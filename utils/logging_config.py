@@ -22,10 +22,16 @@ def add_request_id(logger: Any, method_name: str, event_dict: EventDict) -> Even
 
 def add_module_info(logger: Any, method_name: str, event_dict: EventDict) -> EventDict:
     """Add module and function information to log entries."""
-    frame = logger._context.get("frame")
-    if frame:
-        event_dict["module"] = frame.f_globals.get("__name__", "unknown")
-        event_dict["function"] = frame.f_code.co_name
+    try:
+        # Skip if logger doesn't have _context (for compatibility)
+        if hasattr(logger, '_context'):
+            frame = logger._context.get("frame")
+            if frame:
+                event_dict["module"] = frame.f_globals.get("__name__", "unknown")
+                event_dict["function"] = frame.f_code.co_name
+    except:
+        # Silently skip if frame info is not available
+        pass
     return event_dict
 
 

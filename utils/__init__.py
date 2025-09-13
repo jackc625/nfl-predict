@@ -1,6 +1,6 @@
 """Utilities module for NFL Prediction System."""
 
-from .logging_config import setup_logging, get_logger
+from .logging_config import setup_logging, get_logger, log_data_operation
 from .date_utils import (
     get_current_nfl_week,
     get_current_nfl_season,
@@ -19,6 +19,9 @@ from .validation import (
     validate_game_data,
     validate_odds_data,
     validate_prediction_data,
+    validate_data_quality,
+    validate_nfl_business_rules,
+    validate_temporal_consistency,
 )
 from .exceptions import (
     NFLPredictException,
@@ -36,6 +39,7 @@ __all__ = [
     # Logging
     "setup_logging",
     "get_logger",
+    "log_data_operation",
     # Date utilities
     "get_current_nfl_week",
     "get_current_nfl_season", 
@@ -52,6 +56,9 @@ __all__ = [
     "validate_game_data",
     "validate_odds_data",
     "validate_prediction_data",
+    "validate_data_quality",
+    "validate_nfl_business_rules",
+    "validate_temporal_consistency",
     # Exceptions
     "NFLPredictException",
     "DataIngestionError",
