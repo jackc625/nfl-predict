@@ -1,0 +1,212 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nfl-predict"
+version = "1.0.0"
+description = "NFL Prediction System - Pre-game predictions for Win Probability, ATS, and O/U"
+authors = [
+    {name = "Jack", email = "jack@example.com"},
+]
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+keywords = ["nfl", "predictions", "sports-betting", "machine-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    # Core data processing
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "pyarrow>=10.0.0",
+    "duckdb>=0.8.0",
+    "polars>=0.18.0",
+    
+    # Modeling and ML
+    "scikit-learn>=1.3.0",
+    "xgboost>=1.7.0",
+    "lightgbm>=4.0.0",
+    "statsmodels>=0.14.0",
+    
+    # API and Web UI
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.23.0",
+    "jinja2>=3.1.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-multipart>=0.0.6",
+    "itsdangerous>=2.1.0",
+    
+    # HTTP requests and ETL
+    "httpx>=0.24.0",
+    "tenacity>=8.2.0",
+    "pytz>=2023.3",
+    "python-dateutil>=2.8.0",
+    "pendulum>=2.1.0",
+    "tqdm>=4.65.0",
+    
+    # Data sources
+    "nfl-data-py>=0.3.0",
+    "meteostat>=1.6.0",
+    
+    # Visualization for reports
+    "matplotlib>=3.7.0",
+    "plotly>=5.15.0",
+    "seaborn>=0.12.0",
+    
+    # Utilities
+    "structlog>=23.1.0",
+    "click>=8.1.0",
+    "python-dotenv>=1.0.0",
+    "joblib>=1.3.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.21.0",
+    "hypothesis>=6.82.0",
+    "httpx>=0.24.0",  # for testing FastAPI endpoints
+]
+
+dev = [
+    "black>=23.7.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.5.0",
+    "pre-commit>=3.3.0",
+    "jupyter>=1.0.0",
+    "ipython>=8.14.0",
+]
+
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.1.0",
+    "mkdocstrings[python]>=0.22.0",
+]
+
+all = [
+    "nfl-predict[test,dev,docs]"
+]
+
+[project.urls]
+Homepage = "https://github.com/jackc/nfl-predict"
+Repository = "https://github.com/jackc/nfl-predict"
+Issues = "https://github.com/jackc/nfl-predict/issues"
+
+[project.scripts]
+nfl-predict = "scripts.main:cli"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scripts*", "ratings*", "models*", "backtest*", "api*"]
+exclude = ["tests*", "data*", "outputs*", "artifacts*"]
+
+# Black configuration
+[tool.black]
+line-length = 88
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.venv
+  | \.tox
+  | build
+  | dist
+  | data
+  | outputs
+  | artifacts
+)/
+'''
+
+# isort configuration
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["scripts", "ratings", "models", "backtest", "api"]
+
+# MyPy configuration
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = [
+    "nfl_data_py.*",
+    "meteostat.*",
+    "duckdb.*",
+    "polars.*",
+    "lightgbm.*",
+]
+ignore_missing_imports = true
+
+# Pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--cov=scripts",
+    "--cov=ratings", 
+    "--cov=models",
+    "--cov=backtest",
+    "--cov=api",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-fail-under=80",
+    "-v"
+]
+asyncio_mode = "auto"
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["scripts", "ratings", "models", "backtest", "api"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__init__.py",
+    "*/conftest.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]

@@ -1,0 +1,213 @@
+# NFL Prediction System Configuration
+# Based on PRD specifications
+
+# Data Pipeline Settings
+data:
+  root_path: "./data"
+  snapshot_time_et: "Friday 18:00"  # Friday 6:00 PM ET
+  
+  # Data sources
+  sources:
+    games: "nfl_data_py"
+    odds: "theoddsapi"  # or "manual_json"
+    weather: "meteostat"
+    venues: "static_json"
+  
+  # Storage paths
+  paths:
+    bronze: "./data/bronze"  # raw snapshots
+    silver: "./data/silver"  # cleaned tables
+    gold: "./data/gold"      # feature matrices
+    outputs: "./outputs"     # prediction artifacts
+    artifacts: "./artifacts" # model artifacts
+  
+  # Data retention (optional)
+  retention_days: 365
+
+# Model Configuration
+models:
+  # Win Probability model
+  wp:
+    algorithm: "logistic_regression"
+    calibration: true
+    solver: "lbfgs"
+    regularization: "l2"
+    max_iter: 1000
+    
+  # Against the Spread model  
+  ats:
+    algorithm: "xgboost_regression"
+    objective: "reg:squarederror"
+    n_estimators: 100
+    max_depth: 6
+    learning_rate: 0.1
+    subsample: 0.8
+    colsample_bytree: 0.8
+    
+  # Over/Under model
+  ou:
+    algorithm: "xgboost_regression"
+    objective: "reg:squarederror"
+    n_estimators: 100
+    max_depth: 6
+    learning_rate: 0.1
+    subsample: 0.8
+    colsample_bytree: 0.8
+    
+  # Calibration settings
+  calibration:
+    method: "isotonic"  # or "platt"
+    cv_folds: 5
+    
+  # Feature engineering
+  features:
+    elo:
+      initial_rating: 1500
+      k_factor_base: 20
+      margin_multiplier_cap: 2.0
+      season_carryover_shrink: 25
+      
+    form:
+      rolling_weeks: 4
+      min_games: 2
+      
+    weather:
+      wind_threshold: 12  # mph for "windy" games
+      temp_threshold: 32  # Fahrenheit for "cold" games
+      
+    market:
+      devig_method: "proportional"  # or "worst_case"
+
+# Backtesting Configuration
+backtest:
+  seasons: [2018, 2019, 2020, 2021, 2022, 2023, 2024]
+  validation_method: "walk_forward"
+  min_train_seasons: 2
+  
+  # Evaluation metrics
+  metrics:
+    classification: ["log_loss", "brier_score", "accuracy", "calibration_error"]
+    regression: ["mae", "rmse", "mape"]
+    betting: ["roi", "sharpe", "max_drawdown", "hit_rate"]
+
+# Prediction & Betting Settings
+betting:
+  edge_threshold: 0.02  # 2.0% minimum edge
+  max_edge_threshold: 0.15  # 15% maximum edge (sanity check)
+  kelly_fraction: 0.25  # fractional Kelly sizing
+  max_bet_size: 0.05    # 5% max bet as fraction of bankroll
+  
+  # Juice assumptions for ROI calculations
+  standard_juice: -110
+  
+  # Edge calculation
+  min_probability: 0.01  # 1% minimum probability
+  max_probability: 0.99  # 99% maximum probability
+
+# API Configuration  
+api:
+  host: "0.0.0.0"
+  port: 8000
+  title: "NFL Prediction System API"
+  description: "Pre-game predictions for NFL Win Probability, ATS, and O/U"
+  version: "1.0.0"
+  
+  # Rate limiting
+  rate_limit:
+    requests_per_minute: 60
+    requests_per_hour: 1000
+  
+  # CORS settings
+  cors:
+    allow_origins: ["*"]
+    allow_methods: ["GET", "POST"]
+    allow_headers: ["*"]
+
+# Web UI Configuration
+web:
+  title: "NFL Predictions"
+  theme: "light"  # or "dark"
+  
+  # Table settings
+  default_week: "current"
+  games_per_page: 16
+  edge_color_thresholds:
+    low: 0.02    # 2%
+    medium: 0.05 # 5% 
+    high: 0.10   # 10%
+    
+  # Downloads
+  enable_csv_download: true
+  enable_json_download: true
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "json"  # or "text"
+  
+  # Log destinations
+  console: true
+  file: true
+  file_path: "./logs/nfl-predict.log"
+  
+  # Structured logging fields
+  include_request_id: true
+  include_timestamp: true
+  include_module: true
+
+# External API Settings (populate in .env)
+external_apis:
+  odds_api:
+    base_url: "https://api.the-odds-api.com/v4"
+    timeout: 30
+    retries: 3
+    rate_limit_per_hour: 500
+    
+  weather_api:
+    provider: "meteostat"
+    timeout: 30
+    retries: 3
+
+# Monitoring & Alerting
+monitoring:
+  enable_health_checks: true
+  health_check_interval: 300  # seconds
+  
+  # Data quality alerts
+  data_quality:
+    min_games_per_week: 14
+    max_missing_odds_pct: 0.1   # 10%
+    max_missing_weather_pct: 0.2 # 20%
+    
+  # Model performance alerts  
+  model_performance:
+    max_log_loss_increase: 0.1
+    min_calibration_score: 0.8
+    max_prediction_time: 60  # seconds
+
+# Development Settings
+development:
+  debug: false
+  reload: false
+  
+  # Testing
+  test_data_path: "./tests/data"
+  mock_external_apis: false
+  
+  # Profiling
+  enable_profiling: false
+  profile_output_path: "./profiles"
+
+# Production Settings
+production:
+  # Security
+  secret_key_min_length: 32
+  
+  # Performance
+  worker_processes: 4
+  max_request_size: "10MB"
+  request_timeout: 300
+  
+  # Caching
+  enable_redis_cache: false
+  cache_ttl: 3600  # seconds

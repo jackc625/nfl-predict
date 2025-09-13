@@ -1,0 +1,370 @@
+# NFL Prediction System - Git Ignore File
+
+# =============================================================================
+# ENVIRONMENT & SECRETS
+# =============================================================================
+
+# Environment variables (NEVER commit secrets!)
+.env
+.env.*
+!.env.example
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# =============================================================================
+# DATA & OUTPUTS
+# =============================================================================
+
+# Data directories (contain large datasets and sensitive information)
+data/
+!data/.gitkeep
+
+# Model outputs and predictions
+outputs/
+!outputs/.gitkeep
+
+# Model artifacts and trained models
+artifacts/
+!artifacts/.gitkeep
+
+# Logs
+logs/
+*.log
+
+# =============================================================================
+# PYTHON
+# =============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+.pdm.toml
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# =============================================================================
+# IDEs & EDITORS
+# =============================================================================
+
+# PyCharm
+.idea/
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Atom
+.atom/
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+*.tmp
+*.swp
+
+# =============================================================================
+# SYSTEM FILES
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# =============================================================================
+# PROJECT SPECIFIC
+# =============================================================================
+
+# API Keys and sensitive config (double-check these are not committed)
+**/api_keys.json
+**/secrets.yaml
+**/credentials.json
+
+# Large data files
+*.parquet
+*.csv
+*.json
+!conf/*.json
+!conf/*.yaml
+!tests/data/**/*.json
+!tests/data/**/*.csv
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Profiling outputs
+profiles/
+*.prof
+
+# Documentation build
+docs/_build/
+docs/site/
+
+# Cache directories
+.cache/
+cache/
+
+# Downloaded models or data
+downloads/
+models/pretrained/
+
+# API response caches
+.api_cache/
+
+# =============================================================================
+# SPECIFIC SERVICES
+# =============================================================================
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Kubernetes
+*.kubeconfig
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# =============================================================================
+# BACKUP & TEMPORARY FILES
+# =============================================================================
+
+# Backup files
+*~
+*.backup
+*.bak
+*.old
+*.orig
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+
+# Auto-generated files
+VERSION
+BUILD_INFO
+
+# =============================================================================
+# DEVELOPMENT & TESTING
+# =============================================================================
+
+# Development databases
+dev.db
+test.db
+local.db
+
+# Test outputs
+test_outputs/
+test_reports/
+
+# Benchmarking results
+benchmarks/
+*.benchmark
+
+# =============================================================================
+# DOCUMENTATION
+# =============================================================================
+
+# Sphinx documentation
+docs/_build/
+
+# =============================================================================
+# MONITORING & OBSERVABILITY  
+# =============================================================================
+
+# Monitoring data
+monitoring/
+metrics/
+
+# APM traces
+traces/
+apm/
+
+# =============================================================================
+# EXCEPTIONS (Files to track)
+# =============================================================================
+
+# Keep essential empty directories
+!data/.gitkeep
+!outputs/.gitkeep  
+!artifacts/.gitkeep
+!logs/.gitkeep
+
+# Keep configuration examples
+!.env.example
+
+# Keep test data
+!tests/data/
+!tests/fixtures/
+
+# Keep documentation
+!docs/
+!*.md
+!*.rst
