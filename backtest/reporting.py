@@ -240,6 +240,11 @@ class BacktestReporter:
 
         seasonal_breakdown = {}
 
+        # Handle empty DataFrame
+        if results_df.empty or 'season' not in results_df.columns:
+            logger.warning("Empty or malformed results DataFrame for seasonal analysis")
+            return seasonal_breakdown
+
         for season in results_df['season'].unique():
             season_data = results_df[results_df['season'] == season]
 
@@ -293,6 +298,11 @@ class BacktestReporter:
         """Perform cohort analysis on different factors."""
 
         cohort_analysis = {}
+
+        # Handle empty DataFrame
+        if results_df.empty:
+            logger.warning("Empty results DataFrame for cohort analysis")
+            return cohort_analysis
 
         # Weather cohort analysis (if weather data available)
         if additional_data and 'weather_data' in additional_data:
@@ -509,6 +519,11 @@ class BacktestReporter:
         """Perform sensitivity analysis on key parameters."""
 
         sensitivity_results = {}
+
+        # Handle empty DataFrame
+        if results_df.empty:
+            logger.warning("Empty results DataFrame for sensitivity analysis")
+            return sensitivity_results
 
         # EV threshold sensitivity
         if not results_df['betting_roi'].isna().all():
