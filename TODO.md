@@ -102,130 +102,158 @@ This document outlines the comprehensive implementation plan for the NFL predict
 ### Phase 3: Feature Engineering System
 **Timeline: Days 9-14**
 
-- [ ] **3.1** Implement Elo rating system (`ratings/elo.py`)
-  - Base Elo calculations (init at 1500)
-  - Margin-of-victory adjustments with dynamic K-factor
-  - Home-field advantage learning per season
-  - Season carryover with 25 Elo shrinkage
-  - Chronological updates across multiple seasons
+- [x] **3.1** Implement Elo rating system (`ratings/elo.py`)
+  - Base Elo calculations (init at 1500)                     ✅ COMPLETE
+  - Margin-of-victory adjustments with dynamic K-factor     ✅ COMPLETE
+  - Home-field advantage learning per season                ✅ COMPLETE
+  - Season carryover with 25 Elo shrinkage                  ✅ COMPLETE
+  - Chronological updates across multiple seasons           ✅ COMPLETE
+  - Consider Glicko rating system as Elo alternative        ✅ COMPLETE (uncertainty tracking implemented)
 
-- [ ] **3.2** Implement team form metrics
-  - Rolling 4-week EPA/play calculations (offense/defense)
-  - Success rate metrics (offense/defense)
-  - Neutral situation pass rate calculations
-  - Rest days since last game
-  - Ensure no data leakage (only past games)
+- [x] **3.2** Implement team form metrics
+  - Rolling 4-week EPA/play calculations (offense/defense)     ✅ COMPLETE
+  - Success rate metrics (offense/defense)                    ✅ COMPLETE
+  - Neutral situation pass rate calculations                  ✅ COMPLETE
+  - Rest days since last game                                 ✅ COMPLETE
+  - Ensure no data leakage (only past games)                  ✅ COMPLETE
 
-- [ ] **3.3** Implement contextual features
-  - Travel time-zone difference calculations
-  - Short week detection
-  - Venue roof type encoding
-  - Home/away team indicators
+- [x] **3.3** Implement contextual features
+  - Travel time-zone difference calculations               ✅ COMPLETE
+  - Short week detection                                   ✅ COMPLETE
+  - Venue roof type encoding                              ✅ COMPLETE
+  - Home/away team indicators                             ✅ COMPLETE
 
-- [ ] **3.4** Implement weather features
-  - Wind speed (primary factor)
-  - Temperature, precipitation probability
-  - Outdoor game filtering
-  - Weather impact only for outdoor/retractable venues
+- [x] **3.4** Implement weather features
+  - Wind speed (primary factor)                           ✅ COMPLETE
+  - Temperature, precipitation probability                 ✅ COMPLETE
+  - Outdoor game filtering                                 ✅ COMPLETE
+  - Weather impact only for outdoor/retractable venues    ✅ COMPLETE
 
-- [ ] **3.5** Implement market anchor features
-  - Opening line capture and storage
-  - Current line at snapshot time
-  - Moneyline to probability conversions with devig
-  - Never use closing lines (strict no-leakage)
+- [x] **3.5** Implement market anchor features
+  - Opening line capture and storage                      ✅ COMPLETE
+  - Current line at snapshot time                         ✅ COMPLETE
+  - Moneyline to probability conversions with devig       ✅ COMPLETE
+  - Never use closing lines (strict no-leakage)           ✅ COMPLETE
 
-- [ ] **3.6** Create feature building pipeline (`scripts/build_features.py`)
-  - Combine all feature sources
-  - Handle missing data and outliers (winsorization)
-  - Z-score normalization within seasons
-  - Generate separate feature matrices for WP/ATS/OU
-  - Store features in gold layer
+- [x] **3.6** Create feature building pipeline (`scripts/build_features.py`)
+  - Combine all feature sources                              ✅ COMPLETE
+  - Handle missing data and outliers (winsorization)         ✅ COMPLETE
+  - Z-score normalization within seasons                     ✅ COMPLETE
+  - Generate separate feature matrices for WP/ATS/OU         ✅ COMPLETE
+  - Store features in gold layer                             ✅ COMPLETE
 
-- [ ] **3.7** Implement feature validation
-  - Check for data leakage in feature construction
-  - Validate feature distributions
-  - Test feature pipeline end-to-end
+- [x] **3.7** Implement feature validation
+  - Check for data leakage in feature construction                ✅ COMPLETE
+  - Validate feature distributions                               ✅ COMPLETE
+  - Test feature pipeline end-to-end                             ✅ COMPLETE
 
 ### Phase 4: Modeling Infrastructure
 **Timeline: Days 15-18**
 
-- [ ] **4.1** Create model training utilities (`models/utils.py`)
-  - Walk-forward validation framework
-  - Data splitting by season/week
-  - Cross-validation utilities
-  - Model serialization/loading
+- [x] **4.1** Create model training utilities (`models/utils.py`)
+  - Walk-forward validation framework                   ✅ COMPLETE
+  - Data splitting by season/week                       ✅ COMPLETE
+  - Cross-validation utilities                          ✅ COMPLETE
+  - Model serialization/loading                         ✅ COMPLETE
 
-- [ ] **4.2** Implement probability calibration (`models/calibrate.py`)
-  - Isotonic regression calibration
-  - Platt scaling as fallback
-  - Within-season calibration on validation folds
-  - Calibration curve generation
+- [x] **4.2** Implement probability calibration (`models/calibrate.py`)
+  - Isotonic regression calibration                     ✅ COMPLETE
+  - Platt scaling as fallback                           ✅ COMPLETE
+  - Within-season calibration on validation folds       ✅ COMPLETE
+  - Calibration curve generation                        ✅ COMPLETE
 
-- [ ] **4.3** Implement baseline Elo model
-  - Pure Elo-based win probability
-  - Logistic regression on Elo difference
-  - Home field advantage integration
-  - Serve as baseline comparison
+- [x] **4.3** Implement baseline Elo model                     ✅ COMPLETE
+  - Pure Elo-based win probability                          ✅ COMPLETE
+  - Logistic regression on Elo difference                   ✅ COMPLETE
+  - Home field advantage integration                        ✅ COMPLETE
+  - Serve as baseline comparison                            ✅ COMPLETE
 
-- [ ] **4.4** Create model evaluation framework
-  - LogLoss, Brier score for WP
-  - MAE, RMSE for regression targets
-  - Calibration metrics (ECE, reliability diagrams)
-  - Betting simulation metrics (ROI, CLV)
+- [x] **4.4** Create model evaluation framework             ✅ COMPLETE
+  - LogLoss, Brier score for WP                          ✅ COMPLETE
+  - MAE, RMSE for regression targets                     ✅ COMPLETE
+  - Calibration metrics (ECE, reliability diagrams)     ✅ COMPLETE
+  - Betting simulation metrics (ROI, CLV)               ✅ COMPLETE
 
 ### Phase 5: Core Prediction Models
 **Timeline: Days 19-22**
 
-- [ ] **5.1** Implement Win Probability model (`models/train_wp.py`)
-  - Logistic regression with L1/L2 regularization
-  - Feature selection and hyperparameter tuning
-  - Walk-forward training protocol
-  - Calibration integration
-  - Model persistence and loading
+- [x] **5.1** Implement Win Probability model (`models/train_wp.py`)      ✅ COMPLETE
+  - Logistic regression with L1/L2 regularization               ✅ COMPLETE
+  - Feature selection and hyperparameter tuning                 ✅ COMPLETE
+  - Walk-forward training protocol                              ✅ COMPLETE
+  - Calibration integration                                     ✅ COMPLETE
+  - Model persistence and loading                               ✅ COMPLETE
 
-- [ ] **5.2** Implement ATS model (`models/train_ats.py`)
-  - XGBoost/LightGBM regression for expected margin
-  - Convert to cover probability using residual distribution
-  - Handle spread betting mechanics
-  - Feature importance tracking
+- [x] **5.2** Implement ATS model (`models/train_ats.py`)           ✅ COMPLETE
+  - XGBoost/LightGBM regression for expected margin            ✅ COMPLETE
+  - Convert to cover probability using residual distribution   ✅ COMPLETE
+  - Implement both classification and regression approaches     ✅ COMPLETE
+  - Handle spread betting mechanics                             ✅ COMPLETE
+  - Feature importance tracking                                 ✅ COMPLETE
 
-- [ ] **5.3** Implement Over/Under model (`models/train_ou.py`)
-  - XGBoost/LightGBM regression for total points
-  - Convert to over/under probabilities
-  - Weather impact modeling for totals
-  - Handle total betting mechanics
+- [x] **5.3** Implement Over/Under model (`models/train_ou.py`)     ✅ COMPLETE
+  - XGBoost/LightGBM regression for total points              ✅ COMPLETE
+  - Convert to over/under probabilities                       ✅ COMPLETE
+  - Optional: Poisson score model for total points simulation ✅ COMPLETE
+  - Weather impact modeling for totals                        ✅ COMPLETE
+  - Handle total betting mechanics                             ✅ COMPLETE
 
-- [ ] **5.4** Create prediction pipeline
-  - Combine all models for unified predictions
-  - Generate fair lines and probabilities
-  - Calculate edges vs market lines
-  - Output structured prediction format
+- [x] **5.4** Create prediction pipeline                    ✅ COMPLETE
+  - Combine all models for unified predictions            ✅ COMPLETE
+  - Generate fair lines and probabilities                ✅ COMPLETE
+  - Calculate edges vs market lines                       ✅ COMPLETE
+  - Output structured prediction format                   ✅ COMPLETE
+
+### Phase 5.5: Betting Utilities & Selection  
+**Timeline: Days 22.5-23.5**
+
+- [x] **5.5.1** Implement Expected Value calculations
+  - American odds to implied probability conversion                ✅ COMPLETE
+  - EV calculation for different bet types (spread, total, ML)     ✅ COMPLETE
+  - Devig utilities for removing sportsbook margin                ✅ COMPLETE
+  
+- [x] **5.5.2** Implement Kelly Criterion bet sizing
+  - Full Kelly and fractional Kelly calculations                 ✅ COMPLETE
+  - Bankroll management with drawdown limits                     ✅ COMPLETE
+  - Unit size determination based on edge and confidence         ✅ COMPLETE
+
+- [x] **5.5.3** Create bet selection and filtering                     ✅ COMPLETE
+  - Minimum edge thresholds (configurable, default 2%)              ✅ COMPLETE
+  - Confidence requirements (|prob - 0.5| >= threshold)             ✅ COMPLETE
+  - Maximum bets per week limits (top N edges)                      ✅ COMPLETE
+  - Disagreement vs closing line detection                          ✅ COMPLETE
+
+- [x] **5.5.4** Implement bet recommendation engine                      ✅ COMPLETE
+  - Rank potential bets by EV and confidence                        ✅ COMPLETE
+  - Generate recommended unit sizes                                 ✅ COMPLETE
+  - Output structured bet recommendations                           ✅ COMPLETE
 
 ### Phase 6: Backtesting & Evaluation System
-**Timeline: Days 23-26**
+**Timeline: Days 24-27**
 
-- [ ] **6.1** Implement walk-forward backtesting (`backtest/walkforward.py`)
-  - Season-by-season validation (2018-2024)
-  - Strict temporal ordering
-  - No data leakage validation
-  - Progress tracking and logging
+- [x] **6.1** Implement walk-forward backtesting (`backtest/walkforward.py`) ✅ COMPLETE
+  - Season-by-season validation (2018-2024)                         ✅ COMPLETE
+  - Strict temporal ordering                                         ✅ COMPLETE
+  - No data leakage validation                                       ✅ COMPLETE
+  - Progress tracking and logging                                    ✅ COMPLETE
 
-- [ ] **6.2** Create evaluation metrics (`backtest/metrics.py`)
-  - Model performance metrics (LogLoss, Brier, MAE, RMSE)
-  - Calibration analysis (ECE, reliability diagrams)
-  - Edge bucket analysis
-  - Statistical significance testing
+- [x] **6.2** Create evaluation metrics (`backtest/metrics.py`)            ✅ COMPLETE
+  - Model performance metrics (LogLoss, Brier, MAE, RMSE)               ✅ COMPLETE
+  - Calibration analysis (ECE, reliability diagrams)                    ✅ COMPLETE
+  - Edge bucket analysis                                                 ✅ COMPLETE
+  - Statistical significance testing                                     ✅ COMPLETE
 
-- [ ] **6.3** Implement betting simulation
-  - ROI calculation at -110 juice
-  - Kelly criterion sizing (fractional)
-  - CLV tracking if closing lines available
-  - Bankroll simulation over time
+- [x] **6.3** Implement betting simulation                               ✅ COMPLETE
+  - ROI calculation at -110 juice                                      ✅ COMPLETE
+  - Kelly criterion sizing (fractional)                                ✅ COMPLETE
+  - CLV tracking if closing lines available                            ✅ COMPLETE
+  - Bankroll simulation over time                                      ✅ COMPLETE
 
 - [ ] **6.4** Create backtest reporting
   - HTML report generation with charts
   - Season-by-season performance breakdown
   - Cohort analysis (weather, venue, travel)
+  - Sensitivity analysis on EV thresholds and Kelly fractions
   - CSV export for detailed analysis
 
 - [ ] **6.5** Validate backtest with known results
@@ -234,7 +262,7 @@ This document outlines the comprehensive implementation plan for the NFL predict
   - Ensure reproducibility
 
 ### Phase 7: API & Web Interface
-**Timeline: Days 27-30**
+**Timeline: Days 28-31**
 
 - [ ] **7.1** Create FastAPI application (`api/main.py`)
   - API endpoint structure per PRD specification
@@ -270,7 +298,7 @@ This document outlines the comprehensive implementation plan for the NFL predict
   - Mobile-optimized styling
 
 ### Phase 8: Integration & Testing
-**Timeline: Days 31-34**
+**Timeline: Days 32-35**
 
 - [ ] **8.1** Create comprehensive test suite
   - Unit tests for all feature builders
@@ -298,7 +326,7 @@ This document outlines the comprehensive implementation plan for the NFL predict
   - Operational runbooks
 
 ### Phase 9: Deployment & Orchestration
-**Timeline: Days 35-38**
+**Timeline: Days 36-39**
 
 - [ ] **9.1** Create Make commands per acceptance criteria
   - `make snapshot` - produce silver/gold tables
@@ -355,5 +383,5 @@ Each phase should include:
 
 Use this document to track progress. Mark items as complete with ✅ and note any blockers or changes needed.
 
-**Current Status**: ✅ Phase 2 COMPLETE - Data Infrastructure & Ingestion implemented
-**Next Milestone**: Begin Phase 3 - Feature Engineering System (Days 9-14)
+**Current Status**: ✅ Phase 6.3 COMPLETE - Betting simulation implemented
+**Next Milestone**: Phase 6.4 - Create backtest reporting

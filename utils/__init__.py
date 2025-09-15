@@ -34,6 +34,51 @@ from .exceptions import (
     BacktestError,
     FeatureEngineeringError,
 )
+from .betting_utils import (
+    BetType,
+    BettingResult,
+    calculate_moneyline_ev,
+    calculate_spread_ev,
+    calculate_total_ev,
+    analyze_game_betting_opportunities,
+    summarize_betting_session,
+)
+from .kelly_criterion import (
+    KellyMode,
+    KellyResult,
+    KellyCalculator,
+)
+from .bankroll_manager import (
+    RiskLevel,
+    AlertType,
+    BankrollAlert,
+    BettingSession,
+    BankrollManager,
+)
+from .unit_sizing import (
+    ConfidenceMethod,
+    UnitScale,
+    ConfidenceMetrics,
+    UnitRecommendation,
+    UnitSizer,
+)
+from .bet_selector import (
+    FilterReason,
+    FilterCriteria,
+    BetCandidate,
+    BetSelectionResult,
+    BetSelector,
+    create_default_criteria,
+    create_aggressive_criteria,
+)
+from .bet_recommender import (
+    RecommendationTier,
+    RecommendationAction,
+    UnitRecommendation,
+    BetRecommendation,
+    RecommendationPortfolio,
+    BetRecommender,
+)
 
 __all__ = [
     # Logging
@@ -69,4 +114,43 @@ __all__ = [
     "ExternalAPIError",
     "BacktestError",
     "FeatureEngineeringError",
+    # Betting utilities
+    "BetType",
+    "BettingResult",
+    "calculate_moneyline_ev",
+    "calculate_spread_ev",
+    "calculate_total_ev",
+    "analyze_game_betting_opportunities",
+    "summarize_betting_session",
+    # Kelly criterion
+    "KellyMode",
+    "KellyResult",
+    "KellyCalculator",
+    # Bankroll management
+    "RiskLevel",
+    "AlertType",
+    "BankrollAlert",
+    "BettingSession",
+    "BankrollManager",
+    # Unit sizing
+    "ConfidenceMethod",
+    "UnitScale",
+    "ConfidenceMetrics",
+    "UnitRecommendation",
+    "UnitSizer",
+    # Bet selection
+    "FilterReason",
+    "FilterCriteria",
+    "BetCandidate",
+    "BetSelectionResult",
+    "BetSelector",
+    "create_default_criteria",
+    "create_aggressive_criteria",
+    # Bet recommendation
+    "RecommendationTier",
+    "RecommendationAction",
+    "UnitRecommendation",
+    "BetRecommendation",
+    "RecommendationPortfolio",
+    "BetRecommender",
 ]

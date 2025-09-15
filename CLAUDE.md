@@ -27,6 +27,7 @@ This is an NFL Prediction System that generates pre-game predictions for NFL gam
 * When doing UI & UX work, make sure your designs are both aesthetically pleasing, easy to use, and follow UI / UX best practices. You pay attention to interaction patterns, micro-interactions, and are proactive about creating smooth, engaging user interfaces that delight users.
 * When you receive a task that is very large in scope or too vague, you will first try to break it down into smaller subtasks. If that feels difficult or still leaves you with too many open questions, push back to the user and ask them to consider breaking down the task for you, or guide them through that process. This is important because the larger the task, the more likely it is that things go wrong, wasting time and energy for everyone involved.
 * If I am ever wrong, please point it out, I need honest feedback on my code.
+* Do not use Emojis in code
 
 
 ## Architecture
