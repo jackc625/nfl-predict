@@ -249,12 +249,12 @@ This document outlines the comprehensive implementation plan for the NFL predict
   - CLV tracking if closing lines available                            ✅ COMPLETE
   - Bankroll simulation over time                                      ✅ COMPLETE
 
-- [ ] **6.4** Create backtest reporting
-  - HTML report generation with charts
-  - Season-by-season performance breakdown
-  - Cohort analysis (weather, venue, travel)
-  - Sensitivity analysis on EV thresholds and Kelly fractions
-  - CSV export for detailed analysis
+- [x] **6.4** Create backtest reporting                                      ✅ COMPLETE
+  - HTML report generation with charts                                ✅ COMPLETE
+  - Season-by-season performance breakdown                            ✅ COMPLETE
+  - Cohort analysis (weather, venue, travel)                         ✅ COMPLETE
+  - Sensitivity analysis on EV thresholds and Kelly fractions        ✅ COMPLETE
+  - CSV export for detailed analysis                                  ✅ COMPLETE
 
 - [ ] **6.5** Validate backtest with known results
   - Test on subset of historical data
@@ -383,5 +383,5 @@ Each phase should include:
 
 Use this document to track progress. Mark items as complete with ✅ and note any blockers or changes needed.
 
-**Current Status**: ✅ Phase 6.3 COMPLETE - Betting simulation implemented
-**Next Milestone**: Phase 6.4 - Create backtest reporting
+**Current Status**: ✅ Phase 6.4 COMPLETE - Backtest reporting system implemented
+**Next Milestone**: Phase 6.5 - Validate backtest with known results
