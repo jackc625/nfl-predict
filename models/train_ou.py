@@ -17,18 +17,17 @@ The O/U model predicts game totals and over/under probabilities, integrating
 with the broader prediction pipeline for comprehensive game analysis.
 """
 
-import pandas as pd
-import numpy as np
-from pathlib import Path
 import sys
-from datetime import datetime
-from typing import Dict, List, Tuple, Optional, Any, Union
-from dataclasses import dataclass, field
 import warnings
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
 import joblib
-import json
-from scipy import stats
-from scipy.optimize import minimize_scalar
+import numpy as np
+import pandas as pd
+from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -36,44 +35,52 @@ sys.path.insert(0, str(project_root))
 
 # ML imports
 import xgboost as xgb
+
 try:
     import lightgbm as lgb
+
     LIGHTGBM_AVAILABLE = True
 except ImportError:
     LIGHTGBM_AVAILABLE = False
 
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet, PoissonRegressor
+from sklearn.base import BaseEstimator
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.feature_selection import (
-    SelectKBest, SelectFromModel, RFE, f_regression, f_classif,
-    mutual_info_regression, VarianceThreshold
+    RFE,
+    SelectFromModel,
+    SelectKBest,
+    VarianceThreshold,
+    f_regression,
+)
+from sklearn.linear_model import (
+    LinearRegression,
+    PoissonRegressor,
+    Ridge,
+)
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
 )
 from sklearn.model_selection import (
-    GridSearchCV, RandomizedSearchCV, cross_val_score, KFold
+    GridSearchCV,
+    RandomizedSearchCV,
 )
-from sklearn.preprocessing import StandardScaler, RobustScaler
-from sklearn.metrics import (
-    mean_absolute_error, mean_squared_error, r2_score,
-    median_absolute_error, explained_variance_score
-)
-from sklearn.pipeline import Pipeline
-from scipy.stats import uniform, randint, norm, poisson
-from sklearn.base import BaseEstimator, RegressorMixin
-from sklearn.utils.validation import check_X_y, check_array
+from sklearn.preprocessing import RobustScaler
+
+from data.storage import load_dataframe
+from models.calibrate import CalibrationResults, ProbabilityCalibrator
+from models.evaluation import ModelEvaluationFramework
 
 # Project imports
-from models.utils import WalkForwardValidator, ModelManager, ModelMetadata
-from models.calibrate import ProbabilityCalibrator, CalibrationResults
-from models.evaluation import ModelEvaluationFramework, EvaluationMetrics
-from data.storage import load_dataframe, save_dataframe
+from models.utils import ModelManager, WalkForwardValidator
 from utils import get_logger
-from conf.settings import get_settings
 
 logger = get_logger(__name__)
 
 # Suppress warnings for cleaner output
-warnings.filterwarnings('ignore', category=UserWarning)
-warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 @dataclass
@@ -102,25 +109,26 @@ class OUModelPrediction:
         prediction_date: When prediction was made
         metadata: Additional prediction metadata
     """
+
     game_id: str
     home_team: str
     away_team: str
     predicted_total: float
     over_probability: float
     under_probability: float
-    poisson_over_prob: Optional[float] = None
-    weather_adjusted_total: Optional[float] = None
-    market_total: Optional[float] = None
-    edge_over: Optional[float] = None
-    edge_under: Optional[float] = None
-    confidence: Optional[float] = None
-    weather_impact: Optional[float] = None
-    home_team_total: Optional[float] = None
-    away_team_total: Optional[float] = None
-    feature_importances: Optional[Dict[str, float]] = None
-    model_version: Optional[str] = None
-    prediction_date: Optional[datetime] = None
-    metadata: Optional[Dict[str, Any]] = None
+    poisson_over_prob: float | None = None
+    weather_adjusted_total: float | None = None
+    market_total: float | None = None
+    edge_over: float | None = None
+    edge_under: float | None = None
+    confidence: float | None = None
+    weather_impact: float | None = None
+    home_team_total: float | None = None
+    away_team_total: float | None = None
+    feature_importances: dict[str, float] | None = None
+    model_version: str | None = None
+    prediction_date: datetime | None = None
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass
@@ -150,26 +158,27 @@ class OUModelResults:
         training_date: When model was trained
         metadata: Additional model metadata
     """
+
     total_regression_model: Any
-    poisson_model: Optional[Any] = None
-    home_score_model: Optional[Any] = None
-    away_score_model: Optional[Any] = None
-    weather_model: Optional[Any] = None
-    scaler: Optional[Any] = None
-    feature_selector: Optional[Any] = None
-    calibrator: Optional[ProbabilityCalibrator] = None
-    residual_std: Optional[float] = None
-    weather_coefficients: Dict[str, float] = field(default_factory=dict)
-    feature_names: List[str] = field(default_factory=list)
-    feature_importances: Dict[str, float] = field(default_factory=dict)
-    performance_metrics: Dict[str, float] = field(default_factory=dict)
-    hyperparameters: Dict[str, Any] = field(default_factory=dict)
-    training_history: Dict[str, List[float]] = field(default_factory=dict)
-    calibration_results: Optional[CalibrationResults] = None
-    poisson_params: Dict[str, Any] = field(default_factory=dict)
+    poisson_model: Any | None = None
+    home_score_model: Any | None = None
+    away_score_model: Any | None = None
+    weather_model: Any | None = None
+    scaler: Any | None = None
+    feature_selector: Any | None = None
+    calibrator: ProbabilityCalibrator | None = None
+    residual_std: float | None = None
+    weather_coefficients: dict[str, float] = field(default_factory=dict)
+    feature_names: list[str] = field(default_factory=list)
+    feature_importances: dict[str, float] = field(default_factory=dict)
+    performance_metrics: dict[str, float] = field(default_factory=dict)
+    hyperparameters: dict[str, Any] = field(default_factory=dict)
+    training_history: dict[str, list[float]] = field(default_factory=dict)
+    calibration_results: CalibrationResults | None = None
+    poisson_params: dict[str, Any] = field(default_factory=dict)
     model_version: str = "1.0.0"
-    training_date: Optional[datetime] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    training_date: datetime | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class TotalDistributionConverter:
@@ -203,25 +212,30 @@ class TotalDistributionConverter:
 
         if self.distribution_type == "normal":
             self.distribution_params = {
-                'loc': np.mean(residuals),
-                'scale': np.std(residuals)
+                "loc": np.mean(residuals),
+                "scale": np.std(residuals),
             }
         elif self.distribution_type == "t":
             from scipy.stats import t
+
             df, loc, scale = t.fit(residuals)
-            self.distribution_params = {'df': df, 'loc': loc, 'scale': scale}
+            self.distribution_params = {"df": df, "loc": loc, "scale": scale}
         elif self.distribution_type == "skewnorm":
             from scipy.stats import skewnorm
+
             a, loc, scale = skewnorm.fit(residuals)
-            self.distribution_params = {'a': a, 'loc': loc, 'scale': scale}
+            self.distribution_params = {"a": a, "loc": loc, "scale": scale}
         else:
             raise ValueError(f"Unsupported distribution type: {self.distribution_type}")
 
         self.is_fitted = True
-        logger.info(f"Fitted {self.distribution_type} distribution with params: {self.distribution_params}")
+        logger.info(
+            f"Fitted {self.distribution_type} distribution with params: {self.distribution_params}"
+        )
 
-    def predict_over_under_probabilities(self, predicted_totals: np.ndarray,
-                                       market_totals: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def predict_over_under_probabilities(
+        self, predicted_totals: np.ndarray, market_totals: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Convert total predictions to over/under probabilities.
 
@@ -237,8 +251,9 @@ class TotalDistributionConverter:
 
         if self.distribution_type == "normal":
             from scipy.stats import norm
-            loc = self.distribution_params['loc']
-            scale = self.distribution_params['scale']
+
+            loc = self.distribution_params["loc"]
+            scale = self.distribution_params["scale"]
 
             # Probability that actual total > market total
             z_scores = (market_totals - predicted_totals - loc) / scale
@@ -246,18 +261,20 @@ class TotalDistributionConverter:
 
         elif self.distribution_type == "t":
             from scipy.stats import t
-            df = self.distribution_params['df']
-            loc = self.distribution_params['loc']
-            scale = self.distribution_params['scale']
+
+            df = self.distribution_params["df"]
+            loc = self.distribution_params["loc"]
+            scale = self.distribution_params["scale"]
 
             t_scores = (market_totals - predicted_totals - loc) / scale
             over_probs = 1 - t.cdf(t_scores, df)
 
         elif self.distribution_type == "skewnorm":
             from scipy.stats import skewnorm
-            a = self.distribution_params['a']
-            loc = self.distribution_params['loc']
-            scale = self.distribution_params['scale']
+
+            a = self.distribution_params["a"]
+            loc = self.distribution_params["loc"]
+            scale = self.distribution_params["scale"]
 
             z_scores = (market_totals - predicted_totals - loc) / scale
             over_probs = 1 - skewnorm.cdf(z_scores, a)
@@ -284,7 +301,9 @@ class PoissonScoreModel:
         self.correlation_factor = 0.0
         self.is_fitted = False
 
-    def fit(self, X: pd.DataFrame, home_scores: np.ndarray, away_scores: np.ndarray) -> None:
+    def fit(
+        self, X: pd.DataFrame, home_scores: np.ndarray, away_scores: np.ndarray
+    ) -> None:
         """
         Fit Poisson models for home and away team scores.
 
@@ -309,9 +328,11 @@ class PoissonScoreModel:
         self.correlation_factor = np.corrcoef(home_residuals, away_residuals)[0, 1]
 
         self.is_fitted = True
-        logger.info(f"Fitted Poisson score models with correlation: {self.correlation_factor:.3f}")
+        logger.info(
+            f"Fitted Poisson score models with correlation: {self.correlation_factor:.3f}"
+        )
 
-    def predict_scores(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    def predict_scores(self, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         """
         Predict individual team scores.
 
@@ -329,7 +350,9 @@ class PoissonScoreModel:
 
         return home_scores, away_scores
 
-    def simulate_game_totals(self, X: pd.DataFrame, n_simulations: int = 10000) -> np.ndarray:
+    def simulate_game_totals(
+        self, X: pd.DataFrame, n_simulations: int = 10000
+    ) -> np.ndarray:
         """
         Simulate game totals using Poisson distributions.
 
@@ -355,14 +378,17 @@ class PoissonScoreModel:
         # Add correlation adjustment
         if abs(self.correlation_factor) > 0.1:
             # Simple correlation adjustment
-            correlation_noise = np.random.normal(0, abs(self.correlation_factor) * 5, n_simulations)
+            correlation_noise = np.random.normal(
+                0, abs(self.correlation_factor) * 5, n_simulations
+            )
             away_sims = np.maximum(0, away_sims + correlation_noise.astype(int))
 
         total_sims = home_sims + away_sims
         return total_sims
 
-    def calculate_over_under_probabilities(self, X: pd.DataFrame, market_total: float,
-                                         n_simulations: int = 10000) -> Tuple[float, float]:
+    def calculate_over_under_probabilities(
+        self, X: pd.DataFrame, market_total: float, n_simulations: int = 10000
+    ) -> tuple[float, float]:
         """
         Calculate over/under probabilities using simulation.
 
@@ -407,12 +433,16 @@ class WeatherImpactModel:
             weather_features: Weather feature matrix
             total_residuals: Residuals from base total model
         """
-        from sklearn.linear_model import LinearRegression
 
         # Focus on key weather variables for totals
-        weather_cols = [col for col in weather_features.columns
-                       if any(weather_term in col.lower()
-                             for weather_term in ['wind', 'temp', 'precip', 'humidity'])]
+        weather_cols = [
+            col
+            for col in weather_features.columns
+            if any(
+                weather_term in col.lower()
+                for weather_term in ["wind", "temp", "precip", "humidity"]
+            )
+        ]
 
         if len(weather_cols) == 0:
             logger.warning("No weather features found for impact modeling")
@@ -426,7 +456,7 @@ class WeatherImpactModel:
         model.fit(X_weather, total_residuals)
 
         # Store coefficients
-        self.coefficients = dict(zip(weather_cols, model.coef_))
+        self.coefficients = dict(zip(weather_cols, model.coef_, strict=False))
         self.baseline_intercept = model.intercept_
 
         self.is_fitted = True
@@ -464,17 +494,19 @@ class OUModel(BaseEstimator):
     weather impact modeling.
     """
 
-    def __init__(self,
-                 model_type: str = "xgboost",
-                 use_poisson: bool = True,
-                 use_weather_model: bool = True,
-                 feature_selection_method: str = "model_based",
-                 max_features: Optional[int] = 20,
-                 regularization_strength: float = 0.1,
-                 use_calibration: bool = True,
-                 hyperparameter_tuning: str = "grid_search",
-                 distribution_type: str = "normal",
-                 random_state: int = 42):
+    def __init__(
+        self,
+        model_type: str = "xgboost",
+        use_poisson: bool = True,
+        use_weather_model: bool = True,
+        feature_selection_method: str = "model_based",
+        max_features: int | None = 20,
+        regularization_strength: float = 0.1,
+        use_calibration: bool = True,
+        hyperparameter_tuning: str = "grid_search",
+        distribution_type: str = "normal",
+        random_state: int = 42,
+    ):
         """
         Initialize the O/U model.
 
@@ -526,50 +558,37 @@ class OUModel(BaseEstimator):
         if self.model_type == "xgboost":
             if task_type == "regression":
                 return xgb.XGBRegressor(
-                    random_state=self.random_state,
-                    n_jobs=-1,
-                    verbosity=0
+                    random_state=self.random_state, n_jobs=-1, verbosity=0
                 )
-            else:
-                return xgb.XGBClassifier(
-                    random_state=self.random_state,
-                    n_jobs=-1,
-                    verbosity=0,
-                    eval_metric='logloss'
-                )
-        elif self.model_type == "lightgbm" and LIGHTGBM_AVAILABLE:
+            return xgb.XGBClassifier(
+                random_state=self.random_state,
+                n_jobs=-1,
+                verbosity=0,
+                eval_metric="logloss",
+            )
+        if self.model_type == "lightgbm" and LIGHTGBM_AVAILABLE:
             if task_type == "regression":
                 return lgb.LGBMRegressor(
-                    random_state=self.random_state,
-                    n_jobs=-1,
-                    verbosity=-1
+                    random_state=self.random_state, n_jobs=-1, verbosity=-1
                 )
-            else:
-                return lgb.LGBMClassifier(
-                    random_state=self.random_state,
-                    n_jobs=-1,
-                    verbosity=-1
-                )
-        elif self.model_type == "random_forest":
+            return lgb.LGBMClassifier(
+                random_state=self.random_state, n_jobs=-1, verbosity=-1
+            )
+        if self.model_type == "random_forest":
             if task_type == "regression":
-                return RandomForestRegressor(
-                    random_state=self.random_state,
-                    n_jobs=-1
-                )
-            else:
-                from sklearn.ensemble import RandomForestClassifier
-                return RandomForestClassifier(
-                    random_state=self.random_state,
-                    n_jobs=-1
-                )
-        else:
-            if task_type == "regression":
-                return Ridge(random_state=self.random_state)
-            else:
-                from sklearn.linear_model import LogisticRegression
-                return LogisticRegression(random_state=self.random_state)
+                return RandomForestRegressor(random_state=self.random_state, n_jobs=-1)
+            from sklearn.ensemble import RandomForestClassifier
 
-    def _prepare_features(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray]:
+            return RandomForestClassifier(random_state=self.random_state, n_jobs=-1)
+        if task_type == "regression":
+            return Ridge(random_state=self.random_state)
+        from sklearn.linear_model import LogisticRegression
+
+        return LogisticRegression(random_state=self.random_state)
+
+    def _prepare_features(
+        self, data: pd.DataFrame
+    ) -> tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray]:
         """
         Prepare features and targets for O/U modeling.
 
@@ -581,9 +600,19 @@ class OUModel(BaseEstimator):
         """
         # Feature columns (exclude targets and identifiers)
         exclude_cols = [
-            'game_id', 'season', 'week', 'home_team', 'away_team',
-            'home_wins', 'actual_margin', 'covers_spread', 'total_points',
-            'home_score', 'away_score', 'over_under', 'market_total'
+            "game_id",
+            "season",
+            "week",
+            "home_team",
+            "away_team",
+            "home_wins",
+            "actual_margin",
+            "covers_spread",
+            "total_points",
+            "home_score",
+            "away_score",
+            "over_under",
+            "market_total",
         ]
 
         feature_cols = [col for col in data.columns if col not in exclude_cols]
@@ -597,16 +626,16 @@ class OUModel(BaseEstimator):
         home_scores = None
         away_scores = None
 
-        if 'total_points' in data.columns:
-            total_targets = data['total_points'].values
-        elif 'home_score' in data.columns and 'away_score' in data.columns:
-            home_scores = data['home_score'].values
-            away_scores = data['away_score'].values
+        if "total_points" in data.columns:
+            total_targets = data["total_points"].values
+        elif "home_score" in data.columns and "away_score" in data.columns:
+            home_scores = data["home_score"].values
+            away_scores = data["away_score"].values
             total_targets = home_scores + away_scores
 
         return X, total_targets, home_scores, away_scores
 
-    def select_features(self, X: pd.DataFrame, y: np.ndarray) -> Tuple[Any, List[str]]:
+    def select_features(self, X: pd.DataFrame, y: np.ndarray) -> tuple[Any, list[str]]:
         """
         Select features using the specified method.
 
@@ -624,36 +653,47 @@ class OUModel(BaseEstimator):
 
         if self.feature_selection_method == "variance":
             selector = VarianceThreshold(threshold=0.01)
-            X_selected = selector.fit_transform(X)
-            selected_features = [col for i, col in enumerate(feature_cols)
-                               if selector.get_support()[i]]
+            selector.fit_transform(X)
+            selected_features = [
+                col for i, col in enumerate(feature_cols) if selector.get_support()[i]
+            ]
 
         elif self.feature_selection_method == "univariate":
-            selector = SelectKBest(score_func=f_regression, k=min(max_features, len(feature_cols)))
+            selector = SelectKBest(
+                score_func=f_regression, k=min(max_features, len(feature_cols))
+            )
             selector.fit(X, y)
-            selected_features = [feature_cols[i] for i in selector.get_support(indices=True)]
+            selected_features = [
+                feature_cols[i] for i in selector.get_support(indices=True)
+            ]
 
         elif self.feature_selection_method == "model_based":
             base_model = self._create_base_model("regression")
             selector = SelectFromModel(base_model, max_features=max_features)
             selector.fit(X, y)
-            selected_features = [feature_cols[i] for i in selector.get_support(indices=True)]
+            selected_features = [
+                feature_cols[i] for i in selector.get_support(indices=True)
+            ]
 
         elif self.feature_selection_method == "recursive":
             base_model = self._create_base_model("regression")
             selector = RFE(base_model, n_features_to_select=max_features)
             selector.fit(X, y)
-            selected_features = [feature_cols[i] for i in selector.get_support(indices=True)]
+            selected_features = [
+                feature_cols[i] for i in selector.get_support(indices=True)
+            ]
 
         else:
             # Use all features
             selector = None
             selected_features = feature_cols[:max_features]
 
-        logger.info(f"Selected {len(selected_features)} features using {self.feature_selection_method}")
+        logger.info(
+            f"Selected {len(selected_features)} features using {self.feature_selection_method}"
+        )
         return selector, selected_features
 
-    def tune_hyperparameters(self, X: np.ndarray, y: np.ndarray) -> Dict[str, Any]:
+    def tune_hyperparameters(self, X: np.ndarray, y: np.ndarray) -> dict[str, Any]:
         """
         Tune hyperparameters using the specified method.
 
@@ -667,51 +707,51 @@ class OUModel(BaseEstimator):
         base_model = self._create_base_model("regression")
 
         # Define parameter grids based on model type
-        if self.model_type == "xgboost":
+        if self.model_type == "xgboost" or (
+            self.model_type == "lightgbm" and LIGHTGBM_AVAILABLE
+        ):
             param_grid = {
-                'n_estimators': [100, 200, 300],
-                'max_depth': [3, 4, 5, 6],
-                'learning_rate': [0.01, 0.1, 0.2],
-                'subsample': [0.8, 0.9, 1.0],
-                'colsample_bytree': [0.8, 0.9, 1.0],
-                'reg_alpha': [0, 0.1, 0.5],
-                'reg_lambda': [1, 1.5, 2]
-            }
-        elif self.model_type == "lightgbm" and LIGHTGBM_AVAILABLE:
-            param_grid = {
-                'n_estimators': [100, 200, 300],
-                'max_depth': [3, 4, 5, 6],
-                'learning_rate': [0.01, 0.1, 0.2],
-                'subsample': [0.8, 0.9, 1.0],
-                'colsample_bytree': [0.8, 0.9, 1.0],
-                'reg_alpha': [0, 0.1, 0.5],
-                'reg_lambda': [1, 1.5, 2]
+                "n_estimators": [100, 200, 300],
+                "max_depth": [3, 4, 5, 6],
+                "learning_rate": [0.01, 0.1, 0.2],
+                "subsample": [0.8, 0.9, 1.0],
+                "colsample_bytree": [0.8, 0.9, 1.0],
+                "reg_alpha": [0, 0.1, 0.5],
+                "reg_lambda": [1, 1.5, 2],
             }
         elif self.model_type == "random_forest":
             param_grid = {
-                'n_estimators': [100, 200, 300],
-                'max_depth': [5, 10, 15, None],
-                'min_samples_split': [2, 5, 10],
-                'min_samples_leaf': [1, 2, 4],
-                'max_features': ['sqrt', 'log2', None]
+                "n_estimators": [100, 200, 300],
+                "max_depth": [5, 10, 15, None],
+                "min_samples_split": [2, 5, 10],
+                "min_samples_leaf": [1, 2, 4],
+                "max_features": ["sqrt", "log2", None],
             }
         else:
             # Simple parameter grid for Ridge
-            param_grid = {'alpha': [0.1, 1.0, 10.0]}
+            param_grid = {"alpha": [0.1, 1.0, 10.0]}
 
         # Choose search method
         if self.hyperparameter_tuning == "grid_search":
             search = GridSearchCV(
-                base_model, param_grid, cv=5,
-                scoring='neg_mean_squared_error',
-                n_jobs=-1, verbose=0
+                base_model,
+                param_grid,
+                cv=5,
+                scoring="neg_mean_squared_error",
+                n_jobs=-1,
+                verbose=0,
             )
         else:
             # Random search
             search = RandomizedSearchCV(
-                base_model, param_grid, n_iter=50, cv=5,
-                scoring='neg_mean_squared_error',
-                n_jobs=-1, verbose=0, random_state=self.random_state
+                base_model,
+                param_grid,
+                n_iter=50,
+                cv=5,
+                scoring="neg_mean_squared_error",
+                n_jobs=-1,
+                verbose=0,
+                random_state=self.random_state,
             )
 
         search.fit(X, y)
@@ -719,8 +759,11 @@ class OUModel(BaseEstimator):
 
         return search.best_params_
 
-    def train_model(self, training_data: pd.DataFrame,
-                   validation_data: Optional[pd.DataFrame] = None) -> OUModelResults:
+    def train_model(
+        self,
+        training_data: pd.DataFrame,
+        validation_data: pd.DataFrame | None = None,
+    ) -> OUModelResults:
         """
         Train the O/U model using multiple approaches.
 
@@ -734,7 +777,9 @@ class OUModel(BaseEstimator):
         logger.info("Starting O/U model training...")
 
         # Prepare features and targets
-        X, total_targets, home_scores, away_scores = self._prepare_features(training_data)
+        X, total_targets, home_scores, away_scores = self._prepare_features(
+            training_data
+        )
 
         if total_targets is None:
             raise ValueError("Training data must include total points information")
@@ -742,9 +787,7 @@ class OUModel(BaseEstimator):
         # Initialize scaler
         self.scaler = RobustScaler()
         X_scaled = pd.DataFrame(
-            self.scaler.fit_transform(X),
-            columns=X.columns,
-            index=X.index
+            self.scaler.fit_transform(X), columns=X.columns, index=X.index
         )
 
         # Train total points regression model
@@ -793,29 +836,41 @@ class OUModel(BaseEstimator):
             weather_coefficients = weather_model.coefficients
 
         # Calculate feature importances
-        if hasattr(self.total_model, 'feature_importances_'):
-            self.feature_importances = dict(zip(self.feature_names,
-                                              self.total_model.feature_importances_))
-        elif hasattr(self.total_model, 'coef_'):
-            self.feature_importances = dict(zip(self.feature_names,
-                                              np.abs(self.total_model.coef_)))
+        if hasattr(self.total_model, "feature_importances_"):
+            self.feature_importances = dict(
+                zip(
+                    self.feature_names,
+                    self.total_model.feature_importances_,
+                    strict=False,
+                )
+            )
+        elif hasattr(self.total_model, "coef_"):
+            self.feature_importances = dict(
+                zip(self.feature_names, np.abs(self.total_model.coef_), strict=False)
+            )
 
         # Probability calibration
         calibrator = None
         calibration_results = None
 
-        if self.use_calibration and 'market_total' in training_data.columns and 'over_under' in training_data.columns:
+        if (
+            self.use_calibration
+            and "market_total" in training_data.columns
+            and "over_under" in training_data.columns
+        ):
             logger.info("Training probability calibration...")
 
-            market_totals = training_data['market_total'].values
-            over_under_results = training_data['over_under'].values
+            market_totals = training_data["market_total"].values
+            over_under_results = training_data["over_under"].values
 
             over_probs, _ = self.total_converter.predict_over_under_probabilities(
                 total_predictions, market_totals
             )
 
             calibrator = ProbabilityCalibrator(primary_method="isotonic")
-            calibration_results = calibrator.calibrate_probabilities(over_probs, over_under_results)
+            calibration_results = calibrator.calibrate_probabilities(
+                over_probs, over_under_results
+            )
             self.calibrator = calibrator
             self.trained_calibrator = calibration_results.calibrator
 
@@ -825,30 +880,42 @@ class OUModel(BaseEstimator):
         train_r2 = r2_score(total_targets, total_predictions)
 
         performance_metrics = {
-            'training_mae': train_mae,
-            'training_rmse': train_rmse,
-            'training_r2': train_r2,
-            'training_residual_std': self.residual_std
+            "training_mae": train_mae,
+            "training_rmse": train_rmse,
+            "training_r2": train_r2,
+            "training_residual_std": self.residual_std,
         }
 
         # Add O/U specific metrics if available
-        if 'market_total' in training_data.columns and 'over_under' in training_data.columns:
-            market_totals = training_data['market_total'].values
-            over_under_results = training_data['over_under'].values
+        if (
+            "market_total" in training_data.columns
+            and "over_under" in training_data.columns
+        ):
+            market_totals = training_data["market_total"].values
+            over_under_results = training_data["over_under"].values
 
             over_probs, _ = self.total_converter.predict_over_under_probabilities(
                 total_predictions, market_totals
             )
 
-            if calibrator and hasattr(self, 'trained_calibrator'):
-                over_probs = calibrator.apply_calibration(over_probs, self.trained_calibrator)
+            if calibrator and hasattr(self, "trained_calibrator"):
+                over_probs = calibrator.apply_calibration(
+                    over_probs, self.trained_calibrator
+                )
 
-            from sklearn.metrics import log_loss, brier_score_loss, accuracy_score
-            performance_metrics.update({
-                'training_over_accuracy': accuracy_score(over_under_results, over_probs > 0.5),
-                'training_over_log_loss': log_loss(over_under_results, over_probs),
-                'training_over_brier_score': brier_score_loss(over_under_results, over_probs)
-            })
+            from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
+
+            performance_metrics.update(
+                {
+                    "training_over_accuracy": accuracy_score(
+                        over_under_results, over_probs > 0.5
+                    ),
+                    "training_over_log_loss": log_loss(over_under_results, over_probs),
+                    "training_over_brier_score": brier_score_loss(
+                        over_under_results, over_probs
+                    ),
+                }
+            )
 
         # Validation metrics
         if validation_data is not None:
@@ -859,31 +926,49 @@ class OUModel(BaseEstimator):
             val_predictions = self.predict(validation_data)
             self.is_trained = was_trained
 
-            if 'total_points' in validation_data.columns or \
-               ('home_score' in validation_data.columns and 'away_score' in validation_data.columns):
-
-                if 'total_points' in validation_data.columns:
-                    val_totals = validation_data['total_points'].values
+            if "total_points" in validation_data.columns or (
+                "home_score" in validation_data.columns
+                and "away_score" in validation_data.columns
+            ):
+                if "total_points" in validation_data.columns:
+                    val_totals = validation_data["total_points"].values
                 else:
-                    val_totals = validation_data['home_score'].values + validation_data['away_score'].values
+                    val_totals = (
+                        validation_data["home_score"].values
+                        + validation_data["away_score"].values
+                    )
 
                 pred_totals = np.array([p.predicted_total for p in val_predictions])
 
-                performance_metrics.update({
-                    'validation_mae': mean_absolute_error(val_totals, pred_totals),
-                    'validation_rmse': np.sqrt(mean_squared_error(val_totals, pred_totals)),
-                    'validation_r2': r2_score(val_totals, pred_totals)
-                })
+                performance_metrics.update(
+                    {
+                        "validation_mae": mean_absolute_error(val_totals, pred_totals),
+                        "validation_rmse": np.sqrt(
+                            mean_squared_error(val_totals, pred_totals)
+                        ),
+                        "validation_r2": r2_score(val_totals, pred_totals),
+                    }
+                )
 
-            if 'over_under' in validation_data.columns:
-                val_over_under = validation_data['over_under'].values
-                pred_over_probs = np.array([p.over_probability for p in val_predictions])
+            if "over_under" in validation_data.columns:
+                val_over_under = validation_data["over_under"].values
+                pred_over_probs = np.array(
+                    [p.over_probability for p in val_predictions]
+                )
 
-                performance_metrics.update({
-                    'validation_over_accuracy': accuracy_score(val_over_under, pred_over_probs > 0.5),
-                    'validation_over_log_loss': log_loss(val_over_under, pred_over_probs),
-                    'validation_over_brier_score': brier_score_loss(val_over_under, pred_over_probs)
-                })
+                performance_metrics.update(
+                    {
+                        "validation_over_accuracy": accuracy_score(
+                            val_over_under, pred_over_probs > 0.5
+                        ),
+                        "validation_over_log_loss": log_loss(
+                            val_over_under, pred_over_probs
+                        ),
+                        "validation_over_brier_score": brier_score_loss(
+                            val_over_under, pred_over_probs
+                        ),
+                    }
+                )
 
         self.is_trained = True
 
@@ -904,19 +989,23 @@ class OUModel(BaseEstimator):
             calibration_results=calibration_results,
             training_date=datetime.now(),
             metadata={
-                'model_type': self.model_type,
-                'use_poisson': self.use_poisson,
-                'use_weather_model': self.use_weather_model,
-                'feature_selection_method': self.feature_selection_method,
-                'training_samples': len(training_data),
-                'distribution_type': self.distribution_type
-            }
+                "model_type": self.model_type,
+                "use_poisson": self.use_poisson,
+                "use_weather_model": self.use_weather_model,
+                "feature_selection_method": self.feature_selection_method,
+                "training_samples": len(training_data),
+                "distribution_type": self.distribution_type,
+            },
         )
 
-        logger.info(f"O/U model training complete. Training MAE: {train_mae:.3f}, RMSE: {train_rmse:.3f}")
+        logger.info(
+            f"O/U model training complete. Training MAE: {train_mae:.3f}, RMSE: {train_rmse:.3f}"
+        )
         return results
 
-    def predict(self, data: pd.DataFrame, include_simulation: bool = True) -> List[OUModelPrediction]:
+    def predict(
+        self, data: pd.DataFrame, include_simulation: bool = True
+    ) -> list[OUModelPrediction]:
         """
         Make O/U predictions on new data.
 
@@ -945,9 +1034,7 @@ class OUModel(BaseEstimator):
 
         # Scale features
         X_scaled = pd.DataFrame(
-            self.scaler.transform(X),
-            columns=X.columns,
-            index=X.index
+            self.scaler.transform(X), columns=X.columns, index=X.index
         )
 
         # Make total predictions
@@ -955,7 +1042,11 @@ class OUModel(BaseEstimator):
 
         # Weather adjustments if available
         weather_adjustments = np.zeros(len(total_predictions))
-        if self.use_weather_model and hasattr(self, 'weather_model') and self.weather_model:
+        if (
+            self.use_weather_model
+            and hasattr(self, "weather_model")
+            and self.weather_model
+        ):
             weather_adjustments = self.weather_model.predict_weather_impact(X_scaled)
 
         weather_adjusted_totals = total_predictions + weather_adjustments
@@ -963,27 +1054,31 @@ class OUModel(BaseEstimator):
         # Create predictions
         predictions = []
 
-        for i, (idx, row) in enumerate(data.iterrows()):
-            game_id = row.get('game_id', f'game_{i}')
-            home_team = row.get('home_team', 'HOME')
-            away_team = row.get('away_team', 'AWAY')
+        for i, (_idx, row) in enumerate(data.iterrows()):
+            game_id = row.get("game_id", f"game_{i}")
+            home_team = row.get("home_team", "HOME")
+            away_team = row.get("away_team", "AWAY")
             predicted_total = total_predictions[i]
             weather_adjusted_total = weather_adjusted_totals[i]
 
             # Get market total if available
-            market_total = row.get('market_total', None)
+            market_total = row.get("market_total", None)
 
             # Calculate over/under probabilities
             if market_total is not None:
-                over_prob, under_prob = self.total_converter.predict_over_under_probabilities(
-                    np.array([weather_adjusted_total]), np.array([market_total])
+                over_prob, under_prob = (
+                    self.total_converter.predict_over_under_probabilities(
+                        np.array([weather_adjusted_total]), np.array([market_total])
+                    )
                 )
                 over_prob = over_prob[0]
                 under_prob = under_prob[0]
 
                 # Apply calibration if available
-                if self.calibrator and hasattr(self, 'trained_calibrator'):
-                    over_prob = self.calibrator.apply_calibration(np.array([over_prob]), self.trained_calibrator)[0]
+                if self.calibrator and hasattr(self, "trained_calibrator"):
+                    over_prob = self.calibrator.apply_calibration(
+                        np.array([over_prob]), self.trained_calibrator
+                    )[0]
                     under_prob = 1 - over_prob
 
                 # Calculate edges (assuming -110 juice)
@@ -1000,13 +1095,23 @@ class OUModel(BaseEstimator):
             home_team_total = None
             away_team_total = None
 
-            if include_simulation and self.use_poisson and hasattr(self, 'poisson_model') and self.poisson_model:
+            if (
+                include_simulation
+                and self.use_poisson
+                and hasattr(self, "poisson_model")
+                and self.poisson_model
+            ):
                 try:
                     game_features = X_scaled.iloc[[i]]
-                    poisson_over_prob, _ = self.poisson_model.calculate_over_under_probabilities(
-                        game_features, market_total if market_total else predicted_total
+                    poisson_over_prob, _ = (
+                        self.poisson_model.calculate_over_under_probabilities(
+                            game_features,
+                            market_total if market_total else predicted_total,
+                        )
                     )
-                    home_team_total, away_team_total = self.poisson_model.predict_scores(game_features)
+                    home_team_total, away_team_total = (
+                        self.poisson_model.predict_scores(game_features)
+                    )
                     home_team_total = home_team_total[0]
                     away_team_total = away_team_total[0]
                 except:
@@ -1014,9 +1119,14 @@ class OUModel(BaseEstimator):
 
             # Feature importances for this prediction
             feature_importances = None
-            if hasattr(self.total_model, 'feature_importances_'):
-                feature_importances = dict(zip(self.feature_names,
-                                             self.total_model.feature_importances_))
+            if hasattr(self.total_model, "feature_importances_"):
+                feature_importances = dict(
+                    zip(
+                        self.feature_names,
+                        self.total_model.feature_importances_,
+                        strict=False,
+                    )
+                )
 
             # Calculate confidence
             confidence = abs(over_prob - 0.5) * 2 if market_total else None
@@ -1041,16 +1151,17 @@ class OUModel(BaseEstimator):
                 home_team_total=home_team_total,
                 away_team_total=away_team_total,
                 feature_importances=feature_importances,
-                model_version=getattr(self, 'model_version', '1.0.0'),
-                prediction_date=datetime.now()
+                model_version=getattr(self, "model_version", "1.0.0"),
+                prediction_date=datetime.now(),
             )
 
             predictions.append(prediction)
 
         return predictions
 
-    def run_walk_forward_validation(self, games_df: pd.DataFrame,
-                                  start_season: int, end_season: int) -> Dict[str, Any]:
+    def run_walk_forward_validation(
+        self, games_df: pd.DataFrame, start_season: int, end_season: int
+    ) -> dict[str, Any]:
         """
         Run walk-forward validation across multiple seasons.
 
@@ -1062,12 +1173,14 @@ class OUModel(BaseEstimator):
         Returns:
             Dictionary containing validation results
         """
-        logger.info(f"Running O/U walk-forward validation from {start_season} to {end_season}")
+        logger.info(
+            f"Running O/U walk-forward validation from {start_season} to {end_season}"
+        )
 
         results = {
-            'season_results': [],
-            'overall_metrics': {},
-            'feature_importance_evolution': []
+            "season_results": [],
+            "overall_metrics": {},
+            "feature_importance_evolution": [],
         }
 
         all_predictions = []
@@ -1078,8 +1191,8 @@ class OUModel(BaseEstimator):
             logger.info(f"Validating season {season}")
 
             # Split data
-            train_data = games_df[games_df['season'] < season].copy()
-            test_data = games_df[games_df['season'] == season].copy()
+            train_data = games_df[games_df["season"] < season].copy()
+            test_data = games_df[games_df["season"] == season].copy()
 
             if len(train_data) == 0 or len(test_data) == 0:
                 logger.warning(f"Insufficient data for season {season}, skipping")
@@ -1092,13 +1205,15 @@ class OUModel(BaseEstimator):
             predictions = self.predict(test_data)
 
             # Calculate metrics for this season
-            if 'total_points' in test_data.columns or \
-               ('home_score' in test_data.columns and 'away_score' in test_data.columns):
-
-                if 'total_points' in test_data.columns:
-                    actual_totals = test_data['total_points'].values
+            if "total_points" in test_data.columns or (
+                "home_score" in test_data.columns and "away_score" in test_data.columns
+            ):
+                if "total_points" in test_data.columns:
+                    actual_totals = test_data["total_points"].values
                 else:
-                    actual_totals = test_data['home_score'].values + test_data['away_score'].values
+                    actual_totals = (
+                        test_data["home_score"].values + test_data["away_score"].values
+                    )
 
                 pred_totals = np.array([p.predicted_total for p in predictions])
 
@@ -1111,11 +1226,13 @@ class OUModel(BaseEstimator):
             else:
                 season_mae = season_rmse = season_r2 = None
 
-            if 'over_under' in test_data.columns:
-                actual_over_under = test_data['over_under'].values
+            if "over_under" in test_data.columns:
+                actual_over_under = test_data["over_under"].values
                 pred_over_probs = np.array([p.over_probability for p in predictions])
 
-                season_accuracy = accuracy_score(actual_over_under, pred_over_probs > 0.5)
+                season_accuracy = accuracy_score(
+                    actual_over_under, pred_over_probs > 0.5
+                )
                 season_log_loss = log_loss(actual_over_under, pred_over_probs)
                 season_brier = brier_score_loss(actual_over_under, pred_over_probs)
 
@@ -1124,68 +1241,76 @@ class OUModel(BaseEstimator):
                 season_accuracy = season_log_loss = season_brier = None
 
             season_result = {
-                'season': season,
-                'train_games': len(train_data),
-                'test_games': len(test_data),
-                'mae': season_mae,
-                'rmse': season_rmse,
-                'r2': season_r2,
-                'over_accuracy': season_accuracy,
-                'over_log_loss': season_log_loss,
-                'over_brier_score': season_brier,
-                'feature_importances': model_results.feature_importances.copy()
+                "season": season,
+                "train_games": len(train_data),
+                "test_games": len(test_data),
+                "mae": season_mae,
+                "rmse": season_rmse,
+                "r2": season_r2,
+                "over_accuracy": season_accuracy,
+                "over_log_loss": season_log_loss,
+                "over_brier_score": season_brier,
+                "feature_importances": model_results.feature_importances.copy(),
             }
 
-            results['season_results'].append(season_result)
+            results["season_results"].append(season_result)
 
             if model_results.feature_importances:
-                results['feature_importance_evolution'].append({
-                    'season': season,
-                    'importances': model_results.feature_importances.copy()
-                })
+                results["feature_importance_evolution"].append(
+                    {
+                        "season": season,
+                        "importances": model_results.feature_importances.copy(),
+                    }
+                )
 
         # Calculate overall metrics
         if all_actuals_total:
             overall_mae = mean_absolute_error(all_actuals_total, all_predictions)
-            overall_rmse = np.sqrt(mean_squared_error(all_actuals_total, all_predictions))
+            overall_rmse = np.sqrt(
+                mean_squared_error(all_actuals_total, all_predictions)
+            )
             overall_r2 = r2_score(all_actuals_total, all_predictions)
 
-            results['overall_metrics'].update({
-                'overall_mae': overall_mae,
-                'overall_rmse': overall_rmse,
-                'overall_r2': overall_r2,
-                'seasons_validated': len(results['season_results'])
-            })
+            results["overall_metrics"].update(
+                {
+                    "overall_mae": overall_mae,
+                    "overall_rmse": overall_rmse,
+                    "overall_r2": overall_r2,
+                    "seasons_validated": len(results["season_results"]),
+                }
+            )
 
-        logger.info(f"O/U walk-forward validation complete. Overall MAE: {results['overall_metrics'].get('overall_mae', 'N/A')}")
+        logger.info(
+            f"O/U walk-forward validation complete. Overall MAE: {results['overall_metrics'].get('overall_mae', 'N/A')}"
+        )
         return results
 
-    def get_model_summary(self) -> Dict[str, Any]:
+    def get_model_summary(self) -> dict[str, Any]:
         """Get a comprehensive summary of the trained model."""
         if not self.is_trained:
             return {
-                'model_type': 'O/U Model',
-                'is_trained': False,
-                'status': 'Not trained'
+                "model_type": "O/U Model",
+                "is_trained": False,
+                "status": "Not trained",
             }
 
         summary = {
-            'model_type': 'O/U Model',
-            'is_trained': True,
-            'base_model_type': self.model_type,
-            'use_poisson': self.use_poisson,
-            'use_weather_model': self.use_weather_model,
-            'distribution_type': self.distribution_type,
-            'features_selected': len(self.feature_names),
-            'residual_std': self.residual_std,
-            'feature_importances': self.feature_importances,
-            'weather_coefficients': getattr(self, 'weather_coefficients', {}),
-            'configuration': {
-                'feature_selection_method': self.feature_selection_method,
-                'max_features': self.max_features,
-                'use_calibration': self.use_calibration,
-                'hyperparameter_tuning': self.hyperparameter_tuning
-            }
+            "model_type": "O/U Model",
+            "is_trained": True,
+            "base_model_type": self.model_type,
+            "use_poisson": self.use_poisson,
+            "use_weather_model": self.use_weather_model,
+            "distribution_type": self.distribution_type,
+            "features_selected": len(self.feature_names),
+            "residual_std": self.residual_std,
+            "feature_importances": self.feature_importances,
+            "weather_coefficients": getattr(self, "weather_coefficients", {}),
+            "configuration": {
+                "feature_selection_method": self.feature_selection_method,
+                "max_features": self.max_features,
+                "use_calibration": self.use_calibration,
+                "hyperparameter_tuning": self.hyperparameter_tuning,
+            },
         }
 
         return summary
@@ -1196,27 +1321,27 @@ class OUModel(BaseEstimator):
             raise ValueError("Cannot save untrained model")
 
         model_data = {
-            'total_regression_model': self.total_model,
-            'poisson_model': getattr(self, 'poisson_model', None),
-            'weather_model': getattr(self, 'weather_model', None),
-            'scaler': self.scaler,
-            'feature_selector': self.feature_selector,
-            'calibrator': self.calibrator,
-            'trained_calibrator': getattr(self, 'trained_calibrator', None),
-            'total_converter': self.total_converter,
-            'feature_names': self.feature_names,
-            'feature_importances': self.feature_importances,
-            'residual_std': self.residual_std,
-            'model_config': {
-                'model_type': self.model_type,
-                'use_poisson': self.use_poisson,
-                'use_weather_model': self.use_weather_model,
-                'feature_selection_method': self.feature_selection_method,
-                'max_features': self.max_features,
-                'use_calibration': self.use_calibration,
-                'distribution_type': self.distribution_type,
-                'random_state': self.random_state
-            }
+            "total_regression_model": self.total_model,
+            "poisson_model": getattr(self, "poisson_model", None),
+            "weather_model": getattr(self, "weather_model", None),
+            "scaler": self.scaler,
+            "feature_selector": self.feature_selector,
+            "calibrator": self.calibrator,
+            "trained_calibrator": getattr(self, "trained_calibrator", None),
+            "total_converter": self.total_converter,
+            "feature_names": self.feature_names,
+            "feature_importances": self.feature_importances,
+            "residual_std": self.residual_std,
+            "model_config": {
+                "model_type": self.model_type,
+                "use_poisson": self.use_poisson,
+                "use_weather_model": self.use_weather_model,
+                "feature_selection_method": self.feature_selection_method,
+                "max_features": self.max_features,
+                "use_calibration": self.use_calibration,
+                "distribution_type": self.distribution_type,
+                "random_state": self.random_state,
+            },
         }
 
         joblib.dump(model_data, filepath)
@@ -1226,38 +1351,117 @@ class OUModel(BaseEstimator):
         """Load a trained model from disk."""
         model_data = joblib.load(filepath)
 
-        self.total_model = model_data['total_regression_model']
-        self.poisson_model = model_data.get('poisson_model')
-        self.weather_model = model_data.get('weather_model')
-        self.scaler = model_data['scaler']
-        self.feature_selector = model_data.get('feature_selector')
-        self.calibrator = model_data.get('calibrator')
-        self.trained_calibrator = model_data.get('trained_calibrator')
-        self.total_converter = model_data['total_converter']
-        self.feature_names = model_data['feature_names']
-        self.feature_importances = model_data['feature_importances']
-        self.residual_std = model_data['residual_std']
+        self.total_model = model_data["total_regression_model"]
+        self.poisson_model = model_data.get("poisson_model")
+        self.weather_model = model_data.get("weather_model")
+        self.scaler = model_data["scaler"]
+        self.feature_selector = model_data.get("feature_selector")
+        self.calibrator = model_data.get("calibrator")
+        self.trained_calibrator = model_data.get("trained_calibrator")
+        self.total_converter = model_data["total_converter"]
+        self.feature_names = model_data["feature_names"]
+        self.feature_importances = model_data["feature_importances"]
+        self.residual_std = model_data["residual_std"]
 
         # Restore configuration
-        config = model_data['model_config']
-        self.model_type = config['model_type']
-        self.use_poisson = config['use_poisson']
-        self.use_weather_model = config['use_weather_model']
-        self.feature_selection_method = config['feature_selection_method']
-        self.max_features = config['max_features']
-        self.use_calibration = config['use_calibration']
-        self.distribution_type = config['distribution_type']
-        self.random_state = config['random_state']
+        config = model_data["model_config"]
+        self.model_type = config["model_type"]
+        self.use_poisson = config["use_poisson"]
+        self.use_weather_model = config["use_weather_model"]
+        self.feature_selection_method = config["feature_selection_method"]
+        self.max_features = config["max_features"]
+        self.use_calibration = config["use_calibration"]
+        self.distribution_type = config["distribution_type"]
+        self.random_state = config["random_state"]
 
         self.is_trained = True
         logger.info(f"O/U model loaded from {filepath}")
 
 
 def main():
-    """Main function for testing O/U model functionality."""
-    # This would typically be called from a training script
-    # For now, just log that the module was imported successfully
-    logger.info("O/U model module loaded successfully")
+    """Main function for command-line usage."""
+    import argparse
+    from pathlib import Path
+
+    from utils.date_utils import get_current_nfl_season, get_current_nfl_week
+
+    parser = argparse.ArgumentParser(description="Train Over/Under (O/U) Model")
+    parser.add_argument("--season", type=int, help="Target season (default: current)")
+    parser.add_argument(
+        "--week", help="Target week (default: current, 'all' for full season)"
+    )
+    parser.add_argument(
+        "--model-type",
+        default="xgboost",
+        choices=["xgboost", "lightgbm", "random_forest"],
+        help="Model algorithm (default: xgboost)",
+    )
+    parser.add_argument(
+        "--no-poisson", action="store_true", help="Disable Poisson score modeling"
+    )
+    parser.add_argument(
+        "--no-weather", action="store_true", help="Disable weather impact modeling"
+    )
+    parser.add_argument(
+        "--distribution",
+        default="normal",
+        choices=["normal", "poisson", "negative_binomial"],
+        help="Distribution type for modeling (default: normal)",
+    )
+
+    args = parser.parse_args()
+
+    # Determine season and week
+    season = args.season or get_current_nfl_season()
+    if args.week == "all":
+        week = None
+    else:
+        week = int(args.week) if args.week else get_current_nfl_week()
+
+    # Load features from gold layer (standard pipeline path)
+    try:
+        features_df = load_dataframe("features_ou", layer="gold")
+
+        # Filter for target season/week
+        if season:
+            features_df = features_df[features_df["season"] == season]
+        if week:
+            features_df = features_df[features_df["week"] == week]
+
+        logger.info(
+            "Loaded O/U features", season=season, week=week, records=len(features_df)
+        )
+    except Exception as e:
+        logger.error(f"Failed to load features: {e}")
+        return
+
+    # Initialize model with pipeline defaults
+    model = OUModel(
+        model_type=args.model_type,
+        use_poisson=not args.no_poisson,  # Default enabled
+        use_weather_model=not args.no_weather,  # Default enabled
+        feature_selection_method="model_based",
+        use_calibration=True,
+        hyperparameter_tuning="grid_search",
+        distribution_type=args.distribution,
+    )
+
+    # Always do both: Train first, then validate
+    model.train_model(features_df)
+
+    # Save to standard artifacts location
+    artifacts_dir = Path("artifacts")
+    artifacts_dir.mkdir(exist_ok=True)
+    model_path = artifacts_dir / "ou_model.pkl"
+    model.save_model(str(model_path))
+
+    # Load the saved model and run validation
+    validation_model = OUModel()
+    validation_model.load_model(str(model_path))
+
+    validation_model.run_walk_forward_validation(features_df)
+
+    logger.info("O/U model training completed successfully")
 
 
 if __name__ == "__main__":

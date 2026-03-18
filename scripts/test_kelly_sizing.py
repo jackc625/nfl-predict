@@ -6,27 +6,33 @@ This script validates the Kelly sizing implementation with comprehensive
 test scenarios covering all risk management features and edge cases.
 """
 
-import pandas as pd
-import numpy as np
-from pathlib import Path
 import sys
-from datetime import datetime, timedelta
+from pathlib import Path
+
+import numpy as np
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from utils.kelly_criterion import (
-    KellyCalculator, KellyMode, KellyResult, BankrollState,
-    calculate_simultaneous_kelly, compare_kelly_modes
-)
+from utils import get_logger
 from utils.bankroll_manager import (
-    BankrollManager, RiskLevel, AlertType, BankrollAlert, BettingSession
+    BankrollManager,
+    RiskLevel,
+)
+from utils.kelly_criterion import (
+    KellyCalculator,
+    KellyMode,
+    KellyResult,
+    calculate_simultaneous_kelly,
+    compare_kelly_modes,
 )
 from utils.unit_sizing import (
-    UnitSizer, ConfidenceMethod, UnitScale, ConfidenceMetrics, UnitRecommendation
+    ConfidenceMetrics,
+    UnitRecommendation,
+    UnitScale,
+    UnitSizer,
 )
-from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -41,7 +47,7 @@ def test_kelly_calculator_initialization():
         max_drawdown_pct=0.20,
         base_unit_size=100.0,
         default_kelly_fraction=0.25,
-        confidence_threshold=0.02
+        confidence_threshold=0.02,
     )
 
     assert calculator.starting_bankroll == 10000.0
@@ -63,9 +69,15 @@ def test_kelly_fraction_calculation():
     # Kelly = (2.5 * 0.6 - 0.4) / 1.5 = (1.5 - 0.4) / 1.5 = 0.733
 
     full_kelly = calculator.calculate_kelly_fraction(0.6, 150, KellyMode.FULL)
-    fractional_kelly = calculator.calculate_kelly_fraction(0.6, 150, KellyMode.FRACTIONAL)
-    confidence_kelly = calculator.calculate_kelly_fraction(0.6, 150, KellyMode.CONFIDENCE_ADJUSTED)
-    conservative_kelly = calculator.calculate_kelly_fraction(0.6, 150, KellyMode.CONSERVATIVE)
+    fractional_kelly = calculator.calculate_kelly_fraction(
+        0.6, 150, KellyMode.FRACTIONAL
+    )
+    confidence_kelly = calculator.calculate_kelly_fraction(
+        0.6, 150, KellyMode.CONFIDENCE_ADJUSTED
+    )
+    conservative_kelly = calculator.calculate_kelly_fraction(
+        0.6, 150, KellyMode.CONSERVATIVE
+    )
 
     assert full_kelly > fractional_kelly
     assert fractional_kelly > conservative_kelly
@@ -121,7 +133,10 @@ def test_bankroll_updates():
     assert calculator.bankroll_state.total_bets == 2
 
     # Check drawdown calculation
-    if calculator.bankroll_state.current_balance < calculator.bankroll_state.peak_balance:
+    if (
+        calculator.bankroll_state.current_balance
+        < calculator.bankroll_state.peak_balance
+    ):
         assert calculator.bankroll_state.current_drawdown > 0
 
     logger.info("Bankroll update test passed")
@@ -135,9 +150,7 @@ def test_optimal_bet_sizing():
 
     # Test with good edge and confidence
     result = calculator.calculate_optimal_bet_size(
-        model_prob=0.60,
-        market_odds=150,
-        mode=KellyMode.FRACTIONAL
+        model_prob=0.60, market_odds=150, mode=KellyMode.FRACTIONAL
     )
 
     assert isinstance(result, KellyResult)
@@ -148,9 +161,7 @@ def test_optimal_bet_sizing():
 
     # Test with insufficient edge
     no_bet_result = calculator.calculate_optimal_bet_size(
-        model_prob=0.51,
-        market_odds=-110,
-        mode=KellyMode.FRACTIONAL
+        model_prob=0.51, market_odds=-110, mode=KellyMode.FRACTIONAL
     )
 
     assert no_bet_result.recommended_bet == 0.0
@@ -166,7 +177,7 @@ def test_bankroll_manager_initialization():
         starting_bankroll=10000.0,
         risk_level=RiskLevel.MODERATE,
         max_drawdown_pct=0.20,
-        stop_loss_pct=0.15
+        stop_loss_pct=0.15,
     )
 
     assert manager.starting_bankroll == 10000.0
@@ -210,9 +221,7 @@ def test_risk_limits_and_alerts():
     logger.info("Testing risk limits and alerts")
 
     manager = BankrollManager(
-        starting_bankroll=1000.0,
-        max_drawdown_pct=0.20,
-        stop_loss_pct=0.15
+        starting_bankroll=1000.0, max_drawdown_pct=0.20, stop_loss_pct=0.15
     )
 
     manager.start_session("risk_test")
@@ -237,10 +246,7 @@ def test_unit_sizer_initialization():
     logger.info("Testing UnitSizer initialization")
 
     sizer = UnitSizer(
-        base_unit_dollar=100.0,
-        max_units=10.0,
-        min_units=0.5,
-        confidence_scaling=2.0
+        base_unit_dollar=100.0, max_units=10.0, min_units=0.5, confidence_scaling=2.0
     )
 
     assert sizer.base_unit_dollar == 100.0
@@ -262,18 +268,13 @@ def test_confidence_calculations():
 
     # Test model confidence
     model_conf = sizer.calculate_model_confidence(
-        model_prob=0.65,
-        prediction_interval=(0.55, 0.75),
-        model_accuracy=0.58
+        model_prob=0.65, prediction_interval=(0.55, 0.75), model_accuracy=0.58
     )
     assert 0 <= model_conf <= 1
 
     # Test market confidence
     market_conf = sizer.calculate_market_confidence(
-        market_prob=0.50,
-        line_movement=0.03,
-        volume_indicator=0.4,
-        time_to_game=12.0
+        market_prob=0.50, line_movement=0.03, volume_indicator=0.4, time_to_game=12.0
     )
     assert 0 <= market_conf <= 1
 
@@ -299,8 +300,13 @@ def test_unit_scaling_methods():
     exp_units = sizer.calculate_base_units_from_edge(edge, UnitScale.EXPONENTIAL)
     threshold_units = sizer.calculate_base_units_from_edge(edge, UnitScale.THRESHOLD)
 
-    assert all(units >= 0 for units in [linear_units, log_units, exp_units, threshold_units])
-    assert all(units <= sizer.max_units for units in [linear_units, log_units, exp_units, threshold_units])
+    assert all(
+        units >= 0 for units in [linear_units, log_units, exp_units, threshold_units]
+    )
+    assert all(
+        units <= sizer.max_units
+        for units in [linear_units, log_units, exp_units, threshold_units]
+    )
 
     logger.info("Unit scaling methods test passed")
 
@@ -318,7 +324,7 @@ def test_unit_recommendation():
         bankroll=10000.0,
         sample_size=500,
         model_accuracy=0.58,
-        line_movement=0.02
+        line_movement=0.02,
     )
 
     assert isinstance(recommendation, UnitRecommendation)
@@ -329,9 +335,7 @@ def test_unit_recommendation():
 
     # Test with insufficient edge
     no_bet_rec = sizer.calculate_unit_recommendation(
-        model_prob=0.505,
-        market_odds=-110,
-        bankroll=10000.0
+        model_prob=0.505, market_odds=-110, bankroll=10000.0
     )
 
     assert no_bet_rec.recommended_units == 0.0
@@ -344,15 +348,13 @@ def test_simultaneous_kelly():
     logger.info("Testing simultaneous Kelly sizing")
 
     opportunities = [
-        {'model_prob': 0.60, 'odds': 150, 'edge': 0.10},
-        {'model_prob': 0.55, 'odds': -110, 'edge': 0.05},
-        {'model_prob': 0.58, 'odds': 120, 'edge': 0.08}
+        {"model_prob": 0.60, "odds": 150, "edge": 0.10},
+        {"model_prob": 0.55, "odds": -110, "edge": 0.05},
+        {"model_prob": 0.58, "odds": 120, "edge": 0.08},
     ]
 
     bet_sizes = calculate_simultaneous_kelly(
-        opportunities=opportunities,
-        total_bankroll=10000.0,
-        max_total_allocation=0.25
+        opportunities=opportunities, total_bankroll=10000.0, max_total_allocation=0.25
     )
 
     assert len(bet_sizes) == len(opportunities)
@@ -366,18 +368,20 @@ def test_kelly_mode_comparison():
     """Test comparison of different Kelly modes."""
     logger.info("Testing Kelly mode comparison")
 
-    results = compare_kelly_modes(
-        model_prob=0.60,
-        market_odds=150,
-        bankroll=10000.0
-    )
+    results = compare_kelly_modes(model_prob=0.60, market_odds=150, bankroll=10000.0)
 
     assert len(results) == len(KellyMode)
     assert all(isinstance(result, KellyResult) for result in results.values())
 
     # Full Kelly should recommend largest bet
-    assert results[KellyMode.FULL].recommended_bet >= results[KellyMode.FRACTIONAL].recommended_bet
-    assert results[KellyMode.FRACTIONAL].recommended_bet >= results[KellyMode.CONSERVATIVE].recommended_bet
+    assert (
+        results[KellyMode.FULL].recommended_bet
+        >= results[KellyMode.FRACTIONAL].recommended_bet
+    )
+    assert (
+        results[KellyMode.FRACTIONAL].recommended_bet
+        >= results[KellyMode.CONSERVATIVE].recommended_bet
+    )
 
     logger.info("Kelly mode comparison test passed")
 
@@ -401,21 +405,16 @@ def test_performance_simulation():
         # Simulate outcome based on model probability
         outcome = np.random.random() < model_prob
 
-        scenarios.append({
-            'model_prob': model_prob,
-            'odds': odds,
-            'outcome': outcome
-        })
+        scenarios.append({"model_prob": model_prob, "odds": odds, "outcome": outcome})
 
     performance_metrics = calculator.simulate_kelly_performance(
-        scenarios=scenarios,
-        mode=KellyMode.FRACTIONAL
+        scenarios=scenarios, mode=KellyMode.FRACTIONAL
     )
 
-    assert 'total_return' in performance_metrics
-    assert 'volatility' in performance_metrics
-    assert 'max_drawdown' in performance_metrics
-    assert 'final_balance' in performance_metrics
+    assert "total_return" in performance_metrics
+    assert "volatility" in performance_metrics
+    assert "max_drawdown" in performance_metrics
+    assert "final_balance" in performance_metrics
 
     logger.info("Performance simulation test passed")
 
@@ -429,9 +428,7 @@ def test_bankroll_manager_integration():
 
     # Test bet sizing with all features
     kelly_result = manager.calculate_bet_size(
-        model_prob=0.60,
-        market_odds=150,
-        mode=KellyMode.FRACTIONAL
+        model_prob=0.60, market_odds=150, mode=KellyMode.FRACTIONAL
     )
 
     assert isinstance(kelly_result, KellyResult)
@@ -441,14 +438,14 @@ def test_bankroll_manager_integration():
         manager.record_bet_result(
             bet_amount=kelly_result.recommended_bet,
             outcome=True,  # Assume win for test
-            odds=150
+            odds=150,
         )
 
     # Get performance summary
     summary = manager.get_performance_summary()
     assert isinstance(summary, dict)
-    assert 'current_balance' in summary
-    assert 'win_rate' in summary
+    assert "current_balance" in summary
+    assert "win_rate" in summary
 
     manager.end_session()
 
@@ -469,7 +466,7 @@ def test_historical_tracking():
         confidence=0.8,
         units_bet=2.0,
         outcome=True,
-        profit_loss=150.0
+        profit_loss=150.0,
     )
 
     sizer.record_bet_outcome(
@@ -479,16 +476,16 @@ def test_historical_tracking():
         confidence=0.6,
         units_bet=1.0,
         outcome=False,
-        profit_loss=-100.0
+        profit_loss=-100.0,
     )
 
     # Get performance analysis
     analysis = sizer.get_performance_analysis()
 
-    assert 'total_bets' in analysis
-    assert 'overall_win_rate' in analysis
-    assert 'performance_by_confidence' in analysis
-    assert 'performance_by_edge' in analysis
+    assert "total_bets" in analysis
+    assert "overall_win_rate" in analysis
+    assert "performance_by_confidence" in analysis
+    assert "performance_by_edge" in analysis
 
     logger.info("Historical tracking test passed")
 
@@ -541,7 +538,7 @@ def run_all_tests():
         test_performance_simulation,
         test_bankroll_manager_integration,
         test_historical_tracking,
-        test_edge_cases
+        test_edge_cases,
     ]
 
     passed = 0
@@ -554,16 +551,15 @@ def run_all_tests():
             logger.info(f"PASSED: {test_func.__name__}")
         except Exception as e:
             failed += 1
-            logger.error(f"FAILED: {test_func.__name__} - {str(e)}")
+            logger.error(f"FAILED: {test_func.__name__} - {e!s}")
 
     logger.info(f"\nTest Results: {passed} passed, {failed} failed")
 
     if failed == 0:
         logger.info("All Kelly sizing and bankroll management tests passed!")
         return True
-    else:
-        logger.error("Some tests failed. Check the logs above for details.")
-        return False
+    logger.error("Some tests failed. Check the logs above for details.")
+    return False
 
 
 if __name__ == "__main__":

@@ -6,29 +6,27 @@ This script validates the betting utilities implementation with
 comprehensive test scenarios covering all bet types and edge cases.
 """
 
-import pandas as pd
-import numpy as np
-from pathlib import Path
 import sys
+from pathlib import Path
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from utils import get_logger
 from utils.betting_utils import (
-    BetType,
     BettingResult,
+    BetType,
+    _normal_cdf,
+    analyze_game_betting_opportunities,
+    calculate_kelly_sizing,
     calculate_moneyline_ev,
     calculate_spread_ev,
     calculate_total_ev,
-    calculate_kelly_sizing,
-    analyze_game_betting_opportunities,
     portfolio_kelly_sizing,
     summarize_betting_session,
-    _normal_cdf
 )
 from utils.probability_utils import moneyline_to_probability
-from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -42,7 +40,7 @@ def test_betting_result_creation():
         model_prob=0.6,
         market_prob=0.55,
         edge=0.05,
-        expected_value=10.0
+        expected_value=10.0,
     )
 
     assert result.bet_type == BetType.MONEYLINE
@@ -64,7 +62,7 @@ def test_moneyline_ev_positive_odds():
         model_prob=0.6,
         market_odds=150,  # +150 underdog
         stake=100.0,
-        devig=False
+        devig=False,
     )
 
     assert result.bet_type == BetType.MONEYLINE
@@ -91,7 +89,7 @@ def test_moneyline_ev_negative_odds():
         model_prob=0.7,
         market_odds=-150,  # -150 favorite
         stake=100.0,
-        devig=False
+        devig=False,
     )
 
     # Market prob for -150 should be 150/(150+100) = 0.6
@@ -113,11 +111,7 @@ def test_moneyline_ev_with_devig():
     logger.info("Testing moneyline EV with devig")
 
     result = calculate_moneyline_ev(
-        model_prob=0.55,
-        market_odds=-110,
-        stake=100.0,
-        devig=True,
-        opposite_odds=-110
+        model_prob=0.55, market_odds=-110, stake=100.0, devig=True, opposite_odds=-110
     )
 
     # With devig, both sides at -110 should become 0.5 each
@@ -136,10 +130,7 @@ def test_moneyline_no_edge():
     market_prob = moneyline_to_probability(-110)
 
     result = calculate_moneyline_ev(
-        model_prob=market_prob,
-        market_odds=-110,
-        stake=100.0,
-        devig=False
+        model_prob=market_prob, market_odds=-110, stake=100.0, devig=False
     )
 
     # Should have minimal edge and essentially break-even EV before vig
@@ -159,7 +150,7 @@ def test_spread_ev_home_favorite():
         model_margin_std=14.0,
         market_spread=-3.5,  # Market has home favored by 3.5
         spread_juice=-110,
-        side="home"
+        side="home",
     )
 
     assert result.bet_type == BetType.SPREAD
@@ -181,7 +172,7 @@ def test_spread_ev_away_underdog():
         model_margin_std=14.0,
         market_spread=-7.0,  # Market has home favored by 7
         spread_juice=-110,
-        side="away"
+        side="away",
     )
 
     # Away gets +7 points, model has home losing by 2
@@ -201,7 +192,7 @@ def test_spread_ev_no_edge():
         model_margin_std=14.0,
         market_spread=-3.5,
         spread_juice=-110,
-        side="home"
+        side="home",
     )
 
     # Should be close to 50/50
@@ -220,7 +211,7 @@ def test_total_ev_over():
         model_total_std=10.5,
         market_total=45.0,  # Market total is 45
         total_juice=-110,
-        side="over"
+        side="over",
     )
 
     assert result.bet_type == BetType.TOTAL
@@ -242,7 +233,7 @@ def test_total_ev_under():
         model_total_std=10.5,
         market_total=47.0,  # Market total is 47
         total_juice=-110,
-        side="under"
+        side="under",
     )
 
     # Model predicts significantly less than market
@@ -262,7 +253,7 @@ def test_total_ev_no_edge():
         model_total_std=10.5,
         market_total=45.0,
         total_juice=-110,
-        side="over"
+        side="over",
     )
 
     # Should be close to 50/50
@@ -281,7 +272,7 @@ def test_kelly_sizing_positive_edge():
         model_prob=0.6,
         market_prob=0.5,
         edge=0.1,
-        expected_value=10.0
+        expected_value=10.0,
     )
 
     bet_size = calculate_kelly_sizing(
@@ -289,7 +280,7 @@ def test_kelly_sizing_positive_edge():
         bankroll=10000.0,
         odds=-110,
         fraction=0.25,
-        max_bet_pct=0.05
+        max_bet_pct=0.05,
     )
 
     assert bet_size > 0
@@ -309,13 +300,11 @@ def test_kelly_sizing_no_edge():
         model_prob=0.5,
         market_prob=0.5,
         edge=0.0,
-        expected_value=0.0
+        expected_value=0.0,
     )
 
     bet_size = calculate_kelly_sizing(
-        betting_result=result,
-        bankroll=10000.0,
-        odds=-110
+        betting_result=result, bankroll=10000.0, odds=-110
     )
 
     assert bet_size == 0.0
@@ -332,13 +321,11 @@ def test_kelly_sizing_negative_edge():
         model_prob=0.45,
         market_prob=0.5,
         edge=-0.05,
-        expected_value=-5.0
+        expected_value=-5.0,
     )
 
     bet_size = calculate_kelly_sizing(
-        betting_result=result,
-        bankroll=10000.0,
-        odds=-110
+        betting_result=result, bankroll=10000.0, odds=-110
     )
 
     assert bet_size == 0.0
@@ -356,7 +343,7 @@ def create_sample_game_data():
         "spread_juice_away": -110,
         "total": 45.0,
         "total_over_juice": -110,
-        "total_under_juice": -110
+        "total_under_juice": -110,
     }
 
 
@@ -367,7 +354,7 @@ def create_sample_predictions():
         "predicted_margin": 5.0,
         "margin_std": 14.0,
         "predicted_total": 48.0,
-        "total_std": 10.5
+        "total_std": 10.5,
     }
 
 
@@ -382,7 +369,7 @@ def test_analyze_game_opportunities():
         game_data=game_data,
         model_predictions=predictions,
         bankroll=10000.0,
-        min_edge_threshold=0.01
+        min_edge_threshold=0.01,
     )
 
     # Should find some opportunities given our setup
@@ -412,13 +399,13 @@ def test_analyze_game_no_opportunities():
         "predicted_margin": 3.5,  # Exactly the spread
         "margin_std": 14.0,
         "predicted_total": 45.0,  # Exactly the total
-        "total_std": 10.5
+        "total_std": 10.5,
     }
 
     opportunities = analyze_game_betting_opportunities(
         game_data=game_data,
         model_predictions=no_edge_predictions,
-        min_edge_threshold=0.05  # Higher threshold
+        min_edge_threshold=0.05,  # Higher threshold
     )
 
     # Should find few or no opportunities
@@ -431,18 +418,18 @@ def test_portfolio_single_bet():
     """Test portfolio sizing with single bet."""
     logger.info("Testing single bet portfolio")
 
-    results = [BettingResult(
-        bet_type=BetType.MONEYLINE,
-        model_prob=0.6,
-        market_prob=0.5,
-        edge=0.1,
-        expected_value=10.0
-    )]
+    results = [
+        BettingResult(
+            bet_type=BetType.MONEYLINE,
+            model_prob=0.6,
+            market_prob=0.5,
+            edge=0.1,
+            expected_value=10.0,
+        )
+    ]
 
     sizes = portfolio_kelly_sizing(
-        betting_results=results,
-        bankroll=10000.0,
-        fraction=0.25
+        betting_results=results, bankroll=10000.0, fraction=0.25
     )
 
     assert len(sizes) == 1
@@ -458,13 +445,11 @@ def test_portfolio_multi_bet():
     results = [
         BettingResult(BetType.MONEYLINE, 0.6, 0.5, 0.1, 10.0),
         BettingResult(BetType.SPREAD, 0.55, 0.5, 0.05, 5.0),
-        BettingResult(BetType.TOTAL, 0.58, 0.5, 0.08, 8.0)
+        BettingResult(BetType.TOTAL, 0.58, 0.5, 0.08, 8.0),
     ]
 
     sizes = portfolio_kelly_sizing(
-        betting_results=results,
-        bankroll=10000.0,
-        fraction=0.25
+        betting_results=results, bankroll=10000.0, fraction=0.25
     )
 
     assert len(sizes) == 3
@@ -481,10 +466,7 @@ def test_portfolio_empty():
     """Test portfolio sizing with no bets."""
     logger.info("Testing empty portfolio")
 
-    sizes = portfolio_kelly_sizing(
-        betting_results=[],
-        bankroll=10000.0
-    )
+    sizes = portfolio_kelly_sizing(betting_results=[], bankroll=10000.0)
 
     assert sizes == []
 
@@ -511,7 +493,7 @@ def test_summarize_betting_session():
     results = [
         BettingResult(BetType.MONEYLINE, 0.6, 0.5, 0.1, 10.0),
         BettingResult(BetType.SPREAD, 0.55, 0.5, 0.05, 5.0),
-        BettingResult(BetType.TOTAL, 0.58, 0.5, 0.08, 8.0)
+        BettingResult(BetType.TOTAL, 0.58, 0.5, 0.08, 8.0),
     ]
 
     # Add Kelly sizes
@@ -546,7 +528,7 @@ def test_summarize_with_outcomes():
 
     results = [
         BettingResult(BetType.MONEYLINE, 0.6, 0.5, 0.1, 10.0),
-        BettingResult(BetType.SPREAD, 0.55, 0.5, 0.05, 5.0)
+        BettingResult(BetType.SPREAD, 0.55, 0.5, 0.05, 5.0),
     ]
 
     outcomes = [True, False]  # First bet wins, second loses
@@ -612,7 +594,7 @@ def run_all_tests():
         test_summarize_betting_session,
         test_summarize_with_outcomes,
         test_normal_cdf,
-        test_normal_cdf_extreme_values
+        test_normal_cdf_extreme_values,
     ]
 
     passed = 0
@@ -625,16 +607,15 @@ def run_all_tests():
             logger.info(f"PASSED: {test_func.__name__}")
         except Exception as e:
             failed += 1
-            logger.error(f"FAILED: {test_func.__name__} - {str(e)}")
+            logger.error(f"FAILED: {test_func.__name__} - {e!s}")
 
     logger.info(f"\nTest Results: {passed} passed, {failed} failed")
 
     if failed == 0:
         logger.info("All betting utilities tests passed!")
         return True
-    else:
-        logger.error("Some tests failed. Check the logs above for details.")
-        return False
+    logger.error("Some tests failed. Check the logs above for details.")
+    return False
 
 
 if __name__ == "__main__":

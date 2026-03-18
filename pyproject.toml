@@ -11,91 +11,68 @@ authors = [
 ]
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 keywords = ["nfl", "predictions", "sports-betting", "machine-learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 
 dependencies = [
     # Core data processing
-    "pandas>=2.0.0",
-    "numpy>=1.24.0",
-    "pyarrow>=10.0.0",
-    "duckdb>=0.8.0",
-    "polars>=0.18.0",
-    
+    "pandas>=2.2.0,<3",
+    "numpy>=1.26.0,<2",
+    "pyarrow>=18.0.0",
+    "duckdb>=1.5.0,<2",
+
     # Modeling and ML
-    "scikit-learn>=1.3.0",
-    "xgboost>=1.7.0",
-    "lightgbm>=4.0.0",
-    "statsmodels>=0.14.0",
-    
+    "scikit-learn>=1.8.0,<2",
+    "xgboost>=3.2.0,<4",
+
     # API and Web UI
-    "fastapi>=0.100.0",
-    "uvicorn[standard]>=0.23.0",
-    "jinja2>=3.1.0",
-    "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
-    "python-multipart>=0.0.6",
-    "itsdangerous>=2.1.0",
-    
+    "fastapi>=0.115.0,<1",
+    "uvicorn[standard]>=0.34.0,<1",
+    "jinja2>=3.1.0,<4",
+    "pydantic>=2.10.0,<3",
+    "pydantic-settings>=2.7.0,<3",
+    "python-multipart>=0.0.18,<1",
+    "itsdangerous>=2.2.0,<3",
+
     # HTTP requests and ETL
-    "httpx>=0.24.0",
-    "tenacity>=8.2.0",
-    "pytz>=2023.3",
-    "python-dateutil>=2.8.0",
-    "pendulum>=2.1.0",
-    "tqdm>=4.65.0",
-    
+    "httpx>=0.28.0,<1",
+    "tenacity>=9.0.0,<10",
+    "python-dateutil>=2.9.0,<3",
+    "tqdm>=4.67.0,<5",
+
     # Data sources
-    "nfl-data-py>=0.3.0",
-    "meteostat>=1.6.0",
-    
+    "nflreadpy>=0.1.5,<1",
+
     # Visualization for reports
-    "matplotlib>=3.7.0",
-    "plotly>=5.15.0",
-    "seaborn>=0.12.0",
-    
+    "matplotlib>=3.10.0,<4",
+    "plotly>=6.0.0,<7",
+
     # Utilities
-    "structlog>=23.1.0",
-    "click>=8.1.0",
-    "python-dotenv>=1.0.0",
-    "joblib>=1.3.0",
+    "structlog>=24.4.0,<25",
+    "click>=8.1.0,<9",
+    "python-dotenv>=1.0.0,<2",
+    "joblib>=1.4.0,<2",
+    "pyyaml>=6.0.0,<7",
 ]
 
-[project.optional-dependencies]
-test = [
-    "pytest>=7.4.0",
-    "pytest-cov>=4.1.0",
-    "pytest-asyncio>=0.21.0",
-    "hypothesis>=6.82.0",
-    "httpx>=0.24.0",  # for testing FastAPI endpoints
-]
-
+[dependency-groups]
 dev = [
-    "black>=23.7.0",
-    "isort>=5.12.0",
-    "flake8>=6.0.0",
-    "mypy>=1.5.0",
-    "pre-commit>=3.3.0",
-    "jupyter>=1.0.0",
-    "ipython>=8.14.0",
-]
-
-docs = [
-    "mkdocs>=1.5.0",
-    "mkdocs-material>=9.1.0",
-    "mkdocstrings[python]>=0.22.0",
-]
-
-all = [
-    "nfl-predict[test,dev,docs]"
+    "ruff>=0.9.0",
+    "pyright>=1.1.390",
+    "pre-commit>=4.0.0",
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "pytest-asyncio>=0.25.0",
+    "hypothesis>=6.120.0",
+    "beautifulsoup4>=4.12.0",
 ]
 
 [project.urls]
@@ -114,59 +91,84 @@ where = ["."]
 include = ["scripts*", "ratings*", "models*", "backtest*", "api*"]
 exclude = ["tests*", "data*", "outputs*", "artifacts*"]
 
-# Black configuration
-[tool.black]
+# Ruff configuration
+[tool.ruff]
+target-version = "py312"
 line-length = 88
-target-version = ['py311']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.venv
-  | \.tox
-  | build
-  | dist
-  | data
-  | outputs
-  | artifacts
-)/
-'''
+fix = true
 
-# isort configuration
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-line_length = 88
-known_first_party = ["scripts", "ratings", "models", "backtest", "api"]
-
-# MyPy configuration
-[tool.mypy]
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-disallow_untyped_decorators = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-warn_unreachable = true
-strict_equality = true
-show_error_codes = true
-
-[[tool.mypy.overrides]]
-module = [
-    "nfl_data_py.*",
-    "meteostat.*",
-    "duckdb.*",
-    "polars.*",
-    "lightgbm.*",
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # Pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "C4",   # flake8-comprehensions
+    "DTZ",  # flake8-datetimez
+    "T20",  # flake8-print
+    "RET",  # flake8-return
+    "PTH",  # flake8-use-pathlib
+    "ERA",  # eradicate
+    "PL",   # Pylint subset
+    "RUF",  # Ruff-specific
 ]
-ignore_missing_imports = true
+ignore = [
+    "E501",     # line too long (formatter handles)
+    "E402",     # module-import-not-at-top -- common pattern in scripts/conditional imports
+    "E722",     # bare-except -- TODO: fix in Plan 03
+    "PLR0913",  # too many arguments
+    "PLR2004",  # magic value comparison
+    "PLR0911",  # too many return statements
+    "PLR0912",  # too many branches
+    "PLR0915",  # too many statements
+    "PLC0415",  # import-outside-top-level -- common in existing code
+    "PLW0603",  # global-statement -- existing patterns
+    "PLW1510",  # subprocess-run-without-check
+    "PLW2901",  # redefined-loop-name
+    "RET504",   # unnecessary assignment before return
+    "RUF003",   # ambiguous-unicode-character-comment
+    "RUF012",   # mutable-class-default -- Pydantic models use this pattern
+    "RUF013",   # implicit-optional -- TODO: fix incrementally
+    "RUF059",   # unused-unpacked-variable
+    "DTZ001",   # datetime-without-tzinfo -- TODO: fix incrementally
+    "DTZ005",   # datetime-now-without-tzinfo -- TODO: fix incrementally
+    "DTZ006",   # datetime-fromtimestamp -- TODO: fix incrementally
+    "PTH100",   # os-path-abspath -- TODO: migrate to pathlib incrementally
+    "PTH103",   # os-makedirs -- TODO: migrate to pathlib incrementally
+    "PTH108",   # os-unlink -- TODO: migrate to pathlib incrementally
+    "PTH110",   # os-path-exists -- TODO: migrate to pathlib incrementally
+    "PTH112",   # os-path-isdir -- TODO: migrate to pathlib incrementally
+    "PTH118",   # os-path-join -- TODO: migrate to pathlib incrementally
+    "PTH120",   # os-path-dirname -- TODO: migrate to pathlib incrementally
+    "PTH123",   # builtin-open -- TODO: migrate to pathlib incrementally
+    "PTH202",   # os-path-getsize -- TODO: migrate to pathlib incrementally
+    "PTH208",   # os-listdir -- TODO: migrate to pathlib incrementally
+    "SIM102",   # collapsible-if -- style preference, low priority
+    "SIM108",   # if-else-block-instead-of-if-exp -- style preference
+    "SIM117",   # multiple-with-statements -- style preference
+    "B904",     # raise-without-from-inside-except -- TODO: fix incrementally
+    "B905",     # zip-without-explicit-strict -- TODO: fix incrementally
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["T201"]
+"tests/**/*.py" = ["S101", "PLR2004"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# Pyright configuration
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+venvPath = "."
+venv = ".venv"
 
 # Pytest configuration
 [tool.pytest.ini_options]
@@ -174,17 +176,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = [
-    "--cov=scripts",
-    "--cov=ratings", 
-    "--cov=models",
-    "--cov=backtest",
-    "--cov=api",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-    "--cov-fail-under=80",
-    "-v"
-]
+addopts = ["-v", "--tb=short"]
 asyncio_mode = "auto"
 
 # Coverage configuration

@@ -14,16 +14,17 @@ References:
 - Glicko rating system (Mark Glickman, 1995)
 """
 
-import math
-import pandas as pd
-from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime
-from dataclasses import dataclass, field
-from pathlib import Path
 import json
+import math
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-from utils import get_logger
+import pandas as pd
+
 from conf.settings import get_settings
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -31,36 +32,39 @@ logger = get_logger(__name__)
 @dataclass
 class EloRating:
     """Individual team Elo rating with metadata."""
+
     team: str
     rating: float = 1500.0
     games_played: int = 0
-    last_updated: Optional[datetime] = None
+    last_updated: datetime | None = None
     uncertainty: float = 350.0  # Glicko-style rating deviation
-    season: Optional[int] = None
-    
-    def to_dict(self) -> Dict[str, Any]:
+    season: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
-            'team': self.team,
-            'rating': self.rating,
-            'games_played': self.games_played,
-            'last_updated': self.last_updated.isoformat() if self.last_updated else None,
-            'uncertainty': self.uncertainty,
-            'season': self.season
+            "team": self.team,
+            "rating": self.rating,
+            "games_played": self.games_played,
+            "last_updated": self.last_updated.isoformat()
+            if self.last_updated
+            else None,
+            "uncertainty": self.uncertainty,
+            "season": self.season,
         }
-    
+
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'EloRating':
+    def from_dict(cls, data: dict[str, Any]) -> "EloRating":
         """Create from dictionary."""
-        if data.get('last_updated'):
-            data['last_updated'] = datetime.fromisoformat(data['last_updated'])
+        if data.get("last_updated"):
+            data["last_updated"] = datetime.fromisoformat(data["last_updated"])
         return cls(**data)
 
 
 class EloRatingSystem:
     """
     NFL Elo Rating System with advanced features.
-    
+
     Features:
     - Base Elo calculations (initialized at 1500)
     - Margin-of-victory adjustments with dynamic K-factor
@@ -69,7 +73,7 @@ class EloRatingSystem:
     - Chronological updates across multiple seasons
     - Optional Glicko-style uncertainty tracking
     """
-    
+
     def __init__(
         self,
         base_k: float = 20.0,
@@ -78,11 +82,11 @@ class EloRatingSystem:
         season_carryover: float = 0.75,
         uncertainty_decay: float = 15.0,
         min_uncertainty: float = 50.0,
-        max_uncertainty: float = 350.0
+        max_uncertainty: float = 350.0,
     ):
         """
         Initialize Elo rating system.
-        
+
         Args:
             base_k: Base K-factor for rating updates
             hfa_init: Initial home field advantage
@@ -99,77 +103,79 @@ class EloRatingSystem:
         self.uncertainty_decay = uncertainty_decay
         self.min_uncertainty = min_uncertainty
         self.max_uncertainty = max_uncertainty
-        
+
         # Current ratings by team
-        self.ratings: Dict[str, EloRating] = {}
-        
+        self.ratings: dict[str, EloRating] = {}
+
         # Home field advantage by season
-        self.hfa_by_season: Dict[int, float] = {}
-        
+        self.hfa_by_season: dict[int, float] = {}
+
         # Game history for analysis
-        self.game_history: List[Dict[str, Any]] = []
-        
+        self.game_history: list[dict[str, Any]] = []
+
         self.settings = get_settings()
-    
-    def _expected_score(self, rating_a: float, rating_b: float, hfa: float = 0.0) -> float:
+
+    def _expected_score(
+        self, rating_a: float, rating_b: float, hfa: float = 0.0
+    ) -> float:
         """
         Calculate expected score for team A vs team B.
-        
+
         Args:
             rating_a: Team A's Elo rating
-            rating_b: Team B's Elo rating  
+            rating_b: Team B's Elo rating
             hfa: Home field advantage for team A (if home)
-            
+
         Returns:
             Expected score (0-1) for team A
         """
         rating_diff = rating_a - rating_b + hfa
         return 1 / (1 + 10 ** (-rating_diff / 400))
-    
+
     def _calculate_k_factor(
-        self, 
-        base_k: float, 
-        mov: int, 
-        elo_diff: float, 
-        uncertainty: float = None
+        self, base_k: float, mov: int, elo_diff: float, uncertainty: float | None = None
     ) -> float:
         """
         Calculate dynamic K-factor based on margin of victory and rating difference.
-        
+
         Uses FiveThirtyEight methodology with uncertainty adjustment.
-        
+
         Args:
             base_k: Base K-factor
             mov: Margin of victory (absolute)
             elo_diff: Rating difference (winner - loser)
             uncertainty: Rating uncertainty (for Glicko-style adjustment)
-            
+
         Returns:
             Adjusted K-factor
         """
         # Base margin of victory adjustment
         mov_factor = math.log(max(1, mov)) + 1.0
-        
+
         # Elo difference adjustment (blowout of strong team less impressive)
         elo_factor = 2.2 / ((elo_diff * 0.001) + 2.2)
-        
+
         # Uncertainty adjustment (higher K for uncertain ratings)
         uncertainty_factor = 1.0
         if uncertainty is not None:
-            uncertainty_factor = 1 + (uncertainty - self.min_uncertainty) / (self.max_uncertainty - self.min_uncertainty)
-            uncertainty_factor = max(0.5, min(2.0, uncertainty_factor))  # Clamp between 0.5-2.0
-        
+            uncertainty_factor = 1 + (uncertainty - self.min_uncertainty) / (
+                self.max_uncertainty - self.min_uncertainty
+            )
+            uncertainty_factor = max(
+                0.5, min(2.0, uncertainty_factor)
+            )  # Clamp between 0.5-2.0
+
         return base_k * mov_factor * elo_factor * uncertainty_factor
-    
+
     def _update_uncertainty(self, rating: EloRating, k_factor: float) -> None:
         """Update rating uncertainty after a game (Glicko-style)."""
         # Uncertainty decreases with game experience but increases over time
         rating.uncertainty = max(
             self.min_uncertainty,
-            rating.uncertainty * 0.95 - (k_factor * 0.5) + self.uncertainty_decay
+            rating.uncertainty * 0.95 - (k_factor * 0.5) + self.uncertainty_decay,
         )
         rating.uncertainty = min(self.max_uncertainty, rating.uncertainty)
-    
+
     def get_or_create_rating(self, team: str, season: int) -> EloRating:
         """Get existing rating or create new one for team."""
         if team not in self.ratings:
@@ -177,35 +183,42 @@ class EloRatingSystem:
                 team=team,
                 rating=1500.0,
                 season=season,
-                uncertainty=self.max_uncertainty
+                uncertainty=self.max_uncertainty,
             )
         return self.ratings[team]
-    
+
     def apply_season_carryover(self, season: int) -> None:
         """
         Apply season carryover (regression to mean) for all teams.
-        
+
         Args:
             season: New season to apply carryover for
         """
-        logger.info(f"Applying season carryover for {season}", 
-                   carryover_factor=self.season_carryover)
-        
+        logger.info(
+            f"Applying season carryover for {season}",
+            carryover_factor=self.season_carryover,
+        )
+
         for team, rating in self.ratings.items():
             if rating.season and rating.season < season:
                 # Regress to mean (1500) by (1 - carryover_factor)
                 old_rating = rating.rating
-                rating.rating = (rating.rating * self.season_carryover + 
-                               1500 * (1 - self.season_carryover))
-                
+                rating.rating = rating.rating * self.season_carryover + 1500 * (
+                    1 - self.season_carryover
+                )
+
                 # Reset uncertainty to higher value for new season
-                rating.uncertainty = min(self.max_uncertainty, 
-                                       rating.uncertainty + 50.0)
+                rating.uncertainty = min(
+                    self.max_uncertainty, rating.uncertainty + 50.0
+                )
                 rating.season = season
-                
-                logger.debug(f"Season carryover for {team}", 
-                           old_rating=old_rating, new_rating=rating.rating)
-    
+
+                logger.debug(
+                    f"Season carryover for {team}",
+                    old_rating=old_rating,
+                    new_rating=rating.rating,
+                )
+
     def update_ratings(
         self,
         home_team: str,
@@ -214,11 +227,11 @@ class EloRatingSystem:
         away_score: int,
         season: int,
         game_date: datetime,
-        game_id: str = None
-    ) -> Tuple[float, float]:
+        game_id: str | None = None,
+    ) -> tuple[float, float]:
         """
         Update Elo ratings for both teams after a game.
-        
+
         Args:
             home_team: Home team abbreviation
             away_team: Away team abbreviation
@@ -227,25 +240,25 @@ class EloRatingSystem:
             season: Season year
             game_date: Game date
             game_id: Optional game identifier
-            
+
         Returns:
             Tuple of (home_rating_change, away_rating_change)
         """
         # Get or create ratings
         home_rating = self.get_or_create_rating(home_team, season)
         away_rating = self.get_or_create_rating(away_team, season)
-        
+
         # Get home field advantage for this season
         hfa = self.hfa_by_season.get(season, self.hfa_init)
-        
+
         # Pre-game ratings
         home_pre = home_rating.rating
         away_pre = away_rating.rating
-        
+
         # Expected scores
         home_expected = self._expected_score(home_pre, away_pre, hfa)
         away_expected = 1 - home_expected
-        
+
         # Actual scores (0-1)
         if home_score > away_score:
             home_actual, away_actual = 1.0, 0.0
@@ -253,10 +266,10 @@ class EloRatingSystem:
             home_actual, away_actual = 0.0, 1.0
         else:
             home_actual, away_actual = 0.5, 0.5  # Tie
-        
+
         # Margin of victory
         mov = abs(home_score - away_score)
-        
+
         # Calculate K-factors
         elo_diff = abs(home_pre - away_pre)
         home_k = self._calculate_k_factor(
@@ -265,294 +278,310 @@ class EloRatingSystem:
         away_k = self._calculate_k_factor(
             self.base_k, mov, elo_diff, away_rating.uncertainty
         )
-        
+
         # Update ratings
         home_change = home_k * (home_actual - home_expected)
         away_change = away_k * (away_actual - away_expected)
-        
+
         home_rating.rating += home_change
         away_rating.rating += away_change
-        
+
         # Update metadata
         home_rating.games_played += 1
         away_rating.games_played += 1
         home_rating.last_updated = game_date
         away_rating.last_updated = game_date
-        
+
         # Update uncertainties
         self._update_uncertainty(home_rating, home_k)
         self._update_uncertainty(away_rating, away_k)
-        
+
         # Log the update
-        logger.debug(f"Elo update: {game_id or 'Unknown'}", 
-                    home_team=home_team, away_team=away_team,
-                    home_change=home_change, away_change=away_change,
-                    home_new=home_rating.rating, away_new=away_rating.rating)
-        
+        logger.debug(
+            f"Elo update: {game_id or 'Unknown'}",
+            home_team=home_team,
+            away_team=away_team,
+            home_change=home_change,
+            away_change=away_change,
+            home_new=home_rating.rating,
+            away_new=away_rating.rating,
+        )
+
         # Store game history
-        self.game_history.append({
-            'game_id': game_id,
-            'game_date': game_date,
-            'season': season,
-            'home_team': home_team,
-            'away_team': away_team,
-            'home_score': home_score,
-            'away_score': away_score,
-            'home_rating_pre': home_pre,
-            'away_rating_pre': away_pre,
-            'home_rating_post': home_rating.rating,
-            'away_rating_post': away_rating.rating,
-            'home_change': home_change,
-            'away_change': away_change,
-            'hfa_used': hfa,
-            'mov': mov
-        })
-        
+        self.game_history.append(
+            {
+                "game_id": game_id,
+                "game_date": game_date,
+                "season": season,
+                "home_team": home_team,
+                "away_team": away_team,
+                "home_score": home_score,
+                "away_score": away_score,
+                "home_rating_pre": home_pre,
+                "away_rating_pre": away_pre,
+                "home_rating_post": home_rating.rating,
+                "away_rating_post": away_rating.rating,
+                "home_change": home_change,
+                "away_change": away_change,
+                "hfa_used": hfa,
+                "mov": mov,
+            }
+        )
+
         return home_change, away_change
-    
+
     def learn_home_field_advantage(self, games_df: pd.DataFrame, season: int) -> float:
         """
         Learn home field advantage for a season from actual game results.
-        
+
         Args:
             games_df: DataFrame with game results for the season
             season: Season to learn HFA for
-            
+
         Returns:
             Learned home field advantage value
         """
         if len(games_df) == 0:
             self.hfa_by_season[season] = self.hfa_init
             return self.hfa_init
-        
+
         # Calculate actual home win rate
         completed_games = games_df[
-            (games_df['home_score'].notna()) & 
-            (games_df['away_score'].notna()) &
-            (games_df['home_score'] != games_df['away_score'])  # Exclude ties
+            (games_df["home_score"].notna())
+            & (games_df["away_score"].notna())
+            & (games_df["home_score"] != games_df["away_score"])  # Exclude ties
         ]
-        
+
         if len(completed_games) == 0:
             self.hfa_by_season[season] = self.hfa_init
             return self.hfa_init
-        
-        home_wins = (completed_games['home_score'] > completed_games['away_score']).sum()
+
+        home_wins = (
+            completed_games["home_score"] > completed_games["away_score"]
+        ).sum()
         home_win_rate = home_wins / len(completed_games)
-        
+
         # Convert win rate to Elo points (approximately)
         # 50% win rate = 0 Elo advantage
         # Each 1% above 50% ≈ 8 Elo points
         hfa = (home_win_rate - 0.5) * 800
-        
+
         # Smooth with previous season and clamp to reasonable range
         prev_hfa = self.hfa_by_season.get(season - 1, self.hfa_init)
         learned_hfa = 0.7 * hfa + 0.3 * prev_hfa
         learned_hfa = max(20.0, min(120.0, learned_hfa))  # Clamp between 20-120
-        
+
         self.hfa_by_season[season] = learned_hfa
-        
-        logger.info(f"Learned HFA for {season}",
-                   games_analyzed=len(completed_games),
-                   home_win_rate=home_win_rate,
-                   raw_hfa=hfa, final_hfa=learned_hfa)
-        
+
+        logger.info(
+            f"Learned HFA for {season}",
+            games_analyzed=len(completed_games),
+            home_win_rate=home_win_rate,
+            raw_hfa=hfa,
+            final_hfa=learned_hfa,
+        )
+
         return learned_hfa
-    
+
     def process_season_chronologically(
-        self, 
-        games_df: pd.DataFrame, 
-        season: int,
-        learn_hfa: bool = True
+        self, games_df: pd.DataFrame, season: int, learn_hfa: bool = True
     ) -> pd.DataFrame:
         """
         Process all games in a season chronologically.
-        
+
         Args:
             games_df: DataFrame with games for the season
             season: Season year
             learn_hfa: Whether to learn home field advantage from data
-            
+
         Returns:
             DataFrame with pre/post game ratings added
         """
-        logger.info(f"Processing {season} season chronologically", 
-                   total_games=len(games_df))
-        
+        logger.info(
+            f"Processing {season} season chronologically", total_games=len(games_df)
+        )
+
         # Apply season carryover if this is a new season
         if season not in self.hfa_by_season:
             self.apply_season_carryover(season)
-        
+
         # Learn home field advantage for this season
         if learn_hfa:
             self.learn_home_field_advantage(games_df, season)
-        
+
         # Sort games chronologically
-        games_sorted = games_df.sort_values('kickoff_et').copy()
-        
+        games_sorted = games_df.sort_values("kickoff_et").copy()
+
         # Process each completed game
         rating_updates = []
-        
-        for idx, game in games_sorted.iterrows():
+
+        for _idx, game in games_sorted.iterrows():
             # Skip games without results
-            if pd.isna(game['home_score']) or pd.isna(game['away_score']):
+            if pd.isna(game["home_score"]) or pd.isna(game["away_score"]):
                 continue
-            
-            home_team = game['home_team']
-            away_team = game['away_team']
-            
+
+            home_team = game["home_team"]
+            away_team = game["away_team"]
+
             # Get pre-game ratings
             home_rating_pre = self.get_or_create_rating(home_team, season).rating
             away_rating_pre = self.get_or_create_rating(away_team, season).rating
-            
+
             # Update ratings
             home_change, away_change = self.update_ratings(
                 home_team=home_team,
                 away_team=away_team,
-                home_score=int(game['home_score']),
-                away_score=int(game['away_score']),
+                home_score=int(game["home_score"]),
+                away_score=int(game["away_score"]),
                 season=season,
-                game_date=game['kickoff_et'],
-                game_id=game['game_id']
+                game_date=game["kickoff_et"],
+                game_id=game["game_id"],
             )
-            
+
             # Get post-game ratings
             home_rating_post = self.ratings[home_team].rating
             away_rating_post = self.ratings[away_team].rating
-            
-            rating_updates.append({
-                'game_id': game['game_id'],
-                'home_rating_pre': home_rating_pre,
-                'away_rating_pre': away_rating_pre,
-                'home_rating_post': home_rating_post,
-                'away_rating_post': away_rating_post,
-                'home_change': home_change,
-                'away_change': away_change
-            })
-        
+
+            rating_updates.append(
+                {
+                    "game_id": game["game_id"],
+                    "home_rating_pre": home_rating_pre,
+                    "away_rating_pre": away_rating_pre,
+                    "home_rating_post": home_rating_post,
+                    "away_rating_post": away_rating_post,
+                    "home_change": home_change,
+                    "away_change": away_change,
+                }
+            )
+
         # Merge rating updates back into games DataFrame
         if rating_updates:
             updates_df = pd.DataFrame(rating_updates)
-            games_sorted = games_sorted.merge(updates_df, on='game_id', how='left')
-        
-        logger.info(f"Completed {season} season processing", 
-                   games_processed=len(rating_updates))
-        
+            games_sorted = games_sorted.merge(updates_df, on="game_id", how="left")
+
+        logger.info(
+            f"Completed {season} season processing", games_processed=len(rating_updates)
+        )
+
         return games_sorted
-    
+
     def predict_game(
-        self, 
-        home_team: str, 
-        away_team: str, 
-        season: int,
-        neutral_site: bool = False
-    ) -> Dict[str, float]:
+        self, home_team: str, away_team: str, season: int, neutral_site: bool = False
+    ) -> dict[str, float]:
         """
         Predict game outcome using current Elo ratings.
-        
+
         Args:
             home_team: Home team abbreviation
-            away_team: Away team abbreviation  
+            away_team: Away team abbreviation
             season: Season year
             neutral_site: Whether game is at neutral site
-            
+
         Returns:
             Dictionary with win probabilities and rating info
         """
         home_rating = self.get_or_create_rating(home_team, season)
         away_rating = self.get_or_create_rating(away_team, season)
-        
+
         hfa = 0.0 if neutral_site else self.hfa_by_season.get(season, self.hfa_init)
-        
+
         home_win_prob = self._expected_score(
             home_rating.rating, away_rating.rating, hfa
         )
         away_win_prob = 1 - home_win_prob
-        
+
         return {
-            'home_win_prob': home_win_prob,
-            'away_win_prob': away_win_prob,
-            'home_rating': home_rating.rating,
-            'away_rating': away_rating.rating,
-            'rating_diff': home_rating.rating - away_rating.rating,
-            'hfa_used': hfa,
-            'home_uncertainty': home_rating.uncertainty,
-            'away_uncertainty': away_rating.uncertainty
+            "home_win_prob": home_win_prob,
+            "away_win_prob": away_win_prob,
+            "home_rating": home_rating.rating,
+            "away_rating": away_rating.rating,
+            "rating_diff": home_rating.rating - away_rating.rating,
+            "hfa_used": hfa,
+            "home_uncertainty": home_rating.uncertainty,
+            "away_uncertainty": away_rating.uncertainty,
         }
-    
-    def get_current_ratings(self, season: int = None) -> pd.DataFrame:
+
+    def get_current_ratings(self, season: int | None = None) -> pd.DataFrame:
         """
         Get current ratings for all teams.
-        
+
         Args:
             season: Optional season filter
-            
+
         Returns:
             DataFrame with current team ratings
         """
         ratings_data = []
         for team, rating in self.ratings.items():
             if season is None or rating.season == season:
-                ratings_data.append({
-                    'team': team,
-                    'rating': rating.rating,
-                    'games_played': rating.games_played,
-                    'uncertainty': rating.uncertainty,
-                    'season': rating.season,
-                    'last_updated': rating.last_updated
-                })
-        
+                ratings_data.append(
+                    {
+                        "team": team,
+                        "rating": rating.rating,
+                        "games_played": rating.games_played,
+                        "uncertainty": rating.uncertainty,
+                        "season": rating.season,
+                        "last_updated": rating.last_updated,
+                    }
+                )
+
         df = pd.DataFrame(ratings_data)
         if len(df) > 0:
-            return df.sort_values('rating', ascending=False)
-        else:
-            return df
-    
-    def save_ratings(self, filepath: str = None) -> None:
+            return df.sort_values("rating", ascending=False)
+        return df
+
+    def save_ratings(self, filepath: str | None = None) -> None:
         """Save current ratings to JSON file."""
         if filepath is None:
-            filepath = self.settings.get_data_path('silver') / 'elo_ratings.json'
-        
+            filepath = self.settings.get_data_path("silver") / "elo_ratings.json"
+
+        # Convert numpy types to native Python types for JSON serialization
+        hfa_by_season_clean = {str(k): float(v) for k, v in self.hfa_by_season.items()}
+
         data = {
-            'ratings': {team: rating.to_dict() for team, rating in self.ratings.items()},
-            'hfa_by_season': self.hfa_by_season,
-            'parameters': {
-                'base_k': self.base_k,
-                'hfa_init': self.hfa_init,
-                'mov_multiplier': self.mov_multiplier,
-                'season_carryover': self.season_carryover
-            }
+            "ratings": {
+                team: rating.to_dict() for team, rating in self.ratings.items()
+            },
+            "hfa_by_season": hfa_by_season_clean,
+            "parameters": {
+                "base_k": float(self.base_k),
+                "hfa_init": float(self.hfa_init),
+                "mov_multiplier": float(self.mov_multiplier),
+                "season_carryover": float(self.season_carryover),
+            },
         }
-        
-        with open(filepath, 'w') as f:
+
+        with open(filepath, "w") as f:
             json.dump(data, f, indent=2, default=str)
-        
+
         logger.info(f"Saved Elo ratings to {filepath}")
-    
-    def load_ratings(self, filepath: str = None) -> None:
+
+    def load_ratings(self, filepath: str | None = None) -> None:
         """Load ratings from JSON file."""
         if filepath is None:
-            filepath = self.settings.get_data_path('silver') / 'elo_ratings.json'
-        
+            filepath = self.settings.get_data_path("silver") / "elo_ratings.json"
+
         if not Path(filepath).exists():
             logger.warning(f"Ratings file not found: {filepath}")
             return
-        
-        with open(filepath, 'r') as f:
+
+        with open(filepath) as f:
             data = json.load(f)
-        
+
         # Load ratings
         self.ratings = {}
-        for team, rating_data in data.get('ratings', {}).items():
+        for team, rating_data in data.get("ratings", {}).items():
             self.ratings[team] = EloRating.from_dict(rating_data)
-        
+
         # Load HFA by season
         self.hfa_by_season = {
-            int(season): hfa for season, hfa in data.get('hfa_by_season', {}).items()
+            int(season): hfa for season, hfa in data.get("hfa_by_season", {}).items()
         }
-        
-        logger.info(f"Loaded Elo ratings from {filepath}", 
-                   teams_loaded=len(self.ratings))
-    
+
+        logger.info(
+            f"Loaded Elo ratings from {filepath}", teams_loaded=len(self.ratings)
+        )
+
     def get_rating_history(self) -> pd.DataFrame:
         """Get complete rating history from all processed games."""
         return pd.DataFrame(self.game_history)

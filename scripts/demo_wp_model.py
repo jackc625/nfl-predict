@@ -9,18 +9,19 @@ This script demonstrates the complete WP model workflow including:
 - Persistence and loading
 """
 
-import pandas as pd
-import numpy as np
-from pathlib import Path
 import sys
 import tempfile
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from models.train_wp import WinProbabilityModel
 from models.evaluation import ModelEvaluationFramework
+from models.train_wp import WinProbabilityModel
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -30,7 +31,20 @@ def create_demo_data(n_games: int = 300) -> pd.DataFrame:
     """Create realistic demo NFL data."""
     np.random.seed(42)
 
-    teams = ['KC', 'BUF', 'CIN', 'BAL', 'SF', 'PHI', 'DAL', 'GB', 'LAR', 'TB', 'NO', 'ATL']
+    teams = [
+        "KC",
+        "BUF",
+        "CIN",
+        "BAL",
+        "SF",
+        "PHI",
+        "DAL",
+        "GB",
+        "LAR",
+        "TB",
+        "NO",
+        "ATL",
+    ]
     seasons = [2022, 2023, 2024]
 
     games = []
@@ -58,29 +72,28 @@ def create_demo_data(n_games: int = 300) -> pd.DataFrame:
                 home_wins = np.random.binomial(1, win_prob)
 
                 game = {
-                    'game_id': f'DEMO_{season}_{week:02d}_{game_id:03d}',
-                    'season': season,
-                    'week': week,
-                    'home_team': home_team,
-                    'away_team': away_team,
-                    'home_wins': home_wins,
-
+                    "game_id": f"DEMO_{season}_{week:02d}_{game_id:03d}",
+                    "season": season,
+                    "week": week,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "home_wins": home_wins,
                     # Features
-                    'elo_home': elo_home,
-                    'elo_away': elo_away,
-                    'elo_diff': elo_diff,
-                    'rest_days_home': np.random.choice([3, 7, 10, 14]),
-                    'rest_days_away': np.random.choice([3, 7, 10, 14]),
-                    'is_playoff': int(week > 18),
-                    'is_primetime': np.random.binomial(1, 0.25),
-                    'temperature': np.random.normal(65, 20),
-                    'wind_speed': np.random.exponential(5),
-                    'home_epa_offense_4w': np.random.normal(0, 0.25),
-                    'away_epa_offense_4w': np.random.normal(0, 0.25),
-                    'home_epa_defense_4w': np.random.normal(0, 0.25),
-                    'away_epa_defense_4w': np.random.normal(0, 0.25),
-                    'opening_spread': np.random.normal(-elo_diff/30, 2.5),
-                    'closing_total': np.random.normal(47, 5)
+                    "elo_home": elo_home,
+                    "elo_away": elo_away,
+                    "elo_diff": elo_diff,
+                    "rest_days_home": np.random.choice([3, 7, 10, 14]),
+                    "rest_days_away": np.random.choice([3, 7, 10, 14]),
+                    "is_playoff": int(week > 18),
+                    "is_primetime": np.random.binomial(1, 0.25),
+                    "temperature": np.random.normal(65, 20),
+                    "wind_speed": np.random.exponential(5),
+                    "home_epa_offense_4w": np.random.normal(0, 0.25),
+                    "away_epa_offense_4w": np.random.normal(0, 0.25),
+                    "home_epa_defense_4w": np.random.normal(0, 0.25),
+                    "away_epa_defense_4w": np.random.normal(0, 0.25),
+                    "opening_spread": np.random.normal(-elo_diff / 30, 2.5),
+                    "closing_total": np.random.normal(47, 5),
                 }
 
                 games.append(game)
@@ -98,15 +111,17 @@ def main():
     # Step 1: Create demo data
     print("\n1. Creating demo NFL data...")
     games_df = create_demo_data(300)
-    print(f"   Created {len(games_df)} games across {games_df['season'].nunique()} seasons")
+    print(
+        f"   Created {len(games_df)} games across {games_df['season'].nunique()} seasons"
+    )
     print(f"   Teams: {', '.join(sorted(games_df['home_team'].unique()))}")
     print(f"   Season range: {games_df['season'].min()}-{games_df['season'].max()}")
     print(f"   Home win rate: {games_df['home_wins'].mean():.3f}")
 
     # Step 2: Split data
     print("\n2. Splitting data for training and testing...")
-    train_data = games_df[games_df['season'].isin([2022, 2023])].copy()
-    test_data = games_df[games_df['season'] == 2024].copy()
+    train_data = games_df[games_df["season"].isin([2022, 2023])].copy()
+    test_data = games_df[games_df["season"] == 2024].copy()
 
     print(f"   Training games: {len(train_data)}")
     print(f"   Test games: {len(test_data)}")
@@ -119,7 +134,7 @@ def main():
         regularization_type="elasticnet",
         use_calibration=True,
         hyperparameter_tuning="grid_search",
-        random_state=42
+        random_state=42,
     )
 
     print("   Model configuration:")
@@ -136,9 +151,15 @@ def main():
     print("   Training Results:")
     print(f"   - Features selected: {len(training_results.feature_names)}")
     print(f"   - Top features: {list(training_results.feature_importances.keys())[:5]}")
-    print(f"   - Training accuracy: {training_results.performance_metrics.get('training_accuracy', 0):.3f}")
-    print(f"   - Training log loss: {training_results.performance_metrics.get('training_log_loss', 0):.3f}")
-    print(f"   - Training Brier score: {training_results.performance_metrics.get('training_brier_score', 0):.3f}")
+    print(
+        f"   - Training accuracy: {training_results.performance_metrics.get('training_accuracy', 0):.3f}"
+    )
+    print(
+        f"   - Training log loss: {training_results.performance_metrics.get('training_log_loss', 0):.3f}"
+    )
+    print(
+        f"   - Training Brier score: {training_results.performance_metrics.get('training_brier_score', 0):.3f}"
+    )
     print(f"   - Final hyperparameters: {training_results.hyperparameters}")
 
     # Step 5: Make predictions
@@ -150,8 +171,8 @@ def main():
     # Show sample predictions
     print("\n   Sample Predictions:")
     for i, pred in enumerate(predictions[:5]):
-        actual = test_data.iloc[i]['home_wins']
-        print(f"   {i+1}. {pred.home_team} vs {pred.away_team}")
+        actual = test_data.iloc[i]["home_wins"]
+        print(f"   {i + 1}. {pred.home_team} vs {pred.away_team}")
         print(f"      Raw prob: {pred.raw_win_probability:.3f}")
         print(f"      Cal prob: {pred.calibrated_win_probability:.3f}")
         print(f"      Confidence: {pred.prediction_confidence:.3f}")
@@ -163,13 +184,13 @@ def main():
     evaluator = ModelEvaluationFramework()
 
     pred_probs = np.array([p.calibrated_win_probability for p in predictions])
-    actual_outcomes = test_data['home_wins'].values
+    actual_outcomes = test_data["home_wins"].values
 
     eval_results = evaluator.evaluate_model(
         predictions=pred_probs,
         actual_outcomes=actual_outcomes,
         prediction_type="binary",
-        model_name="WP Demo Model"
+        model_name="WP Demo Model",
     )
 
     print("   Test Set Performance:")
@@ -181,9 +202,11 @@ def main():
     print(f"   - Resolution: {eval_results.calibration_metrics['resolution']:.4f}")
 
     # Statistical significance
-    if 'accuracy_vs_random' in eval_results.statistical_tests:
-        acc_test = eval_results.statistical_tests['accuracy_vs_random']
-        print(f"   - Significant vs random: {acc_test['significant']} (p={acc_test['p_value']:.4f})")
+    if "accuracy_vs_random" in eval_results.statistical_tests:
+        acc_test = eval_results.statistical_tests["accuracy_vs_random"]
+        print(
+            f"   - Significant vs random: {acc_test['significant']} (p={acc_test['p_value']:.4f})"
+        )
 
     # Step 7: Model persistence demo
     print("\n7. Demonstrating model persistence...")
@@ -192,12 +215,12 @@ def main():
 
         # Save model
         wp_model.save_model(str(model_path))
-        print(f"   Model saved to temporary location")
+        print("   Model saved to temporary location")
 
         # Load model
         loaded_model = WinProbabilityModel()
         loaded_model.load_model(str(model_path))
-        print(f"   Model loaded successfully")
+        print("   Model loaded successfully")
 
         # Test loaded model
         test_sample = test_data.head(3)
@@ -207,7 +230,7 @@ def main():
         # Verify predictions match
         match = all(
             abs(orig.raw_win_probability - loaded.raw_win_probability) < 1e-10
-            for orig, loaded in zip(original_preds, loaded_preds)
+            for orig, loaded in zip(original_preds, loaded_preds, strict=False)
         )
         print(f"   Loaded model predictions match: {match}")
 
@@ -218,27 +241,33 @@ def main():
     print(f"   Trained: {summary['is_trained']}")
     print(f"   Features Selected: {summary['model_details']['features_selected']}")
     print(f"   Regularization: {summary['configuration']['regularization_type']}")
-    print(f"   Feature Selection: {summary['configuration']['feature_selection_method']}")
+    print(
+        f"   Feature Selection: {summary['configuration']['feature_selection_method']}"
+    )
     print(f"   Calibrated: {summary['calibration_used']}")
 
     print("\n   Top Feature Importances:")
-    for feat, imp in list(summary['model_details']['feature_importances'].items())[:8]:
+    for feat, imp in list(summary["model_details"]["feature_importances"].items())[:8]:
         print(f"   - {feat}: {imp:.4f}")
 
     # Step 9: Walk-forward validation demo (quick version)
     print("\n9. Quick walk-forward validation demo...")
     try:
         validation_results = wp_model.run_walk_forward_validation(
-            games_df,
-            start_season=2023,
-            end_season=2024
+            games_df, start_season=2023, end_season=2024
         )
 
         print("   Walk-forward Results:")
-        if 'overall_metrics' in validation_results:
-            print(f"   - Seasons validated: {validation_results['overall_metrics'].get('seasons_validated', 0)}")
-            print(f"   - Overall accuracy: {validation_results['overall_metrics'].get('overall_accuracy', 0):.3f}")
-            print(f"   - Overall log loss: {validation_results['overall_metrics'].get('overall_log_loss', 0):.3f}")
+        if "overall_metrics" in validation_results:
+            print(
+                f"   - Seasons validated: {validation_results['overall_metrics'].get('seasons_validated', 0)}"
+            )
+            print(
+                f"   - Overall accuracy: {validation_results['overall_metrics'].get('overall_accuracy', 0):.3f}"
+            )
+            print(
+                f"   - Overall log loss: {validation_results['overall_metrics'].get('overall_log_loss', 0):.3f}"
+            )
     except Exception as e:
         print(f"   Walk-forward validation skipped: {e}")
 

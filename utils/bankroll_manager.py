@@ -5,19 +5,19 @@ This module provides comprehensive bankroll management including drawdown limits
 stop-loss mechanisms, unit sizing, and performance analytics.
 """
 
-from typing import Dict, List, Optional, Tuple, Union, Any
-import math
-import numpy as np
-from datetime import datetime, timedelta
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
-import json
+from typing import Any
+
+import numpy as np
 
 from utils.kelly_criterion import KellyCalculator, KellyMode, KellyResult
 
 
 class RiskLevel(Enum):
     """Risk management levels."""
+
     CONSERVATIVE = "conservative"
     MODERATE = "moderate"
     AGGRESSIVE = "aggressive"
@@ -26,6 +26,7 @@ class RiskLevel(Enum):
 
 class AlertType(Enum):
     """Types of bankroll alerts."""
+
     DRAWDOWN_WARNING = "drawdown_warning"
     DRAWDOWN_LIMIT = "drawdown_limit"
     LOW_BALANCE = "low_balance"
@@ -36,21 +37,23 @@ class AlertType(Enum):
 @dataclass
 class BankrollAlert:
     """Container for bankroll alerts and warnings."""
+
     alert_type: AlertType
     message: str
     severity: str  # 'info', 'warning', 'critical'
     timestamp: datetime
-    data: Dict[str, Any] = field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class BettingSession:
     """Container for a betting session's data."""
+
     session_id: str
     start_time: datetime
-    end_time: Optional[datetime]
+    end_time: datetime | None
     starting_balance: float
-    ending_balance: Optional[float]
+    ending_balance: float | None
     total_bets: int = 0
     winning_bets: int = 0
     total_wagered: float = 0.0
@@ -97,7 +100,7 @@ class BankrollManager:
         min_unit_size: float = 25.0,
         max_unit_size: float = 500.0,
         rebalance_frequency: int = 50,  # bets
-        confidence_threshold: float = 0.02
+        confidence_threshold: float = 0.02,
     ):
         """
         Initialize bankroll manager.
@@ -134,19 +137,21 @@ class BankrollManager:
             max_drawdown_pct=max_drawdown_pct,
             base_unit_size=initial_unit_size,
             default_kelly_fraction=kelly_fraction,
-            confidence_threshold=confidence_threshold
+            confidence_threshold=confidence_threshold,
         )
 
         # Tracking variables
-        self.alerts: List[BankrollAlert] = []
-        self.sessions: List[BettingSession] = []
-        self.current_session: Optional[BettingSession] = None
+        self.alerts: list[BankrollAlert] = []
+        self.sessions: list[BettingSession] = []
+        self.current_session: BettingSession | None = None
         self.bets_since_rebalance = 0
         self.is_stopped = False
-        self.stop_reason: Optional[str] = None
+        self.stop_reason: str | None = None
 
         # Performance tracking
-        self.daily_balances: List[Tuple[datetime, float]] = [(datetime.now(), starting_bankroll)]
+        self.daily_balances: list[tuple[datetime, float]] = [
+            (datetime.now(), starting_bankroll)
+        ]
         self.consecutive_losses = 0
         self.consecutive_wins = 0
         self.best_streak = 0
@@ -158,7 +163,7 @@ class BankrollManager:
             RiskLevel.CONSERVATIVE: 0.1,
             RiskLevel.MODERATE: 0.25,
             RiskLevel.AGGRESSIVE: 0.5,
-            RiskLevel.CUSTOM: 0.25
+            RiskLevel.CUSTOM: 0.25,
         }
         return risk_settings.get(self.risk_level, 0.25)
 
@@ -168,7 +173,7 @@ class BankrollManager:
             RiskLevel.CONSERVATIVE: 0.02,
             RiskLevel.MODERATE: 0.05,
             RiskLevel.AGGRESSIVE: 0.10,
-            RiskLevel.CUSTOM: 0.05
+            RiskLevel.CUSTOM: 0.05,
         }
         return risk_settings.get(self.risk_level, 0.05)
 
@@ -197,7 +202,7 @@ class BankrollManager:
         current_balance = self.current_bankroll
         return current_balance / self.calculate_current_unit_size()
 
-    def start_session(self, session_id: Optional[str] = None) -> str:
+    def start_session(self, session_id: str | None = None) -> str:
         """Start a new betting session."""
         if session_id is None:
             session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -209,12 +214,12 @@ class BankrollManager:
             start_time=datetime.now(),
             end_time=None,
             starting_balance=current_balance,
-            ending_balance=None
+            ending_balance=None,
         )
 
         return session_id
 
-    def end_session(self) -> Optional[BettingSession]:
+    def end_session(self) -> BettingSession | None:
         """End the current betting session."""
         if self.current_session is None:
             return None
@@ -234,8 +239,8 @@ class BankrollManager:
         self,
         model_prob: float,
         market_odds: int,
-        confidence_override: Optional[float] = None,
-        mode: KellyMode = KellyMode.FRACTIONAL
+        confidence_override: float | None = None,
+        mode: KellyMode = KellyMode.FRACTIONAL,
     ) -> KellyResult:
         """
         Calculate optimal bet size with all risk management applied.
@@ -259,7 +264,7 @@ class BankrollManager:
                 final_fraction=0.0,
                 reasoning=f"Betting stopped: {self.stop_reason}",
                 bankroll_pct=0.0,
-                units=0.0
+                units=0.0,
             )
 
         # Check drawdown limits
@@ -274,7 +279,7 @@ class BankrollManager:
                 final_fraction=0.0,
                 reasoning=f"Betting stopped: {self.stop_reason}",
                 bankroll_pct=0.0,
-                units=0.0
+                units=0.0,
             )
 
         # Update unit size if needed
@@ -285,7 +290,7 @@ class BankrollManager:
             model_prob=model_prob,
             market_odds=market_odds,
             confidence_level=confidence_override,
-            mode=mode
+            mode=mode,
         )
 
         return kelly_result
@@ -295,7 +300,7 @@ class BankrollManager:
         bet_amount: float,
         outcome: bool,
         odds: int,
-        payout: Optional[float] = None
+        payout: float | None = None,
     ) -> None:
         """
         Record the result of a bet and update all tracking.
@@ -318,25 +323,25 @@ class BankrollManager:
                 self.current_session.winning_bets += 1
                 profit = (payout or 0) - bet_amount
                 self.current_session.net_profit += profit
-                if profit > self.current_session.largest_win:
-                    self.current_session.largest_win = profit
+                self.current_session.largest_win = max(
+                    self.current_session.largest_win, profit
+                )
             else:
                 loss = bet_amount
                 self.current_session.net_profit -= loss
-                if loss > self.current_session.largest_loss:
-                    self.current_session.largest_loss = loss
+                self.current_session.largest_loss = max(
+                    self.current_session.largest_loss, loss
+                )
 
         # Update streak tracking
         if outcome:
             self.consecutive_wins += 1
             self.consecutive_losses = 0
-            if self.consecutive_wins > self.best_streak:
-                self.best_streak = self.consecutive_wins
+            self.best_streak = max(self.best_streak, self.consecutive_wins)
         else:
             self.consecutive_losses += 1
             self.consecutive_wins = 0
-            if self.consecutive_losses > self.worst_streak:
-                self.worst_streak = self.consecutive_losses
+            self.worst_streak = max(self.worst_streak, self.consecutive_losses)
 
         # Update daily balance tracking
         current_balance = self.kelly_calculator.bankroll_state.current_balance
@@ -368,7 +373,7 @@ class BankrollManager:
                 AlertType.DRAWDOWN_WARNING,
                 f"Drawdown warning: {current_dd_pct:.1%}",
                 "warning",
-                {"drawdown_pct": current_dd_pct}
+                {"drawdown_pct": current_dd_pct},
             )
 
         # Check low balance
@@ -378,7 +383,10 @@ class BankrollManager:
                 AlertType.LOW_BALANCE,
                 f"Low balance warning: ${current_balance:.2f}",
                 "warning",
-                {"current_balance": current_balance, "starting_balance": self.starting_bankroll}
+                {
+                    "current_balance": current_balance,
+                    "starting_balance": self.starting_bankroll,
+                },
             )
 
     def _check_performance_alerts(self) -> None:
@@ -397,7 +405,7 @@ class BankrollManager:
                 AlertType.POOR_PERFORMANCE,
                 f"Low win rate: {win_rate:.1%} over {total_bets} bets",
                 "warning",
-                {"win_rate": win_rate, "total_bets": total_bets}
+                {"win_rate": win_rate, "total_bets": total_bets},
             )
 
         # Excessive consecutive losses
@@ -406,7 +414,7 @@ class BankrollManager:
                 AlertType.POOR_PERFORMANCE,
                 f"Consecutive losses: {self.consecutive_losses}",
                 "critical",
-                {"consecutive_losses": self.consecutive_losses}
+                {"consecutive_losses": self.consecutive_losses},
             )
 
     def _update_unit_size_if_needed(self) -> None:
@@ -421,7 +429,7 @@ class BankrollManager:
                     AlertType.UNIT_SIZE_ADJUSTMENT,
                     f"Unit size adjusted: ${old_unit_size:.2f} -> ${new_unit_size:.2f}",
                     "info",
-                    {"old_unit_size": old_unit_size, "new_unit_size": new_unit_size}
+                    {"old_unit_size": old_unit_size, "new_unit_size": new_unit_size},
                 )
 
             self.bets_since_rebalance = 0
@@ -435,7 +443,7 @@ class BankrollManager:
             AlertType.DRAWDOWN_LIMIT,
             f"Betting stopped: {reason}",
             "critical",
-            {"reason": reason}
+            {"reason": reason},
         )
 
     def _add_alert(
@@ -443,7 +451,7 @@ class BankrollManager:
         alert_type: AlertType,
         message: str,
         severity: str,
-        data: Optional[Dict] = None
+        data: dict | None = None,
     ) -> None:
         """Add an alert to the tracking system."""
         alert = BankrollAlert(
@@ -451,7 +459,7 @@ class BankrollManager:
             message=message,
             severity=severity,
             timestamp=datetime.now(),
-            data=data or {}
+            data=data or {},
         )
         self.alerts.append(alert)
 
@@ -481,12 +489,12 @@ class BankrollManager:
             AlertType.DRAWDOWN_WARNING,
             f"Betting resumed: {reason}",
             "info",
-            {"reason": reason, "current_drawdown": current_dd_pct}
+            {"reason": reason, "current_drawdown": current_dd_pct},
         )
 
         return True
 
-    def get_performance_summary(self) -> Dict[str, Any]:
+    def get_performance_summary(self) -> dict[str, Any]:
         """Get comprehensive performance summary."""
         kelly_summary = self.kelly_calculator.get_bankroll_summary()
 
@@ -500,7 +508,8 @@ class BankrollManager:
                     "avg_session_roi": np.mean(session_returns),
                     "best_session_roi": max(session_returns),
                     "worst_session_roi": min(session_returns),
-                    "session_win_rate": len([r for r in session_returns if r > 0]) / len(session_returns)
+                    "session_win_rate": len([r for r in session_returns if r > 0])
+                    / len(session_returns),
                 }
 
         # Recent alerts
@@ -509,7 +518,7 @@ class BankrollManager:
                 "type": alert.alert_type.value,
                 "message": alert.message,
                 "severity": alert.severity,
-                "timestamp": alert.timestamp.isoformat()
+                "timestamp": alert.timestamp.isoformat(),
             }
             for alert in self.alerts[-10:]  # Last 10 alerts
         ]
@@ -524,13 +533,14 @@ class BankrollManager:
             "best_streak": self.best_streak,
             "worst_streak": self.worst_streak,
             "current_unit_size": self.calculate_current_unit_size(),
-            "bets_until_rebalance": self.rebalance_frequency - self.bets_since_rebalance,
+            "bets_until_rebalance": self.rebalance_frequency
+            - self.bets_since_rebalance,
             "total_alerts": len(self.alerts),
             **sessions_summary,
-            "recent_alerts": recent_alerts
+            "recent_alerts": recent_alerts,
         }
 
-    def export_performance_data(self) -> Dict[str, Any]:
+    def export_performance_data(self) -> dict[str, Any]:
         """Export all performance data for analysis."""
         return {
             "bankroll_summary": self.get_performance_summary(),
@@ -544,13 +554,15 @@ class BankrollManager:
                 "winning_bets": self.kelly_calculator.bankroll_state.winning_bets,
                 "total_wagered": self.kelly_calculator.bankroll_state.total_wagered,
                 "net_profit": self.kelly_calculator.bankroll_state.net_profit,
-                "roi": self.kelly_calculator.bankroll_state.roi
+                "roi": self.kelly_calculator.bankroll_state.roi,
             },
             "sessions": [
                 {
                     "session_id": session.session_id,
                     "start_time": session.start_time.isoformat(),
-                    "end_time": session.end_time.isoformat() if session.end_time else None,
+                    "end_time": session.end_time.isoformat()
+                    if session.end_time
+                    else None,
                     "starting_balance": session.starting_balance,
                     "ending_balance": session.ending_balance,
                     "total_bets": session.total_bets,
@@ -560,7 +572,7 @@ class BankrollManager:
                     "net_profit": session.net_profit,
                     "roi": session.roi,
                     "largest_win": session.largest_win,
-                    "largest_loss": session.largest_loss
+                    "largest_loss": session.largest_loss,
                 }
                 for session in self.sessions
             ],
@@ -574,7 +586,7 @@ class BankrollManager:
                     "message": alert.message,
                     "severity": alert.severity,
                     "timestamp": alert.timestamp.isoformat(),
-                    "data": alert.data
+                    "data": alert.data,
                 }
                 for alert in self.alerts
             ],
@@ -587,6 +599,6 @@ class BankrollManager:
                 "min_unit_size": self.min_unit_size,
                 "max_unit_size": self.max_unit_size,
                 "rebalance_frequency": self.rebalance_frequency,
-                "confidence_threshold": self.confidence_threshold
-            }
+                "confidence_threshold": self.confidence_threshold,
+            },
         }

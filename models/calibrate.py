@@ -13,30 +13,28 @@ This module provides comprehensive probability calibration for NFL prediction mo
 All calibration methods respect temporal ordering and prevent data leakage.
 """
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from pathlib import Path
 import sys
-from datetime import datetime
-from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass
-import warnings
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from sklearn.calibration import CalibratedClassifierCV, calibration_curve
+import joblib
+from scipy import stats
+from sklearn.calibration import calibration_curve
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import brier_score_loss, log_loss
-from scipy import stats
-import joblib
 
 from utils import get_logger
-from models.utils import CrossValidator, TrainTestSplit
 
 logger = get_logger(__name__)
 
@@ -57,15 +55,16 @@ class CalibrationResults:
         calibration_plot_data: Data for generating calibration plots
         metadata: Additional calibration metadata
     """
+
     calibrator: Any
     method: str
     calibrated_probabilities: np.ndarray
     raw_probabilities: np.ndarray
     true_labels: np.ndarray
-    reliability_curve: Tuple[np.ndarray, np.ndarray, np.ndarray]
-    calibration_metrics: Dict[str, float]
-    calibration_plot_data: Dict[str, Any]
-    metadata: Dict[str, Any]
+    reliability_curve: tuple[np.ndarray, np.ndarray, np.ndarray]
+    calibration_metrics: dict[str, float]
+    calibration_plot_data: dict[str, Any]
+    metadata: dict[str, Any]
 
 
 class ProbabilityCalibrator:
@@ -76,12 +75,14 @@ class ProbabilityCalibrator:
     with temporal validation and comprehensive evaluation metrics.
     """
 
-    def __init__(self,
-                 primary_method: str = 'isotonic',
-                 fallback_method: str = 'platt',
-                 n_bins: int = 10,
-                 min_samples_per_bin: int = 10,
-                 cv_folds: int = 5):
+    def __init__(
+        self,
+        primary_method: str = "isotonic",
+        fallback_method: str = "platt",
+        n_bins: int = 10,
+        min_samples_per_bin: int = 10,
+        cv_folds: int = 5,
+    ):
         """
         Initialize probability calibrator.
 
@@ -100,17 +101,19 @@ class ProbabilityCalibrator:
         self.logger = get_logger(__name__)
 
         # Validation
-        valid_methods = ['isotonic', 'platt']
+        valid_methods = ["isotonic", "platt"]
         if primary_method not in valid_methods:
             raise ValueError(f"Primary method must be one of {valid_methods}")
         if fallback_method not in valid_methods:
             raise ValueError(f"Fallback method must be one of {valid_methods}")
 
-    def calibrate_probabilities(self,
-                               raw_probabilities: np.ndarray,
-                               true_labels: np.ndarray,
-                               method: str = None,
-                               sample_weight: Optional[np.ndarray] = None) -> CalibrationResults:
+    def calibrate_probabilities(
+        self,
+        raw_probabilities: np.ndarray,
+        true_labels: np.ndarray,
+        method: str | None = None,
+        sample_weight: np.ndarray | None = None,
+    ) -> CalibrationResults:
         """
         Calibrate probabilities using specified method.
 
@@ -126,10 +129,12 @@ class ProbabilityCalibrator:
         if method is None:
             method = self.primary_method
 
-        self.logger.info("Calibrating probabilities",
-                        method=method,
-                        n_samples=len(raw_probabilities),
-                        positive_rate=float(np.mean(true_labels)))
+        self.logger.info(
+            "Calibrating probabilities",
+            method=method,
+            n_samples=len(raw_probabilities),
+            positive_rate=float(np.mean(true_labels)),
+        )
 
         # Validate inputs
         raw_probabilities = np.asarray(raw_probabilities).flatten()
@@ -146,17 +151,19 @@ class ProbabilityCalibrator:
 
         # Check for sufficient data
         if len(raw_probabilities) < self.min_samples_per_bin:
-            self.logger.warning("Insufficient data for reliable calibration",
-                               n_samples=len(raw_probabilities),
-                               min_required=self.min_samples_per_bin)
+            self.logger.warning(
+                "Insufficient data for reliable calibration",
+                n_samples=len(raw_probabilities),
+                min_required=self.min_samples_per_bin,
+            )
 
         try:
             # Fit calibration model
-            if method == 'isotonic':
+            if method == "isotonic":
                 calibrator = self._fit_isotonic_calibration(
                     raw_probabilities, true_labels, sample_weight
                 )
-            elif method == 'platt':
+            elif method == "platt":
                 calibrator = self._fit_platt_calibration(
                     raw_probabilities, true_labels, sample_weight
                 )
@@ -164,10 +171,14 @@ class ProbabilityCalibrator:
                 raise ValueError(f"Unknown calibration method: {method}")
 
             # Apply calibration
-            calibrated_probabilities = calibrator.predict(raw_probabilities.reshape(-1, 1))
+            calibrated_probabilities = calibrator.predict(
+                raw_probabilities.reshape(-1, 1)
+            )
 
             # Ensure calibrated probabilities are in valid range
-            calibrated_probabilities = np.clip(calibrated_probabilities, 1e-15, 1 - 1e-15)
+            calibrated_probabilities = np.clip(
+                calibrated_probabilities, 1e-15, 1 - 1e-15
+            )
 
             # Calculate calibration metrics
             calibration_metrics = self._calculate_calibration_metrics(
@@ -181,7 +192,10 @@ class ProbabilityCalibrator:
 
             # Create calibration plot data
             calibration_plot_data = self._prepare_calibration_plot_data(
-                raw_probabilities, calibrated_probabilities, true_labels, reliability_curve
+                raw_probabilities,
+                calibrated_probabilities,
+                true_labels,
+                reliability_curve,
             )
 
             # Create results object
@@ -195,19 +209,21 @@ class ProbabilityCalibrator:
                 calibration_metrics=calibration_metrics,
                 calibration_plot_data=calibration_plot_data,
                 metadata={
-                    'n_samples': len(raw_probabilities),
-                    'positive_rate': float(np.mean(true_labels)),
-                    'calibration_date': datetime.now(),
-                    'method_used': method,
-                    'sample_weight_used': sample_weight is not None
-                }
+                    "n_samples": len(raw_probabilities),
+                    "positive_rate": float(np.mean(true_labels)),
+                    "calibration_date": datetime.now(),
+                    "method_used": method,
+                    "sample_weight_used": sample_weight is not None,
+                },
             )
 
-            self.logger.info("Calibration completed successfully",
-                           method=method,
-                           raw_brier=calibration_metrics['raw_brier_score'],
-                           calibrated_brier=calibration_metrics['calibrated_brier_score'],
-                           ece=calibration_metrics['expected_calibration_error'])
+            self.logger.info(
+                "Calibration completed successfully",
+                method=method,
+                raw_brier=calibration_metrics["raw_brier_score"],
+                calibrated_brier=calibration_metrics["calibrated_brier_score"],
+                ece=calibration_metrics["expected_calibration_error"],
+            )
 
             return results
 
@@ -216,17 +232,20 @@ class ProbabilityCalibrator:
 
             # Try fallback method if different from primary
             if method != self.fallback_method:
-                self.logger.info(f"Attempting fallback calibration with {self.fallback_method}")
+                self.logger.info(
+                    f"Attempting fallback calibration with {self.fallback_method}"
+                )
                 return self.calibrate_probabilities(
                     raw_probabilities, true_labels, self.fallback_method, sample_weight
                 )
-            else:
-                raise
+            raise
 
-    def _fit_isotonic_calibration(self,
-                                 raw_probabilities: np.ndarray,
-                                 true_labels: np.ndarray,
-                                 sample_weight: Optional[np.ndarray] = None) -> IsotonicRegression:
+    def _fit_isotonic_calibration(
+        self,
+        raw_probabilities: np.ndarray,
+        true_labels: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ) -> IsotonicRegression:
         """
         Fit isotonic regression calibration model.
 
@@ -241,7 +260,7 @@ class ProbabilityCalibrator:
         Returns:
             Fitted IsotonicRegression model
         """
-        calibrator = IsotonicRegression(out_of_bounds='clip')
+        calibrator = IsotonicRegression(out_of_bounds="clip")
 
         # Isotonic regression expects probabilities as targets for calibration
         # We fit f: raw_prob -> calibrated_prob where calibrated_prob should equal true_frequency
@@ -249,10 +268,12 @@ class ProbabilityCalibrator:
 
         return calibrator
 
-    def _fit_platt_calibration(self,
-                              raw_probabilities: np.ndarray,
-                              true_labels: np.ndarray,
-                              sample_weight: Optional[np.ndarray] = None) -> LogisticRegression:
+    def _fit_platt_calibration(
+        self,
+        raw_probabilities: np.ndarray,
+        true_labels: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ) -> LogisticRegression:
         """
         Fit Platt scaling calibration model.
 
@@ -288,10 +309,12 @@ class ProbabilityCalibrator:
 
         return PlattCalibrator(calibrator)
 
-    def _calculate_calibration_metrics(self,
-                                      raw_probabilities: np.ndarray,
-                                      calibrated_probabilities: np.ndarray,
-                                      true_labels: np.ndarray) -> Dict[str, float]:
+    def _calculate_calibration_metrics(
+        self,
+        raw_probabilities: np.ndarray,
+        calibrated_probabilities: np.ndarray,
+        true_labels: np.ndarray,
+    ) -> dict[str, float]:
         """
         Calculate comprehensive calibration quality metrics.
 
@@ -307,55 +330,109 @@ class ProbabilityCalibrator:
 
         # Brier score (lower is better)
         try:
-            metrics['raw_brier_score'] = brier_score_loss(true_labels, raw_probabilities)
-            metrics['calibrated_brier_score'] = brier_score_loss(true_labels, calibrated_probabilities)
-            metrics['brier_score_improvement'] = metrics['raw_brier_score'] - metrics['calibrated_brier_score']
+            metrics["raw_brier_score"] = brier_score_loss(
+                true_labels, raw_probabilities
+            )
+            metrics["calibrated_brier_score"] = brier_score_loss(
+                true_labels, calibrated_probabilities
+            )
+            metrics["brier_score_improvement"] = (
+                metrics["raw_brier_score"] - metrics["calibrated_brier_score"]
+            )
         except Exception as e:
             self.logger.warning(f"Failed to calculate Brier score: {e}")
-            metrics.update({'raw_brier_score': np.nan, 'calibrated_brier_score': np.nan, 'brier_score_improvement': np.nan})
+            metrics.update(
+                {
+                    "raw_brier_score": np.nan,
+                    "calibrated_brier_score": np.nan,
+                    "brier_score_improvement": np.nan,
+                }
+            )
 
         # Log loss (lower is better)
         try:
-            metrics['raw_log_loss'] = log_loss(true_labels, raw_probabilities)
-            metrics['calibrated_log_loss'] = log_loss(true_labels, calibrated_probabilities)
-            metrics['log_loss_improvement'] = metrics['raw_log_loss'] - metrics['calibrated_log_loss']
+            metrics["raw_log_loss"] = log_loss(true_labels, raw_probabilities)
+            metrics["calibrated_log_loss"] = log_loss(
+                true_labels, calibrated_probabilities
+            )
+            metrics["log_loss_improvement"] = (
+                metrics["raw_log_loss"] - metrics["calibrated_log_loss"]
+            )
         except Exception as e:
             self.logger.warning(f"Failed to calculate log loss: {e}")
-            metrics.update({'raw_log_loss': np.nan, 'calibrated_log_loss': np.nan, 'log_loss_improvement': np.nan})
+            metrics.update(
+                {
+                    "raw_log_loss": np.nan,
+                    "calibrated_log_loss": np.nan,
+                    "log_loss_improvement": np.nan,
+                }
+            )
 
         # Expected Calibration Error (ECE)
         try:
-            metrics['expected_calibration_error'] = self._calculate_ece(calibrated_probabilities, true_labels)
-            metrics['raw_expected_calibration_error'] = self._calculate_ece(raw_probabilities, true_labels)
-            metrics['ece_improvement'] = metrics['raw_expected_calibration_error'] - metrics['expected_calibration_error']
+            metrics["expected_calibration_error"] = self._calculate_ece(
+                calibrated_probabilities, true_labels
+            )
+            metrics["raw_expected_calibration_error"] = self._calculate_ece(
+                raw_probabilities, true_labels
+            )
+            metrics["ece_improvement"] = (
+                metrics["raw_expected_calibration_error"]
+                - metrics["expected_calibration_error"]
+            )
         except Exception as e:
             self.logger.warning(f"Failed to calculate ECE: {e}")
-            metrics.update({'expected_calibration_error': np.nan, 'raw_expected_calibration_error': np.nan, 'ece_improvement': np.nan})
+            metrics.update(
+                {
+                    "expected_calibration_error": np.nan,
+                    "raw_expected_calibration_error": np.nan,
+                    "ece_improvement": np.nan,
+                }
+            )
 
         # Maximum Calibration Error (MCE)
         try:
-            metrics['maximum_calibration_error'] = self._calculate_mce(calibrated_probabilities, true_labels)
-            metrics['raw_maximum_calibration_error'] = self._calculate_mce(raw_probabilities, true_labels)
+            metrics["maximum_calibration_error"] = self._calculate_mce(
+                calibrated_probabilities, true_labels
+            )
+            metrics["raw_maximum_calibration_error"] = self._calculate_mce(
+                raw_probabilities, true_labels
+            )
         except Exception as e:
             self.logger.warning(f"Failed to calculate MCE: {e}")
-            metrics.update({'maximum_calibration_error': np.nan, 'raw_maximum_calibration_error': np.nan})
+            metrics.update(
+                {
+                    "maximum_calibration_error": np.nan,
+                    "raw_maximum_calibration_error": np.nan,
+                }
+            )
 
         # Calibration slope and intercept (reliability regression)
         try:
-            slope, intercept = self._calculate_calibration_slope(calibrated_probabilities, true_labels)
-            metrics['calibration_slope'] = slope
-            metrics['calibration_intercept'] = intercept
+            slope, intercept = self._calculate_calibration_slope(
+                calibrated_probabilities, true_labels
+            )
+            metrics["calibration_slope"] = slope
+            metrics["calibration_intercept"] = intercept
             # Perfect calibration has slope=1, intercept=0
-            metrics['calibration_slope_deviation'] = abs(slope - 1.0)
-            metrics['calibration_intercept_deviation'] = abs(intercept)
+            metrics["calibration_slope_deviation"] = abs(slope - 1.0)
+            metrics["calibration_intercept_deviation"] = abs(intercept)
         except Exception as e:
             self.logger.warning(f"Failed to calculate calibration slope: {e}")
-            metrics.update({'calibration_slope': np.nan, 'calibration_intercept': np.nan,
-                          'calibration_slope_deviation': np.nan, 'calibration_intercept_deviation': np.nan})
+            metrics.update(
+                {
+                    "calibration_slope": np.nan,
+                    "calibration_intercept": np.nan,
+                    "calibration_slope_deviation": np.nan,
+                    "calibration_intercept_deviation": np.nan,
+                }
+            )
 
         return metrics
 
-    def _calculate_ece(self, probabilities: np.ndarray, true_labels: np.ndarray) -> float:
+    def _calculate_ece(
+        self, probabilities: np.ndarray, true_labels: np.ndarray
+    ) -> float:
         """
         Calculate Expected Calibration Error (ECE).
 
@@ -374,9 +451,9 @@ class ProbabilityCalibrator:
         bin_uppers = bin_boundaries[1:]
 
         ece = 0
-        total_samples = len(probabilities)
+        len(probabilities)
 
-        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers, strict=False):
             # Find samples in this bin
             in_bin = (probabilities > bin_lower) & (probabilities <= bin_upper)
             prop_in_bin = in_bin.mean()
@@ -391,7 +468,9 @@ class ProbabilityCalibrator:
 
         return ece
 
-    def _calculate_mce(self, probabilities: np.ndarray, true_labels: np.ndarray) -> float:
+    def _calculate_mce(
+        self, probabilities: np.ndarray, true_labels: np.ndarray
+    ) -> float:
         """
         Calculate Maximum Calibration Error (MCE).
 
@@ -410,7 +489,7 @@ class ProbabilityCalibrator:
 
         max_calibration_error = 0
 
-        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers, strict=False):
             in_bin = (probabilities > bin_lower) & (probabilities <= bin_upper)
 
             if in_bin.sum() > 0:
@@ -421,7 +500,9 @@ class ProbabilityCalibrator:
 
         return max_calibration_error
 
-    def _calculate_calibration_slope(self, probabilities: np.ndarray, true_labels: np.ndarray) -> Tuple[float, float]:
+    def _calculate_calibration_slope(
+        self, probabilities: np.ndarray, true_labels: np.ndarray
+    ) -> tuple[float, float]:
         """
         Calculate calibration slope and intercept via linear regression.
 
@@ -441,7 +522,9 @@ class ProbabilityCalibrator:
         slope, intercept, _, _, _ = stats.linregress(probabilities, true_labels)
         return slope, intercept
 
-    def _generate_reliability_curve(self, probabilities: np.ndarray, true_labels: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _generate_reliability_curve(
+        self, probabilities: np.ndarray, true_labels: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Generate reliability curve data for calibration plots.
 
@@ -455,7 +538,7 @@ class ProbabilityCalibrator:
         # Use sklearn's calibration_curve function
         try:
             fraction_of_positives, mean_predicted_value = calibration_curve(
-                true_labels, probabilities, n_bins=self.n_bins, strategy='uniform'
+                true_labels, probabilities, n_bins=self.n_bins, strategy="uniform"
             )
 
             # Create bin edges for plotting
@@ -468,11 +551,13 @@ class ProbabilityCalibrator:
             # Return empty arrays if calculation fails
             return np.array([]), np.array([]), np.array([])
 
-    def _prepare_calibration_plot_data(self,
-                                      raw_probabilities: np.ndarray,
-                                      calibrated_probabilities: np.ndarray,
-                                      true_labels: np.ndarray,
-                                      reliability_curve: Tuple[np.ndarray, np.ndarray, np.ndarray]) -> Dict[str, Any]:
+    def _prepare_calibration_plot_data(
+        self,
+        raw_probabilities: np.ndarray,
+        calibrated_probabilities: np.ndarray,
+        true_labels: np.ndarray,
+        reliability_curve: tuple[np.ndarray, np.ndarray, np.ndarray],
+    ) -> dict[str, Any]:
         """
         Prepare data for generating calibration plots.
 
@@ -488,28 +573,34 @@ class ProbabilityCalibrator:
         mean_predicted, fraction_positive, bin_edges = reliability_curve
 
         plot_data = {
-            'raw_probabilities': raw_probabilities,
-            'calibrated_probabilities': calibrated_probabilities,
-            'true_labels': true_labels,
-            'reliability_curve': {
-                'mean_predicted': mean_predicted,
-                'fraction_positive': fraction_positive,
-                'bin_edges': bin_edges
+            "raw_probabilities": raw_probabilities,
+            "calibrated_probabilities": calibrated_probabilities,
+            "true_labels": true_labels,
+            "reliability_curve": {
+                "mean_predicted": mean_predicted,
+                "fraction_positive": fraction_positive,
+                "bin_edges": bin_edges,
             },
-            'histogram_data': {
-                'raw_hist': np.histogram(raw_probabilities, bins=self.n_bins, range=(0, 1)),
-                'calibrated_hist': np.histogram(calibrated_probabilities, bins=self.n_bins, range=(0, 1))
-            }
+            "histogram_data": {
+                "raw_hist": np.histogram(
+                    raw_probabilities, bins=self.n_bins, range=(0, 1)
+                ),
+                "calibrated_hist": np.histogram(
+                    calibrated_probabilities, bins=self.n_bins, range=(0, 1)
+                ),
+            },
         }
 
         return plot_data
 
-    def calibrate_with_cross_validation(self,
-                                       data: pd.DataFrame,
-                                       probability_column: str,
-                                       target_column: str,
-                                       season_column: str = 'season',
-                                       method: str = None) -> Dict[int, CalibrationResults]:
+    def calibrate_with_cross_validation(
+        self,
+        data: pd.DataFrame,
+        probability_column: str,
+        target_column: str,
+        season_column: str = "season",
+        method: str | None = None,
+    ) -> dict[int, CalibrationResults]:
         """
         Perform within-season calibration using cross-validation.
 
@@ -529,10 +620,12 @@ class ProbabilityCalibrator:
         if method is None:
             method = self.primary_method
 
-        self.logger.info("Starting within-season cross-validation calibration",
-                        method=method,
-                        seasons=sorted(data[season_column].unique()),
-                        total_samples=len(data))
+        self.logger.info(
+            "Starting within-season cross-validation calibration",
+            method=method,
+            seasons=sorted(data[season_column].unique()),
+            total_samples=len(data),
+        )
 
         results = {}
 
@@ -540,8 +633,9 @@ class ProbabilityCalibrator:
             season_data = data[data[season_column] == season].copy()
 
             if len(season_data) < self.min_samples_per_bin:
-                self.logger.warning(f"Insufficient data for season {season}",
-                                   n_samples=len(season_data))
+                self.logger.warning(
+                    f"Insufficient data for season {season}", n_samples=len(season_data)
+                )
                 continue
 
             try:
@@ -555,27 +649,35 @@ class ProbabilityCalibrator:
                 )
 
                 # Add season-specific metadata
-                season_results.metadata.update({
-                    'season': season,
-                    'season_samples': len(season_data),
-                    'calibration_type': 'within_season_cv'
-                })
+                season_results.metadata.update(
+                    {
+                        "season": season,
+                        "season_samples": len(season_data),
+                        "calibration_type": "within_season_cv",
+                    }
+                )
 
                 results[season] = season_results
 
-                self.logger.info(f"Completed calibration for season {season}",
-                               n_samples=len(season_data),
-                               ece=season_results.calibration_metrics['expected_calibration_error'])
+                self.logger.info(
+                    f"Completed calibration for season {season}",
+                    n_samples=len(season_data),
+                    ece=season_results.calibration_metrics[
+                        "expected_calibration_error"
+                    ],
+                )
 
             except Exception as e:
                 self.logger.error(f"Failed to calibrate season {season}", error=str(e))
 
         return results
 
-    def generate_calibration_plot(self,
-                                 calibration_results: CalibrationResults,
-                                 save_path: Optional[str] = None,
-                                 title: Optional[str] = None) -> plt.Figure:
+    def generate_calibration_plot(
+        self,
+        calibration_results: CalibrationResults,
+        save_path: str | None = None,
+        title: str | None = None,
+    ) -> plt.Figure:
         """
         Generate comprehensive calibration plot.
 
@@ -595,82 +697,106 @@ class ProbabilityCalibrator:
         if title is None:
             title = f"Probability Calibration ({calibration_results.method.title()})"
 
-        fig.suptitle(title, fontsize=14, fontweight='bold')
+        fig.suptitle(title, fontsize=14, fontweight="bold")
 
         plot_data = calibration_results.calibration_plot_data
         metrics = calibration_results.calibration_metrics
 
         # 1. Reliability diagram
-        ax1.plot([0, 1], [0, 1], 'k--', alpha=0.5, label='Perfect calibration')
+        ax1.plot([0, 1], [0, 1], "k--", alpha=0.5, label="Perfect calibration")
 
         # Raw probabilities reliability
-        if len(plot_data['reliability_curve']['mean_predicted']) > 0:
-            ax1.plot(plot_data['reliability_curve']['mean_predicted'],
-                    plot_data['reliability_curve']['fraction_positive'],
-                    marker='o', linewidth=2, label='Calibrated')
+        if len(plot_data["reliability_curve"]["mean_predicted"]) > 0:
+            ax1.plot(
+                plot_data["reliability_curve"]["mean_predicted"],
+                plot_data["reliability_curve"]["fraction_positive"],
+                marker="o",
+                linewidth=2,
+                label="Calibrated",
+            )
 
-        ax1.set_xlabel('Mean Predicted Probability')
-        ax1.set_ylabel('Fraction of Positives')
-        ax1.set_title('Reliability Diagram')
+        ax1.set_xlabel("Mean Predicted Probability")
+        ax1.set_ylabel("Fraction of Positives")
+        ax1.set_title("Reliability Diagram")
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         ax1.set_xlim([0, 1])
         ax1.set_ylim([0, 1])
 
         # 2. Histogram of predictions
-        ax2.hist(calibration_results.raw_probabilities, bins=20, alpha=0.7,
-                label='Raw', color='red', density=True)
-        ax2.hist(calibration_results.calibrated_probabilities, bins=20, alpha=0.7,
-                label='Calibrated', color='blue', density=True)
-        ax2.set_xlabel('Predicted Probability')
-        ax2.set_ylabel('Density')
-        ax2.set_title('Probability Distributions')
+        ax2.hist(
+            calibration_results.raw_probabilities,
+            bins=20,
+            alpha=0.7,
+            label="Raw",
+            color="red",
+            density=True,
+        )
+        ax2.hist(
+            calibration_results.calibrated_probabilities,
+            bins=20,
+            alpha=0.7,
+            label="Calibrated",
+            color="blue",
+            density=True,
+        )
+        ax2.set_xlabel("Predicted Probability")
+        ax2.set_ylabel("Density")
+        ax2.set_title("Probability Distributions")
         ax2.legend()
         ax2.grid(True, alpha=0.3)
 
         # 3. Calibration metrics table
-        ax3.axis('tight')
-        ax3.axis('off')
+        ax3.axis("tight")
+        ax3.axis("off")
 
         metric_data = []
-        if not np.isnan(metrics.get('expected_calibration_error', np.nan)):
-            metric_data.append(['ECE', f"{metrics['expected_calibration_error']:.4f}"])
-        if not np.isnan(metrics.get('calibrated_brier_score', np.nan)):
-            metric_data.append(['Brier Score', f"{metrics['calibrated_brier_score']:.4f}"])
-        if not np.isnan(metrics.get('calibrated_log_loss', np.nan)):
-            metric_data.append(['Log Loss', f"{metrics['calibrated_log_loss']:.4f}"])
-        if not np.isnan(metrics.get('calibration_slope', np.nan)):
-            metric_data.append(['Cal. Slope', f"{metrics['calibration_slope']:.3f}"])
+        if not np.isnan(metrics.get("expected_calibration_error", np.nan)):
+            metric_data.append(["ECE", f"{metrics['expected_calibration_error']:.4f}"])
+        if not np.isnan(metrics.get("calibrated_brier_score", np.nan)):
+            metric_data.append(
+                ["Brier Score", f"{metrics['calibrated_brier_score']:.4f}"]
+            )
+        if not np.isnan(metrics.get("calibrated_log_loss", np.nan)):
+            metric_data.append(["Log Loss", f"{metrics['calibrated_log_loss']:.4f}"])
+        if not np.isnan(metrics.get("calibration_slope", np.nan)):
+            metric_data.append(["Cal. Slope", f"{metrics['calibration_slope']:.3f}"])
 
         if metric_data:
-            table = ax3.table(cellText=metric_data,
-                             colLabels=['Metric', 'Value'],
-                             cellLoc='center',
-                             loc='center')
+            table = ax3.table(
+                cellText=metric_data,
+                colLabels=["Metric", "Value"],
+                cellLoc="center",
+                loc="center",
+            )
             table.auto_set_font_size(False)
             table.set_fontsize(10)
             table.scale(1, 2)
-            ax3.set_title('Calibration Metrics')
+            ax3.set_title("Calibration Metrics")
 
         # 4. Before/after comparison
         sample_size = min(1000, len(calibration_results.raw_probabilities))
-        indices = np.random.choice(len(calibration_results.raw_probabilities),
-                                  sample_size, replace=False)
+        indices = np.random.choice(
+            len(calibration_results.raw_probabilities), sample_size, replace=False
+        )
 
-        ax4.scatter(calibration_results.raw_probabilities[indices],
-                   calibration_results.calibrated_probabilities[indices],
-                   alpha=0.5, s=10)
-        ax4.plot([0, 1], [0, 1], 'k--', alpha=0.5, label='No change')
-        ax4.set_xlabel('Raw Probability')
-        ax4.set_ylabel('Calibrated Probability')
-        ax4.set_title('Raw vs Calibrated')
+        ax4.scatter(
+            calibration_results.raw_probabilities[indices],
+            calibration_results.calibrated_probabilities[indices],
+            alpha=0.5,
+            s=10,
+        )
+        ax4.plot([0, 1], [0, 1], "k--", alpha=0.5, label="No change")
+        ax4.set_xlabel("Raw Probability")
+        ax4.set_ylabel("Calibrated Probability")
+        ax4.set_title("Raw vs Calibrated")
         ax4.legend()
         ax4.grid(True, alpha=0.3)
 
         plt.tight_layout()
 
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
             self.logger.info(f"Calibration plot saved to {save_path}")
 
         return fig
@@ -684,10 +810,10 @@ class ProbabilityCalibrator:
             save_path: Path to save the calibrator
         """
         save_data = {
-            'calibrator': calibration_results.calibrator,
-            'method': calibration_results.method,
-            'metadata': calibration_results.metadata,
-            'calibration_metrics': calibration_results.calibration_metrics
+            "calibrator": calibration_results.calibrator,
+            "method": calibration_results.method,
+            "metadata": calibration_results.metadata,
+            "calibration_metrics": calibration_results.calibration_metrics,
         }
 
         joblib.dump(save_data, save_path)
@@ -705,14 +831,15 @@ class ProbabilityCalibrator:
         """
         save_data = joblib.load(load_path)
 
-        self.logger.info(f"Calibrator loaded from {load_path}",
-                        method=save_data['method'])
+        self.logger.info(
+            f"Calibrator loaded from {load_path}", method=save_data["method"]
+        )
 
-        return save_data['calibrator']
+        return save_data["calibrator"]
 
-    def apply_calibration(self,
-                         raw_probabilities: np.ndarray,
-                         calibrator: Any) -> np.ndarray:
+    def apply_calibration(
+        self, raw_probabilities: np.ndarray, calibrator: Any
+    ) -> np.ndarray:
         """
         Apply a pre-trained calibrator to new probabilities.
 

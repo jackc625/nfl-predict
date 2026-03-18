@@ -5,12 +5,12 @@ Test script for contextual features calculator.
 This script validates the contextual features implementation with sample data.
 """
 
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import pytz
-from pathlib import Path
 import sys
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import pytz
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -26,45 +26,49 @@ def create_sample_games_data() -> pd.DataFrame:
     """Create sample games data for testing."""
 
     # Create sample games
-    et_tz = pytz.timezone('America/New_York')
+    et_tz = pytz.timezone("America/New_York")
 
     sample_games = [
         {
-            'game_id': 'TEST_2024_01_BUF_MIA',
-            'season': 2024,
-            'week': 1,
-            'home_team': 'MIA',
-            'away_team': 'BUF',
-            'venue_id': 'hard_rock_stadium',
-            'kickoff_et': et_tz.localize(datetime(2024, 9, 8, 13, 0))  # Sunday 1 PM
+            "game_id": "TEST_2024_01_BUF_MIA",
+            "season": 2024,
+            "week": 1,
+            "home_team": "MIA",
+            "away_team": "BUF",
+            "venue_id": "hard_rock_stadium",
+            "kickoff_et": et_tz.localize(datetime(2024, 9, 8, 13, 0)),  # Sunday 1 PM
         },
         {
-            'game_id': 'TEST_2024_01_LAR_SEA',
-            'season': 2024,
-            'week': 1,
-            'home_team': 'SEA',
-            'away_team': 'LAR',
-            'venue_id': 'lumen_field',
-            'kickoff_et': et_tz.localize(datetime(2024, 9, 8, 16, 25))  # Sunday 4:25 PM
+            "game_id": "TEST_2024_01_LAR_SEA",
+            "season": 2024,
+            "week": 1,
+            "home_team": "SEA",
+            "away_team": "LAR",
+            "venue_id": "lumen_field",
+            "kickoff_et": et_tz.localize(
+                datetime(2024, 9, 8, 16, 25)
+            ),  # Sunday 4:25 PM
         },
         {
-            'game_id': 'TEST_2024_02_KC_BUF',
-            'season': 2024,
-            'week': 2,
-            'home_team': 'BUF',
-            'away_team': 'KC',
-            'venue_id': 'highmark_stadium',
-            'kickoff_et': et_tz.localize(datetime(2024, 9, 12, 20, 20))  # Thursday Night Football
+            "game_id": "TEST_2024_02_KC_BUF",
+            "season": 2024,
+            "week": 2,
+            "home_team": "BUF",
+            "away_team": "KC",
+            "venue_id": "highmark_stadium",
+            "kickoff_et": et_tz.localize(
+                datetime(2024, 9, 12, 20, 20)
+            ),  # Thursday Night Football
         },
         {
-            'game_id': 'TEST_2024_02_DEN_NE',
-            'season': 2024,
-            'week': 2,
-            'home_team': 'NE',
-            'away_team': 'DEN',
-            'venue_id': 'gillette_stadium',
-            'kickoff_et': et_tz.localize(datetime(2024, 9, 15, 13, 0))  # Sunday 1 PM
-        }
+            "game_id": "TEST_2024_02_DEN_NE",
+            "season": 2024,
+            "week": 2,
+            "home_team": "NE",
+            "away_team": "DEN",
+            "venue_id": "gillette_stadium",
+            "kickoff_et": et_tz.localize(datetime(2024, 9, 15, 13, 0)),  # Sunday 1 PM
+        },
     ]
 
     return pd.DataFrame(sample_games)
@@ -77,14 +81,14 @@ def test_travel_metrics():
     calculator = ContextualFeaturesCalculator()
 
     # Test cross-country travel (LAR to SEA)
-    et_tz = pytz.timezone('America/New_York')
+    et_tz = pytz.timezone("America/New_York")
     kickoff_dt = et_tz.localize(datetime(2024, 9, 8, 16, 25))
 
     travel_metrics = calculator.calculate_travel_metrics(
-        away_team='LAR',
-        home_team='SEA',
-        game_venue_id='lumen_field',
-        kickoff_datetime=kickoff_dt
+        away_team="LAR",
+        home_team="SEA",
+        game_venue_id="lumen_field",
+        kickoff_datetime=kickoff_dt,
     )
 
     print("LAR @ SEA Travel Metrics:")
@@ -93,10 +97,10 @@ def test_travel_metrics():
 
     # Test East Coast travel (BUF to MIA)
     travel_metrics_2 = calculator.calculate_travel_metrics(
-        away_team='BUF',
-        home_team='MIA',
-        game_venue_id='hard_rock_stadium',
-        kickoff_datetime=kickoff_dt
+        away_team="BUF",
+        home_team="MIA",
+        game_venue_id="hard_rock_stadium",
+        kickoff_datetime=kickoff_dt,
     )
 
     print("\nBUF @ MIA Travel Metrics:")
@@ -111,7 +115,7 @@ def test_short_week_detection():
     logger.info("Testing short week detection...")
 
     calculator = ContextualFeaturesCalculator()
-    et_tz = pytz.timezone('America/New_York')
+    et_tz = pytz.timezone("America/New_York")
 
     # Test Thursday Night Football
     thursday_dt = et_tz.localize(datetime(2024, 9, 12, 20, 20))
@@ -139,19 +143,19 @@ def test_venue_features():
     calculator = ContextualFeaturesCalculator()
 
     # Test outdoor stadium (Buffalo)
-    buffalo_features = calculator.encode_venue_features('highmark_stadium')
+    buffalo_features = calculator.encode_venue_features("highmark_stadium")
     print("Buffalo (Outdoor) Venue Features:")
     for key, value in buffalo_features.items():
         print(f"  {key}: {value}")
 
     # Test indoor stadium (Detroit)
-    detroit_features = calculator.encode_venue_features('ford_field')
+    detroit_features = calculator.encode_venue_features("ford_field")
     print("\nDetroit (Indoor) Venue Features:")
     for key, value in detroit_features.items():
         print(f"  {key}: {value}")
 
     # Test high altitude (Denver)
-    denver_features = calculator.encode_venue_features('empower_field')
+    denver_features = calculator.encode_venue_features("empower_field")
     print("\nDenver (High Altitude) Venue Features:")
     for key, value in denver_features.items():
         print(f"  {key}: {value}")
@@ -179,8 +183,8 @@ def test_contextual_features_pipeline():
 
     print("\nFeature columns:")
     for col in sorted(features_df.columns):
-        if col not in ['game_id', 'season', 'week', 'home_team', 'away_team']:
-            sample_value = features_df[col].iloc[0] if len(features_df) > 0 else 'N/A'
+        if col not in ["game_id", "season", "week", "home_team", "away_team"]:
+            sample_value = features_df[col].iloc[0] if len(features_df) > 0 else "N/A"
             print(f"  {col}: {sample_value}")
 
     # Validate features

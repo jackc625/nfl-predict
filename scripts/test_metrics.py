@@ -5,19 +5,25 @@ This script validates the MetricsCalculator functionality including performance 
 calibration analysis, edge bucket analysis, and statistical significance testing.
 """
 
-import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 import tempfile
-from typing import List, Dict
+
 import numpy as np
-import pandas as pd
 
 from backtest.metrics import (
-    MetricsCalculator, ModelType, ClassificationMetrics, RegressionMetrics,
-    CalibrationMetrics, EdgeBucketMetrics, SignificanceTest, ComprehensiveMetrics,
-    create_metrics_summary
+    CalibrationMetrics,
+    ClassificationMetrics,
+    ComprehensiveMetrics,
+    EdgeBucketMetrics,
+    MetricsCalculator,
+    ModelType,
+    RegressionMetrics,
+    SignificanceTest,
+    create_metrics_summary,
 )
 from backtest.visualization import MetricsVisualizer
 from utils.logging_config import get_logger
@@ -25,7 +31,9 @@ from utils.logging_config import get_logger
 logger = get_logger(__name__)
 
 
-def create_synthetic_data(n_samples: int = 1000, random_seed: int = 42) -> Dict[str, np.ndarray]:
+def create_synthetic_data(
+    n_samples: int = 1000, random_seed: int = 42
+) -> dict[str, np.ndarray]:
     """Create synthetic data for testing."""
     np.random.seed(random_seed)
 
@@ -38,21 +46,23 @@ def create_synthetic_data(n_samples: int = 1000, random_seed: int = 42) -> Dict[
     y_pred = np.clip(base_prob + noise, 0.01, 0.99)  # Keep in valid probability range
 
     # Create synthetic betting odds (American format)
-    implied_probs = y_pred + np.random.normal(0, 0.05, n_samples)  # Market slightly off from model
+    implied_probs = y_pred + np.random.normal(
+        0, 0.05, n_samples
+    )  # Market slightly off from model
     implied_probs = np.clip(implied_probs, 0.1, 0.9)
 
     # Convert to American odds
     betting_odds = np.where(
         implied_probs >= 0.5,
         -100 * implied_probs / (1 - implied_probs),
-        100 * (1 - implied_probs) / implied_probs
+        100 * (1 - implied_probs) / implied_probs,
     ).astype(int)
 
     return {
-        'y_true': y_true,
-        'y_pred': y_pred,
-        'betting_odds': betting_odds,
-        'implied_probs': implied_probs
+        "y_true": y_true,
+        "y_pred": y_pred,
+        "betting_odds": betting_odds,
+        "implied_probs": implied_probs,
     }
 
 
@@ -63,14 +73,16 @@ def test_classification_metrics():
     calculator = MetricsCalculator()
     data = create_synthetic_data(500)
 
-    y_true = data['y_true']
-    y_pred = data['y_pred']
+    y_true = data["y_true"]
+    y_pred = data["y_pred"]
 
     # Calculate classification metrics
     metrics = calculator._calculate_classification_metrics(y_true, y_pred)
 
     # Verify basic properties
-    assert isinstance(metrics, ClassificationMetrics), "Should return ClassificationMetrics"
+    assert isinstance(metrics, ClassificationMetrics), (
+        "Should return ClassificationMetrics"
+    )
     assert 0 <= metrics.accuracy <= 1, "Accuracy should be between 0 and 1"
     assert metrics.log_loss >= 0, "Log loss should be non-negative"
     assert 0 <= metrics.brier_score <= 1, "Brier score should be between 0 and 1"
@@ -79,12 +91,16 @@ def test_classification_metrics():
     # Check that accuracy makes sense
     y_pred_binary = (y_pred > 0.5).astype(int)
     expected_accuracy = np.mean(y_true == y_pred_binary)
-    assert abs(metrics.accuracy - expected_accuracy) < 1e-6, "Accuracy calculation should match expected"
+    assert abs(metrics.accuracy - expected_accuracy) < 1e-6, (
+        "Accuracy calculation should match expected"
+    )
 
     # Check that log loss is reasonable
     assert metrics.log_loss < 2.0, "Log loss should be reasonable for good predictions"
 
-    logger.info(f"Classification metrics: Acc={metrics.accuracy:.3f}, LogLoss={metrics.log_loss:.3f}, Brier={metrics.brier_score:.3f}")
+    logger.info(
+        f"Classification metrics: Acc={metrics.accuracy:.3f}, LogLoss={metrics.log_loss:.3f}, Brier={metrics.brier_score:.3f}"
+    )
     return True
 
 
@@ -117,7 +133,9 @@ def test_regression_metrics():
     # For data with some correlation, R2 should be positive
     assert metrics.r2 > 0.5, "R-squared should be reasonably high for correlated data"
 
-    logger.info(f"Regression metrics: MAE={metrics.mae:.3f}, RMSE={metrics.rmse:.3f}, R2={metrics.r2:.3f}")
+    logger.info(
+        f"Regression metrics: MAE={metrics.mae:.3f}, RMSE={metrics.rmse:.3f}, R2={metrics.r2:.3f}"
+    )
     return True
 
 
@@ -143,18 +161,30 @@ def test_calibration_metrics():
     assert metrics.n_samples == len(y_true), "Sample count should match input"
 
     # For well-calibrated data, ECE should be relatively low
-    assert metrics.ece < 0.1, f"ECE should be low for well-calibrated data, got {metrics.ece}"
+    assert metrics.ece < 0.1, (
+        f"ECE should be low for well-calibrated data, got {metrics.ece}"
+    )
 
     # Verify bin data
-    assert len(metrics.bin_boundaries) == metrics.n_bins + 1, "Should have n_bins+1 boundaries"
-    assert len(metrics.bin_accuracies) == metrics.n_bins, "Should have n_bins accuracies"
-    assert len(metrics.bin_confidences) == metrics.n_bins, "Should have n_bins confidences"
+    assert len(metrics.bin_boundaries) == metrics.n_bins + 1, (
+        "Should have n_bins+1 boundaries"
+    )
+    assert len(metrics.bin_accuracies) == metrics.n_bins, (
+        "Should have n_bins accuracies"
+    )
+    assert len(metrics.bin_confidences) == metrics.n_bins, (
+        "Should have n_bins confidences"
+    )
     assert len(metrics.bin_counts) == metrics.n_bins, "Should have n_bins counts"
 
     # Total counts should sum to total samples
-    assert sum(metrics.bin_counts) == n_samples, "Bin counts should sum to total samples"
+    assert sum(metrics.bin_counts) == n_samples, (
+        "Bin counts should sum to total samples"
+    )
 
-    logger.info(f"Calibration metrics: ECE={metrics.ece:.4f}, MCE={metrics.mce:.4f}, ACE={metrics.ace:.4f}")
+    logger.info(
+        f"Calibration metrics: ECE={metrics.ece:.4f}, MCE={metrics.mce:.4f}, ACE={metrics.ace:.4f}"
+    )
     return True
 
 
@@ -165,9 +195,9 @@ def test_edge_bucket_metrics():
     calculator = MetricsCalculator()
     data = create_synthetic_data(1000)
 
-    y_true = data['y_true']
-    y_pred = data['y_pred']
-    betting_odds = data['betting_odds']
+    y_true = data["y_true"]
+    y_pred = data["y_pred"]
+    betting_odds = data["betting_odds"]
 
     metrics = calculator._calculate_edge_bucket_metrics(
         y_true, y_pred, betting_odds, ModelType.WIN_PROBABILITY
@@ -176,25 +206,39 @@ def test_edge_bucket_metrics():
     # Verify basic properties
     assert isinstance(metrics, EdgeBucketMetrics), "Should return EdgeBucketMetrics"
     assert len(metrics.edge_ranges) > 0, "Should have edge ranges"
-    assert len(metrics.bucket_counts) == len(metrics.edge_ranges), "Counts should match ranges"
-    assert len(metrics.bucket_rois) == len(metrics.edge_ranges), "ROIs should match ranges"
+    assert len(metrics.bucket_counts) == len(metrics.edge_ranges), (
+        "Counts should match ranges"
+    )
+    assert len(metrics.bucket_rois) == len(metrics.edge_ranges), (
+        "ROIs should match ranges"
+    )
 
     # Total bets should equal sum of bucket counts
-    assert metrics.total_bets == sum(metrics.bucket_counts), "Total bets should match sum of bucket counts"
+    assert metrics.total_bets == sum(metrics.bucket_counts), (
+        "Total bets should match sum of bucket counts"
+    )
 
     # Check that bucket counts are non-negative
-    assert all(count >= 0 for count in metrics.bucket_counts), "All bucket counts should be non-negative"
+    assert all(count >= 0 for count in metrics.bucket_counts), (
+        "All bucket counts should be non-negative"
+    )
 
     # Average edge should be reasonable
     assert -1 <= metrics.average_edge <= 1, "Average edge should be reasonable"
 
     # Best and worst buckets should be valid indices if they exist
     if metrics.best_roi_bucket is not None:
-        assert 0 <= metrics.best_roi_bucket < len(metrics.bucket_rois), "Best ROI bucket should be valid index"
+        assert 0 <= metrics.best_roi_bucket < len(metrics.bucket_rois), (
+            "Best ROI bucket should be valid index"
+        )
     if metrics.worst_roi_bucket is not None:
-        assert 0 <= metrics.worst_roi_bucket < len(metrics.bucket_rois), "Worst ROI bucket should be valid index"
+        assert 0 <= metrics.worst_roi_bucket < len(metrics.bucket_rois), (
+            "Worst ROI bucket should be valid index"
+        )
 
-    logger.info(f"Edge bucket metrics: Total ROI={metrics.total_roi:.4f}, Avg Edge={metrics.average_edge:.4f}, Total Bets={metrics.total_bets}")
+    logger.info(
+        f"Edge bucket metrics: Total ROI={metrics.total_roi:.4f}, Avg Edge={metrics.average_edge:.4f}, Total Bets={metrics.total_bets}"
+    )
     return True
 
 
@@ -210,12 +254,15 @@ def test_significance_tests():
 
     # High-skill model
     y_true = np.random.binomial(1, 0.5, n_samples)
-    skill_factor = 0.3
-    y_pred = np.where(y_true == 1,
-                     np.random.beta(2, 1, np.sum(y_true)),  # Higher predictions for true positives
-                     np.random.beta(1, 2, np.sum(1 - y_true)))  # Lower predictions for true negatives
+    y_pred = np.where(
+        y_true == 1,
+        np.random.beta(2, 1, np.sum(y_true)),  # Higher predictions for true positives
+        np.random.beta(1, 2, np.sum(1 - y_true)),
+    )  # Lower predictions for true negatives
 
-    tests = calculator._calculate_significance_tests(y_true, y_pred, ModelType.WIN_PROBABILITY)
+    tests = calculator._calculate_significance_tests(
+        y_true, y_pred, ModelType.WIN_PROBABILITY
+    )
 
     # Should have at least one test
     assert len(tests) > 0, "Should perform at least one significance test"
@@ -223,9 +270,13 @@ def test_significance_tests():
     # Check binomial test
     binomial_test = next((t for t in tests if "Binomial" in t.test_name), None)
     assert binomial_test is not None, "Should include binomial test"
-    assert isinstance(binomial_test, SignificanceTest), "Should be SignificanceTest object"
+    assert isinstance(binomial_test, SignificanceTest), (
+        "Should be SignificanceTest object"
+    )
     assert 0 <= binomial_test.p_value <= 1, "P-value should be between 0 and 1"
-    assert binomial_test.confidence_level == calculator.confidence_level, "Should match calculator confidence"
+    assert binomial_test.confidence_level == calculator.confidence_level, (
+        "Should match calculator confidence"
+    )
 
     # For skilled model, should likely be significant
     if binomial_test.is_significant:
@@ -244,38 +295,50 @@ def test_comprehensive_metrics():
     calculator = MetricsCalculator()
     data = create_synthetic_data(1000)
 
-    y_true = data['y_true']
-    y_pred = data['y_pred']
-    betting_odds = data['betting_odds']
+    y_true = data["y_true"]
+    y_pred = data["y_pred"]
+    betting_odds = data["betting_odds"]
 
     # Test win probability model
     metrics = calculator.calculate_comprehensive_metrics(
         y_true=y_true,
         y_pred=y_pred,
         model_type=ModelType.WIN_PROBABILITY,
-        betting_odds=betting_odds
+        betting_odds=betting_odds,
     )
 
     # Verify structure
-    assert isinstance(metrics, ComprehensiveMetrics), "Should return ComprehensiveMetrics"
-    assert metrics.model_type == ModelType.WIN_PROBABILITY, "Should have correct model type"
+    assert isinstance(metrics, ComprehensiveMetrics), (
+        "Should return ComprehensiveMetrics"
+    )
+    assert metrics.model_type == ModelType.WIN_PROBABILITY, (
+        "Should have correct model type"
+    )
     assert metrics.n_total_samples == len(y_true), "Should track total samples"
 
     # Should have classification and calibration metrics for WP
-    assert metrics.classification_metrics is not None, "WP should have classification metrics"
+    assert metrics.classification_metrics is not None, (
+        "WP should have classification metrics"
+    )
     assert metrics.calibration_metrics is not None, "WP should have calibration metrics"
 
     # Should have betting metrics since odds provided
-    assert metrics.edge_bucket_metrics is not None, "Should have edge bucket metrics when odds provided"
+    assert metrics.edge_bucket_metrics is not None, (
+        "Should have edge bucket metrics when odds provided"
+    )
 
     # Should have significance tests
     assert len(metrics.significance_tests) > 0, "Should have significance tests"
 
     # Should have overall score
     assert metrics.overall_score is not None, "Should have overall score"
-    assert 0 <= metrics.overall_score <= 100, "Overall score should be between 0 and 100"
+    assert 0 <= metrics.overall_score <= 100, (
+        "Overall score should be between 0 and 100"
+    )
 
-    logger.info(f"Comprehensive metrics: Overall={metrics.overall_score:.1f}, Tests={len(metrics.significance_tests)}")
+    logger.info(
+        f"Comprehensive metrics: Overall={metrics.overall_score:.1f}, Tests={len(metrics.significance_tests)}"
+    )
     return True
 
 
@@ -286,22 +349,26 @@ def test_ats_model_metrics():
     calculator = MetricsCalculator()
     data = create_synthetic_data(500)
 
-    y_true = data['y_true']
-    y_pred = data['y_pred']
-    betting_odds = data['betting_odds']
+    y_true = data["y_true"]
+    y_pred = data["y_pred"]
+    betting_odds = data["betting_odds"]
 
     # Test ATS model
     metrics = calculator.calculate_comprehensive_metrics(
         y_true=y_true,
         y_pred=y_pred,
         model_type=ModelType.AGAINST_THE_SPREAD,
-        betting_odds=betting_odds
+        betting_odds=betting_odds,
     )
 
     # ATS should have both classification and regression metrics
-    assert metrics.classification_metrics is not None, "ATS should have classification metrics"
+    assert metrics.classification_metrics is not None, (
+        "ATS should have classification metrics"
+    )
     assert metrics.regression_metrics is not None, "ATS should have regression metrics"
-    assert metrics.calibration_metrics is not None, "ATS should have calibration metrics"
+    assert metrics.calibration_metrics is not None, (
+        "ATS should have calibration metrics"
+    )
 
     logger.info("ATS model metrics calculated successfully")
     return True
@@ -314,15 +381,15 @@ def test_metrics_summary():
     calculator = MetricsCalculator()
     data = create_synthetic_data(500)
 
-    y_true = data['y_true']
-    y_pred = data['y_pred']
-    betting_odds = data['betting_odds']
+    y_true = data["y_true"]
+    y_pred = data["y_pred"]
+    betting_odds = data["betting_odds"]
 
     metrics = calculator.calculate_comprehensive_metrics(
         y_true=y_true,
         y_pred=y_pred,
         model_type=ModelType.WIN_PROBABILITY,
-        betting_odds=betting_odds
+        betting_odds=betting_odds,
     )
 
     # Generate summary
@@ -365,14 +432,18 @@ def test_model_comparison():
     y_true = np.random.binomial(1, 0.5, n_samples)
 
     # Model A: Good performance
-    y_pred_a = np.where(y_true == 1,
-                       np.random.beta(3, 1, np.sum(y_true)),
-                       np.random.beta(1, 3, np.sum(1 - y_true)))
+    y_pred_a = np.where(
+        y_true == 1,
+        np.random.beta(3, 1, np.sum(y_true)),
+        np.random.beta(1, 3, np.sum(1 - y_true)),
+    )
 
     # Model B: Worse performance
-    y_pred_b = np.where(y_true == 1,
-                       np.random.beta(2, 1.5, np.sum(y_true)),
-                       np.random.beta(1.5, 2, np.sum(1 - y_true)))
+    y_pred_b = np.where(
+        y_true == 1,
+        np.random.beta(2, 1.5, np.sum(y_true)),
+        np.random.beta(1.5, 2, np.sum(1 - y_true)),
+    )
 
     # Calculate metrics for both models
     metrics_a = calculator.calculate_comprehensive_metrics(
@@ -384,7 +455,9 @@ def test_model_comparison():
     )
 
     # Compare models
-    comparison = calculator.compare_models(metrics_a, metrics_b, y_true, y_pred_a, y_pred_b)
+    comparison = calculator.compare_models(
+        metrics_a, metrics_b, y_true, y_pred_a, y_pred_b
+    )
 
     # Verify comparison structure
     assert isinstance(comparison, dict), "Comparison should be dictionary"
@@ -394,9 +467,13 @@ def test_model_comparison():
     assert "significance_tests" in comparison, "Should include significance tests"
 
     # Model A should generally perform better
-    assert comparison["model_a_score"] >= comparison["model_b_score"], "Model A should perform better"
+    assert comparison["model_a_score"] >= comparison["model_b_score"], (
+        "Model A should perform better"
+    )
 
-    logger.info(f"Model comparison: A={comparison['model_a_score']:.1f}, B={comparison['model_b_score']:.1f}")
+    logger.info(
+        f"Model comparison: A={comparison['model_a_score']:.1f}, B={comparison['model_b_score']:.1f}"
+    )
     return True
 
 
@@ -408,30 +485,28 @@ def test_visualization_creation():
     visualizer = MetricsVisualizer()
 
     data = create_synthetic_data(500)
-    y_true = data['y_true']
-    y_pred = data['y_pred']
-    betting_odds = data['betting_odds']
+    y_true = data["y_true"]
+    y_pred = data["y_pred"]
+    betting_odds = data["betting_odds"]
 
     metrics = calculator.calculate_comprehensive_metrics(
         y_true=y_true,
         y_pred=y_pred,
         model_type=ModelType.WIN_PROBABILITY,
-        betting_odds=betting_odds
+        betting_odds=betting_odds,
     )
 
     with tempfile.TemporaryDirectory() as temp_dir:
         # Test dashboard creation
         plots_created = visualizer.create_metrics_dashboard(
-            comprehensive_metrics=metrics,
-            output_dir=temp_dir,
-            model_name="TestModel"
+            comprehensive_metrics=metrics, output_dir=temp_dir, model_name="TestModel"
         )
 
         # Should create some plots (or text files if matplotlib unavailable)
         assert isinstance(plots_created, dict), "Should return dictionary of plots"
 
         # Check that files were actually created
-        for plot_type, file_path in plots_created.items():
+        for _plot_type, file_path in plots_created.items():
             assert os.path.exists(file_path), f"Plot file should exist: {file_path}"
 
     logger.info(f"Visualization test: {len(plots_created)} plots/files created")
@@ -445,18 +520,19 @@ def test_edge_cases():
     calculator = MetricsCalculator()
 
     # Test with perfect predictions
-    n_samples = 100
     y_true = np.array([0, 1, 0, 1, 0] * 20)
     y_pred = y_true.astype(float)  # Perfect predictions
 
     try:
         metrics = calculator.calculate_comprehensive_metrics(
-            y_true=y_true,
-            y_pred=y_pred,
-            model_type=ModelType.WIN_PROBABILITY
+            y_true=y_true, y_pred=y_pred, model_type=ModelType.WIN_PROBABILITY
         )
-        assert metrics.classification_metrics.accuracy == 1.0, "Perfect predictions should have 100% accuracy"
-        assert metrics.classification_metrics.brier_score == 0.0, "Perfect predictions should have 0 Brier score"
+        assert metrics.classification_metrics.accuracy == 1.0, (
+            "Perfect predictions should have 100% accuracy"
+        )
+        assert metrics.classification_metrics.brier_score == 0.0, (
+            "Perfect predictions should have 0 Brier score"
+        )
     except Exception as e:
         logger.warning(f"Perfect predictions test failed: {e}")
 
@@ -468,7 +544,7 @@ def test_edge_cases():
         small_metrics = calculator.calculate_comprehensive_metrics(
             y_true=small_y_true,
             y_pred=small_y_pred,
-            model_type=ModelType.WIN_PROBABILITY
+            model_type=ModelType.WIN_PROBABILITY,
         )
         assert small_metrics.n_total_samples == 2, "Should handle small samples"
     except Exception as e:
@@ -482,7 +558,7 @@ def test_edge_cases():
         extreme_metrics = calculator.calculate_comprehensive_metrics(
             y_true=extreme_y_true,
             y_pred=extreme_y_pred,
-            model_type=ModelType.WIN_PROBABILITY
+            model_type=ModelType.WIN_PROBABILITY,
         )
         assert extreme_metrics is not None, "Should handle extreme predictions"
     except Exception as e:
@@ -507,7 +583,7 @@ def run_all_tests():
         test_metrics_summary,
         test_model_comparison,
         test_visualization_creation,
-        test_edge_cases
+        test_edge_cases,
     ]
 
     passed = 0
@@ -524,6 +600,7 @@ def run_all_tests():
             failed += 1
             logger.error(f"Test {test_func.__name__} failed with exception: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
 
     logger.info(f"Evaluation metrics tests completed: {passed} passed, {failed} failed")

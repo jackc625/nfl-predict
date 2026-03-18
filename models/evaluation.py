@@ -11,16 +11,15 @@ This module provides comprehensive evaluation metrics for NFL prediction models:
 All metrics are designed for proper evaluation of sports betting models.
 """
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from pathlib import Path
 import sys
-from datetime import datetime
-from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass, field
-import warnings
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from scipy import stats
 from scipy.stats import chi2
 
@@ -28,15 +27,18 @@ from scipy.stats import chi2
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from sklearn.metrics import (
-    accuracy_score, log_loss, brier_score_loss, mean_absolute_error,
-    mean_squared_error, r2_score, confusion_matrix, classification_report
-)
-from sklearn.isotonic import IsotonicRegression
 from sklearn.calibration import calibration_curve
+from sklearn.metrics import (
+    accuracy_score,
+    brier_score_loss,
+    log_loss,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+)
 
 from utils import get_logger
-from utils.probability_utils import moneyline_to_probability, probability_to_moneyline
+from utils.probability_utils import moneyline_to_probability
 
 logger = get_logger(__name__)
 
@@ -53,20 +55,21 @@ class EvaluationMetrics:
         statistical_tests: Statistical significance tests
         sample_info: Information about the evaluation sample
     """
-    core_metrics: Dict[str, float] = field(default_factory=dict)
-    calibration_metrics: Dict[str, float] = field(default_factory=dict)
-    betting_metrics: Dict[str, float] = field(default_factory=dict)
-    statistical_tests: Dict[str, Any] = field(default_factory=dict)
-    sample_info: Dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    core_metrics: dict[str, float] = field(default_factory=dict)
+    calibration_metrics: dict[str, float] = field(default_factory=dict)
+    betting_metrics: dict[str, float] = field(default_factory=dict)
+    statistical_tests: dict[str, Any] = field(default_factory=dict)
+    sample_info: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
-            'core_metrics': self.core_metrics,
-            'calibration_metrics': self.calibration_metrics,
-            'betting_metrics': self.betting_metrics,
-            'statistical_tests': self.statistical_tests,
-            'sample_info': self.sample_info
+            "core_metrics": self.core_metrics,
+            "calibration_metrics": self.calibration_metrics,
+            "betting_metrics": self.betting_metrics,
+            "statistical_tests": self.statistical_tests,
+            "sample_info": self.sample_info,
         }
 
 
@@ -87,6 +90,7 @@ class BettingSimulationResult:
         clv: Closing line value (if available)
         bet_history: Individual bet results
     """
+
     bets_placed: int
     win_rate: float
     roi: float
@@ -95,8 +99,8 @@ class BettingSimulationResult:
     max_drawdown: float
     sharpe_ratio: float
     kelly_fraction: float
-    clv: Optional[float] = None
-    bet_history: List[Dict[str, Any]] = field(default_factory=list)
+    clv: float | None = None
+    bet_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ModelEvaluationFramework:
@@ -110,12 +114,14 @@ class ModelEvaluationFramework:
     - Model calibration and reliability
     """
 
-    def __init__(self,
-                 n_calibration_bins: int = 10,
-                 confidence_level: float = 0.95,
-                 betting_bankroll: float = 10000.0,
-                 max_bet_fraction: float = 0.05,
-                 min_edge_threshold: float = 0.02):
+    def __init__(
+        self,
+        n_calibration_bins: int = 10,
+        confidence_level: float = 0.95,
+        betting_bankroll: float = 10000.0,
+        max_bet_fraction: float = 0.05,
+        min_edge_threshold: float = 0.02,
+    ):
         """
         Initialize evaluation framework.
 
@@ -134,13 +140,15 @@ class ModelEvaluationFramework:
 
         self.logger = get_logger(__name__)
 
-    def evaluate_model(self,
-                      predictions: np.ndarray,
-                      actual_outcomes: np.ndarray,
-                      market_odds: Optional[np.ndarray] = None,
-                      closing_odds: Optional[np.ndarray] = None,
-                      prediction_type: str = "binary",
-                      model_name: str = "Model") -> EvaluationMetrics:
+    def evaluate_model(
+        self,
+        predictions: np.ndarray,
+        actual_outcomes: np.ndarray,
+        market_odds: np.ndarray | None = None,
+        closing_odds: np.ndarray | None = None,
+        prediction_type: str = "binary",
+        model_name: str = "Model",
+    ) -> EvaluationMetrics:
         """
         Comprehensive model evaluation.
 
@@ -155,12 +163,16 @@ class ModelEvaluationFramework:
         Returns:
             EvaluationMetrics object with all computed metrics
         """
-        self.logger.info(f"Evaluating {model_name}",
-                        predictions=len(predictions),
-                        prediction_type=prediction_type)
+        self.logger.info(
+            f"Evaluating {model_name}",
+            predictions=len(predictions),
+            prediction_type=prediction_type,
+        )
 
         # Input validation
-        predictions, actual_outcomes = self._validate_inputs(predictions, actual_outcomes)
+        predictions, actual_outcomes = self._validate_inputs(
+            predictions, actual_outcomes
+        )
 
         # Initialize metrics container
         metrics = EvaluationMetrics()
@@ -187,7 +199,7 @@ class ModelEvaluationFramework:
 
             # Calculate CLV if closing odds available
             if closing_odds is not None:
-                metrics.betting_metrics['clv'] = self._calculate_clv(
+                metrics.betting_metrics["clv"] = self._calculate_clv(
                     predictions, market_odds, closing_odds
                 )
 
@@ -201,16 +213,18 @@ class ModelEvaluationFramework:
             predictions, actual_outcomes, market_odds
         )
 
-        self.logger.info(f"{model_name} evaluation completed",
-                        accuracy=metrics.core_metrics.get('accuracy'),
-                        log_loss=metrics.core_metrics.get('log_loss'),
-                        roi=metrics.betting_metrics.get('roi'))
+        self.logger.info(
+            f"{model_name} evaluation completed",
+            accuracy=metrics.core_metrics.get("accuracy"),
+            log_loss=metrics.core_metrics.get("log_loss"),
+            roi=metrics.betting_metrics.get("roi"),
+        )
 
         return metrics
 
-    def _validate_inputs(self,
-                        predictions: np.ndarray,
-                        actual_outcomes: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _validate_inputs(
+        self, predictions: np.ndarray, actual_outcomes: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Validate and clean input arrays."""
         predictions = np.asarray(predictions)
         actual_outcomes = np.asarray(actual_outcomes)
@@ -228,107 +242,107 @@ class ModelEvaluationFramework:
 
         return predictions, actual_outcomes
 
-    def _calculate_classification_metrics(self,
-                                        predictions: np.ndarray,
-                                        actual_outcomes: np.ndarray) -> Dict[str, float]:
+    def _calculate_classification_metrics(
+        self, predictions: np.ndarray, actual_outcomes: np.ndarray
+    ) -> dict[str, float]:
         """Calculate classification metrics (accuracy, log-loss, Brier score)."""
         metrics = {}
 
         # Ensure predictions are probabilities
         if not all(0 <= p <= 1 for p in predictions):
             self.logger.warning("Predictions outside [0,1] range detected")
-            predictions = np.clip(predictions, 1e-10, 1-1e-10)
+            predictions = np.clip(predictions, 1e-10, 1 - 1e-10)
 
         # Basic metrics
         binary_predictions = (predictions >= 0.5).astype(int)
-        metrics['accuracy'] = accuracy_score(actual_outcomes, binary_predictions)
+        metrics["accuracy"] = accuracy_score(actual_outcomes, binary_predictions)
 
         try:
-            metrics['log_loss'] = log_loss(actual_outcomes, predictions)
+            metrics["log_loss"] = log_loss(actual_outcomes, predictions)
         except ValueError:
-            metrics['log_loss'] = np.nan
+            metrics["log_loss"] = np.nan
 
         try:
-            metrics['brier_score'] = brier_score_loss(actual_outcomes, predictions)
+            metrics["brier_score"] = brier_score_loss(actual_outcomes, predictions)
         except ValueError:
-            metrics['brier_score'] = np.nan
+            metrics["brier_score"] = np.nan
 
         # Additional classification metrics
-        metrics['precision'] = self._safe_precision(actual_outcomes, binary_predictions)
-        metrics['recall'] = self._safe_recall(actual_outcomes, binary_predictions)
-        metrics['f1_score'] = self._safe_f1_score(actual_outcomes, binary_predictions)
+        metrics["precision"] = self._safe_precision(actual_outcomes, binary_predictions)
+        metrics["recall"] = self._safe_recall(actual_outcomes, binary_predictions)
+        metrics["f1_score"] = self._safe_f1_score(actual_outcomes, binary_predictions)
 
         # Probability-based metrics
-        metrics['avg_predicted_prob'] = np.mean(predictions)
-        metrics['base_rate'] = np.mean(actual_outcomes)
-        metrics['prob_std'] = np.std(predictions)
+        metrics["avg_predicted_prob"] = np.mean(predictions)
+        metrics["base_rate"] = np.mean(actual_outcomes)
+        metrics["prob_std"] = np.std(predictions)
 
         return metrics
 
-    def _calculate_regression_metrics(self,
-                                    predictions: np.ndarray,
-                                    actual_outcomes: np.ndarray) -> Dict[str, float]:
+    def _calculate_regression_metrics(
+        self, predictions: np.ndarray, actual_outcomes: np.ndarray
+    ) -> dict[str, float]:
         """Calculate regression metrics (MAE, RMSE, R²)."""
         metrics = {}
 
         # Core regression metrics
-        metrics['mae'] = mean_absolute_error(actual_outcomes, predictions)
-        metrics['rmse'] = np.sqrt(mean_squared_error(actual_outcomes, predictions))
-        metrics['r2'] = r2_score(actual_outcomes, predictions)
+        metrics["mae"] = mean_absolute_error(actual_outcomes, predictions)
+        metrics["rmse"] = np.sqrt(mean_squared_error(actual_outcomes, predictions))
+        metrics["r2"] = r2_score(actual_outcomes, predictions)
 
         # Additional regression metrics
         errors = actual_outcomes - predictions
-        metrics['mean_error'] = np.mean(errors)
-        metrics['median_error'] = np.median(errors)
-        metrics['error_std'] = np.std(errors)
-        metrics['max_error'] = np.max(np.abs(errors))
+        metrics["mean_error"] = np.mean(errors)
+        metrics["median_error"] = np.median(errors)
+        metrics["error_std"] = np.std(errors)
+        metrics["max_error"] = np.max(np.abs(errors))
 
         # Percentage-based metrics
-        metrics['mape'] = np.mean(np.abs(errors / actual_outcomes)) * 100
+        metrics["mape"] = np.mean(np.abs(errors / actual_outcomes)) * 100
 
         return metrics
 
-    def _calculate_calibration_metrics(self,
-                                     predictions: np.ndarray,
-                                     actual_outcomes: np.ndarray) -> Dict[str, float]:
+    def _calculate_calibration_metrics(
+        self, predictions: np.ndarray, actual_outcomes: np.ndarray
+    ) -> dict[str, float]:
         """Calculate calibration metrics (ECE, reliability)."""
         metrics = {}
 
         # Expected Calibration Error (ECE)
-        metrics['ece'] = self._calculate_ece(predictions, actual_outcomes)
+        metrics["ece"] = self._calculate_ece(predictions, actual_outcomes)
 
         # Maximum Calibration Error (MCE)
-        metrics['mce'] = self._calculate_mce(predictions, actual_outcomes)
+        metrics["mce"] = self._calculate_mce(predictions, actual_outcomes)
 
         # Reliability and Resolution
         reliability, resolution = self._calculate_reliability_resolution(
             predictions, actual_outcomes
         )
-        metrics['reliability'] = reliability
-        metrics['resolution'] = resolution
+        metrics["reliability"] = reliability
+        metrics["resolution"] = resolution
 
         # Sharpness (average confidence)
-        metrics['sharpness'] = np.mean(np.abs(predictions - 0.5))
+        metrics["sharpness"] = np.mean(np.abs(predictions - 0.5))
 
         # Hosmer-Lemeshow test
-        metrics['hosmer_lemeshow_pvalue'] = self._hosmer_lemeshow_test(
+        metrics["hosmer_lemeshow_pvalue"] = self._hosmer_lemeshow_test(
             predictions, actual_outcomes
         )
 
         return metrics
 
-    def _calculate_ece(self,
-                      predictions: np.ndarray,
-                      actual_outcomes: np.ndarray) -> float:
+    def _calculate_ece(
+        self, predictions: np.ndarray, actual_outcomes: np.ndarray
+    ) -> float:
         """Calculate Expected Calibration Error."""
         bin_boundaries = np.linspace(0, 1, self.n_calibration_bins + 1)
         bin_lowers = bin_boundaries[:-1]
         bin_uppers = bin_boundaries[1:]
 
         ece = 0
-        total_samples = len(predictions)
+        len(predictions)
 
-        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers, strict=False):
             in_bin = (predictions > bin_lower) & (predictions <= bin_upper)
             prop_in_bin = in_bin.mean()
 
@@ -339,9 +353,9 @@ class ModelEvaluationFramework:
 
         return ece
 
-    def _calculate_mce(self,
-                      predictions: np.ndarray,
-                      actual_outcomes: np.ndarray) -> float:
+    def _calculate_mce(
+        self, predictions: np.ndarray, actual_outcomes: np.ndarray
+    ) -> float:
         """Calculate Maximum Calibration Error."""
         bin_boundaries = np.linspace(0, 1, self.n_calibration_bins + 1)
         bin_lowers = bin_boundaries[:-1]
@@ -349,7 +363,7 @@ class ModelEvaluationFramework:
 
         max_error = 0
 
-        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers, strict=False):
             in_bin = (predictions > bin_lower) & (predictions <= bin_upper)
 
             if in_bin.sum() > 0:
@@ -359,9 +373,9 @@ class ModelEvaluationFramework:
 
         return max_error
 
-    def _calculate_reliability_resolution(self,
-                                        predictions: np.ndarray,
-                                        actual_outcomes: np.ndarray) -> Tuple[float, float]:
+    def _calculate_reliability_resolution(
+        self, predictions: np.ndarray, actual_outcomes: np.ndarray
+    ) -> tuple[float, float]:
         """Calculate reliability and resolution components."""
         bin_boundaries = np.linspace(0, 1, self.n_calibration_bins + 1)
         bin_lowers = bin_boundaries[:-1]
@@ -370,9 +384,9 @@ class ModelEvaluationFramework:
         overall_accuracy = np.mean(actual_outcomes)
         reliability = 0
         resolution = 0
-        total_samples = len(predictions)
+        len(predictions)
 
-        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers, strict=False):
             in_bin = (predictions > bin_lower) & (predictions <= bin_upper)
             prop_in_bin = in_bin.mean()
 
@@ -380,14 +394,16 @@ class ModelEvaluationFramework:
                 accuracy_in_bin = actual_outcomes[in_bin].mean()
                 avg_confidence_in_bin = predictions[in_bin].mean()
 
-                reliability += prop_in_bin * (avg_confidence_in_bin - accuracy_in_bin) ** 2
+                reliability += (
+                    prop_in_bin * (avg_confidence_in_bin - accuracy_in_bin) ** 2
+                )
                 resolution += prop_in_bin * (accuracy_in_bin - overall_accuracy) ** 2
 
         return reliability, resolution
 
-    def _hosmer_lemeshow_test(self,
-                            predictions: np.ndarray,
-                            actual_outcomes: np.ndarray) -> float:
+    def _hosmer_lemeshow_test(
+        self, predictions: np.ndarray, actual_outcomes: np.ndarray
+    ) -> float:
         """Perform Hosmer-Lemeshow goodness-of-fit test."""
         # Sort by predicted probability
         sorted_idx = np.argsort(predictions)
@@ -418,25 +434,33 @@ class ModelEvaluationFramework:
 
             # Add to chi-square statistic
             if expected_events > 0 and expected_non_events > 0:
-                chi_square += ((observed_events - expected_events) ** 2) / expected_events
-                chi_square += ((observed_non_events - expected_non_events) ** 2) / expected_non_events
+                chi_square += (
+                    (observed_events - expected_events) ** 2
+                ) / expected_events
+                chi_square += (
+                    (observed_non_events - expected_non_events) ** 2
+                ) / expected_non_events
 
         # Calculate p-value (8 degrees of freedom for 10 groups - 2)
         p_value = 1 - chi2.cdf(chi_square, df=8)
 
         return p_value
 
-    def _simulate_betting(self,
-                         predictions: np.ndarray,
-                         actual_outcomes: np.ndarray,
-                         market_odds: np.ndarray,
-                         closing_odds: Optional[np.ndarray] = None) -> BettingSimulationResult:
+    def _simulate_betting(
+        self,
+        predictions: np.ndarray,
+        actual_outcomes: np.ndarray,
+        market_odds: np.ndarray,
+        closing_odds: np.ndarray | None = None,
+    ) -> BettingSimulationResult:
         """Simulate betting with Kelly criterion."""
         bankroll = self.betting_bankroll
         bet_history = []
         bankroll_history = [bankroll]
 
-        for i, (pred_prob, outcome, odds) in enumerate(zip(predictions, actual_outcomes, market_odds)):
+        for i, (pred_prob, outcome, odds) in enumerate(
+            zip(predictions, actual_outcomes, market_odds, strict=False)
+        ):
             # Convert odds to market probability
             market_prob = moneyline_to_probability(int(odds))
 
@@ -462,49 +486,56 @@ class ModelEvaluationFramework:
                     bet_on_home = pred_prob <= 0.5
 
                 # Calculate payout
-                if bet_on_home and outcome == 1:  # Won bet on home
-                    payout = bet_amount * (odds / 100) if odds > 0 else bet_amount * (100 / abs(odds))
-                elif not bet_on_home and outcome == 0:  # Won bet on away
-                    payout = bet_amount * (odds / 100) if odds > 0 else bet_amount * (100 / abs(odds))
+                if (bet_on_home and outcome == 1) or (
+                    not bet_on_home and outcome == 0
+                ):  # Won bet on home
+                    payout = (
+                        bet_amount * (odds / 100)
+                        if odds > 0
+                        else bet_amount * (100 / abs(odds))
+                    )
                 else:  # Lost bet
                     payout = -bet_amount
 
                 bankroll += payout
 
-                bet_history.append({
-                    'game_idx': i,
-                    'bet_amount': bet_amount,
-                    'bet_on_home': bet_on_home,
-                    'edge': edge,
-                    'kelly_fraction': kelly_fraction,
-                    'payout': payout,
-                    'bankroll_after': bankroll,
-                    'market_odds': odds,
-                    'predicted_prob': pred_prob,
-                    'actual_outcome': outcome
-                })
+                bet_history.append(
+                    {
+                        "game_idx": i,
+                        "bet_amount": bet_amount,
+                        "bet_on_home": bet_on_home,
+                        "edge": edge,
+                        "kelly_fraction": kelly_fraction,
+                        "payout": payout,
+                        "bankroll_after": bankroll,
+                        "market_odds": odds,
+                        "predicted_prob": pred_prob,
+                        "actual_outcome": outcome,
+                    }
+                )
 
             bankroll_history.append(bankroll)
 
         # Calculate results
         if bet_history:
-            total_bet = sum(abs(bet['bet_amount']) for bet in bet_history)
-            total_profit = sum(bet['payout'] for bet in bet_history)
-            winning_bets = sum(1 for bet in bet_history if bet['payout'] > 0)
+            total_bet = sum(abs(bet["bet_amount"]) for bet in bet_history)
+            total_profit = sum(bet["payout"] for bet in bet_history)
+            winning_bets = sum(1 for bet in bet_history if bet["payout"] > 0)
 
             # Calculate drawdown
             peak = self.betting_bankroll
             max_drawdown = 0
             for balance in bankroll_history:
-                if balance > peak:
-                    peak = balance
+                peak = max(peak, balance)
                 drawdown = (peak - balance) / peak
                 max_drawdown = max(max_drawdown, drawdown)
 
             # Calculate Sharpe ratio (simplified)
             returns = np.diff(bankroll_history) / bankroll_history[:-1]
             if len(returns) > 1 and np.std(returns) > 0:
-                sharpe_ratio = np.mean(returns) / np.std(returns) * np.sqrt(252)  # Annualized
+                sharpe_ratio = (
+                    np.mean(returns) / np.std(returns) * np.sqrt(252)
+                )  # Annualized
             else:
                 sharpe_ratio = 0
 
@@ -516,25 +547,32 @@ class ModelEvaluationFramework:
                 avg_bet_size=total_bet / len(bet_history) if bet_history else 0,
                 max_drawdown=max_drawdown,
                 sharpe_ratio=sharpe_ratio,
-                kelly_fraction=np.mean([bet['kelly_fraction'] for bet in bet_history]),
-                bet_history=bet_history
+                kelly_fraction=np.mean([bet["kelly_fraction"] for bet in bet_history]),
+                bet_history=bet_history,
             )
         else:
             result = BettingSimulationResult(
-                bets_placed=0, win_rate=0, roi=0, total_profit=0,
-                avg_bet_size=0, max_drawdown=0, sharpe_ratio=0, kelly_fraction=0
+                bets_placed=0,
+                win_rate=0,
+                roi=0,
+                total_profit=0,
+                avg_bet_size=0,
+                max_drawdown=0,
+                sharpe_ratio=0,
+                kelly_fraction=0,
             )
 
         return result
 
-    def _calculate_clv(self,
-                      predictions: np.ndarray,
-                      market_odds: np.ndarray,
-                      closing_odds: np.ndarray) -> float:
+    def _calculate_clv(
+        self, predictions: np.ndarray, market_odds: np.ndarray, closing_odds: np.ndarray
+    ) -> float:
         """Calculate Closing Line Value (CLV)."""
         clv_values = []
 
-        for pred_prob, open_odds, close_odds in zip(predictions, market_odds, closing_odds):
+        for pred_prob, open_odds, close_odds in zip(
+            predictions, market_odds, closing_odds, strict=False
+        ):
             open_prob = moneyline_to_probability(int(open_odds))
             close_prob = moneyline_to_probability(int(close_odds))
 
@@ -547,23 +585,24 @@ class ModelEvaluationFramework:
 
         return np.mean(clv_values) if clv_values else 0
 
-    def _extract_betting_metrics(self, betting_result: BettingSimulationResult) -> Dict[str, float]:
+    def _extract_betting_metrics(
+        self, betting_result: BettingSimulationResult
+    ) -> dict[str, float]:
         """Extract betting metrics for storage."""
         return {
-            'bets_placed': betting_result.bets_placed,
-            'win_rate': betting_result.win_rate,
-            'roi': betting_result.roi,
-            'total_profit': betting_result.total_profit,
-            'avg_bet_size': betting_result.avg_bet_size,
-            'max_drawdown': betting_result.max_drawdown,
-            'sharpe_ratio': betting_result.sharpe_ratio,
-            'avg_kelly_fraction': betting_result.kelly_fraction
+            "bets_placed": betting_result.bets_placed,
+            "win_rate": betting_result.win_rate,
+            "roi": betting_result.roi,
+            "total_profit": betting_result.total_profit,
+            "avg_bet_size": betting_result.avg_bet_size,
+            "max_drawdown": betting_result.max_drawdown,
+            "sharpe_ratio": betting_result.sharpe_ratio,
+            "avg_kelly_fraction": betting_result.kelly_fraction,
         }
 
-    def _perform_statistical_tests(self,
-                                  predictions: np.ndarray,
-                                  actual_outcomes: np.ndarray,
-                                  prediction_type: str) -> Dict[str, Any]:
+    def _perform_statistical_tests(
+        self, predictions: np.ndarray, actual_outcomes: np.ndarray, prediction_type: str
+    ) -> dict[str, Any]:
         """Perform statistical significance tests."""
         tests = {}
 
@@ -574,11 +613,12 @@ class ModelEvaluationFramework:
 
             # Binomial test against 50% accuracy
             from scipy.stats import binomtest
-            result = binomtest(int(accuracy * n), n, 0.5, alternative='greater')
-            tests['accuracy_vs_random'] = {
-                'statistic': accuracy,
-                'p_value': result.pvalue,
-                'significant': result.pvalue < (1 - self.confidence_level)
+
+            result = binomtest(int(accuracy * n), n, 0.5, alternative="greater")
+            tests["accuracy_vs_random"] = {
+                "statistic": accuracy,
+                "p_value": result.pvalue,
+                "significant": result.pvalue < (1 - self.confidence_level),
             }
 
             # McNemar's test would require comparing two models
@@ -586,41 +626,45 @@ class ModelEvaluationFramework:
         else:
             # Test if predictions correlate with outcomes
             correlation, p_value = stats.pearsonr(predictions, actual_outcomes)
-            tests['correlation'] = {
-                'correlation': correlation,
-                'p_value': p_value,
-                'significant': p_value < (1 - self.confidence_level)
+            tests["correlation"] = {
+                "correlation": correlation,
+                "p_value": p_value,
+                "significant": p_value < (1 - self.confidence_level),
             }
 
         return tests
 
-    def _gather_sample_info(self,
-                           predictions: np.ndarray,
-                           actual_outcomes: np.ndarray,
-                           market_odds: Optional[np.ndarray] = None) -> Dict[str, Any]:
+    def _gather_sample_info(
+        self,
+        predictions: np.ndarray,
+        actual_outcomes: np.ndarray,
+        market_odds: np.ndarray | None = None,
+    ) -> dict[str, Any]:
         """Gather information about the evaluation sample."""
         info = {
-            'n_predictions': len(predictions),
-            'prediction_date': datetime.now(),
-            'min_prediction': float(np.min(predictions)),
-            'max_prediction': float(np.max(predictions)),
-            'mean_prediction': float(np.mean(predictions)),
-            'std_prediction': float(np.std(predictions))
+            "n_predictions": len(predictions),
+            "prediction_date": datetime.now(),
+            "min_prediction": float(np.min(predictions)),
+            "max_prediction": float(np.max(predictions)),
+            "mean_prediction": float(np.mean(predictions)),
+            "std_prediction": float(np.std(predictions)),
         }
 
         if market_odds is not None:
-            info['has_market_odds'] = True
-            info['min_odds'] = float(np.min(market_odds))
-            info['max_odds'] = float(np.max(market_odds))
+            info["has_market_odds"] = True
+            info["min_odds"] = float(np.min(market_odds))
+            info["max_odds"] = float(np.max(market_odds))
         else:
-            info['has_market_odds'] = False
+            info["has_market_odds"] = False
 
         return info
 
-    def generate_calibration_plot(self,
-                                predictions: np.ndarray,
-                                actual_outcomes: np.ndarray,
-                                save_path: Optional[str] = None) -> plt.Figure:
+    def generate_calibration_plot(
+        self,
+        predictions: np.ndarray,
+        actual_outcomes: np.ndarray,
+        save_path: str | None = None,
+    ) -> plt.Figure:
         """Generate reliability/calibration plot."""
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -638,7 +682,7 @@ class ModelEvaluationFramework:
         ax1.grid(True, alpha=0.3)
 
         # Histogram of predictions
-        ax2.hist(predictions, bins=20, alpha=0.7, edgecolor='black')
+        ax2.hist(predictions, bins=20, alpha=0.7, edgecolor="black")
         ax2.set_xlabel("Predicted Probability")
         ax2.set_ylabel("Count")
         ax2.set_title("Distribution of Predictions")
@@ -647,18 +691,20 @@ class ModelEvaluationFramework:
         plt.tight_layout()
 
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
         return fig
 
-    def compare_models(self,
-                      model_results: Dict[str, EvaluationMetrics],
-                      save_path: Optional[str] = None) -> pd.DataFrame:
+    def compare_models(
+        self,
+        model_results: dict[str, EvaluationMetrics],
+        save_path: str | None = None,
+    ) -> pd.DataFrame:
         """Compare multiple models side-by-side."""
         comparison_data = []
 
         for model_name, metrics in model_results.items():
-            row = {'Model': model_name}
+            row = {"Model": model_name}
             row.update(metrics.core_metrics)
             row.update(metrics.calibration_metrics)
             row.update(metrics.betting_metrics)
@@ -675,6 +721,7 @@ class ModelEvaluationFramework:
         """Calculate precision with safe handling of edge cases."""
         try:
             from sklearn.metrics import precision_score
+
             return precision_score(y_true, y_pred, zero_division=0)
         except:
             return 0.0
@@ -683,6 +730,7 @@ class ModelEvaluationFramework:
         """Calculate recall with safe handling of edge cases."""
         try:
             from sklearn.metrics import recall_score
+
             return recall_score(y_true, y_pred, zero_division=0)
         except:
             return 0.0
@@ -691,6 +739,7 @@ class ModelEvaluationFramework:
         """Calculate F1 score with safe handling of edge cases."""
         try:
             from sklearn.metrics import f1_score
+
             return f1_score(y_true, y_pred, zero_division=0)
         except:
             return 0.0

@@ -6,26 +6,28 @@ This script validates the calibration system with synthetic and realistic
 probability data to ensure proper calibration functionality.
 """
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from datetime import datetime, timedelta
-from pathlib import Path
 import sys
 import tempfile
 import warnings
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from models.calibrate import ProbabilityCalibrator, CalibrationResults
+from models.calibrate import ProbabilityCalibrator
 from utils import get_logger
 
 logger = get_logger(__name__)
 
 
-def create_sample_probability_data(n_samples: int = 1000, miscalibration_type: str = 'none') -> tuple:
+def create_sample_probability_data(
+    n_samples: int = 1000, miscalibration_type: str = "none"
+) -> tuple:
     """
     Create sample probability data for testing calibration.
 
@@ -38,25 +40,25 @@ def create_sample_probability_data(n_samples: int = 1000, miscalibration_type: s
     """
     np.random.seed(42)  # Reproducible results
 
-    if miscalibration_type == 'none':
+    if miscalibration_type == "none":
         # Well-calibrated probabilities
         true_probs = np.random.uniform(0.1, 0.9, n_samples)
         raw_probs = true_probs + np.random.normal(0, 0.05, n_samples)
         raw_probs = np.clip(raw_probs, 0.01, 0.99)
 
-    elif miscalibration_type == 'overconfident':
+    elif miscalibration_type == "overconfident":
         # Model is overconfident (probabilities too extreme)
         true_probs = np.random.uniform(0.2, 0.8, n_samples)
         raw_probs = 0.5 + 1.5 * (true_probs - 0.5)  # Stretch probabilities
         raw_probs = np.clip(raw_probs, 0.01, 0.99)
 
-    elif miscalibration_type == 'underconfident':
+    elif miscalibration_type == "underconfident":
         # Model is underconfident (probabilities too moderate)
         true_probs = np.random.uniform(0.1, 0.9, n_samples)
         raw_probs = 0.5 + 0.6 * (true_probs - 0.5)  # Compress probabilities
         raw_probs = np.clip(raw_probs, 0.01, 0.99)
 
-    elif miscalibration_type == 'sigmoid':
+    elif miscalibration_type == "sigmoid":
         # S-shaped miscalibration
         true_probs = np.random.uniform(0.1, 0.9, n_samples)
         raw_probs = 1 / (1 + np.exp(-6 * (true_probs - 0.5)))  # Sigmoid transformation
@@ -101,7 +103,9 @@ def create_nfl_like_probability_data(n_samples: int = 1000) -> tuple:
             base_prob = np.random.uniform(0.35, 0.65)
         elif week >= 15:
             # Late season: more certainty for playoff-bound teams
-            base_prob = np.random.choice([np.random.uniform(0.15, 0.35), np.random.uniform(0.65, 0.85)])
+            base_prob = np.random.choice(
+                [np.random.uniform(0.15, 0.35), np.random.uniform(0.65, 0.85)]
+            )
         else:
             # Mid-season: normal distribution
             base_prob = np.random.uniform(0.2, 0.8)
@@ -109,24 +113,34 @@ def create_nfl_like_probability_data(n_samples: int = 1000) -> tuple:
         # Add some model miscalibration patterns common in sports betting
         # Models tend to be overconfident on favorites
         if base_prob > 0.6:
-            raw_prob = base_prob + np.random.uniform(0.05, 0.15)  # Overconfident on favorites
+            raw_prob = base_prob + np.random.uniform(
+                0.05, 0.15
+            )  # Overconfident on favorites
         elif base_prob < 0.4:
-            raw_prob = base_prob - np.random.uniform(0.05, 0.15)  # Overconfident on underdogs
+            raw_prob = base_prob - np.random.uniform(
+                0.05, 0.15
+            )  # Overconfident on underdogs
         else:
-            raw_prob = base_prob + np.random.normal(0, 0.05)  # Well-calibrated in middle
+            raw_prob = base_prob + np.random.normal(
+                0, 0.05
+            )  # Well-calibrated in middle
 
         raw_prob = np.clip(raw_prob, 0.01, 0.99)
 
         # Generate true outcome
-        true_outcome = np.random.binomial(1, base_prob)  # Use base_prob as true probability
+        true_outcome = np.random.binomial(
+            1, base_prob
+        )  # Use base_prob as true probability
 
-        game_data.append({
-            'game_id': f'TEST_{season}_{week:02d}_{i:04d}',
-            'season': season,
-            'week': week,
-            'raw_probability': raw_prob,
-            'true_outcome': true_outcome
-        })
+        game_data.append(
+            {
+                "game_id": f"TEST_{season}_{week:02d}_{i:04d}",
+                "season": season,
+                "week": week,
+                "raw_probability": raw_prob,
+                "true_outcome": true_outcome,
+            }
+        )
 
         raw_probs.append(raw_prob)
         true_labels.append(true_outcome)
@@ -138,12 +152,12 @@ def test_isotonic_calibration():
     """Test isotonic regression calibration."""
     logger.info("Testing isotonic regression calibration...")
 
-    calibrator = ProbabilityCalibrator(primary_method='isotonic')
+    calibrator = ProbabilityCalibrator(primary_method="isotonic")
 
     print("\n1. Testing Isotonic Regression Calibration:")
 
     # Test with overconfident probabilities
-    raw_probs, true_labels = create_sample_probability_data(1000, 'overconfident')
+    raw_probs, true_labels = create_sample_probability_data(1000, "overconfident")
 
     print(f"Test data: {len(raw_probs)} samples")
     print(f"Raw probability range: [{raw_probs.min():.3f}, {raw_probs.max():.3f}]")
@@ -153,19 +167,23 @@ def test_isotonic_calibration():
     results = calibrator.calibrate_probabilities(raw_probs, true_labels)
 
     print(f"Calibration method used: {results.method}")
-    print(f"Raw ECE: {results.calibration_metrics['raw_expected_calibration_error']:.4f}")
-    print(f"Calibrated ECE: {results.calibration_metrics['expected_calibration_error']:.4f}")
+    print(
+        f"Raw ECE: {results.calibration_metrics['raw_expected_calibration_error']:.4f}"
+    )
+    print(
+        f"Calibrated ECE: {results.calibration_metrics['expected_calibration_error']:.4f}"
+    )
     print(f"ECE improvement: {results.calibration_metrics['ece_improvement']:.4f}")
 
     # Calibration should improve ECE
-    if results.calibration_metrics['ece_improvement'] > 0:
+    if results.calibration_metrics["ece_improvement"] > 0:
         print("  [OK] ECE improved after calibration")
     else:
         print("  [WARN] ECE did not improve (may be due to random variation)")
 
     # Check calibration slope (should be closer to 1 after calibration)
-    slope = results.calibration_metrics['calibration_slope']
-    slope_dev = results.calibration_metrics['calibration_slope_deviation']
+    slope = results.calibration_metrics["calibration_slope"]
+    slope_dev = results.calibration_metrics["calibration_slope_deviation"]
 
     print(f"Calibration slope: {slope:.3f} (deviation from 1.0: {slope_dev:.3f})")
 
@@ -181,7 +199,7 @@ def test_isotonic_calibration():
     try:
         single_class_labels = np.ones(100)  # All positive
         single_class_probs = np.random.uniform(0.3, 0.9, 100)
-        results_single = calibrator.calibrate_probabilities(single_class_probs, single_class_labels)
+        calibrator.calibrate_probabilities(single_class_probs, single_class_labels)
         print("  [OK] Handled single-class data")
     except Exception as e:
         print(f"  [ERROR] Single-class handling failed: {e}")
@@ -191,7 +209,7 @@ def test_isotonic_calibration():
     try:
         few_probs = np.array([0.1, 0.9, 0.5])
         few_labels = np.array([0, 1, 1])
-        results_few = calibrator.calibrate_probabilities(few_probs, few_labels)
+        calibrator.calibrate_probabilities(few_probs, few_labels)
         print("  [OK] Handled few samples")
     except Exception as e:
         print(f"  [ERROR] Few samples handling failed: {e}")
@@ -205,12 +223,12 @@ def test_platt_calibration():
     """Test Platt scaling calibration."""
     logger.info("Testing Platt scaling calibration...")
 
-    calibrator = ProbabilityCalibrator(primary_method='platt')
+    calibrator = ProbabilityCalibrator(primary_method="platt")
 
     print("\n2. Testing Platt Scaling Calibration:")
 
     # Test with sigmoid-shaped miscalibration (ideal for Platt scaling)
-    raw_probs, true_labels = create_sample_probability_data(1000, 'sigmoid')
+    raw_probs, true_labels = create_sample_probability_data(1000, "sigmoid")
 
     print(f"Test data: {len(raw_probs)} samples")
     print(f"Raw probability range: [{raw_probs.min():.3f}, {raw_probs.max():.3f}]")
@@ -220,11 +238,15 @@ def test_platt_calibration():
 
     print(f"Calibration method used: {results.method}")
     print(f"Raw Brier score: {results.calibration_metrics['raw_brier_score']:.4f}")
-    print(f"Calibrated Brier score: {results.calibration_metrics['calibrated_brier_score']:.4f}")
-    print(f"Brier score improvement: {results.calibration_metrics['brier_score_improvement']:.4f}")
+    print(
+        f"Calibrated Brier score: {results.calibration_metrics['calibrated_brier_score']:.4f}"
+    )
+    print(
+        f"Brier score improvement: {results.calibration_metrics['brier_score_improvement']:.4f}"
+    )
 
     # Calibration should improve Brier score
-    if results.calibration_metrics['brier_score_improvement'] > 0:
+    if results.calibration_metrics["brier_score_improvement"] > 0:
         print("  [OK] Brier score improved after calibration")
     else:
         print("  [WARN] Brier score did not improve")
@@ -234,7 +256,7 @@ def test_platt_calibration():
     extreme_labels = np.random.binomial(1, [0.1, 0.9, 0.5] * 100)
 
     try:
-        extreme_results = calibrator.calibrate_probabilities(extreme_probs, extreme_labels)
+        calibrator.calibrate_probabilities(extreme_probs, extreme_labels)
         print("  [OK] Handled extreme probabilities")
     except Exception as e:
         print(f"  [ERROR] Extreme probabilities handling failed: {e}")
@@ -259,13 +281,15 @@ def test_calibration_metrics():
 
     results = calibrator.calibrate_probabilities(perfect_probs, perfect_labels)
 
-    print(f"Perfect calibration test:")
+    print("Perfect calibration test:")
     print(f"  ECE: {results.calibration_metrics['expected_calibration_error']:.4f}")
     print(f"  MCE: {results.calibration_metrics['maximum_calibration_error']:.4f}")
-    print(f"  Calibration slope: {results.calibration_metrics['calibration_slope']:.3f}")
+    print(
+        f"  Calibration slope: {results.calibration_metrics['calibration_slope']:.3f}"
+    )
 
     # ECE should be low for well-calibrated data
-    if results.calibration_metrics['expected_calibration_error'] < 0.1:
+    if results.calibration_metrics["expected_calibration_error"] < 0.1:
         print("  [OK] ECE is low for well-calibrated data")
     else:
         print("  [WARN] ECE is high for supposedly well-calibrated data")
@@ -299,25 +323,27 @@ def test_cross_validation_calibration():
     # Create NFL-like data with multiple seasons
     raw_probs, true_labels, game_data = create_nfl_like_probability_data(1500)
 
-    print(f"Test data: {len(game_data)} games across {game_data['season'].nunique()} seasons")
+    print(
+        f"Test data: {len(game_data)} games across {game_data['season'].nunique()} seasons"
+    )
 
     # Add probability and outcome columns
-    game_data['raw_probability'] = raw_probs
-    game_data['true_outcome'] = true_labels
+    game_data["raw_probability"] = raw_probs
+    game_data["true_outcome"] = true_labels
 
     # Perform within-season calibration
     season_results = calibrator.calibrate_with_cross_validation(
         data=game_data,
-        probability_column='raw_probability',
-        target_column='true_outcome',
-        season_column='season'
+        probability_column="raw_probability",
+        target_column="true_outcome",
+        season_column="season",
     )
 
     print(f"Calibrated {len(season_results)} seasons")
 
     for season, results in season_results.items():
-        ece = results.calibration_metrics['expected_calibration_error']
-        n_samples = results.metadata['season_samples']
+        ece = results.calibration_metrics["expected_calibration_error"]
+        n_samples = results.metadata["season_samples"]
         print(f"  Season {season}: ECE = {ece:.4f}, samples = {n_samples}")
 
     if len(season_results) >= 2:
@@ -330,9 +356,9 @@ def test_cross_validation_calibration():
     total_ece_improvement = 0
     valid_seasons = 0
 
-    for season, results in season_results.items():
-        if not np.isnan(results.calibration_metrics['ece_improvement']):
-            total_ece_improvement += results.calibration_metrics['ece_improvement']
+    for _season, results in season_results.items():
+        if not np.isnan(results.calibration_metrics["ece_improvement"]):
+            total_ece_improvement += results.calibration_metrics["ece_improvement"]
             valid_seasons += 1
 
     if valid_seasons > 0:
@@ -357,7 +383,7 @@ def test_calibration_plotting():
     print("\n5. Testing Calibration Plot Generation:")
 
     # Create miscalibrated data for interesting plots
-    raw_probs, true_labels = create_sample_probability_data(1000, 'overconfident')
+    raw_probs, true_labels = create_sample_probability_data(1000, "overconfident")
 
     results = calibrator.calibrate_probabilities(raw_probs, true_labels)
 
@@ -388,31 +414,35 @@ def test_calibrator_persistence():
     """Test saving and loading calibrators."""
     logger.info("Testing calibrator persistence...")
 
-    calibrator = ProbabilityCalibrator(primary_method='isotonic')
+    calibrator = ProbabilityCalibrator(primary_method="isotonic")
 
     print("\n6. Testing Calibrator Persistence:")
 
     # Create and fit a calibrator
-    raw_probs, true_labels = create_sample_probability_data(500, 'overconfident')
+    raw_probs, true_labels = create_sample_probability_data(500, "overconfident")
     results = calibrator.calibrate_probabilities(raw_probs, true_labels)
 
     # Test saving and loading
     with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir) / 'test_calibrator.joblib'
+        temp_path = Path(temp_dir) / "test_calibrator.joblib"
 
         try:
             # Save calibrator
             calibrator.save_calibrator(results, str(temp_path))
-            print(f"  Calibrator saved to temporary file")
+            print("  Calibrator saved to temporary file")
 
             # Load calibrator
             loaded_calibrator = calibrator.load_calibrator(str(temp_path))
-            print(f"  Calibrator loaded successfully")
+            print("  Calibrator loaded successfully")
 
             # Test loaded calibrator
             test_probs = np.array([0.1, 0.5, 0.9])
-            original_calibrated = calibrator.apply_calibration(test_probs, results.calibrator)
-            loaded_calibrated = calibrator.apply_calibration(test_probs, loaded_calibrator)
+            original_calibrated = calibrator.apply_calibration(
+                test_probs, results.calibrator
+            )
+            loaded_calibrated = calibrator.apply_calibration(
+                test_probs, loaded_calibrator
+            )
 
             # Results should be identical
             if np.allclose(original_calibrated, loaded_calibrated, rtol=1e-10):
@@ -434,7 +464,9 @@ def test_fallback_mechanism():
     logger.info("Testing fallback mechanism...")
 
     # Create calibrator that might fail with primary method
-    calibrator = ProbabilityCalibrator(primary_method='isotonic', fallback_method='platt')
+    calibrator = ProbabilityCalibrator(
+        primary_method="isotonic", fallback_method="platt"
+    )
 
     print("\n7. Testing Fallback Mechanism:")
 
@@ -443,7 +475,9 @@ def test_fallback_mechanism():
     problematic_labels = np.array([0, 1] * 50)  # Alternating labels
 
     try:
-        results = calibrator.calibrate_probabilities(problematic_probs, problematic_labels)
+        results = calibrator.calibrate_probabilities(
+            problematic_probs, problematic_labels
+        )
         print(f"  Calibration completed with method: {results.method}")
         print("  [OK] Fallback mechanism handled problematic data")
     except Exception as e:
@@ -485,7 +519,7 @@ def main():
             test_cross_validation_calibration(),
             test_calibration_plotting(),
             test_calibrator_persistence(),
-            test_fallback_mechanism()
+            test_fallback_mechanism(),
         ]
 
         # Overall test summary
@@ -499,21 +533,21 @@ def main():
             "Cross-validation calibration",
             "Calibration plotting",
             "Calibrator persistence",
-            "Fallback mechanism"
+            "Fallback mechanism",
         ]
 
         all_passed = True
-        for test_name, result in zip(test_names, test_results):
+        for test_name, result in zip(test_names, test_results, strict=False):
             status = "[PASS]" if result else "[FAIL]"
             print(f"{status} {test_name}")
             if not result:
                 all_passed = False
 
         if all_passed:
-            print(f"\n[SUCCESS] ALL PROBABILITY CALIBRATION TESTS PASSED!")
-            print(f"The probability calibration system is ready for production use.")
+            print("\n[SUCCESS] ALL PROBABILITY CALIBRATION TESTS PASSED!")
+            print("The probability calibration system is ready for production use.")
         else:
-            print(f"\n[FAIL] Some tests failed. Please review the output above.")
+            print("\n[FAIL] Some tests failed. Please review the output above.")
             return False
 
     except Exception as e:

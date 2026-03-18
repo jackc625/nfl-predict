@@ -13,31 +13,32 @@ This script comprehensively tests the WP model implementation including:
 - Edge cases and error handling
 """
 
-import pandas as pd
-import numpy as np
-from pathlib import Path
 import sys
 import tempfile
 import warnings
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from models.train_wp import WinProbabilityModel, WPModelPrediction, WPModelResults
+from models.train_wp import WinProbabilityModel
 from utils import get_logger
 
 logger = get_logger(__name__)
 
 
-def create_synthetic_nfl_games(n_games: int = 500,
-                             n_seasons: int = 3,
-                             n_teams: int = 32) -> pd.DataFrame:
+def create_synthetic_nfl_games(
+    n_games: int = 500, n_seasons: int = 3, n_teams: int = 32
+) -> pd.DataFrame:
     """Create synthetic NFL games for testing."""
     np.random.seed(42)
 
     # Team names
-    teams = [f'T{i:02d}' for i in range(n_teams)]
+    teams = [f"T{i:02d}" for i in range(n_teams)]
     seasons = [2022, 2023, 2024][:n_seasons]
 
     games = []
@@ -65,38 +66,33 @@ def create_synthetic_nfl_games(n_games: int = 500,
                 home_wins = np.random.binomial(1, win_prob)
 
                 game = {
-                    'game_id': f'TEST_{season}_{week:02d}_{game_id:03d}',
-                    'season': season,
-                    'week': week,
-                    'home_team': home_team,
-                    'away_team': away_team,
-                    'home_wins': home_wins,
-
+                    "game_id": f"TEST_{season}_{week:02d}_{game_id:03d}",
+                    "season": season,
+                    "week": week,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "home_wins": home_wins,
                     # Elo features
-                    'elo_home': elo_home,
-                    'elo_away': elo_away,
-                    'elo_diff': elo_diff,
-
+                    "elo_home": elo_home,
+                    "elo_away": elo_away,
+                    "elo_diff": elo_diff,
                     # Contextual features
-                    'rest_days_home': np.random.choice([3, 7, 10, 14]),
-                    'rest_days_away': np.random.choice([3, 7, 10, 14]),
-                    'is_playoff': int(week > 18),
-                    'is_primetime': np.random.binomial(1, 0.2),
-
+                    "rest_days_home": np.random.choice([3, 7, 10, 14]),
+                    "rest_days_away": np.random.choice([3, 7, 10, 14]),
+                    "is_playoff": int(week > 18),
+                    "is_primetime": np.random.binomial(1, 0.2),
                     # Weather features
-                    'temperature': np.random.normal(65, 20),
-                    'wind_speed': np.random.exponential(5),
-                    'precipitation': np.random.exponential(0.1),
-
+                    "temperature": np.random.normal(65, 20),
+                    "wind_speed": np.random.exponential(5),
+                    "precipitation": np.random.exponential(0.1),
                     # Team form features (simplified)
-                    'home_epa_offense_4w': np.random.normal(0, 0.3),
-                    'away_epa_offense_4w': np.random.normal(0, 0.3),
-                    'home_epa_defense_4w': np.random.normal(0, 0.3),
-                    'away_epa_defense_4w': np.random.normal(0, 0.3),
-
+                    "home_epa_offense_4w": np.random.normal(0, 0.3),
+                    "away_epa_offense_4w": np.random.normal(0, 0.3),
+                    "home_epa_defense_4w": np.random.normal(0, 0.3),
+                    "away_epa_defense_4w": np.random.normal(0, 0.3),
                     # Market features
-                    'opening_spread': np.random.normal(-elo_diff/25, 3),
-                    'closing_total': np.random.normal(47, 6),
+                    "opening_spread": np.random.normal(-elo_diff / 25, 3),
+                    "closing_total": np.random.normal(47, 6),
                 }
 
                 games.append(game)
@@ -130,18 +126,20 @@ def test_feature_preparation():
         print("  [ERROR] Feature and target lengths don't match")
         return False
 
-    if not all(col in features_df.columns for col in ['game_id', 'home_team', 'away_team']):
+    if not all(
+        col in features_df.columns for col in ["game_id", "home_team", "away_team"]
+    ):
         print("  [ERROR] Missing required ID columns")
         return False
 
     # Test with missing data
     print("\n  Testing with missing data:")
     games_with_na = games_df.copy()
-    games_with_na.loc[0:10, 'elo_home'] = np.nan
-    games_with_na.loc[20:30, 'temperature'] = np.nan
+    games_with_na.loc[0:10, "elo_home"] = np.nan
+    games_with_na.loc[20:30, "temperature"] = np.nan
 
     try:
-        features_na, targets_na = model.prepare_features(games_with_na)
+        features_na, _targets_na = model.prepare_features(games_with_na)
         print(f"  [OK] Handled missing data: {features_na.shape}")
     except Exception as e:
         print(f"  [ERROR] Failed with missing data: {e}")
@@ -166,15 +164,15 @@ def test_feature_selection():
 
         try:
             model = WinProbabilityModel(
-                feature_selection_method=method,
-                max_features=10,
-                random_state=42
+                feature_selection_method=method, max_features=10, random_state=42
             )
 
             features_df, targets = model.prepare_features(games_df)
-            selector, selected_features = model.select_features(features_df, targets)
+            _selector, selected_features = model.select_features(features_df, targets)
 
-            print(f"    Original features: {len([c for c in features_df.columns if c not in ['game_id', 'home_team', 'away_team']])}")
+            print(
+                f"    Original features: {len([c for c in features_df.columns if c not in ['game_id', 'home_team', 'away_team']])}"
+            )
             print(f"    Selected features: {len(selected_features)}")
             print(f"    Feature names: {selected_features[:5]}...")
 
@@ -211,18 +209,20 @@ def test_hyperparameter_tuning():
                 model = WinProbabilityModel(
                     regularization_type=reg_type,
                     hyperparameter_tuning=tuning_method,
-                    random_state=42
+                    random_state=42,
                 )
 
                 features_df, targets = model.prepare_features(games_df)
-                selector, selected_features = model.select_features(features_df, targets)
+                _selector, selected_features = model.select_features(
+                    features_df, targets
+                )
                 X = features_df[selected_features].values
                 params = model.tune_hyperparameters(X, targets)
 
                 print(f"    {tuning_method}: {params}")
 
-                if 'penalty' not in params:
-                    print(f"    [ERROR] No penalty parameter found")
+                if "penalty" not in params:
+                    print("    [ERROR] No penalty parameter found")
                     return False
 
                 print(f"    [OK] {tuning_method} with {reg_type}")
@@ -242,8 +242,8 @@ def test_model_training():
     print("\n4. Testing Model Training:")
 
     games_df = create_synthetic_nfl_games(300, 2, 16)
-    train_games = games_df[games_df['season'] == 2022].copy()
-    val_games = games_df[games_df['season'] == 2023].copy()
+    train_games = games_df[games_df["season"] == 2022].copy()
+    val_games = games_df[games_df["season"] == 2023].copy()
 
     print(f"  Training games: {len(train_games)}")
     print(f"  Validation games: {len(val_games)}")
@@ -256,13 +256,17 @@ def test_model_training():
             regularization_type="l2",
             use_calibration=True,
             hyperparameter_tuning="none",
-            random_state=42
+            random_state=42,
         )
 
         results = model.train_model(train_games, val_games)
 
-        print(f"    Training accuracy: {results.performance_metrics.get('training_accuracy', 0):.3f}")
-        print(f"    Validation accuracy: {results.performance_metrics.get('validation_accuracy', 0):.3f}")
+        print(
+            f"    Training accuracy: {results.performance_metrics.get('training_accuracy', 0):.3f}"
+        )
+        print(
+            f"    Validation accuracy: {results.performance_metrics.get('validation_accuracy', 0):.3f}"
+        )
         print(f"    Features used: {len(results.feature_names)}")
         print(f"    Top features: {list(results.feature_importances.keys())[:5]}")
 
@@ -280,21 +284,21 @@ def test_model_training():
     configurations = [
         {"feature_selection_method": "model_based", "regularization_type": "l1"},
         {"feature_selection_method": "univariate", "regularization_type": "elasticnet"},
-        {"use_calibration": False, "regularization_type": "l2"}
+        {"use_calibration": False, "regularization_type": "l2"},
     ]
 
     for i, config in enumerate(configurations):
-        print(f"\n  Testing configuration {i+1}: {config}")
+        print(f"\n  Testing configuration {i + 1}: {config}")
         try:
             config_model = WinProbabilityModel(random_state=42, **config)
             config_results = config_model.train_model(train_games)
 
-            acc = config_results.performance_metrics.get('training_accuracy', 0)
+            acc = config_results.performance_metrics.get("training_accuracy", 0)
             print(f"    Accuracy: {acc:.3f}")
-            print(f"    [OK] Configuration {i+1} completed")
+            print(f"    [OK] Configuration {i + 1} completed")
 
         except Exception as e:
-            print(f"    [ERROR] Configuration {i+1} failed: {e}")
+            print(f"    [ERROR] Configuration {i + 1} failed: {e}")
             return False
 
     print("  [OK] All model training tests passed")
@@ -309,11 +313,11 @@ def test_predictions():
 
     # Train a model
     games_df = create_synthetic_nfl_games(200, 2, 16)
-    train_games = games_df[games_df['season'] == 2022].copy()
-    test_games = games_df[games_df['season'] == 2023].head(20).copy()
+    train_games = games_df[games_df["season"] == 2022].copy()
+    test_games = games_df[games_df["season"] == 2023].head(20).copy()
 
     model = WinProbabilityModel(random_state=42)
-    results = model.train_model(train_games)
+    model.train_model(train_games)
 
     print(f"  Training completed, testing predictions on {len(test_games)} games")
 
@@ -325,7 +329,7 @@ def test_predictions():
 
     # Validate prediction objects
     pred = calibrated_preds[0]
-    required_attrs = ['game_id', 'home_team', 'away_team', 'raw_win_probability']
+    required_attrs = ["game_id", "home_team", "away_team", "raw_win_probability"]
 
     for attr in required_attrs:
         if not hasattr(pred, attr) or getattr(pred, attr) is None:
@@ -333,18 +337,24 @@ def test_predictions():
             return False
 
     if not (0 <= pred.raw_win_probability <= 1):
-        print(f"    [ERROR] Raw probability outside valid range: {pred.raw_win_probability}")
+        print(
+            f"    [ERROR] Raw probability outside valid range: {pred.raw_win_probability}"
+        )
         return False
 
     if pred.calibrated_win_probability is not None:
         if not (0 <= pred.calibrated_win_probability <= 1):
-            print(f"    [ERROR] Calibrated probability outside valid range")
+            print("    [ERROR] Calibrated probability outside valid range")
             return False
 
     print(f"    Sample prediction: {pred.home_team} vs {pred.away_team}")
     print(f"    Raw prob: {pred.raw_win_probability:.3f}")
-    print(f"    Cal prob: {pred.calibrated_win_probability:.3f if pred.calibrated_win_probability else 'None'}")
-    print(f"    Confidence: {pred.prediction_confidence:.3f if pred.prediction_confidence else 'None'}")
+    print(
+        f"    Cal prob: {pred.calibrated_win_probability:.3f if pred.calibrated_win_probability else 'None'}"
+    )
+    print(
+        f"    Confidence: {pred.prediction_confidence:.3f if pred.prediction_confidence else 'None'}"
+    )
 
     # Test non-calibrated predictions
     print("\n  Testing non-calibrated predictions:")
@@ -373,7 +383,9 @@ def test_walk_forward_validation():
 
     # Create multi-season data
     games_df = create_synthetic_nfl_games(600, 4, 16)
-    print(f"  Created {len(games_df)} games across {games_df['season'].nunique()} seasons")
+    print(
+        f"  Created {len(games_df)} games across {games_df['season'].nunique()} seasons"
+    )
 
     # Test walk-forward validation
     print("\n  Running walk-forward validation:")
@@ -382,33 +394,42 @@ def test_walk_forward_validation():
             feature_selection_method="recursive",
             max_features=10,
             hyperparameter_tuning="none",
-            random_state=42
+            random_state=42,
         )
 
         validation_results = model.run_walk_forward_validation(
             games_df,
-            start_season=games_df['season'].min() + 1,  # Need at least 1 season for training
-            end_season=games_df['season'].max()
+            start_season=games_df["season"].min()
+            + 1,  # Need at least 1 season for training
+            end_season=games_df["season"].max(),
         )
 
-        print(f"    Seasons validated: {validation_results['overall_metrics'].get('seasons_validated', 0)}")
-        print(f"    Overall accuracy: {validation_results['overall_metrics'].get('overall_accuracy', 0):.3f}")
-        print(f"    Overall log loss: {validation_results['overall_metrics'].get('overall_log_loss', 0):.3f}")
+        print(
+            f"    Seasons validated: {validation_results['overall_metrics'].get('seasons_validated', 0)}"
+        )
+        print(
+            f"    Overall accuracy: {validation_results['overall_metrics'].get('overall_accuracy', 0):.3f}"
+        )
+        print(
+            f"    Overall log loss: {validation_results['overall_metrics'].get('overall_log_loss', 0):.3f}"
+        )
 
         # Check that we have results for each test season
-        expected_seasons = list(range(games_df['season'].min() + 1, games_df['season'].max() + 1))
+        expected_seasons = list(
+            range(games_df["season"].min() + 1, games_df["season"].max() + 1)
+        )
         for season in expected_seasons:
-            if season not in validation_results['season_results']:
+            if season not in validation_results["season_results"]:
                 print(f"    [ERROR] Missing results for season {season}")
                 return False
 
-            season_result = validation_results['season_results'][season]
-            if 'error' in season_result:
+            season_result = validation_results["season_results"][season]
+            if "error" in season_result:
                 print(f"    [ERROR] Season {season} failed: {season_result['error']}")
                 return False
 
-        if 'model_stability' in validation_results:
-            stability = validation_results['model_stability']
+        if "model_stability" in validation_results:
+            stability = validation_results["model_stability"]
             print(f"    Model stability std: {stability.get('accuracy_std', 0):.3f}")
 
         print("    [OK] Walk-forward validation completed successfully")
@@ -429,17 +450,19 @@ def test_model_persistence():
 
     # Train a model
     games_df = create_synthetic_nfl_games(150, 2, 12)
-    train_games = games_df[games_df['season'] == games_df['season'].min()].copy()
+    train_games = games_df[games_df["season"] == games_df["season"].min()].copy()
 
     original_model = WinProbabilityModel(
         feature_selection_method="recursive",
         regularization_type="elasticnet",
         use_calibration=True,
-        random_state=42
+        random_state=42,
     )
 
     results = original_model.train_model(train_games)
-    print(f"  Original model trained with accuracy: {results.performance_metrics.get('training_accuracy', 0):.3f}")
+    print(
+        f"  Original model trained with accuracy: {results.performance_metrics.get('training_accuracy', 0):.3f}"
+    )
 
     # Test saving and loading
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -467,7 +490,7 @@ def test_model_persistence():
                 print("    [ERROR] Loaded model not marked as trained")
                 return False
 
-            print(f"    [OK] Model loaded successfully")
+            print("    [OK] Model loaded successfully")
             print(f"    Features: {len(loaded_model.feature_names)}")
             print(f"    Regularization: {loaded_model.regularization_type}")
 
@@ -478,17 +501,21 @@ def test_model_persistence():
         # Test predictions with loaded model
         print("\n  Testing loaded model predictions:")
         try:
-            test_games = games_df[games_df['season'] == games_df['season'].max()].head(10)
+            test_games = games_df[games_df["season"] == games_df["season"].max()].head(
+                10
+            )
             original_preds = original_model.predict(test_games)
             loaded_preds = loaded_model.predict(test_games)
 
             # Compare predictions
-            for orig, loaded in zip(original_preds, loaded_preds):
+            for orig, loaded in zip(original_preds, loaded_preds, strict=False):
                 if abs(orig.raw_win_probability - loaded.raw_win_probability) > 1e-10:
-                    print("    [ERROR] Predictions differ between original and loaded model")
+                    print(
+                        "    [ERROR] Predictions differ between original and loaded model"
+                    )
                     return False
 
-            print(f"    [OK] Loaded model predictions match original")
+            print("    [OK] Loaded model predictions match original")
 
         except Exception as e:
             print(f"    [ERROR] Loaded model prediction test failed: {e}")
@@ -509,12 +536,12 @@ def test_edge_cases():
     small_games = create_synthetic_nfl_games(20, 1, 6)
     try:
         small_model = WinProbabilityModel(
-            max_features=5,
-            hyperparameter_tuning="none",
-            random_state=42
+            max_features=5, hyperparameter_tuning="none", random_state=42
         )
         small_results = small_model.train_model(small_games)
-        print(f"    [OK] Small dataset handled: {len(small_results.feature_names)} features")
+        print(
+            f"    [OK] Small dataset handled: {len(small_results.feature_names)} features"
+        )
     except Exception as e:
         print(f"    [WARN] Small dataset failed (expected): {e}")
 
@@ -532,14 +559,13 @@ def test_edge_cases():
     # Test with all same target values
     print("\n  Testing with constant target values:")
     constant_games = create_synthetic_nfl_games(50, 1, 8)
-    constant_games['home_wins'] = 1  # All home wins
+    constant_games["home_wins"] = 1  # All home wins
 
     try:
         constant_model = WinProbabilityModel(
-            hyperparameter_tuning="none",
-            random_state=42
+            hyperparameter_tuning="none", random_state=42
         )
-        constant_results = constant_model.train_model(constant_games)
+        constant_model.train_model(constant_games)
         print("    [OK] Handled constant targets")
     except Exception as e:
         print(f"    [WARN] Constant targets caused issues: {e}")
@@ -547,18 +573,18 @@ def test_edge_cases():
     # Test with missing features in prediction
     print("\n  Testing prediction with missing features:")
     games_df = create_synthetic_nfl_games(100, 2, 8)
-    train_games = games_df[games_df['season'] == games_df['season'].min()].copy()
-    test_games = games_df[games_df['season'] == games_df['season'].max()].copy()
+    train_games = games_df[games_df["season"] == games_df["season"].min()].copy()
+    test_games = games_df[games_df["season"] == games_df["season"].max()].copy()
 
     # Train model
     missing_model = WinProbabilityModel(random_state=42, hyperparameter_tuning="none")
     missing_model.train_model(train_games)
 
     # Remove a column from test data
-    test_games_missing = test_games.drop('wind_speed', axis=1, errors='ignore')
+    test_games_missing = test_games.drop("wind_speed", axis=1, errors="ignore")
 
     try:
-        missing_preds = missing_model.predict(test_games_missing)
+        missing_model.predict(test_games_missing)
         print("    [OK] Handled missing features in prediction data")
     except Exception as e:
         print(f"    [WARN] Missing features caused prediction failure: {e}")
@@ -577,7 +603,7 @@ def test_model_summary():
     untrained_model = WinProbabilityModel()
     untrained_summary = untrained_model.get_model_summary()
 
-    if untrained_summary.get('is_trained', True):
+    if untrained_summary.get("is_trained", True):
         print("  [ERROR] Untrained model marked as trained")
         return False
 
@@ -590,7 +616,13 @@ def test_model_summary():
 
     trained_summary = trained_model.get_model_summary()
 
-    required_keys = ['model_type', 'is_trained', 'configuration', 'model_details', 'training_info']
+    required_keys = [
+        "model_type",
+        "is_trained",
+        "configuration",
+        "model_details",
+        "training_info",
+    ]
     for key in required_keys:
         if key not in trained_summary:
             print(f"  [ERROR] Missing summary key: {key}")
@@ -600,7 +632,9 @@ def test_model_summary():
     print(f"    Type: {trained_summary['model_type']}")
     print(f"    Trained: {trained_summary['is_trained']}")
     print(f"    Features: {trained_summary['model_details']['features_selected']}")
-    print(f"    Regularization: {trained_summary['configuration']['regularization_type']}")
+    print(
+        f"    Regularization: {trained_summary['configuration']['regularization_type']}"
+    )
     print(f"    Calibration: {trained_summary['calibration_used']}")
 
     print("  [OK] Trained model summary complete")
@@ -628,14 +662,14 @@ def main():
             ("Walk-Forward Validation", test_walk_forward_validation),
             ("Model Persistence", test_model_persistence),
             ("Edge Cases", test_edge_cases),
-            ("Model Summary", test_model_summary)
+            ("Model Summary", test_model_summary),
         ]
 
         results = []
         for test_name, test_func in test_functions:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"RUNNING TEST: {test_name.upper()}")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
 
             try:
                 success = test_func()
@@ -666,7 +700,7 @@ def main():
         print(f"Failed: {failed}")
 
         if failed == 0:
-            print(f"\n[SUCCESS] ALL WP MODEL TESTS PASSED!")
+            print("\n[SUCCESS] ALL WP MODEL TESTS PASSED!")
             print("The Win Probability model is ready for production use.")
         else:
             print(f"\n[FAILED] {failed} TEST(S) FAILED")

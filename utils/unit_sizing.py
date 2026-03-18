@@ -5,17 +5,18 @@ This module provides sophisticated unit sizing algorithms that consider multiple
 factors including model confidence, historical performance, and market conditions.
 """
 
-from typing import Dict, List, Optional, Tuple, Union
 import math
-import numpy as np
 from dataclasses import dataclass
 from enum import Enum
 
-from utils.probability_utils import moneyline_to_probability, edge_calculation
+import numpy as np
+
+from utils.probability_utils import moneyline_to_probability
 
 
 class ConfidenceMethod(Enum):
     """Methods for calculating betting confidence."""
+
     EDGE_BASED = "edge_based"
     VOLATILITY_ADJUSTED = "volatility_adjusted"
     HISTORICAL_PERFORMANCE = "historical_performance"
@@ -25,6 +26,7 @@ class ConfidenceMethod(Enum):
 
 class UnitScale(Enum):
     """Unit scaling approaches."""
+
     LINEAR = "linear"
     LOGARITHMIC = "logarithmic"
     EXPONENTIAL = "exponential"
@@ -34,12 +36,13 @@ class UnitScale(Enum):
 @dataclass
 class ConfidenceMetrics:
     """Container for confidence calculation metrics."""
+
     edge_confidence: float
     model_confidence: float
     market_confidence: float
     historical_confidence: float
     combined_confidence: float
-    confidence_factors: Dict[str, float]
+    confidence_factors: dict[str, float]
 
     @property
     def distance_from_fifty(self) -> float:
@@ -50,6 +53,7 @@ class ConfidenceMetrics:
 @dataclass
 class UnitRecommendation:
     """Container for unit sizing recommendation."""
+
     recommended_units: float
     base_units: float
     confidence_multiplier: float
@@ -82,7 +86,7 @@ class UnitSizer:
         edge_threshold: float = 0.02,
         confidence_threshold: float = 0.6,
         volatility_factor: float = 0.1,
-        historical_weight: float = 0.3
+        historical_weight: float = 0.3,
     ):
         """
         Initialize unit sizer.
@@ -107,15 +111,12 @@ class UnitSizer:
         self.historical_weight = historical_weight
 
         # Historical tracking
-        self.bet_history: List[Dict] = []
-        self.performance_by_confidence: Dict[str, List[float]] = {}
-        self.performance_by_edge: Dict[str, List[float]] = {}
+        self.bet_history: list[dict] = []
+        self.performance_by_confidence: dict[str, list[float]] = {}
+        self.performance_by_edge: dict[str, list[float]] = {}
 
     def calculate_edge_confidence(
-        self,
-        model_prob: float,
-        market_prob: float,
-        sample_size: Optional[int] = None
+        self, model_prob: float, market_prob: float, sample_size: int | None = None
     ) -> float:
         """
         Calculate confidence based on edge size and statistical significance.
@@ -165,8 +166,8 @@ class UnitSizer:
     def calculate_model_confidence(
         self,
         model_prob: float,
-        prediction_interval: Optional[Tuple[float, float]] = None,
-        model_accuracy: Optional[float] = None
+        prediction_interval: tuple[float, float] | None = None,
+        model_accuracy: float | None = None,
     ) -> float:
         """
         Calculate confidence based on model characteristics.
@@ -193,7 +194,9 @@ class UnitSizer:
 
         # Adjust for historical model accuracy
         if model_accuracy is not None:
-            accuracy_adjustment = min(1.0, model_accuracy / 0.6)  # Scale so 60% accuracy = 1.0
+            accuracy_adjustment = min(
+                1.0, model_accuracy / 0.6
+            )  # Scale so 60% accuracy = 1.0
             base_confidence *= accuracy_adjustment
 
         return min(base_confidence, 1.0)
@@ -201,9 +204,9 @@ class UnitSizer:
     def calculate_market_confidence(
         self,
         market_prob: float,
-        line_movement: Optional[float] = None,
-        volume_indicator: Optional[float] = None,
-        time_to_game: Optional[float] = None
+        line_movement: float | None = None,
+        volume_indicator: float | None = None,
+        time_to_game: float | None = None,
     ) -> float:
         """
         Calculate confidence based on market characteristics.
@@ -244,8 +247,8 @@ class UnitSizer:
 
     def calculate_historical_confidence(
         self,
-        similar_situations: Optional[List[Dict]] = None,
-        recent_performance: Optional[Dict] = None
+        similar_situations: list[dict] | None = None,
+        recent_performance: dict | None = None,
     ) -> float:
         """
         Calculate confidence based on historical performance.
@@ -261,7 +264,7 @@ class UnitSizer:
 
         # Adjust based on similar historical situations
         if similar_situations:
-            results = [s.get('outcome', False) for s in similar_situations]
+            results = [s.get("outcome", False) for s in similar_situations]
             if results:
                 success_rate = sum(results) / len(results)
                 if success_rate >= 0.6:
@@ -271,8 +274,8 @@ class UnitSizer:
 
         # Adjust based on recent performance
         if recent_performance:
-            recent_roi = recent_performance.get('roi', 0.0)
-            recent_accuracy = recent_performance.get('accuracy', 0.5)
+            recent_roi = recent_performance.get("roi", 0.0)
+            recent_accuracy = recent_performance.get("accuracy", 0.5)
 
             if recent_roi > 0.05 and recent_accuracy > 0.55:
                 base_confidence *= 1.1
@@ -287,8 +290,8 @@ class UnitSizer:
         model_confidence: float,
         market_confidence: float,
         historical_confidence: float,
-        weights: Optional[Dict[str, float]] = None
-    ) -> Tuple[float, Dict[str, float]]:
+        weights: dict[str, float] | None = None,
+    ) -> tuple[float, dict[str, float]]:
         """
         Calculate combined confidence from all sources.
 
@@ -303,19 +306,14 @@ class UnitSizer:
             Tuple of (combined_confidence, factor_breakdown)
         """
         if weights is None:
-            weights = {
-                'edge': 0.4,
-                'model': 0.3,
-                'market': 0.2,
-                'historical': 0.1
-            }
+            weights = {"edge": 0.4, "model": 0.3, "market": 0.2, "historical": 0.1}
 
         # Weighted average
         combined = (
-            edge_confidence * weights['edge'] +
-            model_confidence * weights['model'] +
-            market_confidence * weights['market'] +
-            historical_confidence * weights['historical']
+            edge_confidence * weights["edge"]
+            + model_confidence * weights["model"]
+            + market_confidence * weights["market"]
+            + historical_confidence * weights["historical"]
         )
 
         # Apply non-linear scaling for extreme values
@@ -325,18 +323,16 @@ class UnitSizer:
             combined = combined * 0.8  # Compress low values
 
         factor_breakdown = {
-            'edge_contribution': edge_confidence * weights['edge'],
-            'model_contribution': model_confidence * weights['model'],
-            'market_contribution': market_confidence * weights['market'],
-            'historical_contribution': historical_confidence * weights['historical']
+            "edge_contribution": edge_confidence * weights["edge"],
+            "model_contribution": model_confidence * weights["model"],
+            "market_contribution": market_confidence * weights["market"],
+            "historical_contribution": historical_confidence * weights["historical"],
         }
 
         return min(combined, 1.0), factor_breakdown
 
     def calculate_base_units_from_edge(
-        self,
-        edge: float,
-        scale_method: UnitScale = UnitScale.LOGARITHMIC
+        self, edge: float, scale_method: UnitScale = UnitScale.LOGARITHMIC
     ) -> float:
         """
         Calculate base units based on edge size.
@@ -383,10 +379,10 @@ class UnitSizer:
         model_prob: float,
         market_odds: int,
         bankroll: float,
-        market_prob: Optional[float] = None,
-        confidence_overrides: Optional[Dict[str, float]] = None,
+        market_prob: float | None = None,
+        confidence_overrides: dict[str, float] | None = None,
         scale_method: UnitScale = UnitScale.LOGARITHMIC,
-        **kwargs
+        **kwargs,
     ) -> UnitRecommendation:
         """
         Calculate comprehensive unit recommendation.
@@ -421,33 +417,47 @@ class UnitSizer:
                 reasoning="Edge below threshold",
                 dollar_amount=0.0,
                 bankroll_percentage=0.0,
-                confidence_metrics=ConfidenceMetrics(0, 0, 0, 0, 0, {})
+                confidence_metrics=ConfidenceMetrics(0, 0, 0, 0, 0, {}),
             )
 
         # Calculate confidence metrics
-        edge_conf = confidence_overrides.get('edge', None) if confidence_overrides else None
+        edge_conf = (
+            confidence_overrides.get("edge", None) if confidence_overrides else None
+        )
         if edge_conf is None:
             edge_conf = self.calculate_edge_confidence(
-                model_prob, market_prob, kwargs.get('sample_size')
+                model_prob, market_prob, kwargs.get("sample_size")
             )
 
-        model_conf = confidence_overrides.get('model', None) if confidence_overrides else None
+        model_conf = (
+            confidence_overrides.get("model", None) if confidence_overrides else None
+        )
         if model_conf is None:
             model_conf = self.calculate_model_confidence(
-                model_prob, kwargs.get('prediction_interval'), kwargs.get('model_accuracy')
+                model_prob,
+                kwargs.get("prediction_interval"),
+                kwargs.get("model_accuracy"),
             )
 
-        market_conf = confidence_overrides.get('market', None) if confidence_overrides else None
+        market_conf = (
+            confidence_overrides.get("market", None) if confidence_overrides else None
+        )
         if market_conf is None:
             market_conf = self.calculate_market_confidence(
-                market_prob, kwargs.get('line_movement'),
-                kwargs.get('volume_indicator'), kwargs.get('time_to_game')
+                market_prob,
+                kwargs.get("line_movement"),
+                kwargs.get("volume_indicator"),
+                kwargs.get("time_to_game"),
             )
 
-        historical_conf = confidence_overrides.get('historical', None) if confidence_overrides else None
+        historical_conf = (
+            confidence_overrides.get("historical", None)
+            if confidence_overrides
+            else None
+        )
         if historical_conf is None:
             historical_conf = self.calculate_historical_confidence(
-                kwargs.get('similar_situations'), kwargs.get('recent_performance')
+                kwargs.get("similar_situations"), kwargs.get("recent_performance")
             )
 
         # Calculate combined confidence
@@ -462,7 +472,7 @@ class UnitSizer:
             market_confidence=market_conf,
             historical_confidence=historical_conf,
             combined_confidence=combined_conf,
-            confidence_factors=factor_breakdown
+            confidence_factors=factor_breakdown,
         )
 
         # Exit if combined confidence too low
@@ -476,7 +486,7 @@ class UnitSizer:
                 reasoning="Confidence below threshold",
                 dollar_amount=0.0,
                 bankroll_percentage=0.0,
-                confidence_metrics=confidence_metrics
+                confidence_metrics=confidence_metrics,
             )
 
         # Calculate base units from edge
@@ -487,16 +497,15 @@ class UnitSizer:
         confidence_multiplier = min(confidence_multiplier, 2.0)  # Cap at 2x
 
         # Apply risk adjustment (could be from external risk manager)
-        risk_adjustment = kwargs.get('risk_adjustment', 1.0)
+        risk_adjustment = kwargs.get("risk_adjustment", 1.0)
 
         # Calculate final multiplier and units
         final_multiplier = confidence_multiplier * risk_adjustment
         recommended_units = base_units * final_multiplier
 
         # Apply min/max constraints
-        if recommended_units < self.min_units:
-            if recommended_units > 0:
-                recommended_units = 0.0  # Below minimum viable
+        if recommended_units < self.min_units and recommended_units > 0:
+            recommended_units = 0.0  # Below minimum viable
         recommended_units = min(recommended_units, self.max_units)
 
         # Calculate dollar amount and bankroll percentage
@@ -523,7 +532,7 @@ class UnitSizer:
             reasoning=reasoning,
             dollar_amount=dollar_amount,
             bankroll_percentage=bankroll_percentage,
-            confidence_metrics=confidence_metrics
+            confidence_metrics=confidence_metrics,
         )
 
     def record_bet_outcome(
@@ -534,7 +543,7 @@ class UnitSizer:
         confidence: float,
         units_bet: float,
         outcome: bool,
-        profit_loss: float
+        profit_loss: float,
     ) -> None:
         """
         Record bet outcome for historical analysis.
@@ -549,14 +558,14 @@ class UnitSizer:
             profit_loss: Profit or loss in dollars
         """
         bet_record = {
-            'model_prob': model_prob,
-            'market_prob': market_prob,
-            'edge': edge,
-            'confidence': confidence,
-            'units_bet': units_bet,
-            'outcome': outcome,
-            'profit_loss': profit_loss,
-            'timestamp': np.datetime64('now')
+            "model_prob": model_prob,
+            "market_prob": market_prob,
+            "edge": edge,
+            "confidence": confidence,
+            "units_bet": units_bet,
+            "outcome": outcome,
+            "profit_loss": profit_loss,
+            "timestamp": np.datetime64("now"),
         }
 
         self.bet_history.append(bet_record)
@@ -577,30 +586,28 @@ class UnitSizer:
         """Get confidence bucket for performance tracking."""
         if confidence >= 0.8:
             return "high"
-        elif confidence >= 0.6:
+        if confidence >= 0.6:
             return "medium"
-        else:
-            return "low"
+        return "low"
 
     def _get_edge_bucket(self, edge: float) -> str:
         """Get edge bucket for performance tracking."""
         if edge >= 0.05:
             return "large"
-        elif edge >= 0.03:
+        if edge >= 0.03:
             return "medium"
-        else:
-            return "small"
+        return "small"
 
-    def get_performance_analysis(self) -> Dict[str, any]:
+    def get_performance_analysis(self) -> dict[str, any]:
         """Get comprehensive performance analysis."""
         if not self.bet_history:
             return {"message": "No betting history available"}
 
         total_bets = len(self.bet_history)
-        winning_bets = sum(1 for bet in self.bet_history if bet['outcome'])
+        winning_bets = sum(1 for bet in self.bet_history if bet["outcome"])
         win_rate = winning_bets / total_bets
 
-        total_profit = sum(bet['profit_loss'] for bet in self.bet_history)
+        total_profit = sum(bet["profit_loss"] for bet in self.bet_history)
         avg_profit_per_bet = total_profit / total_bets
 
         # Performance by confidence level
@@ -608,9 +615,9 @@ class UnitSizer:
         for conf_level, returns in self.performance_by_confidence.items():
             if returns:
                 conf_performance[conf_level] = {
-                    'avg_return_per_unit': np.mean(returns),
-                    'win_rate': sum(1 for r in returns if r > 0) / len(returns),
-                    'total_bets': len(returns)
+                    "avg_return_per_unit": np.mean(returns),
+                    "win_rate": sum(1 for r in returns if r > 0) / len(returns),
+                    "total_bets": len(returns),
                 }
 
         # Performance by edge level
@@ -618,22 +625,22 @@ class UnitSizer:
         for edge_level, returns in self.performance_by_edge.items():
             if returns:
                 edge_performance[edge_level] = {
-                    'avg_return_per_unit': np.mean(returns),
-                    'win_rate': sum(1 for r in returns if r > 0) / len(returns),
-                    'total_bets': len(returns)
+                    "avg_return_per_unit": np.mean(returns),
+                    "win_rate": sum(1 for r in returns if r > 0) / len(returns),
+                    "total_bets": len(returns),
                 }
 
         return {
-            'total_bets': total_bets,
-            'overall_win_rate': win_rate,
-            'total_profit': total_profit,
-            'avg_profit_per_bet': avg_profit_per_bet,
-            'performance_by_confidence': conf_performance,
-            'performance_by_edge': edge_performance,
-            'recent_performance': self._get_recent_performance()
+            "total_bets": total_bets,
+            "overall_win_rate": win_rate,
+            "total_profit": total_profit,
+            "avg_profit_per_bet": avg_profit_per_bet,
+            "performance_by_confidence": conf_performance,
+            "performance_by_edge": edge_performance,
+            "recent_performance": self._get_recent_performance(),
         }
 
-    def _get_recent_performance(self, lookback: int = 20) -> Dict[str, float]:
+    def _get_recent_performance(self, lookback: int = 20) -> dict[str, float]:
         """Get recent performance metrics."""
         if len(self.bet_history) < lookback:
             recent_bets = self.bet_history
@@ -643,11 +650,11 @@ class UnitSizer:
         if not recent_bets:
             return {}
 
-        recent_wins = sum(1 for bet in recent_bets if bet['outcome'])
-        recent_roi = sum(bet['profit_loss'] for bet in recent_bets) / len(recent_bets)
+        recent_wins = sum(1 for bet in recent_bets if bet["outcome"])
+        recent_roi = sum(bet["profit_loss"] for bet in recent_bets) / len(recent_bets)
 
         return {
-            'recent_win_rate': recent_wins / len(recent_bets),
-            'recent_avg_profit': recent_roi,
-            'bets_analyzed': len(recent_bets)
+            "recent_win_rate": recent_wins / len(recent_bets),
+            "recent_avg_profit": recent_roi,
+            "bets_analyzed": len(recent_bets),
         }

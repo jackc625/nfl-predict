@@ -5,22 +5,26 @@ This script validates the BacktestReporter functionality including HTML generati
 seasonal breakdown, cohort analysis, sensitivity analysis, and CSV exports.
 """
 
-import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 import tempfile
-from datetime import datetime, timedelta
-from typing import List, Dict
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 
-from backtest.reporting import (
-    BacktestReporter, ReportData, CohortResult, CohortType,
-    SensitivityResult, ReportSection
-)
-from backtest.walkforward import BacktestSummary, BacktestResult, BacktestConfig
 from backtest.clv_tracking import CLVSummary
+from backtest.reporting import (
+    BacktestReporter,
+    CohortResult,
+    CohortType,
+    ReportData,
+    SensitivityResult,
+)
+from backtest.walkforward import BacktestConfig, BacktestResult, BacktestSummary
 from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -30,9 +34,7 @@ def create_mock_backtest_summary() -> BacktestSummary:
     """Create mock backtest summary for testing."""
 
     config = BacktestConfig(
-        start_season=2020,
-        end_season=2023,
-        model_types=["wp", "ats", "ou"]
+        start_season=2020, end_season=2023, model_types=["wp", "ats", "ou"]
     )
 
     # Create mock results by season and model
@@ -55,7 +57,7 @@ def create_mock_backtest_summary() -> BacktestSummary:
                     bets_placed=8,
                     betting_roi=0.02 + np.random.normal(0, 0.15),
                     betting_profit=100 + np.random.normal(0, 200),
-                    execution_time=45.0
+                    execution_time=45.0,
                 )
                 season_results.append(result)
                 results_by_model[model_type].append(result)
@@ -68,7 +70,7 @@ def create_mock_backtest_summary() -> BacktestSummary:
         "ats_mean_mae": 0.125,
         "ou_mean_mae": 0.118,
         "total_predictions": 6240,
-        "total_weeks": 52
+        "total_weeks": 52,
     }
 
     return BacktestSummary(
@@ -82,11 +84,11 @@ def create_mock_backtest_summary() -> BacktestSummary:
         seasonal_trends={"wp_accuracy": [0.56, 0.57, 0.55, 0.58]},
         start_time=datetime(2024, 1, 1),
         end_time=datetime(2024, 1, 2),
-        total_execution_time=3600.0
+        total_execution_time=3600.0,
     )
 
 
-def create_mock_raw_results() -> List[BacktestResult]:
+def create_mock_raw_results() -> list[BacktestResult]:
     """Create mock raw results for testing."""
 
     results = []
@@ -109,7 +111,7 @@ def create_mock_raw_results() -> List[BacktestResult]:
                     units_wagered=800,
                     execution_time=45.0 + np.random.normal(0, 10),
                     feature_count=25,
-                    data_quality_score=0.95 + np.random.normal(0, 0.05)
+                    data_quality_score=0.95 + np.random.normal(0, 0.05),
                 )
                 results.append(result)
 
@@ -132,23 +134,23 @@ def create_mock_clv_summary() -> CLVSummary:
                 "count": 670,
                 "win_rate": 0.54,
                 "roi": 0.08,
-                "average_clv": 0.025
+                "average_clv": 0.025,
             },
             "Negative CLV": {
                 "count": 480,
                 "win_rate": 0.48,
                 "roi": -0.03,
-                "average_clv": -0.018
-            }
+                "average_clv": -0.018,
+            },
         },
         start_date=datetime(2020, 9, 1),
         end_date=datetime(2023, 12, 31),
         clv_t_statistic=2.34,
-        clv_p_value=0.019
+        clv_p_value=0.019,
     )
 
 
-def create_mock_additional_data() -> Dict:
+def create_mock_additional_data() -> dict:
     """Create mock additional data for enhanced analysis."""
 
     # Mock weather data
@@ -158,7 +160,7 @@ def create_mock_additional_data() -> Dict:
             weather_data[f"{season}_{week}"] = {
                 "condition": np.random.choice(["clear", "rain", "snow", "cloudy"]),
                 "temperature": np.random.randint(20, 80),
-                "wind_speed": np.random.randint(0, 25)
+                "wind_speed": np.random.randint(0, 25),
             }
 
     # Mock venue data
@@ -167,7 +169,7 @@ def create_mock_additional_data() -> Dict:
         for week in range(5, 18):
             venue_data[f"{season}_{week}"] = {
                 "roof_type": np.random.choice(["outdoor", "dome", "retractable"]),
-                "surface": np.random.choice(["grass", "turf"])
+                "surface": np.random.choice(["grass", "turf"]),
             }
 
     # Mock travel data
@@ -176,14 +178,14 @@ def create_mock_additional_data() -> Dict:
         for week in range(5, 18):
             travel_data[f"{season}_{week}"] = {
                 "distance_miles": np.random.randint(0, 3000),
-                "timezone_diff": np.random.randint(-3, 4)
+                "timezone_diff": np.random.randint(-3, 4),
             }
 
     return {
         "weather_data": weather_data,
         "venue_data": venue_data,
         "travel_data": travel_data,
-        "clv_summary": create_mock_clv_summary()
+        "clv_summary": create_mock_clv_summary(),
     }
 
 
@@ -195,7 +197,9 @@ def test_reporter_initialization():
         reporter = BacktestReporter(output_dir=temp_dir)
 
         assert reporter.output_dir.exists(), "Output directory should be created"
-        assert str(reporter.output_dir) == temp_dir, "Should use specified output directory"
+        assert str(reporter.output_dir) == temp_dir, (
+            "Should use specified output directory"
+        )
 
     logger.info("Reporter initialization successful")
     return True
@@ -212,24 +216,44 @@ def test_results_dataframe_creation():
 
     # Verify DataFrame structure
     assert isinstance(results_df, pd.DataFrame), "Should return DataFrame"
-    assert len(results_df) == len(raw_results), "Should have same number of rows as raw results"
+    assert len(results_df) == len(raw_results), (
+        "Should have same number of rows as raw results"
+    )
 
     # Verify columns
     expected_columns = [
-        'season', 'week', 'model_type', 'predictions_made', 'accuracy',
-        'log_loss', 'brier_score', 'mae', 'rmse', 'bets_placed',
-        'betting_roi', 'betting_profit', 'units_wagered', 'execution_time',
-        'feature_count', 'data_quality_score'
+        "season",
+        "week",
+        "model_type",
+        "predictions_made",
+        "accuracy",
+        "log_loss",
+        "brier_score",
+        "mae",
+        "rmse",
+        "bets_placed",
+        "betting_roi",
+        "betting_profit",
+        "units_wagered",
+        "execution_time",
+        "feature_count",
+        "data_quality_score",
     ]
 
     for col in expected_columns:
         assert col in results_df.columns, f"Should have {col} column"
 
     # Verify data types
-    assert results_df['season'].dtype in [np.int64, np.int32], "Season should be integer"
-    assert results_df['accuracy'].dtype in [np.float64, np.float32], "Accuracy should be float"
+    assert results_df["season"].dtype in [np.int64, np.int32], (
+        "Season should be integer"
+    )
+    assert results_df["accuracy"].dtype in [np.float64, np.float32], (
+        "Accuracy should be float"
+    )
 
-    logger.info(f"DataFrame creation successful: {len(results_df)} rows, {len(results_df.columns)} columns")
+    logger.info(
+        f"DataFrame creation successful: {len(results_df)} rows, {len(results_df.columns)} columns"
+    )
     return True
 
 
@@ -259,9 +283,13 @@ def test_seasonal_analysis():
         for model_type in ["wp", "ats", "ou"]:
             if model_type in model_performance:
                 model_data = model_performance[model_type]
-                assert "accuracy" in model_data or "roi" in model_data, f"Should have performance metrics for {model_type}"
+                assert "accuracy" in model_data or "roi" in model_data, (
+                    f"Should have performance metrics for {model_type}"
+                )
 
-    logger.info(f"Seasonal analysis successful: {len(seasonal_breakdown)} seasons analyzed")
+    logger.info(
+        f"Seasonal analysis successful: {len(seasonal_breakdown)} seasons analyzed"
+    )
     return True
 
 
@@ -280,7 +308,9 @@ def test_cohort_analysis():
     assert isinstance(cohort_analysis, dict), "Should return dictionary"
 
     # Should have at least season timing cohorts
-    assert CohortType.SEASON_TIMING in cohort_analysis, "Should have season timing cohorts"
+    assert CohortType.SEASON_TIMING in cohort_analysis, (
+        "Should have season timing cohorts"
+    )
 
     # Verify season timing cohorts
     timing_cohorts = cohort_analysis[CohortType.SEASON_TIMING]
@@ -288,7 +318,12 @@ def test_cohort_analysis():
 
     for cohort in timing_cohorts:
         assert isinstance(cohort, CohortResult), "Should be CohortResult objects"
-        assert cohort.cohort_name in ["Early Season", "Mid Season", "Late Season", "Playoffs"], "Should have valid cohort names"
+        assert cohort.cohort_name in [
+            "Early Season",
+            "Mid Season",
+            "Late Season",
+            "Playoffs",
+        ], "Should have valid cohort names"
         assert cohort.sample_size > 0, "Should have positive sample size"
         assert 0 <= cohort.accuracy <= 1, "Accuracy should be between 0 and 1"
 
@@ -297,7 +332,9 @@ def test_cohort_analysis():
         weather_cohorts = cohort_analysis[CohortType.WEATHER]
         assert len(weather_cohorts) > 0, "Should have weather cohorts"
 
-    logger.info(f"Cohort analysis successful: {len(cohort_analysis)} cohort types analyzed")
+    logger.info(
+        f"Cohort analysis successful: {len(cohort_analysis)} cohort types analyzed"
+    )
     return True
 
 
@@ -319,12 +356,22 @@ def test_sensitivity_analysis():
     for analysis_name in expected_analyses:
         if analysis_name in sensitivity_analysis:
             result = sensitivity_analysis[analysis_name]
-            assert isinstance(result, SensitivityResult), f"Should be SensitivityResult for {analysis_name}"
-            assert len(result.parameter_values) > 0, f"Should have parameter values for {analysis_name}"
-            assert len(result.roi_values) == len(result.parameter_values), f"Should have matching ROI values for {analysis_name}"
-            assert result.optimal_roi_value in result.parameter_values, f"Optimal value should be in parameter range for {analysis_name}"
+            assert isinstance(result, SensitivityResult), (
+                f"Should be SensitivityResult for {analysis_name}"
+            )
+            assert len(result.parameter_values) > 0, (
+                f"Should have parameter values for {analysis_name}"
+            )
+            assert len(result.roi_values) == len(result.parameter_values), (
+                f"Should have matching ROI values for {analysis_name}"
+            )
+            assert result.optimal_roi_value in result.parameter_values, (
+                f"Optimal value should be in parameter range for {analysis_name}"
+            )
 
-    logger.info(f"Sensitivity analysis successful: {len(sensitivity_analysis)} parameters analyzed")
+    logger.info(
+        f"Sensitivity analysis successful: {len(sensitivity_analysis)} parameters analyzed"
+    )
     return True
 
 
@@ -344,24 +391,30 @@ def test_html_report_generation():
         report_path = reporter.generate_full_report(
             backtest_summary=backtest_summary,
             raw_results=raw_results,
-            additional_data=additional_data
+            additional_data=additional_data,
         )
 
         # Verify report file was created
         assert os.path.exists(report_path), "HTML report file should exist"
-        assert report_path.endswith('.html'), "Report should be HTML file"
+        assert report_path.endswith(".html"), "Report should be HTML file"
 
         # Verify report content
-        with open(report_path, 'r', encoding='utf-8') as f:
+        with open(report_path, encoding="utf-8") as f:
             html_content = f.read()
 
         # Check for key sections
         assert "NFL Prediction System" in html_content, "Should have title"
         assert "Executive Summary" in html_content, "Should have executive summary"
-        assert "Performance Overview" in html_content, "Should have performance overview"
-        assert "Season-by-Season Performance" in html_content, "Should have seasonal breakdown"
+        assert "Performance Overview" in html_content, (
+            "Should have performance overview"
+        )
+        assert "Season-by-Season Performance" in html_content, (
+            "Should have seasonal breakdown"
+        )
         assert "Cohort Analysis" in html_content, "Should have cohort analysis"
-        assert "Sensitivity Analysis" in html_content, "Should have sensitivity analysis"
+        assert "Sensitivity Analysis" in html_content, (
+            "Should have sensitivity analysis"
+        )
 
         # Check for data
         assert "Total Predictions" in html_content, "Should show total predictions"
@@ -384,7 +437,9 @@ def test_csv_exports():
         additional_data = create_mock_additional_data()
 
         # Prepare report data
-        report_data = reporter._prepare_report_data(backtest_summary, raw_results, additional_data)
+        report_data = reporter._prepare_report_data(
+            backtest_summary, raw_results, additional_data
+        )
 
         # Generate CSV exports
         csv_files = reporter._generate_csv_exports(report_data, raw_results)
@@ -392,14 +447,19 @@ def test_csv_exports():
         # Verify CSV files were created
         assert len(csv_files) >= 3, "Should create at least 3 CSV files"
 
-        expected_files = ["detailed_results.csv", "seasonal_summary.csv", "cohort_analysis.csv"]
+        expected_files = [
+            "detailed_results.csv",
+            "seasonal_summary.csv",
+            "cohort_analysis.csv",
+        ]
         for expected_file in expected_files:
             file_path = os.path.join(temp_dir, expected_file)
             assert os.path.exists(file_path), f"Should create {expected_file}"
 
             # Verify CSV content
             import csv
-            with open(file_path, 'r') as f:
+
+            with open(file_path) as f:
                 reader = csv.reader(f)
                 header = next(reader)
                 assert len(header) > 0, f"Should have header in {expected_file}"
@@ -424,14 +484,22 @@ def test_report_data_preparation():
     additional_data = create_mock_additional_data()
 
     # Prepare report data
-    report_data = reporter._prepare_report_data(backtest_summary, raw_results, additional_data)
+    report_data = reporter._prepare_report_data(
+        backtest_summary, raw_results, additional_data
+    )
 
     # Verify report data structure
     assert isinstance(report_data, ReportData), "Should return ReportData"
-    assert report_data.backtest_summary == backtest_summary, "Should include backtest summary"
-    assert isinstance(report_data.seasonal_breakdown, dict), "Should have seasonal breakdown"
+    assert report_data.backtest_summary == backtest_summary, (
+        "Should include backtest summary"
+    )
+    assert isinstance(report_data.seasonal_breakdown, dict), (
+        "Should have seasonal breakdown"
+    )
     assert isinstance(report_data.cohort_analysis, dict), "Should have cohort analysis"
-    assert isinstance(report_data.sensitivity_analysis, dict), "Should have sensitivity analysis"
+    assert isinstance(report_data.sensitivity_analysis, dict), (
+        "Should have sensitivity analysis"
+    )
     assert report_data.clv_summary is not None, "Should include CLV summary"
 
     # Verify seasonal breakdown
@@ -454,7 +522,9 @@ def test_html_template_sections():
     backtest_summary = create_mock_backtest_summary()
     raw_results = create_mock_raw_results()
     additional_data = create_mock_additional_data()
-    report_data = reporter._prepare_report_data(backtest_summary, raw_results, additional_data)
+    report_data = reporter._prepare_report_data(
+        backtest_summary, raw_results, additional_data
+    )
 
     # Test executive summary section
     exec_summary = reporter._create_executive_summary_section(report_data)
@@ -469,8 +539,12 @@ def test_html_template_sections():
 
     # Test seasonal breakdown section
     seasonal_section = reporter._create_seasonal_breakdown_section(report_data)
-    assert "Season-by-Season Performance" in seasonal_section, "Should have section title"
-    assert "2020" in seasonal_section or "2021" in seasonal_section, "Should show season data"
+    assert "Season-by-Season Performance" in seasonal_section, (
+        "Should have section title"
+    )
+    assert "2020" in seasonal_section or "2021" in seasonal_section, (
+        "Should show season data"
+    )
 
     logger.info("HTML template sections validated")
     return True
@@ -492,26 +566,28 @@ def test_edge_cases():
         results_by_model={"wp": []},
         overall_metrics={},
         seasonal_trends={},
-        start_time=datetime.now()
+        start_time=datetime.now(),
     )
 
-    minimal_results = [BacktestResult(
-        season=2023,
-        week=5,
-        model_type="wp",
-        predictions_made=10,
-        accuracy=0.6
-    )]
+    minimal_results = [
+        BacktestResult(
+            season=2023, week=5, model_type="wp", predictions_made=10, accuracy=0.6
+        )
+    ]
 
     try:
         # Should handle minimal data without crashing
-        report_data = reporter._prepare_report_data(minimal_summary, minimal_results, None)
+        report_data = reporter._prepare_report_data(
+            minimal_summary, minimal_results, None
+        )
         assert report_data is not None, "Should handle minimal data"
 
         # Should handle empty cohort analysis
         results_df = reporter._create_results_dataframe(minimal_results)
         cohort_analysis = reporter._perform_cohort_analysis(results_df, None)
-        assert isinstance(cohort_analysis, dict), "Should return dict for empty cohort analysis"
+        assert isinstance(cohort_analysis, dict), (
+            "Should return dict for empty cohort analysis"
+        )
 
     except Exception as e:
         logger.error(f"Edge case handling failed: {e}")
@@ -537,22 +613,26 @@ def test_full_integration():
         report_path = reporter.generate_full_report(
             backtest_summary=backtest_summary,
             raw_results=raw_results,
-            additional_data=additional_data
+            additional_data=additional_data,
         )
 
         # Verify all outputs
         assert os.path.exists(report_path), "HTML report should exist"
 
         # Check for CSV files
-        csv_files = [f for f in os.listdir(temp_dir) if f.endswith('.csv')]
+        csv_files = [f for f in os.listdir(temp_dir) if f.endswith(".csv")]
         assert len(csv_files) >= 3, "Should create multiple CSV files"
 
         # Verify file sizes (should not be empty)
-        assert os.path.getsize(report_path) > 1000, "HTML report should have substantial content"
+        assert os.path.getsize(report_path) > 1000, (
+            "HTML report should have substantial content"
+        )
 
         for csv_file in csv_files:
             csv_path = os.path.join(temp_dir, csv_file)
-            assert os.path.getsize(csv_path) > 100, f"CSV file {csv_file} should have content"
+            assert os.path.getsize(csv_path) > 100, (
+                f"CSV file {csv_file} should have content"
+            )
 
     logger.info("Full integration test successful")
     return True
@@ -573,7 +653,7 @@ def run_all_tests():
         test_report_data_preparation,
         test_html_template_sections,
         test_edge_cases,
-        test_full_integration
+        test_full_integration,
     ]
 
     passed = 0
@@ -590,6 +670,7 @@ def run_all_tests():
             failed += 1
             logger.error(f"Test {test_func.__name__} failed with exception: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
 
     logger.info(f"Backtest reporting tests completed: {passed} passed, {failed} failed")

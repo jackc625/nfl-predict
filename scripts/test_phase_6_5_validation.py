@@ -6,20 +6,20 @@ Simple test to validate our backtest system produces consistent results.
 Uses existing backtest reporting infrastructure to test reproducibility.
 """
 
-import sys
-import os
-from pathlib import Path
-from datetime import datetime
-import json
-import tempfile
 import hashlib
-from typing import Dict, List, Any
+import json
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
 
 # Add project root to Python path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from scripts.test_backtest_reporting import (
-    create_mock_backtest_summary, create_mock_raw_results, BacktestReporter
+    BacktestReporter,
+    create_mock_backtest_summary,
+    create_mock_raw_results,
 )
 from utils.logging_config import get_logger
 
@@ -44,22 +44,26 @@ def test_reproducibility_simple():
 
     # Create frozen artifacts
     frozen_artifacts = {
-        'summary': reference_summary,
-        'creation_time': datetime.now(),
-        'total_predictions': reference_summary.total_predictions,
-        'overall_metrics': reference_summary.overall_metrics,
-        'seasons': list(reference_summary.results_by_season.keys())
+        "summary": reference_summary,
+        "creation_time": datetime.now(),
+        "total_predictions": reference_summary.total_predictions,
+        "overall_metrics": reference_summary.overall_metrics,
+        "seasons": list(reference_summary.results_by_season.keys()),
     }
 
     # Save frozen reference
     frozen_path = validation_dir / "frozen_reference.json"
-    with open(frozen_path, 'w') as f:
-        json.dump({
-            'total_predictions': frozen_artifacts['total_predictions'],
-            'overall_metrics': frozen_artifacts['overall_metrics'],
-            'seasons': frozen_artifacts['seasons'],
-            'creation_time': frozen_artifacts['creation_time'].isoformat()
-        }, f, indent=2)
+    with open(frozen_path, "w") as f:
+        json.dump(
+            {
+                "total_predictions": frozen_artifacts["total_predictions"],
+                "overall_metrics": frozen_artifacts["overall_metrics"],
+                "seasons": frozen_artifacts["seasons"],
+                "creation_time": frozen_artifacts["creation_time"].isoformat(),
+            },
+            f,
+            indent=2,
+        )
 
     print(f"[+] Reference artifacts saved to {frozen_path}")
     print(f"    Total predictions: {frozen_artifacts['total_predictions']:,}")
@@ -79,10 +83,10 @@ def test_reproducibility_simple():
         test_summary = create_mock_backtest_summary()
 
         test_artifacts = {
-            'run_id': run_id,
-            'total_predictions': test_summary.total_predictions,
-            'overall_metrics': test_summary.overall_metrics,
-            'seasons': list(test_summary.results_by_season.keys())
+            "run_id": run_id,
+            "total_predictions": test_summary.total_predictions,
+            "overall_metrics": test_summary.overall_metrics,
+            "seasons": list(test_summary.results_by_season.keys()),
         }
 
         test_results.append(test_artifacts)
@@ -96,36 +100,38 @@ def test_reproducibility_simple():
     validation_status = "PASS"
     issues = []
 
-    for i, test_run in enumerate(test_results):
-        run_id = test_run['run_id']
+    for _i, test_run in enumerate(test_results):
+        run_id = test_run["run_id"]
 
         # Check total predictions
-        if test_run['total_predictions'] != frozen_artifacts['total_predictions']:
+        if test_run["total_predictions"] != frozen_artifacts["total_predictions"]:
             issues.append(f"Run {run_id}: Total predictions mismatch")
             validation_status = "FAIL"
 
         # Check seasons
-        if test_run['seasons'] != frozen_artifacts['seasons']:
+        if test_run["seasons"] != frozen_artifacts["seasons"]:
             issues.append(f"Run {run_id}: Seasons mismatch")
             validation_status = "FAIL"
 
         # Check key metrics with tolerance
         tolerance = 1e-6
-        for metric_name, ref_value in frozen_artifacts['overall_metrics'].items():
-            test_value = test_run['overall_metrics'].get(metric_name)
+        for metric_name, ref_value in frozen_artifacts["overall_metrics"].items():
+            test_value = test_run["overall_metrics"].get(metric_name)
 
             if test_value is None:
                 issues.append(f"Run {run_id}: Missing metric {metric_name}")
                 validation_status = "FAIL"
             elif abs(test_value - ref_value) > tolerance:
-                issues.append(f"Run {run_id}: Metric {metric_name} differs by {abs(test_value - ref_value):.2e}")
+                issues.append(
+                    f"Run {run_id}: Metric {metric_name} differs by {abs(test_value - ref_value):.2e}"
+                )
                 validation_status = "FAIL"
 
     # Check cross-run consistency
     for i in range(1, len(test_results)):
-        for metric_name in frozen_artifacts['overall_metrics'].keys():
-            val_0 = test_results[0]['overall_metrics'][metric_name]
-            val_i = test_results[i]['overall_metrics'][metric_name]
+        for metric_name in frozen_artifacts["overall_metrics"]:
+            val_0 = test_results[0]["overall_metrics"][metric_name]
+            val_i = test_results[i]["overall_metrics"][metric_name]
 
             if abs(val_0 - val_i) > 1e-10:
                 issues.append(f"Cross-run inconsistency in {metric_name}")
@@ -153,7 +159,7 @@ def test_reproducibility_simple():
     raw_results = create_mock_raw_results()
 
     report_hashes = []
-    for run_id in range(2):  # Test 2 report generations
+    for _run_id in range(2):  # Test 2 report generations
         with tempfile.TemporaryDirectory() as temp_dir:
             reporter = BacktestReporter(temp_dir)
 
@@ -161,14 +167,14 @@ def test_reproducibility_simple():
             report_path = reporter.generate_full_report(
                 backtest_summary=reference_summary,
                 raw_results=raw_results,
-                additional_data={}
+                additional_data={},
             )
 
             # Read and hash the report content
-            with open(report_path, 'r', encoding='utf-8') as f:
+            with open(report_path, encoding="utf-8") as f:
                 content = f.read()
                 # Remove timestamps for comparison
-                content = content.replace(datetime.now().strftime('%Y'), 'YEAR')
+                content = content.replace(datetime.now().strftime("%Y"), "YEAR")
                 content_hash = hashlib.md5(content.encode()).hexdigest()
                 report_hashes.append(content_hash)
 
@@ -182,22 +188,25 @@ def test_reproducibility_simple():
 
     # Final validation results
     validation_results = {
-        'timestamp': datetime.now().isoformat(),
-        'validation_status': validation_status,
-        'total_runs': num_runs,
-        'issues_found': len(issues),
-        'issue_details': issues,
-        'reference_metrics': frozen_artifacts['overall_metrics'],
-        'test_summary': {
-            'reproducible_predictions': len(issues) == 0,
-            'reproducible_reports': len(set(report_hashes)) == 1,
-            'numerical_precision': 'high' if validation_status == "PASS" else 'medium'
-        }
+        "timestamp": datetime.now().isoformat(),
+        "validation_status": validation_status,
+        "total_runs": num_runs,
+        "issues_found": len(issues),
+        "issue_details": issues,
+        "reference_metrics": frozen_artifacts["overall_metrics"],
+        "test_summary": {
+            "reproducible_predictions": len(issues) == 0,
+            "reproducible_reports": len(set(report_hashes)) == 1,
+            "numerical_precision": "high" if validation_status == "PASS" else "medium",
+        },
     }
 
     # Save validation results
-    results_path = validation_dir / f"validation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with open(results_path, 'w') as f:
+    results_path = (
+        validation_dir
+        / f"validation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
+    with open(results_path, "w") as f:
         json.dump(validation_results, f, indent=2)
 
     print("=" * 60)
@@ -234,8 +243,12 @@ def test_deterministic_behavior():
             break
 
     print(f"Mock summaries identical: {metrics_match}")
-    print(f"Total predictions match: {summary1.total_predictions == summary2.total_predictions}")
-    print(f"Season count match: {len(summary1.results_by_season) == len(summary2.results_by_season)}")
+    print(
+        f"Total predictions match: {summary1.total_predictions == summary2.total_predictions}"
+    )
+    print(
+        f"Season count match: {len(summary1.results_by_season) == len(summary2.results_by_season)}"
+    )
 
     return metrics_match
 
@@ -251,12 +264,11 @@ def main():
         results = test_reproducibility_simple()
 
         # Overall assessment
-        if results['validation_status'] == "PASS" and deterministic:
+        if results["validation_status"] == "PASS" and deterministic:
             print("\n[SUCCESS] Phase 6.5 validation completed successfully")
             return True
-        else:
-            print("\n[WARNING] Phase 6.5 validation completed with issues")
-            return False
+        print("\n[WARNING] Phase 6.5 validation completed with issues")
+        return False
 
     except Exception as e:
         logger.error(f"Validation failed: {e}")

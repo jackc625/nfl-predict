@@ -13,21 +13,20 @@ Generated to demonstrate completion of Phase 6.4.
 """
 
 import sys
-import os
 from pathlib import Path
-from datetime import datetime
-import tempfile
 
 # Add project root to Python path
 sys.path.append(str(Path(__file__).parent.parent))
 
+import logging
+
 from backtest.reporting import BacktestReporter
 from scripts.test_backtest_reporting import create_mock_backtest_summary
-import logging
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 def main():
     """Generate a complete demo of Phase 6.4 backtest reporting."""
@@ -45,8 +44,8 @@ def main():
 
     # Initialize reporter
     reporter = BacktestReporter(str(demo_dir))
-    print(f"BacktestReporter initialized")
-    print(f"   Plotly charts available: True")
+    print("BacktestReporter initialized")
+    print("   Plotly charts available: True")
     print()
 
     # Create comprehensive mock data
@@ -56,21 +55,23 @@ def main():
     # Simulate raw results
     raw_results = []
     additional_data = {
-        'model_configs': {
-            'wp': {'features': ['elo_diff', 'rest_days', 'travel_distance']},
-            'ats': {'features': ['spread', 'market_movement', 'weather']},
-            'ou': {'features': ['totals', 'pace', 'weather']}
+        "model_configs": {
+            "wp": {"features": ["elo_diff", "rest_days", "travel_distance"]},
+            "ats": {"features": ["spread", "market_movement", "weather"]},
+            "ou": {"features": ["totals", "pace", "weather"]},
         },
-        'feature_importance': {
-            'wp': {'elo_diff': 0.45, 'rest_days': 0.30, 'travel_distance': 0.25},
-            'ats': {'spread': 0.40, 'market_movement': 0.35, 'weather': 0.25}
-        }
+        "feature_importance": {
+            "wp": {"elo_diff": 0.45, "rest_days": 0.30, "travel_distance": 0.25},
+            "ats": {"spread": 0.40, "market_movement": 0.35, "weather": 0.25},
+        },
     }
 
     print("Test data created")
-    print(f"   Seasons: 2018-2021 (4 seasons)")
+    print("   Seasons: 2018-2021 (4 seasons)")
     print(f"   Total predictions: {backtest_summary.total_predictions:,}")
-    print(f"   Overall accuracy: {backtest_summary.overall_metrics.get('wp_mean_accuracy', 0.55):.3f}")
+    print(
+        f"   Overall accuracy: {backtest_summary.overall_metrics.get('wp_mean_accuracy', 0.55):.3f}"
+    )
     print()
 
     # Generate comprehensive report
@@ -88,7 +89,7 @@ def main():
         report_path = reporter.generate_full_report(
             backtest_summary=backtest_summary,
             raw_results=raw_results,
-            additional_data=additional_data
+            additional_data=additional_data,
         )
 
         print("REPORT GENERATION SUCCESSFUL!")
@@ -139,7 +140,7 @@ def main():
         csv_files = reporter.export_csv_reports(
             backtest_summary=backtest_summary,
             raw_results=raw_results,
-            additional_data=additional_data
+            additional_data=additional_data,
         )
 
         print(f"CSV exports generated: {len(csv_files)} files")
@@ -166,12 +167,13 @@ def main():
         print("[+] Sensitivity analysis on EV thresholds and Kelly fractions")
         print("[+] CSV export for detailed analysis")
         print()
-        print(f"Open the HTML report to see the full interactive experience:")
+        print("Open the HTML report to see the full interactive experience:")
         print(f"   {report_path}")
 
     except Exception as e:
         print(f"Error generating report: {e}")
         raise
+
 
 if __name__ == "__main__":
     main()

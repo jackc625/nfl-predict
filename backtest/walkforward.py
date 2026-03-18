@@ -5,27 +5,27 @@ This module implements rigorous walk-forward validation with strict temporal ord
 data leakage prevention, and comprehensive performance tracking across multiple seasons.
 """
 
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import List, Dict, Optional, Tuple, Any, Callable
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
 import json
-import pickle
 import os
-from pathlib import Path
-import warnings
+import pickle
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any
 
-from utils.logging_config import get_logger
-from utils.date_utils import get_current_nfl_season, get_current_nfl_week
+import numpy as np
+import pandas as pd
+
 from utils.exceptions import BacktestError, DataValidationError, ModelTrainingError
+from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 
 class BacktestPhase(Enum):
     """Phases of walk-forward backtesting."""
+
     INITIALIZATION = "initialization"
     DATA_PREPARATION = "data_preparation"
     FEATURE_BUILDING = "feature_building"
@@ -38,9 +38,10 @@ class BacktestPhase(Enum):
 
 class ValidationLevel(Enum):
     """Levels of validation strictness."""
-    STRICT = "strict"      # Maximum validation, slowest
+
+    STRICT = "strict"  # Maximum validation, slowest
     MODERATE = "moderate"  # Balanced validation
-    BASIC = "basic"       # Minimal validation, fastest
+    BASIC = "basic"  # Minimal validation, fastest
 
 
 @dataclass
@@ -48,16 +49,18 @@ class SeasonSplit:
     """Defines training and validation periods for a season."""
 
     validation_season: int
-    validation_weeks: List[int]
+    validation_weeks: list[int]
 
     # Training data includes all prior seasons + early weeks of validation season
-    training_seasons: List[int]
-    training_weeks_current_season: List[int]  # Weeks from validation season used for training
+    training_seasons: list[int]
+    training_weeks_current_season: list[
+        int
+    ]  # Weeks from validation season used for training
 
     # Metadata
     total_training_games: int = 0
     total_validation_games: int = 0
-    split_date: Optional[datetime] = None
+    split_date: datetime | None = None
 
 
 @dataclass
@@ -78,7 +81,7 @@ class BacktestConfig:
     results_path: str = "outputs/backtest"
 
     # Model types to backtest
-    model_types: List[str] = field(default_factory=lambda: ["wp", "ats", "ou"])
+    model_types: list[str] = field(default_factory=lambda: ["wp", "ats", "ou"])
 
     # Validation settings
     validation_level: ValidationLevel = ValidationLevel.MODERATE
@@ -94,7 +97,7 @@ class BacktestConfig:
     # Betting simulation
     simulate_betting: bool = True
     starting_bankroll: float = 10000.0
-    bet_selection_criteria: Dict[str, Any] = field(default_factory=dict)
+    bet_selection_criteria: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -107,23 +110,23 @@ class BacktestResult:
 
     # Performance metrics
     predictions_made: int
-    accuracy: Optional[float] = None
-    log_loss: Optional[float] = None
-    brier_score: Optional[float] = None
-    mae: Optional[float] = None
-    rmse: Optional[float] = None
+    accuracy: float | None = None
+    log_loss: float | None = None
+    brier_score: float | None = None
+    mae: float | None = None
+    rmse: float | None = None
 
     # Betting metrics (if applicable)
     bets_placed: int = 0
-    betting_roi: Optional[float] = None
-    betting_profit: Optional[float] = None
-    units_wagered: Optional[float] = None
+    betting_roi: float | None = None
+    betting_profit: float | None = None
+    units_wagered: float | None = None
 
     # Metadata
-    execution_time: Optional[float] = None
-    data_quality_score: Optional[float] = None
-    feature_count: Optional[int] = None
-    model_version: Optional[str] = None
+    execution_time: float | None = None
+    data_quality_score: float | None = None
+    feature_count: int | None = None
+    model_version: str | None = None
 
 
 @dataclass
@@ -136,23 +139,23 @@ class BacktestSummary:
     total_predictions: int
 
     # Aggregated performance
-    results_by_season: Dict[int, List[BacktestResult]]
-    results_by_model: Dict[str, List[BacktestResult]]
+    results_by_season: dict[int, list[BacktestResult]]
+    results_by_model: dict[str, list[BacktestResult]]
 
     # Summary metrics
-    overall_metrics: Dict[str, float]
-    seasonal_trends: Dict[str, List[float]]
+    overall_metrics: dict[str, float]
+    seasonal_trends: dict[str, list[float]]
 
     # Execution metadata
     start_time: datetime
-    end_time: Optional[datetime] = None
-    total_execution_time: Optional[float] = None
-    validation_errors: List[str] = field(default_factory=list)
+    end_time: datetime | None = None
+    total_execution_time: float | None = None
+    validation_errors: list[str] = field(default_factory=list)
 
     # Betting simulation results
-    final_bankroll: Optional[float] = None
-    total_roi: Optional[float] = None
-    sharpe_ratio: Optional[float] = None
+    final_bankroll: float | None = None
+    total_roi: float | None = None
+    sharpe_ratio: float | None = None
 
 
 class DataLeakageValidator:
@@ -163,17 +166,18 @@ class DataLeakageValidator:
         self.violations = []
 
     def validate_training_data(
-        self,
-        training_data: pd.DataFrame,
-        validation_cutoff: datetime
+        self, training_data: pd.DataFrame, validation_cutoff: datetime
     ) -> bool:
         """Validate that training data contains no future information."""
 
-        if 'date' not in training_data.columns and 'game_date' not in training_data.columns:
+        if (
+            "date" not in training_data.columns
+            and "game_date" not in training_data.columns
+        ):
             logger.warning("No date column found for leakage validation")
             return True
 
-        date_col = 'date' if 'date' in training_data.columns else 'game_date'
+        date_col = "date" if "date" in training_data.columns else "game_date"
 
         # Check for future dates
         future_data = training_data[training_data[date_col] >= validation_cutoff]
@@ -191,17 +195,19 @@ class DataLeakageValidator:
         return True
 
     def validate_feature_timestamps(
-        self,
-        features: pd.DataFrame,
-        prediction_date: datetime
+        self, features: pd.DataFrame, prediction_date: datetime
     ) -> bool:
         """Validate that all features are based on data before prediction date."""
 
         # Check for any timestamp columns that might indicate leakage
-        timestamp_cols = [col for col in features.columns if 'timestamp' in col.lower() or 'date' in col.lower()]
+        timestamp_cols = [
+            col
+            for col in features.columns
+            if "timestamp" in col.lower() or "date" in col.lower()
+        ]
 
         for col in timestamp_cols:
-            if features[col].dtype == 'datetime64[ns]':
+            if features[col].dtype == "datetime64[ns]":
                 future_features = features[features[col] >= prediction_date]
                 if len(future_features) > 0:
                     violation = f"Feature column '{col}' contains {len(future_features)} future timestamps"
@@ -209,7 +215,9 @@ class DataLeakageValidator:
                     logger.error(violation)
 
                     if self.strict_mode:
-                        raise DataValidationError(f"Feature leakage detected: {violation}")
+                        raise DataValidationError(
+                            f"Feature leakage detected: {violation}"
+                        )
 
                     return False
 
@@ -234,14 +242,16 @@ class WalkForwardBacktester:
         # Create output directories
         self._create_directories()
 
-        logger.info(f"WalkForwardBacktester initialized for seasons {config.start_season}-{config.end_season}")
+        logger.info(
+            f"WalkForwardBacktester initialized for seasons {config.start_season}-{config.end_season}"
+        )
 
     def run_backtest(
         self,
         data_loader: Callable,
         feature_builder: Callable,
-        model_trainers: Dict[str, Callable],
-        evaluator: Callable
+        model_trainers: dict[str, Callable],
+        evaluator: Callable,
     ) -> BacktestSummary:
         """
         Execute complete walk-forward backtesting.
@@ -273,7 +283,9 @@ class WalkForwardBacktester:
 
             # Execute backtest for each split
             for i, split in enumerate(season_splits):
-                logger.info(f"Processing split {i+1}/{total_splits}: Season {split.validation_season}")
+                logger.info(
+                    f"Processing split {i + 1}/{total_splits}: Season {split.validation_season}"
+                )
 
                 try:
                     split_results = self._execute_season_split(
@@ -295,12 +307,11 @@ class WalkForwardBacktester:
                         self._save_checkpoint(all_results, i + 1)
 
                 except Exception as e:
-                    logger.error(f"Error in split {i+1}: {e}")
+                    logger.error(f"Error in split {i + 1}: {e}")
                     if self.config.validation_level == ValidationLevel.STRICT:
-                        raise BacktestError(f"Backtest failed at split {i+1}: {e}")
-                    else:
-                        # Continue with next split in non-strict mode
-                        continue
+                        raise BacktestError(f"Backtest failed at split {i + 1}: {e}")
+                    # Continue with next split in non-strict mode
+                    continue
 
             # Create final summary
             end_time = datetime.now()
@@ -318,14 +329,16 @@ class WalkForwardBacktester:
                 start_time=start_time,
                 end_time=end_time,
                 total_execution_time=execution_time,
-                validation_errors=self.leakage_validator.violations
+                validation_errors=self.leakage_validator.violations,
             )
 
             # Save final results
             self._save_final_results(summary)
 
             logger.info(f"Backtesting completed in {execution_time:.1f} seconds")
-            logger.info(f"Processed {summary.total_predictions} predictions across {summary.total_weeks} weeks")
+            logger.info(
+                f"Processed {summary.total_predictions} predictions across {summary.total_weeks} weeks"
+            )
 
             return summary
 
@@ -333,20 +346,22 @@ class WalkForwardBacktester:
             logger.error(f"Backtesting failed: {e}")
             raise BacktestError(f"Walk-forward backtest failed: {e}")
 
-    def _generate_season_splits(self) -> List[SeasonSplit]:
+    def _generate_season_splits(self) -> list[SeasonSplit]:
         """Generate all season splits for walk-forward validation."""
 
         splits = []
 
         for validation_season in range(
             self.config.start_season + self.config.min_training_seasons,
-            self.config.end_season + 1
+            self.config.end_season + 1,
         ):
             # Training seasons: all previous seasons
             training_seasons = list(range(self.config.start_season, validation_season))
 
             # Validation weeks: from validation_start_week to end of season
-            validation_weeks = list(range(self.config.validation_start_week, 19))  # NFL weeks 1-18
+            validation_weeks = list(
+                range(self.config.validation_start_week, 19)
+            )  # NFL weeks 1-18
 
             # Training weeks from current season: weeks before validation starts
             training_weeks_current = list(range(1, self.config.validation_start_week))
@@ -356,7 +371,9 @@ class WalkForwardBacktester:
                 validation_weeks=validation_weeks,
                 training_seasons=training_seasons,
                 training_weeks_current_season=training_weeks_current,
-                split_date=datetime(validation_season, 9, 1)  # Approximate season start
+                split_date=datetime(
+                    validation_season, 9, 1
+                ),  # Approximate season start
             )
 
             splits.append(split)
@@ -369,9 +386,9 @@ class WalkForwardBacktester:
         split: SeasonSplit,
         data_loader: Callable,
         feature_builder: Callable,
-        model_trainers: Dict[str, Callable],
-        evaluator: Callable
-    ) -> List[BacktestResult]:
+        model_trainers: dict[str, Callable],
+        evaluator: Callable,
+    ) -> list[BacktestResult]:
         """Execute backtesting for a single season split."""
 
         logger.info(f"Executing season split: {split.validation_season}")
@@ -382,7 +399,9 @@ class WalkForwardBacktester:
 
         # Phase 2: Build features
         logger.info("Phase 2: Building features")
-        training_features = self._build_training_features(split, training_data, feature_builder)
+        training_features = self._build_training_features(
+            split, training_data, feature_builder
+        )
 
         # Phase 3: Train models
         logger.info("Phase 3: Training models")
@@ -395,20 +414,31 @@ class WalkForwardBacktester:
         for week in split.validation_weeks:
             try:
                 week_result = self._execute_week_validation(
-                    split.validation_season, week, split, trained_models,
-                    data_loader, feature_builder, evaluator
+                    split.validation_season,
+                    week,
+                    split,
+                    trained_models,
+                    data_loader,
+                    feature_builder,
+                    evaluator,
                 )
                 week_results.extend(week_result)
 
             except Exception as e:
-                logger.error(f"Error in week {week} of season {split.validation_season}: {e}")
+                logger.error(
+                    f"Error in week {week} of season {split.validation_season}: {e}"
+                )
                 if self.config.validation_level == ValidationLevel.STRICT:
                     raise
 
-        logger.info(f"Completed season {split.validation_season}: {len(week_results)} results")
+        logger.info(
+            f"Completed season {split.validation_season}: {len(week_results)} results"
+        )
         return week_results
 
-    def _load_training_data(self, split: SeasonSplit, data_loader: Callable) -> pd.DataFrame:
+    def _load_training_data(
+        self, split: SeasonSplit, data_loader: Callable
+    ) -> pd.DataFrame:
         """Load and validate training data for a split."""
 
         # Load data for all training seasons
@@ -422,7 +452,7 @@ class WalkForwardBacktester:
         if split.training_weeks_current_season:
             current_season_data = data_loader(
                 season=split.validation_season,
-                weeks=split.training_weeks_current_season
+                weeks=split.training_weeks_current_season,
             )
             training_data.append(current_season_data)
 
@@ -431,17 +461,20 @@ class WalkForwardBacktester:
 
         # Validate data leakage
         if self.config.check_data_leakage:
-            validation_cutoff = datetime(split.validation_season, 10, 1)  # Conservative cutoff
-            self.leakage_validator.validate_training_data(combined_data, validation_cutoff)
+            validation_cutoff = datetime(
+                split.validation_season, 10, 1
+            )  # Conservative cutoff
+            self.leakage_validator.validate_training_data(
+                combined_data, validation_cutoff
+            )
 
-        logger.info(f"Loaded {len(combined_data)} training records for season {split.validation_season}")
+        logger.info(
+            f"Loaded {len(combined_data)} training records for season {split.validation_season}"
+        )
         return combined_data
 
     def _build_training_features(
-        self,
-        split: SeasonSplit,
-        training_data: pd.DataFrame,
-        feature_builder: Callable
+        self, split: SeasonSplit, training_data: pd.DataFrame, feature_builder: Callable
     ) -> pd.DataFrame:
         """Build features for training data."""
 
@@ -449,23 +482,27 @@ class WalkForwardBacktester:
         features = feature_builder(
             data=training_data,
             as_of_date=datetime(split.validation_season, 9, 1),  # No future data
-            include_targets=True
+            include_targets=True,
         )
 
         # Validate feature timestamps
         if self.config.validate_temporal_order:
             prediction_date = datetime(split.validation_season, 9, 1)
-            self.leakage_validator.validate_feature_timestamps(features, prediction_date)
+            self.leakage_validator.validate_feature_timestamps(
+                features, prediction_date
+            )
 
-        logger.info(f"Built {len(features)} feature records with {len(features.columns)} features")
+        logger.info(
+            f"Built {len(features)} feature records with {len(features.columns)} features"
+        )
         return features
 
     def _train_models(
         self,
         split: SeasonSplit,
         training_features: pd.DataFrame,
-        model_trainers: Dict[str, Callable]
-    ) -> Dict[str, Any]:
+        model_trainers: dict[str, Callable],
+    ) -> dict[str, Any]:
         """Train all models for the split."""
 
         trained_models = {}
@@ -484,7 +521,7 @@ class WalkForwardBacktester:
                     features=training_features,
                     target_column=f"{model_type}_target",
                     validation_split=0.2,
-                    random_state=42
+                    random_state=42,
                 )
 
                 trained_models[model_type] = model
@@ -493,11 +530,11 @@ class WalkForwardBacktester:
                 if self.config.save_intermediate_results:
                     model_path = os.path.join(
                         self.config.models_path,
-                        f"{model_type}_season_{split.validation_season}.pkl"
+                        f"{model_type}_season_{split.validation_season}.pkl",
                     )
                     os.makedirs(os.path.dirname(model_path), exist_ok=True)
 
-                    with open(model_path, 'wb') as f:
+                    with open(model_path, "wb") as f:
                         pickle.dump(model, f)
 
                 logger.info(f"Successfully trained {model_type} model")
@@ -505,7 +542,9 @@ class WalkForwardBacktester:
             except Exception as e:
                 logger.error(f"Failed to train {model_type} model: {e}")
                 if self.config.validation_level == ValidationLevel.STRICT:
-                    raise ModelTrainingError(f"Model training failed for {model_type}: {e}")
+                    raise ModelTrainingError(
+                        f"Model training failed for {model_type}: {e}"
+                    )
 
         return trained_models
 
@@ -514,11 +553,11 @@ class WalkForwardBacktester:
         season: int,
         week: int,
         split: SeasonSplit,
-        trained_models: Dict[str, Any],
+        trained_models: dict[str, Any],
         data_loader: Callable,
         feature_builder: Callable,
-        evaluator: Callable
-    ) -> List[BacktestResult]:
+        evaluator: Callable,
+    ) -> list[BacktestResult]:
         """Execute validation for a single week."""
 
         logger.debug(f"Validating season {season}, week {week}")
@@ -533,8 +572,8 @@ class WalkForwardBacktester:
         # Build features for this week
         week_features = feature_builder(
             data=week_data,
-            as_of_date=datetime(season, 9, 1) + timedelta(weeks=week-1),
-            include_targets=False  # No targets for prediction
+            as_of_date=datetime(season, 9, 1) + timedelta(weeks=week - 1),
+            include_targets=False,  # No targets for prediction
         )
 
         results = []
@@ -543,7 +582,9 @@ class WalkForwardBacktester:
         for model_type, model in trained_models.items():
             try:
                 # Make predictions
-                predictions = model.predict(week_features.drop(columns=['game_id'], errors='ignore'))
+                predictions = model.predict(
+                    week_features.drop(columns=["game_id"], errors="ignore")
+                )
 
                 # Load actual outcomes for evaluation
                 actuals = week_data[f"{model_type}_actual"].values
@@ -557,27 +598,33 @@ class WalkForwardBacktester:
                     week=week,
                     model_type=model_type,
                     predictions_made=len(predictions),
-                    accuracy=metrics.get('accuracy'),
-                    log_loss=metrics.get('log_loss'),
-                    brier_score=metrics.get('brier_score'),
-                    mae=metrics.get('mae'),
-                    rmse=metrics.get('rmse'),
+                    accuracy=metrics.get("accuracy"),
+                    log_loss=metrics.get("log_loss"),
+                    brier_score=metrics.get("brier_score"),
+                    mae=metrics.get("mae"),
+                    rmse=metrics.get("rmse"),
                     feature_count=len(week_features.columns),
-                    model_version=f"{model_type}_v1.0"
+                    model_version=f"{model_type}_v1.0",
                 )
 
                 results.append(result)
 
-                logger.debug(f"Season {season} Week {week} {model_type}: {result.predictions_made} predictions")
+                logger.debug(
+                    f"Season {season} Week {week} {model_type}: {result.predictions_made} predictions"
+                )
 
             except Exception as e:
-                logger.error(f"Prediction failed for {model_type} in season {season}, week {week}: {e}")
+                logger.error(
+                    f"Prediction failed for {model_type} in season {season}, week {week}: {e}"
+                )
                 if self.config.validation_level == ValidationLevel.STRICT:
                     raise
 
         return results
 
-    def _calculate_overall_metrics(self, all_results: List[BacktestResult]) -> Dict[str, float]:
+    def _calculate_overall_metrics(
+        self, all_results: list[BacktestResult]
+    ) -> dict[str, float]:
         """Calculate overall performance metrics."""
 
         if not all_results:
@@ -597,24 +644,34 @@ class WalkForwardBacktester:
             valid_results = [r for r in results if r.accuracy is not None]
 
             if valid_results:
-                metrics[f"{model_type}_mean_accuracy"] = np.mean([r.accuracy for r in valid_results])
-                metrics[f"{model_type}_std_accuracy"] = np.std([r.accuracy for r in valid_results])
+                metrics[f"{model_type}_mean_accuracy"] = np.mean(
+                    [r.accuracy for r in valid_results]
+                )
+                metrics[f"{model_type}_std_accuracy"] = np.std(
+                    [r.accuracy for r in valid_results]
+                )
 
                 log_loss_results = [r for r in results if r.log_loss is not None]
                 if log_loss_results:
-                    metrics[f"{model_type}_mean_log_loss"] = np.mean([r.log_loss for r in log_loss_results])
+                    metrics[f"{model_type}_mean_log_loss"] = np.mean(
+                        [r.log_loss for r in log_loss_results]
+                    )
 
                 mae_results = [r for r in results if r.mae is not None]
                 if mae_results:
-                    metrics[f"{model_type}_mean_mae"] = np.mean([r.mae for r in mae_results])
+                    metrics[f"{model_type}_mean_mae"] = np.mean(
+                        [r.mae for r in mae_results]
+                    )
 
         # Overall statistics
-        metrics['total_predictions'] = sum(r.predictions_made for r in all_results)
-        metrics['total_weeks'] = len(set((r.season, r.week) for r in all_results))
+        metrics["total_predictions"] = sum(r.predictions_made for r in all_results)
+        metrics["total_weeks"] = len({(r.season, r.week) for r in all_results})
 
         return metrics
 
-    def _calculate_seasonal_trends(self, results_by_season: Dict[int, List[BacktestResult]]) -> Dict[str, List[float]]:
+    def _calculate_seasonal_trends(
+        self, results_by_season: dict[int, list[BacktestResult]]
+    ) -> dict[str, list[float]]:
         """Calculate seasonal performance trends."""
 
         trends = {}
@@ -630,8 +687,12 @@ class WalkForwardBacktester:
             trends[f"{model_type}_accuracy"] = []
 
             for season in sorted(results_by_season.keys()):
-                season_results = [r for r in results_by_season[season] if r.model_type == model_type]
-                valid_accuracies = [r.accuracy for r in season_results if r.accuracy is not None]
+                season_results = [
+                    r for r in results_by_season[season] if r.model_type == model_type
+                ]
+                valid_accuracies = [
+                    r.accuracy for r in season_results if r.accuracy is not None
+                ]
 
                 if valid_accuracies:
                     trends[f"{model_type}_accuracy"].append(np.mean(valid_accuracies))
@@ -645,13 +706,13 @@ class WalkForwardBacktester:
         dirs_to_create = [
             self.config.results_path,
             self.config.models_path,
-            os.path.join(self.config.results_path, "checkpoints")
+            os.path.join(self.config.results_path, "checkpoints"),
         ]
 
         for dir_path in dirs_to_create:
             os.makedirs(dir_path, exist_ok=True)
 
-    def _save_checkpoint(self, results: List[BacktestResult], checkpoint_num: int):
+    def _save_checkpoint(self, results: list[BacktestResult], checkpoint_num: int):
         """Save intermediate results checkpoint."""
         checkpoint_path = os.path.join(
             self.config.results_path, "checkpoints", f"checkpoint_{checkpoint_num}.json"
@@ -668,13 +729,13 @@ class WalkForwardBacktester:
                     "model_type": r.model_type,
                     "predictions_made": r.predictions_made,
                     "accuracy": r.accuracy,
-                    "log_loss": r.log_loss
+                    "log_loss": r.log_loss,
                 }
                 for r in results[-50:]  # Save last 50 results
-            ]
+            ],
         }
 
-        with open(checkpoint_path, 'w') as f:
+        with open(checkpoint_path, "w") as f:
             json.dump(checkpoint_data, f, indent=2)
 
         logger.info(f"Saved checkpoint {checkpoint_num} with {len(results)} results")
@@ -690,25 +751,25 @@ class WalkForwardBacktester:
                 "start_season": summary.config.start_season,
                 "end_season": summary.config.end_season,
                 "model_types": summary.config.model_types,
-                "validation_level": summary.config.validation_level.value
+                "validation_level": summary.config.validation_level.value,
             },
             "execution": {
                 "start_time": summary.start_time.isoformat(),
                 "end_time": summary.end_time.isoformat() if summary.end_time else None,
                 "total_execution_time": summary.total_execution_time,
-                "total_predictions": summary.total_predictions
+                "total_predictions": summary.total_predictions,
             },
             "performance": summary.overall_metrics,
             "trends": summary.seasonal_trends,
-            "validation_errors": summary.validation_errors
+            "validation_errors": summary.validation_errors,
         }
 
-        with open(summary_path, 'w') as f:
+        with open(summary_path, "w") as f:
             json.dump(summary_data, f, indent=2)
 
         # Save detailed results as pickle
         results_path = os.path.join(self.config.results_path, "detailed_results.pkl")
-        with open(results_path, 'wb') as f:
+        with open(results_path, "wb") as f:
             pickle.dump(summary, f)
 
         logger.info(f"Saved final results to {self.config.results_path}")
@@ -724,7 +785,7 @@ def create_default_config() -> BacktestConfig:
         validation_level=ValidationLevel.MODERATE,
         check_data_leakage=True,
         validate_temporal_order=True,
-        save_intermediate_results=True
+        save_intermediate_results=True,
     )
 
 
@@ -739,5 +800,5 @@ def create_strict_config() -> BacktestConfig:
         check_data_leakage=True,
         validate_temporal_order=True,
         save_intermediate_results=True,
-        checkpoint_frequency=2
+        checkpoint_frequency=2,
     )

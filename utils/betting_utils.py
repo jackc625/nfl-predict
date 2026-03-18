@@ -1,20 +1,20 @@
 """Betting utilities for Expected Value calculations and bet sizing."""
 
-from typing import Dict, List, Optional, Tuple, Union
 import math
-import numpy as np
 from enum import Enum
 
+import numpy as np
+
 from utils.probability_utils import (
-    moneyline_to_probability,
-    probability_to_moneyline,
     devig_probabilities,
-    edge_calculation
+    edge_calculation,
+    moneyline_to_probability,
 )
 
 
 class BetType(Enum):
     """Enumeration of supported bet types."""
+
     MONEYLINE = "moneyline"
     SPREAD = "spread"
     TOTAL = "total"
@@ -30,8 +30,8 @@ class BettingResult:
         market_prob: float,
         edge: float,
         expected_value: float,
-        kelly_size: Optional[float] = None,
-        recommended_units: Optional[float] = None
+        kelly_size: float | None = None,
+        recommended_units: float | None = None,
     ):
         self.bet_type = bet_type
         self.model_prob = model_prob
@@ -53,7 +53,7 @@ def calculate_moneyline_ev(
     market_odds: int,
     stake: float = 100.0,
     devig: bool = True,
-    opposite_odds: int = -110
+    opposite_odds: int = -110,
 ) -> BettingResult:
     """
     Calculate Expected Value for a moneyline bet.
@@ -82,7 +82,11 @@ def calculate_moneyline_ev(
 
     # Calculate Expected Value
     # EV = (Win Prob × Win Amount) - (Lose Prob × Lose Amount)
-    win_amount = stake * (abs(market_odds) / 100) if market_odds > 0 else stake * (100 / abs(market_odds))
+    win_amount = (
+        stake * (abs(market_odds) / 100)
+        if market_odds > 0
+        else stake * (100 / abs(market_odds))
+    )
     lose_amount = stake
 
     expected_value = (model_prob * win_amount) - ((1 - model_prob) * lose_amount)
@@ -92,7 +96,7 @@ def calculate_moneyline_ev(
         model_prob=model_prob,
         market_prob=market_prob,
         edge=edge,
-        expected_value=expected_value
+        expected_value=expected_value,
     )
 
 
@@ -102,7 +106,7 @@ def calculate_spread_ev(
     market_spread: float,
     spread_juice: int = -110,
     stake: float = 100.0,
-    side: str = "home"
+    side: str = "home",
 ) -> BettingResult:
     """
     Calculate Expected Value for a spread bet.
@@ -157,7 +161,7 @@ def calculate_spread_ev(
         model_prob=model_prob,
         market_prob=market_prob_devig,
         edge=edge,
-        expected_value=expected_value
+        expected_value=expected_value,
     )
 
 
@@ -167,7 +171,7 @@ def calculate_total_ev(
     market_total: float,
     total_juice: int = -110,
     stake: float = 100.0,
-    side: str = "over"
+    side: str = "over",
 ) -> BettingResult:
     """
     Calculate Expected Value for an over/under total bet.
@@ -213,7 +217,7 @@ def calculate_total_ev(
         model_prob=model_prob,
         market_prob=market_prob_devig,
         edge=edge,
-        expected_value=expected_value
+        expected_value=expected_value,
     )
 
 
@@ -222,7 +226,7 @@ def calculate_kelly_sizing(
     bankroll: float,
     odds: int,
     fraction: float = 0.25,
-    max_bet_pct: float = 0.05
+    max_bet_pct: float = 0.05,
 ) -> float:
     """
     Calculate Kelly criterion bet sizing for a betting result.
@@ -241,10 +245,7 @@ def calculate_kelly_sizing(
         return 0.0
 
     # Convert American odds to decimal odds
-    if odds > 0:
-        decimal_odds = (odds / 100) + 1
-    else:
-        decimal_odds = (100 / abs(odds)) + 1
+    decimal_odds = odds / 100 + 1 if odds > 0 else 100 / abs(odds) + 1
 
     # Kelly formula: f* = (bp - q) / b
     # where b = decimal_odds - 1, p = win probability, q = lose probability
@@ -268,12 +269,12 @@ def calculate_kelly_sizing(
 
 
 def analyze_game_betting_opportunities(
-    game_data: Dict,
-    model_predictions: Dict,
+    game_data: dict,
+    model_predictions: dict,
     bankroll: float = 10000.0,
     min_edge_threshold: float = 0.02,
-    kelly_fraction: float = 0.25
-) -> List[BettingResult]:
+    kelly_fraction: float = 0.25,
+) -> list[BettingResult]:
     """
     Analyze all betting opportunities for a single game.
 
@@ -295,22 +296,26 @@ def analyze_game_betting_opportunities(
         ml_result = calculate_moneyline_ev(
             model_prob=model_predictions["wp_home"],
             market_odds=game_data["ml_home"],
-            opposite_odds=game_data.get("ml_away", -110)
+            opposite_odds=game_data.get("ml_away", -110),
         )
 
         if ml_result.edge >= min_edge_threshold:
-            calculate_kelly_sizing(ml_result, bankroll, game_data["ml_home"], kelly_fraction)
+            calculate_kelly_sizing(
+                ml_result, bankroll, game_data["ml_home"], kelly_fraction
+            )
             opportunities.append(ml_result)
 
         # Away moneyline
         ml_away_result = calculate_moneyline_ev(
             model_prob=1 - model_predictions["wp_home"],
             market_odds=game_data.get("ml_away", -110),
-            opposite_odds=game_data["ml_home"]
+            opposite_odds=game_data["ml_home"],
         )
 
         if ml_away_result.edge >= min_edge_threshold:
-            calculate_kelly_sizing(ml_away_result, bankroll, game_data.get("ml_away", -110), kelly_fraction)
+            calculate_kelly_sizing(
+                ml_away_result, bankroll, game_data.get("ml_away", -110), kelly_fraction
+            )
             opportunities.append(ml_away_result)
 
     # Spread bets
@@ -323,11 +328,16 @@ def analyze_game_betting_opportunities(
             model_margin_std=margin_std,
             market_spread=game_data["spread"],
             spread_juice=game_data.get("spread_juice_home", -110),
-            side="home"
+            side="home",
         )
 
         if spread_home_result.edge >= min_edge_threshold:
-            calculate_kelly_sizing(spread_home_result, bankroll, game_data.get("spread_juice_home", -110), kelly_fraction)
+            calculate_kelly_sizing(
+                spread_home_result,
+                bankroll,
+                game_data.get("spread_juice_home", -110),
+                kelly_fraction,
+            )
             opportunities.append(spread_home_result)
 
         # Away spread
@@ -336,11 +346,16 @@ def analyze_game_betting_opportunities(
             model_margin_std=margin_std,
             market_spread=game_data["spread"],
             spread_juice=game_data.get("spread_juice_away", -110),
-            side="away"
+            side="away",
         )
 
         if spread_away_result.edge >= min_edge_threshold:
-            calculate_kelly_sizing(spread_away_result, bankroll, game_data.get("spread_juice_away", -110), kelly_fraction)
+            calculate_kelly_sizing(
+                spread_away_result,
+                bankroll,
+                game_data.get("spread_juice_away", -110),
+                kelly_fraction,
+            )
             opportunities.append(spread_away_result)
 
     # Total bets
@@ -353,11 +368,16 @@ def analyze_game_betting_opportunities(
             model_total_std=total_std,
             market_total=game_data["total"],
             total_juice=game_data.get("total_over_juice", -110),
-            side="over"
+            side="over",
         )
 
         if over_result.edge >= min_edge_threshold:
-            calculate_kelly_sizing(over_result, bankroll, game_data.get("total_over_juice", -110), kelly_fraction)
+            calculate_kelly_sizing(
+                over_result,
+                bankroll,
+                game_data.get("total_over_juice", -110),
+                kelly_fraction,
+            )
             opportunities.append(over_result)
 
         # Under bet
@@ -366,11 +386,16 @@ def analyze_game_betting_opportunities(
             model_total_std=total_std,
             market_total=game_data["total"],
             total_juice=game_data.get("total_under_juice", -110),
-            side="under"
+            side="under",
         )
 
         if under_result.edge >= min_edge_threshold:
-            calculate_kelly_sizing(under_result, bankroll, game_data.get("total_under_juice", -110), kelly_fraction)
+            calculate_kelly_sizing(
+                under_result,
+                bankroll,
+                game_data.get("total_under_juice", -110),
+                kelly_fraction,
+            )
             opportunities.append(under_result)
 
     # Sort by expected value (highest first)
@@ -393,11 +418,11 @@ def _normal_cdf(x: float) -> float:
 
 
 def portfolio_kelly_sizing(
-    betting_results: List[BettingResult],
-    correlation_matrix: Optional[np.ndarray] = None,
+    betting_results: list[BettingResult],
+    correlation_matrix: np.ndarray | None = None,
     bankroll: float = 10000.0,
-    fraction: float = 0.25
-) -> List[float]:
+    fraction: float = 0.25,
+) -> list[float]:
     """
     Calculate optimal bet sizes for a portfolio of bets using Kelly criterion.
 
@@ -420,7 +445,9 @@ def portfolio_kelly_sizing(
         result = betting_results[0]
         # Estimate odds from edge and probability
         implied_odds = 1 / result.market_prob
-        kelly_size = calculate_kelly_sizing(result, bankroll, int(implied_odds * 100), fraction)
+        kelly_size = calculate_kelly_sizing(
+            result, bankroll, int(implied_odds * 100), fraction
+        )
         return [kelly_size]
 
     # Multi-bet portfolio optimization (simplified)
@@ -450,9 +477,8 @@ def portfolio_kelly_sizing(
 
 
 def summarize_betting_session(
-    betting_results: List[BettingResult],
-    actual_outcomes: Optional[List[bool]] = None
-) -> Dict:
+    betting_results: list[BettingResult], actual_outcomes: list[bool] | None = None
+) -> dict:
     """
     Summarize a betting session's opportunities and results.
 
@@ -480,8 +506,8 @@ def summarize_betting_session(
             "min": min(result.edge for result in betting_results),
             "max": max(result.edge for result in betting_results),
             "mean": avg_edge,
-            "std": np.std([result.edge for result in betting_results])
-        }
+            "std": np.std([result.edge for result in betting_results]),
+        },
     }
 
     # Bet type breakdown
@@ -490,13 +516,17 @@ def summarize_betting_session(
         summary["bet_type_breakdown"][bet_type.value] = {
             "count": len(type_results),
             "total_ev": sum(r.expected_value for r in type_results),
-            "avg_edge": np.mean([r.edge for r in type_results]) if type_results else 0.0
+            "avg_edge": np.mean([r.edge for r in type_results])
+            if type_results
+            else 0.0,
         }
 
     # If actual outcomes provided, calculate realized returns
     if actual_outcomes and len(actual_outcomes) == len(betting_results):
         realized_returns = []
-        for i, (result, outcome) in enumerate(zip(betting_results, actual_outcomes)):
+        for _i, (result, outcome) in enumerate(
+            zip(betting_results, actual_outcomes, strict=False)
+        ):
             if outcome:
                 # Win: return stake + winnings
                 realized_returns.append(result.expected_value)
@@ -507,7 +537,7 @@ def summarize_betting_session(
         summary["actual_returns"] = {
             "total_return": sum(realized_returns),
             "hit_rate": sum(actual_outcomes) / len(actual_outcomes),
-            "roi": sum(realized_returns) / (len(betting_results) * 100)
+            "roi": sum(realized_returns) / (len(betting_results) * 100),
         }
 
     return summary

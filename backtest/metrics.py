@@ -7,14 +7,12 @@ for NFL prediction models.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
-from typing import List, Dict, Optional, Tuple, Any, Union
-import pandas as pd
+from typing import Any
+
 import numpy as np
 from scipy import stats
-import warnings
-from datetime import datetime
-import json
 
 from utils.logging_config import get_logger
 
@@ -23,6 +21,7 @@ logger = get_logger(__name__)
 
 class ModelType(Enum):
     """Types of prediction models."""
+
     WIN_PROBABILITY = "wp"
     AGAINST_THE_SPREAD = "ats"
     OVER_UNDER = "ou"
@@ -30,6 +29,7 @@ class ModelType(Enum):
 
 class MetricType(Enum):
     """Types of evaluation metrics."""
+
     CLASSIFICATION = "classification"
     REGRESSION = "regression"
     CALIBRATION = "calibration"
@@ -41,12 +41,18 @@ class ClassificationMetrics:
     """Classification performance metrics."""
 
     accuracy: float
+    balanced_accuracy: float  # Forces consideration of class imbalance
     log_loss: float
     brier_score: float
-    auc_roc: Optional[float] = None
-    precision: Optional[float] = None
-    recall: Optional[float] = None
-    f1_score: Optional[float] = None
+    auc_roc: float | None = None
+    precision: float | None = None
+    recall: float | None = None
+    f1_score: float | None = None
+
+    # Bootstrap confidence intervals (optional)
+    accuracy_ci: tuple[float, float] | None = None
+    log_loss_ci: tuple[float, float] | None = None
+    auc_roc_ci: tuple[float, float] | None = None
 
     # Sample size
     n_samples: int = 0
@@ -60,13 +66,13 @@ class RegressionMetrics:
 
     mae: float  # Mean Absolute Error
     rmse: float  # Root Mean Square Error
-    mse: float   # Mean Square Error
-    r2: float    # R-squared
+    mse: float  # Mean Square Error
+    r2: float  # R-squared
 
     # Additional regression metrics
-    median_ae: Optional[float] = None
-    max_error: Optional[float] = None
-    mean_error: Optional[float] = None  # Bias
+    median_ae: float | None = None
+    max_error: float | None = None
+    mean_error: float | None = None  # Bias
 
     # Sample size
     n_samples: int = 0
@@ -81,14 +87,14 @@ class CalibrationMetrics:
     ace: float  # Average Calibration Error
 
     # Reliability diagram data
-    bin_boundaries: List[float]
-    bin_accuracies: List[float]
-    bin_confidences: List[float]
-    bin_counts: List[int]
+    bin_boundaries: list[float]
+    bin_accuracies: list[float]
+    bin_confidences: list[float]
+    bin_counts: list[int]
 
     # Hosmer-Lemeshow test
-    hl_statistic: Optional[float] = None
-    hl_p_value: Optional[float] = None
+    hl_statistic: float | None = None
+    hl_p_value: float | None = None
 
     # Sample size
     n_samples: int = 0
@@ -99,23 +105,23 @@ class CalibrationMetrics:
 class EdgeBucketMetrics:
     """Edge bucket analysis for betting evaluation."""
 
-    edge_ranges: List[Tuple[float, float]]
-    bucket_counts: List[int]
-    bucket_accuracies: List[float]
-    bucket_rois: List[float]  # Return on Investment
-    bucket_profits: List[float]  # Absolute profit
-    bucket_hit_rates: List[float]
+    edge_ranges: list[tuple[float, float]]
+    bucket_counts: list[int]
+    bucket_accuracies: list[float]
+    bucket_rois: list[float]  # Return on Investment
+    bucket_profits: list[float]  # Absolute profit
+    bucket_hit_rates: list[float]
 
     # Overall betting metrics
     total_bets: int
     total_profit: float
     total_roi: float
     average_edge: float
-    sharpe_ratio: Optional[float] = None
+    sharpe_ratio: float | None = None
 
     # Best/worst performing buckets
-    best_roi_bucket: Optional[int] = None
-    worst_roi_bucket: Optional[int] = None
+    best_roi_bucket: int | None = None
+    worst_roi_bucket: int | None = None
 
 
 @dataclass
@@ -129,12 +135,12 @@ class SignificanceTest:
     confidence_level: float
 
     # Effect size measures
-    effect_size: Optional[float] = None
-    effect_size_interpretation: Optional[str] = None
+    effect_size: float | None = None
+    effect_size_interpretation: str | None = None
 
     # Additional test details
-    degrees_freedom: Optional[int] = None
-    test_details: Optional[Dict[str, Any]] = None
+    degrees_freedom: int | None = None
+    test_details: dict[str, Any] | None = None
 
 
 @dataclass
@@ -144,21 +150,21 @@ class ComprehensiveMetrics:
     model_type: ModelType
 
     # Core metrics
-    classification_metrics: Optional[ClassificationMetrics] = None
-    regression_metrics: Optional[RegressionMetrics] = None
-    calibration_metrics: Optional[CalibrationMetrics] = None
-    edge_bucket_metrics: Optional[EdgeBucketMetrics] = None
+    classification_metrics: ClassificationMetrics | None = None
+    regression_metrics: RegressionMetrics | None = None
+    calibration_metrics: CalibrationMetrics | None = None
+    edge_bucket_metrics: EdgeBucketMetrics | None = None
 
     # Significance tests
-    significance_tests: List[SignificanceTest] = field(default_factory=list)
+    significance_tests: list[SignificanceTest] = field(default_factory=list)
 
     # Metadata
     evaluation_date: datetime = field(default_factory=datetime.now)
-    sample_period: Optional[Tuple[datetime, datetime]] = None
+    sample_period: tuple[datetime, datetime] | None = None
     n_total_samples: int = 0
 
     # Summary score
-    overall_score: Optional[float] = None
+    overall_score: float | None = None
 
 
 class MetricsCalculator:
@@ -174,15 +180,19 @@ class MetricsCalculator:
         self.confidence_level = confidence_level
         self.alpha = 1 - confidence_level
 
-        logger.info(f"MetricsCalculator initialized with {confidence_level:.1%} confidence level")
+        logger.info(
+            f"MetricsCalculator initialized with {confidence_level:.1%} confidence level"
+        )
 
     def calculate_comprehensive_metrics(
         self,
         y_true: np.ndarray,
         y_pred: np.ndarray,
         model_type: ModelType,
-        betting_odds: Optional[np.ndarray] = None,
-        sample_weights: Optional[np.ndarray] = None
+        betting_odds: np.ndarray | None = None,
+        sample_weights: np.ndarray | None = None,
+        bootstrap_ci: bool = False,
+        bootstrap_samples: int = 1000,
     ) -> ComprehensiveMetrics:
         """
         Calculate comprehensive metrics for a model.
@@ -193,6 +203,8 @@ class MetricsCalculator:
             model_type: Type of model being evaluated
             betting_odds: American odds for betting analysis (optional)
             sample_weights: Sample weights (optional)
+            bootstrap_ci: Whether to calculate bootstrap confidence intervals
+            bootstrap_samples: Number of bootstrap samples (default 1000)
 
         Returns:
             ComprehensiveMetrics object with all evaluation results
@@ -211,15 +223,14 @@ class MetricsCalculator:
             raise ValueError("Cannot calculate metrics for empty arrays")
 
         metrics = ComprehensiveMetrics(
-            model_type=model_type,
-            n_total_samples=len(y_true)
+            model_type=model_type, n_total_samples=len(y_true)
         )
 
         # Calculate appropriate metrics based on model type
         if model_type == ModelType.WIN_PROBABILITY:
             # Classification metrics for win probability
             metrics.classification_metrics = self._calculate_classification_metrics(
-                y_true, y_pred, sample_weights
+                y_true, y_pred, sample_weights, bootstrap_ci, bootstrap_samples
             )
             metrics.calibration_metrics = self._calculate_calibration_metrics(
                 y_true, y_pred, sample_weights
@@ -230,7 +241,7 @@ class MetricsCalculator:
             # Treat as classification (cover/not cover, over/under)
             y_true_binary = (y_true > 0.5).astype(int)
             metrics.classification_metrics = self._calculate_classification_metrics(
-                y_true_binary, y_pred, sample_weights
+                y_true_binary, y_pred, sample_weights, bootstrap_ci, bootstrap_samples
             )
             metrics.calibration_metrics = self._calculate_calibration_metrics(
                 y_true_binary, y_pred, sample_weights
@@ -243,7 +254,9 @@ class MetricsCalculator:
                 y_pred_margin = (y_pred - 0.5) * 20
             else:  # OVER_UNDER
                 # Convert to expected total deviation
-                y_true_margin = (y_true - 0.5) * 10  # Rough conversion to total deviation
+                y_true_margin = (
+                    y_true - 0.5
+                ) * 10  # Rough conversion to total deviation
                 y_pred_margin = (y_pred - 0.5) * 10
 
             metrics.regression_metrics = self._calculate_regression_metrics(
@@ -271,7 +284,9 @@ class MetricsCalculator:
         self,
         y_true: np.ndarray,
         y_pred: np.ndarray,
-        sample_weights: Optional[np.ndarray] = None
+        sample_weights: np.ndarray | None = None,
+        bootstrap_ci: bool = False,
+        bootstrap_samples: int = 1000,
     ) -> ClassificationMetrics:
         """Calculate classification performance metrics."""
 
@@ -288,59 +303,111 @@ class MetricsCalculator:
         # Basic metrics
         accuracy = np.average(y_true_binary == y_pred_binary, weights=sample_weights)
 
+        # Balanced accuracy - average of recall for each class
+        # This accounts for class imbalance
+        if len(np.unique(y_true_binary)) > 1:
+            # Calculate recall for each class
+            true_positive_rate = np.sum(
+                (y_true_binary == 1) & (y_pred_binary == 1)
+            ) / np.sum(y_true_binary == 1)
+            true_negative_rate = np.sum(
+                (y_true_binary == 0) & (y_pred_binary == 0)
+            ) / np.sum(y_true_binary == 0)
+            balanced_accuracy = (true_positive_rate + true_negative_rate) / 2
+        else:
+            # Only one class present, fall back to regular accuracy
+            balanced_accuracy = accuracy
+
         # Log loss (cross-entropy)
         log_loss = -np.average(
-            y_true_binary * np.log(y_pred_prob) + (1 - y_true_binary) * np.log(1 - y_pred_prob),
-            weights=sample_weights
+            y_true_binary * np.log(y_pred_prob)
+            + (1 - y_true_binary) * np.log(1 - y_pred_prob),
+            weights=sample_weights,
         )
 
         # Brier score
-        brier_score = np.average((y_pred_prob - y_true_binary) ** 2, weights=sample_weights)
+        brier_score = np.average(
+            (y_pred_prob - y_true_binary) ** 2, weights=sample_weights
+        )
 
         # AUC-ROC if we have both classes
         auc_roc = None
         if len(np.unique(y_true_binary)) > 1:
             try:
                 from sklearn.metrics import roc_auc_score
-                auc_roc = roc_auc_score(y_true_binary, y_pred_prob, sample_weight=sample_weights)
+
+                auc_roc = roc_auc_score(
+                    y_true_binary, y_pred_prob, sample_weight=sample_weights
+                )
             except ImportError:
                 logger.warning("sklearn not available, skipping AUC calculation")
 
         # Precision, Recall, F1
         precision = recall = f1_score = None
         try:
-            from sklearn.metrics import precision_score, recall_score, f1_score as f1
-            precision = precision_score(y_true_binary, y_pred_binary, sample_weight=sample_weights, zero_division=0)
-            recall = recall_score(y_true_binary, y_pred_binary, sample_weight=sample_weights, zero_division=0)
-            f1_score = f1(y_true_binary, y_pred_binary, sample_weight=sample_weights, zero_division=0)
+            from sklearn.metrics import f1_score as f1
+            from sklearn.metrics import precision_score, recall_score
+
+            precision = precision_score(
+                y_true_binary,
+                y_pred_binary,
+                sample_weight=sample_weights,
+                zero_division=0,
+            )
+            recall = recall_score(
+                y_true_binary,
+                y_pred_binary,
+                sample_weight=sample_weights,
+                zero_division=0,
+            )
+            f1_score = f1(
+                y_true_binary,
+                y_pred_binary,
+                sample_weight=sample_weights,
+                zero_division=0,
+            )
         except ImportError:
             pass
 
+        # Bootstrap confidence intervals
+        accuracy_ci = log_loss_ci = auc_roc_ci = None
+        if bootstrap_ci and len(y_true) > 10:  # Minimum sample size check
+            try:
+                accuracy_ci, log_loss_ci, auc_roc_ci = self._calculate_bootstrap_ci(
+                    y_true_binary, y_pred_prob, bootstrap_samples
+                )
+            except Exception as e:
+                logger.warning(f"Failed to calculate bootstrap CIs: {e}")
+
         return ClassificationMetrics(
             accuracy=accuracy,
+            balanced_accuracy=balanced_accuracy,
             log_loss=log_loss,
             brier_score=brier_score,
             auc_roc=auc_roc,
             precision=precision,
             recall=recall,
             f1_score=f1_score,
+            accuracy_ci=accuracy_ci,
+            log_loss_ci=log_loss_ci,
+            auc_roc_ci=auc_roc_ci,
             n_samples=len(y_true),
             n_positive=np.sum(y_true_binary),
-            n_negative=len(y_true_binary) - np.sum(y_true_binary)
+            n_negative=len(y_true_binary) - np.sum(y_true_binary),
         )
 
     def _calculate_regression_metrics(
         self,
         y_true: np.ndarray,
         y_pred: np.ndarray,
-        sample_weights: Optional[np.ndarray] = None
+        sample_weights: np.ndarray | None = None,
     ) -> RegressionMetrics:
         """Calculate regression performance metrics."""
 
         # Basic error metrics
         errors = y_true - y_pred
         abs_errors = np.abs(errors)
-        squared_errors = errors ** 2
+        squared_errors = errors**2
 
         mae = np.average(abs_errors, weights=sample_weights)
         mse = np.average(squared_errors, weights=sample_weights)
@@ -370,15 +437,15 @@ class MetricsCalculator:
             median_ae=median_ae,
             max_error=max_error,
             mean_error=mean_error,
-            n_samples=len(y_true)
+            n_samples=len(y_true),
         )
 
     def _calculate_calibration_metrics(
         self,
         y_true: np.ndarray,
         y_pred: np.ndarray,
-        sample_weights: Optional[np.ndarray] = None,
-        n_bins: int = 10
+        sample_weights: np.ndarray | None = None,
+        n_bins: int = 10,
     ) -> CalibrationMetrics:
         """Calculate model calibration metrics."""
 
@@ -411,8 +478,12 @@ class MetricsCalculator:
             if count > 0:
                 if sample_weights is not None:
                     bin_weight = np.sum(sample_weights[mask])
-                    accuracy = np.sum(sample_weights[mask] * y_true_binary[mask]) / bin_weight
-                    confidence = np.sum(sample_weights[mask] * y_pred_prob[mask]) / bin_weight
+                    accuracy = (
+                        np.sum(sample_weights[mask] * y_true_binary[mask]) / bin_weight
+                    )
+                    confidence = (
+                        np.sum(sample_weights[mask] * y_pred_prob[mask]) / bin_weight
+                    )
                 else:
                     accuracy = np.mean(y_true_binary[mask])
                     confidence = np.mean(y_pred_prob[mask])
@@ -428,25 +499,43 @@ class MetricsCalculator:
         total_samples = len(y_true)
         ece = sum(
             (count / total_samples) * abs(acc - conf)
-            for count, acc, conf in zip(bin_counts, bin_accuracies, bin_confidences)
+            for count, acc, conf in zip(
+                bin_counts, bin_accuracies, bin_confidences, strict=False
+            )
             if count > 0
         )
 
         # Maximum Calibration Error (MCE)
-        mce = max(
-            abs(acc - conf)
-            for acc, conf, count in zip(bin_accuracies, bin_confidences, bin_counts)
-            if count > 0
-        ) if any(count > 0 for count in bin_counts) else 0
+        mce = (
+            max(
+                abs(acc - conf)
+                for acc, conf, count in zip(
+                    bin_accuracies, bin_confidences, bin_counts, strict=False
+                )
+                if count > 0
+            )
+            if any(count > 0 for count in bin_counts)
+            else 0
+        )
 
         # Average Calibration Error (ACE)
-        valid_bins = [(acc, conf) for acc, conf, count in zip(bin_accuracies, bin_confidences, bin_counts) if count > 0]
-        ace = np.mean([abs(acc - conf) for acc, conf in valid_bins]) if valid_bins else 0
+        valid_bins = [
+            (acc, conf)
+            for acc, conf, count in zip(
+                bin_accuracies, bin_confidences, bin_counts, strict=False
+            )
+            if count > 0
+        ]
+        ace = (
+            np.mean([abs(acc - conf) for acc, conf in valid_bins]) if valid_bins else 0
+        )
 
         # Hosmer-Lemeshow test
         hl_statistic = hl_p_value = None
         try:
-            hl_statistic, hl_p_value = self._hosmer_lemeshow_test(y_true_binary, y_pred_prob, n_bins)
+            hl_statistic, hl_p_value = self._hosmer_lemeshow_test(
+                y_true_binary, y_pred_prob, n_bins
+            )
         except Exception as e:
             logger.warning(f"Failed to calculate Hosmer-Lemeshow test: {e}")
 
@@ -461,7 +550,7 @@ class MetricsCalculator:
             hl_statistic=hl_statistic,
             hl_p_value=hl_p_value,
             n_samples=len(y_true),
-            n_bins=n_bins
+            n_bins=n_bins,
         )
 
     def _calculate_edge_bucket_metrics(
@@ -469,7 +558,7 @@ class MetricsCalculator:
         y_true: np.ndarray,
         y_pred: np.ndarray,
         betting_odds: np.ndarray,
-        model_type: ModelType
+        model_type: ModelType,
     ) -> EdgeBucketMetrics:
         """Calculate edge bucket analysis for betting evaluation."""
 
@@ -482,11 +571,11 @@ class MetricsCalculator:
         # Define edge buckets
         edge_ranges = [
             (-1.0, -0.05),  # Strong negative edge
-            (-0.05, -0.02), # Moderate negative edge
+            (-0.05, -0.02),  # Moderate negative edge
             (-0.02, 0.02),  # No edge
-            (0.02, 0.05),   # Moderate positive edge
-            (0.05, 0.10),   # Strong positive edge
-            (0.10, 1.0)     # Very strong positive edge
+            (0.02, 0.05),  # Moderate positive edge
+            (0.05, 0.10),  # Strong positive edge
+            (0.10, 1.0),  # Very strong positive edge
         ]
 
         bucket_counts = []
@@ -504,9 +593,9 @@ class MetricsCalculator:
 
             if count > 0:
                 bucket_y_true = y_true[mask]
-                bucket_y_pred = y_pred[mask]
+                y_pred[mask]
                 bucket_odds = betting_odds[mask]
-                bucket_edges = edges[mask]
+                edges[mask]
 
                 # Calculate accuracy (hit rate)
                 if model_type == ModelType.WIN_PROBABILITY:
@@ -526,7 +615,7 @@ class MetricsCalculator:
                         else:
                             profit = 100 / abs(bucket_odds[i])
                     else:
-                        # Loss: profit = -stake
+                        # Bet lost: profit equals negative stake
                         profit = -1
 
                     profits.append(profit)
@@ -554,7 +643,7 @@ class MetricsCalculator:
         # Sharpe ratio (simplified)
         if len(edges) > 1:
             edge_returns = []
-            for i, edge in enumerate(edges):
+            for i, _edge in enumerate(edges):
                 if y_true[i] > 0.5:  # Win
                     if betting_odds[i] > 0:
                         return_val = betting_odds[i] / 100
@@ -570,9 +659,13 @@ class MetricsCalculator:
             sharpe_ratio = None
 
         # Best/worst buckets
-        valid_rois = [(i, roi) for i, roi in enumerate(bucket_rois) if bucket_counts[i] > 0]
+        valid_rois = [
+            (i, roi) for i, roi in enumerate(bucket_rois) if bucket_counts[i] > 0
+        ]
         best_roi_bucket = max(valid_rois, key=lambda x: x[1])[0] if valid_rois else None
-        worst_roi_bucket = min(valid_rois, key=lambda x: x[1])[0] if valid_rois else None
+        worst_roi_bucket = (
+            min(valid_rois, key=lambda x: x[1])[0] if valid_rois else None
+        )
 
         return EdgeBucketMetrics(
             edge_ranges=edge_ranges,
@@ -587,15 +680,12 @@ class MetricsCalculator:
             average_edge=average_edge,
             sharpe_ratio=sharpe_ratio,
             best_roi_bucket=best_roi_bucket,
-            worst_roi_bucket=worst_roi_bucket
+            worst_roi_bucket=worst_roi_bucket,
         )
 
     def _calculate_significance_tests(
-        self,
-        y_true: np.ndarray,
-        y_pred: np.ndarray,
-        model_type: ModelType
-    ) -> List[SignificanceTest]:
+        self, y_true: np.ndarray, y_pred: np.ndarray, model_type: ModelType
+    ) -> list[SignificanceTest]:
         """Calculate statistical significance tests."""
 
         tests = []
@@ -612,26 +702,28 @@ class MetricsCalculator:
             # Two-tailed binomial test
             p_value = 2 * min(
                 stats.binom.cdf(n_correct, n_total, 0.5),
-                1 - stats.binom.cdf(n_correct - 1, n_total, 0.5)
+                1 - stats.binom.cdf(n_correct - 1, n_total, 0.5),
             )
 
             accuracy = n_correct / n_total
             is_significant = p_value < self.alpha
 
-            tests.append(SignificanceTest(
-                test_name="Binomial Test (Accuracy vs Random)",
-                statistic=n_correct,
-                p_value=p_value,
-                is_significant=is_significant,
-                confidence_level=self.confidence_level,
-                effect_size=abs(accuracy - 0.5),
-                test_details={
-                    "n_correct": int(n_correct),
-                    "n_total": int(n_total),
-                    "observed_accuracy": accuracy,
-                    "null_hypothesis": 0.5
-                }
-            ))
+            tests.append(
+                SignificanceTest(
+                    test_name="Binomial Test (Accuracy vs Random)",
+                    statistic=n_correct,
+                    p_value=p_value,
+                    is_significant=is_significant,
+                    confidence_level=self.confidence_level,
+                    effect_size=abs(accuracy - 0.5),
+                    test_details={
+                        "n_correct": int(n_correct),
+                        "n_total": int(n_total),
+                        "observed_accuracy": accuracy,
+                        "null_hypothesis": 0.5,
+                    },
+                )
+            )
 
         # 2. Kolmogorov-Smirnov test for distribution comparison
         try:
@@ -639,14 +731,16 @@ class MetricsCalculator:
             uniform_sample = np.random.uniform(0, 1, len(y_pred))
             ks_stat, ks_p = stats.ks_2samp(y_pred, uniform_sample)
 
-            tests.append(SignificanceTest(
-                test_name="Kolmogorov-Smirnov Test (Prediction Distribution)",
-                statistic=ks_stat,
-                p_value=ks_p,
-                is_significant=ks_p < self.alpha,
-                confidence_level=self.confidence_level,
-                test_details={"distribution": "uniform"}
-            ))
+            tests.append(
+                SignificanceTest(
+                    test_name="Kolmogorov-Smirnov Test (Prediction Distribution)",
+                    statistic=ks_stat,
+                    p_value=ks_p,
+                    is_significant=ks_p < self.alpha,
+                    confidence_level=self.confidence_level,
+                    test_details={"distribution": "uniform"},
+                )
+            )
         except Exception as e:
             logger.warning(f"Failed KS test: {e}")
 
@@ -666,11 +760,15 @@ class MetricsCalculator:
 
         # Negative odds
         negative_mask = american_odds < 0
-        probabilities[negative_mask] = -american_odds[negative_mask] / (-american_odds[negative_mask] + 100)
+        probabilities[negative_mask] = -american_odds[negative_mask] / (
+            -american_odds[negative_mask] + 100
+        )
 
         return probabilities
 
-    def _hosmer_lemeshow_test(self, y_true: np.ndarray, y_pred: np.ndarray, n_bins: int = 10) -> Tuple[float, float]:
+    def _hosmer_lemeshow_test(
+        self, y_true: np.ndarray, y_pred: np.ndarray, n_bins: int = 10
+    ) -> tuple[float, float]:
         """Perform Hosmer-Lemeshow goodness-of-fit test."""
 
         # Sort by predicted probabilities
@@ -693,7 +791,9 @@ class MetricsCalculator:
             expected = np.sum(bin_y_pred)
 
             if expected > 0 and expected < len(bin_y_true):
-                chi_square += ((observed - expected) ** 2) / (expected * (1 - expected / len(bin_y_true)))
+                chi_square += ((observed - expected) ** 2) / (
+                    expected * (1 - expected / len(bin_y_true))
+                )
 
         # Chi-square test with (n_bins - 2) degrees of freedom
         df = n_bins - 2
@@ -708,23 +808,25 @@ class MetricsCalculator:
 
         # Classification metrics
         if metrics.classification_metrics:
-            # Accuracy component (0-100)
-            accuracy_score = metrics.classification_metrics.accuracy * 100
-            score_components.append(('accuracy', accuracy_score, 0.3))
+            # Use balanced accuracy instead of regular accuracy to account for class imbalance
+            balanced_accuracy_score = (
+                metrics.classification_metrics.balanced_accuracy * 100
+            )
+            score_components.append(("balanced_accuracy", balanced_accuracy_score, 0.3))
 
             # Log loss component (lower is better, convert to 0-100 scale)
             log_loss_score = max(0, 100 - metrics.classification_metrics.log_loss * 100)
-            score_components.append(('log_loss', log_loss_score, 0.25))
+            score_components.append(("log_loss", log_loss_score, 0.25))
 
             # Brier score component (lower is better, convert to 0-100 scale)
             brier_score = max(0, 100 - metrics.classification_metrics.brier_score * 100)
-            score_components.append(('brier', brier_score, 0.2))
+            score_components.append(("brier", brier_score, 0.2))
 
         # Calibration metrics
         if metrics.calibration_metrics:
             # ECE component (lower is better)
             ece_score = max(0, 100 - metrics.calibration_metrics.ece * 500)  # Scale ECE
-            score_components.append(('ece', ece_score, 0.15))
+            score_components.append(("ece", ece_score, 0.15))
 
         # Betting metrics
         if metrics.edge_bucket_metrics:
@@ -732,7 +834,7 @@ class MetricsCalculator:
             roi = metrics.edge_bucket_metrics.total_roi
             roi_score = 50 + roi * 500  # Center at 50, scale by ROI
             roi_score = max(0, min(100, roi_score))
-            score_components.append(('roi', roi_score, 0.1))
+            score_components.append(("roi", roi_score, 0.1))
 
         # Calculate weighted average
         if score_components:
@@ -750,15 +852,15 @@ class MetricsCalculator:
         metrics_b: ComprehensiveMetrics,
         y_true: np.ndarray,
         y_pred_a: np.ndarray,
-        y_pred_b: np.ndarray
-    ) -> Dict[str, Any]:
+        y_pred_b: np.ndarray,
+    ) -> dict[str, Any]:
         """Compare two models statistically."""
 
         comparison_results = {
             "model_a_score": metrics_a.overall_score,
             "model_b_score": metrics_b.overall_score,
             "score_difference": metrics_a.overall_score - metrics_b.overall_score,
-            "significance_tests": []
+            "significance_tests": [],
         }
 
         # McNemar's test for paired binary predictions
@@ -768,44 +870,166 @@ class MetricsCalculator:
             y_pred_b_binary = (y_pred_b > 0.5).astype(int)
 
             # Create contingency table
-            a_correct_b_wrong = np.sum((y_true_binary == y_pred_a_binary) & (y_true_binary != y_pred_b_binary))
-            a_wrong_b_correct = np.sum((y_true_binary != y_pred_a_binary) & (y_true_binary == y_pred_b_binary))
+            a_correct_b_wrong = np.sum(
+                (y_true_binary == y_pred_a_binary) & (y_true_binary != y_pred_b_binary)
+            )
+            a_wrong_b_correct = np.sum(
+                (y_true_binary != y_pred_a_binary) & (y_true_binary == y_pred_b_binary)
+            )
 
             if a_correct_b_wrong + a_wrong_b_correct > 0:
-                mcnemar_stat = (abs(a_correct_b_wrong - a_wrong_b_correct) - 1) ** 2 / (a_correct_b_wrong + a_wrong_b_correct)
+                mcnemar_stat = (abs(a_correct_b_wrong - a_wrong_b_correct) - 1) ** 2 / (
+                    a_correct_b_wrong + a_wrong_b_correct
+                )
                 mcnemar_p = 1 - stats.chi2.cdf(mcnemar_stat, 1)
 
-                comparison_results["significance_tests"].append({
-                    "test_name": "McNemar's Test",
-                    "statistic": mcnemar_stat,
-                    "p_value": mcnemar_p,
-                    "is_significant": mcnemar_p < self.alpha,
-                    "interpretation": "Model A significantly better" if mcnemar_p < self.alpha and a_correct_b_wrong > a_wrong_b_correct
-                                   else "Model B significantly better" if mcnemar_p < self.alpha and a_wrong_b_correct > a_correct_b_wrong
-                                   else "No significant difference"
-                })
+                comparison_results["significance_tests"].append(
+                    {
+                        "test_name": "McNemar's Test",
+                        "statistic": mcnemar_stat,
+                        "p_value": mcnemar_p,
+                        "is_significant": mcnemar_p < self.alpha,
+                        "interpretation": "Model A significantly better"
+                        if mcnemar_p < self.alpha
+                        and a_correct_b_wrong > a_wrong_b_correct
+                        else "Model B significantly better"
+                        if mcnemar_p < self.alpha
+                        and a_wrong_b_correct > a_correct_b_wrong
+                        else "No significant difference",
+                    }
+                )
 
         return comparison_results
 
+    def _calculate_bootstrap_ci(
+        self,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        n_samples: int = 1000,
+        confidence_level: float = 0.95,
+    ) -> tuple[
+        tuple[float, float] | None,
+        tuple[float, float] | None,
+        tuple[float, float] | None,
+    ]:
+        """Calculate bootstrap confidence intervals for key metrics."""
 
-def create_metrics_summary(metrics: ComprehensiveMetrics) -> Dict[str, Any]:
+        # Ensure we have sklearn for AUC calculation
+        try:
+            from sklearn.metrics import roc_auc_score
+
+            has_sklearn = True
+        except ImportError:
+            has_sklearn = False
+
+        # Initialize arrays to store bootstrap results
+        bootstrap_accuracies = []
+        bootstrap_log_losses = []
+        bootstrap_aucs = [] if has_sklearn and len(np.unique(y_true)) > 1 else None
+
+        n_data = len(y_true)
+
+        for _ in range(n_samples):
+            # Bootstrap sample with replacement
+            indices = np.random.choice(n_data, size=n_data, replace=True)
+            y_true_boot = y_true[indices]
+            y_pred_boot = y_pred[indices]
+
+            # Calculate metrics for this bootstrap sample
+            try:
+                # Accuracy
+                y_pred_binary_boot = (y_pred_boot > 0.5).astype(int)
+                accuracy_boot = np.mean(y_true_boot == y_pred_binary_boot)
+                bootstrap_accuracies.append(accuracy_boot)
+
+                # Log loss (with clipping for numerical stability)
+                y_pred_clipped = np.clip(y_pred_boot, 1e-15, 1 - 1e-15)
+                log_loss_boot = -np.mean(
+                    y_true_boot * np.log(y_pred_clipped)
+                    + (1 - y_true_boot) * np.log(1 - y_pred_clipped)
+                )
+                bootstrap_log_losses.append(log_loss_boot)
+
+                # AUC (if sklearn available and both classes present)
+                if bootstrap_aucs is not None and len(np.unique(y_true_boot)) > 1:
+                    try:
+                        auc_boot = roc_auc_score(y_true_boot, y_pred_boot)
+                        bootstrap_aucs.append(auc_boot)
+                    except ValueError:
+                        # Skip this sample if AUC calculation fails
+                        pass
+
+            except Exception:
+                # Skip problematic bootstrap samples
+                continue
+
+        # Calculate confidence intervals using percentile method
+        alpha = 1 - confidence_level
+        lower_percentile = (alpha / 2) * 100
+        upper_percentile = (1 - alpha / 2) * 100
+
+        # Accuracy CI
+        accuracy_ci = None
+        if bootstrap_accuracies:
+            accuracy_ci = (
+                np.percentile(bootstrap_accuracies, lower_percentile),
+                np.percentile(bootstrap_accuracies, upper_percentile),
+            )
+
+        # Log loss CI
+        log_loss_ci = None
+        if bootstrap_log_losses:
+            log_loss_ci = (
+                np.percentile(bootstrap_log_losses, lower_percentile),
+                np.percentile(bootstrap_log_losses, upper_percentile),
+            )
+
+        # AUC CI
+        auc_ci = None
+        if bootstrap_aucs and len(bootstrap_aucs) > 10:  # Need sufficient samples
+            auc_ci = (
+                np.percentile(bootstrap_aucs, lower_percentile),
+                np.percentile(bootstrap_aucs, upper_percentile),
+            )
+
+        return accuracy_ci, log_loss_ci, auc_ci
+
+
+def create_metrics_summary(metrics: ComprehensiveMetrics) -> dict[str, Any]:
     """Create human-readable summary of metrics."""
 
     summary = {
         "model_type": metrics.model_type.value,
-        "overall_score": round(metrics.overall_score, 2) if metrics.overall_score else None,
-        "sample_size": metrics.n_total_samples
+        "overall_score": round(metrics.overall_score, 2)
+        if metrics.overall_score
+        else None,
+        "sample_size": metrics.n_total_samples,
     }
 
     # Classification metrics
     if metrics.classification_metrics:
         cm = metrics.classification_metrics
-        summary["classification"] = {
+        classification_summary = {
             "accuracy": round(cm.accuracy, 4),
+            "balanced_accuracy": round(cm.balanced_accuracy, 4),
             "log_loss": round(cm.log_loss, 4),
             "brier_score": round(cm.brier_score, 4),
-            "auc_roc": round(cm.auc_roc, 4) if cm.auc_roc else None
+            "auc_roc": round(cm.auc_roc, 4) if cm.auc_roc else None,
         }
+
+        # Add confidence intervals if available
+        if cm.accuracy_ci:
+            classification_summary["accuracy_ci"] = [
+                round(x, 4) for x in cm.accuracy_ci
+            ]
+        if cm.log_loss_ci:
+            classification_summary["log_loss_ci"] = [
+                round(x, 4) for x in cm.log_loss_ci
+            ]
+        if cm.auc_roc_ci:
+            classification_summary["auc_roc_ci"] = [round(x, 4) for x in cm.auc_roc_ci]
+
+        summary["classification"] = classification_summary
 
     # Regression metrics
     if metrics.regression_metrics:
@@ -814,7 +1038,7 @@ def create_metrics_summary(metrics: ComprehensiveMetrics) -> Dict[str, Any]:
             "mae": round(rm.mae, 4),
             "rmse": round(rm.rmse, 4),
             "r2": round(rm.r2, 4),
-            "bias": round(rm.mean_error, 4)
+            "bias": round(rm.mean_error, 4),
         }
 
     # Calibration metrics
@@ -824,7 +1048,7 @@ def create_metrics_summary(metrics: ComprehensiveMetrics) -> Dict[str, Any]:
             "ece": round(cal.ece, 4),
             "mce": round(cal.mce, 4),
             "ace": round(cal.ace, 4),
-            "hosmer_lemeshow_p": round(cal.hl_p_value, 4) if cal.hl_p_value else None
+            "hosmer_lemeshow_p": round(cal.hl_p_value, 4) if cal.hl_p_value else None,
         }
 
     # Betting metrics
@@ -834,7 +1058,7 @@ def create_metrics_summary(metrics: ComprehensiveMetrics) -> Dict[str, Any]:
             "total_roi": round(eb.total_roi, 4),
             "total_profit": round(eb.total_profit, 2),
             "sharpe_ratio": round(eb.sharpe_ratio, 4) if eb.sharpe_ratio else None,
-            "total_bets": eb.total_bets
+            "total_bets": eb.total_bets,
         }
 
     # Significance tests
@@ -842,7 +1066,7 @@ def create_metrics_summary(metrics: ComprehensiveMetrics) -> Dict[str, Any]:
         {
             "test": test.test_name,
             "p_value": round(test.p_value, 6),
-            "significant": test.is_significant
+            "significant": test.is_significant,
         }
         for test in metrics.significance_tests
     ]

@@ -6,12 +6,12 @@ This script validates the baseline Elo model implementation with
 synthetic NFL game data and realistic scenarios.
 """
 
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-from pathlib import Path
 import sys
 import tempfile
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -38,10 +38,38 @@ def create_sample_nfl_games(n_games: int = 500, n_seasons: int = 3) -> pd.DataFr
 
     # NFL team abbreviations
     nfl_teams = [
-        'ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE',
-        'DAL', 'DEN', 'DET', 'GB', 'HOU', 'IND', 'JAX', 'KC',
-        'LV', 'LAC', 'LAR', 'MIA', 'MIN', 'NE', 'NO', 'NYG',
-        'NYJ', 'PHI', 'PIT', 'SEA', 'SF', 'TB', 'TEN', 'WAS'
+        "ARI",
+        "ATL",
+        "BAL",
+        "BUF",
+        "CAR",
+        "CHI",
+        "CIN",
+        "CLE",
+        "DAL",
+        "DEN",
+        "DET",
+        "GB",
+        "HOU",
+        "IND",
+        "JAX",
+        "KC",
+        "LV",
+        "LAC",
+        "LAR",
+        "MIA",
+        "MIN",
+        "NE",
+        "NO",
+        "NYG",
+        "NYJ",
+        "PHI",
+        "PIT",
+        "SEA",
+        "SF",
+        "TB",
+        "TEN",
+        "WAS",
     ]
 
     games = []
@@ -50,19 +78,29 @@ def create_sample_nfl_games(n_games: int = 500, n_seasons: int = 3) -> pd.DataFr
 
     # Create team quality tiers for realistic Elo differences
     elite_teams = np.random.choice(nfl_teams, 8, replace=False)
-    good_teams = np.random.choice([t for t in nfl_teams if t not in elite_teams], 8, replace=False)
-    avg_teams = np.random.choice([t for t in nfl_teams if t not in elite_teams and t not in good_teams], 8, replace=False)
-    poor_teams = [t for t in nfl_teams if t not in elite_teams and t not in good_teams and t not in avg_teams]
+    good_teams = np.random.choice(
+        [t for t in nfl_teams if t not in elite_teams], 8, replace=False
+    )
+    avg_teams = np.random.choice(
+        [t for t in nfl_teams if t not in elite_teams and t not in good_teams],
+        8,
+        replace=False,
+    )
+    poor_teams = [
+        t
+        for t in nfl_teams
+        if t not in elite_teams and t not in good_teams and t not in avg_teams
+    ]
 
     team_quality = {}
     for team in elite_teams:
-        team_quality[team] = 'elite'
+        team_quality[team] = "elite"
     for team in good_teams:
-        team_quality[team] = 'good'
+        team_quality[team] = "good"
     for team in avg_teams:
-        team_quality[team] = 'average'
+        team_quality[team] = "average"
     for team in poor_teams:
-        team_quality[team] = 'poor'
+        team_quality[team] = "poor"
 
     # Generate games
     for i in range(n_games):
@@ -79,10 +117,10 @@ def create_sample_nfl_games(n_games: int = 500, n_seasons: int = 3) -> pd.DataFr
 
         # Map quality to Elo ratings (approximate)
         quality_elo = {
-            'elite': np.random.normal(1650, 50),
-            'good': np.random.normal(1550, 40),
-            'average': np.random.normal(1500, 30),
-            'poor': np.random.normal(1450, 40)
+            "elite": np.random.normal(1650, 50),
+            "good": np.random.normal(1550, 40),
+            "average": np.random.normal(1500, 30),
+            "poor": np.random.normal(1450, 40),
         }
 
         home_elo_base = quality_elo[home_quality]
@@ -108,36 +146,40 @@ def create_sample_nfl_games(n_games: int = 500, n_seasons: int = 3) -> pd.DataFr
             actual_margin = min(-1, expected_margin + np.random.normal(0, 10))
 
         game = {
-            'game_id': f'TEST_{season}_{week:02d}_{home_team}_{away_team}',
-            'season': season,
-            'week': week,
-            'home_team': home_team,
-            'away_team': away_team,
-            'home_wins': home_wins,
-            'point_differential': actual_margin,
-            'home_score': max(0, 24 + actual_margin / 2 + np.random.normal(0, 5)),
-            'away_score': max(0, 24 - actual_margin / 2 + np.random.normal(0, 5)),
-            'elo_home': home_elo,  # True Elo for validation
-            'elo_away': away_elo   # True Elo for validation
+            "game_id": f"TEST_{season}_{week:02d}_{home_team}_{away_team}",
+            "season": season,
+            "week": week,
+            "home_team": home_team,
+            "away_team": away_team,
+            "home_wins": home_wins,
+            "point_differential": actual_margin,
+            "home_score": max(0, 24 + actual_margin / 2 + np.random.normal(0, 5)),
+            "away_score": max(0, 24 - actual_margin / 2 + np.random.normal(0, 5)),
+            "elo_home": home_elo,  # True Elo for validation
+            "elo_away": away_elo,  # True Elo for validation
         }
 
         # Ensure scores are consistent with outcome
-        if home_wins and game['home_score'] <= game['away_score']:
-            game['home_score'] = game['away_score'] + abs(actual_margin)
-        elif not home_wins and game['away_score'] <= game['home_score']:
-            game['away_score'] = game['home_score'] + abs(actual_margin)
+        if home_wins and game["home_score"] <= game["away_score"]:
+            game["home_score"] = game["away_score"] + abs(actual_margin)
+        elif not home_wins and game["away_score"] <= game["home_score"]:
+            game["away_score"] = game["home_score"] + abs(actual_margin)
 
         games.append(game)
 
     games_df = pd.DataFrame(games)
 
     # Sort by season and week for chronological order
-    games_df = games_df.sort_values(['season', 'week']).reset_index(drop=True)
+    games_df = games_df.sort_values(["season", "week"]).reset_index(drop=True)
 
-    logger.info("Created sample NFL games",
-               games=len(games_df),
-               seasons=games_df['season'].nunique(),
-               teams=len(set(games_df['home_team'].unique()) | set(games_df['away_team'].unique())))
+    logger.info(
+        "Created sample NFL games",
+        games=len(games_df),
+        seasons=games_df["season"].nunique(),
+        teams=len(
+            set(games_df["home_team"].unique()) | set(games_df["away_team"].unique())
+        ),
+    )
 
     return games_df
 
@@ -152,24 +194,43 @@ def test_elo_probability_calculation():
 
     # Test cases with known outcomes
     test_cases = [
-        {'home_elo': 1500, 'away_elo': 1500, 'expected_prob': 0.593},  # Equal teams + home advantage
-        {'home_elo': 1600, 'away_elo': 1500, 'expected_prob': 0.760},  # Home team stronger
-        {'home_elo': 1400, 'away_elo': 1500, 'expected_prob': 0.407},  # Away team stronger
-        {'home_elo': 1500, 'away_elo': 1500, 'home_adv': 0, 'expected_prob': 0.500},  # No home advantage
+        {
+            "home_elo": 1500,
+            "away_elo": 1500,
+            "expected_prob": 0.593,
+        },  # Equal teams + home advantage
+        {
+            "home_elo": 1600,
+            "away_elo": 1500,
+            "expected_prob": 0.760,
+        },  # Home team stronger
+        {
+            "home_elo": 1400,
+            "away_elo": 1500,
+            "expected_prob": 0.407,
+        },  # Away team stronger
+        {
+            "home_elo": 1500,
+            "away_elo": 1500,
+            "home_adv": 0,
+            "expected_prob": 0.500,
+        },  # No home advantage
     ]
 
     for i, case in enumerate(test_cases):
-        home_adv = case.get('home_adv', 65)  # Default home advantage
+        home_adv = case.get("home_adv", 65)  # Default home advantage
         prob = model.calculate_win_probability(
-            case['home_elo'], case['away_elo'], home_adv
+            case["home_elo"], case["away_elo"], home_adv
         )
 
-        print(f"Test case {i+1}: Home={case['home_elo']}, Away={case['away_elo']}, "
-              f"Home Adv={home_adv}")
+        print(
+            f"Test case {i + 1}: Home={case['home_elo']}, Away={case['away_elo']}, "
+            f"Home Adv={home_adv}"
+        )
         print(f"  Calculated prob: {prob:.3f}, Expected: {case['expected_prob']:.3f}")
 
         # Allow some tolerance for floating point precision
-        if abs(prob - case['expected_prob']) < 0.05:
+        if abs(prob - case["expected_prob"]) < 0.05:
             print("  [OK] Probability calculation accurate")
         else:
             print("  [ERROR] Probability calculation inaccurate")
@@ -213,19 +274,28 @@ def test_training_data_preparation():
     # Test with Elo columns present
     features_df, targets = model.prepare_training_data(games_df)
 
-    print(f"Prepared features: {len(features_df)} games, {len(features_df.columns)} columns")
+    print(
+        f"Prepared features: {len(features_df)} games, {len(features_df.columns)} columns"
+    )
     print(f"Targets: {len(targets)} labels, positive rate: {targets.mean():.3f}")
 
     # Check required columns
-    required_cols = ['game_id', 'home_team', 'away_team', 'home_elo', 'away_elo',
-                    'elo_diff', 'home_advantage', 'raw_win_probability']
+    required_cols = [
+        "game_id",
+        "home_team",
+        "away_team",
+        "home_elo",
+        "away_elo",
+        "elo_diff",
+        "home_advantage",
+        "raw_win_probability",
+    ]
 
     missing_cols = [col for col in required_cols if col not in features_df.columns]
     if missing_cols:
         print(f"  [ERROR] Missing required columns: {missing_cols}")
         return False
-    else:
-        print("  [OK] All required columns present")
+    print("  [OK] All required columns present")
 
     # Check data validity
     if len(features_df) != len(targets):
@@ -237,26 +307,27 @@ def test_training_data_preparation():
         return False
 
     # Check Elo difference calculation
-    elo_diffs = features_df['home_elo'] - features_df['away_elo']
-    if not np.allclose(features_df['elo_diff'], elo_diffs):
+    elo_diffs = features_df["home_elo"] - features_df["away_elo"]
+    if not np.allclose(features_df["elo_diff"], elo_diffs):
         print("  [ERROR] Elo difference calculation incorrect")
         return False
-    else:
-        print("  [OK] Elo difference calculated correctly")
+    print("  [OK] Elo difference calculated correctly")
 
     # Check probability range
-    probs = features_df['raw_win_probability']
+    probs = features_df["raw_win_probability"]
     if not ((probs >= 0) & (probs <= 1)).all():
         print("  [ERROR] Raw probabilities outside [0, 1] range")
         return False
-    else:
-        print("  [OK] Raw probabilities in valid range")
+    print("  [OK] Raw probabilities in valid range")
 
     # Test without Elo columns (should use defaults)
-    games_no_elo = games_df.drop(columns=['elo_home', 'elo_away'])
+    games_no_elo = games_df.drop(columns=["elo_home", "elo_away"])
     features_no_elo, _ = model.prepare_training_data(games_no_elo)
 
-    if features_no_elo['home_elo'].nunique() == 1 and features_no_elo['away_elo'].nunique() == 1:
+    if (
+        features_no_elo["home_elo"].nunique() == 1
+        and features_no_elo["away_elo"].nunique() == 1
+    ):
         print("  [OK] Default Elo ratings used when columns missing")
     else:
         print("  [ERROR] Default Elo handling failed")
@@ -316,15 +387,15 @@ def test_model_training():
     # Check performance metrics
     metrics = results.performance_metrics
 
-    required_metrics = ['training_accuracy', 'validation_accuracy']
+    required_metrics = ["training_accuracy", "validation_accuracy"]
     missing_metrics = [m for m in required_metrics if m not in metrics]
 
     if missing_metrics:
         print(f"  [ERROR] Missing performance metrics: {missing_metrics}")
         return False
 
-    train_acc = metrics['training_accuracy']
-    val_acc = metrics['validation_accuracy']
+    train_acc = metrics["training_accuracy"]
+    val_acc = metrics["validation_accuracy"]
 
     print(f"  Training accuracy: {train_acc:.3f}")
     print(f"  Validation accuracy: {val_acc:.3f}")
@@ -337,15 +408,14 @@ def test_model_training():
         print("  [OK] Model performance reasonable")
 
     # Check model coefficients
-    coeffs = results.training_history['model_coefficients']
+    coeffs = results.training_history["model_coefficients"]
     print(f"  Model coefficients: {[f'{c:.3f}' for c in coeffs]}")
 
     # Elo difference coefficient should be positive (higher Elo = higher win prob)
     if coeffs[0] <= 0:
         print("  [ERROR] Elo difference coefficient should be positive")
         return False
-    else:
-        print("  [OK] Elo difference coefficient positive")
+    print("  [OK] Elo difference coefficient positive")
 
     print("[PASS] Model training tests passed")
     return True
@@ -375,8 +445,16 @@ def test_model_predictions():
 
     # Check required fields
     sample_pred = predictions[0]
-    required_fields = ['game_id', 'home_team', 'away_team', 'home_elo', 'away_elo',
-                      'elo_diff', 'home_advantage', 'raw_win_probability']
+    required_fields = [
+        "game_id",
+        "home_team",
+        "away_team",
+        "home_elo",
+        "away_elo",
+        "elo_diff",
+        "home_advantage",
+        "raw_win_probability",
+    ]
 
     for field in required_fields:
         if not hasattr(sample_pred, field) or getattr(sample_pred, field) is None:
@@ -409,7 +487,11 @@ def test_model_predictions():
         print("  [WARN] Some predictions not calibrated")
 
     # Check prediction confidence
-    confidences = [p.prediction_confidence for p in predictions if p.prediction_confidence is not None]
+    confidences = [
+        p.prediction_confidence
+        for p in predictions
+        if p.prediction_confidence is not None
+    ]
     if confidences:
         avg_confidence = np.mean(confidences)
         print(f"  Average prediction confidence: {avg_confidence:.3f}")
@@ -433,7 +515,9 @@ def test_walk_forward_validation():
     # Create multi-season data
     games_df = create_sample_nfl_games(600, 4)  # 4 seasons of data
 
-    print(f"Historical data: {len(games_df)} games across {games_df['season'].nunique()} seasons")
+    print(
+        f"Historical data: {len(games_df)} games across {games_df['season'].nunique()} seasons"
+    )
 
     # Initialize model
     model = BaselineEloModel(use_calibration=True)
@@ -449,26 +533,26 @@ def test_walk_forward_validation():
         return False
 
     # Check results structure
-    required_keys = ['start_season', 'end_season', 'season_results', 'overall_metrics']
+    required_keys = ["start_season", "end_season", "season_results", "overall_metrics"]
     missing_keys = [k for k in required_keys if k not in validation_results]
 
     if missing_keys:
         print(f"  [ERROR] Missing validation result keys: {missing_keys}")
         return False
 
-    season_results = validation_results['season_results']
-    overall_metrics = validation_results['overall_metrics']
+    season_results = validation_results["season_results"]
+    overall_metrics = validation_results["overall_metrics"]
 
     print(f"  Seasons validated: {len(season_results)}")
-    overall_acc = overall_metrics.get('overall_accuracy', 'N/A')
+    overall_acc = overall_metrics.get("overall_accuracy", "N/A")
     if isinstance(overall_acc, (int, float)):
         print(f"  Overall accuracy: {overall_acc:.3f}")
     else:
         print(f"  Overall accuracy: {overall_acc}")
 
     # Check individual season results
-    successful_seasons = [s for s, r in season_results.items() if 'error' not in r]
-    failed_seasons = [s for s, r in season_results.items() if 'error' in r]
+    successful_seasons = [s for s, r in season_results.items() if "error" not in r]
+    failed_seasons = [s for s, r in season_results.items() if "error" in r]
 
     print(f"  Successful seasons: {len(successful_seasons)}")
     print(f"  Failed seasons: {len(failed_seasons)}")
@@ -480,13 +564,15 @@ def test_walk_forward_validation():
     # Check performance across seasons
     season_accuracies = []
     for season, result in season_results.items():
-        if 'metrics' in result:
-            acc_key = f'season_{season}_accuracy'
-            if acc_key in result['metrics']:
-                season_accuracies.append(result['metrics'][acc_key])
+        if "metrics" in result:
+            acc_key = f"season_{season}_accuracy"
+            if acc_key in result["metrics"]:
+                season_accuracies.append(result["metrics"][acc_key])
 
     if season_accuracies:
-        print(f"  Season accuracy range: {min(season_accuracies):.3f} - {max(season_accuracies):.3f}")
+        print(
+            f"  Season accuracy range: {min(season_accuracies):.3f} - {max(season_accuracies):.3f}"
+        )
         print(f"  Season accuracy std: {np.std(season_accuracies):.3f}")
 
         if min(season_accuracies) > 0.45:  # Should beat random guessing
@@ -495,15 +581,15 @@ def test_walk_forward_validation():
             print("  [WARN] Some seasons perform poorly")
 
     # Check model stability
-    if 'model_stability' in validation_results:
-        stability = validation_results['model_stability']
-        stability_std = stability.get('accuracy_std', 'N/A')
+    if "model_stability" in validation_results:
+        stability = validation_results["model_stability"]
+        stability_std = stability.get("accuracy_std", "N/A")
         if isinstance(stability_std, (int, float)):
             print(f"  Model stability std: {stability_std:.3f}")
         else:
             print(f"  Model stability std: {stability_std}")
 
-        if stability.get('accuracy_std', 1.0) < 0.1:
+        if stability.get("accuracy_std", 1.0) < 0.1:
             print("  [OK] Model shows good stability")
         else:
             print("  [WARN] Model shows high variance across seasons")
@@ -525,7 +611,7 @@ def test_model_persistence():
 
     # Test saving and loading
     with tempfile.TemporaryDirectory() as temp_dir:
-        model_path = Path(temp_dir) / 'test_baseline_elo.joblib'
+        model_path = Path(temp_dir) / "test_baseline_elo.joblib"
 
         try:
             # Save model
@@ -535,7 +621,7 @@ def test_model_persistence():
             # Create new model instance and load
             loaded_model = BaselineEloModel()
             loaded_model.load_model(str(model_path))
-            print(f"  Model loaded successfully")
+            print("  Model loaded successfully")
 
             # Test predictions are identical
             test_games = create_sample_nfl_games(10, 1)
@@ -545,7 +631,7 @@ def test_model_persistence():
 
             # Compare predictions
             pred_diffs = []
-            for orig, loaded in zip(original_preds, loaded_preds):
+            for orig, loaded in zip(original_preds, loaded_preds, strict=False):
                 diff = abs(orig.raw_win_probability - loaded.raw_win_probability)
                 pred_diffs.append(diff)
 
@@ -594,8 +680,14 @@ def test_model_summary():
     print(f"Model summary keys: {list(summary.keys())}")
 
     # Check required summary fields
-    required_fields = ['model_type', 'is_trained', 'hyperparameters', 'training_info',
-                      'model_coefficients', 'elo_system_info']
+    required_fields = [
+        "model_type",
+        "is_trained",
+        "hyperparameters",
+        "training_info",
+        "model_coefficients",
+        "elo_system_info",
+    ]
 
     missing_fields = [f for f in required_fields if f not in summary]
     if missing_fields:
@@ -605,17 +697,17 @@ def test_model_summary():
     print("  [OK] All required summary fields present")
 
     # Check specific values
-    if summary['model_type'] != 'BaselineEloModel':
+    if summary["model_type"] != "BaselineEloModel":
         print("  [ERROR] Incorrect model type in summary")
         return False
 
-    if not summary['is_trained']:
+    if not summary["is_trained"]:
         print("  [ERROR] Model not marked as trained in summary")
         return False
 
     # Check hyperparameters
-    hyperparams = summary['hyperparameters']
-    expected_params = ['initial_elo', 'k_factor', 'home_advantage', 'season_carryover']
+    hyperparams = summary["hyperparameters"]
+    expected_params = ["initial_elo", "k_factor", "home_advantage", "season_carryover"]
     missing_params = [p for p in expected_params if p not in hyperparams]
 
     if missing_params:
@@ -623,8 +715,8 @@ def test_model_summary():
         return False
 
     # Check coefficients
-    coeffs = summary['model_coefficients']
-    if 'elo_diff_coef' not in coeffs or coeffs['elo_diff_coef'] <= 0:
+    coeffs = summary["model_coefficients"]
+    if "elo_diff_coef" not in coeffs or coeffs["elo_diff_coef"] <= 0:
         print("  [ERROR] Invalid Elo difference coefficient")
         return False
 
@@ -652,7 +744,7 @@ def main():
             test_model_predictions(),
             test_walk_forward_validation(),
             test_model_persistence(),
-            test_model_summary()
+            test_model_summary(),
         ]
 
         # Overall test summary
@@ -666,21 +758,21 @@ def main():
             "Model predictions",
             "Walk-forward validation",
             "Model persistence",
-            "Model summary"
+            "Model summary",
         ]
 
         all_passed = True
-        for test_name, result in zip(test_names, test_results):
+        for test_name, result in zip(test_names, test_results, strict=False):
             status = "[PASS]" if result else "[FAIL]"
             print(f"{status} {test_name}")
             if not result:
                 all_passed = False
 
         if all_passed:
-            print(f"\n[SUCCESS] ALL BASELINE ELO MODEL TESTS PASSED!")
-            print(f"The baseline Elo model is ready for production use.")
+            print("\n[SUCCESS] ALL BASELINE ELO MODEL TESTS PASSED!")
+            print("The baseline Elo model is ready for production use.")
         else:
-            print(f"\n[FAIL] Some tests failed. Please review the output above.")
+            print("\n[FAIL] Some tests failed. Please review the output above.")
             return False
 
     except Exception as e:

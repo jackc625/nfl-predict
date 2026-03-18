@@ -1,5 +1,5 @@
 """Rating systems for NFL teams."""
 
-from .elo import EloRatingSystem, EloRating
+from .elo import EloRating, EloRatingSystem
 
-__all__ = ['EloRatingSystem', 'EloRating']
+__all__ = ["EloRating", "EloRatingSystem"]
