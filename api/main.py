@@ -24,10 +24,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 # Import utils for additional functionality
+from utils.exceptions import StorageError
 from utils.similar_games import SimilarGameCriteria, get_similar_games_engine
 
 from .config import get_middleware_config, settings
-from .exceptions import setup_exception_handlers
+from .exceptions import NFLPredictionAPIException, setup_exception_handlers
 from .middleware import setup_middleware
 from .schemas import (
     BacktestResponse,
@@ -87,7 +88,7 @@ async def initialize_models():
         else:
             logger.warning("Model artifacts directory not found - models unavailable")
             models_loaded = False
-    except Exception as e:
+    except OSError as e:
         logger.error(f"Model initialization failed: {e}")
         models_loaded = False
 
@@ -105,7 +106,7 @@ async def setup_database_connections():
         else:
             logger.warning("Data directory not found - database unavailable")
             database_connected = False
-    except Exception as e:
+    except OSError as e:
         logger.error(f"Database setup failed: {e}")
         database_connected = False
 
@@ -117,7 +118,7 @@ async def cleanup_models():
         if models_loaded:
             models_loaded = False
             logger.info("Models cleaned up")
-    except Exception as e:
+    except (RuntimeError, OSError) as e:
         logger.error(f"Model cleanup failed: {e}")
 
 
@@ -128,7 +129,7 @@ async def close_database_connections():
         if database_connected:
             database_connected = False
             logger.info("Database connections closed")
-    except Exception as e:
+    except (RuntimeError, OSError) as e:
         logger.error(f"Database cleanup failed: {e}")
 
 
@@ -161,7 +162,7 @@ def get_build_date() -> datetime:
             mtime = main_py.stat().st_mtime
             return datetime.fromtimestamp(mtime, tz=UTC)
 
-    except Exception as e:
+    except (ValueError, TypeError, OSError) as e:
         logger.warning(f"Could not determine build date: {e}")
 
     return datetime.now(UTC)
@@ -223,7 +224,7 @@ def get_component_health() -> dict[str, str]:
             "models": "healthy" if models_loaded else "unavailable",
             "cache": "healthy",
         }
-    except Exception as e:
+    except (RuntimeError, OSError, ValueError) as e:
         logger.error(f"Health check failed: {e}")
         return {"database": "error", "models": "error", "cache": "error"}
 
@@ -489,7 +490,7 @@ async def get_game_detail(
 
         logger.info(f"Found {len(similar_games)} similar games for {game_id}")
 
-    except Exception as e:
+    except (ImportError, ValueError, KeyError, TypeError, FileNotFoundError) as e:
         logger.error(f"Error finding similar games for {game_id}: {e}")
         similar_games = []
 
@@ -581,7 +582,7 @@ async def get_backtest_summary(
             f"Generated seasonal breakdown for {len(seasonal_breakdown)} seasons"
         )
 
-    except Exception as e:
+    except (FileNotFoundError, OSError, ValueError, KeyError) as e:
         logger.error(f"Error generating seasonal/recent performance data: {e}")
         # Fallback to placeholder data
         seasonal_breakdown = {
@@ -670,7 +671,9 @@ async def generate_backtest_report(
         )
         return HTMLResponse(content=html_content)
 
-    except Exception as e:
+    except NFLPredictionAPIException:
+        raise
+    except (ImportError, FileNotFoundError, OSError, ValueError) as e:
         logger.error(f"Error generating HTML report: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to generate HTML report: {e!s}"
@@ -703,7 +706,7 @@ async def download_backtest_csv(
 
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
+    except (OSError, ValueError, KeyError) as e:
         logger.error(f"Error generating CSV download: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to generate CSV download: {e!s}"
@@ -749,7 +752,7 @@ async def list_teams():
             "divisions": ["East", "North", "South", "West"],
         }
 
-    except Exception as e:
+    except (ImportError, ValueError, KeyError, TypeError) as e:
         logger.error(f"Error retrieving teams list: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to retrieve teams list: {e!s}"
@@ -773,7 +776,9 @@ async def get_team_stats(
         )
         return team_stats
 
-    except Exception as e:
+    except NFLPredictionAPIException:
+        raise
+    except (StorageError, ValueError, KeyError) as e:
         if "not found" in str(e).lower():
             raise HTTPException(status_code=404, detail=str(e))
         logger.error(f"Error retrieving team stats for {team_id}: {e}")
@@ -801,7 +806,7 @@ async def get_week_predictions(
         )
         return week_predictions
 
-    except Exception as e:
+    except (StorageError, ValueError, KeyError) as e:
         logger.error(f"Error retrieving week predictions for {season} week {week}: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to retrieve week predictions: {e!s}"
@@ -908,7 +913,7 @@ async def get_week_recommendations(
                             }
                             all_recommendations.append(rec_dict)
 
-            except Exception as e:
+            except (ImportError, ValueError, KeyError, TypeError) as e:
                 logger.warning(
                     f"Error generating recommendations for game {game.game_id}: {e}"
                 )
@@ -969,7 +974,7 @@ async def get_week_recommendations(
             },
         }
 
-    except Exception as e:
+    except (StorageError, ValueError, KeyError, TypeError) as e:
         logger.error(
             f"Error retrieving week recommendations for {season} week {week}: {e}"
         )

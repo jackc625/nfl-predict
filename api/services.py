@@ -14,11 +14,13 @@ import duckdb
 import numpy as np
 import pandas as pd
 
+from utils.exceptions import StorageError
 from utils.game_utils import determine_week_type, is_prime_time_game
 from utils.team_data import get_team_info
 
 from .config import settings
 from .exceptions import (
+    DataNotFoundError,
     raise_model_unavailable,
     raise_not_found,
 )
@@ -55,20 +57,20 @@ class DataService:
         self.db_path = self.data_path / "nfl_predictions.duckdb"
 
     def _get_db_connection(self) -> duckdb.DuckDBPyConnection:
-        """Get database connection with read-only access to avoid locking issues."""
+        """Get read-only DuckDB connection. Raises StorageError on failure."""
+        if not self.db_path.exists():
+            raise StorageError(
+                f"Database file not found: {self.db_path}. "
+                f"Run data ingestion pipeline first."
+            )
         try:
-            if not self.db_path.exists():
-                logger.warning(f"Database file not found: {self.db_path}")
-                # Return in-memory database as fallback
-                return duckdb.connect()
-
-            # Use read-only connection to avoid file locking issues with multiple workers
-            conn = duckdb.connect(str(self.db_path), read_only=True)
-            return conn
-        except Exception as e:
-            logger.error(f"Failed to connect to database: {e}")
-            # Return in-memory database as fallback
-            return duckdb.connect()
+            return duckdb.connect(str(self.db_path), read_only=True)
+        except duckdb.IOException as e:
+            raise StorageError(f"Cannot open database {self.db_path}: {e}") from e
+        except duckdb.Error as e:
+            raise StorageError(
+                f"DuckDB connection failed for {self.db_path}: {e}"
+            ) from e
 
     def _normalize_team_filter(self, team: str) -> str:
         """Normalize team filter input for consistent querying."""
@@ -195,10 +197,9 @@ class DataService:
                     )
 
                 return df
-        except Exception as e:
+        except (StorageError, duckdb.Error) as e:
             logger.error(f"Failed to load games data: {e}")
-            # Return empty DataFrame if no data available
-            return pd.DataFrame()
+            raise StorageError(f"Failed to load games data: {e}") from e
 
     def _load_predictions_data(
         self, season: int | None = None, week: int | None = None
@@ -248,7 +249,7 @@ class DataService:
             )
 
             return df
-        except Exception as e:
+        except (FileNotFoundError, OSError, ValueError, KeyError) as e:
             logger.error(f"Failed to load predictions data: {e}")
             return pd.DataFrame()
 
@@ -310,9 +311,9 @@ class DataService:
                     )
 
                 return df
-        except Exception as e:
+        except (StorageError, duckdb.Error) as e:
             logger.error(f"Failed to load market data: {e}")
-            return pd.DataFrame()
+            raise StorageError(f"Failed to load market data: {e}") from e
 
     def get_current_week_metadata(self) -> WeekMetadata:
         """Get current NFL season and week information."""
@@ -325,7 +326,7 @@ class DataService:
 
                 if "games" not in table_names:
                     logger.warning("Games table not found in database, using fallback")
-                    raise Exception("Games table not found")
+                    raise StorageError("Games table not found in database")
 
                 result = conn.execute("""
                     SELECT
@@ -373,7 +374,7 @@ class DataService:
                         last_updated=last_updated,
                         snapshot_time=last_updated,
                     )
-        except Exception as e:
+        except (StorageError, duckdb.Error, ValueError, TypeError) as e:
             logger.warning(f"Could not determine current week from database: {e}")
 
         # Try to get the most recent data from database as fallback
@@ -412,7 +413,7 @@ class DataService:
                         last_updated=datetime.now(UTC),
                         snapshot_time=None,
                     )
-        except Exception as e2:
+        except (StorageError, duckdb.Error, ValueError, TypeError) as e2:
             logger.warning(f"Could not get most recent data from database: {e2}")
 
         # Final fallback to current date-based logic
@@ -529,7 +530,7 @@ class DataService:
                             recommendations[0] if recommendations else None
                         )
 
-                    except Exception as e:
+                    except (ImportError, ValueError, KeyError, TypeError) as e:
                         logger.warning(
                             f"Error generating recommendations for game {game['game_id']}: {e}"
                         )
@@ -603,9 +604,9 @@ class DataService:
 
                 game_summaries.append(game_summary)
 
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
                 logger.error(
-                    f"Error processing game {game.get('game_id') if hasattr(game, 'get') else game.get('game_id', 'unknown')}: {e}"
+                    f"Error processing game {game.get('game_id', 'unknown')}: {e}"
                 )
                 continue
 
@@ -650,7 +651,7 @@ class DataService:
                 # Convert to dict for easier access
                 game_data = dict(zip(columns, result, strict=False))
 
-            except Exception as e:
+            except duckdb.Error as e:
                 logger.error(f"Database error querying game {game_id}: {e}")
                 raise_not_found("Game", game_id)
 
@@ -759,7 +760,7 @@ class DataService:
                         game_id, game_predictions.iloc[0], game_market.iloc[0], 0.02
                     )
                 )
-        except Exception as e:
+        except (ImportError, ValueError, KeyError, TypeError) as e:
             logger.warning(
                 f"Error generating detailed recommendations for game {game_id}: {e}"
             )
@@ -959,7 +960,7 @@ class DataService:
                     "season_averages": season_averages,
                 }
 
-        except Exception as e:
+        except (StorageError, duckdb.Error, ValueError, KeyError) as e:
             logger.error(f"Error retrieving team stats for {team_id}: {e}")
             raise
 
@@ -1113,7 +1114,7 @@ class DataService:
                     },
                 }
 
-        except Exception as e:
+        except (StorageError, duckdb.Error, ValueError, KeyError) as e:
             logger.error(
                 f"Error retrieving week predictions for {season} week {week}: {e}"
             )
@@ -1194,7 +1195,13 @@ class BacktestService:
                 from utils.api_metrics_bridge import api_metrics_bridge
 
                 calculated_metrics = api_metrics_bridge.calculate_backtest_metrics(df)
-            except Exception as e:
+            except (
+                ImportError,
+                ValueError,
+                KeyError,
+                TypeError,
+                ZeroDivisionError,
+            ) as e:
                 logger.warning(f"Error calculating actual metrics: {e}")
                 calculated_metrics = {}
 
@@ -1252,7 +1259,7 @@ class BacktestService:
                 max_drawdown=calculated_metrics.get("max_drawdown", 0.15),
             )
 
-        except Exception as e:
+        except (FileNotFoundError, OSError, ValueError, KeyError) as e:
             logger.error(f"Failed to load backtest summary: {e}")
             # Return placeholder data for development
             return BacktestSummary(
@@ -1389,7 +1396,7 @@ class BacktestService:
             )
             return seasonal_breakdown
 
-        except Exception as e:
+        except (FileNotFoundError, OSError, ValueError, KeyError) as e:
             logger.error(f"Error generating seasonal breakdown: {e}")
             return {}
 
@@ -1468,7 +1475,7 @@ class BacktestService:
                 "recent_games_analyzed": len(recent_weeks_8),
             }
 
-        except Exception as e:
+        except (FileNotFoundError, OSError, ValueError, KeyError) as e:
             logger.error(f"Error generating recent performance: {e}")
             return {
                 "last_4_weeks_roi": 0.0,
@@ -1489,8 +1496,10 @@ class BacktestService:
             # Load backtest data
             backtest_file = self.outputs_path / "backtest" / "backtest_results.parquet"
             if not backtest_file.exists():
-                logger.warning("Backtest results file not found for HTML report")
-                return self._generate_fallback_html_report()
+                raise DataNotFoundError(
+                    "Backtest report not available. Run backtest pipeline first.",
+                    details={"report_type": "html_report"},
+                )
 
             df = pd.read_parquet(backtest_file)
 
@@ -1501,7 +1510,14 @@ class BacktestService:
                 df = df[df["season"] <= end_season]
 
             if df.empty:
-                return self._generate_fallback_html_report()
+                raise DataNotFoundError(
+                    "No backtest data available for the specified period.",
+                    details={
+                        "report_type": "html_report",
+                        "start_season": start_season,
+                        "end_season": end_season,
+                    },
+                )
 
             # Create backtest summary (use existing method)
             backtest_summary = self.get_backtest_summary(start_season, end_season)
@@ -1546,80 +1562,12 @@ class BacktestService:
             logger.info(f"Generated HTML report with {len(raw_results)} results")
             return html_content
 
-        except Exception as e:
+        except (ImportError, FileNotFoundError, OSError, ValueError, KeyError) as e:
             logger.error(f"Error generating HTML report: {e}")
-            return self._generate_fallback_html_report()
-
-    def _generate_fallback_html_report(self) -> str:
-        """Generate a simple fallback HTML report."""
-        return (
-            """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>NFL Prediction System - Backtest Report</title>
-            <style>
-                body {
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                    line-height: 1.6;
-                    margin: 0;
-                    padding: 20px;
-                    background-color: #f5f5f5;
-                }
-                .container {
-                    max-width: 800px;
-                    margin: 0 auto;
-                    background: white;
-                    border-radius: 8px;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                    padding: 30px;
-                }
-                .header {
-                    text-align: center;
-                    border-bottom: 2px solid #eee;
-                    padding-bottom: 20px;
-                    margin-bottom: 30px;
-                }
-                .error {
-                    background: #f8d7da;
-                    border: 1px solid #f5c6cb;
-                    color: #721c24;
-                    padding: 15px;
-                    border-radius: 4px;
-                    margin: 20px 0;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>NFL Prediction System</h1>
-                    <h2>Backtest Report</h2>
-                </div>
-
-                <div class="error">
-                    <h3>Report Generation Error</h3>
-                    <p>The comprehensive backtest report could not be generated at this time. This may be due to:</p>
-                    <ul>
-                        <li>Missing backtest data files</li>
-                        <li>Insufficient historical data</li>
-                        <li>Temporary system issues</li>
-                    </ul>
-                    <p>Please try again later or contact support if the issue persists.</p>
-                </div>
-
-                <div style="text-align: center; margin-top: 30px; color: #666;">
-                    <p>Generated at: """
-            + datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
-            + """</p>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        )
+            raise DataNotFoundError(
+                f"Failed to generate backtest HTML report: {e}",
+                details={"report_type": "html_report"},
+            ) from e
 
     def generate_csv_download(
         self, start_season: int | None = None, end_season: int | None = None
@@ -1724,7 +1672,7 @@ class BacktestService:
             logger.info(f"Generated CSV export: {csv_path} with {len(export_df)} rows")
             return str(csv_path)
 
-        except Exception as e:
+        except (FileNotFoundError, OSError, ValueError, KeyError) as e:
             logger.error(f"Error generating CSV export: {e}")
             raise
 
