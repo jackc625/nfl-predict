@@ -1,13 +1,15 @@
-"""Weather data ingestion using Meteostat."""
+"""Weather data ingestion using Open-Meteo Historical Weather API."""
 
 import argparse
+import asyncio
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
+import httpx
 import pandas as pd
-import pytz
-from meteostat import Hourly, Point
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from conf.settings import get_settings
 from data.schemas import WeatherSchema
@@ -18,25 +20,144 @@ from utils import (
     get_logger,
     log_data_operation,
 )
+from utils.exceptions import WeatherDataError
 from utils.game_id_utils import is_valid_game_id
 
 logger = get_logger(__name__)
 
+# Open-Meteo Historical Weather API endpoint
+OPEN_METEO_URL = "https://archive-api.open-meteo.com/v1/archive"
+
+# Full set of hourly weather variables to fetch from Open-Meteo
+HOURLY_VARIABLES = ",".join(
+    [
+        "temperature_2m",
+        "relative_humidity_2m",
+        "dew_point_2m",
+        "apparent_temperature",
+        "precipitation",
+        "rain",
+        "snowfall",
+        "weather_code",
+        "cloud_cover",
+        "wind_speed_10m",
+        "wind_direction_10m",
+        "wind_gusts_10m",
+    ]
+)
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    reraise=True,
+)
+async def fetch_game_weather(
+    client: httpx.AsyncClient,
+    latitude: float,
+    longitude: float,
+    game_date: str,
+    game_hour: int = 13,
+) -> dict[str, Any]:
+    """
+    Fetch historical weather from Open-Meteo for a game venue.
+
+    Args:
+        client: httpx async client
+        latitude: Venue latitude
+        longitude: Venue longitude
+        game_date: Game date as ISO string (YYYY-MM-DD)
+        game_hour: Hour of game in local timezone (default 1 PM ET)
+
+    Returns:
+        Dict with weather data matching the system schema
+
+    Raises:
+        WeatherDataError: If API call fails or response is malformed
+    """
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "start_date": game_date,
+        "end_date": game_date,
+        "hourly": HOURLY_VARIABLES,
+        "temperature_unit": "fahrenheit",
+        "wind_speed_unit": "mph",
+        "timezone": "America/New_York",
+    }
+
+    try:
+        response = await client.get(OPEN_METEO_URL, params=params)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise WeatherDataError(
+            f"Open-Meteo API returned {e.response.status_code} "
+            f"for ({latitude}, {longitude}) on {game_date}"
+        )
+    except httpx.TimeoutException as e:
+        raise WeatherDataError(
+            f"Open-Meteo API timeout for ({latitude}, {longitude}) on {game_date}: {e}"
+        )
+    except httpx.RequestError as e:
+        raise WeatherDataError(
+            f"Open-Meteo API request failed for ({latitude}, {longitude}) "
+            f"on {game_date}: {e}"
+        )
+
+    data = response.json()
+
+    if "hourly" not in data:
+        raise WeatherDataError(
+            f"Open-Meteo response missing 'hourly' key for "
+            f"({latitude}, {longitude}) on {game_date}"
+        )
+
+    hourly = data["hourly"]
+
+    # Select the game_hour index from the hourly arrays (0-23 for single-day)
+    idx = min(game_hour, len(hourly.get("temperature_2m", [])) - 1)
+    if idx < 0:
+        raise WeatherDataError(
+            f"No hourly data returned for ({latitude}, {longitude}) on {game_date}"
+        )
+
+    temp_f = hourly["temperature_2m"][idx]
+
+    return {
+        "temp_f": temp_f,
+        "temp_c": round((temp_f - 32) * 5 / 9, 1) if temp_f is not None else None,
+        "wind_mph": hourly["wind_speed_10m"][idx],
+        "wind_direction": hourly["wind_direction_10m"][idx],
+        "humidity_pct": hourly["relative_humidity_2m"][idx],
+        "precip_mm": hourly["precipitation"][idx],
+        "precip_prob": None,  # Not available in historical reanalysis data
+        "condition": None,  # Derive from weather_code if needed downstream
+        "condition_code": hourly["weather_code"][idx],
+        "visibility_km": None,  # Not available in ERA5
+        # New fields available from Open-Meteo
+        "dew_point_f": hourly["dew_point_2m"][idx],
+        "apparent_temp_f": hourly["apparent_temperature"][idx],
+        "snowfall_cm": hourly["snowfall"][idx],
+        "wind_gusts_mph": hourly["wind_gusts_10m"][idx],
+        "cloud_cover_pct": hourly["cloud_cover"][idx],
+        "weather_code": hourly["weather_code"][idx],
+    }
+
 
 class WeatherDataIngester:
-    """NFL weather data ingestion using Meteostat."""
+    """NFL weather data ingestion using Open-Meteo Historical Weather API."""
 
     def __init__(self):
         """Initialize weather data ingester."""
         self.settings = get_settings()
 
-        # Timezone mappings
+        # Timezone mappings using stdlib zoneinfo
         self.timezone_map = {
-            "America/New_York": pytz.timezone("America/New_York"),
-            "America/Chicago": pytz.timezone("America/Chicago"),
-            "America/Denver": pytz.timezone("America/Denver"),
-            "America/Los_Angeles": pytz.timezone("America/Los_Angeles"),
-            "America/Phoenix": pytz.timezone("America/Phoenix"),
+            "America/New_York": ZoneInfo("America/New_York"),
+            "America/Chicago": ZoneInfo("America/Chicago"),
+            "America/Denver": ZoneInfo("America/Denver"),
+            "America/Los_Angeles": ZoneInfo("America/Los_Angeles"),
+            "America/Phoenix": ZoneInfo("America/Phoenix"),
         }
 
     def _load_venue_data(self) -> pd.DataFrame:
@@ -52,7 +173,7 @@ class WeatherDataIngester:
             venues_df = pd.DataFrame(venues_data["venues"])
             logger.info("Loaded venue data", venues=len(venues_df))
             return venues_df
-        except Exception as e:
+        except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
             logger.error("Failed to load venue data", error=str(e))
             raise DataIngestionError(f"Venue data load failed: {e}")
 
@@ -99,7 +220,7 @@ class WeatherDataIngester:
 
             return filtered_games
 
-        except Exception as e:
+        except (FileNotFoundError, KeyError, ValueError) as e:
             logger.error(
                 "Failed to load games data", season=season, week=week, error=str(e)
             )
@@ -109,7 +230,7 @@ class WeatherDataIngester:
         self, home_team: str, venues_df: pd.DataFrame
     ) -> tuple[float, float, str]:
         """Get venue coordinates and roof type for a team."""
-        # Filter venues by checking if home_team is in the home_teams array for each venue
+        # Filter venues by checking if home_team is in the home_teams array
         venue_info = venues_df[
             venues_df["home_teams"].apply(lambda teams: home_team in teams)
         ]
@@ -134,10 +255,10 @@ class WeatherDataIngester:
             tz = self.timezone_map[from_tz]
 
             if dt.tzinfo is None:
-                dt = tz.localize(dt)
+                dt = dt.replace(tzinfo=tz)
 
             if to_utc:
-                return dt.astimezone(pytz.UTC)
+                return dt.astimezone(UTC)
             return dt
 
         return dt
@@ -179,7 +300,6 @@ class WeatherDataIngester:
 
         # Other conditions
         humidity_pct = random.uniform(40, 90)
-        visibility_km = random.uniform(8, 16)
 
         # Weather condition
         if precip_prob > 0.6:
@@ -196,94 +316,47 @@ class WeatherDataIngester:
             "temp_f": round(temp_f, 1),
             "temp_c": round(temp_c, 1),
             "wind_mph": round(wind_mph, 1),
-            "wind_direction": random.choice(
-                ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-            ),
+            "wind_direction": random.randint(0, 359),
             "humidity_pct": round(humidity_pct, 1),
             "precip_prob": round(precip_prob, 2),
             "precip_mm": round(precip_mm, 1),
             "condition": condition,
             "condition_code": condition_code,
-            "visibility_km": round(visibility_km, 1),
+            "visibility_km": None,
+            "dew_point_f": round(temp_f - random.uniform(5, 20), 1),
+            "apparent_temp_f": round(temp_f - random.uniform(-5, 10), 1),
+            "snowfall_cm": round(random.uniform(0, 2), 1) if temp_f <= 35 else 0.0,
+            "wind_gusts_mph": round(wind_mph * random.uniform(1.2, 2.0), 1),
+            "cloud_cover_pct": round(random.uniform(10, 100), 1),
+            "weather_code": condition_code,
         }
 
-    def _fetch_meteostat_weather(
+    async def _fetch_openmeteo_weather(
         self,
         latitude: float,
         longitude: float,
-        game_time: datetime,
-        forecast_time: datetime,
+        game_date: str,
+        game_hour: int = 13,
     ) -> dict[str, Any]:
-        """Fetch weather data from Meteostat API."""
-        try:
-            import warnings
+        """
+        Fetch weather data from Open-Meteo Historical API.
 
-            # Suppress numpy warnings that occur in meteostat calculations
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", "divide by zero encountered in log")
-                warnings.filterwarnings("ignore", "invalid value encountered")
+        Args:
+            latitude: Venue latitude
+            longitude: Venue longitude
+            game_date: Game date as YYYY-MM-DD string
+            game_hour: Hour of game in ET (default 1 PM)
 
-                # Create Point object for location
-                location = Point(latitude, longitude)
+        Returns:
+            Dict with weather data matching system schema
 
-                # Convert game_time to naive datetime in UTC for Meteostat
-                if game_time.tzinfo is not None:
-                    game_time_utc = game_time.astimezone(pytz.UTC).replace(tzinfo=None)
-                else:
-                    game_time_utc = game_time
-
-                # Determine time range for forecast (use naive datetime)
-                start_time = game_time_utc - timedelta(hours=2)
-                end_time = game_time_utc + timedelta(hours=2)
-
-                # Fetch hourly data with error handling
-                data = Hourly(location, start_time, end_time)
-                df = data.fetch()
-
-                if df.empty:
-                    logger.warning(
-                        "No Meteostat data available",
-                        lat=latitude,
-                        lon=longitude,
-                        time=game_time_utc,
-                    )
-                    return self._generate_mock_weather(game_time, latitude, longitude)
-
-                # Get closest time to game time
-                closest_idx = df.index[
-                    df.index.get_indexer([game_time_utc], method="nearest")
-                ]
-                weather_data = df.loc[closest_idx[0]]
-
-                # Convert to our format
-                return {
-                    "temp_f": round(weather_data.get("temp", 60) * 9 / 5 + 32, 1)
-                    if pd.notna(weather_data.get("temp"))
-                    else None,
-                    "temp_c": round(weather_data.get("temp", 15), 1)
-                    if pd.notna(weather_data.get("temp"))
-                    else None,
-                    "wind_mph": round(weather_data.get("wspd", 5) * 0.621371, 1)
-                    if pd.notna(weather_data.get("wspd"))
-                    else None,
-                    "wind_direction": None,  # Meteostat doesn't provide direction easily
-                    "humidity_pct": round(weather_data.get("rhum", 60), 1)
-                    if pd.notna(weather_data.get("rhum"))
-                    else None,
-                    "precip_prob": None,  # Not available in historical data
-                    "precip_mm": round(weather_data.get("prcp", 0), 1)
-                    if pd.notna(weather_data.get("prcp"))
-                    else 0,
-                    "condition": None,  # Would need to derive from other fields
-                    "condition_code": None,
-                    "visibility_km": None,  # Not available
-                }
-
-        except Exception as e:
-            logger.warning(
-                "Meteostat fetch failed", lat=latitude, lon=longitude, error=str(e)
+        Raises:
+            WeatherDataError: If API call fails
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            return await fetch_game_weather(
+                client, latitude, longitude, game_date, game_hour
             )
-            return self._generate_mock_weather(game_time, latitude, longitude)
 
     def _create_weather_record(
         self,
@@ -329,7 +402,7 @@ class WeatherDataIngester:
     ) -> pd.DataFrame:
         """Fetch weather data for all games."""
         if forecast_time is None:
-            forecast_time = datetime.now(pytz.UTC).replace(tzinfo=None)
+            forecast_time = datetime.now(UTC).replace(tzinfo=None)
 
         logger.info(
             "Fetching weather for games", games=len(games_df), use_mock=use_mock
@@ -360,8 +433,15 @@ class WeatherDataIngester:
                 if use_mock or not self._is_outdoor_game(roof_type):
                     weather_data = self._generate_mock_weather(game_time_utc, lat, lon)
                 else:
-                    weather_data = self._fetch_meteostat_weather(
-                        lat, lon, game_time_utc, forecast_time
+                    # Extract date string and hour for Open-Meteo API
+                    game_date_str = game_time_utc.strftime("%Y-%m-%d")
+                    game_hour = game_time_utc.hour
+
+                    # Use asyncio.run for the async fetch
+                    weather_data = asyncio.run(
+                        self._fetch_openmeteo_weather(
+                            lat, lon, game_date_str, game_hour
+                        )
                     )
 
                 # Create weather record
@@ -381,9 +461,16 @@ class WeatherDataIngester:
                     outdoor=weather_record["is_outdoor"],
                 )
 
-            except Exception as e:
+            except WeatherDataError as e:
                 logger.warning(
                     "Failed to fetch weather for game",
+                    game_id=game["game_id"],
+                    error=str(e),
+                )
+                continue
+            except (ValueError, KeyError, TypeError) as e:
+                logger.warning(
+                    "Failed to process weather for game",
                     game_id=game["game_id"],
                     error=str(e),
                 )
@@ -465,7 +552,7 @@ class WeatherDataIngester:
                 week = current_week
 
         if forecast_time is None:
-            forecast_time = datetime.now(pytz.UTC).replace(tzinfo=None)
+            forecast_time = datetime.now(UTC).replace(tzinfo=None)
 
         scope = f"Week {week}" if week is not None else "Entire Season"
         logger.info(
@@ -534,7 +621,7 @@ class WeatherDataIngester:
                     save_to_db=False,
                 )
 
-            # Save to silver layer (processed) - NO partitioning to maintain compatibility
+            # Save to silver layer (processed) - NO partitioning
             save_dataframe(
                 validated_df, "weather_forecast", layer="silver", append_mode=False
             )
@@ -559,7 +646,9 @@ class WeatherDataIngester:
 
             return validated_df
 
-        except Exception as e:
+        except DataIngestionError:
+            raise
+        except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
             logger.error("Weather data ingestion failed", error=str(e))
             raise DataIngestionError(f"Weather ingestion failed: {e}")
 
@@ -603,7 +692,8 @@ def main():
         # Weather ingestion currently supports single season only
         if len(seasons) > 1:
             print(
-                "Warning: Weather ingestion only supports single season. Using first season."
+                "Warning: Weather ingestion only supports single season. "
+                "Using first season."
             )
         season = seasons[0]
 
@@ -630,7 +720,7 @@ def main():
             try:
                 forecast_time = datetime.fromisoformat(args.forecast_time)
                 if forecast_time.tzinfo is None:
-                    forecast_time = pytz.UTC.localize(forecast_time)
+                    forecast_time = forecast_time.replace(tzinfo=ZoneInfo("UTC"))
             except ValueError:
                 print(f"Invalid forecast time format: {args.forecast_time}")
                 sys.exit(1)
@@ -659,7 +749,7 @@ def main():
         if not outdoor_weather.empty:
             print("\nOutdoor weather summary:")
             if "temp_f" in outdoor_weather.columns:
-                print(f"  Temperature: {outdoor_weather['temp_f'].mean():.1f}°F avg")
+                print(f"  Temperature: {outdoor_weather['temp_f'].mean():.1f}F avg")
             if "wind_mph" in outdoor_weather.columns:
                 print(f"  Wind: {outdoor_weather['wind_mph'].mean():.1f} mph avg")
             if "is_cold" in outdoor_weather.columns:

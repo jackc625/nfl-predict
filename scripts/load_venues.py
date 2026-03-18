@@ -193,7 +193,7 @@ class VenueDataLoader:
             )
             with open(mappings_path, encoding="utf-8") as f:
                 mappings = json.load(f)
-        except:
+        except (FileNotFoundError, json.JSONDecodeError):
             # Process venues if mappings don't exist
             self.process_venues()
             with open(mappings_path, encoding="utf-8") as f:
