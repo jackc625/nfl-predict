@@ -53,3 +53,15 @@ class FeatureEngineeringError(NFLPredictException):
     """Raised when feature engineering fails."""
 
     pass
+
+
+class StorageError(NFLPredictException):
+    """Raised when DuckDB or Parquet storage operations fail."""
+
+    pass
+
+
+class WeatherDataError(DataIngestionError):
+    """Raised when weather data fetch or parse fails."""
+
+    pass

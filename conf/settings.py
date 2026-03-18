@@ -24,7 +24,7 @@ class DataSources(BaseModel):
 
     games: str = "nfl_data_py"
     odds: str = "theoddsapi"
-    weather: str = "meteostat"
+    weather: str = "open_meteo"
     venues: str = "static_json"
 
 
@@ -194,7 +194,11 @@ class ExternalAPIConfig(BaseModel):
         "retries": 3,
         "rate_limit_per_hour": 500,
     }
-    weather_api: dict[str, Any] = {"provider": "meteostat", "timeout": 30, "retries": 3}
+    weather_api: dict[str, Any] = {
+        "provider": "open_meteo",
+        "timeout": 30,
+        "retries": 3,
+    }
 
 
 class MonitoringConfig(BaseModel):

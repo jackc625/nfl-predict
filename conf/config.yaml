@@ -10,7 +10,7 @@ data:
   sources:
     games: "nfl_data_py"
     odds: "theoddsapi"  # or "manual_json"
-    weather: "meteostat"
+    weather: "open_meteo"
     venues: "static_json"
   
   # Storage paths
@@ -164,7 +164,7 @@ external_apis:
     rate_limit_per_hour: 500
     
   weather_api:
-    provider: "meteostat"
+    provider: "open_meteo"
     timeout: 30
     retries: 3
 
@@ -172,18 +172,65 @@ external_apis:
 monitoring:
   enable_health_checks: true
   health_check_interval: 300  # seconds
-  
+
   # Data quality alerts
   data_quality:
     min_games_per_week: 14
     max_missing_odds_pct: 0.1   # 10%
     max_missing_weather_pct: 0.2 # 20%
-    
-  # Model performance alerts  
+    max_data_age_hours: 6       # Data freshness threshold
+    max_duplicate_games: 0      # No duplicate games allowed
+    min_odds_coverage: 0.9      # 90% odds coverage required
+
+  # Model performance alerts
   model_performance:
     max_log_loss_increase: 0.1
     min_calibration_score: 0.8
     max_prediction_time: 60  # seconds
+    accuracy_drop_threshold: 0.05  # 5% accuracy drop triggers alert
+    feature_drift_threshold: 0.20  # 20% feature drift threshold
+    extreme_prediction_threshold: 0.10  # Max 10% extreme predictions
+
+  # Alert thresholds by severity
+  alert_thresholds:
+    data_freshness:
+      warning_hours: 6
+      error_hours: 12
+      critical_hours: 24
+    model_accuracy:
+      warning_drop: 0.03  # 3%
+      error_drop: 0.05    # 5%
+      critical_drop: 0.10 # 10%
+    prediction_volume:
+      min_predictions_per_week: 12
+      max_prediction_variance: 0.3
+
+  # Notification settings
+  notifications:
+    enable_email: false
+    enable_slack: false
+    enable_console: true
+    email_recipients: []
+    slack_webhook_url: ""
+
+    # Alert routing by severity
+    notification_levels:
+      critical: ["email", "slack", "console"]
+      error: ["slack", "console"]
+      warning: ["console"]
+      info: ["console"]
+
+    # Rate limiting
+    max_alerts_per_hour: 20
+    cooldown_minutes: 30  # Suppress repeat alerts
+
+  # Health check endpoints
+  health_checks:
+    database: true
+    data_freshness: true
+    model_health: true
+    api_endpoints: true
+    prediction_pipeline: true
 
 # Development Settings
 development:

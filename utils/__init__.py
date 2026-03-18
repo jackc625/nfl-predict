@@ -49,6 +49,8 @@ from .exceptions import (
     ModelPredictionError,
     ModelTrainingError,
     NFLPredictException,
+    StorageError,
+    WeatherDataError,
 )
 from .ingestion_args import (
     add_standard_ingestion_args,
@@ -124,9 +126,11 @@ __all__ = [
     "RecommendationTier",
     # Bankroll management
     "RiskLevel",
+    "StorageError",
     "UnitRecommendation",
     "UnitScale",
     "UnitSizer",
+    "WeatherDataError",
     "add_standard_ingestion_args",
     "analyze_game_betting_opportunities",
     "calculate_moneyline_ev",
