@@ -9,13 +9,13 @@ This module calculates rolling team performance metrics from play-by-play data:
 - Ensures no data leakage (only past games used)
 
 Key metrics:
-- EPA/play: Expected Points Added per play (nfl_data_py provides this)
+- EPA/play: Expected Points Added per play (nflreadpy provides this)
 - Success rate: Percentage of plays that increase win probability
 - Neutral situations: Down 1-2, distance 5+ yards, not in red zone
 - Pass rate: Tendency to pass vs run in neutral situations
 """
 
-import nfl_data_py as nfl
+import nflreadpy as nfl
 import numpy as np
 import pandas as pd
 
@@ -55,7 +55,7 @@ class TeamFormCalculator:
         self.team_mapping = self._build_team_mapping()
 
     def _build_team_mapping(self) -> dict[str, str]:
-        """Build mapping from nfl_data_py team names to our canonical abbreviations."""
+        """Build mapping from nflreadpy team names to our canonical abbreviations."""
         return {
             # Most should be the same, but handle any differences
             "LA": "LAR",  # Los Angeles Rams
@@ -84,8 +84,8 @@ class TeamFormCalculator:
         try:
             logger.info("Fetching play-by-play data", seasons=seasons)
 
-            # Import play-by-play data (this is the expensive call)
-            pbp_df = nfl.import_pbp_data(seasons, include_participation=False)
+            # Load play-by-play data (nflreadpy returns Polars, convert to pandas)
+            pbp_df = nfl.load_pbp(seasons).to_pandas()
 
             # Normalize team names
             pbp_df["posteam"] = pbp_df["posteam"].apply(self._normalize_team_name)

@@ -1,10 +1,10 @@
-"""Game data ingestion using nfl_data_py."""
+"""Game data ingestion using nflreadpy."""
 
 import argparse
 import sys
 from datetime import UTC, datetime
 
-import nfl_data_py as nfl
+import nflreadpy as nfl
 import pandas as pd
 
 from conf.settings import get_settings
@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 
 
 class GameDataIngester:
-    """NFL game data ingestion from nfl_data_py."""
+    """NFL game data ingestion from nflreadpy."""
 
     def __init__(self):
         """Initialize game data ingester."""
@@ -34,7 +34,7 @@ class GameDataIngester:
 
     def _build_team_mapping(self) -> dict[str, str]:
         """Build mapping from various team name formats to canonical abbreviations."""
-        # This should be updated based on actual nfl_data_py team formats
+        # This should be updated based on actual nflreadpy team formats
         return {
             # Standard abbreviations (these should pass through unchanged)
             "ARI": "ARI",
@@ -153,7 +153,7 @@ class GameDataIngester:
         self, seasons: list[int], weeks: list[int] | None = None
     ) -> pd.DataFrame:
         """
-        Fetch schedule data from nfl_data_py.
+        Fetch schedule data from nflreadpy.
 
         Args:
             seasons: List of seasons to fetch
@@ -165,8 +165,8 @@ class GameDataIngester:
         try:
             logger.info("Fetching schedule data", seasons=seasons, weeks=weeks)
 
-            # Import schedule data
-            schedule_df = nfl.import_schedules(seasons)
+            # Load schedule data (nflreadpy returns Polars, convert to pandas)
+            schedule_df = nfl.load_schedules(seasons).to_pandas()
 
             if weeks:
                 schedule_df = schedule_df[schedule_df["week"].isin(weeks)]
@@ -177,7 +177,7 @@ class GameDataIngester:
 
             return schedule_df
 
-        except Exception as e:
+        except (ConnectionError, TimeoutError, ValueError) as e:
             logger.error(
                 "Failed to fetch schedule data",
                 seasons=seasons,
@@ -204,8 +204,8 @@ class GameDataIngester:
                 "Fetching play-by-play data for results", seasons=seasons, weeks=weeks
             )
 
-            # Import play-by-play data (contains final scores)
-            pbp_df = nfl.import_pbp_data(seasons)
+            # Load play-by-play data (nflreadpy returns Polars, convert to pandas)
+            pbp_df = nfl.load_pbp(seasons).to_pandas()
 
             if weeks:
                 pbp_df = pbp_df[pbp_df["week"].isin(weeks)]
@@ -221,7 +221,7 @@ class GameDataIngester:
 
             return game_results
 
-        except Exception as e:
+        except (ConnectionError, TimeoutError, ValueError) as e:
             logger.error(
                 "Failed to fetch PBP data", seasons=seasons, weeks=weeks, error=str(e)
             )
@@ -232,7 +232,7 @@ class GameDataIngester:
         Transform raw schedule data to our schema format.
 
         Args:
-            schedule_df: Raw schedule DataFrame from nfl_data_py
+            schedule_df: Raw schedule DataFrame from nflreadpy
 
         Returns:
             Transformed DataFrame matching GameSchema
