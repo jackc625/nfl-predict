@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NFL Predict - Stack Smoke Test</title>
+    <link rel="stylesheet" href="/static/css/tailwind-compiled.css">
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
+</head>
+<body class="bg-gray-100 p-8">
+    <div class="max-w-2xl mx-auto bg-white rounded-lg shadow p-6">
+        <h1 class="text-2xl font-bold text-gray-900 mb-4">NFL Predict - Stack Smoke Test</h1>
+        <p class="text-gray-600 mb-4">Tailwind v4 + HTMX 2.0 working correctly.</p>
+        <button
+            class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors"
+            hx-get="/api/health"
+            hx-target="#result"
+            hx-swap="innerHTML">
+            Test API Health
+        </button>
+        <div id="result" class="mt-4 p-4 bg-gray-50 rounded font-mono text-sm"></div>
+    </div>
+</body>
+</html>

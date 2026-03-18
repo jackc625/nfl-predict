@@ -3,7 +3,7 @@
 # This Makefile provides standardized commands for running the NFL prediction system
 # in accordance with the PRD acceptance criteria.
 
-.PHONY: help snapshot backtest predict serve test clean install setup lint
+.PHONY: help snapshot backtest predict serve test clean install setup lint build-css
 
 # Default target
 .DEFAULT_GOAL := help
@@ -163,20 +163,16 @@ test-quick: ## Run quick test suite (unit tests only)
 	pytest tests/unit/ -v --tb=line -x
 
 test-models: ## Test model training and prediction pipeline
-	@echo "$(GREEN)🤖 Testing model pipeline...$(NC)"
-	$(PYTHON) scripts/test_wp_model.py
-	$(PYTHON) scripts/test_ats_model.py
-	$(PYTHON) scripts/test_ou_model.py
-	$(PYTHON) scripts/test_prediction_pipeline.py
+	@echo "$(GREEN)Testing model pipeline...$(NC)"
+	pytest tests/unit/test_elo_and_probabilities.py -v --tb=short
 
 test-features: ## Test feature engineering pipeline
-	@echo "$(GREEN)🔧 Testing feature pipeline...$(NC)"
-	$(PYTHON) scripts/test_feature_pipeline.py
-	$(PYTHON) scripts/test_feature_validation.py
+	@echo "$(GREEN)Testing feature pipeline...$(NC)"
+	pytest tests/unit/test_feature_builders.py -v --tb=short
 
 test-api: ## Test API endpoints
-	@echo "$(GREEN)🌐 Testing API endpoints...$(NC)"
-	$(PYTHON) scripts/test_api_endpoints.py
+	@echo "$(GREEN)Testing API endpoints...$(NC)"
+	pytest tests/ -k "api" -v --tb=short
 	@echo "Note: Start the server with 'make serve' in another terminal for full API testing"
 
 # =============================================================================
@@ -213,9 +209,8 @@ features-build: ## Build all features for current week
 	$(PYTHON) scripts/build_features.py --current-week
 
 features-validate: ## Validate feature engineering pipeline
-	@echo "$(GREEN)✔️ Validating features...$(NC)"
+	@echo "$(GREEN)Validating features...$(NC)"
 	$(PYTHON) scripts/validate_features.py --comprehensive
-	$(PYTHON) scripts/test_feature_validation.py
 
 # =============================================================================
 # MODEL MANAGEMENT COMMANDS
@@ -393,6 +388,13 @@ friday-production: ## Friday 6 PM ET production run
 	@make health-check
 
 	@echo "$(GREEN)🎯 Production run complete! Predictions ready for weekend.$(NC)"
+
+# =============================================================================
+# FRONTEND BUILD
+# =============================================================================
+
+build-css: ## Build Tailwind CSS
+	./tools/tailwindcss -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify
 
 # =============================================================================
 # DEVELOPMENT SHORTCUTS
