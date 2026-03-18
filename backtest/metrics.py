@@ -376,7 +376,7 @@ class MetricsCalculator:
                 accuracy_ci, log_loss_ci, auc_roc_ci = self._calculate_bootstrap_ci(
                     y_true_binary, y_pred_prob, bootstrap_samples
                 )
-            except Exception as e:
+            except (ValueError, IndexError, ZeroDivisionError) as e:
                 logger.warning(f"Failed to calculate bootstrap CIs: {e}")
 
         return ClassificationMetrics(
@@ -536,7 +536,7 @@ class MetricsCalculator:
             hl_statistic, hl_p_value = self._hosmer_lemeshow_test(
                 y_true_binary, y_pred_prob, n_bins
             )
-        except Exception as e:
+        except (ValueError, IndexError, ZeroDivisionError) as e:
             logger.warning(f"Failed to calculate Hosmer-Lemeshow test: {e}")
 
         return CalibrationMetrics(
@@ -741,7 +741,7 @@ class MetricsCalculator:
                     test_details={"distribution": "uniform"},
                 )
             )
-        except Exception as e:
+        except (ValueError, IndexError) as e:
             logger.warning(f"Failed KS test: {e}")
 
         # 3. McNemar's test for paired predictions (if comparing two models)
@@ -959,7 +959,7 @@ class MetricsCalculator:
                         # Skip this sample if AUC calculation fails
                         pass
 
-            except Exception:
+            except (ValueError, IndexError, ZeroDivisionError):
                 # Skip problematic bootstrap samples
                 continue
 

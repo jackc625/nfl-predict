@@ -726,7 +726,7 @@ class BaselineEloModel:
                     accuracy=season_metrics[f"season_{test_season}_accuracy"],
                 )
 
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, RuntimeError) as e:
                 logger.error(f"Season {test_season} validation failed", error=str(e))
                 validation_results["season_results"][test_season] = {
                     "error": str(e),

@@ -306,10 +306,18 @@ class WalkForwardBacktester:
                     if (i + 1) % self.config.checkpoint_frequency == 0:
                         self._save_checkpoint(all_results, i + 1)
 
-                except Exception as e:
+                except (
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                    RuntimeError,
+                    FileNotFoundError,
+                ) as e:
                     logger.error(f"Error in split {i + 1}: {e}")
                     if self.config.validation_level == ValidationLevel.STRICT:
-                        raise BacktestError(f"Backtest failed at split {i + 1}: {e}")
+                        raise BacktestError(
+                            f"Backtest failed at split {i + 1}: {e}"
+                        ) from e
                     # Continue with next split in non-strict mode
                     continue
 
@@ -342,9 +350,9 @@ class WalkForwardBacktester:
 
             return summary
 
-        except Exception as e:
+        except (BacktestError, DataValidationError, ModelTrainingError) as e:
             logger.error(f"Backtesting failed: {e}")
-            raise BacktestError(f"Walk-forward backtest failed: {e}")
+            raise BacktestError(f"Walk-forward backtest failed: {e}") from e
 
     def _generate_season_splits(self) -> list[SeasonSplit]:
         """Generate all season splits for walk-forward validation."""
@@ -424,7 +432,7 @@ class WalkForwardBacktester:
                 )
                 week_results.extend(week_result)
 
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, RuntimeError) as e:
                 logger.error(
                     f"Error in week {week} of season {split.validation_season}: {e}"
                 )
@@ -539,12 +547,12 @@ class WalkForwardBacktester:
 
                 logger.info(f"Successfully trained {model_type} model")
 
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, RuntimeError) as e:
                 logger.error(f"Failed to train {model_type} model: {e}")
                 if self.config.validation_level == ValidationLevel.STRICT:
                     raise ModelTrainingError(
                         f"Model training failed for {model_type}: {e}"
-                    )
+                    ) from e
 
         return trained_models
 
@@ -613,7 +621,7 @@ class WalkForwardBacktester:
                     f"Season {season} Week {week} {model_type}: {result.predictions_made} predictions"
                 )
 
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, RuntimeError) as e:
                 logger.error(
                     f"Prediction failed for {model_type} in season {season}, week {week}: {e}"
                 )

@@ -965,7 +965,13 @@ class WinProbabilityModel:
                     accuracy=season_metrics.get(accuracy_key, 0),
                 )
 
-            except Exception as e:
+            except (
+                ValueError,
+                KeyError,
+                TypeError,
+                RuntimeError,
+                np.linalg.LinAlgError,
+            ) as e:
                 self.logger.error(
                     f"Season {test_season} WP validation failed", error=str(e)
                 )
@@ -1146,7 +1152,7 @@ def main():
         logger.info(
             "Loaded WP features", season=season, week=week, records=len(features_df)
         )
-    except Exception as e:
+    except (FileNotFoundError, OSError, ValueError, KeyError) as e:
         logger.error(f"Failed to load features: {e}")
         return
 

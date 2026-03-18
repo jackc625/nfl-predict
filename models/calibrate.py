@@ -227,7 +227,7 @@ class ProbabilityCalibrator:
 
             return results
 
-        except Exception as e:
+        except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
             self.logger.error(f"Calibration failed with {method}", error=str(e))
 
             # Try fallback method if different from primary
@@ -339,7 +339,7 @@ class ProbabilityCalibrator:
             metrics["brier_score_improvement"] = (
                 metrics["raw_brier_score"] - metrics["calibrated_brier_score"]
             )
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             self.logger.warning(f"Failed to calculate Brier score: {e}")
             metrics.update(
                 {
@@ -358,7 +358,7 @@ class ProbabilityCalibrator:
             metrics["log_loss_improvement"] = (
                 metrics["raw_log_loss"] - metrics["calibrated_log_loss"]
             )
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             self.logger.warning(f"Failed to calculate log loss: {e}")
             metrics.update(
                 {
@@ -380,7 +380,7 @@ class ProbabilityCalibrator:
                 metrics["raw_expected_calibration_error"]
                 - metrics["expected_calibration_error"]
             )
-        except Exception as e:
+        except (ValueError, TypeError, ZeroDivisionError) as e:
             self.logger.warning(f"Failed to calculate ECE: {e}")
             metrics.update(
                 {
@@ -398,7 +398,7 @@ class ProbabilityCalibrator:
             metrics["raw_maximum_calibration_error"] = self._calculate_mce(
                 raw_probabilities, true_labels
             )
-        except Exception as e:
+        except (ValueError, TypeError, ZeroDivisionError) as e:
             self.logger.warning(f"Failed to calculate MCE: {e}")
             metrics.update(
                 {
@@ -417,7 +417,7 @@ class ProbabilityCalibrator:
             # Perfect calibration has slope=1, intercept=0
             metrics["calibration_slope_deviation"] = abs(slope - 1.0)
             metrics["calibration_intercept_deviation"] = abs(intercept)
-        except Exception as e:
+        except (ValueError, TypeError, np.linalg.LinAlgError) as e:
             self.logger.warning(f"Failed to calculate calibration slope: {e}")
             metrics.update(
                 {
@@ -546,7 +546,7 @@ class ProbabilityCalibrator:
 
             return mean_predicted_value, fraction_of_positives, bin_edges
 
-        except Exception as e:
+        except (ValueError, TypeError, IndexError) as e:
             self.logger.warning(f"Failed to generate reliability curve: {e}")
             # Return empty arrays if calculation fails
             return np.array([]), np.array([]), np.array([])
@@ -667,7 +667,7 @@ class ProbabilityCalibrator:
                     ],
                 )
 
-            except Exception as e:
+            except (ValueError, RuntimeError, np.linalg.LinAlgError) as e:
                 self.logger.error(f"Failed to calibrate season {season}", error=str(e))
 
         return results

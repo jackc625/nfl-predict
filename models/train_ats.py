@@ -1173,7 +1173,7 @@ def main():
         logger.info(
             "Loaded ATS features", season=season, week=week, records=len(features_df)
         )
-    except Exception as e:
+    except (FileNotFoundError, OSError, ValueError, KeyError) as e:
         logger.error(f"Failed to load features: {e}")
         return
 

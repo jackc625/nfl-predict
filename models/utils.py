@@ -673,7 +673,7 @@ class ModelManager:
                             "version": metadata_dict.get("version", "1.0.0"),
                         }
                     )
-                except Exception as e:
+                except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
                     self.logger.warning(f"Error reading metadata for {model_path}: {e}")
 
         # Sort by training date (newest first)
@@ -850,7 +850,13 @@ class TrainingPipeline:
                     test_games=len(split.test_data),
                 )
 
-            except Exception as e:
+            except (
+                ValueError,
+                KeyError,
+                TypeError,
+                RuntimeError,
+                np.linalg.LinAlgError,
+            ) as e:
                 split_results["success"] = False
                 split_results["error"] = str(e)
                 self.logger.error(
