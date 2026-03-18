@@ -12,7 +12,7 @@ Transform the existing NFL prediction codebase from an unvalidated partial imple
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation Hardening** - Replace deprecated dependencies, fix silent failure modes, modernize toolchain
+- [x] **Phase 1: Foundation Hardening** - Replace deprecated dependencies, fix silent failure modes, modernize toolchain (completed 2026-03-18)
 - [ ] **Phase 2: Data Pipeline Audit** - Reliable ingestion, canonical team mapping, hard-fail quality gates
 - [ ] **Phase 3: Feature Engineering Correctness** - Audit existing features for leakage, enforce time-fence abstraction, compress overengineered features
 - [ ] **Phase 4: Core Model Training** - Walk-forward training of WP/ATS/O/U models with correct temporal validation protocol
@@ -36,10 +36,10 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 4 plans
 
 Plans:
-- [ ] 01-01-PLAN.md -- Toolchain modernization: uv, Ruff, pyright, dependency cleanup, version upgrades, exception hierarchy
-- [ ] 01-02-PLAN.md -- Data library migration: nfl_data_py to nflreadpy, Meteostat to Open-Meteo
-- [ ] 01-03-PLAN.md -- Error handling hardening: except Exception removal, DuckDB fail-loud, HTML fallback removal
-- [ ] 01-04-PLAN.md -- Frontend toolchain and cleanup: Tailwind v4 standalone, HTMX 2.0, dead file removal, pytz elimination
+- [x] 01-01-PLAN.md -- Toolchain modernization: uv, Ruff, pyright, dependency cleanup, version upgrades, exception hierarchy
+- [x] 01-02-PLAN.md -- Data library migration: nfl_data_py to nflreadpy, Meteostat to Open-Meteo
+- [x] 01-03-PLAN.md -- Error handling hardening: except Exception removal, DuckDB fail-loud, HTML fallback removal
+- [x] 01-04-PLAN.md -- Frontend toolchain and cleanup: Tailwind v4 standalone, HTMX 2.0, dead file removal, pytz elimination
 
 ### Phase 2: Data Pipeline Audit
 **Goal**: Data flows reliably from all three sources through Bronze and Silver layers with hard-fail quality gates, canonical team names, and verified completeness for all 32 teams across 2018-2024
@@ -165,7 +165,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation Hardening | 0/4 | Planning complete | - |
+| 1. Foundation Hardening | 4/4 | Complete   | 2026-03-18 |
 | 2. Data Pipeline Audit | 0/TBD | Not started | - |
 | 3. Feature Engineering Correctness | 0/TBD | Not started | - |
 | 4. Core Model Training | 0/TBD | Not started | - |

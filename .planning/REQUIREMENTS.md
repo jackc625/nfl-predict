@@ -17,8 +17,8 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **FOUN-06**: Upgrade XGBoost to 3.2+, scikit-learn to 1.8+, DuckDB to 1.3+
 - [x] **FOUN-07**: Migrate package management from pip to uv with lockfile
 - [x] **FOUN-08**: Replace black + isort + flake8 with Ruff for linting/formatting
-- [ ] **FOUN-09**: Add HTMX 2.0 for interactive UI without JavaScript build toolchain
-- [ ] **FOUN-10**: Migrate to Tailwind CSS v4 standalone CLI (eliminate Node.js dependency)
+- [x] **FOUN-09**: Add HTMX 2.0 for interactive UI without JavaScript build toolchain
+- [x] **FOUN-10**: Migrate to Tailwind CSS v4 standalone CLI (eliminate Node.js dependency)
 - [x] **FOUN-11**: Remove unused dependencies (polars, lightgbm, statsmodels, seaborn, pytz, pendulum)
 - [x] **FOUN-12**: Pin all dependency versions in pyproject.toml for reproducibility
 
@@ -141,8 +141,8 @@ Deferred to future release. Tracked but not in current roadmap.
 | FOUN-06 | Phase 1 | Complete |
 | FOUN-07 | Phase 1 | Complete |
 | FOUN-08 | Phase 1 | Complete |
-| FOUN-09 | Phase 1 | Pending |
-| FOUN-10 | Phase 1 | Pending |
+| FOUN-09 | Phase 1 | Complete |
+| FOUN-10 | Phase 1 | Complete |
 | FOUN-11 | Phase 1 | Complete |
 | FOUN-12 | Phase 1 | Complete |
 | DATA-01 | Phase 2 | Pending |
