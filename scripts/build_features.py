@@ -109,7 +109,7 @@ class FeatureMatrixBuilder:
                     ]
                 feature_sources["team_form"] = team_form_df
                 logger.info("Loaded team form features", records=len(team_form_df))
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 logger.warning("Failed to load team form features", error=str(e))
                 feature_sources["team_form"] = pd.DataFrame()
 
@@ -123,7 +123,7 @@ class FeatureMatrixBuilder:
                     ]
                 feature_sources["elo"] = elo_df
                 logger.info("Loaded Elo features", records=len(elo_df))
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 logger.warning("Failed to load Elo features", error=str(e))
                 feature_sources["elo"] = pd.DataFrame()
 
@@ -137,7 +137,7 @@ class FeatureMatrixBuilder:
                     ]
                 feature_sources["contextual"] = contextual_df
                 logger.info("Loaded contextual features", records=len(contextual_df))
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 logger.warning("Failed to load contextual features", error=str(e))
                 feature_sources["contextual"] = pd.DataFrame()
 
@@ -151,7 +151,7 @@ class FeatureMatrixBuilder:
                     ]
                 feature_sources["weather"] = weather_df
                 logger.info("Loaded weather features", records=len(weather_df))
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 logger.warning("Failed to load weather features", error=str(e))
                 feature_sources["weather"] = pd.DataFrame()
 
@@ -165,13 +165,13 @@ class FeatureMatrixBuilder:
                     ]
                 feature_sources["market"] = market_df
                 logger.info("Loaded market anchor features", records=len(market_df))
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 logger.warning("Failed to load market anchor features", error=str(e))
                 feature_sources["market"] = pd.DataFrame()
 
             return feature_sources
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             logger.error("Failed to load feature sources", error=str(e))
             raise
 
@@ -794,7 +794,7 @@ class FeatureMatrixBuilder:
 
             return feature_matrices
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             logger.error("Failed to generate feature matrices", error=str(e))
             raise
 
@@ -959,7 +959,7 @@ def main():
 
         logger.info("Feature matrix building completed successfully")
 
-    except Exception as e:
+    except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
         logger.error("Failed to build feature matrices", error=str(e))
         raise
 

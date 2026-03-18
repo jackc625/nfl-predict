@@ -137,7 +137,7 @@ class MarketAnchorFeaturesCalculator:
 
             return opening_df
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.error("Failed to identify opening lines", error=str(e))
             raise
 
@@ -227,7 +227,7 @@ class MarketAnchorFeaturesCalculator:
 
             return snapshot_df
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.error("Failed to identify snapshot lines", error=str(e))
             raise
 
@@ -318,7 +318,7 @@ class MarketAnchorFeaturesCalculator:
 
             return probabilities
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.error("Failed to calculate devigged probabilities", error=str(e))
             return {}
 
@@ -396,7 +396,7 @@ class MarketAnchorFeaturesCalculator:
 
             return movement
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.error("Failed to calculate line movement", error=str(e))
             return {}
 
@@ -463,7 +463,7 @@ class MarketAnchorFeaturesCalculator:
 
             return efficiency
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.error(
                 "Failed to calculate market efficiency indicators", error=str(e)
             )
@@ -530,7 +530,7 @@ class MarketAnchorFeaturesCalculator:
 
             return consensus_df
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.error("Failed to create consensus lines", error=str(e))
             raise
 
@@ -723,7 +723,7 @@ class MarketAnchorFeaturesCalculator:
 
             return features_df
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.error("Failed to build market anchor features", error=str(e))
             raise
 

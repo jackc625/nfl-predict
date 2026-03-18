@@ -162,7 +162,7 @@ class WeatherFeaturesCalculator:
 
             return wind_features
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
             logger.error("Failed to calculate wind features", error=str(e))
             return self._default_wind_features()
 
@@ -278,7 +278,7 @@ class WeatherFeaturesCalculator:
 
             return temp_features
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
             logger.error("Failed to calculate temperature features", error=str(e))
             return self._default_temperature_features()
 
@@ -397,7 +397,7 @@ class WeatherFeaturesCalculator:
 
             return precip_features
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
             logger.error("Failed to calculate precipitation features", error=str(e))
             return self._default_precipitation_features()
 
@@ -474,7 +474,7 @@ class WeatherFeaturesCalculator:
                 "extreme_weather": 1.0 if weather_severity >= 0.8 else 0.0,
             }
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
             logger.error("Failed to calculate weather severity", error=str(e))
             return {
                 "weather_severity_score": 0.0,
@@ -621,7 +621,7 @@ class WeatherFeaturesCalculator:
 
             return features_df
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
             logger.error("Failed to build weather features", error=str(e))
             raise
 
@@ -670,7 +670,7 @@ class WeatherFeaturesCalculator:
 
             return features_dict
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
             logger.error(
                 "Failed to get weather features for game",
                 game_id=game_id,

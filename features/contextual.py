@@ -16,10 +16,10 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-import pytz
 
 from conf.settings import get_settings
 from data.storage import load_dataframe
@@ -67,7 +67,7 @@ class ContextualFeaturesCalculator:
             logger.info("Loaded venues data", venues_count=len(venues_data["venues"]))
             return venues_data
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             logger.error("Failed to load venues data", error=str(e))
             raise
 
@@ -168,8 +168,8 @@ class ContextualFeaturesCalculator:
             )
 
             # Calculate timezone difference
-            away_tz = pytz.timezone(away_venue["timezone"])
-            game_tz = pytz.timezone(game_venue["timezone"])
+            away_tz = ZoneInfo(away_venue["timezone"])
+            game_tz = ZoneInfo(game_venue["timezone"])
 
             # Convert kickoff to both timezones to calculate difference
             kickoff_away_tz = kickoff_datetime.astimezone(away_tz)
@@ -205,7 +205,7 @@ class ContextualFeaturesCalculator:
                 "westward_travel": 1.0 if tz_diff_hours > 0 else 0.0,
             }
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             logger.error(
                 "Failed to calculate travel metrics",
                 away_team=away_team,
@@ -301,7 +301,7 @@ class ContextualFeaturesCalculator:
                 "game_day_of_week": float(game_day),
             }
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             logger.error(
                 "Failed to detect short week",
                 kickoff_datetime=kickoff_datetime,
@@ -364,7 +364,7 @@ class ContextualFeaturesCalculator:
                 "venue_large_stadium": large_stadium,
             }
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             logger.error(
                 "Failed to encode venue features", venue_id=venue_id, error=str(e)
             )
@@ -418,7 +418,7 @@ class ContextualFeaturesCalculator:
 
             return float(rest_days)
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             logger.error("Failed to calculate rest days", team=team, error=str(e))
             return 7.0  # Default to standard week
 
@@ -536,7 +536,7 @@ class ContextualFeaturesCalculator:
 
             return features_df
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             logger.error("Failed to build contextual features", error=str(e))
             raise
 
@@ -585,7 +585,7 @@ class ContextualFeaturesCalculator:
 
             return features_dict
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             logger.error(
                 "Failed to get contextual features for game",
                 game_id=game_id,

@@ -176,7 +176,7 @@ class FeatureValidator:
                 warnings=len(validation_results["warnings"]),
             )
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
             logger.error("Feature validation failed", error=str(e))
             validation_results["validation_passed"] = False
             validation_results["errors"].append(f"Validation exception: {e!s}")

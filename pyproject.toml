@@ -105,6 +105,7 @@ select = [
     "I",    # isort
     "UP",   # pyupgrade
     "B",    # flake8-bugbear
+    "BLE",  # flake8-blind-except
     "SIM",  # flake8-simplify
     "C4",   # flake8-comprehensions
     "DTZ",  # flake8-datetimez
@@ -118,7 +119,6 @@ select = [
 ignore = [
     "E501",     # line too long (formatter handles)
     "E402",     # module-import-not-at-top -- common pattern in scripts/conditional imports
-    "E722",     # bare-except -- TODO: fix in Plan 03
     "PLR0913",  # too many arguments
     "PLR2004",  # magic value comparison
     "PLR0911",  # too many return statements
@@ -155,7 +155,23 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "scripts/*.py" = ["T201"]
-"tests/**/*.py" = ["S101", "PLR2004"]
+"scripts/test_*.py" = ["BLE001", "E722"]  # Legacy test scripts (Plan 04 will remove)
+"scripts/cleanup_data.py" = ["BLE001"]  # Utility script, not production code
+"scripts/create_sample_api_data.py" = ["BLE001"]  # Utility script
+"scripts/demo_*.py" = ["BLE001"]  # Demo scripts, not production code
+"scripts/enhanced_health_check.py" = ["BLE001"]  # Operations script
+"scripts/friday_data_update.py" = ["BLE001"]  # Operations script
+"scripts/friday_predictions_run.py" = ["BLE001"]  # Operations script
+"scripts/generate_current_week_predictions.py" = ["BLE001"]  # Operations script
+"scripts/health_check.py" = ["BLE001"]  # Operations script
+"scripts/ingest_*.py" = ["BLE001"]  # Ingestion scripts, fix incrementally
+"scripts/load_venues.py" = ["BLE001"]  # Utility script
+"scripts/operational_monitoring.py" = ["BLE001"]  # Operations script
+"scripts/performance_monitor.py" = ["BLE001"]  # Operations script
+"scripts/run_backtest.py" = ["BLE001"]  # Runner script
+"scripts/validate_*.py" = ["BLE001"]  # Validation scripts
+"deployment/**/*.py" = ["BLE001"]  # Infrastructure scripts, not production code
+"tests/**/*.py" = ["S101", "PLR2004", "BLE001"]
 
 [tool.ruff.format]
 quote-style = "double"

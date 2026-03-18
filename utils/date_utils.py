@@ -1,9 +1,10 @@
 """Date and time utilities for NFL data processing."""
 
 import re
+from datetime import UTC as _UTC
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-import pytz
 from dateutil import parser
 
 # NFL season typically starts first Thursday in September
@@ -15,8 +16,8 @@ NFL_REGULAR_SEASON_WEEKS = 18
 NFL_TOTAL_WEEKS = 22
 
 # Time zones
-ET = pytz.timezone("America/New_York")
-UTC = pytz.UTC
+ET = ZoneInfo("America/New_York")
+UTC = _UTC
 
 
 def get_current_nfl_season() -> int:
@@ -316,14 +317,18 @@ def get_timezone_difference(home_timezone: str, away_timezone: str) -> float:
         Time difference in hours (positive = away team traveling east)
     """
     try:
-        home_tz = pytz.timezone(home_timezone)
-        away_tz = pytz.timezone(away_timezone)
+        home_tz = ZoneInfo(home_timezone)
+        away_tz = ZoneInfo(away_timezone)
 
         # Use a reference time to calculate offset
         ref_time = datetime.now()
-        home_offset = home_tz.localize(ref_time).utcoffset().total_seconds() / 3600
-        away_offset = away_tz.localize(ref_time).utcoffset().total_seconds() / 3600
+        home_offset = (
+            ref_time.replace(tzinfo=home_tz).utcoffset().total_seconds() / 3600
+        )
+        away_offset = (
+            ref_time.replace(tzinfo=away_tz).utcoffset().total_seconds() / 3600
+        )
 
         return home_offset - away_offset
-    except Exception:
+    except (KeyError, ValueError, AttributeError):
         return 0.0  # Default to no difference if calculation fails

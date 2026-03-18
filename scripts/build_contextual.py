@@ -148,7 +148,7 @@ def main():
 
         logger.info("Contextual features building completed successfully")
 
-    except Exception as e:
+    except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
         logger.error("Failed to build contextual features", error=str(e))
         raise
 

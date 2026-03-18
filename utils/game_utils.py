@@ -5,9 +5,8 @@ This module provides utilities for NFL game-specific logic including
 week type determination, prime time game detection, and other game metadata.
 """
 
-from datetime import datetime
-
-import pytz
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 # NFL week type constants
 NFL_REGULAR_SEASON_WEEKS = 18
@@ -65,11 +64,11 @@ def is_prime_time_game(game_date: datetime, strict_mode: bool = False) -> bool:
         return False
 
     # Convert to ET for consistent time checking
-    et_tz = pytz.timezone("America/New_York")
+    et_tz = ZoneInfo("America/New_York")
 
     if game_date.tzinfo is None:
         # Assume UTC if no timezone info
-        utc_date = pytz.UTC.localize(game_date)
+        utc_date = game_date.replace(tzinfo=UTC)
         game_et = utc_date.astimezone(et_tz)
     else:
         game_et = game_date.astimezone(et_tz)
@@ -132,9 +131,9 @@ def get_game_day_type(game_date: datetime) -> str:
         return "Unknown"
 
     # Convert to ET
-    et_tz = pytz.timezone("America/New_York")
+    et_tz = ZoneInfo("America/New_York")
     if game_date.tzinfo is None:
-        utc_date = pytz.UTC.localize(game_date)
+        utc_date = game_date.replace(tzinfo=UTC)
         game_et = utc_date.astimezone(et_tz)
     else:
         game_et = game_date.astimezone(et_tz)
@@ -218,11 +217,11 @@ def normalize_game_time_to_et(game_date: datetime) -> datetime:
     if not game_date:
         return game_date
 
-    et_tz = pytz.timezone("America/New_York")
+    et_tz = ZoneInfo("America/New_York")
 
     if game_date.tzinfo is None:
         # Assume UTC if no timezone info, then convert to ET
-        utc_date = pytz.UTC.localize(game_date)
+        utc_date = game_date.replace(tzinfo=UTC)
         return utc_date.astimezone(et_tz)
     return game_date.astimezone(et_tz)
 

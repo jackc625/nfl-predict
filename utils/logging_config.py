@@ -29,7 +29,7 @@ def add_module_info(logger: Any, method_name: str, event_dict: EventDict) -> Eve
             if frame:
                 event_dict["module"] = frame.f_globals.get("__name__", "unknown")
                 event_dict["function"] = frame.f_code.co_name
-    except:
+    except (AttributeError, KeyError, TypeError):
         # Silently skip if frame info is not available
         pass
     return event_dict

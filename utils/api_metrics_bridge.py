@@ -44,7 +44,7 @@ class APIMetricsBridge:
             try:
                 self.calculator = MetricsCalculator()
                 logger.info("Metrics calculator initialized successfully")
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
                 logger.warning(f"Failed to initialize metrics calculator: {e}")
                 self.has_engine = False
         else:
@@ -85,7 +85,7 @@ class APIMetricsBridge:
             logger.info(f"Calculated metrics for {len(backtest_df)} predictions")
             return metrics
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.error(f"Error calculating backtest metrics: {e}")
             return self._calculate_fallback_metrics(backtest_df)
 
@@ -124,7 +124,7 @@ class APIMetricsBridge:
             if "wp_accuracy" not in metrics:
                 metrics.update(self._calculate_simple_wp_metrics(df))
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.warning(f"Error calculating WP metrics: {e}")
             metrics.update(self._calculate_simple_wp_metrics(df))
 
@@ -164,7 +164,7 @@ class APIMetricsBridge:
             if "ats_mae" not in metrics:
                 metrics.update(self._calculate_simple_ats_metrics(df))
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.warning(f"Error calculating ATS metrics: {e}")
             metrics.update(self._calculate_simple_ats_metrics(df))
 
@@ -204,7 +204,7 @@ class APIMetricsBridge:
             if "ou_mae" not in metrics:
                 metrics.update(self._calculate_simple_ou_metrics(df))
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.warning(f"Error calculating O/U metrics: {e}")
             metrics.update(self._calculate_simple_ou_metrics(df))
 
@@ -255,7 +255,7 @@ class APIMetricsBridge:
                     drawdown = (cum_profit - peak) / peak
                     metrics["max_drawdown"] = abs(drawdown.min())
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.warning(f"Error calculating betting metrics: {e}")
 
         return metrics
@@ -274,7 +274,7 @@ class APIMetricsBridge:
             metrics.setdefault("wp_log_loss", 0.5)
             metrics.setdefault("wp_brier_score", 0.25)
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.warning(f"Error in simple WP metrics: {e}")
             metrics = {"wp_accuracy": 0.5, "wp_log_loss": 0.5, "wp_brier_score": 0.25}
 
@@ -294,7 +294,7 @@ class APIMetricsBridge:
             metrics.setdefault("ats_mae", 3.5)
             metrics.setdefault("ats_rmse", 4.8)
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.warning(f"Error in simple ATS metrics: {e}")
             metrics = {"ats_accuracy": 0.52, "ats_mae": 3.5, "ats_rmse": 4.8}
 
@@ -314,7 +314,7 @@ class APIMetricsBridge:
             metrics.setdefault("ou_mae", 4.2)
             metrics.setdefault("ou_rmse", 5.8)
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.warning(f"Error in simple O/U metrics: {e}")
             metrics = {"ou_accuracy": 0.51, "ou_mae": 4.2, "ou_rmse": 5.8}
 
@@ -358,7 +358,7 @@ class APIMetricsBridge:
             metrics.setdefault("sharpe_ratio", 1.2)
             metrics.setdefault("max_drawdown", 0.15)
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
             logger.error(f"Error in fallback metrics calculation: {e}")
             # Absolute fallback - return reasonable defaults
             metrics = {

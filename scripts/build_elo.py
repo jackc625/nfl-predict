@@ -62,7 +62,7 @@ class EloBuilder:
 
             return games_df
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             logger.error("Failed to load games data", error=str(e))
             raise
 
@@ -336,7 +336,7 @@ def main():
                     f"  {team['team']}: {team['rating']:.1f} ({team['games_played']} games)"
                 )
 
-    except Exception as e:
+    except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
         logger.error("Elo building failed", error=str(e))
         print(f"Error: {e}")
         sys.exit(1)

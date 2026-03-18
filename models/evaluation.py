@@ -723,7 +723,7 @@ class ModelEvaluationFramework:
             from sklearn.metrics import precision_score
 
             return precision_score(y_true, y_pred, zero_division=0)
-        except:
+        except (ValueError, TypeError, ImportError):
             return 0.0
 
     def _safe_recall(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -732,7 +732,7 @@ class ModelEvaluationFramework:
             from sklearn.metrics import recall_score
 
             return recall_score(y_true, y_pred, zero_division=0)
-        except:
+        except (ValueError, TypeError, ImportError):
             return 0.0
 
     def _safe_f1_score(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -741,5 +741,5 @@ class ModelEvaluationFramework:
             from sklearn.metrics import f1_score
 
             return f1_score(y_true, y_pred, zero_division=0)
-        except:
+        except (ValueError, TypeError, ImportError):
             return 0.0

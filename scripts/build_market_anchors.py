@@ -203,7 +203,7 @@ def main():
         print("\n✅ NO-LEAKAGE VALIDATION PASSED: No closing line data detected")
         logger.info("Market anchor features building completed successfully")
 
-    except Exception as e:
+    except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
         logger.error("Failed to build market anchor features", error=str(e))
         raise
 

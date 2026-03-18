@@ -61,7 +61,7 @@ class EloFeatureBuilder:
                 "away_elo_uncertainty": prediction["away_uncertainty"],
             }
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError) as e:
             logger.error(
                 "Failed to get Elo features for game",
                 home_team=home_team,

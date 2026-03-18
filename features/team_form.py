@@ -111,7 +111,7 @@ class TeamFormCalculator:
 
             return meaningful_plays
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.error(
                 "Failed to fetch play-by-play data", seasons=seasons, error=str(e)
             )
@@ -549,7 +549,7 @@ class TeamFormCalculator:
                 return final_df
             return pd.DataFrame()
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.error(
                 "Failed to build team form features", seasons=seasons, error=str(e)
             )
@@ -607,7 +607,7 @@ class TeamFormCalculator:
 
             return result
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
             logger.error(
                 "Failed to get team form for game",
                 home_team=home_team,

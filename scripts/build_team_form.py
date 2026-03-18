@@ -58,7 +58,7 @@ class TeamFormBuilder:
 
             return form_df
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             logger.error(
                 "Failed to build team form features", seasons=seasons, error=str(e)
             )
@@ -91,7 +91,7 @@ class TeamFormBuilder:
 
             return form_df
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             logger.error(
                 "Failed to build current week team form",
                 season=current_season,
@@ -205,14 +205,14 @@ class TeamFormBuilder:
                         - away_form["off_rolling_success_rate"]
                     )
 
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 logger.warning(
                     "Failed to calculate matchup differentials", error=str(e)
                 )
 
             return matchup_features
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             logger.error(
                 "Failed to get team matchup features",
                 home_team=home_team,
@@ -271,7 +271,7 @@ class TeamFormBuilder:
 
             return trends
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             logger.error(
                 "Failed to analyze team trends",
                 team=team,
@@ -331,7 +331,7 @@ def main():
                 else:
                     print("Team form features validation failed")
                     sys.exit(1)
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 print(f"No existing features found: {e}")
                 sys.exit(1)
             return
@@ -398,7 +398,7 @@ def main():
         else:
             print("No team form features generated")
 
-    except Exception as e:
+    except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
         logger.error("Team form building failed", error=str(e))
         print(f"Error: {e}")
         sys.exit(1)

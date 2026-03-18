@@ -115,7 +115,7 @@ class DataQualityMonitor:
                     latest_time = pd.to_datetime(df[col], errors="coerce").max()
                     if pd.notna(latest_time):
                         latest_times.append(latest_time)
-                except:
+                except (ValueError, TypeError, KeyError):
                     continue
 
             if not latest_times:
@@ -127,9 +127,9 @@ class DataQualityMonitor:
             # Handle timezone comparison properly
             if last_update.tz is not None:
                 # If last_update is timezone-aware, make now timezone-aware too
-                import pytz
+                from datetime import UTC
 
-                now = datetime.now(pytz.UTC).astimezone(last_update.tz)
+                now = datetime.now(UTC).astimezone(last_update.tz)
             else:
                 # If last_update is timezone-naive, use naive datetime for now
                 now = datetime.now()
@@ -145,7 +145,7 @@ class DataQualityMonitor:
                 }
             )
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             result["status"] = f"error: {e!s}"
             logger.warning(
                 "Data freshness check failed", table=table_name, error=str(e)
@@ -219,7 +219,7 @@ class DataQualityMonitor:
             else:
                 result["status"] = "unknown_expected"
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             result["status"] = f"error: {e!s}"
             logger.warning(
                 "Data completeness check failed", table=table_name, error=str(e)
@@ -235,7 +235,7 @@ class DataQualityMonitor:
                 games_df[(games_df["season"] == season) & (games_df["week"] == week)]
             )
             return count if count > 0 else None
-        except:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError):
             return None
 
     def check_data_quality(self, table_name: str) -> dict[str, Any]:
@@ -317,7 +317,7 @@ class DataQualityMonitor:
                 df, table_name
             )
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             result["checks"]["error"] = {"status": "error", "message": str(e)}
             logger.error("Data quality check failed", table=table_name, error=str(e))
 
@@ -347,7 +347,7 @@ class DataQualityMonitor:
                                 ]
                             ),
                         }
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 checks["numeric_error"] = f"Numeric columns processing failed: {e!s}"
 
             # Categorical columns
@@ -375,17 +375,23 @@ class DataQualityMonitor:
                             "most_common": value_counts.head(3).to_dict(),
                             "null_count": df[col].isnull().sum(),
                         }
-                    except Exception as e:
+                    except (
+                        ValueError,
+                        KeyError,
+                        TypeError,
+                        FileNotFoundError,
+                        OSError,
+                    ) as e:
                         # If there's still an issue with this column, skip it
                         checks[f"{col}_categories"] = {
                             "error": f"Could not process categorical column: {e!s}"
                         }
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 checks["categorical_error"] = (
                     f"Categorical columns processing failed: {e!s}"
                 )
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             checks["error"] = str(e)
 
         return checks
@@ -418,7 +424,13 @@ class DataQualityMonitor:
                             "sample_orphaned": list(orphaned)[:5],
                             "sample_missing": list(missing)[:5],
                         }
-                except Exception as e:
+                except (
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                    FileNotFoundError,
+                    OSError,
+                ) as e:
                     result["checks"][f"{table}_consistency_error"] = str(e)
 
             # Check team name consistency
@@ -448,10 +460,16 @@ class DataQualityMonitor:
                             "status": "pass" if not teams_without_venues else "warning",
                             "teams_without_venues": list(teams_without_venues),
                         }
-                except Exception as e:
+                except (
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                    FileNotFoundError,
+                    OSError,
+                ) as e:
                     result["checks"]["team_venue_consistency_error"] = str(e)
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             result["checks"]["error"] = str(e)
             logger.error("Data consistency check failed", error=str(e))
 
@@ -566,7 +584,7 @@ class DataQualityMonitor:
             # Database statistics
             try:
                 report["database_stats"] = get_database_stats()
-            except Exception as e:
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 report["database_stats"] = {"error": str(e)}
 
             # Summary
@@ -596,7 +614,7 @@ class DataQualityMonitor:
                 overall_status=report["summary"]["overall_status"],
             )
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             report["error"] = str(e)
             logger.error("QA report generation failed", error=str(e))
 
@@ -645,7 +663,7 @@ class DataQualityMonitor:
                 ):
                     recommendations.append(f"Review {check_name} data consistency")
 
-        except Exception as e:
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             recommendations.append(f"Error generating recommendations: {e}")
 
         return recommendations
@@ -786,7 +804,7 @@ def main():
                 filepath = monitor.save_qa_report(report, args.output)
                 print(f"\nReport saved to: {filepath}")
 
-    except Exception as e:
+    except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
         logger.error("Data QA CLI failed", error=str(e))
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

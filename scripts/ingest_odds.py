@@ -519,7 +519,7 @@ class OddsDataIngester:
                     last_update = datetime.fromisoformat(
                         last_update.replace("Z", "+00:00")
                     )
-                except:
+                except (ValueError, TypeError):
                     last_update = snapshot_time
             else:
                 last_update = snapshot_time

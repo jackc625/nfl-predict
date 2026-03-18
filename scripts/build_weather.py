@@ -179,7 +179,7 @@ def main():
 
         logger.info("Weather features building completed successfully")
 
-    except Exception as e:
+    except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
         logger.error("Failed to build weather features", error=str(e))
         raise
 

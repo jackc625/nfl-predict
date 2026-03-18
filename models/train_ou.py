@@ -1114,7 +1114,7 @@ class OUModel(BaseEstimator):
                     )
                     home_team_total = home_team_total[0]
                     away_team_total = away_team_total[0]
-                except:
+                except (ValueError, TypeError, IndexError, RuntimeError):
                     pass  # Silently handle Poisson errors
 
             # Feature importances for this prediction
