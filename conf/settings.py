@@ -22,7 +22,7 @@ class DataPaths(BaseModel):
 class DataSources(BaseModel):
     """Data source configuration."""
 
-    games: str = "nfl_data_py"
+    games: str = "nflreadpy"
     odds: str = "theoddsapi"
     weather: str = "open_meteo"
     venues: str = "static_json"

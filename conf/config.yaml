@@ -8,7 +8,7 @@ data:
   
   # Data sources
   sources:
-    games: "nfl_data_py"
+    games: "nflreadpy"
     odds: "theoddsapi"  # or "manual_json"
     weather: "open_meteo"
     venues: "static_json"
