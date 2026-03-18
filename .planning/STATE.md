@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-03-18T21:56:46.000Z"
+stopped_at: Completed 01-03-PLAN.md
+last_updated: "2026-03-18T22:05:29.000Z"
 progress:
   total_phases: 8
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
+  completed_plans: 3
 ---
 
 # Project State
@@ -24,15 +24,15 @@ See: .planning/PROJECT.md (updated 2026-03-18)
 ## Current Position
 
 Phase: 01 (foundation-hardening) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 2
-- Average duration: 16 min
-- Total execution time: 0.55 hours
+- Total plans completed: 3
+- Average duration: 17 min
+- Total execution time: 0.85 hours
 
 **By Phase:**
 
@@ -48,6 +48,7 @@ Plan: 3 of 4
 *Updated after each plan completion*
 | Phase 01 P01 | 25 | 2 tasks | 100 files |
 | Phase 01 P02 | 8 | 2 tasks | 7 files |
+| Phase 01 P03 | 18 | 3 tasks | 36 files |
 
 ## Accumulated Context
 
@@ -62,6 +63,7 @@ Recent decisions affecting current work:
 - [Phase 01]: Widened pyarrow constraint to >=18.0.0 for Python 3.13 compatibility
 - [Phase 01]: Added 35 ruff rules to ignore list for pre-existing code, to be enabled incrementally
 - [Phase 01]: Pyright pre-commit set to manual stage due to pre-existing pydantic-settings type errors
+- [Phase 01]: BLE ruff rule enabled with per-file ignores for operations/demo/deployment scripts (non-production code)
 - [Phase 01]: Used httpx directly for Open-Meteo instead of openmeteo-requests library (simpler, already in stack)
 - [Phase 01]: Kept asyncio.run() for weather fetches within synchronous loop (pragmatic, avoids full async refactor)
 
@@ -77,6 +79,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-18T21:56:46.000Z
-Stopped at: Completed 01-02-PLAN.md
+Last session: 2026-03-18T22:05:29.000Z
+Stopped at: Completed 01-03-PLAN.md
 Resume file: None

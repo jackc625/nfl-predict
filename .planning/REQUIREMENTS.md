@@ -11,9 +11,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [x] **FOUN-01**: Replace deprecated nfl_data_py with nflreadpy for all NFL data ingestion
 - [x] **FOUN-02**: Replace deprecated Meteostat with Open-Meteo for weather data
-- [ ] **FOUN-03**: Replace broad `except Exception` handling with specific exception types across all files
-- [ ] **FOUN-04**: Remove silent DuckDB fallback -- fail loudly with clear error messages instead of returning empty results
-- [ ] **FOUN-05**: Remove fallback HTML report generators -- return structured errors instead of fake data
+- [x] **FOUN-03**: Replace broad `except Exception` handling with specific exception types across all files
+- [x] **FOUN-04**: Remove silent DuckDB fallback -- fail loudly with clear error messages instead of returning empty results
+- [x] **FOUN-05**: Remove fallback HTML report generators -- return structured errors instead of fake data
 - [x] **FOUN-06**: Upgrade XGBoost to 3.2+, scikit-learn to 1.8+, DuckDB to 1.3+
 - [x] **FOUN-07**: Migrate package management from pip to uv with lockfile
 - [x] **FOUN-08**: Replace black + isort + flake8 with Ruff for linting/formatting
@@ -135,9 +135,9 @@ Deferred to future release. Tracked but not in current roadmap.
 |-------------|-------|--------|
 | FOUN-01 | Phase 1 | Complete |
 | FOUN-02 | Phase 1 | Complete |
-| FOUN-03 | Phase 1 | Pending |
-| FOUN-04 | Phase 1 | Pending |
-| FOUN-05 | Phase 1 | Pending |
+| FOUN-03 | Phase 1 | Complete |
+| FOUN-04 | Phase 1 | Complete |
+| FOUN-05 | Phase 1 | Complete |
 | FOUN-06 | Phase 1 | Complete |
 | FOUN-07 | Phase 1 | Complete |
 | FOUN-08 | Phase 1 | Complete |
