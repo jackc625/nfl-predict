@@ -15,6 +15,8 @@ Weather has the most impact on:
 - Turnovers (wet conditions)
 """
 
+import warnings
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -495,14 +497,22 @@ class WeatherFeaturesCalculator:
         """
         Build weather features for all games.
 
+        .. deprecated::
+            Use :meth:`build_features` instead (conforms to FeatureBuilder Protocol).
+
         Args:
             games_df: DataFrame with game information
             target_season: Specific season to calculate features for
             target_week: Specific week to calculate features for
 
         Returns:
-            DataFrame with weather features added
+            DataFrame with weather features added (full 38+ columns, uncompressed)
         """
+        warnings.warn(
+            "build_weather_features is deprecated; use build_features instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         logger.info(
             "Building weather features",
             games=len(games_df),
@@ -769,3 +779,189 @@ class WeatherFeaturesCalculator:
         )
 
         return True
+
+    # ------------------------------------------------------------------
+    # FeatureBuilder Protocol methods (compressed output)
+    # ------------------------------------------------------------------
+
+    def build_features(
+        self,
+        games_df: pd.DataFrame,
+        as_of_datetime: datetime,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """Build compressed weather features (4 features) for games.
+
+        Conforms to the FeatureBuilder Protocol. Uses only weather data
+        available before ``as_of_datetime``.
+
+        Output columns:
+            game_id, weather_severity_score, wind_mph, is_precipitation, is_outdoor
+
+        Args:
+            games_df: DataFrame of games to build features for.
+            as_of_datetime: Time-fence cutoff. Only data before this
+                timestamp may be used.
+            target_season: Optional season filter.
+            target_week: Optional week filter.
+
+        Returns:
+            DataFrame with exactly 5 columns (game_id + 4 features).
+        """
+        logger.info(
+            "Building compressed weather features",
+            games=len(games_df),
+            as_of=as_of_datetime.isoformat(),
+            target_season=target_season,
+            target_week=target_week,
+        )
+
+        try:
+            # Load weather data
+            weather_df = load_dataframe("weather_forecast", layer="silver")
+            logger.info("Loaded weather data", weather_records=len(weather_df))
+
+            # Time-fence: only use forecasts available before as_of_datetime
+            if "forecast_time" in weather_df.columns:
+                weather_df = weather_df[weather_df["forecast_time"] <= as_of_datetime]
+
+            # Filter to target if specified
+            if target_season and target_week:
+                games_df = games_df[
+                    (games_df["season"] == target_season)
+                    & (games_df["week"] == target_week)
+                ].copy()
+
+                game_ids = games_df["game_id"].tolist()
+                weather_df = weather_df[weather_df["game_id"].isin(game_ids)]
+
+            compressed_rows: list[dict[str, object]] = []
+
+            for _, game in games_df.iterrows():
+                game_id = game["game_id"]
+
+                # Find weather data for this game
+                game_weather = weather_df[weather_df["game_id"] == game_id]
+
+                if len(game_weather) == 0:
+                    logger.warning("No weather data found for game", game_id=game_id)
+                    weather_data: dict[str, Any] = {
+                        "is_outdoor": False,
+                        "temp_f": 65.0,
+                        "wind_mph": 0.0,
+                        "precip_prob": 0.0,
+                        "precip_mm": 0.0,
+                        "condition": "Clear",
+                        "humidity_pct": 50.0,
+                    }
+                else:
+                    latest_weather = game_weather.sort_values("forecast_time").iloc[-1]
+                    weather_data = latest_weather.to_dict()
+
+                is_outdoor = bool(weather_data.get("is_outdoor", False))
+
+                if not is_outdoor:
+                    # Indoor/dome: all features zeroed
+                    compressed_rows.append(
+                        {
+                            "game_id": game_id,
+                            "weather_severity_score": 0.0,
+                            "wind_mph": 0.0,
+                            "is_precipitation": 0.0,
+                            "is_outdoor": 0.0,
+                        }
+                    )
+                else:
+                    # Outdoor game: compute full features, then compress
+                    wind_features = self.calculate_wind_features(weather_data)
+                    temp_features = self.calculate_temperature_features(weather_data)
+                    precip_features = self.calculate_precipitation_features(
+                        weather_data
+                    )
+                    severity_features = self.calculate_weather_severity(
+                        wind_features, temp_features, precip_features
+                    )
+
+                    # Determine is_precipitation: binary flag
+                    precip_prob = float(weather_data.get("precip_prob", 0.0) or 0.0)
+                    precip_mm = float(weather_data.get("precip_mm", 0.0) or 0.0)
+                    is_snow = precip_features.get("is_snow", 0.0)
+                    is_rain = precip_features.get("is_rain", 0.0)
+
+                    is_precip = (
+                        1.0
+                        if (
+                            precip_prob > 0.3
+                            or precip_mm > 0.5
+                            or is_snow == 1.0
+                            or is_rain == 1.0
+                        )
+                        else 0.0
+                    )
+
+                    compressed_rows.append(
+                        {
+                            "game_id": game_id,
+                            "weather_severity_score": severity_features[
+                                "weather_severity_score"
+                            ],
+                            "wind_mph": wind_features["wind_mph"],
+                            "is_precipitation": is_precip,
+                            "is_outdoor": 1.0,
+                        }
+                    )
+
+            features_df = pd.DataFrame(compressed_rows)
+
+            logger.info(
+                "Built compressed weather features",
+                features_count=len(features_df),
+                outdoor_games=int(features_df["is_outdoor"].sum()),
+            )
+
+            return features_df
+
+        except (ValueError, KeyError, TypeError) as e:
+            logger.error("Failed to build compressed weather features", error=str(e))
+            raise
+
+    def get_features_for_game(
+        self,
+        game_id: str,
+        as_of_datetime: datetime,
+    ) -> dict[str, float]:
+        """Get compressed weather features for a single game.
+
+        Conforms to the FeatureBuilder Protocol.
+
+        Args:
+            game_id: Unique game identifier.
+            as_of_datetime: Time-fence cutoff.
+
+        Returns:
+            Dictionary mapping feature names to values.
+        """
+        try:
+            # Build a minimal games DataFrame for the single game
+            games_df = pd.DataFrame([{"game_id": game_id, "season": 0, "week": 0}])
+            result = self.build_features(games_df, as_of_datetime)
+
+            if len(result) == 0:
+                logger.warning(
+                    "No weather features for game",
+                    game_id=game_id,
+                )
+                return {}
+
+            row = result.iloc[0]
+            return {col: float(row[col]) for col in result.columns if col != "game_id"}
+
+        except (ValueError, KeyError, TypeError) as e:
+            logger.error(
+                "Failed to get weather features for game",
+                game_id=game_id,
+                error=str(e),
+            )
+            return {}
