@@ -170,6 +170,7 @@ ignore = [
 "scripts/performance_monitor.py" = ["BLE001"]  # Operations script
 "scripts/run_backtest.py" = ["BLE001"]  # Runner script
 "scripts/validate_*.py" = ["BLE001"]  # Validation scripts
+"data/storage.py" = ["BLE001"]  # Pre-existing broad exception handlers, fix incrementally
 "deployment/**/*.py" = ["BLE001"]  # Infrastructure scripts, not production code
 "tests/**/*.py" = ["S101", "PLR2004", "BLE001"]
 

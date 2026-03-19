@@ -1,15 +1,18 @@
 """Game data ingestion using nflreadpy."""
 
 import argparse
+import json
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 import nflreadpy as nfl
 import pandas as pd
 
 from conf.settings import get_settings
+from data.quality_gates import validate_bronze_to_silver
 from data.schemas import GameSchema
-from data.storage import get_db_connection, save_dataframe
+from data.storage import save_bronze_snapshot, upsert_silver
 from utils import (
     DataIngestionError,
     get_current_nfl_week,
@@ -17,8 +20,35 @@ from utils import (
     log_data_operation,
 )
 from utils.game_id_utils import is_valid_game_id
+from utils.team_data import normalize_team_abbreviation
 
 logger = get_logger(__name__)
+
+# nflreadpy roof type values -> project VenueRoof enum values
+_NFLVERSE_ROOF_MAP = {
+    "dome": "indoor",
+    "closed": "indoor",
+    "outdoors": "outdoor",
+    "open": "retractable",
+}
+
+
+def _load_venue_lookup() -> dict[str, str]:
+    """Load venue roof types from data/venues.json.
+
+    Returns:
+        Dict mapping venue name (lowercased) -> roof_type string
+    """
+    venues_path = Path(__file__).resolve().parent.parent / "data" / "venues.json"
+    lookup: dict[str, str] = {}
+    if venues_path.exists():
+        with open(venues_path) as f:
+            venues_data = json.load(f)
+        for venue in venues_data.get("venues", []):
+            name = venue.get("venue_name", "").lower()
+            if name:
+                lookup[name] = venue.get("roof_type", "outdoor")
+    return lookup
 
 
 class GameDataIngester:
@@ -27,105 +57,40 @@ class GameDataIngester:
     def __init__(self):
         """Initialize game data ingester."""
         self.settings = get_settings()
-        self.db = get_db_connection()
+        self._venue_lookup = _load_venue_lookup()
 
-        # Team name mapping to canonical abbreviations
-        self.team_mapping = self._build_team_mapping()
+    def _get_venue_roof_type(self, venue: str, nflverse_roof: str | None = None) -> str:
+        """Determine venue roof type from venue name using venues.json.
 
-    def _build_team_mapping(self) -> dict[str, str]:
-        """Build mapping from various team name formats to canonical abbreviations."""
-        # This should be updated based on actual nflreadpy team formats
-        return {
-            # Standard abbreviations (these should pass through unchanged)
-            "ARI": "ARI",
-            "ATL": "ATL",
-            "BAL": "BAL",
-            "BUF": "BUF",
-            "CAR": "CAR",
-            "CHI": "CHI",
-            "CIN": "CIN",
-            "CLE": "CLE",
-            "DAL": "DAL",
-            "DEN": "DEN",
-            "DET": "DET",
-            "GB": "GB",
-            "HOU": "HOU",
-            "IND": "IND",
-            "JAX": "JAX",
-            "KC": "KC",
-            "LV": "LV",
-            "LAC": "LAC",
-            "LAR": "LAR",
-            "MIA": "MIA",
-            "MIN": "MIN",
-            "NE": "NE",
-            "NO": "NO",
-            "NYG": "NYG",
-            "NYJ": "NYJ",
-            "PHI": "PHI",
-            "PIT": "PIT",
-            "SF": "SF",
-            "SEA": "SEA",
-            "TB": "TB",
-            "TEN": "TEN",
-            "WAS": "WAS",
-            # Alternative formats that might appear in data
-            "GNB": "GB",
-            "NWE": "NE",
-            "NOR": "NO",
-            "SFO": "SF",
-            "TAM": "TB",
-            "HST": "HOU",
-            "CLV": "CLE",
-            "LVR": "LV",
-            "OAK": "LV",  # Oakland moved to Las Vegas
-            "SD": "LAC",  # San Diego moved to Los Angeles
-            "STL": "LAR",  # St. Louis moved to Los Angeles
-        }
+        Falls back to nflverse roof column mapping, then to 'outdoor' default.
 
-    def _normalize_team_name(self, team: str) -> str:
-        """Normalize team name to canonical abbreviation."""
-        if not team:
-            return team
+        Args:
+            venue: Stadium name string
+            nflverse_roof: Optional roof value from nflreadpy (dome/outdoors/closed/open)
 
-        team_upper = team.upper().strip()
-        return self.team_mapping.get(team_upper, team_upper)
+        Returns:
+            One of: 'indoor', 'outdoor', 'retractable'
+        """
+        # Try venues.json first (most accurate)
+        if venue:
+            roof = self._venue_lookup.get(venue.lower())
+            if roof:
+                return roof
 
-    def _get_venue_roof_type(self, venue: str) -> str:
-        """Determine venue roof type from venue name."""
-        # This is a simplified mapping - should be updated with comprehensive venue data
-        indoor_venues = {
-            "Mercedes-Benz Superdome",
-            "NRG Stadium",
-            "Ford Field",
-            "U.S. Bank Stadium",
-            "Allegiant Stadium",
-            "State Farm Stadium",
-            "AT&T Stadium",
-            "Lucas Oil Stadium",
-            "Caesars Superdome",
-        }
+        # Fall back to nflverse roof column mapping
+        if nflverse_roof:
+            mapped = _NFLVERSE_ROOF_MAP.get(nflverse_roof.lower().strip())
+            if mapped:
+                return mapped
 
-        retractable_venues = {
-            "Mercedes-Benz Stadium",
-            "State Farm Stadium",
-            "NRG Stadium",
-            "Lucas Oil Stadium",
-            "AT&T Stadium",
-        }
-
-        if venue in indoor_venues:
-            return "indoor"
-        if venue in retractable_venues:
-            return "retractable"
         return "outdoor"
 
     def _create_game_id(self, row: pd.Series) -> str:
         """Create standardized game ID."""
         season = row["season"]
         week = row["week"]
-        home_team = self._normalize_team_name(row["home_team"])
-        away_team = self._normalize_team_name(row["away_team"])
+        home_team = normalize_team_abbreviation(row["home_team"])
+        away_team = normalize_team_abbreviation(row["away_team"])
 
         game_id = f"{season}_W{week:02d}_{away_team}@{home_team}"
 
@@ -244,9 +209,9 @@ class GameDataIngester:
 
         for _, row in schedule_df.iterrows():
             try:
-                # Normalize team names
-                home_team = self._normalize_team_name(row["home_team"])
-                away_team = self._normalize_team_name(row["away_team"])
+                # Normalize team names using canonical mapping
+                home_team = normalize_team_abbreviation(row["home_team"])
+                away_team = normalize_team_abbreviation(row["away_team"])
 
                 # Create game record
                 game_record = {
@@ -259,7 +224,10 @@ class GameDataIngester:
                     "home_team": home_team,
                     "away_team": away_team,
                     "venue": row.get("stadium", "Unknown Stadium"),
-                    "venue_roof": self._get_venue_roof_type(row.get("stadium", "")),
+                    "venue_roof": self._get_venue_roof_type(
+                        row.get("stadium", ""),
+                        row.get("roof"),
+                    ),
                     "home_score": row.get("home_score")
                     if pd.notna(row.get("home_score"))
                     else None,
@@ -290,50 +258,6 @@ class GameDataIngester:
         )
 
         return transformed_df
-
-    def validate_game_data(self, games_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Validate game data against schema.
-
-        Args:
-            games_df: DataFrame with game data
-
-        Returns:
-            Validated DataFrame (invalid records removed)
-        """
-        logger.info("Validating game data", input_rows=len(games_df))
-
-        valid_records = []
-        validation_errors = []
-
-        for idx, row in games_df.iterrows():
-            try:
-                # Validate against schema
-                game = GameSchema(**row.to_dict())
-                valid_records.append(game.model_dump())
-
-            except Exception as e:
-                validation_errors.append(f"Row {idx}: {e!s}")
-                logger.warning(
-                    "Game data validation failed", row_index=idx, error=str(e)
-                )
-
-        if validation_errors:
-            logger.warning(
-                "Game data validation issues",
-                total_errors=len(validation_errors),
-                sample_errors=validation_errors[:5],
-            )
-
-        validated_df = pd.DataFrame(valid_records)
-        logger.info(
-            "Game data validation completed",
-            input_rows=len(games_df),
-            output_rows=len(validated_df),
-            errors=len(validation_errors),
-        )
-
-        return validated_df
 
     def ingest_games(
         self,
@@ -381,28 +305,22 @@ class GameDataIngester:
                 except Exception as e:
                     logger.warning("Failed to fetch game results", error=str(e))
 
-            # Validate data
-            validated_df = self.validate_game_data(games_df)
+            # Validate data using hard-fail quality gate
+            validated_df = validate_bronze_to_silver(games_df, GameSchema)
 
             # Add metadata timestamp
-
             validated_df["created_at"] = datetime.now(UTC)
 
-            # Save to bronze layer (raw)
-            save_dataframe(
+            # Save to bronze layer (raw, timestamped, append-only)
+            save_bronze_snapshot(
                 schedule_df,
-                "games_raw_bronze",
-                layer="bronze",
-                save_to_db=False,  # Don't save raw data to DB
+                "games",
+                season=seasons[0],
+                week=weeks[0] if weeks else 0,
             )
 
-            # Save to silver layer (processed)
-            save_dataframe(
-                validated_df,
-                "games",
-                layer="silver",
-                partition_cols=["season"] if len(seasons) > 1 else None,
-            )
+            # Save to silver layer (latest-wins upsert by game_id)
+            upsert_silver(validated_df, "games")
 
             log_data_operation(
                 operation="ingest",
@@ -518,8 +436,8 @@ def main():
             from data.storage import load_dataframe
 
             games_df = load_dataframe("games", layer="silver")
-            validated_df = ingester.validate_game_data(games_df)
-            print(f"Validated {len(validated_df)}/{len(games_df)} games")
+            validated_df = validate_bronze_to_silver(games_df, GameSchema)
+            print(f"Validated {len(validated_df)} games")
             return
 
         # Parse standardized season/week arguments
