@@ -29,6 +29,48 @@ from utils import get_logger
 logger = get_logger(__name__)
 
 
+# ---- NFL Division Data ----
+# Uses canonical team abbreviations from utils/team_data.py:
+#   LA = Rams (NFC West), LAC = Chargers (AFC West)
+NFL_DIVISIONS: dict[str, list[str]] = {
+    "AFC_East": ["BUF", "MIA", "NE", "NYJ"],
+    "AFC_North": ["BAL", "CIN", "CLE", "PIT"],
+    "AFC_South": ["HOU", "IND", "JAX", "TEN"],
+    "AFC_West": ["DEN", "KC", "LAC", "LV"],
+    "NFC_East": ["DAL", "NYG", "PHI", "WAS"],
+    "NFC_North": ["CHI", "DET", "GB", "MIN"],
+    "NFC_South": ["ATL", "CAR", "NO", "TB"],
+    "NFC_West": ["ARI", "LA", "SEA", "SF"],
+}
+
+# Divisional HFA multiplier: ~46% reduction from nfelo research
+# Non-divisional HFA 2.95 pts, divisional HFA 1.59 pts -> 1.59/2.95 = 0.54
+DIVISIONAL_HFA_FACTOR: float = 0.54
+
+# Pre-build a team-to-division lookup for O(1) checks
+_TEAM_TO_DIVISION: dict[str, str] = {}
+for _div_name, _div_teams in NFL_DIVISIONS.items():
+    for _team in _div_teams:
+        _TEAM_TO_DIVISION[_team] = _div_name
+
+
+def is_divisional_game(home_team: str, away_team: str) -> bool:
+    """Check if two teams are in the same division.
+
+    Args:
+        home_team: Home team canonical abbreviation.
+        away_team: Away team canonical abbreviation.
+
+    Returns:
+        True if both teams are in the same division.
+    """
+    home_div = _TEAM_TO_DIVISION.get(home_team)
+    away_div = _TEAM_TO_DIVISION.get(away_team)
+    if home_div is None or away_div is None:
+        return False
+    return home_div == away_div
+
+
 @dataclass
 class EloRating:
     """Individual team Elo rating with metadata."""
@@ -77,7 +119,7 @@ class EloRatingSystem:
     def __init__(
         self,
         base_k: float = 20.0,
-        hfa_init: float = 65.0,
+        hfa_init: float = 48.0,
         mov_multiplier: float = 2.2,
         season_carryover: float = 0.75,
         uncertainty_decay: float = 15.0,
@@ -228,28 +270,32 @@ class EloRatingSystem:
         season: int,
         game_date: datetime,
         game_id: str | None = None,
+        is_divisional: bool = False,
     ) -> tuple[float, float]:
-        """
-        Update Elo ratings for both teams after a game.
+        """Update Elo ratings for both teams after a game.
 
         Args:
-            home_team: Home team abbreviation
-            away_team: Away team abbreviation
-            home_score: Home team score
-            away_score: Away team score
-            season: Season year
-            game_date: Game date
-            game_id: Optional game identifier
+            home_team: Home team abbreviation.
+            away_team: Away team abbreviation.
+            home_score: Home team score.
+            away_score: Away team score.
+            season: Season year.
+            game_date: Game date.
+            game_id: Optional game identifier.
+            is_divisional: Whether this is a divisional game. Divisional
+                games get reduced HFA (multiplied by DIVISIONAL_HFA_FACTOR).
 
         Returns:
-            Tuple of (home_rating_change, away_rating_change)
+            Tuple of (home_rating_change, away_rating_change).
         """
         # Get or create ratings
         home_rating = self.get_or_create_rating(home_team, season)
         away_rating = self.get_or_create_rating(away_team, season)
 
-        # Get home field advantage for this season
+        # Get home field advantage for this season, with divisional reduction
         hfa = self.hfa_by_season.get(season, self.hfa_init)
+        if is_divisional:
+            hfa *= DIVISIONAL_HFA_FACTOR
 
         # Pre-game ratings
         home_pre = home_rating.rating
@@ -331,53 +377,53 @@ class EloRatingSystem:
         return home_change, away_change
 
     def learn_home_field_advantage(self, games_df: pd.DataFrame, season: int) -> float:
-        """
-        Learn home field advantage for a season from actual game results.
+        """Learn home field advantage from PRIOR season data only (no lookahead).
+
+        For the first season (no prior-season data available), returns
+        hfa_init (48). For subsequent seasons, learns HFA from the prior
+        season's home win rate and blends with the running estimate.
 
         Args:
-            games_df: DataFrame with game results for the season
-            season: Season to learn HFA for
+            games_df: DataFrame with game results (may span multiple seasons).
+            season: Season to learn HFA for. Uses season-1 data.
 
         Returns:
-            Learned home field advantage value
+            Learned home field advantage value (Elo points).
         """
-        if len(games_df) == 0:
-            self.hfa_by_season[season] = self.hfa_init
-            return self.hfa_init
-
-        # Calculate actual home win rate
-        completed_games = games_df[
-            (games_df["home_score"].notna())
-            & (games_df["away_score"].notna())
-            & (games_df["home_score"] != games_df["away_score"])  # Exclude ties
+        # Filter to PRIOR season only -- this is the key fix for the
+        # lookahead bug. Never use same-season data for HFA learning.
+        prior_games = games_df[
+            (games_df["season"] == season - 1)
+            & games_df["home_score"].notna()
+            & games_df["away_score"].notna()
+            & (games_df["home_score"] != games_df["away_score"])
         ]
 
-        if len(completed_games) == 0:
+        if len(prior_games) == 0:
+            # No prior-season data -- use initial value
             self.hfa_by_season[season] = self.hfa_init
             return self.hfa_init
 
-        home_wins = (
-            completed_games["home_score"] > completed_games["away_score"]
-        ).sum()
-        home_win_rate = home_wins / len(completed_games)
+        home_wins = (prior_games["home_score"] > prior_games["away_score"]).sum()
+        home_win_rate = home_wins / len(prior_games)
 
         # Convert win rate to Elo points (approximately)
         # 50% win rate = 0 Elo advantage
-        # Each 1% above 50% ≈ 8 Elo points
-        hfa = (home_win_rate - 0.5) * 800
+        # Each 1% above 50% ~ 8 Elo points
+        hfa_from_data = (home_win_rate - 0.5) * 800
 
-        # Smooth with previous season and clamp to reasonable range
+        # Smooth with previous HFA estimate and clamp to reasonable range
         prev_hfa = self.hfa_by_season.get(season - 1, self.hfa_init)
-        learned_hfa = 0.7 * hfa + 0.3 * prev_hfa
-        learned_hfa = max(20.0, min(120.0, learned_hfa))  # Clamp between 20-120
+        learned_hfa = 0.7 * hfa_from_data + 0.3 * prev_hfa
+        learned_hfa = max(20.0, min(80.0, learned_hfa))  # Clamp between 20-80
 
         self.hfa_by_season[season] = learned_hfa
 
         logger.info(
-            f"Learned HFA for {season}",
-            games_analyzed=len(completed_games),
+            f"Learned HFA for {season} from {season - 1} data",
+            prior_games_analyzed=len(prior_games),
             home_win_rate=home_win_rate,
-            raw_hfa=hfa,
+            raw_hfa=hfa_from_data,
             final_hfa=learned_hfa,
         )
 
@@ -427,6 +473,9 @@ class EloRatingSystem:
             home_rating_pre = self.get_or_create_rating(home_team, season).rating
             away_rating_pre = self.get_or_create_rating(away_team, season).rating
 
+            # Auto-detect divisional games using static division lookup
+            divisional = is_divisional_game(home_team, away_team)
+
             # Update ratings
             home_change, away_change = self.update_ratings(
                 home_team=home_team,
@@ -436,6 +485,7 @@ class EloRatingSystem:
                 season=season,
                 game_date=game["kickoff_et"],
                 game_id=game["game_id"],
+                is_divisional=divisional,
             )
 
             # Get post-game ratings
@@ -466,24 +516,35 @@ class EloRatingSystem:
         return games_sorted
 
     def predict_game(
-        self, home_team: str, away_team: str, season: int, neutral_site: bool = False
+        self,
+        home_team: str,
+        away_team: str,
+        season: int,
+        neutral_site: bool = False,
+        is_divisional: bool = False,
     ) -> dict[str, float]:
-        """
-        Predict game outcome using current Elo ratings.
+        """Predict game outcome using current Elo ratings.
 
         Args:
-            home_team: Home team abbreviation
-            away_team: Away team abbreviation
-            season: Season year
-            neutral_site: Whether game is at neutral site
+            home_team: Home team abbreviation.
+            away_team: Away team abbreviation.
+            season: Season year.
+            neutral_site: Whether game is at neutral site.
+            is_divisional: Whether this is a divisional game. Divisional
+                games get reduced HFA (multiplied by DIVISIONAL_HFA_FACTOR).
 
         Returns:
-            Dictionary with win probabilities and rating info
+            Dictionary with win probabilities and rating info.
         """
         home_rating = self.get_or_create_rating(home_team, season)
         away_rating = self.get_or_create_rating(away_team, season)
 
-        hfa = 0.0 if neutral_site else self.hfa_by_season.get(season, self.hfa_init)
+        if neutral_site:
+            hfa = 0.0
+        else:
+            hfa = self.hfa_by_season.get(season, self.hfa_init)
+            if is_divisional:
+                hfa *= DIVISIONAL_HFA_FACTOR
 
         home_win_prob = self._expected_score(
             home_rating.rating, away_rating.rating, hfa
