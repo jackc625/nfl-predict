@@ -3,7 +3,7 @@
 # This Makefile provides standardized commands for running the NFL prediction system
 # in accordance with the PRD acceptance criteria.
 
-.PHONY: help snapshot backtest predict serve test clean install setup lint build-css
+.PHONY: help snapshot backtest predict serve test clean install setup lint build-css train train-wp train-ats train-ou
 
 # Default target
 .DEFAULT_GOAL := help
@@ -216,17 +216,22 @@ features-validate: ## Validate feature engineering pipeline
 # MODEL MANAGEMENT COMMANDS
 # =============================================================================
 
-models-train: ## Train all models with latest data
-	@echo "$(GREEN)🤖 Training all models...$(NC)"
-	$(PYTHON) models/train_wp.py --full-training
-	$(PYTHON) models/train_ats.py --full-training
-	$(PYTHON) models/train_ou.py --full-training
+train: ## Train all models (WP, ATS, O/U) with walk-forward temporal validation
+	@echo "$(GREEN)Training all models with walk-forward validation...$(NC)"
+	$(PYTHON) -m models.train --target all
 
-models-train-incremental: ## Incrementally update models with recent data
-	@echo "$(GREEN)🔄 Incremental model training...$(NC)"
-	$(PYTHON) models/train_wp.py --incremental --weeks 4
-	$(PYTHON) models/train_ats.py --incremental --weeks 4
-	$(PYTHON) models/train_ou.py --incremental --weeks 4
+train-wp: ## Train WP model only
+	$(PYTHON) -m models.train --target wp
+
+train-ats: ## Train ATS model only
+	$(PYTHON) -m models.train --target ats
+
+train-ou: ## Train O/U model only
+	$(PYTHON) -m models.train --target ou
+
+models-train: train ## Legacy alias
+
+# models-train-incremental removed -- walk-forward training replaces incremental
 
 models-validate: ## Validate trained models
 	@echo "$(GREEN)✔️ Validating models...$(NC)"
