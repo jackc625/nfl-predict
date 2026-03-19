@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An NFL Prediction System that generates pre-game Win Probability (WP), Against the Spread (ATS), and Over/Under (O/U) predictions. Built as a personal tool for informed NFL analysis, doubling as a portfolio project. Phases 1-3 complete. Next up: Phase 4 (Core Model Training). 8 phases total, 5 remaining.
+An NFL Prediction System that generates pre-game Win Probability (WP), Against the Spread (ATS), and Over/Under (O/U) predictions. Built as a personal tool for informed NFL analysis, doubling as a portfolio project. Phases 1-4 complete. Next up: Phase 5 (Differentiating Features). 8 phases total, 4 remaining.
 
-**Current Status**: Phases 1-3 complete. Data pipeline hardened (Phase 1-2), feature engineering correct with temporal safety via FeatureBuilder Protocol, compressed features (weather 38->4, market 40->5), LeakageGate hard-fail validator, and expanding-window normalization (Phase 3). Model training, backtesting, market blending, and UI polish remain.
+**Current Status**: Phases 1-4 complete. Data pipeline hardened (Phase 1-2), feature engineering correct with temporal safety via FeatureBuilder Protocol, compressed features (weather 38->4, market 40->5), LeakageGate hard-fail validator, and expanding-window normalization (Phase 3). Core model training complete with WP (LogReg+isotonic calibration), ATS (XGBoost margin), O/U (XGBoost total), walk-forward temporal validation, CLV computation, market baseline comparison, and versioned artifact storage (Phase 4). Differentiating features, backtesting, market blending, and UI polish remain.
 
 
 ## Persistent Instructions for Claude
