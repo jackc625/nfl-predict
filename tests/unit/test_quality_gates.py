@@ -9,9 +9,9 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
-from data.quality_gates import validate_bronze_to_silver, validate_silver_to_gold
 from pydantic import ValidationError
 
+from data.quality_gates import validate_bronze_to_silver, validate_silver_to_gold
 from data.schemas import GameSchema, OddsSchema, VenueRoof, WeatherSchema
 from utils.exceptions import DataValidationError
 
