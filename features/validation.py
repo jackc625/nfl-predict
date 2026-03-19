@@ -12,8 +12,14 @@ This module validates NFL prediction features for:
 
 The validation system ensures features are properly constructed and safe
 for use in machine learning models without introducing look-ahead bias.
+
+Includes:
+- FeatureValidator: Report-only validation (existing, unchanged)
+- LeakageViolation: Exception for temporal leakage violations
+- LeakageGate: Hard-fail validation gate for the feature pipeline
 """
 
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +35,309 @@ sys.path.insert(0, str(project_root))
 from utils import get_logger
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# LeakageViolation Exception
+# ---------------------------------------------------------------------------
+
+
+class LeakageViolation(Exception):
+    """Raised when temporal data leakage is detected in features.
+
+    Carries a details dict with structured information about the violation
+    for diagnostic report generation.
+    """
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.details = details or {}
+
+
+# ---------------------------------------------------------------------------
+# LeakageGate: Hard-fail validation gate
+# ---------------------------------------------------------------------------
+
+
+class LeakageGate:
+    """Hard-fail validation gate for the feature pipeline.
+
+    Two stages:
+    1. Per-builder time-fence check (fast, runs after each builder)
+    2. Full matrix validation (runs on combined features)
+
+    Hard failures: leakage violations, missing required feature groups,
+                   Elo ordering violations
+    Warnings only: distribution issues, correlation issues, missing data
+                   below threshold
+    """
+
+    # Columns that indicate post-game / future information
+    LEAKAGE_KEYWORDS = [
+        "closing",
+        "final",
+        "result",
+        "outcome",
+        "actual",
+        "post_game",
+        "final_score",
+        "winner",
+        "loser",
+        "margin",
+        "total_score",
+    ]
+
+    # Required feature groups: at least one feature from each must exist
+    # Missing any of these is a hard failure
+    REQUIRED_FEATURE_GROUPS = {
+        "elo": "elo_",
+        "team_form": "rolling_",
+    }
+
+    # Optional feature groups: warn if missing but do not fail
+    OPTIONAL_FEATURE_GROUPS = {
+        "weather": "weather_",
+        "market": "snapshot_",
+    }
+
+    def __init__(self) -> None:
+        self.logger = get_logger(f"{__name__}.LeakageGate")
+
+    # -- Stage 1: Per-builder time-fence check --------------------------------
+
+    def check_time_fence(
+        self,
+        features_df: pd.DataFrame,
+        as_of_datetime: datetime,
+        builder_name: str,
+    ) -> None:
+        """Check that no row in features_df has a timestamp after as_of_datetime.
+
+        Inspects columns: game_date, kickoff_et, snapshot_ts.
+
+        Args:
+            features_df: Output DataFrame from a single feature builder.
+            as_of_datetime: The time-fence cutoff.
+            builder_name: Name of the builder (for diagnostics).
+
+        Raises:
+            LeakageViolation: If any row violates the time-fence.
+        """
+        timestamp_cols = ["game_date", "kickoff_et", "snapshot_ts"]
+
+        for col in timestamp_cols:
+            if col not in features_df.columns:
+                continue
+
+            col_values = pd.to_datetime(features_df[col], errors="coerce")
+            as_of_ts = pd.Timestamp(as_of_datetime)
+
+            # For snapshot_ts: use <= (snapshot at the cutoff is allowed)
+            if col == "snapshot_ts":
+                future_mask = col_values > as_of_ts
+            else:
+                future_mask = col_values > as_of_ts
+
+            future_count = future_mask.sum()
+            if future_count > 0:
+                latest = col_values[future_mask].max()
+                raise LeakageViolation(
+                    f"Time-fence violation in {builder_name}: "
+                    f"{future_count} rows have {col} after {as_of_datetime}",
+                    details={
+                        "builder": builder_name,
+                        "violation_type": "time_fence",
+                        "column": col,
+                        "affected_rows": int(future_count),
+                        "latest_timestamp": str(latest),
+                        "cutoff": str(as_of_datetime),
+                    },
+                )
+
+        self.logger.debug(
+            "Time-fence check passed",
+            builder=builder_name,
+            rows=len(features_df),
+        )
+
+    # -- Stage 2: Full combined-matrix validation -----------------------------
+
+    def validate_combined_matrix(
+        self,
+        combined_df: pd.DataFrame,
+        as_of_datetime: datetime,
+    ) -> None:
+        """Validate the combined feature matrix for leakage and completeness.
+
+        Hard failures:
+        - Leakage keywords found in column names
+        - Required feature groups missing entirely
+
+        Warnings only (logged but not raised):
+        - Optional feature groups missing
+        - Distribution anomalies
+
+        Args:
+            combined_df: The fully merged feature matrix.
+            as_of_datetime: The time-fence cutoff.
+
+        Raises:
+            LeakageViolation: On leakage keyword or missing required group.
+        """
+        columns_lower = {col: col.lower() for col in combined_df.columns}
+
+        # -- Check leakage keywords in column names --
+        leaked_cols = []
+        for col, col_lower in columns_lower.items():
+            for keyword in self.LEAKAGE_KEYWORDS:
+                if keyword in col_lower:
+                    leaked_cols.append((col, keyword))
+
+        if leaked_cols:
+            raise LeakageViolation(
+                f"Leakage keyword columns found: {[c for c, _ in leaked_cols]}",
+                details={
+                    "violation_type": "leakage_keyword",
+                    "affected_features": [c for c, _ in leaked_cols],
+                    "keywords_matched": [k for _, k in leaked_cols],
+                },
+            )
+
+        # -- Check required feature groups --
+        missing_required = []
+        for group_name, prefix in self.REQUIRED_FEATURE_GROUPS.items():
+            has_group = any(prefix in col_lower for col_lower in columns_lower.values())
+            if not has_group:
+                missing_required.append(group_name)
+
+        if missing_required:
+            raise LeakageViolation(
+                f"Missing required feature groups: {missing_required}",
+                details={
+                    "violation_type": "missing_required_group",
+                    "missing_groups": missing_required,
+                },
+            )
+
+        # -- Warn on optional feature groups (no raise) --
+        for group_name, prefix in self.OPTIONAL_FEATURE_GROUPS.items():
+            has_group = any(prefix in col_lower for col_lower in columns_lower.values())
+            if not has_group:
+                self.logger.warning(
+                    "Optional feature group missing",
+                    group=group_name,
+                    prefix=prefix,
+                )
+
+        self.logger.info(
+            "Combined matrix validation passed",
+            columns=len(combined_df.columns),
+            rows=len(combined_df),
+        )
+
+    # -- Elo chronological ordering check -------------------------------------
+
+    def check_elo_ordering(
+        self,
+        elo_history: list[dict[str, Any]] | pd.DataFrame,
+    ) -> None:
+        """Verify that Elo updates are strictly ordered by game_date within each season.
+
+        Args:
+            elo_history: Elo update records with season, game_date, team columns.
+
+        Raises:
+            LeakageViolation: If updates are out of chronological order.
+        """
+        if isinstance(elo_history, list):
+            df = pd.DataFrame(elo_history)
+        else:
+            df = elo_history.copy()
+
+        if "game_date" not in df.columns:
+            self.logger.warning(
+                "No game_date column in Elo history; skipping ordering check"
+            )
+            return
+
+        df["game_date"] = pd.to_datetime(df["game_date"])
+
+        out_of_order = []
+
+        # Check within each (season, team) group
+        group_cols = ["season", "team"] if "team" in df.columns else ["season"]
+        for group_key, group_df in df.groupby(group_cols):
+            sorted_group = group_df.sort_index()  # preserve insertion order
+            dates = sorted_group["game_date"].values
+
+            for i in range(1, len(dates)):
+                if dates[i] < dates[i - 1]:
+                    out_of_order.append(
+                        {
+                            "group": str(group_key),
+                            "index": int(sorted_group.index[i]),
+                            "date": str(dates[i]),
+                            "prev_date": str(dates[i - 1]),
+                        }
+                    )
+
+        if out_of_order:
+            raise LeakageViolation(
+                f"Elo updates are not chronologically ordered: "
+                f"{len(out_of_order)} out-of-order entries found",
+                details={
+                    "violation_type": "elo_ordering",
+                    "out_of_order_games": out_of_order,
+                },
+            )
+
+        self.logger.debug("Elo ordering check passed", records=len(df))
+
+    # -- Diagnostic report ----------------------------------------------------
+
+    def write_diagnostic_report(
+        self,
+        violation: LeakageViolation,
+        output_dir: str | None = None,
+    ) -> str:
+        """Write a JSON diagnostic report for a LeakageViolation.
+
+        Args:
+            violation: The violation to report.
+            output_dir: Directory to write the report to. Defaults to
+                outputs/diagnostics/.
+
+        Returns:
+            Absolute path to the written report file.
+        """
+        if output_dir is None:
+            output_dir = str(project_root / "outputs" / "diagnostics")
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_filename = f"leakage_{timestamp}.json"
+        report_path = output_path / report_filename
+
+        report = {
+            "violation_type": violation.details.get("violation_type", "unknown"),
+            "message": str(violation),
+            "timestamp": datetime.now().isoformat(),
+            "details": violation.details,
+        }
+
+        report_path.write_text(
+            json.dumps(report, indent=2, default=str), encoding="utf-8"
+        )
+
+        self.logger.error(
+            "Diagnostic report written",
+            path=str(report_path),
+            violation_type=report["violation_type"],
+        )
+
+        return str(report_path)
 
 
 class FeatureValidator:
