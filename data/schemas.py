@@ -1,10 +1,10 @@
-"""Data schemas for NFL Prediction System using Pydantic."""
+"""Data schemas for NFL Prediction System using Pydantic v2."""
 
 from datetime import UTC, datetime
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 
 import pandas as pd
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class VenueRoof(StrEnum):
@@ -13,9 +13,6 @@ class VenueRoof(StrEnum):
     INDOOR = "indoor"
     OUTDOOR = "outdoor"
     RETRACTABLE = "retractable"
-
-
-from enum import IntEnum
 
 
 class GameResult(IntEnum):
@@ -28,6 +25,8 @@ class GameResult(IntEnum):
 
 class GameSchema(BaseModel):
     """Schema for NFL game data (silver layer)."""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     game_id: str = Field(
         ..., description="Unique game identifier (e.g., 2024_W06_KC@BUF)"
@@ -62,58 +61,77 @@ class GameSchema(BaseModel):
 
     # Data lineage metadata
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(UTC),
         description="Timestamp when record was created/ingested",
     )
 
-    @validator("home_team", "away_team")
-    def validate_team_format(cls, v):
+    @field_validator("home_team", "away_team")
+    @classmethod
+    def validate_team_format(cls, v: str) -> str:
         """Validate team abbreviation format."""
         return v.upper().strip()
 
-    @validator("home_score", "away_score", pre=True)
+    @field_validator("home_score", "away_score", mode="before")
+    @classmethod
     def validate_scores(cls, v):
         """Convert NaN to None for optional score fields."""
-        if pd.isna(v):
+        if v is not None and pd.isna(v):
             return None
         return v
 
-    @validator("result", pre=True)
+    @field_validator("result", mode="before")
+    @classmethod
     def validate_result(cls, v):
         """Convert NaN to None for optional result field."""
-        if pd.isna(v):
+        if v is not None and pd.isna(v):
             return None
         return v
 
-    @validator("kickoff_et", "created_at", pre=True)
+    @field_validator("kickoff_et", "created_at", mode="before")
+    @classmethod
     def validate_timestamps(cls, v):
         """Ensure timestamps are timezone-aware."""
-        if v is None or pd.isna(v):
+        if v is None:
             return None
+        try:
+            if pd.isna(v):
+                return None
+        except (ValueError, TypeError):
+            pass
         if isinstance(v, str):
             return pd.to_datetime(v)
         if isinstance(v, datetime) and v.tzinfo is None:
-            # Assume ET for kickoff times
             from zoneinfo import ZoneInfo
 
             return v.replace(tzinfo=ZoneInfo("America/New_York"))
         return v
 
-    @validator("game_id")
-    def validate_game_id_format(cls, v):
+    @field_validator("game_id")
+    @classmethod
+    def validate_game_id_format(cls, v: str) -> str:
         """Validate game ID format."""
         if not v or len(v.split("_")) != 3:
             raise ValueError("Game ID must be in format: SEASON_WEEK_AWAY@HOME")
         return v
 
-    class Config:
-        """Pydantic config."""
-
-        use_enum_values = True
+    @model_validator(mode="after")
+    def validate_scores_for_completed_games(self):
+        """Completed games MUST have both scores. Future games may have None for both."""
+        has_home = self.home_score is not None
+        has_away = self.away_score is not None
+        if has_home != has_away:
+            raise ValueError(
+                f"Game {self.game_id}: partial scores "
+                f"(home={self.home_score}, away={self.away_score}). "
+                f"Completed games must have both scores, future games must have neither."
+            )
+        return self
 
 
 class OddsSchema(BaseModel):
     """Schema for odds data (silver layer)."""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     game_id: str = Field(..., description="Foreign key to games table")
     snapshot_ts: datetime = Field(..., description="Timestamp when odds were captured")
@@ -141,11 +159,11 @@ class OddsSchema(BaseModel):
 
     # Data lineage metadata
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(UTC),
         description="Timestamp when record was created/ingested",
     )
 
-    @validator(
+    @field_validator(
         "ml_home",
         "ml_away",
         "spread_ju_home",
@@ -153,32 +171,40 @@ class OddsSchema(BaseModel):
         "total_over_ju",
         "total_under_ju",
     )
+    @classmethod
     def validate_moneyline_range(cls, v):
         """Validate moneyline/juice values are reasonable."""
         if v is not None and not (-10000 <= v <= 10000):
             raise ValueError("Moneyline/juice values must be between -10000 and +10000")
         return v
 
-    @validator("snapshot_ts", "last_update", "created_at", pre=True)
+    @field_validator("snapshot_ts", "last_update", "created_at", mode="before")
+    @classmethod
     def validate_timestamps(cls, v):
         """Ensure timestamps are timezone-aware."""
-        if v is None or pd.isna(v):
+        if v is None:
             return None
+        try:
+            if pd.isna(v):
+                return None
+        except (ValueError, TypeError):
+            pass
         if isinstance(v, str):
             return pd.to_datetime(v)
         if isinstance(v, datetime) and v.tzinfo is None:
-            # Make timezone-aware as UTC
             return v.replace(tzinfo=UTC)
         return v
 
-    @validator("spread")
+    @field_validator("spread")
+    @classmethod
     def validate_spread_range(cls, v):
         """Validate spread is reasonable."""
         if v is not None and not (-50.0 <= v <= 50.0):
             raise ValueError("Spread must be between -50.0 and +50.0 points")
         return v
 
-    @validator("total")
+    @field_validator("total")
+    @classmethod
     def validate_total_range(cls, v):
         """Validate total is reasonable."""
         if v is not None and not (10.0 <= v <= 100.0):
@@ -188,6 +214,8 @@ class OddsSchema(BaseModel):
 
 class WeatherSchema(BaseModel):
     """Schema for weather forecast data (silver layer)."""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     game_id: str = Field(..., description="Foreign key to games table")
     forecast_time: datetime = Field(..., description="When forecast was made")
@@ -217,45 +245,54 @@ class WeatherSchema(BaseModel):
 
     # Derived fields
     is_outdoor: bool = Field(..., description="Whether weather affects the game")
-    is_cold: bool | None = Field(None, description="Temperature below 32°F")
+    is_cold: bool | None = Field(None, description="Temperature below 32F")
     is_windy: bool | None = Field(None, description="Wind speed above 12 MPH")
     is_precipitation: bool | None = Field(None, description="Precipitation expected")
 
     # Data lineage metadata
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(UTC),
         description="Timestamp when record was created/ingested",
     )
 
-    @validator("temp_f")
+    @field_validator("temp_f")
+    @classmethod
     def validate_temperature_f(cls, v):
         """Validate Fahrenheit temperature is reasonable."""
         if v is not None and not (-50 <= v <= 120):
-            raise ValueError("Temperature must be between -50°F and 120°F")
+            raise ValueError("Temperature must be between -50F and 120F")
         return v
 
-    @validator("wind_mph")
+    @field_validator("wind_mph")
+    @classmethod
     def validate_wind_speed(cls, v):
         """Validate wind speed is reasonable."""
         if v is not None and v > 100:
             raise ValueError("Wind speed cannot exceed 100 MPH")
         return v
 
-    @validator("forecast_time", "game_time", "created_at", pre=True)
+    @field_validator("forecast_time", "game_time", "created_at", mode="before")
+    @classmethod
     def validate_timestamps(cls, v):
         """Ensure timestamps are timezone-aware."""
-        if v is None or pd.isna(v):
+        if v is None:
             return None
+        try:
+            if pd.isna(v):
+                return None
+        except (ValueError, TypeError):
+            pass
         if isinstance(v, str):
             return pd.to_datetime(v)
         if isinstance(v, datetime) and v.tzinfo is None:
-            # Make timezone-aware as UTC
             return v.replace(tzinfo=UTC)
         return v
 
 
 class TeamFormSchema(BaseModel):
     """Schema for team form/performance metrics (silver layer)."""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     team_id: str = Field(..., description="Team abbreviation")
     season: int = Field(..., ge=2000, le=2030, description="NFL season")
@@ -304,14 +341,17 @@ class TeamFormSchema(BaseModel):
     losses: int = Field(..., ge=0, description="Losses this season")
     ties: int = Field(0, ge=0, description="Ties this season")
 
-    @validator("team_id")
-    def validate_team_id(cls, v):
+    @field_validator("team_id")
+    @classmethod
+    def validate_team_id(cls, v: str) -> str:
         """Validate team ID format."""
         return v.upper().strip()
 
 
 class VenueSchema(BaseModel):
     """Schema for venue/stadium data (static reference)."""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     venue_id: str = Field(..., description="Unique venue identifier")
     venue_name: str = Field(..., description="Official venue name")
@@ -336,14 +376,11 @@ class VenueSchema(BaseModel):
     # Teams that play here
     home_teams: list[str] = Field(..., description="Teams that call this venue home")
 
-    class Config:
-        """Pydantic config."""
-
-        use_enum_values = True
-
 
 class FeatureMatrixSchema(BaseModel):
     """Schema for feature matrices (gold layer)."""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     game_id: str = Field(..., description="Game identifier")
     season: int = Field(..., description="Season")
@@ -362,7 +399,8 @@ class FeatureMatrixSchema(BaseModel):
     # Features will be added dynamically based on feature engineering
     features: dict[str, float] = Field(..., description="Feature values")
 
-    @validator("features")
+    @field_validator("features")
+    @classmethod
     def validate_features_not_empty(cls, v):
         """Ensure features dict is not empty."""
         if not v:
@@ -372,6 +410,8 @@ class FeatureMatrixSchema(BaseModel):
 
 class PredictionSchema(BaseModel):
     """Schema for model predictions (outputs)."""
+
+    model_config = ConfigDict(use_enum_values=True)
 
     game_id: str = Field(..., description="Game identifier")
     season: int = Field(..., description="Season")
@@ -416,38 +456,27 @@ class PredictionSchema(BaseModel):
         None, ge=0, le=1, description="O/U prediction confidence"
     )
 
-    @validator("wp_home", "wp_away")
-    def validate_wp_probabilities_sum(cls, v, values):
-        """Validate win probabilities sum to approximately 1."""
-        if "wp_home" in values and "wp_away" in values:
-            total = values["wp_home"] + values["wp_away"]
-            if abs(total - 1.0) > 0.01:  # Allow 1% tolerance
-                raise ValueError("Win probabilities must sum to approximately 1.0")
-        return v
-
-    @validator("ats_home_prob", "ats_away_prob")
-    def validate_ats_probabilities_sum(cls, v, values):
-        """Validate ATS probabilities sum to approximately 1."""
-        if "ats_home_prob" in values and "ats_away_prob" in values:
-            total = values["ats_home_prob"] + values["ats_away_prob"]
+    @model_validator(mode="after")
+    def validate_probability_sums(self):
+        """Validate that paired probabilities sum to approximately 1."""
+        pairs = [
+            ("wp_home", "wp_away", self.wp_home, self.wp_away),
+            ("ats_home_prob", "ats_away_prob", self.ats_home_prob, self.ats_away_prob),
+            ("over_prob", "under_prob", self.over_prob, self.under_prob),
+        ]
+        for name_a, name_b, val_a, val_b in pairs:
+            total = val_a + val_b
             if abs(total - 1.0) > 0.01:
-                raise ValueError("ATS probabilities must sum to approximately 1.0")
-        return v
-
-    @validator("over_prob", "under_prob")
-    def validate_ou_probabilities_sum(cls, v, values):
-        """Validate O/U probabilities sum to approximately 1."""
-        if "over_prob" in values and "under_prob" in values:
-            total = values["over_prob"] + values["under_prob"]
-            if abs(total - 1.0) > 0.01:
-                raise ValueError("O/U probabilities must sum to approximately 1.0")
-        return v
+                raise ValueError(
+                    f"{name_a} + {name_b} = {total:.4f}, must sum to approximately 1.0"
+                )
+        return self
 
 
 # Utility functions for schema validation
 
 
-def validate_dataframe_schema(df: pd.DataFrame, schema_class: BaseModel) -> list[str]:
+def validate_dataframe_schema(df: pd.DataFrame, schema_class: type) -> list[str]:
     """
     Validate DataFrame against Pydantic schema.
 
@@ -469,7 +498,7 @@ def validate_dataframe_schema(df: pd.DataFrame, schema_class: BaseModel) -> list
     return errors
 
 
-def convert_df_to_schema(df: pd.DataFrame, schema_class: BaseModel) -> list[BaseModel]:
+def convert_df_to_schema(df: pd.DataFrame, schema_class: type) -> list[BaseModel]:
     """
     Convert DataFrame to list of schema objects.
 
@@ -493,4 +522,4 @@ def schema_to_df(schema_objects: list[BaseModel]) -> pd.DataFrame:
     Returns:
         DataFrame
     """
-    return pd.DataFrame([obj.dict() for obj in schema_objects])
+    return pd.DataFrame([obj.model_dump() for obj in schema_objects])
