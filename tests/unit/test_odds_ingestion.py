@@ -225,4 +225,4 @@ class TestHistoricalOddsTransform:
         df = pd.DataFrame([_make_schedule_row()])
         result = transform_nfl_odds_to_standard_format(df)
 
-        assert result.iloc[0]["is_live"] is False
+        assert result.iloc[0]["is_live"] == False  # noqa: E712 (numpy.bool_ vs Python bool)
