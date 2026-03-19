@@ -1,0 +1,197 @@
+"""Tests for temporal split infrastructure (MODL-01, MODL-13).
+
+Verifies:
+- Three-fold temporal split with no overlap (MODL-13)
+- Walk-forward expanding-window splits for holdout (MODL-01)
+- Temporal CV splits for hyperparameter tuning
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+from models.temporal import (
+    TemporalSplitConfig,
+    WalkForwardSplitter,
+    make_temporal_cv_splits,
+)
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def synthetic_features_df() -> pd.DataFrame:
+    """Create a synthetic feature DataFrame with seasons 2018-2024, 10 rows per season."""
+    rows = []
+    for season in range(2018, 2025):
+        for i in range(10):
+            rows.append(
+                {
+                    "game_id": f"{season}_{i:02d}",
+                    "season": season,
+                    "week": (i % 18) + 1,
+                    "home_team": "KC",
+                    "away_team": "BUF",
+                    "feature_1": np.random.default_rng(season * 100 + i).random(),
+                    "feature_2": np.random.default_rng(season * 200 + i).random(),
+                    "home_win": int(
+                        np.random.default_rng(season * 300 + i).random() > 0.5
+                    ),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture
+def default_config() -> TemporalSplitConfig:
+    """Default temporal split configuration."""
+    return TemporalSplitConfig.default()
+
+
+# ---------------------------------------------------------------------------
+# Test 1: Three-fold no overlap
+# ---------------------------------------------------------------------------
+
+
+def test_three_fold_no_overlap():
+    """TemporalSplitConfig ensures no season overlap across the three groups."""
+    config = TemporalSplitConfig(
+        train_seasons=[2018, 2019],
+        hp_val_seasons=[2020],
+        holdout_seasons=[2021, 2022, 2023, 2024],
+    )
+    # Validation should pass without error
+    config.validate()
+
+    # Verify no overlap
+    train_set = set(config.train_seasons)
+    hp_val_set = set(config.hp_val_seasons)
+    holdout_set = set(config.holdout_seasons)
+
+    assert train_set & hp_val_set == set(), "Train and HP-val overlap"
+    assert train_set & holdout_set == set(), "Train and holdout overlap"
+    assert hp_val_set & holdout_set == set(), "HP-val and holdout overlap"
+
+
+# ---------------------------------------------------------------------------
+# Test 2: Three-fold temporal ordering
+# ---------------------------------------------------------------------------
+
+
+def test_three_fold_temporal_ordering():
+    """validate() raises ValueError if temporal ordering is violated."""
+    # Train contains season >= min(hp_val)
+    bad_config_1 = TemporalSplitConfig(
+        train_seasons=[2018, 2020],
+        hp_val_seasons=[2019],
+        holdout_seasons=[2021, 2022],
+    )
+    with pytest.raises(ValueError, match=r"train.*precede.*hp_val|temporal order"):
+        bad_config_1.validate()
+
+    # HP-val contains season >= min(holdout)
+    bad_config_2 = TemporalSplitConfig(
+        train_seasons=[2018, 2019],
+        hp_val_seasons=[2021],
+        holdout_seasons=[2020, 2022],
+    )
+    with pytest.raises(ValueError, match=r"hp_val.*precede.*holdout|temporal order"):
+        bad_config_2.validate()
+
+
+# ---------------------------------------------------------------------------
+# Test 3: Walk-forward splits
+# ---------------------------------------------------------------------------
+
+
+def test_walk_forward_splits(synthetic_features_df, default_config):
+    """WalkForwardSplitter generates 4 splits for 4 holdout seasons."""
+    splitter = WalkForwardSplitter(config=default_config, target_col="home_win")
+    splits = list(splitter.generate_splits(synthetic_features_df))
+
+    # 4 holdout seasons -> 4 splits
+    assert len(splits) == 4, f"Expected 4 splits, got {len(splits)}"
+
+    # First split: train on [2018, 2019, 2020], test on 2021
+    assert splits[0].train_seasons == [2018, 2019, 2020]
+    assert splits[0].test_season == 2021
+
+
+# ---------------------------------------------------------------------------
+# Test 4: Walk-forward expanding window
+# ---------------------------------------------------------------------------
+
+
+def test_walk_forward_expanding_window(synthetic_features_df, default_config):
+    """For holdout season 2023, train data includes seasons 2018-2022 (expanding)."""
+    splitter = WalkForwardSplitter(config=default_config, target_col="home_win")
+    splits = list(splitter.generate_splits(synthetic_features_df))
+
+    # Find the split for season 2023 (index 2 in holdout [2021,2022,2023,2024])
+    split_2023 = next(s for s in splits if s.test_season == 2023)
+    assert split_2023.train_seasons == [2018, 2019, 2020, 2021, 2022]
+
+
+# ---------------------------------------------------------------------------
+# Test 5: Walk-forward no leakage
+# ---------------------------------------------------------------------------
+
+
+def test_walk_forward_no_leakage(synthetic_features_df, default_config):
+    """For each split, max train season is strictly less than test season."""
+    splitter = WalkForwardSplitter(config=default_config, target_col="home_win")
+    splits = list(splitter.generate_splits(synthetic_features_df))
+
+    for split in splits:
+        max_train_season = max(split.train_seasons)
+        assert max_train_season < split.test_season, (
+            f"Leakage detected: max train season {max_train_season} "
+            f">= test season {split.test_season}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 6: make_temporal_cv_splits
+# ---------------------------------------------------------------------------
+
+
+def test_make_temporal_cv_splits(synthetic_features_df):
+    """make_temporal_cv_splits produces 3 folds where test is after train."""
+    folds = make_temporal_cv_splits(synthetic_features_df, n_splits=3)
+
+    assert len(folds) == 3, f"Expected 3 folds, got {len(folds)}"
+
+    for train_indices, test_indices in folds:
+        # Ensure indices are valid numpy arrays
+        assert len(train_indices) > 0
+        assert len(test_indices) > 0
+
+        # Get max train season and min test season from original df
+        sorted_df = synthetic_features_df.sort_values(["season", "week"]).reset_index(
+            drop=True
+        )
+        train_max_season = sorted_df.iloc[train_indices]["season"].max()
+        test_min_season = sorted_df.iloc[test_indices]["season"].min()
+
+        assert train_max_season <= test_min_season, (
+            f"Temporal violation: max train season {train_max_season} "
+            f"> min test season {test_min_season}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Default config
+# ---------------------------------------------------------------------------
+
+
+def test_default_config():
+    """TemporalSplitConfig.default() returns the expected default split."""
+    config = TemporalSplitConfig.default()
+
+    assert config.train_seasons == [2018, 2019]
+    assert config.hp_val_seasons == [2020]
+    assert config.holdout_seasons == [2021, 2022, 2023, 2024]
+
+    # Should validate cleanly
+    config.validate()
