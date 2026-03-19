@@ -1,19 +1,29 @@
 """
 Team Form Metrics Calculator
 
-This module calculates rolling team performance metrics from play-by-play data:
-- Rolling 4-week EPA/play calculations (offense/defense)
-- Success rate metrics (offense/defense)
-- Neutral situation pass rate calculations
-- Rest days since last game
-- Ensures no data leakage (only past games used)
+This module calculates rolling team performance metrics from play-by-play data
+using a dynamic expanding window that adapts to season progress:
 
-Key metrics:
-- EPA/play: Expected Points Added per play (nflreadpy provides this)
-- Success rate: Percentage of plays that increase win probability
-- Neutral situations: Down 1-2, distance 5+ yards, not in red zone
-- Pass rate: Tendency to pass vs run in neutral situations
+- Early season (Week 1-4): blends prior-season tail with current-season games
+- Mid season (Week 5-8): expanding current-season window, shrinking prior-season
+- Late season (Week 9+): current-season data dominates, prior-season drops off
+
+Metrics calculated:
+- EPA/play: Expected Points Added per play (overall, pass, rush) x (offense, defense)
+- Success rate: Percentage of plays that increase win probability (overall, pass, rush)
+- Neutral situation pass rate
+- Red zone TD rate
+- Third down conversion rate
+- Rest days since last game
+
+Key constraints:
+- No data leakage: features for Week N use only data from before Week N
+- Recency weighting: linear weights [1, 2, ..., N] where more recent = higher weight
+- Canonical team abbreviations: LA is Rams (not LAR), per Phase 2 decision
 """
+
+import warnings
+from datetime import datetime
 
 import nflreadpy as nfl
 import numpy as np
@@ -27,38 +37,46 @@ logger = get_logger(__name__)
 
 
 class TeamFormCalculator:
-    """
-    Calculate rolling team form metrics from play-by-play data.
+    """Calculate rolling team form metrics from play-by-play data.
 
-    Features calculated:
+    Uses a dynamic expanding window: early in the season the window leans
+    on prior-season games; as the current season progresses, those prior-
+    season games are replaced by current-season data.
+
+    Features calculated (all 9 metrics preserved):
     - Offensive EPA/play (overall, pass, rush)
     - Defensive EPA/play (overall, pass, rush)
-    - Offensive success rate
-    - Defensive success rate
+    - Offensive/Defensive success rate (overall, pass, rush)
     - Neutral situation pass rate
-    - Red zone efficiency
-    - Third down conversion rates
+    - Red zone TD rate
+    - Third down conversion rate
     - Rest days since last game
     """
 
-    def __init__(self, rolling_weeks: int = 4):
-        """
-        Initialize team form calculator.
+    def __init__(self, max_prior_games: int = 8):
+        """Initialize team form calculator.
 
         Args:
-            rolling_weeks: Number of weeks to use for rolling averages
+            max_prior_games: Maximum number of prior-season games to include
+                in the window when current-season data is sparse. As current-
+                season games accumulate, prior-season games are shed:
+                prior_count = max(0, max_prior_games - current_season_count).
         """
-        self.rolling_weeks = rolling_weeks
+        self.max_prior_games = max_prior_games
         self.settings = get_settings()
 
         # Team name mapping for consistency with our game data
         self.team_mapping = self._build_team_mapping()
 
     def _build_team_mapping(self) -> dict[str, str]:
-        """Build mapping from nflreadpy team names to our canonical abbreviations."""
+        """Build mapping from nflreadpy team names to our canonical abbreviations.
+
+        Phase 2 established LA as the canonical Rams abbreviation (not LAR).
+        nflreadpy uses LA for Rams, which matches our canonical form, so no
+        mapping is needed for the Rams.
+        """
         return {
-            # Most should be the same, but handle any differences
-            "LA": "LAR",  # Los Angeles Rams
+            # LA is canonical for Rams -- no mapping needed (identity)
             "LV": "LV",  # Las Vegas Raiders
             "GB": "GB",  # Green Bay Packers
             # Add any other mappings needed
@@ -72,8 +90,7 @@ class TeamFormCalculator:
         return self.team_mapping.get(team_upper, team_upper)
 
     def fetch_pbp_data(self, seasons: list[int]) -> pd.DataFrame:
-        """
-        Fetch play-by-play data for specified seasons.
+        """Fetch play-by-play data for specified seasons.
 
         Args:
             seasons: List of seasons to fetch
@@ -118,8 +135,7 @@ class TeamFormCalculator:
             raise
 
     def _identify_neutral_situations(self, pbp_df: pd.DataFrame) -> pd.Series:
-        """
-        Identify neutral game situations for pass rate analysis.
+        """Identify neutral game situations for pass rate analysis.
 
         Neutral situation criteria:
         - Down 1 or 2
@@ -143,8 +159,7 @@ class TeamFormCalculator:
         )
 
     def calculate_team_game_stats(self, pbp_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Calculate team-level statistics for each game from play-by-play data.
+        """Calculate team-level statistics for each game from play-by-play data.
 
         Args:
             pbp_df: Play-by-play DataFrame
@@ -319,11 +334,58 @@ class TeamFormCalculator:
 
         return stats_df
 
+    def _select_dynamic_window(
+        self,
+        team_group: pd.DataFrame,
+        target_season: int,
+        target_week: int,
+    ) -> pd.DataFrame:
+        """Select games for the dynamic expanding window.
+
+        The window blends prior-season and current-season data:
+        - current_games: all games in target_season with week < target_week
+        - prior_games: last N games of (target_season - 1), where
+          N = max(0, max_prior_games - len(current_games))
+        - Combined: prior_games.tail(N) + current_games (all of them)
+
+        This means:
+        - Week 1: 8 prior-season games, 0 current (100% prior)
+        - Week 5: 4 prior + 4 current (50/50)
+        - Week 9+: 0 prior + all current (current dominates)
+
+        Args:
+            team_group: All historical games for one team+side, sorted
+                chronologically and already filtered to < target week.
+            target_season: Season being predicted.
+            target_week: Week being predicted.
+
+        Returns:
+            DataFrame subset with the games to include in the window.
+        """
+        current_season_games = team_group[team_group["season"] == target_season]
+        prior_season_games = team_group[team_group["season"] == target_season - 1]
+
+        current_count = len(current_season_games)
+        prior_count = max(0, self.max_prior_games - current_count)
+
+        # Take last prior_count games from prior season
+        prior_tail = prior_season_games.tail(prior_count)
+
+        # Combine: prior tail + all current season games
+        combined = pd.concat([prior_tail, current_season_games])
+        return combined.sort_values(["season", "week"])
+
     def calculate_rolling_averages(
         self, team_stats_df: pd.DataFrame, target_season: int, target_week: int
     ) -> pd.DataFrame:
-        """
-        Calculate rolling averages for each team up to a specific point in time.
+        """Calculate rolling averages using a dynamic expanding window.
+
+        The window adapts to season progress:
+        - Early season: more prior-season data for stability
+        - Late season: dominated by current-season data for responsiveness
+
+        Recency weighting is applied via linear weights [1, 2, ..., N]
+        where N = number of games in the window.
 
         Args:
             team_stats_df: Team-game statistics DataFrame
@@ -337,7 +399,7 @@ class TeamFormCalculator:
             "Calculating rolling averages",
             target_season=target_season,
             target_week=target_week,
-            rolling_weeks=self.rolling_weeks,
+            max_prior_games=self.max_prior_games,
         )
 
         # Filter to games before target week (no data leakage)
@@ -360,14 +422,16 @@ class TeamFormCalculator:
 
         # Calculate rolling averages for each team and side
         for (team, side), group in historical_games.groupby(["team", "side"]):
-            # Get the most recent N weeks of games
-            recent_games = group.tail(self.rolling_weeks)
+            # Use dynamic window instead of fixed tail
+            recent_games = self._select_dynamic_window(
+                group, target_season, target_week
+            )
 
             if len(recent_games) == 0:
                 continue
 
             # Calculate weighted averages (more recent games weighted higher)
-            weights = np.arange(1, len(recent_games) + 1)  # 1, 2, 3, 4 for 4 games
+            weights = np.arange(1, len(recent_games) + 1)
             weights = weights / weights.sum()
 
             # Calculate weighted averages for key metrics
@@ -426,8 +490,7 @@ class TeamFormCalculator:
         return rolling_df
 
     def calculate_rest_days(self, games_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Calculate rest days for each team since their last game.
+        """Calculate rest days for each team since their last game.
 
         Args:
             games_df: Games DataFrame with kickoff times
@@ -472,14 +535,155 @@ class TeamFormCalculator:
             return result_df.sort_values(["season", "week", "kickoff_et"])
         return games_df.copy()
 
+    # ------------------------------------------------------------------
+    # FeatureBuilder Protocol methods
+    # ------------------------------------------------------------------
+
+    def build_features(
+        self,
+        games_df: pd.DataFrame,
+        as_of_datetime: datetime,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """Build team form features using only data available before as_of_datetime.
+
+        Conforms to the FeatureBuilder Protocol. Uses as_of_datetime to
+        enforce the time-fence: only team stats from games with kickoff
+        before as_of_datetime are included.
+
+        Args:
+            games_df: DataFrame of games to build features for.
+            as_of_datetime: Time-fence cutoff. Only data before this
+                timestamp may be used.
+            target_season: Season to calculate features for.
+            target_week: Week to calculate features for.
+
+        Returns:
+            DataFrame with team form rolling averages.
+        """
+        logger.info(
+            "Building team form features (Protocol)",
+            as_of_datetime=str(as_of_datetime),
+            target_season=target_season,
+            target_week=target_week,
+        )
+
+        # Determine seasons to include
+        if target_season is not None:
+            seasons = [target_season - 1, target_season]
+        else:
+            all_seasons = sorted(games_df["season"].unique())
+            seasons = list(all_seasons)
+            if len(all_seasons) > 0:
+                prior = all_seasons[0] - 1
+                seasons = [prior, *seasons]
+
+        # Fetch play-by-play data and compute team game stats
+        pbp_df = self.fetch_pbp_data(seasons)
+        team_stats_df = self.calculate_team_game_stats(pbp_df)
+
+        # Apply as_of_datetime filter: only include stats from games
+        # whose kickoff is before the time-fence. This is an additional
+        # safety layer on top of the week < target_week filter.
+        if "kickoff_et" in team_stats_df.columns:
+            team_stats_df = team_stats_df[team_stats_df["kickoff_et"] < as_of_datetime]
+
+        # Calculate rolling averages for the target
+        if target_season and target_week:
+            return self.calculate_rolling_averages(
+                team_stats_df, target_season, target_week
+            )
+
+        # Fall back to all weeks in all seasons
+        all_rolling_stats = []
+        for season in seasons:
+            for week in range(1, 19):
+                rolling_df = self.calculate_rolling_averages(
+                    team_stats_df, season, week
+                )
+                if len(rolling_df) > 0:
+                    all_rolling_stats.append(rolling_df)
+
+        if all_rolling_stats:
+            return pd.concat(all_rolling_stats, ignore_index=True)
+        return pd.DataFrame()
+
+    def get_features_for_game(
+        self,
+        game_id: str,
+        as_of_datetime: datetime,
+    ) -> dict[str, float]:
+        """Get team form features for a single game.
+
+        Conforms to the FeatureBuilder Protocol. Wraps the existing
+        get_team_form_for_game with as_of_datetime enforcement.
+
+        Args:
+            game_id: Unique game identifier.
+            as_of_datetime: Time-fence cutoff.
+
+        Returns:
+            Dictionary mapping feature names to values.
+        """
+        try:
+            # Load team form features
+            form_df = load_dataframe("team_form_features", layer="silver")
+
+            # Parse game_id to extract teams and week info
+            # Expected format: {prefix}_{season}_W{week}_{away}@{home}
+            parts = game_id.split("_")
+            if len(parts) < 4:
+                logger.warning(
+                    "Cannot parse game_id for team form lookup",
+                    game_id=game_id,
+                )
+                return {}
+
+            season = int(parts[1])
+            week_str = parts[2]
+            week = int(week_str.replace("W", ""))
+
+            # Filter by season/week
+            week_form = form_df[
+                (form_df["target_season"] == season) & (form_df["target_week"] == week)
+            ]
+
+            result: dict[str, float] = {}
+            for _, row in week_form.iterrows():
+                team = row["team"]
+                side = row["side"]
+                prefix = f"{team}_{side[:3]}"
+                for col in row.index:
+                    if col.startswith("rolling_"):
+                        result[f"{prefix}_{col}"] = float(row[col])
+
+            return result
+
+        except (ValueError, KeyError, TypeError, RuntimeError) as e:
+            logger.error(
+                "Failed to get features for game",
+                game_id=game_id,
+                error=str(e),
+            )
+            return {}
+
+    # ------------------------------------------------------------------
+    # Deprecated aliases (kept for backward compatibility)
+    # ------------------------------------------------------------------
+
     def build_team_form_features(
         self,
         seasons: list[int],
         target_season: int | None = None,
         target_week: int | None = None,
     ) -> pd.DataFrame:
-        """
-        Build complete team form features for specified seasons.
+        """Build complete team form features for specified seasons.
+
+        .. deprecated::
+            Use :meth:`build_features` instead, which enforces the
+            ``as_of_datetime`` time-fence.
 
         Args:
             seasons: Seasons to process play-by-play data for
@@ -489,8 +693,13 @@ class TeamFormCalculator:
         Returns:
             DataFrame with team form features
         """
+        warnings.warn(
+            "build_team_form_features is deprecated; use build_features instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         logger.info(
-            "Building team form features",
+            "Building team form features (deprecated path)",
             seasons=seasons,
             target_season=target_season,
             target_week=target_week,
@@ -558,8 +767,11 @@ class TeamFormCalculator:
     def get_team_form_for_game(
         self, home_team: str, away_team: str, season: int, week: int
     ) -> dict[str, dict[str, float]]:
-        """
-        Get team form features for a specific game.
+        """Get team form features for a specific game.
+
+        .. deprecated::
+            Use :meth:`get_features_for_game` instead, which enforces the
+            ``as_of_datetime`` time-fence.
 
         Args:
             home_team: Home team abbreviation
@@ -570,6 +782,11 @@ class TeamFormCalculator:
         Returns:
             Dictionary with form features for both teams
         """
+        warnings.warn(
+            "get_team_form_for_game is deprecated; use get_features_for_game instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         try:
             # Load team form features
             form_df = load_dataframe("team_form_features", layer="silver")
@@ -619,8 +836,7 @@ class TeamFormCalculator:
             return {}
 
     def validate_form_features(self, form_df: pd.DataFrame) -> bool:
-        """
-        Validate team form features for data quality.
+        """Validate team form features for data quality.
 
         Args:
             form_df: Team form features DataFrame
