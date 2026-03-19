@@ -13,6 +13,7 @@ beyond pure team performance metrics.
 """
 
 import json
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -429,7 +430,10 @@ class ContextualFeaturesCalculator:
         target_week: int | None = None,
     ) -> pd.DataFrame:
         """
-        Build contextual features for all games.
+        Build contextual features for all games (legacy interface).
+
+        .. deprecated::
+            Use :meth:`build_features` instead (conforms to FeatureBuilder Protocol).
 
         Args:
             games_df: DataFrame with game information
@@ -439,6 +443,11 @@ class ContextualFeaturesCalculator:
         Returns:
             DataFrame with contextual features added
         """
+        warnings.warn(
+            "build_contextual_features is deprecated; use build_features instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         logger.info(
             "Building contextual features",
             games=len(games_df),
@@ -665,3 +674,176 @@ class ContextualFeaturesCalculator:
         )
 
         return True
+
+    # ------------------------------------------------------------------
+    # FeatureBuilder Protocol methods
+    # ------------------------------------------------------------------
+
+    def build_features(
+        self,
+        games_df: pd.DataFrame,
+        as_of_datetime: datetime,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """Build contextual features conforming to FeatureBuilder Protocol.
+
+        Uses only schedule data available before ``as_of_datetime``.
+
+        Delegates to the existing ``build_contextual_features`` logic
+        but adds ``as_of_datetime`` filtering.
+
+        Args:
+            games_df: DataFrame of games to build features for.
+            as_of_datetime: Time-fence cutoff.
+            target_season: Optional season filter.
+            target_week: Optional week filter.
+
+        Returns:
+            DataFrame with contextual features.
+        """
+        logger.info(
+            "Building contextual features (Protocol)",
+            games=len(games_df),
+            as_of=as_of_datetime.isoformat(),
+            target_season=target_season,
+            target_week=target_week,
+        )
+
+        try:
+            # Time-fence: only use games with kickoff before as_of_datetime
+            # for rest-days / schedule context (the target games themselves
+            # may have kickoff after the cutoff, but prior games used for
+            # rest calculations must be before the cutoff).
+            if target_season and target_week:
+                games_df = games_df[
+                    (games_df["season"] == target_season)
+                    & (games_df["week"] == target_week)
+                ].copy()
+
+            contextual_features = []
+
+            for _, game in games_df.iterrows():
+                game_id = game["game_id"]
+                home_team = game["home_team"]
+                away_team = game["away_team"]
+                venue_name = game.get("venue", "")
+                venue_id = self._get_venue_id_by_name(venue_name)
+                kickoff_dt = game["kickoff_et"]
+                season = game["season"]
+                week = game["week"]
+
+                game_features: dict[str, object] = {
+                    "game_id": game_id,
+                    "season": season,
+                    "week": week,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                }
+
+                game_features.update(
+                    {
+                        "is_home_game": 1.0,
+                        "is_away_game": 0.0,
+                    }
+                )
+
+                travel_metrics = self.calculate_travel_metrics(
+                    away_team, home_team, venue_id, kickoff_dt
+                )
+                for key, value in travel_metrics.items():
+                    game_features[f"away_{key}"] = value
+
+                short_week_features = self.detect_short_week(kickoff_dt, season, week)
+                game_features.update(short_week_features)
+
+                venue_features = self.encode_venue_features(venue_id)
+                game_features.update(venue_features)
+
+                # Rest days: use only games with kickoff before as_of_datetime
+                prior_games = games_df[games_df["kickoff_et"] < as_of_datetime]
+                home_rest = self.calculate_rest_days(home_team, kickoff_dt, prior_games)
+                away_rest = self.calculate_rest_days(away_team, kickoff_dt, prior_games)
+
+                game_features.update(
+                    {
+                        "home_rest_days": home_rest,
+                        "away_rest_days": away_rest,
+                        "rest_advantage": home_rest - away_rest,
+                        "both_short_rest": (
+                            1.0 if (home_rest <= 4 and away_rest <= 4) else 0.0
+                        ),
+                        "home_short_rest": 1.0 if home_rest <= 4 else 0.0,
+                        "away_short_rest": 1.0 if away_rest <= 4 else 0.0,
+                    }
+                )
+
+                contextual_features.append(game_features)
+
+            features_df = pd.DataFrame(contextual_features)
+
+            logger.info(
+                "Built contextual features (Protocol)",
+                features_count=len(features_df),
+                feature_columns=len(features_df.columns),
+            )
+
+            return features_df
+
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            logger.error(
+                "Failed to build contextual features (Protocol)",
+                error=str(e),
+            )
+            raise
+
+    def get_features_for_game(
+        self,
+        game_id: str,
+        as_of_datetime: datetime,
+    ) -> dict[str, float]:
+        """Get contextual features for a single game.
+
+        Conforms to the FeatureBuilder Protocol.
+
+        Args:
+            game_id: Unique game identifier.
+            as_of_datetime: Time-fence cutoff.
+
+        Returns:
+            Dictionary mapping feature names to values.
+        """
+        try:
+            features_df = load_dataframe("contextual_features", layer="silver")
+
+            game_features = features_df[features_df["game_id"] == game_id]
+
+            if len(game_features) == 0:
+                logger.warning(
+                    "No contextual features found for game",
+                    game_id=game_id,
+                )
+                return {}
+
+            exclude_cols = {
+                "game_id",
+                "season",
+                "week",
+                "home_team",
+                "away_team",
+            }
+            game_row = game_features.iloc[0]
+            return {
+                col: float(game_row[col])
+                for col in game_features.columns
+                if col not in exclude_cols
+            }
+
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            logger.error(
+                "Failed to get contextual features for game",
+                game_id=game_id,
+                error=str(e),
+            )
+            return {}

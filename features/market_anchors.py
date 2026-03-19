@@ -16,6 +16,7 @@ Market anchors provide:
 - Baseline probabilities for model comparison
 """
 
+import warnings
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -541,7 +542,10 @@ class MarketAnchorFeaturesCalculator:
         target_week: int | None = None,
     ) -> pd.DataFrame:
         """
-        Build market anchor features for all games.
+        Build market anchor features for all games (full/uncompressed output).
+
+        .. deprecated::
+            Use :meth:`build_features` instead (conforms to FeatureBuilder Protocol).
 
         Args:
             games_df: DataFrame with game information
@@ -551,6 +555,11 @@ class MarketAnchorFeaturesCalculator:
         Returns:
             DataFrame with market anchor features
         """
+        warnings.warn(
+            "build_market_anchor_features is deprecated; use build_features instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         logger.info(
             "Building market anchor features",
             games=len(games_df),
@@ -869,3 +878,208 @@ class MarketAnchorFeaturesCalculator:
         )
 
         return True
+
+    # ------------------------------------------------------------------
+    # FeatureBuilder Protocol methods (compressed output)
+    # ------------------------------------------------------------------
+
+    def build_features(
+        self,
+        games_df: pd.DataFrame,
+        as_of_datetime: datetime,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """Build compressed market anchor features (5 features) for games.
+
+        Conforms to the FeatureBuilder Protocol. Uses only odds data
+        with ``snapshot_ts <= as_of_datetime``.
+
+        Output columns:
+            game_id, snapshot_spread, snapshot_total,
+            snapshot_ml_prob_home_fair, spread_movement, total_movement
+
+        Args:
+            games_df: DataFrame of games to build features for.
+            as_of_datetime: Time-fence cutoff. Only odds data before this
+                timestamp may be used.
+            target_season: Optional season filter.
+            target_week: Optional week filter.
+
+        Returns:
+            DataFrame with exactly 6 columns (game_id + 5 features).
+        """
+        logger.info(
+            "Building compressed market anchor features",
+            games=len(games_df),
+            as_of=as_of_datetime.isoformat(),
+            target_season=target_season,
+            target_week=target_week,
+        )
+
+        try:
+            # Load odds data
+            odds_df = load_dataframe("odds_snapshot", layer="silver")
+            logger.info("Loaded odds data", odds_records=len(odds_df))
+
+            # Time-fence: only use odds before as_of_datetime
+            if "snapshot_ts" in odds_df.columns:
+                odds_df = odds_df[odds_df["snapshot_ts"] <= as_of_datetime]
+
+            # Filter to target if specified
+            if target_season and target_week:
+                games_df = games_df[
+                    (games_df["season"] == target_season)
+                    & (games_df["week"] == target_week)
+                ].copy()
+
+                game_ids = games_df["game_id"].tolist()
+                odds_df = odds_df[odds_df["game_id"].isin(game_ids)]
+
+            compressed_rows: list[dict[str, object]] = []
+
+            for _, game in games_df.iterrows():
+                game_id = game["game_id"]
+                game_odds = odds_df[odds_df["game_id"] == game_id]
+
+                if len(game_odds) == 0:
+                    # No odds data -- use defaults
+                    compressed_rows.append(
+                        self._default_compressed_market_features(game_id)
+                    )
+                    continue
+
+                # Identify opening lines: earliest snapshot per sportsbook
+                # (at least 24 hours before potential kickoff)
+                opening_lines = (
+                    game_odds.sort_values("snapshot_ts")
+                    .groupby("sportsbook")
+                    .first()
+                    .reset_index()
+                )
+
+                # Identify snapshot lines: latest snapshot per sportsbook
+                snapshot_lines = (
+                    game_odds.sort_values("snapshot_ts", ascending=False)
+                    .groupby("sportsbook")
+                    .first()
+                    .reset_index()
+                )
+
+                # Compute consensus snapshot values (median across books)
+                snap_spread = snapshot_lines["spread"].dropna().median()
+                snap_total = snapshot_lines["total"].dropna().median()
+
+                # Compute devigged home ML probability from snapshot
+                snap_ml_home_vals = snapshot_lines["ml_home"].dropna()
+                snap_ml_away_vals = snapshot_lines["ml_away"].dropna()
+
+                if len(snap_ml_home_vals) > 0 and len(snap_ml_away_vals) > 0:
+                    # Use median moneylines
+                    ml_home_med = int(snap_ml_home_vals.median())
+                    ml_away_med = int(snap_ml_away_vals.median())
+                    prob_home_raw = moneyline_to_probability(ml_home_med)
+                    prob_away_raw = moneyline_to_probability(ml_away_med)
+                    prob_home_fair, _ = devig_probabilities(
+                        prob_home_raw, prob_away_raw, method=self.devig_method
+                    )
+                else:
+                    prob_home_fair = 0.5
+
+                # Compute consensus opening values (median across books)
+                open_spread = opening_lines["spread"].dropna().median()
+                open_total = opening_lines["total"].dropna().median()
+
+                # Compute movement (signed difference)
+                if pd.notna(snap_spread) and pd.notna(open_spread):
+                    spread_mov = float(snap_spread - open_spread)
+                else:
+                    spread_mov = 0.0
+
+                if pd.notna(snap_total) and pd.notna(open_total):
+                    total_mov = float(snap_total - open_total)
+                else:
+                    total_mov = 0.0
+
+                compressed_rows.append(
+                    {
+                        "game_id": game_id,
+                        "snapshot_spread": (
+                            float(snap_spread)
+                            if pd.notna(snap_spread)
+                            else float("nan")
+                        ),
+                        "snapshot_total": (
+                            float(snap_total) if pd.notna(snap_total) else float("nan")
+                        ),
+                        "snapshot_ml_prob_home_fair": float(prob_home_fair),
+                        "spread_movement": spread_mov,
+                        "total_movement": total_mov,
+                    }
+                )
+
+            features_df = pd.DataFrame(compressed_rows)
+
+            logger.info(
+                "Built compressed market anchor features",
+                features_count=len(features_df),
+            )
+
+            return features_df
+
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
+            logger.error(
+                "Failed to build compressed market anchor features",
+                error=str(e),
+            )
+            raise
+
+    def _default_compressed_market_features(self, game_id: str) -> dict[str, object]:
+        """Default compressed market features when no odds data available."""
+        return {
+            "game_id": game_id,
+            "snapshot_spread": float("nan"),
+            "snapshot_total": float("nan"),
+            "snapshot_ml_prob_home_fair": 0.5,
+            "spread_movement": 0.0,
+            "total_movement": 0.0,
+        }
+
+    def get_features_for_game(
+        self,
+        game_id: str,
+        as_of_datetime: datetime,
+    ) -> dict[str, float]:
+        """Get compressed market features for a single game.
+
+        Conforms to the FeatureBuilder Protocol.
+
+        Args:
+            game_id: Unique game identifier.
+            as_of_datetime: Time-fence cutoff.
+
+        Returns:
+            Dictionary mapping feature names to values.
+        """
+        try:
+            games_df = pd.DataFrame([{"game_id": game_id, "season": 0, "week": 0}])
+            result = self.build_features(games_df, as_of_datetime)
+
+            if len(result) == 0:
+                logger.warning(
+                    "No market features for game",
+                    game_id=game_id,
+                )
+                return {}
+
+            row = result.iloc[0]
+            return {col: float(row[col]) for col in result.columns if col != "game_id"}
+
+        except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
+            logger.error(
+                "Failed to get market features for game",
+                game_id=game_id,
+                error=str(e),
+            )
+            return {}
