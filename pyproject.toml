@@ -155,6 +155,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "scripts/*.py" = ["T201"]
+"models/train.py" = ["T201"]  # CLI entry point prints summary tables to stdout
 "scripts/test_*.py" = ["BLE001", "E722"]  # Legacy test scripts (Plan 04 will remove)
 "scripts/cleanup_data.py" = ["BLE001"]  # Utility script, not production code
 "scripts/create_sample_api_data.py" = ["BLE001"]  # Utility script
