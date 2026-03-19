@@ -13,17 +13,17 @@ Tests cover:
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
 
 from utils.exceptions import WeatherDataError
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def ingester():
@@ -31,6 +31,7 @@ def ingester():
     with patch("scripts.ingest_weather.get_settings") as mock_settings:
         mock_settings.return_value = MagicMock()
         from scripts.ingest_weather import WeatherDataIngester
+
         return WeatherDataIngester()
 
 
@@ -93,6 +94,7 @@ def _make_games_df(
 # Test: Indoor game produces zeroed weather
 # ---------------------------------------------------------------------------
 
+
 class TestIndoorWeather:
     """Indoor game (roof_type='indoor') produces zeroed weather fields."""
 
@@ -107,20 +109,21 @@ class TestIndoorWeather:
 
         assert len(weather_df) == 1
         row = weather_df.iloc[0]
-        assert row["is_outdoor"] is False
+        assert row["is_outdoor"] == False  # noqa: E712 - pandas returns numpy bool
         assert row["temp_f"] is None
         assert row["wind_mph"] == 0.0
         assert row["precip_mm"] == 0.0
         assert row["humidity_pct"] is None
         assert row["condition"] == "indoor"
-        assert row["is_cold"] is False
-        assert row["is_windy"] is False
-        assert row["is_precipitation"] is False
+        assert row["is_cold"] == False  # noqa: E712
+        assert row["is_windy"] == False  # noqa: E712
+        assert row["is_precipitation"] == False  # noqa: E712
 
 
 # ---------------------------------------------------------------------------
 # Test: Retractable roof treated as outdoor
 # ---------------------------------------------------------------------------
+
 
 class TestRetractableRoof:
     """Retractable roof game is treated as outdoor (is_outdoor=True)."""
@@ -129,9 +132,7 @@ class TestRetractableRoof:
         """HOU plays at NRG Stadium (retractable) -- should be treated as outdoor."""
         games_df = _make_games_df(home_team="HOU", game_id="2024_W06_KC@HOU")
 
-        with patch.object(
-            ingester,
-            "_fetch_openmeteo_weather",
+        mock_weather = AsyncMock(
             return_value={
                 "temp_f": 82.0,
                 "temp_c": 27.8,
@@ -150,6 +151,11 @@ class TestRetractableRoof:
                 "cloud_cover_pct": 20.0,
                 "weather_code": 1,
             },
+        )
+        with patch.object(
+            ingester,
+            "_fetch_openmeteo_weather",
+            mock_weather,
         ):
             weather_df = ingester.fetch_weather_for_games(
                 games_df,
@@ -159,13 +165,14 @@ class TestRetractableRoof:
 
         assert len(weather_df) == 1
         row = weather_df.iloc[0]
-        assert row["is_outdoor"] is True
+        assert row["is_outdoor"] == True  # noqa: E712 - pandas returns numpy bool
         assert row["temp_f"] == 82.0
 
 
 # ---------------------------------------------------------------------------
 # Test: Outdoor game with successful fetch
 # ---------------------------------------------------------------------------
+
 
 class TestOutdoorWeatherFetch:
     """Outdoor game with successful weather fetch has populated fields."""
@@ -174,9 +181,7 @@ class TestOutdoorWeatherFetch:
         """BUF plays at Highmark Stadium (outdoor) -- real weather data returned."""
         games_df = _make_games_df(home_team="BUF", game_id="2024_W06_KC@BUF")
 
-        with patch.object(
-            ingester,
-            "_fetch_openmeteo_weather",
+        mock_weather = AsyncMock(
             return_value={
                 "temp_f": 45.0,
                 "temp_c": 7.2,
@@ -195,6 +200,11 @@ class TestOutdoorWeatherFetch:
                 "cloud_cover_pct": 50.0,
                 "weather_code": 3,
             },
+        )
+        with patch.object(
+            ingester,
+            "_fetch_openmeteo_weather",
+            mock_weather,
         ):
             weather_df = ingester.fetch_weather_for_games(
                 games_df,
@@ -204,7 +214,7 @@ class TestOutdoorWeatherFetch:
 
         assert len(weather_df) == 1
         row = weather_df.iloc[0]
-        assert row["is_outdoor"] is True
+        assert row["is_outdoor"] == True  # noqa: E712 - pandas returns numpy bool
         assert row["temp_f"] == 45.0
         assert row["wind_mph"] == 15.0
 
@@ -213,6 +223,7 @@ class TestOutdoorWeatherFetch:
 # Test: Outdoor game where weather fetch fails raises WeatherDataError
 # ---------------------------------------------------------------------------
 
+
 class TestOutdoorWeatherFetchFailure:
     """Outdoor game where weather fetch fails raises WeatherDataError."""
 
@@ -220,10 +231,11 @@ class TestOutdoorWeatherFetchFailure:
         """If Open-Meteo fails for an outdoor game, WeatherDataError propagates."""
         games_df = _make_games_df(home_team="BUF", game_id="2024_W06_KC@BUF")
 
+        mock_weather = AsyncMock(side_effect=WeatherDataError("API timeout"))
         with patch.object(
             ingester,
             "_fetch_openmeteo_weather",
-            side_effect=WeatherDataError("API timeout"),
+            mock_weather,
         ):
             with pytest.raises(WeatherDataError, match="API timeout"):
                 ingester.fetch_weather_for_games(
@@ -236,6 +248,7 @@ class TestOutdoorWeatherFetchFailure:
 # ---------------------------------------------------------------------------
 # Test: _get_venue_coordinates returns correct lat/lon for BUF
 # ---------------------------------------------------------------------------
+
 
 class TestVenueCoordinates:
     """Venue coordinate lookup tests."""
@@ -257,8 +270,9 @@ class TestVenueCoordinates:
 
 
 # ---------------------------------------------------------------------------
-# Test: _create_indoor_weather_record
+# Indoor weather record factory
 # ---------------------------------------------------------------------------
+
 
 class TestCreateIndoorWeatherRecord:
     """Indoor weather record factory creates zeroed fields."""
@@ -295,6 +309,7 @@ class TestCreateIndoorWeatherRecord:
 # Test: Weather data validates through validate_bronze_to_silver with WeatherSchema
 # ---------------------------------------------------------------------------
 
+
 class TestBronzeToSilverValidation:
     """Weather data passes validate_bronze_to_silver with WeatherSchema."""
 
@@ -315,12 +330,13 @@ class TestBronzeToSilverValidation:
 
         validated_df = validate_bronze_to_silver(df, WeatherSchema)
         assert len(validated_df) == 1
-        assert validated_df.iloc[0]["is_outdoor"] is False
+        assert validated_df.iloc[0]["is_outdoor"] == False  # noqa: E712
 
 
 # ---------------------------------------------------------------------------
 # Test: nflverse roof type mapping
 # ---------------------------------------------------------------------------
+
 
 class TestNflverseRoofTypeMapping:
     """nflreadpy roof types map correctly to project VenueRoof values."""

@@ -1,4 +1,10 @@
-"""Weather data ingestion using Open-Meteo Historical Weather API."""
+"""Weather data ingestion using Open-Meteo Historical Weather API.
+
+Produces timestamped Bronze snapshots and upserts to Silver weather table.
+Indoor games get zeroed weather fields (no API call).
+Outdoor and retractable-roof games use real Open-Meteo data.
+Missing weather for an outdoor game raises a hard error.
+"""
 
 import argparse
 import asyncio
@@ -12,8 +18,9 @@ import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from conf.settings import get_settings
+from data.quality_gates import validate_bronze_to_silver
 from data.schemas import WeatherSchema
-from data.storage import load_dataframe, save_dataframe
+from data.storage import load_dataframe, save_bronze_snapshot, upsert_silver
 from utils import (
     DataIngestionError,
     get_current_nfl_week,
@@ -22,6 +29,7 @@ from utils import (
 )
 from utils.exceptions import WeatherDataError
 from utils.game_id_utils import is_valid_game_id
+from utils.team_data import normalize_team_abbreviation
 
 logger = get_logger(__name__)
 
@@ -45,6 +53,16 @@ HOURLY_VARIABLES = ",".join(
         "wind_gusts_10m",
     ]
 )
+
+# Mapping from nflverse/nflreadpy roof type strings to project VenueRoof values.
+# nflreadpy returns: "dome", "closed", "outdoors", "open"
+# Project uses: "indoor", "outdoor", "retractable"
+NFLVERSE_ROOF_MAP = {
+    "dome": "indoor",
+    "closed": "indoor",
+    "outdoors": "outdoor",
+    "open": "retractable",
+}
 
 
 @retry(
@@ -229,16 +247,25 @@ class WeatherDataIngester:
     def _get_venue_coordinates(
         self, home_team: str, venues_df: pd.DataFrame
     ) -> tuple[float, float, str]:
-        """Get venue coordinates and roof type for a team."""
-        # Filter venues by checking if home_team is in the home_teams array
+        """Get venue coordinates and roof type for a team.
+
+        Uses normalize_team_abbreviation to handle variant abbreviations
+        (e.g. 'LAR' -> 'LA') before venue lookup.
+
+        Raises:
+            WeatherDataError: If no venue found for the (normalized) team.
+        """
+        canonical_team = normalize_team_abbreviation(home_team)
         venue_info = venues_df[
-            venues_df["home_teams"].apply(lambda teams: home_team in teams)
+            venues_df["home_teams"].apply(lambda teams: canonical_team in teams)
         ]
 
         if venue_info.empty:
-            logger.warning("No venue found for team", team=home_team)
-            # Default coordinates (Kansas City as central location)
-            return 39.0997, -94.5786, "outdoor"
+            raise WeatherDataError(
+                f"No venue found for team '{canonical_team}' "
+                f"(original: '{home_team}'). "
+                f"Check data/venues.json home_teams arrays."
+            )
 
         venue = venue_info.iloc[0]
         return venue["latitude"], venue["longitude"], venue["roof_type"]
@@ -246,6 +273,14 @@ class WeatherDataIngester:
     def _is_outdoor_game(self, roof_type: str) -> bool:
         """Determine if weather affects the game."""
         return roof_type.lower() in ["outdoor", "retractable"]
+
+    def _map_nflverse_roof_type(self, nflverse_roof: str) -> str:
+        """Map nflreadpy roof type string to project VenueRoof value.
+
+        nflreadpy uses: 'dome', 'closed', 'outdoors', 'open'
+        Project uses: 'indoor', 'outdoor', 'retractable'
+        """
+        return NFLVERSE_ROOF_MAP.get(nflverse_roof.lower(), "outdoor")
 
     def _convert_timezone(
         self, dt: datetime, from_tz: str, to_utc: bool = True
@@ -263,72 +298,70 @@ class WeatherDataIngester:
 
         return dt
 
-    def _generate_mock_weather(
-        self, game_time: datetime, latitude: float, longitude: float
+    def _create_indoor_weather_record(
+        self,
+        game_id: str,
+        game_time: datetime,
+        forecast_time: datetime,
     ) -> dict[str, Any]:
-        """Generate mock weather data for testing."""
-        import random
+        """Create zeroed weather record for indoor/dome games.
 
-        # Base weather on geographic location and season
-        month = game_time.month
+        Indoor games have no meaningful weather impact, so all weather
+        fields are set to zero or None with is_outdoor=False.
+        """
+        return {
+            "game_id": game_id,
+            "forecast_time": forecast_time,
+            "game_time": game_time,
+            "temp_f": None,
+            "temp_c": None,
+            "wind_mph": 0.0,
+            "wind_direction": None,
+            "humidity_pct": None,
+            "precip_prob": 0.0,
+            "precip_mm": 0.0,
+            "condition": "indoor",
+            "condition_code": None,
+            "visibility_km": None,
+            "is_outdoor": False,
+            "is_cold": False,
+            "is_windy": False,
+            "is_precipitation": False,
+        }
 
-        # Temperature based on latitude and season
-        if latitude > 45:  # Northern locations
-            base_temp = 35 if month in [11, 12, 1, 2] else 65
-        elif latitude < 30:  # Southern locations
-            base_temp = 65 if month in [11, 12, 1, 2] else 80
-        else:  # Middle latitudes
-            base_temp = 45 if month in [11, 12, 1, 2] else 70
+    def _create_weather_record(
+        self,
+        game_id: str,
+        game_time: datetime,
+        forecast_time: datetime,
+        weather_data: dict[str, Any],
+        roof_type: str,
+    ) -> dict[str, Any]:
+        """Create weather record for an outdoor/retractable game."""
+        is_outdoor = self._is_outdoor_game(roof_type)
 
-        temp_f = base_temp + random.randint(-15, 15)
-        temp_c = (temp_f - 32) * 5 / 9
+        # Derived weather flags - handle None values safely
+        temp_f = weather_data.get("temp_f")
+        is_cold = temp_f < 32 if temp_f is not None else False
 
-        # Wind based on season and location
-        wind_mph = random.uniform(2, 20)
-        if month in [11, 12, 1, 2, 3]:  # Winter/early spring - windier
-            wind_mph += random.uniform(0, 10)
+        wind_mph = weather_data.get("wind_mph")
+        is_windy = wind_mph > 12 if wind_mph is not None else False
 
-        # Precipitation probability
-        precip_prob = random.uniform(0, 0.4)  # 0-40% chance
-        if month in [4, 5, 6, 7, 8]:  # Spring/summer - more rain
-            precip_prob += random.uniform(0, 0.3)
-
-        precip_prob = min(precip_prob, 1.0)
-
-        # Precipitation amount (if any)
-        precip_mm = random.uniform(0, 5) if precip_prob > 0.3 else 0
-
-        # Other conditions
-        humidity_pct = random.uniform(40, 90)
-
-        # Weather condition
-        if precip_prob > 0.6:
-            condition = "Rain" if temp_f > 35 else "Snow"
-            condition_code = 500 if temp_f > 35 else 600
-        elif precip_prob > 0.3:
-            condition = "Cloudy"
-            condition_code = 300
-        else:
-            condition = "Clear"
-            condition_code = 800
+        precip_prob = weather_data.get("precip_prob", 0)
+        precip_mm = weather_data.get("precip_mm", 0)
+        is_precipitation = (
+            precip_prob > 0.3 if precip_prob is not None else False
+        ) or (precip_mm > 0 if precip_mm is not None else False)
 
         return {
-            "temp_f": round(temp_f, 1),
-            "temp_c": round(temp_c, 1),
-            "wind_mph": round(wind_mph, 1),
-            "wind_direction": random.randint(0, 359),
-            "humidity_pct": round(humidity_pct, 1),
-            "precip_prob": round(precip_prob, 2),
-            "precip_mm": round(precip_mm, 1),
-            "condition": condition,
-            "condition_code": condition_code,
-            "visibility_km": None,
-            "dew_point_f": round(temp_f - random.uniform(5, 20), 1),
-            "apparent_temp_f": round(temp_f - random.uniform(-5, 10), 1),
-            "snowfall_cm": round(random.uniform(0, 2), 1) if temp_f <= 35 else 0.0,
-            "wind_gusts_mph": round(wind_mph * random.uniform(1.2, 2.0), 1),
-            "cloud_cover_pct": round(random.uniform(10, 100), 1),
-            "weather_code": condition_code,
+            "game_id": game_id,
+            "forecast_time": forecast_time,
+            "game_time": game_time,
+            "is_outdoor": is_outdoor,
+            "is_cold": is_cold,
+            "is_windy": is_windy,
+            "is_precipitation": is_precipitation,
+            **weather_data,
         }
 
     async def _fetch_openmeteo_weather(
@@ -358,55 +391,23 @@ class WeatherDataIngester:
                 client, latitude, longitude, game_date, game_hour
             )
 
-    def _create_weather_record(
-        self,
-        game_id: str,
-        game_time: datetime,
-        forecast_time: datetime,
-        weather_data: dict[str, Any],
-        roof_type: str,
-    ) -> dict[str, Any]:
-        """Create weather record for a game."""
-        is_outdoor = self._is_outdoor_game(roof_type)
-
-        # Derived weather flags - handle None values safely
-        temp_f = weather_data.get("temp_f")
-        is_cold = temp_f < 32 if temp_f is not None else False
-
-        wind_mph = weather_data.get("wind_mph")
-        is_windy = wind_mph > 12 if wind_mph is not None else False
-
-        precip_prob = weather_data.get("precip_prob", 0)
-        precip_mm = weather_data.get("precip_mm", 0)
-        is_precipitation = (
-            precip_prob > 0.3 if precip_prob is not None else False
-        ) or (precip_mm > 0 if precip_mm is not None else False)
-
-        return {
-            "game_id": game_id,
-            "forecast_time": forecast_time,
-            "game_time": game_time,
-            "is_outdoor": is_outdoor,
-            "is_cold": is_cold,
-            "is_windy": is_windy,
-            "is_precipitation": is_precipitation,
-            **weather_data,
-        }
-
     def fetch_weather_for_games(
         self,
         games_df: pd.DataFrame,
         venues_df: pd.DataFrame,
         forecast_time: datetime | None = None,
-        use_mock: bool = False,
     ) -> pd.DataFrame:
-        """Fetch weather data for all games."""
+        """Fetch weather data for all games.
+
+        Indoor games get zeroed weather records (no API call).
+        Outdoor/retractable games get real Open-Meteo data.
+        If an outdoor game's weather fetch fails, raises WeatherDataError
+        (hard-fail -- no silent skipping).
+        """
         if forecast_time is None:
             forecast_time = datetime.now(UTC).replace(tzinfo=None)
 
-        logger.info(
-            "Fetching weather for games", games=len(games_df), use_mock=use_mock
-        )
+        logger.info("Fetching weather for games", games=len(games_df))
 
         weather_records = []
 
@@ -418,33 +419,34 @@ class WeatherDataIngester:
                 )
                 continue
 
-            try:
-                # Get venue coordinates
-                lat, lon, roof_type = self._get_venue_coordinates(
-                    game["home_team"], venues_df
+            # Get venue coordinates and roof type
+            lat, lon, roof_type = self._get_venue_coordinates(
+                game["home_team"], venues_df
+            )
+
+            # Convert game time to UTC
+            game_time_utc = self._convert_timezone(
+                game["kickoff_et"], "America/New_York", to_utc=True
+            )
+
+            if not self._is_outdoor_game(roof_type):
+                # Indoor game: use zeroed weather record (no API call)
+                weather_record = self._create_indoor_weather_record(
+                    game["game_id"],
+                    game_time_utc,
+                    forecast_time,
+                )
+            else:
+                # Outdoor/retractable game: fetch real weather data
+                game_date_str = game_time_utc.strftime("%Y-%m-%d")
+                game_hour = game_time_utc.hour
+
+                # Use asyncio.run for the async fetch.
+                # If this fails, WeatherDataError propagates (hard-fail).
+                weather_data = asyncio.run(
+                    self._fetch_openmeteo_weather(lat, lon, game_date_str, game_hour)
                 )
 
-                # Convert game time to UTC
-                game_time_utc = self._convert_timezone(
-                    game["kickoff_et"], "America/New_York", to_utc=True
-                )
-
-                # Fetch weather data
-                if use_mock or not self._is_outdoor_game(roof_type):
-                    weather_data = self._generate_mock_weather(game_time_utc, lat, lon)
-                else:
-                    # Extract date string and hour for Open-Meteo API
-                    game_date_str = game_time_utc.strftime("%Y-%m-%d")
-                    game_hour = game_time_utc.hour
-
-                    # Use asyncio.run for the async fetch
-                    weather_data = asyncio.run(
-                        self._fetch_openmeteo_weather(
-                            lat, lon, game_date_str, game_hour
-                        )
-                    )
-
-                # Create weather record
                 weather_record = self._create_weather_record(
                     game["game_id"],
                     game_time_utc,
@@ -453,92 +455,41 @@ class WeatherDataIngester:
                     roof_type,
                 )
 
-                weather_records.append(weather_record)
+            weather_records.append(weather_record)
 
-                logger.debug(
-                    "Weather fetched for game",
-                    game_id=game["game_id"],
-                    outdoor=weather_record["is_outdoor"],
-                )
-
-            except WeatherDataError as e:
-                logger.warning(
-                    "Failed to fetch weather for game",
-                    game_id=game["game_id"],
-                    error=str(e),
-                )
-                continue
-            except (ValueError, KeyError, TypeError) as e:
-                logger.warning(
-                    "Failed to process weather for game",
-                    game_id=game["game_id"],
-                    error=str(e),
-                )
-                continue
+            logger.debug(
+                "Weather fetched for game",
+                game_id=game["game_id"],
+                outdoor=weather_record["is_outdoor"],
+            )
 
         weather_df = pd.DataFrame(weather_records)
 
         logger.info(
-            "Weather data fetched", games=len(games_df), weather_records=len(weather_df)
+            "Weather data fetched",
+            games=len(games_df),
+            weather_records=len(weather_df),
         )
 
         return weather_df
-
-    def validate_weather_data(self, weather_df: pd.DataFrame) -> pd.DataFrame:
-        """Validate weather data against schema."""
-        logger.info("Validating weather data", input_rows=len(weather_df))
-
-        valid_records = []
-        validation_errors = []
-
-        for idx, row in weather_df.iterrows():
-            try:
-                # Fill NaN values with None for validation
-                row_dict = row.where(pd.notna(row), None).to_dict()
-
-                # Validate against schema
-                weather = WeatherSchema(**row_dict)
-                valid_records.append(weather.model_dump())
-
-            except Exception as e:
-                validation_errors.append(f"Row {idx}: {e!s}")
-                logger.warning(
-                    "Weather data validation failed", row_index=idx, error=str(e)
-                )
-
-        if validation_errors:
-            logger.warning(
-                "Weather data validation issues",
-                total_errors=len(validation_errors),
-                sample_errors=validation_errors[:5],
-            )
-
-        validated_df = pd.DataFrame(valid_records)
-
-        logger.info(
-            "Weather data validation completed",
-            input_rows=len(weather_df),
-            output_rows=len(validated_df),
-            errors=len(validation_errors),
-        )
-
-        return validated_df
 
     def ingest_weather(
         self,
         season: int | None = None,
         week: int | None = None,
         forecast_time: datetime | None = None,
-        use_mock: bool = False,
     ) -> pd.DataFrame:
         """
         Full weather data ingestion pipeline.
+
+        Uses Bronze/Silver separation:
+        - Bronze: timestamped append-only snapshots via save_bronze_snapshot
+        - Silver: validated, upserted via validate_bronze_to_silver + upsert_silver
 
         Args:
             season: Season to ingest (default: current)
             week: Week to ingest (default: current), None for entire season
             forecast_time: Time when forecast was made
-            use_mock: Use mock data instead of API
 
         Returns:
             Ingested and validated weather data
@@ -561,7 +512,6 @@ class WeatherDataIngester:
             week=week,
             scope=scope,
             forecast_time=forecast_time.isoformat(),
-            use_mock=use_mock,
         )
 
         try:
@@ -573,17 +523,24 @@ class WeatherDataIngester:
                 logger.warning("No games found", season=season, week=week)
                 return pd.DataFrame()
 
-            # Fetch weather data
+            # Fetch weather data (hard-fails on missing outdoor weather)
             weather_df = self.fetch_weather_for_games(
-                games_df, venues_df, forecast_time, use_mock
+                games_df, venues_df, forecast_time
             )
 
             if weather_df.empty:
                 logger.warning("No weather data fetched")
                 return weather_df
 
-            # Validate data
-            validated_df = self.validate_weather_data(weather_df)
+            # Save Bronze snapshot (append-only, timestamped)
+            if week is not None:
+                save_bronze_snapshot(weather_df, "weather", season=season, week=week)
+            else:
+                # For full-season ingestion, use week=0 as a sentinel
+                save_bronze_snapshot(weather_df, "weather", season=season, week=0)
+
+            # Validate through quality gate (hard-fail on bad rows)
+            validated_df = validate_bronze_to_silver(weather_df, WeatherSchema)
 
             # Ensure no duplicate weather records per game
             initial_count = len(validated_df)
@@ -600,46 +557,25 @@ class WeatherDataIngester:
                     duplicates_removed=initial_count - final_count,
                 )
 
-            # Add metadata timestamp (timezone-aware UTC for schema consistency)
-
+            # Add metadata timestamp
             validated_df["created_at"] = datetime.now(UTC)
 
-            # Save to bronze layer (raw) - only for single week ingestion
-            if not use_mock and week is not None:
-                save_dataframe(
-                    weather_df,
-                    f"weather_raw_bronze_{season}_W{week:02d}",
-                    layer="bronze",
-                    save_to_db=False,
-                )
-            elif not use_mock and week is None:
-                # For season-wide ingestion, save to a season file
-                save_dataframe(
-                    weather_df,
-                    f"weather_raw_bronze_{season}_season",
-                    layer="bronze",
-                    save_to_db=False,
-                )
-
-            # Save to silver layer (processed) - NO partitioning
-            save_dataframe(
-                validated_df, "weather_forecast", layer="silver", append_mode=False
-            )
+            # Upsert to Silver (latest wins by game_id)
+            upsert_silver(validated_df, "weather")
 
             log_data_operation(
                 operation="ingest",
-                table="weather_forecast",
+                table="weather",
                 rows=len(validated_df),
                 season=season,
                 week=week,
-                use_mock=use_mock,
             )
 
             logger.info(
                 "Weather data ingestion completed successfully",
                 total_records=len(validated_df),
                 unique_games=len(validated_df),
-                outdoor_games=validated_df["is_outdoor"].sum(),
+                outdoor_games=int(validated_df["is_outdoor"].sum()),
                 season=season,
                 week=week,
             )
@@ -668,9 +604,6 @@ def main():
     # Add weather-specific arguments
     parser.add_argument(
         "--forecast-time", type=str, help="Forecast time (ISO format, default: now)"
-    )
-    parser.add_argument(
-        "--mock", action="store_true", help="Use mock data instead of API"
     )
     parser.add_argument(
         "--outdoor-only",
@@ -730,7 +663,7 @@ def main():
 
         # Run ingestion
         weather_df = ingester.ingest_weather(
-            season=season, week=week, forecast_time=forecast_time, use_mock=args.mock
+            season=season, week=week, forecast_time=forecast_time
         )
 
         if weather_df.empty:
