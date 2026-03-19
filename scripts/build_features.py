@@ -11,7 +11,8 @@ This script combines all feature sources into complete feature matrices:
 
 Feature processing includes:
 - Missing data imputation and outlier handling (winsorization)
-- Z-score normalization within seasons
+- Expanding-window normalization (per-season, with prior-season bootstrap)
+- LeakageGate hard-fail validation (per-builder + combined matrix)
 - Separate feature matrices for WP, ATS, and O/U targets
 - Storage in gold layer for model consumption
 
@@ -19,10 +20,12 @@ Usage:
     python scripts/build_features.py --season 2024 --week 1
     python scripts/build_features.py --season 2024  # All weeks in season
     python scripts/build_features.py  # All available data
+    python scripts/build_features.py --season 2024 --as-of 2024-10-04T18:00:00
 """
 
 import argparse
 import sys
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -37,7 +40,9 @@ from data.storage import load_dataframe, save_dataframe
 from features.contextual import ContextualFeaturesCalculator
 from features.elo_features import EloFeatureBuilder
 from features.market_anchors import MarketAnchorFeaturesCalculator
+from features.normalization import compute_prior_season_stats, expanding_normalize
 from features.team_form import TeamFormCalculator
+from features.validation import LeakageGate, LeakageViolation
 from features.weather import WeatherFeaturesCalculator
 from utils import get_logger
 
@@ -62,6 +67,9 @@ class FeatureMatrixBuilder:
         self.contextual_calc = ContextualFeaturesCalculator()
         self.weather_calc = WeatherFeaturesCalculator()
         self.market_calc = MarketAnchorFeaturesCalculator()
+
+        # Leakage gate for hard-fail validation
+        self.leakage_gate = LeakageGate()
 
         # Feature processing parameters
         self.outlier_percentiles = (1, 99)  # Winsorization bounds
@@ -515,8 +523,11 @@ class FeatureMatrixBuilder:
     def normalize_features_within_seasons(
         self, features_df: pd.DataFrame, target_columns: list[str] | None = None
     ) -> pd.DataFrame:
-        """
-        Apply Z-score normalization within seasons.
+        """Apply Z-score normalization within seasons.
+
+        .. deprecated::
+            This method uses full-season mean/std which leaks future data.
+            Use ``expanding_normalize`` from ``features.normalization`` instead.
 
         Args:
             features_df: Feature matrix
@@ -525,6 +536,12 @@ class FeatureMatrixBuilder:
         Returns:
             Normalized feature matrix
         """
+        warnings.warn(
+            "normalize_features_within_seasons is deprecated due to future data leakage. "
+            "Use expanding_normalize from features.normalization instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         logger.info("Normalizing features within seasons")
 
         if target_columns is None:
@@ -671,27 +688,60 @@ class FeatureMatrixBuilder:
         return target_df
 
     def generate_feature_matrices(
-        self, target_season: int | None = None, target_week: int | None = None
+        self,
+        target_season: int | None = None,
+        target_week: int | None = None,
+        as_of_datetime: datetime | None = None,
     ) -> dict[str, pd.DataFrame]:
-        """
-        Generate complete feature matrices for all prediction targets.
+        """Generate complete feature matrices for all prediction targets.
+
+        Pipeline flow:
+        1. Load feature sources
+        2. Stage 1: Per-source LeakageGate.check_time_fence
+        3. Combine features
+        4. Stage 2: LeakageGate.validate_combined_matrix
+        5. Handle missing data and outliers
+        6. Expanding-window normalization (replaces within-season Z-scores)
+        7. Create target variables
+        8. Split into per-target matrices
 
         Args:
-            target_season: Specific season to process
-            target_week: Specific week to process
+            target_season: Specific season to process.
+            target_week: Specific week to process.
+            as_of_datetime: Time-fence cutoff for leakage validation.
+                Defaults to datetime.now() if not provided.
 
         Returns:
-            Dictionary with feature matrices for each target
+            Dictionary with feature matrices for each target.
         """
+        if as_of_datetime is None:
+            as_of_datetime = datetime.now()
+
         logger.info(
             "Generating feature matrices",
             target_season=target_season,
             target_week=target_week,
+            as_of_datetime=str(as_of_datetime),
         )
 
         try:
             # Load all feature sources
             feature_sources = self.load_all_feature_sources(target_season, target_week)
+
+            # -- Stage 1: Per-source time-fence check --
+            for source_name, source_df in feature_sources.items():
+                if source_name == "games":
+                    continue  # Games are the base, not a builder output
+                if len(source_df) == 0:
+                    continue
+
+                try:
+                    self.leakage_gate.check_time_fence(
+                        source_df, as_of_datetime, source_name
+                    )
+                except LeakageViolation as e:
+                    self.leakage_gate.write_diagnostic_report(e)
+                    raise
 
             # Combine features
             combined_features = self.combine_features(feature_sources)
@@ -700,14 +750,54 @@ class FeatureMatrixBuilder:
                 logger.error("No features to process")
                 return {}
 
+            # -- Stage 2: Combined matrix validation --
+            try:
+                self.leakage_gate.validate_combined_matrix(
+                    combined_features, as_of_datetime
+                )
+            except LeakageViolation as e:
+                self.leakage_gate.write_diagnostic_report(e)
+                raise
+
             # Handle missing data and outliers
             processed_features = self.handle_missing_data_and_outliers(
                 combined_features
             )
 
-            # Normalize features within seasons
-            normalized_features = self.normalize_features_within_seasons(
-                processed_features
+            # -- Expanding-window normalization (replaces within-season Z-scores) --
+            exclude_cols = [
+                "game_id",
+                "season",
+                "week",
+                "home_team",
+                "away_team",
+                "home_score",
+                "away_score",
+                "feature_timestamp",
+            ]
+            feature_cols = [
+                col for col in processed_features.columns if col not in exclude_cols
+            ]
+            numeric_feature_cols = (
+                processed_features[feature_cols]
+                .select_dtypes(include=[np.number])
+                .columns.tolist()
+            )
+
+            # Compute prior-season stats for bootstrap
+            prior_stats = None
+            if target_season:
+                prior_stats = compute_prior_season_stats(
+                    processed_features, numeric_feature_cols, target_season - 1
+                )
+
+            normalized_features = expanding_normalize(
+                processed_features,
+                feature_cols=numeric_feature_cols,
+                group_col="season",
+                sort_cols=["season", "week"],
+                min_periods=4,
+                prior_season_stats=prior_stats,
             )
 
             # Create target variables
@@ -844,6 +934,11 @@ def main():
     parser.add_argument("--season", type=int, help="Target season (e.g., 2024)")
     parser.add_argument("--week", type=int, help="Target week (1-18)")
     parser.add_argument(
+        "--as-of",
+        type=str,
+        help="As-of datetime (ISO format) for time-fence enforcement",
+    )
+    parser.add_argument(
         "--save",
         action="store_true",
         default=True,
@@ -858,6 +953,11 @@ def main():
 
     args = parser.parse_args()
 
+    # Parse --as-of datetime if provided
+    as_of_dt = None
+    if args.as_of:
+        as_of_dt = datetime.fromisoformat(args.as_of)
+
     logger.info("Building unified feature matrices", season=args.season, week=args.week)
 
     try:
@@ -866,7 +966,9 @@ def main():
 
         # Generate feature matrices
         feature_matrices = builder.generate_feature_matrices(
-            target_season=args.season, target_week=args.week
+            target_season=args.season,
+            target_week=args.week,
+            as_of_datetime=as_of_dt,
         )
 
         if not feature_matrices:
