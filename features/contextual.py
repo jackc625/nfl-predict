@@ -7,6 +7,9 @@ This module calculates contextual features for NFL games:
 - Venue roof type encoding
 - Home/away team indicators
 - Rest days calculations
+- Season-week position features (season progress, late season)
+- Surface type mismatch detection
+- Divisional game indicator
 
 These features capture situational factors that may impact game outcomes
 beyond pure team performance metrics.
@@ -24,9 +27,14 @@ import pandas as pd
 
 from conf.settings import get_settings
 from data.storage import load_dataframe
+from ratings.elo import is_divisional_game
 from utils import get_logger
 
 logger = get_logger(__name__)
+
+# Surface categories for mismatch detection (FEAT-18)
+# Grass surfaces vs synthetic -- categories that differ cause a mismatch
+GRASS_SURFACES: set[str] = {"Bermuda Grass", "Kentucky Bluegrass"}
 
 
 class ContextualFeaturesCalculator:
@@ -97,6 +105,64 @@ class ContextualFeaturesCalculator:
             if venue["venue_id"] == venue_id:
                 return venue
         return None
+
+    def _get_venue_surface(self, venue_id: str) -> str | None:
+        """Get the surface type for a venue by its ID.
+
+        Args:
+            venue_id: Venue identifier.
+
+        Returns:
+            Surface string (e.g. 'FieldTurf', 'Bermuda Grass') or None.
+        """
+        for venue in self.venues_data["venues"]:
+            if venue["venue_id"] == venue_id:
+                return venue.get("surface")
+        return None
+
+    def _is_grass_surface(self, surface: str | None) -> bool:
+        """Classify a surface as grass (True) or synthetic (False).
+
+        Args:
+            surface: Surface string from venues data.
+
+        Returns:
+            True if the surface is a grass type, False otherwise.
+        """
+        if surface is None:
+            return False
+        return surface in GRASS_SURFACES
+
+    def _compute_surface_mismatch(
+        self, away_team: str, game_venue_id: str
+    ) -> float:
+        """Compute surface mismatch for the away team.
+
+        Mismatch = 1.0 when the away team's home surface category (grass vs
+        synthetic) differs from the game venue's surface category.
+
+        Args:
+            away_team: Away team abbreviation.
+            game_venue_id: Venue ID where the game is played.
+
+        Returns:
+            1.0 if surface categories differ, 0.0 otherwise.
+        """
+        # Look up away team's home venue surface
+        away_home_venue_id = self.team_venues.get(away_team)
+        if not away_home_venue_id:
+            return 0.0
+
+        away_surface = self._get_venue_surface(away_home_venue_id)
+        game_surface = self._get_venue_surface(game_venue_id)
+
+        if away_surface is None or game_surface is None:
+            return 0.0
+
+        away_is_grass = self._is_grass_surface(away_surface)
+        game_is_grass = self._is_grass_surface(game_surface)
+
+        return 1.0 if away_is_grass != game_is_grass else 0.0
 
     def _get_venue_id_by_name(self, venue_name: str) -> str:
         """Map venue name to venue ID."""
@@ -776,6 +842,27 @@ class ContextualFeaturesCalculator:
                         ),
                         "home_short_rest": 1.0 if home_rest <= 4 else 0.0,
                         "away_short_rest": 1.0 if away_rest <= 4 else 0.0,
+                    }
+                )
+
+                # FEAT-17: Season-week position features
+                season_progress = float(week) / 18.0
+                late_season = 1.0 if week >= 14 else 0.0
+
+                # FEAT-18: Surface type mismatch (away team perspective)
+                surface_mismatch = self._compute_surface_mismatch(
+                    away_team, venue_id
+                )
+
+                # FEAT-19: Divisional game indicator
+                is_div = 1.0 if is_divisional_game(home_team, away_team) else 0.0
+
+                game_features.update(
+                    {
+                        "season_progress": season_progress,
+                        "late_season": late_season,
+                        "surface_mismatch": surface_mismatch,
+                        "is_divisional": is_div,
                     }
                 )
 

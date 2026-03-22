@@ -11,9 +11,8 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from features.contextual import ContextualFeaturesCalculator, GRASS_SURFACES
+from features.contextual import GRASS_SURFACES, ContextualFeaturesCalculator
 from features.protocol import FeatureBuilder
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
