@@ -9,16 +9,11 @@ Tests for three new metrics added to team_form.py:
 All new metrics use the same dynamic expanding window as existing EPA metrics.
 """
 
-from datetime import datetime
-from unittest.mock import patch
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from features.team_form import TeamFormCalculator
-
 
 # ---------------------------------------------------------------------------
 # Synthetic PBP data fixture for extension tests
@@ -61,7 +56,7 @@ def _build_synthetic_pbp(
 
     # Default CPOE: 8 valid values and 2 nulls for a 10-pass scenario
     if cpoe_values is None:
-        cpoe_values = [2.5, -1.0, 3.0, 0.5, -2.0, 1.5, 4.0, -0.5] + [None, None]
+        cpoe_values = [2.5, -1.0, 3.0, 0.5, -2.0, 1.5, 4.0, -0.5, None, None]
 
     # Default drive starts
     if drive_starts_yardline is None:
@@ -93,15 +88,6 @@ def _build_synthetic_pbp(
             ydstogo = 10 if down == 1 else (7 if down == 2 else 5)
             score_diff = 3  # within 14 points
             half_seconds = 600  # more than 120
-
-            # Neutral = down 1 or 2, ydstogo >= 5, yardline > 20, score_diff <= 14, half_seconds > 120
-            is_neutral = (
-                down in (1, 2)
-                and ydstogo >= 5
-                and yardline > 20
-                and abs(score_diff) <= 14
-                and half_seconds > 120
-            )
 
             rows.append(
                 {

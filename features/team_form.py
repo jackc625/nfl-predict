@@ -15,6 +15,13 @@ Metrics calculated:
 - Red zone TD rate
 - Third down conversion rate
 - Rest days since last game
+- Team-level rolling CPOE (FEAT-15): mean cpoe from non-null pass plays
+- Average drive starting field position (FEAT-20): mean yardline_100 from first play per drive
+- Neutral-situation pace (FEAT-21): count of neutral-situation plays per game
+
+FEAT-16 (Win Totals Prior): SKIPPED -- no free programmatic data source
+available (nflverse, nfelo). Existing Elo 75/25 season carryover (Phase 3)
+serves as the calibration fallback. Per D-09 decision.
 
 Key constraints:
 - No data leakage: features for Week N use only data from before Week N
@@ -43,7 +50,7 @@ class TeamFormCalculator:
     on prior-season games; as the current season progresses, those prior-
     season games are replaced by current-season data.
 
-    Features calculated (all 9 metrics preserved):
+    Features calculated (12 metrics total -- original 9 + 3 PBP-derived):
     - Offensive EPA/play (overall, pass, rush)
     - Defensive EPA/play (overall, pass, rush)
     - Offensive/Defensive success rate (overall, pass, rush)
@@ -51,6 +58,13 @@ class TeamFormCalculator:
     - Red zone TD rate
     - Third down conversion rate
     - Rest days since last game
+    - Team-level rolling CPOE (FEAT-15)
+    - Average drive starting field position (FEAT-20)
+    - Neutral-situation pace of play (FEAT-21)
+
+    FEAT-16 (Win Totals Prior): SKIPPED -- no free programmatic data source
+    available (nflverse, nfelo). Existing Elo 75/25 season carryover (Phase 3)
+    serves as the calibration fallback. Per D-09 decision.
     """
 
     def __init__(self, max_prior_games: int = 8):
@@ -226,6 +240,29 @@ class TeamFormCalculator:
             if len(third_down_plays) > 0:
                 third_down_conversion_rate = third_down_plays["first_down"].mean()
 
+            # FEAT-15: Team-level CPOE -- mean of cpoe where cpoe is not null
+            # Sacks, scrambles, and spikes have null cpoe; filter them out
+            team_cpoe = np.nan
+            if "cpoe" in group.columns:
+                valid_cpoe = group[group["cpoe"].notna()]["cpoe"]
+                if len(valid_cpoe) > 0:
+                    team_cpoe = valid_cpoe.mean()
+
+            # FEAT-20: Average drive start yard line -- yardline_100 from
+            # first play of each fixed_drive (offense only)
+            # Use yardline_100 (numeric, 0-100) NOT drive_start_yard_line (string)
+            avg_drive_start_yardline = np.nan
+            if "fixed_drive" in group.columns:
+                drive_first_plays = group.groupby("fixed_drive").first()
+                if len(drive_first_plays) > 0 and "yardline_100" in drive_first_plays.columns:
+                    avg_drive_start_yardline = drive_first_plays["yardline_100"].mean()
+
+            # FEAT-21: Neutral-situation pace -- count of neutral-situation plays
+            # Uses the neutral_situation column computed by _identify_neutral_situations()
+            neutral_pace = 0
+            if "neutral_situation" in group.columns:
+                neutral_pace = int(group["neutral_situation"].sum())
+
             offense_stats.append(
                 {
                     "game_id": game_id,
@@ -246,6 +283,9 @@ class TeamFormCalculator:
                     "third_down_conversion_rate": third_down_conversion_rate,
                     "pass_attempts": len(pass_plays),
                     "rush_attempts": len(rush_plays),
+                    "team_cpoe": team_cpoe,
+                    "avg_drive_start_yardline": avg_drive_start_yardline,
+                    "neutral_pace": neutral_pace,
                 }
             )
 
@@ -318,6 +358,9 @@ class TeamFormCalculator:
                     "third_down_conversion_rate": third_down_conversion_rate_allowed,
                     "pass_attempts": len(pass_plays),
                     "rush_attempts": len(rush_plays),
+                    "team_cpoe": np.nan,  # Offense-only metric
+                    "avg_drive_start_yardline": np.nan,  # Offense-only metric
+                    "neutral_pace": np.nan,  # Offense-only metric
                 }
             )
 
@@ -435,8 +478,17 @@ class TeamFormCalculator:
             weights = weights / weights.sum()
 
             # Calculate weighted averages for key metrics
-            avg_stats = {}
-            for metric in [
+            # Original 9 metrics + 3 new PBP-derived metrics (FEAT-15, 20, 21)
+            # Offense-only metrics are set to NaN for the defense side
+            offense_only_metrics = {
+                "neutral_pass_rate",
+                "team_cpoe",
+                "avg_drive_start_yardline",
+                "neutral_pace",
+            }
+
+            # Build metrics list dynamically: original 9 + new 3
+            all_metrics = [
                 "epa_per_play",
                 "pass_epa_per_play",
                 "rush_epa_per_play",
@@ -446,22 +498,42 @@ class TeamFormCalculator:
                 "neutral_pass_rate",
                 "red_zone_td_rate",
                 "third_down_conversion_rate",
-            ]:
-                values = recent_games[metric].values
-                if metric == "neutral_pass_rate" and side == "defense":
-                    avg_stats[f"rolling_{metric}"] = np.nan
+                "team_cpoe",
+                "avg_drive_start_yardline",
+                "neutral_pace",
+            ]
+
+            avg_stats = {}
+            for metric in all_metrics:
+                # Use custom rolling column names for new metrics
+                if metric == "team_cpoe":
+                    rolling_name = "rolling_cpoe"
+                elif metric == "avg_drive_start_yardline":
+                    rolling_name = "rolling_avg_drive_start_yardline"
+                elif metric == "neutral_pace":
+                    rolling_name = "rolling_neutral_pace"
                 else:
+                    rolling_name = f"rolling_{metric}"
+
+                # Skip offense-only metrics for defense side
+                if metric in offense_only_metrics and side == "defense":
+                    avg_stats[rolling_name] = np.nan
+                elif metric not in recent_games.columns:
+                    # Graceful handling when column is missing (backward compat)
+                    avg_stats[rolling_name] = np.nan
+                else:
+                    values = recent_games[metric].values
                     # Handle NaN values
-                    valid_mask = ~np.isnan(values)
+                    valid_mask = ~np.isnan(values.astype(float))
                     if valid_mask.sum() > 0:
                         valid_values = values[valid_mask]
                         valid_weights = weights[valid_mask]
                         valid_weights = valid_weights / valid_weights.sum()
-                        avg_stats[f"rolling_{metric}"] = np.average(
+                        avg_stats[rolling_name] = np.average(
                             valid_values, weights=valid_weights
                         )
                     else:
-                        avg_stats[f"rolling_{metric}"] = np.nan
+                        avg_stats[rolling_name] = np.nan
 
             rolling_stats.append(
                 {
