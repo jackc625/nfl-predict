@@ -19,9 +19,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from features.protocol import FeatureBuilder
+from features.protocol import FeatureBuilder  # Protocol only, no heavy imports
 from features.qb_tracking import QBTracker
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: mock depth chart and PBP data
