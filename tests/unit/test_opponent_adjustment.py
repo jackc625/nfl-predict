@@ -13,7 +13,6 @@ import pytest
 
 from features.opponent_adj import OpponentAdjuster
 
-
 # ---------------------------------------------------------------------------
 # Fixtures: synthetic per-game team stats
 # ---------------------------------------------------------------------------
@@ -32,29 +31,6 @@ def _make_schedule() -> pd.DataFrame:
     - Team B always faces strong defenses (low def EPA = good defense)
     - Other teams have average opponents
     """
-    teams = ["A", "B", "C", "D", "E", "F"]
-
-    # Define per-team defensive quality (EPA/play allowed -- higher = worse defense)
-    # A bad defense allows more EPA, a good defense allows less
-    team_def_epa = {
-        "A": -0.05,  # good defense (allows little EPA)
-        "B": 0.15,   # bad defense (allows a lot of EPA)
-        "C": 0.10,   # below-average defense
-        "D": 0.12,   # below-average defense
-        "E": -0.03,  # above-average defense
-        "F": 0.05,   # average defense
-    }
-
-    # Define per-team offensive quality (EPA/play generated)
-    team_off_epa = {
-        "A": 0.10,   # good offense
-        "B": -0.05,  # bad offense
-        "C": 0.05,   # average offense
-        "D": 0.03,   # average offense
-        "E": 0.08,   # good offense
-        "F": 0.00,   # average offense
-    }
-
     # Round-robin schedule for 6 teams over 10 weeks
     # Each team plays once per week
     matchups = [
@@ -218,13 +194,10 @@ class TestWeakScheduleAdjustment:
         ]
         assert len(team_a_off) == 1
 
-        raw_epa = 0.10  # Team A's constant raw offensive EPA
         adj_epa = team_a_off["rolling_opp_adj_epa_per_play"].values[0]
 
         # Team A faced many weak defenses (B=0.15, C=0.10, D=0.12 are all
         # above league average ~0.057). So adjustment should pull EPA down.
-        # adj_epa should be less than or equal to raw_epa for a team with easy schedule
-        # (The exact magnitude depends on the league average computation)
         assert not np.isnan(adj_epa), "Adjusted EPA should not be NaN"
 
 
@@ -489,7 +462,6 @@ class TestIdenticalOpponents:
         adjuster = OpponentAdjuster(window=10, min_opponent_games=4)
 
         # Create uniform schedule -- all teams have identical EPA
-        teams = ["X", "Y", "Z", "W", "V", "U"]
         uniform_epa = 0.05
 
         # Build schedule
@@ -560,9 +532,8 @@ class TestIdenticalOpponents:
             team_game_stats=stats_df,
         )
 
-        # With uniform defensive EPA, league_avg = uniform_epa,
-        # opponent_def = uniform_epa, adjustment = 0
-        # So adjusted EPA should equal raw EPA
+        # With uniform defensive EPA, the league average equals each opponent's
+        # defensive EPA, so the adjustment is zero and adjusted EPA equals raw EPA
         off_rows = result[result["side"] == "offense"]
         for _, row in off_rows.iterrows():
             adj_epa = row["rolling_opp_adj_epa_per_play"]
