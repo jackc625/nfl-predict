@@ -29,6 +29,13 @@ from .era import (
     normalize_week_to_progress,
 )
 
+# Metrics (Phase 6 rewrite)
+from .metrics import (
+    brier_decomposition,
+    compute_season_summary,
+    compute_target_metrics,
+)
+
 __all__ = [
     "ERA_TRANSITION_SEASON",
     "BacktestConfig",
@@ -36,6 +43,9 @@ __all__ = [
     "BacktestResults",
     "SeasonResult",
     "TargetResult",
+    "brier_decomposition",
+    "compute_season_summary",
+    "compute_target_metrics",
     "get_covid_hfa_annotation",
     "get_season_total_weeks",
     "normalize_week_to_progress",
