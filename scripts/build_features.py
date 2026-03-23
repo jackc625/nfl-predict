@@ -874,8 +874,8 @@ class FeatureMatrixBuilder:
                         # Drop old raw EPA columns that are now replaced by opp_adj versions
                         raw_epa_suffixes = [
                             "rolling_epa_per_play",
-                            "rolling_pass_epa",
-                            "rolling_rush_epa",
+                            "rolling_pass_epa_per_play",
+                            "rolling_rush_epa_per_play",
                         ]
                         cols_to_drop = []
                         for pfx in ["home", "away"]:
