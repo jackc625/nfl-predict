@@ -41,6 +41,8 @@ from features.contextual import ContextualFeaturesCalculator
 from features.elo_features import EloFeatureBuilder
 from features.market_anchors import MarketAnchorFeaturesCalculator
 from features.normalization import compute_prior_season_stats, expanding_normalize
+from features.opponent_adj import OpponentAdjuster
+from features.qb_tracking import QBTracker
 from features.team_form import TeamFormCalculator
 from features.validation import LeakageGate, LeakageViolation
 from features.weather import WeatherFeaturesCalculator
@@ -67,6 +69,8 @@ class FeatureMatrixBuilder:
         self.contextual_calc = ContextualFeaturesCalculator()
         self.weather_calc = WeatherFeaturesCalculator()
         self.market_calc = MarketAnchorFeaturesCalculator()
+        self.qb_tracker = QBTracker()
+        self.opponent_adj = OpponentAdjuster(window=10, min_opponent_games=4)
 
         # Leakage gate for hard-fail validation
         self.leakage_gate = LeakageGate()
@@ -76,7 +80,10 @@ class FeatureMatrixBuilder:
         self.min_games_for_stats = 10  # Minimum games for normalization
 
     def load_all_feature_sources(
-        self, target_season: int | None = None, target_week: int | None = None
+        self,
+        target_season: int | None = None,
+        target_week: int | None = None,
+        as_of_datetime: datetime | None = None,
     ) -> dict[str, pd.DataFrame]:
         """
         Load all feature sources from silver layer.
@@ -84,10 +91,14 @@ class FeatureMatrixBuilder:
         Args:
             target_season: Specific season to load
             target_week: Specific week to load
+            as_of_datetime: Time-fence cutoff for builders that need it
+                (QBTracker, OpponentAdjuster). Defaults to datetime.now().
 
         Returns:
             Dictionary with all feature DataFrames
         """
+        if as_of_datetime is None:
+            as_of_datetime = datetime.now()
         logger.info(
             "Loading all feature sources",
             target_season=target_season,
@@ -176,6 +187,20 @@ class FeatureMatrixBuilder:
             except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 logger.warning("Failed to load market anchor features", error=str(e))
                 feature_sources["market"] = pd.DataFrame()
+
+            # QB tracking features (computed via QBTracker, not loaded from silver)
+            try:
+                qb_features_df = self.qb_tracker.build_features(
+                    games_df,
+                    as_of_datetime,
+                    target_season=target_season,
+                    target_week=target_week,
+                )
+                feature_sources["qb_tracking"] = qb_features_df
+                logger.info("Loaded QB tracking features", records=len(qb_features_df))
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+                logger.warning("Failed to load QB tracking features", error=str(e))
+                feature_sources["qb_tracking"] = pd.DataFrame()
 
             return feature_sources
 
@@ -297,6 +322,41 @@ class FeatureMatrixBuilder:
             feature_counts["market"] = len(
                 [col for col in market_features.columns if col != "game_id"]
             )
+
+        # QB adjustment features (one value per team per game)
+        qb_df = feature_sources.get("qb_tracking", pd.DataFrame())
+        if len(qb_df) > 0 and "qb_adjustment" in qb_df.columns:
+            # Merge home QB adjustment
+            home_qb = qb_df[["game_id", "team", "qb_adjustment"]].copy()
+            home_qb = home_qb.merge(
+                combined_features[["game_id", "home_team"]].drop_duplicates(),
+                left_on=["game_id", "team"],
+                right_on=["game_id", "home_team"],
+                how="inner",
+            )
+            home_qb = home_qb[["game_id", "qb_adjustment"]].rename(
+                columns={"qb_adjustment": "home_qb_adjustment"}
+            )
+            combined_features = combined_features.merge(
+                home_qb, on="game_id", how="left"
+            )
+
+            # Merge away QB adjustment
+            away_qb = qb_df[["game_id", "team", "qb_adjustment"]].copy()
+            away_qb = away_qb.merge(
+                combined_features[["game_id", "away_team"]].drop_duplicates(),
+                left_on=["game_id", "team"],
+                right_on=["game_id", "away_team"],
+                how="inner",
+            )
+            away_qb = away_qb[["game_id", "qb_adjustment"]].rename(
+                columns={"qb_adjustment": "away_qb_adjustment"}
+            )
+            combined_features = combined_features.merge(
+                away_qb, on="game_id", how="left"
+            )
+
+            feature_counts["qb_tracking"] = 2  # home + away qb_adjustment
 
         # Add feature timestamp
         combined_features["feature_timestamp"] = datetime.now()
@@ -726,7 +786,9 @@ class FeatureMatrixBuilder:
 
         try:
             # Load all feature sources
-            feature_sources = self.load_all_feature_sources(target_season, target_week)
+            feature_sources = self.load_all_feature_sources(
+                target_season, target_week, as_of_datetime=as_of_datetime
+            )
 
             # -- Stage 1: Per-source time-fence check --
             for source_name, source_df in feature_sources.items():
@@ -749,6 +811,63 @@ class FeatureMatrixBuilder:
             if len(combined_features) == 0:
                 logger.error("No features to process")
                 return {}
+
+            # -- Replace raw EPA with opponent-adjusted EPA --
+            team_form_df = feature_sources.get("team_form", pd.DataFrame())
+            games_df = feature_sources["games"]
+            if len(team_form_df) > 0:
+                try:
+                    adjusted_df = self.opponent_adj.build_features(
+                        games_df,
+                        as_of_datetime,
+                        target_season=target_season,
+                        target_week=target_week,
+                        team_game_stats=team_form_df,
+                    )
+
+                    if len(adjusted_df) > 0:
+                        # Merge opponent-adjusted features using same _get_team_features pattern
+                        for prefix, team_col in [("home", "home_team"), ("away", "away_team")]:
+                            adj_team = self._get_team_features(
+                                adjusted_df, combined_features, team_col, prefix
+                            )
+                            # Only keep the rolling_opp_adj_* columns (not duplicate other rolling cols)
+                            opp_adj_cols = [
+                                c for c in adj_team.columns
+                                if "opp_adj" in c
+                            ]
+                            if opp_adj_cols:
+                                adj_team = adj_team[["game_id", *opp_adj_cols]]
+                                combined_features = combined_features.merge(
+                                    adj_team, on="game_id", how="left"
+                                )
+
+                        # Drop old raw EPA columns that are now replaced by opp_adj versions
+                        raw_epa_suffixes = [
+                            "rolling_epa_per_play",
+                            "rolling_pass_epa",
+                            "rolling_rush_epa",
+                        ]
+                        cols_to_drop = []
+                        for pfx in ["home", "away"]:
+                            for side in ["off", "def"]:
+                                for suffix in raw_epa_suffixes:
+                                    col_name = f"{pfx}_{side}_{suffix}"
+                                    if col_name in combined_features.columns:
+                                        cols_to_drop.append(col_name)
+
+                        if cols_to_drop:
+                            combined_features = combined_features.drop(columns=cols_to_drop)
+                            logger.info(
+                                "Replaced raw EPA with opponent-adjusted EPA",
+                                dropped_columns=cols_to_drop,
+                                n_dropped=len(cols_to_drop),
+                            )
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.warning(
+                        "Failed to apply opponent adjustment, keeping raw EPA",
+                        error=str(e),
+                    )
 
             # -- Stage 2: Combined matrix validation --
             try:

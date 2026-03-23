@@ -98,6 +98,9 @@ class LeakageGate:
     OPTIONAL_FEATURE_GROUPS = {
         "weather": "weather_",
         "market": "snapshot_",
+        "qb": "qb_",
+        "contextual_new": "season_progress",
+        "divisional": "is_divisional",
     }
 
     def __init__(self) -> None:

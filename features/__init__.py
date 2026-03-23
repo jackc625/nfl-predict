@@ -16,6 +16,8 @@ comprehensive validation and testing capabilities.
 from .contextual import ContextualFeaturesCalculator
 from .elo_features import EloFeatureBuilder
 from .market_anchors import MarketAnchorFeaturesCalculator
+from .opponent_adj import OpponentAdjuster
+from .qb_tracking import QBTracker
 from .team_form import TeamFormCalculator
 from .validation import FeatureValidator
 from .weather import WeatherFeaturesCalculator
@@ -25,6 +27,8 @@ __all__ = [
     "EloFeatureBuilder",
     "FeatureValidator",
     "MarketAnchorFeaturesCalculator",
+    "OpponentAdjuster",
+    "QBTracker",
     "TeamFormCalculator",
     "WeatherFeaturesCalculator",
 ]
