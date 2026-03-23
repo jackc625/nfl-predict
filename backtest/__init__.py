@@ -4,6 +4,7 @@ New Phase 6 modules:
 - engine: BacktestEngine orchestrating per-season walk-forward retraining
 - era: Era normalization (16-vs-17 game) and COVID annotation utilities
 - metrics: Brier decomposition, per-target metrics, season summary
+- simulation: Betting simulation with slippage, flat-stake, and Kelly strategies
 
 Legacy modules (pre-Phase 4, imported lazily):
 - clv_tracking: BetRecord, CLVSummary dataclasses
@@ -36,12 +37,26 @@ from .metrics import (
     compute_target_metrics,
 )
 
+# Betting simulation (Phase 6 Plan 02)
+from .simulation import (
+    BetRecord,
+    BettingSimulator,
+    SimulationConfig,
+    SimulationResults,
+    StrategyResult,
+)
+
 __all__ = [
     "ERA_TRANSITION_SEASON",
     "BacktestConfig",
     "BacktestEngine",
     "BacktestResults",
+    "BetRecord",
+    "BettingSimulator",
     "SeasonResult",
+    "SimulationConfig",
+    "SimulationResults",
+    "StrategyResult",
     "TargetResult",
     "brier_decomposition",
     "compute_season_summary",
