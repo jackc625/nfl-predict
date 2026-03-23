@@ -135,6 +135,12 @@ class LeakageGate:
             col_values = pd.to_datetime(features_df[col], errors="coerce")
             as_of_ts = pd.Timestamp(as_of_datetime)
 
+            # Align timezone awareness: if column is tz-aware, make cutoff tz-aware too
+            if col_values.dt.tz is not None and as_of_ts.tz is None:
+                as_of_ts = as_of_ts.tz_localize(col_values.dt.tz)
+            elif col_values.dt.tz is None and as_of_ts.tz is not None:
+                as_of_ts = as_of_ts.tz_localize(None)
+
             # For snapshot_ts: use <= (snapshot at the cutoff is allowed)
             if col == "snapshot_ts":
                 future_mask = col_values > as_of_ts

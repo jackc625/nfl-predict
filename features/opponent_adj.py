@@ -210,10 +210,9 @@ class OpponentAdjuster:
                 + off_adjustment[has_enough]
             )
             # Where not enough games or NaN, keep raw value
-            off_adjusted[~has_enough | off_adjustment.isna()] = (
-                off_merged.loc[~has_enough | off_adjustment.isna(), metric]
-                .astype(float)
-            )
+            off_adjusted[~has_enough | off_adjustment.isna()] = off_merged.loc[
+                ~has_enough | off_adjustment.isna(), metric
+            ].astype(float)
 
             result.loc[off_mask, adj_col] = off_adjusted.values
 
@@ -239,10 +238,9 @@ class OpponentAdjuster:
                 def_merged.loc[has_enough_def, metric].astype(float)
                 + def_adjustment[has_enough_def]
             )
-            def_adjusted[~has_enough_def | def_adjustment.isna()] = (
-                def_merged.loc[~has_enough_def | def_adjustment.isna(), metric]
-                .astype(float)
-            )
+            def_adjusted[~has_enough_def | def_adjustment.isna()] = def_merged.loc[
+                ~has_enough_def | def_adjustment.isna(), metric
+            ].astype(float)
 
             result.loc[def_mask, adj_col] = def_adjusted.values
 
@@ -379,34 +377,30 @@ class OpponentAdjuster:
 
         # Apply as_of_datetime filter if kickoff column exists
         if "kickoff_et" in stats.columns:
-            stats = stats[stats["kickoff_et"] < as_of_datetime]
+            kickoff_col = pd.to_datetime(stats["kickoff_et"])
+            cutoff = pd.Timestamp(as_of_datetime)
+            if kickoff_col.dt.tz is not None and cutoff.tz is None:
+                cutoff = cutoff.tz_localize(kickoff_col.dt.tz)
+            stats = stats[kickoff_col < cutoff]
 
         # Filter to only relevant seasons (target + prior)
         if target_season is not None:
-            stats = stats[
-                stats["season"].isin([target_season - 1, target_season])
-            ]
+            stats = stats[stats["season"].isin([target_season - 1, target_season])]
 
         # Apply per-game opponent adjustment
         adjusted = self._adjust_per_game_epa(stats)
 
         # Compute rolling averages of adjusted metrics
         if target_season is not None and target_week is not None:
-            return self._compute_rolling_adjusted(
-                adjusted, target_season, target_week
-            )
+            return self._compute_rolling_adjusted(adjusted, target_season, target_week)
 
         # Fall back: compute for all weeks in all present seasons
         all_seasons = sorted(adjusted["season"].unique())
         all_rolling = []
         for season in all_seasons:
-            max_week = int(
-                adjusted[adjusted["season"] == season]["week"].max()
-            )
+            max_week = int(adjusted[adjusted["season"] == season]["week"].max())
             for week in range(2, max_week + 2):
-                rolling_df = self._compute_rolling_adjusted(
-                    adjusted, season, week
-                )
+                rolling_df = self._compute_rolling_adjusted(adjusted, season, week)
                 if len(rolling_df) > 0:
                     all_rolling.append(rolling_df)
 
@@ -462,9 +456,9 @@ class OpponentAdjuster:
             Stats DataFrame with 'opponent' column added.
         """
         # Build game -> (home, away) lookup
-        game_teams = games_df.set_index("game_id")[
-            ["home_team", "away_team"]
-        ].to_dict("index")
+        game_teams = games_df.set_index("game_id")[["home_team", "away_team"]].to_dict(
+            "index"
+        )
 
         def _get_opponent(row: pd.Series) -> str:
             game_info = game_teams.get(row["game_id"])

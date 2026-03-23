@@ -133,9 +133,7 @@ class ContextualFeaturesCalculator:
             return False
         return surface in GRASS_SURFACES
 
-    def _compute_surface_mismatch(
-        self, away_team: str, game_venue_id: str
-    ) -> float:
+    def _compute_surface_mismatch(self, away_team: str, game_venue_id: str) -> float:
         """Compute surface mismatch for the away team.
 
         Mismatch = 1.0 when the away team's home surface category (grass vs
@@ -828,7 +826,11 @@ class ContextualFeaturesCalculator:
                 game_features.update(venue_features)
 
                 # Rest days: use only games with kickoff before as_of_datetime
-                prior_games = games_df[games_df["kickoff_et"] < as_of_datetime]
+                kickoff_series = pd.to_datetime(games_df["kickoff_et"])
+                cutoff_ts = pd.Timestamp(as_of_datetime)
+                if kickoff_series.dt.tz is not None and cutoff_ts.tz is None:
+                    cutoff_ts = cutoff_ts.tz_localize(kickoff_series.dt.tz)
+                prior_games = games_df[kickoff_series < cutoff_ts]
                 home_rest = self.calculate_rest_days(home_team, kickoff_dt, prior_games)
                 away_rest = self.calculate_rest_days(away_team, kickoff_dt, prior_games)
 
@@ -850,9 +852,7 @@ class ContextualFeaturesCalculator:
                 late_season = 1.0 if week >= 14 else 0.0
 
                 # FEAT-18: Surface type mismatch (away team perspective)
-                surface_mismatch = self._compute_surface_mismatch(
-                    away_team, venue_id
-                )
+                surface_mismatch = self._compute_surface_mismatch(away_team, venue_id)
 
                 # FEAT-19: Divisional game indicator
                 is_div = 1.0 if is_divisional_game(home_team, away_team) else 0.0

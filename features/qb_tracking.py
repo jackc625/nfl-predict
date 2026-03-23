@@ -93,8 +93,14 @@ class QBTracker:
         if len(qb1) == 0:
             logger.warning("No QB1 entries found in depth charts")
             return pd.DataFrame(
-                columns=["season", "week", "team", "gsis_id",
-                         "full_name", "starter_changed"]
+                columns=[
+                    "season",
+                    "week",
+                    "team",
+                    "gsis_id",
+                    "full_name",
+                    "starter_changed",
+                ]
             )
 
         # Normalize team abbreviations
@@ -111,9 +117,8 @@ class QBTracker:
         # Detect starter changes: compare gsis_id to previous week for same team
         starters["prev_gsis_id"] = starters.groupby("team")["gsis_id"].shift(1)
         starters["starter_changed"] = (
-            (starters["gsis_id"] != starters["prev_gsis_id"])
-            & starters["prev_gsis_id"].notna()
-        )
+            starters["gsis_id"] != starters["prev_gsis_id"]
+        ) & starters["prev_gsis_id"].notna()
 
         # Clean up -- drop the helper column
         starters = starters.drop(columns=["prev_gsis_id"])
@@ -151,9 +156,16 @@ class QBTracker:
         """
         if len(pbp_df) == 0:
             return pd.DataFrame(
-                columns=["game_id", "season", "week", "posteam",
-                         "passer_player_id", "pass_attempts",
-                         "mean_qb_epa", "mean_cpoe"]
+                columns=[
+                    "game_id",
+                    "season",
+                    "week",
+                    "posteam",
+                    "passer_player_id",
+                    "pass_attempts",
+                    "mean_qb_epa",
+                    "mean_cpoe",
+                ]
             )
 
         # Filter to plays with a passer
@@ -161,9 +173,16 @@ class QBTracker:
 
         if len(pass_plays) == 0:
             return pd.DataFrame(
-                columns=["game_id", "season", "week", "posteam",
-                         "passer_player_id", "pass_attempts",
-                         "mean_qb_epa", "mean_cpoe"]
+                columns=[
+                    "game_id",
+                    "season",
+                    "week",
+                    "posteam",
+                    "passer_player_id",
+                    "pass_attempts",
+                    "mean_qb_epa",
+                    "mean_cpoe",
+                ]
             )
 
         # Compute per-game stats for each passer
@@ -174,7 +193,10 @@ class QBTracker:
         qb_game_stats = grouped.agg(
             pass_attempts=("qb_epa", "count"),
             mean_qb_epa=("qb_epa", "mean"),
-            mean_cpoe=("cpoe", "mean"),  # NaN cpoe values are automatically excluded by mean
+            mean_cpoe=(
+                "cpoe",
+                "mean",
+            ),  # NaN cpoe values are automatically excluded by mean
         ).reset_index()
 
         # Identify primary passer per game-team (most pass attempts)
@@ -221,10 +243,7 @@ class QBTracker:
         # Filter to games before the target
         historical = qb_games[
             (qb_games["season"] < target_season)
-            | (
-                (qb_games["season"] == target_season)
-                & (qb_games["week"] < target_week)
-            )
+            | ((qb_games["season"] == target_season) & (qb_games["week"] < target_week))
         ]
 
         current_season_games = historical[historical["season"] == target_season]
@@ -262,8 +281,14 @@ class QBTracker:
 
         if len(qb_stats) == 0:
             return pd.DataFrame(
-                columns=["passer_player_id", "rolling_qb_epa", "rolling_cpoe",
-                         "norm_rolling_qb_epa", "norm_rolling_cpoe", "qb_quality"]
+                columns=[
+                    "passer_player_id",
+                    "rolling_qb_epa",
+                    "rolling_cpoe",
+                    "norm_rolling_qb_epa",
+                    "norm_rolling_cpoe",
+                    "qb_quality",
+                ]
             )
 
         results = []
@@ -306,28 +331,32 @@ class QBTracker:
             else:
                 rolling_cpoe = 0.0
 
-            results.append({
-                "passer_player_id": passer_id,
-                "rolling_qb_epa": rolling_epa,
-                "rolling_cpoe": rolling_cpoe,
-                "games_used": len(window_games),
-            })
+            results.append(
+                {
+                    "passer_player_id": passer_id,
+                    "rolling_qb_epa": rolling_epa,
+                    "rolling_cpoe": rolling_cpoe,
+                    "games_used": len(window_games),
+                }
+            )
 
         if not results:
             return pd.DataFrame(
-                columns=["passer_player_id", "rolling_qb_epa", "rolling_cpoe",
-                         "norm_rolling_qb_epa", "norm_rolling_cpoe", "qb_quality"]
+                columns=[
+                    "passer_player_id",
+                    "rolling_qb_epa",
+                    "rolling_cpoe",
+                    "norm_rolling_qb_epa",
+                    "norm_rolling_cpoe",
+                    "qb_quality",
+                ]
             )
 
         rolling_df = pd.DataFrame(results)
 
         # Z-score normalization across all QBs in the window
-        rolling_df["norm_rolling_qb_epa"] = self._zscore(
-            rolling_df["rolling_qb_epa"]
-        )
-        rolling_df["norm_rolling_cpoe"] = self._zscore(
-            rolling_df["rolling_cpoe"]
-        )
+        rolling_df["norm_rolling_qb_epa"] = self._zscore(rolling_df["rolling_qb_epa"])
+        rolling_df["norm_rolling_cpoe"] = self._zscore(rolling_df["rolling_cpoe"])
 
         # Composite quality
         rolling_df["qb_quality"] = rolling_df.apply(
@@ -422,22 +451,21 @@ class QBTracker:
         # Apply as_of_datetime filter to PBP data
         # Only use PBP data from games before the time-fence
         if "kickoff_et" in games_df.columns:
-            completed_game_ids = set(
-                games_df[games_df["kickoff_et"] < as_of_datetime]["game_id"]
-            )
+            kickoff_col = pd.to_datetime(games_df["kickoff_et"])
+            cutoff = pd.Timestamp(as_of_datetime)
+            if kickoff_col.dt.tz is not None and cutoff.tz is None:
+                cutoff = cutoff.tz_localize(kickoff_col.dt.tz)
+            completed_game_ids = set(games_df[kickoff_col < cutoff]["game_id"])
             if len(pbp) > 0:
                 pbp = pbp[pbp["game_id"].isin(completed_game_ids)]
 
         # Get rolling QB metrics
-        rolling_qb = self.compute_rolling_qb_metrics(
-            pbp, target_season, target_week
-        )
+        rolling_qb = self.compute_rolling_qb_metrics(pbp, target_season, target_week)
 
         # Get starters for the target week
         starters = self.get_starters_from_depth_charts(depth_charts)
         target_starters = starters[
-            (starters["season"] == target_season)
-            & (starters["week"] == target_week)
+            (starters["season"] == target_season) & (starters["week"] == target_week)
         ]
 
         # Also use PBP primary passers as fallback for historical games
@@ -445,8 +473,7 @@ class QBTracker:
 
         # Build feature rows: one per team per game in the target week
         target_games = games_df[
-            (games_df["season"] == target_season)
-            & (games_df["week"] == target_week)
+            (games_df["season"] == target_season) & (games_df["week"] == target_week)
         ]
 
         feature_rows = []
@@ -457,14 +484,20 @@ class QBTracker:
 
             for team in [home_team, away_team]:
                 qb_adj = self._get_qb_adjustment_for_team(
-                    team, target_starters, primary_passers, rolling_qb,
-                    target_season, target_week
+                    team,
+                    target_starters,
+                    primary_passers,
+                    rolling_qb,
+                    target_season,
+                    target_week,
                 )
-                feature_rows.append({
-                    "game_id": game_id,
-                    "team": team,
-                    "qb_adjustment": qb_adj,
-                })
+                feature_rows.append(
+                    {
+                        "game_id": game_id,
+                        "team": team,
+                        "qb_adjustment": qb_adj,
+                    }
+                )
 
         result = pd.DataFrame(feature_rows)
 
@@ -515,11 +548,11 @@ class QBTracker:
 
         # Apply time fence
         if self._games_cache is not None and "kickoff_et" in self._games_cache.columns:
-            completed_game_ids = set(
-                self._games_cache[
-                    self._games_cache["kickoff_et"] < as_of_datetime
-                ]["game_id"]
-            )
+            kickoff_col = pd.to_datetime(self._games_cache["kickoff_et"])
+            cutoff = pd.Timestamp(as_of_datetime)
+            if kickoff_col.dt.tz is not None and cutoff.tz is None:
+                cutoff = cutoff.tz_localize(kickoff_col.dt.tz)
+            completed_game_ids = set(self._games_cache[kickoff_col < cutoff]["game_id"])
             if len(pbp) > 0:
                 pbp = pbp[pbp["game_id"].isin(completed_game_ids)]
 
@@ -655,8 +688,15 @@ class QBTracker:
                 error=str(e),
             )
             return pd.DataFrame(
-                columns=["season", "week", "club_code", "position",
-                         "depth_team", "full_name", "gsis_id"]
+                columns=[
+                    "season",
+                    "week",
+                    "club_code",
+                    "position",
+                    "depth_team",
+                    "full_name",
+                    "gsis_id",
+                ]
             )
 
     def _load_pbp_data(self, season: int) -> pd.DataFrame:
@@ -696,8 +736,16 @@ class QBTracker:
         if all_pbp:
             return pd.concat(all_pbp, ignore_index=True)
         return pd.DataFrame(
-            columns=["game_id", "season", "week", "posteam",
-                     "passer_player_id", "qb_epa", "cpoe", "play_id"]
+            columns=[
+                "game_id",
+                "season",
+                "week",
+                "posteam",
+                "passer_player_id",
+                "qb_epa",
+                "cpoe",
+                "play_id",
+            ]
         )
 
     @staticmethod

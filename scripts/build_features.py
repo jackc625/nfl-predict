@@ -132,32 +132,32 @@ class FeatureMatrixBuilder:
                 logger.warning("Failed to load team form features", error=str(e))
                 feature_sources["team_form"] = pd.DataFrame()
 
-            # Elo features
+            # Elo features (computed on-the-fly via EloFeatureBuilder)
             try:
-                elo_df = load_dataframe("elo_ratings", layer="silver")
-                if target_season and target_week:
-                    elo_df = elo_df[
-                        (elo_df["season"] == target_season)
-                        & (elo_df["week"] == target_week)
-                    ]
+                elo_df = self.elo_calc.build_features(
+                    games_df,
+                    as_of_datetime,
+                    target_season=target_season,
+                    target_week=target_week,
+                )
                 feature_sources["elo"] = elo_df
-                logger.info("Loaded Elo features", records=len(elo_df))
+                logger.info("Built Elo features", records=len(elo_df))
             except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
-                logger.warning("Failed to load Elo features", error=str(e))
+                logger.warning("Failed to build Elo features", error=str(e))
                 feature_sources["elo"] = pd.DataFrame()
 
-            # Contextual features
+            # Contextual features (computed on-the-fly for Phase 5 additions)
             try:
-                contextual_df = load_dataframe("contextual_features", layer="silver")
-                if target_season and target_week:
-                    contextual_df = contextual_df[
-                        (contextual_df["season"] == target_season)
-                        & (contextual_df["week"] == target_week)
-                    ]
+                contextual_df = self.contextual_calc.build_features(
+                    games_df,
+                    as_of_datetime,
+                    target_season=target_season,
+                    target_week=target_week,
+                )
                 feature_sources["contextual"] = contextual_df
-                logger.info("Loaded contextual features", records=len(contextual_df))
+                logger.info("Built contextual features", records=len(contextual_df))
             except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
-                logger.warning("Failed to load contextual features", error=str(e))
+                logger.warning("Failed to build contextual features", error=str(e))
                 feature_sources["contextual"] = pd.DataFrame()
 
             # Weather features
@@ -174,18 +174,18 @@ class FeatureMatrixBuilder:
                 logger.warning("Failed to load weather features", error=str(e))
                 feature_sources["weather"] = pd.DataFrame()
 
-            # Market anchor features
+            # Market anchor features (computed on-the-fly via MarketAnchorFeaturesCalculator)
             try:
-                market_df = load_dataframe("market_anchor_features", layer="silver")
-                if target_season and target_week:
-                    market_df = market_df[
-                        (market_df["season"] == target_season)
-                        & (market_df["week"] == target_week)
-                    ]
+                market_df = self.market_calc.build_features(
+                    games_df,
+                    as_of_datetime,
+                    target_season=target_season,
+                    target_week=target_week,
+                )
                 feature_sources["market"] = market_df
-                logger.info("Loaded market anchor features", records=len(market_df))
+                logger.info("Built market anchor features", records=len(market_df))
             except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
-                logger.warning("Failed to load market anchor features", error=str(e))
+                logger.warning("Failed to build market anchor features", error=str(e))
                 feature_sources["market"] = pd.DataFrame()
 
             # QB tracking features (computed via QBTracker, not loaded from silver)
@@ -262,20 +262,24 @@ class FeatureMatrixBuilder:
                 [col for col in combined_features.columns if "form_" in col]
             )
 
-        # Elo features (also need home/away)
+        # Elo features (game-level, already has home/away columns from EloFeatureBuilder)
         elo_df = feature_sources.get("elo", pd.DataFrame())
         if len(elo_df) > 0:
-            home_elo = self._get_team_elo_features(
-                elo_df, combined_features, "home_team", "home"
-            )
-            away_elo = self._get_team_elo_features(
-                elo_df, combined_features, "away_team", "away"
-            )
+            elo_feature_cols = [
+                "home_elo",
+                "away_elo",
+                "elo_diff",
+                "elo_prob_home",
+                "elo_prob_away",
+                "hfa_used",
+                "home_elo_uncertainty",
+                "away_elo_uncertainty",
+            ]
+            merge_cols = ["game_id"] + [
+                c for c in elo_feature_cols if c in elo_df.columns
+            ]
             combined_features = combined_features.merge(
-                home_elo, on="game_id", how="left"
-            )
-            combined_features = combined_features.merge(
-                away_elo, on="game_id", how="left"
+                elo_df[merge_cols], on="game_id", how="left"
             )
             feature_counts["elo"] = len(
                 [col for col in combined_features.columns if "elo_" in col]
@@ -309,18 +313,24 @@ class FeatureMatrixBuilder:
                 [col for col in weather_features.columns if col != "game_id"]
             )
 
-        # Market anchor features (game-level)
+        # Market anchor features (game-level, compressed 5 features)
         market_df = feature_sources.get("market", pd.DataFrame())
         if len(market_df) > 0:
-            merge_cols = ["game_id"]
-            market_features = market_df.drop(
-                columns=["season", "week"], errors="ignore"
-            )
+            market_feature_cols = [
+                "snapshot_spread",
+                "snapshot_total",
+                "snapshot_ml_prob_home_fair",
+                "spread_movement",
+                "total_movement",
+            ]
+            merge_cols = ["game_id"] + [
+                c for c in market_feature_cols if c in market_df.columns
+            ]
             combined_features = combined_features.merge(
-                market_features, on=merge_cols, how="left"
+                market_df[merge_cols], on="game_id", how="left"
             )
             feature_counts["market"] = len(
-                [col for col in market_features.columns if col != "game_id"]
+                [c for c in market_feature_cols if c in market_df.columns]
             )
 
         # QB adjustment features (one value per team per game)
@@ -827,14 +837,16 @@ class FeatureMatrixBuilder:
 
                     if len(adjusted_df) > 0:
                         # Merge opponent-adjusted features using same _get_team_features pattern
-                        for prefix, team_col in [("home", "home_team"), ("away", "away_team")]:
+                        for prefix, team_col in [
+                            ("home", "home_team"),
+                            ("away", "away_team"),
+                        ]:
                             adj_team = self._get_team_features(
                                 adjusted_df, combined_features, team_col, prefix
                             )
                             # Only keep the rolling_opp_adj_* columns (not duplicate other rolling cols)
                             opp_adj_cols = [
-                                c for c in adj_team.columns
-                                if "opp_adj" in c
+                                c for c in adj_team.columns if "opp_adj" in c
                             ]
                             if opp_adj_cols:
                                 adj_team = adj_team[["game_id", *opp_adj_cols]]
@@ -857,7 +869,9 @@ class FeatureMatrixBuilder:
                                         cols_to_drop.append(col_name)
 
                         if cols_to_drop:
-                            combined_features = combined_features.drop(columns=cols_to_drop)
+                            combined_features = combined_features.drop(
+                                columns=cols_to_drop
+                            )
                             logger.info(
                                 "Replaced raw EPA with opponent-adjusted EPA",
                                 dropped_columns=cols_to_drop,

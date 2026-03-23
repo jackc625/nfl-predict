@@ -34,7 +34,7 @@ class TeamFormBuilder:
     def __init__(self, rolling_weeks: int = 4):
         """Initialize team form builder."""
         self.settings = get_settings()
-        self.calculator = TeamFormCalculator(rolling_weeks=rolling_weeks)
+        self.calculator = TeamFormCalculator(max_prior_games=rolling_weeks)
 
     def build_for_seasons(self, seasons: list[int]) -> pd.DataFrame:
         """
