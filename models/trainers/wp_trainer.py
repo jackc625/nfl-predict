@@ -307,6 +307,7 @@ class WPTrainer(BaseTrainer):
                     {
                         "game_id": split.test_data.index,
                         "model_prob": calibrated_predictions,
+                        "actual": y_test.values,
                         "season": split.test_season,
                     }
                 )

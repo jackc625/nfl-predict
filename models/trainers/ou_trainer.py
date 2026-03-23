@@ -242,6 +242,8 @@ class OUTrainer(BaseTrainer):
                     {
                         "game_id": split.test_data.index,
                         "model_prob": predictions,
+                        "model_total": predictions,
+                        "actual": y_test.values,
                         "season": split.test_season,
                     }
                 )

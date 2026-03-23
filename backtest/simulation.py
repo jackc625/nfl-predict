@@ -313,9 +313,7 @@ class BettingSimulator:
 
     # -- Outcome resolution ---------------------------------------------------
 
-    def _resolve_wp_outcome(
-        self, bet_side: str, actual_home_win: int
-    ) -> bool | None:
+    def _resolve_wp_outcome(self, bet_side: str, actual_home_win: int) -> bool | None:
         """Resolve WP moneyline bet outcome."""
         if bet_side == "home":
             return actual_home_win == 1
@@ -360,9 +358,7 @@ class BettingSimulator:
 
     # -- Odds helpers ---------------------------------------------------------
 
-    def _get_wp_odds(
-        self, bet_side: str, ml_home: float, ml_away: float
-    ) -> int:
+    def _get_wp_odds(self, bet_side: str, ml_home: float, ml_away: float) -> int:
         """Get American odds for a WP moneyline bet."""
         if bet_side == "home":
             return int(ml_home)
@@ -421,13 +417,23 @@ class BettingSimulator:
             if preds_df.empty:
                 continue
 
-            # Merge predictions with closing odds
-            merged = preds_df.merge(closing_odds_df, on="game_id", how="inner")
+            # Merge predictions with closing odds (skip if already merged via CLV)
+            odds_cols = {"ml_home", "ml_away", "spread", "total"}
+            if odds_cols.issubset(preds_df.columns):
+                merged = preds_df[preds_df["has_closing_odds"]].copy()
+            else:
+                merged = preds_df.merge(closing_odds_df, on="game_id", how="inner")
             if merged.empty:
                 self.logger.warning(
                     "No matching closing odds for target", target=target
                 )
                 continue
+
+            # Extract week from game_id (format: YYYY_WXX_AWAY@HOME)
+            if "week" not in merged.columns:
+                merged["week"] = (
+                    merged["game_id"].str.extract(r"_W(\d+)_")[0].astype(int)
+                )
 
             # Sort chronologically
             merged = merged.sort_values(["season", "week"]).reset_index(drop=True)
@@ -457,7 +463,9 @@ class BettingSimulator:
 
                     # Market implied probability for the side we're betting
                     market_prob = moneyline_to_probability(odds)
-                    model_value = model_prob if bet_side == "home" else (1.0 - model_prob)
+                    model_value = (
+                        model_prob if bet_side == "home" else (1.0 - model_prob)
+                    )
                     market_value = market_prob
                     edge = model_value - market_value
 
@@ -470,7 +478,9 @@ class BettingSimulator:
                         continue
                     model_spread = float(row["model_spread"])
                     closing_spread = float(row["spread"])
-                    bet_side = self._determine_bet_side_ats(model_spread, closing_spread)
+                    bet_side = self._determine_bet_side_ats(
+                        model_spread, closing_spread
+                    )
                     if bet_side is None:
                         continue
 
@@ -484,7 +494,9 @@ class BettingSimulator:
                     odds = config.standard_vig_odds
 
                     actual_margin = float(row["actual"])
-                    outcome = self._resolve_ats_outcome(bet_side, actual_margin, slipped_line)
+                    outcome = self._resolve_ats_outcome(
+                        bet_side, actual_margin, slipped_line
+                    )
 
                 elif target == "ou":
                     if "model_total" not in row.index:
@@ -505,7 +517,9 @@ class BettingSimulator:
                     odds = config.standard_vig_odds
 
                     actual_total = float(row["actual"])
-                    outcome = self._resolve_ou_outcome(bet_side, actual_total, slipped_line)
+                    outcome = self._resolve_ou_outcome(
+                        bet_side, actual_total, slipped_line
+                    )
 
                 else:
                     continue
@@ -559,23 +573,25 @@ class BettingSimulator:
                 kelly_equity.append(kelly_calc.bankroll_state.current_balance)
                 bet_game_ids.append(game_id)
 
-                all_bet_records.append(BetRecord(
-                    game_id=game_id,
-                    season=season,
-                    week=week,
-                    target=target,
-                    bet_side=bet_side,
-                    model_value=model_value,
-                    market_value=market_value,
-                    edge=edge,
-                    slipped_line=slipped_line,
-                    odds=odds,
-                    flat_stake=flat_bet,
-                    kelly_stake=kelly_bet,
-                    outcome=outcome,
-                    payout_flat=payout_flat,
-                    payout_kelly=payout_kelly,
-                ))
+                all_bet_records.append(
+                    BetRecord(
+                        game_id=game_id,
+                        season=season,
+                        week=week,
+                        target=target,
+                        bet_side=bet_side,
+                        model_value=model_value,
+                        market_value=market_value,
+                        edge=edge,
+                        slipped_line=slipped_line,
+                        odds=odds,
+                        flat_stake=flat_bet,
+                        kelly_stake=kelly_bet,
+                        outcome=outcome,
+                        payout_flat=payout_flat,
+                        payout_kelly=payout_kelly,
+                    )
+                )
 
         # -- Build StrategyResult for flat-stake --
         flat_total_bets = flat_wins + flat_losses + flat_pushes
