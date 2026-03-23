@@ -3,7 +3,7 @@
 # This Makefile provides standardized commands for running the NFL prediction system
 # in accordance with the PRD acceptance criteria.
 
-.PHONY: help snapshot backtest predict serve test clean install setup lint build-css train train-wp train-ats train-ou
+.PHONY: help snapshot backtest backtest-quick predict serve test clean install setup lint build-css train train-wp train-ats train-ou
 
 # Default target
 .DEFAULT_GOAL := help
@@ -72,29 +72,23 @@ snapshot: ## Produce silver/gold tables for current week (PRD Acceptance Criteri
 	@echo "Output location: data/silver/ and data/gold/"
 	@echo ""
 
-backtest: ## Run walk-forward validation 2018-2024 with metrics report (PRD Acceptance Criteria #2)
-	@echo "$(GREEN)🔄 Running walk-forward backtest validation (2018-2024)...$(NC)"
+backtest: ## Run walk-forward backtest across 2021-2024 with interactive HTML report
+	@echo "$(GREEN)Running walk-forward backtest (2021-2024)...$(NC)"
 	@echo "This may take 30-60 minutes depending on system performance."
 	@echo ""
-
-	@echo "$(YELLOW)Step 1: Preparing historical data...$(NC)"
-	$(PYTHON) scripts/validate_historical_data.py --seasons 2018-2024
-
-	@echo "$(YELLOW)Step 2: Running walk-forward validation...$(NC)"
-	$(PYTHON) -c "from backtest.walkforward import WalkForwardBacktester; from backtest.metrics import BacktestMetricsCalculator; bt = WalkForwardBacktester(); results = bt.run_backtest(start_season=2018, end_season=2024); print('Backtest completed successfully')"
-
-	@echo "$(YELLOW)Step 3: Generating metrics report...$(NC)"
-	$(PYTHON) -c "from backtest.reporting import BacktestReporter; reporter = BacktestReporter(); reporter.generate_full_report(start_season=2018, end_season=2024, output_dir='outputs/backtest')"
-
-	@echo "$(YELLOW)Step 4: Validating backtest reproducibility...$(NC)"
-	$(PYTHON) scripts/validate_backtest_reproducibility.py --seasons 2018-2024
-
-	@echo "$(GREEN)✅ Backtest complete! Reports available in outputs/backtest/$(NC)"
+	$(PYTHON) -m backtest.run
+	@echo ""
+	@echo "$(GREEN)Backtest complete! Reports available in outputs/backtest/$(NC)"
 	@echo "Key files:"
-	@echo "  - outputs/backtest/backtest_report.html (Main report)"
+	@echo "  - outputs/backtest/backtest_report.html (Interactive HTML report)"
+	@echo "  - outputs/backtest/predictions_all.csv (All predictions)"
 	@echo "  - outputs/backtest/metrics_summary.json (Summary metrics)"
 	@echo "  - outputs/backtest/betting_simulation.csv (Betting results)"
+	@echo "  - outputs/backtest/season_metrics.csv (Per-season metrics)"
 	@echo ""
+
+backtest-quick: ## Run backtest for a single season (default: 2024)
+	$(PYTHON) -m backtest.run --seasons $(SEASON)
 
 predict: ## Generate prediction artifacts (Parquet + JSON) (PRD Acceptance Criteria #3)
 	@echo "$(GREEN)🎯 Generating prediction artifacts for current week...$(NC)"
