@@ -435,11 +435,36 @@ class QBTracker:
         )
 
         if target_season is None or target_week is None:
-            # Infer from games_df
+            # Build for ALL season/week combos in games_df
             if len(games_df) == 0:
                 return pd.DataFrame(columns=["game_id", "team", "qb_adjustment"])
-            target_season = int(games_df["season"].max())
-            target_week = int(games_df["week"].max())
+            self._games_cache = games_df
+            all_results = []
+            season_weeks = (
+                games_df[["season", "week"]]
+                .drop_duplicates()
+                .sort_values(["season", "week"])
+            )
+            for _, row in season_weeks.iterrows():
+                try:
+                    chunk = self.build_features(
+                        games_df,
+                        as_of_datetime,
+                        target_season=int(row["season"]),
+                        target_week=int(row["week"]),
+                    )
+                    if len(chunk) > 0:
+                        all_results.append(chunk)
+                except (ValueError, KeyError, TypeError) as e:
+                    logger.debug(
+                        "Skipping QB features for season/week",
+                        season=int(row["season"]),
+                        week=int(row["week"]),
+                        error=str(e),
+                    )
+            if all_results:
+                return pd.concat(all_results, ignore_index=True)
+            return pd.DataFrame(columns=["game_id", "team", "qb_adjustment"])
 
         # Store games for get_features_for_game lookups
         self._games_cache = games_df
@@ -679,6 +704,29 @@ class QBTracker:
             import nflreadpy as nfl
 
             dc = nfl.load_depth_charts(season).to_pandas()
+
+            # nflreadpy changed depth chart schema in 2025+:
+            #   Old (<=2024): club_code, position, depth_team, full_name, week, gsis_id
+            #   New (>=2025): team, pos_abb, pos_rank, player_name, dt, gsis_id
+            # Normalize to old schema for consistency.
+            if "pos_abb" in dc.columns and "position" not in dc.columns:
+                rename_map = {
+                    "team": "club_code",
+                    "pos_abb": "position",
+                    "pos_rank": "depth_team",
+                    "player_name": "full_name",
+                }
+                dc = dc.rename(columns=rename_map)
+                # depth_team needs to be string "1" for QB1
+                dc["depth_team"] = dc["depth_team"].astype(str)
+                # Add season column if missing
+                if "season" not in dc.columns:
+                    dc["season"] = season
+                # Add week column from dt if missing
+                if "week" not in dc.columns and "dt" in dc.columns:
+                    # dt column may encode week; default to 0 if not parseable
+                    dc["week"] = 0
+
             self._depth_chart_cache[season] = dc
             return dc
         except (ImportError, ValueError, RuntimeError) as e:

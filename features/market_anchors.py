@@ -925,7 +925,13 @@ class MarketAnchorFeaturesCalculator:
 
             # Time-fence: only use odds before as_of_datetime
             if "snapshot_ts" in odds_df.columns:
-                odds_df = odds_df[odds_df["snapshot_ts"] <= as_of_datetime]
+                snapshot_col = pd.to_datetime(odds_df["snapshot_ts"], errors="coerce")
+                cutoff = pd.Timestamp(as_of_datetime)
+                if snapshot_col.dt.tz is not None and cutoff.tz is None:
+                    cutoff = cutoff.tz_localize(snapshot_col.dt.tz)
+                elif snapshot_col.dt.tz is None and cutoff.tz is not None:
+                    cutoff = cutoff.tz_localize(None)
+                odds_df = odds_df[snapshot_col <= cutoff]
 
             # Filter to target if specified
             if target_season and target_week:

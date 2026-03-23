@@ -823,16 +823,28 @@ class FeatureMatrixBuilder:
                 return {}
 
             # -- Replace raw EPA with opponent-adjusted EPA --
-            team_form_df = feature_sources.get("team_form", pd.DataFrame())
+            # OpponentAdjuster needs per-game stats (with game_id, raw EPA),
+            # not the rolling averages from the silver table.
             games_df = feature_sources["games"]
-            if len(team_form_df) > 0:
+            try:
+                per_game_stats = self.team_form_calc.get_per_game_stats(
+                    as_of_datetime,
+                    target_season=target_season,
+                )
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                logger.warning(
+                    "Failed to get per-game stats for opponent adjustment",
+                    error=str(e),
+                )
+                per_game_stats = pd.DataFrame()
+            if len(per_game_stats) > 0:
                 try:
                     adjusted_df = self.opponent_adj.build_features(
                         games_df,
                         as_of_datetime,
                         target_season=target_season,
                         target_week=target_week,
-                        team_game_stats=team_form_df,
+                        team_game_stats=per_game_stats,
                     )
 
                     if len(adjusted_df) > 0:

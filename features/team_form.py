@@ -254,7 +254,10 @@ class TeamFormCalculator:
             avg_drive_start_yardline = np.nan
             if "fixed_drive" in group.columns:
                 drive_first_plays = group.groupby("fixed_drive").first()
-                if len(drive_first_plays) > 0 and "yardline_100" in drive_first_plays.columns:
+                if (
+                    len(drive_first_plays) > 0
+                    and "yardline_100" in drive_first_plays.columns
+                ):
                     avg_drive_start_yardline = drive_first_plays["yardline_100"].mean()
 
             # FEAT-21: Neutral-situation pace -- count of neutral-situation plays
@@ -681,6 +684,34 @@ class TeamFormCalculator:
         if all_rolling_stats:
             return pd.concat(all_rolling_stats, ignore_index=True)
         return pd.DataFrame()
+
+    def get_per_game_stats(
+        self,
+        as_of_datetime: datetime,
+        *,
+        target_season: int | None = None,
+    ) -> pd.DataFrame:
+        """Get per-game team stats (not rolling) for opponent adjustment.
+
+        Loads PBP data and computes per-game stats with game_id, team,
+        season, week, side, and raw EPA metrics. Used by OpponentAdjuster
+        as input for opponent strength adjustment.
+
+        Args:
+            as_of_datetime: Time-fence cutoff.
+            target_season: If set, loads this season and prior.
+
+        Returns:
+            DataFrame with per-game team stats.
+        """
+        if target_season is not None:
+            seasons = [target_season - 1, target_season]
+        else:
+            seasons = list(range(2018, 2025))
+
+        pbp_df = self.fetch_pbp_data(seasons)
+        team_stats_df = self.calculate_team_game_stats(pbp_df)
+        return team_stats_df
 
     def get_features_for_game(
         self,
