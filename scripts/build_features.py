@@ -716,18 +716,23 @@ class FeatureMatrixBuilder:
         target_df["target_wp"] = (
             target_df["home_score"] > target_df["away_score"]
         ).astype(int)
+        # Trainer-expected column: strict binary (ties = 0, same as trainer derivation)
+        target_df["home_win"] = target_df["target_wp"].copy()
 
         # Handle ties (rare in NFL)
         ties = target_df["home_score"] == target_df["away_score"]
         if ties.sum() > 0:
             logger.info("Found tied games", count=ties.sum())
-            # For WP, treat ties as 0.5 (convert to regression target)
+            # For WP regression target, ties as 0.5
             target_df.loc[ties, "target_wp"] = 0.5
+            # For classifier target, ties stay 0 (not a home win)
 
         # Point differential (for ATS calculation if spreads available)
         target_df["point_differential"] = (
             target_df["home_score"] - target_df["away_score"]
         )
+        # Trainer-expected column (alias for ATS regression target)
+        target_df["home_margin"] = target_df["point_differential"].copy()
 
         # Total points (for O/U calculation if totals available)
         target_df["total_points"] = target_df["home_score"] + target_df["away_score"]
@@ -964,6 +969,8 @@ class FeatureMatrixBuilder:
                 "target_wp",
                 "target_ats",
                 "target_ou",
+                "home_win",
+                "home_margin",
                 "point_differential",
                 "total_points",
                 "home_covered_spread",
@@ -974,48 +981,46 @@ class FeatureMatrixBuilder:
                 col for col in final_features.columns if col not in exclude_cols
             ]
 
+            # Metadata columns to carry through for target derivation
+            meta_cols = ["game_id", "season", "week", "feature_timestamp"]
+            score_cols = [
+                c for c in ["home_score", "away_score"] if c in final_features.columns
+            ]
+
             # Win Probability matrix
+            wp_target_cols = [
+                c for c in ["target_wp", "home_win"] if c in final_features.columns
+            ]
             wp_matrix = final_features[
-                [
-                    "game_id",
-                    "season",
-                    "week",
-                    "feature_timestamp",
-                    "target_wp",
-                    *feature_cols,
-                ]
+                [*meta_cols, *score_cols, *wp_target_cols, *feature_cols]
             ].copy()
             feature_matrices["wp"] = wp_matrix
 
             # ATS matrix (only include games with spread data)
             if "target_ats" in final_features.columns:
+                ats_target_cols = [
+                    c
+                    for c in ["target_ats", "home_margin", "point_differential"]
+                    if c in final_features.columns
+                ]
                 ats_games = final_features["target_ats"].notna()
                 ats_matrix = final_features.loc[
                     ats_games,
-                    [
-                        "game_id",
-                        "season",
-                        "week",
-                        "feature_timestamp",
-                        "target_ats",
-                        *feature_cols,
-                    ],
+                    [*meta_cols, *score_cols, *ats_target_cols, *feature_cols],
                 ].copy()
                 feature_matrices["ats"] = ats_matrix
 
             # O/U matrix (only include games with total data)
             if "target_ou" in final_features.columns:
+                ou_target_cols = [
+                    c
+                    for c in ["target_ou", "total_points"]
+                    if c in final_features.columns
+                ]
                 ou_games = final_features["target_ou"].notna()
                 ou_matrix = final_features.loc[
                     ou_games,
-                    [
-                        "game_id",
-                        "season",
-                        "week",
-                        "feature_timestamp",
-                        "target_ou",
-                        *feature_cols,
-                    ],
+                    [*meta_cols, *score_cols, *ou_target_cols, *feature_cols],
                 ].copy()
                 feature_matrices["ou"] = ou_matrix
 
@@ -1051,6 +1056,43 @@ class FeatureMatrixBuilder:
             if len(matrix_df) == 0:
                 logger.warning("Empty feature matrix", target=target)
                 continue
+
+            # Coerce non-numeric feature columns (string artifacts from append)
+            non_meta = [
+                c
+                for c in matrix_df.columns
+                if c
+                not in [
+                    "game_id",
+                    "season",
+                    "week",
+                    "home_team",
+                    "away_team",
+                    "feature_timestamp",
+                    "weather_condition",
+                ]
+            ]
+            for col in non_meta:
+                if matrix_df[col].dtype == object:
+                    matrix_df[col] = pd.to_numeric(matrix_df[col], errors="coerce")
+
+            # Drop non-numeric string columns that aren't features
+            if "weather_condition" in matrix_df.columns:
+                matrix_df = matrix_df.drop(columns=["weather_condition"])
+
+            # Drop columns that are 100% NaN (offense-only metrics on defense side)
+            all_nan_cols = [
+                c
+                for c in matrix_df.columns
+                if matrix_df[c].isna().all() and c not in ["game_id"]
+            ]
+            if all_nan_cols:
+                matrix_df = matrix_df.drop(columns=all_nan_cols)
+                logger.info(
+                    "Dropped all-NaN columns",
+                    target=target,
+                    dropped=all_nan_cols,
+                )
 
             # Determine partition columns
             partition_cols = ["season"] if target_season else None

@@ -124,7 +124,25 @@ class TemporalSplitConfig:
 # Walk-Forward Splitter
 # ---------------------------------------------------------------------------
 
-_DEFAULT_ID_COLS = ["game_id", "season", "week", "home_team", "away_team"]
+_DEFAULT_ID_COLS = [
+    "game_id",
+    "season",
+    "week",
+    "home_team",
+    "away_team",
+    "home_score",
+    "away_score",
+    "feature_timestamp",
+    "target_wp",
+    "target_ats",
+    "target_ou",
+    "home_win",
+    "home_margin",
+    "point_differential",
+    "total_points",
+    "home_covered_spread",
+    "game_went_over",
+]
 
 
 class WalkForwardSplitter:
@@ -155,9 +173,10 @@ class WalkForwardSplitter:
         self.logger = get_logger(__name__)
 
     def _feature_cols(self, df: pd.DataFrame) -> list[str]:
-        """Determine feature columns by excluding ID and target columns."""
+        """Determine feature columns by excluding ID, target, and non-numeric columns."""
         exclude = set(self.id_cols) | {self.target_col}
-        return [c for c in df.columns if c not in exclude]
+        numeric_df = df.select_dtypes(include=["number"])
+        return [c for c in numeric_df.columns if c not in exclude]
 
     def generate_splits(self, features_df: pd.DataFrame) -> Iterator[TrainTestSplit]:
         """Generate expanding-window walk-forward splits for holdout seasons.
@@ -173,6 +192,10 @@ class WalkForwardSplitter:
             TrainTestSplit for each holdout season.
         """
         feature_cols = self._feature_cols(features_df)
+
+        # Set game_id as index so splits carry game IDs for CLV merge
+        if "game_id" in features_df.columns:
+            features_df = features_df.set_index("game_id", drop=True)
 
         for holdout_season in self.config.holdout_seasons:
             train_mask = features_df["season"] < holdout_season
@@ -222,6 +245,9 @@ class WalkForwardSplitter:
             TrainTestSplit where train is the training window and test is the
             HP-validation window.
         """
+        if "game_id" in features_df.columns:
+            features_df = features_df.set_index("game_id", drop=True)
+
         feature_cols = self._feature_cols(features_df)
 
         train_mask = features_df["season"].isin(self.config.train_seasons)
