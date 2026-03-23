@@ -474,15 +474,19 @@ class QBTracker:
         pbp = self._load_pbp_data(target_season)
 
         # Apply as_of_datetime filter to PBP data
-        # Only use PBP data from games before the time-fence
+        # Only use PBP data from games before the time-fence.
+        # Uses season/week pairs instead of game_id matching because the
+        # silver-layer games table has a different game_id format than PBP
+        # (e.g. "2024_W01_KC@BUF" vs "2024_01_KC_BUF"). See 05-06-PLAN.md.
         if "kickoff_et" in games_df.columns:
             kickoff_col = pd.to_datetime(games_df["kickoff_et"])
             cutoff = pd.Timestamp(as_of_datetime)
             if kickoff_col.dt.tz is not None and cutoff.tz is None:
                 cutoff = cutoff.tz_localize(kickoff_col.dt.tz)
-            completed_game_ids = set(games_df[kickoff_col < cutoff]["game_id"])
-            if len(pbp) > 0:
-                pbp = pbp[pbp["game_id"].isin(completed_game_ids)]
+            completed_games = games_df[kickoff_col < cutoff]
+            if len(pbp) > 0 and len(completed_games) > 0:
+                completed_sw = completed_games[["season", "week"]].drop_duplicates()
+                pbp = pbp.merge(completed_sw, on=["season", "week"], how="inner")
 
         # Get rolling QB metrics
         rolling_qb = self.compute_rolling_qb_metrics(pbp, target_season, target_week)
@@ -571,15 +575,17 @@ class QBTracker:
         depth_charts = self._load_depth_charts(season)
         pbp = self._load_pbp_data(season)
 
-        # Apply time fence
+        # Apply time fence using season/week pairs (format-agnostic).
+        # See build_features() comment for rationale on season/week vs game_id.
         if self._games_cache is not None and "kickoff_et" in self._games_cache.columns:
             kickoff_col = pd.to_datetime(self._games_cache["kickoff_et"])
             cutoff = pd.Timestamp(as_of_datetime)
             if kickoff_col.dt.tz is not None and cutoff.tz is None:
                 cutoff = cutoff.tz_localize(kickoff_col.dt.tz)
-            completed_game_ids = set(self._games_cache[kickoff_col < cutoff]["game_id"])
-            if len(pbp) > 0:
-                pbp = pbp[pbp["game_id"].isin(completed_game_ids)]
+            completed_games = self._games_cache[kickoff_col < cutoff]
+            if len(pbp) > 0 and len(completed_games) > 0:
+                completed_sw = completed_games[["season", "week"]].drop_duplicates()
+                pbp = pbp.merge(completed_sw, on=["season", "week"], how="inner")
 
         rolling_qb = self.compute_rolling_qb_metrics(pbp, season, week)
         starters = self.get_starters_from_depth_charts(depth_charts)

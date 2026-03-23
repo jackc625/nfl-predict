@@ -393,7 +393,9 @@ class TestEdgeCases:
         )
 
         tracker._depth_chart_cache = {2024: mock_depth_charts}
-        tracker._pbp_cache = {2024: empty_pbp}
+        # Cache both target season and prior season as empty to prevent
+        # nflreadpy from loading real data (test must be isolated)
+        tracker._pbp_cache = {2023: empty_pbp, 2024: empty_pbp}
 
         result = tracker.build_features(
             mock_games_df,
