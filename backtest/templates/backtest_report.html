@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NFL Prediction System - Backtest Report</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <style>
+        /* ----------------------------------------------------------------
+           Base styles
+           ---------------------------------------------------------------- */
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+                         'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            background-color: #f0f2f5;
+            color: #333;
+        }
+
+        /* ----------------------------------------------------------------
+           Layout: sidebar + main content
+           ---------------------------------------------------------------- */
+        .layout {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* Sticky sidebar navigation */
+        .sidebar {
+            width: 240px;
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 24px 16px;
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+
+        .sidebar h2 {
+            font-size: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #aaa;
+            margin: 0 0 16px 0;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #333;
+        }
+
+        .sidebar a {
+            display: block;
+            color: #ccc;
+            text-decoration: none;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            margin-bottom: 2px;
+            transition: background 0.15s, color 0.15s;
+        }
+
+        .sidebar a:hover,
+        .sidebar a:focus {
+            background: rgba(102, 126, 234, 0.2);
+            color: #fff;
+        }
+
+        /* Main content area */
+        .main {
+            flex: 1;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 32px 40px;
+        }
+
+        /* ----------------------------------------------------------------
+           Header
+           ---------------------------------------------------------------- */
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 36px 40px;
+            border-radius: 12px;
+            margin-bottom: 32px;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 2rem;
+        }
+
+        .header p {
+            margin: 8px 0 0;
+            opacity: 0.85;
+            font-size: 0.95rem;
+        }
+
+        /* ----------------------------------------------------------------
+           Sections
+           ---------------------------------------------------------------- */
+        .section {
+            background: #fff;
+            border-radius: 10px;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+            padding: 28px 32px;
+            margin-bottom: 28px;
+        }
+
+        .section h2 {
+            margin: 0 0 20px;
+            font-size: 1.35rem;
+            color: #333;
+            border-left: 4px solid #667eea;
+            padding-left: 14px;
+        }
+
+        .section h3 {
+            margin: 24px 0 12px;
+            font-size: 1.05rem;
+            color: #555;
+        }
+
+        /* ----------------------------------------------------------------
+           Metric cards (executive summary)
+           ---------------------------------------------------------------- */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .metric-card {
+            background: #f8f9fa;
+            padding: 18px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .metric-card.wp  { border-left-color: #667eea; }
+        .metric-card.ats { border-left-color: #f093fb; }
+        .metric-card.ou  { border-left-color: #4fd1c5; }
+        .metric-card.sim { border-left-color: #ffa502; }
+
+        .metric-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: #222;
+        }
+
+        .metric-label {
+            font-size: 0.8rem;
+            color: #777;
+            margin-top: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .positive { color: #28a745; }
+        .negative { color: #dc3545; }
+
+        /* ----------------------------------------------------------------
+           Tables
+           ---------------------------------------------------------------- */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+            font-size: 0.9rem;
+        }
+
+        .data-table th,
+        .data-table td {
+            padding: 10px 14px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+
+        .data-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            font-size: 0.82rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            color: #666;
+        }
+
+        .data-table tr:nth-child(even) {
+            background: #fafafa;
+        }
+
+        .data-table td.num {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* ----------------------------------------------------------------
+           Chart containers
+           ---------------------------------------------------------------- */
+        .chart-wrap {
+            margin: 20px 0;
+            padding: 12px;
+            background: #fafafa;
+            border-radius: 8px;
+        }
+
+        /* ----------------------------------------------------------------
+           Methodology / footnotes
+           ---------------------------------------------------------------- */
+        .note-box {
+            background: #fffde7;
+            border-left: 4px solid #ffc107;
+            padding: 14px 18px;
+            border-radius: 0 6px 6px 0;
+            margin: 16px 0;
+            font-size: 0.88rem;
+            color: #555;
+        }
+
+        .note-box strong {
+            color: #333;
+        }
+
+        /* ----------------------------------------------------------------
+           Footer
+           ---------------------------------------------------------------- */
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #999;
+            font-size: 0.8rem;
+        }
+
+        /* ----------------------------------------------------------------
+           Responsive: collapse sidebar on small screens
+           ---------------------------------------------------------------- */
+        @media (max-width: 900px) {
+            .sidebar {
+                display: none;
+            }
+            .main {
+                padding: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="layout">
+
+    <!-- ============================================================
+         Sticky sidebar navigation
+         ============================================================ -->
+    <nav class="sidebar">
+        <h2>Backtest Report</h2>
+        <a href="#executive-summary">Executive Summary</a>
+        <a href="#calibration">Calibration Analysis</a>
+        <a href="#clv-performance">CLV Performance</a>
+        <a href="#season-breakdown">Season Breakdown</a>
+        <a href="#betting-simulation">Betting Simulation</a>
+        <a href="#methodology">Methodology Notes</a>
+    </nav>
+
+    <!-- ============================================================
+         Main content
+         ============================================================ -->
+    <div class="main">
+
+        <!-- Header -->
+        <div class="header">
+            <h1>Walk-Forward Backtest Report</h1>
+            <p>
+                NFL Prediction System --
+                Holdout seasons {{ metrics.config.holdout_seasons | join(', ') }}
+                -- Generated {{ metrics.generated_at }}
+            </p>
+        </div>
+
+        <!-- ========================================================
+             1. Executive Summary
+             ======================================================== -->
+        <div class="section" id="executive-summary">
+            <h2>Executive Summary</h2>
+
+            <div class="metrics-grid">
+                {% for target, info in metrics.per_target.items() %}
+                <div class="metric-card {{ target }}">
+                    <div class="metric-value {% if info.headline_clv is not none and info.headline_clv > 0 %}positive{% elif info.headline_clv is not none %}negative{% endif %}">
+                        {% if info.headline_clv is not none %}
+                            {{ '%+.4f' | format(info.headline_clv) }}
+                        {% else %}
+                            N/A
+                        {% endif %}
+                    </div>
+                    <div class="metric-label">{{ target | upper }} Headline CLV</div>
+                </div>
+                {% endfor %}
+
+                <div class="metric-card sim">
+                    <div class="metric-value">
+                        {{ metrics.simulation.flat_stake.total_bets }}
+                    </div>
+                    <div class="metric-label">Total Bets Simulated</div>
+                </div>
+            </div>
+
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Target</th>
+                        <th>Predictions</th>
+                        <th>Headline CLV</th>
+                        <th>CLV Available</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for target, info in metrics.per_target.items() %}
+                    <tr>
+                        <td>{{ target | upper }}</td>
+                        <td class="num">{{ info.n_predictions }}</td>
+                        <td class="num {% if info.headline_clv is not none and info.headline_clv > 0 %}positive{% elif info.headline_clv is not none %}negative{% endif %}">
+                            {% if info.headline_clv is not none %}
+                                {{ '%+.4f' | format(info.headline_clv) }}
+                            {% else %}
+                                --
+                            {% endif %}
+                        </td>
+                        <td>{{ 'Yes' if info.has_clv else 'No' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- ========================================================
+             2. Calibration Analysis
+             ======================================================== -->
+        <div class="section" id="calibration">
+            <h2>Calibration Analysis</h2>
+
+            <p>
+                The calibration (reliability) diagram shows how well the WP model's
+                predicted probabilities match observed outcomes. Points near the
+                diagonal indicate well-calibrated probabilities.
+            </p>
+
+            <div class="chart-wrap">
+                {{ charts.calibration | safe }}
+            </div>
+
+            <h3>Brier Score Decomposition</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Season</th>
+                        <th>Accuracy</th>
+                        <th>Brier Score</th>
+                        <th>ECE</th>
+                        <th>Log Loss</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for season_data in metrics.per_season %}
+                    {% if 'wp' in season_data.targets %}
+                    {% set wp = season_data.targets['wp'] %}
+                    <tr>
+                        <td>{{ season_data.season }}</td>
+                        <td class="num">
+                            {% if wp.metrics.accuracy is defined %}
+                                {{ '%.1f%%' | format(wp.metrics.accuracy * 100) }}
+                            {% else %}
+                                --
+                            {% endif %}
+                        </td>
+                        <td class="num">
+                            {% if wp.metrics.brier_score is defined %}
+                                {{ '%.4f' | format(wp.metrics.brier_score) }}
+                            {% else %}
+                                --
+                            {% endif %}
+                        </td>
+                        <td class="num">
+                            {% if wp.metrics.ece is defined %}
+                                {{ '%.4f' | format(wp.metrics.ece) }}
+                            {% else %}
+                                --
+                            {% endif %}
+                        </td>
+                        <td class="num">
+                            {% if wp.metrics.log_loss is defined %}
+                                {{ '%.4f' | format(wp.metrics.log_loss) }}
+                            {% else %}
+                                --
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- ========================================================
+             3. CLV Performance
+             ======================================================== -->
+        <div class="section" id="clv-performance">
+            <h2>CLV Performance</h2>
+
+            <p>
+                Closing Line Value (CLV) measures how our model's predictions
+                compare to the closing market odds. Positive CLV indicates the
+                model finds genuine edges against the market.
+            </p>
+
+            <div class="chart-wrap">
+                {{ charts.clv_cumulative | safe }}
+            </div>
+
+            <h3>CLV Summary by Target</h3>
+            <div class="metrics-grid">
+                {% for target, clv_val in metrics.headline_clv.items() %}
+                <div class="metric-card {{ target }}">
+                    <div class="metric-value {% if clv_val > 0 %}positive{% else %}negative{% endif %}">
+                        {{ '%+.4f' | format(clv_val) }}
+                    </div>
+                    <div class="metric-label">{{ target | upper }} Mean CLV</div>
+                </div>
+                {% endfor %}
+            </div>
+
+            <h3>Odds Coverage</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key, value in metrics.odds_coverage.items() %}
+                    <tr>
+                        <td>{{ key | replace('_', ' ') | title }}</td>
+                        <td class="num">{{ value }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- ========================================================
+             4. Season Breakdown
+             ======================================================== -->
+        <div class="section" id="season-breakdown">
+            <h2>Season Breakdown</h2>
+
+            <div class="chart-wrap">
+                {{ charts.season_heatmap | safe }}
+            </div>
+
+            {% for season_data in metrics.per_season %}
+            <h3>{{ season_data.season }} Season</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Target</th>
+                        <th>Predictions</th>
+                        <th>Features</th>
+                        {% for key in season_data.targets.values() | first | attr('metrics') | default({}) %}
+                        <th>{{ key | replace('_', ' ') | title }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for target, info in season_data.targets.items() %}
+                    <tr>
+                        <td>{{ target | upper }}</td>
+                        <td class="num">{{ info.n_predictions }}</td>
+                        <td class="num">{{ info.feature_count }}</td>
+                        {% for key, val in info.metrics.items() %}
+                        <td class="num">
+                            {% if val is number %}
+                                {{ '%.4f' | format(val) }}
+                            {% else %}
+                                {{ val }}
+                            {% endif %}
+                        </td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endfor %}
+        </div>
+
+        <!-- ========================================================
+             5. Betting Simulation
+             ======================================================== -->
+        <div class="section" id="betting-simulation">
+            <h2>Betting Simulation</h2>
+
+            <p>
+                Two strategies simulated side by side: flat-stake (${{ '%.0f' | format(metrics.simulation.starting_bankroll) }} bankroll,
+                fixed bet size) and fractional Kelly criterion (dynamic sizing based on edge).
+                All ATS/O/U bets include half-point slippage.
+            </p>
+
+            <div class="chart-wrap">
+                {{ charts.equity_curve | safe }}
+            </div>
+
+            <h3>Strategy Comparison</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Flat Stake</th>
+                        <th>Kelly</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Total Bets</td>
+                        <td class="num">{{ metrics.simulation.flat_stake.total_bets }}</td>
+                        <td class="num">{{ metrics.simulation.kelly.total_bets }}</td>
+                    </tr>
+                    <tr>
+                        <td>Win Rate</td>
+                        <td class="num">{{ '%.1f%%' | format(metrics.simulation.flat_stake.win_rate * 100) }}</td>
+                        <td class="num">{{ '%.1f%%' | format(metrics.simulation.kelly.win_rate * 100) }}</td>
+                    </tr>
+                    <tr>
+                        <td>Total Wagered</td>
+                        <td class="num">${{ '%.2f' | format(metrics.simulation.flat_stake.total_wagered) }}</td>
+                        <td class="num">${{ '%.2f' | format(metrics.simulation.kelly.total_wagered) }}</td>
+                    </tr>
+                    <tr>
+                        <td>Net Profit</td>
+                        <td class="num {% if metrics.simulation.flat_stake.net_profit > 0 %}positive{% else %}negative{% endif %}">
+                            ${{ '%+.2f' | format(metrics.simulation.flat_stake.net_profit) }}
+                        </td>
+                        <td class="num {% if metrics.simulation.kelly.net_profit > 0 %}positive{% else %}negative{% endif %}">
+                            ${{ '%+.2f' | format(metrics.simulation.kelly.net_profit) }}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>ROI</td>
+                        <td class="num {% if metrics.simulation.flat_stake.roi > 0 %}positive{% else %}negative{% endif %}">
+                            {{ '%+.2f%%' | format(metrics.simulation.flat_stake.roi * 100) }}
+                        </td>
+                        <td class="num {% if metrics.simulation.kelly.roi > 0 %}positive{% else %}negative{% endif %}">
+                            {{ '%+.2f%%' | format(metrics.simulation.kelly.roi * 100) }}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Final Bankroll</td>
+                        <td class="num">${{ '%.2f' | format(metrics.simulation.flat_stake.final_bankroll) }}</td>
+                        <td class="num">${{ '%.2f' | format(metrics.simulation.kelly.final_bankroll) }}</td>
+                    </tr>
+                    <tr>
+                        <td>Max Drawdown</td>
+                        <td class="num">${{ '%.2f' | format(metrics.simulation.flat_stake.max_drawdown) }} ({{ '%.1f%%' | format(metrics.simulation.flat_stake.max_drawdown_pct * 100) }})</td>
+                        <td class="num">${{ '%.2f' | format(metrics.simulation.kelly.max_drawdown) }} ({{ '%.1f%%' | format(metrics.simulation.kelly.max_drawdown_pct * 100) }})</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            {% if metrics.simulation.by_target %}
+            <h3>Simulation by Target</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Target</th>
+                        <th>Bets</th>
+                        <th>Win Rate</th>
+                        <th>Flat ROI</th>
+                        <th>Kelly ROI</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for target, stats in metrics.simulation.by_target.items() %}
+                    <tr>
+                        <td>{{ target | upper }}</td>
+                        <td class="num">{{ stats.n_bets }}</td>
+                        <td class="num">{{ '%.1f%%' | format(stats.win_rate * 100) }}</td>
+                        <td class="num {% if stats.flat_roi > 0 %}positive{% else %}negative{% endif %}">
+                            {{ '%+.2f%%' | format(stats.flat_roi * 100) }}
+                        </td>
+                        <td class="num {% if stats.kelly_roi > 0 %}positive{% else %}negative{% endif %}">
+                            {{ '%+.2f%%' | format(stats.kelly_roi * 100) }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+        </div>
+
+        <!-- ========================================================
+             6. Methodology Notes
+             ======================================================== -->
+        <div class="section" id="methodology">
+            <h2>Methodology Notes</h2>
+
+            <h3>Walk-Forward Validation</h3>
+            <p>
+                This report uses strict walk-forward temporal validation with no
+                future data leakage. For each holdout season Y, the model is
+                trained on seasons [{{ metrics.config.first_data_season }}..Y-2]
+                with hyperparameter validation on season Y-1. This rolling
+                approach ensures realistic out-of-sample evaluation.
+            </p>
+
+            <h3>Era Normalization</h3>
+            <p>
+                The NFL expanded from 16 to 17 regular-season games starting in
+                2021. Week numbers are normalized to season progress (0-1 scale)
+                so that cross-era comparisons are fair.
+            </p>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Season</th>
+                        <th>Total Weeks</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for season, weeks in metrics.era.items() %}
+                    <tr>
+                        <td>{{ season }}</td>
+                        <td class="num">{{ weeks }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            <h3>COVID-2020 Impact</h3>
+            {% if metrics.covid %}
+            <div class="note-box">
+                <strong>COVID-19 Impact on Home Field Advantage:</strong>
+                {{ metrics.covid.note }}
+                <br><br>
+                <strong>Model Impact:</strong> {{ metrics.covid.impact_on_model }}
+                <br>
+                <strong>2020 Home Win %:</strong> {{ '%.1f%%' | format(metrics.covid.home_win_pct * 100) }}
+                (Normal: {{ '%.1f%%' | format(metrics.covid.normal_home_win_pct * 100) }})
+            </div>
+            {% else %}
+            <p>No COVID-2020 annotation available.</p>
+            {% endif %}
+
+            <h3>Betting Simulation Methodology</h3>
+            <ul>
+                <li>Half-point slippage applied to all ATS and O/U bets (moves against bettor)</li>
+                <li>WP bets use moneyline directly (no slippage)</li>
+                <li>Standard -110 vig assumed for ATS/O/U bets</li>
+                <li>Quarter-Kelly (25% of full Kelly) for dynamic sizing strategy</li>
+                <li>Minimum edge threshold required before placing any bet</li>
+            </ul>
+
+            <h3>Data Coverage</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for key, value in metrics.odds_coverage.items() %}
+                    <tr>
+                        <td>{{ key | replace('_', ' ') | title }}</td>
+                        <td class="num">{{ value }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            NFL Prediction System -- Walk-Forward Backtest Report<br>
+            Holdout: {{ metrics.config.holdout_seasons | join(', ') }} |
+            Targets: {{ metrics.config.targets | join(', ') | upper }} |
+            Generated: {{ metrics.generated_at }}
+        </div>
+
+    </div><!-- /.main -->
+</div><!-- /.layout -->
+</body>
+</html>
