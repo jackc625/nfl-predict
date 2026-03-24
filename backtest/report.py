@@ -762,19 +762,50 @@ class BacktestReporter:
 
         return charts
 
+    def _build_blend_delta(
+        self,
+        backtest_results: BacktestResults,
+        baseline_results: BacktestResults,
+    ) -> dict[str, dict[str, Any]]:
+        """Compute per-target CLV improvement delta between blended and baseline.
+
+        Args:
+            backtest_results: Blended backtest results.
+            baseline_results: Unblended baseline backtest results.
+
+        Returns:
+            Dict mapping target to blend delta info (blended_clv, baseline_clv,
+            delta, improved).
+        """
+        blend_delta: dict[str, dict[str, Any]] = {}
+        for target in backtest_results.headline_clv:
+            blended_clv = backtest_results.headline_clv[target]
+            baseline_clv = baseline_results.headline_clv.get(target, 0.0)
+            blend_delta[target] = {
+                "blended_clv": blended_clv,
+                "baseline_clv": baseline_clv,
+                "delta": blended_clv - baseline_clv,
+                "improved": blended_clv > baseline_clv,
+            }
+        return blend_delta
+
     def generate(
         self,
         backtest_results: BacktestResults,
         simulation_results: SimulationResults,
+        baseline_results: BacktestResults | None = None,
     ) -> Path:
         """Generate the full backtest HTML report.
 
         Builds metrics context, generates all charts, renders the Jinja2
-        template, and writes the HTML file.
+        template, and writes the HTML file. When baseline_results is
+        provided and backtest_results.is_blended is True, includes a
+        blend improvement delta section in the report.
 
         Args:
             backtest_results: Complete backtest results from the engine.
             simulation_results: Complete simulation results from BettingSimulator.
+            baseline_results: Unblended baseline results for delta display.
 
         Returns:
             Path to the generated HTML report file.
@@ -785,11 +816,21 @@ class BacktestReporter:
         metrics = self._build_metrics_context(backtest_results, simulation_results)
         charts = self._generate_charts(backtest_results, simulation_results)
 
+        # Add blend delta info to context if applicable
+        blend_delta: dict[str, dict[str, Any]] = {}
+        is_blended = backtest_results.is_blended
+        if is_blended and baseline_results is not None:
+            blend_delta = self._build_blend_delta(
+                backtest_results, baseline_results
+            )
+
         # Render template
         template = self.env.get_template("backtest_report.html")
         html_content = template.render(
             charts=charts,
             metrics=metrics,
+            is_blended=is_blended,
+            blend_delta=blend_delta,
         )
 
         # Write output

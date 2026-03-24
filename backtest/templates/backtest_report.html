@@ -261,6 +261,9 @@
     <nav class="sidebar">
         <h2>Backtest Report</h2>
         <a href="#executive-summary">Executive Summary</a>
+        {% if is_blended and blend_delta %}
+        <a href="#blend-results">Blend Results</a>
+        {% endif %}
         <a href="#calibration">Calibration Analysis</a>
         <a href="#clv-performance">CLV Performance</a>
         <a href="#season-breakdown">Season Breakdown</a>
@@ -338,6 +341,56 @@
                 </tbody>
             </table>
         </div>
+
+        <!-- ========================================================
+             1b. Market Blending Results (conditional)
+             ======================================================== -->
+        {% if is_blended and blend_delta %}
+        <div class="section" id="blend-results">
+            <h2>Market Blending Results</h2>
+
+            <p>
+                Market blending combines model predictions with closing market
+                odds using tuned weights. The table below shows the CLV
+                improvement (or degradation) compared to the unblended baseline.
+            </p>
+
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Target</th>
+                        <th>Blended CLV</th>
+                        <th>Baseline CLV</th>
+                        <th>Delta</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for target, info in blend_delta.items() %}
+                    <tr>
+                        <td>{{ target | upper }}</td>
+                        <td class="num {% if info.blended_clv > 0 %}positive{% else %}negative{% endif %}">
+                            {{ '%+.4f' | format(info.blended_clv) }}
+                        </td>
+                        <td class="num {% if info.baseline_clv > 0 %}positive{% else %}negative{% endif %}">
+                            {{ '%+.4f' | format(info.baseline_clv) }}
+                        </td>
+                        <td class="num {% if info.delta > 0 %}positive{% else %}negative{% endif %}">
+                            {{ '%+.4f' | format(info.delta) }}
+                        </td>
+                        <td>
+                            {% if info.improved %}
+                                <span class="positive">IMPROVED</span>
+                            {% else %}
+                                <span class="negative">DEGRADED</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
 
         <!-- ========================================================
              2. Calibration Analysis
