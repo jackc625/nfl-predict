@@ -147,10 +147,18 @@
 .chart-container {
   min-height: 300px;
   position: relative;
+  overflow: hidden;
 }
 
-.chart-container .js-plotly-plot {
+.chart-container .js-plotly-plot,
+.chart-container .plotly-graph-div {
   width: 100% !important;
+  height: 100% !important;
+}
+
+.chart-container > div {
+  max-width: 100%;
+  max-height: 100%;
 }
 
 

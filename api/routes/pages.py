@@ -69,7 +69,8 @@ def _compute_summary(service: Any) -> dict[str, Any]:
         if target == "wp":
             if metric_name == "accuracy":
                 wp_accuracy_values.append(float(metric_value))
-            elif metric_name == "brier_score":
+            elif metric_name in ("brier_score", "mae"):
+                # Use MAE as proxy if brier_score not available
                 wp_brier_values.append(float(metric_value))
 
     # Compute CLV from predictions

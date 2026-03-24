@@ -278,10 +278,11 @@ class DataService:
             return [dict(zip(columns, row)) for row in result.fetchall()]
 
     def get_available_seasons(self) -> list[int]:
-        """Return distinct seasons from predictions."""
+        """Return distinct seasons from backtest data."""
         with self._connect() as conn:
             result = conn.execute(
-                "SELECT DISTINCT season FROM predictions ORDER BY season DESC"
+                "SELECT DISTINCT season FROM backtest_metrics "
+                "WHERE season > 0 ORDER BY season DESC"
             )
             return [row[0] for row in result.fetchall()]
 
