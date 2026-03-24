@@ -510,3 +510,53 @@ def prerender_charts_for_cache(service: DataService) -> dict[str, str]:
     charts["equity"] = generate_dashboard_equity_chart(equity_data)
 
     return charts
+
+
+def prerender_charts_from_conn(conn: Any) -> dict[str, str]:
+    """Generate all 4 dashboard charts directly from a DuckDB connection.
+
+    Used during cache population when the database is already open in write
+    mode (can't open a second read-only connection to the same file).
+
+    Args:
+        conn: Active DuckDB connection with populated tables.
+
+    Returns:
+        Dict mapping chart_id to HTML div string.
+    """
+    charts: dict[str, str] = {}
+
+    # Query backtest_predictions for calibration + CLV charts
+    predictions = [
+        dict(zip([d[0] for d in conn.description], row))
+        for row in conn.execute("SELECT * FROM backtest_predictions").fetchall()
+    ] if conn.execute(
+        "SELECT COUNT(*) FROM backtest_predictions"
+    ).fetchone()[0] > 0 else []
+
+    charts["calibration"] = generate_dashboard_calibration_chart(predictions)
+    charts["clv"] = generate_dashboard_clv_chart(predictions)
+
+    # Query backtest_metrics for heatmap
+    metrics = [
+        dict(zip([d[0] for d in conn.description], row))
+        for row in conn.execute("SELECT * FROM backtest_metrics").fetchall()
+    ] if conn.execute(
+        "SELECT COUNT(*) FROM backtest_metrics"
+    ).fetchone()[0] > 0 else []
+
+    charts["heatmap"] = generate_dashboard_heatmap(metrics)
+
+    # Query equity_curve for equity chart
+    equity_data = [
+        dict(zip([d[0] for d in conn.description], row))
+        for row in conn.execute(
+            "SELECT * FROM equity_curve ORDER BY strategy, bet_index"
+        ).fetchall()
+    ] if conn.execute(
+        "SELECT COUNT(*) FROM equity_curve"
+    ).fetchone()[0] > 0 else []
+
+    charts["equity"] = generate_dashboard_equity_chart(equity_data)
+
+    return charts

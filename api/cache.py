@@ -220,14 +220,28 @@ def _load_backtest_predictions(
         columns=list(df.columns),
     )
 
-    # Map columns -- the CSV may have varying column names
-    required_cols = {"game_id", "season", "week", "target", "model_prob", "actual"}
+    # Map alternate column names to expected names
+    col_renames = {
+        "model_value": "model_prob",
+        "actual_value": "actual",
+    }
+    df = df.rename(columns={k: v for k, v in col_renames.items() if k in df.columns})
+
+    # Derive 'week' from game_id if missing (format: YYYY_WW_AWAY@HOME)
+    if "week" not in df.columns and "game_id" in df.columns:
+        df["week"] = df["game_id"].str.extract(r"_(\d+)_")[0].astype("Int64")
+
+    required_cols = {"game_id", "season", "target", "model_prob", "actual"}
     if not required_cols.issubset(set(df.columns)):
         logger.warning(
             "Backtest predictions CSV missing required columns",
             missing=required_cols - set(df.columns),
         )
         return 0
+
+    # Ensure week column exists (default to 0 if still missing)
+    if "week" not in df.columns:
+        df["week"] = 0
 
     # Fill optional columns
     if "probability_clv" not in df.columns:
@@ -367,12 +381,45 @@ def _load_simulation_results(
     rows: list[tuple[str, str, float]] = []
 
     if {"strategy", "metric_name", "metric_value"}.issubset(set(df.columns)):
+        # Pre-aggregated long format
         for _, row in df.iterrows():
             rows.append((
                 str(row["strategy"]),
                 str(row["metric_name"]),
                 float(row["metric_value"]),
             ))
+    elif {"flat_stake", "kelly_stake", "payout_flat", "payout_kelly"}.issubset(
+        set(df.columns)
+    ):
+        # Per-bet format from betting_simulation.csv -- aggregate into metrics
+        for strategy in ("flat", "kelly"):
+            stake_col = f"{strategy}_stake"
+            payout_col = f"payout_{strategy}"
+            total_bets = len(df)
+            total_wagered = df[stake_col].sum()
+            total_pnl = df[payout_col].sum()
+            wins = (df[payout_col] > 0).sum()
+            roi = (total_pnl / total_wagered * 100) if total_wagered else 0.0
+
+            rows.extend([
+                (strategy, "total_bets", float(total_bets)),
+                (strategy, "total_wagered", float(total_wagered)),
+                (strategy, "total_pnl", float(total_pnl)),
+                (strategy, "win_rate", float(wins / total_bets * 100) if total_bets else 0.0),
+                (strategy, "roi", float(roi)),
+            ])
+
+            # Build equity curve from cumulative P&L
+            cumulative = df[payout_col].cumsum()
+            bankroll_start = 10000.0
+            equity_rows: list[tuple[str, int, float]] = []
+            for idx, val in enumerate(cumulative):
+                equity_rows.append((strategy, idx, bankroll_start + float(val)))
+            if equity_rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO equity_curve VALUES (?, ?, ?)",
+                    equity_rows,
+                )
     elif "strategy" in df.columns:
         # Wide format
         id_cols = ["strategy"]
@@ -398,7 +445,6 @@ def _load_simulation_results(
 
 def _prerender_charts(
     conn: duckdb.DuckDBPyConnection,
-    db_path: Path,
 ) -> int:
     """Pre-render Plotly charts and store HTML divs in chart_cache.
 
@@ -407,19 +453,17 @@ def _prerender_charts(
     (UIAP-01 compliance).
 
     Args:
-        conn: Active DuckDB connection for writing chart_cache rows.
-        db_path: Path to the database file (for DataService read-only access).
+        conn: Active DuckDB connection (used for both reading data and writing chart_cache).
 
     Returns the number of charts cached.
     """
-    from api.charts import prerender_charts_for_cache
-    from api.services import DataService
+    from api.charts import prerender_charts_from_conn
 
     now = datetime.now(tz=UTC)
 
-    # Use DataService to read back the populated tables
-    service = DataService(db_path=db_path)
-    charts = prerender_charts_for_cache(service)
+    # Generate charts directly from the write connection (can't open
+    # a second read-only connection to the same DuckDB file)
+    charts = prerender_charts_from_conn(conn)
 
     charts_cached = 0
     for chart_id, html_div in charts.items():
@@ -510,7 +554,7 @@ def populate_cache(
         logger.info("Simulation results loaded", count=sr_count)
 
         # Pre-render charts from populated data
-        chart_count = _prerender_charts(conn, tmp_path)
+        chart_count = _prerender_charts(conn)
         logger.info("Charts pre-rendered", count=chart_count)
 
         # Set cache metadata
