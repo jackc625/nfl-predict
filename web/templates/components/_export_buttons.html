@@ -1,0 +1,19 @@
+{# Export buttons component. Pass: csv_url, json_url #}
+<div class="flex items-center gap-2">
+  {% if csv_url %}
+  <a href="{{ csv_url }}" class="btn-secondary text-xs px-3 py-1.5 min-h-[36px]" download>
+    <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+    </svg>
+    CSV
+  </a>
+  {% endif %}
+  {% if json_url %}
+  <a href="{{ json_url }}" class="btn-secondary text-xs px-3 py-1.5 min-h-[36px]" download>
+    <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+    </svg>
+    JSON
+  </a>
+  {% endif %}
+</div>

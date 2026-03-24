@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Backtest Results{% endblock %}
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-xl font-semibold text-gray-900 mb-1">Backtest Results</h1>
+  <p class="text-sm text-gray-500">Walk-forward backtest across 2021-2024 with CLV-headlined metrics and interactive charts</p>
+</div>
+
+{# Charts grid: 2x2 desktop, 1-col mobile #}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+  {# Calibration chart #}
+  <div class="bg-white rounded-lg border border-gray-200 p-4 md:p-6">
+    <h2 class="text-base font-semibold text-gray-900 mb-4">Calibration Reliability</h2>
+    <div class="chart-container" style="aspect-ratio: 16/10;">
+      {% if charts.calibration %}
+        {{ charts.calibration|safe }}
+      {% else %}
+        {% with heading="Chart unavailable", body="Calibration chart data has not been generated.", action_text=none, action_url=none %}
+          {% include "components/_empty_state.html" %}
+        {% endwith %}
+      {% endif %}
+    </div>
+  </div>
+
+  {# CLV chart #}
+  <div class="bg-white rounded-lg border border-gray-200 p-4 md:p-6">
+    <h2 class="text-base font-semibold text-gray-900 mb-4">Cumulative CLV</h2>
+    <div class="chart-container" style="aspect-ratio: 16/10;">
+      {% if charts.clv %}
+        {{ charts.clv|safe }}
+      {% else %}
+        {% with heading="Chart unavailable", body="CLV chart data has not been generated.", action_text=none, action_url=none %}
+          {% include "components/_empty_state.html" %}
+        {% endwith %}
+      {% endif %}
+    </div>
+  </div>
+
+  {# Season heatmap #}
+  <div class="bg-white rounded-lg border border-gray-200 p-4 md:p-6">
+    <h2 class="text-base font-semibold text-gray-900 mb-4">Season Comparison</h2>
+    <div class="chart-container" style="aspect-ratio: 16/10;">
+      {% if charts.heatmap %}
+        {{ charts.heatmap|safe }}
+      {% else %}
+        {% with heading="Chart unavailable", body="Season heatmap has not been generated.", action_text=none, action_url=none %}
+          {% include "components/_empty_state.html" %}
+        {% endwith %}
+      {% endif %}
+    </div>
+  </div>
+
+  {# Equity curves #}
+  <div class="bg-white rounded-lg border border-gray-200 p-4 md:p-6">
+    <h2 class="text-base font-semibold text-gray-900 mb-4">Betting Equity Curves</h2>
+    <div class="chart-container" style="aspect-ratio: 16/10;">
+      {% if charts.equity %}
+        {{ charts.equity|safe }}
+      {% else %}
+        {% with heading="Chart unavailable", body="Equity curve data has not been generated.", action_text=none, action_url=none %}
+          {% include "components/_empty_state.html" %}
+        {% endwith %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{# Export #}
+<div class="flex justify-end mb-6">
+  {% with csv_url="/api/export/csv?type=backtest",
+          json_url="/api/export/json?type=backtest" %}
+    {% include "components/_export_buttons.html" %}
+  {% endwith %}
+</div>
+{% endblock %}
