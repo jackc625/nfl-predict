@@ -16,14 +16,15 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from utils import get_logger
 
-from .dependencies import DB_PATH, templates
+from .dependencies import DB_PATH
+from .routes.fragments import router as fragments_router
 from .routes.health import router as health_router
+from .routes.pages import router as pages_router
 
 logger = get_logger(__name__)
 
@@ -67,23 +68,7 @@ app = FastAPI(
 # Mount static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# Include routers
+# Include routers -- pages_router last so its catch-all "/" doesn't shadow others
 app.include_router(health_router)
-
-
-# ---------------------------------------------------------------------------
-# Placeholder root route (serves base template)
-# ---------------------------------------------------------------------------
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    """Serve the main dashboard page."""
-    return templates.TemplateResponse(
-        "base.html",
-        {
-            "request": request,
-            "current_path": "/",
-            "cache_meta": None,
-        },
-    )
+app.include_router(fragments_router)
+app.include_router(pages_router)

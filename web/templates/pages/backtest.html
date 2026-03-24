@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Backtest Analysis{% endblock %}
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-xl font-semibold text-gray-900 mb-1">Backtest Analysis</h1>
+  <p class="text-sm text-gray-500">Walk-forward backtesting results and betting simulation</p>
+</div>
+
+{% with heading="Coming Soon",
+        body="Backtest analysis is under development. This page will show walk-forward results, betting simulation equity curves, and strategy comparison.",
+        action_text="Back to Predictions", action_url="/" %}
+  {% include "components/_empty_state.html" %}
+{% endwith %}
+{% endblock %}

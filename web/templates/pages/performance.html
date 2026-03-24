@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Historical Performance{% endblock %}
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-xl font-semibold text-gray-900 mb-1">Historical Performance</h1>
+  <p class="text-sm text-gray-500">Model accuracy, calibration, and CLV analysis across seasons</p>
+</div>
+
+{% with heading="Coming Soon",
+        body="Historical performance analysis is under development. This page will show calibration curves, CLV trends, and season-by-season accuracy metrics.",
+        action_text="Back to Predictions", action_url="/" %}
+  {% include "components/_empty_state.html" %}
+{% endwith %}
+{% endblock %}

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Game Detail{% endblock %}
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-xl font-semibold text-gray-900 mb-1">Game Detail</h1>
+  <p class="text-sm text-gray-500">Full prediction breakdown and context for {{ game_id }}</p>
+</div>
+
+{% with heading="Coming Soon",
+        body="Game detail drill-down is under development. This page will show feature importance, model vs market comparison, team context, and result overlay.",
+        action_text="Back to Predictions", action_url="/" %}
+  {% include "components/_empty_state.html" %}
+{% endwith %}
+{% endblock %}
