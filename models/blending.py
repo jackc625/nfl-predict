@@ -71,6 +71,25 @@ class BlendWeights:
 
 
 @dataclass
+class EdgeThresholds:
+    """Per-target edge thresholds for bet flagging.
+
+    Edges below the threshold are not flagged. The 30% cap on
+    mean per-week flagging is a DIAGNOSTIC WARNING, not a hard filter --
+    games are never removed (per D-09).
+
+    Attributes:
+        wp_threshold: WP edge threshold in probability units.
+        ats_threshold: ATS edge threshold in spread points.
+        ou_threshold: O/U edge threshold in total points.
+    """
+
+    wp_threshold: float = 0.03
+    ats_threshold: float = 1.5
+    ou_threshold: float = 1.5
+
+
+@dataclass
 class BlendConfig:
     """Full configuration for market blending.
 
@@ -78,11 +97,13 @@ class BlendConfig:
         weights: Per-target model weights.
         clip_min: Minimum probability for logit clipping (prevents -inf).
         clip_max: Maximum probability for logit clipping (prevents +inf).
+        edge_thresholds: Per-target edge thresholds for bet flagging.
     """
 
     weights: BlendWeights = field(default_factory=BlendWeights)
     clip_min: float = 0.001
     clip_max: float = 0.999
+    edge_thresholds: EdgeThresholds = field(default_factory=EdgeThresholds)
 
 
 @dataclass
@@ -604,6 +625,211 @@ class MarketBlender:
         return float(np.mean(clvs)) if clvs else 0.0
 
     # -----------------------------------------------------------------------
+    # Edge threshold calibration
+    # -----------------------------------------------------------------------
+
+    def calibrate_edge_thresholds(
+        self,
+        tuning_predictions: dict[str, pd.DataFrame],
+        tuning_odds: pd.DataFrame,
+        max_flag_rate: float = 0.30,
+    ) -> EdgeThresholds:
+        """Calibrate per-target edge thresholds on tuning data.
+
+        For each target, computes edges on blended tuning predictions,
+        then sweeps candidate thresholds to find the first where the
+        mean per-week flagging rate is <= max_flag_rate.
+
+        Args:
+            tuning_predictions: Dict mapping target to predictions DataFrame.
+            tuning_odds: DataFrame with game_id, spread, total, ml_home, ml_away.
+            max_flag_rate: Maximum mean per-week flagging rate (default 0.30).
+
+        Returns:
+            EdgeThresholds with calibrated per-target thresholds.
+        """
+        thresholds: dict[str, float] = {}
+
+        # Sweep ranges per target
+        sweep_ranges = {
+            "wp": np.arange(0.01, 0.15, 0.005),
+            "ats": np.arange(0.5, 5.0, 0.25),
+            "ou": np.arange(0.5, 5.0, 0.25),
+        }
+
+        for target, preds_df in tuning_predictions.items():
+            merged = preds_df.merge(tuning_odds, on="game_id", how="inner")
+            if merged.empty:
+                thresholds[target] = sweep_ranges.get(target, np.array([0.03]))[0]
+                continue
+
+            edges = self._compute_edges(target, merged)
+            merged["_edge"] = edges
+
+            # Need season and week for per-week grouping
+            if "season" not in merged.columns or "week" not in merged.columns:
+                thresholds[target] = sweep_ranges.get(target, np.array([0.03]))[0]
+                continue
+
+            sweep = sweep_ranges.get(target, np.arange(0.01, 0.15, 0.005))
+            best_threshold = float(sweep[-1])  # Default to largest if none works
+
+            for candidate in sweep:
+                # Compute per-week flagging rate
+                threshold_val = float(candidate)
+                weekly_rates = merged.groupby(["season", "week"]).apply(
+                    lambda g, t=threshold_val: (g["_edge"] > t).mean(),
+                    include_groups=False,
+                )
+                mean_rate = weekly_rates.mean()
+
+                if mean_rate <= max_flag_rate:
+                    best_threshold = float(candidate)
+                    break
+
+            thresholds[target] = best_threshold
+            self.logger.info(
+                "Edge threshold calibrated",
+                target=target,
+                threshold=best_threshold,
+                max_flag_rate=max_flag_rate,
+            )
+
+        calibrated = EdgeThresholds(
+            wp_threshold=thresholds.get("wp", EdgeThresholds().wp_threshold),
+            ats_threshold=thresholds.get("ats", EdgeThresholds().ats_threshold),
+            ou_threshold=thresholds.get("ou", EdgeThresholds().ou_threshold),
+        )
+        self.config.edge_thresholds = calibrated
+        return calibrated
+
+    def check_weekly_edge_rate(
+        self,
+        predictions_df: pd.DataFrame,
+        market_df: pd.DataFrame,
+        target: str,
+    ) -> dict:
+        """Check per-week edge flagging rate and emit diagnostic warnings.
+
+        Computes edges for each game, groups by (season, week), and
+        logs a WARNING for any week where > 30% of games are flagged.
+        Per D-09: This is a diagnostic WARNING, not a filter -- games
+        are NOT removed.
+
+        Args:
+            predictions_df: Predictions DataFrame with model values.
+            market_df: Market odds DataFrame.
+            target: One of "wp", "ats", "ou".
+
+        Returns:
+            Dict with per_week_rates, mean_rate, warnings.
+        """
+        merged = predictions_df.merge(market_df, on="game_id", how="inner")
+        if merged.empty:
+            return {"per_week_rates": [], "mean_rate": 0.0, "warnings": []}
+
+        edges = self._compute_edges(target, merged)
+        merged["_edge"] = edges
+
+        # Get the threshold for this target
+        threshold_map = {
+            "wp": self.config.edge_thresholds.wp_threshold,
+            "ats": self.config.edge_thresholds.ats_threshold,
+            "ou": self.config.edge_thresholds.ou_threshold,
+        }
+        threshold = threshold_map.get(target, 0.03)
+
+        # Compute per-week flagging rate
+        per_week_rates: list[float] = []
+        warnings: list[str] = []
+
+        for (season, week), group in merged.groupby(["season", "week"]):
+            rate = float((group["_edge"] > threshold).mean())
+            per_week_rates.append(rate)
+
+            if rate > 0.30:
+                msg = (
+                    f"Edge threshold diagnostic: {rate:.0%} of games flagged "
+                    f"in season {season} week {week} for {target}"
+                )
+                warnings.append(msg)
+                self.logger.warning(msg)
+
+        mean_rate = float(np.mean(per_week_rates)) if per_week_rates else 0.0
+
+        return {
+            "per_week_rates": per_week_rates,
+            "mean_rate": mean_rate,
+            "warnings": warnings,
+        }
+
+    def _compute_edges(
+        self,
+        target: str,
+        merged: pd.DataFrame,
+    ) -> np.ndarray:
+        """Compute edge magnitudes for a target on merged predictions+odds.
+
+        Args:
+            target: "wp", "ats", or "ou".
+            merged: Predictions merged with odds DataFrame.
+
+        Returns:
+            Array of absolute edge values.
+        """
+        if target == "wp":
+            # WP edge: |blended_prob - fair_market_prob|
+            valid = merged.dropna(subset=["ml_home", "ml_away", "model_prob"])
+            if valid.empty:
+                return np.array([])
+
+            home_raw = valid["ml_home"].apply(
+                lambda ml: moneyline_to_probability(int(ml))
+            )
+            away_raw = valid["ml_away"].apply(
+                lambda ml: moneyline_to_probability(int(ml))
+            )
+            fair_home = (home_raw / (home_raw + away_raw)).values
+            model_prob = valid["model_prob"].values
+            blended = self.blend_wp(
+                np.asarray(model_prob, dtype=np.float64),
+                np.asarray(fair_home, dtype=np.float64),
+            )
+            edges = np.abs(blended - fair_home)
+            # Reindex to match merged
+            result = np.zeros(len(merged))
+            result[valid.index.to_numpy() - merged.index[0]] = edges
+            return result
+
+        if target == "ats":
+            valid = merged.dropna(subset=["spread", "model_spread"])
+            if valid.empty:
+                return np.array([])
+            blended = (
+                self.config.weights.ats_model_weight * valid["model_spread"].values
+                + (1 - self.config.weights.ats_model_weight) * valid["spread"].values
+            )
+            edges = np.abs(blended - valid["spread"].values)
+            result = np.zeros(len(merged))
+            result[valid.index.to_numpy() - merged.index[0]] = edges
+            return result
+
+        if target == "ou":
+            valid = merged.dropna(subset=["total", "model_total"])
+            if valid.empty:
+                return np.array([])
+            blended = (
+                self.config.weights.ou_model_weight * valid["model_total"].values
+                + (1 - self.config.weights.ou_model_weight) * valid["total"].values
+            )
+            edges = np.abs(blended - valid["total"].values)
+            result = np.zeros(len(merged))
+            result[valid.index.to_numpy() - merged.index[0]] = edges
+            return result
+
+        return np.zeros(len(merged))
+
+    # -----------------------------------------------------------------------
     # Artifact persistence
     # -----------------------------------------------------------------------
 
@@ -635,6 +861,11 @@ class MarketBlender:
                 "wp": tuning_result.weights.wp_model_weight,
                 "ats": tuning_result.weights.ats_model_weight,
                 "ou": tuning_result.weights.ou_model_weight,
+            },
+            "edge_thresholds": {
+                "wp": self.config.edge_thresholds.wp_threshold,
+                "ats": self.config.edge_thresholds.ats_threshold,
+                "ou": self.config.edge_thresholds.ou_threshold,
             },
             "per_target_clv": tuning_result.per_target_clv,
             "tuning_seasons": tuning_result.tuning_seasons,
@@ -713,6 +944,21 @@ class MarketBlender:
             ats_model_weight=weights_data["ats"],
             ou_model_weight=weights_data["ou"],
         )
-        config = BlendConfig(weights=blend_weights)
+
+        # Load edge thresholds if present
+        edge_data = data.get("edge_thresholds")
+        if edge_data:
+            edge_thresholds = EdgeThresholds(
+                wp_threshold=edge_data["wp"],
+                ats_threshold=edge_data["ats"],
+                ou_threshold=edge_data["ou"],
+            )
+        else:
+            edge_thresholds = EdgeThresholds()
+
+        config = BlendConfig(
+            weights=blend_weights,
+            edge_thresholds=edge_thresholds,
+        )
 
         return cls(config=config)

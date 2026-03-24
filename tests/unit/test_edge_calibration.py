@@ -29,7 +29,6 @@ from models.blending import (
     TuningResult,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers: Synthetic data for edge calibration
 # ---------------------------------------------------------------------------
@@ -65,13 +64,10 @@ def _make_wp_predictions_with_edges(
             # Model probability with controlled edge
             if edge_magnitude == "small":
                 edge = rng.uniform(-0.01, 0.01)
-            elif edge_magnitude == "large":
+            elif edge_magnitude == "large" or rng.random() < 0.60:
                 edge = rng.choice([-1, 1]) * rng.uniform(0.05, 0.15)
-            else:  # mixed -- 60% large, 40% small
-                if rng.random() < 0.60:
-                    edge = rng.choice([-1, 1]) * rng.uniform(0.05, 0.15)
-                else:
-                    edge = rng.uniform(-0.01, 0.01)
+            else:
+                edge = rng.uniform(-0.01, 0.01)
 
             model_prob = float(np.clip(fair_prob + edge, 0.05, 0.95))
             actual = int(rng.random() < fair_prob)
@@ -239,7 +235,11 @@ class TestCalibrateEdgeThresholds:
         assert result_noisy.wp_threshold >= result_tight.wp_threshold
 
     def test_calibrate_flag_rate_within_target(self) -> None:
-        """calibrate_edge_thresholds produces mean per-week flagging rate <= 30%."""
+        """calibrate_edge_thresholds produces mean per-week flagging rate <= 30%.
+
+        The verification recomputes edges identically to how calibration
+        does: using blended probabilities (not raw model probabilities).
+        """
         preds, odds = _make_wp_predictions_with_edges(
             edge_magnitude="large", n_weeks=16, games_per_week=8
         )
@@ -250,17 +250,12 @@ class TestCalibrateEdgeThresholds:
             max_flag_rate=0.30,
         )
 
-        # Verify by re-computing the flag rate at the calibrated threshold
+        # Recompute using the blender's internal edge computation (same as calibration)
         merged = preds.merge(odds, on="game_id", how="inner")
-        from utils.probability_utils import moneyline_to_probability
-
-        home_raw = merged["ml_home"].apply(lambda ml: moneyline_to_probability(int(ml)))
-        away_raw = merged["ml_away"].apply(lambda ml: moneyline_to_probability(int(ml)))
-        fair_home = home_raw / (home_raw + away_raw)
-        edges = np.abs(merged["model_prob"].values - fair_home.values)
+        edges = blender._compute_edges("wp", merged)
+        merged["edge"] = edges
 
         # Compute per-week flag rate
-        merged["edge"] = edges
         weekly = merged.groupby(["season", "week"]).apply(
             lambda g: (g["edge"] > thresholds.wp_threshold).mean(),
             include_groups=False,
