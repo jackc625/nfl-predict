@@ -32,12 +32,11 @@ def games_fragment(
     games = service.get_predictions(season=season, week=week, sort=sort)
 
     context = {
-        "request": request,
         "games": games,
         "current_week": week,
         "current_season": season,
         "current_sort": sort,
     }
     return templates.TemplateResponse(
-        "pages/this_week.html", context, block_name="game_grid"
+        request, "pages/this_week.html", context, block_name="game_grid"
     )

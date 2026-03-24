@@ -1,0 +1,52 @@
+{# Week selector with prev/next arrows and dropdown. HTMX-powered.
+   Pass: available_weeks (list of {season, week}), current_week, current_season, current_sort #}
+<div class="flex items-center gap-3">
+  <label for="week-select" class="text-sm font-semibold text-gray-700">Week</label>
+  <div class="flex items-center gap-1">
+    {# Determine previous and next weeks from the available_weeks list #}
+    {% set prev_week = namespace(found=false, season=none, week=none) %}
+    {% set next_week = namespace(found=false, season=none, week=none) %}
+    {% for w in available_weeks %}
+      {% if w.week == current_week and w.season == current_season %}
+        {% if loop.index0 > 0 %}
+          {% set prev_week.found = true %}
+          {% set prev_week.season = available_weeks[loop.index0 - 1].season %}
+          {% set prev_week.week = available_weeks[loop.index0 - 1].week %}
+        {% endif %}
+        {% if loop.index0 < available_weeks|length - 1 %}
+          {% set next_week.found = true %}
+          {% set next_week.season = available_weeks[loop.index0 + 1].season %}
+          {% set next_week.week = available_weeks[loop.index0 + 1].week %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+
+    {# Previous week button #}
+    <button {% if prev_week.found %}hx-get="/fragments/games?week={{ prev_week.week }}&season={{ prev_week.season }}&sort={{ current_sort }}" hx-target="#game-grid" hx-swap="innerHTML"{% else %}disabled{% endif %}
+            class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
+            aria-label="Previous Week">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+    </button>
+
+    {# Week dropdown #}
+    <select id="week-select" name="week"
+            hx-get="/fragments/games"
+            hx-target="#game-grid"
+            hx-swap="innerHTML"
+            hx-include="[name='sort']"
+            class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
+      {% for w in available_weeks %}
+      <option value="{{ w.week }}" data-season="{{ w.season }}" {% if w.week == current_week and w.season == current_season %}selected{% endif %}>
+        {{ w.season }} Week {{ w.week }}
+      </option>
+      {% endfor %}
+    </select>
+
+    {# Next week button #}
+    <button {% if next_week.found %}hx-get="/fragments/games?week={{ next_week.week }}&season={{ next_week.season }}&sort={{ current_sort }}" hx-target="#game-grid" hx-swap="innerHTML"{% else %}disabled{% endif %}
+            class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
+            aria-label="Next Week">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+    </button>
+  </div>
+</div>

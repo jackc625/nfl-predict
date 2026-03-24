@@ -181,6 +181,25 @@ def test_db(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
+def empty_test_db(tmp_path: Path) -> Path:
+    """Create a temporary DuckDB with CACHE_SCHEMA but no data.
+
+    Returns the path to the empty database file.
+    """
+    db_path = tmp_path / "empty_cache.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    # Create schema only, no data
+    for statement in CACHE_SCHEMA.strip().split(";"):
+        stmt = statement.strip()
+        if stmt:
+            conn.execute(stmt)
+
+    conn.close()
+    return db_path
+
+
+@pytest.fixture()
 def test_client(test_db: Path) -> TestClient:
     """Create a FastAPI TestClient with the test database.
 
@@ -192,6 +211,25 @@ def test_client(test_db: Path) -> TestClient:
     # Override the DB_PATH module-level variable
     original_db_path = deps.DB_PATH
     deps.DB_PATH = test_db
+
+    client = TestClient(app, raise_server_exceptions=False)
+    yield client  # type: ignore[misc]
+
+    # Restore
+    deps.DB_PATH = original_db_path
+
+
+@pytest.fixture()
+def empty_test_client(empty_test_db: Path) -> TestClient:
+    """Create a FastAPI TestClient backed by an empty database.
+
+    Useful for testing empty-state UI rendering.
+    """
+    import api.dependencies as deps
+    from api.main import app
+
+    original_db_path = deps.DB_PATH
+    deps.DB_PATH = empty_test_db
 
     client = TestClient(app, raise_server_exceptions=False)
     yield client  # type: ignore[misc]

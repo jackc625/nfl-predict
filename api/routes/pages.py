@@ -56,7 +56,7 @@ def this_week_page(
 
     block_name = "game_grid" if request.headers.get("HX-Request") else None
     return templates.TemplateResponse(
-        "pages/this_week.html", context, block_name=block_name
+        request, "pages/this_week.html", context, block_name=block_name
     )
 
 
@@ -66,9 +66,9 @@ def performance_page(request: Request):
     service = get_data_service()
     cache_meta = service.get_cache_meta()
     return templates.TemplateResponse(
+        request,
         "pages/performance.html",
         {
-            "request": request,
             "current_path": "/performance",
             "cache_meta": cache_meta,
         },
@@ -81,9 +81,9 @@ def backtest_page(request: Request):
     service = get_data_service()
     cache_meta = service.get_cache_meta()
     return templates.TemplateResponse(
+        request,
         "pages/backtest.html",
         {
-            "request": request,
             "current_path": "/backtest",
             "cache_meta": cache_meta,
         },
@@ -96,9 +96,9 @@ def game_detail_page(request: Request, game_id: str):
     service = get_data_service()
     cache_meta = service.get_cache_meta()
     return templates.TemplateResponse(
+        request,
         "pages/game_detail.html",
         {
-            "request": request,
             "game_id": game_id,
             "current_path": f"/games/{game_id}",
             "cache_meta": cache_meta,
