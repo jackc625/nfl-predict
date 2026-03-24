@@ -21,7 +21,7 @@
     <p class="text-2xl font-semibold text-gray-900 mt-1" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.1f"|format(summary.wp_accuracy|default(0)) }}%</p>
   </div>
   <div class="bg-white rounded-lg border border-gray-200 p-4 text-center">
-    <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">WP MAE</p>
+    <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">WP Brier Score</p>
     <p class="text-2xl font-semibold text-gray-900 mt-1" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.4f"|format(summary.brier_score|default(0)) }}</p>
   </div>
 </div>
@@ -38,7 +38,7 @@
 {# Season-specific content (HTMX swap target) #}
 <div id="performance-content">
   {% block performance_content %}
-  {# Season metrics table #}
+  {# Season metrics table -- pivoted by (season, target) #}
   {% if season_metrics %}
   <div class="bg-white rounded-lg border border-gray-200 overflow-hidden mb-6">
     <div class="px-6 py-4 border-b border-gray-200">
@@ -50,17 +50,23 @@
           <tr>
             <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600">Season</th>
             <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600">Target</th>
-            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600">Metric</th>
-            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600">Value</th>
+            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600">Games</th>
+            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600">Accuracy</th>
+            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600">MAE</th>
+            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600">RMSE</th>
+            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600">R&sup2;</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
           {% for m in season_metrics %}
           <tr class="hover:bg-gray-50 transition-colors">
-            <td class="px-4 py-3 text-gray-900">{{ m.season }}</td>
-            <td class="px-4 py-3 text-gray-700 uppercase">{{ m.target }}</td>
-            <td class="px-4 py-3 text-right text-gray-700">{{ m.metric_name }}</td>
-            <td class="px-4 py-3 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.4f"|format(m.metric_value) }}</td>
+            <td class="px-4 py-3 text-gray-900 font-medium">{{ m.season }}</td>
+            <td class="px-4 py-3 text-gray-700 uppercase font-medium">{{ m.target }}</td>
+            <td class="px-4 py-3 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ m.games if m.games is not none else '-' }}</td>
+            <td class="px-4 py-3 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if m.accuracy is not none %}{{ "%.1f"|format(m.accuracy) }}%{% else %}-{% endif %}</td>
+            <td class="px-4 py-3 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if m.mae is not none %}{{ "%.4f"|format(m.mae) }}{% else %}-{% endif %}</td>
+            <td class="px-4 py-3 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if m.rmse is not none %}{{ "%.2f"|format(m.rmse) }}{% else %}-{% endif %}</td>
+            <td class="px-4 py-3 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if m.r2 is not none %}{{ "%.3f"|format(m.r2) }}{% else %}-{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>

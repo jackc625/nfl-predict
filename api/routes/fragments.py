@@ -13,6 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query, Request
 
 from api.dependencies import get_data_service, templates
+from api.routes.pages import _pivot_season_metrics
 
 router = APIRouter(prefix="/fragments", tags=["fragments"])
 
@@ -57,7 +58,8 @@ def performance_fragment(
     """
     season_int = int(season) if season and season.strip() else None
     service = get_data_service()
-    season_metrics = service.get_backtest_metrics(season=season_int)
+    raw_metrics = service.get_backtest_metrics(season=season_int)
+    season_metrics = _pivot_season_metrics(raw_metrics)
 
     context = {
         "request": request,
@@ -65,6 +67,8 @@ def performance_fragment(
         "current_season": season_int,
     }
     return templates.TemplateResponse(
-        request, "pages/performance.html", context,
+        request,
+        "pages/performance.html",
+        context,
         block_name="performance_content",
     )

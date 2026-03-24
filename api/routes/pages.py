@@ -26,6 +26,52 @@ router = APIRouter(tags=["pages"])
 # ---------------------------------------------------------------------------
 
 
+def _pivot_season_metrics(raw_metrics: list[dict]) -> list[dict]:
+    """Pivot long-format (season, target, metric_name, metric_value) rows
+    into one row per (season, target) with named metric columns.
+
+    Returns list of dicts with keys: season, target, games, accuracy, mae, rmse, r2.
+    """
+    grouped: dict[tuple[int, str], dict[str, Any]] = {}
+
+    for m in raw_metrics:
+        season = m.get("season", 0)
+        target = m.get("target", "")
+        metric_name = m.get("metric_name", "")
+        metric_value = m.get("metric_value")
+
+        if season == 0:
+            continue
+
+        key = (season, target)
+        if key not in grouped:
+            grouped[key] = {
+                "season": season,
+                "target": target,
+                "games": None,
+                "accuracy": None,
+                "mae": None,
+                "rmse": None,
+                "r2": None,
+            }
+
+        if metric_name in ("n_games", "n_predictions"):
+            grouped[key]["games"] = int(metric_value) if metric_value else None
+        elif metric_name == "accuracy":
+            grouped[key]["accuracy"] = (
+                float(metric_value) * 100 if metric_value else None
+            )
+        elif metric_name == "mae":
+            grouped[key]["mae"] = float(metric_value) if metric_value else None
+        elif metric_name == "rmse":
+            grouped[key]["rmse"] = float(metric_value) if metric_value else None
+        elif metric_name == "r2":
+            grouped[key]["r2"] = float(metric_value) if metric_value else None
+
+    rows = sorted(grouped.values(), key=lambda r: (r["season"], r["target"]))
+    return rows
+
+
 def _compute_summary(service: Any) -> dict[str, Any]:
     """Aggregate all-time summary metrics from backtest data.
 
@@ -76,7 +122,8 @@ def _compute_summary(service: Any) -> dict[str, Any]:
     # Compute CLV from predictions
     predictions = service.get_backtest_predictions()
     wp_preds = [
-        p for p in predictions
+        p
+        for p in predictions
         if p.get("target") == "wp"
         and p.get("probability_clv") is not None
         and p.get("has_closing_odds") is not False
@@ -88,14 +135,12 @@ def _compute_summary(service: Any) -> dict[str, Any]:
 
     if not summary["total_games"]:
         # Count from predictions if not in aggregate metrics
-        summary["total_games"] = len({
-            p["game_id"] for p in predictions if p.get("game_id")
-        })
+        summary["total_games"] = len(
+            {p["game_id"] for p in predictions if p.get("game_id")}
+        )
 
     if wp_accuracy_values:
-        summary["wp_accuracy"] = (
-            sum(wp_accuracy_values) / len(wp_accuracy_values) * 100
-        )
+        summary["wp_accuracy"] = sum(wp_accuracy_values) / len(wp_accuracy_values) * 100
     if wp_brier_values:
         summary["brier_score"] = sum(wp_brier_values) / len(wp_brier_values)
 
@@ -160,7 +205,8 @@ def performance_page(
     """
     service = get_data_service()
     available_seasons = service.get_available_seasons()
-    season_metrics = service.get_backtest_metrics(season=season)
+    raw_metrics = service.get_backtest_metrics(season=season)
+    season_metrics = _pivot_season_metrics(raw_metrics)
     summary = _compute_summary(service)
     cache_meta = service.get_cache_meta()
 
@@ -223,6 +269,4 @@ def game_detail_page(request: Request, game_id: str):
         "current_path": "",
         "cache_meta": cache_meta,
     }
-    return templates.TemplateResponse(
-        request, "pages/game_detail.html", context
-    )
+    return templates.TemplateResponse(request, "pages/game_detail.html", context)
