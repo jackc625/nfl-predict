@@ -4,7 +4,8 @@ Dedicated router for endpoints that return partial HTML fragments
 for HTMX-powered dynamic updates without full page reloads.
 
 Routes:
-    GET /fragments/games -- Game grid fragment (swapped into #game-grid)
+    GET /fragments/games       -- Game grid fragment (swapped into #game-grid)
+    GET /fragments/performance -- Performance content fragment (season swap)
 """
 
 from __future__ import annotations
@@ -39,4 +40,29 @@ def games_fragment(
     }
     return templates.TemplateResponse(
         request, "pages/this_week.html", context, block_name="game_grid"
+    )
+
+
+@router.get("/performance")
+def performance_fragment(
+    request: Request,
+    season: int | None = Query(None),
+):
+    """Return the performance_content block for HTMX season swap.
+
+    Renders only the season metrics table portion of the performance
+    page, used when the season selector dropdown changes.
+    """
+    service = get_data_service()
+    season_metrics = service.get_backtest_metrics(season=season)
+
+    context = {
+        "request": request,
+        "season_metrics": season_metrics,
+        "current_season": season,
+    }
+    return templates.TemplateResponse(
+        "pages/performance.html",
+        context,
+        block_name="performance_content",
     )

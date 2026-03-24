@@ -398,38 +398,36 @@ def _load_simulation_results(
 
 def _prerender_charts(
     conn: duckdb.DuckDBPyConnection,
+    db_path: Path,
 ) -> int:
     """Pre-render Plotly charts and store HTML divs in chart_cache.
 
-    Reads data back from the already-populated DuckDB tables and generates
-    charts without importing any model classes. Falls back gracefully if
-    data is insufficient.
+    Uses api.charts to generate dashboard-compatible Plotly HTML divs
+    from the already-populated DuckDB tables. No model classes are imported
+    (UIAP-01 compliance).
+
+    Args:
+        conn: Active DuckDB connection for writing chart_cache rows.
+        db_path: Path to the database file (for DataService read-only access).
 
     Returns the number of charts cached.
     """
-    now = datetime.now(tz=UTC)
-    charts_cached = 0
+    from api.charts import prerender_charts_for_cache
+    from api.services import DataService
 
-    # We cannot call the backtest report generators directly since they
-    # require BacktestResults/SimulationResults typed objects. Instead,
-    # we store placeholder entries that will be populated by the populate
-    # script if the full backtest results are available, or by a separate
-    # chart generation step.
-    #
-    # For now, mark the chart_cache entries as needing generation.
-    chart_ids = ["calibration", "clv_cumulative", "season_heatmap", "equity_curve"]
-    for chart_id in chart_ids:
-        # Check if we already have this chart
-        existing = conn.execute(
-            "SELECT chart_id FROM chart_cache WHERE chart_id = ?",
-            [chart_id],
-        ).fetchone()
-        if existing is None:
-            conn.execute(
-                "INSERT INTO chart_cache VALUES (?, ?, ?)",
-                [chart_id, "", now],
-            )
-            charts_cached += 1
+    now = datetime.now(tz=UTC)
+
+    # Use DataService to read back the populated tables
+    service = DataService(db_path=db_path)
+    charts = prerender_charts_for_cache(service)
+
+    charts_cached = 0
+    for chart_id, html_div in charts.items():
+        conn.execute(
+            "INSERT OR REPLACE INTO chart_cache VALUES (?, ?, ?)",
+            [chart_id, html_div, now],
+        )
+        charts_cached += 1
 
     return charts_cached
 
@@ -511,9 +509,9 @@ def populate_cache(
         sr_count = _load_simulation_results(conn, outputs_dir)
         logger.info("Simulation results loaded", count=sr_count)
 
-        # Pre-render chart placeholders
-        chart_count = _prerender_charts(conn)
-        logger.info("Chart placeholders created", count=chart_count)
+        # Pre-render charts from populated data
+        chart_count = _prerender_charts(conn, tmp_path)
+        logger.info("Charts pre-rendered", count=chart_count)
 
         # Set cache metadata
         now = datetime.now(tz=UTC)

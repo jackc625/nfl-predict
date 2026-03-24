@@ -165,6 +165,48 @@ def test_db(tmp_path: Path) -> Path:
         importances,
     )
 
+    # Insert backtest metrics (season-level for performance page)
+    backtest_metrics = [
+        (2023, "wp", "accuracy", 0.65),
+        (2023, "wp", "brier_score", 0.22),
+        (2023, "wp", "ece", 0.035),
+        (2023, "ats", "mae", 6.5),
+        (2023, "ats", "rmse", 8.2),
+        (2024, "wp", "accuracy", 0.68),
+        (2024, "wp", "brier_score", 0.21),
+        (2024, "wp", "ece", 0.030),
+        (2024, "ats", "mae", 6.2),
+        (2024, "ats", "rmse", 7.9),
+    ]
+    conn.executemany(
+        "INSERT INTO backtest_metrics VALUES (?, ?, ?, ?)",
+        backtest_metrics,
+    )
+
+    # Insert backtest predictions (for chart generation)
+    backtest_predictions = [
+        ("2023_W18_SF@SEA", 2023, 18, "wp", 0.38, 0.0, 0.02, True),
+        ("2024_W01_BUF@KC", 2024, 1, "wp", 0.62, 1.0, 0.05, True),
+        ("2024_W01_PHI@GB", 2024, 1, "wp", 0.45, 1.0, -0.03, True),
+    ]
+    conn.executemany(
+        "INSERT INTO backtest_predictions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        backtest_predictions,
+    )
+
+    # Insert chart cache entries (empty HTML for testing graceful fallback)
+    chart_now = datetime.now(tz=UTC)
+    chart_entries = [
+        ("calibration", "<div>test calibration</div>", chart_now),
+        ("clv", "<div>test clv</div>", chart_now),
+        ("heatmap", "<div>test heatmap</div>", chart_now),
+        ("equity", "<div>test equity</div>", chart_now),
+    ]
+    conn.executemany(
+        "INSERT INTO chart_cache VALUES (?, ?, ?)",
+        chart_entries,
+    )
+
     # Insert cache metadata
     now = datetime.now(tz=UTC)
     conn.executemany(
