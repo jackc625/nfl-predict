@@ -548,6 +548,18 @@ wheels = [
 ]
 
 [[package]]
+name = "jinja2-fragments"
+version = "1.11.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d0/06/51681ecdfe06a51c458da481f353bfc9325d56491fec2be138b63e93e2bb/jinja2_fragments-1.11.0.tar.gz", hash = "sha256:240eabb7faaa379110cf8e43acb81fb8731fd6ae39c7a1ae232e4421c4804248", size = 20980, upload-time = "2025-11-20T21:39:48.503Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/4d/b65f80e4aca3a630105f48192dac6ed16699e6d53197899840da2d67c3a5/jinja2_fragments-1.11.0-py3-none-any.whl", hash = "sha256:3b37105d565b96129e2e34df040d1b7bb71c8a76014f7b5e1aa914ccf3f9256c", size = 15999, upload-time = "2025-11-20T21:39:47.516Z" },
+]
+
+[[package]]
 name = "joblib"
 version = "1.5.3"
 source = { registry = "https://pypi.org/simple" }
@@ -779,6 +791,7 @@ dependencies = [
     { name = "httpx" },
     { name = "itsdangerous" },
     { name = "jinja2" },
+    { name = "jinja2-fragments" },
     { name = "joblib" },
     { name = "matplotlib" },
     { name = "nflreadpy" },
@@ -820,6 +833,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.0,<1" },
     { name = "itsdangerous", specifier = ">=2.2.0,<3" },
     { name = "jinja2", specifier = ">=3.1.0,<4" },
+    { name = "jinja2-fragments", specifier = ">=1.11.0" },
     { name = "joblib", specifier = ">=1.4.0,<2" },
     { name = "matplotlib", specifier = ">=3.10.0,<4" },
     { name = "nflreadpy", specifier = ">=0.1.5,<1" },

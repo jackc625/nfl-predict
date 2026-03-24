@@ -28,11 +28,9 @@ dependencies = [
     "numpy>=1.26.0,<2",
     "pyarrow>=18.0.0",
     "duckdb>=1.5.0,<2",
-
     # Modeling and ML
     "scikit-learn>=1.8.0,<2",
     "xgboost>=3.2.0,<4",
-
     # API and Web UI
     "fastapi>=0.115.0,<1",
     "uvicorn[standard]>=0.34.0,<1",
@@ -41,26 +39,23 @@ dependencies = [
     "pydantic-settings>=2.7.0,<3",
     "python-multipart>=0.0.18,<1",
     "itsdangerous>=2.2.0,<3",
-
     # HTTP requests and ETL
     "httpx>=0.28.0,<1",
     "tenacity>=9.0.0,<10",
     "python-dateutil>=2.9.0,<3",
     "tqdm>=4.67.0,<5",
-
     # Data sources
     "nflreadpy>=0.1.5,<1",
-
     # Visualization for reports
     "matplotlib>=3.10.0,<4",
     "plotly>=6.0.0,<7",
-
     # Utilities
     "structlog>=24.4.0,<25",
     "click>=8.1.0,<9",
     "python-dotenv>=1.0.0,<2",
     "joblib>=1.4.0,<2",
     "pyyaml>=6.0.0,<7",
+    "jinja2-fragments>=1.11.0",
 ]
 
 [dependency-groups]

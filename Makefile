@@ -3,7 +3,7 @@
 # This Makefile provides standardized commands for running the NFL prediction system
 # in accordance with the PRD acceptance criteria.
 
-.PHONY: help snapshot backtest backtest-blend backtest-quick predict serve test clean install setup lint build-css train train-wp train-ats train-ou tune-blend
+.PHONY: help snapshot backtest backtest-blend backtest-quick predict serve test clean install setup lint build-css build-cache dev train train-wp train-ats train-ou tune-blend
 
 # Default target
 .DEFAULT_GOAL := help
@@ -130,17 +130,12 @@ predict: ## Generate prediction artifacts (Parquet + JSON) (PRD Acceptance Crite
 	@echo "  - outputs/predictions/current_week_summary.csv"
 	@echo ""
 
-serve: ## Start web UI/API server (PRD Acceptance Criteria #4)
-	@echo "$(GREEN)🌐 Starting NFL Prediction API and Web UI...$(NC)"
+serve: ## Start web UI/API server with hot-reload
+	@echo "$(GREEN)Starting NFL Prediction API and Web UI...$(NC)"
 	@echo "Server will be available at: http://$(API_HOST):$(API_PORT)"
 	@echo "Press Ctrl+C to stop the server"
 	@echo ""
-
-	@echo "$(YELLOW)Pre-flight checks...$(NC)"
-	@$(PYTHON) scripts/health_check.py --pre-startup
-
-	@echo "$(YELLOW)Starting FastAPI server with $(WORKERS) workers...$(NC)"
-	uvicorn api.main:app --host $(API_HOST) --port $(API_PORT) --workers $(WORKERS) --log-level info
+	uv run uvicorn api.main:app --host $(API_HOST) --port $(API_PORT) --reload
 
 # =============================================================================
 # DEVELOPMENT AND TESTING COMMANDS
@@ -406,6 +401,11 @@ friday-production: ## Friday 6 PM ET production run
 
 build-css: ## Build Tailwind CSS
 	./tools/tailwindcss -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify
+
+build-cache: ## Populate DuckDB web cache from artifacts and backtest outputs
+	$(PYTHON) scripts/populate_cache.py
+
+dev: build-css serve ## Build CSS then start dev server
 
 # =============================================================================
 # DEVELOPMENT SHORTCUTS
