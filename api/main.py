@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from utils import get_logger
 
 from .dependencies import DB_PATH
+from .routes.api_export import router as export_router
 from .routes.fragments import router as fragments_router
 from .routes.health import router as health_router
 from .routes.pages import router as pages_router
@@ -70,5 +71,6 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Include routers -- pages_router last so its catch-all "/" doesn't shadow others
 app.include_router(health_router)
+app.include_router(export_router)
 app.include_router(fragments_router)
 app.include_router(pages_router)

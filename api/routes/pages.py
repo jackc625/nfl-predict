@@ -7,7 +7,7 @@ Routes:
     GET /            -- This Week's predictions dashboard (landing page)
     GET /performance -- Historical performance view
     GET /backtest    -- Backtest analysis with Plotly charts
-    GET /games/{id}  -- Game detail drill-down (placeholder)
+    GET /games/{id}  -- Game detail drill-down (feature importance, market comparison)
 """
 
 from __future__ import annotations
@@ -207,15 +207,21 @@ def backtest_page(request: Request):
 
 @router.get("/games/{game_id}")
 def game_detail_page(request: Request, game_id: str):
-    """Serve the game detail drill-down page (placeholder)."""
+    """Serve the game detail drill-down page.
+
+    Shows full prediction breakdown including feature importance bars,
+    prediction vs market comparison, team context (Elo, form, H2H),
+    venue/weather, and result overlay for completed games (D-13 to D-15).
+    """
     service = get_data_service()
+    game = service.get_game_detail(game_id)
     cache_meta = service.get_cache_meta()
+    context = {
+        "request": request,
+        "game": game,
+        "current_path": "",
+        "cache_meta": cache_meta,
+    }
     return templates.TemplateResponse(
-        request,
-        "pages/game_detail.html",
-        {
-            "game_id": game_id,
-            "current_path": f"/games/{game_id}",
-            "cache_meta": cache_meta,
-        },
+        request, "pages/game_detail.html", context
     )

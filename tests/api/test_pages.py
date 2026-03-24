@@ -161,8 +161,69 @@ def test_performance_page_htmx_returns_block(test_client: TestClient):
 
 
 def test_game_detail_page(test_client: TestClient):
-    """Game detail placeholder page loads."""
+    """UIAP-04: Game detail page shows feature importances and market comparison."""
     response = test_client.get("/games/2024_W01_BUF@KC")
     assert response.status_code == 200
-    assert "Game Detail" in response.text
-    assert "Coming Soon" in response.text
+    html = response.text
+    assert "Feature Importance" in html
+    assert "Prediction vs Market" in html
+    # Team header
+    assert "BUF" in html
+    assert "KC" in html
+
+
+def test_game_detail_team_context(test_client: TestClient):
+    """Game detail shows team context (Elo, form, H2H)."""
+    response = test_client.get("/games/2024_W01_BUF@KC")
+    assert response.status_code == 200
+    html = response.text
+    assert "Team Context" in html
+    assert "Elo Ratings" in html
+    assert "1550" in html  # home Elo
+
+
+def test_game_detail_venue_weather(test_client: TestClient):
+    """Game detail shows venue and weather information."""
+    response = test_client.get("/games/2024_W01_BUF@KC")
+    assert response.status_code == 200
+    html = response.text
+    assert "Venue &amp; Weather" in html or "Venue & Weather" in html
+    assert "Arrowhead" in html
+    assert "Grass" in html
+
+
+def test_game_detail_result_overlay(test_client: TestClient):
+    """D-15: Completed game shows result and correct/incorrect indicator."""
+    response = test_client.get("/games/2024_W01_BUF@KC")
+    assert response.status_code == 200
+    html = response.text
+    # Score overlay (away_score - home_score)
+    assert "20 - 27" in html
+    # wp_prob=0.62 > 0.5 (predicted home win), home_score=27 > away_score=20 (home won)
+    assert "Correct" in html
+
+
+def test_game_detail_feature_chart(test_client: TestClient):
+    """D-13: Feature importance bar chart with Plotly."""
+    response = test_client.get("/games/2024_W01_BUF@KC")
+    assert response.status_code == 200
+    html = response.text
+    assert 'Plotly.newPlot("feature-chart"' in html
+    assert "elo_diff" in html  # from sample feature importances
+
+
+def test_game_detail_not_found(test_client: TestClient):
+    """Missing game shows 404-style empty state."""
+    response = test_client.get("/games/nonexistent_game")
+    assert response.status_code == 200
+    assert "Game not found" in response.text
+    assert "Back to This Week" in response.text
+
+
+def test_game_detail_export_buttons(test_client: TestClient):
+    """Game detail page includes export buttons."""
+    response = test_client.get("/games/2024_W01_BUF@KC")
+    assert response.status_code == 200
+    html = response.text
+    assert "/api/export/csv" in html
+    assert "/api/export/json" in html

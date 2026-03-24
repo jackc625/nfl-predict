@@ -207,6 +207,30 @@ def test_db(tmp_path: Path) -> Path:
         chart_entries,
     )
 
+    # Insert game context for one game (game detail page tests)
+    game_context_rows = [
+        (
+            "2024_W01_BUF@KC",  # game_id
+            1550.0,             # home_elo
+            1520.0,             # away_elo
+            '["W","W","L","W","W"]',  # home_last5
+            '["W","L","W","W","L"]',  # away_last5
+            '{"home_wins": 3, "away_wins": 2}',  # h2h_record
+            "GEHA Field at Arrowhead Stadium",    # venue_name
+            "Grass",            # surface
+            "outdoors",         # roof_type
+            2.5,                # weather_severity
+            12.0,               # wind_mph
+            True,               # is_outdoor
+            True,               # is_divisional
+            True,               # is_primetime
+        ),
+    ]
+    conn.executemany(
+        "INSERT INTO game_context VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        game_context_rows,
+    )
+
     # Insert cache metadata
     now = datetime.now(tz=UTC)
     conn.executemany(

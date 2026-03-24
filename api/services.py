@@ -9,6 +9,7 @@ No model classes are imported here (UIAP-01 compliance).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,18 @@ import duckdb
 from utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def _parse_json_or_default(value: Any, default: Any) -> Any:
+    """Parse a JSON string, returning *default* if parsing fails or value is None."""
+    if value is None:
+        return default
+    if isinstance(value, (list, dict)):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return default
 
 
 class DataService:
@@ -79,6 +92,14 @@ class DataService:
     def get_game_detail(self, game_id: str) -> dict[str, Any] | None:
         """Fetch full detail for a single game including context and features.
 
+        Returns a dict with:
+        - All prediction fields from the predictions table
+        - ``context``: nested dict from game_context (with parsed lists)
+        - ``feature_importances``: dict keyed by target, values are
+          ``{feature_name: importance}`` dicts (ready for template tojson)
+        - ``wp_correct``: bool indicating whether the WP prediction was right
+        - ``wp_clv``: closing line value for the WP prediction (if available)
+
         Returns None if the game is not found.
         """
         with self._connect() as conn:
@@ -93,16 +114,62 @@ class DataService:
 
             game = dict(zip(columns, row))
 
-            # Game context
+            # --- Derived fields for completed games (D-15) ---
+            game["wp_correct"] = None
+            game["wp_clv"] = None
+
+            home_score = game.get("home_score")
+            away_score = game.get("away_score")
+            wp_prob = game.get("wp_prob")
+
+            if (
+                game.get("status") == "completed"
+                and home_score is not None
+                and away_score is not None
+                and wp_prob is not None
+            ):
+                home_won = home_score > away_score
+                predicted_home = wp_prob > 0.5
+                game["wp_correct"] = home_won == predicted_home
+
+            # CLV from backtest predictions (if available)
+            clv_result = conn.execute(
+                "SELECT probability_clv FROM backtest_predictions "
+                "WHERE game_id = ? AND target = 'wp'",
+                [game_id],
+            )
+            clv_row = clv_result.fetchone()
+            if clv_row is not None and clv_row[0] is not None:
+                game["wp_clv"] = float(clv_row[0]) * 100  # as percentage
+
+            # --- Game context ---
             ctx_result = conn.execute(
                 "SELECT * FROM game_context WHERE game_id = ?", [game_id]
             )
             ctx_cols = [desc[0] for desc in ctx_result.description]
             ctx_row = ctx_result.fetchone()
             if ctx_row is not None:
-                game["context"] = dict(zip(ctx_cols, ctx_row))
+                context = dict(zip(ctx_cols, ctx_row))
 
-            # Feature importances for this game (or model-level)
+                # Parse JSON strings into Python lists for template rendering
+                context["home_last5_list"] = _parse_json_or_default(
+                    context.get("home_last5"), []
+                )
+                context["away_last5_list"] = _parse_json_or_default(
+                    context.get("away_last5"), []
+                )
+
+                # Parse H2H record JSON
+                h2h = _parse_json_or_default(context.get("h2h_record"), {})
+                context["h2h_home_wins"] = h2h.get("home_wins", 0)
+                context["h2h_away_wins"] = h2h.get("away_wins", 0)
+
+                game["context"] = context
+            else:
+                game["context"] = None
+
+            # --- Feature importances ---
+            # Return as {target: {feature_name: importance}} for tojson in template
             fi_result = conn.execute(
                 "SELECT target, feature_name, importance "
                 "FROM feature_importances "
@@ -111,13 +178,12 @@ class DataService:
                 [game_id],
             )
             fi_rows = fi_result.fetchall()
-            importances: dict[str, list[dict[str, Any]]] = {}
+            importances: dict[str, dict[str, float]] = {}
             for target, feature_name, importance in fi_rows:
-                importances.setdefault(target, []).append({
-                    "feature_name": feature_name,
-                    "importance": importance,
-                })
-            game["feature_importances"] = importances
+                importances.setdefault(target, {})[feature_name] = float(
+                    importance
+                )
+            game["feature_importances"] = importances if importances else None
 
             return game
 

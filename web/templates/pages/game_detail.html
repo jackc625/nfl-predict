@@ -1,14 +1,250 @@
 {% extends "base.html" %}
-{% block title %}Game Detail{% endblock %}
+{% block title %}{% if game %}{{ game.away_team }} @ {{ game.home_team }}{% else %}Game Not Found{% endif %}{% endblock %}
 {% block content %}
-<div class="mb-6">
-  <h1 class="text-xl font-semibold text-gray-900 mb-1">Game Detail</h1>
-  <p class="text-sm text-gray-500">Full prediction breakdown and context for {{ game_id }}</p>
+
+{% if not game %}
+  {% with heading="Game not found",
+          body="This game does not exist in the prediction database.",
+          action_text="Back to This Week", action_url="/" %}
+    {% include "components/_empty_state.html" %}
+  {% endwith %}
+{% else %}
+
+{# Back link #}
+<a href="/" class="inline-flex items-center text-sm text-nfl-primary hover:underline mb-4">
+  <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+  Back to predictions
+</a>
+
+{# Game header #}
+<div class="bg-white rounded-lg border border-gray-200 p-6 mb-6">
+  <div class="flex items-center justify-between mb-2">
+    <h1 class="text-xl font-semibold text-gray-900">{{ game.away_team }} @ {{ game.home_team }}</h1>
+    {% with status=game.status %}{% include "components/_status_badge.html" %}{% endwith %}
+  </div>
+  <p class="text-sm text-gray-500">{{ game.game_date }} | Season {{ game.season }}, Week {{ game.week }}</p>
+
+  {# Result overlay for completed games (D-15) #}
+  {% if game.status == "completed" and game.home_score is not none %}
+  <div class="mt-4 p-4 rounded-lg {% if game.wp_correct %}bg-green-50 border border-green-200{% else %}bg-red-50 border border-red-200{% endif %}">
+    <div class="flex items-center justify-between">
+      <div>
+        <span class="text-lg font-semibold" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ game.away_score }} - {{ game.home_score }}</span>
+        <span class="ml-3 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold {% if game.wp_correct %}bg-green-100 text-green-800{% else %}bg-red-100 text-red-600{% endif %}">
+          {% if game.wp_correct %}Correct{% else %}Incorrect{% endif %}
+        </span>
+      </div>
+      {% if game.wp_clv is not none %}
+      <span class="text-sm font-medium {% if game.wp_clv > 0 %}text-green-700{% else %}text-red-600{% endif %}">
+        CLV: {{ "%+.2f"|format(game.wp_clv) }}%
+      </span>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
 </div>
 
-{% with heading="Coming Soon",
-        body="Game detail drill-down is under development. This page will show feature importance, model vs market comparison, team context, and result overlay.",
-        action_text="Back to Predictions", action_url="/" %}
-  {% include "components/_empty_state.html" %}
-{% endwith %}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  {# LEFT COLUMN: Predictions + Feature Importance #}
+  <div class="space-y-6">
+
+    {# Prediction vs Market Comparison (D-14) #}
+    <div class="bg-white rounded-lg border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-4">Prediction vs Market</h2>
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-gray-200">
+            <th scope="col" class="pb-2 text-left font-semibold text-gray-600">Metric</th>
+            <th scope="col" class="pb-2 text-right font-semibold text-gray-600">Model</th>
+            <th scope="col" class="pb-2 text-right font-semibold text-gray-600">Market</th>
+            <th scope="col" class="pb-2 text-right font-semibold text-gray-600">Blended</th>
+            <th scope="col" class="pb-2 text-right font-semibold text-gray-600">Edge</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          <tr>
+            <td class="py-2 text-gray-700">Win Probability</td>
+            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.1f"|format((game.wp_prob or 0) * 100) }}%</td>
+            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">-</td>
+            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if game.blended_wp %}{{ "%.1f"|format(game.blended_wp * 100) }}%{% else %}-{% endif %}</td>
+            <td class="py-2 text-right {% if (game.wp_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %}" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%+.1f"|format((game.wp_edge or 0) * 100) }}%</td>
+          </tr>
+          <tr>
+            <td class="py-2 text-gray-700">Spread</td>
+            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%+.1f"|format(game.ats_prediction or 0) }}</td>
+            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%+.1f"|format(game.market_spread or 0) }}</td>
+            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if game.blended_ats is not none %}{{ "%+.1f"|format(game.blended_ats) }}{% else %}-{% endif %}</td>
+            <td class="py-2 text-right {% if (game.ats_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %}" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%+.1f"|format((game.ats_edge or 0) * 100) }}%</td>
+          </tr>
+          <tr>
+            <td class="py-2 text-gray-700">Total</td>
+            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.1f"|format(game.ou_prediction or 0) }}</td>
+            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.1f"|format(game.market_total or 0) }}</td>
+            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if game.blended_ou is not none %}{{ "%.1f"|format(game.blended_ou) }}{% else %}-{% endif %}</td>
+            <td class="py-2 text-right {% if (game.ou_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %}" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%+.1f"|format((game.ou_edge or 0) * 100) }}%</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    {# Feature Importance Chart (D-13) #}
+    <div class="bg-white rounded-lg border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-4">Feature Importance</h2>
+      {% if game.feature_importances %}
+      <div id="feature-chart" style="width: 100%; min-height: 300px;"></div>
+      <script>
+        (function() {
+          var features = {{ game.feature_importances | tojson }};
+          // features is {target: {feature: importance, ...}, ...}
+          // Show WP importances by default, or first available
+          var target = features.wp ? "wp" : Object.keys(features)[0];
+          var data = features[target] || {};
+          var sorted = Object.entries(data).sort(function(a, b) { return Math.abs(b[1]) - Math.abs(a[1]); }).slice(0, 10);
+          var names = sorted.map(function(d) { return d[0]; }).reverse();
+          var values = sorted.map(function(d) { return d[1]; }).reverse();
+          var colors = values.map(function(v) { return v >= 0 ? "#013369" : "#D50A0A"; });
+
+          Plotly.newPlot("feature-chart", [{
+            type: "bar",
+            orientation: "h",
+            x: values,
+            y: names,
+            marker: { color: colors }
+          }], {
+            font: { family: "system-ui, -apple-system, sans-serif", size: 13 },
+            plot_bgcolor: "#FFFFFF",
+            paper_bgcolor: "#FFFFFF",
+            margin: { l: 120, r: 16, t: 16, b: 40 },
+            xaxis: { title: "Importance", gridcolor: "#E5E7EB" },
+            yaxis: { gridcolor: "#E5E7EB" }
+          }, { responsive: true, displayModeBar: false });
+        })();
+      </script>
+      {% else %}
+        <p class="text-sm text-gray-500">Feature importance data not available for this game.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  {# RIGHT COLUMN: Context Cards #}
+  <div class="space-y-6">
+
+    {# Team Context Card (D-14: Elo, last 5, H2H) #}
+    <div class="bg-white rounded-lg border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-4">Team Context</h2>
+
+      {# Elo Ratings #}
+      {% if game.context and (game.context.home_elo or game.context.away_elo) %}
+      <div class="mb-4">
+        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Elo Ratings</h3>
+        <div class="grid grid-cols-2 gap-4">
+          <div class="text-center p-3 bg-gray-50 rounded">
+            <p class="text-xs text-gray-500">{{ game.home_team }}</p>
+            <p class="text-lg font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.0f"|format(game.context.home_elo or 0) }}</p>
+          </div>
+          <div class="text-center p-3 bg-gray-50 rounded">
+            <p class="text-xs text-gray-500">{{ game.away_team }}</p>
+            <p class="text-lg font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.0f"|format(game.context.away_elo or 0) }}</p>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {# Last 5 Games #}
+      {% if game.context and (game.context.home_last5_list or game.context.away_last5_list) %}
+      <div class="mb-4">
+        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Recent Form (Last 5)</h3>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <p class="text-xs text-gray-500 mb-1">{{ game.home_team }}</p>
+            <div class="flex gap-1">
+              {% for result in game.context.home_last5_list %}
+              <span class="w-7 h-7 rounded flex items-center justify-center text-xs font-bold {% if result == 'W' %}bg-green-100 text-green-800{% else %}bg-red-100 text-red-600{% endif %}">{{ result }}</span>
+              {% endfor %}
+            </div>
+          </div>
+          <div>
+            <p class="text-xs text-gray-500 mb-1">{{ game.away_team }}</p>
+            <div class="flex gap-1">
+              {% for result in game.context.away_last5_list %}
+              <span class="w-7 h-7 rounded flex items-center justify-center text-xs font-bold {% if result == 'W' %}bg-green-100 text-green-800{% else %}bg-red-100 text-red-600{% endif %}">{{ result }}</span>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {# Head-to-Head #}
+      {% if game.context and game.context.h2h_record %}
+      <div>
+        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Head-to-Head (Last 5 Seasons)</h3>
+        <p class="text-sm text-gray-700">{{ game.home_team }} {{ game.context.h2h_home_wins }}-{{ game.context.h2h_away_wins }} {{ game.away_team }}</p>
+      </div>
+      {% endif %}
+
+      {# Empty context state #}
+      {% if not game.context %}
+      <p class="text-sm text-gray-500">Team context data not available for this game.</p>
+      {% endif %}
+    </div>
+
+    {# Venue and Weather Card (D-14) #}
+    <div class="bg-white rounded-lg border border-gray-200 p-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-4">Venue & Weather</h2>
+      {% if game.context %}
+      <dl class="space-y-3 text-sm">
+        {% if game.context.venue_name %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Stadium</dt>
+          <dd class="text-gray-900 font-medium">{{ game.context.venue_name }}</dd>
+        </div>
+        {% endif %}
+        {% if game.context.surface %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Surface</dt>
+          <dd class="text-gray-900 font-medium">{{ game.context.surface }}</dd>
+        </div>
+        {% endif %}
+        {% if game.context.roof_type %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Roof</dt>
+          <dd class="text-gray-900 font-medium">{{ game.context.roof_type|title }}</dd>
+        </div>
+        {% endif %}
+        {% if game.context.is_outdoor and game.context.weather_severity is not none %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Weather Severity</dt>
+          <dd class="text-gray-900 font-medium" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.1f"|format(game.context.weather_severity) }}</dd>
+        </div>
+        {% endif %}
+        {% if game.context.is_outdoor and game.context.wind_mph is not none %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Wind</dt>
+          <dd class="text-gray-900 font-medium" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.0f"|format(game.context.wind_mph) }} mph</dd>
+        </div>
+        {% endif %}
+        {% if game.context.is_divisional %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Type</dt>
+          <dd class="text-gray-900 font-medium">Divisional Game</dd>
+        </div>
+        {% endif %}
+      </dl>
+      {% else %}
+      <p class="text-sm text-gray-500">Venue and weather data not available.</p>
+      {% endif %}
+    </div>
+
+    {# Export for this game #}
+    <div class="flex justify-end">
+      {% with csv_url="/api/export/csv?game_id=" ~ game.game_id,
+              json_url="/api/export/json?game_id=" ~ game.game_id %}
+        {% include "components/_export_buttons.html" %}
+      {% endwith %}
+    </div>
+  </div>
+</div>
+
+{% endif %}
 {% endblock %}
