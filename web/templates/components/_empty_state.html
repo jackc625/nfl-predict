@@ -1,0 +1,13 @@
+{# Empty state component. Pass: heading, body, action_text (optional), action_url (optional) #}
+<div class="text-center py-12">
+  <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+  </svg>
+  <h3 class="mt-4 text-lg font-semibold text-gray-900">{{ heading }}</h3>
+  <p class="mt-2 text-sm text-gray-500 max-w-md mx-auto">{{ body }}</p>
+  {% if action_text and action_url %}
+  <div class="mt-6">
+    <a href="{{ action_url }}" class="inline-flex items-center px-4 py-2 bg-nfl-primary text-white text-sm font-medium rounded-md hover:bg-nfl-secondary transition-colors min-h-[44px]">{{ action_text }}</a>
+  </div>
+  {% endif %}
+</div>

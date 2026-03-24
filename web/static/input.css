@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+@source "../../web/templates";
+
+@theme {
+  --color-nfl-primary: #013369;
+  --color-nfl-secondary: #D50A0A;
+  --color-nfl-accent: #FF8C00;
+  --color-nfl-dark: #1a1a1a;
+  --color-nfl-light: #F8F9FA;
+}

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}NFL Predictions{% endblock %} | NFL Predict</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/tailwind-compiled.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/custom.css') }}">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  {% block head_extra %}{% endblock %}
+</head>
+<body class="bg-nfl-light min-h-screen flex flex-col">
+  <nav class="bg-nfl-primary text-white shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        <div class="flex items-center gap-2">
+          <span class="text-xl font-semibold">NFL Predict</span>
+        </div>
+        <!-- Desktop nav -->
+        <div class="hidden md:flex items-center gap-6">
+          <a href="/" class="nav-link px-3 py-2 text-sm font-medium rounded-md {% if current_path == '/' %}bg-white/20{% else %}hover:bg-white/10{% endif %}">This Week</a>
+          <a href="/performance" class="nav-link px-3 py-2 text-sm font-medium rounded-md {% if current_path == '/performance' %}bg-white/20{% else %}hover:bg-white/10{% endif %}">Performance</a>
+          <a href="/backtest" class="nav-link px-3 py-2 text-sm font-medium rounded-md {% if current_path == '/backtest' %}bg-white/20{% else %}hover:bg-white/10{% endif %}">Backtest</a>
+        </div>
+        <!-- Mobile hamburger button -->
+        <button
+          class="md:hidden p-2 rounded-md hover:bg-white/10 min-h-[44px] min-w-[44px] flex items-center justify-center"
+          aria-label="Toggle navigation menu"
+          onclick="document.getElementById('mobile-menu').classList.toggle('hidden')"
+        >
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <!-- Mobile menu (hidden by default) -->
+    <div id="mobile-menu" class="hidden md:hidden border-t border-white/20">
+      <div class="px-4 py-3 space-y-1">
+        <a href="/" class="block px-3 py-2 text-sm font-medium rounded-md min-h-[44px] flex items-center {% if current_path == '/' %}bg-white/20{% endif %}">This Week</a>
+        <a href="/performance" class="block px-3 py-2 text-sm font-medium rounded-md min-h-[44px] flex items-center {% if current_path == '/performance' %}bg-white/20{% endif %}">Performance</a>
+        <a href="/backtest" class="block px-3 py-2 text-sm font-medium rounded-md min-h-[44px] flex items-center {% if current_path == '/backtest' %}bg-white/20{% endif %}">Backtest</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="bg-white border-t border-gray-200 mt-auto">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div class="text-center text-sm text-gray-500">
+        <p>NFL Prediction System -- Precomputed predictions served from DuckDB cache</p>
+        <p class="mt-1">Last updated: {{ cache_meta.last_updated if cache_meta else 'Unknown' }}</p>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
