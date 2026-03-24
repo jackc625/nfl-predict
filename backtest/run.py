@@ -292,7 +292,19 @@ def run_backtest(
     if blend:
         from models.blending import MarketBlender
 
-        blender = MarketBlender.from_artifacts(Path(blend_artifacts_dir))
+        try:
+            blender = MarketBlender.from_artifacts(Path(blend_artifacts_dir))
+        except (KeyError, FileNotFoundError) as exc:
+            print("ERROR: Blend artifacts not found.")
+            print()
+            print("  Blend weight artifacts must be generated before running --blend.")
+            print("  Run this command first:")
+            print()
+            print("    python -m backtest.tune")
+            print()
+            print(f"  (Details: {exc})")
+            raise SystemExit(1) from exc
+
         blend_config = blender.config
         print(
             f"Applying market blending with weights: "
