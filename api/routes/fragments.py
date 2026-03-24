@@ -20,8 +20,8 @@ router = APIRouter(prefix="/fragments", tags=["fragments"])
 @router.get("/games")
 def games_fragment(
     request: Request,
-    week: int | None = Query(None),
-    season: int | None = Query(None),
+    week: str | None = Query(None),
+    season: str | None = Query(None),
     sort: str = Query("time"),
 ):
     """Return the game grid as an HTMX fragment.
@@ -29,13 +29,15 @@ def games_fragment(
     Used by the week selector and sort controls to swap the game grid
     without reloading the full page.
     """
+    week_int = int(week) if week and week.strip() else None
+    season_int = int(season) if season and season.strip() else None
     service = get_data_service()
-    games = service.get_predictions(season=season, week=week, sort=sort)
+    games = service.get_predictions(season=season_int, week=week_int, sort=sort)
 
     context = {
         "games": games,
-        "current_week": week,
-        "current_season": season,
+        "current_week": week_int,
+        "current_season": season_int,
         "current_sort": sort,
     }
     return templates.TemplateResponse(
@@ -46,20 +48,21 @@ def games_fragment(
 @router.get("/performance")
 def performance_fragment(
     request: Request,
-    season: int | None = Query(None),
+    season: str | None = Query(None),
 ):
     """Return the performance_content block for HTMX season swap.
 
     Renders only the season metrics table portion of the performance
     page, used when the season selector dropdown changes.
     """
+    season_int = int(season) if season and season.strip() else None
     service = get_data_service()
-    season_metrics = service.get_backtest_metrics(season=season)
+    season_metrics = service.get_backtest_metrics(season=season_int)
 
     context = {
         "request": request,
         "season_metrics": season_metrics,
-        "current_season": season,
+        "current_season": season_int,
     }
     return templates.TemplateResponse(
         request, "pages/performance.html", context,
