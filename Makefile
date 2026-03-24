@@ -3,7 +3,7 @@
 # This Makefile provides standardized commands for running the NFL prediction system
 # in accordance with the PRD acceptance criteria.
 
-.PHONY: help snapshot backtest backtest-blend backtest-quick predict serve test clean install setup lint build-css train train-wp train-ats train-ou
+.PHONY: help snapshot backtest backtest-blend backtest-quick predict serve test clean install setup lint build-css train train-wp train-ats train-ou tune-blend
 
 # Default target
 .DEFAULT_GOAL := help
@@ -92,6 +92,12 @@ backtest-blend: ## Run blended backtest with market reversion
 	$(PYTHON) -m backtest.run --blend
 	@echo ""
 	@echo "$(GREEN)Blended backtest complete! Reports in outputs/backtest/$(NC)"
+
+tune-blend: ## Tune blend weights on pre-2018 data and save artifacts
+	@echo "$(GREEN)Tuning blend weights on pre-backtest data...$(NC)"
+	$(PYTHON) -m backtest.tune
+	@echo ""
+	@echo "$(GREEN)Blend weight tuning complete! Run 'make backtest-blend' to use.$(NC)"
 
 backtest-quick: ## Run backtest for a single season (default: 2024)
 	$(PYTHON) -m backtest.run --seasons $(SEASON)
