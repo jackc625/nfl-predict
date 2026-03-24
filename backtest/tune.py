@@ -135,7 +135,7 @@ def _build_synthetic_predictions(
     # ATS: Use spread as base with N(0, 1.5) noise
     valid_spread = tuning_odds.dropna(subset=["spread"])
     spread_noise = rng.normal(0, 1.5, size=len(valid_spread))
-    model_spread = valid_spread["spread"].values + spread_noise
+    model_spread = np.asarray(valid_spread["spread"].values) + spread_noise
 
     ats_df = valid_spread[base_cols].copy()
     ats_df["model_spread"] = model_spread
@@ -143,12 +143,13 @@ def _build_synthetic_predictions(
     # O/U: Use total as base with N(0, 1.5) noise
     valid_total = tuning_odds.dropna(subset=["total"])
     total_noise = rng.normal(0, 1.5, size=len(valid_total))
-    model_total = valid_total["total"].values + total_noise
+    model_total = np.asarray(valid_total["total"].values) + total_noise
 
     ou_df = valid_total[base_cols].copy()
     ou_df["model_total"] = model_total
 
-    return {"wp": wp_df, "ats": ats_df, "ou": ou_df}
+    result: dict[str, pd.DataFrame] = {"wp": wp_df, "ats": ats_df, "ou": ou_df}
+    return result
 
 
 def main() -> None:
