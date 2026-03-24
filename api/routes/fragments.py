@@ -62,7 +62,6 @@ def performance_fragment(
         "current_season": season,
     }
     return templates.TemplateResponse(
-        "pages/performance.html",
-        context,
+        request, "pages/performance.html", context,
         block_name="performance_content",
     )

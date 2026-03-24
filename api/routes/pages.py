@@ -176,7 +176,7 @@ def performance_page(
     # If HTMX request, return only the performance_content block
     block = "performance_content" if request.headers.get("HX-Request") else None
     return templates.TemplateResponse(
-        "pages/performance.html", context, block_name=block
+        request, "pages/performance.html", context, block_name=block
     )
 
 
@@ -202,7 +202,7 @@ def backtest_page(request: Request):
         "current_path": "/backtest",
         "cache_meta": cache_meta,
     }
-    return templates.TemplateResponse("pages/backtest.html", context)
+    return templates.TemplateResponse(request, "pages/backtest.html", context)
 
 
 @router.get("/games/{game_id}")
