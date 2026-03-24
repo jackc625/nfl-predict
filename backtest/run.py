@@ -170,16 +170,18 @@ def export_summary_json(
     backtest_results: BacktestResults,
     simulation_results: SimulationResults,
     output_dir: Path,
+    baseline_results: BacktestResults | None = None,
 ) -> Path:
     """Export a machine-readable JSON summary of backtest results.
 
     Contains headline CLV, per-season summaries, simulation ROI,
-    odds coverage stats, and config metadata.
+    odds coverage stats, config metadata, and blending info when applicable.
 
     Args:
         backtest_results: Complete backtest results from the engine.
         simulation_results: Complete simulation results.
         output_dir: Directory to write the JSON file.
+        baseline_results: Unblended baseline results for delta computation.
 
     Returns:
         Path to the written JSON file.
@@ -228,6 +230,24 @@ def export_summary_json(
         "generated_at": datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
+    # Add blending info if this is a blended backtest
+    if backtest_results.is_blended:
+        blend_delta_data: dict[str, Any] = {}
+        if baseline_results is not None:
+            for target in backtest_results.headline_clv:
+                blended_clv = backtest_results.headline_clv[target]
+                baseline_clv = baseline_results.headline_clv.get(target, 0.0)
+                blend_delta_data[target] = {
+                    "blended_clv": blended_clv,
+                    "baseline_clv": baseline_clv,
+                    "delta": blended_clv - baseline_clv,
+                    "improved": blended_clv > baseline_clv,
+                }
+        summary["blending"] = {
+            "is_blended": True,
+            "blend_delta": blend_delta_data,
+        }
+
     json_path = output_dir / "metrics_summary.json"
     json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
@@ -244,13 +264,20 @@ def run_backtest(
     seasons: list[int] | None = None,
     targets: list[str] | None = None,
     output_dir: str = "outputs/backtest",
+    blend: bool = False,
+    blend_artifacts_dir: str = "artifacts",
 ) -> None:
     """Run the complete backtest pipeline: engine + simulation + report + export.
+
+    When blend=True, runs two backtests: blended (primary) and unblended
+    (baseline), then computes and prints improvement delta per target.
 
     Args:
         seasons: Holdout seasons to evaluate. Defaults to [2021,2022,2023,2024].
         targets: Model targets. Defaults to ["wp","ats","ou"].
         output_dir: Output directory for reports and exports.
+        blend: Whether to apply market blending to predictions.
+        blend_artifacts_dir: Directory containing blend weight artifacts.
     """
     if seasons is None:
         seasons = [2021, 2022, 2023, 2024]
@@ -260,14 +287,32 @@ def run_backtest(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    # Load blend config if requested
+    blend_config = None
+    if blend:
+        from models.blending import MarketBlender
+
+        blender = MarketBlender.from_artifacts(Path(blend_artifacts_dir))
+        blend_config = blender.config
+        print(
+            f"Applying market blending with weights: "
+            f"WP={blend_config.weights.wp_model_weight:.2f}, "
+            f"ATS={blend_config.weights.ats_model_weight:.2f}, "
+            f"O/U={blend_config.weights.ou_model_weight:.2f}"
+        )
+        print()
+
     # Step 1: Run walk-forward backtest
     print(f"Running walk-forward backtest for seasons: {seasons}")
     print(f"Targets: {[t.upper() for t in targets]}")
+    if blend:
+        print("Mode: BLENDED (market reversion applied)")
     print()
 
     config = BacktestConfig(
         holdout_seasons=seasons,
         targets=targets,
+        blend_config=blend_config,
     )
     engine = BacktestEngine(config=config)
     results = engine.run()
@@ -276,6 +321,32 @@ def run_backtest(
     for target, clv in results.headline_clv.items():
         print(f"  {target.upper()} Headline CLV: {clv:+.4f}")
     print()
+
+    # Step 1b: Run unblended baseline if blending is active
+    unblended_results: BacktestResults | None = None
+    if blend:
+        print("Running unblended baseline for comparison...")
+        baseline_config = BacktestConfig(
+            holdout_seasons=seasons,
+            targets=targets,
+            blend_config=None,
+        )
+        baseline_engine = BacktestEngine(config=baseline_config)
+        unblended_results = baseline_engine.run()
+
+        # Print improvement delta
+        print()
+        print("  Blend Improvement Delta:")
+        for target in targets:
+            blended_clv = results.headline_clv.get(target, 0.0)
+            baseline_clv = unblended_results.headline_clv.get(target, 0.0)
+            delta = blended_clv - baseline_clv
+            direction = "+" if delta >= 0 else ""
+            print(
+                f"    {target.upper()}: {blended_clv:+.4f} vs {baseline_clv:+.4f} "
+                f"(delta: {direction}{delta:.4f})"
+            )
+        print()
 
     # Step 2: Run betting simulation
     print("Running betting simulation...")
@@ -291,7 +362,10 @@ def run_backtest(
     # Step 3: Generate HTML report
     print("Generating HTML report...")
     reporter = BacktestReporter(output_dir=output_path)
-    report_path = reporter.generate(results, sim_results)
+    report_path = reporter.generate(
+        results, sim_results,
+        baseline_results=unblended_results if blend else None,
+    )
     print(f"  HTML report: {report_path}")
 
     # Step 4: Export CSVs
@@ -302,13 +376,19 @@ def run_backtest(
 
     # Step 5: Export JSON summary
     print("Exporting JSON summary...")
-    json_path = export_summary_json(results, sim_results, output_path)
+    json_path = export_summary_json(
+        results, sim_results, output_path,
+        baseline_results=unblended_results if blend else None,
+    )
     print(f"  JSON: {json_path}")
 
     # Final summary
     print()
     print("=" * 60)
-    print("  Backtest Complete")
+    if blend:
+        print("  Blended Backtest Complete")
+    else:
+        print("  Backtest Complete")
     print("=" * 60)
     print()
     for target, clv in results.headline_clv.items():
@@ -316,6 +396,17 @@ def run_backtest(
         print(f"  {target.upper()} Headline CLV: {sign}{clv:.4f}")
     print(f"  Flat-Stake ROI:  {sim_results.flat_stake.roi:+.2%}")
     print(f"  Kelly ROI:       {sim_results.kelly.roi:+.2%}")
+
+    if blend and unblended_results:
+        print()
+        print("  Improvement vs Unblended Baseline:")
+        for target in targets:
+            blended_clv = results.headline_clv.get(target, 0.0)
+            baseline_clv = unblended_results.headline_clv.get(target, 0.0)
+            delta = blended_clv - baseline_clv
+            status = "IMPROVED" if delta > 0 else "DEGRADED" if delta < 0 else "UNCHANGED"
+            print(f"    {target.upper()}: delta {delta:+.4f} ({status})")
+
     print()
     print("  Output files:")
     print(f"    {report_path}")
@@ -338,6 +429,8 @@ def main() -> None:
         python -m backtest.run
         python -m backtest.run --seasons 2023,2024
         python -m backtest.run --targets wp,ats --output-dir custom/path
+        python -m backtest.run --blend
+        python -m backtest.run --blend --blend-artifacts-dir custom/artifacts
     """
     parser = argparse.ArgumentParser(
         description="Run walk-forward backtest with HTML report and CSV exports.",
@@ -361,13 +454,31 @@ def main() -> None:
         default="outputs/backtest",
         help="Output directory for reports (default: outputs/backtest)",
     )
+    parser.add_argument(
+        "--blend",
+        action="store_true",
+        default=False,
+        help="Apply market blending to predictions using tuned weights from artifacts.",
+    )
+    parser.add_argument(
+        "--blend-artifacts-dir",
+        type=str,
+        default="artifacts",
+        help="Directory containing blend weight artifacts (default: artifacts/)",
+    )
 
     args = parser.parse_args()
 
     seasons = [int(s.strip()) for s in args.seasons.split(",")]
     targets = [t.strip() for t in args.targets.split(",")]
 
-    run_backtest(seasons=seasons, targets=targets, output_dir=args.output_dir)
+    run_backtest(
+        seasons=seasons,
+        targets=targets,
+        output_dir=args.output_dir,
+        blend=args.blend,
+        blend_artifacts_dir=args.blend_artifacts_dir,
+    )
 
 
 if __name__ == "__main__":

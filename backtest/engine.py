@@ -52,6 +52,8 @@ class BacktestConfig:
         first_data_season: Earliest season in the data.
         targets: Model targets to evaluate.
         max_backtest_season: Maximum season to include (filters incomplete seasons).
+        blend_config: Market blending configuration. None means no blending
+            (Phase 6 baseline behavior).
     """
 
     holdout_seasons: list[int] = field(
@@ -60,6 +62,7 @@ class BacktestConfig:
     first_data_season: int = 2018
     targets: list[str] = field(default_factory=lambda: ["wp", "ats", "ou"])
     max_backtest_season: int = 2024
+    blend_config: Any | None = None  # BlendConfig from models.blending
 
 
 @dataclass
@@ -113,6 +116,7 @@ class BacktestResults:
         odds_coverage: Games with/without closing odds per target.
         covid_annotation: COVID-2020 context from get_covid_hfa_annotation().
         era_info: Season total weeks mapping.
+        is_blended: Whether market blending was applied to predictions.
     """
 
     config: BacktestConfig
@@ -123,6 +127,7 @@ class BacktestResults:
     odds_coverage: dict[str, int]
     covid_annotation: dict
     era_info: dict
+    is_blended: bool = False
 
 
 # -----------------------------------------------------------------------
@@ -398,6 +403,55 @@ class BacktestEngine:
                 pd.concat(clv_frames, ignore_index=True) if clv_frames else pd.DataFrame()
             )
 
+        # Apply market blending if configured
+        is_blended = False
+        if self.config.blend_config is not None:
+            from models.blending import MarketBlender
+
+            blender = MarketBlender(config=self.config.blend_config)
+            for target in self.config.targets:
+                if not concat_predictions[target].empty:
+                    concat_predictions[target] = blender.blend_predictions(
+                        concat_predictions[target], closing_odds_df, target
+                    )
+                    # Run edge rate diagnostic
+                    edge_report = blender.check_weekly_edge_rate(
+                        concat_predictions[target], closing_odds_df, target
+                    )
+                    self.logger.info(
+                        "Blend edge diagnostic",
+                        target=target,
+                        mean_flag_rate=edge_report["mean_rate"],
+                        n_warnings=len(edge_report["warnings"]),
+                    )
+
+            # Recompute CLV from blended predictions.
+            # Drop existing CLV/odds columns first to avoid merge conflicts,
+            # since concat_predictions already contains merged odds from
+            # the initial CLV computation.
+            from models.clv import compute_clv_for_predictions
+
+            clv_odds_cols = [
+                "probability_clv", "fair_closing_prob", "has_closing_odds",
+                "line_clv", "ml_home", "ml_away", "spread", "total",
+            ]
+            for target in self.config.targets:
+                if not concat_predictions[target].empty:
+                    drop_cols = [
+                        c for c in clv_odds_cols
+                        if c in concat_predictions[target].columns
+                    ]
+                    clean_preds = concat_predictions[target].drop(
+                        columns=drop_cols
+                    )
+                    concat_clv[target] = compute_clv_for_predictions(
+                        clean_preds, closing_odds_df, target
+                    )
+                    # Update concat_predictions with recomputed CLV data
+                    concat_predictions[target] = concat_clv[target]
+
+            is_blended = True
+
         # Compute headline CLV: mean probability_clv for games with closing odds
         headline_clv: dict[str, float] = {}
         for target in self.config.targets:
@@ -442,4 +496,5 @@ class BacktestEngine:
             odds_coverage=odds_coverage,
             covid_annotation=get_covid_hfa_annotation(),
             era_info=era_info,
+            is_blended=is_blended,
         )
