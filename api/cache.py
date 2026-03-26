@@ -17,9 +17,11 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 from utils import get_logger
+from utils.probability_utils import moneyline_to_probability
 
 logger = get_logger(__name__)
 
@@ -227,9 +229,9 @@ def _load_backtest_predictions(
     }
     df = df.rename(columns={k: v for k, v in col_renames.items() if k in df.columns})
 
-    # Derive 'week' from game_id if missing (format: YYYY_WW_AWAY@HOME)
+    # Derive 'week' from game_id if missing (format: YYYY_W01_AWAY@HOME)
     if "week" not in df.columns and "game_id" in df.columns:
-        df["week"] = df["game_id"].str.extract(r"_(\d+)_")[0].astype("Int64")
+        df["week"] = df["game_id"].str.extract(r"_W(\d+)_")[0].astype("Int64")
 
     required_cols = {"game_id", "season", "target", "model_prob", "actual"}
     if not required_cols.issubset(set(df.columns)):
@@ -288,7 +290,10 @@ def _load_metrics_summary(
                 # Nested: key is target, value is metrics dict
                 for metric_name, metric_value in value.items():
                     if isinstance(metric_value, (int, float)):
-                        rows.append((0, str(key), str(metric_name), float(metric_value)))
+                        rows.append((
+                            0, str(key), str(metric_name),
+                            float(metric_value),
+                        ))
             elif isinstance(value, (int, float)):
                 # Flat: key is metric name
                 rows.append((0, "overall", str(key), float(value)))
@@ -405,7 +410,10 @@ def _load_simulation_results(
                 (strategy, "total_bets", float(total_bets)),
                 (strategy, "total_wagered", float(total_wagered)),
                 (strategy, "total_pnl", float(total_pnl)),
-                (strategy, "win_rate", float(wins / total_bets * 100) if total_bets else 0.0),
+                (
+                    strategy, "win_rate",
+                    float(wins / total_bets * 100) if total_bets else 0.0,
+                ),
                 (strategy, "roi", float(roi)),
             ])
 
@@ -443,6 +451,407 @@ def _load_simulation_results(
     return len(rows)
 
 
+def _compute_confidence(edge: pd.Series) -> pd.Series:
+    """Map absolute edge values to confidence labels.
+
+    Args:
+        edge: Series of edge values (can contain NaN).
+
+    Returns:
+        Series of "high", "medium", or "low" strings.
+    """
+    abs_edge = edge.abs()
+    return pd.Series(
+        np.where(
+            abs_edge > 0.05,
+            "high",
+            np.where(abs_edge > 0.02, "medium", "low"),
+        ),
+        index=edge.index,
+    )
+
+
+def _load_predictions(
+    conn: duckdb.DuckDBPyConnection,
+    outputs_dir: Path,
+    silver_dir: Path,
+) -> int:
+    """Load predictions from backtest outputs into the predictions table.
+
+    Transforms predictions_all.csv (one row per game per target: wp/ats/ou)
+    into the predictions table (one row per game with all three targets as
+    columns). Joins with silver games for team names, scores, and dates.
+
+    Args:
+        conn: Active DuckDB connection.
+        outputs_dir: Directory containing predictions_all.csv.
+        silver_dir: Directory containing games.parquet.
+
+    Returns:
+        Number of rows inserted.
+    """
+    csv_path = outputs_dir / "predictions_all.csv"
+    if not csv_path.exists():
+        logger.warning(
+            "Predictions CSV not found, skipping predictions table",
+            path=str(csv_path),
+        )
+        return 0
+
+    df = pd.read_csv(csv_path)
+    logger.info("Read predictions CSV for pivot", rows=len(df))
+
+    # Extract week from game_id (format: YYYY_W01_AWAY@HOME)
+    df["week"] = df["game_id"].str.extract(r"_W(\d+)_")[0].astype("Int64")
+
+    # -- Pivot: filter each target and rename model columns --
+    wp = df[df["target"] == "wp"][
+        [
+            "game_id", "season", "week", "model_value",
+            "ml_home", "ml_away", "spread", "total", "probability_clv",
+        ]
+    ].copy()
+    wp = wp.rename(columns={"model_value": "wp_prob"})
+
+    ats = df[df["target"] == "ats"][["game_id", "model_spread"]].copy()
+    ats = ats.rename(columns={"model_spread": "ats_prediction"})
+
+    ou = df[df["target"] == "ou"][["game_id", "model_total"]].copy()
+    ou = ou.rename(columns={"model_total": "ou_prediction"})
+
+    # Merge targets into one row per game
+    merged = wp.merge(ats, on="game_id", how="left").merge(
+        ou, on="game_id", how="left"
+    )
+
+    # Join with silver games for teams, scores, dates
+    games_path = silver_dir / "games.parquet"
+    if not games_path.exists():
+        logger.warning(
+            "Silver games.parquet not found", path=str(games_path)
+        )
+        return 0
+
+    games = pd.read_parquet(games_path)
+    game_cols = [
+        "game_id", "home_team", "away_team",
+        "home_score", "away_score", "kickoff_et",
+    ]
+    merged = merged.merge(
+        games[game_cols], on="game_id", how="left",
+    )
+
+    # Map to predictions schema
+    merged["game_date"] = pd.to_datetime(merged["kickoff_et"])
+    merged["status"] = np.where(
+        merged["home_score"].notna(), "completed", "scheduled"
+    )
+    merged["home_score"] = merged["home_score"].astype("Int64")
+    merged["away_score"] = merged["away_score"].astype("Int64")
+    merged["market_spread"] = merged["spread"]
+    merged["market_total"] = merged["total"]
+    merged["market_ml_home"] = merged["ml_home"].astype("Int64")
+    merged["market_ml_away"] = merged["ml_away"].astype("Int64")
+
+    # Compute edges
+    # WP edge: use probability_clv if available, else compute from moneyline
+    if "probability_clv" in merged.columns:
+        merged["wp_edge"] = merged["probability_clv"]
+    # Fill NaN wp_edge from moneyline-derived fair probability
+    wp_edge_mask = merged["wp_edge"].isna() & merged["ml_home"].notna()
+    if wp_edge_mask.any():
+        fair_prob = merged.loc[wp_edge_mask, "ml_home"].apply(
+            lambda ml: moneyline_to_probability(int(ml)) if pd.notna(ml) else np.nan
+        )
+        merged.loc[wp_edge_mask, "wp_edge"] = (
+            merged.loc[wp_edge_mask, "wp_prob"] - fair_prob
+        )
+
+    # ATS edge: model spread vs negative market spread, normalized
+    market_spread_safe = merged["market_spread"].abs().clip(lower=0.5)
+    merged["ats_edge"] = (
+        merged["ats_prediction"] - (-merged["market_spread"])
+    ) / market_spread_safe
+
+    # O/U edge: model total vs market total, normalized
+    market_total_safe = merged["market_total"].clip(lower=30)
+    merged["ou_edge"] = (
+        merged["ou_prediction"] - merged["market_total"]
+    ) / market_total_safe
+
+    # Confidence levels from edge magnitudes
+    merged["wp_confidence"] = _compute_confidence(merged["wp_edge"])
+    merged["ats_confidence"] = _compute_confidence(merged["ats_edge"])
+    merged["ou_confidence"] = _compute_confidence(merged["ou_edge"])
+
+    # Blended columns: NULL for now (backtest data may not include blended)
+    merged["blended_wp"] = None
+    merged["blended_ats"] = None
+    merged["blended_ou"] = None
+
+    # Select final columns matching schema order
+    final_cols = [
+        "game_id", "season", "week", "game_date",
+        "home_team", "away_team", "status", "home_score", "away_score",
+        "wp_prob", "wp_confidence", "ats_prediction", "ats_confidence",
+        "ou_prediction", "ou_confidence",
+        "market_spread", "market_total", "market_ml_home", "market_ml_away",
+        "wp_edge", "ats_edge", "ou_edge",
+        "blended_wp", "blended_ats", "blended_ou",
+    ]
+    final_df = merged[final_cols].copy()
+
+    conn.execute(
+        "INSERT OR REPLACE INTO predictions SELECT * FROM final_df"
+    )
+    row_count = len(final_df)
+    logger.info("Predictions table populated", count=row_count)
+    return row_count
+
+
+def _build_last5_records(games: pd.DataFrame) -> pd.DataFrame:
+    """Build last-5 win/loss records for every team-game combination.
+
+    Uses a vectorized approach: creates two rows per game (one for each team),
+    computes results, then uses groupby + rolling to find the last 5 results
+    prior to each game.
+
+    Args:
+        games: Silver games DataFrame with game_id, season, week, home_team,
+               away_team, home_score, away_score.
+
+    Returns:
+        DataFrame with columns: game_id, team, is_home, last5 (JSON string).
+    """
+    # Build team-game results: two rows per game (home and away perspective)
+    cols = ["game_id", "season", "week", "home_team",
+            "home_score", "away_score"]
+    home_rows = games[cols].copy()
+    home_rows = home_rows.rename(columns={"home_team": "team"})
+    home_rows["result"] = np.where(
+        home_rows["home_score"] > home_rows["away_score"], "W",
+        np.where(home_rows["home_score"] < home_rows["away_score"], "L", "T"),
+    )
+    home_rows["is_home"] = True
+
+    away_cols = ["game_id", "season", "week", "away_team",
+                 "home_score", "away_score"]
+    away_rows = games[away_cols].copy()
+    away_rows = away_rows.rename(columns={"away_team": "team"})
+    away_rows["result"] = np.where(
+        away_rows["away_score"] > away_rows["home_score"], "W",
+        np.where(away_rows["away_score"] < away_rows["home_score"], "L", "T"),
+    )
+    away_rows["is_home"] = False
+
+    team_games = pd.concat([home_rows, away_rows], ignore_index=True)
+    team_games = team_games.sort_values(
+        ["team", "season", "week"],
+    ).reset_index(drop=True)
+
+    # For each team-game, collect the last 5 results from prior weeks in the same season
+    records: list[dict[str, Any]] = []
+    for (team, _season), group in team_games.groupby(["team", "season"]):
+        group = group.sort_values("week")
+        results_so_far: list[str] = []
+        for _, row in group.iterrows():
+            # last5 is from games before this one
+            last5 = results_so_far[-5:] if results_so_far else []
+            records.append({
+                "game_id": row["game_id"],
+                "team": team,
+                "is_home": row["is_home"],
+                "last5": json.dumps(list(reversed(last5))),  # most recent first
+            })
+            results_so_far.append(row["result"])
+
+    return pd.DataFrame(records)
+
+
+def _build_h2h_records(games: pd.DataFrame) -> pd.DataFrame:
+    """Build head-to-head records for each game's matchup over last 5 seasons.
+
+    Args:
+        games: Silver games DataFrame.
+
+    Returns:
+        DataFrame with columns: game_id, h2h_record (JSON string).
+    """
+    records: list[dict[str, str]] = []
+
+    # Pre-sort for efficiency
+    games_sorted = games.sort_values(["season", "week"]).reset_index(drop=True)
+
+    for _, game in games_sorted.iterrows():
+        home = game["home_team"]
+        away = game["away_team"]
+        season = game["season"]
+        week = game["week"]
+
+        # Find prior matchups between these two teams
+        gs = games_sorted
+        is_matchup = (
+            ((gs["home_team"] == home) & (gs["away_team"] == away))
+            | ((gs["home_team"] == away) & (gs["away_team"] == home))
+        )
+        # Last 5 seasons (strictly prior)
+        prior_seasons = (
+            is_matchup
+            & (gs["season"] >= season - 5)
+            & (gs["season"] < season)
+        )
+        # Earlier weeks of the same season
+        same_season = (
+            is_matchup
+            & (gs["season"] == season)
+            & (gs["week"] < week)
+        )
+        prior = gs[prior_seasons | same_season]
+
+        home_wins = 0
+        away_wins = 0
+        for _, prior_game in prior.iterrows():
+            if prior_game["home_score"] is None or pd.isna(prior_game["home_score"]):
+                continue
+            if prior_game["home_team"] == home:
+                if prior_game["home_score"] > prior_game["away_score"]:
+                    home_wins += 1
+                elif prior_game["away_score"] > prior_game["home_score"]:
+                    away_wins += 1
+            # Teams are reversed in this matchup
+            elif prior_game["home_score"] > prior_game["away_score"]:
+                away_wins += 1
+            elif prior_game["away_score"] > prior_game["home_score"]:
+                home_wins += 1
+
+        records.append({
+            "game_id": game["game_id"],
+            "h2h_record": json.dumps({"home_wins": home_wins, "away_wins": away_wins}),
+        })
+
+    return pd.DataFrame(records)
+
+
+def _load_game_context(
+    conn: duckdb.DuckDBPyConnection,
+    gold_dir: Path,
+    silver_dir: Path,
+) -> int:
+    """Load game context from gold features and silver games.
+
+    Builds the game_context table with Elo ratings, venue info, weather,
+    last-5 records, and head-to-head history.
+
+    Args:
+        conn: Active DuckDB connection.
+        gold_dir: Directory containing features_wp.parquet.
+        silver_dir: Directory containing games.parquet.
+
+    Returns:
+        Number of rows inserted.
+    """
+    gold_path = gold_dir / "features_wp.parquet"
+    if not gold_path.exists():
+        logger.warning(
+            "Gold features not found, skipping game_context",
+            path=str(gold_path),
+        )
+        return 0
+
+    games_path = silver_dir / "games.parquet"
+    if not games_path.exists():
+        logger.warning(
+            "Silver games not found, skipping game_context",
+            path=str(games_path),
+        )
+        return 0
+
+    # Read gold features for Elo, weather, divisional
+    gold_df = pd.read_parquet(gold_path)
+    gold_cols = [
+        "game_id", "home_elo", "away_elo", "is_divisional",
+        "weather_severity_score", "wind_mph", "venue_outdoor",
+    ]
+    context = gold_df[gold_cols].copy()
+    context = context.rename(columns={
+        "weather_severity_score": "weather_severity",
+        "venue_outdoor": "is_outdoor",
+    })
+
+    # Read silver games for venue, scores, and last-5 computation
+    games = pd.read_parquet(games_path)
+    games_merge_cols = [
+        "game_id", "venue", "venue_roof", "home_team",
+        "away_team", "home_score", "away_score", "season", "week",
+    ]
+    context = context.merge(
+        games[games_merge_cols], on="game_id", how="left",
+    )
+    context = context.rename(columns={
+        "venue": "venue_name",
+        "venue_roof": "roof_type",
+    })
+
+    # Derive surface from roof_type
+    surface_map = {
+        "indoor": "FieldTurf",
+        "outdoor": "Grass",
+        "retractable": "Grass",
+    }
+    context["surface"] = context["roof_type"].map(surface_map).fillna("Unknown")
+
+    # Primetime: not easily derivable from current data, set False
+    context["is_primetime"] = False
+
+    # Convert is_outdoor and is_divisional to boolean
+    context["is_outdoor"] = context["is_outdoor"].astype(bool)
+    context["is_divisional"] = context["is_divisional"].astype(bool)
+
+    # Compute last-5 records (vectorized by team+season)
+    logger.info("Computing last-5 records...")
+    last5_df = _build_last5_records(games)
+
+    # Join home last5
+    home_last5 = last5_df[last5_df["is_home"]][["game_id", "last5"]].rename(
+        columns={"last5": "home_last5"}
+    )
+    context = context.merge(home_last5, on="game_id", how="left")
+
+    # Join away last5
+    away_last5 = last5_df[~last5_df["is_home"]][["game_id", "last5"]].rename(
+        columns={"last5": "away_last5"}
+    )
+    context = context.merge(away_last5, on="game_id", how="left")
+
+    # Fill missing last5 with empty array
+    context["home_last5"] = context["home_last5"].fillna("[]")
+    context["away_last5"] = context["away_last5"].fillna("[]")
+
+    # Compute H2H records
+    logger.info("Computing H2H records...")
+    h2h_df = _build_h2h_records(games)
+    context = context.merge(h2h_df, on="game_id", how="left")
+    context["h2h_record"] = context["h2h_record"].fillna(
+        json.dumps({"home_wins": 0, "away_wins": 0})
+    )
+
+    # Select final columns matching game_context schema
+    final_cols = [
+        "game_id", "home_elo", "away_elo", "home_last5", "away_last5",
+        "h2h_record", "venue_name", "surface", "roof_type",
+        "weather_severity", "wind_mph", "is_outdoor", "is_divisional",
+        "is_primetime",
+    ]
+    context_df = context[final_cols].copy()
+
+    conn.execute(
+        "INSERT OR REPLACE INTO game_context SELECT * FROM context_df"
+    )
+    row_count = len(context_df)
+    logger.info("Game context table populated", count=row_count)
+    return row_count
+
+
 def _prerender_charts(
     conn: duckdb.DuckDBPyConnection,
 ) -> int:
@@ -453,7 +862,8 @@ def _prerender_charts(
     (UIAP-01 compliance).
 
     Args:
-        conn: Active DuckDB connection (used for both reading data and writing chart_cache).
+        conn: Active DuckDB connection (used for both reading data
+              and writing chart_cache).
 
     Returns the number of charts cached.
     """
@@ -486,6 +896,7 @@ def populate_cache(
     artifacts_dir: Path,
     outputs_dir: Path,
     gold_dir: Path,
+    silver_dir: Path = Path("data/silver"),
 ) -> None:
     """Populate the DuckDB web cache from artifacts and backtest outputs.
 
@@ -493,8 +904,9 @@ def populate_cache(
     1. Creating all tables per CACHE_SCHEMA
     2. Loading feature importances from model artifacts
     3. Loading backtest predictions, metrics, and simulation results
-    4. Pre-rendering chart placeholders
-    5. Setting cache metadata
+    4. Loading predictions (pivoted) and game context tables
+    5. Pre-rendering chart placeholders
+    6. Setting cache metadata
 
     Uses atomic rename: writes to a .tmp.duckdb file, then renames.
 
@@ -502,7 +914,8 @@ def populate_cache(
         db_path: Final path for the cache database (e.g. data/web_cache.duckdb).
         artifacts_dir: Root artifacts directory containing latest.json.
         outputs_dir: Backtest outputs directory.
-        gold_dir: Gold data directory (for future feature matrix loading).
+        gold_dir: Gold data directory containing features_wp.parquet.
+        silver_dir: Silver data directory containing games.parquet.
     """
     tmp_path = db_path.with_suffix(".tmp.duckdb")
     logger.info(
@@ -553,6 +966,14 @@ def populate_cache(
         sr_count = _load_simulation_results(conn, outputs_dir)
         logger.info("Simulation results loaded", count=sr_count)
 
+        # Load predictions from backtest data into the predictions table
+        pred_table_count = _load_predictions(conn, outputs_dir, silver_dir)
+        logger.info("Predictions loaded into cache", count=pred_table_count)
+
+        # Load game context from gold features + silver games
+        gc_count = _load_game_context(conn, gold_dir, silver_dir)
+        logger.info("Game context loaded", count=gc_count)
+
         # Pre-render charts from populated data
         chart_count = _prerender_charts(conn)
         logger.info("Charts pre-rendered", count=chart_count)
@@ -560,11 +981,11 @@ def populate_cache(
         # Set cache metadata
         now = datetime.now(tz=UTC)
         pred_count = conn.execute(
-            "SELECT COUNT(*) FROM backtest_predictions"
+            "SELECT COUNT(*) FROM predictions"
         ).fetchone()[0]
 
         season_range_row = conn.execute(
-            "SELECT MIN(season), MAX(season) FROM backtest_predictions"
+            "SELECT MIN(season), MAX(season) FROM predictions"
         ).fetchone()
         if season_range_row and season_range_row[0] is not None:
             season_range = f"{season_range_row[0]}-{season_range_row[1]}"
