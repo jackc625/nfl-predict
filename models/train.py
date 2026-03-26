@@ -478,7 +478,7 @@ def main() -> None:
     # Load closing odds (unless --no-clv)
     closing_odds_df = None
     if not args.no_clv:
-        odds_path = Path("data/silver/odds_historical.parquet")
+        odds_path = Path("data/silver/odds_snapshot.parquet")
         if odds_path.exists():
             closing_odds_df = pd.read_parquet(odds_path)
             logger.info(
