@@ -6,7 +6,7 @@
           hx-get="/fragments/games"
           hx-target="#game-grid"
           hx-swap="innerHTML"
-          hx-include="[name='week']"
+          hx-include="[name='week'],[name='season']"
           class="rounded-md border-gray-300 text-sm py-2 px-3 min-h-[44px]">
     <option value="time" {% if current_sort == "time" %}selected{% endif %}>Game Time</option>
     <option value="confidence" {% if current_sort == "confidence" %}selected{% endif %}>Confidence</option>
