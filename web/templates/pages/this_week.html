@@ -39,4 +39,35 @@
   {% endif %}
   {% endblock %}
 </div>
+
+<script>
+(function() {
+  function updateExportUrls() {
+    var seasonEl = document.getElementById('season-select');
+    var weekEl = document.getElementById('week-select');
+    var season = seasonEl ? seasonEl.value : '{{ current_season or "" }}';
+    var week = weekEl ? weekEl.value : '{{ current_week or "" }}';
+
+    var csvBtn = document.getElementById('export-csv');
+    var jsonBtn = document.getElementById('export-json');
+    var seasonCsvBtn = document.getElementById('export-season-csv');
+
+    if (csvBtn) csvBtn.href = '/api/export/csv?season=' + season + '&week=' + week;
+    if (jsonBtn) jsonBtn.href = '/api/export/json?season=' + season + '&week=' + week;
+    if (seasonCsvBtn) seasonCsvBtn.href = '/api/export/csv?season=' + season;
+  }
+
+  // Update on dropdown change
+  document.addEventListener('change', function(e) {
+    if (e.target && (e.target.id === 'season-select' || e.target.id === 'week-select')) {
+      updateExportUrls();
+    }
+  });
+
+  // Update after HTMX swaps (week selector updates available_weeks which changes week dropdown)
+  document.addEventListener('htmx:afterSwap', function() {
+    updateExportUrls();
+  });
+})();
+</script>
 {% endblock %}

@@ -1,15 +1,17 @@
-{# Export buttons for CSV and JSON downloads. Pass: csv_url, json_url, season_csv_url (optional), season_json_url (optional) #}
-<div class="flex flex-wrap items-center gap-2">
-  <a href="{{ csv_url }}" class="inline-flex items-center px-3 py-1.5 border border-nfl-primary text-nfl-primary text-sm font-medium rounded-md hover:bg-nfl-primary hover:text-white transition-colors min-h-[44px]">
+{# Export buttons for CSV and JSON downloads.
+   When used on the predictions page, JS updates hrefs dynamically based on current dropdown values.
+   Pass: csv_url, json_url, season_csv_url (optional), season_json_url (optional) #}
+<div id="export-buttons" class="flex flex-wrap items-center gap-2">
+  <a id="export-csv" href="{{ csv_url }}" data-base-url="/api/export/csv" class="inline-flex items-center px-3 py-1.5 border border-nfl-primary text-nfl-primary text-sm font-medium rounded-md hover:bg-nfl-primary hover:text-white transition-colors min-h-[44px]">
     <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
     CSV
   </a>
-  <a href="{{ json_url }}" class="inline-flex items-center px-3 py-1.5 border border-gray-400 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-100 transition-colors min-h-[44px]">
+  <a id="export-json" href="{{ json_url }}" data-base-url="/api/export/json" class="inline-flex items-center px-3 py-1.5 border border-gray-400 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-100 transition-colors min-h-[44px]">
     <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
     JSON
   </a>
   {% if season_csv_url is defined and season_csv_url %}
-  <a href="{{ season_csv_url }}" class="inline-flex items-center px-3 py-1.5 border border-gray-400 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-100 transition-colors min-h-[44px]">
+  <a id="export-season-csv" href="{{ season_csv_url }}" data-base-url="/api/export/csv" class="inline-flex items-center px-3 py-1.5 border border-gray-400 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-100 transition-colors min-h-[44px]">
     <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
     Export Full Season
   </a>
