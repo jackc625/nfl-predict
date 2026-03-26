@@ -102,33 +102,10 @@ tune-blend: ## Tune blend weights on pre-2018 data and save artifacts
 backtest-quick: ## Run backtest for a single season (default: 2024)
 	$(PYTHON) -m backtest.run --seasons $(SEASON)
 
-predict: ## Generate prediction artifacts (Parquet + JSON) (PRD Acceptance Criteria #3)
-	@echo "$(GREEN)🎯 Generating prediction artifacts for current week...$(NC)"
-	@echo "Timestamp: $(CURRENT_TIMESTAMP)"
-	@echo ""
-
-	@echo "$(YELLOW)Step 1: Validating model availability...$(NC)"
-	$(PYTHON) scripts/validate_models.py --models wp,ats,ou --required
-
-	@echo "$(YELLOW)Step 2: Generating predictions...$(NC)"
-	$(PYTHON) -c "from models.prediction_pipeline import NFLPredictionPipeline; pipeline = NFLPredictionPipeline(); results = pipeline.predict_current_week(); print(f'Generated {len(results)} predictions')"
-
-	@echo "$(YELLOW)Step 3: Generating bet recommendations...$(NC)"
-	$(PYTHON) -c "from models.bet_recommender import BetRecommendationEngine; engine = BetRecommendationEngine(); recs = engine.generate_weekly_recommendations(); print(f'Generated {len(recs)} bet recommendations')"
-
-	@echo "$(YELLOW)Step 4: Exporting prediction artifacts...$(NC)"
-	$(PYTHON) -c "from models.prediction_pipeline import PredictionExporter; exporter = PredictionExporter(); exporter.export_current_week_predictions(formats=['parquet', 'json', 'csv'])"
-
-	@echo "$(YELLOW)Step 5: Validating prediction outputs...$(NC)"
-	$(PYTHON) scripts/validate_predictions.py --current-week --check-completeness
-
-	@echo "$(GREEN)✅ Prediction artifacts generated!$(NC)"
-	@echo "Output files:"
-	@echo "  - outputs/predictions/current_week_predictions.parquet"
-	@echo "  - outputs/predictions/current_week_predictions.json"
-	@echo "  - outputs/predictions/current_week_recommendations.json"
-	@echo "  - outputs/predictions/current_week_summary.csv"
-	@echo ""
+predict: ## Generate predictions for a specific season/week (SEASON=2024 WEEK=1)
+	@echo "$(GREEN)Generating predictions for $(SEASON) Week $(WEEK)...$(NC)"
+	$(PYTHON) scripts/generate_current_week_predictions.py --season $(SEASON) --week $(WEEK)
+	@echo "$(GREEN)Predictions generated! Files in outputs/predictions/$(NC)"
 
 serve: ## Start web UI/API server with hot-reload
 	@echo "$(GREEN)Starting NFL Prediction API and Web UI...$(NC)"
@@ -452,7 +429,11 @@ ifdef WORKERS_OVERRIDE
 WORKERS := $(WORKERS_OVERRIDE)
 endif
 
-# Season override for data commands
+# Season and week override for data/prediction commands
 ifndef SEASON
 SEASON := 2024
+endif
+
+ifndef WEEK
+WEEK := 1
 endif
