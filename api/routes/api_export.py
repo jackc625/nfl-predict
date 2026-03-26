@@ -134,7 +134,8 @@ def _flatten_game_detail(detail: dict | None) -> dict:
     """
     if detail is None:
         return {}
-    flat = {k: v for k, v in detail.items() if k not in ("context", "feature_importances")}
+    skip = ("context", "feature_importances")
+    flat = {k: v for k, v in detail.items() if k not in skip}
     ctx = detail.get("context")
     if ctx and isinstance(ctx, dict):
         for ck, cv in ctx.items():
