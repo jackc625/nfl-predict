@@ -286,6 +286,14 @@ class DataService:
             )
             return [row[0] for row in result.fetchall()]
 
+    def get_prediction_seasons(self) -> list[int]:
+        """Return distinct seasons from predictions table."""
+        with self._connect() as conn:
+            result = conn.execute(
+                "SELECT DISTINCT season FROM predictions ORDER BY season DESC"
+            )
+            return [row[0] for row in result.fetchall()]
+
     def get_cache_meta(self) -> dict[str, Any]:
         """Fetch all cache metadata as a dict."""
         with self._connect() as conn:

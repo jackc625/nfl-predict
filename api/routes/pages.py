@@ -72,6 +72,114 @@ def _pivot_season_metrics(raw_metrics: list[dict]) -> list[dict]:
     return rows
 
 
+def _compute_week_summary(games: list[dict]) -> dict[str, Any]:
+    """Compute per-target accuracy for completed games in a week.
+
+    For each target (WP, ATS, O/U), counts correct predictions and
+    returns counts plus percentages.
+
+    Args:
+        games: List of game prediction dicts.
+
+    Returns:
+        Dict with total_games, wp_correct/wp_total/wp_pct,
+        ats_correct/ats_total/ats_pct, ou_correct/ou_total/ou_pct.
+        Empty dict if no completed games.
+    """
+    completed = [g for g in games if g.get("status") == "completed"]
+    if not completed:
+        return {}
+
+    # WP correct: predicted home win (wp_prob > 0.5) matches actual home win
+    wp_total = len(
+        [g for g in completed if g.get("wp_prob") is not None]
+    )
+    wp_correct = sum(
+        1
+        for g in completed
+        if g.get("wp_prob") is not None
+        and g.get("home_score") is not None
+        and g.get("away_score") is not None
+        and ((g["wp_prob"] > 0.5) == (g["home_score"] > g["away_score"]))
+    )
+
+    # ATS correct: model spread prediction vs actual margin
+    ats_total = len(
+        [
+            g
+            for g in completed
+            if g.get("ats_prediction") is not None
+            and g.get("market_spread") is not None
+        ]
+    )
+    ats_correct = sum(
+        1
+        for g in completed
+        if g.get("ats_prediction") is not None
+        and g.get("market_spread") is not None
+        and g.get("home_score") is not None
+        and g.get("away_score") is not None
+        and (
+            (g["home_score"] - g["away_score"] > -g["market_spread"])
+            == (g["ats_prediction"] > -g["market_spread"])
+        )
+    )
+
+    # O/U correct: model total prediction vs actual total
+    ou_total = len(
+        [
+            g
+            for g in completed
+            if g.get("ou_prediction") is not None
+            and g.get("market_total") is not None
+        ]
+    )
+    ou_correct = sum(
+        1
+        for g in completed
+        if g.get("ou_prediction") is not None
+        and g.get("market_total") is not None
+        and g.get("home_score") is not None
+        and g.get("away_score") is not None
+        and (
+            (g["home_score"] + g["away_score"] > g["market_total"])
+            == (g["ou_prediction"] > g["market_total"])
+        )
+    )
+
+    return {
+        "total_games": len(completed),
+        "wp_correct": wp_correct,
+        "wp_total": wp_total,
+        "wp_pct": round(wp_correct / wp_total * 100) if wp_total else 0,
+        "ats_correct": ats_correct,
+        "ats_total": ats_total,
+        "ats_pct": round(ats_correct / ats_total * 100) if ats_total else 0,
+        "ou_correct": ou_correct,
+        "ou_total": ou_total,
+        "ou_pct": round(ou_correct / ou_total * 100) if ou_total else 0,
+    }
+
+
+def _annotate_wp_correct(games: list[dict]) -> None:
+    """Add wp_correct field to each game dict in-place.
+
+    wp_correct is True if the WP prediction was correct, False if
+    incorrect, or None if the game is not completed or data is missing.
+    """
+    for game in games:
+        game["wp_correct"] = None
+        if (
+            game.get("status") == "completed"
+            and game.get("wp_prob") is not None
+            and game.get("home_score") is not None
+            and game.get("away_score") is not None
+        ):
+            home_won = game["home_score"] > game["away_score"]
+            predicted_home = game["wp_prob"] > 0.5
+            game["wp_correct"] = home_won == predicted_home
+
+
 def _compute_summary(service: Any) -> dict[str, Any]:
     """Aggregate all-time summary metrics from backtest data.
 
@@ -164,27 +272,42 @@ def this_week_page(
     Fetches predictions for the selected (or latest) week and renders
     the full page. If the request comes from HTMX, returns only the
     game_grid block.
+
+    Defaults to the most recent season/week with prediction data (D-01, D-02).
+    Computes wp_correct for correct/incorrect indicators (D-03) and
+    week_summary for per-target accuracy banner (D-04).
     """
     service = get_data_service()
-    available_weeks = service.get_available_weeks(season=season)
+    available_seasons = service.get_prediction_seasons()
     cache_meta = service.get_cache_meta()
 
-    # Default to latest available week if none specified
+    # Default to latest season with predictions (D-01)
+    if season is None and available_seasons:
+        season = available_seasons[0]
+
+    available_weeks = service.get_available_weeks(season=season)
+
+    # Default to latest week (not Week 1) per D-02
     if week is None and available_weeks:
         week = available_weeks[0]["week"]
         season = available_weeks[0]["season"]
 
     games = service.get_predictions(season=season, week=week, sort=sort)
 
+    # Compute wp_correct for correct/incorrect indicators (D-03)
+    _annotate_wp_correct(games)
+
     context = {
         "request": request,
         "games": games,
         "available_weeks": available_weeks,
+        "available_seasons": available_seasons,
         "current_week": week,
         "current_season": season,
         "current_sort": sort,
         "current_path": "/",
         "cache_meta": cache_meta,
+        "week_summary": _compute_week_summary(games),
     }
 
     block_name = "game_grid" if request.headers.get("HX-Request") else None
