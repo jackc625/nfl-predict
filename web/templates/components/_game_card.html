@@ -43,6 +43,11 @@
         <p class="text-base font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">
           {% if game.wp_prob is not none %}{{ "%.1f"|format(game.wp_prob * 100) }}%{% else %}-{% endif %}
         </p>
+        {% if game.wp_prob is not none %}
+          <p class="text-xs text-gray-500 mt-0.5">
+            {{ game.home_team if game.wp_prob > 0.5 else game.away_team }}
+          </p>
+        {% endif %}
         {% if game.wp_confidence %}
           {% with level=game.wp_confidence, value=game.wp_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}
         {% endif %}
@@ -53,6 +58,19 @@
         <p class="text-base font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">
           {% if game.ats_prediction is not none %}{{ "%+.1f"|format(game.ats_prediction) }}{% else %}-{% endif %}
         </p>
+        {% if game.ats_prediction is not none and game.market_spread is not none %}
+          <p class="text-xs text-gray-500 mt-0.5">
+            {% if game.ats_prediction > -game.market_spread %}
+              {{ game.home_team }} covers
+            {% else %}
+              {{ game.away_team }} covers
+            {% endif %}
+          </p>
+        {% elif game.ats_prediction is not none %}
+          <p class="text-xs text-gray-500 mt-0.5">
+            {% if game.ats_prediction > 0 %}{{ game.home_team }}{% else %}{{ game.away_team }}{% endif %} by {{ "%.0f"|format(game.ats_prediction|abs) }}
+          </p>
+        {% endif %}
         {% if game.ats_confidence %}
           {% with level=game.ats_confidence, value=game.ats_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}
         {% endif %}
@@ -63,6 +81,13 @@
         <p class="text-base font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">
           {% if game.ou_prediction is not none %}{{ "%.1f"|format(game.ou_prediction) }}{% else %}-{% endif %}
         </p>
+        {% if game.ou_prediction is not none and game.market_total is not none %}
+          <p class="text-xs text-gray-500 mt-0.5">
+            {% if game.ou_prediction > game.market_total %}Over{% else %}Under{% endif %} {{ "%.1f"|format(game.market_total) }}
+          </p>
+        {% elif game.ou_prediction is not none %}
+          <p class="text-xs text-gray-500 mt-0.5">Predicted total</p>
+        {% endif %}
         {% if game.ou_confidence %}
           {% with level=game.ou_confidence, value=game.ou_confidence|title %}{% include "components/_confidence_badge.html" %}{% endwith %}
         {% endif %}
