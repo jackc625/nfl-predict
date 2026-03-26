@@ -804,7 +804,7 @@ def _load_game_context(
     context["is_primetime"] = False
 
     # Convert is_outdoor and is_divisional to boolean
-    context["is_outdoor"] = context["is_outdoor"].astype(bool)
+    context["is_outdoor"] = context["roof_type"].isin(["outdoor", "retractable"])
     context["is_divisional"] = context["is_divisional"].astype(bool)
 
     # Compute last-5 records (vectorized by team+season)
