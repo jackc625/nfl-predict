@@ -54,7 +54,7 @@
       <div class="text-center text-sm text-gray-500">
         <p>NFL Prediction System -- Precomputed predictions served from DuckDB cache</p>
         <p class="mt-1">
-          Data updated: {{ cache_meta.last_updated if cache_meta else 'Unknown' }}
+          Data updated: {{ cache_meta.last_updated|format_datetime if cache_meta else 'Unknown' }}
           {% if cache_meta and cache_meta.prediction_count %}
             <span class="mx-1">--</span> {{ cache_meta.prediction_count }} predictions loaded
           {% endif %}
