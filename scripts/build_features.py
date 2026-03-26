@@ -934,21 +934,43 @@ class FeatureMatrixBuilder:
                 .columns.tolist()
             )
 
-            # Compute prior-season stats for bootstrap
-            prior_stats = None
+            # Compute prior-season stats for bootstrap and normalize
             if target_season:
+                # Single-season mode: compute prior stats once
                 prior_stats = compute_prior_season_stats(
                     processed_features, numeric_feature_cols, target_season - 1
                 )
-
-            normalized_features = expanding_normalize(
-                processed_features,
-                feature_cols=numeric_feature_cols,
-                group_col="season",
-                sort_cols=["season", "week"],
-                min_periods=4,
-                prior_season_stats=prior_stats,
-            )
+                normalized_features = expanding_normalize(
+                    processed_features,
+                    feature_cols=numeric_feature_cols,
+                    group_col="season",
+                    sort_cols=["season", "week"],
+                    min_periods=4,
+                    prior_season_stats=prior_stats,
+                )
+            else:
+                # Batch mode: compute prior-season stats per season
+                seasons = sorted(processed_features["season"].unique())
+                normalized_parts = []
+                for s in seasons:
+                    season_df = processed_features[
+                        processed_features["season"] == s
+                    ].copy()
+                    prior_stats = compute_prior_season_stats(
+                        processed_features, numeric_feature_cols, s - 1
+                    )
+                    norm_part = expanding_normalize(
+                        season_df,
+                        feature_cols=numeric_feature_cols,
+                        group_col="season",
+                        sort_cols=["season", "week"],
+                        min_periods=4,
+                        prior_season_stats=prior_stats,
+                    )
+                    normalized_parts.append(norm_part)
+                normalized_features = pd.concat(
+                    normalized_parts, ignore_index=False
+                )
 
             # Create target variables
             final_features = self.create_target_variables(normalized_features)
