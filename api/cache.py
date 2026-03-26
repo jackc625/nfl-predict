@@ -651,7 +651,7 @@ def _build_last5_records(games: pd.DataFrame) -> pd.DataFrame:
 
     # For each team-game, collect the last 5 results from prior weeks in the same season
     records: list[dict[str, Any]] = []
-    for (team, season), group in team_games.groupby(["team", "season"]):
+    for (team, _season), group in team_games.groupby(["team", "season"]):
         group = group.sort_values("week")
         results_so_far: list[str] = []
         for _, row in group.iterrows():
@@ -718,12 +718,11 @@ def _build_h2h_records(games: pd.DataFrame) -> pd.DataFrame:
                     home_wins += 1
                 elif prior_game["away_score"] > prior_game["home_score"]:
                     away_wins += 1
-            else:
-                # Teams are reversed in this matchup
-                if prior_game["home_score"] > prior_game["away_score"]:
-                    away_wins += 1
-                elif prior_game["away_score"] > prior_game["home_score"]:
-                    home_wins += 1
+            # Teams are reversed in this matchup
+            elif prior_game["home_score"] > prior_game["away_score"]:
+                away_wins += 1
+            elif prior_game["away_score"] > prior_game["home_score"]:
+                home_wins += 1
 
         records.append({
             "game_id": game["game_id"],

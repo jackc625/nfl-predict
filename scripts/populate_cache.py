@@ -46,6 +46,12 @@ def main() -> None:
         default=Path("data/gold"),
         help="Gold data directory (default: data/gold/)",
     )
+    parser.add_argument(
+        "--silver-dir",
+        type=Path,
+        default=Path("data/silver"),
+        help="Silver data directory (default: data/silver/)",
+    )
     args = parser.parse_args()
 
     populate_cache(
@@ -53,6 +59,7 @@ def main() -> None:
         artifacts_dir=args.artifacts_dir,
         outputs_dir=args.outputs_dir,
         gold_dir=args.gold_dir,
+        silver_dir=args.silver_dir,
     )
 
 
