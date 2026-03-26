@@ -13,7 +13,9 @@
     {% include "components/_sort_controls.html" %}
   </div>
   {% with csv_url="/api/export/csv?season=" ~ (current_season or '') ~ "&week=" ~ (current_week or ''),
-          json_url="/api/export/json?season=" ~ (current_season or '') ~ "&week=" ~ (current_week or '') %}
+          json_url="/api/export/json?season=" ~ (current_season or '') ~ "&week=" ~ (current_week or ''),
+          season_csv_url="/api/export/csv?season=" ~ (current_season or ''),
+          season_json_url="/api/export/json?season=" ~ (current_season or '') %}
     {% include "components/_export_buttons.html" %}
   {% endwith %}
 </div>
@@ -21,6 +23,7 @@
 {# Game grid -- HTMX swap target #}
 <div id="game-grid">
   {% block game_grid %}
+  {% include "components/_week_summary.html" %}
   {% if games %}
   <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
     {% for game in games %}

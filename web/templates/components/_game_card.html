@@ -1,5 +1,5 @@
-{# Single game card. Pass: game (dict with all prediction fields) #}
-<article class="game-card bg-white rounded-lg border border-gray-200 overflow-hidden">
+{# Single game card. Pass: game (dict with all prediction fields, wp_correct for completed games) #}
+<article class="game-card bg-white rounded-lg overflow-hidden {% if game.wp_correct == true %}border-l-4 border-green-400 border border-gray-200{% elif game.wp_correct == false %}border-l-4 border-red-400 border border-gray-200{% else %}border border-gray-200{% endif %}">
   <a href="/games/{{ game.game_id }}" class="block p-4 md:p-6">
     {# Header: teams + status #}
     <div class="flex items-center justify-between mb-3">
@@ -9,6 +9,17 @@
         <span class="text-base font-semibold text-gray-900">{{ game.home_team }}</span>
       </div>
       {% with status=game.status %}{% include "components/_status_badge.html" %}{% endwith %}
+      {% if game.wp_correct is not none %}
+        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold {% if game.wp_correct %}bg-green-100 text-green-800{% else %}bg-red-100 text-red-600{% endif %} ml-2">
+          {% if game.wp_correct %}
+            <svg class="w-3 h-3 mr-0.5" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            Correct
+          {% else %}
+            <svg class="w-3 h-3 mr-0.5" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            Incorrect
+          {% endif %}
+        </span>
+      {% endif %}
     </div>
 
     {# Game time and score (for completed games) #}
@@ -16,6 +27,11 @@
       {% if game.game_date %}{{ game.game_date }}{% endif %}
       {% if game.status == "completed" and game.away_score is not none and game.home_score is not none %}
         <span class="ml-2 font-semibold text-gray-700">{{ game.away_score }} - {{ game.home_score }}</span>
+      {% endif %}
+      {% if game.status == "completed" and game.wp_prob is not none and game.home_score is not none %}
+        <span class="block text-xs text-gray-400 mt-0.5">
+          Predicted: {{ game.home_team if game.wp_prob > 0.5 else game.away_team }} {{ "%.0f"|format((game.wp_prob if game.wp_prob > 0.5 else 1 - game.wp_prob) * 100) }}% WP
+        </span>
       {% endif %}
     </p>
 
