@@ -67,6 +67,18 @@ class CalibrationResults:
     metadata: dict[str, Any]
 
 
+class PlattCalibrator:
+    """Wrapper that accepts raw probabilities and applies Platt scaling via logistic regression."""
+
+    def __init__(self, lr_model):
+        self.lr_model = lr_model
+
+    def predict(self, probabilities):
+        clipped_probs = np.clip(probabilities.flatten(), 1e-15, 1 - 1e-15)
+        logits = np.log(clipped_probs / (1 - clipped_probs))
+        return self.lr_model.predict_proba(logits.reshape(-1, 1))[:, 1]
+
+
 class ProbabilityCalibrator:
     """
     Comprehensive probability calibration system for NFL predictions.
@@ -273,7 +285,7 @@ class ProbabilityCalibrator:
         raw_probabilities: np.ndarray,
         true_labels: np.ndarray,
         sample_weight: np.ndarray | None = None,
-    ) -> LogisticRegression:
+    ) -> PlattCalibrator:
         """
         Fit Platt scaling calibration model.
 
@@ -296,16 +308,6 @@ class ProbabilityCalibrator:
         # Fit logistic regression: logit(raw_prob) -> calibrated_prob
         calibrator = LogisticRegression(max_iter=1000, random_state=42)
         calibrator.fit(logits.reshape(-1, 1), true_labels, sample_weight=sample_weight)
-
-        # Create wrapper that accepts probabilities directly
-        class PlattCalibrator:
-            def __init__(self, lr_model):
-                self.lr_model = lr_model
-
-            def predict(self, probabilities):
-                clipped_probs = np.clip(probabilities.flatten(), 1e-15, 1 - 1e-15)
-                logits = np.log(clipped_probs / (1 - clipped_probs))
-                return self.lr_model.predict_proba(logits.reshape(-1, 1))[:, 1]
 
         return PlattCalibrator(calibrator)
 

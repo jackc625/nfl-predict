@@ -92,16 +92,42 @@ def load_market_data(game_ids: list[str]) -> pd.DataFrame:
     """
     odds_path = Path("data/silver/odds_historical.parquet")
     if not odds_path.exists():
-        logger.warning("Odds snapshot not found, skipping market data", path=str(odds_path))
-        return pd.DataFrame(columns=["game_id", "spread", "total", "ml_home", "ml_away"])
+        logger.warning(
+            "Odds snapshot not found, skipping market data", path=str(odds_path)
+        )
+        return pd.DataFrame(
+            columns=["game_id", "spread", "total", "ml_home", "ml_away"]
+        )
 
     odds_df = pd.read_parquet(odds_path)
+
+    # Normalize team abbreviations in odds game_ids (e.g. LAR -> LA)
+    # to match canonical game_ids from gold features
+    from utils.team_data import normalize_team_abbreviation
+
+    def _normalize_game_id(gid: str) -> str:
+        parts = gid.split("_")
+        if len(parts) >= 3:
+            matchup = parts[2]  # e.g. "LAR@DET"
+            sep = "@" if "@" in matchup else "_"
+            teams = matchup.split(sep)
+            if len(teams) == 2:
+                try:
+                    normalized = sep.join(normalize_team_abbreviation(t) for t in teams)
+                    return "_".join([*parts[:2], normalized, *parts[3:]])
+                except (ValueError, KeyError):
+                    pass
+        return gid
+
+    odds_df["game_id"] = odds_df["game_id"].apply(_normalize_game_id)
     filtered = odds_df[odds_df["game_id"].isin(game_ids)].copy()
 
     # Keep only the columns we need, deduplicate by game_id (take first row per game)
     cols_needed = ["game_id", "spread", "total", "ml_home", "ml_away"]
     available_cols = [c for c in cols_needed if c in filtered.columns]
-    filtered = filtered[available_cols].drop_duplicates(subset=["game_id"], keep="first")
+    filtered = filtered[available_cols].drop_duplicates(
+        subset=["game_id"], keep="first"
+    )
 
     logger.info(
         "Loaded market data",
@@ -210,11 +236,13 @@ def compute_edges(
     if "ml_home" in merged.columns and "ml_away" in merged.columns:
         valid_ml = merged["ml_home"].notna() & merged["ml_away"].notna()
         merged.loc[valid_ml, "wp_edge"] = merged.loc[valid_ml].apply(
-            lambda row: row["wp_prob"]
-            - moneyline_to_probability(int(row["ml_home"]))
-            / (
-                moneyline_to_probability(int(row["ml_home"]))
-                + moneyline_to_probability(int(row["ml_away"]))
+            lambda row: (
+                row["wp_prob"]
+                - moneyline_to_probability(int(row["ml_home"]))
+                / (
+                    moneyline_to_probability(int(row["ml_home"]))
+                    + moneyline_to_probability(int(row["ml_away"]))
+                )
             ),
             axis=1,
         )
@@ -295,7 +323,9 @@ def apply_blending(
         )
     except (KeyError, FileNotFoundError) as exc:
         has_blend = False
-        logger.info("No blend artifacts found, using raw model predictions", reason=str(exc))
+        logger.info(
+            "No blend artifacts found, using raw model predictions", reason=str(exc)
+        )
 
     if not has_blend:
         return predictions

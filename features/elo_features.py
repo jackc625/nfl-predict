@@ -86,9 +86,20 @@ class EloFeatureBuilder:
             filtered_df = filtered_df[filtered_df["week"] == target_week]
 
         # Update Elo ratings from completed games before the cutoff
+        # Make as_of_datetime timezone-aware if kickoff_et is tz-aware
+        cutoff = as_of_datetime
+        if (
+            hasattr(games_df["kickoff_et"].dtype, "tz")
+            and games_df["kickoff_et"].dtype.tz is not None
+        ):
+            cutoff = pd.Timestamp(as_of_datetime).tz_localize(
+                games_df["kickoff_et"].dtype.tz
+            )
         completed_mask = (
-            games_df["kickoff_et"] < as_of_datetime
-        ) & games_df["home_score"].notna() & games_df["away_score"].notna()
+            (games_df["kickoff_et"] < cutoff)
+            & games_df["home_score"].notna()
+            & games_df["away_score"].notna()
+        )
         completed_games = games_df[completed_mask]
 
         if len(completed_games) > 0:

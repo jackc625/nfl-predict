@@ -56,9 +56,7 @@ class BacktestConfig:
             (Phase 6 baseline behavior).
     """
 
-    holdout_seasons: list[int] = field(
-        default_factory=lambda: [2021, 2022, 2023, 2024]
-    )
+    holdout_seasons: list[int] = field(default_factory=lambda: [2021, 2022, 2023, 2024])
     first_data_season: int = 2018
     targets: list[str] = field(default_factory=lambda: ["wp", "ats", "ou"])
     max_backtest_season: int = 2024
@@ -182,9 +180,7 @@ class BacktestEngine:
         Returns:
             Validated TemporalSplitConfig.
         """
-        train_seasons = list(
-            range(self.config.first_data_season, holdout_season - 1)
-        )
+        train_seasons = list(range(self.config.first_data_season, holdout_season - 1))
         hp_val_seasons = [holdout_season - 1]
         holdout_seasons = [holdout_season]
 
@@ -196,9 +192,7 @@ class BacktestEngine:
         config.validate()
         return config
 
-    def _create_trainer(
-        self, target: str, config: TemporalSplitConfig
-    ) -> BaseTrainer:
+    def _create_trainer(self, target: str, config: TemporalSplitConfig) -> BaseTrainer:
         """Create a fresh trainer instance for the given target.
 
         Always creates a NEW instance to prevent state leakage between
@@ -261,9 +255,30 @@ class BacktestEngine:
         Returns:
             DataFrame with game_id, ml_home, ml_away, spread, total columns.
         """
-        odds_path = Path("data/silver/odds_snapshot.parquet")
+        odds_path = Path("data/silver/odds_historical.parquet")
         self.logger.info("Loading closing odds", path=str(odds_path))
         df = pd.read_parquet(odds_path)
+
+        # Normalize team abbreviations in game_ids (e.g. LAR -> LA)
+        from utils.team_data import normalize_team_abbreviation
+
+        def _normalize_game_id(gid: str) -> str:
+            parts = gid.split("_")
+            if len(parts) >= 3:
+                matchup = parts[2]
+                sep = "@" if "@" in matchup else "_"
+                teams = matchup.split(sep)
+                if len(teams) == 2:
+                    try:
+                        normalized = sep.join(
+                            normalize_team_abbreviation(t) for t in teams
+                        )
+                        return "_".join([*parts[:2], normalized, *parts[3:]])
+                    except (ValueError, KeyError):
+                        pass
+            return gid
+
+        df["game_id"] = df["game_id"].apply(_normalize_game_id)
         return df
 
     def run(self) -> BacktestResults:
@@ -297,9 +312,7 @@ class BacktestEngine:
         all_predictions: dict[str, list[pd.DataFrame]] = {
             t: [] for t in self.config.targets
         }
-        all_clv: dict[str, list[pd.DataFrame]] = {
-            t: [] for t in self.config.targets
-        }
+        all_clv: dict[str, list[pd.DataFrame]] = {t: [] for t in self.config.targets}
 
         for holdout_season in self.config.holdout_seasons:
             season_start = time.monotonic()
@@ -343,9 +356,7 @@ class BacktestEngine:
                 if clv_df is not None and not clv_df.empty:
                     # Filter to this holdout season
                     if "season" in clv_df.columns:
-                        season_preds = clv_df[
-                            clv_df["season"] == holdout_season
-                        ].copy()
+                        season_preds = clv_df[clv_df["season"] == holdout_season].copy()
                     else:
                         season_preds = clv_df.copy()
 
@@ -397,10 +408,14 @@ class BacktestEngine:
             clv_frames = [df for df in all_clv[target] if not df.empty]
 
             concat_predictions[target] = (
-                pd.concat(pred_frames, ignore_index=True) if pred_frames else pd.DataFrame()
+                pd.concat(pred_frames, ignore_index=True)
+                if pred_frames
+                else pd.DataFrame()
             )
             concat_clv[target] = (
-                pd.concat(clv_frames, ignore_index=True) if clv_frames else pd.DataFrame()
+                pd.concat(clv_frames, ignore_index=True)
+                if clv_frames
+                else pd.DataFrame()
             )
 
         # Apply market blending if configured
@@ -432,18 +447,23 @@ class BacktestEngine:
             from models.clv import compute_clv_for_predictions
 
             clv_odds_cols = [
-                "probability_clv", "fair_closing_prob", "has_closing_odds",
-                "line_clv", "ml_home", "ml_away", "spread", "total",
+                "probability_clv",
+                "fair_closing_prob",
+                "has_closing_odds",
+                "line_clv",
+                "ml_home",
+                "ml_away",
+                "spread",
+                "total",
             ]
             for target in self.config.targets:
                 if not concat_predictions[target].empty:
                     drop_cols = [
-                        c for c in clv_odds_cols
+                        c
+                        for c in clv_odds_cols
                         if c in concat_predictions[target].columns
                     ]
-                    clean_preds = concat_predictions[target].drop(
-                        columns=drop_cols
-                    )
+                    clean_preds = concat_predictions[target].drop(columns=drop_cols)
                     concat_clv[target] = compute_clv_for_predictions(
                         clean_preds, closing_odds_df, target
                     )
@@ -459,9 +479,7 @@ class BacktestEngine:
             if not clv_data.empty and "probability_clv" in clv_data.columns:
                 valid_clv = clv_data[clv_data["has_closing_odds"] == True]  # noqa: E712
                 if not valid_clv.empty:
-                    headline_clv[target] = float(
-                        valid_clv["probability_clv"].mean()
-                    )
+                    headline_clv[target] = float(valid_clv["probability_clv"].mean())
 
         # Compute odds coverage
         odds_coverage: dict[str, int] = {}
