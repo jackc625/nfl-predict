@@ -241,8 +241,8 @@ class WPTrainer(BaseTrainer):
 
         # Fit isotonic calibrator on HP-val predictions
         prob_calibrator = ProbabilityCalibrator(
-            primary_method="isotonic",
-            fallback_method="platt",
+            primary_method="platt",
+            fallback_method="isotonic",
         )
         calibration_results = prob_calibrator.calibrate_probabilities(
             raw_probabilities=hp_val_predictions,

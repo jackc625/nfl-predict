@@ -54,13 +54,31 @@
       <div class="text-center text-sm text-gray-500">
         <p>NFL Prediction System -- Precomputed predictions served from DuckDB cache</p>
         <p class="mt-1">
-          Data updated: {{ cache_meta.last_updated|format_datetime if cache_meta else 'Unknown' }}
+          Data updated:
+          <span id="cache-timestamp"
+                data-utc="{{ cache_meta.last_updated if cache_meta else '' }}">
+            {{ cache_meta.last_updated|format_datetime if cache_meta else 'Unknown' }}
+          </span>
           {% if cache_meta and cache_meta.prediction_count %}
             <span class="mx-1">--</span> {{ cache_meta.prediction_count }} predictions loaded
           {% endif %}
         </p>
       </div>
     </div>
+    <script>
+    (function() {
+      var el = document.getElementById('cache-timestamp');
+      if (el && el.dataset.utc) {
+        var d = new Date(el.dataset.utc);
+        if (!isNaN(d.getTime())) {
+          el.textContent = d.toLocaleString(undefined, {
+            year: 'numeric', month: 'short', day: 'numeric',
+            hour: 'numeric', minute: '2-digit'
+          });
+        }
+      }
+    })();
+    </script>
   </footer>
 </body>
 </html>

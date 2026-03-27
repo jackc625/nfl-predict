@@ -391,7 +391,7 @@ class OddsDataIngester:
             "Philadelphia Eagles": "PHI",
             "Washington Commanders": "WAS",
             "Arizona Cardinals": "ARI",
-            "Los Angeles Rams": "LAR",
+            "Los Angeles Rams": "LA",
             "San Francisco 49ers": "SF",
             "Seattle Seahawks": "SEA",
             "New York Jets": "NYJ",
