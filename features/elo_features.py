@@ -85,6 +85,22 @@ class EloFeatureBuilder:
         if target_week is not None:
             filtered_df = filtered_df[filtered_df["week"] == target_week]
 
+        # Update Elo ratings from completed games before the cutoff
+        completed_mask = (
+            games_df["kickoff_et"] < as_of_datetime
+        ) & games_df["home_score"].notna() & games_df["away_score"].notna()
+        completed_games = games_df[completed_mask]
+
+        if len(completed_games) > 0:
+            for season in sorted(completed_games["season"].unique()):
+                season_games = completed_games[completed_games["season"] == season]
+                self.elo_system.process_season_chronologically(season_games, season)
+            logger.info(
+                "Updated Elo ratings from completed games",
+                completed_games=len(completed_games),
+                seasons=sorted(completed_games["season"].unique().tolist()),
+            )
+
         # Initialize feature columns
         for col in ELO_FEATURE_COLUMNS:
             filtered_df[col] = None

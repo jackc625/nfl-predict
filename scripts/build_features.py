@@ -924,6 +924,11 @@ class FeatureMatrixBuilder:
                 "home_score",
                 "away_score",
                 "feature_timestamp",
+                "raw_wind_mph",
+                "raw_temp_f",
+                "raw_precip_prob",
+                "raw_precip_mm",
+                "raw_humidity_pct",
             ]
             feature_cols = [
                 col for col in processed_features.columns if col not in exclude_cols

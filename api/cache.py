@@ -584,10 +584,60 @@ def _load_predictions(
     merged["ats_confidence"] = _compute_confidence(merged["ats_edge"])
     merged["ou_confidence"] = _compute_confidence(merged["ou_edge"])
 
-    # Blended columns: NULL for now (backtest data may not include blended)
+    # Compute blended predictions via MarketBlender
     merged["blended_wp"] = None
     merged["blended_ats"] = None
     merged["blended_ou"] = None
+    try:
+        from models.blending import MarketBlender
+
+        blender = MarketBlender.from_artifacts(Path("artifacts"))
+
+        # Compute blended WP using devigged market moneylines
+        valid_ml = merged["ml_home"].notna() & merged["ml_away"].notna()
+        if valid_ml.any():
+            home_raw = merged.loc[valid_ml, "ml_home"].apply(
+                lambda ml: moneyline_to_probability(int(ml))
+            )
+            away_raw = merged.loc[valid_ml, "ml_away"].apply(
+                lambda ml: moneyline_to_probability(int(ml))
+            )
+            fair_home = home_raw / (home_raw + away_raw)
+            blended_wp_vals = blender.blend_wp(
+                merged.loc[valid_ml, "wp_prob"].values.astype(float),
+                fair_home.values.astype(float),
+            )
+            merged.loc[valid_ml, "blended_wp"] = blended_wp_vals
+
+        # Compute blended ATS using market spread
+        valid_spread = merged["market_spread"].notna()
+        if valid_spread.any():
+            blended_ats_vals = blender.blend_ats(
+                merged.loc[valid_spread, "ats_prediction"].values.astype(float),
+                merged.loc[valid_spread, "market_spread"].values.astype(float),
+            )
+            merged.loc[valid_spread, "blended_ats"] = blended_ats_vals
+
+        # Compute blended O/U using market total
+        valid_total = merged["market_total"].notna()
+        if valid_total.any():
+            blended_ou_vals = blender.blend_ou(
+                merged.loc[valid_total, "ou_prediction"].values.astype(float),
+                merged.loc[valid_total, "market_total"].values.astype(float),
+            )
+            merged.loc[valid_total, "blended_ou"] = blended_ou_vals
+
+        logger.info(
+            "Computed blended predictions for cache",
+            blended_wp=int(valid_ml.sum()),
+            blended_ats=int(valid_spread.sum()),
+            blended_ou=int(valid_total.sum()),
+        )
+    except (FileNotFoundError, KeyError, ImportError) as e:
+        logger.warning(
+            "Blend artifacts not available, blended columns will be NULL",
+            error=str(e),
+        )
 
     # Select final columns matching schema order
     final_cols = [
@@ -770,12 +820,13 @@ def _load_game_context(
     gold_df = pd.read_parquet(gold_path)
     gold_cols = [
         "game_id", "home_elo", "away_elo", "is_divisional",
-        "weather_severity_score", "wind_mph", "venue_outdoor",
+        "weather_severity_score", "raw_wind_mph", "venue_outdoor",
     ]
     context = gold_df[gold_cols].copy()
     context = context.rename(columns={
         "weather_severity_score": "weather_severity",
         "venue_outdoor": "is_outdoor",
+        "raw_wind_mph": "wind_mph",
     })
 
     # Read silver games for venue, scores, and last-5 computation
