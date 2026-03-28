@@ -19,6 +19,7 @@ from typing import Any
 import duckdb
 import numpy as np
 import pandas as pd
+from scipy.special import expit, logit
 
 from utils import get_logger
 from utils.probability_utils import moneyline_to_probability
@@ -584,16 +585,25 @@ def _load_predictions(
     merged["ats_confidence"] = _compute_confidence(merged["ats_edge"])
     merged["ou_confidence"] = _compute_confidence(merged["ou_edge"])
 
-    # Compute blended predictions via MarketBlender
+    # Compute blended predictions from blend artifact JSON (UIAP-01: no model imports)
     merged["blended_wp"] = None
     merged["blended_ats"] = None
     merged["blended_ou"] = None
     try:
-        from models.blending import MarketBlender
+        latest_path = Path("artifacts") / "latest.json"
+        if not latest_path.exists():
+            raise FileNotFoundError("latest.json not found in artifacts/")
+        manifest = json.loads(latest_path.read_text())
+        if "blend" not in manifest:
+            raise KeyError("'blend' not found in latest.json manifest")
+        blend_dir = Path("artifacts") / manifest["blend"]
+        weights_path = blend_dir / "blend_weights.json"
+        if not weights_path.exists():
+            raise FileNotFoundError(f"blend_weights.json not found in {blend_dir}")
+        blend_data = json.loads(weights_path.read_text())
+        weights = blend_data["weights"]  # {"wp": float, "ats": float, "ou": float}
 
-        blender = MarketBlender.from_artifacts(Path("artifacts"))
-
-        # Compute blended WP using devigged market moneylines
+        # WP blending in log-odds space
         valid_ml = merged["ml_home"].notna() & merged["ml_away"].notna()
         if valid_ml.any():
             home_raw = merged.loc[valid_ml, "ml_home"].apply(
@@ -603,27 +613,32 @@ def _load_predictions(
                 lambda ml: moneyline_to_probability(int(ml))
             )
             fair_home = home_raw / (home_raw + away_raw)
-            blended_wp_vals = blender.blend_wp(
-                merged.loc[valid_ml, "wp_prob"].values.astype(float),
-                fair_home.values.astype(float),
+            clip_min, clip_max = 0.001, 0.999
+            model_clipped = np.clip(
+                merged.loc[valid_ml, "wp_prob"].values.astype(float), clip_min, clip_max
             )
+            market_clipped = np.clip(fair_home.values.astype(float), clip_min, clip_max)
+            w = weights["wp"]
+            blended_wp_vals = expit(w * logit(model_clipped) + (1 - w) * logit(market_clipped))
             merged.loc[valid_ml, "blended_wp"] = blended_wp_vals
 
-        # Compute blended ATS using market spread
+        # ATS blending (linear)
         valid_spread = merged["market_spread"].notna()
         if valid_spread.any():
-            blended_ats_vals = blender.blend_ats(
-                merged.loc[valid_spread, "ats_prediction"].values.astype(float),
-                merged.loc[valid_spread, "market_spread"].values.astype(float),
+            w = weights["ats"]
+            blended_ats_vals = (
+                w * merged.loc[valid_spread, "ats_prediction"].values.astype(float)
+                + (1 - w) * merged.loc[valid_spread, "market_spread"].values.astype(float)
             )
             merged.loc[valid_spread, "blended_ats"] = blended_ats_vals
 
-        # Compute blended O/U using market total
+        # O/U blending (linear)
         valid_total = merged["market_total"].notna()
         if valid_total.any():
-            blended_ou_vals = blender.blend_ou(
-                merged.loc[valid_total, "ou_prediction"].values.astype(float),
-                merged.loc[valid_total, "market_total"].values.astype(float),
+            w = weights["ou"]
+            blended_ou_vals = (
+                w * merged.loc[valid_total, "ou_prediction"].values.astype(float)
+                + (1 - w) * merged.loc[valid_total, "market_total"].values.astype(float)
             )
             merged.loc[valid_total, "blended_ou"] = blended_ou_vals
 
@@ -633,7 +648,7 @@ def _load_predictions(
             blended_ats=int(valid_spread.sum()),
             blended_ou=int(valid_total.sum()),
         )
-    except (FileNotFoundError, KeyError, ImportError) as e:
+    except (FileNotFoundError, KeyError) as e:
         logger.warning(
             "Blend artifacts not available, blended columns will be NULL",
             error=str(e),
