@@ -1,87 +1,59 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.0
-milestone_name: milestone
-status: unknown
-stopped_at: Completed 01-04-PLAN.md (Phase 1 complete)
-last_updated: "2026-03-18T23:02:02.963Z"
+milestone_name: MVP
+status: Milestone shipped
+stopped_at: v1.0 milestone archived
+last_updated: "2026-03-28T22:30:00.000Z"
+last_activity: 2026-03-28
 progress:
-  total_phases: 8
-  completed_phases: 1
-  total_plans: 4
-  completed_plans: 4
+  total_phases: 10
+  completed_phases: 10
+  total_plans: 43
+  completed_plans: 43
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-18)
+See: .planning/PROJECT.md (updated 2026-03-28)
 
 **Core value:** Produce trustworthy, well-calibrated NFL predictions backed by rigorous methodology -- when the model says 70%, it should win ~70% of the time, and over a season it should find real edges against the market.
-**Current focus:** Phase 01 complete -- Phase 02 (data-pipeline-audit) next
+**Current focus:** v1.0 shipped. Planning next milestone.
 
 ## Current Position
 
-Phase: 01 (foundation-hardening) — COMPLETE
-Plan: 4 of 4 (all plans complete)
+Phase: Complete (v1.0 shipped)
+Plan: None -- milestone archived
 
 ## Performance Metrics
 
-**Velocity:**
+**v1.0 Milestone:**
 
-- Total plans completed: 4
-- Average duration: 16 min
-- Total execution time: 1.05 hours
-
-**By Phase:**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| - | - | - | - |
-
-**Recent Trend:**
-
-- Last 5 plans: -
-- Trend: -
-
-*Updated after each plan completion*
-| Phase 01 P01 | 25 | 2 tasks | 100 files |
-| Phase 01 P02 | 8 | 2 tasks | 7 files |
-| Phase 01 P03 | 18 | 3 tasks | 36 files |
-| Phase 01 P04 | 12 | 2 tasks | 29 files |
+- Total phases: 10
+- Total plans: 43 (39 with SUMMARY.md, 4 Phase 8 pre-summary convention)
+- Timeline: 11 days (2026-03-18 to 2026-03-28)
+- Commits: 57 feat, 27 fix, 27 test (111 total)
+- Codebase: ~35.5K LOC Python + ~72K LOC tests + ~44K LOC HTML
 
 ## Accumulated Context
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
-
-- Roadmap: 8 phases derived from 63 requirements following dependency chain (foundation -> data -> features -> models -> new features -> backtest -> market blend -> UI)
-- Roadmap: FEAT requirements split across Phase 3 (audit existing, 11 reqs) and Phase 5 (add new, 10 reqs) -- fix before extend
-- Roadmap: MODL requirements split across Phase 4 (core training, 9 reqs) and Phase 7 (market reversion, 4 reqs) -- need working model before blending
-- [Phase 01]: Widened pyarrow constraint to >=18.0.0 for Python 3.13 compatibility
-- [Phase 01]: Added 35 ruff rules to ignore list for pre-existing code, to be enabled incrementally
-- [Phase 01]: Pyright pre-commit set to manual stage due to pre-existing pydantic-settings type errors
-- [Phase 01]: BLE ruff rule enabled with per-file ignores for operations/demo/deployment scripts (non-production code)
-- [Phase 01]: Used httpx directly for Open-Meteo instead of openmeteo-requests library (simpler, already in stack)
-- [Phase 01]: Kept asyncio.run() for weather fetches within synchronous loop (pragmatic, avoids full async refactor)
-- [Phase 01]: Tailwind v4 standalone binary replaces Node.js npm-based build -- zero JS toolchain dependency
-- [Phase 01]: 46 pre-existing test failures confirmed as interface mismatches, not Phase 1 regressions (31 pass including new smoke tests)
+All v1.0 decisions archived in .planning/milestones/v1.0-ROADMAP.md and PROJECT.md Key Decisions table.
 
 ### Pending Todos
 
-None yet.
+None.
 
 ### Blockers/Concerns
 
-- Research flag (Phase 3): Time-fence abstraction and expanding-window normalization have implementation nuances worth a research spike
-- Research flag (Phase 5): QB starter data source (injury reports / depth charts) not yet in the system -- nflreadpy endpoints need evaluation
-- Research flag (Phase 7): Pre-backtest period (2010-2017) historical odds availability is unknown -- must verify before planning Phase 7
+None -- all v1.0 blockers resolved.
 
 ## Session Continuity
 
-Last session: 2026-03-18T23:02:02.958Z
-Stopped at: Completed 01-04-PLAN.md (Phase 1 complete)
+Last activity: 2026-03-28
+Last session: v1.0 milestone completion
+Stopped at: v1.0 milestone archived
 Resume file: None

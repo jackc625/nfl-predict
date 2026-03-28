@@ -255,7 +255,9 @@ class MarketBlender:
             return result
 
         # Merge on game_id to get market data alongside predictions
-        merged = result.merge(market_df, on="game_id", how="left", suffixes=("", "_market"))
+        merged = result.merge(
+            market_df, on="game_id", how="left", suffixes=("", "_market")
+        )
 
         if target == "wp":
             self._blend_wp_predictions(result, merged)
@@ -463,9 +465,7 @@ class MarketBlender:
                 continue
 
             for w in candidates:
-                mean_clv = self._compute_mean_clv_for_weight(
-                    target, merged, float(w)
-                )
+                mean_clv = self._compute_mean_clv_for_weight(target, merged, float(w))
                 grid.append((float(w), mean_clv))
 
             # Select the weight with highest mean CLV
@@ -485,9 +485,15 @@ class MarketBlender:
 
         # Build optimized BlendWeights
         tuned_weights = BlendWeights(
-            wp_model_weight=optimal_weights.get("wp", self.config.weights.wp_model_weight),
-            ats_model_weight=optimal_weights.get("ats", self.config.weights.ats_model_weight),
-            ou_model_weight=optimal_weights.get("ou", self.config.weights.ou_model_weight),
+            wp_model_weight=optimal_weights.get(
+                "wp", self.config.weights.wp_model_weight
+            ),
+            ats_model_weight=optimal_weights.get(
+                "ats", self.config.weights.ats_model_weight
+            ),
+            ou_model_weight=optimal_weights.get(
+                "ou", self.config.weights.ou_model_weight
+            ),
         )
 
         # Update self.config with tuned weights
@@ -539,9 +545,7 @@ class MarketBlender:
             return self._compute_ou_clv_for_weight(merged, weight)
         return 0.0
 
-    def _compute_wp_clv_for_weight(
-        self, merged: pd.DataFrame, weight: float
-    ) -> float:
+    def _compute_wp_clv_for_weight(self, merged: pd.DataFrame, weight: float) -> float:
         """Compute mean probability CLV for WP at a given weight."""
         valid = merged.dropna(subset=["ml_home", "ml_away", "model_prob"])
         if valid.empty:
@@ -580,9 +584,7 @@ class MarketBlender:
 
         return float(np.mean(clvs)) if clvs else 0.0
 
-    def _compute_ats_clv_for_weight(
-        self, merged: pd.DataFrame, weight: float
-    ) -> float:
+    def _compute_ats_clv_for_weight(self, merged: pd.DataFrame, weight: float) -> float:
         """Compute mean line CLV for ATS at a given weight."""
         valid = merged.dropna(subset=["spread", "model_spread"])
         if valid.empty:
@@ -602,9 +604,7 @@ class MarketBlender:
         ]
         return float(np.mean(clvs)) if clvs else 0.0
 
-    def _compute_ou_clv_for_weight(
-        self, merged: pd.DataFrame, weight: float
-    ) -> float:
+    def _compute_ou_clv_for_weight(self, merged: pd.DataFrame, weight: float) -> float:
         """Compute mean line CLV for O/U at a given weight."""
         valid = merged.dropna(subset=["total", "model_total"])
         if valid.empty:
@@ -724,9 +724,20 @@ class MarketBlender:
         Returns:
             Dict with per_week_rates, mean_rate, warnings.
         """
-        merged = predictions_df.merge(market_df, on="game_id", how="inner")
+        merged = predictions_df.merge(
+            market_df, on="game_id", how="inner", suffixes=("", "_mkt")
+        )
         if merged.empty:
             return {"per_week_rates": [], "mean_rate": 0.0, "warnings": []}
+
+        # Ensure season/week columns exist for grouping.
+        # Predictions may not carry week; extract from game_id (e.g. 2021_W01_ATL@PHI).
+        if "season" not in merged.columns:
+            merged["season"] = merged["game_id"].str.split("_").str[0].astype(int)
+        if "week" not in merged.columns:
+            merged["week"] = (
+                merged["game_id"].str.split("_").str[1].str.lstrip("W").astype(int)
+            )
 
         edges = self._compute_edges(target, merged)
         merged["_edge"] = edges

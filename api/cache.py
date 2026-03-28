@@ -175,17 +175,16 @@ def _load_feature_importances(
             continue
 
         metadata = _load_json(metadata_path)
-        importances = metadata.get("feature_importances", {})
+        importances = metadata.get("feature_importances") or metadata.get(
+            "top_feature_importances", {}
+        )
 
         if not importances:
-            logger.info(
-                "No feature importances in metadata", target=target
-            )
+            logger.info("No feature importances in metadata", target=target)
             continue
 
         rows = [
-            ("_model_", target, feat, float(imp))
-            for feat, imp in importances.items()
+            ("_model_", target, feat, float(imp)) for feat, imp in importances.items()
         ]
         conn.executemany(
             "INSERT OR REPLACE INTO feature_importances VALUES (?, ?, ?, ?)",
@@ -211,9 +210,7 @@ def _load_backtest_predictions(
     """
     csv_path = outputs_dir / "predictions_all.csv"
     if not csv_path.exists():
-        logger.warning(
-            "Backtest predictions file not found", path=str(csv_path)
-        )
+        logger.warning("Backtest predictions file not found", path=str(csv_path))
         return 0
 
     df = pd.read_csv(csv_path)
@@ -253,15 +250,18 @@ def _load_backtest_predictions(
         df["has_closing_odds"] = None
 
     select_cols = [
-        "game_id", "season", "week", "target",
-        "model_prob", "actual", "probability_clv", "has_closing_odds",
+        "game_id",
+        "season",
+        "week",
+        "target",
+        "model_prob",
+        "actual",
+        "probability_clv",
+        "has_closing_odds",
     ]
     subset = df[select_cols].copy()
 
-    conn.execute(
-        "INSERT OR REPLACE INTO backtest_predictions "
-        "SELECT * FROM subset"
-    )
+    conn.execute("INSERT OR REPLACE INTO backtest_predictions SELECT * FROM subset")
     return len(subset)
 
 
@@ -276,9 +276,7 @@ def _load_metrics_summary(
     """
     json_path = outputs_dir / "metrics_summary.json"
     if not json_path.exists():
-        logger.warning(
-            "Metrics summary file not found", path=str(json_path)
-        )
+        logger.warning("Metrics summary file not found", path=str(json_path))
         return 0
 
     data = _load_json(json_path)
@@ -291,10 +289,14 @@ def _load_metrics_summary(
                 # Nested: key is target, value is metrics dict
                 for metric_name, metric_value in value.items():
                     if isinstance(metric_value, (int, float)):
-                        rows.append((
-                            0, str(key), str(metric_name),
-                            float(metric_value),
-                        ))
+                        rows.append(
+                            (
+                                0,
+                                str(key),
+                                str(metric_name),
+                                float(metric_value),
+                            )
+                        )
             elif isinstance(value, (int, float)):
                 # Flat: key is metric name
                 rows.append((0, "overall", str(key), float(value)))
@@ -317,15 +319,11 @@ def _load_season_metrics(
     """
     csv_path = outputs_dir / "season_metrics.csv"
     if not csv_path.exists():
-        logger.warning(
-            "Season metrics file not found", path=str(csv_path)
-        )
+        logger.warning("Season metrics file not found", path=str(csv_path))
         return 0
 
     df = pd.read_csv(csv_path)
-    logger.info(
-        "Read season metrics CSV", rows=len(df), columns=list(df.columns)
-    )
+    logger.info("Read season metrics CSV", rows=len(df), columns=list(df.columns))
 
     rows: list[tuple[int, str, str, float]] = []
 
@@ -334,12 +332,14 @@ def _load_season_metrics(
     if {"season", "target", "metric_name", "metric_value"}.issubset(set(df.columns)):
         # Long format
         for _, row in df.iterrows():
-            rows.append((
-                int(row["season"]),
-                str(row["target"]),
-                str(row["metric_name"]),
-                float(row["metric_value"]),
-            ))
+            rows.append(
+                (
+                    int(row["season"]),
+                    str(row["target"]),
+                    str(row["metric_name"]),
+                    float(row["metric_value"]),
+                )
+            )
     elif "season" in df.columns and "target" in df.columns:
         # Wide format: melt non-id columns into long format
         id_cols = ["season", "target"]
@@ -349,12 +349,14 @@ def _load_season_metrics(
                 val = row[metric_col]
                 if pd.notna(val):
                     with contextlib.suppress(ValueError, TypeError):
-                        rows.append((
-                            int(row["season"]),
-                            str(row["target"]),
-                            str(metric_col),
-                            float(val),
-                        ))
+                        rows.append(
+                            (
+                                int(row["season"]),
+                                str(row["target"]),
+                                str(metric_col),
+                                float(val),
+                            )
+                        )
 
     if rows:
         conn.executemany(
@@ -374,26 +376,24 @@ def _load_simulation_results(
     """
     csv_path = outputs_dir / "betting_simulation.csv"
     if not csv_path.exists():
-        logger.warning(
-            "Betting simulation file not found", path=str(csv_path)
-        )
+        logger.warning("Betting simulation file not found", path=str(csv_path))
         return 0
 
     df = pd.read_csv(csv_path)
-    logger.info(
-        "Read simulation CSV", rows=len(df), columns=list(df.columns)
-    )
+    logger.info("Read simulation CSV", rows=len(df), columns=list(df.columns))
 
     rows: list[tuple[str, str, float]] = []
 
     if {"strategy", "metric_name", "metric_value"}.issubset(set(df.columns)):
         # Pre-aggregated long format
         for _, row in df.iterrows():
-            rows.append((
-                str(row["strategy"]),
-                str(row["metric_name"]),
-                float(row["metric_value"]),
-            ))
+            rows.append(
+                (
+                    str(row["strategy"]),
+                    str(row["metric_name"]),
+                    float(row["metric_value"]),
+                )
+            )
     elif {"flat_stake", "kelly_stake", "payout_flat", "payout_kelly"}.issubset(
         set(df.columns)
     ):
@@ -407,16 +407,19 @@ def _load_simulation_results(
             wins = (df[payout_col] > 0).sum()
             roi = (total_pnl / total_wagered * 100) if total_wagered else 0.0
 
-            rows.extend([
-                (strategy, "total_bets", float(total_bets)),
-                (strategy, "total_wagered", float(total_wagered)),
-                (strategy, "total_pnl", float(total_pnl)),
-                (
-                    strategy, "win_rate",
-                    float(wins / total_bets * 100) if total_bets else 0.0,
-                ),
-                (strategy, "roi", float(roi)),
-            ])
+            rows.extend(
+                [
+                    (strategy, "total_bets", float(total_bets)),
+                    (strategy, "total_wagered", float(total_wagered)),
+                    (strategy, "total_pnl", float(total_pnl)),
+                    (
+                        strategy,
+                        "win_rate",
+                        float(wins / total_bets * 100) if total_bets else 0.0,
+                    ),
+                    (strategy, "roi", float(roi)),
+                ]
+            )
 
             # Build equity curve from cumulative P&L
             cumulative = df[payout_col].cumsum()
@@ -438,11 +441,13 @@ def _load_simulation_results(
                 val = row[metric_col]
                 if pd.notna(val):
                     with contextlib.suppress(ValueError, TypeError):
-                        rows.append((
-                            str(row["strategy"]),
-                            str(metric_col),
-                            float(val),
-                        ))
+                        rows.append(
+                            (
+                                str(row["strategy"]),
+                                str(metric_col),
+                                float(val),
+                            )
+                        )
 
     if rows:
         conn.executemany(
@@ -508,8 +513,15 @@ def _load_predictions(
     # -- Pivot: filter each target and rename model columns --
     wp = df[df["target"] == "wp"][
         [
-            "game_id", "season", "week", "model_value",
-            "ml_home", "ml_away", "spread", "total", "probability_clv",
+            "game_id",
+            "season",
+            "week",
+            "model_value",
+            "ml_home",
+            "ml_away",
+            "spread",
+            "total",
+            "probability_clv",
         ]
     ].copy()
     wp = wp.rename(columns={"model_value": "wp_prob"})
@@ -521,32 +533,32 @@ def _load_predictions(
     ou = ou.rename(columns={"model_total": "ou_prediction"})
 
     # Merge targets into one row per game
-    merged = wp.merge(ats, on="game_id", how="left").merge(
-        ou, on="game_id", how="left"
-    )
+    merged = wp.merge(ats, on="game_id", how="left").merge(ou, on="game_id", how="left")
 
     # Join with silver games for teams, scores, dates
     games_path = silver_dir / "games.parquet"
     if not games_path.exists():
-        logger.warning(
-            "Silver games.parquet not found", path=str(games_path)
-        )
+        logger.warning("Silver games.parquet not found", path=str(games_path))
         return 0
 
     games = pd.read_parquet(games_path)
     game_cols = [
-        "game_id", "home_team", "away_team",
-        "home_score", "away_score", "kickoff_et",
+        "game_id",
+        "home_team",
+        "away_team",
+        "home_score",
+        "away_score",
+        "kickoff_et",
     ]
     merged = merged.merge(
-        games[game_cols], on="game_id", how="left",
+        games[game_cols],
+        on="game_id",
+        how="left",
     )
 
     # Map to predictions schema
     merged["game_date"] = pd.to_datetime(merged["kickoff_et"])
-    merged["status"] = np.where(
-        merged["home_score"].notna(), "completed", "scheduled"
-    )
+    merged["status"] = np.where(merged["home_score"].notna(), "completed", "scheduled")
     merged["home_score"] = merged["home_score"].astype("Int64")
     merged["away_score"] = merged["away_score"].astype("Int64")
     merged["market_spread"] = merged["spread"]
@@ -619,27 +631,31 @@ def _load_predictions(
             )
             market_clipped = np.clip(fair_home.values.astype(float), clip_min, clip_max)
             w = weights["wp"]
-            blended_wp_vals = expit(w * logit(model_clipped) + (1 - w) * logit(market_clipped))
+            blended_wp_vals = expit(
+                w * logit(model_clipped) + (1 - w) * logit(market_clipped)
+            )
             merged.loc[valid_ml, "blended_wp"] = blended_wp_vals
 
         # ATS blending (linear)
         valid_spread = merged["market_spread"].notna()
         if valid_spread.any():
             w = weights["ats"]
-            blended_ats_vals = (
-                w * merged.loc[valid_spread, "ats_prediction"].values.astype(float)
-                + (1 - w) * merged.loc[valid_spread, "market_spread"].values.astype(float)
-            )
+            blended_ats_vals = w * merged.loc[
+                valid_spread, "ats_prediction"
+            ].values.astype(float) + (1 - w) * merged.loc[
+                valid_spread, "market_spread"
+            ].values.astype(float)
             merged.loc[valid_spread, "blended_ats"] = blended_ats_vals
 
         # O/U blending (linear)
         valid_total = merged["market_total"].notna()
         if valid_total.any():
             w = weights["ou"]
-            blended_ou_vals = (
-                w * merged.loc[valid_total, "ou_prediction"].values.astype(float)
-                + (1 - w) * merged.loc[valid_total, "market_total"].values.astype(float)
-            )
+            blended_ou_vals = w * merged.loc[
+                valid_total, "ou_prediction"
+            ].values.astype(float) + (1 - w) * merged.loc[
+                valid_total, "market_total"
+            ].values.astype(float)
             merged.loc[valid_total, "blended_ou"] = blended_ou_vals
 
         logger.info(
@@ -656,19 +672,35 @@ def _load_predictions(
 
     # Select final columns matching schema order
     final_cols = [
-        "game_id", "season", "week", "game_date",
-        "home_team", "away_team", "status", "home_score", "away_score",
-        "wp_prob", "wp_confidence", "ats_prediction", "ats_confidence",
-        "ou_prediction", "ou_confidence",
-        "market_spread", "market_total", "market_ml_home", "market_ml_away",
-        "wp_edge", "ats_edge", "ou_edge",
-        "blended_wp", "blended_ats", "blended_ou",
+        "game_id",
+        "season",
+        "week",
+        "game_date",
+        "home_team",
+        "away_team",
+        "status",
+        "home_score",
+        "away_score",
+        "wp_prob",
+        "wp_confidence",
+        "ats_prediction",
+        "ats_confidence",
+        "ou_prediction",
+        "ou_confidence",
+        "market_spread",
+        "market_total",
+        "market_ml_home",
+        "market_ml_away",
+        "wp_edge",
+        "ats_edge",
+        "ou_edge",
+        "blended_wp",
+        "blended_ats",
+        "blended_ou",
     ]
     final_df = merged[final_cols].copy()
 
-    conn.execute(
-        "INSERT OR REPLACE INTO predictions SELECT * FROM final_df"
-    )
+    conn.execute("INSERT OR REPLACE INTO predictions SELECT * FROM final_df")
     row_count = len(final_df)
     logger.info("Predictions table populated", count=row_count)
     return row_count
@@ -689,22 +721,22 @@ def _build_last5_records(games: pd.DataFrame) -> pd.DataFrame:
         DataFrame with columns: game_id, team, is_home, last5 (JSON string).
     """
     # Build team-game results: two rows per game (home and away perspective)
-    cols = ["game_id", "season", "week", "home_team",
-            "home_score", "away_score"]
+    cols = ["game_id", "season", "week", "home_team", "home_score", "away_score"]
     home_rows = games[cols].copy()
     home_rows = home_rows.rename(columns={"home_team": "team"})
     home_rows["result"] = np.where(
-        home_rows["home_score"] > home_rows["away_score"], "W",
+        home_rows["home_score"] > home_rows["away_score"],
+        "W",
         np.where(home_rows["home_score"] < home_rows["away_score"], "L", "T"),
     )
     home_rows["is_home"] = True
 
-    away_cols = ["game_id", "season", "week", "away_team",
-                 "home_score", "away_score"]
+    away_cols = ["game_id", "season", "week", "away_team", "home_score", "away_score"]
     away_rows = games[away_cols].copy()
     away_rows = away_rows.rename(columns={"away_team": "team"})
     away_rows["result"] = np.where(
-        away_rows["away_score"] > away_rows["home_score"], "W",
+        away_rows["away_score"] > away_rows["home_score"],
+        "W",
         np.where(away_rows["away_score"] < away_rows["home_score"], "L", "T"),
     )
     away_rows["is_home"] = False
@@ -722,12 +754,14 @@ def _build_last5_records(games: pd.DataFrame) -> pd.DataFrame:
         for _, row in group.iterrows():
             # last5 is from games before this one
             last5 = results_so_far[-5:] if results_so_far else []
-            records.append({
-                "game_id": row["game_id"],
-                "team": team,
-                "is_home": row["is_home"],
-                "last5": json.dumps(list(reversed(last5))),  # most recent first
-            })
+            records.append(
+                {
+                    "game_id": row["game_id"],
+                    "team": team,
+                    "is_home": row["is_home"],
+                    "last5": json.dumps(list(reversed(last5))),  # most recent first
+                }
+            )
             results_so_far.append(row["result"])
 
     return pd.DataFrame(records)
@@ -755,22 +789,15 @@ def _build_h2h_records(games: pd.DataFrame) -> pd.DataFrame:
 
         # Find prior matchups between these two teams
         gs = games_sorted
-        is_matchup = (
-            ((gs["home_team"] == home) & (gs["away_team"] == away))
-            | ((gs["home_team"] == away) & (gs["away_team"] == home))
+        is_matchup = ((gs["home_team"] == home) & (gs["away_team"] == away)) | (
+            (gs["home_team"] == away) & (gs["away_team"] == home)
         )
         # Last 5 seasons (strictly prior)
         prior_seasons = (
-            is_matchup
-            & (gs["season"] >= season - 5)
-            & (gs["season"] < season)
+            is_matchup & (gs["season"] >= season - 5) & (gs["season"] < season)
         )
         # Earlier weeks of the same season
-        same_season = (
-            is_matchup
-            & (gs["season"] == season)
-            & (gs["week"] < week)
-        )
+        same_season = is_matchup & (gs["season"] == season) & (gs["week"] < week)
         prior = gs[prior_seasons | same_season]
 
         home_wins = 0
@@ -789,10 +816,14 @@ def _build_h2h_records(games: pd.DataFrame) -> pd.DataFrame:
             elif prior_game["away_score"] > prior_game["home_score"]:
                 home_wins += 1
 
-        records.append({
-            "game_id": game["game_id"],
-            "h2h_record": json.dumps({"home_wins": home_wins, "away_wins": away_wins}),
-        })
+        records.append(
+            {
+                "game_id": game["game_id"],
+                "h2h_record": json.dumps(
+                    {"home_wins": home_wins, "away_wins": away_wins}
+                ),
+            }
+        )
 
     return pd.DataFrame(records)
 
@@ -834,29 +865,47 @@ def _load_game_context(
     # Read gold features for Elo, weather, divisional
     gold_df = pd.read_parquet(gold_path)
     gold_cols = [
-        "game_id", "home_elo", "away_elo", "is_divisional",
-        "weather_severity_score", "raw_wind_mph", "venue_outdoor",
+        "game_id",
+        "home_elo",
+        "away_elo",
+        "is_divisional",
+        "weather_severity_score",
+        "raw_wind_mph",
+        "venue_outdoor",
     ]
     context = gold_df[gold_cols].copy()
-    context = context.rename(columns={
-        "weather_severity_score": "weather_severity",
-        "venue_outdoor": "is_outdoor",
-        "raw_wind_mph": "wind_mph",
-    })
+    context = context.rename(
+        columns={
+            "weather_severity_score": "weather_severity",
+            "venue_outdoor": "is_outdoor",
+            "raw_wind_mph": "wind_mph",
+        }
+    )
 
     # Read silver games for venue, scores, and last-5 computation
     games = pd.read_parquet(games_path)
     games_merge_cols = [
-        "game_id", "venue", "venue_roof", "home_team",
-        "away_team", "home_score", "away_score", "season", "week",
+        "game_id",
+        "venue",
+        "venue_roof",
+        "home_team",
+        "away_team",
+        "home_score",
+        "away_score",
+        "season",
+        "week",
     ]
     context = context.merge(
-        games[games_merge_cols], on="game_id", how="left",
+        games[games_merge_cols],
+        on="game_id",
+        how="left",
     )
-    context = context.rename(columns={
-        "venue": "venue_name",
-        "venue_roof": "roof_type",
-    })
+    context = context.rename(
+        columns={
+            "venue": "venue_name",
+            "venue_roof": "roof_type",
+        }
+    )
 
     # Derive surface from roof_type
     surface_map = {
@@ -903,16 +952,24 @@ def _load_game_context(
 
     # Select final columns matching game_context schema
     final_cols = [
-        "game_id", "home_elo", "away_elo", "home_last5", "away_last5",
-        "h2h_record", "venue_name", "surface", "roof_type",
-        "weather_severity", "wind_mph", "is_outdoor", "is_divisional",
+        "game_id",
+        "home_elo",
+        "away_elo",
+        "home_last5",
+        "away_last5",
+        "h2h_record",
+        "venue_name",
+        "surface",
+        "roof_type",
+        "weather_severity",
+        "wind_mph",
+        "is_outdoor",
+        "is_divisional",
         "is_primetime",
     ]
     context_df = context[final_cols].copy()
 
-    conn.execute(
-        "INSERT OR REPLACE INTO game_context SELECT * FROM context_df"
-    )
+    conn.execute("INSERT OR REPLACE INTO game_context SELECT * FROM context_df")
     row_count = len(context_df)
     logger.info("Game context table populated", count=row_count)
     return row_count
@@ -1046,9 +1103,7 @@ def populate_cache(
 
         # Set cache metadata
         now = datetime.now(tz=UTC)
-        pred_count = conn.execute(
-            "SELECT COUNT(*) FROM predictions"
-        ).fetchone()[0]
+        pred_count = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
 
         season_range_row = conn.execute(
             "SELECT MIN(season), MAX(season) FROM predictions"

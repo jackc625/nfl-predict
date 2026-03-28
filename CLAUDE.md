@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An NFL Prediction System that generates pre-game Win Probability (WP), Against the Spread (ATS), and Over/Under (O/U) predictions. Built as a personal tool for informed NFL analysis, doubling as a portfolio project. Phases 1-5 complete. Next up: Phase 6 (Backtest Reporting). 8 phases total, 3 remaining.
+An NFL Prediction System that generates pre-game Win Probability (WP), Against the Spread (ATS), and Over/Under (O/U) predictions. Built as a personal tool for informed NFL analysis, doubling as a portfolio project. v1.0 MVP shipped 2026-03-28. 10 phases complete across foundation, data pipeline, feature engineering, model training, backtesting, market blending, and web UI.
 
-**Current Status**: Phases 1-5 complete. Data pipeline hardened (Phase 1-2), feature engineering correct with temporal safety via FeatureBuilder Protocol, compressed features (weather 38->4, market 40->5), LeakageGate hard-fail validator, and expanding-window normalization (Phase 3). Core model training complete with WP (LogReg+isotonic calibration), ATS (XGBoost margin), O/U (XGBoost total), walk-forward temporal validation, CLV computation, market baseline comparison, and versioned artifact storage (Phase 4). Differentiating features added: QB adjustment (depth charts + composite EPA/CPOE metric), opponent-adjusted EPA (single-pass SOS, replaces raw EPA), team CPOE, drive start position, neutral pace, season progress, surface mismatch, divisional indicator (Phase 5). End-to-end pipeline runs: ingest -> features -> Gold -> training. Backtesting, market blending, and UI polish remain.
+**Current Status**: v1.0 MVP shipped. End-to-end pipeline: data ingestion (nflreadpy, Odds API, Open-Meteo) -> Bronze/Silver/Gold layers -> temporal-safe feature engineering (FeatureBuilder Protocol, LeakageGate) -> walk-forward model training (WP LogReg+isotonic, ATS/O/U XGBoost) -> backtest reporting (2021-2024, Brier decomposition, betting simulation) -> market blending (log-odds WP, linear ATS/O/U, pre-2018 weight tuning) -> FastAPI + HTMX web dashboard with game detail drill-down and CSV/JSON exports.
 
 
 ## Persistent Instructions for Claude
@@ -59,7 +59,9 @@ External Sources -> Ingestion (ETL) -> Data Lake (Parquet/DuckDB) -> Feature Bui
 The `.planning/` directory is the single source of truth for project planning and state:
 
 - `.planning/PROJECT.md` -- Project overview, requirements context, known issues, key decisions
-- `.planning/ROADMAP.md` -- 8-phase development roadmap with phase details and progress
+- `.planning/ROADMAP.md` -- Development roadmap with milestone groupings and progress
 - `.planning/STATE.md` -- Current position, decisions log, session continuity
-- `.planning/REQUIREMENTS.md` -- Full requirements list (72 requirements across 7 categories)
+- `.planning/MILESTONES.md` -- Shipped milestone history
+- `.planning/RETROSPECTIVE.md` -- Living retrospective with lessons learned
+- `.planning/milestones/` -- Archived milestone artifacts (roadmap, requirements, phases)
 - `.planning/codebase/` -- Architecture analysis, stack details, conventions, structure mapping
