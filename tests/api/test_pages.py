@@ -212,6 +212,25 @@ def test_game_detail_feature_chart(test_client: TestClient):
     assert "elo_diff" in html  # from sample feature importances
 
 
+def test_game_detail_multi_target_importances(test_client: TestClient):
+    """UIAP-04: Feature importance tabs for WP, ATS, and O/U targets."""
+    response = test_client.get("/games/2024_W01_BUF@KC")
+    assert response.status_code == 200
+    html = response.text
+    # Tab buttons for all three targets
+    assert 'id="tab-wp"' in html
+    assert 'id="tab-ats"' in html
+    assert 'id="tab-ou"' in html
+    # Tab strip has tablist role
+    assert 'role="tablist"' in html
+    # All feature names from test data appear in the JSON blob
+    assert "elo_diff" in html
+    assert "rolling_off_epa" in html
+    assert "rolling_total_epa" in html
+    # showFeatureChart function exists
+    assert "showFeatureChart" in html
+
+
 def test_game_detail_not_found(test_client: TestClient):
     """Missing game shows 404-style empty state."""
     response = test_client.get("/games/nonexistent_game")
