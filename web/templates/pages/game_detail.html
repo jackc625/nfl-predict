@@ -103,37 +103,82 @@
       </table>
     </div>
 
-    {# Feature Importance Chart (D-13) #}
+    {# Feature Importance Chart (D-13 + UIAP-04: multi-target tabs) #}
     <div class="bg-white rounded-lg border border-gray-200 p-6">
       <h2 class="text-base font-semibold text-gray-900 mb-4">Feature Importance</h2>
       {% if game.feature_importances %}
-      <div id="feature-chart" style="width: 100%; min-height: 300px;"></div>
+      {% set available_targets = [] %}
+      {% for t in ["wp", "ats", "ou"] %}
+        {% if t in game.feature_importances %}
+          {% if available_targets.append(t) %}{% endif %}
+        {% endif %}
+      {% endfor %}
+
+      {% if available_targets | length > 1 %}
+      <div class="flex border-b border-gray-200 mb-4" role="tablist">
+        {% for target in available_targets %}
+        <button onclick="showFeatureChart('{{ target }}')"
+                id="tab-{{ target }}"
+                role="tab"
+                aria-selected="{{ 'true' if loop.first else 'false' }}"
+                aria-controls="feature-chart"
+                class="px-4 py-2 text-sm font-medium min-h-[44px] {% if loop.first %}text-nfl-primary border-b-2 border-nfl-primary{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+          {{ target | upper }}
+        </button>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <div id="feature-chart" role="tabpanel" style="width: 100%; min-height: 300px;"></div>
       <script>
         (function() {
-          var features = {{ game.feature_importances | tojson }};
-          // features is {target: {feature: importance, ...}, ...}
-          // Show WP importances by default, or first available
-          var target = features.wp ? "wp" : Object.keys(features)[0];
-          var data = features[target] || {};
-          var sorted = Object.entries(data).sort(function(a, b) { return Math.abs(b[1]) - Math.abs(a[1]); }).slice(0, 10);
-          var names = sorted.map(function(d) { return d[0]; }).reverse();
-          var values = sorted.map(function(d) { return d[1]; }).reverse();
-          var colors = values.map(function(v) { return v >= 0 ? "#013369" : "#D50A0A"; });
+          var allFeatures = {{ game.feature_importances | tojson }};
+          var availableTargets = {{ available_targets | tojson }};
 
-          Plotly.newPlot("feature-chart", [{
-            type: "bar",
-            orientation: "h",
-            x: values,
-            y: names,
-            marker: { color: colors }
-          }], {
-            font: { family: "system-ui, -apple-system, sans-serif", size: 13 },
-            plot_bgcolor: "#FFFFFF",
-            paper_bgcolor: "#FFFFFF",
-            margin: { l: 120, r: 16, t: 16, b: 40 },
-            xaxis: { title: "Importance", gridcolor: "#E5E7EB" },
-            yaxis: { gridcolor: "#E5E7EB" }
-          }, { responsive: true, displayModeBar: false });
+          function showFeatureChart(target) {
+            // Update tab active/inactive styles
+            availableTargets.forEach(function(t) {
+              var tab = document.getElementById("tab-" + t);
+              if (!tab) return;
+              if (t === target) {
+                tab.className = "px-4 py-2 text-sm font-medium min-h-[44px] text-nfl-primary border-b-2 border-nfl-primary";
+                tab.setAttribute("aria-selected", "true");
+              } else {
+                tab.className = "px-4 py-2 text-sm font-medium min-h-[44px] text-gray-500 hover:text-gray-700";
+                tab.setAttribute("aria-selected", "false");
+              }
+            });
+
+            // Render Plotly chart for selected target
+            var data = allFeatures[target] || {};
+            var sorted = Object.entries(data)
+              .sort(function(a, b) { return Math.abs(b[1]) - Math.abs(a[1]); })
+              .slice(0, 10);
+            var names = sorted.map(function(d) { return d[0]; }).reverse();
+            var values = sorted.map(function(d) { return d[1]; }).reverse();
+            var colors = values.map(function(v) { return v >= 0 ? "#013369" : "#D50A0A"; });
+
+            Plotly.newPlot("feature-chart", [{
+              type: "bar",
+              orientation: "h",
+              x: values,
+              y: names,
+              marker: { color: colors }
+            }], {
+              font: { family: "system-ui, -apple-system, sans-serif", size: 13 },
+              plot_bgcolor: "#FFFFFF",
+              paper_bgcolor: "#FFFFFF",
+              margin: { l: 120, r: 16, t: 16, b: 40 },
+              xaxis: { title: "Importance", gridcolor: "#E5E7EB" },
+              yaxis: { gridcolor: "#E5E7EB" }
+            }, { responsive: true, displayModeBar: false });
+          }
+
+          // Make function globally accessible for tab onclick handlers
+          window.showFeatureChart = showFeatureChart;
+
+          // Show default target (first available, preferring WP)
+          showFeatureChart(availableTargets[0]);
         })();
       </script>
       {% else %}
