@@ -90,7 +90,7 @@ def load_market_data(game_ids: list[str]) -> pd.DataFrame:
     Returns DataFrame with columns: game_id, spread, total, ml_home, ml_away.
     Returns empty DataFrame if odds file not found.
     """
-    odds_path = Path("data/silver/odds_historical.parquet")
+    odds_path = Path("data/silver/odds_snapshot.parquet")
     if not odds_path.exists():
         logger.warning(
             "Odds snapshot not found, skipping market data", path=str(odds_path)

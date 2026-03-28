@@ -58,7 +58,7 @@ def export_csv(
         elif season:
             filename = f"predictions_{season}_full_season.csv"
         else:
-            filename = "predictions_all.csv"
+            filename = "nfl_predictions.csv"
 
     if not rows:
         return JSONResponse({"error": "No data found"}, status_code=404)
@@ -115,7 +115,7 @@ def export_json(
     elif season:
         filename = f"predictions_{season}_full_season.json"
     else:
-        filename = "predictions_all.json"
+        filename = "nfl_export.json"
 
     content = json.dumps(rows, default=str, indent=2)
     return StreamingResponse(

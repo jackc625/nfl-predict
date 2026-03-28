@@ -255,7 +255,7 @@ class BacktestEngine:
         Returns:
             DataFrame with game_id, ml_home, ml_away, spread, total columns.
         """
-        odds_path = Path("data/silver/odds_historical.parquet")
+        odds_path = Path("data/silver/odds_snapshot.parquet")
         self.logger.info("Loading closing odds", path=str(odds_path))
         df = pd.read_parquet(odds_path)
 
