@@ -260,6 +260,7 @@ class BacktestEngine:
         df = pd.read_parquet(odds_path)
 
         # Normalize team abbreviations in game_ids (e.g. LAR -> LA)
+        from utils.exceptions import DataValidationError
         from utils.team_data import normalize_team_abbreviation
 
         def _normalize_game_id(gid: str) -> str:
@@ -274,7 +275,7 @@ class BacktestEngine:
                             normalize_team_abbreviation(t) for t in teams
                         )
                         return "_".join([*parts[:2], normalized, *parts[3:]])
-                    except (ValueError, KeyError):
+                    except (ValueError, KeyError, DataValidationError):
                         pass
             return gid
 
