@@ -12,9 +12,8 @@ matching BacktestResults.
 from __future__ import annotations
 
 import json
-from dataclasses import field
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -26,7 +25,6 @@ from backtest.engine import (
     TargetResult,
 )
 from models.temporal import TemporalSplitConfig
-
 
 # -----------------------------------------------------------------------
 # Fixtures
@@ -183,7 +181,7 @@ class TestBaselineCapture:
             )
 
             capture = BaselineCapture(output_dir=output_dir)
-            result_path = capture.run()
+            capture.run()
 
         expected_files = [
             "metrics_wp.json",
