@@ -265,18 +265,10 @@ class FeatureMatrixBuilder:
         # Elo features (game-level, already has home/away columns from EloFeatureBuilder)
         elo_df = feature_sources.get("elo", pd.DataFrame())
         if len(elo_df) > 0:
-            elo_feature_cols = [
-                "home_elo",
-                "away_elo",
-                "elo_diff",
-                "elo_prob_home",
-                "elo_prob_away",
-                "hfa_used",
-                "home_elo_uncertainty",
-                "away_elo_uncertainty",
-            ]
+            from features.elo_features import ELO_FEATURE_COLUMNS
+
             merge_cols = ["game_id"] + [
-                c for c in elo_feature_cols if c in elo_df.columns
+                c for c in ELO_FEATURE_COLUMNS if c in elo_df.columns
             ]
             combined_features = combined_features.merge(
                 elo_df[merge_cols], on="game_id", how="left"
