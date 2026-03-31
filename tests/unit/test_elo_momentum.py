@@ -11,9 +11,7 @@ Verifies:
 from datetime import datetime
 from unittest.mock import patch
 
-import numpy as np
 import pandas as pd
-import pytest
 
 
 def _make_snapshot_df(games_data: list[dict]) -> pd.DataFrame:

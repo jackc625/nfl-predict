@@ -14,6 +14,7 @@ parameter for time-fence enforcement.
 
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 from data.storage import load_dataframe
@@ -22,7 +23,7 @@ from utils import get_logger
 
 logger = get_logger(__name__)
 
-# Elo feature column names -- unchanged from v1.0 (per D-17)
+# Elo feature column names -- extended with momentum, rank, percentile
 ELO_FEATURE_COLUMNS = [
     "home_elo",
     "away_elo",
@@ -32,6 +33,12 @@ ELO_FEATURE_COLUMNS = [
     "hfa_used",
     "home_elo_uncertainty",
     "away_elo_uncertainty",
+    "home_elo_momentum",
+    "away_elo_momentum",
+    "home_elo_rank",
+    "away_elo_rank",
+    "home_elo_percentile",
+    "away_elo_percentile",
 ]
 
 
@@ -76,6 +83,168 @@ class EloFeatureBuilder:
             else [],
         )
         return self._snapshots_df
+
+    # ---- Derived feature methods ----
+
+    def _add_momentum_features(
+        self,
+        df: pd.DataFrame,
+        snapshots: pd.DataFrame,
+        lookback: int = 4,
+    ) -> pd.DataFrame:
+        """Add Elo momentum features for home and away teams.
+
+        Momentum measures the Elo change per game over a rolling window.
+        For each team, it looks at the last `lookback` games (or fewer if
+        the team has played fewer games in the season) and computes:
+            momentum = (newest_elo - oldest_elo) / window_size
+
+        Returns NaN for a team's first game of the season (no prior games).
+
+        Args:
+            df: DataFrame with games (must have game_id, season, week,
+                home_team, away_team columns and Elo columns from snapshot merge).
+            snapshots: Full elo_game_snapshots DataFrame.
+            lookback: Number of prior games for momentum window (default 4).
+
+        Returns:
+            DataFrame with home_elo_momentum and away_elo_momentum added.
+        """
+        home_momentum = []
+        away_momentum = []
+
+        for _, game in df.iterrows():
+            season = game["season"]
+            week = game["week"]
+
+            for team, elo_list in [
+                (game["home_team"], home_momentum),
+                (game["away_team"], away_momentum),
+            ]:
+                # Find all prior games for this team in this season
+                team_home = snapshots[
+                    (snapshots["season"] == season)
+                    & (snapshots["week"] < week)
+                    & (snapshots["home_team"] == team)
+                ][["week", "home_elo_pre"]].rename(
+                    columns={"home_elo_pre": "team_elo"}
+                )
+                team_away = snapshots[
+                    (snapshots["season"] == season)
+                    & (snapshots["week"] < week)
+                    & (snapshots["away_team"] == team)
+                ][["week", "away_elo_pre"]].rename(
+                    columns={"away_elo_pre": "team_elo"}
+                )
+                prior_games = pd.concat(
+                    [team_home, team_away], ignore_index=True
+                ).sort_values("week")
+
+                if len(prior_games) == 0:
+                    elo_list.append(np.nan)
+                else:
+                    window = prior_games.tail(lookback)
+                    oldest_elo = window.iloc[0]["team_elo"]
+                    newest_elo = window.iloc[-1]["team_elo"]
+                    momentum = (newest_elo - oldest_elo) / len(window)
+                    elo_list.append(momentum)
+
+        df = df.copy()
+        df["home_elo_momentum"] = home_momentum
+        df["away_elo_momentum"] = away_momentum
+        return df
+
+    def _add_rank_features(
+        self,
+        df: pd.DataFrame,
+        snapshots: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Add Elo rank and percentile features for home and away teams.
+
+        For each game, determines the latest pre-game Elo for all teams
+        as of that game's week, then ranks them 1-32 (1 = highest Elo).
+        Percentile = (32 - rank + 1) / 32, so rank 1 = 1.0, rank 32 ~= 0.03.
+
+        Args:
+            df: DataFrame with games (must have game_id, season, week,
+                home_team, away_team columns).
+            snapshots: Full elo_game_snapshots DataFrame.
+
+        Returns:
+            DataFrame with home_elo_rank, away_elo_rank,
+            home_elo_percentile, away_elo_percentile added.
+        """
+        home_ranks = []
+        away_ranks = []
+        home_pcts = []
+        away_pcts = []
+
+        # Cache rankings by (season, week) to avoid recomputation
+        rank_cache: dict[tuple[int, int], dict[str, int]] = {}
+
+        for _, game in df.iterrows():
+            season = game["season"]
+            week = game["week"]
+            cache_key = (season, week)
+
+            if cache_key not in rank_cache:
+                # Build a mapping of team -> latest pre-game Elo as of this week
+                season_snaps = snapshots[snapshots["season"] == season]
+                # Include current week's games (pre-game Elo is captured BEFORE
+                # the game, so week N's snapshot is valid for ranking at week N)
+                week_snaps = season_snaps[season_snaps["week"] <= week]
+
+                team_elos: dict[str, float] = {}
+
+                # Process home teams
+                for _, snap in week_snaps.iterrows():
+                    home_t = snap["home_team"]
+                    away_t = snap["away_team"]
+                    snap_week = snap["week"]
+
+                    # Keep the latest week's Elo for each team
+                    if home_t not in team_elos or snap_week >= team_elos.get(
+                        f"_week_{home_t}", -1
+                    ):
+                        team_elos[home_t] = snap["home_elo_pre"]
+                        team_elos[f"_week_{home_t}"] = snap_week
+
+                    if away_t not in team_elos or snap_week >= team_elos.get(
+                        f"_week_{away_t}", -1
+                    ):
+                        team_elos[away_t] = snap["away_elo_pre"]
+                        team_elos[f"_week_{away_t}"] = snap_week
+
+                # Remove internal tracking keys
+                clean_elos = {
+                    k: v for k, v in team_elos.items() if not k.startswith("_week_")
+                }
+
+                # Rank: 1 = highest Elo
+                sorted_teams = sorted(
+                    clean_elos.items(), key=lambda x: x[1], reverse=True
+                )
+                n_teams = len(sorted_teams)
+                team_rank = {team: rank + 1 for rank, (team, _) in enumerate(sorted_teams)}
+                rank_cache[cache_key] = team_rank
+
+            team_rank = rank_cache[cache_key]
+            n_teams = len(team_rank)
+
+            home_r = team_rank.get(game["home_team"], n_teams)
+            away_r = team_rank.get(game["away_team"], n_teams)
+
+            home_ranks.append(home_r)
+            away_ranks.append(away_r)
+            home_pcts.append((n_teams - home_r + 1) / n_teams)
+            away_pcts.append((n_teams - away_r + 1) / n_teams)
+
+        df = df.copy()
+        df["home_elo_rank"] = home_ranks
+        df["away_elo_rank"] = away_ranks
+        df["home_elo_percentile"] = home_pcts
+        df["away_elo_percentile"] = away_pcts
+        return df
 
     # ---- Protocol-conforming methods ----
 
@@ -155,6 +324,10 @@ class EloFeatureBuilder:
                 total_games=len(merged),
             )
 
+        # Add derived features: momentum and rank/percentile
+        merged = self._add_momentum_features(merged, snapshots)
+        merged = self._add_rank_features(merged, snapshots)
+
         logger.info("Built Elo features from snapshots", games=len(merged))
         return merged
 
@@ -188,7 +361,11 @@ class EloFeatureBuilder:
             )
 
         snap = game_snap.iloc[0]
-        return {
+        season = int(snap["season"])
+        week = int(snap["week"])
+
+        # Base features from snapshot
+        features = {
             "home_elo": float(snap["home_elo_pre"]),
             "away_elo": float(snap["away_elo_pre"]),
             "elo_diff": float(snap["home_elo_pre"] - snap["away_elo_pre"]),
@@ -198,3 +375,53 @@ class EloFeatureBuilder:
             "home_elo_uncertainty": float(snap["home_elo_uncertainty"]),
             "away_elo_uncertainty": float(snap["away_elo_uncertainty"]),
         }
+
+        # Compute momentum for home and away teams
+        home_team = snap["home_team"]
+        away_team = snap["away_team"]
+        for team, prefix in [(home_team, "home"), (away_team, "away")]:
+            team_home = snapshots[
+                (snapshots["season"] == season)
+                & (snapshots["week"] < week)
+                & (snapshots["home_team"] == team)
+            ][["week", "home_elo_pre"]].rename(columns={"home_elo_pre": "team_elo"})
+            team_away = snapshots[
+                (snapshots["season"] == season)
+                & (snapshots["week"] < week)
+                & (snapshots["away_team"] == team)
+            ][["week", "away_elo_pre"]].rename(columns={"away_elo_pre": "team_elo"})
+            prior_games = pd.concat(
+                [team_home, team_away], ignore_index=True
+            ).sort_values("week")
+
+            if len(prior_games) == 0:
+                features[f"{prefix}_elo_momentum"] = float("nan")
+            else:
+                window = prior_games.tail(4)
+                oldest_elo = window.iloc[0]["team_elo"]
+                newest_elo = window.iloc[-1]["team_elo"]
+                features[f"{prefix}_elo_momentum"] = float(
+                    (newest_elo - oldest_elo) / len(window)
+                )
+
+        # Compute rank and percentile
+        season_snaps = snapshots[
+            (snapshots["season"] == season) & (snapshots["week"] <= week)
+        ]
+        team_elos: dict[str, float] = {}
+        for _, s in season_snaps.iterrows():
+            team_elos[s["home_team"]] = s["home_elo_pre"]
+            team_elos[s["away_team"]] = s["away_elo_pre"]
+
+        sorted_teams = sorted(team_elos.items(), key=lambda x: x[1], reverse=True)
+        n_teams = len(sorted_teams)
+        team_rank = {t: r + 1 for r, (t, _) in enumerate(sorted_teams)}
+
+        for team, prefix in [(home_team, "home"), (away_team, "away")]:
+            rank = team_rank.get(team, n_teams)
+            features[f"{prefix}_elo_rank"] = float(rank)
+            features[f"{prefix}_elo_percentile"] = float(
+                (n_teams - rank + 1) / n_teams
+            )
+
+        return features
