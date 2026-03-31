@@ -22,7 +22,7 @@ sys.path.append(".")
 
 from conf.settings import get_settings
 from data.storage import load_dataframe, save_dataframe
-from ratings.elo import EloRatingSystem
+from ratings.elo import EloRatingSystem, is_divisional_game
 from utils import get_current_nfl_week, get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -139,21 +139,149 @@ class EloBuilder:
         # Process current season
         return self.process_seasons_chronologically([current_season])
 
-    def build_all_ratings(self, start_season: int = 2018) -> pd.DataFrame:
-        """
-        Build Elo ratings from scratch for all available seasons.
+    def build_elo_with_snapshots(self, start_season: int = 2002) -> pd.DataFrame:
+        """Build Elo ratings and save per-game pre-game snapshots.
+
+        For each game in chronological order:
+        1. Capture PRE-GAME ratings for both teams
+        2. Record snapshot (pre-game Elo, uncertainty, win prob, HFA)
+        3. THEN process the game result (updates ratings)
+
+        This ensures each game's snapshot contains the ratings computed
+        from all prior games but NOT the current game's result (no batch
+        leakage).
 
         Args:
-            start_season: First season to include
+            start_season: First season to process. Default 2002 for full
+                burn-in (16 seasons before first backtest season 2018).
 
         Returns:
-            DataFrame with all processed games
+            DataFrame of per-game pre-game snapshots with columns:
+            game_id, season, week, home_team, away_team, home_elo_pre,
+            away_elo_pre, home_elo_uncertainty, away_elo_uncertainty,
+            elo_prob_home, hfa_used.
         """
-        # Get all available seasons from games data
+        logger.info(
+            "Building Elo ratings with per-game snapshots",
+            start_season=start_season,
+        )
+
+        # Reset Elo system for clean build
+        self.elo_system = EloRatingSystem()
+
+        # Load all games from silver layer
         all_games = self.load_games_data()
         available_seasons = sorted(all_games["season"].unique())
+        seasons_to_process = [s for s in available_seasons if s >= start_season]
 
-        # Filter to start_season and later
+        if not seasons_to_process:
+            logger.warning("No seasons to process", start_season=start_season)
+            return pd.DataFrame()
+
+        logger.info(
+            "Processing seasons for Elo snapshots",
+            seasons=seasons_to_process,
+            total_seasons=len(seasons_to_process),
+        )
+
+        snapshots = []
+
+        for season in seasons_to_process:
+            # Apply season carryover
+            self.elo_system.apply_season_carryover(season)
+
+            # Learn HFA from prior season data (no lookahead per D-11)
+            self.elo_system.learn_home_field_advantage(all_games, season)
+
+            # Get this season's games sorted chronologically
+            season_games = all_games[all_games["season"] == season].sort_values(
+                "kickoff_et"
+            )
+
+            games_processed = 0
+            for _, game in season_games.iterrows():
+                # Skip games without results
+                if pd.isna(game["home_score"]) or pd.isna(game["away_score"]):
+                    continue
+
+                home = game["home_team"]
+                away = game["away_team"]
+
+                # Step 1: Capture PRE-GAME ratings
+                home_rating = self.elo_system.get_or_create_rating(home, season)
+                away_rating = self.elo_system.get_or_create_rating(away, season)
+
+                divisional = is_divisional_game(home, away)
+
+                # Get prediction using current (pre-game) state
+                prediction = self.elo_system.predict_game(
+                    home, away, season, is_divisional=divisional
+                )
+
+                # Step 2: Record snapshot
+                snapshots.append({
+                    "game_id": game["game_id"],
+                    "season": season,
+                    "week": game["week"],
+                    "home_team": home,
+                    "away_team": away,
+                    "home_elo_pre": home_rating.rating,
+                    "away_elo_pre": away_rating.rating,
+                    "home_elo_uncertainty": home_rating.uncertainty,
+                    "away_elo_uncertainty": away_rating.uncertainty,
+                    "elo_prob_home": prediction["home_win_prob"],
+                    "hfa_used": prediction["hfa_used"],
+                })
+
+                # Step 3: THEN process game result (updates ratings)
+                self.elo_system.update_ratings(
+                    home_team=home,
+                    away_team=away,
+                    home_score=int(game["home_score"]),
+                    away_score=int(game["away_score"]),
+                    season=season,
+                    game_date=game["kickoff_et"],
+                    game_id=game["game_id"],
+                    is_divisional=divisional,
+                )
+                games_processed += 1
+
+            logger.info(
+                f"Completed season {season} snapshots",
+                games_processed=games_processed,
+            )
+
+        snapshots_df = pd.DataFrame(snapshots)
+        logger.info(
+            "Built all Elo snapshots",
+            total_snapshots=len(snapshots_df),
+            seasons=len(seasons_to_process),
+        )
+
+        return snapshots_df
+
+    def build_all_ratings(self, start_season: int = 2002) -> pd.DataFrame:
+        """Build Elo ratings from scratch with per-game snapshots.
+
+        Uses build_elo_with_snapshots to process all seasons chronologically
+        and produce per-game pre-game snapshots. Also processes seasons
+        through the legacy path for backward compatibility of games_with_elo.
+
+        Args:
+            start_season: First season to include (default: 2002 for burn-in)
+
+        Returns:
+            DataFrame with all processed games (from legacy path)
+        """
+        # Build snapshots (the primary output)
+        self._snapshots_df = self.build_elo_with_snapshots(start_season)
+
+        # Also run the legacy processing path for games_with_elo compatibility
+        # Reset Elo system for clean processing
+        self.elo_system = EloRatingSystem()
+
+        all_games = self.load_games_data()
+        available_seasons = sorted(all_games["season"].unique())
         seasons_to_process = [s for s in available_seasons if s >= start_season]
 
         logger.info(
@@ -162,19 +290,35 @@ class EloBuilder:
             seasons_to_process=seasons_to_process,
         )
 
-        # Reset Elo system
-        self.elo_system = EloRatingSystem()
-
-        # Process all seasons chronologically
         return self.process_seasons_chronologically(seasons_to_process)
 
     def save_results(self, processed_games: pd.DataFrame) -> None:
-        """
-        Save Elo results to data storage.
+        """Save Elo results to data storage.
+
+        Saves:
+        - elo_game_snapshots: Per-game pre-game Elo snapshots (primary artifact)
+        - games_with_elo: Games with Elo rating updates (legacy)
+        - elo_ratings_current: Current team ratings
+        - elo_rating_history: Full rating history
+        - elo_ratings.json: Elo system state
 
         Args:
             processed_games: DataFrame with games and rating updates
         """
+        # Save per-game pre-game snapshots (primary artifact for EloFeatureBuilder)
+        if hasattr(self, "_snapshots_df") and self._snapshots_df is not None:
+            if len(self._snapshots_df) > 0:
+                save_dataframe(
+                    self._snapshots_df,
+                    "elo_game_snapshots",
+                    layer="silver",
+                    append_mode=False,  # Always replace, full rebuild
+                )
+                logger.info(
+                    "Saved elo_game_snapshots",
+                    total_snapshots=len(self._snapshots_df),
+                )
+
         # Save updated games with Elo ratings
         if len(processed_games) > 0:
             save_dataframe(
@@ -273,8 +417,8 @@ def main():
     parser.add_argument(
         "--start-season",
         type=int,
-        default=2018,
-        help="Starting season for all-seasons build (default: 2018)",
+        default=2002,
+        help="Starting season for all-seasons build (default: 2002)",
     )
     parser.add_argument(
         "--validate-only", action="store_true", help="Only validate existing ratings"

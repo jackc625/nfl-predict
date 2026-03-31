@@ -9,8 +9,6 @@ Verifies:
 
 import pytest
 
-import pandas as pd
-
 
 def _silver_has_games() -> bool:
     """Check if silver layer has games data."""

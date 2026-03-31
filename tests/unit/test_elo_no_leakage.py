@@ -9,10 +9,9 @@ Verifies:
 """
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pandas as pd
-import pytest
 
 from ratings.elo import EloRatingSystem, is_divisional_game
 
@@ -302,6 +301,27 @@ class TestFeatureBuilderUsesSnapshots:
         pre-computed snapshots (mock load_dataframe to verify it reads
         elo_game_snapshots).
         """
+        import importlib
+        import sys
+        from pathlib import Path
+
+        import features.elo_features as elo_mod
+
+        # In worktree environments, the venv may place the main repo on
+        # sys.path before the worktree, causing Python to import the OLD
+        # elo_features.py. Detect and fix by reinserting the worktree root.
+        if not hasattr(elo_mod.EloFeatureBuilder, "_load_snapshots"):
+            worktree_root = str(Path(__file__).resolve().parent.parent.parent)
+            # Remove cached features modules
+            for key in list(sys.modules.keys()):
+                if key.startswith("features.elo") or key == "features":
+                    del sys.modules[key]
+            # Ensure worktree root is first in sys.path
+            if worktree_root in sys.path:
+                sys.path.remove(worktree_root)
+            sys.path.insert(0, worktree_root)
+            elo_mod = importlib.import_module("features.elo_features")
+
         # Create mock snapshot data that would be in the silver layer
         mock_snapshots = pd.DataFrame([
             {
@@ -356,12 +376,11 @@ class TestFeatureBuilderUsesSnapshots:
             },
         ])
 
-        with patch("features.elo_features.load_dataframe") as mock_load:
+        # Patch load_dataframe on the actual module object
+        with patch.object(elo_mod, "load_dataframe") as mock_load:
             mock_load.return_value = mock_snapshots
 
-            from features.elo_features import EloFeatureBuilder
-
-            builder = EloFeatureBuilder()
+            builder = elo_mod.EloFeatureBuilder()
             result = builder.build_features(
                 games_df,
                 as_of_datetime=datetime(2023, 9, 8, 0, 0),
@@ -371,9 +390,7 @@ class TestFeatureBuilderUsesSnapshots:
             mock_load.assert_called_once_with("elo_game_snapshots", layer="silver")
 
             # Verify the result has the expected Elo feature columns
-            from features.elo_features import ELO_FEATURE_COLUMNS
-
-            for col in ELO_FEATURE_COLUMNS:
+            for col in elo_mod.ELO_FEATURE_COLUMNS:
                 assert col in result.columns, f"Missing Elo feature column: {col}"
 
             # Verify features come from snapshots (not recomputed from 1500)
@@ -387,7 +404,7 @@ class TestFeatureBuilderUsesSnapshots:
 
         # Verify the builder does NOT have an EloRatingSystem internally
         # (it should use snapshots, not recompute)
-        builder2 = EloFeatureBuilder()
+        builder2 = elo_mod.EloFeatureBuilder()
         assert not hasattr(builder2, "elo_system"), (
             "EloFeatureBuilder should not have self.elo_system "
             "(should use snapshot lookup, not recomputation)"

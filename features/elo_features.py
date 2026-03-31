@@ -1,22 +1,28 @@
 """Elo Feature Builder
 
-This module creates Elo-based features for game prediction models.
+This module creates Elo-based features for game prediction models by
+looking up pre-computed per-game Elo snapshots from the silver layer.
+
+The snapshots are produced by scripts/build_elo.py which processes all
+games chronologically, recording each team's pre-game Elo BEFORE the
+game result is applied. This eliminates batch leakage where end-of-season
+ratings were previously assigned to every game.
+
 Conforms to the FeatureBuilder Protocol with mandatory as_of_datetime
 parameter for time-fence enforcement.
 """
 
-import warnings
 from datetime import datetime
 
 import pandas as pd
 
+from data.storage import load_dataframe
 from features.protocol import FeatureBuilder  # noqa: F401 (documents conformance)
-from ratings.elo import EloRatingSystem, is_divisional_game
 from utils import get_logger
 
 logger = get_logger(__name__)
 
-# Elo feature column names
+# Elo feature column names -- unchanged from v1.0 (per D-17)
 ELO_FEATURE_COLUMNS = [
     "home_elo",
     "away_elo",
@@ -30,20 +36,46 @@ ELO_FEATURE_COLUMNS = [
 
 
 class EloFeatureBuilder:
-    """Build Elo-based features for game predictions.
+    """Build Elo-based features from pre-computed snapshots.
 
     Satisfies the FeatureBuilder Protocol via structural subtyping.
-    The as_of_datetime parameter enforces the time-fence: only data
-    before this cutoff is used in feature construction.
+    Features are derived from per-game Elo snapshots stored in the silver
+    layer (elo_game_snapshots), NOT recomputed on the fly.
+
+    The as_of_datetime parameter is accepted for protocol conformance but
+    filtering is handled by the snapshot join -- each game's snapshot already
+    contains only pre-game information by construction.
     """
 
     def __init__(self) -> None:
-        """Initialize Elo feature builder."""
-        self.elo_system = EloRatingSystem()
+        """Initialize Elo feature builder with empty snapshot cache."""
+        self._snapshots_df: pd.DataFrame | None = None
 
-    def load_elo_system(self, filepath: str | None = None) -> None:
-        """Load existing Elo ratings."""
-        self.elo_system.load_ratings(filepath)
+    def _load_snapshots(self) -> pd.DataFrame:
+        """Load per-game Elo snapshots from silver layer.
+
+        Loads elo_game_snapshots produced by scripts/build_elo.py and
+        caches the result for repeated calls within the same session.
+
+        Returns:
+            DataFrame with per-game pre-game Elo snapshots.
+
+        Raises:
+            ValueError: If snapshots are not found in the silver layer.
+        """
+        if self._snapshots_df is not None:
+            return self._snapshots_df
+
+        logger.info("Loading Elo game snapshots from silver layer")
+        self._snapshots_df = load_dataframe("elo_game_snapshots", layer="silver")
+        logger.info(
+            "Loaded Elo snapshots",
+            total_snapshots=len(self._snapshots_df),
+            seasons=sorted(self._snapshots_df["season"].unique().tolist())
+            if len(self._snapshots_df) > 0
+            else [],
+        )
+        return self._snapshots_df
 
     # ---- Protocol-conforming methods ----
 
@@ -55,17 +87,16 @@ class EloFeatureBuilder:
         target_season: int | None = None,
         target_week: int | None = None,
     ) -> pd.DataFrame:
-        """Build Elo features for a batch of games.
+        """Build Elo features by joining games with pre-computed snapshots.
 
-        Only uses game data where kickoff_et < as_of_datetime for Elo
-        rating updates. Games after the cutoff get predictions based
-        on ratings computed from pre-cutoff games only.
+        Looks up per-game Elo snapshots from the silver layer and joins
+        them to the input games DataFrame. Each snapshot contains the
+        pre-game Elo ratings (computed from all prior games only).
 
         Args:
-            games_df: DataFrame with game records (must have columns:
-                game_id, home_team, away_team, season, week, kickoff_et).
-            as_of_datetime: Time-fence cutoff. Only games with
-                kickoff_et < as_of_datetime are used for rating updates.
+            games_df: DataFrame with game records (must have game_id column).
+            as_of_datetime: Time-fence cutoff (accepted for protocol
+                conformance; filtering is inherent in snapshot construction).
             target_season: Optional filter to a specific season.
             target_week: Optional filter to a specific week.
 
@@ -73,7 +104,7 @@ class EloFeatureBuilder:
             DataFrame with Elo feature columns added.
         """
         logger.info(
-            "Building Elo features",
+            "Building Elo features from snapshots",
             games=len(games_df),
             as_of_datetime=str(as_of_datetime),
         )
@@ -85,278 +116,85 @@ class EloFeatureBuilder:
         if target_week is not None:
             filtered_df = filtered_df[filtered_df["week"] == target_week]
 
-        # Update Elo ratings from completed games before the cutoff
-        # Make as_of_datetime timezone-aware if kickoff_et is tz-aware
-        cutoff = as_of_datetime
-        if (
-            hasattr(games_df["kickoff_et"].dtype, "tz")
-            and games_df["kickoff_et"].dtype.tz is not None
-        ):
-            cutoff = pd.Timestamp(as_of_datetime).tz_localize(
-                games_df["kickoff_et"].dtype.tz
-            )
-        completed_mask = (
-            (games_df["kickoff_et"] < cutoff)
-            & games_df["home_score"].notna()
-            & games_df["away_score"].notna()
-        )
-        completed_games = games_df[completed_mask]
+        # Load pre-computed snapshots
+        snapshots = self._load_snapshots()
 
-        if len(completed_games) > 0:
-            for season in sorted(completed_games["season"].unique()):
-                season_games = completed_games[completed_games["season"] == season]
-                self.elo_system.process_season_chronologically(season_games, season)
-            logger.info(
-                "Updated Elo ratings from completed games",
-                completed_games=len(completed_games),
-                seasons=sorted(completed_games["season"].unique().tolist()),
-            )
+        # Select only the columns we need from snapshots for the join
+        snapshot_cols = [
+            "game_id",
+            "home_elo_pre",
+            "away_elo_pre",
+            "home_elo_uncertainty",
+            "away_elo_uncertainty",
+            "elo_prob_home",
+            "hfa_used",
+        ]
+        # Only keep columns that exist in the snapshots
+        available_cols = [c for c in snapshot_cols if c in snapshots.columns]
+        snapshot_subset = snapshots[available_cols]
 
-        # Initialize feature columns
-        for col in ELO_FEATURE_COLUMNS:
-            filtered_df[col] = None
+        # Merge snapshots onto games by game_id (left join to keep all games)
+        merged = filtered_df.merge(snapshot_subset, on="game_id", how="left")
 
-        # Calculate Elo features for each game
-        for idx, game in filtered_df.iterrows():
-            home_team = game["home_team"]
-            away_team = game["away_team"]
-            season = game["season"]
-            neutral_site = game.get("neutral_site", False)
+        # Rename snapshot columns to feature names
+        merged = merged.rename(columns={
+            "home_elo_pre": "home_elo",
+            "away_elo_pre": "away_elo",
+        })
 
-            # Detect divisional games for HFA reduction
-            divisional = is_divisional_game(home_team, away_team)
+        # Compute derived columns
+        merged["elo_diff"] = merged["home_elo"] - merged["away_elo"]
+        merged["elo_prob_away"] = 1.0 - merged["elo_prob_home"]
 
-            # Get Elo prediction using current (pre-cutoff) ratings
-            prediction = self.elo_system.predict_game(
-                home_team,
-                away_team,
-                season,
-                neutral_site=neutral_site,
-                is_divisional=divisional,
+        # Log any games without snapshots (future games or missing data)
+        missing_count = merged["home_elo"].isna().sum()
+        if missing_count > 0:
+            logger.warning(
+                "Games without Elo snapshots (future games or missing data)",
+                missing_count=missing_count,
+                total_games=len(merged),
             )
 
-            elo_features = {
-                "home_elo": prediction["home_rating"],
-                "away_elo": prediction["away_rating"],
-                "elo_diff": prediction["rating_diff"],
-                "elo_prob_home": prediction["home_win_prob"],
-                "elo_prob_away": prediction["away_win_prob"],
-                "hfa_used": prediction["hfa_used"],
-                "home_elo_uncertainty": prediction["home_uncertainty"],
-                "away_elo_uncertainty": prediction["away_uncertainty"],
-            }
-
-            for feature, value in elo_features.items():
-                filtered_df.loc[idx, feature] = value
-
-        logger.info("Built Elo features", games=len(filtered_df))
-        return filtered_df
+        logger.info("Built Elo features from snapshots", games=len(merged))
+        return merged
 
     def get_features_for_game(
         self,
         game_id: str,
         as_of_datetime: datetime,
     ) -> dict[str, float]:
-        """Get Elo features for a single game.
+        """Get Elo features for a single game from pre-computed snapshots.
 
-        Looks up game data from the Silver layer, computes Elo prediction
-        using only ratings updated from games before as_of_datetime.
+        Looks up the game's pre-game Elo snapshot from the silver layer.
 
         Args:
             game_id: Unique game identifier (e.g., '2024_01_BUF_MIA').
-            as_of_datetime: Time-fence cutoff. Only data before this
-                timestamp may be used.
+            as_of_datetime: Time-fence cutoff (accepted for protocol
+                conformance).
 
         Returns:
             Dictionary mapping feature names to values.
 
         Raises:
-            ValueError: If game_id cannot be parsed.
-            KeyError: If required data is missing.
+            ValueError: If game_id is not found in snapshots.
         """
-        # Parse game_id to extract teams and season
-        # Format: YYYY_WW_AWAY_HOME or similar -- defer to data layer
-        # For now, use the internal Elo system's current state
-        # (ratings should have been built up to as_of_datetime by process_season)
-        try:
-            from data.storage import load_dataframe
+        snapshots = self._load_snapshots()
+        game_snap = snapshots[snapshots["game_id"] == game_id]
 
-            games_df = load_dataframe("games", layer="silver")
-            game_row = games_df[games_df["game_id"] == game_id]
-
-            if len(game_row) == 0:
-                raise ValueError(f"Game not found: {game_id}")
-
-            game = game_row.iloc[0]
-            home_team = game["home_team"]
-            away_team = game["away_team"]
-            season = game["season"]
-            neutral_site = game.get("neutral_site", False)
-
-            divisional = is_divisional_game(home_team, away_team)
-
-            prediction = self.elo_system.predict_game(
-                home_team,
-                away_team,
-                season,
-                neutral_site=neutral_site,
-                is_divisional=divisional,
+        if len(game_snap) == 0:
+            raise ValueError(
+                f"No Elo snapshot found for game_id={game_id}. "
+                "Ensure build_elo.py has been run with --all-seasons."
             )
 
-            return {
-                "home_elo": prediction["home_rating"],
-                "away_elo": prediction["away_rating"],
-                "elo_diff": prediction["rating_diff"],
-                "elo_prob_home": prediction["home_win_prob"],
-                "elo_prob_away": prediction["away_win_prob"],
-                "hfa_used": prediction["hfa_used"],
-                "home_elo_uncertainty": prediction["home_uncertainty"],
-                "away_elo_uncertainty": prediction["away_uncertainty"],
-            }
-
-        except (ValueError, KeyError, TypeError) as e:
-            logger.error(
-                "Failed to get Elo features for game",
-                game_id=game_id,
-                as_of_datetime=str(as_of_datetime),
-                error=str(e),
-            )
-            raise
-
-    # ---- Deprecated methods (kept for backward compatibility) ----
-
-    def get_elo_features_for_game(
-        self,
-        home_team: str,
-        away_team: str,
-        season: int,
-        week: int,
-        neutral_site: bool = False,
-    ) -> dict[str, float]:
-        """Get Elo-based features for a specific game.
-
-        .. deprecated::
-            Use `get_features_for_game(game_id, as_of_datetime)` instead.
-            This method does not enforce the time-fence contract.
-
-        Args:
-            home_team: Home team abbreviation.
-            away_team: Away team abbreviation.
-            season: Season year.
-            week: Week number.
-            neutral_site: Whether game is at neutral site.
-
-        Returns:
-            Dictionary with Elo features.
-
-        Raises:
-            ValueError, KeyError, TypeError: If prediction fails.
-        """
-        warnings.warn(
-            "get_elo_features_for_game is deprecated. "
-            "Use get_features_for_game(game_id, as_of_datetime) instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        divisional = is_divisional_game(home_team, away_team)
-
-        try:
-            prediction = self.elo_system.predict_game(
-                home_team,
-                away_team,
-                season,
-                neutral_site,
-                is_divisional=divisional,
-            )
-
-            return {
-                "home_elo": prediction["home_rating"],
-                "away_elo": prediction["away_rating"],
-                "elo_diff": prediction["rating_diff"],
-                "elo_prob_home": prediction["home_win_prob"],
-                "elo_prob_away": prediction["away_win_prob"],
-                "hfa_used": prediction["hfa_used"],
-                "home_elo_uncertainty": prediction["home_uncertainty"],
-                "away_elo_uncertainty": prediction["away_uncertainty"],
-            }
-
-        except (ValueError, KeyError, TypeError) as e:
-            logger.error(
-                "Failed to get Elo features for game",
-                home_team=home_team,
-                away_team=away_team,
-                season=season,
-                week=week,
-                error=str(e),
-            )
-            raise
-
-    def build_elo_features_for_games(self, games_df: pd.DataFrame) -> pd.DataFrame:
-        """Build Elo features for a DataFrame of games.
-
-        .. deprecated::
-            Use `build_features(games_df, as_of_datetime)` instead.
-            This method does not enforce the time-fence contract.
-
-        Args:
-            games_df: DataFrame with games.
-
-        Returns:
-            DataFrame with Elo features added.
-        """
-        warnings.warn(
-            "build_elo_features_for_games is deprecated. "
-            "Use build_features(games_df, as_of_datetime) instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        logger.info("Building Elo features for games", games=len(games_df))
-
-        games_with_elo = games_df.copy()
-
-        for col in ELO_FEATURE_COLUMNS:
-            games_with_elo[col] = None
-
-        for idx, game in games_df.iterrows():
-            home_team = game["home_team"]
-            away_team = game["away_team"]
-            divisional = is_divisional_game(home_team, away_team)
-
-            try:
-                prediction = self.elo_system.predict_game(
-                    home_team,
-                    away_team,
-                    game["season"],
-                    game.get("neutral_site", False),
-                    is_divisional=divisional,
-                )
-
-                elo_features = {
-                    "home_elo": prediction["home_rating"],
-                    "away_elo": prediction["away_rating"],
-                    "elo_diff": prediction["rating_diff"],
-                    "elo_prob_home": prediction["home_win_prob"],
-                    "elo_prob_away": prediction["away_win_prob"],
-                    "hfa_used": prediction["hfa_used"],
-                    "home_elo_uncertainty": prediction["home_uncertainty"],
-                    "away_elo_uncertainty": prediction["away_uncertainty"],
-                }
-
-                for feature, value in elo_features.items():
-                    games_with_elo.loc[idx, feature] = value
-
-            except (ValueError, KeyError, TypeError) as e:
-                logger.error(
-                    "Failed to get Elo features for game",
-                    home_team=home_team,
-                    away_team=away_team,
-                    season=game["season"],
-                    week=game["week"],
-                    error=str(e),
-                )
-                raise
-
-        logger.info("Built Elo features", games=len(games_with_elo))
-        return games_with_elo
+        snap = game_snap.iloc[0]
+        return {
+            "home_elo": float(snap["home_elo_pre"]),
+            "away_elo": float(snap["away_elo_pre"]),
+            "elo_diff": float(snap["home_elo_pre"] - snap["away_elo_pre"]),
+            "elo_prob_home": float(snap["elo_prob_home"]),
+            "elo_prob_away": float(1.0 - snap["elo_prob_home"]),
+            "hfa_used": float(snap["hfa_used"]),
+            "home_elo_uncertainty": float(snap["home_elo_uncertainty"]),
+            "away_elo_uncertainty": float(snap["away_elo_uncertainty"]),
+        }
