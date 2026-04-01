@@ -13,10 +13,13 @@ The pipeline generates comprehensive predictions including:
 - Structured output format for betting analysis
 - Confidence metrics and model agreement analysis
 - Bet recommendation engine integration
+
+Models are loaded from versioned artifacts (via models.artifacts) rather than
+legacy trainer classes. Each artifact contains the raw sklearn/xgboost model,
+feature list, metadata, and optional calibrator.
 """
 
 import json
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -26,14 +29,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
-# Project imports
-from models.train_ats import ATSModel, ATSModelPrediction
-from models.train_ou import OUModel, OUModelPrediction
-from models.train_wp import WinProbabilityModel, WPModelPrediction
+from models.artifacts import load_model_artifact
+from models.train_ats import ResidualDistributionConverter
+from models.train_ou import TotalDistributionConverter
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -122,6 +120,45 @@ class BetRecommendation:
     kelly_fraction: float
     confidence: float
     reasoning: str
+
+
+# -- Prediction dataclasses (replace legacy WPModelPrediction, ATSModelPrediction,
+# OUModelPrediction from train_*.py modules) --
+
+
+@dataclass
+class WPPrediction:
+    """Win probability prediction from artifact-loaded model."""
+
+    game_id: str
+    home_team: str
+    away_team: str
+    raw_win_probability: float
+    calibrated_win_probability: float | None = None
+    prediction_confidence: float | None = None
+    feature_importances: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class ATSPrediction:
+    """Against the spread prediction from artifact-loaded model."""
+
+    predicted_margin: float
+    predicted_spread: float
+    cover_probability: float
+    confidence: float | None = None
+    feature_importances: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class OUPrediction:
+    """Over/under prediction from artifact-loaded model."""
+
+    predicted_total: float
+    over_probability: float
+    under_probability: float
+    confidence: float | None = None
+    feature_importances: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -366,15 +403,17 @@ class NFLPredictionPipeline:
     """
     Unified NFL prediction pipeline combining WP, ATS, and O/U models.
 
-    This pipeline orchestrates all three models to generate comprehensive
-    game predictions with fair lines, edges, and betting recommendations.
+    Models are loaded from versioned artifacts (via models.artifacts) and called
+    with raw sklearn/xgboost predict methods. This pipeline orchestrates all three
+    models to generate comprehensive game predictions with fair lines, edges, and
+    betting recommendations.
     """
 
     def __init__(
         self,
-        wp_model: WinProbabilityModel | None = None,
-        ats_model: ATSModel | None = None,
-        ou_model: OUModel | None = None,
+        wp_artifact: dict[str, Any] | None = None,
+        ats_artifact: dict[str, Any] | None = None,
+        ou_artifact: dict[str, Any] | None = None,
         min_edge_threshold: float = 0.02,
         min_confidence_threshold: float = 0.6,
         max_kelly_fraction: float = 0.25,
@@ -383,16 +422,16 @@ class NFLPredictionPipeline:
         Initialize the prediction pipeline.
 
         Args:
-            wp_model: Trained Win Probability model
-            ats_model: Trained ATS model
-            ou_model: Trained O/U model
+            wp_artifact: Loaded WP model artifact dict (from load_model_artifact)
+            ats_artifact: Loaded ATS model artifact dict (from load_model_artifact)
+            ou_artifact: Loaded O/U model artifact dict (from load_model_artifact)
             min_edge_threshold: Minimum edge for bet consideration
             min_confidence_threshold: Minimum confidence for recommendations
             max_kelly_fraction: Maximum Kelly fraction for bet sizing
         """
-        self.wp_model = wp_model
-        self.ats_model = ats_model
-        self.ou_model = ou_model
+        self.wp_artifact = wp_artifact
+        self.ats_artifact = ats_artifact
+        self.ou_artifact = ou_artifact
 
         # Initialize utility classes
         self.odds_converter = OddsConverter()
@@ -408,79 +447,70 @@ class NFLPredictionPipeline:
 
     def load_models(
         self,
-        wp_model_path: str | None = None,
-        ats_model_path: str | None = None,
-        ou_model_path: str | None = None,
+        artifacts_dir: Path = Path("artifacts"),
+        wp_version: str | None = None,
+        ats_version: str | None = None,
+        ou_version: str | None = None,
     ) -> None:
-        """Load models from disk."""
-        if wp_model_path:
-            self.wp_model = WinProbabilityModel()
-            self.wp_model.load_model(wp_model_path)
-            logger.info(f"Loaded WP model from {wp_model_path}")
+        """Load all three model artifacts from versioned artifact storage.
 
-        if ats_model_path:
-            self.ats_model = ATSModel()
-            self.ats_model.load_model(ats_model_path)
-            logger.info(f"Loaded ATS model from {ats_model_path}")
+        Args:
+            artifacts_dir: Root directory for model artifacts.
+            wp_version: Specific WP artifact version (None = latest).
+            ats_version: Specific ATS artifact version (None = latest).
+            ou_version: Specific O/U artifact version (None = latest).
+        """
+        self.wp_artifact = load_model_artifact("wp", wp_version, artifacts_dir)
+        logger.info("Loaded WP model artifact", version=wp_version or "latest")
 
-        if ou_model_path:
-            self.ou_model = OUModel()
-            self.ou_model.load_model(ou_model_path)
-            logger.info(f"Loaded O/U model from {ou_model_path}")
+        self.ats_artifact = load_model_artifact("ats", ats_version, artifacts_dir)
+        logger.info("Loaded ATS model artifact", version=ats_version or "latest")
+
+        self.ou_artifact = load_model_artifact("ou", ou_version, artifacts_dir)
+        logger.info("Loaded O/U model artifact", version=ou_version or "latest")
 
     def _check_models_loaded(self) -> None:
-        """Check that all required models are loaded."""
-        missing_models = []
-        if self.wp_model is None or not getattr(self.wp_model, "is_trained", False):
-            missing_models.append("WP model")
-        if self.ats_model is None or not getattr(self.ats_model, "is_trained", False):
-            missing_models.append("ATS model")
-        if self.ou_model is None or not getattr(self.ou_model, "is_trained", False):
-            missing_models.append("O/U model")
-
-        if missing_models:
-            raise ValueError(f"Missing trained models: {', '.join(missing_models)}")
+        """Check that all required model artifacts are loaded."""
+        missing = []
+        if self.wp_artifact is None:
+            missing.append("WP model")
+        if self.ats_artifact is None:
+            missing.append("ATS model")
+        if self.ou_artifact is None:
+            missing.append("O/U model")
+        if missing:
+            raise ValueError(f"Missing loaded models: {', '.join(missing)}")
 
     def _generate_fair_lines(
         self,
-        wp_pred: WPModelPrediction,
-        ats_pred: ATSModelPrediction,
-        ou_pred: OUModelPrediction,
+        wp_pred: WPPrediction,
+        ats_pred: ATSPrediction,
+        ou_pred: OUPrediction,
     ) -> dict[BetType, FairLine]:
         """Generate fair lines from model predictions."""
         fair_lines = {}
 
         # Moneyline fair lines
+        wp_prob = wp_pred.calibrated_win_probability or wp_pred.raw_win_probability
+
         fair_lines[BetType.MONEYLINE_HOME] = FairLine(
             bet_type=BetType.MONEYLINE_HOME,
-            fair_probability=wp_pred.calibrated_win_probability
-            or wp_pred.raw_win_probability,
-            fair_odds_american=self.odds_converter.probability_to_american(
-                wp_pred.calibrated_win_probability or wp_pred.raw_win_probability
-            ),
+            fair_probability=wp_prob,
+            fair_odds_american=self.odds_converter.probability_to_american(wp_prob),
             fair_odds_decimal=self.odds_converter.american_to_decimal(
-                self.odds_converter.probability_to_american(
-                    wp_pred.calibrated_win_probability or wp_pred.raw_win_probability
-                )
+                self.odds_converter.probability_to_american(wp_prob)
             ),
             confidence=wp_pred.prediction_confidence,
         )
 
         fair_lines[BetType.MONEYLINE_AWAY] = FairLine(
             bet_type=BetType.MONEYLINE_AWAY,
-            fair_probability=1
-            - (wp_pred.calibrated_win_probability or wp_pred.raw_win_probability),
+            fair_probability=1 - wp_prob,
             fair_odds_american=self.odds_converter.probability_to_american(
-                1 - (wp_pred.calibrated_win_probability or wp_pred.raw_win_probability)
+                1 - wp_prob
             ),
             fair_odds_decimal=self.odds_converter.american_to_decimal(
-                self.odds_converter.probability_to_american(
-                    1
-                    - (
-                        wp_pred.calibrated_win_probability
-                        or wp_pred.raw_win_probability
-                    )
-                )
+                self.odds_converter.probability_to_american(1 - wp_prob)
             ),
             confidence=wp_pred.prediction_confidence,
         )
@@ -607,9 +637,9 @@ class NFLPredictionPipeline:
 
     def _calculate_model_agreement(
         self,
-        wp_pred: WPModelPrediction,
-        ats_pred: ATSModelPrediction,
-        ou_pred: OUModelPrediction,
+        wp_pred: WPPrediction,
+        ats_pred: ATSPrediction,
+        ou_pred: OUPrediction,
     ) -> float:
         """Calculate agreement score between models."""
         agreements = []
@@ -628,7 +658,7 @@ class NFLPredictionPipeline:
 
         # Additional agreement metrics could be added here
 
-        return np.mean(agreements)
+        return float(np.mean(agreements))
 
     def _generate_recommendations(
         self, edges: dict[BetType, MarketEdge], fair_lines: dict[BetType, FairLine]
@@ -653,27 +683,132 @@ class NFLPredictionPipeline:
         """
         Generate unified predictions for multiple games.
 
+        Uses raw model.predict() / model.predict_proba() on feature DataFrames
+        with feature columns specified by each artifact's feature_list.
+
         Args:
-            games_data: DataFrame with game data and market lines
+            games_data: DataFrame with game data, features, and market lines.
+                Must contain all feature columns referenced by the loaded model
+                artifacts, plus game_id, home_team, away_team, and optional
+                market line columns (market_moneyline_home, market_moneyline_away,
+                market_spread, market_total).
 
         Returns:
-            List of unified game predictions
+            List of unified game predictions.
         """
         self._check_models_loaded()
 
         logger.info(f"Generating predictions for {len(games_data)} games")
 
-        # Get predictions from all models
-        wp_predictions = self.wp_model.predict(games_data)
-        ats_predictions = self.ats_model.predict(games_data)
-        ou_predictions = self.ou_model.predict(games_data)
+        # Extract models and feature lists from artifacts
+        wp_model = self.wp_artifact["model"]
+        wp_features = self.wp_artifact["feature_list"]
+        wp_calibrator = self.wp_artifact.get("calibrator")
 
+        ats_model = self.ats_artifact["model"]
+        ats_features = self.ats_artifact["feature_list"]
+
+        ou_model = self.ou_artifact["model"]
+        ou_features = self.ou_artifact["feature_list"]
+
+        # -- WP predictions: predict_proba for classification --
+        wp_feature_df = games_data[wp_features].copy()
+        wp_raw_probs = wp_model.predict_proba(wp_feature_df)[:, 1]
+
+        # Apply calibrator if available
+        wp_calibrated_probs = None
+        if wp_calibrator is not None:
+            wp_calibrated_probs = wp_calibrator.transform(wp_raw_probs)
+
+        # -- ATS predictions: predict for regression --
+        ats_feature_df = games_data[ats_features].copy()
+        ats_margins = ats_model.predict(ats_feature_df)
+
+        # Compute cover probabilities using ResidualDistributionConverter
+        # Use market_spread column if available, otherwise use predicted margin as spread
+        if "market_spread" in games_data.columns:
+            spreads = games_data["market_spread"].values
+        else:
+            spreads = -ats_margins  # Default: predicted margin as implied spread
+
+        # Build a simple converter with a normal distribution fallback
+        # The residual_std is embedded in metadata if available, otherwise use a
+        # reasonable default (NFL margin std ~13.5 points)
+        ats_metadata = self.ats_artifact.get("metadata", {})
+        ats_residual_std = ats_metadata.get("residual_std", 13.5)
+        ats_converter = ResidualDistributionConverter(distribution_type="normal")
+        ats_converter.is_fitted = True
+        ats_converter.residual_std = ats_residual_std
+        ats_converter.distribution_params = {"loc": 0.0, "scale": ats_residual_std}
+
+        cover_probs = ats_converter.predict_cover_probability(
+            np.array(ats_margins), np.array(spreads)
+        )
+
+        # -- O/U predictions: predict for regression --
+        ou_feature_df = games_data[ou_features].copy()
+        ou_totals = ou_model.predict(ou_feature_df)
+
+        # Compute over/under probabilities using TotalDistributionConverter
+        if "market_total" in games_data.columns:
+            market_totals = games_data["market_total"].values
+        else:
+            market_totals = ou_totals  # Default: predicted total as market total
+
+        ou_metadata = self.ou_artifact.get("metadata", {})
+        ou_residual_std = ou_metadata.get("residual_std", 13.0)
+        ou_converter = TotalDistributionConverter(distribution_type="normal")
+        ou_converter.is_fitted = True
+        ou_converter.residual_std = ou_residual_std
+        ou_converter.distribution_params = {"loc": 0.0, "scale": ou_residual_std}
+
+        over_probs, under_probs = ou_converter.predict_over_under_probabilities(
+            np.array(ou_totals), np.array(market_totals)
+        )
+
+        # -- Build per-game predictions --
         unified_predictions = []
 
-        for i, (wp_pred, ats_pred, ou_pred) in enumerate(
-            zip(wp_predictions, ats_predictions, ou_predictions, strict=False)
-        ):
+        for i in range(len(games_data)):
             game_data = games_data.iloc[i]
+
+            # Build WP prediction
+            raw_prob = float(wp_raw_probs[i])
+            cal_prob = float(wp_calibrated_probs[i]) if wp_calibrated_probs is not None else None
+            confidence = abs(raw_prob - 0.5) * 2  # Distance from 0.5 scaled to [0, 1]
+
+            wp_pred = WPPrediction(
+                game_id=str(game_data.get("game_id", f"game_{i}")),
+                home_team=str(game_data.get("home_team", "UNK")),
+                away_team=str(game_data.get("away_team", "UNK")),
+                raw_win_probability=raw_prob,
+                calibrated_win_probability=cal_prob,
+                prediction_confidence=confidence,
+            )
+
+            # Build ATS prediction
+            margin = float(ats_margins[i])
+            cover_prob = float(cover_probs[i])
+            spread_val = float(spreads[i]) if spreads is not None else -margin
+
+            ats_pred = ATSPrediction(
+                predicted_margin=margin,
+                predicted_spread=spread_val,
+                cover_probability=cover_prob,
+                confidence=abs(cover_prob - 0.5) * 2,
+            )
+
+            # Build O/U prediction
+            total = float(ou_totals[i])
+            over_p = float(over_probs[i])
+            under_p = float(under_probs[i])
+
+            ou_pred = OUPrediction(
+                predicted_total=total,
+                over_probability=over_p,
+                under_probability=under_p,
+                confidence=abs(over_p - 0.5) * 2,
+            )
 
             # Extract market lines
             market_moneyline_home = game_data.get("market_moneyline_home")
@@ -707,16 +842,21 @@ class NFLPredictionPipeline:
                 ats_pred.confidence or 0.5,
                 ou_pred.confidence or 0.5,
             ]
-            overall_confidence = np.mean(confidences)
+            overall_confidence = float(np.mean(confidences))
 
             # Combine feature importances
-            combined_features = {}
+            combined_features: dict[str, float] = {}
             if wp_pred.feature_importances:
                 combined_features.update(wp_pred.feature_importances)
             if ats_pred.feature_importances:
                 combined_features.update(ats_pred.feature_importances)
             if ou_pred.feature_importances:
                 combined_features.update(ou_pred.feature_importances)
+
+            # Build model version info from artifact metadata
+            wp_meta = self.wp_artifact.get("metadata", {})
+            ats_meta = self.ats_artifact.get("metadata", {})
+            ou_meta = self.ou_artifact.get("metadata", {})
 
             # Create unified prediction
             unified_pred = UnifiedGamePrediction(
@@ -725,10 +865,8 @@ class NFLPredictionPipeline:
                 away_team=wp_pred.away_team,
                 prediction_date=datetime.now(),
                 # Core predictions
-                wp_home_probability=wp_pred.calibrated_win_probability
-                or wp_pred.raw_win_probability,
-                wp_away_probability=1
-                - (wp_pred.calibrated_win_probability or wp_pred.raw_win_probability),
+                wp_home_probability=cal_prob if cal_prob is not None else raw_prob,
+                wp_away_probability=1 - (cal_prob if cal_prob is not None else raw_prob),
                 predicted_margin=ats_pred.predicted_margin,
                 predicted_spread=ats_pred.predicted_spread,
                 ats_cover_probability=ats_pred.cover_probability,
@@ -750,9 +888,9 @@ class NFLPredictionPipeline:
                 feature_importance=combined_features,
                 # Metadata
                 model_versions={
-                    "wp_model": getattr(wp_pred, "model_version", "1.0.0"),
-                    "ats_model": getattr(ats_pred, "model_version", "1.0.0"),
-                    "ou_model": getattr(ou_pred, "model_version", "1.0.0"),
+                    "wp_model": wp_meta.get("version", "artifact"),
+                    "ats_model": ats_meta.get("version", "artifact"),
+                    "ou_model": ou_meta.get("version", "artifact"),
                 },
             )
 
@@ -868,12 +1006,9 @@ class NFLPredictionPipeline:
         """Get a summary of the pipeline configuration."""
         return {
             "models_loaded": {
-                "wp_model": self.wp_model is not None
-                and getattr(self.wp_model, "is_trained", False),
-                "ats_model": self.ats_model is not None
-                and getattr(self.ats_model, "is_trained", False),
-                "ou_model": self.ou_model is not None
-                and getattr(self.ou_model, "is_trained", False),
+                "wp_model": self.wp_artifact is not None,
+                "ats_model": self.ats_artifact is not None,
+                "ou_model": self.ou_artifact is not None,
             },
             "configuration": {
                 "min_edge_threshold": self.min_edge_threshold,
@@ -881,7 +1016,7 @@ class NFLPredictionPipeline:
                 "max_kelly_fraction": self.max_kelly_fraction,
             },
             "supported_bet_types": [bet_type.value for bet_type in BetType],
-            "pipeline_version": "1.0.0",
+            "pipeline_version": "2.0.0",
         }
 
 
