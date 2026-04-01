@@ -287,11 +287,16 @@ class BaseTrainer(ABC):
         objective = self._make_objective(X_train, y_train, cv_splits)
         result = tuner.optimize(objective)
 
+        # Replay best params through _define_search_space to get
+        # model-compatible parameter names (e.g., "solver_l2" -> "solver")
+        fixed_trial = optuna.trial.FixedTrial(result.best_params)
+        best_params = self._define_search_space(fixed_trial)
+
         self.logger.info(
             "Optuna tuning completed",
             target=self.target,
             best_value=result.best_value,
-            best_params=result.best_params,
+            best_params=best_params,
             n_trials=result.n_trials,
             top_importances=dict(list(result.param_importances.items())[:5]),
         )
@@ -299,7 +304,7 @@ class BaseTrainer(ABC):
         # Store tuning result for later use in save()
         self._tuning_result = result
 
-        return result.best_params
+        return best_params
 
     def train_and_evaluate(
         self,

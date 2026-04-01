@@ -83,11 +83,16 @@ class WPTrainer(BaseTrainer):
         solver-penalty compatibility: l1 and elasticnet require saga,
         l2 allows lbfgs or saga.
 
+        The solver_l2 parameter is suggested under a separate Optuna name
+        to avoid conditional parameter conflicts, but is returned as
+        "solver" in the output dict so LogisticRegression receives valid kwargs.
+
         Args:
             trial: Optuna trial for parameter suggestion.
 
         Returns:
-            Dict of parameter name to suggested value.
+            Dict of parameter name to suggested value, ready for
+            LogisticRegression(**params).
         """
         C = trial.suggest_float("C", 0.001, 100.0, log=True)
         penalty = trial.suggest_categorical("penalty", ["l1", "l2", "elasticnet"])
@@ -105,9 +110,12 @@ class WPTrainer(BaseTrainer):
             params["solver"] = "saga"
             params["l1_ratio"] = trial.suggest_float("l1_ratio", 0.0, 1.0)
         else:  # l2
-            params["solver"] = trial.suggest_categorical(
+            # Use distinct Optuna name to avoid conflicts with fixed solver values,
+            # but map back to "solver" for LogisticRegression compatibility
+            solver_choice = trial.suggest_categorical(
                 "solver_l2", ["lbfgs", "saga"]
             )
+            params["solver"] = solver_choice
 
         return params
 
