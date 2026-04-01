@@ -12,6 +12,7 @@ Extends BaseTrainer to implement WP-specific model logic:
 from __future__ import annotations
 
 import numpy as np
+import optuna
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
@@ -75,6 +76,49 @@ class WPTrainer(BaseTrainer):
             "random_state": 42,
         }
 
+    def _define_search_space(self, trial: optuna.Trial) -> dict:
+        """LogReg search space with conditional solver-penalty (per D-09).
+
+        Uses trial.suggest_* to define the search space. Handles
+        solver-penalty compatibility: l1 and elasticnet require saga,
+        l2 allows lbfgs or saga.
+
+        The solver_l2 parameter is suggested under a separate Optuna name
+        to avoid conditional parameter conflicts, but is returned as
+        "solver" in the output dict so LogisticRegression receives valid kwargs.
+
+        Args:
+            trial: Optuna trial for parameter suggestion.
+
+        Returns:
+            Dict of parameter name to suggested value, ready for
+            LogisticRegression(**params).
+        """
+        C = trial.suggest_float("C", 0.001, 100.0, log=True)
+        penalty = trial.suggest_categorical("penalty", ["l1", "l2", "elasticnet"])
+
+        params: dict = {
+            "C": C,
+            "penalty": penalty,
+            "max_iter": 1000,
+            "random_state": 42,
+        }
+
+        if penalty == "l1":
+            params["solver"] = "saga"
+        elif penalty == "elasticnet":
+            params["solver"] = "saga"
+            params["l1_ratio"] = trial.suggest_float("l1_ratio", 0.0, 1.0)
+        else:  # l2
+            # Use distinct Optuna name to avoid conflicts with fixed solver values,
+            # but map back to "solver" for LogisticRegression compatibility
+            solver_choice = trial.suggest_categorical(
+                "solver_l2", ["lbfgs", "saga"]
+            )
+            params["solver"] = solver_choice
+
+        return params
+
     def _predict_raw(self, model: LogisticRegression, X: pd.DataFrame) -> np.ndarray:
         """Generate raw probabilities from a fitted LogisticRegression.
 
@@ -103,6 +147,30 @@ class WPTrainer(BaseTrainer):
     def _get_scoring_metric(self) -> str:
         """WP uses log loss for HP tuning."""
         return "neg_log_loss"
+
+    def _compute_cv_score(
+        self,
+        predictions: np.ndarray,
+        actuals: pd.Series,
+    ) -> float:
+        """WP uses log_loss for CV scoring (per D-05).
+
+        Overrides the base class MAE default to use log_loss,
+        which is the appropriate metric for binary probability
+        calibration.
+
+        Args:
+            predictions: Model probability predictions for validation fold.
+            actuals: Actual binary target values (0/1).
+
+        Returns:
+            Log loss score (lower is better).
+        """
+        from sklearn.metrics import log_loss
+
+        # Clip predictions to avoid log(0)
+        clipped = np.clip(predictions, 1e-7, 1 - 1e-7)
+        return float(log_loss(actuals.values, clipped))
 
     # ------------------------------------------------------------------
     # WP-specific feature importance

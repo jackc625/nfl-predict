@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import optuna
 import pandas as pd
 from xgboost import XGBRegressor
 
@@ -81,6 +82,34 @@ class ATSTrainer(BaseTrainer):
             "colsample_bytree": 0.8,
             "reg_alpha": 0.1,
             "reg_lambda": 1.0,
+            "random_state": 42,
+            "verbosity": 0,
+            "n_jobs": -1,
+        }
+
+    def _define_search_space(self, trial: optuna.Trial) -> dict:
+        """8-parameter XGBoost search space for ATS (per D-07).
+
+        Defines the full hyperparameter search space for XGBoost
+        margin prediction. Ranges follow D-07 specifications.
+
+        Args:
+            trial: Optuna trial for parameter suggestion.
+
+        Returns:
+            Dict of parameter name to suggested value.
+        """
+        return {
+            "learning_rate": trial.suggest_float(
+                "learning_rate", 0.005, 0.3, log=True
+            ),
+            "max_depth": trial.suggest_int("max_depth", 2, 8),
+            "n_estimators": trial.suggest_int("n_estimators", 50, 500),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-4, 10.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10.0, log=True),
             "random_state": 42,
             "verbosity": 0,
             "n_jobs": -1,
