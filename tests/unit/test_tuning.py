@@ -1,12 +1,16 @@
-"""Unit tests for OptunaTuner and TuningResult."""
+"""Unit tests for OptunaTuner, TuningResult, and params sidecar."""
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
+import numpy as np
 import pytest
+from sklearn.linear_model import LogisticRegression
 
+from models.artifacts import load_model_artifact, save_model_artifact
 from models.tuning import OptunaTuner, TuningResult
 
 # ---------------------------------------------------------------------------
@@ -192,3 +196,150 @@ class TestOptunaTunerOptimize:
         # something reasonably close (< 5)
         assert result.best_value < 5.0
         assert result.best_value >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# Test params sidecar in save/load_model_artifact
+# ---------------------------------------------------------------------------
+
+
+def _make_tiny_model():
+    """Create a minimal fitted LogisticRegression for testing."""
+    rng = np.random.RandomState(42)
+    X = rng.randn(20, 2)
+    y = (X[:, 0] > 0).astype(int)
+    model = LogisticRegression(max_iter=100)
+    model.fit(X, y)
+    return model
+
+
+class TestParamsSidecar:
+    """Tests for the JSON params sidecar in save/load_model_artifact."""
+
+    def test_save_with_best_params_creates_params_json(
+        self, tmp_path: Path
+    ) -> None:
+        """save_model_artifact with best_params creates {target}_params.json."""
+        model = _make_tiny_model()
+        best_params = {"C": 1.0, "penalty": "l2"}
+
+        artifact_dir = save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            best_params=best_params,
+            artifacts_dir=tmp_path,
+        )
+
+        params_path = artifact_dir / "wp_params.json"
+        assert params_path.exists()
+
+    def test_params_json_contains_best_params(self, tmp_path: Path) -> None:
+        """params.json contains 'best_params' key with the passed dict."""
+        model = _make_tiny_model()
+        best_params = {"C": 1.0, "penalty": "l2"}
+
+        artifact_dir = save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            best_params=best_params,
+            artifacts_dir=tmp_path,
+        )
+
+        params_path = artifact_dir / "wp_params.json"
+        data = json.loads(params_path.read_text())
+        assert "best_params" in data
+        assert data["best_params"] == {"C": 1.0, "penalty": "l2"}
+
+    def test_params_json_contains_tuning_metadata(
+        self, tmp_path: Path
+    ) -> None:
+        """params.json contains 'tuning_metadata' key when provided."""
+        model = _make_tiny_model()
+        best_params = {"C": 0.5}
+        tuning_metadata = {
+            "study_name": "wp_tune",
+            "n_trials": 100,
+            "best_value": 0.42,
+        }
+
+        artifact_dir = save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            best_params=best_params,
+            tuning_metadata=tuning_metadata,
+            artifacts_dir=tmp_path,
+        )
+
+        params_path = artifact_dir / "wp_params.json"
+        data = json.loads(params_path.read_text())
+        assert "tuning_metadata" in data
+        assert data["tuning_metadata"]["study_name"] == "wp_tune"
+        assert data["tuning_metadata"]["n_trials"] == 100
+
+    def test_save_without_best_params_no_params_json(
+        self, tmp_path: Path
+    ) -> None:
+        """save_model_artifact without best_params does NOT create _params.json."""
+        model = _make_tiny_model()
+
+        artifact_dir = save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            artifacts_dir=tmp_path,
+        )
+
+        params_path = artifact_dir / "wp_params.json"
+        assert not params_path.exists()
+
+    def test_load_returns_params_when_exists(self, tmp_path: Path) -> None:
+        """load_model_artifact returns 'params' key when _params.json exists."""
+        model = _make_tiny_model()
+        best_params = {"C": 2.0, "penalty": "l1"}
+
+        save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            best_params=best_params,
+            artifacts_dir=tmp_path,
+        )
+
+        loaded = load_model_artifact(
+            target="wp",
+            artifacts_dir=tmp_path,
+        )
+
+        assert "params" in loaded
+        assert loaded["params"] is not None
+        assert loaded["params"]["best_params"] == {"C": 2.0, "penalty": "l1"}
+
+    def test_load_returns_none_params_when_no_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        """load_model_artifact returns params=None when no _params.json."""
+        model = _make_tiny_model()
+
+        save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            artifacts_dir=tmp_path,
+        )
+
+        loaded = load_model_artifact(
+            target="wp",
+            artifacts_dir=tmp_path,
+        )
+
+        assert "params" in loaded
+        assert loaded["params"] is None
