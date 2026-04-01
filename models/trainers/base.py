@@ -12,13 +12,14 @@ Subclasses implement model-specific logic via abstract methods.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import optuna
 import pandas as pd
 from sklearn.feature_selection import SelectFromModel
-from sklearn.model_selection import RandomizedSearchCV
 
 from models.artifacts import save_model_artifact
 from models.clv import compute_clv_for_predictions
@@ -27,6 +28,7 @@ from models.temporal import (
     WalkForwardSplitter,
     make_temporal_cv_splits,
 )
+from models.tuning import OptunaTuner, TuningResult
 from utils import get_logger
 
 
@@ -71,6 +73,7 @@ class BaseTrainer(ABC):
         self.calibrator: Any = None
         self.feature_names: list[str] = []
         self.metadata: dict[str, Any] = {}
+        self._tuning_result: TuningResult | None = None
 
     # ------------------------------------------------------------------
     # Abstract methods -- subclasses must implement
@@ -115,6 +118,21 @@ class BaseTrainer(ABC):
             Dict of default parameter values.
         """
 
+    @abstractmethod
+    def _define_search_space(self, trial: optuna.Trial) -> dict:
+        """Define Optuna search space using trial.suggest_* API.
+
+        Each subclass defines its own hyperparameter search space
+        using Optuna's trial.suggest_* methods (suggest_float,
+        suggest_int, suggest_categorical).
+
+        Args:
+            trial: Optuna trial for parameter suggestion.
+
+        Returns:
+            Dict of parameter name to suggested value.
+        """
+
     # ------------------------------------------------------------------
     # Concrete methods -- shared across all trainers
     # ------------------------------------------------------------------
@@ -154,62 +172,134 @@ class BaseTrainer(ABC):
 
         return selected_features
 
+    def _make_objective(
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        cv_splits: list[tuple[np.ndarray, np.ndarray]],
+    ) -> Callable[[optuna.Trial], float]:
+        """Create Optuna objective function for temporal CV evaluation.
+
+        The objective trains the model on each CV fold's train split,
+        evaluates on the validation split, and reports intermediate
+        scores for Hyperband pruning (per D-02).
+
+        Args:
+            X_train: Training features (combined train + hp_val).
+            y_train: Training targets.
+            cv_splits: Temporal CV fold indices.
+
+        Returns:
+            Callable that takes an Optuna Trial and returns mean CV score.
+        """
+
+        def objective(trial: optuna.Trial) -> float:
+            params = self._define_search_space(trial)
+            scores = []
+            for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
+                model = self._create_model(params)
+                model.fit(X_train.iloc[train_idx], y_train.iloc[train_idx])
+                preds = self._predict_raw(model, X_train.iloc[val_idx])
+                score = self._compute_cv_score(preds, y_train.iloc[val_idx])
+                scores.append(score)
+
+                # Report intermediate value for Hyperband pruning (per D-02)
+                trial.report(float(np.mean(scores)), step=fold_idx)
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
+
+            return float(np.mean(scores))
+
+        return objective
+
+    def _compute_cv_score(
+        self,
+        predictions: np.ndarray,
+        actuals: pd.Series,
+    ) -> float:
+        """Compute CV score for a single fold. Lower is better (minimized).
+
+        Default implementation uses MAE (appropriate for ATS/O/U).
+        WP subclass should override to use log_loss.
+
+        Args:
+            predictions: Model predictions for validation fold.
+            actuals: Actual target values.
+
+        Returns:
+            Score value (lower is better for Optuna minimization).
+        """
+        from sklearn.metrics import mean_absolute_error
+
+        return float(mean_absolute_error(actuals.values, predictions))
+
     def tune_hyperparameters(
         self,
         X_train: pd.DataFrame,
         y_train: pd.Series,
-        n_iter: int = 50,
+        n_trials: int = 100,
+        season_week_df: pd.DataFrame | None = None,
     ) -> dict:
-        """Tune hyperparameters using temporal CV within the training window.
+        """Tune hyperparameters using Optuna with temporal CV folds.
 
-        Uses make_temporal_cv_splits for CV folds and RandomizedSearchCV
-        for parameter search. Subclasses should override
-        _get_param_distributions() to define the search space.
+        Per D-01, delegates to OptunaTuner. Per D-02, uses TPE sampler
+        with 100+ trials and Hyperband pruner. Per D-03, uses SQLite
+        storage for resumability. Per D-05, uses target-specific
+        optimization metric (direction derived from _get_scoring_metric).
 
         Args:
             X_train: Training features (train + hp_val combined).
             y_train: Training targets.
-            n_iter: Number of random parameter combinations to try.
+            n_trials: Number of Optuna trials (default 100 per D-02).
+            season_week_df: DataFrame with "season" and "week" columns
+                for temporal CV splits. If None, creates index-based splits.
 
         Returns:
             Best parameters dict.
         """
-        param_distributions = self._get_param_distributions()
-        if not param_distributions:
-            self.logger.info("No param distributions defined, using defaults")
-            return self._get_default_params()
-
         # Create temporal CV folds
-        # We need a df with season and week for temporal splits
-        # Since we're working with feature matrices, create index-based splits
-        cv_splits = make_temporal_cv_splits(
-            pd.DataFrame({"season": [0] * len(X_train), "week": range(len(X_train))}),
-            n_splits=3,
+        if season_week_df is not None:
+            cv_splits = make_temporal_cv_splits(season_week_df, n_splits=3)
+        else:
+            cv_splits = make_temporal_cv_splits(
+                pd.DataFrame(
+                    {
+                        "season": [0] * len(X_train),
+                        "week": range(len(X_train)),
+                    }
+                ),
+                n_splits=3,
+            )
+
+        # Determine optimization direction from scoring metric
+        # neg_log_loss and neg_mean_absolute_error are both "higher is better"
+        # in sklearn convention, but we want to minimize the raw metric
+        direction = "minimize"
+
+        study_name = f"{self.target}_tuning_v1"
+
+        tuner = OptunaTuner(
+            study_name=study_name,
+            direction=direction,
+            n_trials=n_trials,
         )
 
-        model = self._create_model(self._get_default_params())
-
-        search = RandomizedSearchCV(
-            model,
-            param_distributions,
-            n_iter=n_iter,
-            cv=cv_splits,
-            scoring=self._get_scoring_metric(),
-            random_state=42,
-            n_jobs=1,
-            verbose=0,
-        )
-
-        search.fit(X_train, y_train)
+        objective = self._make_objective(X_train, y_train, cv_splits)
+        result = tuner.optimize(objective)
 
         self.logger.info(
-            "Hyperparameter tuning completed",
-            best_score=search.best_score_,
-            best_params=search.best_params_,
-            n_iter=n_iter,
+            "Optuna tuning completed",
+            target=self.target,
+            best_value=result.best_value,
+            best_params=result.best_params,
+            n_trials=result.n_trials,
+            top_importances=dict(list(result.param_importances.items())[:5]),
         )
 
-        return search.best_params_
+        # Store tuning result for later use in save()
+        self._tuning_result = result
+
+        return result.best_params
 
     def train_and_evaluate(
         self,
@@ -341,6 +431,9 @@ class BaseTrainer(ABC):
     def save(self, artifacts_dir: Path = Path("artifacts")) -> Path:
         """Save the trained model and metadata as a versioned artifact.
 
+        Passes tuning metadata (if available) to save_model_artifact
+        for JSON params sidecar creation (per D-12, D-13).
+
         Args:
             artifacts_dir: Root directory for artifacts.
 
@@ -354,12 +447,27 @@ class BaseTrainer(ABC):
             msg = "Cannot save: model has not been trained yet"
             raise RuntimeError(msg)
 
+        # Get tuning result if available
+        tuning_result = getattr(self, "_tuning_result", None)
+        best_params = self.metadata.get("best_params")
+        tuning_metadata = None
+        if tuning_result is not None:
+            tuning_metadata = {
+                "study_name": tuning_result.study_name,
+                "best_value": tuning_result.best_value,
+                "n_trials": tuning_result.n_trials,
+                "param_importances": tuning_result.param_importances,
+                "optimization_metric": self._get_scoring_metric(),
+            }
+
         return save_model_artifact(
             model=self.model,
             target=self.target,
             metadata=self.metadata,
             feature_list=self.feature_names,
             calibrator=self.calibrator,
+            best_params=best_params,
+            tuning_metadata=tuning_metadata,
             artifacts_dir=artifacts_dir,
         )
 
@@ -370,8 +478,13 @@ class BaseTrainer(ABC):
     def _get_param_distributions(self) -> dict:
         """Return parameter distributions for RandomizedSearchCV.
 
-        Subclasses should override this to define their search space.
-        Returns empty dict to skip tuning and use defaults.
+        .. deprecated::
+            No longer used by BaseTrainer. Tuning now delegates to
+            OptunaTuner via _define_search_space(). Kept for backward
+            compatibility with any external code referencing this method.
+
+        Returns:
+            Empty dict (no-op).
         """
         return {}
 
