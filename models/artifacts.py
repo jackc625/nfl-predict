@@ -38,6 +38,8 @@ def save_model_artifact(
     feature_list: list[str],
     calibrator: Any | None = None,
     artifacts_dir: Path = Path("artifacts"),
+    best_params: dict | None = None,
+    tuning_metadata: dict | None = None,
 ) -> Path:
     """Save a trained model with versioned directory structure.
 
@@ -46,6 +48,7 @@ def save_model_artifact(
     - metadata.json: Training metadata (metrics, params, etc.)
     - feature_list.json: Ordered list of feature names
     - calibrator.pkl: Calibrator model (if provided)
+    - {target}_params.json: Tuning parameters sidecar (if best_params provided)
 
     Also updates latest.json manifest with the new artifact directory.
 
@@ -56,6 +59,10 @@ def save_model_artifact(
         feature_list: Ordered list of feature column names.
         calibrator: Optional fitted calibrator.
         artifacts_dir: Root directory for artifacts.
+        best_params: Optional dict of tuned hyperparameters.
+            When provided, a JSON sidecar file is saved alongside the model.
+        tuning_metadata: Optional dict of tuning study metadata
+            (study name, n_trials, optimization metric, etc.).
 
     Returns:
         Path to the created artifact directory.
@@ -81,6 +88,15 @@ def save_model_artifact(
     feature_list_path = artifact_dir / "feature_list.json"
     feature_list_path.write_text(json.dumps(feature_list, indent=2))
 
+    # Save params sidecar atomically with model (per D-13)
+    if best_params is not None:
+        params_data = {
+            "best_params": best_params,
+            "tuning_metadata": tuning_metadata or {},
+        }
+        params_path = artifact_dir / f"{target}_params.json"
+        params_path.write_text(json.dumps(params_data, indent=2, default=str))
+
     # Update latest.json manifest
     latest_path = artifacts_dir / "latest.json"
     if latest_path.exists():
@@ -96,6 +112,7 @@ def save_model_artifact(
         artifact_dir=str(artifact_dir),
         n_features=len(feature_list),
         has_calibrator=calibrator is not None,
+        has_params=best_params is not None,
     )
 
     return artifact_dir
@@ -154,12 +171,17 @@ def load_model_artifact(
     calibrator_path = artifact_dir / "calibrator.pkl"
     calibrator = joblib.load(calibrator_path) if calibrator_path.exists() else None
 
+    # Load params sidecar if it exists
+    params_path = artifact_dir / f"{target}_params.json"
+    params = json.loads(params_path.read_text()) if params_path.exists() else None
+
     logger.info(
         "Loaded model artifact",
         target=target,
         version=version,
         n_features=len(feature_list),
         has_calibrator=calibrator is not None,
+        has_params=params is not None,
     )
 
     return {
@@ -167,6 +189,7 @@ def load_model_artifact(
         "metadata": metadata,
         "feature_list": feature_list,
         "calibrator": calibrator,
+        "params": params,
         "artifact_dir": artifact_dir,
     }
 

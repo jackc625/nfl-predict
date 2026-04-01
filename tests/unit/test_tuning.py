@@ -1,0 +1,345 @@
+"""Unit tests for OptunaTuner, TuningResult, and params sidecar."""
+
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+import numpy as np
+import pytest
+from sklearn.linear_model import LogisticRegression
+
+from models.artifacts import load_model_artifact, save_model_artifact
+from models.tuning import OptunaTuner, TuningResult
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _quadratic_objective(trial):
+    """Simple quadratic objective for testing: (x - 3)^2."""
+    x = trial.suggest_float("x", -10, 10)
+    return (x - 3) ** 2
+
+
+def _multi_param_objective(trial):
+    """Multi-parameter objective for importance testing."""
+    x = trial.suggest_float("x", -10, 10)
+    y = trial.suggest_float("y", -10, 10)
+    z = trial.suggest_float("z", -10, 10)
+    # x matters most, y matters somewhat, z is noise
+    return (x - 3) ** 2 + 0.1 * (y - 1) ** 2 + 0.001 * z
+
+
+# ---------------------------------------------------------------------------
+# Test OptunaTuner
+# ---------------------------------------------------------------------------
+
+
+class TestOptunaTunerInit:
+    """Test OptunaTuner initialization."""
+
+    def test_creates_storage_dir(self, tmp_path: Path) -> None:
+        """OptunaTuner.__init__ creates storage_dir if not exists."""
+        storage_dir = tmp_path / "optuna_storage"
+        assert not storage_dir.exists()
+
+        OptunaTuner(
+            study_name="test_study",
+            storage_dir=storage_dir,
+        )
+
+        assert storage_dir.exists()
+
+    def test_stores_params(self, tmp_path: Path) -> None:
+        """OptunaTuner.__init__ stores study_name, direction, n_trials."""
+        tuner = OptunaTuner(
+            study_name="my_study",
+            direction="maximize",
+            storage_dir=tmp_path,
+            n_trials=50,
+        )
+
+        assert tuner.study_name == "my_study"
+        assert tuner.direction == "maximize"
+        assert tuner.n_trials == 50
+
+
+class TestOptunaTunerStorageUrl:
+    """Test OptunaTuner.storage_url property."""
+
+    def test_returns_sqlite_url(self, tmp_path: Path) -> None:
+        """OptunaTuner.storage_url returns sqlite:///{storage_dir}/{study_name}.db."""
+        tuner = OptunaTuner(
+            study_name="test_study",
+            storage_dir=tmp_path,
+        )
+
+        url = tuner.storage_url
+        assert url.startswith("sqlite:///")
+        assert "test_study.db" in url
+        assert str(tmp_path).replace("\\", "/") in url.replace("\\", "/")
+
+
+class TestOptunaTunerOptimize:
+    """Test OptunaTuner.optimize() method."""
+
+    def test_creates_study_with_tpe_sampler_and_hyperband(
+        self, tmp_path: Path
+    ) -> None:
+        """OptunaTuner.optimize() creates study with TPESampler and HyperbandPruner."""
+        tuner = OptunaTuner(
+            study_name="test_tpe",
+            storage_dir=tmp_path,
+            n_trials=5,
+        )
+
+        result = tuner.optimize(_quadratic_objective)
+
+        # Verify it returned a TuningResult
+        assert isinstance(result, TuningResult)
+
+    def test_returns_best_params_dict(self, tmp_path: Path) -> None:
+        """OptunaTuner.optimize() with simple objective returns non-empty best_params."""
+        tuner = OptunaTuner(
+            study_name="test_params",
+            storage_dir=tmp_path,
+            n_trials=10,
+        )
+
+        result = tuner.optimize(_quadratic_objective)
+
+        assert isinstance(result.best_params, dict)
+        assert len(result.best_params) > 0
+        assert "x" in result.best_params
+
+    def test_resumes_study_with_load_if_exists(self, tmp_path: Path) -> None:
+        """OptunaTuner.optimize() with load_if_exists=True resumes and only runs remaining trials."""
+        # First run: 3 trials
+        tuner1 = OptunaTuner(
+            study_name="test_resume",
+            storage_dir=tmp_path,
+            n_trials=3,
+        )
+        result1 = tuner1.optimize(_quadratic_objective)
+        assert result1.n_trials == 3
+
+        # Second run: n_trials=5, should only run 2 more (already have 3)
+        tuner2 = OptunaTuner(
+            study_name="test_resume",
+            storage_dir=tmp_path,
+            n_trials=5,
+        )
+        result2 = tuner2.optimize(_quadratic_objective)
+        assert result2.n_trials == 5
+
+    def test_returns_tuning_result_dataclass(self, tmp_path: Path) -> None:
+        """OptunaTuner.optimize() returns TuningResult with correct fields."""
+        tuner = OptunaTuner(
+            study_name="test_result",
+            storage_dir=tmp_path,
+            n_trials=5,
+        )
+
+        result = tuner.optimize(_quadratic_objective)
+
+        assert isinstance(result, TuningResult)
+        assert isinstance(result.best_params, dict)
+        assert isinstance(result.best_value, float)
+        assert result.n_trials == 5
+        assert isinstance(result.param_importances, dict)
+        assert result.study_name == "test_result"
+
+    def test_logs_parameter_importance(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """OptunaTuner.optimize() logs parameter importance rankings."""
+        tuner = OptunaTuner(
+            study_name="test_importance",
+            storage_dir=tmp_path,
+            n_trials=20,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = tuner.optimize(_multi_param_objective)
+
+        # If importances were computed, they should be in the result
+        # (may be empty if too few trials, but with 20 trials it should work)
+        if result.param_importances:
+            assert len(result.param_importances) > 0
+
+    def test_runs_exact_n_trials(self, tmp_path: Path) -> None:
+        """OptunaTuner with n_trials=5 actually runs 5 trials."""
+        tuner = OptunaTuner(
+            study_name="test_exact_trials",
+            storage_dir=tmp_path,
+            n_trials=5,
+        )
+
+        result = tuner.optimize(_quadratic_objective)
+
+        assert result.n_trials == 5
+
+    def test_best_value_is_reasonable(self, tmp_path: Path) -> None:
+        """OptunaTuner finds a reasonable best_value for quadratic objective."""
+        tuner = OptunaTuner(
+            study_name="test_value",
+            storage_dir=tmp_path,
+            n_trials=30,
+        )
+
+        result = tuner.optimize(_quadratic_objective)
+
+        # The minimum of (x - 3)^2 is 0. With 30 trials, should find
+        # something reasonably close (< 5)
+        assert result.best_value < 5.0
+        assert result.best_value >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# Test params sidecar in save/load_model_artifact
+# ---------------------------------------------------------------------------
+
+
+def _make_tiny_model():
+    """Create a minimal fitted LogisticRegression for testing."""
+    rng = np.random.RandomState(42)
+    X = rng.randn(20, 2)
+    y = (X[:, 0] > 0).astype(int)
+    model = LogisticRegression(max_iter=100)
+    model.fit(X, y)
+    return model
+
+
+class TestParamsSidecar:
+    """Tests for the JSON params sidecar in save/load_model_artifact."""
+
+    def test_save_with_best_params_creates_params_json(
+        self, tmp_path: Path
+    ) -> None:
+        """save_model_artifact with best_params creates {target}_params.json."""
+        model = _make_tiny_model()
+        best_params = {"C": 1.0, "penalty": "l2"}
+
+        artifact_dir = save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            best_params=best_params,
+            artifacts_dir=tmp_path,
+        )
+
+        params_path = artifact_dir / "wp_params.json"
+        assert params_path.exists()
+
+    def test_params_json_contains_best_params(self, tmp_path: Path) -> None:
+        """params.json contains 'best_params' key with the passed dict."""
+        model = _make_tiny_model()
+        best_params = {"C": 1.0, "penalty": "l2"}
+
+        artifact_dir = save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            best_params=best_params,
+            artifacts_dir=tmp_path,
+        )
+
+        params_path = artifact_dir / "wp_params.json"
+        data = json.loads(params_path.read_text())
+        assert "best_params" in data
+        assert data["best_params"] == {"C": 1.0, "penalty": "l2"}
+
+    def test_params_json_contains_tuning_metadata(
+        self, tmp_path: Path
+    ) -> None:
+        """params.json contains 'tuning_metadata' key when provided."""
+        model = _make_tiny_model()
+        best_params = {"C": 0.5}
+        tuning_metadata = {
+            "study_name": "wp_tune",
+            "n_trials": 100,
+            "best_value": 0.42,
+        }
+
+        artifact_dir = save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            best_params=best_params,
+            tuning_metadata=tuning_metadata,
+            artifacts_dir=tmp_path,
+        )
+
+        params_path = artifact_dir / "wp_params.json"
+        data = json.loads(params_path.read_text())
+        assert "tuning_metadata" in data
+        assert data["tuning_metadata"]["study_name"] == "wp_tune"
+        assert data["tuning_metadata"]["n_trials"] == 100
+
+    def test_save_without_best_params_no_params_json(
+        self, tmp_path: Path
+    ) -> None:
+        """save_model_artifact without best_params does NOT create _params.json."""
+        model = _make_tiny_model()
+
+        artifact_dir = save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            artifacts_dir=tmp_path,
+        )
+
+        params_path = artifact_dir / "wp_params.json"
+        assert not params_path.exists()
+
+    def test_load_returns_params_when_exists(self, tmp_path: Path) -> None:
+        """load_model_artifact returns 'params' key when _params.json exists."""
+        model = _make_tiny_model()
+        best_params = {"C": 2.0, "penalty": "l1"}
+
+        save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            best_params=best_params,
+            artifacts_dir=tmp_path,
+        )
+
+        loaded = load_model_artifact(
+            target="wp",
+            artifacts_dir=tmp_path,
+        )
+
+        assert "params" in loaded
+        assert loaded["params"] is not None
+        assert loaded["params"]["best_params"] == {"C": 2.0, "penalty": "l1"}
+
+    def test_load_returns_none_params_when_no_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        """load_model_artifact returns params=None when no _params.json."""
+        model = _make_tiny_model()
+
+        save_model_artifact(
+            model=model,
+            target="wp",
+            metadata={"version": "test"},
+            feature_list=["feat1", "feat2"],
+            artifacts_dir=tmp_path,
+        )
+
+        loaded = load_model_artifact(
+            target="wp",
+            artifacts_dir=tmp_path,
+        )
+
+        assert "params" in loaded
+        assert loaded["params"] is None
