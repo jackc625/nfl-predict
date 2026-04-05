@@ -12,6 +12,10 @@ Tests cover:
 - save_blend_artifacts includes provenance metadata
 - load_blend_artifacts reads back the same BlendWeights
 - temporal isolation: tune_weights raises ValueError if season > 2017
+- build_dynamic_synthetic_predictions with per-week noise from noise profile
+- Deterministic RNG seeding produces identical output
+- WP predictions clipped to [0.01, 0.99]
+- Fallback for weeks not in noise profile
 """
 
 from __future__ import annotations
@@ -229,7 +233,9 @@ class TestTuneWeights:
         # per_target_grid should have 21 entries per target
         for target in ("wp", "ats", "ou"):
             grid = result.per_target_grid[target]
-            assert len(grid) == 21, f"Expected 21 grid entries for {target}, got {len(grid)}"
+            assert len(grid) == 21, (
+                f"Expected 21 grid entries for {target}, got {len(grid)}"
+            )
             # Each entry is (weight, clv) pair
             weights = [w for w, _ in grid]
             assert min(weights) == pytest.approx(0.50, abs=0.001)
@@ -273,7 +279,10 @@ class TestTuneWeights:
         result_perfect = blender_perfect.tune_weights(predictions_perfect, odds_perfect)
 
         # Random model weight should be <= perfect model weight
-        assert result_random.weights.wp_model_weight <= result_perfect.weights.wp_model_weight
+        assert (
+            result_random.weights.wp_model_weight
+            <= result_perfect.weights.wp_model_weight
+        )
 
     def test_tune_weights_maximizes_mean_clv(
         self,
@@ -315,7 +324,9 @@ class TestTuneWeights:
 
         # The blender's own config should now reflect the tuned weights
         assert blender.config.weights.wp_model_weight == result.weights.wp_model_weight
-        assert blender.config.weights.ats_model_weight == result.weights.ats_model_weight
+        assert (
+            blender.config.weights.ats_model_weight == result.weights.ats_model_weight
+        )
         assert blender.config.weights.ou_model_weight == result.weights.ou_model_weight
 
 
@@ -440,3 +451,222 @@ class TestBlendArtifacts:
         assert loaded.config.weights.wp_model_weight == pytest.approx(0.55)
         assert loaded.config.weights.ats_model_weight == pytest.approx(0.62)
         assert loaded.config.weights.ou_model_weight == pytest.approx(0.58)
+
+
+# ---------------------------------------------------------------------------
+# Helpers: Noise profile and tuning odds for dynamic synthetic tests
+# ---------------------------------------------------------------------------
+
+
+def _make_noise_profile(
+    weeks: list[int] | None = None,
+    wp_mean: float = 0.02,
+    wp_std: float = 0.10,
+    ats_mean: float = 0.5,
+    ats_std: float = 3.0,
+    ou_mean: float = -0.3,
+    ou_std: float = 3.0,
+    count_per_week: int = 50,
+) -> dict[str, pd.DataFrame]:
+    """Create a synthetic noise profile for testing build_dynamic_synthetic_predictions."""
+    if weeks is None:
+        weeks = list(range(1, 19))
+
+    def _make_target_df(mean: float, std: float) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "week": weeks,
+                "mean": [mean] * len(weeks),
+                "std": [std] * len(weeks),
+                "count": [count_per_week] * len(weeks),
+            }
+        )
+
+    return {
+        "wp": _make_target_df(wp_mean, wp_std),
+        "ats": _make_target_df(ats_mean, ats_std),
+        "ou": _make_target_df(ou_mean, ou_std),
+    }
+
+
+def _make_dynamic_tuning_odds(
+    seasons: list[int] | None = None,
+    n_per_season: int = 64,
+    rng_seed: int = 42,
+) -> pd.DataFrame:
+    """Create tuning odds DataFrame for dynamic synthetic prediction tests."""
+    if seasons is None:
+        seasons = [2015, 2016]
+
+    rng = np.random.default_rng(rng_seed)
+    rows = []
+    for season in seasons:
+        for week in range(1, n_per_season // 4 + 1):
+            for game_idx in range(4):
+                game_id = f"{season}_W{week:02d}_G{game_idx:02d}"
+                rows.append(
+                    {
+                        "game_id": game_id,
+                        "season": season,
+                        "week": week,
+                        "spread": rng.normal(-2.5, 5.0),
+                        "total": rng.normal(45.0, 4.0),
+                        "ml_home": rng.choice([-150, -130, -120, -110]),
+                        "ml_away": rng.choice([100, 110, 130, 150]),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Test class: Dynamic synthetic predictions
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicSyntheticPredictions:
+    """Tests for build_dynamic_synthetic_predictions function."""
+
+    def test_dynamic_synthetic_predictions_uses_noise_profile(self) -> None:
+        """build_dynamic_synthetic_predictions returns dict with keys wp, ats, ou."""
+        from backtest.tune import build_dynamic_synthetic_predictions
+
+        noise_profile = _make_noise_profile()
+        tuning_odds = _make_dynamic_tuning_odds()
+        rng = np.random.default_rng(42)
+
+        result = build_dynamic_synthetic_predictions(tuning_odds, noise_profile, rng)
+
+        assert set(result.keys()) == {"wp", "ats", "ou"}
+
+        # WP DataFrame should have game_id, season, week, model_prob
+        wp_df = result["wp"]
+        assert "game_id" in wp_df.columns
+        assert "season" in wp_df.columns
+        assert "week" in wp_df.columns
+        assert "model_prob" in wp_df.columns
+
+        # ATS DataFrame should have model_spread
+        assert "model_spread" in result["ats"].columns
+
+        # O/U DataFrame should have model_total
+        assert "model_total" in result["ou"].columns
+
+    def test_dynamic_synthetic_predictions_deterministic(self) -> None:
+        """Same rng seed produces identical output twice (reproducibility)."""
+        from backtest.tune import build_dynamic_synthetic_predictions
+
+        noise_profile = _make_noise_profile()
+        tuning_odds = _make_dynamic_tuning_odds()
+
+        rng1 = np.random.default_rng(42)
+        result1 = build_dynamic_synthetic_predictions(tuning_odds, noise_profile, rng1)
+
+        rng2 = np.random.default_rng(42)
+        result2 = build_dynamic_synthetic_predictions(tuning_odds, noise_profile, rng2)
+
+        for target in ("wp", "ats", "ou"):
+            model_col = {
+                "wp": "model_prob",
+                "ats": "model_spread",
+                "ou": "model_total",
+            }[target]
+            np.testing.assert_array_equal(
+                result1[target][model_col].values,
+                result2[target][model_col].values,
+            )
+
+    def test_dynamic_synthetic_predictions_noise_per_week(self) -> None:
+        """Per-week noise from profile is applied (different std per week)."""
+        from backtest.tune import build_dynamic_synthetic_predictions
+
+        # Week 1: large std, Week 10: small std
+        noise_profile = _make_noise_profile(weeks=[1, 10])
+        noise_profile["wp"] = pd.DataFrame(
+            {
+                "week": [1, 10],
+                "mean": [0.0, 0.0],
+                "std": [0.20, 0.02],
+                "count": [100, 100],
+            }
+        )
+
+        # Create tuning odds with 500 games per week for statistical power
+        rows = []
+        for week in [1, 10]:
+            for i in range(500):
+                rows.append(
+                    {
+                        "game_id": f"2015_W{week:02d}_G{i:04d}",
+                        "season": 2015,
+                        "week": week,
+                        "spread": -3.0,
+                        "total": 45.0,
+                        "ml_home": -150,
+                        "ml_away": 130,
+                    }
+                )
+        tuning_odds = pd.DataFrame(rows)
+
+        rng = np.random.default_rng(42)
+        result = build_dynamic_synthetic_predictions(tuning_odds, noise_profile, rng)
+
+        wp_df = result["wp"]
+        # Get fair probability from devigged moneylines for reference
+        # ml_home=-150, ml_away=130 -> fair_prob is constant for all rows
+        # The noise std should be visible in the spread of model_prob values
+        week1_probs = wp_df[wp_df["week"] == 1]["model_prob"].values
+        week10_probs = wp_df[wp_df["week"] == 10]["model_prob"].values
+
+        week1_std = np.std(week1_probs)
+        week10_std = np.std(week10_probs)
+
+        # Week 1 (std=0.20) should have significantly larger spread than Week 10 (std=0.02)
+        assert week1_std > week10_std * 2.0
+
+    def test_dynamic_synthetic_predictions_fallback_for_missing_weeks(self) -> None:
+        """Weeks not in noise profile use fallback (overall mean/std from available weeks)."""
+        from backtest.tune import build_dynamic_synthetic_predictions
+
+        # Noise profile only has weeks 1-5
+        noise_profile = _make_noise_profile(weeks=[1, 2, 3, 4, 5])
+
+        # Tuning odds has games in week 10 (not in profile)
+        rows = []
+        for i in range(50):
+            rows.append(
+                {
+                    "game_id": f"2015_W10_G{i:02d}",
+                    "season": 2015,
+                    "week": 10,
+                    "spread": -3.0,
+                    "total": 45.0,
+                    "ml_home": -150,
+                    "ml_away": 130,
+                }
+            )
+        tuning_odds = pd.DataFrame(rows)
+
+        rng = np.random.default_rng(42)
+
+        # Should not raise -- week 10 uses fallback stats
+        result = build_dynamic_synthetic_predictions(tuning_odds, noise_profile, rng)
+
+        assert len(result["wp"]) == 50
+        assert len(result["ats"]) == 50
+        assert len(result["ou"]) == 50
+
+    def test_dynamic_synthetic_predictions_wp_clipped(self) -> None:
+        """WP synthetic predictions are in [0.01, 0.99] after perturbation."""
+        from backtest.tune import build_dynamic_synthetic_predictions
+
+        # Very large std to force extreme values before clipping
+        noise_profile = _make_noise_profile(wp_std=0.50)
+
+        tuning_odds = _make_dynamic_tuning_odds(n_per_season=256)
+
+        rng = np.random.default_rng(42)
+        result = build_dynamic_synthetic_predictions(tuning_odds, noise_profile, rng)
+
+        wp_probs = result["wp"]["model_prob"].values
+        assert np.all(wp_probs >= 0.01)
+        assert np.all(wp_probs <= 0.99)
