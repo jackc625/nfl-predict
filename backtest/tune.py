@@ -89,9 +89,7 @@ def run_blend_tuning(artifacts_dir: str = "artifacts") -> None:
     print()
 
     # Step 5: Save artifacts
-    artifact_dir = blender.save_blend_artifacts(
-        tuning_result, Path(artifacts_dir)
-    )
+    artifact_dir = blender.save_blend_artifacts(tuning_result, Path(artifacts_dir))
     print(f"Blend artifacts saved to {artifact_dir}")
     print()
     print("Run `python -m backtest.run --blend` to use these weights in the backtest.")
@@ -150,6 +148,105 @@ def _build_synthetic_predictions(
 
     result: dict[str, pd.DataFrame] = {"wp": wp_df, "ats": ats_df, "ou": ou_df}
     return result
+
+
+def build_dynamic_synthetic_predictions(
+    tuning_odds: pd.DataFrame,
+    noise_profile: dict[str, pd.DataFrame],
+    rng: np.random.Generator,
+) -> dict[str, pd.DataFrame]:
+    """Build synthetic predictions using backtest-derived noise profiles.
+
+    Per D-14: Instead of uniform noise, applies per-week noise from the
+    noise profile extracted from actual backtest results. This produces
+    more realistic synthetic predictions for sigmoid parameter tuning.
+
+    IMPORTANT: The rng parameter MUST be a seeded np.random.Generator
+    for reproducibility. Callers should create it as np.random.default_rng(42)
+    and pass it in. This function does NOT create its own RNG.
+
+    Args:
+        tuning_odds: DataFrame with game_id, season, week, spread, total,
+            ml_home, ml_away columns.
+        noise_profile: Dict from extract_noise_profile() mapping target
+            to DataFrame with week, mean, std, count columns.
+        rng: Numpy random generator for reproducibility. Must be externally
+            seeded for deterministic results.
+
+    Returns:
+        Dict mapping target ("wp", "ats", "ou") to DataFrame with
+        game_id, season, week, and the target-specific prediction column.
+    """
+    base_cols = ["game_id", "season", "week"]
+
+    # -- WP: Apply per-week noise from WP noise profile --
+    wp_profile = noise_profile["wp"].set_index("week")
+    wp_fallback_mean = float(wp_profile["mean"].mean())
+    wp_fallback_std = float(wp_profile["std"].mean())
+
+    valid_ml = tuning_odds.dropna(subset=["ml_home", "ml_away"]).copy()
+    home_raw = valid_ml["ml_home"].apply(lambda ml: moneyline_to_probability(int(ml)))
+    away_raw = valid_ml["ml_away"].apply(lambda ml: moneyline_to_probability(int(ml)))
+    fair_home_prob = (home_raw / (home_raw + away_raw)).values
+
+    # Per-row noise via sorted iteration for deterministic ordering
+    wp_noise = np.zeros(len(fair_home_prob))
+    for i, (_, row) in enumerate(valid_ml.iterrows()):
+        week = int(row["week"])
+        if week in wp_profile.index:
+            mean = float(wp_profile.at[week, "mean"])
+            std = float(wp_profile.at[week, "std"])
+        else:
+            mean, std = wp_fallback_mean, wp_fallback_std
+        wp_noise[i] = rng.normal(mean, max(std, 0.01))
+
+    model_prob = np.clip(fair_home_prob + wp_noise, 0.01, 0.99)
+    wp_df = valid_ml[base_cols].copy()
+    wp_df["model_prob"] = model_prob
+
+    # -- ATS: Apply per-week noise from ATS noise profile --
+    ats_profile = noise_profile["ats"].set_index("week")
+    ats_fallback_mean = float(ats_profile["mean"].mean())
+    ats_fallback_std = float(ats_profile["std"].mean())
+
+    valid_spread = tuning_odds.dropna(subset=["spread"]).copy()
+    ats_noise = np.zeros(len(valid_spread))
+    for i, (_, row) in enumerate(valid_spread.iterrows()):
+        week = int(row["week"])
+        if week in ats_profile.index:
+            mean = float(ats_profile.at[week, "mean"])
+            std = float(ats_profile.at[week, "std"])
+        else:
+            mean, std = ats_fallback_mean, ats_fallback_std
+        ats_noise[i] = rng.normal(mean, max(std, 0.01))
+
+    model_spread = (
+        np.asarray(valid_spread["spread"].values, dtype=np.float64) + ats_noise
+    )
+    ats_df = valid_spread[base_cols].copy()
+    ats_df["model_spread"] = model_spread
+
+    # -- O/U: Apply per-week noise from O/U noise profile --
+    ou_profile = noise_profile["ou"].set_index("week")
+    ou_fallback_mean = float(ou_profile["mean"].mean())
+    ou_fallback_std = float(ou_profile["std"].mean())
+
+    valid_total = tuning_odds.dropna(subset=["total"]).copy()
+    ou_noise = np.zeros(len(valid_total))
+    for i, (_, row) in enumerate(valid_total.iterrows()):
+        week = int(row["week"])
+        if week in ou_profile.index:
+            mean = float(ou_profile.at[week, "mean"])
+            std = float(ou_profile.at[week, "std"])
+        else:
+            mean, std = ou_fallback_mean, ou_fallback_std
+        ou_noise[i] = rng.normal(mean, max(std, 0.01))
+
+    model_total = np.asarray(valid_total["total"].values, dtype=np.float64) + ou_noise
+    ou_df = valid_total[base_cols].copy()
+    ou_df["model_total"] = model_total
+
+    return {"wp": wp_df, "ats": ats_df, "ou": ou_df}
 
 
 def main() -> None:
