@@ -7,17 +7,31 @@ Tests cover:
 - Per-target blend weights via BlendWeights
 - DataFrame-level blend_predictions with proper column handling
 - Edge cases: boundary probabilities, NaN handling, empty DataFrames
+- SigmoidParams and DynamicBlendWeights dataclass validation
+- Hypothesis property-based sigmoid tests
+- Dynamic week-aware blending via MarketBlender
+- Artifact round-trip persistence for dynamic weights
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from numpy.testing import assert_allclose
 
-from models.blending import BlendConfig, BlendWeights, MarketBlender
-
+from models.blending import (
+    BlendConfig,
+    BlendWeights,
+    DynamicBlendWeights,
+    MarketBlender,
+    SigmoidParams,
+)
 
 # ---------------------------------------------------------------------------
 # BlendWeights tests
@@ -47,12 +61,12 @@ class TestBlendWeights:
 
     def test_weight_too_high_raises(self) -> None:
         """BlendWeights rejects weight > 1.0."""
-        with pytest.raises(ValueError, match="in \\[0.0, 1.0\\]"):
+        with pytest.raises(ValueError, match=r"in \[0.0, 1.0\]"):
             BlendWeights(wp_model_weight=1.5)
 
     def test_weight_too_low_raises(self) -> None:
         """BlendWeights rejects weight < 0.0."""
-        with pytest.raises(ValueError, match="in \\[0.0, 1.0\\]"):
+        with pytest.raises(ValueError, match=r"in \[0.0, 1.0\]"):
             BlendWeights(ats_model_weight=-0.1)
 
     def test_boundary_weights_valid(self) -> None:
@@ -224,9 +238,7 @@ class TestBlendOU:
         assert_allclose(result, [48.0])
 
 
-# ---------------------------------------------------------------------------
-# blend_predictions (DataFrame-level)
-# ---------------------------------------------------------------------------
+# -- blend_predictions (DataFrame-level) --
 
 
 class TestBlendPredictions:
@@ -403,11 +415,566 @@ class TestBlendPredictions:
     def test_blend_predictions_empty_df(self) -> None:
         """blend_predictions handles empty DataFrames gracefully."""
         blender = MarketBlender()
-        empty_preds = pd.DataFrame(
-            columns=["game_id", "model_prob", "season", "week"]
-        )
+        empty_preds = pd.DataFrame(columns=["game_id", "model_prob", "season", "week"])
         empty_market = pd.DataFrame(
             columns=["game_id", "ml_home", "ml_away", "spread", "total"]
         )
         result = blender.blend_predictions(empty_preds, empty_market, target="wp")
         assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# SigmoidParams tests
+# ---------------------------------------------------------------------------
+
+
+class TestSigmoidParams:
+    """Tests for SigmoidParams dataclass validation."""
+
+    def test_valid_construction(self) -> None:
+        """SigmoidParams(midpoint=0.5, steepness=1.0) constructs without error."""
+        params = SigmoidParams(midpoint=0.5, steepness=1.0)
+        assert params.midpoint == 0.5
+        assert params.steepness == 1.0
+
+    def test_midpoint_too_low_raises(self) -> None:
+        """SigmoidParams rejects midpoint < 0 with ValueError."""
+        with pytest.raises(ValueError, match="midpoint"):
+            SigmoidParams(midpoint=-0.1, steepness=1.0)
+
+    def test_midpoint_too_high_raises(self) -> None:
+        """SigmoidParams rejects midpoint > 1 with ValueError."""
+        with pytest.raises(ValueError, match="midpoint"):
+            SigmoidParams(midpoint=1.1, steepness=1.0)
+
+    def test_steepness_too_low_raises(self) -> None:
+        """SigmoidParams rejects steepness < 0.1 with ValueError."""
+        with pytest.raises(ValueError, match="steepness"):
+            SigmoidParams(midpoint=0.5, steepness=0.05)
+
+    def test_steepness_too_high_raises(self) -> None:
+        """SigmoidParams rejects steepness > 1.5 with ValueError."""
+        with pytest.raises(ValueError, match="steepness"):
+            SigmoidParams(midpoint=0.5, steepness=2.0)
+
+    def test_boundary_midpoint_zero(self) -> None:
+        """SigmoidParams accepts midpoint=0.0."""
+        params = SigmoidParams(midpoint=0.0, steepness=0.5)
+        assert params.midpoint == 0.0
+
+    def test_boundary_midpoint_one(self) -> None:
+        """SigmoidParams accepts midpoint=1.0."""
+        params = SigmoidParams(midpoint=1.0, steepness=0.5)
+        assert params.midpoint == 1.0
+
+    def test_boundary_steepness_min(self) -> None:
+        """SigmoidParams accepts steepness=0.1."""
+        params = SigmoidParams(midpoint=0.5, steepness=0.1)
+        assert params.steepness == 0.1
+
+    def test_boundary_steepness_max(self) -> None:
+        """SigmoidParams accepts steepness=1.5."""
+        params = SigmoidParams(midpoint=0.5, steepness=1.5)
+        assert params.steepness == 1.5
+
+
+# ---------------------------------------------------------------------------
+# DynamicBlendWeights tests
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicBlendWeights:
+    """Tests for DynamicBlendWeights dataclass and get_weight."""
+
+    @pytest.fixture()
+    def default_dynamic(self) -> DynamicBlendWeights:
+        """Standard DynamicBlendWeights for testing."""
+        return DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ats=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.5, steepness=1.0),
+        )
+
+    def test_get_weight_week1_in_range(
+        self, default_dynamic: DynamicBlendWeights
+    ) -> None:
+        """get_weight returns float in [0.30, 0.80] for week 1."""
+        weight = default_dynamic.get_weight("wp", week=1, season=2022)
+        assert isinstance(weight, float)
+        assert 0.30 <= weight <= 0.80
+
+    def test_get_weight_week18_in_range(
+        self, default_dynamic: DynamicBlendWeights
+    ) -> None:
+        """get_weight returns float in [0.30, 0.80] for week 18."""
+        weight = default_dynamic.get_weight("wp", week=18, season=2022)
+        assert isinstance(weight, float)
+        assert 0.30 <= weight <= 0.80
+
+    def test_era_pre2021_max_week_17(
+        self, default_dynamic: DynamicBlendWeights
+    ) -> None:
+        """Season 2019 uses max_week=17 (pre-2021 era)."""
+        # week 17 should be t=1.0 for pre-2021
+        weight_17 = default_dynamic.get_weight("wp", week=17, season=2019)
+        # week 18 should clamp to t=1.0 (same as week 17)
+        weight_18 = default_dynamic.get_weight("wp", week=18, season=2019)
+        assert_allclose(weight_17, weight_18, atol=1e-10)
+
+    def test_era_post2020_max_week_18(
+        self, default_dynamic: DynamicBlendWeights
+    ) -> None:
+        """Season 2022 uses max_week=18 (post-2020 era)."""
+        weight = default_dynamic.get_weight("wp", week=18, season=2022)
+        assert 0.30 <= weight <= 0.80
+
+    def test_era_boundary_2020_max_week_17(
+        self, default_dynamic: DynamicBlendWeights
+    ) -> None:
+        """Season 2020 -> max_week=17 (last pre-expansion season)."""
+        weight_17 = default_dynamic.get_weight("wp", week=17, season=2020)
+        weight_18 = default_dynamic.get_weight("wp", week=18, season=2020)
+        # Both should be the same since week 18 clamps to max_week=17
+        assert_allclose(weight_17, weight_18, atol=1e-10)
+
+    def test_era_boundary_2021_max_week_18(
+        self, default_dynamic: DynamicBlendWeights
+    ) -> None:
+        """Season 2021 -> max_week=18 (first expanded season)."""
+        weight_17 = default_dynamic.get_weight("wp", week=17, season=2021)
+        weight_18 = default_dynamic.get_weight("wp", week=18, season=2021)
+        # week 18 should produce higher weight than week 17
+        assert weight_18 >= weight_17
+
+    def test_playoff_clamping(self, default_dynamic: DynamicBlendWeights) -> None:
+        """Playoff weeks (> max_week) clamped to t=1.0 -- same as max_week."""
+        weight_18 = default_dynamic.get_weight("wp", week=18, season=2022)
+        weight_20 = default_dynamic.get_weight("wp", week=20, season=2022)
+        assert_allclose(weight_18, weight_20, atol=1e-10)
+
+    def test_week_zero_raises(self, default_dynamic: DynamicBlendWeights) -> None:
+        """Week 0 raises ValueError."""
+        with pytest.raises(ValueError, match="week must be >= 1"):
+            default_dynamic.get_weight("wp", week=0, season=2022)
+
+    def test_all_targets_return_valid_weights(
+        self, default_dynamic: DynamicBlendWeights
+    ) -> None:
+        """All three targets (wp, ats, ou) return valid weights."""
+        for target in ("wp", "ats", "ou"):
+            weight = default_dynamic.get_weight(target, week=9, season=2022)
+            assert isinstance(weight, float)
+            assert 0.30 <= weight <= 0.80
+
+    def test_deterministic_known_value(self) -> None:
+        """Known deterministic value: midpoint=0.5, steepness=1.0, week=9, season=2022.
+
+        t = 9/18 = 0.5
+        weight = 0.30 + 0.50 / (1 + exp(-1.0 * (0.5 - 0.5)))
+               = 0.30 + 0.50 / (1 + 1)
+               = 0.30 + 0.25
+               = 0.55
+        """
+        dw = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ats=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.5, steepness=1.0),
+        )
+        weight = dw.get_weight("wp", week=9, season=2022)
+        assert_allclose(weight, 0.55, atol=1e-10)
+
+    def test_to_dict_round_trip(self) -> None:
+        """to_dict produces serializable dict that from_dict can reconstruct."""
+        original = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.45, steepness=0.8),
+            ats=SigmoidParams(midpoint=0.50, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.40, steepness=0.6),
+            mode_by_target={"wp": "dynamic", "ats": "static", "ou": "dynamic"},
+        )
+        data = original.to_dict()
+        restored = DynamicBlendWeights.from_dict(data)
+        assert restored.wp.midpoint == original.wp.midpoint
+        assert restored.wp.steepness == original.wp.steepness
+        assert restored.ats.midpoint == original.ats.midpoint
+        assert restored.ou.steepness == original.ou.steepness
+        assert restored.low == original.low
+        assert restored.high == original.high
+        assert restored.mode_by_target == original.mode_by_target
+
+    def test_from_dict_missing_target_raises(self) -> None:
+        """from_dict with missing target raises ValueError."""
+        data = {
+            "wp": {"midpoint": 0.5, "steepness": 1.0},
+            "ats": {"midpoint": 0.5, "steepness": 1.0},
+            # "ou" missing
+        }
+        with pytest.raises(ValueError, match="Invalid dynamic blend weights"):
+            DynamicBlendWeights.from_dict(data)
+
+    def test_from_dict_invalid_type_raises(self) -> None:
+        """from_dict with invalid param type raises ValueError."""
+        data = {
+            "wp": {"midpoint": "invalid", "steepness": 1.0},
+            "ats": {"midpoint": 0.5, "steepness": 1.0},
+            "ou": {"midpoint": 0.5, "steepness": 1.0},
+        }
+        with pytest.raises(ValueError, match="Invalid dynamic blend weights"):
+            DynamicBlendWeights.from_dict(data)
+
+
+# ---------------------------------------------------------------------------
+# Hypothesis property-based sigmoid tests
+# ---------------------------------------------------------------------------
+
+
+class TestSigmoidProperties:
+    """Hypothesis property-based tests for sigmoid weight bounds and monotonicity."""
+
+    @given(
+        week=st.integers(min_value=1, max_value=22),
+        season=st.integers(min_value=2010, max_value=2025),
+        midpoint=st.floats(min_value=0.15, max_value=0.82, allow_nan=False),
+        steepness=st.floats(min_value=0.1, max_value=1.5, allow_nan=False),
+    )
+    @settings(max_examples=200)
+    def test_weight_always_in_bounds(
+        self,
+        week: int,
+        season: int,
+        midpoint: float,
+        steepness: float,
+    ) -> None:
+        """Sigmoid weight is always in [0.30, 0.80] for any valid inputs."""
+        dw = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=midpoint, steepness=steepness),
+            ats=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.5, steepness=1.0),
+        )
+        weight = dw.get_weight("wp", week=week, season=season)
+        assert 0.30 <= weight <= 0.80, (
+            f"weight={weight} out of bounds for week={week}, season={season}, "
+            f"midpoint={midpoint}, steepness={steepness}"
+        )
+
+    @given(
+        w1=st.integers(min_value=1, max_value=21),
+        season=st.integers(min_value=2010, max_value=2025),
+        midpoint=st.floats(min_value=0.15, max_value=0.82, allow_nan=False),
+        steepness=st.floats(min_value=0.1, max_value=1.5, allow_nan=False),
+    )
+    @settings(max_examples=200)
+    def test_monotonically_nondecreasing_in_week(
+        self,
+        w1: int,
+        season: int,
+        midpoint: float,
+        steepness: float,
+    ) -> None:
+        """Weight is monotonically non-decreasing in week for fixed params."""
+        w2 = w1 + 1
+        dw = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=midpoint, steepness=steepness),
+            ats=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.5, steepness=1.0),
+        )
+        weight_1 = dw.get_weight("wp", week=w1, season=season)
+        weight_2 = dw.get_weight("wp", week=w2, season=season)
+        assert weight_2 >= weight_1 - 1e-12, (
+            f"Non-monotonic: week {w1} -> {weight_1}, week {w2} -> {weight_2}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dynamic blending via MarketBlender
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicBlending:
+    """Tests for MarketBlender with dynamic week-aware weights."""
+
+    @pytest.fixture()
+    def dynamic_blender(self) -> MarketBlender:
+        """MarketBlender with dynamic weights configured."""
+        dw = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.3, steepness=1.0),
+            ats=SigmoidParams(midpoint=0.3, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.3, steepness=1.0),
+        )
+        return MarketBlender(dynamic_weights=dw)
+
+    @pytest.fixture()
+    def static_blender(self) -> MarketBlender:
+        """MarketBlender without dynamic weights (static)."""
+        return MarketBlender()
+
+    def test_dynamic_blend_wp_uses_sigmoid_weight(
+        self, dynamic_blender: MarketBlender
+    ) -> None:
+        """blend_wp with dynamic weights uses sigmoid-derived weight."""
+        model = np.array([0.7])
+        market = np.array([0.5])
+        result_dynamic = dynamic_blender.blend_wp(model, market, week=5, season=2022)
+        # Should produce a valid result
+        assert np.isfinite(result_dynamic[0])
+        assert 0.0 < result_dynamic[0] < 1.0
+
+    def test_dynamic_blend_wp_raises_without_week_season(
+        self, dynamic_blender: MarketBlender
+    ) -> None:
+        """blend_wp with dynamic weights raises ValueError when week/season not provided."""
+        model = np.array([0.7])
+        market = np.array([0.5])
+        with pytest.raises(
+            ValueError,
+            match="week and season are required when dynamic_weights is configured",
+        ):
+            dynamic_blender.blend_wp(model, market)
+
+    def test_static_blend_wp_no_week_season_required(
+        self, static_blender: MarketBlender
+    ) -> None:
+        """blend_wp without dynamic weights works without week/season (no regression)."""
+        model = np.array([0.7])
+        market = np.array([0.5])
+        result = static_blender.blend_wp(model, market)
+        assert np.isfinite(result[0])
+        assert 0.0 < result[0] < 1.0
+
+    def test_dynamic_blend_ats_raises_without_week_season(
+        self, dynamic_blender: MarketBlender
+    ) -> None:
+        """blend_ats with dynamic weights raises ValueError without week/season."""
+        with pytest.raises(ValueError, match="week and season are required"):
+            dynamic_blender.blend_ats(np.array([-7.0]), np.array([-3.0]))
+
+    def test_dynamic_blend_ou_raises_without_week_season(
+        self, dynamic_blender: MarketBlender
+    ) -> None:
+        """blend_ou with dynamic weights raises ValueError without week/season."""
+        with pytest.raises(ValueError, match="week and season are required"):
+            dynamic_blender.blend_ou(np.array([48.0]), np.array([44.0]))
+
+    def test_dynamic_blend_ats_with_week_season(
+        self, dynamic_blender: MarketBlender
+    ) -> None:
+        """blend_ats with dynamic weights and week/season returns valid result."""
+        result = dynamic_blender.blend_ats(
+            np.array([-7.0]), np.array([-3.0]), week=10, season=2022
+        )
+        assert np.isfinite(result[0])
+
+    def test_dynamic_blend_ou_with_week_season(
+        self, dynamic_blender: MarketBlender
+    ) -> None:
+        """blend_ou with dynamic weights and week/season returns valid result."""
+        result = dynamic_blender.blend_ou(
+            np.array([48.0]), np.array([44.0]), week=10, season=2022
+        )
+        assert np.isfinite(result[0])
+
+    def test_blend_predictions_extracts_week_season_for_dynamic(self) -> None:
+        """blend_predictions extracts week/season from game_id for dynamic blending."""
+        dw = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ats=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.5, steepness=1.0),
+        )
+        blender = MarketBlender(dynamic_weights=dw)
+
+        preds = pd.DataFrame(
+            {
+                "game_id": ["2022_W05_KC@DET", "2022_W05_BUF@NYJ"],
+                "model_spread": [-5.0, -2.5],
+            }
+        )
+        market = pd.DataFrame(
+            {
+                "game_id": ["2022_W05_KC@DET", "2022_W05_BUF@NYJ"],
+                "spread": [-3.0, -1.5],
+                "total": [52.5, 44.0],
+                "ml_home": [-150, -120],
+                "ml_away": [130, 100],
+            }
+        )
+        result = blender.blend_predictions(preds, market, target="ats")
+        # Blended spreads should differ from original model spreads
+        assert not np.allclose(
+            result["model_spread"].values, preds["model_spread"].values
+        )
+
+    def test_compute_edges_with_dynamic_weights(self) -> None:
+        """_compute_edges uses dynamic weights when available."""
+        dw = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ats=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.5, steepness=1.0),
+        )
+        blender = MarketBlender(dynamic_weights=dw)
+
+        merged = pd.DataFrame(
+            {
+                "game_id": ["2022_W10_KC@DET", "2022_W10_BUF@NYJ"],
+                "model_spread": [-5.0, -2.5],
+                "spread": [-3.0, -1.5],
+            }
+        )
+        edges = blender._compute_edges("ats", merged)
+        assert len(edges) == 2
+        assert np.all(edges >= 0)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic artifact persistence tests
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicArtifacts:
+    """Tests for DynamicBlendWeights artifact save/load round-trip."""
+
+    def test_artifact_round_trip(self, tmp_path: Path) -> None:
+        """Save MarketBlender with dynamic weights, load via from_artifacts -- identical params."""
+        dw = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.45, steepness=0.8),
+            ats=SigmoidParams(midpoint=0.50, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.40, steepness=0.6),
+            mode_by_target={"wp": "dynamic", "ats": "static", "ou": "dynamic"},
+        )
+        blender = MarketBlender(dynamic_weights=dw)
+
+        # Create a minimal TuningResult for save
+        from models.blending import BlendWeights, TuningResult
+
+        tuning_result = TuningResult(
+            weights=BlendWeights(
+                wp_model_weight=0.55, ats_model_weight=0.55, ou_model_weight=0.55
+            ),
+            per_target_clv={"wp": 0.01, "ats": 0.02, "ou": 0.015},
+            per_target_grid={"wp": [], "ats": [], "ou": []},
+            tuning_seasons=[2010, 2011, 2012],
+            n_games={"wp": 100, "ats": 100, "ou": 100},
+        )
+
+        blender.save_blend_artifacts(tuning_result, artifacts_dir=tmp_path)
+
+        # Load via from_artifacts
+        loaded = MarketBlender.from_artifacts(artifacts_dir=tmp_path)
+        assert loaded._dynamic_weights is not None
+        assert loaded._dynamic_weights.wp.midpoint == 0.45
+        assert loaded._dynamic_weights.wp.steepness == 0.8
+        assert loaded._dynamic_weights.ats.midpoint == 0.50
+        assert loaded._dynamic_weights.ats.steepness == 1.0
+        assert loaded._dynamic_weights.ou.midpoint == 0.40
+        assert loaded._dynamic_weights.ou.steepness == 0.6
+        assert loaded._dynamic_weights.mode_by_target == {
+            "wp": "dynamic",
+            "ats": "static",
+            "ou": "dynamic",
+        }
+
+    def test_artifact_legacy_load(self, tmp_path: Path) -> None:
+        """from_artifacts with static-only JSON (no 'dynamic' key) returns None dynamic_weights."""
+        # Create a legacy-format artifact
+        artifact_dir = tmp_path / "blend_legacy"
+        artifact_dir.mkdir()
+        payload = {
+            "weights": {"wp": 0.50, "ats": 0.50, "ou": 0.70},
+            "edge_thresholds": {"wp": 0.03, "ats": 1.5, "ou": 1.5},
+        }
+        (artifact_dir / "blend_weights.json").write_text(json.dumps(payload))
+
+        # Write latest.json pointing to it
+        manifest = {"blend": "blend_legacy"}
+        (tmp_path / "latest.json").write_text(json.dumps(manifest))
+
+        loaded = MarketBlender.from_artifacts(artifacts_dir=tmp_path)
+        assert loaded._dynamic_weights is None
+
+    def test_artifact_schema_validation(self, tmp_path: Path) -> None:
+        """from_artifacts with malformed dynamic section raises ValueError."""
+        artifact_dir = tmp_path / "blend_bad"
+        artifact_dir.mkdir()
+        payload = {
+            "weights": {"wp": 0.50, "ats": 0.50, "ou": 0.70},
+            "edge_thresholds": {"wp": 0.03, "ats": 1.5, "ou": 1.5},
+            "dynamic": {"wp": {"midpoint": "invalid"}},
+        }
+        (artifact_dir / "blend_weights.json").write_text(json.dumps(payload))
+
+        manifest = {"blend": "blend_bad"}
+        (tmp_path / "latest.json").write_text(json.dumps(manifest))
+
+        with pytest.raises(ValueError, match="Invalid dynamic blend weights"):
+            MarketBlender.from_artifacts(artifacts_dir=tmp_path)
+
+    def test_artifact_mode_by_target_persisted(self, tmp_path: Path) -> None:
+        """mode_by_target is persisted in artifact and loadable."""
+        dw = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.45, steepness=0.8),
+            ats=SigmoidParams(midpoint=0.50, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.40, steepness=0.6),
+            mode_by_target={"wp": "dynamic", "ats": "static", "ou": "dynamic"},
+        )
+        blender = MarketBlender(dynamic_weights=dw)
+
+        from models.blending import TuningResult
+
+        tuning_result = TuningResult(
+            weights=BlendWeights(
+                wp_model_weight=0.55, ats_model_weight=0.55, ou_model_weight=0.55
+            ),
+            per_target_clv={"wp": 0.01, "ats": 0.02, "ou": 0.015},
+            per_target_grid={"wp": [], "ats": [], "ou": []},
+            tuning_seasons=[2010, 2011, 2012],
+            n_games={"wp": 100, "ats": 100, "ou": 100},
+        )
+
+        blender.save_blend_artifacts(tuning_result, artifacts_dir=tmp_path)
+
+        # Read raw JSON and verify mode_by_target is there
+        latest = json.loads((tmp_path / "latest.json").read_text())
+        artifact_dir = tmp_path / latest["blend"]
+        data = json.loads((artifact_dir / "blend_weights.json").read_text())
+        assert "dynamic" in data
+        assert data["dynamic"]["mode_by_target"] == {
+            "wp": "dynamic",
+            "ats": "static",
+            "ou": "dynamic",
+        }
+
+    def test_artifact_blender_version(self, tmp_path: Path) -> None:
+        """Artifact contains blender_version key -- '2.0' for dynamic, '1.0' for static."""
+        # Dynamic blender
+        dw = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.45, steepness=0.8),
+            ats=SigmoidParams(midpoint=0.50, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.40, steepness=0.6),
+        )
+        dynamic_blender = MarketBlender(dynamic_weights=dw)
+
+        from models.blending import TuningResult
+
+        tuning_result = TuningResult(
+            weights=BlendWeights(
+                wp_model_weight=0.55, ats_model_weight=0.55, ou_model_weight=0.55
+            ),
+            per_target_clv={"wp": 0.01, "ats": 0.02, "ou": 0.015},
+            per_target_grid={"wp": [], "ats": [], "ou": []},
+            tuning_seasons=[2010],
+            n_games={"wp": 100, "ats": 100, "ou": 100},
+        )
+
+        artifact_dir = dynamic_blender.save_blend_artifacts(
+            tuning_result, artifacts_dir=tmp_path
+        )
+        data = json.loads((artifact_dir / "blend_weights.json").read_text())
+        assert data["blender_version"] == "2.0"
+
+        # Static blender
+        static_dir = tmp_path / "static_test"
+        static_dir.mkdir()
+        static_blender = MarketBlender()
+        artifact_dir2 = static_blender.save_blend_artifacts(
+            tuning_result, artifacts_dir=static_dir
+        )
+        data2 = json.loads((artifact_dir2 / "blend_weights.json").read_text())
+        assert data2["blender_version"] == "1.0"
