@@ -9,13 +9,18 @@ Orchestrates blend weight tuning on pre-backtest data (2010-2017):
 4. Calibrate per-target edge thresholds via calibrate_edge_thresholds()
 5. Save blend artifacts to artifacts/ directory
 
+Also provides dynamic sigmoid tuning (--dynamic) and side-by-side
+comparison with per-target gating (--compare).
+
 The tuned weights are then available for `python -m backtest.run --blend`.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -35,7 +40,11 @@ from models.blending_data import (
     extract_noise_profile,
     load_tuning_period_data,
 )
-from models.clv import compute_line_clv, compute_probability_clv
+from models.clv import (
+    compute_clv_for_predictions,
+    compute_line_clv,
+    compute_probability_clv,
+)
 from models.tuning import OptunaTuner
 from models.tuning import TuningResult as OptunaTuningResult
 from utils import get_logger
@@ -604,6 +613,421 @@ def run_dynamic_blend_tuning(
     }
 
 
+def _gate_per_target(
+    static_clv: dict[str, float],
+    dynamic_clv: dict[str, float],
+    bet_counts: dict[str, int] | None = None,
+) -> dict[str, dict]:
+    """Per-target gating: dynamic must match or beat static CLV (per D-19).
+
+    Includes bet counts as context for evaluating the significance of
+    CLV differences (addresses review concern about gating sensitivity).
+
+    Args:
+        static_clv: Dict mapping target to headline CLV from static blending.
+        dynamic_clv: Dict mapping target to headline CLV from dynamic blending.
+        bet_counts: Optional dict mapping target to number of games with
+            valid odds (provides sample size context for interpreting deltas).
+
+    Returns:
+        Dict mapping target to {
+            "passed": bool,
+            "static_clv": float,
+            "dynamic_clv": float,
+            "delta": float,
+            "relative_delta_pct": float,
+            "bet_count": int,
+            "reason": str,
+        }.
+    """
+    if bet_counts is None:
+        bet_counts = {}
+
+    results = {}
+    for target in ("wp", "ats", "ou"):
+        s_clv = static_clv.get(target, 0.0)
+        d_clv = dynamic_clv.get(target, 0.0)
+        delta = d_clv - s_clv
+        passed = d_clv >= s_clv  # D-19: match or beat
+        count = bet_counts.get(target, 0)
+
+        # Relative delta for context (avoid division by zero)
+        if abs(s_clv) > 1e-6:
+            relative_pct = (delta / abs(s_clv)) * 100
+        else:
+            relative_pct = 0.0
+
+        direction = (
+            "improved" if delta > 0 else ("matched" if delta == 0 else "regressed")
+        )
+        reason = (
+            f"Dynamic CLV {direction}: "
+            f"{s_clv:.4f} -> {d_clv:.4f} (delta: {delta:+.4f}, "
+            f"{relative_pct:+.1f}%, n={count} games)"
+        )
+        results[target] = {
+            "passed": passed,
+            "static_clv": s_clv,
+            "dynamic_clv": d_clv,
+            "delta": delta,
+            "relative_delta_pct": relative_pct,
+            "bet_count": count,
+            "reason": reason,
+        }
+    return results
+
+
+def _generate_comparison_report(
+    static_results: dict,
+    dynamic_results: dict,
+    gating: dict[str, dict],
+    dynamic_weights: DynamicBlendWeights,
+    output_path: Path,
+) -> None:
+    """Generate markdown comparison report (per D-20).
+
+    Report includes:
+    - Headline CLV per target (static vs dynamic with delta and verdict)
+    - Per-season CLV breakdown per target
+    - Bet counts per target (sample size context per review feedback)
+    - Sigmoid parameter summary
+    - Gating verdicts with reasons
+
+    Args:
+        static_results: Dict with "headline_clv" and "per_season_clv" dicts.
+        dynamic_results: Dict with "headline_clv" and "per_season_clv" dicts.
+        gating: Output from _gate_per_target.
+        dynamic_weights: The DynamicBlendWeights that were tested.
+        output_path: Where to write the markdown report.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        "# Dynamic vs Static Blend Weight Comparison",
+        "",
+        f"*Generated: {datetime.now(tz=UTC).isoformat()}*",
+        "",
+        "## Headline CLV",
+        "",
+        "| Target | Static CLV | Dynamic CLV | Delta | Rel Delta"
+        " | Bet Count | Verdict |",
+        "|--------|-----------|-------------|-------|-----------|"
+        "-----------|---------|",
+    ]
+
+    for target in ("wp", "ats", "ou"):
+        g = gating[target]
+        verdict = "PASS" if g["passed"] else "FAIL"
+        lines.append(
+            f"| {target.upper()} | {g['static_clv']:.4f} | "
+            f"{g['dynamic_clv']:.4f} | {g['delta']:+.4f} | "
+            f"{g['relative_delta_pct']:+.1f}% | {g['bet_count']} | {verdict} |"
+        )
+
+    lines.extend(["", "## Per-Season CLV Breakdown", ""])
+
+    for target in ("wp", "ats", "ou"):
+        lines.extend(
+            [
+                f"### {target.upper()}",
+                "",
+                "| Season | Static CLV | Dynamic CLV | Delta |",
+                "|--------|-----------|-------------|-------|",
+            ]
+        )
+        static_seasons = static_results.get("per_season_clv", {}).get(target, {})
+        dynamic_seasons = dynamic_results.get("per_season_clv", {}).get(target, {})
+        all_seasons = sorted(
+            set(list(static_seasons.keys()) + list(dynamic_seasons.keys()))
+        )
+        for season in all_seasons:
+            s = static_seasons.get(season, 0.0)
+            d = dynamic_seasons.get(season, 0.0)
+            lines.append(f"| {season} | {s:.4f} | {d:.4f} | {d - s:+.4f} |")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Sigmoid Parameters",
+            "",
+            "| Target | Midpoint | Steepness | Mode |",
+            "|--------|----------|-----------|------|",
+            f"| WP | {dynamic_weights.wp.midpoint:.4f}"
+            f" | {dynamic_weights.wp.steepness:.4f}"
+            f" | {dynamic_weights.mode_by_target.get('wp', 'dynamic')} |",
+            f"| ATS | {dynamic_weights.ats.midpoint:.4f}"
+            f" | {dynamic_weights.ats.steepness:.4f}"
+            f" | {dynamic_weights.mode_by_target.get('ats', 'dynamic')} |",
+            f"| O/U | {dynamic_weights.ou.midpoint:.4f}"
+            f" | {dynamic_weights.ou.steepness:.4f}"
+            f" | {dynamic_weights.mode_by_target.get('ou', 'dynamic')} |",
+            "",
+            f"Low bound: {dynamic_weights.low}, High bound: {dynamic_weights.high}",
+            "",
+            "## Gating Verdicts",
+            "",
+        ]
+    )
+
+    for target in ("wp", "ats", "ou"):
+        g = gating[target]
+        status = (
+            "ACCEPTED (dynamic)" if g["passed"] else "REJECTED (using static fallback)"
+        )
+        lines.append(f"- **{target.upper()}**: {status} -- {g['reason']}")
+
+    lines.extend(
+        [
+            "",
+            "*Per D-19: Each target gated independently."
+            " Dynamic CLV must match or beat static.*",
+            "",
+            "## Methodology",
+            "",
+            "- One unblended backtest (2021-2024) provides identical raw predictions",
+            "- Static and dynamic blending applied post-hoc to same raw predictions",
+            "- CLV computed via same compute_clv_for_predictions code path",
+            "- Edge thresholds held constant (from Plan 03 calibration)",
+            "- This guarantees fair apples-to-apples comparison",
+        ]
+    )
+
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+    logger.info("Comparison report written", path=str(output_path))
+
+
+def run_comparison(
+    artifacts_dir: str = "artifacts",
+    baselines_dir: str = "data/baselines/v2.0",
+    backtest_seasons: list[int] | None = None,
+) -> dict:
+    """Run side-by-side backtest comparison: static vs dynamic sigmoid (per D-18).
+
+    Strategy (addresses review concern about post-hoc equivalence):
+    1. Run one UNBLENDED backtest to get raw model predictions
+    2. Apply static blending post-hoc using MarketBlender.blend_predictions()
+    3. Apply dynamic blending post-hoc using MarketBlender.blend_predictions()
+    4. Compute CLV for both via compute_clv_for_predictions() (same code path)
+    5. Gate per target (D-19)
+    6. Update mode_by_target on DynamicBlendWeights based on gating (D-07)
+    7. Write comparison report (D-20)
+    8. Save gating results and update artifacts
+
+    Edge thresholds are held constant (from Plan 03 calibration) across both
+    static and dynamic runs. This ensures fair comparison -- the only variable
+    is the blend weights.
+
+    Post-hoc validity: Both static and dynamic paths call
+    MarketBlender.blend_predictions() which is the same method used by
+    BacktestEngine._run_season() (line 430) and by the live prediction
+    pipeline. The CLV recomputation follows the exact pattern at
+    engine.py lines 444-473.
+
+    Args:
+        artifacts_dir: Directory containing blend artifacts.
+        baselines_dir: Directory for comparison report output.
+        backtest_seasons: Seasons to backtest (default [2021, 2022, 2023, 2024]).
+
+    Returns:
+        Dict with "static_clv", "dynamic_clv", "gating", "report_path", "any_passed".
+    """
+    from backtest.engine import BacktestConfig, BacktestEngine
+
+    if backtest_seasons is None:
+        backtest_seasons = [2021, 2022, 2023, 2024]
+
+    artifacts_path = Path(artifacts_dir)
+    baselines_path = Path(baselines_dir)
+
+    # Load dynamic blender from artifacts (has both static config and dynamic weights)
+    dynamic_blender = MarketBlender.from_artifacts(artifacts_path)
+    if dynamic_blender._dynamic_weights is None:
+        msg = (
+            "No dynamic blend weights found in artifacts. "
+            "Run `python -m backtest.tune --dynamic` first."
+        )
+        raise ValueError(msg)
+
+    # Create a static-only blender using the same BlendConfig but no dynamic weights
+    static_blender = MarketBlender(config=dynamic_blender.config)
+
+    # ---- Step 1: Run UNBLENDED backtest (shared base for both comparisons) ----
+    print("Running unblended backtest (2021-2024)...")
+    unblended_config = BacktestConfig(
+        holdout_seasons=backtest_seasons,
+        targets=["wp", "ats", "ou"],
+        blend_config=None,  # No blending -- raw predictions only
+    )
+    engine = BacktestEngine(config=unblended_config)
+    unblended_result = engine.run()
+    print(f"  Got predictions for {len(backtest_seasons)} seasons")
+    print()
+
+    # ---- Step 2: Apply blending post-hoc for both static and dynamic ----
+    # Load closing odds using the same internal method the engine uses
+    closing_odds_df = engine._load_closing_odds()
+
+    # Columns that need to be dropped before CLV recomputation
+    # (same pattern as engine.py lines 450-459)
+    clv_odds_cols = [
+        "probability_clv",
+        "fair_closing_prob",
+        "has_closing_odds",
+        "line_clv",
+        "ml_home",
+        "ml_away",
+        "spread",
+        "total",
+    ]
+
+    static_clv_map: dict[str, float] = {}
+    dynamic_clv_map: dict[str, float] = {}
+    static_per_season: dict[str, dict] = {}
+    dynamic_per_season: dict[str, dict] = {}
+    bet_counts: dict[str, int] = {}
+
+    for target in ("wp", "ats", "ou"):
+        raw_preds = unblended_result.all_predictions[target]
+        if raw_preds.empty:
+            static_clv_map[target] = 0.0
+            dynamic_clv_map[target] = 0.0
+            bet_counts[target] = 0
+            continue
+
+        # -- Static blending + CLV --
+        s_blended = static_blender.blend_predictions(
+            raw_preds.copy(), closing_odds_df, target
+        )
+        s_drop = [c for c in clv_odds_cols if c in s_blended.columns]
+        s_clv_df = compute_clv_for_predictions(
+            s_blended.drop(columns=s_drop), closing_odds_df, target
+        )
+
+        # -- Dynamic blending + CLV --
+        d_blended = dynamic_blender.blend_predictions(
+            raw_preds.copy(), closing_odds_df, target
+        )
+        d_drop = [c for c in clv_odds_cols if c in d_blended.columns]
+        d_clv_df = compute_clv_for_predictions(
+            d_blended.drop(columns=d_drop), closing_odds_df, target
+        )
+
+        # Compute headline CLV (same logic as engine.py lines 476-493)
+        clv_col = "probability_clv" if target == "wp" else "line_clv"
+        has_odds_col = "has_closing_odds"
+
+        s_valid = (
+            s_clv_df[s_clv_df[has_odds_col]]
+            if has_odds_col in s_clv_df.columns
+            else s_clv_df
+        )
+        d_valid = (
+            d_clv_df[d_clv_df[has_odds_col]]
+            if has_odds_col in d_clv_df.columns
+            else d_clv_df
+        )
+
+        static_clv_map[target] = (
+            float(s_valid[clv_col].mean()) if len(s_valid) > 0 else 0.0
+        )
+        dynamic_clv_map[target] = (
+            float(d_valid[clv_col].mean()) if len(d_valid) > 0 else 0.0
+        )
+        bet_counts[target] = len(s_valid)  # Same for both since same underlying games
+
+        # Per-season CLV
+        for _label, clv_df, per_season_dict in [
+            ("static", s_clv_df, static_per_season),
+            ("dynamic", d_clv_df, dynamic_per_season),
+        ]:
+            if "season" not in clv_df.columns:
+                clv_df["season"] = clv_df["game_id"].str.split("_").str[0].astype(int)
+            per_season_dict[target] = {}
+            for season in backtest_seasons:
+                mask = clv_df["season"] == season
+                season_valid = clv_df.loc[mask]
+                if has_odds_col in season_valid.columns:
+                    season_valid = season_valid[season_valid[has_odds_col]]
+                per_season_dict[target][season] = (
+                    float(season_valid[clv_col].mean())
+                    if len(season_valid) > 0
+                    else 0.0
+                )
+
+        print(
+            f"  {target.upper()}: static={static_clv_map[target]:.4f}, "
+            f"dynamic={dynamic_clv_map[target]:.4f}, "
+            f"delta={dynamic_clv_map[target] - static_clv_map[target]:+.4f} "
+            f"(n={bet_counts[target]})"
+        )
+
+    print()
+
+    # ---- Step 3: Gating (D-19) ----
+    gating = _gate_per_target(static_clv_map, dynamic_clv_map, bet_counts)
+    any_passed = any(g["passed"] for g in gating.values())
+
+    # Update mode_by_target on DynamicBlendWeights based on gating (D-07)
+    mode_by_target = {}
+    for target in ("wp", "ats", "ou"):
+        mode_by_target[target] = "dynamic" if gating[target]["passed"] else "static"
+    dynamic_blender._dynamic_weights.mode_by_target = mode_by_target
+
+    # ---- Step 4: Write comparison report (D-20) ----
+    report_path = baselines_path / "comparison_dynamic_vs_static.md"
+    _generate_comparison_report(
+        static_results={
+            "headline_clv": static_clv_map,
+            "per_season_clv": static_per_season,
+        },
+        dynamic_results={
+            "headline_clv": dynamic_clv_map,
+            "per_season_clv": dynamic_per_season,
+        },
+        gating=gating,
+        dynamic_weights=dynamic_blender._dynamic_weights,
+        output_path=report_path,
+    )
+
+    # Save gating results JSON
+    gating_path = baselines_path / "gating_dynamic_vs_static.json"
+    baselines_path.mkdir(parents=True, exist_ok=True)
+    gating_path.write_text(json.dumps(gating, indent=2), encoding="utf-8")
+
+    # Re-save dynamic artifacts with updated mode_by_target
+    # This ensures the artifact on disk reflects the gating decision
+    if any_passed:
+        combined_clv = {t: dynamic_clv_map[t] for t in ("wp", "ats", "ou")}
+        tuning_result_for_save = TuningResult(
+            weights=dynamic_blender.config.weights,
+            per_target_clv=combined_clv,
+            per_target_grid={},
+            tuning_seasons=[],
+            n_games=bet_counts,
+        )
+        artifact_dir = dynamic_blender.save_blend_artifacts(
+            tuning_result_for_save, artifacts_path
+        )
+        print(f"  Updated artifacts with gating results at {artifact_dir}")
+
+    # Print summary
+    print("Gating results:")
+    for target in ("wp", "ats", "ou"):
+        g = gating[target]
+        status = "PASS" if g["passed"] else "FAIL"
+        print(f"  {target.upper()}: {status} -- {g['reason']}")
+    print()
+    print(f"Report: {report_path}")
+
+    return {
+        "static_clv": static_clv_map,
+        "dynamic_clv": dynamic_clv_map,
+        "gating": gating,
+        "report_path": str(report_path),
+        "any_passed": any_passed,
+    }
+
+
 def _build_cli_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser for blend weight tuning.
 
@@ -647,6 +1071,12 @@ def _build_cli_parser() -> argparse.ArgumentParser:
         default=42,
         help="RNG seed for deterministic synthetic data generation (default: 42)",
     )
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        default=False,
+        help="Run side-by-side static vs dynamic backtest comparison (per D-18)",
+    )
     return parser
 
 
@@ -655,7 +1085,12 @@ def main() -> None:
     parser = _build_cli_parser()
     args = parser.parse_args()
 
-    if args.dynamic:
+    if args.compare:
+        run_comparison(
+            artifacts_dir=args.artifacts_dir,
+            baselines_dir=args.baselines_dir or "data/baselines/v2.0",
+        )
+    elif args.dynamic:
         run_dynamic_blend_tuning(
             n_trials=args.n_trials,
             artifacts_dir=args.artifacts_dir,
