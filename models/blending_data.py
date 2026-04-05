@@ -16,6 +16,8 @@ of the codebase.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 
 try:
@@ -157,3 +159,128 @@ def get_tuning_period_games(
     """
     full_df = load_tuning_period_data(seasons=seasons)
     return full_df[_GAME_INFO_COLUMNS].copy()
+
+
+# ---------------------------------------------------------------------------
+# Noise profile extraction
+# ---------------------------------------------------------------------------
+
+MIN_NOISE_SAMPLE_COUNT = 30
+"""Minimum games per week for reliable noise statistics.
+Below this threshold, per-week stats are blended toward season-wide
+stats to prevent overfitting to sparse data (addresses review concern
+about thin sample sizes for late-season weeks)."""
+
+
+def extract_noise_profile(
+    baselines_dir: Path | None = None,
+    min_sample_count: int = MIN_NOISE_SAMPLE_COUNT,
+) -> dict[str, pd.DataFrame]:
+    """Extract per-week model error distributions from backtest predictions.
+
+    Reads prediction parquets from the baselines directory, computes
+    per-game errors (model value minus closing market value), and returns
+    per-week statistics (mean, std, count) for each target.
+
+    Used by dynamic blend tuning to generate realistic synthetic predictions
+    for the 2010-2017 tuning period (per D-14, D-15).
+
+    Error definitions (all measure model-vs-closing-market deviation):
+    - WP: model_prob - fair_closing_prob
+    - ATS: model_spread - spread (closing line)
+    - O/U: model_total - total (closing line)
+
+    For weeks with fewer than min_sample_count games, stats are blended
+    toward the season-wide mean/std to prevent overfitting to sparse data.
+
+    Args:
+        baselines_dir: Path to baselines directory containing prediction parquets.
+            Defaults to Path("data/baselines/v2.0"). Configurable for testing
+            and for pointing to different baseline versions.
+        min_sample_count: Minimum games for reliable per-week stats.
+            Below this, stats blend toward season-wide values.
+
+    Returns:
+        Dict mapping target ("wp", "ats", "ou") to DataFrame with columns:
+        week (int), mean (float), std (float), count (int).
+
+    Raises:
+        FileNotFoundError: If baselines_dir does not exist or required
+            parquet files are missing (per D-17: fail fast, no fallback).
+    """
+    if baselines_dir is None:
+        baselines_dir = Path("data/baselines/v2.0")
+
+    if not baselines_dir.exists():
+        msg = (
+            f"Baselines directory not found: {baselines_dir}. "
+            "Run backtest first to generate baseline predictions."
+        )
+        raise FileNotFoundError(msg)
+
+    profiles: dict[str, pd.DataFrame] = {}
+
+    # Target configs: (parquet filename, model column, market column)
+    target_configs = {
+        "wp": ("predictions_wp.parquet", "model_prob", "fair_closing_prob"),
+        "ats": ("predictions_ats.parquet", "model_spread", "spread"),
+        "ou": ("predictions_ou.parquet", "model_total", "total"),
+    }
+
+    for target, (filename, model_col, market_col) in target_configs.items():
+        parquet_path = baselines_dir / filename
+        if not parquet_path.exists():
+            msg = (
+                f"{filename} not found in {baselines_dir}. "
+                "Run backtest first to generate baseline predictions."
+            )
+            raise FileNotFoundError(msg)
+
+        df = pd.read_parquet(parquet_path)
+
+        # Extract week from game_id: {season}_W{week}_{away}@{home}
+        # Handles both W01 (zero-padded) and W1 (unpadded) formats
+        df["week"] = df["game_id"].str.extract(r"_W(\d+)_")[0].astype(int)
+        # Extract season for era-aware max_week filtering
+        df["season"] = df["game_id"].str.split("_").str[0].astype(int)
+
+        # Compute error (model-vs-closing-market deviation)
+        df["error"] = df[model_col] - df[market_col]
+
+        # Filter out playoff weeks per D-05 era lookup
+        max_week = df["season"].apply(lambda s: 17 if s <= 2020 else 18)
+        df = df[df["week"] <= max_week]
+
+        # Compute season-wide stats for sparse-week blending
+        season_mean = float(df["error"].mean())
+        season_std = float(df["error"].std())
+
+        # Aggregate per-week stats
+        stats = df.groupby("week")["error"].agg(["mean", "std", "count"]).reset_index()
+        stats["count"] = stats["count"].astype(int)
+
+        # Blend sparse weeks toward season-wide stats
+        for idx in stats.index:
+            count = stats.at[idx, "count"]
+            if count < min_sample_count:
+                blend_weight = count / min_sample_count
+                stats.at[idx, "mean"] = (
+                    blend_weight * stats.at[idx, "mean"]
+                    + (1 - blend_weight) * season_mean
+                )
+                stats.at[idx, "std"] = (
+                    blend_weight * stats.at[idx, "std"]
+                    + (1 - blend_weight) * season_std
+                )
+
+        profiles[target] = stats
+
+        logger.info(
+            "Noise profile extracted",
+            target=target,
+            n_weeks=len(stats),
+            total_games=int(stats["count"].sum()),
+            sparse_weeks=int((stats["count"] < min_sample_count).sum()),
+        )
+
+    return profiles
