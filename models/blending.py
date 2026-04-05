@@ -71,6 +71,156 @@ class BlendWeights:
 
 
 @dataclass
+class SigmoidParams:
+    """Sigmoid parameters for a single target's dynamic blend weight.
+
+    Attributes:
+        midpoint: Normalized week fraction (week/max_week) at sigmoid midpoint.
+            Must be in [0.0, 1.0].
+        steepness: How quickly weight transitions from low to high.
+            Must be in [0.1, 1.5] -- matches Optuna search range to prevent
+            artifacts the tuner would never produce.
+    """
+
+    midpoint: float
+    steepness: float
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.midpoint <= 1.0):
+            msg = f"midpoint={self.midpoint} must be in [0.0, 1.0]"
+            raise ValueError(msg)
+        if not (0.1 <= self.steepness <= 1.5):
+            msg = f"steepness={self.steepness} must be in [0.1, 1.5]"
+            raise ValueError(msg)
+
+
+@dataclass
+class DynamicBlendWeights:
+    """Week-dependent blend weights via sigmoid schedule (per D-01, D-02, D-03).
+
+    Each target gets an independent sigmoid:
+        weight(t) = low + (high - low) / (1 + exp(-steepness * (t - midpoint)))
+    where t = week / max_week (normalized week fraction per D-04).
+
+    Contract:
+    - When DynamicBlendWeights is configured on a MarketBlender, callers
+      MUST provide week and season to blend methods. Omitting them raises
+      ValueError (no silent fallback to static).
+    - Playoff weeks (> max_week) are clamped to max_week (t=1.0).
+    - Week must be >= 1. Week 0 is invalid.
+
+    Attributes:
+        wp: Sigmoid parameters for Win Probability target.
+        ats: Sigmoid parameters for Against the Spread target.
+        ou: Sigmoid parameters for Over/Under target.
+        low: Minimum weight (early season). Fixed at 0.30 per D-03.
+        high: Maximum weight (late season). Fixed at 0.80 per D-03.
+        mode_by_target: Per-target mode after gating (e.g., {"wp": "dynamic",
+            "ats": "static"}). Set by comparison/gating logic.
+            Defaults to all dynamic.
+    """
+
+    wp: SigmoidParams
+    ats: SigmoidParams
+    ou: SigmoidParams
+    low: float = 0.30
+    high: float = 0.80
+    mode_by_target: dict[str, str] = field(
+        default_factory=lambda: {
+            "wp": "dynamic",
+            "ats": "dynamic",
+            "ou": "dynamic",
+        }
+    )
+
+    def get_weight(self, target: str, week: int, season: int) -> float:
+        """Compute sigmoid blend weight for a specific target, week, season.
+
+        Args:
+            target: One of "wp", "ats", "ou".
+            week: Game week number (1-based). Playoff weeks (> max_week) clamped.
+            season: NFL season year (for era-based max_week per D-05).
+
+        Returns:
+            Blend weight in [low, high].
+
+        Raises:
+            ValueError: If week < 1.
+            AttributeError: If target is not wp/ats/ou.
+        """
+        if week < 1:
+            msg = f"week must be >= 1, got {week}"
+            raise ValueError(msg)
+        max_week = 17 if season <= 2020 else 18  # D-05
+        t = min(week, max_week) / max_week  # D-04 + playoff clamping
+        params: SigmoidParams = getattr(self, target)
+        return float(
+            self.low
+            + (self.high - self.low)
+            / (1 + np.exp(-params.steepness * (t - params.midpoint)))
+        )
+
+    def to_dict(self) -> dict:
+        """Serialize to dict for JSON artifact persistence."""
+        return {
+            "wp": {"midpoint": self.wp.midpoint, "steepness": self.wp.steepness},
+            "ats": {"midpoint": self.ats.midpoint, "steepness": self.ats.steepness},
+            "ou": {"midpoint": self.ou.midpoint, "steepness": self.ou.steepness},
+            "low": self.low,
+            "high": self.high,
+            "mode_by_target": self.mode_by_target,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DynamicBlendWeights:
+        """Deserialize from dict with schema validation.
+
+        Raises:
+            ValueError: If required fields are missing or values are invalid.
+        """
+        required_targets = ("wp", "ats", "ou")
+        for t in required_targets:
+            if t not in data:
+                msg = f"Invalid dynamic blend weights: missing target '{t}'"
+                raise ValueError(msg)
+            t_data = data[t]
+            if (
+                not isinstance(t_data, dict)
+                or "midpoint" not in t_data
+                or "steepness" not in t_data
+            ):
+                msg = (
+                    f"Invalid dynamic blend weights: target '{t}' "
+                    f"must have 'midpoint' and 'steepness'"
+                )
+                raise ValueError(msg)
+        try:
+            return cls(
+                wp=SigmoidParams(
+                    midpoint=float(data["wp"]["midpoint"]),
+                    steepness=float(data["wp"]["steepness"]),
+                ),
+                ats=SigmoidParams(
+                    midpoint=float(data["ats"]["midpoint"]),
+                    steepness=float(data["ats"]["steepness"]),
+                ),
+                ou=SigmoidParams(
+                    midpoint=float(data["ou"]["midpoint"]),
+                    steepness=float(data["ou"]["steepness"]),
+                ),
+                low=float(data.get("low", 0.30)),
+                high=float(data.get("high", 0.80)),
+                mode_by_target=data.get(
+                    "mode_by_target",
+                    {"wp": "dynamic", "ats": "dynamic", "ou": "dynamic"},
+                ),
+            )
+        except (TypeError, ValueError) as e:
+            msg = f"Invalid dynamic blend weights: {e}"
+            raise ValueError(msg) from e
+
+
+@dataclass
 class EdgeThresholds:
     """Per-target edge thresholds for bet flagging.
 
@@ -147,14 +297,21 @@ class MarketBlender:
         result_df = blender.blend_predictions(preds_df, market_df, target="wp")
     """
 
-    def __init__(self, config: BlendConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: BlendConfig | None = None,
+        dynamic_weights: DynamicBlendWeights | None = None,
+    ) -> None:
         self.config = config or BlendConfig()
+        self._dynamic_weights = dynamic_weights
         self.logger = get_logger(__name__)
 
     def blend_wp(
         self,
         model_prob: np.ndarray,
         market_prob: np.ndarray,
+        week: int | None = None,
+        season: int | None = None,
     ) -> np.ndarray:
         """Blend WP predictions in log-odds space.
 
@@ -165,11 +322,22 @@ class MarketBlender:
         Args:
             model_prob: Model's predicted win probabilities.
             market_prob: Market's fair win probabilities.
+            week: Game week (required when dynamic_weights is configured).
+            season: NFL season year (required when dynamic_weights is configured).
 
         Returns:
             Blended win probabilities in [0, 1].
+
+        Raises:
+            ValueError: If dynamic_weights is configured but week/season omitted.
         """
-        weight = self.config.weights.wp_model_weight
+        if self._dynamic_weights is not None:
+            if week is None or season is None:
+                msg = "week and season are required when dynamic_weights is configured"
+                raise ValueError(msg)
+            weight = self._dynamic_weights.get_weight("wp", week, season)
+        else:
+            weight = self.config.weights.wp_model_weight
         clip_min = self.config.clip_min
         clip_max = self.config.clip_max
 
@@ -188,34 +356,60 @@ class MarketBlender:
         self,
         model_spread: np.ndarray,
         market_spread: np.ndarray,
+        week: int | None = None,
+        season: int | None = None,
     ) -> np.ndarray:
         """Blend ATS predictions in spread-point space (linear interpolation).
 
         Args:
             model_spread: Model's predicted spreads (negative = home favored).
             market_spread: Market's closing spreads.
+            week: Game week (required when dynamic_weights is configured).
+            season: NFL season year (required when dynamic_weights is configured).
 
         Returns:
             Blended spreads.
+
+        Raises:
+            ValueError: If dynamic_weights is configured but week/season omitted.
         """
-        weight = self.config.weights.ats_model_weight
+        if self._dynamic_weights is not None:
+            if week is None or season is None:
+                msg = "week and season are required when dynamic_weights is configured"
+                raise ValueError(msg)
+            weight = self._dynamic_weights.get_weight("ats", week, season)
+        else:
+            weight = self.config.weights.ats_model_weight
         return weight * model_spread + (1 - weight) * market_spread
 
     def blend_ou(
         self,
         model_total: np.ndarray,
         market_total: np.ndarray,
+        week: int | None = None,
+        season: int | None = None,
     ) -> np.ndarray:
         """Blend O/U predictions in total-point space (linear interpolation).
 
         Args:
             model_total: Model's predicted game totals.
             market_total: Market's closing totals.
+            week: Game week (required when dynamic_weights is configured).
+            season: NFL season year (required when dynamic_weights is configured).
 
         Returns:
             Blended totals.
+
+        Raises:
+            ValueError: If dynamic_weights is configured but week/season omitted.
         """
-        weight = self.config.weights.ou_model_weight
+        if self._dynamic_weights is not None:
+            if week is None or season is None:
+                msg = "week and season are required when dynamic_weights is configured"
+                raise ValueError(msg)
+            weight = self._dynamic_weights.get_weight("ou", week, season)
+        else:
+            weight = self.config.weights.ou_model_weight
         return weight * model_total + (1 - weight) * market_total
 
     def blend_predictions(
@@ -271,6 +465,21 @@ class MarketBlender:
 
         return result
 
+    def _ensure_week_season_columns(self, merged: pd.DataFrame) -> pd.DataFrame:
+        """Ensure week and season columns exist by extracting from game_id.
+
+        Game ID format: {season}_W{week}_{away}@{home}
+        """
+        if "season" not in merged.columns:
+            merged = merged.copy()
+            merged["season"] = merged["game_id"].str.split("_").str[0].astype(int)
+        if "week" not in merged.columns:
+            merged = merged.copy()
+            merged["week"] = (
+                merged["game_id"].str.split("_").str[1].str.lstrip("W").astype(int)
+            )
+        return merged
+
     def _blend_wp_predictions(
         self,
         result: pd.DataFrame,
@@ -301,10 +510,25 @@ class MarketBlender:
         model_prob = result.loc[valid_mask, "model_prob"].values
         market_prob = fair_home.values
 
-        blended = self.blend_wp(
-            np.asarray(model_prob, dtype=np.float64),
-            np.asarray(market_prob, dtype=np.float64),
-        )
+        if self._dynamic_weights is not None and "game_id" in merged.columns:
+            merged = self._ensure_week_season_columns(merged)
+            valid_merged = merged.loc[valid_mask]
+            blended = np.empty_like(model_prob, dtype=np.float64)
+            for (season_val, week_val), group_idx in valid_merged.groupby(
+                ["season", "week"]
+            ).groups.items():
+                local_idx = np.isin(valid_merged.index, group_idx)
+                blended[local_idx] = self.blend_wp(
+                    np.asarray(model_prob[local_idx], dtype=np.float64),
+                    np.asarray(market_prob[local_idx], dtype=np.float64),
+                    week=int(week_val),
+                    season=int(season_val),
+                )
+        else:
+            blended = self.blend_wp(
+                np.asarray(model_prob, dtype=np.float64),
+                np.asarray(market_prob, dtype=np.float64),
+            )
         result.loc[valid_mask, "model_prob"] = blended
 
         n_blended = valid_mask.sum()
@@ -333,10 +557,25 @@ class MarketBlender:
         model_spread = result.loc[valid_mask, "model_spread"].values
         market_spread = merged.loc[valid_mask, "spread"].values
 
-        blended = self.blend_ats(
-            np.asarray(model_spread, dtype=np.float64),
-            np.asarray(market_spread, dtype=np.float64),
-        )
+        if self._dynamic_weights is not None and "game_id" in merged.columns:
+            merged = self._ensure_week_season_columns(merged)
+            valid_merged = merged.loc[valid_mask]
+            blended = np.empty_like(model_spread, dtype=np.float64)
+            for (season_val, week_val), group_idx in valid_merged.groupby(
+                ["season", "week"]
+            ).groups.items():
+                local_idx = np.isin(valid_merged.index, group_idx)
+                blended[local_idx] = self.blend_ats(
+                    np.asarray(model_spread[local_idx], dtype=np.float64),
+                    np.asarray(market_spread[local_idx], dtype=np.float64),
+                    week=int(week_val),
+                    season=int(season_val),
+                )
+        else:
+            blended = self.blend_ats(
+                np.asarray(model_spread, dtype=np.float64),
+                np.asarray(market_spread, dtype=np.float64),
+            )
         result.loc[valid_mask, "model_spread"] = blended
 
         self.logger.info(
@@ -364,10 +603,25 @@ class MarketBlender:
         model_total = result.loc[valid_mask, "model_total"].values
         market_total = merged.loc[valid_mask, "total"].values
 
-        blended = self.blend_ou(
-            np.asarray(model_total, dtype=np.float64),
-            np.asarray(market_total, dtype=np.float64),
-        )
+        if self._dynamic_weights is not None and "game_id" in merged.columns:
+            merged = self._ensure_week_season_columns(merged)
+            valid_merged = merged.loc[valid_mask]
+            blended = np.empty_like(model_total, dtype=np.float64)
+            for (season_val, week_val), group_idx in valid_merged.groupby(
+                ["season", "week"]
+            ).groups.items():
+                local_idx = np.isin(valid_merged.index, group_idx)
+                blended[local_idx] = self.blend_ou(
+                    np.asarray(model_total[local_idx], dtype=np.float64),
+                    np.asarray(market_total[local_idx], dtype=np.float64),
+                    week=int(week_val),
+                    season=int(season_val),
+                )
+        else:
+            blended = self.blend_ou(
+                np.asarray(model_total, dtype=np.float64),
+                np.asarray(market_total, dtype=np.float64),
+            )
         result.loc[valid_mask, "model_total"] = blended
 
         self.logger.info(
@@ -774,6 +1028,36 @@ class MarketBlender:
             "warnings": warnings,
         }
 
+    def _get_edge_weight(
+        self,
+        target: str,
+        merged: pd.DataFrame,
+    ) -> np.ndarray:
+        """Get per-row blend weights for edge computation.
+
+        Returns an array of weights, one per row of merged.
+        For static mode, all rows get the same weight.
+        For dynamic mode, weight varies by (season, week).
+        """
+        weight_attr_map = {
+            "wp": "wp_model_weight",
+            "ats": "ats_model_weight",
+            "ou": "ou_model_weight",
+        }
+        if self._dynamic_weights is not None and "game_id" in merged.columns:
+            merged_wk = self._ensure_week_season_columns(merged)
+            weights = np.empty(len(merged_wk))
+            for (season_val, week_val), group_idx in merged_wk.groupby(
+                ["season", "week"]
+            ).groups.items():
+                local_mask = np.isin(merged_wk.index, group_idx)
+                weights[local_mask] = self._dynamic_weights.get_weight(
+                    target, int(week_val), int(season_val)
+                )
+            return weights
+        static_weight = getattr(self.config.weights, weight_attr_map[target])
+        return np.full(len(merged), static_weight)
+
     def _compute_edges(
         self,
         target: str,
@@ -802,10 +1086,23 @@ class MarketBlender:
             )
             fair_home = (home_raw / (home_raw + away_raw)).values
             model_prob = valid["model_prob"].values
-            blended = self.blend_wp(
-                np.asarray(model_prob, dtype=np.float64),
-                np.asarray(fair_home, dtype=np.float64),
-            )
+
+            if self._dynamic_weights is not None and "game_id" in valid.columns:
+                valid_wk = self._ensure_week_season_columns(valid)
+                blended = np.empty_like(model_prob, dtype=np.float64)
+                for (s, w), gidx in valid_wk.groupby(["season", "week"]).groups.items():
+                    local = np.isin(valid_wk.index, gidx)
+                    blended[local] = self.blend_wp(
+                        np.asarray(model_prob[local], dtype=np.float64),
+                        np.asarray(fair_home[local], dtype=np.float64),
+                        week=int(w),
+                        season=int(s),
+                    )
+            else:
+                blended = self.blend_wp(
+                    np.asarray(model_prob, dtype=np.float64),
+                    np.asarray(fair_home, dtype=np.float64),
+                )
             edges = np.abs(blended - fair_home)
             # Reindex to match merged
             result = np.zeros(len(merged))
@@ -816,9 +1113,10 @@ class MarketBlender:
             valid = merged.dropna(subset=["spread", "model_spread"])
             if valid.empty:
                 return np.array([])
+            weights = self._get_edge_weight("ats", valid)
             blended = (
-                self.config.weights.ats_model_weight * valid["model_spread"].values
-                + (1 - self.config.weights.ats_model_weight) * valid["spread"].values
+                weights * valid["model_spread"].values
+                + (1 - weights) * valid["spread"].values
             )
             edges = np.abs(blended - valid["spread"].values)
             result = np.zeros(len(merged))
@@ -829,9 +1127,10 @@ class MarketBlender:
             valid = merged.dropna(subset=["total", "model_total"])
             if valid.empty:
                 return np.array([])
+            weights = self._get_edge_weight("ou", valid)
             blended = (
-                self.config.weights.ou_model_weight * valid["model_total"].values
-                + (1 - self.config.weights.ou_model_weight) * valid["total"].values
+                weights * valid["model_total"].values
+                + (1 - weights) * valid["total"].values
             )
             edges = np.abs(blended - valid["total"].values)
             result = np.zeros(len(merged))
@@ -863,11 +1162,13 @@ class MarketBlender:
             Path to the created artifact directory.
         """
         timestamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
-        artifact_dir = artifacts_dir / f"blend_{timestamp}"
+        dir_prefix = "blend_dynamic" if self._dynamic_weights else "blend"
+        artifact_dir = artifacts_dir / f"{dir_prefix}_{timestamp}"
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
         # Build JSON payload
-        payload = {
+        payload: dict = {
+            "blender_version": "2.0" if self._dynamic_weights else "1.0",
             "weights": {
                 "wp": tuning_result.weights.wp_model_weight,
                 "ats": tuning_result.weights.ats_model_weight,
@@ -885,6 +1186,10 @@ class MarketBlender:
             "weight_range": [0.50, 0.70],
             "weight_step": 0.01,
         }
+
+        # Include dynamic section when dynamic weights are configured
+        if self._dynamic_weights is not None:
+            payload["dynamic"] = self._dynamic_weights.to_dict()
 
         weights_path = artifact_dir / "blend_weights.json"
         weights_path.write_text(json.dumps(payload, indent=2))
@@ -972,4 +1277,10 @@ class MarketBlender:
             edge_thresholds=edge_thresholds,
         )
 
-        return cls(config=config)
+        # Load dynamic weights if present (D-23: auto-detect)
+        dynamic_weights = None
+        dynamic_data = data.get("dynamic")
+        if dynamic_data is not None:
+            dynamic_weights = DynamicBlendWeights.from_dict(dynamic_data)
+
+        return cls(config=config, dynamic_weights=dynamic_weights)
