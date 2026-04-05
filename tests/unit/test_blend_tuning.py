@@ -670,3 +670,445 @@ class TestDynamicSyntheticPredictions:
         wp_probs = result["wp"]["model_prob"].values
         assert np.all(wp_probs >= 0.01)
         assert np.all(wp_probs <= 0.99)
+
+
+# ---------------------------------------------------------------------------
+# Test class: Sigmoid objective function
+# ---------------------------------------------------------------------------
+
+
+class TestSigmoidObjective:
+    """Tests for create_sigmoid_objective function."""
+
+    def _make_sigmoid_tuning_data(
+        self,
+        n_games: int = 10,
+        seasons: list[int] | None = None,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Create minimal tuning data for sigmoid objective tests.
+
+        Returns (predictions_df, tuning_odds) with valid game_ids
+        in the tuning era (2010-2017).
+        """
+        if seasons is None:
+            seasons = [2015]
+
+        rng = np.random.default_rng(99)
+        rows_preds = []
+        rows_odds = []
+        game_counter = 0
+
+        for season in seasons:
+            for week in range(1, n_games // len(seasons) + 1):
+                game_counter += 1
+                gid = f"{season}_W{week:02d}_ATL@PHI_{game_counter:02d}"
+
+                rows_preds.append(
+                    {
+                        "game_id": gid,
+                        "season": season,
+                        "week": week,
+                        "model_prob": float(
+                            np.clip(rng.normal(0.55, 0.10), 0.05, 0.95)
+                        ),
+                        "model_spread": float(rng.normal(-3.0, 5.0)),
+                        "model_total": float(rng.normal(45.0, 4.0)),
+                    }
+                )
+
+                home_ml = rng.choice([-150, -130, -120, -110])
+                away_ml = rng.choice([100, 110, 130, 150])
+                rows_odds.append(
+                    {
+                        "game_id": gid,
+                        "season": season,
+                        "week": week,
+                        "spread": float(rng.normal(-2.5, 5.0)),
+                        "total": float(rng.normal(45.0, 4.0)),
+                        "ml_home": home_ml,
+                        "ml_away": away_ml,
+                    }
+                )
+
+        preds_df = pd.DataFrame(rows_preds)
+        odds_df = pd.DataFrame(rows_odds)
+        return preds_df, odds_df
+
+    def test_sigmoid_objective_callable(self) -> None:
+        """create_sigmoid_objective returns a callable that accepts an optuna.Trial."""
+        import optuna
+
+        from backtest.tune import create_sigmoid_objective
+
+        preds_df, odds_df = self._make_sigmoid_tuning_data(n_games=10)
+
+        objective = create_sigmoid_objective("wp", preds_df, odds_df, max_week=17)
+
+        # Should be callable
+        assert callable(objective)
+
+        # Should accept a FixedTrial and return a float
+        trial = optuna.trial.FixedTrial({"midpoint": 0.5, "steepness": 1.0})
+        result = objective(trial)
+        assert isinstance(result, float)
+
+    def test_sigmoid_objective_search_ranges(self) -> None:
+        """Objective accepts midpoint in [3/17, 14/17] and steepness in [0.1, 1.5]."""
+        import optuna
+
+        from backtest.tune import create_sigmoid_objective
+
+        preds_df, odds_df = self._make_sigmoid_tuning_data(n_games=10)
+
+        objective = create_sigmoid_objective("wp", preds_df, odds_df, max_week=17)
+
+        # Lower bounds should work
+        lower_trial = optuna.trial.FixedTrial({"midpoint": 3 / 17, "steepness": 0.1})
+        result_lower = objective(lower_trial)
+        assert isinstance(result_lower, float)
+
+        # Upper bounds should work
+        upper_trial = optuna.trial.FixedTrial({"midpoint": 14 / 17, "steepness": 1.5})
+        result_upper = objective(upper_trial)
+        assert isinstance(result_upper, float)
+
+    def test_sigmoid_objective_uses_all_games(self) -> None:
+        """Objective uses ALL games with valid odds (no threshold filtering)."""
+        import optuna
+
+        from backtest.tune import create_sigmoid_objective
+
+        preds_df, odds_df = self._make_sigmoid_tuning_data(n_games=10)
+
+        # All 10 games have valid odds
+        assert len(preds_df) == 10
+        assert len(odds_df) == 10
+
+        objective = create_sigmoid_objective("wp", preds_df, odds_df, max_week=17)
+
+        trial = optuna.trial.FixedTrial({"midpoint": 0.5, "steepness": 1.0})
+        result = objective(trial)
+
+        # Result should be a proper float (not NaN or zero from empty data)
+        assert isinstance(result, float)
+        assert not np.isnan(result)
+
+    def test_sigmoid_objective_frozen_data(self) -> None:
+        """Same frozen data used for all trials (not regenerated per trial)."""
+        import optuna
+
+        from backtest.tune import create_sigmoid_objective
+
+        preds_df, odds_df = self._make_sigmoid_tuning_data(n_games=10)
+
+        objective = create_sigmoid_objective("wp", preds_df, odds_df, max_week=17)
+
+        # Call with different params -- both should work on same data
+        trial1 = optuna.trial.FixedTrial({"midpoint": 0.3, "steepness": 0.5})
+        result1 = objective(trial1)
+
+        trial2 = optuna.trial.FixedTrial({"midpoint": 0.7, "steepness": 1.2})
+        result2 = objective(trial2)
+
+        # Both should be valid floats (data was not regenerated)
+        assert isinstance(result1, float)
+        assert isinstance(result2, float)
+        assert not np.isnan(result1)
+        assert not np.isnan(result2)
+
+        # With different params, results should differ
+        # (same data, different weights -> different CLV)
+        assert result1 != result2
+
+    def test_sigmoid_objective_ats_target(self) -> None:
+        """create_sigmoid_objective works for ATS target."""
+        import optuna
+
+        from backtest.tune import create_sigmoid_objective
+
+        preds_df, odds_df = self._make_sigmoid_tuning_data(n_games=10)
+
+        objective = create_sigmoid_objective("ats", preds_df, odds_df, max_week=17)
+
+        trial = optuna.trial.FixedTrial({"midpoint": 0.5, "steepness": 1.0})
+        result = objective(trial)
+        assert isinstance(result, float)
+        assert not np.isnan(result)
+
+    def test_sigmoid_objective_ou_target(self) -> None:
+        """create_sigmoid_objective works for O/U target."""
+        import optuna
+
+        from backtest.tune import create_sigmoid_objective
+
+        preds_df, odds_df = self._make_sigmoid_tuning_data(n_games=10)
+
+        objective = create_sigmoid_objective("ou", preds_df, odds_df, max_week=17)
+
+        trial = optuna.trial.FixedTrial({"midpoint": 0.5, "steepness": 1.0})
+        result = objective(trial)
+        assert isinstance(result, float)
+        assert not np.isnan(result)
+
+
+# ---------------------------------------------------------------------------
+# Test class: run_dynamic_blend_tuning
+# ---------------------------------------------------------------------------
+
+
+class TestRunDynamicBlendTuning:
+    """Tests for run_dynamic_blend_tuning function."""
+
+    def test_run_dynamic_blend_tuning_returns_results(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """run_dynamic_blend_tuning returns dict with expected keys."""
+        from unittest.mock import patch
+
+        from backtest.tune import run_dynamic_blend_tuning
+
+        noise_profile = _make_noise_profile()
+        tuning_odds = _make_dynamic_tuning_odds(seasons=[2015, 2016])
+
+        with (
+            patch(
+                "backtest.tune.extract_noise_profile",
+                return_value=noise_profile,
+            ),
+            patch(
+                "backtest.tune.load_tuning_period_data",
+                return_value=tuning_odds,
+            ),
+        ):
+            result = run_dynamic_blend_tuning(
+                n_trials=5,
+                artifacts_dir=str(tmp_path / "artifacts"),
+            )
+
+        assert isinstance(result, dict)
+        assert "tuning_results" in result
+        assert "dynamic_weights" in result
+        assert "artifact_dir" in result
+        assert "static_fallback_weights" in result
+        assert "metadata" in result
+
+        # Check metadata contents
+        metadata = result["metadata"]
+        assert "rng_seed" in metadata
+        assert "n_trials" in metadata
+        assert "noise_profile_source" in metadata
+        assert "search_ranges" in metadata
+        assert "bet_counts" in metadata
+
+    def test_run_dynamic_blend_tuning_saves_dynamic_artifacts(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """run_dynamic_blend_tuning saves artifacts with dynamic section."""
+        from unittest.mock import patch
+
+        from backtest.tune import run_dynamic_blend_tuning
+
+        noise_profile = _make_noise_profile()
+        tuning_odds = _make_dynamic_tuning_odds(seasons=[2015, 2016])
+
+        with (
+            patch(
+                "backtest.tune.extract_noise_profile",
+                return_value=noise_profile,
+            ),
+            patch(
+                "backtest.tune.load_tuning_period_data",
+                return_value=tuning_odds,
+            ),
+        ):
+            result = run_dynamic_blend_tuning(
+                n_trials=5,
+                artifacts_dir=str(tmp_path / "artifacts"),
+            )
+
+        artifact_dir = Path(result["artifact_dir"])
+        weights_file = artifact_dir / "blend_weights.json"
+        assert weights_file.exists()
+
+        data = json.loads(weights_file.read_text())
+        assert "dynamic" in data
+        assert data["blender_version"] == "2.0"
+
+    def test_run_dynamic_blend_tuning_valid_dynamic_weights(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """DynamicBlendWeights from tuning has valid SigmoidParams."""
+        from unittest.mock import patch
+
+        from backtest.tune import run_dynamic_blend_tuning
+        from models.blending import DynamicBlendWeights, SigmoidParams
+
+        noise_profile = _make_noise_profile()
+        tuning_odds = _make_dynamic_tuning_odds(seasons=[2015, 2016])
+
+        with (
+            patch(
+                "backtest.tune.extract_noise_profile",
+                return_value=noise_profile,
+            ),
+            patch(
+                "backtest.tune.load_tuning_period_data",
+                return_value=tuning_odds,
+            ),
+        ):
+            result = run_dynamic_blend_tuning(
+                n_trials=5,
+                artifacts_dir=str(tmp_path / "artifacts"),
+            )
+
+        dw = result["dynamic_weights"]
+        assert isinstance(dw, DynamicBlendWeights)
+        assert isinstance(dw.wp, SigmoidParams)
+        assert isinstance(dw.ats, SigmoidParams)
+        assert isinstance(dw.ou, SigmoidParams)
+
+        # Sigmoid params should be in valid ranges
+        for target_params in (dw.wp, dw.ats, dw.ou):
+            assert 0.0 <= target_params.midpoint <= 1.0
+            assert 0.1 <= target_params.steepness <= 1.5
+
+
+# ---------------------------------------------------------------------------
+# Test class: CLI parser flags
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicCLIFlags:
+    """Tests for --dynamic and --n-trials CLI flags."""
+
+    def test_dynamic_flag_accepted(self) -> None:
+        """--dynamic flag is accepted by CLI parser."""
+
+        from backtest.tune import _build_cli_parser
+
+        parser = _build_cli_parser()
+        args = parser.parse_args(["--dynamic"])
+        assert args.dynamic is True
+
+    def test_dynamic_flag_default_false(self) -> None:
+        """--dynamic flag defaults to False."""
+        from backtest.tune import _build_cli_parser
+
+        parser = _build_cli_parser()
+        args = parser.parse_args([])
+        assert args.dynamic is False
+
+    def test_n_trials_flag_accepted(self) -> None:
+        """--n-trials flag is accepted by CLI parser."""
+        from backtest.tune import _build_cli_parser
+
+        parser = _build_cli_parser()
+        args = parser.parse_args(["--dynamic", "--n-trials", "50"])
+        assert args.n_trials == 50
+
+    def test_n_trials_default_100(self) -> None:
+        """--n-trials defaults to 100."""
+        from backtest.tune import _build_cli_parser
+
+        parser = _build_cli_parser()
+        args = parser.parse_args([])
+        assert args.n_trials == 100
+
+    def test_rng_seed_flag_accepted(self) -> None:
+        """--rng-seed flag is accepted by CLI parser."""
+        from backtest.tune import _build_cli_parser
+
+        parser = _build_cli_parser()
+        args = parser.parse_args(["--rng-seed", "123"])
+        assert args.rng_seed == 123
+
+    def test_rng_seed_default_42(self) -> None:
+        """--rng-seed defaults to 42."""
+        from backtest.tune import _build_cli_parser
+
+        parser = _build_cli_parser()
+        args = parser.parse_args([])
+        assert args.rng_seed == 42
+
+
+# ---------------------------------------------------------------------------
+# Test class: Sigmoid tuning metadata (guardrail metrics)
+# ---------------------------------------------------------------------------
+
+
+class TestSigmoidTuningMetadata:
+    """Tests for tuning metadata capturing guardrail metrics."""
+
+    def test_metadata_captures_bet_counts(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Metadata includes bet_counts per target as guardrail metric."""
+        from unittest.mock import patch
+
+        from backtest.tune import run_dynamic_blend_tuning
+
+        noise_profile = _make_noise_profile()
+        tuning_odds = _make_dynamic_tuning_odds(seasons=[2015, 2016])
+
+        with (
+            patch(
+                "backtest.tune.extract_noise_profile",
+                return_value=noise_profile,
+            ),
+            patch(
+                "backtest.tune.load_tuning_period_data",
+                return_value=tuning_odds,
+            ),
+        ):
+            result = run_dynamic_blend_tuning(
+                n_trials=5,
+                artifacts_dir=str(tmp_path / "artifacts"),
+            )
+
+        metadata = result["metadata"]
+        bet_counts = metadata["bet_counts"]
+
+        # Should have counts for all three targets
+        assert "wp" in bet_counts
+        assert "ats" in bet_counts
+        assert "ou" in bet_counts
+
+        # Counts should be positive
+        for target in ("wp", "ats", "ou"):
+            assert bet_counts[target] > 0
+
+    def test_metadata_captures_study_names(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Metadata includes study names per D-10 (distinct from Phase 12)."""
+        from unittest.mock import patch
+
+        from backtest.tune import run_dynamic_blend_tuning
+
+        noise_profile = _make_noise_profile()
+        tuning_odds = _make_dynamic_tuning_odds(seasons=[2015, 2016])
+
+        with (
+            patch(
+                "backtest.tune.extract_noise_profile",
+                return_value=noise_profile,
+            ),
+            patch(
+                "backtest.tune.load_tuning_period_data",
+                return_value=tuning_odds,
+            ),
+        ):
+            result = run_dynamic_blend_tuning(
+                n_trials=5,
+                artifacts_dir=str(tmp_path / "artifacts"),
+            )
+
+        study_names = result["metadata"]["study_names"]
+        assert study_names["wp"] == "blend_sigmoid_wp"
+        assert study_names["ats"] == "blend_sigmoid_ats"
+        assert study_names["ou"] == "blend_sigmoid_ou"
