@@ -4,6 +4,9 @@ Tests wiring between MarketBlender and BacktestEngine, BettingSimulator
 schema compatibility with blended predictions, report blend delta
 rendering, backward compatibility, and JSON export with blending key.
 
+Also contains TestDynamicComparison (Plan 13-04) for side-by-side
+comparison, per-target gating, and comparison report generation.
+
 All heavy components (BacktestEngine.run, trainer training) are mocked.
 Tests verify the WIRING, not model quality.
 """
@@ -22,7 +25,13 @@ from backtest.engine import BacktestConfig, BacktestResults
 from backtest.report import BacktestReporter
 from backtest.run import export_summary_json
 from backtest.simulation import BettingSimulator, SimulationResults
-from models.blending import BlendConfig
+from backtest.tune import _gate_per_target, _generate_comparison_report
+from models.blending import (
+    BlendConfig,
+    DynamicBlendWeights,
+    MarketBlender,
+    SigmoidParams,
+)
 
 # ---------------------------------------------------------------------------
 # Synthetic data factories
@@ -32,50 +41,64 @@ from models.blending import BlendConfig
 def _make_wp_predictions(n: int = 50, season: int = 2022) -> pd.DataFrame:
     """Create synthetic WP predictions DataFrame."""
     rng = np.random.default_rng(42)
-    return pd.DataFrame({
-        "game_id": [f"{season}_W{(i % 17) + 1:02d}_TEAM{i}@HOME{i}" for i in range(n)],
-        "season": season,
-        "week": [(i % 17) + 1 for i in range(n)],
-        "model_prob": rng.uniform(0.3, 0.7, n),
-        "actual": rng.integers(0, 2, n),
-    })
+    return pd.DataFrame(
+        {
+            "game_id": [
+                f"{season}_W{(i % 17) + 1:02d}_TEAM{i}@HOME{i}" for i in range(n)
+            ],
+            "season": season,
+            "week": [(i % 17) + 1 for i in range(n)],
+            "model_prob": rng.uniform(0.3, 0.7, n),
+            "actual": rng.integers(0, 2, n),
+        }
+    )
 
 
 def _make_ats_predictions(n: int = 50, season: int = 2022) -> pd.DataFrame:
     """Create synthetic ATS predictions DataFrame."""
     rng = np.random.default_rng(43)
-    return pd.DataFrame({
-        "game_id": [f"{season}_W{(i % 17) + 1:02d}_TEAM{i}@HOME{i}" for i in range(n)],
-        "season": season,
-        "week": [(i % 17) + 1 for i in range(n)],
-        "model_spread": rng.uniform(-10, 10, n),
-        "actual": rng.uniform(-20, 20, n),
-    })
+    return pd.DataFrame(
+        {
+            "game_id": [
+                f"{season}_W{(i % 17) + 1:02d}_TEAM{i}@HOME{i}" for i in range(n)
+            ],
+            "season": season,
+            "week": [(i % 17) + 1 for i in range(n)],
+            "model_spread": rng.uniform(-10, 10, n),
+            "actual": rng.uniform(-20, 20, n),
+        }
+    )
 
 
 def _make_ou_predictions(n: int = 50, season: int = 2022) -> pd.DataFrame:
     """Create synthetic O/U predictions DataFrame."""
     rng = np.random.default_rng(44)
-    return pd.DataFrame({
-        "game_id": [f"{season}_W{(i % 17) + 1:02d}_TEAM{i}@HOME{i}" for i in range(n)],
-        "season": season,
-        "week": [(i % 17) + 1 for i in range(n)],
-        "model_total": rng.uniform(35, 55, n),
-        "actual": rng.uniform(30, 60, n),
-    })
+    return pd.DataFrame(
+        {
+            "game_id": [
+                f"{season}_W{(i % 17) + 1:02d}_TEAM{i}@HOME{i}" for i in range(n)
+            ],
+            "season": season,
+            "week": [(i % 17) + 1 for i in range(n)],
+            "model_total": rng.uniform(35, 55, n),
+            "actual": rng.uniform(30, 60, n),
+        }
+    )
 
 
 def _make_closing_odds(game_ids: list[str]) -> pd.DataFrame:
     """Create synthetic closing odds DataFrame matching given game_ids."""
     rng = np.random.default_rng(45)
     n = len(game_ids)
-    return pd.DataFrame({
-        "game_id": game_ids,
-        "ml_home": rng.choice([-150, -130, -110, 110, 130, 150], n),
-        "ml_away": rng.choice([-150, -130, -110, 110, 130, 150], n),
-        "spread": rng.uniform(-7, 7, n),
-        "total": rng.uniform(40, 50, n),
-    })
+    return pd.DataFrame(
+        {
+            "game_id": game_ids,
+            "ml_home": rng.choice([-150, -130, -110, 110, 130, 150], n),
+            "ml_away": rng.choice([-150, -130, -110, 110, 130, 150], n),
+            "spread": rng.uniform(-7, 7, n),
+            "total": rng.uniform(40, 50, n),
+        }
+    )
 
 
 def _make_backtest_results(
@@ -103,21 +126,32 @@ def _make_backtest_results(
         },
         all_clv={
             "wp": wp_preds.assign(
-                probability_clv=np.random.default_rng(50).uniform(-0.1, 0.1, len(wp_preds)),
+                probability_clv=np.random.default_rng(50).uniform(
+                    -0.1, 0.1, len(wp_preds)
+                ),
                 has_closing_odds=True,
             ),
             "ats": ats_preds.assign(
-                probability_clv=np.random.default_rng(51).uniform(-0.1, 0.1, len(ats_preds)),
+                probability_clv=np.random.default_rng(51).uniform(
+                    -0.1, 0.1, len(ats_preds)
+                ),
                 has_closing_odds=True,
             ),
             "ou": ou_preds.assign(
-                probability_clv=np.random.default_rng(52).uniform(-0.1, 0.1, len(ou_preds)),
+                probability_clv=np.random.default_rng(52).uniform(
+                    -0.1, 0.1, len(ou_preds)
+                ),
                 has_closing_odds=True,
             ),
         },
         headline_clv={"wp": 0.025, "ats": 0.018, "ou": -0.003},
         odds_coverage={"wp_with_odds": 50, "wp_without_odds": 0},
-        covid_annotation={"note": "test", "impact_on_model": "none", "home_win_pct": 0.5, "normal_home_win_pct": 0.57},
+        covid_annotation={
+            "note": "test",
+            "impact_on_model": "none",
+            "home_win_pct": 0.5,
+            "normal_home_win_pct": 0.57,
+        },
         era_info={2022: 18},
         is_blended=is_blended,
     )
@@ -348,13 +382,13 @@ class TestSimulatorSchemaCompatibility:
 class TestReporterBlendDelta:
     """Verify BacktestReporter handles blend delta correctly."""
 
-    def test_generate_with_baseline_includes_blend_section(self, tmp_path: Path) -> None:
+    def test_generate_with_baseline_includes_blend_section(
+        self, tmp_path: Path
+    ) -> None:
         blended_results = _make_backtest_results(
             blend_config=BlendConfig(), is_blended=True
         )
-        baseline_results = _make_backtest_results(
-            blend_config=None, is_blended=False
-        )
+        baseline_results = _make_backtest_results(blend_config=None, is_blended=False)
         # Give baseline different CLV values
         baseline_results.headline_clv = {"wp": 0.020, "ats": 0.015, "ou": -0.005}
 
@@ -370,7 +404,9 @@ class TestReporterBlendDelta:
         assert "Baseline CLV" in html_content
         assert "Delta" in html_content
 
-    def test_generate_without_baseline_omits_blend_section(self, tmp_path: Path) -> None:
+    def test_generate_without_baseline_omits_blend_section(
+        self, tmp_path: Path
+    ) -> None:
         results = _make_backtest_results(blend_config=None, is_blended=False)
         sim_results = _make_simulation_results()
         reporter = BacktestReporter(output_dir=tmp_path)
@@ -380,7 +416,7 @@ class TestReporterBlendDelta:
         # The blend section header is inside a Jinja2 conditional, so it
         # should not appear as a rendered <h2> when is_blended is False.
         # (The HTML comment text is always present in the template.)
-        assert '<h2>Market Blending Results</h2>' not in html_content
+        assert "<h2>Market Blending Results</h2>" not in html_content
 
     def test_build_blend_delta_values(self) -> None:
         blended = _make_backtest_results(is_blended=True)
@@ -428,12 +464,8 @@ class TestExportSummaryJsonBlending:
     """Verify blending key in JSON summary."""
 
     def test_blended_json_contains_blending_key(self, tmp_path: Path) -> None:
-        results = _make_backtest_results(
-            blend_config=BlendConfig(), is_blended=True
-        )
-        baseline = _make_backtest_results(
-            blend_config=None, is_blended=False
-        )
+        results = _make_backtest_results(blend_config=BlendConfig(), is_blended=True)
+        baseline = _make_backtest_results(blend_config=None, is_blended=False)
         baseline.headline_clv = {"wp": 0.020, "ats": 0.015, "ou": -0.005}
 
         sim_results = _make_simulation_results()
@@ -448,9 +480,7 @@ class TestExportSummaryJsonBlending:
         assert "wp" in data["blending"]["blend_delta"]
 
     def test_unblended_json_lacks_blending_key(self, tmp_path: Path) -> None:
-        results = _make_backtest_results(
-            blend_config=None, is_blended=False
-        )
+        results = _make_backtest_results(blend_config=None, is_blended=False)
         sim_results = _make_simulation_results()
         json_path = export_summary_json(results, sim_results, tmp_path)
 
@@ -458,9 +488,7 @@ class TestExportSummaryJsonBlending:
         assert "blending" not in data
 
     def test_blend_delta_values_in_json(self, tmp_path: Path) -> None:
-        results = _make_backtest_results(
-            blend_config=BlendConfig(), is_blended=True
-        )
+        results = _make_backtest_results(blend_config=BlendConfig(), is_blended=True)
         results.headline_clv = {"wp": 0.030}
 
         baseline = _make_backtest_results(is_blended=False)
@@ -477,3 +505,268 @@ class TestExportSummaryJsonBlending:
         assert wp_delta["baseline_clv"] == pytest.approx(0.025)
         assert wp_delta["delta"] == pytest.approx(0.005)
         assert wp_delta["improved"] is True
+
+
+# ---------------------------------------------------------------------------
+# Test: Dynamic comparison, per-target gating, and comparison report (13-04)
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicComparison:
+    """Tests for _gate_per_target, _generate_comparison_report, and
+    post-hoc blending equivalence (Plan 13-04)."""
+
+    # -- _gate_per_target tests --
+
+    def test_gate_per_target_passes_when_dynamic_better(self) -> None:
+        static_clv = {"wp": -0.02, "ats": 0.80, "ou": 45.0}
+        dynamic_clv = {"wp": -0.01, "ats": 0.90, "ou": 46.0}
+        bet_counts = {"wp": 200, "ats": 180, "ou": 190}
+        result = _gate_per_target(static_clv, dynamic_clv, bet_counts)
+        for target in ("wp", "ats", "ou"):
+            assert result[target]["passed"] is True
+            assert "bet_count" in result[target]
+
+    def test_gate_per_target_rejects_when_dynamic_worse(self) -> None:
+        static_clv = {"wp": -0.01, "ats": 1.00, "ou": 46.0}
+        dynamic_clv = {"wp": -0.03, "ats": 0.80, "ou": 44.0}
+        bet_counts = {"wp": 200, "ats": 180, "ou": 190}
+        result = _gate_per_target(static_clv, dynamic_clv, bet_counts)
+        for target in ("wp", "ats", "ou"):
+            assert result[target]["passed"] is False
+
+    def test_gate_per_target_mixed_outcome(self) -> None:
+        static_clv = {"wp": -0.02, "ats": 1.00, "ou": 45.0}
+        dynamic_clv = {"wp": -0.01, "ats": 0.80, "ou": 46.0}
+        bet_counts = {"wp": 200, "ats": 180, "ou": 190}
+        result = _gate_per_target(static_clv, dynamic_clv, bet_counts)
+        assert result["wp"]["passed"] is True
+        assert result["ats"]["passed"] is False
+        assert result["ou"]["passed"] is True
+
+    def test_gate_per_target_equal_clv_passes(self) -> None:
+        """Per D-19: dynamic CLV must match or beat static CLV."""
+        static_clv = {"wp": -0.02, "ats": 1.00, "ou": 45.0}
+        dynamic_clv = {"wp": -0.02, "ats": 1.00, "ou": 45.0}
+        bet_counts = {"wp": 200, "ats": 180, "ou": 190}
+        result = _gate_per_target(static_clv, dynamic_clv, bet_counts)
+        for target in ("wp", "ats", "ou"):
+            assert result[target]["passed"] is True
+
+    def test_gate_per_target_has_required_keys(self) -> None:
+        """Each gating entry must have all expected keys."""
+        static_clv = {"wp": 0.01, "ats": 0.02, "ou": 0.03}
+        dynamic_clv = {"wp": 0.02, "ats": 0.01, "ou": 0.04}
+        bet_counts = {"wp": 100, "ats": 100, "ou": 100}
+        result = _gate_per_target(static_clv, dynamic_clv, bet_counts)
+        required_keys = {
+            "passed",
+            "static_clv",
+            "dynamic_clv",
+            "delta",
+            "relative_delta_pct",
+            "bet_count",
+            "reason",
+        }
+        for target in ("wp", "ats", "ou"):
+            assert set(result[target].keys()) == required_keys
+
+    # -- _generate_comparison_report tests --
+
+    def test_generate_comparison_report(self, tmp_path: Path) -> None:
+        dynamic_weights = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.5, steepness=0.8),
+            ats=SigmoidParams(midpoint=0.4, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.6, steepness=0.5),
+            mode_by_target={"wp": "dynamic", "ats": "static", "ou": "dynamic"},
+        )
+        static_results = {
+            "headline_clv": {"wp": -0.02, "ats": 1.00, "ou": 45.0},
+            "per_season_clv": {
+                "wp": {2021: -0.03, 2022: -0.01},
+                "ats": {2021: 0.90, 2022: 1.10},
+                "ou": {2021: 44.0, 2022: 46.0},
+            },
+        }
+        dynamic_results = {
+            "headline_clv": {"wp": -0.01, "ats": 0.80, "ou": 46.0},
+            "per_season_clv": {
+                "wp": {2021: -0.02, 2022: 0.00},
+                "ats": {2021: 0.70, 2022: 0.90},
+                "ou": {2021: 45.0, 2022: 47.0},
+            },
+        }
+        gating = _gate_per_target(
+            static_results["headline_clv"],
+            dynamic_results["headline_clv"],
+            {"wp": 200, "ats": 180, "ou": 190},
+        )
+        output_path = tmp_path / "comparison_dynamic_vs_static.md"
+        _generate_comparison_report(
+            static_results=static_results,
+            dynamic_results=dynamic_results,
+            gating=gating,
+            dynamic_weights=dynamic_weights,
+            output_path=output_path,
+        )
+        assert output_path.exists()
+        content = output_path.read_text(encoding="utf-8")
+        assert "# Dynamic vs Static Blend Weight Comparison" in content
+        assert "PASS" in content or "FAIL" in content
+        assert "Sigmoid Parameters" in content
+        assert "Bet Count" in content
+
+    def test_generate_comparison_report_per_season_breakdown(
+        self, tmp_path: Path
+    ) -> None:
+        dynamic_weights = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.5, steepness=0.8),
+            ats=SigmoidParams(midpoint=0.4, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.6, steepness=0.5),
+        )
+        static_results = {
+            "headline_clv": {"wp": 0.01, "ats": 0.02, "ou": 0.03},
+            "per_season_clv": {
+                "wp": {2021: 0.01, 2022: 0.02, 2023: 0.00, 2024: 0.01},
+                "ats": {2021: 0.02, 2022: 0.03, 2023: 0.01, 2024: 0.02},
+                "ou": {2021: 0.03, 2022: 0.04, 2023: 0.02, 2024: 0.03},
+            },
+        }
+        dynamic_results = {
+            "headline_clv": {"wp": 0.02, "ats": 0.03, "ou": 0.04},
+            "per_season_clv": {
+                "wp": {2021: 0.02, 2022: 0.03, 2023: 0.01, 2024: 0.02},
+                "ats": {2021: 0.03, 2022: 0.04, 2023: 0.02, 2024: 0.03},
+                "ou": {2021: 0.04, 2022: 0.05, 2023: 0.03, 2024: 0.04},
+            },
+        }
+        gating = _gate_per_target(
+            static_results["headline_clv"],
+            dynamic_results["headline_clv"],
+            {"wp": 250, "ats": 240, "ou": 260},
+        )
+        output_path = tmp_path / "comparison_dynamic_vs_static.md"
+        _generate_comparison_report(
+            static_results=static_results,
+            dynamic_results=dynamic_results,
+            gating=gating,
+            dynamic_weights=dynamic_weights,
+            output_path=output_path,
+        )
+        content = output_path.read_text(encoding="utf-8")
+        assert "Per-Season CLV Breakdown" in content
+        assert "2021" in content
+        assert "2022" in content
+        assert "2023" in content
+        assert "2024" in content
+
+    # -- mode_by_target gating test --
+
+    def test_mode_by_target_updated_after_gating(self) -> None:
+        """After gating where ATS fails, mode_by_target reflects the result."""
+        dynamic_weights = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.5, steepness=0.8),
+            ats=SigmoidParams(midpoint=0.4, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.6, steepness=0.5),
+            mode_by_target={"wp": "dynamic", "ats": "dynamic", "ou": "dynamic"},
+        )
+        # Simulate gating: wp passes, ats fails, ou passes
+        gating = _gate_per_target(
+            static_clv={"wp": -0.02, "ats": 1.00, "ou": 45.0},
+            dynamic_clv={"wp": -0.01, "ats": 0.80, "ou": 46.0},
+            bet_counts={"wp": 200, "ats": 180, "ou": 190},
+        )
+        # Apply gating to mode_by_target (same pattern as run_comparison)
+        for target in ("wp", "ats", "ou"):
+            dynamic_weights.mode_by_target[target] = (
+                "dynamic" if gating[target]["passed"] else "static"
+            )
+        assert dynamic_weights.mode_by_target == {
+            "wp": "dynamic",
+            "ats": "static",
+            "ou": "dynamic",
+        }
+
+    # -- Post-hoc blending equivalence test --
+
+    def test_post_hoc_blending_equivalence(self) -> None:
+        """Post-hoc blending via blend_predictions produces the same result as
+        manual per-row blending, proving post-hoc is equivalent to production."""
+        from models.clv import compute_clv_for_predictions
+
+        rng = np.random.default_rng(99)
+        n = 30
+        game_ids = [f"2022_W{(i % 17) + 1:02d}_TEAM{i}@HOME{i}" for i in range(n)]
+
+        preds_df = pd.DataFrame(
+            {
+                "game_id": game_ids,
+                "season": 2022,
+                "week": [(i % 17) + 1 for i in range(n)],
+                "model_prob": rng.uniform(0.3, 0.7, n),
+            }
+        )
+
+        odds_df = pd.DataFrame(
+            {
+                "game_id": game_ids,
+                "ml_home": rng.choice([-150, -130, -110, 110, 130, 150], n),
+                "ml_away": rng.choice([-150, -130, -110, 110, 130, 150], n),
+                "spread": rng.uniform(-7, 7, n),
+                "total": rng.uniform(40, 50, n),
+            }
+        )
+
+        blender = MarketBlender()
+
+        # Path A: blend_predictions (what run_comparison uses)
+        blended_a = blender.blend_predictions(preds_df.copy(), odds_df, "wp")
+
+        # Path B: manual blend_wp call (what engine does internally)
+        from utils.probability_utils import moneyline_to_probability
+
+        merged = preds_df.copy().merge(odds_df, on="game_id", how="left")
+        home_raw = merged["ml_home"].apply(lambda ml: moneyline_to_probability(int(ml)))
+        away_raw = merged["ml_away"].apply(lambda ml: moneyline_to_probability(int(ml)))
+        fair_home = (home_raw / (home_raw + away_raw)).values
+        blended_manual = blender.blend_wp(
+            np.asarray(preds_df["model_prob"].values, dtype=np.float64),
+            np.asarray(fair_home, dtype=np.float64),
+        )
+
+        # The blended model_prob values should match exactly
+        np.testing.assert_array_almost_equal(
+            blended_a["model_prob"].values,
+            blended_manual,
+            decimal=10,
+            err_msg="Post-hoc blend_predictions must produce same result as manual blend_wp",
+        )
+
+        # Additionally verify CLV computation produces identical results
+        clv_cols = [
+            "probability_clv",
+            "fair_closing_prob",
+            "has_closing_odds",
+            "line_clv",
+            "ml_home",
+            "ml_away",
+            "spread",
+            "total",
+        ]
+        drop_a = [c for c in clv_cols if c in blended_a.columns]
+        clv_a = compute_clv_for_predictions(
+            blended_a.drop(columns=drop_a), odds_df, "wp"
+        )
+
+        blended_b_df = preds_df.copy()
+        blended_b_df["model_prob"] = blended_manual
+        clv_b = compute_clv_for_predictions(blended_b_df, odds_df, "wp")
+
+        valid_a = clv_a[clv_a["has_closing_odds"]]
+        valid_b = clv_b[clv_b["has_closing_odds"]]
+        np.testing.assert_array_almost_equal(
+            valid_a["probability_clv"].values,
+            valid_b["probability_clv"].values,
+            decimal=10,
+            err_msg="Post-hoc CLV must match manual CLV computation",
+        )
