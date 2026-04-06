@@ -372,6 +372,67 @@ class TestFridayPipelineRun:
         assert log.pid > 0
 
 
+class TestEdgeCases:
+    """Edge case and robustness tests."""
+
+    @pytest.mark.usefixtures("_patch_nfl_week")
+    def test_interrupted_run_leaves_usable_log(self, tmp_path):
+        """If a step crashes mid-run, the last successful step is captured in log."""
+        from pipeline.orchestrator import FridayPipeline
+
+        step_ok = make_mock_step("step_ok", PipelinePhase.DATA)
+        step_crash = make_mock_step(
+            "step_crash", PipelinePhase.DATA, critical=True, should_fail=True
+        )
+        steps = [step_ok, step_crash]
+
+        log_path = tmp_path / "pipeline.json"
+        with patch("pipeline.orchestrator.build_step_registry", return_value=steps):
+            with patch("pipeline.orchestrator.LOG_PATH", log_path):
+                pipeline = FridayPipeline()
+                with pytest.raises(RuntimeError):
+                    pipeline.run()
+
+        # Log file should exist and be valid JSON
+        import json
+
+        assert log_path.exists()
+        with open(log_path) as f:
+            data = json.load(f)
+        assert data["status"] == "failed"
+        # step_ok should be recorded
+        assert len(data["steps"]) == 2
+        assert data["steps"][0]["name"] == "step_ok"
+        assert data["steps"][0]["status"] == "success"
+
+    @pytest.mark.usefixtures("_patch_nfl_week")
+    def test_predictions_only_missing_artifacts_runs_with_warning(
+        self, _patch_log_write
+    ):
+        """predictions-only with missing data artifacts still runs but logs warning."""
+        from pipeline.orchestrator import FridayPipeline
+
+        pred_step = make_mock_step("pred_step", PipelinePhase.PREDICTIONS)
+        steps = [pred_step]
+
+        with patch("pipeline.orchestrator.build_step_registry", return_value=steps):
+            with patch("pipeline.orchestrator.logger") as mock_logger:
+                pipeline = FridayPipeline(mode="predictions-only")
+                log = pipeline.run()
+
+                # Should still complete (step succeeded)
+                assert log.status == "success"
+                pred_step.callable.assert_called_once()
+
+                # Warning should have been logged about data artifacts
+                warning_calls = [
+                    c
+                    for c in mock_logger.warning.call_args_list
+                    if "data artifacts" in str(c).lower()
+                ]
+                assert len(warning_calls) > 0
+
+
 class TestArgparse:
     """Tests for CLI argument parsing."""
 
