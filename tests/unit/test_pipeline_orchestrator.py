@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from pipeline.steps import (
     PipelinePhase,
     StepDefinition,
@@ -171,9 +172,8 @@ class TestFridayPipelineRun:
         steps = [pred_step]
 
         with patch("pipeline.orchestrator.build_step_registry", return_value=steps):
-            with patch("pipeline.orchestrator.get_logger") as mock_get_logger:
-                mock_logger = MagicMock()
-                mock_get_logger.return_value = mock_logger
+            # Patch the module-level logger directly (already bound at import time)
+            with patch("pipeline.orchestrator.logger") as mock_logger:
                 pipeline = FridayPipeline(mode="predictions-only")
                 pipeline.run()
 
@@ -182,7 +182,6 @@ class TestFridayPipelineRun:
                     c
                     for c in mock_logger.warning.call_args_list
                     if "data artifacts" in str(c).lower()
-                    or "prerequisite" in str(c).lower()
                 ]
                 assert len(warning_calls) > 0, (
                     "Expected warning about data artifact freshness"
@@ -273,10 +272,10 @@ class TestFridayPipelineRun:
 
         with patch("pipeline.orchestrator.build_step_registry", return_value=steps):
             pipeline = FridayPipeline()
-            with pytest.raises(ValueError):
+            with pytest.raises(RuntimeError):
                 pipeline.run()
 
-        # Called only once -- no retry for ValueError
+        # Called only once -- no retry for ValueError (non-transient)
         assert step.callable.call_count == 1
 
     @pytest.mark.usefixtures("_patch_nfl_week")
