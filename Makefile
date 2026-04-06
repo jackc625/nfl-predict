@@ -221,8 +221,8 @@ models-validate: ## Validate trained models
 # =============================================================================
 
 health-check: ## Run comprehensive health check
-	@echo "$(GREEN)🏥 Running health check...$(NC)"
-	$(PYTHON) scripts/health_check.py --comprehensive
+	@echo "$(GREEN)Running health check...$(NC)"
+	$(PYTHON) -c "from pipeline.health import PipelineHealthChecker; import json; c = PipelineHealthChecker(); r = c.run_postrun(); print(json.dumps(r, indent=2, default=str))"
 
 health-monitor: ## Run operational monitoring
 	@echo "$(GREEN)📊 Running operational monitoring...$(NC)"
@@ -352,25 +352,12 @@ weekly-update: ## Complete weekly update process (Tuesday-Saturday)
 
 	@echo "$(GREEN)✅ Weekly update complete!$(NC)"
 
-friday-production: ## Friday 6 PM ET production run
-	@echo "$(GREEN)🏈 Friday Production Run - NFL Predictions$(NC)"
+friday-production: ## Friday production run - unified pipeline
+	@echo "$(GREEN)Friday Production Run - NFL Predictions$(NC)"
 	@echo "Time: $(CURRENT_TIMESTAMP)"
-	@echo "This is the official Friday 6 PM ET production process"
 	@echo ""
-
-	@echo "$(YELLOW)Step 1: Market snapshot...$(NC)"
-	$(PYTHON) scripts/ingest_odds.py --snapshot-time "$(CURRENT_TIMESTAMP)" --current
-
-	@echo "$(YELLOW)Step 2: Final data preparation...$(NC)"
-	@make snapshot
-
-	@echo "$(YELLOW)Step 3: Generate predictions...$(NC)"
-	@make predict
-
-	@echo "$(YELLOW)Step 4: Health validation...$(NC)"
-	@make health-check
-
-	@echo "$(GREEN)🎯 Production run complete! Predictions ready for weekend.$(NC)"
+	$(PYTHON) scripts/friday_pipeline.py --log-level INFO
+	@echo "$(GREEN)Production run complete!$(NC)"
 
 # =============================================================================
 # FRONTEND BUILD

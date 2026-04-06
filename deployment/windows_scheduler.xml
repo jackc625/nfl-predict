@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+NFL Prediction System - Windows Task Scheduler Configuration
+
+Single unified task for the Friday pipeline (data ingestion + predictions).
+Replaces the old two-task approach (DataUpdate at 5 PM + Predictions at 6 PM).
+
+To install:
+1. Open Task Scheduler as Administrator
+2. Import this task definition
+3. Modify credentials as needed
+4. Enable for production use
+
+The task uses the .venv Python directly with explicit WorkingDirectory.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>2026-04-06T00:00:00</Date>
+    <Author>NFL Prediction System</Author>
+    <Description>Friday 5:00 PM ET - Unified Pipeline (data ingestion + predictions)</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-09-12T17:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByWeek>
+        <DaysOfWeek>
+          <Friday />
+        </DaysOfWeek>
+        <WeeksInterval>1</WeeksInterval>
+      </ScheduleByWeek>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>true</WakeToRun>
+    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>C:\Users\jackc\Code\nfl-predict\.venv\Scripts\python.exe</Command>
+      <Arguments>scripts/friday_pipeline.py --log-level INFO</Arguments>
+      <WorkingDirectory>C:\Users\jackc\Code\nfl-predict</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

@@ -110,6 +110,32 @@ def _patch_log_write(tmp_path):
         yield mock_write
 
 
+@pytest.fixture(autouse=True)
+def _patch_gates():
+    """Patch staleness gate, health checker, and alert manager for all tests.
+
+    Ensures orchestrator tests focus on step execution logic without
+    triggering real staleness/health checks or offseason gates.
+    """
+    from pipeline.staleness import StalenessResult
+
+    mock_staleness = MagicMock()
+    mock_staleness.run_all_checks.return_value = StalenessResult(passed=True)
+
+    mock_health = MagicMock()
+    mock_health.run_preflight.return_value = {"status": "healthy", "checks": []}
+    mock_health.run_postrun.return_value = {"status": "healthy", "checks": []}
+
+    mock_alert = MagicMock()
+
+    with (
+        patch("pipeline.orchestrator.StalenessGate", return_value=mock_staleness),
+        patch("pipeline.orchestrator.PipelineHealthChecker", return_value=mock_health),
+        patch("pipeline.orchestrator.PipelineAlertManager", return_value=mock_alert),
+    ):
+        yield
+
+
 class TestFridayPipelineRun:
     """Tests for FridayPipeline.run() method."""
 
