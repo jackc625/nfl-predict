@@ -240,6 +240,39 @@ class ProductionConfig(BaseModel):
     cache_ttl: int = 3600
 
 
+class PipelineStalenessConfig(BaseModel):
+    """Pipeline staleness gate thresholds."""
+
+    data_age_hours: int = 168
+    odds_age_hours: int = 168
+    weather_age_hours: int = 336
+    model_age_days: int = 90
+    partial_run_log: str = "logs/friday_pipeline.json"
+
+
+class PipelineRetryConfig(BaseModel):
+    """Pipeline retry configuration."""
+
+    max_retries: int = 3
+    base_delay: int = 2
+    max_delay: int = 60
+
+
+class PipelineScheduleConfig(BaseModel):
+    """Pipeline schedule configuration."""
+
+    run_time_et: str = "17:00"
+    day_of_week: str = "friday"
+
+
+class PipelineConfig(BaseModel):
+    """Pipeline automation configuration."""
+
+    staleness: PipelineStalenessConfig = PipelineStalenessConfig()
+    retry: PipelineRetryConfig = PipelineRetryConfig()
+    schedule: PipelineScheduleConfig = PipelineScheduleConfig()
+
+
 class ConfigFromYAML(BaseModel):
     """Configuration loaded from YAML file."""
 
@@ -252,6 +285,7 @@ class ConfigFromYAML(BaseModel):
     logging: LoggingConfig = LoggingConfig()
     external_apis: ExternalAPIConfig = ExternalAPIConfig()
     monitoring: MonitoringConfig = MonitoringConfig()
+    pipeline: PipelineConfig = PipelineConfig()
     development: DevelopmentConfig = DevelopmentConfig()
     production: ProductionConfig = ProductionConfig()
 

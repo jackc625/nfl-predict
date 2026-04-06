@@ -232,6 +232,22 @@ monitoring:
     api_endpoints: true
     prediction_pipeline: true
 
+# Pipeline Automation
+pipeline:
+  staleness:
+    data_age_hours: 168        # 7 days -- games data considered stale after this
+    odds_age_hours: 168        # 7 days -- odds data considered stale after this
+    weather_age_hours: 336     # 14 days -- weather data is less critical
+    model_age_days: 90         # 90 days -- model artifacts warning threshold
+    partial_run_log: "logs/friday_pipeline.json"
+  retry:
+    max_retries: 3             # Max retries for retryable steps
+    base_delay: 2              # Base delay in seconds
+    max_delay: 60              # Max delay in seconds
+  schedule:
+    run_time_et: "17:00"       # 5:00 PM ET
+    day_of_week: "friday"
+
 # Development Settings
 development:
   debug: false
