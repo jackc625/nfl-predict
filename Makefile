@@ -234,7 +234,7 @@ status: ## Show system status
 	@echo "Date: $(CURRENT_DATE)"
 	@echo "Timestamp: $(CURRENT_TIMESTAMP)"
 	@echo ""
-	@$(PYTHON) scripts/health_check.py --brief
+	@$(PYTHON) -c "from pipeline.health import PipelineHealthChecker; import json; c = PipelineHealthChecker(); r = c.run_preflight(); print(json.dumps(r, indent=2, default=str))"
 	@echo ""
 	@echo "Data Status:"
 	@$(PYTHON) -c "import os; from pathlib import Path; print(f'Bronze tables: {len(list(Path(\"data/bronze\").glob(\"*.parquet\")))} files') if Path('data/bronze').exists() else print('Bronze: Not found')"
