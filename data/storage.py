@@ -147,20 +147,34 @@ class DuckDBConnection:
             raise DataIngestionError(f"Table creation failed: {e}") from e
 
     def _normalize_datetime_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Normalize datetime columns to UTC naive for consistent storage."""
+        """Normalize datetime columns to UTC for consistent storage.
+
+        All datetime columns reaching storage MUST be timezone-aware.
+        Timezone-aware columns are converted to UTC. Naive datetime
+        columns raise ValueError -- the previous "assume naive == UTC"
+        pattern silently corrupted data when sources actually used a
+        non-UTC timezone (Phase 15-04 D-15).
+
+        Raises:
+            ValueError: If any datetime column is timezone-naive. Use
+                ``utils.date_utils.ensure_utc_aware()`` at the producer
+                site to fix-forward, or pass tz-aware datetimes
+                (e.g. ``datetime.now(UTC)``) at construction.
+        """
         df_copy = df.copy()
 
         for col in df_copy.columns:
             if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
                 if df_copy[col].dt.tz is not None:
-                    # Convert timezone-aware to UTC naive datetime
+                    # Convert timezone-aware to UTC
                     df_copy[col] = df_copy[col].dt.tz_convert("UTC")
                 else:
-                    # Convert timezone-naive to UTC timezone-aware for DuckDB compatibility
-                    # (assumes input is already UTC if timezone-naive)
-                    df_copy[col] = df_copy[col].dt.tz_localize("UTC")
-                # Ensure all datetime columns are consistently stored as UTC
-                # (assumes input is already UTC if timezone-naive)
+                    raise ValueError(
+                        f"Column '{col}' contains naive (timezone-unaware) "
+                        f"datetimes. All datetime columns must be timezone-aware. "
+                        f"Use utils.date_utils.ensure_utc_aware() at the producer "
+                        f"site or pass tz-aware datetimes (e.g. datetime.now(UTC))."
+                    )
 
         return df_copy
 
@@ -222,8 +236,23 @@ class DuckDBConnection:
     def _normalize_parquet_datetime_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Normalize datetime columns for consistent Parquet storage.
 
-        Converts all datetime columns to UTC timezone-aware timestamps with consistent string format.
-        This prevents timezone/format issues when round-tripping through Parquet.
+        Converts timezone-aware datetime columns to UTC and preserves a
+        consistent string format for object-typed timestamp columns. This
+        prevents timezone/format issues when round-tripping through
+        Parquet.
+
+        All datetime64-typed columns reaching storage MUST be tz-aware.
+        Naive datetime columns raise ValueError -- the previous
+        "assume naive == UTC" pattern silently corrupted data when sources
+        actually used a non-UTC timezone (Phase 15-04 D-15).
+
+        Object-typed columns containing strings, naive Python datetimes,
+        or pandas Timestamps follow the legacy normalization path below
+        (string-formatting), which is not affected by the strict tz-check.
+
+        Raises:
+            ValueError: If any datetime64-typed column is timezone-naive.
+                Use ``utils.date_utils.ensure_utc_aware()`` to fix-forward.
         """
         df_copy = df.copy()
 
@@ -237,8 +266,12 @@ class DuckDBConnection:
                     # Convert timezone-aware to UTC, then store as UTC timestamp with Arrow
                     df_copy[col] = df_copy[col].dt.tz_convert("UTC")
                 else:
-                    # Assume naive datetimes are already UTC, make them timezone-aware
-                    df_copy[col] = df_copy[col].dt.tz_localize("UTC")
+                    raise ValueError(
+                        f"Column '{col}' contains naive (timezone-unaware) "
+                        f"datetimes. All datetime columns must be timezone-aware "
+                        f"before writing to Parquet. Use "
+                        f"utils.date_utils.ensure_utc_aware() to fix-forward."
+                    )
             elif df_copy[col].dtype == "object":
                 # Handle mixed timestamp objects in other columns
                 def normalize_timestamp(x):
@@ -302,8 +335,23 @@ class ParquetManager:
     def _normalize_parquet_datetime_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Normalize datetime columns for consistent Parquet storage.
 
-        Converts all datetime columns to UTC timezone-aware timestamps with consistent string format.
-        This prevents timezone/format issues when round-tripping through Parquet.
+        Converts timezone-aware datetime columns to UTC and preserves a
+        consistent string format for object-typed timestamp columns. This
+        prevents timezone/format issues when round-tripping through
+        Parquet.
+
+        All datetime64-typed columns reaching storage MUST be tz-aware.
+        Naive datetime columns raise ValueError -- the previous
+        "assume naive == UTC" pattern silently corrupted data when sources
+        actually used a non-UTC timezone (Phase 15-04 D-15).
+
+        Object-typed columns containing strings, naive Python datetimes,
+        or pandas Timestamps follow the legacy normalization path below
+        (string-formatting), which is not affected by the strict tz-check.
+
+        Raises:
+            ValueError: If any datetime64-typed column is timezone-naive.
+                Use ``utils.date_utils.ensure_utc_aware()`` to fix-forward.
         """
         df_copy = df.copy()
 
@@ -317,8 +365,12 @@ class ParquetManager:
                     # Convert timezone-aware to UTC, then store as UTC timestamp with Arrow
                     df_copy[col] = df_copy[col].dt.tz_convert("UTC")
                 else:
-                    # Assume naive datetimes are already UTC, make them timezone-aware
-                    df_copy[col] = df_copy[col].dt.tz_localize("UTC")
+                    raise ValueError(
+                        f"Column '{col}' contains naive (timezone-unaware) "
+                        f"datetimes. All datetime columns must be timezone-aware "
+                        f"before writing to Parquet. Use "
+                        f"utils.date_utils.ensure_utc_aware() to fix-forward."
+                    )
             elif df_copy[col].dtype == "object":
                 # Handle mixed timestamp objects in other columns
                 def normalize_timestamp(x):
