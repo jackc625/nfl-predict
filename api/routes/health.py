@@ -165,6 +165,53 @@ def _get_model_status() -> ModelStatusResponse:
     )
 
 
+def _read_last_updated(request: Request) -> datetime | None:
+    """Read the cache_meta.last_updated value via the shared DuckDB connection.
+
+    Acquires ``app.state.db_lock`` while touching ``app.state.db_conn`` so the
+    read does not race the reconnect path in
+    :func:`api.dependencies._reconnect_under_lock`. Without the lock, a
+    concurrent reconnect could close the handle between the ``getattr`` and
+    the ``execute`` call, raising ``duckdb.Error`` and causing this endpoint
+    to silently report ``last_updated=None`` even though the cache is healthy.
+
+    Falls back to opening a short-lived read-only connection only when the
+    shared lifespan handle is unavailable (e.g. tests that bypass lifespan or
+    a transient startup failure). The fallback path does not need the lock
+    because the connection is local to this call.
+    """
+    lock = getattr(request.app.state, "db_lock", None)
+    shared_conn = getattr(request.app.state, "db_conn", None)
+
+    row: tuple | None = None
+    try:
+        if shared_conn is not None and lock is not None:
+            with lock:
+                # Re-fetch under the lock in case a reconnect replaced it
+                # while we were waiting.
+                shared_conn = getattr(request.app.state, "db_conn", None)
+                if shared_conn is None:
+                    return None
+                row = shared_conn.execute(
+                    "SELECT value FROM cache_meta WHERE key = 'last_updated'"
+                ).fetchone()
+        else:
+            with duckdb.connect(str(DB_PATH), read_only=True) as conn:
+                row = conn.execute(
+                    "SELECT value FROM cache_meta WHERE key = 'last_updated'"
+                ).fetchone()
+    except (duckdb.Error, ValueError, OSError):
+        # Cache exists but may be empty/corrupt -- still report ready
+        return None
+
+    if row and row[0]:
+        try:
+            return datetime.fromisoformat(row[0])
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health_check(request: Request) -> HealthResponse:
     """Return API health status including cache, pipeline, data, and model status.
@@ -192,25 +239,10 @@ async def health_check(request: Request) -> HealthResponse:
     last_updated: datetime | None = None
 
     if cache_ready:
-        # Prefer the shared lifespan connection. Fall back to opening one
-        # locally only if the lifespan handle is unavailable (e.g. tests that
-        # bypass lifespan or a transient startup failure).
-        shared_conn = getattr(request.app.state, "db_conn", None)
-        try:
-            if shared_conn is not None:
-                row = shared_conn.execute(
-                    "SELECT value FROM cache_meta WHERE key = 'last_updated'"
-                ).fetchone()
-            else:
-                with duckdb.connect(str(DB_PATH), read_only=True) as conn:
-                    row = conn.execute(
-                        "SELECT value FROM cache_meta WHERE key = 'last_updated'"
-                    ).fetchone()
-            if row and row[0]:
-                last_updated = datetime.fromisoformat(row[0])
-        except (duckdb.Error, ValueError, OSError):
-            # Cache exists but may be empty/corrupt -- still report ready
-            pass
+        # Routed through ``_read_last_updated`` so the shared-connection read
+        # happens under ``app.state.db_lock`` (matches every other reader and
+        # avoids racing the reconnect path in api.dependencies).
+        last_updated = _read_last_updated(request)
 
     # Pipeline status from execution log
     pipeline, log_corrupt, log_stale = _read_pipeline_log()
