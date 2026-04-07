@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
-from data.storage import DuckDBConnection
+from data.storage import DuckDBConnection, ParquetManager
 from utils.date_utils import ensure_utc_aware
 
 ET = ZoneInfo("America/New_York")
@@ -42,6 +42,19 @@ def db_conn(tmp_path: Path) -> Iterator[DuckDBConnection]:
         yield conn
     finally:
         conn.close()
+
+
+@pytest.fixture
+def parquet_manager(tmp_path: Path) -> ParquetManager:
+    """Minimal ParquetManager for exercising _normalize_parquet_datetime_columns.
+
+    The Phase 15-04 strict-naive rejection lives on ParquetManager because
+    that is the class whose ``save()`` path is the only production caller
+    of the parquet normalization (via ``upsert_silver`` in data/storage.py).
+    Tests must therefore call the ParquetManager copy directly so the
+    contract is exercised on the real production code path.
+    """
+    return ParquetManager(str(tmp_path))
 
 
 # ---------------------------------------------------------------------
@@ -107,24 +120,25 @@ def test_normalize_datetime_columns_no_datetime_columns(
 
 
 # ---------------------------------------------------------------------
-# _normalize_parquet_datetime_columns
+# _normalize_parquet_datetime_columns (lives on ParquetManager so tests
+# exercise the same code path that production hits via upsert_silver)
 # ---------------------------------------------------------------------
 
 
 def test_normalize_parquet_datetime_columns_rejects_naive(
-    db_conn: DuckDBConnection,
+    parquet_manager: ParquetManager,
 ) -> None:
     df = pd.DataFrame({"game_date": pd.to_datetime(["2024-01-01T00:00:00"])})
     with pytest.raises(ValueError) as excinfo:
-        db_conn._normalize_parquet_datetime_columns(df)
+        parquet_manager._normalize_parquet_datetime_columns(df)
     assert "naive" in str(excinfo.value)
 
 
 def test_normalize_parquet_datetime_columns_accepts_aware(
-    db_conn: DuckDBConnection,
+    parquet_manager: ParquetManager,
 ) -> None:
     df = pd.DataFrame({"game_date": pd.to_datetime(["2024-01-01T00:00:00Z"])})
-    result = db_conn._normalize_parquet_datetime_columns(df)
+    result = parquet_manager._normalize_parquet_datetime_columns(df)
     assert result["game_date"].dt.tz is not None
 
 
