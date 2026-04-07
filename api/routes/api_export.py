@@ -15,10 +15,11 @@ import csv
 import io
 import json
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from api.dependencies import get_data_service
+from api.services import DataService
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
@@ -29,6 +30,7 @@ def export_csv(
     week: int | None = Query(None),
     game_id: str | None = Query(None),
     type: str | None = Query(None),
+    service: DataService = Depends(get_data_service),
 ):
     """Export prediction data as a downloadable CSV file.
 
@@ -42,8 +44,6 @@ def export_csv(
         StreamingResponse with ``text/csv`` content type and
         ``Content-Disposition: attachment`` header.
     """
-    service = get_data_service()
-
     if type == "backtest":
         rows = service.get_backtest_predictions(season=season)
         filename = f"nfl_backtest{'_' + str(season) if season else ''}.csv"
@@ -84,6 +84,7 @@ def export_json(
     week: int | None = Query(None),
     game_id: str | None = Query(None),
     type: str | None = Query(None),
+    service: DataService = Depends(get_data_service),
 ):
     """Export prediction data as a downloadable JSON file.
 
@@ -93,8 +94,6 @@ def export_json(
         StreamingResponse with ``application/json`` content type and
         ``Content-Disposition: attachment`` header.
     """
-    service = get_data_service()
-
     if type == "backtest":
         rows = service.get_backtest_predictions(season=season)
     elif game_id:

@@ -14,9 +14,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from api.dependencies import get_data_service, templates
+from api.services import DataService
 
 router = APIRouter(tags=["pages"])
 
@@ -91,9 +92,7 @@ def _compute_week_summary(games: list[dict]) -> dict[str, Any]:
         return {}
 
     # WP correct: predicted home win (wp_prob > 0.5) matches actual home win
-    wp_total = len(
-        [g for g in completed if g.get("wp_prob") is not None]
-    )
+    wp_total = len([g for g in completed if g.get("wp_prob") is not None])
     wp_correct = sum(
         1
         for g in completed
@@ -130,8 +129,7 @@ def _compute_week_summary(games: list[dict]) -> dict[str, Any]:
         [
             g
             for g in completed
-            if g.get("ou_prediction") is not None
-            and g.get("market_total") is not None
+            if g.get("ou_prediction") is not None and g.get("market_total") is not None
         ]
     )
     ou_correct = sum(
@@ -266,6 +264,7 @@ def this_week_page(
     week: int | None = Query(None),
     season: int | None = Query(None),
     sort: str = Query("time"),
+    service: DataService = Depends(get_data_service),
 ):
     """Serve the predictions dashboard (landing page).
 
@@ -277,7 +276,6 @@ def this_week_page(
     Computes wp_correct for correct/incorrect indicators (D-03) and
     week_summary for per-target accuracy banner (D-04).
     """
-    service = get_data_service()
     available_seasons = service.get_prediction_seasons()
     cache_meta = service.get_cache_meta()
 
@@ -320,13 +318,13 @@ def this_week_page(
 def performance_page(
     request: Request,
     season: int | None = Query(None),
+    service: DataService = Depends(get_data_service),
 ):
     """Serve the historical performance page.
 
     Shows all-time summary metrics with a season selector that swaps
     season-specific metrics via HTMX.
     """
-    service = get_data_service()
     available_seasons = service.get_available_seasons()
     raw_metrics = service.get_backtest_metrics(season=season)
     season_metrics = _pivot_season_metrics(raw_metrics)
@@ -351,13 +349,15 @@ def performance_page(
 
 
 @router.get("/backtest")
-def backtest_page(request: Request):
+def backtest_page(
+    request: Request,
+    service: DataService = Depends(get_data_service),
+):
     """Serve the backtest results page with 4 Plotly charts.
 
     Charts are pre-rendered in the DuckDB chart_cache for fast serving.
     Falls back to empty state components if charts are not available.
     """
-    service = get_data_service()
     charts = {
         "calibration": service.get_chart_html("calibration"),
         "clv": service.get_chart_html("clv"),
@@ -376,14 +376,17 @@ def backtest_page(request: Request):
 
 
 @router.get("/games/{game_id}")
-def game_detail_page(request: Request, game_id: str):
+def game_detail_page(
+    request: Request,
+    game_id: str,
+    service: DataService = Depends(get_data_service),
+):
     """Serve the game detail drill-down page.
 
     Shows full prediction breakdown including feature importance bars,
     prediction vs market comparison, team context (Elo, form, H2H),
     venue/weather, and result overlay for completed games (D-13 to D-15).
     """
-    service = get_data_service()
     game = service.get_game_detail(game_id)
     cache_meta = service.get_cache_meta()
     context = {

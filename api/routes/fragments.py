@@ -10,7 +10,7 @@ Routes:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from api.dependencies import get_data_service, templates
 from api.routes.pages import (
@@ -18,6 +18,7 @@ from api.routes.pages import (
     _compute_week_summary,
     _pivot_season_metrics,
 )
+from api.services import DataService
 
 router = APIRouter(prefix="/fragments", tags=["fragments"])
 
@@ -28,6 +29,7 @@ def games_fragment(
     week: str | None = Query(None),
     season: str | None = Query(None),
     sort: str = Query("time"),
+    service: DataService = Depends(get_data_service),
 ):
     """Return the game grid as an HTMX fragment.
 
@@ -39,7 +41,6 @@ def games_fragment(
     """
     week_int = int(week) if week and week.strip() else None
     season_int = int(season) if season and season.strip() else None
-    service = get_data_service()
 
     # When season changes, default to latest week for that season
     if week_int is None and season_int is not None:
@@ -68,6 +69,7 @@ def games_fragment(
 def performance_fragment(
     request: Request,
     season: str | None = Query(None),
+    service: DataService = Depends(get_data_service),
 ):
     """Return the performance_content block for HTMX season swap.
 
@@ -75,7 +77,6 @@ def performance_fragment(
     page, used when the season selector dropdown changes.
     """
     season_int = int(season) if season and season.strip() else None
-    service = get_data_service()
     raw_metrics = service.get_backtest_metrics(season=season_int)
     season_metrics = _pivot_season_metrics(raw_metrics)
 

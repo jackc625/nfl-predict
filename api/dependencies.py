@@ -1,6 +1,13 @@
 """Shared dependencies for the FastAPI application.
 
-Provides the Jinja2Blocks template engine and DataService factory.
+Provides:
+- Templates engine (Jinja2Blocks) and the ``format_datetime`` filter
+- ``DB_PATH`` constant pointing at the DuckDB web cache
+- ``get_db()`` FastAPI dependency that returns the shared read-only DuckDB
+  connection from ``app.state.db_conn``, reconnecting under
+  ``app.state.db_lock`` if the current connection is dead or missing
+- ``get_data_service()`` factory that builds a ``DataService`` bound to the
+  injected connection
 """
 
 from __future__ import annotations
@@ -8,9 +15,16 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import duckdb
+from fastapi import Depends, Request
 from jinja2_fragments.fastapi import Jinja2Blocks
 
+from api.exceptions import ModelUnavailableError
+from utils import get_logger
+
 from .services import DataService
+
+logger = get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "web" / "templates"
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "web_cache.duckdb"
@@ -33,6 +47,68 @@ def format_datetime(value: str | datetime | None) -> str:
 templates.env.filters["format_datetime"] = format_datetime
 
 
-def get_data_service() -> DataService:
-    """Create a DataService instance pointing to the web cache."""
-    return DataService(db_path=DB_PATH)
+def _reconnect_under_lock(request: Request) -> duckdb.DuckDBPyConnection:
+    """Atomically replace ``app.state.db_conn`` with a fresh read-only connection.
+
+    Called from :func:`get_db` when the existing connection is dead or missing.
+    Guarded by ``app.state.db_lock`` so concurrent requests do not race.
+    """
+    lock = request.app.state.db_lock
+    with lock:
+        # Double-check inside the lock: another request may have already
+        # reconnected while we were waiting for the lock.
+        current = getattr(request.app.state, "db_conn", None)
+        if current is not None:
+            try:
+                current.execute("SELECT 1")
+                return current  # another request reconnected, reuse it
+            except duckdb.Error:
+                pass  # fall through and replace
+
+        if not DB_PATH.exists():
+            request.app.state.db_conn = None
+            raise ModelUnavailableError("DuckDB cache not available (file missing)")
+
+        try:
+            new_conn = duckdb.connect(str(DB_PATH), read_only=True)
+        except (duckdb.Error, OSError) as exc:
+            request.app.state.db_conn = None
+            logger.error(
+                "Failed to reconnect to DuckDB cache",
+                path=str(DB_PATH),
+                error=str(exc),
+            )
+            raise ModelUnavailableError(
+                "DuckDB cache not available (reconnect failed)"
+            ) from exc
+
+        request.app.state.db_conn = new_conn
+        logger.warning("DuckDB connection replaced under lock")
+        return new_conn
+
+
+def get_db(request: Request) -> duckdb.DuckDBPyConnection:
+    """Return the shared DuckDB read-only connection, reconnecting if stale.
+
+    Owned by the app (not DataService). If the current connection is None or
+    fails a lightweight ``SELECT 1`` health check, atomically replaces
+    ``app.state.db_conn`` under ``app.state.db_lock``.
+    """
+    conn = getattr(request.app.state, "db_conn", None)
+    if conn is None:
+        return _reconnect_under_lock(request)
+
+    # Lightweight health check -- SELECT 1 is O(1) on DuckDB read-only.
+    try:
+        conn.execute("SELECT 1")
+        return conn
+    except duckdb.Error:
+        logger.warning("DuckDB connection stale, reconnecting under lock")
+        return _reconnect_under_lock(request)
+
+
+def get_data_service(
+    conn: duckdb.DuckDBPyConnection = Depends(get_db),
+) -> DataService:
+    """Create a ``DataService`` instance bound to the shared connection."""
+    return DataService(conn=conn)

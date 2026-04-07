@@ -13,9 +13,11 @@ Architecture:
 
 from __future__ import annotations
 
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import duckdb
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
@@ -43,16 +45,48 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: check cache on startup, cleanup on shutdown."""
+    """Application lifespan: open shared DuckDB connection, cleanup on shutdown.
+
+    DEPLOYMENT ASSUMPTION: this app runs under single-worker uvicorn
+    (``uvicorn ... --workers 1``). Thread-safety of ``app.state.db_conn`` and
+    the module-level TTLCache introduced in plan 15-02 is bounded by:
+        (a) Python's GIL,
+        (b) the single async event loop,
+        (c) ``app.state.db_lock`` (threading.RLock) below for reconnects.
+    If ``--workers N`` with N > 1 is ever enabled, the shared connection and
+    the cache must be revisited (each worker would hold its own copy and any
+    cross-worker coordination would require out-of-process state).
+    """
+    app.state.db_lock = threading.RLock()
+
     if DB_PATH.exists():
-        logger.info("DuckDB web cache found", path=str(DB_PATH))
+        try:
+            conn = duckdb.connect(str(DB_PATH), read_only=True)
+            app.state.db_conn = conn
+            logger.info("DuckDB connection established", path=str(DB_PATH))
+        except (duckdb.Error, OSError) as exc:
+            app.state.db_conn = None
+            logger.error(
+                "Failed to open DuckDB cache at startup",
+                path=str(DB_PATH),
+                error=str(exc),
+            )
     else:
+        app.state.db_conn = None
         logger.warning(
             "DuckDB web cache not found -- run 'make build-cache' to populate",
             path=str(DB_PATH),
         )
+
     yield
-    logger.info("NFL Prediction API shutting down")
+
+    conn_to_close = getattr(app.state, "db_conn", None)
+    if conn_to_close is not None:
+        try:
+            conn_to_close.close()
+            logger.info("DuckDB connection closed")
+        except (duckdb.Error, OSError) as exc:
+            logger.warning("Error closing DuckDB connection", error=str(exc))
 
 
 # ---------------------------------------------------------------------------

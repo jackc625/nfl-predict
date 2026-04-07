@@ -149,6 +149,12 @@ ignore = [
     "B905",     # zip-without-explicit-strict -- TODO: fix incrementally
 ]
 
+[tool.ruff.lint.flake8-bugbear]
+# Allow FastAPI's Depends() in argument defaults (B008). The other FastAPI
+# helpers (Query, Path, Body, Header, Cookie, File, Form, Security) are already
+# in ruff's default immutable-calls list, but Depends is not.
+extend-immutable-calls = ["fastapi.Depends"]
+
 [tool.ruff.lint.per-file-ignores]
 "scripts/*.py" = ["T201"]
 "models/train.py" = ["T201"]  # CLI entry point prints summary tables to stdout

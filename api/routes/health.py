@@ -20,7 +20,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter
+import duckdb
+from fastapi import APIRouter, Request
 
 from api.dependencies import DB_PATH
 from api.schemas import (
@@ -165,8 +166,14 @@ def _get_model_status() -> ModelStatusResponse:
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check() -> HealthResponse:
+async def health_check(request: Request) -> HealthResponse:
     """Return API health status including cache, pipeline, data, and model status.
+
+    Reads cache metadata via the shared ``app.state.db_conn`` when available so
+    the request does not have to open its own DuckDB handle. The handler must
+    still respond gracefully when the DB file is missing or the connection is
+    None — it bypasses the ``get_db`` dependency for that reason and reports
+    ``cache_ready: false`` instead of raising 503 from the dependency.
 
     Summary status computation order (deterministic, most severe wins, D-17):
     Priority 1: unhealthy conditions (checked first)
@@ -180,21 +187,28 @@ async def health_check() -> HealthResponse:
       - Data not fresh (not all_fresh)
     Priority 3: ok (default if no issues)
     """
-    # Existing cache check (unchanged for backward compatibility)
+    # File-level cache check (unchanged for backward compatibility)
     cache_ready = DB_PATH.exists()
     last_updated: datetime | None = None
 
     if cache_ready:
+        # Prefer the shared lifespan connection. Fall back to opening one
+        # locally only if the lifespan handle is unavailable (e.g. tests that
+        # bypass lifespan or a transient startup failure).
+        shared_conn = getattr(request.app.state, "db_conn", None)
         try:
-            import duckdb
-
-            with duckdb.connect(str(DB_PATH), read_only=True) as conn:
-                row = conn.execute(
+            if shared_conn is not None:
+                row = shared_conn.execute(
                     "SELECT value FROM cache_meta WHERE key = 'last_updated'"
                 ).fetchone()
-                if row and row[0]:
-                    last_updated = datetime.fromisoformat(row[0])
-        except Exception:  # noqa: BLE001
+            else:
+                with duckdb.connect(str(DB_PATH), read_only=True) as conn:
+                    row = conn.execute(
+                        "SELECT value FROM cache_meta WHERE key = 'last_updated'"
+                    ).fetchone()
+            if row and row[0]:
+                last_updated = datetime.fromisoformat(row[0])
+        except (duckdb.Error, ValueError, OSError):
             # Cache exists but may be empty/corrupt -- still report ready
             pass
 
