@@ -16,6 +16,22 @@ from utils import DataIngestionError, get_logger
 
 logger = get_logger(__name__)
 
+# pyarrow is a hard dependency of this module (pa.Table.from_pandas,
+# pq.write_table, etc.) so ``pyarrow.lib`` should always be importable.
+# The guard exists so narrowing the parquet read/write catches never crashes
+# on an unexpectedly slim pyarrow build -- if the symbols cannot be resolved,
+# we fall back to an empty tuple so ``except (..., *_PYARROW_EXCEPTIONS)``
+# becomes a no-op for pyarrow-specific errors (D-12 review item #11).
+try:
+    import pyarrow.lib as _pa_lib  # type: ignore[import-untyped]
+
+    _PYARROW_EXCEPTIONS: tuple[type[BaseException], ...] = (
+        _pa_lib.ArrowInvalid,
+        _pa_lib.ArrowIOError,
+    )
+except (ImportError, AttributeError):  # pragma: no cover -- defensive
+    _PYARROW_EXCEPTIONS = ()
+
 
 class DuckDBConnection:
     """DuckDB connection manager with utilities."""
@@ -47,9 +63,14 @@ class DuckDBConnection:
                 self._connection.execute("SET memory_limit='4GB'")
                 self._connection.execute("SET threads=4")
 
-            except Exception as e:
-                logger.error("Failed to connect to DuckDB", error=str(e))
-                raise DataIngestionError(f"DuckDB connection failed: {e}")
+            except (duckdb.Error, OSError) as e:
+                logger.error(
+                    "Failed to connect to DuckDB",
+                    db_path=self.db_path,
+                    error=str(e),
+                    exception_type=type(e).__name__,
+                )
+                raise DataIngestionError(f"DuckDB connection failed: {e}") from e
 
         return self._connection
 
@@ -70,9 +91,14 @@ class DuckDBConnection:
                 result = conn.execute(query)
             logger.debug("Executed query", query=query[:100] + "...")
             return result
-        except Exception as e:
-            logger.error("Query execution failed", query=query[:100], error=str(e))
-            raise DataIngestionError(f"Query failed: {e}")
+        except (duckdb.Error, OSError) as e:
+            logger.error(
+                "Query execution failed",
+                query=query[:100],
+                error=str(e),
+                exception_type=type(e).__name__,
+            )
+            raise DataIngestionError(f"Query failed: {e}") from e
 
     def fetchall(self, query: str, parameters: dict | None = None) -> list[tuple]:
         """Execute query and fetch all results."""
@@ -111,9 +137,14 @@ class DuckDBConnection:
                 rows=len(df_copy),
                 columns=len(df_copy.columns),
             )
-        except Exception as e:
-            logger.error("Failed to create table", table=sanitized_name, error=str(e))
-            raise DataIngestionError(f"Table creation failed: {e}")
+        except (duckdb.Error, ValueError, TypeError) as e:
+            logger.error(
+                "Failed to create table",
+                table=sanitized_name,
+                error=str(e),
+                exception_type=type(e).__name__,
+            )
+            raise DataIngestionError(f"Table creation failed: {e}") from e
 
     def _normalize_datetime_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Normalize datetime columns to UTC naive for consistent storage."""
@@ -172,7 +203,9 @@ class DuckDBConnection:
                 [sanitized_name],
             )
             return len(result.fetchall()) > 0
-        except Exception as e:
+        except (duckdb.Error, DataIngestionError, ValueError) as e:
+            # DataIngestionError is raised by self.execute on query failure.
+            # ValueError comes from _sanitize_table_name on invalid names.
             logger.debug(f"Table existence check failed for {table_name}: {e}")
             return False
 
@@ -212,7 +245,10 @@ class DuckDBConnection:
                     if pd.isna(x):
                         return x
 
-                    # Convert various timestamp formats to consistent UTC string
+                    # Convert various timestamp formats to consistent UTC string.
+                    # The try/except covers the narrow set of errors raised by
+                    # pandas Timestamp / datetime strftime/tz_convert/astimezone
+                    # on unexpected object types.
                     try:
                         if hasattr(x, "tz_convert"):  # pandas Timestamp with timezone
                             return x.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S.%fZ")
@@ -227,7 +263,7 @@ class DuckDBConnection:
                             # Assume naive datetime is UTC
                             return x.strftime("%Y-%m-%d %H:%M:%S.%fZ")
                         return str(x)
-                    except Exception:
+                    except (ValueError, TypeError, AttributeError, OverflowError):
                         return str(x)
 
                 # Only apply to columns that might contain timestamps
@@ -238,7 +274,7 @@ class DuckDBConnection:
                 ):
                     try:
                         df_copy[col] = df_copy[col].apply(normalize_timestamp)
-                    except Exception as e:
+                    except (ValueError, TypeError) as e:
                         logger.warning(
                             f"Failed to normalize timestamp column {col}: {e}"
                         )
@@ -289,7 +325,10 @@ class ParquetManager:
                     if pd.isna(x):
                         return x
 
-                    # Convert various timestamp formats to consistent UTC string
+                    # Convert various timestamp formats to consistent UTC string.
+                    # The try/except covers the narrow set of errors raised by
+                    # pandas Timestamp / datetime strftime/tz_convert/astimezone
+                    # on unexpected object types.
                     try:
                         if hasattr(x, "tz_convert"):  # pandas Timestamp with timezone
                             return x.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S.%fZ")
@@ -304,7 +343,7 @@ class ParquetManager:
                             # Assume naive datetime is UTC
                             return x.strftime("%Y-%m-%d %H:%M:%S.%fZ")
                         return str(x)
-                    except Exception:
+                    except (ValueError, TypeError, AttributeError, OverflowError):
                         return str(x)
 
                 # Only apply to columns that might contain timestamps
@@ -315,7 +354,7 @@ class ParquetManager:
                 ):
                     try:
                         df_copy[col] = df_copy[col].apply(normalize_timestamp)
-                    except Exception as e:
+                    except (ValueError, TypeError) as e:
                         logger.warning(
                             f"Failed to normalize timestamp column {col}: {e}"
                         )
@@ -372,11 +411,14 @@ class ParquetManager:
                     columns=len(df_copy.columns),
                 )
 
-        except Exception as e:
+        except (OSError, ValueError, TypeError, *_PYARROW_EXCEPTIONS) as e:
             logger.error(
-                "Failed to save Parquet file", path=str(full_path), error=str(e)
+                "Failed to save Parquet file",
+                path=str(full_path),
+                error=str(e),
+                exception_type=type(e).__name__,
             )
-            raise DataIngestionError(f"Parquet save failed: {e}")
+            raise DataIngestionError(f"Parquet save failed: {e}") from e
 
     def load(
         self,
@@ -458,7 +500,12 @@ class ParquetManager:
                                 filters=filters,
                                 engine="pyarrow",
                             )
-                        except Exception as e:
+                        except (
+                            FileNotFoundError,
+                            OSError,
+                            ValueError,
+                            *_PYARROW_EXCEPTIONS,
+                        ) as e:
                             if "timezone" in str(e) or "zone offset" in str(e):
                                 # Fallback to fastparquet which handles timezones more gracefully
                                 logger.warning(
@@ -516,11 +563,25 @@ class ParquetManager:
 
             raise DataIngestionError(f"Parquet file or dataset not found: {full_path}")
 
-        except Exception as e:
+        except (
+            FileNotFoundError,
+            OSError,
+            ValueError,
+            TypeError,
+            DataIngestionError,
+            *_PYARROW_EXCEPTIONS,
+        ) as e:
+            if isinstance(e, DataIngestionError):
+                # Re-raise without wrapping so the original "not found" message
+                # is preserved for callers.
+                raise
             logger.error(
-                "Failed to load Parquet file/dataset", path=str(full_path), error=str(e)
+                "Failed to load Parquet file/dataset",
+                path=str(full_path),
+                error=str(e),
+                exception_type=type(e).__name__,
             )
-            raise DataIngestionError(f"Parquet load failed: {e}")
+            raise DataIngestionError(f"Parquet load failed: {e}") from e
 
     def exists(self, path: str) -> bool:
         """Check if Parquet file or partitioned dataset exists."""
@@ -577,11 +638,14 @@ class ParquetManager:
                 "schema": parquet_file.schema_arrow,
                 "column_names": parquet_file.schema_arrow.names,
             }
-        except Exception as e:
+        except (OSError, ValueError, *_PYARROW_EXCEPTIONS) as e:
             logger.error(
-                "Failed to get Parquet file info", path=str(full_path), error=str(e)
+                "Failed to get Parquet file info",
+                path=str(full_path),
+                error=str(e),
+                exception_type=type(e).__name__,
             )
-            raise DataIngestionError(f"Parquet info failed: {e}")
+            raise DataIngestionError(f"Parquet info failed: {e}") from e
 
 
 # Global instances
@@ -614,7 +678,13 @@ def get_parquet_manager(base_path: str | None = None) -> ParquetManager:
 
 @contextmanager
 def db_transaction():
-    """Context manager for database transactions."""
+    """Context manager for database transactions.
+
+    Catches the broad ``Exception`` on purpose: this is a top-level rollback
+    boundary that must fire on ANY failure inside the ``with`` block, not just
+    DuckDB errors. Callers will see the original exception re-raised via the
+    bare ``raise`` statement, so no information is lost.
+    """
     conn = get_db_connection()
     try:
         conn.execute("BEGIN TRANSACTION")
@@ -623,7 +693,11 @@ def db_transaction():
         logger.debug("Database transaction committed")
     except Exception as e:
         conn.execute("ROLLBACK")
-        logger.error("Database transaction rolled back", error=str(e))
+        logger.error(
+            "Database transaction rolled back",
+            error=str(e),
+            exception_type=type(e).__name__,
+        )
         raise
 
 
@@ -671,10 +745,11 @@ def _migrate_schema_for_append(
                 migrated_df["created_at"] = pd.to_datetime(
                     migrated_df["created_at"], unit="s", utc=True
                 )
-            except Exception as e:
+            except (ValueError, TypeError, OverflowError) as e:
                 logger.warning(
                     "Failed to convert legacy timestamps, using current time",
                     error=str(e),
+                    exception_type=type(e).__name__,
                 )
                 migrated_df["created_at"] = datetime.now(UTC)
 
@@ -685,10 +760,11 @@ def _migrate_schema_for_append(
                 migrated_df["created_at"] = pd.to_datetime(
                     migrated_df["created_at"], utc=True
                 )
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 logger.warning(
                     "Failed to convert object timestamps, using current time",
                     error=str(e),
+                    exception_type=type(e).__name__,
                 )
                 migrated_df["created_at"] = datetime.now(UTC)
 
@@ -765,10 +841,15 @@ def save_dataframe(
                     "No existing data found, creating new dataset", rows=len(df)
                 )
 
-        except Exception as e:
+        except (DataIngestionError, FileNotFoundError, OSError, ValueError) as e:
+            # These are expected "no existing data" signals -- the ParquetManager
+            # raises DataIngestionError when the file is missing, and OSError /
+            # FileNotFoundError / ValueError can come from early filesystem or
+            # schema probes. Any other exception should propagate.
             logger.info(
                 "No existing data to append to, creating new dataset",
                 error=str(e),
+                exception_type=type(e).__name__,
                 rows=len(df),
             )
 
@@ -1009,8 +1090,12 @@ def optimize_database() -> None:
 
         logger.info("Database optimization completed")
 
-    except Exception as e:
-        logger.warning("Database optimization failed", error=str(e))
+    except (duckdb.Error, DataIngestionError, OSError) as e:
+        logger.warning(
+            "Database optimization failed",
+            error=str(e),
+            exception_type=type(e).__name__,
+        )
 
 
 def get_database_stats() -> dict[str, Any]:
@@ -1038,8 +1123,11 @@ def get_database_stats() -> dict[str, Any]:
                     "row_count": row_count,
                     "columns": column_count,
                 }
-            except Exception as e:
-                logger.warning(f"Failed to get stats for table {table_name}: {e}")
+            except (duckdb.Error, DataIngestionError, ValueError, KeyError) as e:
+                logger.warning(
+                    f"Failed to get stats for table {table_name}: {e}",
+                    exception_type=type(e).__name__,
+                )
                 table_stats[table_name] = {"row_count": "unknown", "columns": "unknown"}
 
         return {
@@ -1048,6 +1136,10 @@ def get_database_stats() -> dict[str, Any]:
             "database_path": db.db_path or "in-memory",
         }
 
-    except Exception as e:
-        logger.error("Failed to get database stats", error=str(e))
+    except (duckdb.Error, DataIngestionError, OSError) as e:
+        logger.error(
+            "Failed to get database stats",
+            error=str(e),
+            exception_type=type(e).__name__,
+        )
         return {"error": str(e)}
