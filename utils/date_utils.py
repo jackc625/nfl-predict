@@ -332,3 +332,45 @@ def get_timezone_difference(home_timezone: str, away_timezone: str) -> float:
         return home_offset - away_offset
     except (KeyError, ValueError, AttributeError):
         return 0.0  # Default to no difference if calculation fails
+
+
+def ensure_utc_aware(dt: datetime) -> datetime:
+    """Return *dt* as a timezone-aware datetime in UTC.
+
+    Fix-forward helper for callers that were previously passing naive
+    datetimes to storage and now need to be explicit about timezone.
+    Phase 15-04 made ``data/storage.py`` reject naive datetimes at write
+    time; this helper gives producers a cheap way to keep their existing
+    code shape while becoming explicit about UTC.
+
+    Behavior:
+    - If *dt* has tzinfo, it is converted to UTC via ``astimezone(UTC)``.
+    - If *dt* is naive (``tzinfo is None``), it is REINTERPRETED as UTC by
+      attaching ``tzinfo=UTC`` without shifting the wall clock. This is
+      the correct semantic when the caller knows the source was already
+      UTC but was stored as naive.
+    - If *dt* is None or not a ``datetime`` instance, raises ValueError.
+
+    Callers that know their source is in a DIFFERENT timezone (e.g. ET)
+    should NOT use this helper -- instead, use
+    ``dt.replace(tzinfo=ET).astimezone(UTC)`` to get the correct UTC
+    conversion.
+
+    Args:
+        dt: A datetime instance (naive or aware).
+
+    Returns:
+        A timezone-aware datetime in UTC.
+
+    Raises:
+        ValueError: If *dt* is None or not a datetime instance.
+    """
+    if dt is None:
+        raise ValueError("ensure_utc_aware() received None; expected datetime")
+    if not isinstance(dt, datetime):
+        raise ValueError(
+            f"ensure_utc_aware() received {type(dt).__name__}; expected datetime"
+        )
+    if dt.tzinfo is not None:
+        return dt.astimezone(UTC)
+    return dt.replace(tzinfo=UTC)

@@ -405,7 +405,10 @@ class WeatherDataIngester:
         (hard-fail -- no silent skipping).
         """
         if forecast_time is None:
-            forecast_time = datetime.now(UTC).replace(tzinfo=None)
+            # tz-aware UTC -- Phase 15-04 requires storage writers to provide
+            # timezone-aware datetimes. Storage will reject naive datetimes
+            # at write time via _normalize_parquet_datetime_columns.
+            forecast_time = datetime.now(UTC)
 
         logger.info("Fetching weather for games", games=len(games_df))
 
@@ -503,7 +506,10 @@ class WeatherDataIngester:
                 week = current_week
 
         if forecast_time is None:
-            forecast_time = datetime.now(UTC).replace(tzinfo=None)
+            # tz-aware UTC -- Phase 15-04 requires storage writers to provide
+            # timezone-aware datetimes. Storage will reject naive datetimes
+            # at write time via _normalize_parquet_datetime_columns.
+            forecast_time = datetime.now(UTC)
 
         scope = f"Week {week}" if week is not None else "Entire Season"
         logger.info(
