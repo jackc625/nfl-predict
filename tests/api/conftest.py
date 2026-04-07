@@ -8,6 +8,7 @@ Provides:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -281,7 +282,7 @@ def empty_test_db(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def test_client(test_db: Path) -> TestClient:
+def test_client(test_db: Path) -> Iterator[TestClient]:
     """Create a FastAPI TestClient with the test database.
 
     Uses FastAPI ``app.dependency_overrides`` to inject a test DuckDB
@@ -308,14 +309,14 @@ def test_client(test_db: Path) -> TestClient:
 
     client = TestClient(app, raise_server_exceptions=False)
     try:
-        yield client  # type: ignore[misc]
+        yield client
     finally:
         app.dependency_overrides.clear()
         test_conn.close()
 
 
 @pytest.fixture()
-def empty_test_client(empty_test_db: Path) -> TestClient:
+def empty_test_client(empty_test_db: Path) -> Iterator[TestClient]:
     """Create a FastAPI TestClient backed by an empty database.
 
     Useful for testing empty-state UI rendering.
@@ -335,7 +336,7 @@ def empty_test_client(empty_test_db: Path) -> TestClient:
 
     client = TestClient(app, raise_server_exceptions=False)
     try:
-        yield client  # type: ignore[misc]
+        yield client
     finally:
         app.dependency_overrides.clear()
         test_conn.close()

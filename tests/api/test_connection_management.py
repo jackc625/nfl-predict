@@ -69,12 +69,12 @@ def test_lifespan_creates_connection(test_db: Path) -> None:
     # lifespan path runs.
     app.dependency_overrides.clear()
     try:
-        with TestClient(app) as client:
-            assert client.app.state.db_conn is not None
+        with TestClient(app):
+            assert app.state.db_conn is not None
             # The lock must exist after lifespan ran.
-            assert hasattr(client.app.state.db_lock, "acquire")
+            assert hasattr(app.state.db_lock, "acquire")
             # And the connection must answer SELECT 1.
-            client.app.state.db_conn.execute("SELECT 1").fetchone()
+            app.state.db_conn.execute("SELECT 1").fetchone()
     finally:
         _restore_db_path(original_deps, original_health)
 
@@ -89,7 +89,7 @@ def test_lifespan_handles_missing_db(tmp_path: Path) -> None:
     app.dependency_overrides.clear()
     try:
         with TestClient(app) as client:
-            assert client.app.state.db_conn is None
+            assert app.state.db_conn is None
             response = client.get("/health")
             # Health must not 500 even with no DB.
             assert response.status_code in (200, 503), response.text
