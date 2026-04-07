@@ -1,11 +1,16 @@
-"""
-API Exception Handling for NFL Prediction System.
+"""API Exception Handling for NFL Prediction System.
 
-This module is the canonical home for custom exceptions used across the
-FastAPI application. Other API modules import their exception classes from
-here. Plan 15-03 may trim genuinely unused classes after grep verification,
-but ``ModelUnavailableError`` and ``NFLPredictionAPIException`` MUST remain
-because they are imported by ``api.dependencies``.
+Canonical home for custom API exceptions used across the FastAPI application.
+Kept intentionally minimal -- only classes with active external usage.
+
+Active usage (grep-verified by plan 15-03):
+    - ``ModelUnavailableError`` -- raised by ``api.dependencies.get_db`` when the
+      DuckDB web cache is missing or unreadable, mapped to 503 by FastAPI.
+    - ``NFLPredictionAPIException`` -- base class for ``ModelUnavailableError``.
+
+Previously-unused classes ``DataNotFoundError`` and ``ValidationError`` were
+removed in plan 15-03 after grep confirmed zero importers. Any new exception
+type added here must first be imported from at least one non-test module.
 """
 
 from __future__ import annotations
@@ -28,38 +33,6 @@ class NFLPredictionAPIException(Exception):
         self.error_code = error_code
         self.details = details or {}
         super().__init__(self.message)
-
-
-class DataNotFoundError(NFLPredictionAPIException):
-    """Raised when requested data is not found (404 Not Found)."""
-
-    def __init__(
-        self,
-        message: str = "Requested data not found",
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(
-            message=message,
-            status_code=404,
-            error_code="DATA_NOT_FOUND",
-            details=details,
-        )
-
-
-class ValidationError(NFLPredictionAPIException):
-    """Raised when input validation fails (400 Bad Request)."""
-
-    def __init__(
-        self,
-        message: str = "Validation failed",
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(
-            message=message,
-            status_code=400,
-            error_code="VALIDATION_ERROR",
-            details=details,
-        )
 
 
 class ModelUnavailableError(NFLPredictionAPIException):
