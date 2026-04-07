@@ -10,10 +10,11 @@ Routes:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request
 
 from api.dependencies import get_data_service, templates
 from api.routes.pages import (
+    PAGE_CACHE_CONTROL,
     _annotate_wp_correct,
     _compute_week_summary,
     _pivot_season_metrics,
@@ -26,7 +27,6 @@ router = APIRouter(prefix="/fragments", tags=["fragments"])
 @router.get("/games")
 def games_fragment(
     request: Request,
-    response: Response,
     week: str | None = Query(None),
     season: str | None = Query(None),
     sort: str = Query("time"),
@@ -40,7 +40,6 @@ def games_fragment(
     When season changes and week is empty, defaults to the latest week
     for that season.
     """
-    response.headers["Cache-Control"] = "public, max-age=60"
     week_int = int(week) if week and week.strip() else None
     season_int = int(season) if season and season.strip() else None
 
@@ -63,15 +62,16 @@ def games_fragment(
         "current_sort": sort,
         "week_summary": _compute_week_summary(games),
     }
-    return templates.TemplateResponse(
+    template_response = templates.TemplateResponse(
         request, "pages/this_week.html", context, block_name="game_grid"
     )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
 
 
 @router.get("/performance")
 def performance_fragment(
     request: Request,
-    response: Response,
     season: str | None = Query(None),
     service: DataService = Depends(get_data_service),
 ):
@@ -80,7 +80,6 @@ def performance_fragment(
     Renders only the season metrics table portion of the performance
     page, used when the season selector dropdown changes.
     """
-    response.headers["Cache-Control"] = "public, max-age=60"
     season_int = int(season) if season and season.strip() else None
     raw_metrics = service.get_backtest_metrics(season=season_int)
     season_metrics = _pivot_season_metrics(raw_metrics)
@@ -90,9 +89,11 @@ def performance_fragment(
         "season_metrics": season_metrics,
         "current_season": season_int,
     }
-    return templates.TemplateResponse(
+    template_response = templates.TemplateResponse(
         request,
         "pages/performance.html",
         context,
         block_name="performance_content",
     )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response

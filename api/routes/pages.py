@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request
 
 from api.dependencies import get_data_service, templates
 from api.services import DataService
@@ -159,6 +159,9 @@ def _compute_week_summary(games: list[dict]) -> dict[str, Any]:
     }
 
 
+PAGE_CACHE_CONTROL = "public, max-age=60"
+
+
 def _annotate_wp_correct(games: list[dict]) -> list[dict]:
     """Return a new list of games with wp_correct annotated.
 
@@ -270,7 +273,6 @@ def _compute_summary(service: Any) -> dict[str, Any]:
 @router.get("/")
 def this_week_page(
     request: Request,
-    response: Response,
     week: int | None = Query(None),
     season: int | None = Query(None),
     sort: str = Query("time"),
@@ -286,7 +288,6 @@ def this_week_page(
     Computes wp_correct for correct/incorrect indicators (D-03) and
     week_summary for per-target accuracy banner (D-04).
     """
-    response.headers["Cache-Control"] = "public, max-age=60"
     available_seasons = service.get_prediction_seasons()
     cache_meta = service.get_cache_meta()
 
@@ -321,15 +322,20 @@ def this_week_page(
     }
 
     block_name = "game_grid" if request.headers.get("HX-Request") else None
-    return templates.TemplateResponse(
+    template_response = templates.TemplateResponse(
         request, "pages/this_week.html", context, block_name=block_name
     )
+    # Cache-Control is set directly on the returned TemplateResponse because
+    # headers set on an injected ``response: Response`` parameter are NOT
+    # propagated when the handler returns its own response object (a known
+    # FastAPI/Starlette behaviour).
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
 
 
 @router.get("/performance")
 def performance_page(
     request: Request,
-    response: Response,
     season: int | None = Query(None),
     service: DataService = Depends(get_data_service),
 ):
@@ -338,7 +344,6 @@ def performance_page(
     Shows all-time summary metrics with a season selector that swaps
     season-specific metrics via HTMX.
     """
-    response.headers["Cache-Control"] = "public, max-age=60"
     available_seasons = service.get_available_seasons()
     raw_metrics = service.get_backtest_metrics(season=season)
     season_metrics = _pivot_season_metrics(raw_metrics)
@@ -357,15 +362,16 @@ def performance_page(
 
     # If HTMX request, return only the performance_content block
     block = "performance_content" if request.headers.get("HX-Request") else None
-    return templates.TemplateResponse(
+    template_response = templates.TemplateResponse(
         request, "pages/performance.html", context, block_name=block
     )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
 
 
 @router.get("/backtest")
 def backtest_page(
     request: Request,
-    response: Response,
     service: DataService = Depends(get_data_service),
 ):
     """Serve the backtest results page with 4 Plotly charts.
@@ -373,7 +379,6 @@ def backtest_page(
     Charts are pre-rendered in the DuckDB chart_cache for fast serving.
     Falls back to empty state components if charts are not available.
     """
-    response.headers["Cache-Control"] = "public, max-age=60"
     charts = {
         "calibration": service.get_chart_html("calibration"),
         "clv": service.get_chart_html("clv"),
@@ -388,13 +393,16 @@ def backtest_page(
         "current_path": "/backtest",
         "cache_meta": cache_meta,
     }
-    return templates.TemplateResponse(request, "pages/backtest.html", context)
+    template_response = templates.TemplateResponse(
+        request, "pages/backtest.html", context
+    )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
 
 
 @router.get("/games/{game_id}")
 def game_detail_page(
     request: Request,
-    response: Response,
     game_id: str,
     service: DataService = Depends(get_data_service),
 ):
@@ -404,7 +412,6 @@ def game_detail_page(
     prediction vs market comparison, team context (Elo, form, H2H),
     venue/weather, and result overlay for completed games (D-13 to D-15).
     """
-    response.headers["Cache-Control"] = "public, max-age=60"
     game = service.get_game_detail(game_id)
     cache_meta = service.get_cache_meta()
     context = {
@@ -413,4 +420,8 @@ def game_detail_page(
         "current_path": "",
         "cache_meta": cache_meta,
     }
-    return templates.TemplateResponse(request, "pages/game_detail.html", context)
+    template_response = templates.TemplateResponse(
+        request, "pages/game_detail.html", context
+    )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response

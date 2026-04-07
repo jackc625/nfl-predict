@@ -17,6 +17,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.cache import CACHE_SCHEMA
+from api.services import clear_cache
+
+
+@pytest.fixture(autouse=True)
+def _isolate_data_service_cache() -> Iterator[None]:
+    """Clear the module-level DataService TTLCache before and after every test.
+
+    The ``api.services._cache`` is a module-level :class:`cachetools.TTLCache`
+    (plan 15-02). Because Python modules are singletons, cache entries leak
+    across tests unless explicitly cleared. This fixture uses ``try/finally``
+    so isolation holds even when a test fails mid-way.
+    """
+    clear_cache()
+    try:
+        yield
+    finally:
+        clear_cache()
 
 
 def _sample_game_data() -> list[dict]:
