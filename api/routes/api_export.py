@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from api.dependencies import get_data_service
+from api.routes.pages import PAGE_CACHE_CONTROL
 from api.services import DataService
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -76,7 +77,7 @@ def export_csv(
         media_type="text/csv",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "Cache-Control": "public, max-age=60",
+            "Cache-Control": PAGE_CACHE_CONTROL,
         },
     )
 
@@ -125,7 +126,7 @@ def export_json(
         media_type="application/json",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "Cache-Control": "public, max-age=60",
+            "Cache-Control": PAGE_CACHE_CONTROL,
         },
     )
 
