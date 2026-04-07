@@ -7,6 +7,9 @@ endpoint MUST NOT set Cache-Control -- it must always reflect live state.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -58,8 +61,23 @@ def test_export_json_has_cache_control(test_client: TestClient) -> None:
     assert response.headers.get("cache-control") == "public, max-age=60"
 
 
-def test_health_endpoint_has_no_cache_control(test_client: TestClient) -> None:
-    """Health must NOT advertise cache-control; it reflects live state."""
+def test_health_endpoint_has_no_cache_control(
+    test_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Health must NOT advertise cache-control; it reflects live state.
+
+    Patches ``api.routes.health.DB_PATH`` to a tmp path so the test does
+    not read from the host filesystem's production cache file. Without
+    the patch, ``cache_ready`` would reflect whatever ``data/web_cache.duckdb``
+    happens to exist on the dev machine, leaking host state into the
+    test and exercising different code paths between CI and local runs.
+    The Cache-Control assertion holds either way, but routing through a
+    deterministic tmp path lets the test catch a regression where /health
+    starts emitting Cache-Control under specific cache states.
+    """
+    monkeypatch.setattr("api.routes.health.DB_PATH", tmp_path / "no.duckdb")
     response = test_client.get("/health")
     header_keys_lower = {k.lower() for k in response.headers}
     assert "cache-control" not in header_keys_lower
