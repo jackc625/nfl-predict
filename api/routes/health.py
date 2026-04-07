@@ -30,6 +30,7 @@ from api.schemas import (
     ModelStatusResponse,
     PipelineStatusResponse,
 )
+from utils.date_utils import ensure_utc_aware
 
 router = APIRouter(tags=["health"])
 
@@ -72,12 +73,22 @@ def _read_pipeline_log() -> tuple[PipelineStatusResponse | None, bool, bool]:
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None, True, False
 
-    # Parse start_time to check staleness
+    # Parse start_time to check staleness.
+    #
+    # The pipeline log is documented to write UTC timestamps but pre-Phase
+    # 15-04 writers may still emit naive ISO strings. ``datetime.fromisoformat``
+    # returns a naive datetime in that case, and naive ``.timestamp()`` is
+    # interpreted as LOCAL time per Python's documented behavior -- on a
+    # non-UTC host the staleness check would be wrong by the local UTC offset
+    # (e.g. up to 5 hours off in ET). Route through ``ensure_utc_aware`` so
+    # naive datetimes are reinterpreted as UTC without shifting the wall
+    # clock, matching the documented producer contract.
     log_stale = False
     last_run_time: datetime | None = None
     if data.get("start_time"):
         try:
-            last_run_time = datetime.fromisoformat(data["start_time"])
+            parsed = datetime.fromisoformat(data["start_time"])
+            last_run_time = ensure_utc_aware(parsed)
             age_seconds = time.time() - last_run_time.timestamp()
             if age_seconds > LOG_STALENESS_SECONDS:
                 log_stale = True
