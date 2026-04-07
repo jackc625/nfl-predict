@@ -28,6 +28,7 @@ from .routes.api_export import router as export_router
 from .routes.fragments import router as fragments_router
 from .routes.health import router as health_router
 from .routes.pages import router as pages_router
+from .services import clear_cache
 
 logger = get_logger(__name__)
 
@@ -77,6 +78,10 @@ async def lifespan(app: FastAPI):
             "DuckDB web cache not found -- run 'make build-cache' to populate",
             path=str(deps.DB_PATH),
         )
+
+    # Plan 15-02: invalidate any TTLCache entries surviving a previous run so
+    # a redeploy never serves stale data beyond the startup boundary.
+    clear_cache()
 
     yield
 

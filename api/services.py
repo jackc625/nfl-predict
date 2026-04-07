@@ -10,18 +10,121 @@ propagates and the next request will receive a fresh connection from
 ``get_db()``.
 
 No model classes are imported here (UIAP-01 compliance).
+
+Caching (plan 15-02)
+--------------------
+Hot-path methods are backed by a module-level :class:`cachetools.TTLCache`
+guarded by a :class:`threading.RLock`. Every cache read and write goes through
+``copy.deepcopy`` so route-layer mutation of returned values cannot poison the
+cached copy. The TTL is 5 minutes (predictions change at most weekly).
+
+Concurrency envelope: see the deployment-assumption docstring in
+``api.main.lifespan`` -- this app runs under single-worker uvicorn, so the
+module-level cache plus the RLock is sufficient. If N>1 workers are ever
+introduced, each worker will hold its own copy of the cache; cross-worker
+invalidation would require out-of-process state.
+
+``clear_cache()`` is a module-level function intended to be called from:
+- ``api.main.lifespan`` startup, after ``app.state.db_conn`` is established
+- Pipeline scripts, after the Friday snapshot refreshes the cache
+- Test fixtures, between tests for isolation
 """
 
 from __future__ import annotations
 
+import copy
 import json
+import threading
 from typing import Any
 
 import duckdb
+from cachetools import TTLCache
 
 from utils import get_logger
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Module-level TTL cache (plan 15-02)
+# ---------------------------------------------------------------------------
+
+# maxsize=128 is ample for this workload (a handful of season/week combos).
+# ttl=300 (5 minutes per D-06) because predictions update at most weekly.
+# _cache_lock guards all reads and writes; see plan 15-01 for the single-worker
+# uvicorn assumption that bounds the concurrency envelope.
+_cache: TTLCache = TTLCache(maxsize=128, ttl=300)
+_cache_lock = threading.RLock()
+
+
+def clear_cache() -> None:
+    """Clear the DataService TTL cache.
+
+    Call this:
+    - From the FastAPI lifespan startup hook AFTER app.state.db_conn is set
+    - From pipeline scripts after Friday snapshot refresh
+    - From test fixtures between tests for isolation
+    """
+    with _cache_lock:
+        _cache.clear()
+
+
+def _cache_get(key: tuple) -> Any | None:
+    """Return a deep copy of the cached value at *key*, or None if missing.
+
+    The deep copy prevents callers from mutating the cached copy via Python
+    aliasing even if they ignore the ``_cache_set`` deep-copy on the way in.
+    """
+    with _cache_lock:
+        value = _cache.get(key)
+    if value is None:
+        return None
+    return copy.deepcopy(value)
+
+
+def _cache_set(key: tuple, value: Any) -> None:
+    """Store a deep copy of *value* under *key*.
+
+    The deep copy decouples the cached payload from the caller's reference so
+    the caller cannot mutate the cache by mutating its own return value.
+    """
+    with _cache_lock:
+        _cache[key] = copy.deepcopy(value)
+
+
+# ---------------------------------------------------------------------------
+# Explicit column lists (plan 15-02 D-09)
+# ---------------------------------------------------------------------------
+# These match ``api.cache.CACHE_SCHEMA`` in column order. Keeping them here as
+# module-level constants makes schema drift a compile-time (well, import-time)
+# concern instead of a silent runtime one.
+
+_PREDICTIONS_COLUMNS = (
+    "game_id, season, week, game_date, home_team, away_team, "
+    "status, home_score, away_score, "
+    "wp_prob, wp_confidence, ats_prediction, ats_confidence, "
+    "ou_prediction, ou_confidence, "
+    "market_spread, market_total, market_ml_home, market_ml_away, "
+    "wp_edge, ats_edge, ou_edge, "
+    "blended_wp, blended_ats, blended_ou"
+)
+
+_GAME_CONTEXT_COLUMNS = (
+    "game_id, home_elo, away_elo, home_last5, away_last5, h2h_record, "
+    "venue_name, surface, roof_type, weather_severity, wind_mph, "
+    "is_outdoor, is_divisional, is_primetime"
+)
+
+_BACKTEST_METRICS_COLUMNS = "season, target, metric_name, metric_value"
+
+_BACKTEST_PREDICTIONS_COLUMNS = (
+    "game_id, season, week, target, model_prob, actual, "
+    "probability_clv, has_closing_odds"
+)
+
+_SIMULATION_RESULTS_COLUMNS = "strategy, metric_name, metric_value"
+
+_EQUITY_CURVE_COLUMNS = "strategy, bet_index, bankroll"
 
 
 def _parse_json_or_default(value: Any, default: Any) -> Any:
@@ -63,7 +166,21 @@ class DataService:
         Returns:
             List of prediction dicts.
         """
-        query = "SELECT * FROM predictions"
+        key = ("predictions", season, week, sort)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_predictions_uncached(season, week, sort)
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_predictions_uncached(
+        self,
+        season: int | None,
+        week: int | None,
+        sort: str,
+    ) -> list[dict[str, Any]]:
+        query = f"SELECT {_PREDICTIONS_COLUMNS} FROM predictions"
         conditions: list[str] = []
         params: list[Any] = []
 
@@ -101,10 +218,13 @@ class DataService:
 
         Returns None if the game is not found. All four queries below run
         through the same injected ``self._conn`` -- no per-query reconnect.
+
+        NOT cached: unique per game_id, cache hit rate would be ~0.
         """
         # Prediction data
         result = self._conn.execute(
-            "SELECT * FROM predictions WHERE game_id = ?", [game_id]
+            f"SELECT {_PREDICTIONS_COLUMNS} FROM predictions WHERE game_id = ?",
+            [game_id],
         )
         columns = [desc[0] for desc in result.description]
         row = result.fetchone()
@@ -143,7 +263,8 @@ class DataService:
 
         # --- Game context ---
         ctx_result = self._conn.execute(
-            "SELECT * FROM game_context WHERE game_id = ?", [game_id]
+            f"SELECT {_GAME_CONTEXT_COLUMNS} FROM game_context WHERE game_id = ?",
+            [game_id],
         )
         ctx_cols = [desc[0] for desc in ctx_result.description]
         ctx_row = ctx_result.fetchone()
@@ -190,7 +311,18 @@ class DataService:
 
     def get_backtest_metrics(self, season: int | None = None) -> list[dict[str, Any]]:
         """Fetch backtest metrics, optionally filtered by season."""
-        query = "SELECT * FROM backtest_metrics"
+        key = ("backtest_metrics", season)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_backtest_metrics_uncached(season)
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_backtest_metrics_uncached(
+        self, season: int | None
+    ) -> list[dict[str, Any]]:
+        query = f"SELECT {_BACKTEST_METRICS_COLUMNS} FROM backtest_metrics"
         params: list[Any] = []
 
         if season is not None:
@@ -207,7 +339,18 @@ class DataService:
         self, season: int | None = None
     ) -> list[dict[str, Any]]:
         """Fetch backtest predictions, optionally filtered by season."""
-        query = "SELECT * FROM backtest_predictions"
+        key = ("backtest_predictions", season)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_backtest_predictions_uncached(season)
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_backtest_predictions_uncached(
+        self, season: int | None
+    ) -> list[dict[str, Any]]:
+        query = f"SELECT {_BACKTEST_PREDICTIONS_COLUMNS} FROM backtest_predictions"
         params: list[Any] = []
 
         if season is not None:
@@ -221,7 +364,12 @@ class DataService:
         return [dict(zip(columns, row)) for row in result.fetchall()]
 
     def get_chart_html(self, chart_id: str) -> str | None:
-        """Fetch a pre-rendered chart HTML div from the cache."""
+        """Fetch a pre-rendered chart HTML div from the cache.
+
+        NOT cached at the DataService layer: pre-rendered HTML is already fast
+        to fetch and rarely changes; route-level Cache-Control headers cover
+        browser caching.
+        """
         result = self._conn.execute(
             "SELECT html_div FROM chart_cache WHERE chart_id = ?",
             [chart_id],
@@ -231,16 +379,36 @@ class DataService:
 
     def get_simulation_results(self) -> list[dict[str, Any]]:
         """Fetch all betting simulation results."""
+        key = ("simulation_results",)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_simulation_results_uncached()
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_simulation_results_uncached(self) -> list[dict[str, Any]]:
         result = self._conn.execute(
-            "SELECT * FROM simulation_results ORDER BY strategy, metric_name"
+            f"SELECT {_SIMULATION_RESULTS_COLUMNS} FROM simulation_results "
+            "ORDER BY strategy, metric_name"
         )
         columns = [desc[0] for desc in result.description]
         return [dict(zip(columns, row)) for row in result.fetchall()]
 
     def get_equity_curve(self) -> list[dict[str, Any]]:
         """Fetch equity curve data for all strategies."""
+        key = ("equity_curve",)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_equity_curve_uncached()
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_equity_curve_uncached(self) -> list[dict[str, Any]]:
         result = self._conn.execute(
-            "SELECT * FROM equity_curve ORDER BY strategy, bet_index"
+            f"SELECT {_EQUITY_CURVE_COLUMNS} FROM equity_curve "
+            "ORDER BY strategy, bet_index"
         )
         columns = [desc[0] for desc in result.description]
         return [dict(zip(columns, row)) for row in result.fetchall()]
@@ -251,6 +419,15 @@ class DataService:
 
     def get_available_weeks(self, season: int | None = None) -> list[dict[str, Any]]:
         """Return distinct season/week combinations from predictions."""
+        key = ("available_weeks", season)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_available_weeks_uncached(season)
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_available_weeks_uncached(self, season: int | None) -> list[dict[str, Any]]:
         query = "SELECT DISTINCT season, week FROM predictions"
         params: list[Any] = []
 
@@ -266,6 +443,15 @@ class DataService:
 
     def get_available_seasons(self) -> list[int]:
         """Return distinct seasons from backtest data."""
+        key = ("available_seasons",)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_available_seasons_uncached()
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_available_seasons_uncached(self) -> list[int]:
         result = self._conn.execute(
             "SELECT DISTINCT season FROM backtest_metrics "
             "WHERE season > 0 ORDER BY season DESC"
@@ -274,6 +460,15 @@ class DataService:
 
     def get_prediction_seasons(self) -> list[int]:
         """Return distinct seasons from predictions table."""
+        key = ("prediction_seasons",)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_prediction_seasons_uncached()
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_prediction_seasons_uncached(self) -> list[int]:
         result = self._conn.execute(
             "SELECT DISTINCT season FROM predictions ORDER BY season DESC"
         )
@@ -281,6 +476,15 @@ class DataService:
 
     def get_cache_meta(self) -> dict[str, Any]:
         """Fetch all cache metadata as a dict."""
+        key = ("cache_meta",)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_cache_meta_uncached()
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_cache_meta_uncached(self) -> dict[str, Any]:
         result = self._conn.execute("SELECT key, value FROM cache_meta")
         return {row[0]: row[1] for row in result.fetchall()}
 
@@ -293,5 +497,9 @@ class DataService:
         season: int | None = None,
         week: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Export full prediction data for download/API consumption."""
+        """Export full prediction data for download/API consumption.
+
+        NOT cached directly: delegates to ``get_predictions`` which is already
+        cached. The double-cache would just double-deep-copy.
+        """
         return self.get_predictions(season=season, week=week, sort="time")

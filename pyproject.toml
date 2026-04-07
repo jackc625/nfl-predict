@@ -57,6 +57,7 @@ dependencies = [
     "pyyaml>=6.0.0,<7",
     "jinja2-fragments>=1.11.0",
     "optuna==4.8.0",
+    "cachetools>=7.0.5",
 ]
 
 [dependency-groups]
