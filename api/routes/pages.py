@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from api.dependencies import get_data_service, templates
 from api.services import DataService
@@ -159,23 +159,32 @@ def _compute_week_summary(games: list[dict]) -> dict[str, Any]:
     }
 
 
-def _annotate_wp_correct(games: list[dict]) -> None:
-    """Add wp_correct field to each game dict in-place.
+def _annotate_wp_correct(games: list[dict]) -> list[dict]:
+    """Return a new list of games with wp_correct annotated.
+
+    Builds fresh shallow copies of each dict so the source list (which may
+    come from the DataService TTLCache in plan 15-02) is never mutated.
+    A shallow copy is sufficient because wp_correct is a scalar -- no
+    nested structures are touched.
 
     wp_correct is True if the WP prediction was correct, False if
     incorrect, or None if the game is not completed or data is missing.
     """
+    annotated: list[dict] = []
     for game in games:
-        game["wp_correct"] = None
+        new_game = dict(game)
+        new_game["wp_correct"] = None
         if (
-            game.get("status") == "completed"
-            and game.get("wp_prob") is not None
-            and game.get("home_score") is not None
-            and game.get("away_score") is not None
+            new_game.get("status") == "completed"
+            and new_game.get("wp_prob") is not None
+            and new_game.get("home_score") is not None
+            and new_game.get("away_score") is not None
         ):
-            home_won = game["home_score"] > game["away_score"]
-            predicted_home = game["wp_prob"] > 0.5
-            game["wp_correct"] = home_won == predicted_home
+            home_won = new_game["home_score"] > new_game["away_score"]
+            predicted_home = new_game["wp_prob"] > 0.5
+            new_game["wp_correct"] = home_won == predicted_home
+        annotated.append(new_game)
+    return annotated
 
 
 def _compute_summary(service: Any) -> dict[str, Any]:
@@ -261,6 +270,7 @@ def _compute_summary(service: Any) -> dict[str, Any]:
 @router.get("/")
 def this_week_page(
     request: Request,
+    response: Response,
     week: int | None = Query(None),
     season: int | None = Query(None),
     sort: str = Query("time"),
@@ -276,6 +286,7 @@ def this_week_page(
     Computes wp_correct for correct/incorrect indicators (D-03) and
     week_summary for per-target accuracy banner (D-04).
     """
+    response.headers["Cache-Control"] = "public, max-age=60"
     available_seasons = service.get_prediction_seasons()
     cache_meta = service.get_cache_meta()
 
@@ -292,8 +303,9 @@ def this_week_page(
 
     games = service.get_predictions(season=season, week=week, sort=sort)
 
-    # Compute wp_correct for correct/incorrect indicators (D-03)
-    _annotate_wp_correct(games)
+    # Compute wp_correct on a fresh list so the DataService TTLCache source
+    # is never mutated (plan 15-02 review item #4).
+    games = _annotate_wp_correct(games)
 
     context = {
         "request": request,
@@ -317,6 +329,7 @@ def this_week_page(
 @router.get("/performance")
 def performance_page(
     request: Request,
+    response: Response,
     season: int | None = Query(None),
     service: DataService = Depends(get_data_service),
 ):
@@ -325,6 +338,7 @@ def performance_page(
     Shows all-time summary metrics with a season selector that swaps
     season-specific metrics via HTMX.
     """
+    response.headers["Cache-Control"] = "public, max-age=60"
     available_seasons = service.get_available_seasons()
     raw_metrics = service.get_backtest_metrics(season=season)
     season_metrics = _pivot_season_metrics(raw_metrics)
@@ -351,6 +365,7 @@ def performance_page(
 @router.get("/backtest")
 def backtest_page(
     request: Request,
+    response: Response,
     service: DataService = Depends(get_data_service),
 ):
     """Serve the backtest results page with 4 Plotly charts.
@@ -358,6 +373,7 @@ def backtest_page(
     Charts are pre-rendered in the DuckDB chart_cache for fast serving.
     Falls back to empty state components if charts are not available.
     """
+    response.headers["Cache-Control"] = "public, max-age=60"
     charts = {
         "calibration": service.get_chart_html("calibration"),
         "clv": service.get_chart_html("clv"),
@@ -378,6 +394,7 @@ def backtest_page(
 @router.get("/games/{game_id}")
 def game_detail_page(
     request: Request,
+    response: Response,
     game_id: str,
     service: DataService = Depends(get_data_service),
 ):
@@ -387,6 +404,7 @@ def game_detail_page(
     prediction vs market comparison, team context (Elo, form, H2H),
     venue/weather, and result overlay for completed games (D-13 to D-15).
     """
+    response.headers["Cache-Control"] = "public, max-age=60"
     game = service.get_game_detail(game_id)
     cache_meta = service.get_cache_meta()
     context = {
