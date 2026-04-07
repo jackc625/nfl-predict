@@ -138,16 +138,31 @@ def test_db(tmp_path: Path) -> Path:
             )
             """,
             [
-                game["game_id"], game["season"], game["week"],
-                game["game_date"], game["home_team"], game["away_team"],
-                game["status"], game["home_score"], game["away_score"],
-                game["wp_prob"], game["wp_confidence"],
-                game["ats_prediction"], game["ats_confidence"],
-                game["ou_prediction"], game["ou_confidence"],
-                game["market_spread"], game["market_total"],
-                game["market_ml_home"], game["market_ml_away"],
-                game["wp_edge"], game["ats_edge"], game["ou_edge"],
-                game["blended_wp"], game["blended_ats"], game["blended_ou"],
+                game["game_id"],
+                game["season"],
+                game["week"],
+                game["game_date"],
+                game["home_team"],
+                game["away_team"],
+                game["status"],
+                game["home_score"],
+                game["away_score"],
+                game["wp_prob"],
+                game["wp_confidence"],
+                game["ats_prediction"],
+                game["ats_confidence"],
+                game["ou_prediction"],
+                game["ou_confidence"],
+                game["market_spread"],
+                game["market_total"],
+                game["market_ml_home"],
+                game["market_ml_away"],
+                game["wp_edge"],
+                game["ats_edge"],
+                game["ou_edge"],
+                game["blended_wp"],
+                game["blended_ats"],
+                game["blended_ou"],
             ],
         )
 
@@ -211,19 +226,19 @@ def test_db(tmp_path: Path) -> Path:
     game_context_rows = [
         (
             "2024_W01_BUF@KC",  # game_id
-            1550.0,             # home_elo
-            1520.0,             # away_elo
+            1550.0,  # home_elo
+            1520.0,  # away_elo
             '["W","W","L","W","W"]',  # home_last5
             '["W","L","W","W","L"]',  # away_last5
             '{"home_wins": 3, "away_wins": 2}',  # h2h_record
-            "GEHA Field at Arrowhead Stadium",    # venue_name
-            "Grass",            # surface
-            "outdoors",         # roof_type
-            2.5,                # weather_severity
-            12.0,               # wind_mph
-            True,               # is_outdoor
-            True,               # is_divisional
-            True,               # is_primetime
+            "GEHA Field at Arrowhead Stadium",  # venue_name
+            "Grass",  # surface
+            "outdoors",  # roof_type
+            2.5,  # weather_severity
+            12.0,  # wind_mph
+            True,  # is_outdoor
+            True,  # is_divisional
+            True,  # is_primetime
         ),
     ]
     conn.executemany(
@@ -269,20 +284,34 @@ def empty_test_db(tmp_path: Path) -> Path:
 def test_client(test_db: Path) -> TestClient:
     """Create a FastAPI TestClient with the test database.
 
-    Overrides the DB_PATH dependency so the app reads from the test DB.
+    Uses FastAPI ``app.dependency_overrides`` to inject a test DuckDB
+    connection via :func:`api.dependencies.get_db`. This is the canonical
+    pattern for unit-testing FastAPI dependencies and replaces the older
+    ``deps.DB_PATH`` mutation approach.
     """
-    import api.dependencies as deps
+    import threading
+
+    from api.dependencies import get_db
     from api.main import app
 
-    # Override the DB_PATH module-level variable
-    original_db_path = deps.DB_PATH
-    deps.DB_PATH = test_db
+    test_conn = duckdb.connect(str(test_db), read_only=True)
+
+    def _override_get_db():
+        return test_conn
+
+    # Ensure app.state has the lock even when lifespan has not run yet.
+    # TestClient triggers lifespan, but dependency overrides bypass the
+    # reconnect path inside get_db anyway -- the lock is here so any code
+    # that touches app.state.db_lock (e.g. health endpoint) does not break.
+    app.state.db_lock = threading.RLock()
+    app.dependency_overrides[get_db] = _override_get_db
 
     client = TestClient(app, raise_server_exceptions=False)
-    yield client  # type: ignore[misc]
-
-    # Restore
-    deps.DB_PATH = original_db_path
+    try:
+        yield client  # type: ignore[misc]
+    finally:
+        app.dependency_overrides.clear()
+        test_conn.close()
 
 
 @pytest.fixture()
@@ -291,14 +320,22 @@ def empty_test_client(empty_test_db: Path) -> TestClient:
 
     Useful for testing empty-state UI rendering.
     """
-    import api.dependencies as deps
+    import threading
+
+    from api.dependencies import get_db
     from api.main import app
 
-    original_db_path = deps.DB_PATH
-    deps.DB_PATH = empty_test_db
+    test_conn = duckdb.connect(str(empty_test_db), read_only=True)
+
+    def _override_get_db():
+        return test_conn
+
+    app.state.db_lock = threading.RLock()
+    app.dependency_overrides[get_db] = _override_get_db
 
     client = TestClient(app, raise_server_exceptions=False)
-    yield client  # type: ignore[misc]
-
-    # Restore
-    deps.DB_PATH = original_db_path
+    try:
+        yield client  # type: ignore[misc]
+    finally:
+        app.dependency_overrides.clear()
+        test_conn.close()

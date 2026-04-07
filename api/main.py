@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from utils import get_logger
 
-from .dependencies import DB_PATH
+from . import dependencies as deps
 from .routes.api_export import router as export_router
 from .routes.fragments import router as fragments_router
 from .routes.health import router as health_router
@@ -59,23 +59,23 @@ async def lifespan(app: FastAPI):
     """
     app.state.db_lock = threading.RLock()
 
-    if DB_PATH.exists():
+    if deps.DB_PATH.exists():
         try:
-            conn = duckdb.connect(str(DB_PATH), read_only=True)
+            conn = duckdb.connect(str(deps.DB_PATH), read_only=True)
             app.state.db_conn = conn
-            logger.info("DuckDB connection established", path=str(DB_PATH))
+            logger.info("DuckDB connection established", path=str(deps.DB_PATH))
         except (duckdb.Error, OSError) as exc:
             app.state.db_conn = None
             logger.error(
                 "Failed to open DuckDB cache at startup",
-                path=str(DB_PATH),
+                path=str(deps.DB_PATH),
                 error=str(exc),
             )
     else:
         app.state.db_conn = None
         logger.warning(
             "DuckDB web cache not found -- run 'make build-cache' to populate",
-            path=str(DB_PATH),
+            path=str(deps.DB_PATH),
         )
 
     yield
