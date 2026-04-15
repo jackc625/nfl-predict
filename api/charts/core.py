@@ -16,7 +16,7 @@ include_plotlyjs=False (Plotly CDN loaded in base.html).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import plotly.graph_objects as go
@@ -25,9 +25,6 @@ from plotly.subplots import make_subplots
 from sklearn.calibration import calibration_curve
 
 from backtest.report import SEASON_COLORS, TARGET_COLORS
-
-if TYPE_CHECKING:
-    from api.services import DataService
 
 # ---------------------------------------------------------------------------
 # Layout defaults (per UI-SPEC CHART_LAYOUT_DEFAULTS)
@@ -115,14 +112,16 @@ def generate_dashboard_calibration_chart(predictions: list[dict]) -> str:
     fig = go.Figure()
 
     # Diagonal reference line (perfect calibration)
-    fig.add_trace(go.Scatter(
-        x=[0, 1],
-        y=[0, 1],
-        mode="lines",
-        line={"dash": "dash", "color": "#999", "width": 1},
-        name="Perfect Calibration",
-        showlegend=True,
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=[0, 1],
+            y=[0, 1],
+            mode="lines",
+            line={"dash": "dash", "color": "#999", "width": 1},
+            name="Perfect Calibration",
+            showlegend=True,
+        )
+    )
 
     # Group by season
     seasons: dict[int, list[dict]] = {}
@@ -148,14 +147,16 @@ def generate_dashboard_calibration_chart(predictions: list[dict]) -> str:
             y_true, y_prob, n_bins=10, strategy="uniform"
         )
 
-        fig.add_trace(go.Scatter(
-            x=mean_pred,
-            y=fraction_pos,
-            mode="lines+markers",
-            name=str(season),
-            line={"color": _get_season_color(season), "width": 2},
-            marker={"size": 6},
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=mean_pred,
+                y=fraction_pos,
+                mode="lines+markers",
+                name=str(season),
+                line={"color": _get_season_color(season), "width": 2},
+                marker={"size": 6},
+            )
+        )
 
     # Overall calibration curve
     ece_text = "ECE = N/A"
@@ -167,14 +168,16 @@ def generate_dashboard_calibration_chart(predictions: list[dict]) -> str:
             combined_true, combined_prob, n_bins=10, strategy="uniform"
         )
 
-        fig.add_trace(go.Scatter(
-            x=mean_pred,
-            y=fraction_pos,
-            mode="lines+markers",
-            name="Overall",
-            line={"color": "#333", "width": 3},
-            marker={"size": 8},
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=mean_pred,
+                y=fraction_pos,
+                mode="lines+markers",
+                name="Overall",
+                line={"color": "#333", "width": 3},
+                marker={"size": 8},
+            )
+        )
 
         # Compute ECE
         from backtest.metrics import _compute_ece
@@ -230,7 +233,8 @@ def generate_dashboard_clv_chart(predictions: list[dict]) -> str:
 
         # Filter to valid CLV values
         valid_preds = [
-            p for p in preds
+            p
+            for p in preds
             if p.get("probability_clv") is not None
             and p.get("has_closing_odds") is not False
         ]
@@ -247,13 +251,15 @@ def generate_dashboard_clv_chart(predictions: list[dict]) -> str:
         x_vals = list(range(len(cumulative_clv)))
         mean_clv = float(clv_values.mean())
 
-        fig.add_trace(go.Scatter(
-            x=x_vals,
-            y=cumulative_clv.tolist(),
-            mode="lines",
-            name=f"{target.upper()} (Mean: {mean_clv:+.4f})",
-            line={"color": _get_target_color(target), "width": 2},
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=cumulative_clv.tolist(),
+                mode="lines",
+                name=f"{target.upper()} (Mean: {mean_clv:+.4f})",
+                line={"color": _get_target_color(target), "width": 2},
+            )
+        )
 
         # Season boundary markers
         for i in range(1, len(valid_preds)):
@@ -335,9 +341,7 @@ def generate_dashboard_heatmap(metrics: list[dict]) -> str:
             "ou": ["mae", "rmse"],
         }
         if target in preferred:
-            available_preferred = [
-                m for m in preferred[target] if m in metric_names
-            ]
+            available_preferred = [m for m in preferred[target] if m in metric_names]
             if available_preferred:
                 metric_names = available_preferred
 
@@ -353,7 +357,8 @@ def generate_dashboard_heatmap(metrics: list[dict]) -> str:
             row_text: list[str] = []
             for metric in metric_names:
                 matching = [
-                    m for m in target_metrics
+                    m
+                    for m in target_metrics
                     if int(m["season"]) == season and m["metric_name"] == metric
                 ]
                 if matching:
@@ -387,9 +392,7 @@ def generate_dashboard_heatmap(metrics: list[dict]) -> str:
                 colorscale=colorscale,
                 showscale=(col_idx == n_targets),
                 hovertemplate=(
-                    "Season: %{y}<br>"
-                    "Metric: %{x}<br>"
-                    "Value: %{text}<extra></extra>"
+                    "Season: %{y}<br>Metric: %{x}<br>Value: %{text}<extra></extra>"
                 ),
             ),
             row=1,
@@ -443,13 +446,15 @@ def generate_dashboard_equity_chart(equity_data: list[dict]) -> str:
         color = strategy_colors.get(strategy, DEFAULT_COLOR)
         display_name = strategy.replace("_", " ").title()
 
-        fig.add_trace(go.Scatter(
-            x=x_vals,
-            y=y_vals,
-            mode="lines",
-            name=display_name,
-            line={"color": color, "width": 2},
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=x_vals,
+                y=y_vals,
+                mode="lines",
+                name=display_name,
+                line={"color": color, "width": 2},
+            )
+        )
 
     # Break-even reference line at starting bankroll (first value)
     if equity_data:
@@ -473,90 +478,3 @@ def generate_dashboard_equity_chart(equity_data: list[dict]) -> str:
     _apply_layout_defaults(fig)
 
     return _to_html(fig)
-
-
-# ---------------------------------------------------------------------------
-# Pre-render for cache population
-# ---------------------------------------------------------------------------
-
-
-def prerender_charts_for_cache(service: DataService) -> dict[str, str]:
-    """Generate all 4 dashboard charts and return their HTML divs.
-
-    Called during cache population to store pre-rendered charts in the
-    chart_cache DuckDB table.
-
-    Args:
-        service: DataService instance pointing to the web cache.
-
-    Returns:
-        Dict mapping chart_id to HTML div string:
-        {"calibration": html, "clv": html, "heatmap": html, "equity": html}
-    """
-    charts: dict[str, str] = {}
-
-    # Calibration + CLV use backtest predictions
-    predictions = service.get_backtest_predictions()
-
-    charts["calibration"] = generate_dashboard_calibration_chart(predictions)
-    charts["clv"] = generate_dashboard_clv_chart(predictions)
-
-    # Heatmap uses backtest metrics
-    metrics = service.get_backtest_metrics()
-    charts["heatmap"] = generate_dashboard_heatmap(metrics)
-
-    # Equity uses equity curve data
-    equity_data = service.get_equity_curve()
-    charts["equity"] = generate_dashboard_equity_chart(equity_data)
-
-    return charts
-
-
-def prerender_charts_from_conn(conn: Any) -> dict[str, str]:
-    """Generate all 4 dashboard charts directly from a DuckDB connection.
-
-    Used during cache population when the database is already open in write
-    mode (can't open a second read-only connection to the same file).
-
-    Args:
-        conn: Active DuckDB connection with populated tables.
-
-    Returns:
-        Dict mapping chart_id to HTML div string.
-    """
-    charts: dict[str, str] = {}
-
-    # Query backtest_predictions for calibration + CLV charts
-    predictions = [
-        dict(zip([d[0] for d in conn.description], row))
-        for row in conn.execute("SELECT * FROM backtest_predictions").fetchall()
-    ] if conn.execute(
-        "SELECT COUNT(*) FROM backtest_predictions"
-    ).fetchone()[0] > 0 else []
-
-    charts["calibration"] = generate_dashboard_calibration_chart(predictions)
-    charts["clv"] = generate_dashboard_clv_chart(predictions)
-
-    # Query backtest_metrics for heatmap
-    metrics = [
-        dict(zip([d[0] for d in conn.description], row))
-        for row in conn.execute("SELECT * FROM backtest_metrics").fetchall()
-    ] if conn.execute(
-        "SELECT COUNT(*) FROM backtest_metrics"
-    ).fetchone()[0] > 0 else []
-
-    charts["heatmap"] = generate_dashboard_heatmap(metrics)
-
-    # Query equity_curve for equity chart
-    equity_data = [
-        dict(zip([d[0] for d in conn.description], row))
-        for row in conn.execute(
-            "SELECT * FROM equity_curve ORDER BY strategy, bet_index"
-        ).fetchall()
-    ] if conn.execute(
-        "SELECT COUNT(*) FROM equity_curve"
-    ).fetchone()[0] > 0 else []
-
-    charts["equity"] = generate_dashboard_equity_chart(equity_data)
-
-    return charts
