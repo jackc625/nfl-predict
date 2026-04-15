@@ -146,6 +146,43 @@ class DataService:
         self._conn = conn
 
     # ------------------------------------------------------------------
+    # Connection accessor (Codex MEDIUM #11)
+    # ------------------------------------------------------------------
+
+    def get_connection(self) -> duckdb.DuckDBPyConnection:
+        """Return the injected read-only DuckDB connection.
+
+        Public accessor used by pre-render hooks that need to run ad-hoc
+        queries not covered by a cached ``get_*`` method. Do NOT use this on
+        the request path — all request handlers use the typed getters so the
+        TTL cache and schema-drift guards stay in effect.
+        """
+        return self._conn
+
+    # ------------------------------------------------------------------
+    # Insights aggregate table (Phase 16 — precomputed during pre-render)
+    # ------------------------------------------------------------------
+
+    def get_insights_aggregate_table(self) -> list[dict[str, Any]]:
+        """Read the precomputed insights aggregate table from ``chart_cache``.
+
+        The table is stored as a JSON blob under ``chart_id =
+        "insights_aggregate_table"`` during pre-render (Codex HIGH #1). This
+        accessor decodes the JSON into a list of dicts so the template can
+        render it without re-running any statistics at request time.
+
+        Returns an empty list if the entry is missing or malformed.
+        """
+        html = self.get_chart_html("insights_aggregate_table")
+        if not html:
+            return []
+        try:
+            decoded = json.loads(html)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return decoded if isinstance(decoded, list) else []
+
+    # ------------------------------------------------------------------
     # Predictions
     # ------------------------------------------------------------------
 
