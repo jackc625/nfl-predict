@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from api.charts import INSIGHTS_CHART_IDS
 from api.dependencies import get_data_service, templates
 from api.services import DataService
 
@@ -395,6 +396,49 @@ def backtest_page(
     }
     template_response = templates.TemplateResponse(
         request, "pages/backtest.html", context
+    )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
+
+
+@router.get("/insights")
+def insights_page(
+    request: Request,
+    service: DataService = Depends(get_data_service),
+):
+    """Serve the Model Insights page.
+
+    All charts are pre-rendered during cache population (Plan 16-02) and
+    stored in the DuckDB chart_cache. The aggregate Model-vs-Market table
+    is also precomputed during pre-render and stored under chart_id
+    ``insights_aggregate_table``. This handler contains NO statistical
+    logic -- Plan 16-02 is the single source of truth for metric formulas
+    (REVIEWS Codex HIGH #1).
+
+    Page is static with no filters (D-19). Cache-Control header matches
+    the other static-artifact pages (Phase 15 D-07 / REVIEWS Codex MEDIUM
+    #12).
+    """
+    # Fetch the 9 new insights chart HTML blobs.
+    charts: dict[str, str | None] = {
+        chart_id: service.get_chart_html(chart_id) for chart_id in INSIGHTS_CHART_IDS
+    }
+    # Reuse the existing WP reliability chart (not part of INSIGHTS_CHART_IDS per D-22).
+    charts["calibration"] = service.get_chart_html("calibration")
+
+    # Precomputed aggregate table (list of dicts). Falls back to [] if missing/malformed.
+    aggregate_table = service.get_insights_aggregate_table()
+
+    cache_meta = service.get_cache_meta()
+    context = {
+        "request": request,
+        "charts": charts,
+        "aggregate_table": aggregate_table,
+        "current_path": "/insights",
+        "cache_meta": cache_meta,
+    }
+    template_response = templates.TemplateResponse(
+        request, "pages/insights.html", context
     )
     template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
     return template_response
