@@ -326,7 +326,6 @@ def _wp_rows(data: dict[str, list[dict]]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_ats_calibration_happy_path(insights_chart_data: dict) -> None:
     """Generator produces a chart div with expected bin-center references."""
     from api.charts import generate_insights_ats_calibration
@@ -343,7 +342,6 @@ def test_insights_ats_calibration_happy_path(insights_chart_data: dict) -> None:
     )
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_ats_calibration_empty_data() -> None:
     """Generator returns an empty-state div with a helpful message."""
     from api.charts import generate_insights_ats_calibration
@@ -352,7 +350,6 @@ def test_insights_ats_calibration_empty_data() -> None:
     assert "Chart unavailable" in html or "No ATS calibration" in html
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_ats_calibration_overflow_bins(insights_chart_data: dict) -> None:
     """Overflow bins ``<=-21`` and ``>=21`` are rendered when residuals exceed
     the regular bin range (E13 / E14)."""
@@ -368,7 +365,6 @@ def test_insights_ats_calibration_overflow_bins(insights_chart_data: dict) -> No
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_ou_calibration_happy_path(insights_chart_data: dict) -> None:
     from api.charts import generate_insights_ou_calibration
 
@@ -377,7 +373,6 @@ def test_insights_ou_calibration_happy_path(insights_chart_data: dict) -> None:
     assert "Predicted total" in html
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_ou_calibration_empty_data() -> None:
     from api.charts import generate_insights_ou_calibration
 
@@ -385,7 +380,6 @@ def test_insights_ou_calibration_empty_data() -> None:
     assert "Chart unavailable" in html or "No OU calibration" in html
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_ou_calibration_fixed_bins(insights_chart_data: dict) -> None:
     """OU uses fixed 3-point bins across 35-65 — bin centers 36.5, 39.5,
     42.5, ..., 63.5 — plus ``<=35`` and ``>=65`` overflow bins."""
@@ -405,7 +399,6 @@ def test_insights_ou_calibration_fixed_bins(insights_chart_data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 @pytest.mark.parametrize("target", ["wp", "ats", "ou"])
 def test_insights_feature_importance_happy_path(
     insights_chart_data: dict,
@@ -439,7 +432,6 @@ def test_insights_feature_importance_happy_path(
         assert feature in html, f"Missing feature {feature} in {target} chart"
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_feature_importance_empty_data() -> None:
     from api.charts import generate_insights_feature_importance_wp
 
@@ -452,7 +444,6 @@ def test_insights_feature_importance_empty_data() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_accuracy_trend_happy_path(insights_chart_data: dict) -> None:
     """Chart includes all four season labels 2021-2024."""
     from api.charts import generate_insights_accuracy_trend
@@ -462,7 +453,6 @@ def test_insights_accuracy_trend_happy_path(insights_chart_data: dict) -> None:
         assert year in html, f"Missing season label {year} in accuracy trend chart"
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_accuracy_trend_empty_data() -> None:
     from api.charts import generate_insights_accuracy_trend
 
@@ -475,7 +465,6 @@ def test_insights_accuracy_trend_empty_data() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_model_vs_market_wp_happy_path(insights_chart_data: dict) -> None:
     """WP small-multiples or metric-toggle chart renders all three metrics and
     both series labels."""
@@ -492,7 +481,6 @@ def test_insights_model_vs_market_wp_happy_path(insights_chart_data: dict) -> No
         assert title in html, f"Missing metric subplot title containing {title!r}"
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_model_vs_market_wp_empty_data() -> None:
     from api.charts import generate_insights_model_vs_market_wp
 
@@ -500,7 +488,6 @@ def test_insights_model_vs_market_wp_empty_data() -> None:
     assert "Chart unavailable" in html or "No" in html
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_model_vs_market_wp_handles_null_moneylines(
     insights_chart_data: dict,
 ) -> None:
@@ -524,7 +511,6 @@ def test_insights_model_vs_market_wp_handles_null_moneylines(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_model_vs_market_ats_happy_path() -> None:
     """Sign convention: market prediction is ``-market_spread``. If we feed
     rows where model predicted home margin == -market_spread for every game,
@@ -565,7 +551,6 @@ def test_insights_model_vs_market_ats_happy_path() -> None:
     assert "0.00" in html or "0.0" in html
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_insights_model_vs_market_ou_happy_path(insights_chart_data: dict) -> None:
     from api.charts import generate_insights_model_vs_market_ou
 
@@ -583,7 +568,6 @@ def test_insights_model_vs_market_ou_happy_path(insights_chart_data: dict) -> No
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_prerender_charts_failure_isolation(
     insights_chart_data: dict,
     caplog: pytest.LogCaptureFixture,
@@ -592,9 +576,8 @@ def test_prerender_charts_failure_isolation(
     (b) emit a WARNING log record with chart_id + traceback, and (c) populate
     the failed chart_id with the ``_empty_chart_div`` fallback so the template
     renders a "Chart unavailable" div instead of a hole."""
-    from api.charts.prerender import prerender_charts_for_cache
-
     from api.charts import INSIGHTS_CHART_IDS
+    from api.charts.prerender import prerender_charts_for_cache
 
     caplog.set_level(logging.WARNING)
     # Patch exactly one generator to blow up.
