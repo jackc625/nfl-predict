@@ -6,7 +6,6 @@ backtest page, and HTMX block rendering.
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -248,14 +247,11 @@ def test_game_detail_export_buttons(test_client: TestClient):
 
 
 # ---------------------------------------------------------------------------
-# Phase 16: /insights page (DASH-10) route test stubs
+# Phase 16: /insights page (DASH-10) route tests
 # ---------------------------------------------------------------------------
-# Full assertion bodies written now; gated by @pytest.mark.skip until Plan
-# 16-03 lands the route, template, and nav link. Plan 16-03 removes the skip
-# markers and expects every assertion to pass.
+# Activated by Plan 16-03 (route, template, and nav link are now wired).
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-03")
 def test_insights_page_200(test_client: TestClient):
     """DASH-10: /insights returns 200 with all three section headings."""
     response = test_client.get("/insights")
@@ -267,7 +263,6 @@ def test_insights_page_200(test_client: TestClient):
     assert "Model vs Market" in html
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-03")
 def test_insights_page_cache_control(test_client: TestClient):
     """D-20 / PAGE_CACHE_CONTROL: Cache-Control header is set on TemplateResponse."""
     response = test_client.get("/insights")
@@ -276,7 +271,6 @@ def test_insights_page_cache_control(test_client: TestClient):
     assert "public" in cc and "max-age" in cc
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-03")
 def test_insights_page_has_nav_link(test_client: TestClient):
     """D-16: Insights link appears in rendered HTML (desktop + mobile menus)."""
     response = test_client.get("/insights")
@@ -284,7 +278,6 @@ def test_insights_page_has_nav_link(test_client: TestClient):
     assert response.text.count('href="/insights"') >= 2
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-03")
 def test_insights_page_renders_expected_chart_ids(test_client: TestClient):
     """REVIEWS Codex HIGH #7: route reads exactly the 9 insights chart IDs
     plus the existing ``calibration`` chart_id (D-22)."""
@@ -300,7 +293,6 @@ def test_insights_page_renders_expected_chart_ids(test_client: TestClient):
     assert 'data-chart-id="calibration"' in html
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-03")
 def test_insights_page_empty_db(empty_test_client: TestClient):
     """D-29: empty DB renders empty-state cards, not 500."""
     response = empty_test_client.get("/insights")

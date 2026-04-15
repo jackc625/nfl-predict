@@ -646,7 +646,11 @@ def test_db(tmp_path: Path) -> Path:
     # Insert chart cache entries (empty HTML for testing graceful fallback)
     chart_now = datetime.now(tz=UTC)
     chart_entries = [
-        ("calibration", "<div>test calibration</div>", chart_now),
+        (
+            "calibration",
+            '<div data-chart-id="calibration">test calibration</div>',
+            chart_now,
+        ),
         ("clv", "<div>test clv</div>", chart_now),
         ("heatmap", "<div>test heatmap</div>", chart_now),
         ("equity", "<div>test equity</div>", chart_now),
