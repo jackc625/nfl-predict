@@ -2,7 +2,7 @@
 
 These tests target the module Plan 16-02 will create at
 ``api/insights_metrics.py``. Full assertion bodies are written now; tests are
-gated by ``@pytest.mark.skip(reason="unblocked by plan 16-02")`` until the
+gated by ```` until the
 module lands. Plan 16-02's verify step removes the skip markers.
 
 Why skip instead of xfail (per REVIEWS.md Codex MEDIUM #10): xfail silently
@@ -21,7 +21,6 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_compute_wp_market_prob_devig_both_sides_present() -> None:
     """Both moneylines present => devig both sides so home + away = 1."""
     from api.insights_metrics import compute_wp_market_prob
@@ -39,7 +38,6 @@ def test_compute_wp_market_prob_devig_both_sides_present() -> None:
     assert result["prob"] == pytest.approx(expected_prob, abs=1e-6)
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_compute_wp_market_prob_missing_home_side() -> None:
     """Only away side present => return the implied (non-devigged) probability
     with ``devig_method == "implied"`` tag per Plan 16-02 contract."""
@@ -54,7 +52,6 @@ def test_compute_wp_market_prob_missing_home_side() -> None:
     assert result["prob"] == pytest.approx(expected, abs=1e-6)
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_compute_wp_market_prob_missing_both_sides() -> None:
     """Both sides null => return None so caller can skip the row."""
     from api.insights_metrics import compute_wp_market_prob
@@ -67,7 +64,6 @@ def test_compute_wp_market_prob_missing_both_sides() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_compute_log_loss_clipping_at_zero() -> None:
     """p=0.0 with y=1 must be finite (clipped at epsilon=1e-15) and equal
     ``-log(1e-15)`` to 6 decimals."""
@@ -78,7 +74,6 @@ def test_compute_log_loss_clipping_at_zero() -> None:
     assert loss == pytest.approx(-math.log(1e-15), abs=1e-6)
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_compute_log_loss_clipping_at_one() -> None:
     """Mirror: p=1.0 with y=0 must clip at 1 - 1e-15."""
     from api.insights_metrics import compute_log_loss
@@ -93,7 +88,6 @@ def test_compute_log_loss_clipping_at_one() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_compute_brier_formula() -> None:
     """Brier = mean((y_prob - y_true)^2)."""
     from api.insights_metrics import compute_brier
@@ -112,7 +106,6 @@ def test_compute_brier_formula() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_compute_accuracy_threshold_half() -> None:
     """Threshold is ``p >= 0.5`` (inclusive). For y=[0,1,1] and p=[0.49,0.5,0.51],
     predictions are [0,1,1] so accuracy = 3/3 = 1.0."""
@@ -130,7 +123,6 @@ def test_compute_accuracy_threshold_half() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_compute_ats_mae_sign_convention() -> None:
     """Model ATS prediction is home margin; market prediction is
     ``-market_spread`` (market_spread < 0 means home favored)."""
@@ -154,7 +146,6 @@ def test_compute_ats_mae_sign_convention() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_compute_ou_mae() -> None:
     from api.insights_metrics import compute_ou_mae_model_and_market
 
@@ -174,7 +165,6 @@ def test_compute_ou_mae() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_bin_ats_residuals_semantics() -> None:
     """Bins are left-closed/right-open at boundaries ``-21, -19, -17, ..., 19, 21``;
     values below -21 map to ``<=-21`` and values >= 21 map to ``>=21``; empty
@@ -197,7 +187,6 @@ def test_bin_ats_residuals_semantics() -> None:
     assert 0 in bins.values() or len(bins) >= 20
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_bin_ou_residuals_fixed_bins() -> None:
     """OU bins fixed 3-point width across 35-65 with ``<=35`` and ``>=65``
     overflow bins."""
@@ -217,7 +206,6 @@ def test_bin_ou_residuals_fixed_bins() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="unblocked by plan 16-02")
 def test_american_odds_formula() -> None:
     """Sanity check: -150 -> 0.60, +130 -> 100/230 ≈ 0.4347826..."""
     from api.insights_metrics import american_odds_to_prob
