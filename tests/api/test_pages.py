@@ -6,6 +6,7 @@ backtest page, and HTMX block rendering.
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -50,7 +51,7 @@ def test_this_week_page_confidence_badges(test_client: TestClient):
     # Sample data contains high, medium, and low confidence values
     assert "bg-green-100" in html  # high
     assert "bg-amber-100" in html  # medium
-    assert "bg-red-100" in html    # low
+    assert "bg-red-100" in html  # low
 
 
 def test_this_week_page_with_week_filter(test_client: TestClient):
@@ -69,9 +70,7 @@ def test_this_week_page_with_sort(test_client: TestClient):
 
 def test_this_week_htmx_returns_fragment(test_client: TestClient):
     """UIAP-08: HX-Request header returns game_grid block only."""
-    response = test_client.get(
-        "/", headers={"HX-Request": "true"}
-    )
+    response = test_client.get("/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     html = response.text
     # Fragment should NOT contain full page elements
@@ -246,3 +245,64 @@ def test_game_detail_export_buttons(test_client: TestClient):
     html = response.text
     assert "/api/export/csv" in html
     assert "/api/export/json" in html
+
+
+# ---------------------------------------------------------------------------
+# Phase 16: /insights page (DASH-10) route test stubs
+# ---------------------------------------------------------------------------
+# Full assertion bodies written now; gated by @pytest.mark.skip until Plan
+# 16-03 lands the route, template, and nav link. Plan 16-03 removes the skip
+# markers and expects every assertion to pass.
+
+
+@pytest.mark.skip(reason="unblocked by plan 16-03")
+def test_insights_page_200(test_client: TestClient):
+    """DASH-10: /insights returns 200 with all three section headings."""
+    response = test_client.get("/insights")
+    assert response.status_code == 200
+    html = response.text
+    assert "Model Insights" in html
+    assert "Calibration" in html
+    assert "Feature Importance" in html
+    assert "Model vs Market" in html
+
+
+@pytest.mark.skip(reason="unblocked by plan 16-03")
+def test_insights_page_cache_control(test_client: TestClient):
+    """D-20 / PAGE_CACHE_CONTROL: Cache-Control header is set on TemplateResponse."""
+    response = test_client.get("/insights")
+    assert response.status_code == 200
+    cc = response.headers.get("Cache-Control", "")
+    assert "public" in cc and "max-age" in cc
+
+
+@pytest.mark.skip(reason="unblocked by plan 16-03")
+def test_insights_page_has_nav_link(test_client: TestClient):
+    """D-16: Insights link appears in rendered HTML (desktop + mobile menus)."""
+    response = test_client.get("/insights")
+    # Exactly two occurrences expected: desktop nav + mobile menu.
+    assert response.text.count('href="/insights"') >= 2
+
+
+@pytest.mark.skip(reason="unblocked by plan 16-03")
+def test_insights_page_renders_expected_chart_ids(test_client: TestClient):
+    """REVIEWS Codex HIGH #7: route reads exactly the 9 insights chart IDs
+    plus the existing ``calibration`` chart_id (D-22)."""
+    from api.charts import INSIGHTS_CHART_IDS
+
+    assert len(INSIGHTS_CHART_IDS) == 9
+    response = test_client.get("/insights")
+    html = response.text
+    # conftest inserts marker divs for each chart_id; assert all 9 markers render.
+    for chart_id in INSIGHTS_CHART_IDS:
+        assert f'data-chart-id="{chart_id}"' in html, f"Missing chart_id: {chart_id}"
+    # WP calibration reuses the existing `calibration` chart_id.
+    assert 'data-chart-id="calibration"' in html
+
+
+@pytest.mark.skip(reason="unblocked by plan 16-03")
+def test_insights_page_empty_db(empty_test_client: TestClient):
+    """D-29: empty DB renders empty-state cards, not 500."""
+    response = empty_test_client.get("/insights")
+    assert response.status_code == 200
+    assert "Chart unavailable" in response.text
