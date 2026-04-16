@@ -488,9 +488,9 @@ nfl-predict/
     build_*.py, populate_cache.py, validate_*.py
 
   tests/
-    unit/        # 47 files: trainers, builders, leakage, Elo, quality gates, ...
-    integration/ # 19 files: end-to-end pipeline, idempotency, smoke tests
-    api/         # 12 files including UIAP-01 import guard
+    unit/        # 45 files: trainers, builders, leakage, Elo, quality gates, ...
+    integration/ # 16 files: end-to-end pipeline, idempotency, smoke tests
+    api/         #  9 files including UIAP-01 import guard
     ui/          # HTML snapshot tests via BeautifulSoup
 
   utils/                   # Cross-cutting
@@ -521,9 +521,9 @@ nfl-predict/
 
 | Suite | File count | What it covers |
 |-------|-----------:|----------------|
-| `tests/unit/` | 47 | Trainers, feature builders, leakage gate, Elo correctness + no-leakage, quality gates, temporal splits, CLV, static + dynamic blending, Optuna tuning, timezone handling, pipeline health + orchestrator + staleness + alerts + execution log, betting simulation, QB tracking, opponent adjustment, backtest engine + metrics + report |
-| `tests/integration/` | 19 | End-to-end pipeline, backtest comparison + report, data completeness, Elo convergence, idempotency, lift validation, nflreadpy + Open-Meteo smoke tests, Phase 15 integration, prediction pipeline, scheduling setup, training pipeline |
-| `tests/api/` | 12 | Pages, fragments, exports, cache headers, caching, connection management, error responses, health endpoint, **UIAP-01 import guard** |
+| `tests/unit/` | 45 | Trainers, feature builders, leakage gate, Elo correctness + no-leakage, quality gates, temporal splits, CLV, static + dynamic blending, Optuna tuning, timezone handling, pipeline health + orchestrator + staleness + alerts + execution log, betting simulation, QB tracking, opponent adjustment, backtest engine + metrics + report |
+| `tests/integration/` | 16 | End-to-end pipeline, backtest comparison + report, data completeness, Elo convergence, idempotency, lift validation, nflreadpy + Open-Meteo smoke tests, Phase 15 integration, prediction pipeline, scheduling setup, training pipeline |
+| `tests/api/` | 9 | Pages, fragments, exports, cache headers, caching, connection management, error responses, health endpoint, **UIAP-01 import guard** |
 | `tests/ui/` | HTML snapshot | BeautifulSoup-based snapshot tests over rendered pages |
 
 Seven test files use Hypothesis for property-based testing (betting
