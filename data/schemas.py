@@ -217,6 +217,26 @@ class WeatherSchema(BaseModel):
 
     model_config = ConfigDict(use_enum_values=True)
 
+    # Nullable numeric fields whose pandas None -> NaN round-trip must be
+    # coerced back to None BEFORE Pydantic's ge/le range checks run. Any new
+    # nullable numeric field MUST be added here too.
+    _NULLABLE_NUMERIC_WEATHER_FIELDS = (
+        "temp_f",
+        "temp_c",
+        "wind_mph",
+        "wind_direction",
+        "humidity_pct",
+        "precip_prob",
+        "precip_mm",
+        "visibility_km",
+        "condition_code",
+        "dew_point_f",
+        "apparent_temp_f",
+        "snowfall_cm",
+        "wind_gusts_mph",
+        "cloud_cover_pct",
+    )
+
     game_id: str = Field(..., description="Foreign key to games table")
     forecast_time: datetime = Field(..., description="When forecast was made")
     game_time: datetime = Field(..., description="Game kickoff time")
@@ -225,7 +245,12 @@ class WeatherSchema(BaseModel):
     temp_f: float | None = Field(None, description="Temperature in Fahrenheit")
     temp_c: float | None = Field(None, description="Temperature in Celsius")
     wind_mph: float | None = Field(None, ge=0, description="Wind speed in MPH")
-    wind_direction: str | None = Field(None, description="Wind direction")
+    wind_direction: float | None = Field(
+        None,
+        ge=0,
+        lt=360,
+        description="Wind direction in degrees (meteorological; 0=N, 90=E)",
+    )
     humidity_pct: float | None = Field(
         None, ge=0, le=100, description="Humidity percentage"
     )
@@ -241,6 +266,19 @@ class WeatherSchema(BaseModel):
     condition_code: int | None = Field(None, description="Weather condition code")
     visibility_km: float | None = Field(
         None, ge=0, description="Visibility in kilometers"
+    )
+
+    # Open-Meteo additional fields (previously emitted by ingest but dropped
+    # by Pydantic extra='ignore' default). Declaring them here preserves the
+    # values into the Silver parquet.
+    dew_point_f: float | None = Field(None, description="Dew point in Fahrenheit")
+    apparent_temp_f: float | None = Field(
+        None, description="Apparent (feels-like) temperature in Fahrenheit"
+    )
+    snowfall_cm: float | None = Field(None, ge=0, description="Snowfall in centimeters")
+    wind_gusts_mph: float | None = Field(None, ge=0, description="Wind gusts in MPH")
+    cloud_cover_pct: float | None = Field(
+        None, ge=0, le=100, description="Cloud cover percentage"
     )
 
     # Derived fields
@@ -269,6 +307,27 @@ class WeatherSchema(BaseModel):
         """Validate wind speed is reasonable."""
         if v is not None and v > 100:
             raise ValueError("Wind speed cannot exceed 100 MPH")
+        return v
+
+    @field_validator(*_NULLABLE_NUMERIC_WEATHER_FIELDS, mode="before")
+    @classmethod
+    def nan_to_none(cls, v):
+        """Pandas NaN/pd.NA -> None for nullable numeric fields.
+
+        The DataFrame -> to_dict round-trip in validate_bronze_to_silver converts
+        Python None into float NaN for numeric columns; this validator maps NaN
+        back to None before Pydantic's ge/le range checks or the after-mode
+        validators (validate_temperature_f, validate_wind_speed) reject NaN.
+        Mirrors the pattern in GameSchema.validate_scores.
+        """
+        if v is None:
+            return None
+        try:
+            if pd.isna(v):
+                return None
+        except (ValueError, TypeError):
+            # pd.isna raises on non-scalar inputs; defensive fallthrough matches GameSchema.
+            pass
         return v
 
     @field_validator("forecast_time", "game_time", "created_at", mode="before")
