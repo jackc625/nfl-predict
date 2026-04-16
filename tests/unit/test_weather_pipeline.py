@@ -352,3 +352,95 @@ class TestNflverseRoofTypeMapping:
 
     def test_open_maps_to_retractable(self, ingester):
         assert ingester._map_nflverse_roof_type("open") == "retractable"
+
+
+# ---------------------------------------------------------------------------
+# Test: NaN -> None coercion validator on WeatherSchema
+# ---------------------------------------------------------------------------
+
+
+class TestNanToNoneValidator:
+    """WeatherSchema.nan_to_none maps pandas NaN/pd.NA/None to None uniformly
+    across all nullable numeric fields, before ge/le range checks run.
+
+    Regression guard for Phase 15 UAT bug: None -> NaN round-trip via pandas
+    DataFrame was failing `precip_prob le=1` and indoor temp/humidity/condition_code
+    range checks.
+    """
+
+    def _base_kwargs(self):
+        return {
+            "game_id": "2024_W06_KC@BUF",
+            "forecast_time": datetime(2024, 10, 11, 22, 0, tzinfo=UTC),
+            "game_time": datetime(2024, 10, 13, 17, 0, tzinfo=UTC),
+            "is_outdoor": True,
+        }
+
+    def test_nan_wind_direction_coerces_to_none(self):
+        from data.schemas import WeatherSchema
+
+        m = WeatherSchema(**self._base_kwargs(), wind_direction=float("nan"))
+        assert m.wind_direction is None
+
+    def test_nan_precip_prob_coerces_to_none(self):
+        from data.schemas import WeatherSchema
+
+        m = WeatherSchema(**self._base_kwargs(), precip_prob=float("nan"))
+        assert m.precip_prob is None
+
+    def test_nan_indoor_unknowns_coerce_to_none(self):
+        from data.schemas import WeatherSchema
+
+        m = WeatherSchema(
+            **self._base_kwargs(),
+            temp_f=float("nan"),
+            humidity_pct=float("nan"),
+            condition_code=float("nan"),
+        )
+        assert m.temp_f is None
+        assert m.humidity_pct is None
+        assert m.condition_code is None
+
+    def test_real_float_wind_direction_survives(self):
+        from data.schemas import WeatherSchema
+
+        m = WeatherSchema(**self._base_kwargs(), wind_direction=270.5)
+        assert m.wind_direction == 270.5
+
+    def test_wind_direction_range_still_enforced(self):
+        from pydantic import ValidationError
+
+        from data.schemas import WeatherSchema
+
+        with pytest.raises(ValidationError):
+            WeatherSchema(**self._base_kwargs(), wind_direction=361.0)
+        with pytest.raises(ValidationError):
+            WeatherSchema(**self._base_kwargs(), wind_direction=-0.1)
+
+    def test_real_zero_wind_mph_not_coerced(self):
+        """Indoor record emits wind_mph=0.0 -- must NOT be coerced to None by
+        the nan_to_none validator (pd.isna(0.0) returns False, confirmed)."""
+        from data.schemas import WeatherSchema
+
+        m = WeatherSchema(**self._base_kwargs(), wind_mph=0.0)
+        assert m.wind_mph == 0.0
+
+    def test_new_openmeteo_fields_round_trip(self):
+        """The 5 new Open-Meteo fields persist through model_dump (not dropped
+        by Pydantic extra='ignore' anymore)."""
+        from data.schemas import WeatherSchema
+
+        m = WeatherSchema(
+            **self._base_kwargs(),
+            dew_point_f=32.0,
+            apparent_temp_f=38.0,
+            snowfall_cm=0.0,
+            wind_gusts_mph=22.0,
+            cloud_cover_pct=50.0,
+        )
+        dumped = m.model_dump()
+        assert dumped["dew_point_f"] == 32.0
+        assert dumped["apparent_temp_f"] == 38.0
+        assert dumped["snowfall_cm"] == 0.0
+        assert dumped["wind_gusts_mph"] == 22.0
+        assert dumped["cloud_cover_pct"] == 50.0
