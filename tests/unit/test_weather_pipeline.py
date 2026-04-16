@@ -395,7 +395,7 @@ class TestNanToNoneValidator:
             **self._base_kwargs(),
             temp_f=float("nan"),
             humidity_pct=float("nan"),
-            condition_code=float("nan"),
+            condition_code=float("nan"),  # pyright: ignore[reportArgumentType]
         )
         assert m.temp_f is None
         assert m.humidity_pct is None
