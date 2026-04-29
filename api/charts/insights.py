@@ -245,7 +245,10 @@ def generate_insights_ats_calibration(predictions: list[dict]) -> str:
     fig.update_layout(
         title={"text": "ATS — Predicted margin vs actual", "x": 0.5},
         showlegend=False,
-        annotations=[*list(fig.layout.annotations), *overflow_annotations],
+        annotations=[
+            *list(fig.layout.annotations),  # pyright: ignore[reportAttributeAccessIssue]
+            *overflow_annotations,
+        ],
     )
     fig.update_xaxes(title_text="Predicted margin", row=1, col=1)
     fig.update_yaxes(title_text="Actual margin", row=1, col=1)
