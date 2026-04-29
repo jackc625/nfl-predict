@@ -362,11 +362,13 @@ def generate_insights_ou_calibration(predictions: list[dict]) -> str:
             col=1,
         )
 
+    # Residual histogram. Bin width tracks OU_BIN_WIDTH (3.0) so the residual
+    # grid aligns with the calibration bins above; range is symmetric around
+    # zero on the OU bin grid (14 bins of width 3 over [-21, 21]).
     fig.add_trace(
         go.Histogram(
             x=residuals,
-            nbinsx=30,
-            xbins={"start": -20, "end": 20, "size": 20 / 15},
+            xbins={"start": -21, "end": 21, "size": OU_BIN_WIDTH},
             marker={"color": ou_color},
             opacity=0.7,
             showlegend=False,
