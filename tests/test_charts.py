@@ -356,8 +356,10 @@ def test_insights_ats_calibration_overflow_bins(insights_chart_data: dict) -> No
     from api.charts import generate_insights_ats_calibration
 
     html = generate_insights_ats_calibration(_ats_rows(insights_chart_data))
-    assert "<=-21" in html or "≤-21" in html
-    assert ">=21" in html or "≥21" in html
+    # Both overflow bins use the ASCII forms exposed by api.insights_metrics
+    # (ATS_UNDERFLOW_LABEL / ATS_OVERFLOW_LABEL) — no Unicode "≤" / "≥" mixing.
+    assert "<=-21" in html
+    assert ">=21" in html
 
 
 # ---------------------------------------------------------------------------

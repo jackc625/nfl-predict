@@ -228,7 +228,7 @@ def generate_insights_ats_calibration(predictions: list[dict]) -> str:
             "y": overflow_y_anchor,
             "xref": "x",
             "yref": "y",
-            "text": "≤-21",
+            "text": ATS_UNDERFLOW_LABEL,
             "showarrow": False,
             "font": {"size": 10, "color": "#666"},
         },
