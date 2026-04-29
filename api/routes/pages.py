@@ -238,14 +238,17 @@ def _compute_summary(service: Any) -> dict[str, Any]:
                 # Use MAE as proxy if brier_score not available
                 wp_brier_values.append(float(metric_value))
 
-    # Compute CLV from predictions
+    # Compute CLV from predictions. Require has_closing_odds is explicitly
+    # True so rows where the closing-line capture status is unknown
+    # (None / NULL) do not pollute the overall CLV summary. Mirrors the
+    # contract in api/charts/core.py::generate_dashboard_clv_chart.
     predictions = service.get_backtest_predictions()
     wp_preds = [
         p
         for p in predictions
         if p.get("target") == "wp"
         and p.get("probability_clv") is not None
-        and p.get("has_closing_odds") is not False
+        and p.get("has_closing_odds") is True
     ]
 
     if wp_preds:

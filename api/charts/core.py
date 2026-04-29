@@ -231,12 +231,15 @@ def generate_dashboard_clv_chart(predictions: list[dict]) -> str:
     for target in sorted(targets):
         preds = targets[target]
 
-        # Filter to valid CLV values
+        # Filter to valid CLV values. Require has_closing_odds is explicitly
+        # True so rows where the closing-line capture status is unknown
+        # (None / NULL) do not pollute the cumulative CLV mean. Mirrors the
+        # contract in api/routes/pages.py::_compute_summary.
         valid_preds = [
             p
             for p in preds
             if p.get("probability_clv") is not None
-            and p.get("has_closing_odds") is not False
+            and p.get("has_closing_odds") is True
         ]
 
         if not valid_preds:
