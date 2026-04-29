@@ -60,13 +60,34 @@ def _safe_render(chart_id: str, fn: Callable[[], str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Allow-list of table names that the prerender path is permitted to query.
+# DuckDB does not support parameterized table identifiers, so we validate the
+# identifier against this set before f-string interpolation. Every current
+# call site passes a string literal, but the allow-list prevents a future
+# caller from accidentally wiring in a request-derived value.
+_ALLOWED_TABLES: frozenset[str] = frozenset(
+    {
+        "backtest_predictions",
+        "backtest_metrics",
+        "predictions",
+        "feature_importances",
+        "equity_curve",
+    }
+)
+
+
 def _query_table(conn: Any, table: str) -> list[dict]:
     """Return every row of *table* as a list of column-keyed dicts.
 
     Returns an empty list if the table is empty. Avoids the
     ``conn.description`` reliance pattern the legacy code used by executing
     a single SELECT and zipping column names in one pass.
+
+    Raises:
+        ValueError: if *table* is not in :data:`_ALLOWED_TABLES`.
     """
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(f"Refusing to query disallowed table: {table!r}")
     result = conn.execute(f"SELECT * FROM {table}")
     cols = [d[0] for d in result.description]
     return [dict(zip(cols, row)) for row in result.fetchall()]
@@ -111,7 +132,10 @@ def _extract_data_bundle(source: Any) -> dict[str, list[dict]]:
             "equity_curve": equity,
         }
 
-    # Raw DuckDB connection: read every table directly.
+    # Raw DuckDB connection: read every table directly. Each table identifier
+    # is validated against _ALLOWED_TABLES before f-string interpolation so a
+    # future caller passing an attacker-controlled name cannot reach the SQL
+    # stream.
     conn = source
     bundle: dict[str, list[dict]] = {}
     for table in (
@@ -120,9 +144,13 @@ def _extract_data_bundle(source: Any) -> dict[str, list[dict]]:
         "predictions",
         "feature_importances",
     ):
+        if table not in _ALLOWED_TABLES:
+            raise ValueError(f"Refusing to query disallowed table: {table!r}")
         count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         bundle[table] = _query_table(conn, table) if count > 0 else []
     # equity_curve has an explicit ORDER BY in the legacy code; keep the shape.
+    if "equity_curve" not in _ALLOWED_TABLES:
+        raise ValueError("Refusing to query disallowed table: 'equity_curve'")
     eq_count = conn.execute("SELECT COUNT(*) FROM equity_curve").fetchone()[0]
     if eq_count > 0:
         result = conn.execute("SELECT * FROM equity_curve ORDER BY strategy, bet_index")
