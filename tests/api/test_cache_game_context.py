@@ -67,13 +67,13 @@ def test_divisional_rate_in_plausible_band() -> None:
             "KC",  # divisional (AFC West)
             "DAL",  # divisional (NFC East)
             "GB",  # divisional (NFC North)
-            "BUF",  # cross-conference
-            "DAL",  # cross-conference
+            "BUF",  # cross-division (AFC)
+            "DAL",  # cross-division (NFC)
             "GB",  # cross-conference
-            "WAS",  # cross-division
-            "KC",  # cross-conference
-            "SEA",  # cross-conference
-            "NE",  # cross-division
+            "WAS",  # cross-conference
+            "KC",  # cross-division (AFC)
+            "SEA",  # cross-division (NFC)
+            "NE",  # cross-division (AFC)
             "PIT",  # cross-conference
         ]
     )
