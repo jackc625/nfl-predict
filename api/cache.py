@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 from scipy.special import expit, logit
 
+from ratings.elo import is_divisional_game
 from utils import get_logger
 from utils.probability_utils import moneyline_to_probability
 
@@ -828,6 +829,33 @@ def _build_h2h_records(games: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def _compute_is_divisional(
+    home_teams: pd.Series,
+    away_teams: pd.Series,
+) -> pd.Series:
+    """Recompute the divisional flag from the canonical team mapping.
+
+    Pairs the home and away abbreviations elementwise and evaluates each
+    matchup with ``ratings.elo.is_divisional_game`` (a pure division-lookup
+    that returns False for unknown teams). The gold ``is_divisional`` column
+    must NOT be used: it is expanding-window z-score normalized, so a naive
+    ``.astype(bool)`` flags nearly every game as divisional.
+
+    Args:
+        home_teams: Series of canonical home-team abbreviations.
+        away_teams: Series of canonical away-team abbreviations.
+
+    Returns:
+        Boolean Series (real ``bool`` dtype, matching the BOOLEAN schema
+        column) aligned to ``home_teams.index``.
+    """
+    divisional = [
+        is_divisional_game(home, away)
+        for home, away in zip(home_teams, away_teams, strict=True)
+    ]
+    return pd.Series(divisional, index=home_teams.index, dtype=bool)
+
+
 def _load_game_context(
     conn: duckdb.DuckDBPyConnection,
     gold_dir: Path,
@@ -868,7 +896,6 @@ def _load_game_context(
         "game_id",
         "home_elo",
         "away_elo",
-        "is_divisional",
         "weather_severity_score",
         "raw_wind_mph",
         "venue_outdoor",
@@ -918,9 +945,16 @@ def _load_game_context(
     # Primetime: not easily derivable from current data, set False
     context["is_primetime"] = False
 
-    # Convert is_outdoor and is_divisional to boolean
+    # Derive is_outdoor from roof_type and recompute is_divisional from the
+    # canonical team mapping. Both mirror the same pattern: never trust the
+    # normalized gold columns for these flags.
     context["is_outdoor"] = context["roof_type"].isin(["outdoor", "retractable"])
-    context["is_divisional"] = context["is_divisional"].astype(bool)
+    # pandas-stubs widens DataFrame __getitem__ to Series | DataFrame; the
+    # columns are Series at runtime (same stub gap as _compute_confidence above).
+    context["is_divisional"] = _compute_is_divisional(
+        context["home_team"],  # pyright: ignore[reportArgumentType]
+        context["away_team"],  # pyright: ignore[reportArgumentType]
+    )
 
     # Compute last-5 records (vectorized by team+season)
     logger.info("Computing last-5 records...")
