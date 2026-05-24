@@ -856,6 +856,52 @@ def _compute_is_divisional(
     return pd.Series(divisional, index=home_teams.index, dtype=bool)
 
 
+def _attach_raw_elo(
+    context: pd.DataFrame,
+    snapshots: pd.DataFrame,
+) -> pd.DataFrame:
+    """Attach RAW pre-game Elo to context from the silver Elo snapshot.
+
+    LEFT-joins ``home_elo_pre`` / ``away_elo_pre`` from
+    ``elo_game_snapshots.parquet`` onto ``context`` by ``game_id`` (renamed to
+    ``home_elo`` / ``away_elo``). The gold ``home_elo`` / ``away_elo`` columns
+    must NOT be displayed: they are expanding-window z-scores (e.g. -0.78) plus
+    a 1500.0 placeholder leakage for the earliest games. This helper is the
+    raw-Elo counterpart of ``_compute_is_divisional`` -- never trust the
+    normalized gold columns for display values.
+
+    The snapshot covers seasons 2018-2025 only (1991 of 6263 gold games). Games
+    without a snapshot get NaN, which DuckDB stores as SQL NULL in the DOUBLE
+    columns and the UI renders as "N/A". This is deliberate: NaN propagation
+    simultaneously removes the z-score display AND the 1500.0 leakage, so do
+    NOT fillna here.
+
+    Only ``["game_id", "home_elo_pre", "away_elo_pre"]`` are selected before the
+    merge so snapshot-only columns (season/week/team) cannot collide with the
+    silver-merge columns and create ``_x`` / ``_y`` suffixes. The snapshot
+    ``game_id`` is unique, so the LEFT join cannot duplicate context rows.
+
+    Args:
+        context: Game-context frame containing a ``game_id`` column. Callers
+            must drop ``home_elo`` / ``away_elo`` from gold first so this merge
+            cleanly ADDS the columns (no suffix collision).
+        snapshots: Silver Elo-snapshot frame with ``game_id``,
+            ``home_elo_pre``, ``away_elo_pre``.
+
+    Returns:
+        ``context`` with raw float ``home_elo`` / ``away_elo`` columns added
+        (NaN for games lacking a snapshot).
+    """
+    # pandas-stubs widens DataFrame __getitem__ with a list key to
+    # Series | DataFrame, so .rename loses its overload match at type-check
+    # time though it is a DataFrame at runtime (same stub gap as the gold/last5
+    # renames elsewhere in this module).
+    elo_raw = snapshots[["game_id", "home_elo_pre", "away_elo_pre"]].rename(  # pyright: ignore[reportCallIssue]
+        columns={"home_elo_pre": "home_elo", "away_elo_pre": "away_elo"}
+    )
+    return context.merge(elo_raw, on="game_id", how="left")
+
+
 def _load_game_context(
     conn: duckdb.DuckDBPyConnection,
     gold_dir: Path,
@@ -890,12 +936,13 @@ def _load_game_context(
         )
         return 0
 
-    # Read gold features for Elo, weather, divisional
+    # Read gold features for weather and venue. home_elo/away_elo are
+    # deliberately NOT read here: the gold columns are expanding-window
+    # z-scores (plus a 1500.0 leakage), so raw pre-game Elo is sourced from the
+    # silver snapshot via _attach_raw_elo after the silver games merge below.
     gold_df = pd.read_parquet(gold_path)
     gold_cols = [
         "game_id",
-        "home_elo",
-        "away_elo",
         "weather_severity_score",
         "raw_wind_mph",
         "venue_outdoor",
@@ -955,6 +1002,13 @@ def _load_game_context(
         context["home_team"],  # pyright: ignore[reportArgumentType]
         context["away_team"],  # pyright: ignore[reportArgumentType]
     )
+
+    # Source raw pre-game Elo from the silver snapshot (read directly per the
+    # UIAP-01 self-contained-cache convention, mirroring the games.parquet read
+    # above -- not data.storage). The gold home_elo/away_elo are z-scores plus a
+    # 1500.0 leakage; snapshot-less games get NaN -> SQL NULL -> "N/A".
+    snapshots = pd.read_parquet(silver_dir / "elo_game_snapshots.parquet")
+    context = _attach_raw_elo(context, snapshots)
 
     # Compute last-5 records (vectorized by team+season)
     logger.info("Computing last-5 records...")

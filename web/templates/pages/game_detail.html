@@ -201,11 +201,11 @@
         <div class="grid grid-cols-2 gap-4">
           <div class="text-center p-3 bg-gray-50 rounded">
             <p class="text-xs text-gray-500">{{ game.home_team }}</p>
-            <p class="text-lg font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.0f"|format(game.context.home_elo or 0) }}</p>
+            <p class="text-lg font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if game.context.home_elo is not none %}{{ "%.0f"|format(game.context.home_elo) }}{% else %}<span class="text-gray-400">N/A</span>{% endif %}</p>
           </div>
           <div class="text-center p-3 bg-gray-50 rounded">
             <p class="text-xs text-gray-500">{{ game.away_team }}</p>
-            <p class="text-lg font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.0f"|format(game.context.away_elo or 0) }}</p>
+            <p class="text-lg font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if game.context.away_elo is not none %}{{ "%.0f"|format(game.context.away_elo) }}{% else %}<span class="text-gray-400">N/A</span>{% endif %}</p>
           </div>
         </div>
       </div>
