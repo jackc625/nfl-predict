@@ -1,6 +1,6 @@
 """Regression tests for game_context derived-column recomputation.
 
-Guards two web-cache fixes that share the same defect class -- a normalized
+Guards three web-cache fixes that share the same defect class -- a normalized
 gold column surfaced raw in the UI:
 
 1. ``is_divisional``. Previously ``api/cache.py`` applied ``.astype(bool)``
@@ -19,15 +19,28 @@ gold column surfaced raw in the UI:
    ``api.cache._attach_raw_elo``. Snapshot-less games get NaN -> SQL NULL
    -> "N/A" in the UI.
 
-These tests assert the recomputed flags / ratings against known inputs and
-explicitly catch a regression back to the normalized-gold values.
+3. ``weather_severity``. The cache read the normalized
+   ``weather_severity_score`` from gold (an expanding-window z-score in
+   ~[-1.7, 3.7]), so the UI showed values like "-0.2" / "1.8". The fix reads
+   the un-normalized ``raw_weather_severity`` gold passthrough (renamed
+   ``weather_severity``, a raw composite in ~[0, 0.8]) and stores a
+   qualitative ``weather_severity_band`` computed by the module-level helper
+   ``api.cache._weather_severity_band``. The 0.60/0.80 band anchors match
+   ``features.weather`` weather_game / extreme_weather.
+
+These tests assert the recomputed flags / ratings / bands against known
+inputs and explicitly catch a regression back to the normalized-gold values.
 """
 
 from __future__ import annotations
 
 import pandas as pd
 
-from api.cache import _attach_raw_elo, _compute_is_divisional
+from api.cache import (
+    _attach_raw_elo,
+    _compute_is_divisional,
+    _weather_severity_band,
+)
 
 
 def test_same_division_pairs_resolve_true() -> None:
@@ -229,3 +242,95 @@ def test_left_join_does_not_duplicate_rows_or_add_suffixes() -> None:
     # Snapshot-only columns must not leak into context.
     assert "season" not in result.columns
     assert "home_elo_pre" not in result.columns
+
+
+# ---------------------------------------------------------------------------
+# Weather-severity band mapping (_weather_severity_band)
+# ---------------------------------------------------------------------------
+
+
+def test_band_anchors_match_weather_code_thresholds() -> None:
+    """The 0.60/0.80 anchors match features.weather weather_game/extreme_weather.
+
+    ``features/weather.py:475-476`` defines ``weather_game`` at severity >= 0.6
+    and ``extreme_weather`` at severity >= 0.8. The band must align so the
+    display semantics never drift from the code's own thresholds.
+    """
+    band = _weather_severity_band(pd.Series([0.60, 0.80]))
+
+    assert band.iloc[0] == "Significant"
+    assert band.iloc[1] == "Extreme"
+
+
+def test_band_just_below_anchors_drops_one_level() -> None:
+    """A value just below an anchor falls into the band below it."""
+    band = _weather_severity_band(pd.Series([0.59, 0.79]))
+
+    assert band.iloc[0] == "Moderate"
+    assert band.iloc[1] == "Significant"
+
+
+def test_band_sub_06_calibrated_cutoffs() -> None:
+    """Sub-0.6 cutoffs map to the calibrated bands from the real distribution.
+
+    Cutoffs 0.10 / 0.25 sit in the valleys between the 0.09 / 0.19 / 0.39
+    severity clusters (RESEARCH section 5).
+    """
+    severities = pd.Series([0.0, 0.09, 0.10, 0.19, 0.25, 0.39])
+    band = _weather_severity_band(severities)
+
+    assert band.tolist() == [
+        "Clear",
+        "Clear",
+        "Mild",
+        "Mild",
+        "Moderate",
+        "Moderate",
+    ]
+
+
+def test_band_boundaries_are_left_closed() -> None:
+    """A value exactly at a cutoff belongs to the UPPER band (left-closed bins).
+
+    ``right=False`` makes each interval ``[lo, hi)`` so an exact-cutoff value
+    falls into the higher band: 0.25 -> Moderate (not Mild), 0.60 ->
+    Significant, 0.80 -> Extreme.
+    """
+    band = _weather_severity_band(pd.Series([0.10, 0.25, 0.60, 0.80]))
+
+    assert band.tolist() == ["Mild", "Moderate", "Significant", "Extreme"]
+
+
+def test_band_input_is_raw_composite_not_zscore() -> None:
+    """Given plausible RAW composites, every input is in [0, 1] and maps correctly.
+
+    This is the raw-not-z-score guard (mirrors the raw-Elo ``1100<=v<=1900``
+    band test). A negative value, or one above ~1.5, would mean the cache is
+    reading the NORMALIZED ``weather_severity_score`` column instead of the
+    ``raw_weather_severity`` passthrough -- this assertion catches that
+    regression. Boundary values are explicitly allowed (never ``!= specific``).
+    """
+    severities = pd.Series([0.0, 0.09, 0.39, 0.60, 0.80])
+
+    assert (severities >= 0.0).all()
+    assert (severities <= 1.0).all()
+
+    band = _weather_severity_band(severities)
+
+    assert band.tolist() == ["Clear", "Clear", "Moderate", "Significant", "Extreme"]
+
+
+def test_band_returns_object_dtype_aligned_to_input_index() -> None:
+    """The helper returns object-dtype labels aligned to the input index.
+
+    Object dtype (plain strings) stores as a DuckDB VARCHAR and keeps the
+    equality assertions above plain ``str`` comparisons; the preserved index
+    lets the result be assigned straight back as a cache column.
+    """
+    severities = pd.Series([0.05, 0.30, 0.85], index=[10, 20, 30])
+
+    band = _weather_severity_band(severities)
+
+    assert band.dtype == object
+    assert band.index.tolist() == [10, 20, 30]
+    assert band.tolist() == ["Clear", "Moderate", "Extreme"]

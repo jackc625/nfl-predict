@@ -111,8 +111,8 @@ _PREDICTIONS_COLUMNS = (
 
 _GAME_CONTEXT_COLUMNS = (
     "game_id, home_elo, away_elo, home_last5, away_last5, h2h_record, "
-    "venue_name, surface, roof_type, weather_severity, wind_mph, "
-    "is_outdoor, is_divisional, is_primetime"
+    "venue_name, surface, roof_type, weather_severity, weather_severity_band, "
+    "wind_mph, is_outdoor, is_divisional, is_primetime"
 )
 
 _BACKTEST_METRICS_COLUMNS = "season, target, metric_name, metric_value"

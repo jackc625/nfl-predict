@@ -7,11 +7,13 @@ Covers:
 - min_periods behavior
 - Shape preservation
 - Normalization effectiveness
+- Model-input invariance under an added excluded column
 """
 
 import numpy as np
 import pandas as pd
 import pytest
+
 from features.normalization import expanding_normalize
 
 # ---------------------------------------------------------------------------
@@ -265,3 +267,59 @@ def test_normalization_effectiveness(multi_season_df):
             f"Normalization not effective for {col}: "
             f"raw mean={raw_mean:.3f}, normalized mean={norm_mean:.3f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 15: Adding an excluded sibling column does not perturb model inputs
+# ---------------------------------------------------------------------------
+
+
+def test_added_excluded_column_does_not_change_other_zscores(multi_season_df):
+    """An excluded raw passthrough cannot change another column's z-scores.
+
+    This is the unit-level proof of the locked "model inputs MUST stay
+    byte-identical" guarantee behind ``raw_weather_severity``: the gold build
+    copies ``weather_severity_score`` to an un-normalized ``raw_weather_severity``
+    sibling that is excluded from ``feature_cols``. Because
+    ``expanding_normalize`` is a per-column independent loop (no cross-column
+    accumulator), adding such a sibling must leave every normalized column
+    byte-identical AND pass the raw copy through unchanged. (Task 2 adds the
+    live-parquet sha256 cross-check on the real matrices.)
+    """
+    feature_cols = ["feat_a"]
+
+    # Baseline: normalize feat_a alone.
+    baseline = expanding_normalize(
+        multi_season_df,
+        feature_cols=feature_cols,
+        group_col="season",
+        sort_cols=["season", "week"],
+        min_periods=4,
+    )
+
+    # Add a raw copy of the ORIGINAL feat_a to a fresh frame, excluded from
+    # feature_cols (mirrors raw_weather_severity = copy of weather_severity_score).
+    with_sibling = multi_season_df.copy()
+    with_sibling["raw_feat_a"] = multi_season_df["feat_a"]
+    normalized = expanding_normalize(
+        with_sibling,
+        feature_cols=feature_cols,  # raw_feat_a deliberately excluded
+        group_col="season",
+        sort_cols=["season", "week"],
+        min_periods=4,
+    )
+
+    # The normalized model input (feat_a) is byte-identical with/without the
+    # excluded sibling -- equal_nan covers the early-week NaN positions.
+    pd.testing.assert_series_equal(
+        baseline["feat_a"],
+        normalized["feat_a"],
+        check_exact=True,
+    )
+
+    # The excluded raw copy passes through unchanged (never normalized).
+    pd.testing.assert_series_equal(
+        normalized["raw_feat_a"],
+        multi_season_df["feat_a"],
+        check_names=False,
+    )

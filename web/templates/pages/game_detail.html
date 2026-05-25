@@ -276,7 +276,7 @@
         {% if game.context.is_outdoor and game.context.weather_severity is not none %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Weather Severity</dt>
-          <dd class="text-gray-900 font-medium" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.1f"|format(game.context.weather_severity) }}</dd>
+          <dd class="text-gray-900 font-medium" title="severity {{ "%.2f"|format(game.context.weather_severity) }}">{{ game.context.weather_severity_band }}</dd>
         </div>
         {% endif %}
         {% if game.context.is_outdoor and game.context.wind_mph is not none %}

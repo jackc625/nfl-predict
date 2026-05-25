@@ -906,6 +906,15 @@ class FeatureMatrixBuilder:
                 combined_features
             )
 
+            # Preserve the un-normalized composite severity for display before
+            # normalization runs (mirrors the raw_wind_mph / raw_precip_mm
+            # family). The normalized weather_severity_score stays the model
+            # feature; this raw sibling is excluded below so it is never
+            # z-scored and the cache can surface a human-meaningful value.
+            processed_features["raw_weather_severity"] = processed_features[
+                "weather_severity_score"
+            ]
+
             # -- Expanding-window normalization (replaces within-season Z-scores) --
             exclude_cols = [
                 "game_id",
@@ -921,6 +930,7 @@ class FeatureMatrixBuilder:
                 "raw_precip_prob",
                 "raw_precip_mm",
                 "raw_humidity_pct",
+                "raw_weather_severity",
             ]
             feature_cols = [
                 col for col in processed_features.columns if col not in exclude_cols
@@ -965,9 +975,7 @@ class FeatureMatrixBuilder:
                         prior_season_stats=prior_stats,
                     )
                     normalized_parts.append(norm_part)
-                normalized_features = pd.concat(
-                    normalized_parts, ignore_index=False
-                )
+                normalized_features = pd.concat(normalized_parts, ignore_index=False)
 
             # Create target variables
             final_features = self.create_target_variables(normalized_features)

@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS game_context (
     surface VARCHAR,
     roof_type VARCHAR,
     weather_severity DOUBLE,
+    weather_severity_band VARCHAR,
     wind_mph DOUBLE,
     is_outdoor BOOLEAN,
     is_divisional BOOLEAN,
@@ -902,6 +903,45 @@ def _attach_raw_elo(
     return context.merge(elo_raw, on="game_id", how="left")
 
 
+def _weather_severity_band(severity: pd.Series) -> pd.Series:
+    """Map raw composite weather severity to a qualitative display band.
+
+    The cache must display ``raw_weather_severity`` (the un-normalized gold
+    passthrough, a composite in ~[0, 0.8]), NOT the normalized
+    ``weather_severity_score`` -- the latter is an expanding-window z-score
+    (~[-1.7, 3.7]) and surfaces as a meaningless "-0.2" in the UI. This helper
+    is the weather-severity counterpart of ``_attach_raw_elo`` /
+    ``_compute_is_divisional``: it derives a stored display value rather than
+    trusting a normalized gold column.
+
+    The 0.60 ("Significant") and 0.80 ("Extreme") anchors are the code's own
+    thresholds from ``features.weather`` (``weather_game`` >= 0.6,
+    ``extreme_weather`` >= 0.8), not invented cutoffs. The sub-0.6 cutoffs
+    (0.10, 0.25) were calibrated from the silver ``weather_features``
+    distribution -- they sit in the valleys between the 0.09 / 0.19 / 0.39
+    severity clusters, giving every band non-trivial mass.
+
+    Bins are LEFT-CLOSED (``right=False``) so a value exactly at a cutoff
+    falls into the UPPER band: 0.25 -> "Moderate", 0.60 -> "Significant",
+    0.80 -> "Extreme".
+
+    Args:
+        severity: Series of raw composite severities in ~[0, 1]. The gold
+            fallback for missing/indoor games is 0.0, so this is never NaN.
+
+    Returns:
+        Object-dtype Series of band labels aligned to ``severity.index`` (so
+        it stores as a DuckDB VARCHAR and assigns straight back as a column).
+    """
+    bins = [-float("inf"), 0.10, 0.25, 0.60, 0.80, float("inf")]
+    labels = ["Clear", "Mild", "Moderate", "Significant", "Extreme"]
+    # pandas-stubs widens pd.cut to include the retbins=True tuple overload, so
+    # the chained .astype and the Series return lose their overload match at
+    # type-check time though pd.cut returns a Series here at runtime (right=False
+    # + no retbins). Same class of pandas-stubs gap as the .rename calls above.
+    return pd.cut(severity, bins=bins, labels=labels, right=False).astype("object")  # pyright: ignore[reportAttributeAccessIssue, reportReturnType]
+
+
 def _load_game_context(
     conn: duckdb.DuckDBPyConnection,
     gold_dir: Path,
@@ -936,21 +976,26 @@ def _load_game_context(
         )
         return 0
 
-    # Read gold features for weather and venue. home_elo/away_elo are
-    # deliberately NOT read here: the gold columns are expanding-window
-    # z-scores (plus a 1500.0 leakage), so raw pre-game Elo is sourced from the
-    # silver snapshot via _attach_raw_elo after the silver games merge below.
+    # Read gold features for weather and venue. Two columns are deliberately
+    # NOT read raw from the normalized gold:
+    #   * home_elo/away_elo -- expanding-window z-scores (plus a 1500.0
+    #     leakage); raw pre-game Elo is sourced from the silver snapshot via
+    #     _attach_raw_elo after the silver games merge below.
+    #   * weather_severity -- read from the un-normalized raw_weather_severity
+    #     passthrough (the normalized weather_severity_score is a z-score and
+    #     would surface a meaningless "-0.2" in the UI). The qualitative
+    #     weather_severity_band is derived from it via _weather_severity_band.
     gold_df = pd.read_parquet(gold_path)
     gold_cols = [
         "game_id",
-        "weather_severity_score",
+        "raw_weather_severity",
         "raw_wind_mph",
         "venue_outdoor",
     ]
     context = gold_df[gold_cols].copy()
     context = context.rename(
         columns={
-            "weather_severity_score": "weather_severity",
+            "raw_weather_severity": "weather_severity",
             "venue_outdoor": "is_outdoor",
             "raw_wind_mph": "wind_mph",
         }
@@ -1010,6 +1055,16 @@ def _load_game_context(
     snapshots = pd.read_parquet(silver_dir / "elo_game_snapshots.parquet")
     context = _attach_raw_elo(context, snapshots)
 
+    # Derive the qualitative weather-severity band from the raw composite
+    # (anchored to the features.weather 0.6/0.8 thresholds). Co-located with
+    # the other cache-derived display fields; the raw weather_severity is
+    # retained for the tooltip. pandas-stubs widens DataFrame __getitem__ to
+    # Series | DataFrame, so the column is a Series at runtime (same stub gap
+    # as the _compute_is_divisional call above).
+    context["weather_severity_band"] = _weather_severity_band(
+        context["weather_severity"]  # pyright: ignore[reportArgumentType]
+    )
+
     # Compute last-5 records (vectorized by team+season)
     logger.info("Computing last-5 records...")
     last5_df = _build_last5_records(games)
@@ -1050,6 +1105,7 @@ def _load_game_context(
         "surface",
         "roof_type",
         "weather_severity",
+        "weather_severity_band",
         "wind_mph",
         "is_outdoor",
         "is_divisional",
