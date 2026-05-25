@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from features.normalization import expanding_normalize
+from features.normalization import compute_prior_season_stats, expanding_normalize
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -322,4 +322,57 @@ def test_added_excluded_column_does_not_change_other_zscores(multi_season_df):
         normalized["raw_feat_a"],
         multi_season_df["feat_a"],
         check_names=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 16: Degenerate prior season -> neutral 0.0 fallback (no raw leak)
+# ---------------------------------------------------------------------------
+
+
+def test_degenerate_prior_season_falls_back_to_zero_not_raw():
+    """When a column's prior season is degenerate (constant placeholder -> std 0
+    -> omitted from prior_season_stats), the next season's first ``min_periods-1``
+    games fall back to 0.0 (neutral z-score), NOT the raw value.
+
+    Regression for 260524-svu: pre-2018 Elo is a constant 1500 placeholder, so it
+    was omitted from 2018's prior stats and the first 3 games of 2018 leaked raw
+    ~1500 Elo into the normalized ``home_elo`` column. The fallback must be the
+    neutral z-score, never the raw magnitude.
+    """
+    rows = []
+    # Prior season 2017: 'elo' is a constant 1500.0 placeholder (std 0 -> omitted).
+    for wk in range(1, 6):
+        for _g in range(4):
+            rows.append({"season": 2017, "week": wk, "elo": 1500.0})
+    # Season 2018: real, varied 'elo'. Its first 3 games are insufficient-data.
+    for wk in range(1, 6):
+        for g in range(4):
+            rows.append({"season": 2018, "week": wk, "elo": 1500.0 + wk * 10 + g})
+    df = pd.DataFrame(rows)
+
+    prior = compute_prior_season_stats(df, ["elo"], 2017)
+    assert "elo" not in prior, "degenerate constant prior should be omitted"
+
+    result = expanding_normalize(
+        df,
+        feature_cols=["elo"],
+        group_col="season",
+        sort_cols=["season", "week"],
+        min_periods=4,
+        prior_season_stats=prior,
+    )
+
+    # expanding_normalize returns rows already sorted by (season, week), so the
+    # filtered 2018 slice is in order -- head(3) is W1's first 3 (insufficient) games.
+    s2018 = result[result["season"] == 2018]
+    first3 = [float(v) for v in s2018["elo"].head(3)]
+    # Raw values here were ~1510-1512; the fix must yield 0.0, not those magnitudes.
+    assert all(abs(v) < 1e-9 for v in first3), (
+        f"insufficient-data positions with a degenerate prior must be 0.0 "
+        f"(neutral), not raw values; got {first3}"
+    )
+    # And no normalized value anywhere should carry a raw-Elo magnitude.
+    assert bool((s2018["elo"].abs() < 10).all()), (
+        "no 2018 'elo' value should exceed a plausible z-score band (raw leak)"
     )

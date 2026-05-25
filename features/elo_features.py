@@ -126,16 +126,12 @@ class EloFeatureBuilder:
                     (snapshots["season"] == season)
                     & (snapshots["week"] < week)
                     & (snapshots["home_team"] == team)
-                ][["week", "home_elo_pre"]].rename(
-                    columns={"home_elo_pre": "team_elo"}
-                )
+                ][["week", "home_elo_pre"]].rename(columns={"home_elo_pre": "team_elo"})
                 team_away = snapshots[
                     (snapshots["season"] == season)
                     & (snapshots["week"] < week)
                     & (snapshots["away_team"] == team)
-                ][["week", "away_elo_pre"]].rename(
-                    columns={"away_elo_pre": "team_elo"}
-                )
+                ][["week", "away_elo_pre"]].rename(columns={"away_elo_pre": "team_elo"})
                 prior_games = pd.concat(
                     [team_home, team_away], ignore_index=True
                 ).sort_values("week")
@@ -225,11 +221,26 @@ class EloFeatureBuilder:
                     clean_elos.items(), key=lambda x: x[1], reverse=True
                 )
                 n_teams = len(sorted_teams)
-                team_rank = {team: rank + 1 for rank, (team, _) in enumerate(sorted_teams)}
+                team_rank = {
+                    team: rank + 1 for rank, (team, _) in enumerate(sorted_teams)
+                }
                 rank_cache[cache_key] = team_rank
 
             team_rank = rank_cache[cache_key]
             n_teams = len(team_rank)
+
+            if n_teams == 0:
+                # No Elo snapshots cover this (season, week): the snapshot table
+                # only spans the rated era (2018+), so pre-2018 burn-in weeks have
+                # no teams to rank. Emit NaN ("no Elo rank") instead of dividing by
+                # zero. These games are Elo burn-in and are never model inputs --
+                # training/validation start at season 2018, where snapshots always
+                # exist and n_teams > 0, so this branch never affects model data.
+                home_ranks.append(float("nan"))
+                away_ranks.append(float("nan"))
+                home_pcts.append(float("nan"))
+                away_pcts.append(float("nan"))
+                continue
 
             home_r = team_rank.get(game["home_team"], n_teams)
             away_r = team_rank.get(game["away_team"], n_teams)
@@ -306,10 +317,12 @@ class EloFeatureBuilder:
         merged = filtered_df.merge(snapshot_subset, on="game_id", how="left")
 
         # Rename snapshot columns to feature names
-        merged = merged.rename(columns={
-            "home_elo_pre": "home_elo",
-            "away_elo_pre": "away_elo",
-        })
+        merged = merged.rename(
+            columns={
+                "home_elo_pre": "home_elo",
+                "away_elo_pre": "away_elo",
+            }
+        )
 
         # Compute derived columns
         merged["elo_diff"] = merged["home_elo"] - merged["away_elo"]
@@ -420,8 +433,6 @@ class EloFeatureBuilder:
         for team, prefix in [(home_team, "home"), (away_team, "away")]:
             rank = team_rank.get(team, n_teams)
             features[f"{prefix}_elo_rank"] = float(rank)
-            features[f"{prefix}_elo_percentile"] = float(
-                (n_teams - rank + 1) / n_teams
-            )
+            features[f"{prefix}_elo_percentile"] = float((n_teams - rank + 1) / n_teams)
 
         return features

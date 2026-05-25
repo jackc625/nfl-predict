@@ -26,7 +26,7 @@ Usage:
 import argparse
 import sys
 import warnings
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -360,8 +360,9 @@ class FeatureMatrixBuilder:
 
             feature_counts["qb_tracking"] = 2  # home + away qb_adjustment
 
-        # Add feature timestamp
-        combined_features["feature_timestamp"] = datetime.now()
+        # Add feature timestamp (tz-aware UTC; the storage layer rejects naive
+        # datetimes, and feature_timestamp is persisted into every gold matrix)
+        combined_features["feature_timestamp"] = datetime.now(UTC)
 
         logger.info(
             "Combined all features",

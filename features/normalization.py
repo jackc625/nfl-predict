@@ -37,8 +37,11 @@ def expanding_normalize(
 
     For early weeks where the expanding window has fewer than min_periods
     data points, uses prior_season_stats (mean, std) as bootstrap values.
-    If prior_season_stats is not provided or a column is not in it, the
-    raw value is returned (NOT NaN).
+    If prior_season_stats is not provided or a column is not in it (e.g. the
+    first data-bearing season, or a season whose prior season is degenerate /
+    all-placeholder), those positions fall back to 0.0 -- the neutral z-score --
+    NOT the raw value (which would leak an un-normalized magnitude, e.g. a raw
+    ~1500 Elo, into the normalized column) and NOT NaN.
 
     Resets each season to avoid cross-season distribution contamination.
 
@@ -90,11 +93,15 @@ def expanding_normalize(
             safe_std = exp_std.clip(lower=1e-8)
             normalized = (values - exp_mean) / safe_std
 
-            # For positions still without valid stats (no prior_season_stats
-            # provided for this column), keep raw values
+            # For positions still without valid stats -- insufficient expanding
+            # data AND no usable prior_season_stats for this column (the first
+            # data-bearing season, or a season whose prior season is degenerate /
+            # all-placeholder) -- fall back to 0.0, the neutral z-score. Returning
+            # the RAW value here would leak an un-normalized magnitude (e.g. a raw
+            # ~1500 Elo) into the normalized column and corrupt the model feature.
             still_missing = normalized.isna()
             if still_missing.any():
-                normalized = normalized.fillna(values)
+                normalized = normalized.fillna(0.0)
 
             result.loc[season_idx, col] = normalized
 

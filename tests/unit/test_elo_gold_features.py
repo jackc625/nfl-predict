@@ -122,7 +122,7 @@ class TestMomentumNanCountReasonable:
             # Allow a small fraction of NaN (< 5%) in case some edge cases remain
             assert nan_count / total < 0.05, (
                 f"{target}: Too many NaN in momentum after imputation: "
-                f"{nan_count}/{total} = {nan_count/total:.1%}"
+                f"{nan_count}/{total} = {nan_count / total:.1%}"
             )
 
             # Momentum should have meaningful variation (not constant)
@@ -148,9 +148,7 @@ class TestRankValuesInRange:
             if "home_elo_rank" in df.columns:
                 valid = df["home_elo_rank"].dropna()
                 # After Z-score normalization, verify meaningful variance
-                assert valid.std() > 0, (
-                    f"{target}: home_elo_rank has zero variance"
-                )
+                assert valid.std() > 0, f"{target}: home_elo_rank has zero variance"
                 # Should have many distinct values (32 ranks per week)
                 assert valid.nunique() > 10, (
                     f"{target}: home_elo_rank has too few unique values: "
@@ -186,9 +184,7 @@ class TestNewColumnsVsBaseline:
             baseline_cols = set(baseline_meta[target]["columns"])
 
             # Find new Elo columns not in baseline
-            new_elo_cols = {
-                c for c in gold_cols - baseline_cols if "elo" in c.lower()
-            }
+            new_elo_cols = {c for c in gold_cols - baseline_cols if "elo" in c.lower()}
             expected_new = {
                 "home_elo_momentum",
                 "away_elo_momentum",
@@ -201,3 +197,127 @@ class TestNewColumnsVsBaseline:
                 f"{target}: Expected new Elo columns {expected_new} but only "
                 f"found new Elo cols: {new_elo_cols}"
             )
+
+
+class TestRankFeaturesEmptyWeekGuard:
+    """Regression: ``_add_rank_features`` must not divide by zero when a
+    ``(season, week)`` has no Elo snapshots.
+
+    The silver snapshot table only spans the rated era (2018+), so pre-2018
+    burn-in weeks have zero teams to rank (``n_teams == 0``). Before the guard,
+    ``(n_teams - home_r + 1) / n_teams`` raised ZeroDivisionError and aborted the
+    whole full-history gold rebuild (blocker BLOCKER-svu-01). Such games must get
+    NaN rank/percentile, and the normal (covered) path must be unaffected.
+    """
+
+    @staticmethod
+    def _snapshots_2018_week1() -> pd.DataFrame:
+        # Two 2018 W1 games -> four ranked teams (n_teams == 4).
+        return pd.DataFrame(
+            [
+                {
+                    "season": 2018,
+                    "week": 1,
+                    "home_team": "KC",
+                    "away_team": "BUF",
+                    "home_elo_pre": 1600.0,
+                    "away_elo_pre": 1500.0,
+                },
+                {
+                    "season": 2018,
+                    "week": 1,
+                    "home_team": "SF",
+                    "away_team": "SEA",
+                    "home_elo_pre": 1550.0,
+                    "away_elo_pre": 1450.0,
+                },
+            ]
+        )
+
+    def test_uncovered_week_yields_nan_not_zero_division(self):
+        """A snapshot-less (pre-2018) game gets NaN rank/percentile, no crash."""
+        from features.elo_features import EloFeatureBuilder
+
+        builder = EloFeatureBuilder()
+        games = pd.DataFrame(
+            [
+                {
+                    "game_id": "2002_W01_GB_CHI",
+                    "season": 2002,
+                    "week": 1,
+                    "home_team": "GB",
+                    "away_team": "CHI",
+                },
+            ]
+        )
+
+        # Must not raise ZeroDivisionError.
+        result = builder._add_rank_features(games, self._snapshots_2018_week1())
+
+        for col in [
+            "home_elo_rank",
+            "away_elo_rank",
+            "home_elo_percentile",
+            "away_elo_percentile",
+        ]:
+            assert bool(result[col].isna().all()), (
+                f"snapshot-less game should have NaN {col}, got {result[col].tolist()}"
+            )
+
+    def test_covered_week_still_ranks_normally(self):
+        """The guard must not perturb the normal path: a covered game ranks."""
+        from features.elo_features import EloFeatureBuilder
+
+        builder = EloFeatureBuilder()
+        games = pd.DataFrame(
+            [
+                {
+                    "game_id": "2018_W01_KC_BUF",
+                    "season": 2018,
+                    "week": 1,
+                    "home_team": "KC",
+                    "away_team": "BUF",
+                },
+            ]
+        )
+
+        result = builder._add_rank_features(games, self._snapshots_2018_week1())
+
+        # KC (1600) is highest of 4 -> rank 1, percentile (4-1+1)/4 = 1.0.
+        # BUF (1500) is 3rd of 4   -> rank 3, percentile (4-3+1)/4 = 0.5.
+        assert result["home_elo_rank"].iloc[0] == 1
+        assert result["away_elo_rank"].iloc[0] == 3
+        assert result["home_elo_percentile"].iloc[0] == 1.0
+        assert result["away_elo_percentile"].iloc[0] == 0.5
+
+    def test_mixed_covered_and_uncovered_weeks(self):
+        """Covered and uncovered games in one frame: ranks vs NaN, no crash."""
+        from features.elo_features import EloFeatureBuilder
+
+        builder = EloFeatureBuilder()
+        games = pd.DataFrame(
+            [
+                {
+                    "game_id": "2018_W01_KC_BUF",
+                    "season": 2018,
+                    "week": 1,
+                    "home_team": "KC",
+                    "away_team": "BUF",
+                },
+                {
+                    "game_id": "2002_W01_GB_CHI",
+                    "season": 2002,
+                    "week": 1,
+                    "home_team": "GB",
+                    "away_team": "CHI",
+                },
+            ]
+        )
+
+        result = builder._add_rank_features(games, self._snapshots_2018_week1())
+
+        covered = result[result["game_id"] == "2018_W01_KC_BUF"].iloc[0]
+        uncovered = result[result["game_id"] == "2002_W01_GB_CHI"].iloc[0]
+        assert covered["home_elo_rank"] == 1
+        assert bool(pd.isna(uncovered["home_elo_rank"]))
+        assert bool(pd.isna(uncovered["home_elo_percentile"]))
