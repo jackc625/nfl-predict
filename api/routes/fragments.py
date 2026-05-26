@@ -7,6 +7,7 @@ Routes:
     GET /fragments/games       -- Game grid fragment (swapped into #game-grid)
     GET /fragments/performance -- Performance content fragment (season swap)
     GET /fragments/betting     -- Betting content fragment (All/Recommended scope swap)
+    GET /fragments/season      -- Season tracking content fragment (season swap)
 """
 
 from __future__ import annotations
@@ -19,8 +20,10 @@ from api.routes.pages import (
     PAGE_CACHE_CONTROL,
     _annotate_wp_correct,
     _build_betting_context,
+    _build_season_context,
     _compute_week_summary,
     _normalize_betting_scope,
+    _normalize_season,
     _pivot_season_metrics,
 )
 from api.services import DataService
@@ -128,6 +131,38 @@ def betting_fragment(
         "pages/betting.html",
         context,
         block_name="betting_content",
+    )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
+
+
+@router.get("/season")
+def season_fragment(
+    request: Request,
+    season: int | None = Query(None),
+    service: DataService = Depends(get_data_service),
+):
+    """Return the ``season_tracking_content`` block for the HTMX season swap.
+
+    Renders only the swappable portion of the season page (KPI strip + the
+    cumulative and weekly chart sections) for the selected *season*, used when
+    the season selector dropdown changes (D-11).
+
+    ``season`` is whitelisted to ``service.get_prediction_seasons()`` (an
+    out-of-range value falls back to the latest, D-01) via the same chokepoint
+    the full page uses, and the context is built by the shared
+    ``_build_season_context`` helper so the cached-read logic is not duplicated.
+    Reads cached HTML/JSON only -- zero metric logic on the request path (D-12).
+    Cache-Control is set on the returned TemplateResponse.
+    """
+    available = service.get_prediction_seasons()
+    season = _normalize_season(season, available)
+    context = _build_season_context(service, season, request)
+    template_response = templates.TemplateResponse(
+        request,
+        "pages/season.html",
+        context,
+        block_name="season_tracking_content",
     )
     template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
     return template_response

@@ -213,6 +213,66 @@ def _build_betting_context(
     }
 
 
+def _normalize_season(season: int | None, available: list[int]) -> int | None:
+    """Whitelist *season* to the seasons present in ``predictions`` (T-V5-01).
+
+    The only untrusted input on the season page is the ``season`` query param;
+    this is the single chokepoint that constrains it before any cached
+    ``season_*_{season}`` id is built. Mirrors ``_normalize_betting_scope`` but
+    the valid set is data-dependent rather than two literals:
+
+    * ``available`` is ``service.get_prediction_seasons()`` -- DESC-ordered, so
+      ``available[0]`` is the dynamically-resolved latest season (D-01).
+    * In-range seasons pass through unchanged.
+    * ``None`` (no param) or any out-of-range value falls back to the latest
+      available season -- never a hardcoded year (D-01 / D-04 / T-V5-01).
+    * If there are no seasons at all (empty DB), returns ``None`` so the page
+      renders its whole-season empty state instead of 500ing.
+    """
+    if not available:
+        return None
+    if season in available:
+        return season
+    return available[0]
+
+
+def _build_season_context(
+    service: DataService, season: int | None, request: Request
+) -> dict[str, Any]:
+    """Assemble the season-tracking template context from cached data only.
+
+    Reads ONLY pre-rendered HTML / JSON for the (already-whitelisted) *season*:
+    the per-season cumulative + weekly chart HTML (via ``get_chart_html``) and
+    the per-season KPI JSON blob (via ``get_season_kpis``). ZERO hit-rate metric
+    logic runs here -- every statistic was computed during cache population
+    (D-12). The ``charts`` dict is keyed by bare chart_id (e.g.
+    ``season_cumulative_<year>``) so the template references each slot via
+    ``current_season`` and the fragment swap re-renders exactly the active
+    season's set.
+
+    Shared by both ``season_tracking_page`` and ``season_fragment`` so the
+    cached-read contract lives in one place and cannot drift between the two
+    handlers.
+    """
+    charts: dict[str, str | None] = {}
+    if season is not None:
+        charts[f"season_cumulative_{season}"] = service.get_chart_html(
+            f"season_cumulative_{season}"
+        )
+        charts[f"season_weekly_{season}"] = service.get_chart_html(
+            f"season_weekly_{season}"
+        )
+    return {
+        "request": request,
+        "charts": charts,
+        "kpis": service.get_season_kpis(season) if season is not None else {},
+        "available_seasons": service.get_prediction_seasons(),
+        "current_season": season,
+        "current_path": "/season",
+        "cache_meta": service.get_cache_meta(),
+    }
+
+
 def _annotate_wp_correct(games: list[dict]) -> list[dict]:
     """Return a new list of games with wp_correct annotated.
 
@@ -528,6 +588,47 @@ def betting_page(
     block_name = "betting_content" if request.headers.get("HX-Request") else None
     template_response = templates.TemplateResponse(
         request, "pages/betting.html", context, block_name=block_name
+    )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
+
+
+@router.get("/season")
+def season_tracking_page(
+    request: Request,
+    season: int | None = Query(None),
+    service: DataService = Depends(get_data_service),
+):
+    """Serve the Season Tracking page.
+
+    Renders the season-to-date KPI strip, the cumulative-accuracy chart
+    (running per-target hit rate, DASH-07), and the weekly-performance chart
+    (per-week hit rate + rolling overlay, DASH-08) for the selected season.
+    A season selector re-renders the swappable ``season_tracking_content``
+    block via HTMX (D-11).
+
+    The default season is the dynamically-resolved latest season present in
+    ``predictions`` (D-01) -- never a hardcoded year. ``season`` is whitelisted
+    to ``service.get_prediction_seasons()`` before any cached
+    ``season_*_{season}`` id is built; an out-of-range value falls back to the
+    latest available season (Security V5 / T-V5-01).
+
+    All charts and the KPI JSON blob are pre-rendered for every season during
+    cache population (Plan 18-02); this handler reads cached HTML/JSON only and
+    contains NO hit-rate metric logic (D-12). On an HX-Request the handler
+    returns only the ``season_tracking_content`` block so a full navigation to
+    ``/season?season=`` and the selector's fragment swap share one code path.
+    Cache-Control is set on the returned TemplateResponse (Phase 15 D-07).
+    """
+    available = service.get_prediction_seasons()
+    season = _normalize_season(season, available)
+    context = _build_season_context(service, season, request)
+
+    block_name = (
+        "season_tracking_content" if request.headers.get("HX-Request") else None
+    )
+    template_response = templates.TemplateResponse(
+        request, "pages/season.html", context, block_name=block_name
     )
     template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
     return template_response
