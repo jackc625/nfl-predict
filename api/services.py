@@ -183,6 +183,52 @@ class DataService:
         return decoded if isinstance(decoded, list) else []
 
     # ------------------------------------------------------------------
+    # Betting KPI strip + ROI table (Phase 17 — precomputed during pre-render)
+    # ------------------------------------------------------------------
+
+    def get_betting_kpis(self, scope: str) -> dict[str, Any]:
+        """Read the precomputed betting KPI strip for *scope* from ``chart_cache``.
+
+        The KPI dict is stored as a JSON blob under ``chart_id =
+        f"betting_kpis_{scope}"`` during pre-render (D-20), one blob per scope
+        (``all`` / ``recommended``). This accessor decodes the JSON into a dict
+        so the template renders the 7-card scoreboard without re-running any
+        statistics at request time (zero metric logic on the request path).
+
+        ``scope`` whitelisting happens in the Plan 04 handlers; this accessor
+        simply reads the cached id. Returns an empty dict if the entry is
+        missing or malformed.
+        """
+        html = self.get_chart_html(f"betting_kpis_{scope}")
+        if not html:
+            return {}
+        try:
+            decoded = json.loads(html)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+
+    def get_betting_roi_table(self, scope: str) -> list[dict[str, Any]]:
+        """Read the precomputed betting ROI table for *scope* from ``chart_cache``.
+
+        The per-slice ROI rows are stored as a JSON blob under ``chart_id =
+        f"betting_roi_table_{scope}"`` during pre-render (D-20), one blob per
+        scope. This accessor decodes the JSON into a list of dicts so the
+        template renders the ROI summary table without re-running any statistics
+        at request time.
+
+        Returns an empty list if the entry is missing or malformed.
+        """
+        html = self.get_chart_html(f"betting_roi_table_{scope}")
+        if not html:
+            return []
+        try:
+            decoded = json.loads(html)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return decoded if isinstance(decoded, list) else []
+
+    # ------------------------------------------------------------------
     # Predictions
     # ------------------------------------------------------------------
 
