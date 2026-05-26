@@ -472,3 +472,64 @@ def test_season_page_htmx_returns_block(test_client: TestClient):
     assert "<html" not in html
     # Still contains season content (a section heading).
     assert "Cumulative Accuracy" in html
+
+
+def test_season_error_state_wired_and_distinct_from_empty(test_client: TestClient):
+    """DASH-09 / D-17: the /season page wires `_error_state.html` for the failed-
+    swap path, and the error state (red) is DISTINCT from the empty state (gray).
+
+    The page reads cached HTML/JSON only and the error wiring is HTMX-native: a
+    hidden ``<template id="season-error-template">`` carries the server-rendered
+    ``_error_state.html`` markup (with the LOCKED ``/season`` error copy) and the
+    selector's ``hx-on::response-error`` handler copies it into ``#season-content``
+    on a 4xx/5xx swap (HTMX leaves the target untouched on non-200 by default --
+    ``detail.shouldSwap`` is false). This route-level assertion proves the error
+    path is reachable and renders the red error copy, deterministically and with
+    no network, and that the two states are not conflated.
+    """
+    response = test_client.get("/season")
+    assert response.status_code == 200
+    html = response.text
+
+    # The orphaned error component is now wired: the LOCKED red /season error copy
+    # is server-rendered into the page (inside the hidden error <template>).
+    assert "Could not load season data" in html
+    assert "Refresh the page or rebuild the cache" in html
+
+    # The error markup is reachable via the wired HTMX error handler + template,
+    # not left blank: the response-error handler and the error <template> exist.
+    assert "hx-on::response-error" in html
+    assert 'id="season-error-template"' in html
+
+    # Distinction (must NOT be conflated): the error card uses the red _error_state
+    # styling, while the empty state uses the gray styling. Assert the error path
+    # carries the red error card class so it is not the gray "no data" state.
+    assert "bg-red-50" in html
+
+    # The populated fixture renders real season content, so the gray whole-season
+    # empty copy must NOT appear here -- error (red) and empty (gray) are distinct
+    # states and are not conflated. On a populated page the KPI strip renders (not
+    # the whole-season empty state), proving the visible content is real data with
+    # the error state held in reserve in the hidden template.
+    assert "No completed games yet" not in html
+    assert "WP Hit Rate" in html
+
+
+def test_season_error_copy_renders_via_error_component(empty_test_client: TestClient):
+    """D-17: even when the page falls back to the EMPTY state (empty DB), the
+    red ERROR component is still wired and reachable -- the two states coexist and
+    are distinct. The empty DB shows the gray "No completed games yet" empty state
+    in the content area, while the red "Could not load season data" error copy is
+    held in the hidden error <template> for the failed-swap path.
+    """
+    response = empty_test_client.get("/season")
+    assert response.status_code == 200
+    html = response.text
+
+    # Empty state (gray) is the active content for an empty DB (no completed games).
+    assert "No completed games yet" in html
+
+    # Error state (red) is STILL wired and reachable (distinct concern, not shown
+    # as the active content): the LOCKED error copy + the red card markup exist.
+    assert "Could not load season data" in html
+    assert "bg-red-50" in html
