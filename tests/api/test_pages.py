@@ -6,6 +6,7 @@ backtest page, and HTMX block rendering.
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -296,5 +297,93 @@ def test_insights_page_renders_expected_chart_ids(test_client: TestClient):
 def test_insights_page_empty_db(empty_test_client: TestClient):
     """D-29: empty DB renders empty-state cards, not 500."""
     response = empty_test_client.get("/insights")
+    assert response.status_code == 200
+    assert "Chart unavailable" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 17: /betting page + /fragments/betting route scaffolds (skip-gated)
+# ---------------------------------------------------------------------------
+# Full assertion bodies now; gated by ``@pytest.mark.skip(reason="activated in
+# 17-04")`` until Plan 17-04 lands the ``betting_page`` handler, the
+# ``/fragments/betting`` route, ``web/templates/pages/betting.html``, and the
+# ``base.html`` nav link. Plan 17-04 activates them by deleting the skip marker
+# (Phase 16 skip-gated pattern). Default scope = "recommended" (D-17).
+
+
+@pytest.mark.skip(reason="activated in 17-04")
+def test_betting_page_200(test_client: TestClient):
+    """DASH-10: GET /betting returns 200 with the four section headings, a
+    Cache-Control header, and a nav link to /betting (desktop + mobile)."""
+    response = test_client.get("/betting")
+    assert response.status_code == 200
+    html = response.text
+    # Section headings (D-04 order: KPI strip -> Equity -> ROI -> Edge).
+    assert "Equity" in html
+    assert "ROI" in html
+    assert "Edge" in html
+    # Cache-Control set on the returned TemplateResponse (Phase 15 D-07).
+    cc = response.headers.get("Cache-Control", "")
+    assert "public" in cc and "max-age" in cc
+    # Nav link present in both desktop nav and mobile menu (D-02).
+    assert html.count('href="/betting"') >= 2
+
+
+@pytest.mark.skip(reason="activated in 17-04")
+def test_betting_page_renders_recommended_chart_ids(test_client: TestClient):
+    """Default load (scope=recommended) consumes the betting_*_recommended
+    chart_id markers the conftest fixture inserts."""
+    from tests.api.conftest import _BETTING_CHART_BASES, BETTING_SCOPES
+
+    assert "recommended" in BETTING_SCOPES
+    response = test_client.get("/betting")
+    html = response.text
+    # Every recommended-scope chart-HTML marker should render. The two JSON-blob
+    # families (kpis / roi_table) are decoded server-side, not emitted as markers.
+    for base in _BETTING_CHART_BASES:
+        if base in ("betting_kpis", "betting_roi_table"):
+            continue
+        chart_id = f"{base}_recommended"
+        assert f'data-chart-id="{chart_id}"' in html, f"Missing {chart_id}"
+
+
+@pytest.mark.skip(reason="activated in 17-04")
+def test_betting_fragment(test_client: TestClient):
+    """D-17: GET /fragments/betting?scope=all with HX-Request returns only the
+    betting_content block (no full document), and the scope switch changes which
+    betting_*_<scope> chart ids appear."""
+    response = test_client.get(
+        "/fragments/betting?scope=all",
+        headers={"HX-Request": "true"},
+    )
+    assert response.status_code == 200
+    html = response.text
+    # Fragment only: no full HTML document wrapper.
+    assert "<!DOCTYPE" not in html
+    assert "<html" not in html
+    # scope=all surfaces the betting_*_all chart markers.
+    assert 'data-chart-id="betting_equity_all"' in html
+    # ... and not the recommended-scope equity marker.
+    assert 'data-chart-id="betting_equity_recommended"' not in html
+
+
+@pytest.mark.skip(reason="activated in 17-04")
+def test_betting_fragment_scope_whitelist(test_client: TestClient):
+    """Security V5: an out-of-whitelist scope falls back to the default
+    ("recommended") rather than erroring or interpolating raw input."""
+    response = test_client.get(
+        "/fragments/betting?scope=bogus",
+        headers={"HX-Request": "true"},
+    )
+    assert response.status_code == 200
+    # Falls back to recommended-scope content.
+    assert 'data-chart-id="betting_equity_recommended"' in response.text
+
+
+@pytest.mark.skip(reason="activated in 17-04")
+def test_betting_empty_db(empty_test_client: TestClient):
+    """Empty DB renders empty-state cards (not a 500): no betting_* chart_ids
+    are cached, so every chart slot falls back to 'Chart unavailable'."""
+    response = empty_test_client.get("/betting")
     assert response.status_code == 200
     assert "Chart unavailable" in response.text

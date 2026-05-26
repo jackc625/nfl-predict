@@ -616,3 +616,348 @@ def test_prerender_charts_failure_isolation(
 # Sanity guard so the file itself is valid Python even before plan 16-02.
 def test_module_imports_cleanly() -> None:
     assert math.isfinite(1.0)
+
+
+# ===========================================================================
+# Phase 17: betting chart-generator scaffolds (skip-gated, activated in 17-03)
+# ===========================================================================
+# These tests carry full assertion bodies but are gated by
+# ``@pytest.mark.skip(reason="activated in 17-03")`` until Plan 17-03 lands
+# ``api/charts/betting.py`` + ``api/betting_metrics.py`` and wires both scope
+# variants into ``api/charts/prerender.py``. Plan 17-03 activates them by
+# deleting the skip marker (the Phase 16 skip-gated pattern: full bodies now,
+# flipped on by marker removal — see STATE.md Phase 16-01).
+#
+# The generator/metric names referenced here are the contract Plan 17-02/03
+# must satisfy:
+#   api.charts.betting: generate_betting_equity_chart,
+#     generate_betting_equity_mini_wp/_ats/_ou, generate_betting_roi_type/
+#     _season/_bucket, generate_betting_edge_hist_wp/_ats/_ou, filter_scope
+#   api.betting_metrics: compute_kpis, compute_roi_table (pure math)
+# Recommended scope == kelly_stake > 0 (CONTEXT D-16 REVISED).
+
+
+@pytest.fixture()
+def betting_bets_data() -> list[dict]:
+    """Per-bet rows mirroring the betting_bets table / conftest fixture shape.
+
+    Coverage: all 3 targets; win (True) / loss (False) / push (None) outcomes;
+    both kelly_stake > 0 (recommended) and kelly_stake == 0 rows so the scope
+    filter and push-exclusion are exercised. WP rows carry slipped_line=None.
+
+    Split (assertable by test_betting_scope_filter):
+      - 9 total rows; 6 with kelly_stake > 0; 3 with kelly_stake == 0.
+    """
+
+    def _b(
+        game_id: str,
+        season: int,
+        week: int,
+        target: str,
+        edge: float,
+        slipped_line: float | None,
+        kelly_stake: float,
+        outcome: bool | None,
+        payout_flat: float,
+        payout_kelly: float,
+    ) -> dict:
+        return {
+            "game_id": game_id,
+            "season": season,
+            "week": week,
+            "target": target,
+            "bet_side": "home",
+            "model_value": 0.5,
+            "market_value": 0.5,
+            "edge": edge,
+            "slipped_line": slipped_line,
+            "odds": -110.0,
+            "flat_stake": 100.0,
+            "kelly_stake": kelly_stake,
+            "outcome": outcome,
+            "payout_flat": payout_flat,
+            "payout_kelly": payout_kelly,
+        }
+
+    return [
+        _b("2021_W01_DAL@TB", 2021, 1, "wp", 0.07, None, 120.0, True, 66.7, 80.0),
+        _b("2021_W02_KC@BUF", 2021, 2, "wp", 0.06, None, 90.0, False, -100.0, -90.0),
+        _b("2022_W01_SF@CHI", 2022, 1, "wp", -0.06, None, 0.0, True, 83.3, 0.0),
+        _b("2022_W05_PHI@GB", 2022, 5, "ats", 2.5, -3.5, 75.0, True, 90.9, 68.2),
+        _b("2023_W15_DAL@PHI", 2023, 15, "ats", 1.2, 3.0, 60.0, None, 0.0, 0.0),
+        _b("2023_W09_MIA@NYJ", 2023, 9, "ats", 1.5, -3.0, 0.0, False, -100.0, 0.0),
+        _b("2024_W03_CIN@BAL", 2024, 3, "ou", 2.5, 45.0, 70.0, True, 90.9, 63.6),
+        _b("2024_W07_LA@SEA", 2024, 7, "ou", 0.5, 44.0, 0.0, None, 0.0, 0.0),
+        _b("2024_W11_BUF@KC", 2024, 11, "ou", 3.0, 48.5, 85.0, False, -100.0, -85.0),
+    ]
+
+
+def _bets_for(rows: list[dict], target: str) -> list[dict]:
+    return [r for r in rows if r["target"] == target]
+
+
+# ---------------------------------------------------------------------------
+# Equity curve (DASH-04): main flat/Kelly chart + per-type minis
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+def test_betting_equity_happy_path(betting_bets_data: list[dict]) -> None:
+    """Main equity chart renders flat + Kelly series with a starting-bankroll
+    reference line and chronological season ordering (D-07)."""
+    from api.charts import (
+        generate_betting_equity_chart,  # type: ignore[attr-defined]  # symbol lands in 17-02/03
+    )
+
+    html = generate_betting_equity_chart(betting_bets_data)
+    assert "<div" in html
+    # Two strategy series labelled in the legend.
+    assert "Flat" in html
+    assert "Kelly" in html
+    # Starting-bankroll reference line ($10,000) annotated.
+    assert "Starting Bankroll" in html or "10,000" in html or "10000" in html
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+def test_betting_equity_empty_data() -> None:
+    """Empty input yields an empty-state div, not a crash."""
+    from api.charts import (
+        generate_betting_equity_chart,  # type: ignore[attr-defined]  # symbol lands in 17-02/03
+    )
+
+    html = generate_betting_equity_chart([])
+    assert "Chart unavailable" in html or "No betting" in html
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+@pytest.mark.parametrize("target", ["wp", "ats", "ou"])
+def test_betting_equity_mini_per_type(
+    betting_bets_data: list[dict],
+    target: str,
+) -> None:
+    """Each per-type mini equity chart (wp/ats/ou) renders from its own rows."""
+    from api.charts import (
+        generate_betting_equity_mini_ats,  # type: ignore[attr-defined]
+        generate_betting_equity_mini_ou,  # type: ignore[attr-defined]
+        generate_betting_equity_mini_wp,  # type: ignore[attr-defined]
+    )
+
+    fns = {
+        "wp": generate_betting_equity_mini_wp,
+        "ats": generate_betting_equity_mini_ats,
+        "ou": generate_betting_equity_mini_ou,
+    }
+    html = fns[target](_bets_for(betting_bets_data, target))
+    assert "<div" in html
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+@pytest.mark.parametrize("target", ["wp", "ats", "ou"])
+def test_betting_equity_mini_empty_data(target: str) -> None:
+    """Per-type mini equity charts handle empty rows with an empty-state div."""
+    from api.charts import (
+        generate_betting_equity_mini_ats,  # type: ignore[attr-defined]
+        generate_betting_equity_mini_ou,  # type: ignore[attr-defined]
+        generate_betting_equity_mini_wp,  # type: ignore[attr-defined]
+    )
+
+    fns = {
+        "wp": generate_betting_equity_mini_wp,
+        "ats": generate_betting_equity_mini_ats,
+        "ou": generate_betting_equity_mini_ou,
+    }
+    html = fns[target]([])
+    assert "Chart unavailable" in html or "No betting" in html
+
+
+# ---------------------------------------------------------------------------
+# ROI breakdown (DASH-05): grouped flat/Kelly bars + 0% baseline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+@pytest.mark.parametrize(
+    "slice_name",
+    ["type", "season", "bucket"],
+)
+def test_betting_roi_grouped_bars(
+    betting_bets_data: list[dict],
+    slice_name: str,
+) -> None:
+    """ROI bar charts (by type / season / edge bucket) render grouped flat vs
+    Kelly bars with a 0% baseline reference line (D-11 / D-18)."""
+    from api.charts import (
+        generate_betting_roi_bucket,  # type: ignore[attr-defined]
+        generate_betting_roi_season,  # type: ignore[attr-defined]
+        generate_betting_roi_type,  # type: ignore[attr-defined]
+    )
+
+    fns = {
+        "type": generate_betting_roi_type,
+        "season": generate_betting_roi_season,
+        "bucket": generate_betting_roi_bucket,
+    }
+    html = fns[slice_name](betting_bets_data)
+    assert "<div" in html
+    # Both staking strategies appear as grouped-bar series.
+    assert "Flat" in html
+    assert "Kelly" in html
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+def test_betting_roi_empty_data() -> None:
+    """ROI generators handle empty rows with an empty-state div."""
+    from api.charts import (
+        generate_betting_roi_type,  # type: ignore[attr-defined]  # symbol lands in 17-02/03
+    )
+
+    html = generate_betting_roi_type([])
+    assert "Chart unavailable" in html or "No betting" in html
+
+
+# ---------------------------------------------------------------------------
+# Edge distribution (DASH-06): per-type histograms colored by outcome
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+@pytest.mark.parametrize("target", ["wp", "ats", "ou"])
+def test_betting_edge_hist_per_type(
+    betting_bets_data: list[dict],
+    target: str,
+) -> None:
+    """Each per-type edge histogram renders two outcome-colored series
+    (green win / red loss); pushes (outcome None) are excluded (D-14)."""
+    from api.charts import (
+        generate_betting_edge_hist_ats,  # type: ignore[attr-defined]
+        generate_betting_edge_hist_ou,  # type: ignore[attr-defined]
+        generate_betting_edge_hist_wp,  # type: ignore[attr-defined]
+    )
+
+    fns = {
+        "wp": generate_betting_edge_hist_wp,
+        "ats": generate_betting_edge_hist_ats,
+        "ou": generate_betting_edge_hist_ou,
+    }
+    html = fns[target](_bets_for(betting_bets_data, target))
+    assert "<div" in html
+    # Win/loss legend entries present.
+    assert "Win" in html
+    assert "Loss" in html
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+def test_betting_edge_hist_empty_data() -> None:
+    """Edge histogram generators handle empty rows with an empty-state div."""
+    from api.charts import (
+        generate_betting_edge_hist_wp,  # type: ignore[attr-defined]  # symbol lands in 17-02/03
+    )
+
+    html = generate_betting_edge_hist_wp([])
+    assert "Chart unavailable" in html or "No betting" in html
+
+
+# ---------------------------------------------------------------------------
+# Scope filter (recommended == kelly_stake > 0) + KPIs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+def test_betting_scope_filter(betting_bets_data: list[dict]) -> None:
+    """``filter_scope`` returns every row for 'all' and only kelly_stake>0 rows
+    for 'recommended' (CONTEXT D-16 REVISED). Asserted against the fixture's
+    known 9-row / 6-recommended split."""
+    from api.charts import (
+        filter_scope,  # type: ignore[attr-defined]  # symbol lands in 17-02/03
+    )
+
+    all_rows = filter_scope(betting_bets_data, "all")
+    rec_rows = filter_scope(betting_bets_data, "recommended")
+
+    assert len(all_rows) == len(betting_bets_data) == 9
+    expected_rec = sum(1 for r in betting_bets_data if r["kelly_stake"] > 0)
+    assert len(rec_rows) == expected_rec == 6
+    assert all(r["kelly_stake"] > 0 for r in rec_rows)
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+def test_betting_kpis_excludes_pushes(betting_bets_data: list[dict]) -> None:
+    """``compute_kpis`` win-rate denominator excludes pushes (outcome None) and
+    ROI uses net/wagered; scope-aware via filter_scope upstream."""
+    from api.betting_metrics import (  # type: ignore[import-not-found]  # module lands in 17-02
+        compute_kpis,
+    )
+
+    kpis = compute_kpis(betting_bets_data)
+    wins = sum(1 for r in betting_bets_data if r["outcome"] is True)
+    losses = sum(1 for r in betting_bets_data if r["outcome"] is False)
+    decided = wins + losses  # pushes (2 rows) excluded
+    assert kpis["total_bets"] == 9
+    assert kpis["win_rate"] == pytest.approx(wins / decided * 100)
+    # Net profit (flat) = sum of payout_flat across all rows.
+    expected_net = sum(r["payout_flat"] for r in betting_bets_data)
+    assert kpis["net_profit_flat"] == pytest.approx(expected_net)
+
+
+# ---------------------------------------------------------------------------
+# Pre-render BOTH scope variants + per-chart failure isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+def test_betting_prerender_both_scopes() -> None:
+    """Pre-render produces every BETTING_CHART_IDS entry (both scope variants)
+    plus decodable KPI/ROI-table JSON blobs per scope."""
+    import json
+
+    from api.charts.prerender import prerender_charts_for_cache
+    from tests.api.conftest import (
+        _BETTING_KPI_IDS,
+        _BETTING_ROI_TABLE_IDS,
+        BETTING_CHART_IDS,
+        _betting_bets_rows,
+    )
+
+    bundle = {"betting_bets": _betting_bets_rows()}
+    result = prerender_charts_for_cache(bundle)
+
+    for chart_id in BETTING_CHART_IDS:
+        assert chart_id in result, f"Missing chart_id {chart_id}"
+
+    # KPI blobs decode to a dict; ROI-table blobs decode to a list.
+    for kpi_id in _BETTING_KPI_IDS:
+        assert isinstance(json.loads(result[kpi_id]), dict)
+    for roi_id in _BETTING_ROI_TABLE_IDS:
+        assert isinstance(json.loads(result[roi_id]), list)
+
+
+@pytest.mark.skip(reason="activated in 17-03")
+def test_betting_failure_isolation(caplog: pytest.LogCaptureFixture) -> None:
+    """If one betting generator raises, pre-render (a) does not re-raise,
+    (b) WARN-logs the failing chart_id, and (c) fills it with the
+    ``_empty_chart_div`` fallback while the others render real HTML.
+
+    Patch target is the source module ``api.charts.betting`` (prerender imports
+    it as a module so the patch is observable at call time)."""
+    from api.charts.prerender import prerender_charts_for_cache
+    from tests.api.conftest import _betting_bets_rows
+
+    caplog.set_level(logging.WARNING)
+    bundle = {"betting_bets": _betting_bets_rows()}
+    with patch(
+        "api.charts.betting.generate_betting_equity_chart",
+        side_effect=ValueError("injected"),
+    ):
+        result = prerender_charts_for_cache(bundle)
+
+    assert isinstance(result, dict)
+    # Both scope variants of the failed chart fall back to the empty-state div.
+    assert "Chart unavailable" in result["betting_equity_all"]
+    assert "Chart unavailable" in result["betting_equity_recommended"]
+    # A WARNING names the failing chart_id.
+    warned = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "betting_equity" in r.getMessage()
+    ]
+    assert warned, "Expected WARNING log for failing betting chart_id"
