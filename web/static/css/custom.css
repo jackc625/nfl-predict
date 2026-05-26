@@ -160,6 +160,19 @@
 
 
 /* ========================================================================
+   Numeric / Stat Cells
+   ======================================================================== */
+
+/* Single source of truth for the monospace numeric stack applied to every
+   stat/KPI/table-figure cell. Replaces the previously-repeated inline
+   style="font-family: ui-monospace, ..." across the page templates (D-19).
+   Net-zero visual change: identical font-family declaration. */
+.stat-num {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+
+/* ========================================================================
    Prediction Bar (confidence visualization)
    ======================================================================== */
 

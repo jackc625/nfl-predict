@@ -29,7 +29,7 @@
   <div class="mt-4 p-4 rounded-lg {% if game.wp_correct %}bg-green-50 border border-green-200{% else %}bg-red-50 border border-red-200{% endif %}">
     <div class="flex items-center justify-between">
       <div>
-        <span class="text-lg font-semibold" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ game.away_score }} - {{ game.home_score }}</span>
+        <span class="text-lg font-semibold stat-num">{{ game.away_score }} - {{ game.home_score }}</span>
         <span class="ml-3 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold {% if game.wp_correct %}bg-green-100 text-green-800{% else %}bg-red-100 text-red-600{% endif %}">
           {% if game.wp_correct %}Correct{% else %}Incorrect{% endif %}
         </span>
@@ -68,10 +68,10 @@
                 <span class="block text-xs text-gray-400">Predicts {{ game.home_team if game.wp_prob > 0.5 else game.away_team }}</span>
               {% endif %}
             </td>
-            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.1f"|format((game.wp_prob or 0) * 100) }}%</td>
-            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">-</td>
-            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if game.blended_wp %}{{ "%.1f"|format(game.blended_wp * 100) }}%{% else %}-{% endif %}</td>
-            <td class="py-2 text-right {% if (game.wp_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %}" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%+.1f"|format((game.wp_edge or 0) * 100) }}%</td>
+            <td class="py-2 text-right stat-num">{{ "%.1f"|format((game.wp_prob or 0) * 100) }}%</td>
+            <td class="py-2 text-right stat-num">-</td>
+            <td class="py-2 text-right stat-num">{% if game.blended_wp %}{{ "%.1f"|format(game.blended_wp * 100) }}%{% else %}-{% endif %}</td>
+            <td class="py-2 text-right {% if (game.wp_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format((game.wp_edge or 0) * 100) }}%</td>
           </tr>
           <tr>
             <td class="py-2 text-gray-700">Spread
@@ -81,10 +81,10 @@
                 </span>
               {% endif %}
             </td>
-            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%+.1f"|format(game.ats_prediction or 0) }}</td>
-            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%+.1f"|format(game.market_spread or 0) }}</td>
-            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if game.blended_ats is not none %}{{ "%+.1f"|format(game.blended_ats) }}{% else %}-{% endif %}</td>
-            <td class="py-2 text-right {% if (game.ats_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %}" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%+.1f"|format((game.ats_edge or 0) * 100) }}%</td>
+            <td class="py-2 text-right stat-num">{{ "%+.1f"|format(game.ats_prediction or 0) }}</td>
+            <td class="py-2 text-right stat-num">{{ "%+.1f"|format(game.market_spread or 0) }}</td>
+            <td class="py-2 text-right stat-num">{% if game.blended_ats is not none %}{{ "%+.1f"|format(game.blended_ats) }}{% else %}-{% endif %}</td>
+            <td class="py-2 text-right {% if (game.ats_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format((game.ats_edge or 0) * 100) }}%</td>
           </tr>
           <tr>
             <td class="py-2 text-gray-700">Total
@@ -94,10 +94,10 @@
                 </span>
               {% endif %}
             </td>
-            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.1f"|format(game.ou_prediction or 0) }}</td>
-            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.1f"|format(game.market_total or 0) }}</td>
-            <td class="py-2 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if game.blended_ou is not none %}{{ "%.1f"|format(game.blended_ou) }}{% else %}-{% endif %}</td>
-            <td class="py-2 text-right {% if (game.ou_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %}" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%+.1f"|format((game.ou_edge or 0) * 100) }}%</td>
+            <td class="py-2 text-right stat-num">{{ "%.1f"|format(game.ou_prediction or 0) }}</td>
+            <td class="py-2 text-right stat-num">{{ "%.1f"|format(game.market_total or 0) }}</td>
+            <td class="py-2 text-right stat-num">{% if game.blended_ou is not none %}{{ "%.1f"|format(game.blended_ou) }}{% else %}-{% endif %}</td>
+            <td class="py-2 text-right {% if (game.ou_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format((game.ou_edge or 0) * 100) }}%</td>
           </tr>
         </tbody>
       </table>
@@ -201,11 +201,11 @@
         <div class="grid grid-cols-2 gap-4">
           <div class="text-center p-3 bg-gray-50 rounded">
             <p class="text-xs text-gray-500">{{ game.home_team }}</p>
-            <p class="text-lg font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if game.context.home_elo is not none %}{{ "%.0f"|format(game.context.home_elo) }}{% else %}<span class="text-gray-400">N/A</span>{% endif %}</p>
+            <p class="text-lg font-semibold text-gray-900 stat-num">{% if game.context.home_elo is not none %}{{ "%.0f"|format(game.context.home_elo) }}{% else %}<span class="text-gray-400">N/A</span>{% endif %}</p>
           </div>
           <div class="text-center p-3 bg-gray-50 rounded">
             <p class="text-xs text-gray-500">{{ game.away_team }}</p>
-            <p class="text-lg font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">{% if game.context.away_elo is not none %}{{ "%.0f"|format(game.context.away_elo) }}{% else %}<span class="text-gray-400">N/A</span>{% endif %}</p>
+            <p class="text-lg font-semibold text-gray-900 stat-num">{% if game.context.away_elo is not none %}{{ "%.0f"|format(game.context.away_elo) }}{% else %}<span class="text-gray-400">N/A</span>{% endif %}</p>
           </div>
         </div>
       </div>
@@ -282,7 +282,7 @@
         {% if game.context.is_outdoor and game.context.wind_mph is not none %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Wind</dt>
-          <dd class="text-gray-900 font-medium" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ "%.0f"|format(game.context.wind_mph) }} mph</dd>
+          <dd class="text-gray-900 font-medium stat-num">{{ "%.0f"|format(game.context.wind_mph) }} mph</dd>
         </div>
         {% endif %}
         {% if game.context.is_divisional %}

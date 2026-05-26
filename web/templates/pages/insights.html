@@ -209,9 +209,9 @@
           <tr class="hover:bg-gray-50 transition-colors">
             <td class="px-4 py-3 text-gray-700 uppercase font-medium">{{ row.target }}</td>
             <td class="px-4 py-3 text-gray-700 font-medium">{{ row.metric }}</td>
-            <td class="px-4 py-3 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ row.model_fmt }}</td>
-            <td class="px-4 py-3 text-right" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ row.market_fmt }}</td>
-            <td class="px-4 py-3 text-right font-semibold {% if row.gap_favorable is sameas true %}text-green-700{% elif row.gap_favorable is sameas false %}text-red-600{% else %}text-gray-500{% endif %}" style="font-family: ui-monospace, SFMono-Regular, monospace;">{{ row.gap_fmt }}</td>
+            <td class="px-4 py-3 text-right stat-num">{{ row.model_fmt }}</td>
+            <td class="px-4 py-3 text-right stat-num">{{ row.market_fmt }}</td>
+            <td class="px-4 py-3 text-right font-semibold {% if row.gap_favorable is sameas true %}text-green-700{% elif row.gap_favorable is sameas false %}text-red-600{% else %}text-gray-500{% endif %} stat-num">{{ row.gap_fmt }}</td>
           </tr>
           {% endfor %}
         </tbody>

@@ -40,7 +40,7 @@
       {# Win Probability #}
       <div class="text-center">
         <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Win Prob</p>
-        <p class="text-base font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">
+        <p class="text-base font-semibold text-gray-900 stat-num">
           {% if game.wp_prob is not none %}{{ "%.1f"|format(game.wp_prob * 100) }}%{% else %}-{% endif %}
         </p>
         {% if game.wp_prob is not none %}
@@ -55,7 +55,7 @@
       {# Against the Spread #}
       <div class="text-center">
         <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Spread</p>
-        <p class="text-base font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">
+        <p class="text-base font-semibold text-gray-900 stat-num">
           {% if game.ats_prediction is not none %}{{ "%+.1f"|format(game.ats_prediction) }}{% else %}-{% endif %}
         </p>
         {% if game.ats_prediction is not none and game.market_spread is not none %}
@@ -78,7 +78,7 @@
       {# Over/Under #}
       <div class="text-center">
         <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Total</p>
-        <p class="text-base font-semibold text-gray-900" style="font-family: ui-monospace, SFMono-Regular, monospace;">
+        <p class="text-base font-semibold text-gray-900 stat-num">
           {% if game.ou_prediction is not none %}{{ "%.1f"|format(game.ou_prediction) }}{% else %}-{% endif %}
         </p>
         {% if game.ou_prediction is not none and game.market_total is not none %}
