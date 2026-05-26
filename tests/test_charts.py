@@ -947,3 +947,211 @@ def test_betting_failure_isolation(caplog: pytest.LogCaptureFixture) -> None:
         if r.levelno == logging.WARNING and "betting_equity" in r.getMessage()
     ]
     assert warned, "Expected WARNING log for failing betting chart_id"
+
+
+# ===========================================================================
+# Phase 18: season chart generators + per-season prerender self-check
+# ===========================================================================
+# api/charts/season.py renders the cumulative (one line per target, [0,100]
+# axis, 50%/52.4% reference lines — DASH-07) and weekly (per-week markers +
+# rolling overlay — DASH-08) figures, delegating ALL hit-rate math to
+# api.season_metrics. The prerender per-season loop produces
+# season_cumulative_<s> / season_weekly_<s> / season_kpis_<s> for every season
+# present in `predictions`, DERIVED DYNAMICALLY (no hardcoded year — D-01).
+
+
+@pytest.fixture()
+def season_rows() -> list[dict]:
+    """Completed `predictions` rows for ONE season across several weeks.
+
+    Shape matches the `predictions` columns the season hit-rate math reads
+    (season, week, status, home_score, away_score, wp_prob, ats_prediction,
+    ou_prediction, market_spread, market_total). Five completed weeks give the
+    cumulative line several points and the weekly rolling overlay (3-week window)
+    something to smooth. Outcomes are mixed so neither hit-rate pins at 0/100.
+    """
+    rows: list[dict] = []
+    for wk in range(1, 6):
+        # Alternate home/away margins and over/under so WP/ATS/OU each see a mix.
+        home_score = 27 if wk % 2 else 17
+        away_score = 20 if wk % 2 else 24
+        rows.append(
+            {
+                "game_id": f"2024_W{wk:02d}_A@B",
+                "season": 2024,
+                "week": wk,
+                "status": "completed",
+                "home_score": home_score,
+                "away_score": away_score,
+                "wp_prob": 0.62 if wk % 2 else 0.41,
+                "ats_prediction": -4.0 if wk % 2 else 2.0,
+                "ou_prediction": 50.0 if wk % 2 else 40.0,
+                "market_spread": -3.0,
+                "market_total": 45.0,
+            },
+        )
+    return rows
+
+
+def test_season_cumulative_happy_path(season_rows: list[dict]) -> None:
+    """Cumulative chart renders a Plotly div with the three target labels and the
+    50% / 52.4% reference-line annotations on a 0-100 axis (DASH-07 / D-06)."""
+    from api.charts import generate_season_cumulative
+
+    html = generate_season_cumulative(season_rows)
+    assert "<div" in html
+    # Three per-target lines, labeled by the Winner/Spread/Totals legend copy.
+    assert "Winner" in html
+    assert "Spread" in html
+    assert "Totals" in html
+    # D-06 reference-line annotations.
+    assert "50% coin flip" in html
+    assert "breakeven" in html
+
+
+def test_season_cumulative_empty_data() -> None:
+    """Empty input yields the _empty_chart_div fallback, not a crash."""
+    from api.charts import generate_season_cumulative
+
+    html = generate_season_cumulative([])
+    assert "Chart unavailable" in html or "No season" in html
+
+
+def test_season_weekly_happy_path(season_rows: list[dict]) -> None:
+    """Weekly chart renders a Plotly div with per-target marks plus a rolling
+    overlay (the '3-wk avg' series label) on a 0-100 axis (DASH-08)."""
+    from api.charts import generate_season_weekly
+
+    html = generate_season_weekly(season_rows)
+    assert "<div" in html
+    assert "Winner" in html
+    # The rolling-average overlay is a smoothing of the same series, labeled so.
+    assert "avg" in html
+    # Reference lines present in section 2 as well.
+    assert "50% coin flip" in html
+
+
+def test_season_weekly_empty_data() -> None:
+    """Empty input yields the _empty_chart_div fallback, not a crash."""
+    from api.charts import generate_season_weekly
+
+    html = generate_season_weekly([])
+    assert "Chart unavailable" in html or "No season" in html
+
+
+def _season_prediction_bundle() -> tuple[list[dict], list[int]]:
+    """Build a `predictions` bundle from the conftest row-builders.
+
+    Returns (predictions_rows, expected_seasons) where expected_seasons is the
+    DISTINCT season set the fixture yields — which production must derive
+    dynamically and which equals conftest `_FIXTURE_SEASONS` / `SEASON_CHART_IDS`.
+    """
+    from tests.api.conftest import (
+        _insights_market_rows,
+        _sample_game_data,
+        _season_edge_rows,
+    )
+
+    preds = list(_sample_game_data())
+    for mr in _insights_market_rows():
+        preds.append({k: v for k, v in mr.items() if k != "_note"})
+    preds += _season_edge_rows()
+    expected = sorted({int(r["season"]) for r in preds if r.get("season") is not None})
+    return preds, expected
+
+
+def test_season_prerender_covers_every_fixture_season() -> None:
+    """Pre-render produces all three season bases for EVERY distinct season in
+    the fixture's predictions, derived dynamically (the data-dependent
+    self-check passes), and season_kpis_<s> decodes to a dict.
+
+    Also asserts production derived exactly the conftest SEASON_CHART_IDS set
+    from the fixture data — i.e. the test contract (over _FIXTURE_SEASONS)
+    matches what the dynamic prerender loop produced, with NO hardcoded year."""
+    import json
+
+    from api.charts.prerender import prerender_charts_for_cache
+    from tests.api.conftest import (
+        _FIXTURE_SEASONS,
+        SEASON_CHART_IDS,
+    )
+
+    preds, expected_seasons = _season_prediction_bundle()
+    # The fixture row-builders are the source the conftest tuple is derived from.
+    assert expected_seasons == sorted(_FIXTURE_SEASONS), (
+        f"fixture seasons {expected_seasons} drifted from _FIXTURE_SEASONS "
+        f"{sorted(_FIXTURE_SEASONS)} — re-pin the conftest contract"
+    )
+
+    result = prerender_charts_for_cache({"predictions": preds})
+
+    # Per-base-per-fixture-season coverage (NOT equality with a hardcoded tuple).
+    for season in expected_seasons:
+        for base in ("season_cumulative", "season_weekly", "season_kpis"):
+            assert f"{base}_{season}" in result, f"Missing chart_id {base}_{season}"
+        # season_kpis_<s> is a decodable JSON dict.
+        decoded = json.loads(result[f"season_kpis_{season}"])
+        assert isinstance(decoded, dict)
+        # The chart ids carry real div HTML.
+        assert "<div" in result[f"season_cumulative_{season}"]
+        assert "<div" in result[f"season_weekly_{season}"]
+
+    # Production derived exactly the conftest test-contract id set.
+    produced_season_ids = {
+        cid
+        for cid in result
+        if cid.startswith(("season_cumulative_", "season_weekly_", "season_kpis_"))
+    }
+    assert produced_season_ids == set(SEASON_CHART_IDS), (
+        "prerender season id set must equal the conftest SEASON_CHART_IDS "
+        "derived from the same fixture seasons"
+    )
+
+
+def test_season_prerender_failure_isolation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """If one season generator raises, pre-render (a) does not re-raise,
+    (b) WARN-logs the failing chart_id, and (c) fills that one chart_id with the
+    _empty_chart_div fallback while the OTHER season ids (other seasons + the
+    weekly chart of the same season) still render real HTML (the _safe_render
+    contract).
+
+    Patch target is the source module api.charts.season (prerender imports it as
+    a module so the patch is observable at call time)."""
+    from api.charts.prerender import prerender_charts_for_cache
+
+    preds, expected_seasons = _season_prediction_bundle()
+    assert len(expected_seasons) >= 2, "need >=2 seasons to prove cross-isolation"
+    failing_season = expected_seasons[0]
+    other_season = expected_seasons[-1]
+
+    caplog.set_level(logging.WARNING)
+    with patch(
+        "api.charts.season.generate_season_cumulative",
+        side_effect=ValueError("injected"),
+    ):
+        result = prerender_charts_for_cache({"predictions": preds})
+
+    assert isinstance(result, dict)
+    # The failing cumulative chart (every season, since the generator itself
+    # raises) falls back to the empty-state div...
+    assert "Chart unavailable" in result[f"season_cumulative_{failing_season}"]
+    # ...but the weekly chart of the SAME season still renders real HTML...
+    assert "<div" in result[f"season_weekly_{failing_season}"]
+    assert "Chart unavailable" not in result[f"season_weekly_{failing_season}"]
+    # ...and another season's weekly chart is unaffected.
+    assert "<div" in result[f"season_weekly_{other_season}"]
+    assert "Chart unavailable" not in result[f"season_weekly_{other_season}"]
+    # season_kpis is built outside the patched generator, so it still decodes.
+    import json
+
+    assert isinstance(json.loads(result[f"season_kpis_{failing_season}"]), dict)
+    # A WARNING names the failing season chart_id.
+    warned = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and f"season_cumulative_{failing_season}" in r.getMessage()
+    ]
+    assert warned, "Expected WARNING log for failing season chart_id"
