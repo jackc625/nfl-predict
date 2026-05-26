@@ -78,7 +78,7 @@ Repository = "https://github.com/jackc/nfl-predict"
 Issues = "https://github.com/jackc/nfl-predict/issues"
 
 [project.scripts]
-nfl-predict = "scripts.main:cli"
+nfl-predict = "scripts.friday_pipeline:main"
 
 [tool.setuptools]
 package-dir = {"" = "."}
@@ -161,15 +161,9 @@ extend-immutable-calls = ["fastapi.Depends"]
 "models/train.py" = ["T201"]  # CLI entry point prints summary tables to stdout
 "backtest/run.py" = ["T201"]  # CLI entry point prints backtest summary to stdout
 "backtest/tune.py" = ["T201"]  # CLI entry point prints tuning summary to stdout
-"scripts/test_*.py" = ["BLE001", "E722"]  # Legacy test scripts (Plan 04 will remove)
-"scripts/cleanup_data.py" = ["BLE001"]  # Utility script, not production code
-"scripts/create_sample_api_data.py" = ["BLE001"]  # Utility script
-"scripts/demo_*.py" = ["BLE001"]  # Demo scripts, not production code
 "scripts/generate_current_week_predictions.py" = ["BLE001"]  # Operations script
 "scripts/ingest_*.py" = ["BLE001"]  # Ingestion scripts, fix incrementally
 "scripts/load_venues.py" = ["BLE001"]  # Utility script
-"scripts/operational_monitoring.py" = ["BLE001"]  # Operations script
-"scripts/performance_monitor.py" = ["BLE001"]  # Operations script
 "scripts/run_backtest.py" = ["BLE001"]  # Runner script
 "scripts/validate_*.py" = ["BLE001"]  # Validation scripts
 "data/storage.py" = ["BLE001"]  # Pre-existing broad exception handlers, fix incrementally
