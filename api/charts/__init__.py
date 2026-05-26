@@ -59,3 +59,10 @@ from api.charts.prerender import (  # noqa: F401
     prerender_charts_for_cache,
     prerender_charts_from_conn,
 )
+from api.charts.season import (  # noqa: F401
+    compute_cumulative_series,
+    compute_season_kpis,
+    compute_weekly_series,
+    generate_season_cumulative,
+    generate_season_weekly,
+)
