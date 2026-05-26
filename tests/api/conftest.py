@@ -11,6 +11,7 @@ Provides:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,6 +47,49 @@ INSIGHTS_CHART_IDS: tuple[str, ...] = (
     "insights_model_vs_market_ou",
 )
 assert len(INSIGHTS_CHART_IDS) == 9
+
+
+# Authoritative betting chart-id tuple (Phase 17). This is the single source of
+# truth that Plan 17-02's api/charts/betting.py mirrors, Plan 17-03's prerender
+# self-check asserts, and Plan 17-04's route tests import. Built programmatically
+# over both scope variants (D-17/D-20: pre-render "all" AND "recommended"), so
+# the len() guard below stays honest as the chart list evolves.
+#
+# Naming convention: betting_<chart>_<scope>, scope in ("all", "recommended").
+# 12 chart bases x 2 scopes = 24 ids:
+#   - equity main (1) + per-type mini equity wp/ats/ou (3)   -> DASH-04
+#   - ROI bars by type/season/bucket (3)                     -> DASH-05
+#   - edge histograms wp/ats/ou (3)                          -> DASH-06
+#   - JSON blobs: kpis + roi_table (2)                       -> D-20
+_BETTING_CHART_BASES: tuple[str, ...] = (
+    "betting_equity",
+    "betting_equity_mini_wp",
+    "betting_equity_mini_ats",
+    "betting_equity_mini_ou",
+    "betting_roi_type",
+    "betting_roi_season",
+    "betting_roi_bucket",
+    "betting_edge_hist_wp",
+    "betting_edge_hist_ats",
+    "betting_edge_hist_ou",
+    "betting_kpis",
+    "betting_roi_table",
+)
+BETTING_SCOPES: tuple[str, ...] = ("all", "recommended")
+BETTING_CHART_IDS: tuple[str, ...] = tuple(
+    f"{base}_{scope}" for base in _BETTING_CHART_BASES for scope in BETTING_SCOPES
+)
+assert len(BETTING_CHART_IDS) == 24  # 12 chart bases x 2 scopes
+
+# The two JSON-blob id families carry decodable JSON (dict for kpis, list for
+# roi_table) rather than chart HTML, so the conftest marker loop below stores the
+# right payload shape per family and Plan 17-04 accessor tests can json.loads them.
+_BETTING_KPI_IDS: frozenset[str] = frozenset(
+    f"betting_kpis_{scope}" for scope in BETTING_SCOPES
+)
+_BETTING_ROI_TABLE_IDS: frozenset[str] = frozenset(
+    f"betting_roi_table_{scope}" for scope in BETTING_SCOPES
+)
 
 
 _TEAM_ABBREVS = ("KC", "BUF", "PHI", "GB", "SF", "DAL", "CIN", "MIA", "BAL", "NYJ")
@@ -436,6 +480,258 @@ def _insights_market_rows() -> list[dict]:
     return rows
 
 
+def _betting_bets_rows() -> list[dict]:
+    """Rows for the `betting_bets` table (Phase 17 Wave 0 fixture).
+
+    Schema columns (CSV header order): game_id, season, week, target, bet_side,
+    model_value, market_value, edge, slipped_line, odds, flat_stake, kelly_stake,
+    outcome, payout_flat, payout_kelly.
+
+    Coverage contract (Plan 17-01 acceptance criteria; exercises the downstream
+    scope-filter and push-exclusion tests):
+      - all three targets: wp, ats, ou
+      - outcome True (win), False (loss), AND None (push) all present
+      - both kelly_stake > 0 (recommended scope) and kelly_stake == 0 rows
+      - WP rows carry slipped_line=None (matches the real CSV: NaN for all WP)
+
+    The deliberate split (assertable by betting_scope_filter):
+      - 9 total rows
+      - 5 rows with kelly_stake > 0 (the "recommended" scope)
+      - 4 rows with kelly_stake == 0 (dropped by the recommended filter)
+      - pushes (outcome is None): 2 rows (1 ats, 1 ou), excluded from win rate
+    """
+    rows: list[dict] = []
+
+    def _row(
+        game_id: str,
+        season: int,
+        week: int,
+        target: str,
+        bet_side: str,
+        model_value: float,
+        market_value: float,
+        edge: float,
+        slipped_line: float | None,
+        odds: float,
+        flat_stake: float,
+        kelly_stake: float,
+        outcome: bool | None,
+        payout_flat: float,
+        payout_kelly: float,
+    ) -> dict:
+        return {
+            "game_id": game_id,
+            "season": season,
+            "week": week,
+            "target": target,
+            "bet_side": bet_side,
+            "model_value": model_value,
+            "market_value": market_value,
+            "edge": edge,
+            "slipped_line": slipped_line,
+            "odds": odds,
+            "flat_stake": flat_stake,
+            "kelly_stake": kelly_stake,
+            "outcome": outcome,
+            "payout_flat": payout_flat,
+            "payout_kelly": payout_kelly,
+        }
+
+    # WP rows: slipped_line is always None (matches the real CSV). One
+    # win+recommended, one loss+recommended, one win with kelly_stake == 0
+    # (present in "all" scope only).
+    rows.append(
+        # WP win, recommended (kelly_stake > 0). edge positive.
+        _row(
+            "2021_W01_DAL@TB",
+            2021,
+            1,
+            "wp",
+            "home",
+            0.62,
+            0.55,
+            0.07,
+            None,
+            -150.0,
+            100.0,
+            120.0,
+            True,
+            66.7,
+            80.0,
+        ),
+    )
+    rows.append(
+        # WP loss, recommended (kelly_stake > 0). edge positive but lost.
+        _row(
+            "2021_W02_KC@BUF",
+            2021,
+            2,
+            "wp",
+            "away",
+            0.58,
+            0.52,
+            0.06,
+            None,
+            110.0,
+            100.0,
+            90.0,
+            False,
+            -100.0,
+            -90.0,
+        ),
+    )
+    rows.append(
+        # WP win, NOT recommended (kelly_stake == 0). Negative recorded edge --
+        # the sim placed a flat bet but Kelly self-zeroed (mirrors the real CSV's
+        # negative-edge WP rows, e.g. 2021_W01_DAL@TB edge -0.082 / $0 Kelly).
+        _row(
+            "2022_W01_SF@CHI",
+            2022,
+            1,
+            "wp",
+            "home",
+            0.49,
+            0.55,
+            -0.06,
+            None,
+            -120.0,
+            100.0,
+            0.0,
+            True,
+            83.3,
+            0.0,
+        ),
+    )
+
+    # ATS rows: one win+recommended, one push (excluded from win rate), one
+    # loss with kelly_stake == 0.
+    rows.append(
+        # ATS win, recommended.
+        _row(
+            "2022_W05_PHI@GB",
+            2022,
+            5,
+            "ats",
+            "home",
+            -6.5,
+            -4.0,
+            2.5,
+            -3.5,
+            -110.0,
+            100.0,
+            75.0,
+            True,
+            90.9,
+            68.2,
+        ),
+    )
+    rows.append(
+        # ATS push (outcome None) -- excluded from win rate. Recommended.
+        _row(
+            "2023_W15_DAL@PHI",
+            2023,
+            15,
+            "ats",
+            "away",
+            3.0,
+            3.0,
+            1.2,
+            3.0,
+            -110.0,
+            100.0,
+            60.0,
+            None,
+            0.0,
+            0.0,
+        ),
+    )
+    rows.append(
+        # ATS loss, NOT recommended (kelly_stake == 0).
+        _row(
+            "2023_W09_MIA@NYJ",
+            2023,
+            9,
+            "ats",
+            "home",
+            -2.0,
+            -3.5,
+            1.5,
+            -3.0,
+            -110.0,
+            100.0,
+            0.0,
+            False,
+            -100.0,
+            0.0,
+        ),
+    )
+
+    # OU rows: one win+recommended, one push with kelly_stake == 0 (excluded
+    # from win rate), one loss+recommended.
+    rows.append(
+        # OU win, recommended.
+        _row(
+            "2024_W03_CIN@BAL",
+            2024,
+            3,
+            "ou",
+            "over",
+            48.0,
+            45.5,
+            2.5,
+            45.0,
+            -110.0,
+            100.0,
+            70.0,
+            True,
+            90.9,
+            63.6,
+        ),
+    )
+    rows.append(
+        # OU push (outcome None) -- excluded from win rate. NOT recommended.
+        _row(
+            "2024_W07_LA@SEA",
+            2024,
+            7,
+            "ou",
+            "under",
+            44.0,
+            44.0,
+            0.5,
+            44.0,
+            -110.0,
+            100.0,
+            0.0,
+            None,
+            0.0,
+            0.0,
+        ),
+    )
+    rows.append(
+        # OU loss, recommended.
+        _row(
+            "2024_W11_BUF@KC",
+            2024,
+            11,
+            "ou",
+            "over",
+            52.0,
+            49.0,
+            3.0,
+            48.5,
+            -110.0,
+            100.0,
+            85.0,
+            False,
+            -100.0,
+            -85.0,
+        ),
+    )
+
+    return rows
+
+
 @pytest.fixture(autouse=True)
 def _isolate_data_service_cache() -> Iterator[None]:
     """Clear the module-level DataService TTLCache before and after every test.
@@ -643,6 +939,36 @@ def test_db(tmp_path: Path) -> Path:
         backtest_predictions,
     )
 
+    # Insert betting_bets fixture rows (Phase 17 Wave 0). The betting_bets table
+    # is auto-created by the CACHE_SCHEMA split loop above. Rows cover all 3
+    # targets, win/loss/push outcomes, and kelly_stake>0 vs =0 so downstream
+    # scope-filter + push-exclusion tests have data. Bind the 15 columns in CSV
+    # header order (matching the betting_bets schema).
+    betting_bets = [
+        (
+            b["game_id"],
+            b["season"],
+            b["week"],
+            b["target"],
+            b["bet_side"],
+            b["model_value"],
+            b["market_value"],
+            b["edge"],
+            b["slipped_line"],
+            b["odds"],
+            b["flat_stake"],
+            b["kelly_stake"],
+            b["outcome"],
+            b["payout_flat"],
+            b["payout_kelly"],
+        )
+        for b in _betting_bets_rows()
+    ]
+    conn.executemany(
+        "INSERT INTO betting_bets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        betting_bets,
+    )
+
     # Insert chart cache entries (empty HTML for testing graceful fallback)
     chart_now = datetime.now(tz=UTC)
     chart_entries = [
@@ -665,6 +991,39 @@ def test_db(tmp_path: Path) -> Path:
                 chart_now,
             ),
         )
+    # Phase 17: marker rows for every betting chart_id (both scopes). Chart-HTML
+    # ids get a marker div; the two JSON-blob id families instead carry decodable
+    # JSON (a dict for betting_kpis_*, a list-of-dicts for betting_roi_table_*) so
+    # Plan 17-04 accessor/route tests can json.loads them via get_chart_html.
+    for chart_id in BETTING_CHART_IDS:
+        if chart_id in _BETTING_KPI_IDS:
+            payload = json.dumps(
+                {
+                    "total_bets": 5,
+                    "win_rate": 60.0,
+                    "roi_flat": 1.23,
+                    "roi_kelly": 0.91,
+                    "net_profit_flat": 184.0,
+                    "final_bankroll_flat": 10184.0,
+                    "max_drawdown_flat": 250.0,
+                },
+            )
+        elif chart_id in _BETTING_ROI_TABLE_IDS:
+            payload = json.dumps(
+                [
+                    {
+                        "slice": "wp",
+                        "roi_flat_fmt": "+1.2%",
+                        "roi_kelly_fmt": "+0.9%",
+                        "win_rate_fmt": "60.0%",
+                        "bet_count": 3,
+                        "roi_favorable": True,
+                    },
+                ],
+            )
+        else:
+            payload = f'<div data-chart-id="{chart_id}">fixture {chart_id}</div>'
+        chart_entries.append((chart_id, payload, chart_now))
     conn.executemany(
         "INSERT INTO chart_cache VALUES (?, ?, ?)",
         chart_entries,
@@ -780,6 +1139,7 @@ def test_db(tmp_path: Path) -> Path:
             "Grass",  # surface
             "outdoors",  # roof_type
             2.5,  # weather_severity
+            "Extreme",  # weather_severity_band (2.5 >= 0.80 band cutoff)
             12.0,  # wind_mph
             True,  # is_outdoor
             True,  # is_divisional
@@ -787,7 +1147,7 @@ def test_db(tmp_path: Path) -> Path:
         ),
     ]
     conn.executemany(
-        "INSERT INTO game_context VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO game_context VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         game_context_rows,
     )
 
