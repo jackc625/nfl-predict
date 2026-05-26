@@ -12,6 +12,22 @@
   {% include "components/_season_tracking_selector.html" %}
 </div>
 
+{# Error-state source for the HTMX failed-swap path (D-17). Kept OUTSIDE
+   #season-content (inside an inert <template>) so it survives innerHTML swaps and
+   is never rendered on the happy path. The selector's `hx-on::response-error`
+   handler copies this markup into #season-content when a swap returns 4xx/5xx --
+   HTMX leaves the target untouched on a non-200 response (detail.shouldSwap is
+   false; verified against htmx.org/events for htmx 2.0.4), so without this the
+   content area would go blank/stale. Uses the LOCKED /season error copy and the
+   shared _error_state.html (red) -- DISTINCT from the gray "No completed games
+   yet" empty state below, which is a no-data case, not a failure. #}
+<template id="season-error-template">
+  {% with message="Could not load season data",
+          recovery_text="Refresh the page or rebuild the cache. If the problem persists, re-run the Friday pipeline." %}
+    {% include "components/_error_state.html" %}
+  {% endwith %}
+</template>
+
 {# HTMX swap target: the fragment route returns exactly this block (D-11). #}
 <div id="season-content">
 {% block season_tracking_content %}
