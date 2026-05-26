@@ -139,7 +139,7 @@ def betting_fragment(
 @router.get("/season")
 def season_fragment(
     request: Request,
-    season: int | None = Query(None),
+    season: str | None = Query(None),
     service: DataService = Depends(get_data_service),
 ):
     """Return the ``season_tracking_content`` block for the HTMX season swap.
@@ -154,10 +154,18 @@ def season_fragment(
     ``_build_season_context`` helper so the cached-read logic is not duplicated.
     Reads cached HTML/JSON only -- zero metric logic on the request path (D-12).
     Cache-Control is set on the returned TemplateResponse.
+
+    ``season`` is accepted as a raw string (matching the sibling ``/fragments/games``
+    and ``/fragments/performance`` routes) and parsed defensively so an unparseable
+    value degrades to the dynamic latest-season default rather than raising a 422
+    (WR-02); the T-V5-01 whitelist in ``_normalize_season`` still gates the cache id.
     """
     available = service.get_prediction_seasons()
-    season = _normalize_season(season, available)
-    context = _build_season_context(service, season, request)
+    season_int = (
+        int(season) if season and season.strip().lstrip("-").isdigit() else None
+    )
+    season_resolved = _normalize_season(season_int, available)
+    context = _build_season_context(service, season_resolved, request)
     template_response = templates.TemplateResponse(
         request,
         "pages/season.html",

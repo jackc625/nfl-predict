@@ -577,7 +577,7 @@ def betting_page(
 @router.get("/season")
 def season_tracking_page(
     request: Request,
-    season: int | None = Query(None),
+    season: str | None = Query(None),
     service: DataService = Depends(get_data_service),
 ):
     """Serve the Season Tracking page.
@@ -600,10 +600,20 @@ def season_tracking_page(
     returns only the ``season_tracking_content`` block so a full navigation to
     ``/season?season=`` and the selector's fragment swap share one code path.
     Cache-Control is set on the returned TemplateResponse (Phase 15 D-07).
+
+    ``season`` is accepted as a raw string (mirroring the sibling fragment
+    routes ``/fragments/games`` and ``/fragments/performance``) and parsed
+    defensively: an unparseable value (e.g. ``?season=abc``) degrades to the
+    dynamic latest-season default via ``_normalize_season`` rather than raising
+    a 422 (WR-02). The T-V5-01 whitelist still holds -- a non-int can never reach
+    a ``season_*_{season}`` cache id because ``_normalize_season`` rejects it.
     """
     available = service.get_prediction_seasons()
-    season = _normalize_season(season, available)
-    context = _build_season_context(service, season, request)
+    season_int = (
+        int(season) if season and season.strip().lstrip("-").isdigit() else None
+    )
+    season_resolved = _normalize_season(season_int, available)
+    context = _build_season_context(service, season_resolved, request)
 
     block_name = (
         "season_tracking_content" if request.headers.get("HX-Request") else None
