@@ -72,7 +72,11 @@
           </p>
         {% elif game.ats_prediction is not none %}
           <p class="text-xs text-gray-500 mt-0.5">
-            {% if game.ats_prediction > 0 %}{{ game.home_team }}{% else %}{{ game.away_team }}{% endif %} by {{ "%.0f"|format(game.ats_prediction|abs) }}
+            {# Home-perspective spread (same convention as the cover label above and
+               backtest/simulation.py): a NEGATIVE ats_prediction means the model
+               favors the HOME team, so the favorite is home iff ats_prediction < 0.
+               Prior `> 0` named the underdog as the favorite. #}
+            {% if game.ats_prediction < 0 %}{{ game.home_team }}{% else %}{{ game.away_team }}{% endif %} by {{ "%.0f"|format(game.ats_prediction|abs) }}
           </p>
         {% endif %}
         {% if game.ats_confidence %}
