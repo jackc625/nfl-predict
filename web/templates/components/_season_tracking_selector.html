@@ -1,0 +1,21 @@
+{# Season Tracking selector. Pass: available_seasons (list of ints), current_season.
+   Forked from _season_selector.html for the /season page (D-04 / D-11):
+   - retargets the HTMX swap at the season fragment route + #season-content
+   - DROPS the aggregate all-seasons option (D-04): the page always tracks one
+     season, defaulting to the latest (D-01). #}
+<div class="flex items-center gap-2">
+  <label for="season-track-select" class="text-sm font-semibold text-gray-700">Season</label>
+  <select id="season-track-select" name="season"
+          hx-get="/fragments/season"
+          hx-target="#season-content"
+          hx-swap="innerHTML"
+          hx-indicator="#season-loading"
+          class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
+    {% for s in available_seasons %}
+    <option value="{{ s }}" {% if s == current_season %}selected{% endif %}>{{ s }} Season</option>
+    {% endfor %}
+  </select>
+  <div id="season-loading" class="htmx-indicator">
+    <div class="loading-spinner"></div>
+  </div>
+</div>
