@@ -7,14 +7,16 @@
   <p class="text-sm text-gray-500">Would betting this model have made money -- and is its edge real? Walk-forward backtest simulation across 2021-2024.</p>
 </div>
 
-{# Scope toggle (All / Recommended). Swaps #betting-content via HTMX. #}
-<div class="mb-6">
-  {% include "components/_betting_scope_toggle.html" %}
-</div>
-
 {# HTMX swap target: the fragment route returns exactly this block. #}
 <div id="betting-content">
 {% block betting_content %}
+
+{# Scope toggle (All / Recommended). Swaps #betting-content via HTMX. Lives
+   INSIDE the swap target so every HTMX swap re-renders it with the correct
+   current_scope-driven active highlight + aria-pressed (WR-01). #}
+<div class="mb-6">
+  {% include "components/_betting_scope_toggle.html" %}
+</div>
 
 {# ----------------------------------------------------------------- #}
 {# Section 1: KPI scoreboard (D-06) -- 7 scope-aware cards            #}
