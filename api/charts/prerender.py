@@ -364,11 +364,14 @@ def _render_all(bundle: dict[str, list[dict]]) -> dict[str, str]:
     # (module lookup) so ``unittest.mock.patch("api.charts.season.generate_*")``
     # is observable; each ``lambda`` binds ``r=rows_s`` to avoid the
     # closure-over-loop-var bug (Pitfall 5 — mirror the betting ``lambda s=scoped``).
-    seasons = sorted(
-        {int(r["season"]) for r in market_data if r.get("season") is not None},
-    )
+    # Coerce season to int ONCE and slice on the coerced value so detection and
+    # slicing agree on type (WR-01). Comparing a RAW season against the int set
+    # would silently empty every slice if ``season`` ever arrived as a string
+    # (e.g. a VARCHAR column or JSON bundle): ``"2024" == 2024`` is False.
+    norm = [(int(r["season"]), r) for r in market_data if r.get("season") is not None]
+    seasons = sorted({s for s, _ in norm})
     for season in seasons:
-        rows_s = [r for r in market_data if r.get("season") == season]
+        rows_s = [r for s, r in norm if s == season]
         charts[f"season_cumulative_{season}"] = _safe_render(
             f"season_cumulative_{season}",
             lambda r=rows_s: _season_charts.generate_season_cumulative(r),
