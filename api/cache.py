@@ -21,9 +21,9 @@ import numpy as np
 import pandas as pd
 from scipy.special import expit, logit
 
-from ratings.elo import is_divisional_game
 from utils import get_logger
 from utils.probability_utils import moneyline_to_probability
+from utils.team_data import get_team_conference, get_team_division
 
 logger = get_logger(__name__)
 
@@ -920,6 +920,26 @@ def _build_h2h_records(games: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def _is_divisional_matchup(home: str, away: str) -> bool:
+    """Return True iff *home* and *away* share an NFL division.
+
+    UIAP-01 forbids the API layer from importing model/feature/rating code, so
+    this reimplements ``ratings.elo.is_divisional_game`` using the canonical
+    team metadata in ``utils.team_data`` (an allowed namespace) rather than
+    importing ``ratings``. A division is uniquely identified by the
+    (conference, division) PAIR -- "East" exists in both AFC and NFC -- so both
+    must match. Unknown teams resolve to ``"Unknown"`` for both fields; we
+    treat any unknown as non-divisional, matching ``is_divisional_game``'s
+    ``None``-division short-circuit (verified identical across all 32x32 team
+    pairs plus unknown-team edge cases).
+    """
+    home_conf, home_div = get_team_conference(home), get_team_division(home)
+    away_conf, away_div = get_team_conference(away), get_team_division(away)
+    if "Unknown" in (home_conf, home_div, away_conf, away_div):
+        return False
+    return home_conf == away_conf and home_div == away_div
+
+
 def _compute_is_divisional(
     home_teams: pd.Series,
     away_teams: pd.Series,
@@ -927,10 +947,11 @@ def _compute_is_divisional(
     """Recompute the divisional flag from the canonical team mapping.
 
     Pairs the home and away abbreviations elementwise and evaluates each
-    matchup with ``ratings.elo.is_divisional_game`` (a pure division-lookup
-    that returns False for unknown teams). The gold ``is_divisional`` column
-    must NOT be used: it is expanding-window z-score normalized, so a naive
-    ``.astype(bool)`` flags nearly every game as divisional.
+    matchup with :func:`_is_divisional_matchup` (a pure division-lookup over
+    ``utils.team_data`` that returns False for unknown teams). The gold
+    ``is_divisional`` column must NOT be used: it is expanding-window z-score
+    normalized, so a naive ``.astype(bool)`` flags nearly every game as
+    divisional.
 
     Args:
         home_teams: Series of canonical home-team abbreviations.
@@ -941,7 +962,7 @@ def _compute_is_divisional(
         column) aligned to ``home_teams.index``.
     """
     divisional = [
-        is_divisional_game(home, away)
+        _is_divisional_matchup(home, away)
         for home, away in zip(home_teams, away_teams, strict=True)
     ]
     return pd.Series(divisional, index=home_teams.index, dtype=bool)
