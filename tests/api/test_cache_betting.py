@@ -169,8 +169,9 @@ def test_betting_bets_load_parses_push_outcome_to_null(tmp_path: Path) -> None:
 
         # Loader returns the inserted row count (all 4 per-bet rows preserved).
         assert inserted == 4
-        total = conn.execute("SELECT COUNT(*) FROM betting_bets").fetchone()[0]
-        assert total == 4
+        count_row = conn.execute("SELECT COUNT(*) FROM betting_bets").fetchone()
+        assert count_row is not None
+        assert count_row[0] == 4
 
         # Map each game_id to its stored outcome to assert the exact tri-state.
         stored = dict(
@@ -229,16 +230,18 @@ def test_betting_bets_load_preserves_kelly_stake_zero_and_positive(
         _create_betting_bets_table(conn)
         _load_betting_bets(conn, outputs_dir)
 
-        positive = conn.execute(
+        positive_row = conn.execute(
             "SELECT COUNT(*) FROM betting_bets WHERE kelly_stake > 0"
-        ).fetchone()[0]
-        zero = conn.execute(
+        ).fetchone()
+        zero_row = conn.execute(
             "SELECT COUNT(*) FROM betting_bets WHERE kelly_stake = 0"
-        ).fetchone()[0]
+        ).fetchone()
+        assert positive_row is not None
+        assert zero_row is not None
 
         # 3 recommended rows + 1 dropped-by-recommended row = the full ledger.
-        assert positive == 3
-        assert zero == 1
+        assert positive_row[0] == 3
+        assert zero_row[0] == 1
     finally:
         conn.close()
 
@@ -255,7 +258,8 @@ def test_betting_bets_load_missing_csv_returns_zero(tmp_path: Path) -> None:
         inserted = _load_betting_bets(conn, empty_outputs)
 
         assert inserted == 0
-        total = conn.execute("SELECT COUNT(*) FROM betting_bets").fetchone()[0]
-        assert total == 0
+        count_row = conn.execute("SELECT COUNT(*) FROM betting_bets").fetchone()
+        assert count_row is not None
+        assert count_row[0] == 0
     finally:
         conn.close()
