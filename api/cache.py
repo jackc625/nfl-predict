@@ -118,8 +118,10 @@ CREATE TABLE IF NOT EXISTS betting_bets (
     kelly_stake DOUBLE,
     outcome BOOLEAN,
     payout_flat DOUBLE,
-    payout_kelly DOUBLE,
-    PRIMARY KEY (game_id, target)
+    payout_kelly DOUBLE
+    -- No PRIMARY KEY: betting_bets is a flat per-bet ledger (read only with
+    -- SELECT *, never joined on a key). A (game_id, target) PK would let
+    -- INSERT OR REPLACE silently drop same-target re-bets on one game (WR-02).
 );
 
 CREATE TABLE IF NOT EXISTS chart_cache (
@@ -540,7 +542,10 @@ def _load_betting_bets(
     ]
     subset = df[cols].copy()
 
-    conn.execute("INSERT OR REPLACE INTO betting_bets SELECT * FROM subset")
+    # Plain INSERT: betting_bets is dropped/recreated each rebuild and has no
+    # PRIMARY KEY, so every per-bet row is preserved (no silent same-target
+    # re-bet drop). See schema note above (WR-02).
+    conn.execute("INSERT INTO betting_bets SELECT * FROM subset")
     return len(subset)
 
 
