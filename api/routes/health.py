@@ -42,13 +42,41 @@ SILVER_GAMES_PATH = Path("data/silver/games.parquet").resolve()
 SILVER_ODDS_PATH = Path("data/silver/odds_snapshot.parquet").resolve()
 SILVER_WEATHER_DIR = Path("data/silver/weather").resolve()
 
-# Model artifact paths
-MODEL_DIR = Path("artifacts/models").resolve()
-MODEL_FILES = {
-    "wp": MODEL_DIR / "wp_model.pkl",
-    "ats": MODEL_DIR / "ats_model.pkl",
-    "ou": MODEL_DIR / "ou_model.pkl",
-}
+# Model artifact resolution -- the ACTIVE deployed models are the versioned
+# artifact directories named in artifacts/latest.json (the same pointer the
+# prediction pipeline loads via load_model_artifact), NOT fixed-name stubs under
+# artifacts/models/. Resolved with pure stdlib (json/Path) to keep the api/ layer
+# UIAP-01 compliant (no models/features/ratings imports).
+ARTIFACTS_DIR = Path("artifacts").resolve()
+ARTIFACTS_LATEST_PATH = ARTIFACTS_DIR / "latest.json"
+MODEL_TARGETS = ("wp", "ats", "ou")
+
+
+def _resolve_active_model_files() -> dict[str, Path]:
+    """Map each target to its active ``model.pkl`` via artifacts/latest.json.
+
+    Falls back to a non-existent placeholder path when latest.json is missing,
+    unparseable, or lacks a target -- so health reports the model as absent
+    rather than crashing.
+    """
+    try:
+        latest = json.loads(ARTIFACTS_LATEST_PATH.read_text())
+        if not isinstance(latest, dict):
+            latest = {}
+    except (OSError, json.JSONDecodeError):
+        latest = {}
+
+    resolved: dict[str, Path] = {}
+    for target in MODEL_TARGETS:
+        version = latest.get(target)
+        if isinstance(version, str) and version:
+            resolved[target] = ARTIFACTS_DIR / version / "model.pkl"
+        else:
+            resolved[target] = ARTIFACTS_DIR / "__missing__" / f"{target}_model.pkl"
+    return resolved
+
+
+MODEL_FILES = _resolve_active_model_files()
 
 # Freshness thresholds
 DATA_FRESHNESS_HOURS = 168  # 7 days
