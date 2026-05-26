@@ -103,6 +103,25 @@ CREATE TABLE IF NOT EXISTS equity_curve (
     PRIMARY KEY (strategy, bet_index)
 );
 
+CREATE TABLE IF NOT EXISTS betting_bets (
+    game_id VARCHAR,
+    season INTEGER,
+    week INTEGER,
+    target VARCHAR,
+    bet_side VARCHAR,
+    model_value DOUBLE,
+    market_value DOUBLE,
+    edge DOUBLE,
+    slipped_line DOUBLE,
+    odds DOUBLE,
+    flat_stake DOUBLE,
+    kelly_stake DOUBLE,
+    outcome BOOLEAN,
+    payout_flat DOUBLE,
+    payout_kelly DOUBLE,
+    PRIMARY KEY (game_id, target)
+);
+
 CREATE TABLE IF NOT EXISTS chart_cache (
     chart_id VARCHAR PRIMARY KEY,
     html_div TEXT,
@@ -457,6 +476,72 @@ def _load_simulation_results(
             rows,
         )
     return len(rows)
+
+
+def _load_betting_bets(
+    conn: duckdb.DuckDBPyConnection,
+    outputs_dir: Path,
+) -> int:
+    """Load the full per-bet rows from betting_simulation.csv into betting_bets.
+
+    Supplements (does NOT replace) ``_load_simulation_results``: that loader
+    aggregates the same CSV into the lossy ``simulation_results`` /
+    ``equity_curve`` tables that ``/backtest`` still uses (D-19). This loader
+    keeps every per-bet row -- including the low/negative-edge bets the
+    simulation placed -- so the Phase 17 betting dashboard can break results
+    down by target / season / edge bucket / outcome and apply the
+    ``kelly_stake > 0`` "recommended" scope filter (D-15, D-16 REVISED, D-20).
+
+    Critical ``outcome`` parsing (Pitfall 1): the CSV ``outcome`` column is an
+    object column holding real Python ``bool`` values (3,111 rows) mixed with
+    ``float`` NaN (47 push rows). It is NOT strings. ``astype(bool)`` would turn
+    NaN into ``True``, ``bool("False")`` is ``True``, and ``.map({"True": ...})``
+    returns all-NaN because the keys are bools not strings -- every naive cast is
+    wrong. We normalize NaN to ``None`` BEFORE insert so DuckDB stores a nullable
+    BOOLEAN (``True`` win / ``False`` loss / ``NULL`` push); downstream win-rate
+    math then excludes pushes via identity checks.
+
+    The 15 columns are selected in the exact CSV header order so the
+    ``INSERT ... SELECT *`` lines up positionally with the betting_bets schema.
+
+    Returns the number of rows inserted.
+    """
+    csv_path = outputs_dir / "betting_simulation.csv"
+    if not csv_path.exists():
+        logger.warning("Betting simulation file not found", path=str(csv_path))
+        return 0
+
+    df = pd.read_csv(csv_path)
+    logger.info("Read betting bets CSV", rows=len(df), columns=list(df.columns))
+
+    # outcome is object dtype: real bool + float NaN. Normalize NaN -> None so it
+    # stores as a nullable DuckDB BOOLEAN (pushes become SQL NULL). Do NOT cast
+    # with astype(bool) / bool(x) / .map -- each silently corrupts pushes.
+    df["outcome"] = df["outcome"].where(df["outcome"].notna(), None)
+
+    # Column order MUST match the CSV header and the betting_bets schema so the
+    # positional INSERT ... SELECT * aligns.
+    cols = [
+        "game_id",
+        "season",
+        "week",
+        "target",
+        "bet_side",
+        "model_value",
+        "market_value",
+        "edge",
+        "slipped_line",
+        "odds",
+        "flat_stake",
+        "kelly_stake",
+        "outcome",
+        "payout_flat",
+        "payout_kelly",
+    ]
+    subset = df[cols].copy()
+
+    conn.execute("INSERT OR REPLACE INTO betting_bets SELECT * FROM subset")
+    return len(subset)
 
 
 def _compute_confidence(edge: pd.Series) -> pd.Series:
@@ -1232,6 +1317,13 @@ def populate_cache(
 
         sr_count = _load_simulation_results(conn, outputs_dir)
         logger.info("Simulation results loaded", count=sr_count)
+
+        # Load full per-bet rows (Phase 17 betting dashboard, D-19). Supplements
+        # the lossy simulation_results/equity_curve tables above -- both are kept
+        # for /backtest. Must run before _prerender_charts so the betting chart
+        # generators can read betting_bets.
+        bb_count = _load_betting_bets(conn, outputs_dir)
+        logger.info("Betting bets loaded", count=bb_count)
 
         # Load predictions from backtest data into the predictions table
         pred_table_count = _load_predictions(conn, outputs_dir, silver_dir)
