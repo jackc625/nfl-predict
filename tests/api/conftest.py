@@ -1009,14 +1009,23 @@ def test_db(tmp_path: Path) -> Path:
                 },
             )
         elif chart_id in _BETTING_ROI_TABLE_IDS:
+            # Must match the real compute_roi_table row contract (WR-04): the
+            # production rows carry slice_kind/label/roi_flat/roi_kelly/win_rate
+            # plus the *_fmt strings, never a bare "slice" key. The template
+            # reads row.label, so this exercises the production render path
+            # (not the dormant row.slice fallback).
             payload = json.dumps(
                 [
                     {
-                        "slice": "wp",
-                        "roi_flat_fmt": "+1.2%",
-                        "roi_kelly_fmt": "+0.9%",
-                        "win_rate_fmt": "60.0%",
+                        "slice_kind": "type",
+                        "label": "wp",
                         "bet_count": 3,
+                        "roi_flat": 1.2,
+                        "roi_kelly": 0.9,
+                        "win_rate": 60.0,
+                        "roi_flat_fmt": "+1.20%",
+                        "roi_kelly_fmt": "+0.90%",
+                        "win_rate_fmt": "60.0%",
                         "roi_favorable": True,
                     },
                 ],
