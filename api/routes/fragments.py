@@ -6,6 +6,7 @@ for HTMX-powered dynamic updates without full page reloads.
 Routes:
     GET /fragments/games       -- Game grid fragment (swapped into #game-grid)
     GET /fragments/performance -- Performance content fragment (season swap)
+    GET /fragments/betting     -- Betting content fragment (All/Recommended scope swap)
 """
 
 from __future__ import annotations
@@ -14,9 +15,12 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from api.dependencies import get_data_service, templates
 from api.routes.pages import (
+    _DEFAULT_BETTING_SCOPE,
     PAGE_CACHE_CONTROL,
     _annotate_wp_correct,
+    _build_betting_context,
     _compute_week_summary,
+    _normalize_betting_scope,
     _pivot_season_metrics,
 )
 from api.services import DataService
@@ -94,6 +98,36 @@ def performance_fragment(
         "pages/performance.html",
         context,
         block_name="performance_content",
+    )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
+
+
+@router.get("/betting")
+def betting_fragment(
+    request: Request,
+    scope: str = Query(_DEFAULT_BETTING_SCOPE),
+    service: DataService = Depends(get_data_service),
+):
+    """Return the ``betting_content`` block for the HTMX All/Recommended swap.
+
+    Renders only the swappable portion of the betting page (KPI strip + the
+    equity / ROI / edge sections) for the selected *scope*, used when the
+    scope toggle flips between "Recommended" and "All bets" (D-17).
+
+    ``scope`` is whitelisted to {"all", "recommended"} (default ``"recommended"``)
+    via the same chokepoint the full page uses, and the context is built by the
+    shared ``_build_betting_context`` helper so the cached-read logic is not
+    duplicated. Reads cached HTML/JSON only -- zero metric logic on the request
+    path (D-20). Cache-Control is set on the returned TemplateResponse.
+    """
+    scope = _normalize_betting_scope(scope)
+    context = _build_betting_context(service, scope, request)
+    template_response = templates.TemplateResponse(
+        request,
+        "pages/betting.html",
+        context,
+        block_name="betting_content",
     )
     template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
     return template_response

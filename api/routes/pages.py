@@ -7,6 +7,8 @@ Routes:
     GET /            -- This Week's predictions dashboard (landing page)
     GET /performance -- Historical performance view
     GET /backtest    -- Backtest analysis with Plotly charts
+    GET /insights    -- Model insights (calibration, feature importance, vs market)
+    GET /betting     -- Betting dashboard (KPI strip, equity, ROI, edge; scope toggle)
     GET /games/{id}  -- Game detail drill-down (feature importance, market comparison)
 """
 
@@ -16,7 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from api.charts import INSIGHTS_CHART_IDS
+from api.charts import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
 from api.dependencies import get_data_service, templates
 from api.services import DataService
 
@@ -161,6 +163,54 @@ def _compute_week_summary(games: list[dict]) -> dict[str, Any]:
 
 
 PAGE_CACHE_CONTROL = "public, max-age=60"
+
+# Betting-scope whitelist (Security V5 / T-V5-01). Any value outside this set
+# falls back to the default below before it ever reaches a ``betting_*_{scope}``
+# chart_id, so untrusted query input never flows into a cache lookup key.
+_BETTING_SCOPES: frozenset[str] = frozenset({"all", "recommended"})
+_DEFAULT_BETTING_SCOPE = "recommended"  # D-17 honest default
+
+
+def _normalize_betting_scope(scope: str) -> str:
+    """Whitelist *scope* to {"all", "recommended"}, defaulting to recommended.
+
+    The only untrusted input on the betting page is the ``scope`` query param;
+    this is the single chokepoint that constrains it to the two literal scope
+    variants before any cached ``betting_*_{scope}`` id is built (T-V5-01).
+    """
+    return scope if scope in _BETTING_SCOPES else _DEFAULT_BETTING_SCOPE
+
+
+def _build_betting_context(
+    service: DataService, scope: str, request: Request
+) -> dict[str, Any]:
+    """Assemble the betting-page template context from cached data only.
+
+    Reads ONLY pre-rendered HTML / JSON for the (already-whitelisted) *scope*:
+    the per-scope chart HTML blobs from ``BETTING_CHART_IDS`` and the two
+    JSON-blob accessors (KPI strip + ROI table). ZERO betting metric logic runs
+    here -- every statistic was computed during cache population (D-20). The
+    ``charts`` dict is keyed by bare chart_id (e.g. ``betting_equity_recommended``)
+    so the template references each slot via ``current_scope`` and the fragment
+    swap re-renders exactly the active scope's set.
+
+    Shared by both ``betting_page`` and ``betting_fragment`` so the cached-read
+    contract lives in one place and cannot drift between the two handlers.
+    """
+    charts: dict[str, str | None] = {
+        chart_id: service.get_chart_html(chart_id)
+        for chart_id in BETTING_CHART_IDS
+        if chart_id.endswith(f"_{scope}")
+    }
+    return {
+        "request": request,
+        "charts": charts,
+        "kpis": service.get_betting_kpis(scope),
+        "roi_table": service.get_betting_roi_table(scope),
+        "current_scope": scope,
+        "current_path": "/betting",
+        "cache_meta": service.get_cache_meta(),
+    }
 
 
 def _annotate_wp_correct(games: list[dict]) -> list[dict]:
@@ -442,6 +492,42 @@ def insights_page(
     }
     template_response = templates.TemplateResponse(
         request, "pages/insights.html", context
+    )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
+
+
+@router.get("/betting")
+def betting_page(
+    request: Request,
+    scope: str = Query(_DEFAULT_BETTING_SCOPE),
+    service: DataService = Depends(get_data_service),
+):
+    """Serve the Betting Dashboard page.
+
+    Renders the 7-card KPI strip, the flat-vs-Kelly equity curve plus three
+    per-bet-type mini equities, the three ROI grouped-bar charts plus a ROI
+    summary table, and the three per-type edge histograms -- all in D-04 order
+    (KPI -> Equity -> ROI -> Edge). A page-level All/Recommended toggle (D-05/
+    D-17) re-renders the swappable ``betting_content`` block via HTMX.
+
+    All charts and the KPI/ROI JSON blobs are pre-rendered for BOTH scope
+    variants during cache population (Plan 17-03); this handler reads cached
+    HTML/JSON only and contains NO betting metric logic (D-20). ``scope`` is
+    whitelisted to {"all", "recommended"}, defaulting to ``"recommended"`` on
+    anything else (Security V5 / T-V5-01).
+
+    On an HX-Request the handler returns only the ``betting_content`` block so a
+    full navigation to ``/betting?scope=`` and the toggle's fragment swap share
+    one code path. Cache-Control is set on the returned TemplateResponse
+    (Phase 15 D-07).
+    """
+    scope = _normalize_betting_scope(scope)
+    context = _build_betting_context(service, scope, request)
+
+    block_name = "betting_content" if request.headers.get("HX-Request") else None
+    template_response = templates.TemplateResponse(
+        request, "pages/betting.html", context, block_name=block_name
     )
     template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
     return template_response
