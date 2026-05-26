@@ -252,7 +252,7 @@ def step_validate_features() -> None:
 
 def step_validate_models() -> None:
     """Validate prediction models are available and loadable."""
-    from scripts.validate_models import ModelValidator
+    from pipeline.model_validation import ModelValidator
 
     validator = ModelValidator()
     availability = validator.validate_model_availability(["wp", "ats", "ou"])
