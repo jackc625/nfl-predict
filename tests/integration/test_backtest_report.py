@@ -66,6 +66,9 @@ class MockBacktestResults:
     odds_coverage: dict[str, int]
     covid_annotation: dict
     era_info: dict
+    # Mirror backtest.engine.BacktestResults.is_blended (default False); report.py
+    # and run.py read this to decide whether to include the blend-vs-baseline section.
+    is_blended: bool = False
 
 
 @dataclass
@@ -128,24 +131,28 @@ class MockSimulationResults:
 
 def _make_wp_predictions(n: int = 50, season: int = 2022) -> pd.DataFrame:
     rng = np.random.default_rng(42)
-    return pd.DataFrame({
-        "game_id": [f"{season}_{i:02d}_TEST" for i in range(n)],
-        "season": season,
-        "week": rng.integers(1, 19, size=n),
-        "model_prob": rng.uniform(0.3, 0.7, size=n),
-        "actual": rng.integers(0, 2, size=n),
-    })
+    return pd.DataFrame(
+        {
+            "game_id": [f"{season}_{i:02d}_TEST" for i in range(n)],
+            "season": season,
+            "week": rng.integers(1, 19, size=n),
+            "model_prob": rng.uniform(0.3, 0.7, size=n),
+            "actual": rng.integers(0, 2, size=n),
+        }
+    )
 
 
 def _make_clv_df(n: int = 50, season: int = 2022) -> pd.DataFrame:
     rng = np.random.default_rng(42)
-    return pd.DataFrame({
-        "game_id": [f"{season}_{i:02d}_TEST" for i in range(n)],
-        "season": season,
-        "week": rng.integers(1, 19, size=n),
-        "probability_clv": rng.normal(0.01, 0.05, size=n),
-        "has_closing_odds": True,
-    })
+    return pd.DataFrame(
+        {
+            "game_id": [f"{season}_{i:02d}_TEST" for i in range(n)],
+            "season": season,
+            "week": rng.integers(1, 19, size=n),
+            "probability_clv": rng.normal(0.01, 0.05, size=n),
+            "has_closing_odds": True,
+        }
+    )
 
 
 def _make_mock_backtest_results() -> MockBacktestResults:
@@ -158,32 +165,48 @@ def _make_mock_backtest_results() -> MockBacktestResults:
         wp_preds = _make_wp_predictions(50, season)
         wp_clv = _make_clv_df(50, season)
 
-        ats_preds = pd.DataFrame({
-            "game_id": [f"{season}_{i:02d}_TEST" for i in range(30)],
-            "season": season,
-            "week": list(range(1, 31)),
-        })
-        ou_preds = pd.DataFrame({
-            "game_id": [f"{season}_{i:02d}_TEST" for i in range(30)],
-            "season": season,
-            "week": list(range(1, 31)),
-        })
+        ats_preds = pd.DataFrame(
+            {
+                "game_id": [f"{season}_{i:02d}_TEST" for i in range(30)],
+                "season": season,
+                "week": list(range(1, 31)),
+            }
+        )
+        ou_preds = pd.DataFrame(
+            {
+                "game_id": [f"{season}_{i:02d}_TEST" for i in range(30)],
+                "season": season,
+                "week": list(range(1, 31)),
+            }
+        )
 
         target_results = {
             "wp": MockTargetResult(
-                target="wp", season=season, predictions_df=wp_preds,
-                clv_df=wp_clv, metrics={"accuracy": 0.62, "brier_score": 0.23},
-                feature_names=["elo_diff"], best_params={},
+                target="wp",
+                season=season,
+                predictions_df=wp_preds,
+                clv_df=wp_clv,
+                metrics={"accuracy": 0.62, "brier_score": 0.23},
+                feature_names=["elo_diff"],
+                best_params={},
             ),
             "ats": MockTargetResult(
-                target="ats", season=season, predictions_df=ats_preds,
-                clv_df=None, metrics={"mae": 7.5},
-                feature_names=["elo_diff"], best_params={},
+                target="ats",
+                season=season,
+                predictions_df=ats_preds,
+                clv_df=None,
+                metrics={"mae": 7.5},
+                feature_names=["elo_diff"],
+                best_params={},
             ),
             "ou": MockTargetResult(
-                target="ou", season=season, predictions_df=ou_preds,
-                clv_df=None, metrics={"mae": 8.1},
-                feature_names=["elo_diff"], best_params={},
+                target="ou",
+                season=season,
+                predictions_df=ou_preds,
+                clv_df=None,
+                metrics={"mae": 8.1},
+                feature_names=["elo_diff"],
+                best_params={},
             ),
         }
 
@@ -195,17 +218,26 @@ def _make_mock_backtest_results() -> MockBacktestResults:
         all_predictions["ats"].append(ats_preds)
         all_predictions["ou"].append(ou_preds)
 
-    concat_preds = {t: pd.concat(dfs, ignore_index=True) for t, dfs in all_predictions.items()}
-    concat_clv = {t: pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame() for t, dfs in all_clv.items()}
+    concat_preds = {
+        t: pd.concat(dfs, ignore_index=True) for t, dfs in all_predictions.items()
+    }
+    concat_clv = {
+        t: pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+        for t, dfs in all_clv.items()
+    }
 
     return MockBacktestResults(
-        config=config, season_results=season_results,
-        all_predictions=concat_preds, all_clv=concat_clv,
+        config=config,
+        season_results=season_results,
+        all_predictions=concat_preds,
+        all_clv=concat_clv,
         headline_clv={"wp": 0.015, "ats": -0.003, "ou": 0.008},
         odds_coverage={"wp_with_odds": 80, "wp_without_odds": 20},
         covid_annotation={
-            "seasons": [2020], "home_win_pct": 0.496,
-            "normal_home_win_pct": 0.57, "note": "COVID impact.",
+            "seasons": [2020],
+            "home_win_pct": 0.496,
+            "normal_home_win_pct": 0.57,
+            "note": "COVID impact.",
             "impact_on_model": "HFA reduced.",
         },
         era_info={2022: 18, 2023: 18},
@@ -215,10 +247,21 @@ def _make_mock_backtest_results() -> MockBacktestResults:
 def _make_mock_simulation_results() -> MockSimulationResults:
     bet_records = [
         MockBetRecord(
-            game_id=f"2022_{i:02d}_TEST", season=2022, week=i + 1,
-            target="wp", bet_side="home", model_value=0.65, market_value=0.55,
-            edge=0.10, slipped_line=None, odds=-150, flat_stake=100.0,
-            kelly_stake=80.0, outcome=True, payout_flat=66.67, payout_kelly=53.33,
+            game_id=f"2022_{i:02d}_TEST",
+            season=2022,
+            week=i + 1,
+            target="wp",
+            bet_side="home",
+            model_value=0.65,
+            market_value=0.55,
+            edge=0.10,
+            slipped_line=None,
+            odds=-150,
+            flat_stake=100.0,
+            kelly_stake=80.0,
+            outcome=True,
+            payout_flat=66.67,
+            payout_kelly=53.33,
         )
         for i in range(10)
     ]
@@ -226,24 +269,60 @@ def _make_mock_simulation_results() -> MockSimulationResults:
     return MockSimulationResults(
         config=MockSimulationConfig(),
         flat_stake=MockStrategyResult(
-            strategy_name="flat_stake", total_bets=100, winning_bets=55,
-            losing_bets=42, push_bets=3, win_rate=0.55, total_wagered=10000.0,
-            net_profit=500.0, roi=0.05, final_bankroll=10500.0,
-            max_drawdown=800.0, max_drawdown_pct=0.075,
+            strategy_name="flat_stake",
+            total_bets=100,
+            winning_bets=55,
+            losing_bets=42,
+            push_bets=3,
+            win_rate=0.55,
+            total_wagered=10000.0,
+            net_profit=500.0,
+            roi=0.05,
+            final_bankroll=10500.0,
+            max_drawdown=800.0,
+            max_drawdown_pct=0.075,
             equity_curve=[10000.0 + i * 5 for i in range(101)],
             bet_timestamps=[f"game_{i}" for i in range(100)],
         ),
         kelly=MockStrategyResult(
-            strategy_name="kelly", total_bets=100, winning_bets=55,
-            losing_bets=42, push_bets=3, win_rate=0.55, total_wagered=8000.0,
-            net_profit=700.0, roi=0.0875, final_bankroll=10700.0,
-            max_drawdown=600.0, max_drawdown_pct=0.055,
+            strategy_name="kelly",
+            total_bets=100,
+            winning_bets=55,
+            losing_bets=42,
+            push_bets=3,
+            win_rate=0.55,
+            total_wagered=8000.0,
+            net_profit=700.0,
+            roi=0.0875,
+            final_bankroll=10700.0,
+            max_drawdown=600.0,
+            max_drawdown_pct=0.055,
             equity_curve=[10000.0 + i * 7 for i in range(101)],
             bet_timestamps=[f"game_{i}" for i in range(100)],
         ),
         bet_records=bet_records,
-        by_target={"wp": {"n_bets": 40, "wins": 22, "losses": 17, "pushes": 1, "win_rate": 0.55, "flat_roi": 0.03, "kelly_roi": 0.06}},
-        by_season={2022: {"n_bets": 50, "wins": 27, "losses": 21, "pushes": 2, "win_rate": 0.54, "flat_roi": 0.04, "kelly_roi": 0.07}},
+        by_target={
+            "wp": {
+                "n_bets": 40,
+                "wins": 22,
+                "losses": 17,
+                "pushes": 1,
+                "win_rate": 0.55,
+                "flat_roi": 0.03,
+                "kelly_roi": 0.06,
+            }
+        },
+        by_season={
+            2022: {
+                "n_bets": 50,
+                "wins": 27,
+                "losses": 21,
+                "pushes": 2,
+                "win_rate": 0.54,
+                "flat_roi": 0.04,
+                "kelly_roi": 0.07,
+            }
+        },
     )
 
 
