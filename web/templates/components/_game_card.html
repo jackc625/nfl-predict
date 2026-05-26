@@ -60,7 +60,11 @@
         </p>
         {% if game.ats_prediction is not none and game.market_spread is not none %}
           <p class="text-xs text-gray-500 mt-0.5">
-            {% if game.ats_prediction > -game.market_spread %}
+            {# Simulator sign convention (backtest/simulation.py::_determine_bet_side_ats):
+               ats_prediction and market_spread share the home-perspective sign, so a
+               MORE-negative model spread (ats_prediction < market_spread) means the model
+               favors the HOME team to cover. CR-02: prior `> -market_spread` inverted this. #}
+            {% if game.ats_prediction < game.market_spread %}
               {{ game.home_team }} covers
             {% else %}
               {{ game.away_team }} covers

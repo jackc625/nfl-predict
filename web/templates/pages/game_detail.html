@@ -77,7 +77,10 @@
             <td class="py-2 text-gray-700">Spread
               {% if game.ats_prediction is not none and game.market_spread is not none %}
                 <span class="block text-xs text-gray-400">
-                  {% if game.ats_prediction > -game.market_spread %}{{ game.home_team }} covers{% else %}{{ game.away_team }} covers{% endif %}
+                  {# Simulator sign convention (backtest/simulation.py::_determine_bet_side_ats):
+                     a more-negative model spread (ats_prediction < market_spread) = HOME covers.
+                     CR-02: prior `> -market_spread` printed the opposite cover side. #}
+                  {% if game.ats_prediction < game.market_spread %}{{ game.home_team }} covers{% else %}{{ game.away_team }} covers{% endif %}
                 </span>
               {% endif %}
             </td>
