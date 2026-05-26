@@ -701,12 +701,11 @@ def _bets_for(rows: list[dict], target: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 def test_betting_equity_happy_path(betting_bets_data: list[dict]) -> None:
     """Main equity chart renders flat + Kelly series with a starting-bankroll
     reference line and chronological season ordering (D-07)."""
     from api.charts import (
-        generate_betting_equity_chart,  # type: ignore[attr-defined]  # symbol lands in 17-02/03
+        generate_betting_equity_chart,
     )
 
     html = generate_betting_equity_chart(betting_bets_data)
@@ -718,18 +717,16 @@ def test_betting_equity_happy_path(betting_bets_data: list[dict]) -> None:
     assert "Starting Bankroll" in html or "10,000" in html or "10000" in html
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 def test_betting_equity_empty_data() -> None:
     """Empty input yields an empty-state div, not a crash."""
     from api.charts import (
-        generate_betting_equity_chart,  # type: ignore[attr-defined]  # symbol lands in 17-02/03
+        generate_betting_equity_chart,
     )
 
     html = generate_betting_equity_chart([])
     assert "Chart unavailable" in html or "No betting" in html
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 @pytest.mark.parametrize("target", ["wp", "ats", "ou"])
 def test_betting_equity_mini_per_type(
     betting_bets_data: list[dict],
@@ -737,9 +734,9 @@ def test_betting_equity_mini_per_type(
 ) -> None:
     """Each per-type mini equity chart (wp/ats/ou) renders from its own rows."""
     from api.charts import (
-        generate_betting_equity_mini_ats,  # type: ignore[attr-defined]
-        generate_betting_equity_mini_ou,  # type: ignore[attr-defined]
-        generate_betting_equity_mini_wp,  # type: ignore[attr-defined]
+        generate_betting_equity_mini_ats,
+        generate_betting_equity_mini_ou,
+        generate_betting_equity_mini_wp,
     )
 
     fns = {
@@ -751,14 +748,13 @@ def test_betting_equity_mini_per_type(
     assert "<div" in html
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 @pytest.mark.parametrize("target", ["wp", "ats", "ou"])
 def test_betting_equity_mini_empty_data(target: str) -> None:
     """Per-type mini equity charts handle empty rows with an empty-state div."""
     from api.charts import (
-        generate_betting_equity_mini_ats,  # type: ignore[attr-defined]
-        generate_betting_equity_mini_ou,  # type: ignore[attr-defined]
-        generate_betting_equity_mini_wp,  # type: ignore[attr-defined]
+        generate_betting_equity_mini_ats,
+        generate_betting_equity_mini_ou,
+        generate_betting_equity_mini_wp,
     )
 
     fns = {
@@ -775,7 +771,6 @@ def test_betting_equity_mini_empty_data(target: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 @pytest.mark.parametrize(
     "slice_name",
     ["type", "season", "bucket"],
@@ -787,9 +782,9 @@ def test_betting_roi_grouped_bars(
     """ROI bar charts (by type / season / edge bucket) render grouped flat vs
     Kelly bars with a 0% baseline reference line (D-11 / D-18)."""
     from api.charts import (
-        generate_betting_roi_bucket,  # type: ignore[attr-defined]
-        generate_betting_roi_season,  # type: ignore[attr-defined]
-        generate_betting_roi_type,  # type: ignore[attr-defined]
+        generate_betting_roi_bucket,
+        generate_betting_roi_season,
+        generate_betting_roi_type,
     )
 
     fns = {
@@ -804,11 +799,10 @@ def test_betting_roi_grouped_bars(
     assert "Kelly" in html
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 def test_betting_roi_empty_data() -> None:
     """ROI generators handle empty rows with an empty-state div."""
     from api.charts import (
-        generate_betting_roi_type,  # type: ignore[attr-defined]  # symbol lands in 17-02/03
+        generate_betting_roi_type,
     )
 
     html = generate_betting_roi_type([])
@@ -820,7 +814,6 @@ def test_betting_roi_empty_data() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 @pytest.mark.parametrize("target", ["wp", "ats", "ou"])
 def test_betting_edge_hist_per_type(
     betting_bets_data: list[dict],
@@ -829,9 +822,9 @@ def test_betting_edge_hist_per_type(
     """Each per-type edge histogram renders two outcome-colored series
     (green win / red loss); pushes (outcome None) are excluded (D-14)."""
     from api.charts import (
-        generate_betting_edge_hist_ats,  # type: ignore[attr-defined]
-        generate_betting_edge_hist_ou,  # type: ignore[attr-defined]
-        generate_betting_edge_hist_wp,  # type: ignore[attr-defined]
+        generate_betting_edge_hist_ats,
+        generate_betting_edge_hist_ou,
+        generate_betting_edge_hist_wp,
     )
 
     fns = {
@@ -846,11 +839,10 @@ def test_betting_edge_hist_per_type(
     assert "Loss" in html
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 def test_betting_edge_hist_empty_data() -> None:
     """Edge histogram generators handle empty rows with an empty-state div."""
     from api.charts import (
-        generate_betting_edge_hist_wp,  # type: ignore[attr-defined]  # symbol lands in 17-02/03
+        generate_betting_edge_hist_wp,
     )
 
     html = generate_betting_edge_hist_wp([])
@@ -862,13 +854,12 @@ def test_betting_edge_hist_empty_data() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 def test_betting_scope_filter(betting_bets_data: list[dict]) -> None:
     """``filter_scope`` returns every row for 'all' and only kelly_stake>0 rows
     for 'recommended' (CONTEXT D-16 REVISED). Asserted against the fixture's
     known 9-row / 6-recommended split."""
     from api.charts import (
-        filter_scope,  # type: ignore[attr-defined]  # symbol lands in 17-02/03
+        filter_scope,
     )
 
     all_rows = filter_scope(betting_bets_data, "all")
@@ -880,13 +871,10 @@ def test_betting_scope_filter(betting_bets_data: list[dict]) -> None:
     assert all(r["kelly_stake"] > 0 for r in rec_rows)
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 def test_betting_kpis_excludes_pushes(betting_bets_data: list[dict]) -> None:
     """``compute_kpis`` win-rate denominator excludes pushes (outcome None) and
     ROI uses net/wagered; scope-aware via filter_scope upstream."""
-    from api.betting_metrics import (  # type: ignore[import-not-found]  # module lands in 17-02
-        compute_kpis,
-    )
+    from api.betting_metrics import compute_kpis
 
     kpis = compute_kpis(betting_bets_data)
     wins = sum(1 for r in betting_bets_data if r["outcome"] is True)
@@ -904,7 +892,6 @@ def test_betting_kpis_excludes_pushes(betting_bets_data: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 def test_betting_prerender_both_scopes() -> None:
     """Pre-render produces every BETTING_CHART_IDS entry (both scope variants)
     plus decodable KPI/ROI-table JSON blobs per scope."""
@@ -931,7 +918,6 @@ def test_betting_prerender_both_scopes() -> None:
         assert isinstance(json.loads(result[roi_id]), list)
 
 
-@pytest.mark.skip(reason="activated in 17-03")
 def test_betting_failure_isolation(caplog: pytest.LogCaptureFixture) -> None:
     """If one betting generator raises, pre-render (a) does not re-raise,
     (b) WARN-logs the failing chart_id, and (c) fills it with the

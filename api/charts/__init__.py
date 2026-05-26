@@ -3,6 +3,7 @@
 The package layout is:
 - core.py       pre-existing chart generators + helpers
 - insights.py   Phase 16 insights generators (``INSIGHTS_CHART_IDS``)
+- betting.py    Phase 17 betting generators (``BETTING_CHART_IDS``)
 - prerender.py  ``prerender_charts_for_cache`` / ``prerender_charts_from_conn``
                 with per-chart failure isolation
 
@@ -11,6 +12,22 @@ accessible through the re-exports below. Callers under ``api/routes/``,
 ``api/cache.py``, and tests do not need any import changes.
 """
 
+from api.charts.betting import (  # noqa: F401
+    BETTING_CHART_IDS,
+    compute_kpis,
+    compute_roi_table,
+    filter_scope,
+    generate_betting_edge_hist_ats,
+    generate_betting_edge_hist_ou,
+    generate_betting_edge_hist_wp,
+    generate_betting_equity_chart,
+    generate_betting_equity_mini_ats,
+    generate_betting_equity_mini_ou,
+    generate_betting_equity_mini_wp,
+    generate_betting_roi_bucket,
+    generate_betting_roi_season,
+    generate_betting_roi_type,
+)
 from api.charts.core import (  # noqa: F401
     CHART_LAYOUT_DEFAULTS,
     DEFAULT_COLOR,

@@ -9,8 +9,14 @@ entry — a JSON blob consumed by Plan 16-03's route via
 `DataService.get_insights_aggregate_table()`. Computing the aggregate table
 here (not on request) keeps the request path cheap.
 
+The Phase 17 betting path renders BOTH scope variants (``all`` /
+``recommended``) of every betting chart and pre-computes the per-scope KPI strip
++ ROI summary table as JSON blobs (``betting_kpis_<scope>`` /
+``betting_roi_table_<scope>``), consumed by Plan 17-04's route via
+``DataService.get_betting_kpis()`` / ``get_betting_roi_table()``.
+
 UIAP-01 COMPLIANCE: imports only from api.charts.core, api.charts.insights,
-api.insights_metrics, and stdlib.
+api.charts.betting, api.insights_metrics, and stdlib.
 """
 
 from __future__ import annotations
@@ -25,8 +31,10 @@ from typing import TYPE_CHECKING, Any
 # attribute on the source module mutates what we look up at call time through
 # ``insights.generate_*``. Binding the name locally via ``from ... import X``
 # would freeze the reference at import time and defeat the patch.
+from api.charts import betting as _betting_charts
 from api.charts import core as _core_charts
 from api.charts import insights as _insights_charts
+from api.charts.betting import BETTING_CHART_IDS
 from api.charts.core import _empty_chart_div
 from api.charts.insights import INSIGHTS_CHART_IDS
 from api.insights_metrics import build_aggregate_rows
@@ -72,6 +80,7 @@ _ALLOWED_TABLES: frozenset[str] = frozenset(
         "predictions",
         "feature_importances",
         "equity_curve",
+        "betting_bets",
     }
 )
 
@@ -104,7 +113,7 @@ def _extract_data_bundle(source: Any) -> dict[str, list[dict]]:
 
     The returned bundle always carries keys:
     ``backtest_predictions``, ``backtest_metrics``, ``predictions``,
-    ``feature_importances``, ``equity_curve``.
+    ``feature_importances``, ``equity_curve``, ``betting_bets``.
     """
     # Dict bundle shortcut (used directly by tests).
     if isinstance(source, dict):
@@ -114,6 +123,7 @@ def _extract_data_bundle(source: Any) -> dict[str, list[dict]]:
             "predictions": source.get("predictions", []),
             "feature_importances": source.get("feature_importances", []),
             "equity_curve": source.get("equity_curve", []),
+            "betting_bets": source.get("betting_bets", []),
         }
 
     # DataService instance: use public getters + public connection accessor.
@@ -124,12 +134,18 @@ def _extract_data_bundle(source: Any) -> dict[str, list[dict]]:
         equity = source.get_equity_curve()
         conn = source.get_connection()
         fi_rows = _query_table(conn, "feature_importances")
+        # betting_bets has no DataService request-path accessor (D-20: the
+        # handler reads cached HTML/JSON only). Read the per-bet rows directly
+        # via the allow-list-gated connection for the pre-render path only,
+        # mirroring how feature_importances is fetched here.
+        bets = _query_table(conn, "betting_bets")
         return {
             "backtest_predictions": backtest_preds,
             "backtest_metrics": metrics,
             "predictions": preds,
             "feature_importances": fi_rows,
             "equity_curve": equity,
+            "betting_bets": bets,
         }
 
     # Raw DuckDB connection: read every table directly. Each table identifier
@@ -143,6 +159,7 @@ def _extract_data_bundle(source: Any) -> dict[str, list[dict]]:
         "backtest_metrics",
         "predictions",
         "feature_importances",
+        "betting_bets",
     ):
         if table not in _ALLOWED_TABLES:
             raise ValueError(f"Refusing to query disallowed table: {table!r}")
@@ -180,6 +197,7 @@ def _render_all(bundle: dict[str, list[dict]]) -> dict[str, str]:
     market_data = bundle["predictions"]
     feature_imps = bundle["feature_importances"]
     equity_data = bundle["equity_curve"]
+    bets = bundle["betting_bets"]
 
     # --- Dashboard charts (pre-existing) ---
     charts["calibration"] = _safe_render(
@@ -258,8 +276,80 @@ def _render_all(bundle: dict[str, list[dict]]) -> dict[str, str]:
         logger.warning("Aggregate table build failed", exc_info=True)
         charts["insights_aggregate_table"] = json.dumps([])
 
-    # Self-check: every declared insights chart_id produced a value.
+    # --- Betting charts (Phase 17): BOTH scope variants per chart (D-20) ---
+    # The one genuinely new behavior of the phase: loop the two scope variants
+    # and store each chart + the KPI/ROI-table JSON blobs under a
+    # ``betting_<chart>_<scope>`` id. ``filter_scope`` is computed once per scope
+    # and every generator is reached through ``_betting_charts`` (module lookup)
+    # so ``unittest.mock.patch("api.charts.betting.generate_*")`` is observable.
+    # Each ``lambda`` binds ``s=scoped`` to avoid the closure-over-loop-var bug.
+    for scope in ("all", "recommended"):
+        scoped = _betting_charts.filter_scope(bets, scope)
+        charts[f"betting_equity_{scope}"] = _safe_render(
+            f"betting_equity_{scope}",
+            lambda s=scoped: _betting_charts.generate_betting_equity_chart(s),
+        )
+        charts[f"betting_equity_mini_wp_{scope}"] = _safe_render(
+            f"betting_equity_mini_wp_{scope}",
+            lambda s=scoped: _betting_charts.generate_betting_equity_mini_wp(s),
+        )
+        charts[f"betting_equity_mini_ats_{scope}"] = _safe_render(
+            f"betting_equity_mini_ats_{scope}",
+            lambda s=scoped: _betting_charts.generate_betting_equity_mini_ats(s),
+        )
+        charts[f"betting_equity_mini_ou_{scope}"] = _safe_render(
+            f"betting_equity_mini_ou_{scope}",
+            lambda s=scoped: _betting_charts.generate_betting_equity_mini_ou(s),
+        )
+        charts[f"betting_roi_type_{scope}"] = _safe_render(
+            f"betting_roi_type_{scope}",
+            lambda s=scoped: _betting_charts.generate_betting_roi_type(s),
+        )
+        charts[f"betting_roi_season_{scope}"] = _safe_render(
+            f"betting_roi_season_{scope}",
+            lambda s=scoped: _betting_charts.generate_betting_roi_season(s),
+        )
+        charts[f"betting_roi_bucket_{scope}"] = _safe_render(
+            f"betting_roi_bucket_{scope}",
+            lambda s=scoped: _betting_charts.generate_betting_roi_bucket(s),
+        )
+        charts[f"betting_edge_hist_wp_{scope}"] = _safe_render(
+            f"betting_edge_hist_wp_{scope}",
+            lambda s=scoped: _betting_charts.generate_betting_edge_hist_wp(s),
+        )
+        charts[f"betting_edge_hist_ats_{scope}"] = _safe_render(
+            f"betting_edge_hist_ats_{scope}",
+            lambda s=scoped: _betting_charts.generate_betting_edge_hist_ats(s),
+        )
+        charts[f"betting_edge_hist_ou_{scope}"] = _safe_render(
+            f"betting_edge_hist_ou_{scope}",
+            lambda s=scoped: _betting_charts.generate_betting_edge_hist_ou(s),
+        )
+
+        # KPI strip + ROI summary table as per-scope JSON blobs (D-20). Each is
+        # wrapped in its own try/except mirroring the aggregate-table isolation:
+        # a build failure falls back to an empty dict / list, never raising.
+        try:
+            charts[f"betting_kpis_{scope}"] = json.dumps(
+                _betting_charts.compute_kpis(scoped),
+            )
+        except Exception:  # noqa: BLE001 — match per-chart isolation contract
+            logger.warning("Betting KPI build failed for %s", scope, exc_info=True)
+            charts[f"betting_kpis_{scope}"] = json.dumps({})
+        try:
+            charts[f"betting_roi_table_{scope}"] = json.dumps(
+                _betting_charts.compute_roi_table(scoped),
+            )
+        except Exception:  # noqa: BLE001 — match per-chart isolation contract
+            logger.warning(
+                "Betting ROI table build failed for %s", scope, exc_info=True
+            )
+            charts[f"betting_roi_table_{scope}"] = json.dumps([])
+
+    # Self-check: every declared insights + betting chart_id produced a value.
     for chart_id in INSIGHTS_CHART_IDS:
+        assert chart_id in charts, f"Missing chart_id in prerender output: {chart_id}"
+    for chart_id in BETTING_CHART_IDS:
         assert chart_id in charts, f"Missing chart_id in prerender output: {chart_id}"
 
     return charts
@@ -282,8 +372,10 @@ def prerender_charts_for_cache(
 
     Returns:
         Dict mapping chart_id to HTML div string. The return also carries the
-        ``insights_aggregate_table`` key whose value is a JSON-encoded list of
-        aggregate rows consumed by Plan 16-03's template.
+        ``insights_aggregate_table`` key (JSON-encoded list of aggregate rows
+        consumed by Plan 16-03's template) and the per-scope
+        ``betting_kpis_<scope>`` (JSON dict) / ``betting_roi_table_<scope>``
+        (JSON list) blobs consumed by Plan 17-04's route.
     """
     bundle = _extract_data_bundle(service)
     return _render_all(bundle)
