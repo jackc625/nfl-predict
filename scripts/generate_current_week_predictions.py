@@ -299,11 +299,15 @@ def apply_blending(
     market: pd.DataFrame,
     artifacts_dir: Path,
     no_blend: bool,
+    season: int,
+    week: int,
 ) -> pd.DataFrame:
     """Apply market blending if blend artifacts exist.
 
     Adds blended_wp, blended_ats, blended_ou columns. Sets them to NaN
-    when blending is not applied.
+    when blending is not applied. ``season``/``week`` are passed to the blender
+    so dynamic-mode targets resolve their week-of-season weight; static-mode
+    targets ignore them.
     """
     predictions["blended_wp"] = np.nan
     predictions["blended_ats"] = np.nan
@@ -351,6 +355,8 @@ def apply_blending(
             blended_wp = blender.blend_wp(
                 np.asarray(model_probs, dtype=np.float64),
                 np.asarray(market_probs, dtype=np.float64),
+                week=week,
+                season=season,
             )
             predictions.loc[valid_ml, "blended_wp"] = blended_wp
 
@@ -363,6 +369,8 @@ def apply_blending(
             blended_ats = blender.blend_ats(
                 np.asarray(model_spreads, dtype=np.float64),
                 np.asarray(market_spreads, dtype=np.float64),
+                week=week,
+                season=season,
             )
             predictions.loc[valid_spread, "blended_ats"] = blended_ats
 
@@ -375,6 +383,8 @@ def apply_blending(
             blended_ou = blender.blend_ou(
                 np.asarray(model_totals, dtype=np.float64),
                 np.asarray(market_totals, dtype=np.float64),
+                week=week,
+                season=season,
             )
             predictions.loc[valid_total, "blended_ou"] = blended_ou
 
@@ -588,7 +598,9 @@ def generate_and_write(
         combined.rename(columns={"ml_away": "market_ml_away"}, inplace=True)
 
     # 6. Apply market blending (uses the blend artifact, dynamic or static)
-    combined = apply_blending(combined, market_df, artifacts_dir, no_blend)
+    combined = apply_blending(
+        combined, market_df, artifacts_dir, no_blend, season, week
+    )
 
     # 7. Write outputs
     pred_path = write_predictions(combined, season, week, output_dir)

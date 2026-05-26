@@ -331,9 +331,12 @@ class MarketBlender:
         Raises:
             ValueError: If dynamic_weights is configured but week/season omitted.
         """
-        if self._dynamic_weights is not None:
+        if (
+            self._dynamic_weights is not None
+            and self._dynamic_weights.mode_by_target.get("wp") == "dynamic"
+        ):
             if week is None or season is None:
-                msg = "week and season are required when dynamic_weights is configured"
+                msg = "week and season are required for dynamic-mode targets"
                 raise ValueError(msg)
             weight = self._dynamic_weights.get_weight("wp", week, season)
         else:
@@ -373,9 +376,12 @@ class MarketBlender:
         Raises:
             ValueError: If dynamic_weights is configured but week/season omitted.
         """
-        if self._dynamic_weights is not None:
+        if (
+            self._dynamic_weights is not None
+            and self._dynamic_weights.mode_by_target.get("ats") == "dynamic"
+        ):
             if week is None or season is None:
-                msg = "week and season are required when dynamic_weights is configured"
+                msg = "week and season are required for dynamic-mode targets"
                 raise ValueError(msg)
             weight = self._dynamic_weights.get_weight("ats", week, season)
         else:
@@ -403,9 +409,12 @@ class MarketBlender:
         Raises:
             ValueError: If dynamic_weights is configured but week/season omitted.
         """
-        if self._dynamic_weights is not None:
+        if (
+            self._dynamic_weights is not None
+            and self._dynamic_weights.mode_by_target.get("ou") == "dynamic"
+        ):
             if week is None or season is None:
-                msg = "week and season are required when dynamic_weights is configured"
+                msg = "week and season are required for dynamic-mode targets"
                 raise ValueError(msg)
             weight = self._dynamic_weights.get_weight("ou", week, season)
         else:

@@ -726,7 +726,7 @@ class TestDynamicBlending:
         market = np.array([0.5])
         with pytest.raises(
             ValueError,
-            match="week and season are required when dynamic_weights is configured",
+            match="week and season are required",
         ):
             dynamic_blender.blend_wp(model, market)
 
@@ -978,3 +978,60 @@ class TestDynamicArtifacts:
         )
         data2 = json.loads((artifact_dir2 / "blend_weights.json").read_text())
         assert data2["blender_version"] == "1.0"
+
+
+# ---------------------------------------------------------------------------
+# Mode-aware blending (per-target gating honored at blend time)
+# ---------------------------------------------------------------------------
+
+
+class TestModeAwareBlending:
+    """blend_wp/ats/ou honor DynamicBlendWeights.mode_by_target after gating.
+
+    A gated artifact may keep some targets on static weights (they did not beat
+    static in backtest) while another runs dynamic. The blend methods must route
+    per target, and static-mode targets must not require week/season.
+    """
+
+    @staticmethod
+    def _mixed_mode_blender() -> MarketBlender:
+        """Dynamic weights gating WP/ATS to static and O/U to dynamic."""
+        dw = DynamicBlendWeights(
+            wp=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ats=SigmoidParams(midpoint=0.5, steepness=1.0),
+            ou=SigmoidParams(midpoint=0.5, steepness=1.0),
+            mode_by_target={"wp": "static", "ats": "static", "ou": "dynamic"},
+        )
+        return MarketBlender(dynamic_weights=dw)
+
+    def test_static_mode_target_no_week_season_required(self) -> None:
+        """Static-mode WP/ATS blend without week/season (no ValueError)."""
+        blender = self._mixed_mode_blender()
+        wp = blender.blend_wp(np.array([0.7, 0.4]), np.array([0.6, 0.5]))
+        ats = blender.blend_ats(np.array([-3.0]), np.array([-1.0]))
+        assert np.all(np.isfinite(wp))
+        assert np.all(np.isfinite(ats))
+
+    def test_static_mode_uses_static_config_weight(self) -> None:
+        """A static-mode target blends with the static config weight, not sigmoid."""
+        blender = self._mixed_mode_blender()
+        w = blender.config.weights.ats_model_weight
+        model = np.array([-3.0])
+        market = np.array([-1.0])
+        expected = w * model + (1 - w) * market
+        assert_allclose(blender.blend_ats(model, market), expected)
+
+    def test_dynamic_mode_target_requires_week_season(self) -> None:
+        """O/U is dynamic-mode, so blend_ou still requires week/season."""
+        blender = self._mixed_mode_blender()
+        with pytest.raises(ValueError, match="week and season are required"):
+            blender.blend_ou(np.array([44.0]), np.array([46.0]))
+
+    def test_dynamic_mode_target_uses_sigmoid_weight(self) -> None:
+        """O/U dynamic-mode blends with the week-of-season sigmoid weight."""
+        blender = self._mixed_mode_blender()
+        model = np.array([44.0])
+        market = np.array([46.0])
+        w = blender._dynamic_weights.get_weight("ou", week=10, season=2024)
+        expected = w * model + (1 - w) * market
+        assert_allclose(blender.blend_ou(model, market, week=10, season=2024), expected)
