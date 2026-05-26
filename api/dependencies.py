@@ -1,7 +1,8 @@
 """Shared dependencies for the FastAPI application.
 
 Provides:
-- Templates engine (Jinja2Blocks) and the ``format_datetime`` filter
+- Templates engine (Jinja2Blocks) and the ``format_datetime`` / ``format_currency``
+  presentation filters
 - ``DB_PATH`` constant pointing at the DuckDB web cache
 - ``get_db()`` FastAPI dependency that returns the shared read-only DuckDB
   connection from ``app.state.db_conn``, reconnecting under
@@ -44,7 +45,25 @@ def format_datetime(value: str | datetime | None) -> str:
     return value.strftime("%b %d, %Y %I:%M %p")
 
 
+def format_currency(value: float | int | None) -> str:
+    """Format a number as a whole-dollar, thousands-separated string.
+
+    Presentation-only helper for the betting dashboard's dollar KPIs (Net
+    Profit, Final Bankroll, Max Drawdown). Jinja's built-in ``format`` filter
+    is printf-style and rejects the ``,`` grouping flag (``"%,.0f"`` raises
+    ``ValueError``), so grouping is done here via Python's ``format`` builtin.
+    Returns ``"$0"`` for ``None`` / non-numeric input rather than raising.
+    """
+    if value is None:
+        return "$0"
+    try:
+        return f"${format(float(value), ',.0f')}"
+    except (ValueError, TypeError):
+        return "$0"
+
+
 templates.env.filters["format_datetime"] = format_datetime
+templates.env.filters["format_currency"] = format_currency
 
 
 def _reconnect_under_lock(request: Request) -> duckdb.DuckDBPyConnection:

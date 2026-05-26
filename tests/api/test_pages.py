@@ -6,7 +6,6 @@ backtest page, and HTMX block rendering.
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -311,7 +310,6 @@ def test_insights_page_empty_db(empty_test_client: TestClient):
 # (Phase 16 skip-gated pattern). Default scope = "recommended" (D-17).
 
 
-@pytest.mark.skip(reason="activated in 17-04")
 def test_betting_page_200(test_client: TestClient):
     """DASH-10: GET /betting returns 200 with the four section headings, a
     Cache-Control header, and a nav link to /betting (desktop + mobile)."""
@@ -329,7 +327,6 @@ def test_betting_page_200(test_client: TestClient):
     assert html.count('href="/betting"') >= 2
 
 
-@pytest.mark.skip(reason="activated in 17-04")
 def test_betting_page_renders_recommended_chart_ids(test_client: TestClient):
     """Default load (scope=recommended) consumes the betting_*_recommended
     chart_id markers the conftest fixture inserts."""
@@ -347,7 +344,6 @@ def test_betting_page_renders_recommended_chart_ids(test_client: TestClient):
         assert f'data-chart-id="{chart_id}"' in html, f"Missing {chart_id}"
 
 
-@pytest.mark.skip(reason="activated in 17-04")
 def test_betting_fragment(test_client: TestClient):
     """D-17: GET /fragments/betting?scope=all with HX-Request returns only the
     betting_content block (no full document), and the scope switch changes which
@@ -367,7 +363,6 @@ def test_betting_fragment(test_client: TestClient):
     assert 'data-chart-id="betting_equity_recommended"' not in html
 
 
-@pytest.mark.skip(reason="activated in 17-04")
 def test_betting_fragment_scope_whitelist(test_client: TestClient):
     """Security V5: an out-of-whitelist scope falls back to the default
     ("recommended") rather than erroring or interpolating raw input."""
@@ -380,7 +375,6 @@ def test_betting_fragment_scope_whitelist(test_client: TestClient):
     assert 'data-chart-id="betting_equity_recommended"' in response.text
 
 
-@pytest.mark.skip(reason="activated in 17-04")
 def test_betting_empty_db(empty_test_client: TestClient):
     """Empty DB renders empty-state cards (not a 500): no betting_* chart_ids
     are cached, so every chart slot falls back to 'Chart unavailable'."""
