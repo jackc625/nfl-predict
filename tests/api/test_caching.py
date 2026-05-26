@@ -8,15 +8,21 @@ Covers:
 - Non-cached methods (``get_game_detail``) are NOT cached
 - ``_annotate_wp_correct`` does NOT mutate the cached source list
   (end-to-end regression test for review item #4)
+- Phase 17 betting accessors (``get_betting_kpis`` / ``get_betting_roi_table``)
+  decode the chart_cache JSON blob and fall back to ``{}`` / ``[]`` on a
+  missing, malformed, or wrong-type entry.
 """
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 from fastapi.testclient import TestClient
 
+from api.cache import CACHE_SCHEMA
 from api.services import DataService, _cache, clear_cache
 
 
@@ -149,3 +155,136 @@ def test_annotate_wp_correct_does_not_mutate_cached_source(
         "cached predictions mutated between requests -- _annotate_wp_correct "
         "leaked into the cached source list"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 17 betting accessor fallback (get_betting_kpis / get_betting_roi_table)
+# ---------------------------------------------------------------------------
+# These accessors read a JSON blob from chart_cache via
+# get_chart_html(f"betting_kpis_{scope}") / f"betting_roi_table_{scope}" and
+# must return {} / [] when the entry is missing, undecodable, or decodes to the
+# wrong container type. The `test_db` fixture seeds decodable dict/list payloads
+# for the "all"/"recommended" scopes (conftest BETTING_CHART_IDS markers).
+
+
+def _writable_db_with_chart_rows(tmp_path: Path, rows: list[tuple[str, str]]) -> Path:
+    """Build a fresh writable cache DB seeding chart_cache (chart_id, html_div).
+
+    Used to inject malformed / wrong-type JSON blobs the read-only `test_db`
+    fixture cannot express. Only the schema + the supplied chart rows are
+    created; the betting accessors only read chart_cache.
+    """
+    db_path = tmp_path / "betting_accessor_cache.duckdb"
+    conn = duckdb.connect(str(db_path))
+    try:
+        for statement in CACHE_SCHEMA.strip().split(";"):
+            stmt = statement.strip()
+            if stmt:
+                conn.execute(stmt)
+        now = datetime.now(tz=UTC)
+        conn.executemany(
+            "INSERT INTO chart_cache VALUES (?, ?, ?)",
+            [(chart_id, html, now) for chart_id, html in rows],
+        )
+    finally:
+        conn.close()
+    return db_path
+
+
+def test_betting_accessor_happy_path_decodes_dict_and_list(test_db: Path) -> None:
+    """Against the seeded fixture, kpis -> non-empty dict, roi_table -> list.
+
+    The conftest markers store a decodable dict under ``betting_kpis_all`` and a
+    decodable list-of-dicts under ``betting_roi_table_all``; the accessors must
+    json.loads them into the right container types.
+    """
+    clear_cache()
+    conn = duckdb.connect(str(test_db), read_only=True)
+    try:
+        svc = DataService(conn=conn)
+
+        kpis = svc.get_betting_kpis("all")
+        assert isinstance(kpis, dict)
+        assert kpis, "fixture betting_kpis_all should decode to a non-empty dict"
+        # The fixture KPI payload carries the 7-card scoreboard keys.
+        assert "total_bets" in kpis
+        assert "win_rate" in kpis
+
+        roi_table = svc.get_betting_roi_table("all")
+        assert isinstance(roi_table, list)
+        assert roi_table, "fixture betting_roi_table_all should decode to a list"
+        assert isinstance(roi_table[0], dict)
+        # Production rows carry the WR-04 contract keys (label, not bare slice).
+        assert "label" in roi_table[0]
+
+        # The "recommended" scope is seeded too and must also decode.
+        assert isinstance(svc.get_betting_kpis("recommended"), dict)
+        assert svc.get_betting_kpis("recommended")
+        assert isinstance(svc.get_betting_roi_table("recommended"), list)
+        assert svc.get_betting_roi_table("recommended")
+    finally:
+        conn.close()
+
+
+def test_betting_accessor_missing_scope_falls_back_to_empty(test_db: Path) -> None:
+    """An unknown scope has no chart_cache entry -> {} for kpis, [] for roi."""
+    clear_cache()
+    conn = duckdb.connect(str(test_db), read_only=True)
+    try:
+        svc = DataService(conn=conn)
+
+        assert svc.get_betting_kpis("bogus_scope") == {}
+        assert svc.get_betting_roi_table("bogus_scope") == []
+    finally:
+        conn.close()
+
+
+def test_betting_accessor_malformed_json_falls_back_to_empty(
+    tmp_path: Path,
+) -> None:
+    """Undecodable JSON in the chart_cache blob -> {} / [] (JSONDecodeError)."""
+    clear_cache()
+    db_path = _writable_db_with_chart_rows(
+        tmp_path,
+        [
+            ("betting_kpis_recommended", "{not json"),
+            ("betting_roi_table_recommended", "NOT JSON ["),
+        ],
+    )
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        svc = DataService(conn=conn)
+
+        # get_chart_html returns the raw (non-empty) string, so this exercises
+        # the defensive json.loads branch, not the empty-string early return.
+        assert svc.get_betting_kpis("recommended") == {}
+        assert svc.get_betting_roi_table("recommended") == []
+    finally:
+        conn.close()
+
+
+def test_betting_accessor_wrong_type_json_falls_back_to_empty(
+    tmp_path: Path,
+) -> None:
+    """Valid JSON of the wrong container type -> {} / [] (isinstance guard).
+
+    A JSON *list* stored under the kpis id must not leak through as a list (the
+    accessor's ``isinstance(decoded, dict)`` guard returns {}); symmetrically a
+    JSON *dict* under the roi_table id must return [].
+    """
+    clear_cache()
+    db_path = _writable_db_with_chart_rows(
+        tmp_path,
+        [
+            ("betting_kpis_recommended", json.dumps([1, 2, 3])),  # list, not dict
+            ("betting_roi_table_recommended", json.dumps({"a": 1})),  # dict, not list
+        ],
+    )
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        svc = DataService(conn=conn)
+
+        assert svc.get_betting_kpis("recommended") == {}
+        assert svc.get_betting_roi_table("recommended") == []
+    finally:
+        conn.close()
