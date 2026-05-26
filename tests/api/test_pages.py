@@ -381,3 +381,94 @@ def test_betting_empty_db(empty_test_client: TestClient):
     response = empty_test_client.get("/betting")
     assert response.status_code == 200
     assert "Chart unavailable" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 18: /season page (DASH-07/08/09/10) route tests
+# ---------------------------------------------------------------------------
+# Mirror the test_betting_page_* structure. The dynamic-default + whitelist
+# expectations are DERIVED from _FIXTURE_SEASONS so no literal year is asserted
+# (D-01 / T-V5-01; 18-RESEARCH Pitfall 1).
+
+
+def test_season_page_200(test_client: TestClient):
+    """DASH-09/10: GET /season returns 200 with the two section headings, a
+    Cache-Control header, and a nav link to /season (desktop + mobile)."""
+    response = test_client.get("/season")
+    assert response.status_code == 200
+    html = response.text
+    # Page heading + the two stacked section headings (D-07 / D-08).
+    assert "Season Tracking" in html
+    assert "Cumulative Accuracy" in html
+    assert "Weekly Performance" in html
+    # Cache-Control set on the returned TemplateResponse (Phase 15 D-07).
+    cc = response.headers.get("Cache-Control", "")
+    assert "public" in cc and "max-age" in cc
+    assert cc == "public, max-age=60"
+    # Nav link present in both desktop nav and mobile menu (D-09).
+    assert html.count('href="/season"') >= 2
+
+
+def test_season_page_default_is_latest_season(test_client: TestClient):
+    """D-01 / T-V5-01: no season param selects the dynamically-resolved latest
+    season, and an out-of-range season falls back to that same latest -- without
+    500ing and without hardcoding a year in the assertion."""
+    from tests.api.conftest import _FIXTURE_SEASONS
+
+    latest = max(_FIXTURE_SEASONS)
+
+    # No param -> latest season is selected in the rendered selector.
+    response = test_client.get("/season")
+    assert response.status_code == 200
+    html = response.text
+    # The selector marks the resolved season's <option> as selected.
+    assert f'value="{latest}" selected' in html
+    # The latest season's cumulative chart marker renders (proves the route
+    # built the season_cumulative_<latest> cache-id from the dynamic default).
+    assert f'data-chart-id="season_cumulative_{latest}"' in html
+
+    # Out-of-range season (1999 is not in _FIXTURE_SEASONS) -> fall back to
+    # latest, not a 500 and not a raw-interpolated id (T-V5-01 whitelist).
+    fallback = test_client.get("/season?season=1999")
+    assert fallback.status_code == 200
+    fb_html = fallback.text
+    assert f'value="{latest}" selected' in fb_html
+    assert f'data-chart-id="season_cumulative_{latest}"' in fb_html
+    assert 'data-chart-id="season_cumulative_1999"' not in fb_html
+
+
+def test_season_page_in_range_season_passthrough(test_client: TestClient):
+    """An in-range season param renders that season's content (not the latest)."""
+    from tests.api.conftest import _FIXTURE_SEASONS
+
+    # Pick an older in-range season distinct from the latest.
+    older = min(_FIXTURE_SEASONS)
+    response = test_client.get(f"/season?season={older}")
+    assert response.status_code == 200
+    html = response.text
+    assert f'value="{older}" selected' in html
+    assert f'data-chart-id="season_cumulative_{older}"' in html
+
+
+def test_season_page_empty_db(empty_test_client: TestClient):
+    """D-02: empty DB renders the whole-season empty state (not a 500). With no
+    seasons present, _normalize_season returns None and the page shows the
+    'No completed games yet' empty state."""
+    response = empty_test_client.get("/season")
+    assert response.status_code == 200
+    html = response.text
+    # Either the whole-season empty state or the per-chart fallback is acceptable
+    # per the plan; with an empty DB the whole-season guard fires.
+    assert "No completed games yet" in html or "Chart unavailable" in html
+
+
+def test_season_page_htmx_returns_block(test_client: TestClient):
+    """D-11: GET /season with HX-Request returns only the season_tracking_content
+    block, not the full HTML document."""
+    response = test_client.get("/season", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    html = response.text
+    assert "<!DOCTYPE" not in html
+    assert "<html" not in html
+    # Still contains season content (a section heading).
+    assert "Cumulative Accuracy" in html
