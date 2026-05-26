@@ -10,6 +10,7 @@ data-to-prediction pipeline.
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Enums and data classes
@@ -85,6 +86,20 @@ try:
     TRANSIENT_EXCEPTIONS = (*TRANSIENT_EXCEPTIONS, httpx.HTTPStatusError)
 except ImportError:
     pass
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _predictions_output_dir() -> Path:
+    """Directory where current-week prediction artifacts are written.
+
+    Factored into one place so the prediction-phase steps stay consistent and
+    tests can redirect output without writing into the repo's outputs/ tree.
+    """
+    return Path("outputs/predictions")
 
 
 # ---------------------------------------------------------------------------
@@ -251,70 +266,125 @@ def step_validate_models() -> None:
 
 
 def step_generate_predictions() -> None:
-    """Generate predictions for current week games."""
-    from data.storage import load_dataframe
-    from models.prediction_pipeline import NFLPredictionPipeline
+    """Generate current-week predictions via the canonical generation path.
 
-    pipeline = NFLPredictionPipeline()
-    games_df = load_dataframe("games", layer="silver")
+    Delegates to ``generate_current_week_predictions.generate_and_write``, which
+    loads the model artifacts, computes edges, applies market blending (using the
+    blend artifact when present), and writes ``predictions_<season>_week<week>.csv``
+    plus the game-context CSV. Raises if the gold matrix lacks the current week
+    so the orchestrator records a clean step failure.
+    """
+    from scripts.generate_current_week_predictions import generate_and_write
     from utils.date_utils import get_current_nfl_week
 
     season, week = get_current_nfl_week()
-    current_games = games_df[
-        (games_df["season"] == season) & (games_df["week"] == week)
-    ]
-    if len(current_games) > 0:
-        pipeline.predict_games(current_games)
+    generate_and_write(season=season, week=week, output_dir=_predictions_output_dir())
 
 
 def step_generate_recommendations() -> None:
-    """Generate bet recommendations from predictions."""
-    # BetRecommendationEngine.generate_recommendation requires per-game edge/confidence.
-    # The orchestrator adapter loads predictions and generates recommendations in bulk.
-    from models.prediction_pipeline import BetRecommendationEngine
+    """Derive bet recommendations from the generated predictions.
 
-    # This is a lightweight wrapper -- actual recommendation generation happens
-    # inside the prediction pipeline. We instantiate to verify it works.
-    _engine = BetRecommendationEngine()
+    A recommendation is any target whose edge cleared the medium/high confidence
+    threshold during prediction generation. Writes
+    ``recommendations_<season>_week<week>.json``.
+    """
+    import json
+
+    import pandas as pd
+
+    from utils.date_utils import get_current_nfl_week
+
+    season, week = get_current_nfl_week()
+    output_dir = _predictions_output_dir()
+    pred_path = output_dir / f"predictions_{season}_week{week}.csv"
+    if not pred_path.exists():
+        raise RuntimeError(
+            f"Cannot generate recommendations -- predictions missing: {pred_path}"
+        )
+
+    df = pd.read_csv(pred_path)
+    target_cols = {
+        "wp": ("wp_edge", "wp_confidence"),
+        "ats": ("ats_edge", "ats_confidence"),
+        "ou": ("ou_edge", "ou_confidence"),
+    }
+    recommendations: list[dict] = []
+    for _, row in df.iterrows():
+        for target, (edge_col, conf_col) in target_cols.items():
+            if row.get(conf_col) in ("medium", "high"):
+                edge = row.get(edge_col)
+                recommendations.append(
+                    {
+                        "game_id": row.get("game_id"),
+                        "target": target,
+                        "edge": None if pd.isna(edge) else float(edge),
+                        "confidence": row.get(conf_col),
+                    }
+                )
+
+    rec_path = output_dir / f"recommendations_{season}_week{week}.json"
+    rec_path.write_text(json.dumps(recommendations, indent=2))
 
 
 def step_export_artifacts() -> None:
-    """Export prediction artifacts in multiple formats.
+    """Export the current-week predictions to JSON alongside the CSV."""
+    import pandas as pd
 
-    Ensures the outputs directory exists. Actual export is handled by the
-    prediction pipeline during step_generate_predictions; this step
-    verifies the output directory is ready.
-    """
-    from pathlib import Path
+    from utils.date_utils import get_current_nfl_week
 
-    predictions_dir = Path("outputs/predictions")
-    predictions_dir.mkdir(parents=True, exist_ok=True)
+    season, week = get_current_nfl_week()
+    output_dir = _predictions_output_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    pred_csv = output_dir / f"predictions_{season}_week{week}.csv"
+    if not pred_csv.exists():
+        raise RuntimeError(f"Cannot export -- predictions CSV missing: {pred_csv}")
+
+    df = pd.read_csv(pred_csv)
+    json_path = output_dir / f"predictions_{season}_week{week}.json"
+    df.to_json(json_path, orient="records", indent=2)
 
 
 def step_validate_predictions() -> None:
-    """Validate prediction outputs for completeness and quality."""
-    from scripts.validate_predictions import PredictionValidator
+    """Validate the generated current-week prediction file."""
+    import pandas as pd
 
-    validator = PredictionValidator()
-    file_results = validator.validate_prediction_files()
-    missing = [k for k, v in file_results.items() if not v]
+    from utils.date_utils import get_current_nfl_week
+
+    season, week = get_current_nfl_week()
+    pred_path = _predictions_output_dir() / f"predictions_{season}_week{week}.csv"
+    if not pred_path.exists():
+        raise RuntimeError(f"Prediction validation failed -- missing file: {pred_path}")
+
+    df = pd.read_csv(pred_path)
+    if df.empty:
+        raise RuntimeError(f"Prediction validation failed -- no rows in {pred_path}")
+
+    required = ["game_id", "wp_prob", "ats_prediction", "ou_prediction"]
+    missing = [c for c in required if c not in df.columns]
     if missing:
-        raise RuntimeError(f"Prediction validation failed -- missing files: {missing}")
+        raise RuntimeError(
+            f"Prediction validation failed -- missing columns: {missing}"
+        )
+
+    if not df["wp_prob"].between(0.0, 1.0).all():
+        raise RuntimeError("Prediction validation failed -- wp_prob outside [0, 1]")
 
 
 def step_verify_output_files() -> None:
-    """Verify expected output files exist after pipeline run."""
-    from pathlib import Path
-
+    """Verify expected current-week output files exist after the run."""
+    from utils.date_utils import get_current_nfl_week
     from utils.logging_config import get_logger
 
     logger = get_logger(__name__)
+    season, week = get_current_nfl_week()
+    output_dir = _predictions_output_dir()
     expected = [
-        "outputs/predictions/current_week_predictions.parquet",
-        "outputs/predictions/current_week_predictions.json",
-        "outputs/predictions/current_week_summary.csv",
+        output_dir / f"predictions_{season}_week{week}.csv",
+        output_dir / f"predictions_{season}_week{week}.json",
+        output_dir / f"game_context_{season}_week{week}.csv",
     ]
-    missing = [f for f in expected if not Path(f).exists()]
+    missing = [str(f) for f in expected if not f.exists()]
     if missing:
         logger.warning("Missing output files", missing_files=missing)
 

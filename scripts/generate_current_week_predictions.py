@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -55,19 +56,16 @@ def load_gold_features(
     """
     path = Path(f"data/gold/features_{target}.parquet")
     if not path.exists():
-        logger.error("Gold features file not found", path=str(path))
-        sys.exit(1)
+        raise FileNotFoundError(f"Gold features file not found: {path}")
 
     df = pd.read_parquet(path)
     filtered = df[(df["season"] == season) & (df["week"] == week)].copy()
 
     if filtered.empty:
-        logger.error(
-            f"No games found for {season} Week {week} in gold features",
-            target=target,
-            path=str(path),
+        raise ValueError(
+            f"No games found for {season} Week {week} in gold features "
+            f"(target={target}, path={path})"
         )
-        sys.exit(1)
 
     logger.info(
         "Loaded gold features",
@@ -103,6 +101,7 @@ def load_market_data(game_ids: list[str]) -> pd.DataFrame:
 
     # Normalize team abbreviations in odds game_ids (e.g. LAR -> LA)
     # to match canonical game_ids from gold features
+    from utils.exceptions import DataValidationError
     from utils.team_data import normalize_team_abbreviation
 
     def _normalize_game_id(gid: str) -> str:
@@ -115,7 +114,9 @@ def load_market_data(game_ids: list[str]) -> pd.DataFrame:
                 try:
                     normalized = sep.join(normalize_team_abbreviation(t) for t in teams)
                     return "_".join([*parts[:2], normalized, *parts[3:]])
-                except (ValueError, KeyError):
+                except (ValueError, KeyError, DataValidationError):
+                    # Best-effort: an unmappable odds row (e.g. sample/test data)
+                    # is left as-is so it simply fails to match a real game_id.
                     pass
         return gid
 
@@ -511,6 +512,106 @@ def write_game_context(
 # ---------------------------------------------------------------------------
 
 
+def generate_and_write(
+    season: int,
+    week: int,
+    output_dir: Path = Path("outputs/predictions"),
+    artifacts_dir: Path = Path("artifacts"),
+    no_blend: bool = False,
+) -> dict[str, Any]:
+    """Generate predictions for a season/week and write the output files.
+
+    Runs all three model targets, computes edges against market lines, applies
+    market blending when a blend artifact is present, and writes the predictions
+    and game-context CSVs. This is the importable core shared by the CLI
+    ``main()`` and the Friday pipeline's ``step_generate_predictions``.
+
+    Args:
+        season: NFL season year.
+        week: NFL week number.
+        output_dir: Directory for the prediction/context CSV files.
+        artifacts_dir: Root directory for model and blend artifacts.
+        no_blend: Skip market blending even if a blend artifact exists.
+
+    Returns:
+        Summary dict with ``n_games``, ``n_blended``, ``predictions_path``,
+        and ``context_path``.
+
+    Raises:
+        FileNotFoundError: A gold feature matrix is missing for a target.
+        ValueError: No games found for the requested season/week.
+        KeyError: A model's required feature is absent from the gold matrix.
+    """
+    logger.info(
+        "Starting prediction generation",
+        season=season,
+        week=week,
+        artifacts_dir=str(artifacts_dir),
+        output_dir=str(output_dir),
+    )
+
+    # 1. Run model predictions for all three targets
+    prediction_results = run_predictions(artifacts_dir, season, week)
+
+    # 2. Merge predictions into a single DataFrame
+    wp_df = prediction_results["wp"]  # game_id, wp_prob
+    ats_df = prediction_results["ats"]  # game_id, ats_prediction
+    ou_df = prediction_results["ou"]  # game_id, ou_prediction
+
+    combined = wp_df.merge(ats_df, on="game_id", how="outer")
+    combined = combined.merge(ou_df, on="game_id", how="outer")
+    combined["season"] = season
+    combined["week"] = week
+
+    # 3. Load market data
+    game_ids = combined["game_id"].tolist()
+    market_df = load_market_data(game_ids)
+
+    # 4. Join game info from silver games (home_team, away_team)
+    games_path = Path("data/silver/games.parquet")
+    if games_path.exists():
+        games = pd.read_parquet(games_path)
+        games_filtered = games[games["game_id"].isin(game_ids)][
+            ["game_id", "home_team", "away_team"]
+        ].drop_duplicates(subset=["game_id"])
+        combined = combined.merge(games_filtered, on="game_id", how="left")
+
+    # 5. Compute edges, then rename market columns for output clarity
+    combined = compute_edges(combined, market_df)
+    if "spread" in combined.columns:
+        combined.rename(columns={"spread": "market_spread"}, inplace=True)
+    if "total" in combined.columns:
+        combined.rename(columns={"total": "market_total"}, inplace=True)
+    if "ml_home" in combined.columns:
+        combined.rename(columns={"ml_home": "market_ml_home"}, inplace=True)
+    if "ml_away" in combined.columns:
+        combined.rename(columns={"ml_away": "market_ml_away"}, inplace=True)
+
+    # 6. Apply market blending (uses the blend artifact, dynamic or static)
+    combined = apply_blending(combined, market_df, artifacts_dir, no_blend)
+
+    # 7. Write outputs
+    pred_path = write_predictions(combined, season, week, output_dir)
+    context_df = build_game_context(game_ids, season, week)
+    context_path = write_game_context(context_df, season, week, output_dir)
+
+    n_blended = int(combined["blended_wp"].notna().sum())
+    logger.info(
+        "Prediction generation complete",
+        n_games=len(combined),
+        blending_applied=n_blended > 0,
+        n_blended=n_blended,
+        predictions_file=str(pred_path),
+        context_file=str(context_path),
+    )
+    return {
+        "n_games": len(combined),
+        "n_blended": n_blended,
+        "predictions_path": pred_path,
+        "context_path": context_path,
+    }
+
+
 def main() -> None:
     """Entry point for prediction generation."""
     parser = argparse.ArgumentParser(
@@ -537,94 +638,18 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    artifacts_dir = Path(args.artifacts_dir)
-    output_dir = Path(args.output_dir)
-    season = args.season
-    week = args.week
 
-    logger.info(
-        "Starting prediction generation",
-        season=season,
-        week=week,
-        artifacts_dir=str(artifacts_dir),
-        output_dir=str(output_dir),
-    )
-
-    # -----------------------------------------------------------------------
-    # 1. Run model predictions for all three targets
-    # -----------------------------------------------------------------------
-    prediction_results = run_predictions(artifacts_dir, season, week)
-
-    # -----------------------------------------------------------------------
-    # 2. Merge predictions into a single DataFrame
-    # -----------------------------------------------------------------------
-    wp_df = prediction_results["wp"]  # game_id, wp_prob
-    ats_df = prediction_results["ats"]  # game_id, ats_prediction
-    ou_df = prediction_results["ou"]  # game_id, ou_prediction
-
-    combined = wp_df.merge(ats_df, on="game_id", how="outer")
-    combined = combined.merge(ou_df, on="game_id", how="outer")
-
-    # Add season and week
-    combined["season"] = season
-    combined["week"] = week
-
-    # -----------------------------------------------------------------------
-    # 3. Load market data
-    # -----------------------------------------------------------------------
-    game_ids = combined["game_id"].tolist()
-    market_df = load_market_data(game_ids)
-
-    # -----------------------------------------------------------------------
-    # 4. Join game info from silver games (home_team, away_team)
-    # -----------------------------------------------------------------------
-    games_path = Path("data/silver/games.parquet")
-    if games_path.exists():
-        games = pd.read_parquet(games_path)
-        games_filtered = games[games["game_id"].isin(game_ids)][
-            ["game_id", "home_team", "away_team"]
-        ].drop_duplicates(subset=["game_id"])
-        combined = combined.merge(games_filtered, on="game_id", how="left")
-
-    # -----------------------------------------------------------------------
-    # 5. Compute edges
-    # -----------------------------------------------------------------------
-    combined = compute_edges(combined, market_df)
-
-    # Rename market columns for output clarity
-    if "spread" in combined.columns:
-        combined.rename(columns={"spread": "market_spread"}, inplace=True)
-    if "total" in combined.columns:
-        combined.rename(columns={"total": "market_total"}, inplace=True)
-    if "ml_home" in combined.columns:
-        combined.rename(columns={"ml_home": "market_ml_home"}, inplace=True)
-    if "ml_away" in combined.columns:
-        combined.rename(columns={"ml_away": "market_ml_away"}, inplace=True)
-
-    # -----------------------------------------------------------------------
-    # 6. Apply market blending
-    # -----------------------------------------------------------------------
-    combined = apply_blending(combined, market_df, artifacts_dir, args.no_blend)
-
-    # -----------------------------------------------------------------------
-    # 7. Write outputs
-    # -----------------------------------------------------------------------
-    pred_path = write_predictions(combined, season, week, output_dir)
-    context_df = build_game_context(game_ids, season, week)
-    context_path = write_game_context(context_df, season, week, output_dir)
-
-    # -----------------------------------------------------------------------
-    # 8. Summary
-    # -----------------------------------------------------------------------
-    n_blended = int(combined["blended_wp"].notna().sum())
-    logger.info(
-        "Prediction generation complete",
-        n_games=len(combined),
-        blending_applied=n_blended > 0,
-        n_blended=n_blended,
-        predictions_file=str(pred_path),
-        context_file=str(context_path),
-    )
+    try:
+        generate_and_write(
+            season=args.season,
+            week=args.week,
+            output_dir=Path(args.output_dir),
+            artifacts_dir=Path(args.artifacts_dir),
+            no_blend=args.no_blend,
+        )
+    except (FileNotFoundError, ValueError, KeyError) as exc:
+        logger.error("Prediction generation failed", error=str(exc))
+        sys.exit(1)
 
 
 if __name__ == "__main__":
