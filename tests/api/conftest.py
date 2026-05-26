@@ -92,6 +92,41 @@ _BETTING_ROI_TABLE_IDS: frozenset[str] = frozenset(
 )
 
 
+# Authoritative season chart-id tuple (Phase 18). Unlike BETTING_CHART_IDS (a
+# fixed Cartesian product over exactly two scopes forever), the season set is
+# DATA-DEPENDENT: one set of ids per season present in `predictions` (CONTEXT
+# D-01 — the page tracks the dynamically-resolved latest season; production
+# derives the set from `SELECT DISTINCT season FROM predictions`, never a
+# hardcoded year). This tuple is a TEST CONTRACT over the FIXTURE's seasons
+# ONLY (18-RESEARCH Pitfall 1). NO literal year may appear in production code.
+#
+# Verified distinct seasons the `test_db` `predictions` rows yield:
+#   - _sample_game_data(): 2024 (lines 755/782), 2023 (line 809)
+#   - _insights_market_rows(): 2023 (E1/E2), 2021 (E3/E4/E5/E10)
+#   - _season_edge_rows() below: 2021 (WP-tie/ATS-push/OU-push at weeks 1/2/3)
+# => {2021, 2023, 2024} (2022 lives only in backtest_predictions, a DIFFERENT
+#    table, so it is NOT a `predictions` season). Confirmed empirically by
+#    iterating both row sources.
+_SEASON_CHART_BASES: tuple[str, ...] = (
+    "season_cumulative",
+    "season_weekly",
+    "season_kpis",
+)
+_FIXTURE_SEASONS: tuple[int, ...] = (2021, 2023, 2024)
+SEASON_CHART_IDS: tuple[str, ...] = tuple(
+    f"{base}_{s}" for s in _FIXTURE_SEASONS for base in _SEASON_CHART_BASES
+)
+assert len(SEASON_CHART_IDS) == 9  # 3 bases x 3 fixture seasons
+
+# The season_kpis_<s> id family carries a decodable JSON DICT (per-target
+# hit-rate keys + a W-L record) rather than chart HTML, mirroring
+# _BETTING_KPI_IDS, so the conftest marker loop stores the right payload shape
+# and Plan 18-03 accessor tests can json.loads them.
+_SEASON_KPI_IDS: frozenset[str] = frozenset(
+    f"season_kpis_{s}" for s in _FIXTURE_SEASONS
+)
+
+
 _TEAM_ABBREVS = ("KC", "BUF", "PHI", "GB", "SF", "DAL", "CIN", "MIA", "BAL", "NYJ")
 
 
@@ -478,6 +513,127 @@ def _insights_market_rows() -> list[dict]:
         ),
     ]
     return rows
+
+
+def _season_edge_rows() -> list[dict]:
+    """Rows for the `predictions` table giving the season hit-rate math
+    deterministic edge-case coverage (Plan 18-01 Task 2 / 18-RESEARCH Wave 0).
+
+    One row for each per-target push/tie the locked convention must exclude:
+
+    * ``# WP-tie``   — margin == 0 (excluded from the WP denominator).
+    * ``# ATS-push`` — actual margin lands exactly on the slipped spread line
+      (home_cover: market_spread -0.5; actual margin == slipped => push).
+    * ``# OU-push``  — actual total lands exactly on the slipped total line
+      (over: market_total +0.5; actual total == slipped => push).
+
+    Placed in season 2021 at NEW weeks 1/2/3 (existing 2021 predictions rows
+    occupy weeks 16/17/20/21, so no collision). 2021 is deliberately an OLDER
+    season so these rows do NOT become the latest-week view the This-Week page
+    renders (which must keep 2024 W1 as latest for
+    test_this_week_page_confidence_badges). The ">=2 seasons with >=2 completed
+    weeks" Wave-0 requirement is already met by the existing fixture: 2021 has
+    weeks 16/17/20/21 and 2023 has 14/15/18. Adding these three rows gives 2021
+    six distinct completed weeks (1/2/3/16/17/20/21).
+
+    Schema matches _PREDICTIONS_COLUMNS (same shape as _sample_game_data rows).
+    These are NEW game_ids (no collision with existing fixture rows). If a row's
+    season changes, re-derive _FIXTURE_SEASONS / SEASON_CHART_IDS above.
+    """
+    base_game_date = datetime(2021, 9, 12, 17, 0, tzinfo=UTC)
+
+    def _row(
+        game_id: str,
+        *,
+        season: int,
+        week: int,
+        home: str,
+        away: str,
+        home_score: int,
+        away_score: int,
+        wp_prob: float,
+        ats_prediction: float,
+        ou_prediction: float,
+        market_spread: float,
+        market_total: float,
+    ) -> dict:
+        return {
+            "game_id": game_id,
+            "season": season,
+            "week": week,
+            "game_date": base_game_date,
+            "home_team": home,
+            "away_team": away,
+            "status": "completed",
+            "home_score": home_score,
+            "away_score": away_score,
+            "wp_prob": wp_prob,
+            "wp_confidence": "medium",
+            "ats_prediction": ats_prediction,
+            "ats_confidence": "medium",
+            "ou_prediction": ou_prediction,
+            "ou_confidence": "medium",
+            "market_spread": market_spread,
+            "market_total": market_total,
+            "market_ml_home": -120,
+            "market_ml_away": 100,
+            "wp_edge": 0.02,
+            "ats_edge": 0.02,
+            "ou_edge": 0.02,
+            "blended_wp": wp_prob,
+            "blended_ats": ats_prediction,
+            "blended_ou": ou_prediction,
+        }
+
+    return [
+        # WP-tie: margin == 0 (21-21). Excluded from the WP denominator (D-05).
+        _row(
+            _gid(2021, 1, "DAL", "PHI"),
+            season=2021,
+            week=1,
+            home="PHI",
+            away="DAL",
+            home_score=21,
+            away_score=21,  # WP-tie (margin == 0)
+            wp_prob=0.58,
+            ats_prediction=-2.0,
+            ou_prediction=44.0,
+            market_spread=-3.0,
+            market_total=42.0,
+        ),
+        # ATS-push: home_cover slipped = market_spread - 0.5 = -4.0; actual
+        # margin = 20 - 24 = -4.0 lands exactly on it -> push (excluded).
+        _row(
+            _gid(2021, 2, "NYJ", "MIA"),
+            season=2021,
+            week=2,
+            home="MIA",
+            away="NYJ",
+            home_score=20,
+            away_score=24,  # ATS-push (margin -4.0 == slipped -4.0)
+            wp_prob=0.49,
+            ats_prediction=-6.0,  # < market_spread (-3.5) => home_cover
+            ou_prediction=40.0,
+            market_spread=-3.5,
+            market_total=46.0,
+        ),
+        # OU-push: over slipped = market_total + 0.5 = 45.0; actual total =
+        # 24 + 21 = 45.0 lands exactly on it -> push (excluded).
+        _row(
+            _gid(2021, 3, "BAL", "CIN"),
+            season=2021,
+            week=3,
+            home="CIN",
+            away="BAL",
+            home_score=24,
+            away_score=21,  # OU-push (total 45.0 == slipped 45.0)
+            wp_prob=0.52,
+            ats_prediction=-1.0,
+            ou_prediction=50.0,  # > market_total (44.5) => over
+            market_spread=-2.0,
+            market_total=44.5,
+        ),
+    ]
 
 
 def _betting_bets_rows() -> list[dict]:
@@ -1033,6 +1189,33 @@ def test_db(tmp_path: Path) -> Path:
         else:
             payload = f'<div data-chart-id="{chart_id}">fixture {chart_id}</div>'
         chart_entries.append((chart_id, payload, chart_now))
+    # Phase 18: marker rows for every season chart_id (one set per fixture
+    # season). The season_kpis_<s> family carries a decodable JSON DICT (the
+    # per-target hit-rate + W-L record shape compute_season_kpis returns);
+    # season_cumulative_<s> / season_weekly_<s> get a marker div (the else
+    # branch) so Plan 18-03 route tests can assert the /season route consumes
+    # exactly this set.
+    for chart_id in SEASON_CHART_IDS:
+        if chart_id in _SEASON_KPI_IDS:
+            payload = json.dumps(
+                {
+                    "wp_hit_rate": 67.7,
+                    "ats_hit_rate": 51.4,
+                    "ou_hit_rate": 49.3,
+                    "wp_decided": 16,
+                    "ats_decided": 15,
+                    "ou_decided": 15,
+                    "wp_hits": 11,
+                    "ats_hits": 8,
+                    "ou_hits": 7,
+                    "record_wins": 11,
+                    "record_losses": 5,
+                    "record": "11-5",
+                },
+            )
+        else:
+            payload = f'<div data-chart-id="{chart_id}">fixture {chart_id}</div>'
+        chart_entries.append((chart_id, payload, chart_now))
     conn.executemany(
         "INSERT INTO chart_cache VALUES (?, ?, ?)",
         chart_entries,
@@ -1132,6 +1315,47 @@ def test_db(tmp_path: Path) -> Path:
                 mr_clean["blended_wp"],
                 mr_clean["blended_ats"],
                 mr_clean["blended_ou"],
+            ],
+        )
+
+    # Season edge rows — give the season hit-rate math deterministic per-target
+    # push/tie coverage (WP-tie / ATS-push / OU-push) and a 2nd completed week
+    # for 2024. NEW game_ids; INSERT OR REPLACE keeps the loop idempotent.
+    for sr in _season_edge_rows():
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO predictions VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?
+            )
+            """,
+            [
+                sr["game_id"],
+                sr["season"],
+                sr["week"],
+                sr["game_date"],
+                sr["home_team"],
+                sr["away_team"],
+                sr["status"],
+                sr["home_score"],
+                sr["away_score"],
+                sr["wp_prob"],
+                sr["wp_confidence"],
+                sr["ats_prediction"],
+                sr["ats_confidence"],
+                sr["ou_prediction"],
+                sr["ou_confidence"],
+                sr["market_spread"],
+                sr["market_total"],
+                sr["market_ml_home"],
+                sr["market_ml_away"],
+                sr["wp_edge"],
+                sr["ats_edge"],
+                sr["ou_edge"],
+                sr["blended_wp"],
+                sr["blended_ats"],
+                sr["blended_ou"],
             ],
         )
 
