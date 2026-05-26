@@ -38,8 +38,13 @@
 {# Whole-season empty guard FIRST (D-02): a season with zero completed games has
    no KPI blob and no rendered charts, so render a single empty state instead of
    the KPI strip + charts. This is the offseason reality for a not-yet-played
-   season -- it is "no data" (gray), NOT an error. #}
-{% if not kpis and not charts[cumulative_id] and not charts[weekly_id] %}
+   season -- it is "no data" (gray), NOT an error.
+   WR-04: gate on `current_season is none` explicitly first (empty DB ->
+   _normalize_season returns None -> the "...None" chart_ids are absent from the
+   `charts` dict). Use `charts.get(...)` rather than `charts[...]` so the guard
+   does not lean on Jinja's default Undefined-is-falsy behavior -- this stays
+   correct even under StrictUndefined instead of 500ing the empty-DB page. #}
+{% if current_season is none or (not kpis and not charts.get(cumulative_id) and not charts.get(weekly_id)) %}
   {% with heading="No completed games yet",
           body="This season has no completed games in the cache yet. Once results arrive from the Friday pipeline, weekly and cumulative accuracy will appear here.",
           action_text=none, action_url=none %}
