@@ -229,6 +229,32 @@ class DataService:
         return decoded if isinstance(decoded, list) else []
 
     # ------------------------------------------------------------------
+    # Season KPI strip (Phase 18 — precomputed during pre-render)
+    # ------------------------------------------------------------------
+
+    def get_season_kpis(self, season: int) -> dict[str, Any]:
+        """Read the precomputed per-season KPI strip from ``chart_cache``.
+
+        The KPI dict is stored as a JSON blob under ``chart_id =
+        f"season_kpis_{season}"`` during pre-render (D-12), one blob per season
+        present in ``predictions``. This accessor decodes the JSON into a dict so
+        the template renders the season-to-date scoreboard without re-running any
+        statistics at request time (zero metric logic on the request path, D-12).
+
+        ``season`` whitelisting happens in the Plan 03 handlers; this accessor
+        simply reads the cached id. Returns an empty dict if the entry is missing
+        or malformed.
+        """
+        html = self.get_chart_html(f"season_kpis_{season}")
+        if not html:
+            return {}
+        try:
+            decoded = json.loads(html)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+
+    # ------------------------------------------------------------------
     # Predictions
     # ------------------------------------------------------------------
 

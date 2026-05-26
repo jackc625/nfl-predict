@@ -15,8 +15,17 @@ The Phase 17 betting path renders BOTH scope variants (``all`` /
 ``betting_roi_table_<scope>``), consumed by Plan 17-04's route via
 ``DataService.get_betting_kpis()`` / ``get_betting_roi_table()``.
 
+The Phase 18 season path renders per-season cumulative + weekly charts and a
+per-season KPI JSON blob (``season_cumulative_<s>`` / ``season_weekly_<s>`` /
+``season_kpis_<s>``) for every season present in ``predictions``. Unlike the
+fixed betting scope set, the season set is DATA-DEPENDENT — derived at runtime
+from the distinct seasons in the bundle, never a hardcoded year (D-01); the
+self-check is therefore per-base-per-present-season, not equality with a fixed
+tuple. ``season_kpis_<s>`` is consumed by Plan 18-03's route via
+``DataService.get_season_kpis()``.
+
 UIAP-01 COMPLIANCE: imports only from api.charts.core, api.charts.insights,
-api.charts.betting, api.insights_metrics, and stdlib.
+api.charts.betting, api.charts.season, api.insights_metrics, and stdlib.
 """
 
 from __future__ import annotations
@@ -34,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 from api.charts import betting as _betting_charts
 from api.charts import core as _core_charts
 from api.charts import insights as _insights_charts
+from api.charts import season as _season_charts
 from api.charts.betting import BETTING_CHART_IDS
 from api.charts.core import _empty_chart_div
 from api.charts.insights import INSIGHTS_CHART_IDS
@@ -346,11 +356,51 @@ def _render_all(bundle: dict[str, list[dict]]) -> dict[str, str]:
             )
             charts[f"betting_roi_table_{scope}"] = json.dumps([])
 
+    # --- Season charts (Phase 18): one variant set per season in predictions ---
+    # The season dimension is DATA-DEPENDENT (D-01): derive the season set from
+    # the distinct seasons present in ``predictions`` at runtime — NEVER a
+    # hardcoded year. Ingesting a new season produces its chart_ids automatically
+    # with zero code change. Every generator is reached through ``_season_charts``
+    # (module lookup) so ``unittest.mock.patch("api.charts.season.generate_*")``
+    # is observable; each ``lambda`` binds ``r=rows_s`` to avoid the
+    # closure-over-loop-var bug (Pitfall 5 — mirror the betting ``lambda s=scoped``).
+    seasons = sorted(
+        {int(r["season"]) for r in market_data if r.get("season") is not None},
+    )
+    for season in seasons:
+        rows_s = [r for r in market_data if r.get("season") == season]
+        charts[f"season_cumulative_{season}"] = _safe_render(
+            f"season_cumulative_{season}",
+            lambda r=rows_s: _season_charts.generate_season_cumulative(r),
+        )
+        charts[f"season_weekly_{season}"] = _safe_render(
+            f"season_weekly_{season}",
+            lambda r=rows_s: _season_charts.generate_season_weekly(r),
+        )
+        # Per-season KPI strip as a JSON blob (D-08/D-12). Wrapped in its own
+        # try/except mirroring the betting KPI isolation: a build failure falls
+        # back to an empty dict, never raising.
+        try:
+            charts[f"season_kpis_{season}"] = json.dumps(
+                _season_charts.compute_season_kpis(rows_s),
+            )
+        except Exception:  # noqa: BLE001 — match per-chart isolation contract
+            logger.warning("Season KPI build failed for %s", season, exc_info=True)
+            charts[f"season_kpis_{season}"] = json.dumps({})
+
     # Self-check: every declared insights + betting chart_id produced a value.
     for chart_id in INSIGHTS_CHART_IDS:
         assert chart_id in charts, f"Missing chart_id in prerender output: {chart_id}"
     for chart_id in BETTING_CHART_IDS:
         assert chart_id in charts, f"Missing chart_id in prerender output: {chart_id}"
+    # Season self-check is DATA-DEPENDENT (Pitfall 1): assert that for every
+    # season present in the data, all three bases were produced — NOT equality
+    # with a fixed tuple (the conftest SEASON_CHART_IDS is a test contract, not a
+    # production constraint; a hardcoded-year assert would break the moment a new
+    # season is ingested by the Friday pipeline).
+    for s in seasons:
+        for base in ("season_cumulative", "season_weekly", "season_kpis"):
+            assert f"{base}_{s}" in charts, f"Missing chart_id: {base}_{s}"
 
     return charts
 
@@ -373,9 +423,11 @@ def prerender_charts_for_cache(
     Returns:
         Dict mapping chart_id to HTML div string. The return also carries the
         ``insights_aggregate_table`` key (JSON-encoded list of aggregate rows
-        consumed by Plan 16-03's template) and the per-scope
+        consumed by Plan 16-03's template), the per-scope
         ``betting_kpis_<scope>`` (JSON dict) / ``betting_roi_table_<scope>``
-        (JSON list) blobs consumed by Plan 17-04's route.
+        (JSON list) blobs consumed by Plan 17-04's route, and the per-season
+        ``season_cumulative_<s>`` / ``season_weekly_<s>`` chart HTML +
+        ``season_kpis_<s>`` (JSON dict) blob consumed by Plan 18-03's route.
     """
     bundle = _extract_data_bundle(service)
     return _render_all(bundle)
