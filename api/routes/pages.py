@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from api.charts import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
 from api.dependencies import get_data_service, templates
+from api.season_metrics import _ats_outcome, _ou_outcome, _wp_outcome
 from api.services import DataService
 
 router = APIRouter(tags=["pages"])
@@ -82,71 +83,51 @@ def _compute_week_summary(games: list[dict]) -> dict[str, Any]:
     For each target (WP, ATS, O/U), counts correct predictions and
     returns counts plus percentages.
 
+    Every per-game hit/miss/excluded decision is delegated to the authoritative
+    classifiers in :mod:`api.season_metrics` (``_wp_outcome`` / ``_ats_outcome``
+    / ``_ou_outcome``) so this This-Week banner reproduces the ``/betting`` and
+    ``/season`` numbers EXACTLY -- a single source of truth for the locked
+    simulator sign convention (CR-01/CR-02/WR-03). Those classifiers fold in:
+
+    * the home-perspective ATS/OU sign convention (``ats_prediction <
+      market_spread`` -> home_cover) WITH 0.5-pt slippage,
+    * push/tie exclusion (a game landing on the slipped line, or a WP tie, is
+      EXCLUDED from the denominator rather than silently scored), and
+    * NaN-safe score/line coercion.
+
     Args:
         games: List of game prediction dicts.
 
     Returns:
         Dict with total_games, wp_correct/wp_total/wp_pct,
         ats_correct/ats_total/ats_pct, ou_correct/ou_total/ou_pct.
-        Empty dict if no completed games.
+        Empty dict if no completed games. Each ``*_total`` is the count of
+        DECIDED games for that target (pushes/ties excluded).
     """
     completed = [g for g in games if g.get("status") == "completed"]
     if not completed:
         return {}
 
-    # WP correct: predicted home win (wp_prob > 0.5) matches actual home win
-    wp_total = len([g for g in completed if g.get("wp_prob") is not None])
-    wp_correct = sum(
-        1
-        for g in completed
-        if g.get("wp_prob") is not None
-        and g.get("home_score") is not None
-        and g.get("away_score") is not None
-        and ((g["wp_prob"] > 0.5) == (g["home_score"] > g["away_score"]))
-    )
+    def _tally(outcome_fn: Any) -> tuple[int, int]:
+        """Return (correct, decided) over completed games for one classifier.
 
-    # ATS correct: model spread prediction vs actual margin
-    ats_total = len(
-        [
-            g
-            for g in completed
-            if g.get("ats_prediction") is not None
-            and g.get("market_spread") is not None
-        ]
-    )
-    ats_correct = sum(
-        1
-        for g in completed
-        if g.get("ats_prediction") is not None
-        and g.get("market_spread") is not None
-        and g.get("home_score") is not None
-        and g.get("away_score") is not None
-        and (
-            (g["home_score"] - g["away_score"] > -g["market_spread"])
-            == (g["ats_prediction"] > -g["market_spread"])
-        )
-    )
+        ``None`` from the classifier means push / tie / missing data -> the game
+        is excluded from BOTH the numerator and the denominator.
+        """
+        correct = 0
+        decided = 0
+        for g in completed:
+            outcome = outcome_fn(g)
+            if outcome is None:
+                continue
+            decided += 1
+            if outcome:
+                correct += 1
+        return correct, decided
 
-    # O/U correct: model total prediction vs actual total
-    ou_total = len(
-        [
-            g
-            for g in completed
-            if g.get("ou_prediction") is not None and g.get("market_total") is not None
-        ]
-    )
-    ou_correct = sum(
-        1
-        for g in completed
-        if g.get("ou_prediction") is not None
-        and g.get("market_total") is not None
-        and g.get("home_score") is not None
-        and g.get("away_score") is not None
-        and (
-            (g["home_score"] + g["away_score"] > g["market_total"])
-            == (g["ou_prediction"] > g["market_total"])
-        )
-    )
+    wp_correct, wp_total = _tally(_wp_outcome)
+    ats_correct, ats_total = _tally(_ats_outcome)
+    ou_correct, ou_total = _tally(_ou_outcome)
 
     return {
         "total_games": len(completed),
@@ -282,21 +263,21 @@ def _annotate_wp_correct(games: list[dict]) -> list[dict]:
     nested structures are touched.
 
     wp_correct is True if the WP prediction was correct, False if
-    incorrect, or None if the game is not completed or data is missing.
+    incorrect, or None if the game is not completed, data is missing, or the
+    game was a tie. The hit/miss/tie decision is delegated to
+    ``api.season_metrics._wp_outcome`` so the per-game badge uses the SAME
+    locked WP convention as the This-Week banner and the season page (WR-03) --
+    notably it now EXCLUDES ties (``margin == 0`` -> ``None``) instead of
+    scoring them. The explicit ``status == 'completed'`` guard is retained so a
+    scheduled game carrying stale scores never receives a hit/miss badge.
     """
     annotated: list[dict] = []
     for game in games:
         new_game = dict(game)
-        new_game["wp_correct"] = None
-        if (
-            new_game.get("status") == "completed"
-            and new_game.get("wp_prob") is not None
-            and new_game.get("home_score") is not None
-            and new_game.get("away_score") is not None
-        ):
-            home_won = new_game["home_score"] > new_game["away_score"]
-            predicted_home = new_game["wp_prob"] > 0.5
-            new_game["wp_correct"] = home_won == predicted_home
+        if new_game.get("status") == "completed":
+            new_game["wp_correct"] = _wp_outcome(new_game)
+        else:
+            new_game["wp_correct"] = None
         annotated.append(new_game)
     return annotated
 
