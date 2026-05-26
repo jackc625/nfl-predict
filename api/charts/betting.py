@@ -46,6 +46,7 @@ import plotly.graph_objects as go
 from api.betting_metrics import (
     BREAKEVEN_WIN_RATE,
     STARTING_BANKROLL,
+    _num,
     compute_kpis,
     compute_roi_table,
     edge_bucket_for,
@@ -169,7 +170,7 @@ def _cumulative_equity(rows: Sequence[dict], payout_col: str) -> list[float]:
     equity = STARTING_BANKROLL
     series: list[float] = []
     for r in rows:
-        equity += float(r.get(payout_col) or 0.0)
+        equity += _num(r.get(payout_col))
         series.append(equity)
     return series
 
@@ -445,8 +446,8 @@ def _generate_edge_hist(rows: Sequence[dict], target: str) -> str:
     if not type_rows:
         return _empty_chart_div(f"No betting data for {target.upper()}")
 
-    won = [float(r.get("edge") or 0.0) for r in type_rows if r.get("outcome") is True]
-    lost = [float(r.get("edge") or 0.0) for r in type_rows if r.get("outcome") is False]
+    won = [_num(r.get("edge")) for r in type_rows if r.get("outcome") is True]
+    lost = [_num(r.get("edge")) for r in type_rows if r.get("outcome") is False]
 
     fig = go.Figure()
     fig.add_trace(

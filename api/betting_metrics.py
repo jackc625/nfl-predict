@@ -38,6 +38,7 @@ The win-rate denominator is ``wins + losses`` (pushes excluded).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -105,6 +106,23 @@ def filter_scope(rows: Sequence[dict], scope: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _num(v: Any) -> float:
+    """Coerce a value to ``float``, mapping ``None``/non-numeric/NaN to ``0.0``.
+
+    The ``float(x or 0.0)`` idiom this replaces guards ``None`` and literal
+    ``0.0`` but NOT ``float('nan')``: a NaN is truthy, so ``(nan or 0.0)`` is
+    ``nan`` and propagates through ``sum(...)``, the ROI ratio, the cumulative
+    equity series, and the histogram bins — turning one bad CSV value into an
+    all-NaN KPI/chart. Coercing NaN explicitly here drops the single bad value
+    to ``0.0`` instead of corrupting the whole scope's metrics (WR-03).
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if math.isnan(f) else f  # NaN -> 0.0 (do not let it propagate)
+
+
 def _count_outcomes(rows: Sequence[dict]) -> tuple[int, int, int]:
     """Return ``(wins, losses, pushes)`` using identity checks only.
 
@@ -138,8 +156,8 @@ def _roi(rows: Sequence[dict], stake_col: str, payout_col: str) -> float:
     simulation CSV), so ROI = total net / total wagered. Returns ``0.0`` when
     nothing was wagered (zero-division guarded).
     """
-    wagered = sum(float(r.get(stake_col) or 0.0) for r in rows)
-    net = sum(float(r.get(payout_col) or 0.0) for r in rows)
+    wagered = sum(_num(r.get(stake_col)) for r in rows)
+    net = sum(_num(r.get(payout_col)) for r in rows)
     if wagered == 0.0:
         return 0.0
     return net / wagered * 100.0
@@ -158,7 +176,7 @@ def _max_drawdown(rows: Sequence[dict], payout_col: str) -> float:
     peak = STARTING_BANKROLL
     max_dd = 0.0
     for r in rows:
-        equity += float(r.get(payout_col) or 0.0)
+        equity += _num(r.get(payout_col))
         peak = max(peak, equity)
         drawdown = peak - equity
         max_dd = max(max_dd, drawdown)
@@ -186,7 +204,7 @@ def compute_kpis(rows: Sequence[dict]) -> dict[str, Any]:
     Empty input returns zeroed values (with ``final_bankroll_flat`` ==
     ``STARTING_BANKROLL``) and never raises.
     """
-    net_profit_flat = sum(float(r.get("payout_flat") or 0.0) for r in rows)
+    net_profit_flat = sum(_num(r.get("payout_flat")) for r in rows)
     return {
         "total_bets": len(rows),
         "win_rate": _win_rate(rows),
@@ -215,7 +233,7 @@ def edge_bucket_for(target: str, edge: float) -> str:
     ``[small_max, medium_max)`` -> medium, ``>= medium_max`` -> big.
     """
     small_max, medium_max = EDGE_BUCKET_CUTS.get(target, EDGE_BUCKET_CUTS["ats"])
-    magnitude = abs(float(edge))
+    magnitude = abs(_num(edge))  # NaN-safe: a NaN edge buckets as 0.0 -> "small"
     if magnitude < small_max:
         return EDGE_BUCKET_LABELS[0]
     if magnitude < medium_max:
@@ -333,7 +351,7 @@ def compute_roi_table(rows: Sequence[dict]) -> list[dict[str, Any]]:
             continue
         bucketed: dict[str, list[dict]] = {label: [] for label in EDGE_BUCKET_LABELS}
         for r in type_rows:
-            bucket = edge_bucket_for(target, float(r.get("edge") or 0.0))
+            bucket = edge_bucket_for(target, _num(r.get("edge")))
             bucketed[bucket].append(r)
         for label in EDGE_BUCKET_LABELS:
             slice_rows = bucketed[label]
