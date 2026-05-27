@@ -11,8 +11,9 @@ import inspect
 import numpy as np
 import pandas as pd
 import pytest
-from models.trainers.ats_trainer import ATSTrainer
 from xgboost import XGBRegressor
+
+from models.trainers.ats_trainer import ATSTrainer
 
 # ---------------------------------------------------------------------------
 # Fixtures

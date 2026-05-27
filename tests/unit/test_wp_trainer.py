@@ -14,8 +14,9 @@ import re
 import numpy as np
 import pandas as pd
 import pytest
-from models.trainers.wp_trainer import WPTrainer
 from sklearn.linear_model import LogisticRegression
+
+from models.trainers.wp_trainer import WPTrainer
 
 # ---------------------------------------------------------------------------
 # Fixtures

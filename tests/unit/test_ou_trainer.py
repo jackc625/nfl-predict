@@ -11,8 +11,9 @@ import inspect
 import numpy as np
 import pandas as pd
 import pytest
-from models.trainers.ou_trainer import OUTrainer
 from xgboost import XGBRegressor
+
+from models.trainers.ou_trainer import OUTrainer
 
 # ---------------------------------------------------------------------------
 # Fixtures

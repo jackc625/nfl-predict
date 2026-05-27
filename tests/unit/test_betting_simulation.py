@@ -14,7 +14,6 @@ from dataclasses import fields
 from unittest.mock import MagicMock
 
 import pandas as pd
-import pytest
 
 from backtest.simulation import (
     SLIPPAGE_POINTS,
@@ -27,7 +26,6 @@ from backtest.simulation import (
     apply_slippage_spread,
     apply_slippage_total,
 )
-
 
 # ---------------------------------------------------------------------------
 # Slippage tests (BACK-07)
@@ -116,21 +114,25 @@ class TestFlatStakeStrategy:
         model_probs = [0.70] * n_wins + [0.30] * n_losses
         actuals = [1] * n_wins + [0] * n_losses
 
-        predictions_df = pd.DataFrame({
-            "game_id": game_ids,
-            "season": [2021] * n_total,
-            "week": list(range(1, n_total + 1)),
-            "model_prob": model_probs,
-            "actual": actuals,
-        })
+        predictions_df = pd.DataFrame(
+            {
+                "game_id": game_ids,
+                "season": [2021] * n_total,
+                "week": list(range(1, n_total + 1)),
+                "model_prob": model_probs,
+                "actual": actuals,
+            }
+        )
 
-        closing_odds_df = pd.DataFrame({
-            "game_id": game_ids,
-            "ml_home": [-150] * n_total,
-            "ml_away": [130] * n_total,
-            "spread": [-3.0] * n_total,
-            "total": [44.0] * n_total,
-        })
+        closing_odds_df = pd.DataFrame(
+            {
+                "game_id": game_ids,
+                "ml_home": [-150] * n_total,
+                "ml_away": [130] * n_total,
+                "spread": [-3.0] * n_total,
+                "total": [44.0] * n_total,
+            }
+        )
 
         backtest_results = MagicMock()
         backtest_results.all_predictions = {"wp": predictions_df}
@@ -159,21 +161,25 @@ class TestFlatStakeStrategy:
         model_probs = [0.70] * n_total
         actuals = [1] * n_wins + [0] * n_losses
 
-        predictions_df = pd.DataFrame({
-            "game_id": game_ids,
-            "season": [2021] * n_total,
-            "week": list(range(1, n_total + 1)),
-            "model_prob": model_probs,
-            "actual": actuals,
-        })
+        predictions_df = pd.DataFrame(
+            {
+                "game_id": game_ids,
+                "season": [2021] * n_total,
+                "week": list(range(1, n_total + 1)),
+                "model_prob": model_probs,
+                "actual": actuals,
+            }
+        )
 
-        closing_odds_df = pd.DataFrame({
-            "game_id": game_ids,
-            "ml_home": [-150] * n_total,
-            "ml_away": [130] * n_total,
-            "spread": [-3.0] * n_total,
-            "total": [44.0] * n_total,
-        })
+        closing_odds_df = pd.DataFrame(
+            {
+                "game_id": game_ids,
+                "ml_home": [-150] * n_total,
+                "ml_away": [130] * n_total,
+                "spread": [-3.0] * n_total,
+                "total": [44.0] * n_total,
+            }
+        )
 
         backtest_results = MagicMock()
         backtest_results.all_predictions = {"wp": predictions_df}
@@ -199,9 +205,7 @@ class TestKellyStrategy:
             default_kelly_fraction=0.25,
             confidence_threshold=0.02,
         )
-        result = calc.calculate_optimal_bet_size(
-            model_prob=0.51, market_odds=-110
-        )
+        result = calc.calculate_optimal_bet_size(model_prob=0.51, market_odds=-110)
         assert result.recommended_bet == 0.0
 
     def test_kelly_bets_with_sufficient_edge(self) -> None:
@@ -216,9 +220,7 @@ class TestKellyStrategy:
             default_kelly_fraction=0.25,
             confidence_threshold=0.02,
         )
-        result = calc.calculate_optimal_bet_size(
-            model_prob=0.60, market_odds=-110
-        )
+        result = calc.calculate_optimal_bet_size(model_prob=0.60, market_odds=-110)
         assert result.recommended_bet > 0.0
 
 
@@ -237,21 +239,25 @@ class TestSimulationResults:
         n_total = 20
         game_ids = [f"2021_{i:02d}_HOME_AWAY" for i in range(n_total)]
 
-        predictions_df = pd.DataFrame({
-            "game_id": game_ids,
-            "season": [2021] * n_total,
-            "week": list(range(1, n_total + 1)),
-            "model_prob": [0.70] * n_total,
-            "actual": [1, 0] * (n_total // 2),
-        })
+        predictions_df = pd.DataFrame(
+            {
+                "game_id": game_ids,
+                "season": [2021] * n_total,
+                "week": list(range(1, n_total + 1)),
+                "model_prob": [0.70] * n_total,
+                "actual": [1, 0] * (n_total // 2),
+            }
+        )
 
-        closing_odds_df = pd.DataFrame({
-            "game_id": game_ids,
-            "ml_home": [-150] * n_total,
-            "ml_away": [130] * n_total,
-            "spread": [-3.0] * n_total,
-            "total": [44.0] * n_total,
-        })
+        closing_odds_df = pd.DataFrame(
+            {
+                "game_id": game_ids,
+                "ml_home": [-150] * n_total,
+                "ml_away": [130] * n_total,
+                "spread": [-3.0] * n_total,
+                "total": [44.0] * n_total,
+            }
+        )
 
         backtest_results = MagicMock()
         backtest_results.all_predictions = {"wp": predictions_df}
@@ -270,11 +276,21 @@ class TestSimulationResults:
     def test_bet_record_has_required_fields(self) -> None:
         """BetRecord dataclass has all required fields."""
         required_fields = {
-            "game_id", "target", "bet_side", "odds",
-            "flat_stake", "kelly_stake", "outcome",
-            "slipped_line", "season", "week",
-            "model_value", "market_value", "edge",
-            "payout_flat", "payout_kelly",
+            "game_id",
+            "target",
+            "bet_side",
+            "odds",
+            "flat_stake",
+            "kelly_stake",
+            "outcome",
+            "slipped_line",
+            "season",
+            "week",
+            "model_value",
+            "market_value",
+            "edge",
+            "payout_flat",
+            "payout_kelly",
         }
         actual_fields = {f.name for f in fields(BetRecord)}
         assert required_fields.issubset(actual_fields), (
@@ -289,21 +305,25 @@ class TestSimulationResults:
         n_total = 10
         game_ids = [f"2021_{i:02d}_HOME_AWAY" for i in range(n_total)]
 
-        predictions_df = pd.DataFrame({
-            "game_id": game_ids,
-            "season": [2021] * n_total,
-            "week": list(range(1, n_total + 1)),
-            "model_prob": [0.70] * n_total,
-            "actual": [1, 0] * (n_total // 2),
-        })
+        predictions_df = pd.DataFrame(
+            {
+                "game_id": game_ids,
+                "season": [2021] * n_total,
+                "week": list(range(1, n_total + 1)),
+                "model_prob": [0.70] * n_total,
+                "actual": [1, 0] * (n_total // 2),
+            }
+        )
 
-        closing_odds_df = pd.DataFrame({
-            "game_id": game_ids,
-            "ml_home": [-150] * n_total,
-            "ml_away": [130] * n_total,
-            "spread": [-3.0] * n_total,
-            "total": [44.0] * n_total,
-        })
+        closing_odds_df = pd.DataFrame(
+            {
+                "game_id": game_ids,
+                "ml_home": [-150] * n_total,
+                "ml_away": [130] * n_total,
+                "spread": [-3.0] * n_total,
+                "total": [44.0] * n_total,
+            }
+        )
 
         backtest_results = MagicMock()
         backtest_results.all_predictions = {"wp": predictions_df}

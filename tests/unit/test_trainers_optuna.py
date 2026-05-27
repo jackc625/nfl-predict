@@ -8,12 +8,10 @@ instantiated (not abstract).
 from __future__ import annotations
 
 import optuna
-import pytest
 
 from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WPTrainer
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -81,7 +79,9 @@ class TestWPSearchSpace:
         # Ensure we found at least one l1 trial
         assert len(l1_solvers) > 0, "No l1 penalty trials found in 50 trials"
         for solver in l1_solvers:
-            assert solver == "saga", f"l1 penalty should use solver='saga', got '{solver}'"
+            assert solver == "saga", (
+                f"l1 penalty should use solver='saga', got '{solver}'"
+            )
 
     def test_wp_penalty_l2_allows_lbfgs_and_saga(self) -> None:
         """WPTrainer._define_search_space with penalty='l2' returns

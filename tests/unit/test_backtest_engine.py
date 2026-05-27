@@ -4,7 +4,7 @@ Validates that the engine creates correct temporal splits, fresh trainer instanc
 filters 2025 data, and produces well-structured BacktestResults.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -97,18 +97,21 @@ class TestCreateTrainer:
 
     def test_creates_wp_trainer(self) -> None:
         from models.trainers.wp_trainer import WPTrainer
+
         config = self.engine._create_split_config(2021)
         trainer = self.engine._create_trainer("wp", config)
         assert isinstance(trainer, WPTrainer)
 
     def test_creates_ats_trainer(self) -> None:
         from models.trainers.ats_trainer import ATSTrainer
+
         config = self.engine._create_split_config(2021)
         trainer = self.engine._create_trainer("ats", config)
         assert isinstance(trainer, ATSTrainer)
 
     def test_creates_ou_trainer(self) -> None:
         from models.trainers.ou_trainer import OUTrainer
+
         config = self.engine._create_split_config(2021)
         trainer = self.engine._create_trainer("ou", config)
         assert isinstance(trainer, OUTrainer)
@@ -130,15 +133,17 @@ class TestFilters2025Data:
         rows = []
         for season in range(2018, 2026):
             for i in range(5):
-                rows.append({
-                    "game_id": f"{season}_W{i+1:02d}_TEST",
-                    "season": season,
-                    "week": i + 1,
-                    "home_team": "KC",
-                    "away_team": "BUF",
-                    "home_win": 1,
-                    "feature_a": np.random.random(),
-                })
+                rows.append(
+                    {
+                        "game_id": f"{season}_W{i + 1:02d}_TEST",
+                        "season": season,
+                        "week": i + 1,
+                        "home_team": "KC",
+                        "away_team": "BUF",
+                        "home_win": 1,
+                        "feature_a": np.random.random(),
+                    }
+                )
         mock_df = pd.DataFrame(rows)
 
         with patch("backtest.engine.pd.read_parquet", return_value=mock_df):

@@ -8,8 +8,6 @@ Tests cover:
 - Prediction dataclass instantiation
 """
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -24,7 +22,6 @@ from models.prediction_pipeline import (
     OUPrediction,
     WPPrediction,
 )
-
 
 # -- Fixtures --
 
@@ -78,7 +75,7 @@ def tiny_ou_data():
 @pytest.fixture
 def saved_artifacts(tmp_path, tiny_wp_data, tiny_ats_data, tiny_ou_data):
     """Save minimal model artifacts to a tmp directory, return the dir."""
-    # WP: LogisticRegression
+    # Win-probability artifact uses a logistic-regression classifier.
     wp_X, wp_y = tiny_wp_data
     wp_model = LogisticRegression(max_iter=200)
     wp_model.fit(wp_X, wp_y)
@@ -90,7 +87,7 @@ def saved_artifacts(tmp_path, tiny_wp_data, tiny_ats_data, tiny_ou_data):
         artifacts_dir=tmp_path,
     )
 
-    # ATS: XGBRegressor
+    # Against-the-spread artifact uses a gradient-boosted regressor.
     ats_X, ats_y = tiny_ats_data
     ats_model = XGBRegressor(n_estimators=10, max_depth=2, random_state=42)
     ats_model.fit(ats_X, ats_y)
@@ -102,7 +99,7 @@ def saved_artifacts(tmp_path, tiny_wp_data, tiny_ats_data, tiny_ou_data):
         artifacts_dir=tmp_path,
     )
 
-    # O/U: XGBRegressor
+    # Over/under artifact uses a gradient-boosted regressor.
     ou_X, ou_y = tiny_ou_data
     ou_model = XGBRegressor(n_estimators=10, max_depth=2, random_state=42)
     ou_model.fit(ou_X, ou_y)
@@ -178,7 +175,11 @@ class TestLoadModels:
         pipeline = NFLPredictionPipeline()
         pipeline.load_models(artifacts_dir=saved_artifacts)
 
-        for artifact in [pipeline.wp_artifact, pipeline.ats_artifact, pipeline.ou_artifact]:
+        for artifact in [
+            pipeline.wp_artifact,
+            pipeline.ats_artifact,
+            pipeline.ou_artifact,
+        ]:
             assert "model" in artifact
             assert "metadata" in artifact
             assert "feature_list" in artifact

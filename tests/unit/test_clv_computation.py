@@ -9,12 +9,12 @@ Verifies:
 import numpy as np
 import pandas as pd
 import pytest
+
 from models.clv import (
     compute_clv_for_predictions,
     compute_line_clv,
     compute_probability_clv,
 )
-
 from utils.probability_utils import moneyline_to_probability
 
 # ---------------------------------------------------------------------------
