@@ -384,3 +384,12 @@ apm/
 !docs/
 !*.md
 !*.rst
+
+# =============================================================================
+# GRAPHIFY (personal knowledge-graph tool -- generated output + config)
+# =============================================================================
+# Placed AFTER the !*.md / !*.rst re-include block so they win (gitignore is
+# last-match-wins): otherwise the blanket !*.md would re-track
+# graphify-out/GRAPH_REPORT.md.
+graphify-out/
+.graphifyignore
