@@ -150,6 +150,38 @@ running, so they are batch-fix candidates per D-10, not Wave-1 inline blockers).
 
 ---
 
+## Wave-3 correctness triage (FIX-01, D-10) -- as-applied
+
+> Wave 3 (plan 20-06, Task 1) triaged every cataloged finding above plus the four Wave-2
+> diagnostics (`outputs/diagnostics/audit_integrity.md`, `audit_handtrace.md`,
+> `audit_freshness.md`, `audit_features.txt`, `audit_leakage.txt`) into CORRECTNESS
+> (in FIX-01 scope, fixed) vs NON-CORRECTNESS (deferred, D-11). The honest outcome:
+> **no correctness bug in FIX-01 scope was found** -- every finding is either confirmed
+> not to reach the gold feature math, or is an out-of-scope robustness/hygiene item (D-11).
+> Per the plan's Task-1 action ("a clean audit is a valid honest outcome ... record that
+> explicitly and proceed to the rebuild with no code change"), **Wave 3 applied no
+> correctness code change.** The single gold rebuild + backtest re-run still ran (D-10/D-02)
+> to confirm the as-found gold reproduces deterministically.
+
+| Finding | Triage verdict | Basis | Disposition |
+|---------|----------------|-------|-------------|
+| F-01 (team-form `--current` deprecated non-time-fenced builder) | NON-correctness for gold | AUDIT-04 (20-04) confirmed the canonical historical/Gold path uses the time-fenced `build_features` (`expanding_normalize` at `build_features.py:951,970`; deprecated `normalize_features_within_seasons:586` never called). F-01 is a CURRENT-WEEK-path concern, not a gold-leakage exposure. | Deferred; current-week routing semantics are Phase 21 (AUTO-01..04) scope. NOT fixed (no gold impact). |
+| F-02 (non-idempotent `team_game_stats` append, 127,922 dup rows) | NON-correctness (bloat) | AUDIT-02 (20-03) confirmed the duplicates do NOT reach gold: all 3 matrices have 6263 clean rows, correct widths (156/157/156), zero all-null columns. Bloat is upstream of the de-duplicating gold assembly. | Deferred robustness/cleanup (D-11). NOT fixed. |
+| F-03 (`get_current_nfl_week()` = (2025,22) offseason) | NON-correctness | Expected offseason behavior; the dry-run deliberately used 2024 wk18 as its known-answer stand-in. | Phase 21 owns live week resolution. NOT fixed. |
+| F-INTEG-01 (stale `16 if week<=18` completeness) | NON-correctness (robustness) | Only mis-labels Silver completeness percentages; never produces a wrong gold value (the AUDIT-02 gold-integrity check deliberately does not assert against it). | Deferred (D-11). NOT fixed. |
+| F-INTEG-02 (odds/weather silver carry no team cols) | Informational | Tables key by `game_id` only; team coverage verified transitively. Not a defect. | No action. |
+| F-LEAK-01 (`home_margin` label-sibling in features_ats) | NON-correctness (benign) | Confirmed live: `home_margin` is in `build_features.py:1001` `exclude_cols`, so it never enters `feature_cols`; it is excluded from the deployed ATS 25-feature list; the build-time gate runs on `combined_features` BEFORE targets are added. Zero false positives reach a model. | Deferred capture (D-11; the `LEAKAGE_KEYWORDS` substring brittleness is captured, not redesigned). NOT fixed. |
+| F-ZERO-01 (20 all-zero gold columns) | NON-correctness (bloat) | 19/20 reach NO deployed model feature_list; the one that does (`heat_impact_score`, in the WP 20-feature list) is INERT (a constant feature contributes zero signal). Dead/bloat schema, not gold-value corruption. | Deferred cleanup (D-11). NOT fixed. |
+| F-VALIDATOR-01 (stale validator naming + `_z` substring collision) | NON-correctness | Report-only `FeatureValidator` FAILs are stale-schema artifacts (completeness expects v1.0 raw names vs the current `home_*`/`away_*` schema; `_z` substring collides on `red_zone_td_rate`). Not data defects. | Run+harden only; do NOT rebuild the validator (RESEARCH key insight). NOT fixed. |
+
+**Wave-3 correctness verdict:** [PASS] -- clean audit. No FIX-01-scoped correctness bug found;
+no correctness code change applied. The Wave-1 CR-01 cluster blocker fix (plan 20-01) remains
+the only inline fix this phase, and it is unchanged. The D-11 non-correctness items remain
+captured below, NOT fixed. `uv run pytest tests/unit -q` -> 762 passed (green after triage, no
+regression).
+
+---
+
 ## Data currency / freshness
 
 ### 2025 partial-season currency gap (D-05) -- documented, NOT backfilled
