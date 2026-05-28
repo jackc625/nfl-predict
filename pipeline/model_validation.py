@@ -7,6 +7,17 @@ file. Only the two methods the orchestrator actually calls are kept here --
 script's comprehensive/metadata/performance/report helpers and its CLI entry
 point are intentionally NOT relocated (they had no canonical caller).
 
+Artifact convention (CR-01 fix, FIX-01 / D-03): the deployed models are the
+versioned ``artifacts/{target}_{timestamp}/`` directories named in
+``artifacts/latest.json`` -- the same pointer the prediction pipeline loads via
+``load_model_artifact``. The former ``artifacts/models/{name}_model.joblib``
+convention with keys ``model/scaler/feature_names`` was never produced by
+training; validating it caused a correctly-trained Friday run to abort at the
+``critical=True`` ``step_validate_models`` gate. Resolution mirrors
+``api/routes/health.py::_resolve_active_model_files`` (OPS-04, commit 78288a5)
+and reuses ``models.artifacts`` (pipeline/ MAY import models/; only api/ is the
+UIAP-01 stdlib-constrained layer).
+
 Logger acquisition follows the ``pipeline/`` package convention
 (``get_logger`` from ``utils.logging_config``); the source script's top-level
 import shim and project-root path insertion are deliberately dropped because
@@ -15,58 +26,69 @@ packages do not need them.
 
 from pathlib import Path
 
-import joblib
-
+from models.artifacts import get_latest_artifact_path, load_model_artifact
 from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 
 class ModelValidator:
-    """Validate trained models for production readiness."""
+    """Validate trained models for production readiness.
 
-    def __init__(self, models_path: str = "artifacts/models"):
-        self.models_path = Path(models_path)
+    Resolves each target via ``artifacts/latest.json`` (the real training
+    convention) rather than fixed-name stubs under ``artifacts/models/``.
+    """
+
+    def __init__(self, artifacts_dir: str = "artifacts"):
+        self.artifacts_dir = Path(artifacts_dir)
         self.validation_results = {}
 
     def validate_model_availability(self, models: list[str]) -> dict[str, bool]:
-        """Check if required models are available."""
+        """Check if required models are available.
+
+        A model is available when ``artifacts/latest.json`` names a version
+        directory for the target AND that directory's ``model.pkl`` exists.
+        The manifest's non-target keys (e.g. ``blend``) are ignored because
+        only the requested targets are iterated.
+        """
         logger.info(f"Validating availability of models: {models}")
 
         results = {}
         for model_name in models:
-            model_file = self.models_path / f"{model_name}_model.joblib"
-            results[f"{model_name}_available"] = model_file.exists()
+            artifact_dir = get_latest_artifact_path(
+                model_name, artifacts_dir=self.artifacts_dir
+            )
+            model_file = artifact_dir / "model.pkl" if artifact_dir else None
+            available = model_file is not None and model_file.exists()
+            results[f"{model_name}_available"] = available
 
-            if not model_file.exists():
-                logger.error(f"Model file not found: {model_file}")
+            if not available:
+                logger.error(f"Model artifact not found for target: {model_name}")
             else:
-                logger.info(f"Model found: {model_name}")
+                logger.info(f"Model found: {model_name} -> {artifact_dir.name}")
 
         return results
 
     def validate_model_loadability(self, models: list[str]) -> dict[str, bool]:
-        """Check if models can be loaded successfully."""
+        """Check if models can be loaded successfully.
+
+        A model is loadable when ``load_model_artifact`` returns a dict that
+        carries both the ``model`` and ``feature_list`` keys (the real artifact
+        contract). Any load failure degrades the result to ``False`` rather than
+        propagating -- the broad catch is intentional and scoped via the
+        ``BLE001`` per-file ignore (mirrors ``pipeline/health.py``).
+        """
         logger.info("Validating model loadability")
 
         results = {}
         for model_name in models:
-            model_file = self.models_path / f"{model_name}_model.joblib"
-
-            if not model_file.exists():
-                results[f"{model_name}_loadable"] = False
-                continue
-
             try:
-                model_data = joblib.load(model_file)
-
-                # Check required components
-                required_components = ["model", "scaler", "feature_names"]
-                has_all_components = all(
-                    key in model_data for key in required_components
+                artifact = load_model_artifact(
+                    model_name, artifacts_dir=self.artifacts_dir
                 )
+                has_required = "model" in artifact and "feature_list" in artifact
 
-                if not has_all_components:
+                if not has_required:
                     logger.error(f"Model {model_name} missing required components")
                     results[f"{model_name}_loadable"] = False
                 else:

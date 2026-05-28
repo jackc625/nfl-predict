@@ -298,29 +298,39 @@ class StalenessGate:
     def _check_model_age(self) -> list[str]:
         """Check age of model artifacts. Produces warnings only, never errors.
 
+        Resolves the ACTIVE deployed models via ``artifacts/latest.json`` (the
+        same pointer the prediction pipeline loads), NOT the fixed-name stubs
+        under ``artifacts/models/``. The stubs are ~250 days stale, so the
+        former convention silently misreported model age (IN-02). A missing or
+        unparseable manifest reports the target as absent rather than crashing.
+
         Returns:
             List of warning strings (may be empty).
         """
+        from models.artifacts import get_latest_artifact_path
+
         warnings: list[str] = []
         now = time.time()
         threshold_seconds = self.config.model_age_days * 86400
+        artifacts_dir = Path("artifacts")
 
-        model_files = [
-            "artifacts/models/wp_model.pkl",
-            "artifacts/models/ats_model.pkl",
-            "artifacts/models/ou_model.pkl",
-        ]
+        for target in ("wp", "ats", "ou"):
+            try:
+                artifact_dir = get_latest_artifact_path(
+                    target, artifacts_dir=artifacts_dir
+                )
+            except (OSError, json.JSONDecodeError):
+                artifact_dir = None
+            model_path = artifact_dir / "model.pkl" if artifact_dir else None
 
-        for model_file in model_files:
-            model_path = Path(model_file)
-            if model_path.exists():
+            if model_path is not None and model_path.exists():
                 age_days = (now - model_path.stat().st_mtime) / 86400
                 if age_days * 86400 > threshold_seconds:
                     warnings.append(
-                        f"Model artifact {model_file} is {age_days:.0f} days old "
+                        f"Model artifact {target} is {age_days:.0f} days old "
                         f"(threshold: {self.config.model_age_days} days)"
                     )
             else:
-                warnings.append(f"Model artifact missing: {model_file}")
+                warnings.append(f"Model artifact missing: {target}")
 
         return warnings

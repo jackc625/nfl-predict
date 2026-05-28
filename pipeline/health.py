@@ -225,7 +225,14 @@ class PipelineHealthChecker:
         return result
 
     def check_model_artifacts(self) -> dict[str, Any]:
-        """Check if model artifacts exist and are loadable."""
+        """Check if model artifacts exist and report their real age.
+
+        Resolves the ACTIVE deployed models via ``artifacts/latest.json`` (the
+        same pointer the prediction pipeline loads), NOT the fixed-name stubs
+        under ``artifacts/models/``. The stubs are ~250 days stale, so the
+        former convention silently misreported model age (IN-02). A missing or
+        unparseable manifest reports the target as absent rather than crashing.
+        """
         result: dict[str, Any] = {
             "name": "model_artifacts",
             "status": "unknown",
@@ -235,22 +242,31 @@ class PipelineHealthChecker:
         start = time.time()
 
         try:
-            artifacts_dir = Path("artifacts/models")
-            required_models = ["wp_model.pkl", "ats_model.pkl", "ou_model.pkl"]
+            from models.artifacts import get_latest_artifact_path
+
+            artifacts_dir = Path("artifacts")
+            model_targets = ("wp", "ats", "ou")
             model_status = {}
 
-            for model_file in required_models:
-                model_path = artifacts_dir / model_file
-                if model_path.exists():
+            for target in model_targets:
+                try:
+                    artifact_dir = get_latest_artifact_path(
+                        target, artifacts_dir=artifacts_dir
+                    )
+                except Exception:
+                    artifact_dir = None
+                model_path = artifact_dir / "model.pkl" if artifact_dir else None
+
+                if model_path is not None and model_path.exists():
                     stat = model_path.stat()
-                    model_status[model_file] = {
+                    model_status[target] = {
                         "exists": True,
                         "size_mb": round(stat.st_size / (1024 * 1024), 2),
                         "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
                         "age_hours": round((time.time() - stat.st_mtime) / 3600, 2),
                     }
                 else:
-                    model_status[model_file] = {"exists": False}
+                    model_status[target] = {"exists": False}
 
             all_exist = all(m.get("exists", False) for m in model_status.values())
             result.update(
