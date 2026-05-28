@@ -21,8 +21,27 @@ from utils import (
     validate_odds_data,
     validate_temporal_consistency,
 )
+from utils.exceptions import DataValidationError
+from utils.game_id_utils import parse_game_id
+from utils.team_data import get_all_teams, normalize_team_abbreviation
 
 logger = get_logger(__name__)
+
+# Gold-layer feature matrices and their expected column counts (AUDIT-02).
+# Verified on-disk 2026-05-28: features_wp 156, features_ats 157, features_ou 156.
+# The single-column ATS difference is its extra target/margin columns
+# (target_ats, home_margin, point_differential).
+GOLD_FEATURE_MATRICES = {
+    "features_wp": 156,
+    "features_ats": 157,
+    "features_ou": 156,
+}
+
+# Last season for which gold is considered fully ingested. Seasons beyond this
+# are treated as expected, documented trailing-coverage gaps (D-05), NOT failures.
+# 2025 is ingested through ~week 4 only and is intentionally NOT backfilled in
+# this phase (AUDIT-REPORT.md currency gap).
+GOLD_LAST_COMPLETE_SEASON = 2024
 
 
 class DataQualityMonitor:
@@ -475,6 +494,227 @@ class DataQualityMonitor:
 
         return result
 
+    def check_gold_integrity(self) -> dict[str, Any]:
+        """Verify Gold-layer feature-matrix integrity (AUDIT-02).
+
+        For each of the three Gold matrices (features_wp / features_ats /
+        features_ou) this checks:
+
+        - the matrix loads and is non-empty (row count),
+        - its column count matches the expected schema width
+          (wp 156, ats 157, ou 156),
+        - the season span and the latest season present,
+        - no feature column is entirely null (an all-null column signals a
+          broken builder),
+        - the trailing 2025 partial-season coverage, reported as an EXPECTED
+          documented gap (D-05) rather than a hard failure.
+
+        Returns a dict mirroring the ``check_data_consistency`` result shape:
+        ``{"timestamp", "checks": {...}}`` where each per-matrix entry carries
+        a ``status`` of ``pass`` / ``fail`` and the trailing-gap entry carries
+        an informational ``status`` of ``expected_gap``.
+        """
+        logger.info("Checking Gold-layer feature-matrix integrity")
+
+        result = {"timestamp": datetime.now(), "checks": {}}
+
+        for table_name, expected_columns in GOLD_FEATURE_MATRICES.items():
+            try:
+                df = load_dataframe(table_name, layer="gold")
+
+                if df.empty:
+                    result["checks"][table_name] = {
+                        "status": "fail",
+                        "message": "Gold matrix is empty",
+                        "row_count": 0,
+                    }
+                    continue
+
+                actual_columns = len(df.columns)
+                all_null_columns = [col for col in df.columns if df[col].isna().all()]
+
+                season_min = int(df["season"].min()) if "season" in df.columns else None
+                season_max = int(df["season"].max()) if "season" in df.columns else None
+
+                schema_ok = actual_columns == expected_columns
+                no_all_null = not all_null_columns
+
+                matrix_result = {
+                    "status": "pass" if (schema_ok and no_all_null) else "fail",
+                    "row_count": len(df),
+                    "column_count": actual_columns,
+                    "expected_column_count": expected_columns,
+                    "schema_width_ok": schema_ok,
+                    "season_min": season_min,
+                    "season_max": season_max,
+                    "all_null_columns": all_null_columns,
+                }
+
+                # Trailing partial-season coverage (D-05) -- informational, not a fail.
+                if "season" in df.columns and "week" in df.columns:
+                    trailing = df[df["season"] > GOLD_LAST_COMPLETE_SEASON]
+                    if not trailing.empty:
+                        matrix_result["trailing_season_gap"] = {
+                            "status": "expected_gap",
+                            "season": season_max,
+                            "weeks_present": sorted(
+                                int(w) for w in trailing["week"].unique()
+                            ),
+                            "row_count": len(trailing),
+                            "note": (
+                                f"Season {season_max} is ingested partially and "
+                                "treated as a documented expected gap (D-05); "
+                                "not backfilled this phase."
+                            ),
+                        }
+
+                result["checks"][table_name] = matrix_result
+
+            except (
+                ValueError,
+                KeyError,
+                TypeError,
+                FileNotFoundError,
+                OSError,
+            ) as e:
+                result["checks"][f"{table_name}_error"] = {
+                    "status": "fail",
+                    "message": str(e),
+                }
+                logger.warning(
+                    "Gold integrity check failed", table=table_name, error=str(e)
+                )
+
+        return result
+
+    def check_team_abbreviations(self) -> dict[str, Any]:
+        """Verify 32-team completeness, canonical mapping, and no abbreviation
+        mismatches against on-disk data (AUDIT-02).
+
+        Uses the canonical ``utils.team_data`` source as the single source of
+        truth -- NO hand-rolled team set:
+
+        - ``get_all_teams()`` defines the canonical 32-team abbreviation set,
+        - every ``home_team`` / ``away_team`` value across the Silver tables that
+          carry them is asserted to be a subset of that canonical set,
+        - team abbreviations encoded in the Gold matrices' ``game_id`` values are
+          likewise verified canonical,
+        - ``normalize_team_abbreviation`` is invoked against every on-disk
+          abbreviation and must not hard-fail on any of them (the
+          abbreviation-mismatch check, mirroring
+          ``test_data_completeness.py:347-360``).
+
+        Returns a dict in the ``check_data_consistency`` result shape.
+        """
+        logger.info("Checking 32-team completeness and canonical abbreviations")
+
+        result = {"timestamp": datetime.now(), "checks": {}}
+
+        canonical = set(get_all_teams())
+
+        # 1. Canonical-set sanity: exactly 32 teams.
+        result["checks"]["canonical_team_count"] = {
+            "status": "pass" if len(canonical) == 32 else "fail",
+            "count": len(canonical),
+            "expected": 32,
+        }
+
+        # 2. Silver tables that carry home_team / away_team columns.
+        observed_abbreviations: set[str] = set()
+        for table in ["games", "odds_snapshot", "weather_forecast"]:
+            try:
+                table_df = load_dataframe(table, layer="silver")
+                if table_df.empty:
+                    continue
+
+                team_columns = [
+                    col
+                    for col in ("home_team", "away_team", "team")
+                    if col in table_df.columns
+                ]
+                if not team_columns:
+                    continue
+
+                table_values: set[str] = set()
+                for col in team_columns:
+                    table_values.update(str(v) for v in table_df[col].dropna().unique())
+                observed_abbreviations.update(table_values)
+
+                non_canonical = table_values - canonical
+                result["checks"][f"{table}_canonical_teams"] = {
+                    "status": "pass" if not non_canonical else "fail",
+                    "team_columns": team_columns,
+                    "distinct_team_count": len(table_values),
+                    "non_canonical": sorted(non_canonical),
+                }
+            except (
+                ValueError,
+                KeyError,
+                TypeError,
+                FileNotFoundError,
+                OSError,
+            ) as e:
+                result["checks"][f"{table}_canonical_teams_error"] = {
+                    "status": "fail",
+                    "message": str(e),
+                }
+
+        # 3. Gold matrices encode teams in game_id ({season}_W{week}_{away}@{home}).
+        for table in GOLD_FEATURE_MATRICES:
+            try:
+                gold_df = load_dataframe(table, layer="gold")
+                if gold_df.empty or "game_id" not in gold_df.columns:
+                    continue
+
+                gold_teams: set[str] = set()
+                unparseable: list[str] = []
+                for game_id in gold_df["game_id"].dropna().unique():
+                    try:
+                        parsed = parse_game_id(str(game_id))
+                        gold_teams.add(parsed["home_team"])
+                        gold_teams.add(parsed["away_team"])
+                    except ValueError:
+                        unparseable.append(str(game_id))
+
+                observed_abbreviations.update(gold_teams)
+                non_canonical = gold_teams - canonical
+                result["checks"][f"{table}_game_id_teams"] = {
+                    "status": "pass"
+                    if (not non_canonical and not unparseable)
+                    else "fail",
+                    "distinct_team_count": len(gold_teams),
+                    "non_canonical": sorted(non_canonical),
+                    "unparseable_sample": unparseable[:5],
+                }
+            except (
+                ValueError,
+                KeyError,
+                TypeError,
+                FileNotFoundError,
+                OSError,
+            ) as e:
+                result["checks"][f"{table}_game_id_teams_error"] = {
+                    "status": "fail",
+                    "message": str(e),
+                }
+
+        # 4. Abbreviation-mismatch check: normalize_team_abbreviation must not
+        #    hard-fail on ANY on-disk abbreviation (it raises on unknowns).
+        normalize_failures: list[str] = []
+        for abbr in observed_abbreviations:
+            try:
+                normalize_team_abbreviation(abbr)
+            except DataValidationError:
+                normalize_failures.append(abbr)
+
+        result["checks"]["abbreviation_mismatch"] = {
+            "status": "pass" if not normalize_failures else "fail",
+            "abbreviations_checked": len(observed_abbreviations),
+            "normalize_failures": sorted(normalize_failures),
+        }
+
+        return result
+
     def generate_qa_report(
         self, season: int | None = None, week: int | None = None
     ) -> dict[str, Any]:
@@ -493,6 +733,8 @@ class DataQualityMonitor:
             "summary": {},
             "table_reports": {},
             "consistency_check": {},
+            "gold_integrity": {},
+            "team_abbreviations": {},
             "database_stats": {},
             "recommendations": [],
         }
@@ -568,18 +810,31 @@ class DataQualityMonitor:
             # Cross-table consistency
             report["consistency_check"] = self.check_data_consistency()
 
-            # Count consistency check results
-            consistency_checks = report["consistency_check"].get("checks", {})
-            for _check_name, check_result in consistency_checks.items():
-                if isinstance(check_result, dict) and "status" in check_result:
-                    status = check_result["status"]
-                    total_checks += 1
-                    if status == "pass":
-                        passed_checks += 1
-                    elif status == "fail":
-                        failed_checks += 1
-                    elif status == "warning":
-                        warnings += 1
+            # Gold-layer integrity + 32-team / canonical-abbreviation checks (AUDIT-02)
+            report["gold_integrity"] = self.check_gold_integrity()
+            report["team_abbreviations"] = self.check_team_abbreviations()
+
+            # Count check results from the flat-checks sections. The trailing
+            # "expected_gap" status (D-05) is intentionally NOT counted as a
+            # pass/fail/warning -- it is an informational documented gap.
+            for section in (
+                "consistency_check",
+                "gold_integrity",
+                "team_abbreviations",
+            ):
+                section_checks = report[section].get("checks", {})
+                for _check_name, check_result in section_checks.items():
+                    if isinstance(check_result, dict) and "status" in check_result:
+                        status = check_result["status"]
+                        if status == "expected_gap":
+                            continue
+                        total_checks += 1
+                        if status == "pass":
+                            passed_checks += 1
+                        elif status == "fail":
+                            failed_checks += 1
+                        elif status == "warning":
+                            warnings += 1
 
             # Database statistics
             try:
@@ -663,6 +918,18 @@ class DataQualityMonitor:
                 ):
                     recommendations.append(f"Review {check_name} data consistency")
 
+            # Check Gold-integrity + abbreviation failures (AUDIT-02)
+            for section in ("gold_integrity", "team_abbreviations"):
+                section_checks = report.get(section, {}).get("checks", {})
+                for check_name, check_result in section_checks.items():
+                    if (
+                        isinstance(check_result, dict)
+                        and check_result.get("status") == "fail"
+                    ):
+                        recommendations.append(
+                            f"Investigate {section} check '{check_name}'"
+                        )
+
         except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
             recommendations.append(f"Error generating recommendations: {e}")
 
@@ -717,7 +984,14 @@ def main():
     parser.add_argument(
         "--check",
         type=str,
-        choices=["freshness", "completeness", "quality", "consistency"],
+        choices=[
+            "freshness",
+            "completeness",
+            "quality",
+            "consistency",
+            "gold_integrity",
+            "team_abbreviations",
+        ],
         help="Run specific check only",
     )
     parser.add_argument("--output", type=str, help="Output directory for report")
@@ -743,7 +1017,26 @@ def main():
         # Initialize monitor
         monitor = DataQualityMonitor()
 
-        if args.table and args.check:
+        if args.check in ("gold_integrity", "team_abbreviations") and not args.table:
+            # Table-independent AUDIT-02 checks (gold matrices / canonical teams)
+            if args.check == "gold_integrity":
+                result = monitor.check_gold_integrity()
+            else:
+                result = monitor.check_team_abbreviations()
+
+            print(f"Check: {args.check}")
+            checks = result.get("checks", {})
+            failed = [
+                name
+                for name, sub in checks.items()
+                if isinstance(sub, dict) and sub.get("status") == "fail"
+            ]
+            print(f"Sub-checks: {len(checks)}  Failed: {len(failed)}")
+            for name, sub in checks.items():
+                if isinstance(sub, dict) and "status" in sub:
+                    print(f"  [{sub['status']}] {name}")
+
+        elif args.table and args.check:
             # Run specific check on specific table
             if args.check == "freshness":
                 result = monitor.check_data_freshness(args.table)
