@@ -11,6 +11,31 @@ from utils.date_utils import ET
 # ---------------------------------------------------------------------------
 
 
+def _make_model_resolver(st_mtime: float):
+    """Build a get_latest_artifact_path stand-in for the latest.json convention.
+
+    _check_model_age now resolves each target via
+    ``get_latest_artifact_path(target, artifacts_dir=...)`` (the real
+    artifacts/latest.json convention, CR-01/IN-02 fix) instead of probing
+    fixed-name ``artifacts/models/*.pkl`` stubs. The returned artifact dir's
+    ``/ "model.pkl"`` resolves to a mock with the given mtime so the age math
+    runs against a controlled timestamp.
+    """
+
+    def _resolver(target, artifacts_dir=None):
+        model_path = MagicMock()
+        model_path.exists.return_value = True
+        stat = MagicMock()
+        stat.st_mtime = st_mtime
+        model_path.stat.return_value = stat
+
+        artifact_dir = MagicMock()
+        artifact_dir.__truediv__.return_value = model_path
+        return artifact_dir
+
+    return _resolver
+
+
 def _make_settings_mock(overrides: dict | None = None):
     """Create a mock Settings object with PipelineStalenessConfig defaults."""
     defaults = {
@@ -112,15 +137,18 @@ class TestCheckStaleness:
 
     @patch("pipeline.staleness.get_settings")
     @patch("pipeline.staleness.get_current_nfl_week")
+    @patch("pipeline.staleness.get_latest_artifact_path")
     @patch("pipeline.staleness.Path")
     @patch("pipeline.staleness.time")
     def test_check_staleness_all_pass(
-        self, mock_time, mock_path_cls, mock_get_week, mock_settings
+        self, mock_time, mock_path_cls, mock_resolver, mock_get_week, mock_settings
     ):
         """All data fresh, no partial run -- staleness passes."""
         mock_settings.return_value = _make_settings_mock()
         mock_get_week.return_value = (2025, 5)
         mock_time.time.return_value = 1000000.0
+        # Models resolved via latest.json, 1 day old (fresh).
+        mock_resolver.side_effect = _make_model_resolver(1000000.0 - 86400)
 
         # games.parquet exists and is fresh (modified 1 hour ago)
         games_path = MagicMock()
@@ -143,23 +171,14 @@ class TestCheckStaleness:
         weather_stat.st_mtime = 1000000.0 - 3600
         weather_path.stat.return_value = weather_stat
 
-        # Model paths -- all exist and fresh
-        model_paths = []
-        for _ in range(3):
-            mp = MagicMock()
-            mp.exists.return_value = True
-            ms = MagicMock()
-            ms.st_mtime = 1000000.0 - 86400  # 1 day ago
-            mp.stat.return_value = ms
-            model_paths.append(mp)
-
-        # Mock Path() calls in order
+        # Mock Path() calls in order: 3 data files, partial-run log, then
+        # the single Path("artifacts") in _check_model_age (resolver is mocked).
         path_instances = [
             games_path,
             odds_path,
             weather_path,
             MagicMock(exists=MagicMock(return_value=False)),  # partial run log
-            *model_paths,
+            MagicMock(),  # Path("artifacts") root
         ]
         mock_path_cls.side_effect = path_instances
 
@@ -188,15 +207,17 @@ class TestCheckStaleness:
 
     @patch("pipeline.staleness.get_settings")
     @patch("pipeline.staleness.get_current_nfl_week")
+    @patch("pipeline.staleness.get_latest_artifact_path")
     @patch("pipeline.staleness.Path")
     @patch("pipeline.staleness.time")
     def test_check_staleness_stale_games_data(
-        self, mock_time, mock_path_cls, mock_get_week, mock_settings
+        self, mock_time, mock_path_cls, mock_resolver, mock_get_week, mock_settings
     ):
         """games.parquet age > data_age_hours triggers error (passed=False)."""
         mock_settings.return_value = _make_settings_mock({"data_age_hours": 168})
         mock_get_week.return_value = (2025, 5)
         mock_time.time.return_value = 1000000.0
+        mock_resolver.side_effect = _make_model_resolver(1000000.0 - 86400)
 
         # games.parquet exists but is 200 hours old (> 168 threshold)
         games_path = MagicMock()
@@ -223,22 +244,12 @@ class TestCheckStaleness:
         log_path = MagicMock()
         log_path.exists.return_value = False
 
-        # Models -- fresh
-        model_paths = []
-        for _ in range(3):
-            mp = MagicMock()
-            mp.exists.return_value = True
-            ms = MagicMock()
-            ms.st_mtime = 1000000.0 - 86400
-            mp.stat.return_value = ms
-            model_paths.append(mp)
-
         mock_path_cls.side_effect = [
             games_path,
             odds_path,
             weather_path,
             log_path,
-            *model_paths,
+            MagicMock(),  # Path("artifacts") root
         ]
 
         from pipeline.staleness import StalenessGate
@@ -251,6 +262,7 @@ class TestCheckStaleness:
 
     @patch("pipeline.staleness.get_settings")
     @patch("pipeline.staleness.get_current_nfl_week")
+    @patch("pipeline.staleness.get_latest_artifact_path")
     @patch("pipeline.staleness.Path")
     @patch("pipeline.staleness.time")
     @patch("builtins.open")
@@ -261,6 +273,7 @@ class TestCheckStaleness:
         mock_open,
         mock_time,
         mock_path_cls,
+        mock_resolver,
         mock_get_week,
         mock_settings,
     ):
@@ -268,6 +281,7 @@ class TestCheckStaleness:
         mock_settings.return_value = _make_settings_mock()
         mock_get_week.return_value = (2025, 5)
         mock_time.time.return_value = 1000000.0
+        mock_resolver.side_effect = _make_model_resolver(1000000.0 - 86400)
 
         # Fresh data files
         games_path = MagicMock()
@@ -292,22 +306,12 @@ class TestCheckStaleness:
         log_path = MagicMock()
         log_path.exists.return_value = True
 
-        # Models fresh
-        model_paths = []
-        for _ in range(3):
-            mp = MagicMock()
-            mp.exists.return_value = True
-            ms = MagicMock()
-            ms.st_mtime = 1000000.0 - 86400
-            mp.stat.return_value = ms
-            model_paths.append(mp)
-
         mock_path_cls.side_effect = [
             games_path,
             odds_path,
             weather_path,
             log_path,
-            *model_paths,
+            MagicMock(),  # Path("artifacts") root
         ]
 
         # Log JSON says status=running
@@ -332,6 +336,7 @@ class TestCheckStaleness:
 
     @patch("pipeline.staleness.get_settings")
     @patch("pipeline.staleness.get_current_nfl_week")
+    @patch("pipeline.staleness.get_latest_artifact_path")
     @patch("pipeline.staleness.Path")
     @patch("pipeline.staleness.time")
     @patch("builtins.open")
@@ -342,6 +347,7 @@ class TestCheckStaleness:
         mock_open,
         mock_time,
         mock_path_cls,
+        mock_resolver,
         mock_get_week,
         mock_settings,
     ):
@@ -349,6 +355,7 @@ class TestCheckStaleness:
         mock_settings.return_value = _make_settings_mock()
         mock_get_week.return_value = (2025, 5)
         mock_time.time.return_value = 1000000.0
+        mock_resolver.side_effect = _make_model_resolver(1000000.0 - 86400)
 
         # Fresh files
         games_path = MagicMock()
@@ -373,22 +380,12 @@ class TestCheckStaleness:
         log_path = MagicMock()
         log_path.exists.return_value = True
 
-        # Models fresh
-        model_paths = []
-        for _ in range(3):
-            mp = MagicMock()
-            mp.exists.return_value = True
-            ms = MagicMock()
-            ms.st_mtime = 1000000.0 - 86400
-            mp.stat.return_value = ms
-            model_paths.append(mp)
-
         mock_path_cls.side_effect = [
             games_path,
             odds_path,
             weather_path,
             log_path,
-            *model_paths,
+            MagicMock(),  # Path("artifacts") root
         ]
 
         mock_json.load.side_effect = json.JSONDecodeError("bad", "", 0)
@@ -406,15 +403,18 @@ class TestCheckStaleness:
 
     @patch("pipeline.staleness.get_settings")
     @patch("pipeline.staleness.get_current_nfl_week")
+    @patch("pipeline.staleness.get_latest_artifact_path")
     @patch("pipeline.staleness.Path")
     @patch("pipeline.staleness.time")
     def test_check_staleness_model_age_warns_only(
-        self, mock_time, mock_path_cls, mock_get_week, mock_settings
+        self, mock_time, mock_path_cls, mock_resolver, mock_get_week, mock_settings
     ):
         """Models older than threshold produce warning, NOT error (passed=True)."""
         mock_settings.return_value = _make_settings_mock({"model_age_days": 90})
         mock_get_week.return_value = (2025, 5)
         mock_time.time.return_value = 1000000.0
+        # Models resolved via latest.json are 100 days old (> 90 threshold).
+        mock_resolver.side_effect = _make_model_resolver(1000000.0 - (100 * 86400))
 
         # Fresh data
         games_path = MagicMock()
@@ -439,22 +439,12 @@ class TestCheckStaleness:
         log_path = MagicMock()
         log_path.exists.return_value = False
 
-        # Models are 100 days old (> 90 threshold)
-        model_paths = []
-        for _ in range(3):
-            mp = MagicMock()
-            mp.exists.return_value = True
-            ms = MagicMock()
-            ms.st_mtime = 1000000.0 - (100 * 86400)  # 100 days ago
-            mp.stat.return_value = ms
-            model_paths.append(mp)
-
         mock_path_cls.side_effect = [
             games_path,
             odds_path,
             weather_path,
             log_path,
-            *model_paths,
+            MagicMock(),  # Path("artifacts") root
         ]
 
         from pipeline.staleness import StalenessGate
@@ -494,12 +484,14 @@ class TestRunAllChecks:
     @patch("pipeline.staleness.datetime")
     @patch("pipeline.staleness.get_nfl_season_start")
     @patch("pipeline.staleness.get_current_nfl_week")
+    @patch("pipeline.staleness.get_latest_artifact_path")
     @patch("pipeline.staleness.Path")
     @patch("pipeline.staleness.time")
     def test_run_all_checks_merges_results(
         self,
         mock_time,
         mock_path_cls,
+        mock_resolver,
         mock_get_week,
         mock_season_start,
         mock_dt,
@@ -513,6 +505,7 @@ class TestRunAllChecks:
         mock_dt.now.return_value = datetime(2025, 10, 10, 12, 0, tzinfo=ET)
         mock_get_week.return_value = (2025, 5)
         mock_time.time.return_value = 1000000.0
+        mock_resolver.side_effect = _make_model_resolver(1000000.0 - 86400)
 
         # Fresh data
         games_path = MagicMock()
@@ -536,21 +529,12 @@ class TestRunAllChecks:
         log_path = MagicMock()
         log_path.exists.return_value = False
 
-        model_paths = []
-        for _ in range(3):
-            mp = MagicMock()
-            mp.exists.return_value = True
-            ms = MagicMock()
-            ms.st_mtime = 1000000.0 - 86400
-            mp.stat.return_value = ms
-            model_paths.append(mp)
-
         mock_path_cls.side_effect = [
             games_path,
             odds_path,
             weather_path,
             log_path,
-            *model_paths,
+            MagicMock(),  # Path("artifacts") root
         ]
 
         from pipeline.staleness import StalenessGate

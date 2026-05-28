@@ -188,7 +188,9 @@ def step_verify_data_artifacts() -> None:
         "data/silver/games.parquet",
         "data/silver/elo_ratings.parquet",
         "data/silver/team_form.parquet",
-        "data/gold/",
+        "data/gold/features_wp.parquet",
+        "data/gold/features_ats.parquet",
+        "data/gold/features_ou.parquet",
     ]
     missing = [p for p in required if not Path(p).exists()]
     if missing:

@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from conf.settings import get_settings
+from models.artifacts import get_latest_artifact_path
 from utils.date_utils import ET, get_current_nfl_week, get_nfl_season_start
 from utils.logging_config import get_logger
 
@@ -307,8 +308,6 @@ class StalenessGate:
         Returns:
             List of warning strings (may be empty).
         """
-        from models.artifacts import get_latest_artifact_path
-
         warnings: list[str] = []
         now = time.time()
         threshold_seconds = self.config.model_age_days * 86400
