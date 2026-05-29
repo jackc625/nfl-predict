@@ -1074,11 +1074,20 @@ class FeatureMatrixBuilder:
         """
         Save feature matrices to gold layer.
 
+        Each matrix is written as a single self-contained Parquet file with
+        game_id latest-wins dedup (no directory partitioning), so both the
+        full-rebuild (target_season=None) and current-week/per-season paths
+        are idempotent. target_season no longer controls partitioning; it is
+        retained for call-site compatibility and logged for observability.
+
         Args:
             feature_matrices: Dictionary with feature matrices
-            target_season: Season for partitioning
+            target_season: Season the matrices were built for (informational
+                only; does not affect the single-file write).
         """
-        logger.info("Saving feature matrices to gold layer")
+        logger.info(
+            "Saving feature matrices to gold layer", target_season=target_season
+        )
 
         for target, matrix_df in feature_matrices.items():
             if len(matrix_df) == 0:
@@ -1122,16 +1131,34 @@ class FeatureMatrixBuilder:
                     dropped=all_nan_cols,
                 )
 
-            # Determine partition columns
-            partition_cols = ["season"] if target_season else None
-
             table_name = f"features_{target}"
 
+            # Write the gold matrix as a single self-contained file (no
+            # directory partitioning). The gold matrices are one-row-per-game
+            # tables; carrying game_id, they dedup cleanly with latest-wins.
+            #
+            # The prior partition_cols=["season"] if target_season else None
+            # re-introduced the shared-root partitioned-append antipattern that
+            # 25c364f eradicated from every silver builder: pq.write_to_dataset
+            # writes season=YYYY/ partition directories into the SHARED
+            # data/gold/ root, where all three matrices (features_wp/ats/ou)
+            # collide in the same season=YYYY/ directory and each current-week
+            # run appends a NEW hash-named parquet instead of overwriting --
+            # silently multiplying gold cardinality and cross-contaminating the
+            # three matrices.
+            #
+            # save_dataframe's default append_mode=True path reads any existing
+            # single-file gold table, concats the rebuilt rows, drops duplicate
+            # game_ids keeping the latest, and writes one file. So the
+            # current-week/per-season path is now idempotent (re-running cannot
+            # append-bloat or cross-contaminate), and the full-rebuild path
+            # (target_season=None) still writes the complete single file as
+            # before. This mirrors scripts/build_weather.py /
+            # scripts/build_contextual.py and pipeline/steps.py. (CR-01, D-10)
             save_dataframe(
                 matrix_df,
                 table_name=table_name,
                 layer="gold",
-                partition_cols=partition_cols,
             )
 
             logger.info(
