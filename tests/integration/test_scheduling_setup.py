@@ -13,6 +13,11 @@ import pytest
 
 from deployment.setup_scheduling import SchedulingSetup
 
+# Repo root resolved from this test file (tests/integration/<this file>) so the
+# XML-content test is independent of pytest's working directory.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SCHEDULER_XML = _REPO_ROOT / "deployment" / "windows_scheduler.xml"
+
 
 @pytest.fixture()
 def setup_with_mock_home(tmp_path: Path) -> SchedulingSetup:
@@ -97,7 +102,11 @@ class TestWindowsScheduler:
         assert len(create_calls) == 1
         cmd = create_calls[0][0][0]
         assert "NFL_Predict_Pipeline" in cmd
-        assert "17:00" in cmd
+        # Installer registers the canonical XML via /xml (D-07), not an inline /st time
+        assert "/xml" in cmd
+        xml_idx = cmd.index("/xml")
+        assert cmd[xml_idx + 1].endswith("windows_scheduler.xml")
+        assert "/f" in cmd
 
     def test_setup_scheduling_cleans_old_tasks(
         self, setup_with_mock_home: SchedulingSetup
@@ -205,10 +214,10 @@ class TestWindowsScheduler:
         assert len(create_calls) == 0
         assert len(delete_calls) == 0
 
-    def test_setup_scheduling_uses_uv_run(
+    def test_setup_scheduling_installs_canonical_xml(
         self, setup_with_mock_home: SchedulingSetup
     ) -> None:
-        """Verify the schtasks /tr argument uses 'uv run' for the interpreter."""
+        """Verify the installer registers the canonical XML via /xml, not an inline /tr."""
         setup = setup_with_mock_home
 
         with patch("deployment.setup_scheduling.subprocess.run") as mock_run:
@@ -225,8 +234,62 @@ class TestWindowsScheduler:
 
         assert len(create_calls) == 1
         cmd = create_calls[0][0][0]
-        # Find the /tr argument
-        tr_idx = cmd.index("/tr")
-        tr_value = cmd[tr_idx + 1]
-        assert "uv run" in tr_value
-        assert "friday_pipeline.py" in tr_value
+
+        # Installs the committed XML (single source of truth, D-07)
+        assert "/xml" in cmd
+        xml_idx = cmd.index("/xml")
+        xml_path = cmd[xml_idx + 1]
+        assert xml_path.endswith("windows_scheduler.xml")
+        assert "deployment" in xml_path
+        assert "/f" in cmd
+
+        # The inline-command shape is gone: no /tr, /sc, /st, or 17:00
+        assert "/tr" not in cmd
+        assert "/sc" not in cmd
+        assert "/st" not in cmd
+        assert "17:00" not in cmd
+
+    def test_setup_scheduling_has_no_cron_branch(self) -> None:
+        """Verify the dead Linux/mac cron branch was removed (D-07: one story)."""
+        assert not hasattr(SchedulingSetup, "setup_cron_linux_mac")
+
+
+class TestWindowsSchedulerXml:
+    """Content assertions on the committed canonical windows_scheduler.xml."""
+
+    def test_windows_scheduler_xml_is_reconciled(self) -> None:
+        """Verify the canonical XML carries the reconciled principal, time, and command.
+
+        The XML declares UTF-16 (line 1), so it MUST be read with encoding="utf-16";
+        reading as utf-8 would corrupt the assertions.
+        """
+        xml = _SCHEDULER_XML.read_text(encoding="utf-16")
+
+        # Principal: owner user, NOT the SYSTEM SID (D-10)
+        assert "S-1-5-18" not in xml
+        assert "<UserId>jackc</UserId>" in xml
+        assert "<LogonType>S4U</LogonType>" in xml
+        assert "S4U" in xml
+        assert "HighestAvailable" in xml
+
+        # Trigger: 18:00 local = 6 PM ET, no timezone offset (D-09)
+        assert "2026-09-12T18:00:00" in xml
+        assert "17:00" not in xml
+
+        # Command: uv-run invocation, not the .venv python.exe (D-10)
+        assert "<Command>uv</Command>" in xml
+        assert "run python scripts/friday_pipeline.py" in xml
+        assert "friday_pipeline.py" in xml
+        assert ".venv\\Scripts\\python.exe" not in xml
+
+        # Robustness settings preserved (D-10)
+        assert "IgnoreNew" in xml
+        assert "PT2H" in xml
+        assert "WakeToRun" in xml
+        assert "StartWhenAvailable" in xml
+        assert "RunOnlyIfNetworkAvailable" in xml
+
+    def test_windows_scheduler_xml_declares_utf16(self) -> None:
+        """Verify the XML declaration still pins UTF-16 (encoding not corrupted to utf-8)."""
+        xml = _SCHEDULER_XML.read_text(encoding="utf-16")
+        assert 'encoding="UTF-16"' in xml
