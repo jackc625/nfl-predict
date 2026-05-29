@@ -201,6 +201,37 @@ regression).
 
 ---
 
+## Post-review correctness fixes (CR-01, WR-01, WR-02)
+
+> A follow-up deep code review of the phase-20 fix cluster (`20-REVIEW.md`,
+> 2026-05-28) surfaced one Critical + two Warning correctness defects that the
+> earlier waves had not yet caught. All three were fixed under the same
+> correctness-only scope (NO new features, NO refactors beyond the fix, and
+> NEVER a deployed-artifact re-fit -- D-01). The single D-10 gold rebuild was
+> already done and was NOT re-triggered; these are code-path fixes only. Each
+> landed as its own atomic commit. (Finding IDs below are `20-REVIEW.md` IDs,
+> distinct from the F-* as-found IDs above.)
+
+| Review ID | Severity | File | Fix | Commit |
+|-----------|----------|------|-----|--------|
+| CR-01 | Critical | `scripts/build_features.py` (gold save) | The per-season/current-week gold write used `partition_cols=["season"] if target_season else None`, re-introducing the shared-root partitioned-append antipattern that `25c364f` eradicated from every silver builder (`pq.write_to_dataset` writes `season=YYYY/` dirs into the SHARED `data/gold/` root where `features_wp/ats/ou` collide and each run appends a NEW hash-named parquet). Dropped `partition_cols` so BOTH paths write a single self-contained file via `save_dataframe`'s default `append_mode=True` `game_id` latest-wins dedup (mirrors `build_weather.py`/`build_contextual.py`/`pipeline/steps.py`). Current-week write is now idempotent; full-rebuild path still writes the complete single file (verified on disk: gold holds 3 single files, `features_wp` 6263 rows, span 2002-2025, width 156 -- unchanged). | `0269a15` |
+| WR-02 | Warning | `features/market_anchors.py` (`identify_snapshot_lines`) | The deprecated snapshot cutoff was built at `hour=18` then localized to **UTC**, yielding `Friday 18:00 UTC` = `Friday 14:00 ET` (2 PM ET) -- 4 hours before the documented "Friday 6 PM ET" freeze. On disk every `snapshot_ts` is exactly `18:00 ET` = `22:00 UTC`, so comparing `22:00 UTC` snapshots against an `18:00 UTC` cutoff evaluated False and emptied the snapshot set on the orchestrator path. Localized the naive cutoff to ET (`utils.date_utils.ET`, America/New_York) and picked the target Friday from an ET-localized `latest_date`. Verified on disk: the fixed cutoff (`2024-09-13T18:00:00-04:00`) admits 1583 pre-cutoff rows including the 18:00 ET snapshots, vs an empty set before. Ruff auto-dropped the now-unused `UTC` import. | `dcc7883` |
+| WR-01 | Warning | `features/team_form.py` (`build_team_form_features`) | `team_game_stats` was written unconditionally with `replace_mode=True` using only the seasons passed in. The `--current`/orchestrator path (`build_for_current_week`) passes a 3-season subset `[current-2, current-1, current]`, so a weekly current-week run shrank the on-disk `team_game_stats` from the full 2002-2024 history down to 3 seasons -- a silent data-loss regression. Fix: SKIP the persisted `team_game_stats` write on the incremental path (detected via `target_season` AND `target_week` set). Rationale: the full-rebuild path (`build_for_seasons`) is the canonical producer of the COMPLETE table and keeps `replace_mode=True`; no code reads `team_game_stats` from disk (`build_features.py` recomputes per-game stats in-memory via `get_per_game_stats()`), so the current-week run need not mutate it; and an append alternative is unsafe because the sibling rolling table `team_form_features` has no `game_id` (so `save_dataframe`'s `game_id` dedup would not apply and a plain append would duplicate). Idempotency now holds within a fixed seasons argument. This supersedes the as-found finding **F-02**'s `--current` data-loss aspect on `team_game_stats`. The integration test `test_build_team_form_current_path_runs`, which had encoded the OLD buggy "current-week path writes `team_game_stats`" behavior, was updated to assert the corrected "no persisted write on the incremental path." | `8f08163` |
+
+**Verification:** `uv run ruff check` clean on all three files + the updated test;
+each commit passed the pre-commit hooks (ruff + ruff-format). `uv run pytest
+tests/unit -q` -> **761 passed, 1 failed**; the single failure
+(`test_audit_trace_leakage_elo.py::...test_pre_burn_in_games_have_no_spurious_elo_snapshot`)
+is a **pre-existing, fix-independent** data-coverage mismatch recorded below
+(D-11-F) -- it does not touch any file these three fixes changed. Relevant
+integration suites green: `test_audit_stage_runner.py` (18 passed),
+`test_idempotency.py` + `test_audit_stage_runner.py` (24 passed),
+`test_prediction_pipeline.py` (14 passed) -- confirming the `build_features`
+gold change and the team-form `--current` change did not break the
+current-week paths. No deployed model artifact was re-fit (D-01).
+
+---
+
 ## Data currency / freshness
 
 ### 2025 partial-season currency gap (D-05) -- documented, NOT backfilled
@@ -400,6 +431,104 @@ phase; the production-vs-backtest mismatch is DIAG-05's subject (Phase 22).
   affect the canonical gold (dead path on the build_features-on-the-fly market route). A
   future cleanup either repairs the consensus column references or removes the deprecated
   path. NOT fixed this phase.
+
+### D-11-F -- Pre-existing elo burn-in test vs on-disk `elo_game_snapshots` coverage mismatch
+
+- **Where:** `tests/unit/test_audit_trace_leakage_elo.py:346,349`
+  (`test_pre_burn_in_games_have_no_spurious_elo_snapshot`, asserting
+  `elo_game_snapshots["season"].min() == 2002`); on-disk silver
+  `data/silver/elo_game_snapshots.parquet` + DuckDB `elo_game_snapshots`.
+- **Finding:** The test (written in `25c364f`) asserts the persisted
+  `elo_game_snapshots` table begins at the burn-in start season 2002, citing
+  `20-RESEARCH.md` Pitfall 4's claim that "gold AND elo_game_snapshots span
+  2002-2025." Verified live on disk 2026-05-28: the gold matrices DO span
+  2002-2025 (`features_wp` 6263 rows, min season 2002), but `elo_game_snapshots`
+  (both the silver parquet and the DuckDB table) holds only **2018-2025 (1991
+  rows, min season 2018)**. So the test fails (`2018 == 2002` -> AssertionError).
+  This is a genuine data-coverage gap between the persisted `elo_game_snapshots`
+  artifact (2018+) and the gold matrices (2002+) -- the snapshot table was
+  materialized over a narrower window than the burn-in span the test/research
+  assumed.
+- **Risk:** Low for the canonical gold path -- gold `features_wp` carries Elo
+  features for all 2002+ games, so the gap is in the separate
+  `elo_game_snapshots` audit-trace artifact, not in the deployed feature math.
+  The test is an audit tripwire, not a feature producer. Closing the gap would
+  require an Elo snapshot rebuild over 2002+, which is a data rebuild that is
+  out of scope (the single D-10 gold rebuild is already done; D-01 forbids
+  artifact re-fits and this phase does not re-run builders).
+- **Disposition:** Capture only (D-11). PRE-EXISTING and fix-INDEPENDENT: the
+  CR-01/WR-01/WR-02 commits (`0269a15`, `dcc7883`, `8f08163`) changed only
+  `scripts/build_features.py`, `features/market_anchors.py`,
+  `features/team_form.py` and the team-form integration test -- none write
+  `elo_game_snapshots`, and no builder was run, so the on-disk data is
+  byte-identical before and after. Left red (NOT fixed): resolving it requires
+  either an out-of-scope Elo snapshot rebuild over 2002+ or amending an audit
+  invariant this phase was not asked to touch. Recommended follow-up: a future
+  data-currency pass either backfills `elo_game_snapshots` to 2002+ to match the
+  gold/burn-in span, or the test is data-driven off the actual minimum season
+  with an explicit documented coverage note.
+
+### D-11-G -- 20-REVIEW.md deferred findings (WR-03..07, IN-01..04)
+
+> These are the explicitly-deferred items from the follow-up review
+> (`20-REVIEW.md`); per the fix scope they are CAPTURED here, code left
+> untouched. (Review IDs, distinct from the F-* as-found IDs.)
+
+- **WR-03** -- `features/team_form.py:665-666`: the `build_features`
+  `kickoff_et` time-fence guard is dead code (the `calculate_team_game_stats`
+  output schema has no `kickoff_et` column, so the guard never fires). Latent
+  leakage-safety dead code (the primary `week < target_week` fence still
+  holds). Pre-existing. Deferred: either join `kickoff_et` so the guard
+  actually fences, or remove the dead guard + docstring claim.
+- **WR-04** -- `features/market_anchors.py:724-730`: market-efficiency features
+  gate on `"opening_probs" in locals() and "snapshot_probs" in locals()`, a
+  fragile cross-iteration `locals()`-membership idiom that could read a prior
+  game's stale probs if the guard structure ever changes (in practice both are
+  recomputed when both data dicts are present, so the stale value is currently
+  overwritten before use). Pre-existing. Deferred: initialize
+  `opening_probs={}`/`snapshot_probs={}` per iteration and gate on non-empty
+  dicts.
+- **WR-05** -- `data/storage.py:821-827` (write side) + on-disk
+  `data/silver/snapshot_ts=*/`: orphaned `snapshot_ts=`/`season=` partition
+  directories remain in the shared silver root after the `replace_mode` fix;
+  `ParquetManager.exists()` (`:591-595`) scans the parent dir for ANY
+  `*.parquet`-containing subdir and can false-positive on a sibling table's
+  leftover partitions. Reads are correct today (single file takes precedence in
+  `load()`). Deferred: delete the orphaned dirs and/or tighten `exists()` to the
+  same table-scoped logic `load()` uses.
+- **WR-06** -- `pipeline/health.py:191-195`: `check_data_freshness` subtracts a
+  naive `datetime.now()` from a potentially tz-aware `pd.to_datetime(latest)`,
+  raising `TypeError` that the per-table `except Exception` swallows into
+  `is_fresh: False` -- a healthy-but-tz-aware table silently reported stale.
+  Pre-existing. Deferred: normalize both sides to UTC-aware before subtracting
+  (mirror `scripts/data_qa.py:147-154`).
+- **WR-07** -- `scripts/build_market_anchors.py:200,204`: two emoji (CROSS MARK
+  U+274C, WHITE HEAVY CHECK MARK U+2705) in print statements violate the
+  CLAUDE.md no-emoji rule. Pre-existing (present at base `f519bda`). Noted, not
+  mass-edited this pass. Deferred: replace with ASCII tags (`[CRITICAL]` /
+  `[PASS]`).
+- **IN-01** -- `scripts/build_weather.py:113,139` (DEGREE SIGN U+00B0),
+  `scripts/data_qa.py:1093` (BULLET U+2022): non-ASCII (not emoji) source
+  characters that break the `isascii()` discipline the audit harnesses enforce
+  and can corrupt on Windows cp1252 consoles. Pre-existing. Deferred: ASCII
+  equivalents (`deg F` / `*`) if strict-ASCII output is desired.
+- **IN-02** -- `pipeline/staleness.py:326-327`: `_check_model_age` round-trips
+  the age comparison (`age_days * 86400 > model_age_days * 86400`), an
+  unnecessary multiply-back-out equivalent to `age_days > model_age_days`.
+  Harmless, obscures intent. Deferred: simplify.
+- **IN-03** -- `scripts/data_qa.py:34-38`: `GOLD_FEATURE_MATRICES` hardcodes
+  exact column counts (156/157/156) and `test_audit_integrity.py` asserts
+  against them; any legitimate future feature change fails with a non-obvious
+  `schema_width_ok=False`. Accepted as an intentional audit tripwire; noted as a
+  known brittleness trade-off. Deferred: optionally widen to a documented range
+  or emit a clearer message.
+- **IN-04** -- `pipeline/staleness.py:321` vs `pipeline/health.py:256`: the two
+  graceful-degradation paths resolving models via `get_latest_artifact_path`
+  handle the identical contract inconsistently (staleness narrows to
+  `(OSError, json.JSONDecodeError)`; health uses bare `except Exception`,
+  whitelisted via the `BLE001` per-file ignore). Deferred: align health's inner
+  resolver catch to the narrow tuple (the outer broad catch can remain for the
+  unbounded `stat()`/import surface). Related to D-11-A.
 
 ---
 
