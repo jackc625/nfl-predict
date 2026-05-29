@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """NFL Prediction System - Scheduling Setup Script.
 
-Sets up automated scheduling for the unified Friday pipeline on different
-operating systems (Linux/macOS with cron, Windows with Task Scheduler).
+Sets up automated scheduling for the unified Friday pipeline on Windows via
+Task Scheduler. This is the single canonical installer: it registers the
+committed deployment/windows_scheduler.xml via `schtasks /create /xml ... /f`
+so the installer and the XML cannot drift (one automation story).
 
 Consolidates the old two-task approach (DataUpdate + Predictions) into a
-single NFL_Predict_Pipeline task at 5:00 PM ET on Fridays.
+single NFL_Predict_Pipeline task at 6:00 PM ET on Fridays.
 
 Usage:
-    python deployment/setup_scheduling.py --platform linux --install
+    python deployment/setup_scheduling.py --platform windows --install
     python deployment/setup_scheduling.py --platform windows --dry-run
 """
 
@@ -27,7 +29,7 @@ OLD_TASK_NAMES = ["NFL_Predict_DataUpdate", "NFL_Predict_Predictions"]
 
 
 class SchedulingSetup:
-    """Setup automation scheduling for different platforms."""
+    """Set up Friday-pipeline scheduling via the Windows Task Scheduler."""
 
     def __init__(self, nfl_predict_home: str) -> None:
         """Initialize scheduling setup."""
@@ -93,55 +95,12 @@ class SchedulingSetup:
             except Exception:
                 logger.debug(f"Old task {old_name} not found (already removed)")
 
-    def setup_cron_linux_mac(self, dry_run: bool = False) -> bool:
-        """Set up cron jobs for Linux/macOS."""
-        logger.info("Setting up cron jobs for Linux/macOS...")
-
-        # Read the template crontab
-        crontab_template = self.nfl_predict_home / "deployment" / "crontab.txt"
-        if not crontab_template.exists():
-            logger.error(f"Crontab template not found: {crontab_template}")
-            return False
-
-        # Read and customize the crontab
-        with open(crontab_template) as f:
-            crontab_content = f.read()
-
-        # Replace placeholders with actual paths
-        crontab_content = crontab_content.replace(
-            "/path/to/nfl-predict", str(self.nfl_predict_home)
-        )
-        crontab_content = crontab_content.replace(
-            "/path/to/nfl-predict/.venv/bin/python", self.python_path
-        )
-
-        # Create customized crontab
-        custom_crontab = self.nfl_predict_home / "deployment" / "crontab_custom.txt"
-
-        if dry_run:
-            logger.info("DRY RUN: Would create customized crontab:")
-            logger.info(f"  File: {custom_crontab}")
-            logger.info("  Content preview:")
-            for line in crontab_content.split("\n")[:20]:
-                if line.strip() and not line.startswith("#"):
-                    logger.info(f"    {line}")
-            return True
-
-        # Write customized crontab
-        with open(custom_crontab, "w") as f:
-            f.write(crontab_content)
-
-        logger.info(f"Customized crontab created: {custom_crontab}")
-        logger.info("To install, run: crontab deployment/crontab_custom.txt")
-        logger.info("To view current crontab: crontab -l")
-        logger.info("To edit manually: crontab -e")
-
-        return True
-
     def setup_windows_scheduler(self, dry_run: bool = False) -> bool:
         """Set up Windows Task Scheduler with a single unified pipeline task.
 
-        Creates NFL_Predict_Pipeline at 5:00 PM ET on Fridays using uv run.
+        Registers the committed deployment/windows_scheduler.xml via
+        `schtasks /create /xml ... /f` so the installer and the XML cannot
+        drift (the XML carries the real trigger time, principal, and command).
         Idempotently cleans up old tasks (NFL_Predict_DataUpdate,
         NFL_Predict_Predictions) before creating the new one.
         """
@@ -164,34 +123,34 @@ class SchedulingSetup:
             for old_name in OLD_TASK_NAMES:
                 logger.info(f"DRY RUN: Would delete old task: {old_name}")
 
-        # Single unified task definition
+        # Single unified task definition. The trigger time, principal, and command
+        # are carried by the committed XML (installed via /xml below); the fields
+        # here are informational labels only.
         tasks = [
             {
                 "name": "NFL_Predict_Pipeline",
-                "description": "Friday 5:00 PM ET - Unified Pipeline (data + predictions)",
+                "description": "Friday 6:00 PM ET - Unified Pipeline (data + predictions)",
                 "script": "friday_pipeline.py",
-                "time": "17:00",
+                "time": "18:00",
                 "day": "FRI",
             },
         ]
 
+        # Path to the canonical task definition (single source of truth, D-07)
+        xml_path = self.nfl_predict_home / "deployment" / "windows_scheduler.xml"
+
         for task in tasks:
             logger.info(f"Setting up task: {task['name']}")
 
-            # Use uv run for reliable interpreter resolution
+            # Register the canonical XML so the installer and the XML cannot drift.
+            # /f overwrites an existing task of the same name (idempotent re-install).
             cmd = [
                 "schtasks",
                 "/create",
                 "/tn",
                 task["name"],
-                "/tr",
-                f'uv run python "scripts/{task["script"]}" --log-level INFO',
-                "/sc",
-                "weekly",
-                "/d",
-                task["day"],
-                "/st",
-                task["time"],
+                "/xml",
+                str(xml_path),
                 "/f",  # Force creation (overwrite if exists = idempotent)
             ]
 
@@ -262,50 +221,25 @@ class SchedulingSetup:
         return True
 
     def show_status(self) -> None:
-        """Show current scheduling status."""
+        """Show current scheduling status via the Windows Task Scheduler."""
         logger.info("Current scheduling status:")
 
-        if self.platform in ["linux", "darwin"]:  # macOS is darwin
-            try:
-                result = subprocess.run(
-                    ["crontab", "-l"], capture_output=True, text=True
-                )
-                if result.returncode == 0:
-                    nfl_jobs = [
-                        line
-                        for line in result.stdout.split("\n")
-                        if "nfl-predict" in line.lower() or "friday_" in line
-                    ]
-                    if nfl_jobs:
-                        logger.info("Active cron jobs:")
-                        for job in nfl_jobs:
-                            logger.info(f"  {job}")
-                    else:
-                        logger.info("No NFL prediction cron jobs found")
+        try:
+            result = subprocess.run(
+                ["schtasks", "/query", "/fo", "csv"], capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                nfl_tasks = [
+                    line for line in result.stdout.split("\n") if "NFL_Predict" in line
+                ]
+                if nfl_tasks:
+                    logger.info("Active scheduled tasks:")
+                    for task in nfl_tasks:
+                        logger.info(f"  {task}")
                 else:
-                    logger.info("No crontab configured")
-            except Exception as e:
-                logger.error(f"Error checking crontab: {e}")
-
-        elif self.platform == "windows":
-            try:
-                result = subprocess.run(
-                    ["schtasks", "/query", "/fo", "csv"], capture_output=True, text=True
-                )
-                if result.returncode == 0:
-                    nfl_tasks = [
-                        line
-                        for line in result.stdout.split("\n")
-                        if "NFL_Predict" in line
-                    ]
-                    if nfl_tasks:
-                        logger.info("Active scheduled tasks:")
-                        for task in nfl_tasks:
-                            logger.info(f"  {task}")
-                    else:
-                        logger.info("No NFL prediction scheduled tasks found")
-            except Exception as e:
-                logger.error(f"Error checking scheduled tasks: {e}")
+                    logger.info("No NFL prediction scheduled tasks found")
+        except Exception as e:
+            logger.error(f"Error checking scheduled tasks: {e}")
 
 
 def main():
@@ -315,9 +249,9 @@ def main():
     )
     parser.add_argument(
         "--platform",
-        choices=["auto", "linux", "windows", "mac"],
+        choices=["auto", "windows"],
         default="auto",
-        help="Target platform for scheduling setup",
+        help="Target platform for scheduling setup (Windows Task Scheduler only)",
     )
     parser.add_argument(
         "--install", action="store_true", help="Install the scheduling configuration"
@@ -337,17 +271,17 @@ def main():
 
     args = parser.parse_args()
 
-    # Auto-detect platform if needed
+    # Auto-detect platform if needed (Windows Task Scheduler is the only
+    # supported automation mechanism)
     if args.platform == "auto":
         system = platform.system().lower()
-        if system == "linux":
-            args.platform = "linux"
-        elif system == "windows":
+        if system == "windows":
             args.platform = "windows"
-        elif system == "darwin":
-            args.platform = "mac"
         else:
-            logger.error(f"Unsupported platform: {system}")
+            logger.error(
+                f"Unsupported platform: {system}. "
+                "Scheduling is supported via Windows Task Scheduler only."
+            )
             return 1
 
     # Initialize setup
@@ -368,10 +302,7 @@ def main():
         success = setup.test_scripts(dry_run=True)
 
     if args.install or args.dry_run:
-        if args.platform in ["linux", "mac"]:
-            success = setup.setup_cron_linux_mac(dry_run=args.dry_run)
-        elif args.platform == "windows":
-            success = setup.setup_windows_scheduler(dry_run=args.dry_run)
+        success = setup.setup_windows_scheduler(dry_run=args.dry_run)
 
     if success:
         if args.install:
