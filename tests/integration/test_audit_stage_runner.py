@@ -220,10 +220,16 @@ class TestCurrentWeekIncrementalBuilders:
 
         We invoke ``TeamFormBuilder.build_for_current_week`` -- the exact code path the
         ``build_team_form.py --current`` CLI runs -- but patch out the ``save_dataframe``
-        silver write so the harness stays idempotent. (The live ``--current`` path
-        appends non-idempotently to ``team_game_stats`` via the deprecated
-        ``build_team_form_features``; both are cataloged as findings in AUDIT-REPORT.md,
-        D-10, not fixed here.)
+        silver write so the harness stays idempotent.
+
+        WR-01 fix (committed in phase 20): the current-week path passes only a
+        3-season subset, so it MUST NOT overwrite the full-history
+        ``team_game_stats`` silver table (``replace_mode=True`` on a subset would
+        shrink the on-disk 2002-2024 history to 3 seasons -- a data-loss
+        regression). The persisted write is skipped on the incremental path; the
+        full-rebuild path (``build_for_seasons``) remains the canonical producer of
+        the complete table. This test asserts that the current-week path runs
+        end-to-end AND does not attempt any persisted silver write.
         """
         import features.team_form as team_form_module
         from scripts.build_team_form import TeamFormBuilder
@@ -243,7 +249,10 @@ class TestCurrentWeekIncrementalBuilders:
         # The incremental path ran end-to-end and produced rolling team-form features.
         assert isinstance(form_df, pd.DataFrame)
         assert len(form_df) > 0, "Team-form current-week path produced no features"
-        # It attempted to write its silver output (the write we intercepted).
-        assert "team_game_stats" in saved_tables, (
-            "Expected the current-week path to write team_game_stats to silver"
+        # WR-01: the current-week subset path must NOT persist team_game_stats
+        # (doing so would destroy the full-history table). It returns the rolling
+        # features in-memory without mutating the silver artifact.
+        assert "team_game_stats" not in saved_tables, (
+            "WR-01 regression: the current-week path must not overwrite the "
+            "full-history team_game_stats silver table"
         )

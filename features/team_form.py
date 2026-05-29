@@ -808,6 +808,14 @@ class TeamFormCalculator:
             target_week=target_week,
         )
 
+        # The incremental/current-week invocation (build_for_current_week ->
+        # target_season AND target_week set) builds only a 3-season subset
+        # [current-2, current-1, current]. The full-rebuild invocations
+        # (build_for_seasons via --season/--seasons/--all-seasons/default) pass
+        # the complete season set with no target. Only the full path is the
+        # canonical producer of the persisted silver tables.
+        incremental = target_season is not None and target_week is not None
+
         try:
             # Fetch play-by-play data
             pbp_df = self.fetch_pbp_data(seasons)
@@ -815,18 +823,40 @@ class TeamFormCalculator:
             # Calculate team-game statistics
             team_stats_df = self.calculate_team_game_stats(pbp_df)
 
-            # Save team statistics to silver layer.
-            # replace_mode: team_stats_df is the complete team-game stat table
-            # for the seasons built; write a single self-replacing file so a
-            # rebuild is idempotent (no directory-partition append bloat -- the
+            # Persist team statistics to silver layer ONLY on the full-rebuild
+            # path. On the full path team_stats_df IS the complete team-game
+            # stat table, so replace_mode writes a single self-replacing file
+            # that is idempotent (no directory-partition append bloat -- the
             # F-02 ~127k duplicate (game_id, team) rows came from blind appends
             # into the shared data/silver/season=YYYY/ root). (FIX-01, D-13)
-            save_dataframe(
-                team_stats_df,
-                "team_game_stats",
-                layer="silver",
-                replace_mode=True,
-            )
+            #
+            # On the incremental/--current path we must NOT replace the
+            # persisted table: team_stats_df holds only ~3 seasons there, and
+            # replace_mode would shrink the on-disk 2002-2024 history down to
+            # those 3 seasons -- a silent data-loss regression (WR-01). We skip
+            # the persisted write entirely rather than append, because (a) the
+            # full path is the canonical producer of the complete table and
+            # (b) no code path reads team_game_stats from disk -- build_features
+            # recomputes per-game stats in-memory via
+            # TeamFormCalculator.get_per_game_stats() -- so the current-week run
+            # has no need to mutate the artifact. Idempotency therefore holds
+            # within a fixed seasons argument; switching between full and
+            # current builds no longer mutates the table's season span.
+            if not incremental:
+                save_dataframe(
+                    team_stats_df,
+                    "team_game_stats",
+                    layer="silver",
+                    replace_mode=True,
+                )
+            else:
+                logger.info(
+                    "Skipping persisted team_game_stats write on incremental "
+                    "(--current) path to preserve full-history table (WR-01)",
+                    seasons=seasons,
+                    target_season=target_season,
+                    target_week=target_week,
+                )
 
             # If specific target provided, calculate rolling averages for that point
             if target_season and target_week:
