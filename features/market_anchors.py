@@ -521,13 +521,28 @@ class MarketAnchorFeaturesCalculator:
         try:
             consensus_lines = []
 
+            # The lines frame is the output of identify_opening_lines /
+            # identify_snapshot_lines, which prefix every odds column with
+            # ``opening_`` or ``snapshot_`` (e.g. ``opening_ml_home``,
+            # ``snapshot_spread``). The original code read the bare ``ml_home`` /
+            # ``ml_away`` / ``spread`` / ``total`` names that no longer exist after
+            # that upstream rename, raising KeyError 'ml_home' for every call. Detect
+            # the present prefix and read the columns that actually exist. (D-11-E)
+            prefix = (
+                "opening_" if "opening_ml_home" in lines_df.columns else "snapshot_"
+            )
+            ml_home_col = f"{prefix}ml_home"
+            ml_away_col = f"{prefix}ml_away"
+            spread_col = f"{prefix}spread"
+            total_col = f"{prefix}total"
+
             for game_id, group in lines_df.groupby("game_id"):
                 # Calculate consensus for each market
                 consensus = {"game_id": game_id}
 
                 # Moneyline consensus (median)
-                ml_home_values = group["ml_home"].dropna()
-                ml_away_values = group["ml_away"].dropna()
+                ml_home_values = group[ml_home_col].dropna()
+                ml_away_values = group[ml_away_col].dropna()
 
                 if len(ml_home_values) > 0:
                     consensus["consensus_ml_home"] = ml_home_values.median()
@@ -535,12 +550,12 @@ class MarketAnchorFeaturesCalculator:
                     consensus["consensus_ml_away"] = ml_away_values.median()
 
                 # Spread consensus (median)
-                spread_values = group["spread"].dropna()
+                spread_values = group[spread_col].dropna()
                 if len(spread_values) > 0:
                     consensus["consensus_spread"] = spread_values.median()
 
                 # Total consensus (median)
-                total_values = group["total"].dropna()
+                total_values = group[total_col].dropna()
                 if len(total_values) > 0:
                     consensus["consensus_total"] = total_values.median()
 
