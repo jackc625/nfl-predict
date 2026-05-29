@@ -17,7 +17,7 @@ Market anchors provide:
 """
 
 import warnings
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -25,6 +25,7 @@ import pandas as pd
 from conf.settings import get_settings
 from data.storage import load_dataframe
 from utils import get_logger
+from utils.date_utils import ET
 from utils.probability_utils import (
     devig_probabilities,
     moneyline_to_probability,
@@ -183,10 +184,14 @@ class MarketAnchorFeaturesCalculator:
                 odds_df["snapshot_ts"], utc=True, errors="coerce"
             )
 
-            # If no target date provided, find the most recent Friday 6 PM
+            # If no target date provided, find the most recent Friday 6 PM ET.
             if target_date is None:
-                # Find the latest date in odds data
-                latest_date = odds_df["snapshot_ts"].max()
+                # Find the latest snapshot (tz-aware UTC) and view it in ET so
+                # the Friday we pick is the ET calendar Friday, not the UTC one.
+                # On-disk snapshots are 18:00 ET = 22:00 UTC; choosing the
+                # Friday from the UTC date would shift late-night ET snapshots
+                # into the wrong calendar day.
+                latest_date = odds_df["snapshot_ts"].max().tz_convert(ET)
 
                 # Find the Friday before/on this date
                 days_since_friday = (latest_date.weekday() - 4) % 7
@@ -195,14 +200,19 @@ class MarketAnchorFeaturesCalculator:
                     target_friday, datetime.min.time().replace(hour=18)
                 )
 
-            # Convert to snapshot cutoff time (Friday 6 PM ET). Make it tz-aware
-            # (UTC) so the comparison below against the now tz-aware snapshot_ts
-            # does not raise a naive-vs-aware TypeError.
+            # Convert to snapshot cutoff time (Friday 6 PM ET). The module
+            # contract is "Friday 6 PM ET"; localize the naive cutoff to ET
+            # (America/New_York), NOT UTC. Localizing to UTC produced
+            # Friday 18:00 UTC = Friday 14:00 ET (2 PM ET), which is 4 hours
+            # too early and dropped the legitimate 18:00 ET (= 22:00 UTC)
+            # snapshots, emptying the snapshot set on the orchestrator path.
+            # The comparison below is against the tz-aware (UTC) snapshot_ts;
+            # an ET-aware cutoff compares correctly across timezones. (WR-02)
             cutoff_time = target_date.replace(
                 hour=18, minute=0, second=0, microsecond=0
             )
             if cutoff_time.tzinfo is None:
-                cutoff_time = cutoff_time.replace(tzinfo=UTC)
+                cutoff_time = cutoff_time.replace(tzinfo=ET)
 
             logger.info(
                 "Using snapshot cutoff time", cutoff_time=cutoff_time.isoformat()
