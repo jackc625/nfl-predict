@@ -499,3 +499,199 @@ class TestArgparse:
             cwd="C:/Users/jackc/Code/nfl-predict",
         )
         assert result.returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# AUTO-02 coverage-gap behavior tests (Plan 21-02)
+# ---------------------------------------------------------------------------
+
+
+def _make_gate_mocks(preflight_status: str = "healthy"):
+    """Build fresh (staleness, health, alert) mocks for an AUTO-02 gap test.
+
+    Each test re-patches the gates with these so it holds a direct handle to
+    the injected ``alert_manager`` / ``health_checker`` mocks (the autouse
+    ``_patch_gates`` fixture does not expose its mocks). Mirrors the re-patch
+    idiom in ``test_predictions_only_logs_prerequisite_warning``.
+
+    Args:
+        preflight_status: ``run_preflight`` status to return ("healthy" or
+            "unhealthy").
+
+    Returns:
+        (mock_staleness, mock_health, mock_alert) tuple.
+    """
+    from pipeline.staleness import StalenessResult
+
+    mock_staleness = MagicMock()
+    mock_staleness.run_all_checks.return_value = StalenessResult(passed=True)
+
+    mock_health = MagicMock()
+    mock_health.run_preflight.return_value = {
+        "status": preflight_status,
+        "checks": [],
+    }
+    mock_health.run_postrun.return_value = {"status": "healthy", "checks": []}
+
+    mock_alert = MagicMock()
+    return mock_staleness, mock_health, mock_alert
+
+
+class TestAuto02CoverageGaps:
+    """Behavior tests for the two real AUTO-02 coverage gaps (Plan 21-02).
+
+    Gap 1: ``--force`` makes the pre-flight health check ADVISORY (continue +
+    warn) on an unhealthy result rather than aborting.
+
+    Gap 3: exactly ONE alert method is fired per terminal outcome
+    (failed -> alert_pipeline_failure, degraded -> alert_degraded_completion,
+    success -> alert_pipeline_success), with the other two never fired.
+
+    These intentionally re-patch the gates (overriding the autouse
+    ``_patch_gates`` fixture) so each test holds a direct handle to the injected
+    alert/health mocks. The genuinely-covered behavior (retry, sequencing,
+    critical-abort status, degrade status, staleness block/pass) is NOT
+    duplicated here.
+    """
+
+    @pytest.mark.usefixtures("_patch_nfl_week", "_patch_log_write")
+    def test_force_health_advisory_on_unhealthy_preflight(self):
+        """Gap 1: a forced run continues on unhealthy pre-flight and warns.
+
+        With ``force=True`` an unhealthy pre-flight health result must NOT abort
+        the run; instead the orchestrator appends the exact advisory warning and
+        completes (status in {success, degraded}).
+        """
+        from pipeline.orchestrator import FridayPipeline
+
+        mock_staleness, mock_health, mock_alert = _make_gate_mocks(
+            preflight_status="unhealthy"
+        )
+
+        steps = [
+            make_mock_step("step_a", PipelinePhase.DATA),
+            make_mock_step("step_b", PipelinePhase.PREDICTIONS),
+        ]
+
+        with (
+            patch("pipeline.orchestrator.StalenessGate", return_value=mock_staleness),
+            patch(
+                "pipeline.orchestrator.PipelineHealthChecker",
+                return_value=mock_health,
+            ),
+            patch(
+                "pipeline.orchestrator.PipelineAlertManager", return_value=mock_alert
+            ),
+            patch("pipeline.orchestrator.build_step_registry", return_value=steps),
+        ):
+            pipeline = FridayPipeline(force=True)
+            log = pipeline.run()
+
+        # Forced + unhealthy pre-flight => run COMPLETES (advisory), not aborted.
+        assert log.status in ("success", "degraded")
+        assert "Pre-flight health: unhealthy (forced)" in log.warnings
+        # No CRITICAL failure alert fired on the advisory path.
+        mock_alert.alert_pipeline_failure.assert_not_called()
+
+    @pytest.mark.usefixtures("_patch_nfl_week", "_patch_log_write")
+    def test_signal_failed_fires_one_critical_alert(self):
+        """Gap 3 (failed): exactly one alert_pipeline_failure on critical failure.
+
+        The critical-failure path fires ``alert_pipeline_failure`` once then
+        raises before Phase E, so the total must be exactly 1 (not 2). The
+        success/degraded alerts must never fire.
+        """
+        from pipeline.orchestrator import FridayPipeline
+
+        mock_staleness, mock_health, mock_alert = _make_gate_mocks()
+
+        steps = [
+            make_mock_step("step_a", PipelinePhase.DATA),
+            make_mock_step(
+                "step_fail", PipelinePhase.DATA, critical=True, should_fail=True
+            ),
+        ]
+
+        with (
+            patch("pipeline.orchestrator.StalenessGate", return_value=mock_staleness),
+            patch(
+                "pipeline.orchestrator.PipelineHealthChecker",
+                return_value=mock_health,
+            ),
+            patch(
+                "pipeline.orchestrator.PipelineAlertManager", return_value=mock_alert
+            ),
+            patch("pipeline.orchestrator.build_step_registry", return_value=steps),
+        ):
+            pipeline = FridayPipeline()
+            with pytest.raises(RuntimeError):
+                pipeline.run()
+
+        assert mock_alert.alert_pipeline_failure.call_count == 1
+        mock_alert.alert_degraded_completion.assert_not_called()
+        mock_alert.alert_pipeline_success.assert_not_called()
+
+    @pytest.mark.usefixtures("_patch_nfl_week", "_patch_log_write")
+    def test_signal_degraded_fires_one_warning_alert(self):
+        """Gap 3 (degraded): exactly one alert_degraded_completion; no failure alert."""
+        from pipeline.orchestrator import FridayPipeline
+
+        mock_staleness, mock_health, mock_alert = _make_gate_mocks()
+
+        steps = [
+            make_mock_step("step_a", PipelinePhase.DATA),
+            make_mock_step(
+                "step_warn", PipelinePhase.DATA, critical=False, should_fail=True
+            ),
+            make_mock_step("step_c", PipelinePhase.DATA),
+        ]
+
+        with (
+            patch("pipeline.orchestrator.StalenessGate", return_value=mock_staleness),
+            patch(
+                "pipeline.orchestrator.PipelineHealthChecker",
+                return_value=mock_health,
+            ),
+            patch(
+                "pipeline.orchestrator.PipelineAlertManager", return_value=mock_alert
+            ),
+            patch("pipeline.orchestrator.build_step_registry", return_value=steps),
+        ):
+            pipeline = FridayPipeline()
+            log = pipeline.run()
+
+        assert log.status == "degraded"
+        assert mock_alert.alert_degraded_completion.call_count == 1
+        mock_alert.alert_pipeline_failure.assert_not_called()
+        mock_alert.alert_pipeline_success.assert_not_called()
+
+    @pytest.mark.usefixtures("_patch_nfl_week", "_patch_log_write")
+    def test_signal_success_fires_one_info_alert(self):
+        """Gap 3 (success): exactly one alert_pipeline_success; no other alert."""
+        from pipeline.orchestrator import FridayPipeline
+
+        mock_staleness, mock_health, mock_alert = _make_gate_mocks()
+
+        steps = [
+            make_mock_step("step_a", PipelinePhase.DATA),
+            make_mock_step("step_b", PipelinePhase.PREDICTIONS),
+        ]
+
+        with (
+            patch("pipeline.orchestrator.StalenessGate", return_value=mock_staleness),
+            patch(
+                "pipeline.orchestrator.PipelineHealthChecker",
+                return_value=mock_health,
+            ),
+            patch(
+                "pipeline.orchestrator.PipelineAlertManager", return_value=mock_alert
+            ),
+            patch("pipeline.orchestrator.build_step_registry", return_value=steps),
+        ):
+            pipeline = FridayPipeline()
+            log = pipeline.run()
+
+        assert log.status == "success"
+        assert mock_alert.alert_pipeline_success.call_count == 1
+        mock_alert.alert_pipeline_failure.assert_not_called()
+        mock_alert.alert_degraded_completion.assert_not_called()
