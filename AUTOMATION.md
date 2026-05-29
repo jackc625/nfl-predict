@@ -27,15 +27,17 @@ that fires once a week.
   (the D-09 caveat). If the machine is moved to another timezone, the 6 PM ET freeze
   is no longer honored and the trigger must be re-pointed.
 - **Canonical command:** `uv run python scripts/friday_pipeline.py --log-level INFO`
-  (the `<Exec>` in the XML: `<Command>uv</Command>` +
+  (the `<Exec>` in the XML: `<Command>` = the absolute `uv.exe` path +
   `<Arguments>run python scripts/friday_pipeline.py --log-level INFO</Arguments>`).
 - **Principal:** the owner user `jackc` with `LogonType=S4U` and
   `RunLevel=HighestAvailable` (NOT the SYSTEM SID `S-1-5-18`, which cannot see the
   owner's `uv` / `.venv` / `.env`). S4U runs whether or not the owner is interactively
-  logged on, which the `WakeToRun` Friday-evening run needs. The final working
-  `LogonType` is confirmed empirically by the D-08 register-and-verify `schtasks /run`
-  (see Section 9 / the scheduling reconciliation); if `uv` or `.env` do not resolve
-  under S4U, the XML is switched to `InteractiveTokenOrPassword`.
+  logged on, which the `WakeToRun` Friday-evening run needs. `LogonType=S4U` is the
+  CONFIRMED working principal (D-08 register-and-verify, Section 9). Because the S4U
+  logon does NOT load the owner's USER PATH, the `<Command>` must be the ABSOLUTE
+  `uv.exe` path (`C:\Users\jackc\AppData\Roaming\Python\Python313\Scripts\uv.exe`) -- a
+  bare `uv` fails under S4U with `0x80070002` "file not found". The remedy was the
+  absolute path, not switching off S4U.
 - **WorkingDirectory:** `C:\Users\jackc\Code\nfl-predict`. The committed XML is
   machine-specific (this path + the `UserId` principal) and must be re-pointed if the
   repo moves to a different machine or user.
@@ -221,49 +223,61 @@ from the on-disk odds snapshot with NO live pull) with NO model artifact re-fit.
 
 ---
 
-## 7. Alerts -- log-only by default, email/Slack only if configured (D-05)
+## 7. Alerts -- console/log ONLY in the current code (D-05, empirically verified)
 
-Alerts are **log-only by default.** Every alert always fires to the console/log channel
-(`_send_console_alert`), so a normal run requires NO configuration to produce its alert.
-Email and Slack channels fire ONLY if they are explicitly enabled.
+Alerts are **log-only.** Every alert always fires to the console/log channel
+(`_send_console_alert` + the `logger.{info,warning,error,critical}` line in
+`AlertManager.create_alert`), so a normal run produces its alert with NO configuration.
+**Email and Slack are currently INERT** -- they cannot fire at all via `conf/config.yaml`
+today. This is a code-wiring gap, NOT a missing-secret problem: even with every key set,
+no email or Slack message would be sent. The D-05 verification (empirical, read-only) is
+recorded in Section 9; the alert-wiring gap is captured (NOT fixed) in Section 10 with the
+3-part remedy.
 
 The orchestrator's four alert methods (`pipeline/alert.py`) each map to exactly ONE event
 and level: failure -> CRITICAL, success -> INFO, staleness -> WARNING, degraded ->
-WARNING. They wrap `utils.alert_manager.AlertManager`, whose `send_alert` routes each
-alert to the channels configured for its severity, gated on the enable flags.
+WARNING. They wrap `utils.alert_manager.AlertManager`, whose `send_alert` is supposed to
+route each alert to the channels configured for its severity, gated on the enable flags.
 
-The routing is configured in `conf/config.yaml` under `monitoring.notifications`
-(NOT directly in `.env`); secrets (recipients, webhook URL) belong there or in a local
-override, never committed:
+### Why email/Slack are inert (the verified root cause)
 
-| Key (under `monitoring.notifications`) | Default | Purpose |
-|----------------------------------------|---------|---------|
-| `enable_email` | `false` | Master switch for the email channel. |
-| `enable_slack` | `false` | Master switch for the Slack channel. |
-| `enable_console` | `true` | Console/log channel (always on -- the log-only default). |
-| `email_recipients` | `[]` | List of recipient addresses (email is skipped with a warning if empty). |
-| `slack_webhook_url` | `""` | Slack incoming-webhook URL (Slack is skipped with a warning if empty). |
-| `notification_levels` | per-severity channel lists | Which channels fire at each level (e.g. `critical: [email, slack, console]`, `warning: [console]`, `info: [console]`). |
-| `max_alerts_per_hour` | `20` | Hourly rate limit per alert type. |
-| `cooldown_minutes` | `30` | Suppress repeat alerts of the same type/level within this window. |
+A `conf/config.yaml` `monitoring.notifications` block (recipients, webhook URL, per-level
+channel lists) exists in spirit, but the running code never reads it. Three independent
+breaks, each sufficient on its own, keep email/Slack dark:
 
-To enable failure email: set `monitoring.notifications.enable_email: true`, populate
-`email_recipients`, and ensure `critical` (and any other severities you want emailed)
-includes `"email"` in `notification_levels`. To enable Slack: set
-`monitoring.notifications.enable_slack: true` and set `slack_webhook_url`.
+1. **`AlertManager` reads a non-existent attribute.** `AlertManager.__init__` sets
+   `self.monitoring_config` from `self.settings.monitoring` -- but `conf.settings.Settings`
+   has NO `monitoring` attribute (the YAML monitoring block lives under
+   `self.settings.config.monitoring`). So `hasattr(self.settings, "monitoring")` is `False`
+   and `self.monitoring_config == {}` ALWAYS. `send_alert` then resolves
+   `notification_levels.get(<level>, ["console"])` to `["console"]` for EVERY level --
+   CRITICAL and INFO alike route to `["console"]` only, regardless of any config.
+2. **`MonitoringConfig` does not declare `notifications`.** Even via the correct path
+   (`self.settings.config.monitoring`), `conf.settings.MonitoringConfig` declares only
+   `enable_health_checks`, `health_check_interval`, `data_quality`, and
+   `model_performance` -- there is NO `notifications` field. Pydantic (extra=ignore) DROPS
+   `config.yaml`'s `monitoring.notifications` block, so `model_dump()` would never expose
+   `enable_email` / `enable_slack` / `email_recipients` / `slack_webhook_url` /
+   `notification_levels` even if break (1) were fixed.
+3. **`Settings` lacks the SMTP fields.** The email SEND path
+   (`AlertManager._send_email_alert`) references `self.settings.email_from`,
+   `self.settings.smtp_host`, `self.settings.smtp_port`, `self.settings.smtp_use_tls`,
+   `self.settings.smtp_username`, and `self.settings.smtp_password` -- NONE of which are
+   defined on `Settings`. If the email channel were ever reached it would raise
+   `AttributeError`. (The `.env` flags `ENABLE_EMAIL_REPORTS` / `ENABLE_SLACK_NOTIFICATIONS`
+   that DO exist on `Settings` are unrelated -- `AlertManager` never reads them.)
 
-> Note (D-05 / honesty): the email SEND path (`AlertManager._send_email_alert`) reads
-> SMTP attributes off the settings object (`smtp_host`, `smtp_port`, `smtp_use_tls`,
-> `smtp_username`, `smtp_password`, `email_from`) that are NOT currently defined on the
-> `conf.settings.Settings` class. The `.env` feature flags `ENABLE_EMAIL_REPORTS` /
-> `ENABLE_SLACK_NOTIFICATIONS` exist on `Settings` but are NOT the switches
-> `AlertManager` reads (it reads `monitoring.notifications.enable_email/enable_slack`).
-> So the email channel is documented + reachable but the SMTP settings wiring must be
-> verified before relying on it. The Task-3 (D-05) owner checkpoint either verifies a
-> test alert actually arrives via the chosen channel, or confirms the documented keys
-> match the code for a future enable (Slack works as documented; email needs the SMTP
-> settings present). The default stays log-only either way -- no `.env` change is
-> required for a normal run.
+Net: the console/log alert (always fires) is the real, working behavior. **Both email AND
+Slack are currently inert** -- enabling them is NOT possible by configuration alone; it
+requires the code changes listed in Section 10. The rate-limit / cooldown logic in
+`should_send_alert` (`cooldown_minutes` default 30, `max_alerts_per_hour` default 20) reads
+the same empty `monitoring_config`, so it falls back to those defaults.
+
+> Note (D-05 / honesty): an earlier draft of this section implied "Slack works as
+> documented; email needs SMTP settings." That was inaccurate -- in the current code BOTH
+> email and Slack are inert. The honest statement is: alerts are console/log ONLY, and
+> enabling email/Slack requires the deferred code changes in Section 10. The default is
+> log-only and a normal run requires no configuration.
 
 ---
 
@@ -333,15 +347,36 @@ includes `"email"` in `notification_levels`. To enable Slack: set
 - **Fix:** corrected the canonical XML -- owner principal `jackc` + `LogonType=S4U` +
   `RunLevel=HighestAvailable` (NOT the SYSTEM SID, D-10); `StartBoundary` restored to
   `18:00` local = 6 PM ET (undoing the Phase-19 5 PM / 17:00 consolidation, D-09);
-  `<Exec>` changed from the hardcoded `.venv\Scripts\python.exe` to `uv run python
-  scripts/friday_pipeline.py --log-level INFO` (D-10). Made `setup_scheduling.py` a single
-  installer that registers THAT XML via `schtasks /create /xml ... /f` (D-07), removing
-  the dead Linux/mac cron branch. No second automation mechanism.
+  `<Exec>` `<Command>` changed from the hardcoded `.venv\Scripts\python.exe` to run the
+  pipeline via `uv` (D-10). Made `setup_scheduling.py` a single installer that registers
+  THAT XML via `schtasks /create /xml ... /f` (D-07), removing the dead Linux/mac cron
+  branch. No second automation mechanism.
 - **Commits:** `45e2b84` (XML), `bfcf108` (installer), `6b72e41` (tests).
-- **Note:** the committed XML fix is INERT until the OS task is re-registered. The
-  register-and-verify is the D-08 owner checkpoint (Section 9); the final working
-  `LogonType` (S4U vs `InteractiveTokenOrPassword`) is decided empirically by that
-  `schtasks /run`.
+- **D-08 register-and-verify follow-up fixes** (discovered at the D-08 owner checkpoint;
+  these correct the 21-03 artifacts so the task actually registers and launches):
+  - `02e8b6a` -- the XML header comment contained illegal `--` double-hyphens (inside the
+    `--platform` / `--install` install instructions), which is forbidden inside an XML
+    comment, so `schtasks /create /xml` rejected the file ("The task XML is malformed.
+    (9,55) incorrect comment syntax"). Rephrased the comment to be `--`-free and added an
+    XML well-formedness + no-`--`-in-comment regression test (the prior 21-03 test only
+    string-matched content and never PARSED the XML -- that gap is now closed).
+  - `2061907` -- the bare `<Command>uv</Command>` failed under S4U with `0x80070002`
+    ("file not found") because the S4U logon does NOT load the owner's USER PATH (`uv` lives
+    at `C:\Users\jackc\AppData\Roaming\Python\Python313\Scripts\uv.exe`, on the User Path,
+    not the Machine Path). Owner-approved fix: set `<Command>` to the ABSOLUTE `uv.exe`
+    path and KEEP `LogonType=S4U` (runs whether logged on or off, no stored password). The
+    `<Arguments>` stay `run python scripts/friday_pipeline.py --log-level INFO`.
+- **Final state (D-08 verified):** `LogonType=S4U` is the confirmed working principal once
+  the `<Command>` is the absolute `uv.exe` path -- the remedy was the absolute path, NOT
+  switching to `InteractiveTokenOrPassword`. The owner re-ran (elevated)
+  `uv run python deployment/setup_scheduling.py --install` ("Task 'NFL_Predict_Pipeline'
+  created successfully"), then `schtasks /run` (SUCCESS) and `schtasks /query ... /v`:
+  Run As User = `jackc` (NOT SYSTEM), Task To Run resolves the absolute `uv.exe` running
+  `scripts/friday_pipeline.py`, Schedule = Weekly / FRI / 6:00 PM, Next Run Time =
+  9/18/2026 6:00 PM (season-anchored, correct for the offseason), State = Enabled,
+  `Last Result = 0` after `/run` (the run launched `uv.exe` under S4U and exited 0 via the
+  D-06 offseason no-op, so no `logs/friday_pipeline.json` is written -- the no-op returns
+  before the orchestrator is constructed). Details in Section 9.
 
 ### AUTO-01 -- Durable end-to-end orchestrator guard
 
@@ -360,20 +395,46 @@ includes `"email"` in `notification_levels`. To enable Slack: set
 ## 9. Owner-executed verifications (D-08 scheduling, D-05 alerts)
 
 Two verifications complete the automation audit on the owner's machine. They require
-admin / a local `.env` and cannot be CI-automated; they are recorded here when run.
+admin / a local `.env` and cannot be CI-automated. Both are now DONE and recorded here.
 
-- **D-08 (AUTO-03 completion):** register `NFL_Predict_Pipeline` via
-  `uv run python deployment/setup_scheduling.py --install`, then confirm via
-  `schtasks /query /tn NFL_Predict_Pipeline /fo LIST /v` (Run As User = `jackc`,
-  Next Run Time = a Friday, action resolves `uv run ... scripts/friday_pipeline.py`).
-  Optionally `schtasks /run` to prove launch. Records the final working `LogonType`
-  (S4U, or `InteractiveTokenOrPassword` if `uv`/`.env` do not resolve under S4U).
-- **D-05 (alert path):** either set the `monitoring.notifications` keys above and verify
-  a test alert arrives via email/Slack, or confirm the documented keys match the code for
-  a future enable. The default stays log-only.
+### D-08 (AUTO-03 completion) -- scheduled task registered + verified [PASS]
 
-> These owner steps are tracked in the Plan 21-05 SUMMARY (the register-and-verify
-> outcome + final LogonType, and the email-path outcome) once executed.
+The owner registered `NFL_Predict_Pipeline` (elevated) via
+`uv run python deployment/setup_scheduling.py --install` ("Task 'NFL_Predict_Pipeline'
+created successfully"; the old split task names were cleaned up), ran it once with
+`schtasks /run` (SUCCESS), and confirmed it via
+`schtasks /query /tn NFL_Predict_Pipeline /fo LIST /v`:
+
+| Field | Verified value |
+|-------|----------------|
+| Run As User | `jackc` (NOT SYSTEM) |
+| Logon Mode | Interactive/Background (= `LogonType=S4U`) |
+| Task To Run | `uv run python scripts/friday_pipeline.py --log-level INFO` (via the absolute `uv.exe`) |
+| Start In | `C:\Users\jackc\Code\nfl-predict` |
+| Schedule | Weekly, Days = FRI, Start Time = 6:00 PM, Start Date = 9/12/2026 |
+| Next Run Time | 9/18/2026 6:00 PM (season-anchored -- correct for the offseason) |
+| State | Enabled |
+| Stop-after | 02:00:00 (`ExecutionTimeLimit=PT2H`) |
+| Last Result | `0` after `schtasks /run` (Last Run Time 5/29/2026 1:00 PM) |
+
+The `Last Result = 0` confirms the task launched `uv.exe` under S4U and exited 0 via the
+D-06 offseason no-op (no `logs/friday_pipeline.json` is written because the no-op returns
+before the orchestrator is constructed -- correct offseason behavior). Reaching this
+required the two follow-up fixes in Section 8 (`02e8b6a` malformed-comment, `2061907`
+absolute `uv.exe` path). **Final working `LogonType` = S4U** (the remedy for the
+`0x80070002` PATH failure was the absolute `uv.exe` path, NOT switching to
+`InteractiveTokenOrPassword`).
+
+### D-05 (alert path) -- documented-only; email + Slack are inert [PASS]
+
+The owner did NOT enable email/Slack. A read-only diagnostic of `utils/alert_manager.py`
++ `conf/settings.py` (recorded in Section 7) empirically confirmed that **email AND Slack
+are currently inert and cannot fire via config alone**: `AlertManager` reads the
+non-existent `self.settings.monitoring` (so `monitoring_config == {}` always),
+`MonitoringConfig` declares no `notifications` field, and `Settings` lacks the SMTP fields
+the email path references. The console/log alert always fires and IS the working behavior;
+the default stays log-only. Enabling email/Slack requires the deferred code changes in
+Section 10 -- it is NOT a matter of populating config keys.
 
 ---
 
@@ -412,6 +473,33 @@ admin / a local `.env` and cannot be CI-automated; they are recorded here when r
   catches are drift. Deferred: a future robustness pass narrows the non-intentional ones
   to operation-specific exception tuples (the pattern `data/storage.py` adopted in
   Phase 15). The intentional CLI / per-step catches stay.
+- **ALERT-WIRING -- email/Slack alert channels are inert (D-05 finding).**
+  `utils/alert_manager.py` + `conf/settings.py`: the email and Slack alert channels cannot
+  fire via configuration today (verified empirically in Section 7). Three independent
+  breaks: (1) `AlertManager.__init__` reads `self.settings.monitoring`, which does not
+  exist (the YAML monitoring block is at `self.settings.config.monitoring`), so
+  `self.monitoring_config == {}` always and every level resolves to `["console"]`;
+  (2) `conf.settings.MonitoringConfig` declares no `notifications` field, so Pydantic
+  (extra=ignore) drops `config.yaml`'s `monitoring.notifications` block even via the
+  correct path; (3) `conf.settings.Settings` lacks the SMTP fields
+  (`email_from`, `smtp_host`, `smtp_port`, `smtp_use_tls`, `smtp_username`,
+  `smtp_password`) that `AlertManager._send_email_alert` references (would `AttributeError`
+  if reached). Captured, NOT fixed (documentation/verification milestone -- HARD BOUNDARY
+  D-01/D-12; no new feature). 3-part remedy for a future robustness milestone:
+  (a) declare a `MonitoringConfig.notifications` sub-model (or have `AlertManager` read the
+  raw YAML); (b) fix `AlertManager` to read `self.settings.config.monitoring` instead of
+  the non-existent `self.settings.monitoring`; (c) add the SMTP fields to `Settings`
+  (sourced from `.env`, never committed). Until then, alerts are console/log only and the
+  default log-only behavior is the working behavior.
+- **UV-PATH-MAINT -- absolute `uv.exe` path is Python-major-version-pinned (maintenance
+  note).** `deployment/windows_scheduler.xml`: the scheduled task's `<Command>` is the
+  absolute `C:\Users\jackc\AppData\Roaming\Python\Python313\Scripts\uv.exe` (required
+  because the S4U logon does not load the owner USER PATH, see Section 8 `2061907`). The
+  `Python313` segment is version-pinned: on a Python MAJOR upgrade (e.g. to Python 3.14)
+  the per-user Scripts directory moves to `Python314\` and `uv.exe` will no longer resolve
+  at the committed path. Maintenance action on a Python major upgrade: re-point the
+  `<Command>` to the new `Scripts\uv.exe` path and re-run
+  `uv run python deployment/setup_scheduling.py --install` to re-register the task.
 
 For the broader deferred robustness/hygiene catalog (D-11-B SQL-string-build,
 silent in-memory-DB fallback, the `20-REVIEW.md` WR-05..07 / IN-01..04 items, etc.) see

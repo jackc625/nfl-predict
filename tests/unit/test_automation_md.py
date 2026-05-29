@@ -76,8 +76,23 @@ class TestAutomationMdAnchors:
         content = _read_automation_md()
         assert "log-only" in content.lower()
 
+    def test_documents_email_slack_inert_reality(self):
+        """The honest D-05 finding -- email AND Slack are currently inert -- is present.
+
+        Guards against a regression back to the misleading "Slack works as
+        documented" claim. AUTOMATION.md must state plainly that both email and
+        Slack are inert in the current code (console/log alerts only), and name
+        the root cause (AlertManager reads the non-existent
+        ``self.settings.monitoring``).
+        """
+        content = _read_automation_md()
+        lowered = content.lower()
+        assert "inert" in lowered, "missing the email/Slack-inert honesty note"
+        # The precise root cause must be named so the finding stays actionable.
+        assert "self.settings.monitoring" in content
+
     def test_documents_email_slack_enable_keys(self):
-        """The .env / config enablement keys for email + Slack are documented."""
+        """The email + Slack channel switches are named (for the deferred remedy)."""
         content = _read_automation_md()
         assert "enable_email" in content
         assert "enable_slack" in content
