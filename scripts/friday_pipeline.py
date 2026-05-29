@@ -86,7 +86,10 @@ def main() -> int:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Bypass pre-flight staleness/season checks",
+        help=(
+            "Bypass pre-flight staleness/season checks and the offseason no-op "
+            "short-circuit."
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -113,7 +116,12 @@ def main() -> int:
     # alert path is reached. --force deliberately bypasses this so the operator can
     # still run the pipeline out of season (e.g. a one-time forced run against a
     # completed-week stand-in).
-    if not args.force and _is_offseason():
+    #
+    # --dry-run also bypasses the short-circuit (WR-04): it is a read-only inspection
+    # tool that lists the steps that WOULD run and executes nothing, so it should work
+    # year-round. The crying-wolf protection (D-06) is intact because the scheduled task
+    # never passes --dry-run; only a human operator inspecting steps out of season does.
+    if not args.force and not args.dry_run and _is_offseason():
         logger.info("Offseason no-op -- pipeline skipped (use --force to run anyway)")
         return 0
 

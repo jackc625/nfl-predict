@@ -62,7 +62,7 @@ that fires once a week.
 | (none) | Full pipeline: all 18 steps (DATA + PREDICTIONS). |
 | `--data-only` | DATA phase only (the 8 DATA-phase steps). |
 | `--predictions-only` | PREDICTIONS phase only (the 10 PREDICTIONS-phase steps); logs a "ensure data artifacts are fresh" warning. |
-| `--dry-run` | List the steps that would execute (filtered by mode); execute nothing; exit 0. |
+| `--dry-run` | List the steps that would execute (filtered by mode); execute nothing; exit 0. Works year-round: `--dry-run` bypasses the offseason no-op short-circuit so steps can be inspected out of season without `--force` (WR-04). |
 | `--force` | Bypass the pre-flight staleness/season checks AND the offseason no-op short-circuit; pre-flight health becomes advisory. |
 | `--log-level {DEBUG,INFO,WARNING,ERROR}` | Logging verbosity (default INFO). |
 
