@@ -220,15 +220,16 @@ regression).
 
 **Verification:** `uv run ruff check` clean on all three files + the updated test;
 each commit passed the pre-commit hooks (ruff + ruff-format). `uv run pytest
-tests/unit -q` -> **761 passed, 1 failed**; the single failure
-(`test_audit_trace_leakage_elo.py::...test_pre_burn_in_games_have_no_spurious_elo_snapshot`)
-is a **pre-existing, fix-independent** data-coverage mismatch recorded below
-(D-11-F) -- it does not touch any file these three fixes changed. Relevant
-integration suites green: `test_audit_stage_runner.py` (18 passed),
-`test_idempotency.py` + `test_audit_stage_runner.py` (24 passed),
+tests/unit -q` -> **762 passed, 0 failed** (after the D-11-F test correction
+below). Relevant integration suites green: `test_audit_stage_runner.py`
+(18 passed), `test_idempotency.py` + `test_audit_stage_runner.py` (24 passed),
 `test_prediction_pipeline.py` (14 passed) -- confirming the `build_features`
 gold change and the team-form `--current` change did not break the
 current-week paths. No deployed model artifact was re-fit (D-01).
+
+A fourth post-review fix (`bfe11c1`) corrected the `elo_game_snapshots` N/A test
+assertion that `25c364f` had regressed (see D-11-F below) -- the snapshot data is
+correct (2018-2025); the test assertion was wrong.
 
 ---
 
@@ -432,41 +433,29 @@ phase; the production-vs-backtest mismatch is DIAG-05's subject (Phase 22).
   future cleanup either repairs the consensus column references or removes the deprecated
   path. NOT fixed this phase.
 
-### D-11-F -- Pre-existing elo burn-in test vs on-disk `elo_game_snapshots` coverage mismatch
+### D-11-F -- RESOLVED: elo-snapshot N/A test assertion regression (was, not a data gap)
 
-- **Where:** `tests/unit/test_audit_trace_leakage_elo.py:346,349`
-  (`test_pre_burn_in_games_have_no_spurious_elo_snapshot`, asserting
-  `elo_game_snapshots["season"].min() == 2002`); on-disk silver
-  `data/silver/elo_game_snapshots.parquet` + DuckDB `elo_game_snapshots`.
-- **Finding:** The test (written in `25c364f`) asserts the persisted
-  `elo_game_snapshots` table begins at the burn-in start season 2002, citing
-  `20-RESEARCH.md` Pitfall 4's claim that "gold AND elo_game_snapshots span
-  2002-2025." Verified live on disk 2026-05-28: the gold matrices DO span
-  2002-2025 (`features_wp` 6263 rows, min season 2002), but `elo_game_snapshots`
-  (both the silver parquet and the DuckDB table) holds only **2018-2025 (1991
-  rows, min season 2018)**. So the test fails (`2018 == 2002` -> AssertionError).
-  This is a genuine data-coverage gap between the persisted `elo_game_snapshots`
-  artifact (2018+) and the gold matrices (2002+) -- the snapshot table was
-  materialized over a narrower window than the burn-in span the test/research
-  assumed.
-- **Risk:** Low for the canonical gold path -- gold `features_wp` carries Elo
-  features for all 2002+ games, so the gap is in the separate
-  `elo_game_snapshots` audit-trace artifact, not in the deployed feature math.
-  The test is an audit tripwire, not a feature producer. Closing the gap would
-  require an Elo snapshot rebuild over 2002+, which is a data rebuild that is
-  out of scope (the single D-10 gold rebuild is already done; D-01 forbids
-  artifact re-fits and this phase does not re-run builders).
-- **Disposition:** Capture only (D-11). PRE-EXISTING and fix-INDEPENDENT: the
-  CR-01/WR-01/WR-02 commits (`0269a15`, `dcc7883`, `8f08163`) changed only
-  `scripts/build_features.py`, `features/market_anchors.py`,
-  `features/team_form.py` and the team-form integration test -- none write
-  `elo_game_snapshots`, and no builder was run, so the on-disk data is
-  byte-identical before and after. Left red (NOT fixed): resolving it requires
-  either an out-of-scope Elo snapshot rebuild over 2002+ or amending an audit
-  invariant this phase was not asked to touch. Recommended follow-up: a future
-  data-currency pass either backfills `elo_game_snapshots` to 2002+ to match the
-  gold/burn-in span, or the test is data-driven off the actual minimum season
-  with an explicit documented coverage note.
+- **Where:** `tests/unit/test_audit_trace_leakage_elo.py`
+  (`test_pre_burn_in_games_have_no_spurious_elo_snapshot`).
+- **Finding (corrected):** `25c364f` rewrote this test to assert
+  `elo_game_snapshots["season"].min() == 2002`, citing a `20-RESEARCH.md`
+  Pitfall-4 claim that "gold AND elo_game_snapshots span 2002-2025." That
+  conflated two DIFFERENT spans: gold `features_wp` does span 2002-2025 (6263
+  rows, inline burn-in Elo computed for every game, pre-2018 inclusive), but the
+  `elo_game_snapshots` table legitimately spans only **2018-2025 (1991 rows)** --
+  snapshots are recorded solely where market/odds context exists; pre-2018 is
+  N/A by design. The 2018-2025 span is the VERIFIED-CORRECT behavior, independently
+  confirmed by the 20-04 deep hand-trace (8 seasons / 3982 team-games = 1991 games)
+  and the 260523-tp5 quick-task ("N/A for pre-2018 snapshot-less games"). So the
+  data was right and the `25c364f` assertion was the regression (all three of its
+  rewritten assertions failed or were vacuous against the real data).
+- **Resolution (`bfe11c1`):** Corrected the test to the verified invariant --
+  snapshots start at 2018, no pre-2018 gold game carries a snapshot (the real N/A
+  check), and snapshot-window (2018+) gold games do have snapshots. No data/builder
+  change (D-01/D-10 untouched); `uv run pytest tests/unit -q` -> 762 passed.
+- **Note:** This was surfaced by the deep code review's investigation of the
+  pass->fail after the regression suite re-ran; the underlying `elo_game_snapshots`
+  artifact (2018-2025) needs no rebuild and no backfill -- it is correct as-is.
 
 ### D-11-G -- 20-REVIEW.md deferred findings (WR-03..07, IN-01..04)
 
