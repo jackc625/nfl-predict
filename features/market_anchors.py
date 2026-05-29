@@ -17,7 +17,7 @@ Market anchors provide:
 """
 
 import warnings
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -80,12 +80,25 @@ class MarketAnchorFeaturesCalculator:
             # Load games data to get kickoff times
             games_df = load_dataframe("games", layer="silver")
 
+            # Coerce snapshot_ts to a tz-aware (UTC) datetime. On-disk
+            # odds_snapshot stores snapshot_ts as an ISO STRING (object dtype --
+            # _normalize_parquet_datetime_columns string-formats it), so the raw
+            # column cannot be subtracted from the tz-aware datetime kickoff_et.
+            # The canonical build_features path already coerces (see
+            # build_features below); this deprecated path did not, which crashed
+            # build_market_anchors.py with "unsupported operand -: Timestamp and
+            # str" for every season. (FIX-01, D-13)
+            odds_df = odds_df.copy()
+            odds_df["snapshot_ts"] = pd.to_datetime(
+                odds_df["snapshot_ts"], utc=True, errors="coerce"
+            )
+
             # Merge with games to get kickoff times
             odds_with_kickoff = odds_df.merge(
                 games_df[["game_id", "kickoff_et"]], on="game_id", how="left"
             )
 
-            # Calculate hours before kickoff
+            # Calculate hours before kickoff (both operands tz-aware now)
             odds_with_kickoff["hours_before_kickoff"] = (
                 odds_with_kickoff["kickoff_et"] - odds_with_kickoff["snapshot_ts"]
             ).dt.total_seconds() / 3600
@@ -161,6 +174,15 @@ class MarketAnchorFeaturesCalculator:
         logger.info("Identifying snapshot lines", total_records=len(odds_df))
 
         try:
+            # Coerce snapshot_ts to a tz-aware (UTC) datetime -- on-disk
+            # odds_snapshot stores it as an ISO string (object dtype), which
+            # cannot drive .max()/.weekday() or a datetime comparison. Same
+            # deprecated-path coercion gap as identify_opening_lines. (FIX-01)
+            odds_df = odds_df.copy()
+            odds_df["snapshot_ts"] = pd.to_datetime(
+                odds_df["snapshot_ts"], utc=True, errors="coerce"
+            )
+
             # If no target date provided, find the most recent Friday 6 PM
             if target_date is None:
                 # Find the latest date in odds data
@@ -173,10 +195,14 @@ class MarketAnchorFeaturesCalculator:
                     target_friday, datetime.min.time().replace(hour=18)
                 )
 
-            # Convert to snapshot cutoff time (Friday 6 PM ET)
+            # Convert to snapshot cutoff time (Friday 6 PM ET). Make it tz-aware
+            # (UTC) so the comparison below against the now tz-aware snapshot_ts
+            # does not raise a naive-vs-aware TypeError.
             cutoff_time = target_date.replace(
                 hour=18, minute=0, second=0, microsecond=0
             )
+            if cutoff_time.tzinfo is None:
+                cutoff_time = cutoff_time.replace(tzinfo=UTC)
 
             logger.info(
                 "Using snapshot cutoff time", cutoff_time=cutoff_time.isoformat()

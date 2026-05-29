@@ -451,12 +451,36 @@ class ParquetManager:
                     ]
                     partition_col = "season"
                 else:
-                    # Generic partition detection
-                    partition_dirs = [
-                        d
-                        for d in parent_dir.iterdir()
-                        if d.is_dir() and "=" in d.name and any(d.glob("*.parquet"))
-                    ]
+                    # Generic partition detection -- table-scoped ONLY.
+                    #
+                    # CORRECTNESS FIX (Phase 20-06 FIX-01, D-13): the previous
+                    # implementation scanned ``parent_dir`` (the SHARED
+                    # ``{layer}/`` root) for ANY ``name=value`` directory. Because
+                    # several silver tables historically wrote
+                    # ``partition_cols=["season"]`` / ``["target_season"]`` into
+                    # that same shared root, a table with no single-file parquet
+                    # would silently read EVERY sibling table's partition files --
+                    # returning another table's rows mislabeled as its own (e.g.
+                    # ``load_dataframe("weather_features")`` returning the
+                    # ``snapshot_ts=`` odds partitions). That is cross-table data
+                    # contamination, not a partitioned read.
+                    #
+                    # Scope the generic fallback to partition directories nested
+                    # UNDER a table-specific subdirectory ``{layer}/{table}/``;
+                    # never read ``=`` siblings in the shared layer root. If the
+                    # table has neither a single file nor its own subdirectory of
+                    # partitions, fall through to the explicit "not found" error
+                    # below -- a loud miss is correct, a silent wrong-table read
+                    # is not.
+                    table_partition_root = parent_dir / table_name
+                    if table_partition_root.is_dir():
+                        partition_dirs = [
+                            d
+                            for d in table_partition_root.iterdir()
+                            if d.is_dir() and "=" in d.name and any(d.glob("*.parquet"))
+                        ]
+                    else:
+                        partition_dirs = []
                     partition_col = None
 
                 if partition_dirs:
@@ -765,6 +789,7 @@ def save_dataframe(
     save_to_db: bool = True,
     save_to_parquet: bool = True,
     append_mode: bool = True,
+    replace_mode: bool = False,
 ) -> None:
     """
     Save DataFrame to both DuckDB and Parquet.
@@ -777,8 +802,29 @@ def save_dataframe(
         save_to_db: Whether to save to DuckDB
         save_to_parquet: Whether to save to Parquet
         append_mode: Whether to append to existing data (default: True)
+        replace_mode: If True, write the table as a single self-contained
+            Parquet file that fully replaces any prior on-disk state for this
+            table -- the DataFrame passed in IS the table. This makes a full
+            rebuild idempotent and avoids the directory-partitioned-append
+            failure mode (Phase 20-06 FIX-01, D-13): ``pq.write_to_dataset``
+            writes partition directories into the SHARED ``{layer}/`` root, so
+            multiple tables collide in the same ``season=YYYY/`` directories and
+            every rebuild appends a NEW hash-named file instead of overwriting,
+            silently multiplying row counts on each run. When ``replace_mode``
+            is True, ``partition_cols`` and ``append_mode`` are ignored (a single
+            file is written) and any pre-existing partition directories for the
+            table are left untouched on disk but no longer participate (the
+            single file takes read precedence in ``ParquetManager.load``).
     """
     combined_df = df
+
+    if replace_mode:
+        # Idempotent single-file replace: the passed DataFrame is the whole
+        # table. Skip the append/dedup merge AND directory partitioning so a
+        # rebuild always produces byte-stable cardinality regardless of how
+        # many times it runs (FIX-01, D-13).
+        partition_cols = None
+        append_mode = False
 
     if append_mode and save_to_parquet:
         # Check if existing data exists and merge

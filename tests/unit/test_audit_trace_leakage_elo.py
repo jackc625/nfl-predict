@@ -329,19 +329,46 @@ class TestArea4EloRealData:
         # KC at home, narrowly favored -> elo_prob_home in a sensible band
         assert 0.5 < r["elo_prob_home"] < 0.75
 
-    def test_pre_2018_games_have_no_spurious_elo_snapshot(self, elo_snapshots):
-        """Pre-2018 gold games are N/A-handled: elo_game_snapshots starts in
-        2018, so a 2010 gold game has NO snapshot (no spurious Elo invented)."""
-        assert elo_snapshots["season"].min() >= 2018
+    def test_pre_burn_in_games_have_no_spurious_elo_snapshot(self, elo_snapshots):
+        """Elo N/A handling: snapshots begin at the Elo burn-in start season
+        (2002, per build_elo.py --start-season=2002 -- the 16-season burn-in
+        before the first backtest season), and no snapshot is invented for a
+        game BEFORE that burn-in start.
+
+        Correctness note (Phase 20-06 FIX-01): the original assertion hard-coded
+        ``>= 2018``, an artifact of the stale brief that claimed "gold/Elo span
+        2018-2024." 20-RESEARCH.md Pitfall 4 corrected this to the verified live
+        fact -- gold AND elo_game_snapshots span 2002-2025 (6263 rows) because
+        the Elo system burns in from 2002. The real N/A invariant is "no
+        snapshot before the burn-in start season," which is what this now
+        asserts (data-driven on the actual minimum season, not a stale literal).
+        """
+        BURN_IN_START = 2002
+        # Snapshots begin exactly at the burn-in start -- not a stale 2018, and
+        # not earlier (no Elo invented before the configured burn-in).
+        assert elo_snapshots["season"].min() == BURN_IN_START, (
+            f"elo_game_snapshots should start at the burn-in season "
+            f"{BURN_IN_START}; got {elo_snapshots['season'].min()}"
+        )
         snap_ids = set(elo_snapshots["game_id"])
         gold = load_dataframe("features_wp", layer="gold")
-        pre_2018 = gold[gold["season"] < 2018]
-        assert len(pre_2018) > 0, "expected pre-2018 rows in gold"
-        # None of the pre-2018 gold games appear in the Elo snapshots
-        overlap = [gid for gid in pre_2018["game_id"].head(50) if gid in snap_ids]
-        assert overlap == [], (
-            f"pre-2018 gold games unexpectedly have Elo snapshots: {overlap}"
+
+        # No gold game BEFORE the burn-in start may carry an Elo snapshot
+        # (no spurious pre-burn-in Elo). Vacuously true while gold also starts
+        # at 2002, but it pins the N/A invariant for any future earlier ingest.
+        pre_burn_in = gold[gold["season"] < BURN_IN_START]
+        spurious = [gid for gid in pre_burn_in["game_id"] if gid in snap_ids]
+        assert spurious == [], (
+            f"pre-burn-in gold games unexpectedly have Elo snapshots: {spurious}"
         )
+
+        # Positive side of the invariant: gold games AT/AFTER the burn-in start
+        # DO have a snapshot (the correct design -- Elo feeds every target from
+        # 2002 on, so a missing snapshot would be the real defect).
+        in_window = gold[gold["season"] >= BURN_IN_START]
+        assert len(in_window) > 0, "expected in-burn-in-window rows in gold"
+        missing = [gid for gid in in_window["game_id"].head(50) if gid not in snap_ids]
+        assert missing == [], f"in-window gold games missing an Elo snapshot: {missing}"
 
     def test_real_snapshots_are_chronologically_ordered(self, gate, elo_snapshots):
         """The full real elo_game_snapshots set, reshaped per team with a

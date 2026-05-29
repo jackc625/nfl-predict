@@ -168,18 +168,19 @@ def main():
                 print(f"  Min sportsbooks: {sportsbook_counts.min()}")
                 print(f"  Max sportsbooks: {sportsbook_counts.max()}")
 
-        # Save to silver layer if requested
+        # Save to silver layer if requested.
+        # Single self-contained file (no directory partitioning). The per-season
+        # --save path appends into this one file with game_id-level latest-wins
+        # dedup, so a rebuild is idempotent. The prior partition_cols=["season"]
+        # routed to pq.write_to_dataset against the SHARED data/silver/ root,
+        # mixing this table's files with the other season-partitioned feature
+        # tables and appending a new file each run. This now matches the
+        # orchestrator pattern in pipeline/steps.py. (FIX-01, D-13)
         if args.save:
-            # Determine partition columns
-            partition_cols = []
-            if args.season:
-                partition_cols.append("season")
-
             save_dataframe(
                 features_df,
                 table_name="market_anchor_features",
                 layer="silver",
-                partition_cols=partition_cols if partition_cols else None,
             )
 
             logger.info(

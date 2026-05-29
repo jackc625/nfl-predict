@@ -127,18 +127,20 @@ def main():
             if row["venue_high_altitude"] > 0:
                 print("High altitude venue")
 
-        # Save to silver layer if requested
+        # Save to silver layer if requested.
+        # Write a single self-contained file (no directory partitioning). The
+        # per-season --save path appends into this one file with game_id-level
+        # latest-wins dedup, so re-running a season replaces its rows while other
+        # seasons accumulate -- idempotent. The prior partition_cols=["season"]
+        # routed to pq.write_to_dataset against the SHARED data/silver/ root,
+        # which mixed this table's files with weather/market/elo and appended a
+        # new hash-named file every run (the contextual ~4.9x bloat). This now
+        # matches the orchestrator pattern in pipeline/steps.py. (FIX-01, D-13)
         if args.save:
-            # Determine partition columns
-            partition_cols = []
-            if args.season:
-                partition_cols.append("season")
-
             save_dataframe(
                 features_df,
                 table_name="contextual_features",
                 layer="silver",
-                partition_cols=partition_cols if partition_cols else None,
             )
 
             logger.info(

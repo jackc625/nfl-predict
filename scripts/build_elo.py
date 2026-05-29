@@ -219,19 +219,21 @@ class EloBuilder:
                 )
 
                 # Step 2: Record snapshot
-                snapshots.append({
-                    "game_id": game["game_id"],
-                    "season": season,
-                    "week": game["week"],
-                    "home_team": home,
-                    "away_team": away,
-                    "home_elo_pre": home_rating.rating,
-                    "away_elo_pre": away_rating.rating,
-                    "home_elo_uncertainty": home_rating.uncertainty,
-                    "away_elo_uncertainty": away_rating.uncertainty,
-                    "elo_prob_home": prediction["home_win_prob"],
-                    "hfa_used": prediction["hfa_used"],
-                })
+                snapshots.append(
+                    {
+                        "game_id": game["game_id"],
+                        "season": season,
+                        "week": game["week"],
+                        "home_team": home,
+                        "away_team": away,
+                        "home_elo_pre": home_rating.rating,
+                        "away_elo_pre": away_rating.rating,
+                        "home_elo_uncertainty": home_rating.uncertainty,
+                        "away_elo_uncertainty": away_rating.uncertainty,
+                        "elo_prob_home": prediction["home_win_prob"],
+                        "hfa_used": prediction["hfa_used"],
+                    }
+                )
 
                 # Step 3: THEN process game result (updates ratings)
                 self.elo_system.update_ratings(
@@ -319,15 +321,19 @@ class EloBuilder:
                     total_snapshots=len(self._snapshots_df),
                 )
 
-        # Save updated games with Elo ratings
+        # Save updated games with Elo ratings.
+        # replace_mode: processed_games is the complete games-with-Elo table for
+        # this build; write a single self-replacing file so a full rebuild is
+        # idempotent. The prior partition_cols=["season"] wrote into the shared
+        # data/silver/season=YYYY/ root, mixing this table's files with the
+        # weather/contextual/market feature tables and appending a new file on
+        # every run (the ~30.7x games_with_elo bloat). (FIX-01, D-13)
         if len(processed_games) > 0:
             save_dataframe(
                 processed_games,
                 "games_with_elo",
                 layer="silver",
-                partition_cols=["season"]
-                if len(processed_games["season"].unique()) > 1
-                else None,
+                replace_mode=True,
             )
 
         # Save current ratings
@@ -340,14 +346,17 @@ class EloBuilder:
                 append_mode=False,  # Always replace current ratings, don't append
             )
 
-        # Save rating history
+        # Save rating history.
+        # replace_mode: rating_history is the complete history for this build;
+        # single self-replacing file keeps the rebuild idempotent (no shared-root
+        # season-partition append bloat). (FIX-01, D-13)
         rating_history = self.elo_system.get_rating_history()
         if len(rating_history) > 0:
             save_dataframe(
                 rating_history,
                 "elo_rating_history",
                 layer="silver",
-                partition_cols=["season"],
+                replace_mode=True,
             )
 
         # Save Elo system state to JSON

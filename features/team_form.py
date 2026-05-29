@@ -815,12 +815,17 @@ class TeamFormCalculator:
             # Calculate team-game statistics
             team_stats_df = self.calculate_team_game_stats(pbp_df)
 
-            # Save team statistics to silver layer
+            # Save team statistics to silver layer.
+            # replace_mode: team_stats_df is the complete team-game stat table
+            # for the seasons built; write a single self-replacing file so a
+            # rebuild is idempotent (no directory-partition append bloat -- the
+            # F-02 ~127k duplicate (game_id, team) rows came from blind appends
+            # into the shared data/silver/season=YYYY/ root). (FIX-01, D-13)
             save_dataframe(
                 team_stats_df,
                 "team_game_stats",
                 layer="silver",
-                partition_cols=["season"],
+                replace_mode=True,
             )
 
             # If specific target provided, calculate rolling averages for that point
@@ -844,12 +849,19 @@ class TeamFormCalculator:
             if all_rolling_stats:
                 final_df = pd.concat(all_rolling_stats, ignore_index=True)
 
-                # Save rolling team form features
+                # Save rolling team form features.
+                # replace_mode: final_df is the complete rolling team-form table
+                # for the seasons built; a single self-replacing file keeps the
+                # rebuild idempotent. The prior partition_cols=["target_season"]
+                # wrote into the shared data/silver/target_season=YYYY/ root,
+                # which both mixed tables and appended non-idempotently. This is
+                # the table build_features.py consumes, so de-bloating it is the
+                # enabling correctness fix for the gold rebuild. (FIX-01, D-13)
                 save_dataframe(
                     final_df,
                     "team_form_features",
                     layer="silver",
-                    partition_cols=["target_season"],
+                    replace_mode=True,
                 )
 
                 logger.info(

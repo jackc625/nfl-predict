@@ -159,18 +159,21 @@ def main():
                     if conditions:
                         print(f"    Conditions: {', '.join(conditions)}")
 
-        # Save to silver layer if requested
+        # Save to silver layer if requested.
+        # Single self-contained file (no directory partitioning). The per-season
+        # --save path appends into this one file with game_id-level latest-wins
+        # dedup, so a rebuild is idempotent. The prior partition_cols=["season"]
+        # routed to pq.write_to_dataset against the SHARED data/silver/ root,
+        # producing the catastrophic ~1048x weather_features bloat (and the
+        # cross-table mixing that crashed the rebuild with KeyError:
+        # 'forecast_time'). This now matches pipeline/steps.py. weather_features
+        # is read by build_features.py, so de-bloating it is the enabling
+        # correctness fix for the gold weather merge. (FIX-01, D-13)
         if args.save:
-            # Determine partition columns
-            partition_cols = []
-            if args.season:
-                partition_cols.append("season")
-
             save_dataframe(
                 features_df,
                 table_name="weather_features",
                 layer="silver",
-                partition_cols=partition_cols if partition_cols else None,
             )
 
             logger.info(
