@@ -14,10 +14,45 @@ Usage:
 
 import argparse
 import sys
+from datetime import datetime, timedelta
 
+from utils.date_utils import (
+    ET,
+    get_current_nfl_week,
+    get_nfl_season_start,
+)
 from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# Season window matches StalenessGate.check_season: season_start + 22 weeks
+# (regular season + playoffs through the Super Bowl). Kept here so the D-06
+# offseason no-op short-circuit and the staleness gate stay in lockstep.
+_SEASON_WINDOW_WEEKS = 22
+
+
+def _is_offseason(now: datetime | None = None) -> bool:
+    """Return True if *now* falls outside the current NFL season window.
+
+    Mirrors ``pipeline.staleness.StalenessGate.check_season`` so the CLI
+    short-circuit and the staleness gate agree on what "offseason" means:
+    the window is ``[season_start, season_start + 22 weeks]`` for the season
+    resolved by ``get_current_nfl_week()``.
+
+    Args:
+        now: Reference time (defaults to ``datetime.now(ET)``).
+
+    Returns:
+        True when *now* is before the season start or after the season end.
+    """
+    if now is None:
+        now = datetime.now(ET)
+
+    season, _week = get_current_nfl_week()
+    season_start = get_nfl_season_start(season)
+    season_end = season_start + timedelta(weeks=_SEASON_WINDOW_WEEKS)
+
+    return now < season_start or now > season_end
 
 
 def main() -> int:
@@ -69,6 +104,18 @@ def main() -> int:
         mode = "predictions-only"
     else:
         mode = "full"
+
+    # D-06: offseason no-op short-circuit. A live (scheduled, unforced) Friday
+    # run during the offseason would otherwise hit the staleness season gate,
+    # which sets status="failed", fires a CRITICAL "Pipeline Failed" alert, and
+    # raises -- a false alarm that erodes trust (crying wolf). Short-circuit to a
+    # clean exit-0 INFO no-op BEFORE constructing FridayPipeline so no orchestrator
+    # alert path is reached. --force deliberately bypasses this so the operator can
+    # still run the pipeline out of season (e.g. a one-time forced run against a
+    # completed-week stand-in).
+    if not args.force and _is_offseason():
+        logger.info("Offseason no-op -- pipeline skipped (use --force to run anyway)")
+        return 0
 
     try:
         from pipeline.orchestrator import FridayPipeline
