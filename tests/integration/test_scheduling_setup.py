@@ -278,8 +278,13 @@ class TestWindowsSchedulerXml:
         assert "2026-09-12T18:00:00" in xml
         assert "17:00" not in xml
 
-        # Command: uv-run invocation, not the .venv python.exe (D-10)
-        assert "<Command>uv</Command>" in xml
+        # Command: uv-run invocation, not the .venv python.exe (D-10).
+        # The Command may be a bare "uv" or an absolute path ending in "uv.exe"
+        # (S4U does not load the owner USER PATH, so D-10's fix pins the absolute
+        # path). Match either shape WITHOUT pinning the fragile PythonNNN segment.
+        assert re.search(
+            r"<Command>(?:[^<]*[\\/])?uv(?:\.exe)?</Command>", xml, re.IGNORECASE
+        ), "expected <Command> to resolve to uv (bare 'uv' or an absolute '...uv.exe')"
         assert "run python scripts/friday_pipeline.py" in xml
         assert "friday_pipeline.py" in xml
         assert ".venv\\Scripts\\python.exe" not in xml
@@ -326,7 +331,14 @@ class TestWindowsSchedulerXmlWellFormed:
 
         assert user_id is not None and user_id.text == "jackc"
         assert logon_type is not None and logon_type.text == "S4U"
-        assert command is not None and command.text == "uv"
+        # Command resolves to uv: either bare "uv" or an absolute path ending in
+        # "uv.exe" (D-10 pins the absolute path since S4U does not load the owner
+        # USER PATH). Do NOT pin the fragile PythonNNN path segment.
+        assert command is not None and command.text is not None
+        _cmd = command.text.lower()
+        assert _cmd == "uv" or _cmd.endswith("uv.exe"), (
+            f"expected Command to resolve to uv (bare 'uv' or '...uv.exe'), got {command.text!r}"
+        )
         assert start_boundary is not None
         assert start_boundary.text == "2026-09-12T18:00:00"
 
