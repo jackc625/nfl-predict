@@ -217,7 +217,10 @@ and `1` only for `failed`. The AUTO-01 keystone test
 registry (no stubbed registry -- that stubbing was the `cb61042` blind spot) and asserts
 `log.status == "success"`, the predictions CSV exists, `game_id` is present, and
 `wp_prob` is in `[0,1]` -- proving the triad's `success` branch produces a real,
-leakage-safe predictions file. An owner-confirmed one-time live forced run produced a
+leakage-safe predictions file. The registry itself is unstubbed, but three of the ten
+PREDICTIONS-phase step BODIES are no-op'd (`step_ingest_odds`, `step_build_market_anchors`,
+`step_build_features`) so the committed gold supplies their inputs; the remaining
+generate/validate/export/verify steps run for real (matching the test's docstring). An owner-confirmed one-time live forced run produced a
 real predictions file offline (16 rows, `wp_prob` 0.176-0.867, all market rows matched
 from the on-disk odds snapshot with NO live pull) with NO model artifact re-fit.
 
@@ -315,9 +318,24 @@ the same empty `monitoring_config`, so it falls back to those defaults.
 - **Where:** `features/market_anchors.py::create_consensus_lines`.
 - **Fix:** fixed the latent `KeyError 'ml_home'` (the column was renamed upstream to
   `opening_ml_home` / `snapshot_ml_home`) by making the median computation prefix-aware
-  so both the opening- and snapshot-line callers work. This is a DEAD path off the
-  canonical gold (the live build constructs market anchors on the fly via
-  `MarketAnchorFeaturesCalculator.build_features`), so the fix changes no gold value.
+  so both the opening- and snapshot-line callers work.
+- **Live + critical (the fix prevents a Friday-run crash).** `create_consensus_lines`
+  is reached LIVE on every Friday run by the critical PREDICTIONS step 10,
+  `step_build_market_anchors` (`pipeline/steps.py:211`), which calls the deprecated
+  `MarketAnchorFeaturesCalculator.build_market_anchor_features`
+  (`features/market_anchors.py:589`), which in turn calls `create_consensus_lines`
+  (`features/market_anchors.py:649,654`) for both the opening- and snapshot-line frames.
+  Before this fix, that call raised `KeyError 'ml_home'`, which would have aborted the
+  critical step and failed the whole Friday run with a CRITICAL "Pipeline Failed" alert.
+  The fix therefore prevents a live critical-step crash -- it is load-bearing, not cosmetic.
+- **Still no gold value change.** The "no gold value changes" half holds: the canonical
+  gold matrix is built on the fly by the SEPARATE FeatureBuilder Protocol method
+  `MarketAnchorFeaturesCalculator.build_features` (`features/market_anchors.py:937`),
+  invoked by step 11 `build_features` (`scripts/build_features.py`), which does NOT read
+  the silver `market_anchor_features` table that step 10 writes. So step 10's silver
+  output is unconsumed by gold and the fix changes no gold value -- but the path is LIVE
+  and CRITICAL, not dead. (That step 10 writes an unconsumed silver table is a separate
+  deferred cleanup; see Section 10.)
 - **Commit:** `f90966f`.
 
 ### AUTO-02-F1 -- Post-run prediction-pipeline health glob corrected
@@ -491,6 +509,23 @@ Section 10 -- it is NOT a matter of populating config keys.
   the non-existent `self.settings.monitoring`; (c) add the SMTP fields to `Settings`
   (sourced from `.env`, never committed). Until then, alerts are console/log only and the
   default log-only behavior is the working behavior.
+- **STEP10-UNCONSUMED-SILVER -- step 10 writes a silver table no downstream step reads.**
+  `pipeline/steps.py:211` (`step_build_market_anchors`) saves the deprecated
+  `build_market_anchor_features` output to silver `market_anchor_features`, but the
+  canonical gold is built on the fly by the separate Protocol `build_features`
+  (`features/market_anchors.py:937`), which does not read that silver table. So the
+  silver write is unconsumed by gold (see Section 8 D-11-E). The path is still LIVE and
+  CRITICAL -- a crash there fails the Friday run -- so it cannot simply be removed.
+  Deferred: reroute step 10 onto the Protocol `build_features` builder (and drop the
+  unconsumed silver write) in a future cleanup; OUT of this documentation/verification
+  phase's scope.
+- **MA-MEDIAN-INT-TRUNC -- median moneyline truncated by `int()`.**
+  `features/market_anchors.py:1037-1038`: the compressed `build_features` path computes
+  `ml_home_med = int(snap_ml_home_vals.median())`, truncating toward zero; for an even
+  number of books the median can be a half-integer (e.g. -127.5 -> -127), slightly
+  biasing the implied probability. Pre-existing (outside this phase's diff). Deferred:
+  round instead of truncate, or devig from the median raw probability rather than the
+  median moneyline.
 - **UV-PATH-MAINT -- absolute `uv.exe` path is Python-major-version-pinned (maintenance
   note).** `deployment/windows_scheduler.xml`: the scheduled task's `<Command>` is the
   absolute `C:\Users\jackc\AppData\Roaming\Python\Python313\Scripts\uv.exe` (required
