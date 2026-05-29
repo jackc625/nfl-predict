@@ -230,25 +230,56 @@ class TestCurrentWeekIncrementalBuilders:
         full-rebuild path (``build_for_seasons``) remains the canonical producer of
         the complete table. This test asserts that the current-week path runs
         end-to-end AND does not attempt any persisted silver write.
+
+        F-01 fix (phase 21): ``build_for_current_week`` is rerouted off the
+        DEPRECATED ``build_team_form_features`` and onto the time-fenced Protocol
+        method ``build_features``. This test now also asserts that NO
+        ``DeprecationWarning`` is emitted on the current-week path, and that the
+        ``team_game_stats`` silver table is never persisted from this subset path.
         """
+        import warnings
+
         import features.team_form as team_form_module
+        import scripts.build_team_form as build_team_form_module
         from scripts.build_team_form import TeamFormBuilder
 
         saved_tables: list[str] = []
 
         def _capture_save(_df, table, *_args, **_kwargs):
-            # Record the write intent without touching the real lake. The silver write
-            # lives in features.team_form (the calculator), so we patch it there.
+            # Record the write intent without touching the real lake. Patch BOTH the
+            # calculator module (deprecated path) and the script module (F-01 routed
+            # path persists team_form_features from build_for_current_week).
             saved_tables.append(table)
 
         monkeypatch.setattr(team_form_module, "save_dataframe", _capture_save)
+        monkeypatch.setattr(build_team_form_module, "save_dataframe", _capture_save)
 
         builder = TeamFormBuilder(rolling_weeks=4)
-        form_df = builder.build_for_current_week()
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            form_df = builder.build_for_current_week()
+
+        # F-01: the current-week path must route through the time-fenced
+        # build_features Protocol method, NOT the deprecated build_team_form_features.
+        deprecation_msgs = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, DeprecationWarning)
+            and "build_team_form_features" in str(w.message)
+        ]
+        assert not deprecation_msgs, (
+            "F-01 regression: the current-week path emitted a DeprecationWarning "
+            f"for build_team_form_features: {deprecation_msgs}"
+        )
 
         # The incremental path ran end-to-end and produced rolling team-form features.
         assert isinstance(form_df, pd.DataFrame)
         assert len(form_df) > 0, "Team-form current-week path produced no features"
+        # The rerouted builder still carries the target_season/target_week columns
+        # that build_features.py reads off the silver team_form_features table.
+        assert "target_season" in form_df.columns
+        assert "target_week" in form_df.columns
         # WR-01: the current-week subset path must NOT persist team_game_stats
         # (doing so would destroy the full-history table). It returns the rolling
         # features in-memory without mutating the silver artifact.

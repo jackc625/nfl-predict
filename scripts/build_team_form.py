@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import sys
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -21,9 +22,10 @@ import pandas as pd
 sys.path.append(".")
 
 from conf.settings import get_settings
-from data.storage import load_dataframe
+from data.storage import load_dataframe, save_dataframe
 from features.team_form import TeamFormCalculator
 from utils import get_current_nfl_week, get_logger, setup_logging
+from utils.date_utils import ET
 
 logger = get_logger(__name__)
 
@@ -68,26 +70,55 @@ class TeamFormBuilder:
         """
         Build team form features for the current NFL week.
 
+        Routes through the time-fenced ``TeamFormCalculator.build_features``
+        Protocol method (NOT the deprecated ``build_team_form_features``) so the
+        live current-week build enforces the same leakage guard as the canonical
+        gold path (F-01, AUDIT-REPORT.md).
+
+        OPERATIVE LEAKAGE GUARD: the ``week < target_week`` filter inside
+        ``TeamFormCalculator.calculate_rolling_averages`` (features/team_form.py)
+        is what actually excludes the target week's own games from the rolling
+        window. The ``kickoff_et < as_of_datetime`` fence inside ``build_features``
+        is currently DEAD because ``calculate_team_game_stats`` output lacks a
+        ``kickoff_et`` column (WR-03, deferred -- do NOT activate it here).
+
         Returns:
             DataFrame with current week team form features
         """
         current_season, current_week = get_current_nfl_week()
 
         logger.info(
-            "Building team form for current week",
+            "Building team form for current week (time-fenced Protocol path)",
             season=current_season,
             week=current_week,
         )
 
-        # We need historical data to calculate rolling averages
-        # Get data from previous seasons plus current season up to current week
-        seasons = [current_season - 2, current_season - 1, current_season]
-
         try:
-            # Build features including current week
-            form_df = self.calculator.build_team_form_features(
-                seasons=seasons, target_season=current_season, target_week=current_week
+            # Friday 6 PM ET snapshot freeze (documented data freeze, CLAUDE.md /
+            # PROJECT.md). The as_of_datetime is tz-aware ET so the time-fence is
+            # evaluated against the canonical Eastern wall-clock.
+            as_of_datetime = datetime.now(tz=ET)
+
+            # The time-fenced Protocol path computes its own per-game stats from
+            # play-by-play for [target_season - 1, target_season]; the games_df
+            # argument is unused when target_season/target_week are supplied, so an
+            # empty frame is sufficient (it never determines the season set here).
+            form_df = self.calculator.build_features(
+                pd.DataFrame(),
+                as_of_datetime,
+                target_season=current_season,
+                target_week=current_week,
             )
+
+            # Persist the current-week rolling rows to the silver
+            # ``team_form_features`` table that ``scripts/build_features.py`` reads.
+            # WR-01 invariant: the current-week path produces only the target's
+            # rolling rows, so a full-history ``replace_mode=True`` write would
+            # shrink the on-disk season span. Use a target-keyed upsert instead --
+            # drop only the existing rows for THIS (target_season, target_week) and
+            # append the freshly-built ones, preserving all prior history.
+            if len(form_df) > 0:
+                self._upsert_current_week_form(form_df, current_season, current_week)
 
             return form_df
 
@@ -99,6 +130,52 @@ class TeamFormBuilder:
                 error=str(e),
             )
             raise
+
+    def _upsert_current_week_form(
+        self, form_df: pd.DataFrame, target_season: int, target_week: int
+    ) -> None:
+        """Upsert current-week rolling rows into silver ``team_form_features``.
+
+        Latest-wins on the ``(target_season, target_week)`` key: any existing rows
+        for the target are dropped and replaced with the freshly-built ones, while
+        all other on-disk history is preserved. This is the team-form analog of the
+        ``upsert_silver`` latest-wins pattern; we cannot use ``replace_mode=True``
+        (it would discard the rest of the table -- the WR-01 data-loss hazard) nor
+        the default ``append_mode`` (team-form has no ``game_id`` key, so the
+        append-merge would not de-duplicate and the table would grow each run).
+        """
+        try:
+            existing = load_dataframe("team_form_features", layer="silver")
+        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError):
+            existing = pd.DataFrame()
+
+        if len(existing) > 0 and {"target_season", "target_week"}.issubset(
+            existing.columns
+        ):
+            mask = ~(
+                (existing["target_season"] == target_season)
+                & (existing["target_week"] == target_week)
+            )
+            combined = pd.concat([existing[mask], form_df], ignore_index=True)
+        else:
+            combined = form_df
+
+        # replace_mode writes a single self-replacing file from the FULL combined
+        # table (preserved history + refreshed target rows), keeping the write
+        # idempotent without growing the lake or shrinking its span.
+        save_dataframe(
+            combined,
+            "team_form_features",
+            layer="silver",
+            replace_mode=True,
+        )
+        logger.info(
+            "Upserted current-week team_form_features (history preserved)",
+            target_season=target_season,
+            target_week=target_week,
+            target_rows=len(form_df),
+            total_rows=len(combined),
+        )
 
     def update_with_new_games(self, new_games_df: pd.DataFrame) -> pd.DataFrame:
         """
