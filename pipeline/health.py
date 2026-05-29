@@ -353,16 +353,21 @@ class PipelineHealthChecker:
         start = time.time()
 
         try:
-            predictions_dir = Path("outputs/predictions")
-            prediction_files = list(
-                predictions_dir.glob("current_predictions*.parquet")
-            )
+            # Discover the REAL orchestrator output. step_generate_predictions
+            # writes ``predictions_<season>_week<week>.csv`` into the shared
+            # _predictions_output_dir(); the old ``current_predictions*.parquet``
+            # glob never matched, so this advisory check always reported
+            # "No prediction files found" even on a successful run. (AUTO-02-F1)
+            from pipeline.steps import _predictions_output_dir
+
+            predictions_dir = _predictions_output_dir()
+            prediction_files = list(predictions_dir.glob("predictions_*_week*.csv"))
 
             if prediction_files:
                 latest_file = max(prediction_files, key=lambda x: x.stat().st_mtime)
                 file_stat = latest_file.stat()
                 age_hours = (time.time() - file_stat.st_mtime) / 3600
-                predictions_df = pd.read_parquet(latest_file)
+                predictions_df = pd.read_csv(latest_file)
 
                 result.update(
                     {

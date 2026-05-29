@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
+
 # ---------------------------------------------------------------------------
 # PipelineHealthChecker tests
 # ---------------------------------------------------------------------------
@@ -115,3 +117,55 @@ class TestRunPostrun:
         assert "api_endpoints" in check_names
         assert "prediction_pipeline" in check_names
         assert "disk_space" in check_names
+
+
+class TestCheckPredictionPipeline:
+    """Tests for check_prediction_pipeline -- AUTO-02-F1 glob/format fix.
+
+    The post-run prediction-pipeline health check must discover the REAL
+    orchestrator output (``predictions_<season>_week<week>.csv``, written by
+    ``step_generate_predictions`` into ``_predictions_output_dir()``) and read it
+    as CSV. The pre-fix code globbed ``current_predictions*.parquet`` -- a pattern
+    the real run never produces -- so the check always reported "No prediction
+    files found" even on a successful Friday run.
+    """
+
+    def test_check_prediction_pipeline_matches_real_csv(self, tmp_path, monkeypatch):
+        """A real predictions_<S>_week<W>.csv present -> reports healthy."""
+        from pipeline import steps
+
+        # Redirect the shared prediction-output dir to the tmp dir (the same
+        # monkeypatch idiom the prediction-step integration tests use).
+        monkeypatch.setattr(steps, "_predictions_output_dir", lambda: tmp_path)
+
+        pred_csv = tmp_path / "predictions_2024_week1.csv"
+        pd.DataFrame(
+            {
+                "game_id": ["G1", "G2"],
+                "wp_prob": [0.62, 0.48],
+            }
+        ).to_csv(pred_csv, index=False)
+
+        from pipeline.health import PipelineHealthChecker
+
+        checker = PipelineHealthChecker()
+        result = checker.check_prediction_pipeline()
+
+        assert result["name"] == "prediction_pipeline"
+        assert result["status"] == "healthy", result
+        assert result["details"]["prediction_count"] == 2
+        assert result["details"]["latest_file"] == "predictions_2024_week1.csv"
+
+    def test_check_prediction_pipeline_missing_when_empty(self, tmp_path, monkeypatch):
+        """Empty predictions dir -> reports unhealthy / no files found."""
+        from pipeline import steps
+
+        monkeypatch.setattr(steps, "_predictions_output_dir", lambda: tmp_path)
+
+        from pipeline.health import PipelineHealthChecker
+
+        checker = PipelineHealthChecker()
+        result = checker.check_prediction_pipeline()
+
+        assert result["status"] == "unhealthy"
+        assert result["details"]["prediction_count"] == 0
