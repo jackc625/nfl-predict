@@ -1,0 +1,439 @@
+# AUTOMATION.md -- Friday Automation Explanation (Phase 21)
+
+This is the single source of truth for HOW the Friday automation runs and how to
+tell whether a run succeeded. It explains what fires, when, what each of the 18
+orchestrator steps does, where outputs and logs land, and the canonical "did Friday
+succeed?" signal. It is the EXPLANATION layer only: Phase 23's runbook + state-of-system
+summary will CITE this file for operational detail, and this file in turn CITES
+`AUDIT-REPORT.md` (the Phase 20 data/feature-correctness audit handoff) and `PIPELINE.md`
+(the canonical 7-stage run sequence the orchestrator wraps). It documents the
+now-verified-and-fixed reality after Phase 21 Waves 1-2 (the durable AUTO-01 guard,
+the offseason no-op, the three mechanical fixes, and the scheduling reconciliation),
+not intentions.
+
+Status tags are ASCII `[PASS]` / `[FAIL]` (no emoji, per CLAUDE.md).
+
+---
+
+## 1. What runs + when
+
+The Friday automation is a single Windows Task Scheduler task, `NFL_Predict_Pipeline`,
+that fires once a week.
+
+- **Trigger:** Friday `18:00` LOCAL = `6 PM ET`. The `StartBoundary` in
+  `deployment/windows_scheduler.xml` carries NO timezone offset
+  (`2026-09-12T18:00:00`), so `schtasks` interprets it in **machine-LOCAL time**.
+  `18:00` local equals `6 PM ET` **only while the machine stays on Eastern Time**
+  (the D-09 caveat). If the machine is moved to another timezone, the 6 PM ET freeze
+  is no longer honored and the trigger must be re-pointed.
+- **Canonical command:** `uv run python scripts/friday_pipeline.py --log-level INFO`
+  (the `<Exec>` in the XML: `<Command>uv</Command>` +
+  `<Arguments>run python scripts/friday_pipeline.py --log-level INFO</Arguments>`).
+- **Principal:** the owner user `jackc` with `LogonType=S4U` and
+  `RunLevel=HighestAvailable` (NOT the SYSTEM SID `S-1-5-18`, which cannot see the
+  owner's `uv` / `.venv` / `.env`). S4U runs whether or not the owner is interactively
+  logged on, which the `WakeToRun` Friday-evening run needs. The final working
+  `LogonType` is confirmed empirically by the D-08 register-and-verify `schtasks /run`
+  (see Section 9 / the scheduling reconciliation); if `uv` or `.env` do not resolve
+  under S4U, the XML is switched to `InteractiveTokenOrPassword`.
+- **WorkingDirectory:** `C:\Users\jackc\Code\nfl-predict`. The committed XML is
+  machine-specific (this path + the `UserId` principal) and must be re-pointed if the
+  repo moves to a different machine or user.
+- **Robustness settings (XML):** `MultipleInstancesPolicy=IgnoreNew`,
+  `StartWhenAvailable=true`, `RunOnlyIfNetworkAvailable=true`, `WakeToRun=true`,
+  `ExecutionTimeLimit=PT2H`, `AllowHardTerminate=true`, `AllowStartOnDemand=true`,
+  `Priority=7`. The XML is UTF-16 encoded.
+- **Installer (single source of truth, D-07):** the task is registered by
+  `uv run python deployment/setup_scheduling.py --install`, which runs
+  `schtasks /create /tn NFL_Predict_Pipeline /xml deployment/windows_scheduler.xml /f`
+  (idempotent overwrite) and cleans up the old split tasks (`NFL_Predict_DataUpdate`,
+  `NFL_Predict_Predictions`). The installer installs the committed XML so the installer
+  and the definition can never drift; there is no second scheduling mechanism (no
+  PowerShell `Register-ScheduledTask`, no cron).
+
+### CLI modes
+
+`scripts/friday_pipeline.py` accepts (the phase flags are mutually exclusive):
+
+| Flag | Effect |
+|------|--------|
+| (none) | Full pipeline: all 18 steps (DATA + PREDICTIONS). |
+| `--data-only` | DATA phase only (the 8 DATA-phase steps). |
+| `--predictions-only` | PREDICTIONS phase only (the 10 PREDICTIONS-phase steps); logs a "ensure data artifacts are fresh" warning. |
+| `--dry-run` | List the steps that would execute (filtered by mode); execute nothing; exit 0. |
+| `--force` | Bypass the pre-flight staleness/season checks AND the offseason no-op short-circuit; pre-flight health becomes advisory. |
+| `--log-level {DEBUG,INFO,WARNING,ERROR}` | Logging verbosity (default INFO). |
+
+> Note: the scheduled task runs the FULL pipeline (no phase flag). The
+> `--predictions-only` / `--data-only` / `--dry-run` / `--force` modes are operator
+> tools for manual / out-of-season runs.
+
+---
+
+## 2. The 5-phase orchestrator flow
+
+The CLI resolves the mode from its flags and delegates to
+`pipeline.orchestrator.FridayPipeline(force, mode).run()`. `run()` is a fixed 5-phase
+flow:
+
+- **A. Pre-flight staleness gate** (`pipeline/staleness.py`, bypassed by `--force`):
+  a season-window check plus four freshness signals (week-valid, data-freshness,
+  partial-run, model-age warn-only). Staleness *warnings* fire exactly one
+  `alert_staleness_warning` (WARNING) and continue; a staleness *failure* sets
+  `status="failed"`, fires `alert_pipeline_failure` (CRITICAL) and raises.
+- **B. Pre-flight health check** (`pipeline/health.py`, ALWAYS runs): 3 read-only
+  checks (database connectivity, model artifacts, disk space). Without `--force`,
+  `unhealthy` aborts (failure alert + raise). With `--force`, `unhealthy` is advisory:
+  it appends the warning `"Pre-flight health: unhealthy (forced)"` and continues.
+- **C. Step execution:** the 18-step registry (`pipeline/steps.py`), phase-filtered by
+  mode, run in order. The log is written atomically after each step (incremental
+  snapshot). A **critical** step failure sets `status="failed"`, fires
+  `alert_pipeline_failure` (CRITICAL) and raises immediately. A **non-critical** step
+  failure appends a warning and continues; the run ends `degraded`.
+- **D. Post-run health check** (6 checks; ADVISORY ONLY): never changes `status` or the
+  exit code. An `unhealthy` post-run result only appends `"Post-run health check:
+  unhealthy"` to warnings.
+- **E. Completion alerting** (exactly ONE alert per outcome): `failed` ->
+  `alert_pipeline_failure` (CRITICAL); `degraded` -> `alert_degraded_completion`
+  (WARNING); `success` -> `alert_pipeline_success` (INFO).
+
+### Offseason no-op short-circuit (D-06)
+
+A live, scheduled, **unforced** Friday run during the NFL offseason would otherwise hit
+the staleness season gate, set `status="failed"`, fire a CRITICAL "Pipeline Failed"
+alert, and raise -- a false alarm that erodes trust (crying wolf). To prevent this,
+`scripts/friday_pipeline.py::main` detects the offseason and returns `0` as a clean INFO
+no-op **BEFORE** constructing `FridayPipeline`, so no orchestrator alert path is reached.
+The offseason window mirrors `StalenessGate.check_season` exactly
+(`[season_start, season_start + 22 weeks]`, resolved via `get_current_nfl_week()` in ET),
+so the CLI short-circuit and the season gate can never disagree. `--force` deliberately
+bypasses the short-circuit so the operator can still run out of season (e.g. a one-time
+forced run against a completed-week stand-in). A live unforced offseason run therefore
+exits 0 as a no-op with **no CRITICAL alert**.
+
+---
+
+## 3. The 18 orchestrator steps
+
+The registry (`pipeline.steps.build_step_registry`) is exactly 18 `StepDefinition`
+entries: 8 in the DATA phase, 10 in the PREDICTIONS phase. Each step uses deferred
+imports (inside the function body) to avoid argparse collisions and module-level side
+effects. `critical=True` means a failure aborts the run; `retryable=True` means transient
+errors trigger retry.
+
+| # | Step | Phase | Critical | Retryable | What it does |
+|---|------|-------|----------|-----------|--------------|
+| 1 | `ingest_games` | DATA | yes | yes (3) | Ingest current-week games via nflreadpy. |
+| 2 | `ingest_weather` | DATA | no | yes (3) | Ingest weather forecasts via Open-Meteo (async). |
+| 3 | `data_qa` | DATA | yes | no | Run data-quality validation; fail if checks failed. |
+| 4 | `build_elo` | DATA | yes | no | Update Elo ratings for the current season. |
+| 5 | `build_team_form` | DATA | yes | no | Build team-form metrics for the current week. |
+| 6 | `build_contextual` | DATA | yes | no | Build contextual features (travel, rest, venue). |
+| 7 | `build_weather_features` | DATA | no | no | Build weather-based features for outdoor games. |
+| 8 | `verify_data_artifacts` | DATA | yes | no | Verify required silver + gold artifacts exist before predictions. |
+| 9 | `ingest_odds` | PREDICTIONS | yes | yes (3) | Capture the odds snapshot from The Odds API. |
+| 10 | `build_market_anchors` | PREDICTIONS | yes | no | Build market-anchor features from the odds snapshot. |
+| 11 | `build_features` | PREDICTIONS | yes | no | Assemble the unified per-target gold feature matrices. |
+| 12 | `validate_features` | PREDICTIONS | yes | no | Validate features for data leakage / quality. |
+| 13 | `validate_models` | PREDICTIONS | yes | no | Validate WP/ATS/OU models are available + loadable (via `artifacts/latest.json`). |
+| 14 | `generate_predictions` | PREDICTIONS | yes | no | Generate current-week predictions (loads artifacts, applies market blend). |
+| 15 | `generate_recommendations` | PREDICTIONS | yes | no | Derive bet recommendations (edges that cleared medium/high confidence). |
+| 16 | `export_artifacts` | PREDICTIONS | yes | no | Export the predictions CSV to JSON. |
+| 17 | `validate_predictions` | PREDICTIONS | yes | no | Validate the prediction file (non-empty, required columns, `wp_prob` in [0,1]). |
+| 18 | `verify_output_files` | PREDICTIONS | no | no | Verify the expected output files exist (advisory; warns on missing). |
+
+> Note: retry is handled by `tenacity` (`Retrying` with `wait_exponential` backoff) and
+> fires ONLY on `TRANSIENT_EXCEPTIONS` (`ConnectionError`, `TimeoutError`, `OSError`,
+> and `httpx.HTTPStatusError` when httpx is available). Local / validation errors
+> (`ValueError`, `RuntimeError`, etc.) are NOT retried -- they fail fast. Only the three
+> network-touching steps (`ingest_games`, `ingest_weather`, `ingest_odds`) are
+> retryable.
+
+---
+
+## 4. Where outputs land
+
+All current-week prediction artifacts are written under `outputs/predictions/`
+(via the single `pipeline.steps._predictions_output_dir()` helper):
+
+- `outputs/predictions/predictions_<season>_week<week>.csv` -- the prediction matrix.
+- `outputs/predictions/predictions_<season>_week<week>.json` -- the same, JSON.
+- `outputs/predictions/game_context_<season>_week<week>.csv` -- per-game context.
+- `outputs/predictions/recommendations_<season>_week<week>.json` -- bet recommendations.
+
+The orchestrator does NOT train, backtest, or rebuild the web cache -- those are the
+separate PIPELINE.md stages 3, 4, and 6.
+
+---
+
+## 5. Where logs land
+
+The execution log is written to `logs/friday_pipeline.json`.
+
+- **Single-file overwrite -- NO per-run history.** Each run overwrites the same file;
+  there is no per-run archive or rolling history. The log reflects the MOST RECENT run
+  only.
+- **Written atomically** by `pipeline.execution_log.write_execution_log_atomic`
+  (temp file + `os.replace`), so a crash mid-write never leaves a partial JSON file.
+  The log is snapshotted after each step (incremental), so a mid-run inspection shows
+  progress so far.
+- **Shape:** `ExecutionLog` (status, start_time, end_time, season, week,
+  total_duration_ms, forced, mode, pid, `steps[]` of `StepLogEntry`, `warnings[]`,
+  `error`).
+
+> Note: per-run log history is a deferred FUTURE enhancement (D-11). It is deliberately
+> NOT added in this phase (documentation / verification only); the single-file overwrite
+> is documented as-is.
+
+---
+
+## 6. How to tell whether a run succeeded -- the D-04 success-signal triad
+
+A Friday run resolves to exactly one of three observable outcomes. The canonical signal
+is a TRIAD: the `log.status`, the matching alert level, and the presence of the
+predictions output file. These three map to distinct, observable signals (proven by the
+durable AUTO-01 test added in Plan 21-04).
+
+| Outcome | `log.status` | Alert method (level) | Exit code | Predictions file |
+|---------|--------------|----------------------|-----------|------------------|
+| success | `success` | `alert_pipeline_success` (INFO) | 0 | present |
+| degraded | `degraded` | `alert_degraded_completion` (WARNING) | 0 | present (a non-critical step failed) |
+| failed | `failed` | `alert_pipeline_failure` (CRITICAL) | 1 | may be absent |
+
+Stated plainly:
+
+> **"Friday succeeded"** == `log.status` in `{success, degraded}` AND
+> `outputs/predictions/predictions_<S>_week<W>.csv` exists (non-empty, `wp_prob` in
+> `[0,1]`).
+
+The exit code is `0` for BOTH `success` and `degraded` (a degraded run still produced
+predictions; only a non-critical step like weather or output-file verification failed),
+and `1` only for `failed`. The AUTO-01 keystone test
+(`test_orchestrator_predictions_phase_e2e` in
+`tests/integration/test_friday_prediction_step.py`) drives the REAL
+`FridayPipeline(mode="predictions-only", force=True).run()` through the REAL step
+registry (no stubbed registry -- that stubbing was the `cb61042` blind spot) and asserts
+`log.status == "success"`, the predictions CSV exists, `game_id` is present, and
+`wp_prob` is in `[0,1]` -- proving the triad's `success` branch produces a real,
+leakage-safe predictions file. An owner-confirmed one-time live forced run produced a
+real predictions file offline (16 rows, `wp_prob` 0.176-0.867, all market rows matched
+from the on-disk odds snapshot with NO live pull) with NO model artifact re-fit.
+
+---
+
+## 7. Alerts -- log-only by default, email/Slack only if configured (D-05)
+
+Alerts are **log-only by default.** Every alert always fires to the console/log channel
+(`_send_console_alert`), so a normal run requires NO configuration to produce its alert.
+Email and Slack channels fire ONLY if they are explicitly enabled.
+
+The orchestrator's four alert methods (`pipeline/alert.py`) each map to exactly ONE event
+and level: failure -> CRITICAL, success -> INFO, staleness -> WARNING, degraded ->
+WARNING. They wrap `utils.alert_manager.AlertManager`, whose `send_alert` routes each
+alert to the channels configured for its severity, gated on the enable flags.
+
+The routing is configured in `conf/config.yaml` under `monitoring.notifications`
+(NOT directly in `.env`); secrets (recipients, webhook URL) belong there or in a local
+override, never committed:
+
+| Key (under `monitoring.notifications`) | Default | Purpose |
+|----------------------------------------|---------|---------|
+| `enable_email` | `false` | Master switch for the email channel. |
+| `enable_slack` | `false` | Master switch for the Slack channel. |
+| `enable_console` | `true` | Console/log channel (always on -- the log-only default). |
+| `email_recipients` | `[]` | List of recipient addresses (email is skipped with a warning if empty). |
+| `slack_webhook_url` | `""` | Slack incoming-webhook URL (Slack is skipped with a warning if empty). |
+| `notification_levels` | per-severity channel lists | Which channels fire at each level (e.g. `critical: [email, slack, console]`, `warning: [console]`, `info: [console]`). |
+| `max_alerts_per_hour` | `20` | Hourly rate limit per alert type. |
+| `cooldown_minutes` | `30` | Suppress repeat alerts of the same type/level within this window. |
+
+To enable failure email: set `monitoring.notifications.enable_email: true`, populate
+`email_recipients`, and ensure `critical` (and any other severities you want emailed)
+includes `"email"` in `notification_levels`. To enable Slack: set
+`monitoring.notifications.enable_slack: true` and set `slack_webhook_url`.
+
+> Note (D-05 / honesty): the email SEND path (`AlertManager._send_email_alert`) reads
+> SMTP attributes off the settings object (`smtp_host`, `smtp_port`, `smtp_use_tls`,
+> `smtp_username`, `smtp_password`, `email_from`) that are NOT currently defined on the
+> `conf.settings.Settings` class. The `.env` feature flags `ENABLE_EMAIL_REPORTS` /
+> `ENABLE_SLACK_NOTIFICATIONS` exist on `Settings` but are NOT the switches
+> `AlertManager` reads (it reads `monitoring.notifications.enable_email/enable_slack`).
+> So the email channel is documented + reachable but the SMTP settings wiring must be
+> verified before relying on it. The Task-3 (D-05) owner checkpoint either verifies a
+> test alert actually arrives via the chosen channel, or confirms the documented keys
+> match the code for a future enable (Slack works as documented; email needs the SMTP
+> settings present). The default stays log-only either way -- no `.env` change is
+> required for a normal run.
+
+---
+
+## 8. Findings (FIXED this phase)
+
+> The D-12 automation-audit findings record. This section catalogs what was FIXED in
+> Phase 21 (correctness / wiring only -- documentation / verification milestone, no model
+> re-fit and no gold rebuild, D-01). Mirrors `AUDIT-REPORT.md`'s F-NN / D-11-x entry
+> shape. Commit hashes are the atomic per-task commits.
+
+### F-01 -- Team-form `--current` rerouted onto the time-fenced builder
+
+- **Where:** `scripts/build_team_form.py::build_for_current_week`.
+- **Fix:** rerouted off the deprecated, non-time-fenced `build_team_form_features` onto
+  the time-fenced `TeamFormCalculator.build_features` Protocol method, so the live
+  current-week build no longer emits a `DeprecationWarning`. Current-week rolling rows
+  are persisted to silver `team_form_features` via a `(target_season, target_week)`-keyed
+  upsert that preserves the full on-disk history (the WR-01 invariant -- no season-span
+  shrink, no append-merge growth). The operative leakage guard remains the
+  `week < target_week` filter in `calculate_rolling_averages`.
+- **Commit:** `a01aa7a`.
+
+### D-11-D -- Stale `artifacts/models/*.pkl` stubs deleted
+
+- **Where:** `artifacts/models/{wp,ats,ou}_model.pkl`.
+- **Fix:** deleted the three stale stub files (the wrong convention the Phase 20 CR-01
+  fix repointed health / staleness / model_validation AWAY from). They were UNTRACKED, so
+  removed by filesystem delete (Phase 19-02 precedent). `latest.json` + the real
+  `artifacts/{target}_{ts}/` dirs are untouched; nothing on the Friday path reads the
+  stubs.
+- **Commit:** `f90966f`.
+
+### D-11-E -- Market-anchor `create_consensus_lines` KeyError fixed
+
+- **Where:** `features/market_anchors.py::create_consensus_lines`.
+- **Fix:** fixed the latent `KeyError 'ml_home'` (the column was renamed upstream to
+  `opening_ml_home` / `snapshot_ml_home`) by making the median computation prefix-aware
+  so both the opening- and snapshot-line callers work. This is a DEAD path off the
+  canonical gold (the live build constructs market anchors on the fly via
+  `MarketAnchorFeaturesCalculator.build_features`), so the fix changes no gold value.
+- **Commit:** `f90966f`.
+
+### AUTO-02-F1 -- Post-run prediction-pipeline health glob corrected
+
+- **Where:** `pipeline/health.py::check_prediction_pipeline`.
+- **Fix:** the post-run check globbed `current_predictions*.parquet` -- a pattern the real
+  run never produces -- so it ALWAYS reported "No prediction files found" even on a
+  successful run. Changed the glob to `predictions_*_week*.csv` (via the shared
+  `_predictions_output_dir()` helper) and read CSV. The check is advisory-only (it never
+  blocks Friday), but it can now actually report `healthy`, strengthening the D-04
+  "predictions file present" signal.
+- **Commit:** `1ba2405`.
+
+### D-06 -- Offseason no-op short-circuit (no crying wolf)
+
+- **Where:** `scripts/friday_pipeline.py::main`.
+- **Fix:** an unforced offseason run now returns 0 as a clean INFO no-op BEFORE
+  constructing `FridayPipeline`, so it never hits the staleness season gate and never
+  fires a false CRITICAL "Pipeline Failed" alert. The offseason window mirrors
+  `StalenessGate.check_season` exactly; `--force` bypasses. No new `log.status` was added
+  (Option A, smallest blast radius).
+- **Commit:** `cc66264`.
+
+### D-07..D-10 -- Windows scheduling reconciled into one drift-proof story
+
+- **Where:** `deployment/windows_scheduler.xml`, `deployment/setup_scheduling.py`.
+- **Fix:** corrected the canonical XML -- owner principal `jackc` + `LogonType=S4U` +
+  `RunLevel=HighestAvailable` (NOT the SYSTEM SID, D-10); `StartBoundary` restored to
+  `18:00` local = 6 PM ET (undoing the Phase-19 5 PM / 17:00 consolidation, D-09);
+  `<Exec>` changed from the hardcoded `.venv\Scripts\python.exe` to `uv run python
+  scripts/friday_pipeline.py --log-level INFO` (D-10). Made `setup_scheduling.py` a single
+  installer that registers THAT XML via `schtasks /create /xml ... /f` (D-07), removing
+  the dead Linux/mac cron branch. No second automation mechanism.
+- **Commits:** `45e2b84` (XML), `bfcf108` (installer), `6b72e41` (tests).
+- **Note:** the committed XML fix is INERT until the OS task is re-registered. The
+  register-and-verify is the D-08 owner checkpoint (Section 9); the final working
+  `LogonType` (S4U vs `InteractiveTokenOrPassword`) is decided empirically by that
+  `schtasks /run`.
+
+### AUTO-01 -- Durable end-to-end orchestrator guard
+
+- **Where:** `tests/integration/test_friday_prediction_step.py`
+  (`test_orchestrator_predictions_phase_e2e`).
+- **Fix:** added the durable `cb61042` guard -- a permanent, non-mocked, offseason-safe
+  test that drives the REAL `FridayPipeline(mode="predictions-only", force=True).run()`
+  through the REAL step registry (deliberately NO `build_step_registry` patch and NO
+  `make_mock_step`, since those ARE the aliasing blind spot) and proves a leakage-safe
+  predictions file is produced. Plus an owner-confirmed one-time live forced run, offline,
+  with no model re-fit.
+- **Commit:** `a9e8105`.
+
+---
+
+## 9. Owner-executed verifications (D-08 scheduling, D-05 alerts)
+
+Two verifications complete the automation audit on the owner's machine. They require
+admin / a local `.env` and cannot be CI-automated; they are recorded here when run.
+
+- **D-08 (AUTO-03 completion):** register `NFL_Predict_Pipeline` via
+  `uv run python deployment/setup_scheduling.py --install`, then confirm via
+  `schtasks /query /tn NFL_Predict_Pipeline /fo LIST /v` (Run As User = `jackc`,
+  Next Run Time = a Friday, action resolves `uv run ... scripts/friday_pipeline.py`).
+  Optionally `schtasks /run` to prove launch. Records the final working `LogonType`
+  (S4U, or `InteractiveTokenOrPassword` if `uv`/`.env` do not resolve under S4U).
+- **D-05 (alert path):** either set the `monitoring.notifications` keys above and verify
+  a test alert arrives via email/Slack, or confirm the documented keys match the code for
+  a future enable. The default stays log-only.
+
+> These owner steps are tracked in the Plan 21-05 SUMMARY (the register-and-verify
+> outcome + final LogonType, and the email-path outcome) once executed.
+
+---
+
+## 10. Non-correctness findings (deferred)
+
+> Real findings that are OUT of correctness scope for this documentation/verification
+> phase. Per the HARD BOUNDARY (D-01/D-12) these are CAPTURED here, NOT fixed. They are
+> robustness / hygiene items for a future milestone or the backlog. (Pointer: these
+> mirror and extend the `AUDIT-REPORT.md` deferred record.)
+
+- **WR-03 -- dead `kickoff_et` time-fence guard.**
+  `features/team_form.py:665-666`: the `build_features` `kickoff_et < as_of_datetime`
+  guard is dead code because the `calculate_team_game_stats` output schema has no
+  `kickoff_et` column, so the guard never fires. The operative leakage protection on the
+  team-form path is the `week < target_week` filter inside `calculate_rolling_averages`.
+  Pre-existing and latent (not a live leakage exposure). Deferred: either join
+  `kickoff_et` so the guard actually fences, or remove the dead guard + the docstring
+  claim. Documented inline at the F-01 routing site.
+- **WR-04 -- fragile `locals()`-membership idiom.**
+  `features/market_anchors.py:724-730`: market-efficiency features gate on
+  `"opening_probs" in locals() and "snapshot_probs" in locals()`, a fragile
+  cross-iteration `locals()`-membership idiom that could read a prior game's stale probs
+  if the guard structure ever changes (in practice both are recomputed when both data
+  dicts are present, so the stale value is currently overwritten before use).
+  Pre-existing. Deferred: initialize `opening_probs={}` / `snapshot_probs={}` per
+  iteration and gate on non-empty dicts.
+- **D-11-A -- broad `except Exception` drift in the pipeline package.**
+  Several deliberate graceful-degradation / log-and-continue boundaries use a broad
+  `except Exception` (annotated `# noqa: BLE001`). Live sites observed this phase:
+  `scripts/friday_pipeline.py::main` (top-level CLI catch, ~line 149, "top-level CLI must
+  catch all") and `pipeline/orchestrator.py::_execute_step` (~line 175, "must catch all
+  to record in log"). These per-step / top-level catches are intentional (they must
+  record any failure in the log / exit cleanly). Others in `pipeline/health.py` /
+  `execution_log.py` / `model_validation.py` are narrowing candidates. PROJECT.md lists
+  "no broad exception swallowing" as a validated v1.0 requirement, so the remaining
+  catches are drift. Deferred: a future robustness pass narrows the non-intentional ones
+  to operation-specific exception tuples (the pattern `data/storage.py` adopted in
+  Phase 15). The intentional CLI / per-step catches stay.
+
+For the broader deferred robustness/hygiene catalog (D-11-B SQL-string-build,
+silent in-memory-DB fallback, the `20-REVIEW.md` WR-05..07 / IN-01..04 items, etc.) see
+`AUDIT-REPORT.md`'s "Non-correctness findings (deferred)" section.
+
+---
+
+## Cross-references
+
+- **`AUDIT-REPORT.md`** -- the Phase 20 Data & Feature Correctness Audit handoff: the
+  adopted canonical gold (D-02), the FIX-01 fixes, and the deferred findings record this
+  document extends.
+- **`PIPELINE.md`** -- the canonical 7-stage run sequence
+  (ingest -> features -> train -> backtest -> predict -> build-cache -> serve) that the
+  Friday orchestrator wraps for the current-week subset. The orchestrator does the
+  ingest -> features -> predict -> validate work; train, backtest, and build-cache are
+  the separate manual stages.
+- **Phase 23 (forthcoming)** -- the operational runbook + state-of-system summary will
+  CITE this file. AUTOMATION.md is the EXPLANATION; the runbook is the operational
+  procedure. This file does not duplicate runbook scope.
+
+---
+
+*Phase 21 -- Automation Audit & Explanation. AUTO-04 end-to-end automation explanation +
+the D-12 FIX-vs-deferred findings record. ASCII only (no emoji, per CLAUDE.md).*
