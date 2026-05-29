@@ -22,7 +22,7 @@ that fires once a week.
 
 - **Trigger:** Friday `18:00` LOCAL = `6 PM ET`. The `StartBoundary` in
   `deployment/windows_scheduler.xml` carries NO timezone offset
-  (`2026-09-12T18:00:00`), so `schtasks` interprets it in **machine-LOCAL time**.
+  (`2026-09-11T18:00:00`), so `schtasks` interprets it in **machine-LOCAL time**.
   `18:00` local equals `6 PM ET` **only while the machine stays on Eastern Time**
   (the D-09 caveat). If the machine is moved to another timezone, the 6 PM ET freeze
   is no longer honored and the trigger must be re-pointed.
