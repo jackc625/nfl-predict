@@ -3,7 +3,7 @@
 **Milestone:** v2.1 Trust & Reproducibility
 **Phase:** 20 -- Data & Feature Correctness Audit
 **As-found baseline seeded:** 2026-05-28 (Wave 2 / plan 20-02)
-**Finalized:** _pending Wave 3 / plan 20-06_
+**Finalized:** 2026-05-28 (Wave 3 / plan 20-06)
 
 > This is the forensic deliverable for Phase 20 (D-12). It records the system's true
 > **as-found** state -- a per-stage pass/fail baseline captured **before any Wave-3 fix**
@@ -156,17 +156,33 @@ running, so they are batch-fix candidates per D-10, not Wave-1 inline blockers).
 > diagnostics (`outputs/diagnostics/audit_integrity.md`, `audit_handtrace.md`,
 > `audit_freshness.md`, `audit_features.txt`, `audit_leakage.txt`) into CORRECTNESS
 > (in FIX-01 scope, fixed) vs NON-CORRECTNESS (deferred, D-11). The honest outcome:
-> **no correctness bug in FIX-01 scope was found** -- every finding is either confirmed
-> not to reach the gold feature math, or is an out-of-scope robustness/hygiene item (D-11).
-> Per the plan's Task-1 action ("a clean audit is a valid honest outcome ... record that
-> explicitly and proceed to the rebuild with no code change"), **Wave 3 applied no
-> correctness code change.** The single gold rebuild + backtest re-run still ran (D-10/D-02)
-> to confirm the as-found gold reproduces deterministically.
+> **no feature-math correctness bug in FIX-01 scope was found** -- every cataloged feature
+> finding (F-01, F-03, F-LEAK-01, F-ZERO-01, F-VALIDATOR-01) is either confirmed not to
+> reach the gold feature math, or is an out-of-scope robustness/hygiene item (D-11). No
+> feature/builder math was changed.
+>
+> **ONE enabling correctness fix landed under D-13 (owner-authorized, Task 2a):** the
+> reproducibility defect behind finding F-02 -- non-idempotent per-season silver writes that
+> let tables collide / append across runs (weather_features ~1048x, games_with_elo ~30.7x,
+> contextual ~4.9x, team_game_stats 127,922 dup rows) -- was fixed at the storage layer
+> (single-file `replace_mode` writes; dropped `partition_cols` on contextual/weather/market;
+> the partition reader scoped to `{layer}/{table}/` so it can no longer read a sibling
+> table's partitions, which had been feeding `weather_features` the `odds_snapshot` rows).
+> The on-disk bloated tables were de-duped (commit `25c364f`). This is an ENABLING
+> correctness fix for the D-10 single rebuild: the corrected silver is the cause of every
+> gold value-hash change and every backtest metric move recorded below. It is scoped to
+> data/storage correctness ONLY -- NO new features, NO re-tuning, NO algorithm swap, and
+> NEVER a deployed-artifact re-fit (D-01). F-02 was thereby promoted from "deferred bloat"
+> (its as-found Wave-2 disposition) to "fixed" because reproducibility is the v2.1
+> milestone's namesake goal (D-13 owner authorization, OPTION A).
+>
+> The single gold rebuild + backtest re-run (D-10, exactly once) then ran on the corrected
+> silver to materialize the adopted canonical gold (D-02).
 
 | Finding | Triage verdict | Basis | Disposition |
 |---------|----------------|-------|-------------|
 | F-01 (team-form `--current` deprecated non-time-fenced builder) | NON-correctness for gold | AUDIT-04 (20-04) confirmed the canonical historical/Gold path uses the time-fenced `build_features` (`expanding_normalize` at `build_features.py:951,970`; deprecated `normalize_features_within_seasons:586` never called). F-01 is a CURRENT-WEEK-path concern, not a gold-leakage exposure. | Deferred; current-week routing semantics are Phase 21 (AUTO-01..04) scope. NOT fixed (no gold impact). |
-| F-02 (non-idempotent `team_game_stats` append, 127,922 dup rows) | NON-correctness (bloat) | AUDIT-02 (20-03) confirmed the duplicates do NOT reach gold: all 3 matrices have 6263 clean rows, correct widths (156/157/156), zero all-null columns. Bloat is upstream of the de-duplicating gold assembly. | Deferred robustness/cleanup (D-11). NOT fixed. |
+| F-02 (non-idempotent `team_game_stats` append, 127,922 dup rows) | Enabling correctness (reproducibility) -- PROMOTED | AUDIT-02 (20-03) confirmed the duplicates do NOT corrupt the final gold *values* (all 3 matrices have 6263 clean rows, correct widths 156/157/156, zero all-null columns -- the gold assembly de-duplicates). BUT Task 2a found the same non-idempotent-write class broke build REPRODUCIBILITY across the wider silver (weather_features ~1048x growth + a partition reader that returned a sibling table's rows). Reproducibility is the v2.1 namesake goal. | FIXED at the storage layer under D-13 (owner OPTION A), commit `25c364f`. Scoped to data/storage correctness; NO artifact re-fit (D-01). On-disk bloat de-duped. |
 | F-03 (`get_current_nfl_week()` = (2025,22) offseason) | NON-correctness | Expected offseason behavior; the dry-run deliberately used 2024 wk18 as its known-answer stand-in. | Phase 21 owns live week resolution. NOT fixed. |
 | F-INTEG-01 (stale `16 if week<=18` completeness) | NON-correctness (robustness) | Only mis-labels Silver completeness percentages; never produces a wrong gold value (the AUDIT-02 gold-integrity check deliberately does not assert against it). | Deferred (D-11). NOT fixed. |
 | F-INTEG-02 (odds/weather silver carry no team cols) | Informational | Tables key by `game_id` only; team coverage verified transitively. Not a defect. | No action. |
@@ -174,10 +190,13 @@ running, so they are batch-fix candidates per D-10, not Wave-1 inline blockers).
 | F-ZERO-01 (20 all-zero gold columns) | NON-correctness (bloat) | 19/20 reach NO deployed model feature_list; the one that does (`heat_impact_score`, in the WP 20-feature list) is INERT (a constant feature contributes zero signal). Dead/bloat schema, not gold-value corruption. | Deferred cleanup (D-11). NOT fixed. |
 | F-VALIDATOR-01 (stale validator naming + `_z` substring collision) | NON-correctness | Report-only `FeatureValidator` FAILs are stale-schema artifacts (completeness expects v1.0 raw names vs the current `home_*`/`away_*` schema; `_z` substring collides on `red_zone_td_rate`). Not data defects. | Run+harden only; do NOT rebuild the validator (RESEARCH key insight). NOT fixed. |
 
-**Wave-3 correctness verdict:** [PASS] -- clean audit. No FIX-01-scoped correctness bug found;
-no correctness code change applied. The Wave-1 CR-01 cluster blocker fix (plan 20-01) remains
-the only inline fix this phase, and it is unchanged. The D-11 non-correctness items remain
-captured below, NOT fixed. `uv run pytest tests/unit -q` -> 762 passed (green after triage, no
+**Wave-3 correctness verdict:** [PASS] -- clean feature-math audit + one enabling
+reproducibility fix. No FIX-01-scoped feature/builder MATH bug was found; the only Wave-3 code
+change is the D-13 enabling storage-layer fix above (idempotent silver writes + de-dup, commit
+`25c364f`), which is what makes the single rebuild reproducible and explains every metric move
+below. The Wave-1 CR-01 cluster blocker fix (plan 20-01) remains unchanged. The D-11
+non-correctness items remain captured below, NOT fixed. No deployed model artifact was re-fit
+(D-01). `uv run pytest tests/unit -q` -> 762 passed (green after the fix + triage, no
 regression).
 
 ---
@@ -209,36 +228,98 @@ regression).
   Historical Weather API**. The weather hand-trace (Wave 20-04, D-08 area 3) verifies feature
   values against the Open-Meteo archive.
 
-### Source-freshness diff (AUDIT-05) -- _pending Wave 20-05_
+### Source-freshness diff (AUDIT-05) -- FOLDED IN (Wave 20-05)
 
-The nflreadpy vs on-disk games diff and the Open-Meteo single-game re-fetch (D-04: NO live
-odds pull -- The Odds API is offseason / costly) are produced by Wave 20-05 and folded in by
-Wave 20-06.
+Produced by Wave 20-05 (`outputs/diagnostics/audit_freshness.md`), folded in here:
+
+- **Games (nflreadpy vs on-disk silver), season 2024:** source 285 games == on-disk 285;
+  0 MISSING, 0 EXTRA. [PASS] -- no settled source game is missing from disk.
+- **Weather (Open-Meteo single-game re-fetch), 2024_W06_SF@SEA (outdoor):** on-disk
+  temp 56.4F / wind 12.5mph / precip 0.0mm vs live re-fetch 57.4F / 11.4mph / 0.0mm.
+  [PASS] -- order-of-magnitude consistent within re-analysis tolerance.
+- **Odds (D-04: NO live pull -- The Odds API is offseason / 500 req/hr / costly historical
+  endpoint):** snapshot-timestamp confirmation only. Silver `odds_snapshot` = 1856 rows;
+  latest freeze `snapshot_ts` = 2024-09-19 18:00 ET.
+- **Determinism (D-09 double-run):** `generate_and_write` run twice on the fixed 2024 wk18
+  snapshot is value-identical (`assert_frame_equal` on the game_id-sorted prediction frames).
+  Artifacts were LOADED, NOT re-trained (D-01). Seeds confirmed pinned (random_state=42 across
+  WP/ATS/OU; OU `np.random.seed` at `models/train_ou.py:374`); `n_jobs=-1` is a noted-but-
+  out-of-scope train-time variable (XGBoost hist is deterministic for fixed data, and the
+  prediction path is single-threaded inference -- confirmed empirically by the double-run).
 
 ---
 
-## Gold rebuild + metric moves (D-02) -- _placeholder, filled by Wave 20-06_
+## Gold rebuild + metric moves (D-02) -- FINALIZED (Wave 20-06)
 
-> Per D-10, Wave 3 performs the **single** end-of-phase gold rebuild (Elo / team_form
-> `--all-seasons` -> contextual / weather / market `--season` -> `build_features`) followed
-> by one `run_backtest.py` (+ `--blend`) re-run. Per D-02, the corrected gold is **ADOPTED
-> as canonical regardless of whether metrics rise or fall**, but **no metric move is accepted
+> Per D-10, Wave 3 performed the **single** end-of-phase gold rebuild (Elo / team_form
+> `--all-seasons` -> contextual / weather / market `--season` -> `build_features`) on the
+> de-bloated, idempotent silver (the D-13 enabling fix above), followed by one
+> `run_backtest.py` (+ `--blend`) re-run. Per D-02, the corrected gold is **ADOPTED as
+> canonical regardless of whether metrics rise or fall**, but **no metric move is accepted
 > silently**: every before/after move in `outputs/backtest/metrics_summary.json` and
-> `season_metrics.csv` must be EXPLAINED here. An *unexplained* move blocks adoption pending
-> investigation. Adoption is NOT gated on "no regression" (this differs from the 260524-svu
-> precedent).
+> `season_metrics.csv` is EXPLAINED below. Adoption is NOT gated on "no regression" (this
+> differs from the 260524-svu precedent).
 
-| Metric | Before (old gold) | After (rebuilt gold) | Move | Explanation | Adopted? |
-|--------|-------------------|----------------------|------|-------------|----------|
-| _WP Brier_ | _TBD_ | _TBD_ | _TBD_ | _Wave 20-06_ | _TBD_ |
-| _WP log-loss_ | _TBD_ | _TBD_ | _TBD_ | _Wave 20-06_ | _TBD_ |
-| _ATS CLV_ | _TBD_ | _TBD_ | _TBD_ | _Wave 20-06_ | _TBD_ |
-| _O/U CLV_ | _TBD_ | _TBD_ | _TBD_ | _Wave 20-06_ | _TBD_ |
-| _gold row count_ | 6263 | _TBD_ | _TBD_ | _Wave 20-06_ | _TBD_ |
+### Single root cause for EVERY move
 
-**Reminder (D-01):** the gold rebuild + backtest re-run is the full extent of the cascade.
-The deployed `artifacts/latest.json` models are **NEVER re-fit** this phase; the
-production-vs-backtest mismatch is DIAG-05's subject (Phase 22).
+There is exactly **one** driver behind every metric move: the D-13 silver de-dup replaced the
+bloated / cross-contaminated `weather_features` table (which had grown ~1048x and whose
+partition reader was returning `odds_snapshot` rows) with a clean one-row-per-game weather
+table. The gold dimensions are UNCHANGED (6263 rows, widths 156/157/156, span 2002-2025), but
+the per-game weather values feeding the LEFT JOIN changed, so the three gold value-hashes
+changed (wp `f4ce831e`->`939b4118`, ats `7b1b030d`->`4fac1b82`, ou `1bb6adcd`->`56a58fdc`).
+The per-fold backtest models (fit INTERNALLY by the backtest, NOT a production re-fit) then
+moved accordingly. **No move is UNEXPLAINED.**
+
+### Per-target BEFORE -> AFTER (2021-2024 walk-forward backtest)
+
+| Target | Metric | Before (old gold) | After (rebuilt gold) | Move | Direction | Explanation | Adopted? |
+|--------|--------|-------------------|----------------------|------|-----------|-------------|----------|
+| WP | accuracy | 0.66462 | 0.66725 | +0.00263 | better | clean weather feeding the per-fold WP LogReg+isotonic | YES |
+| WP | MAE | 0.44091 | 0.43125 | -0.00967 | better | same clean-weather driver | YES |
+| ATS | MAE | 10.04096 | 10.12177 | +0.08081 | worse | same driver; honest move adopted regardless of direction (D-02) | YES |
+| ATS | R2 | 0.15067 | 0.14593 | -0.00474 | worse | same driver; adopted (no-regression NOT a gate) | YES |
+| ATS | RMSE | 12.99319 | 13.02697 | +0.03378 | worse | same driver; adopted | YES |
+| OU | MAE | 10.57858 | 10.49883 | -0.07974 | better | same driver | YES |
+| OU | R2 | 0.04655 | 0.05485 | +0.00831 | better | same driver | YES |
+| OU | RMSE | 13.27015 | 13.21305 | -0.05710 | better | same driver | YES |
+| SIM | flat-stake ROI | -0.02031 | -0.00018 | +0.02013 | better | win_rate 0.5516 -> 0.5677; +4 bets cross the edge threshold (3158 -> 3162) on clean weather | YES |
+| BLEND | wp CLV | -0.00347 | -0.00207 | +0.00140 | better | WP dynamic blend improved; ATS/OU blend delta 0.0 (gated to static per D-19) | YES |
+| gold | row count | 6263 | 6263 | 0 | unchanged | rebuild is value-only; dimensions identical | YES |
+
+- **WP**: both metrics improved.
+- **ATS**: all three metrics moved slightly worse. Per D-02 this is an HONEST move (explained
+  by the single clean-weather driver) and is ADOPTED -- adoption is NOT gated on no-regression.
+- **OU**: all three metrics improved.
+- **SIM / BLEND**: flat-stake ROI and WP-blend CLV both improved; ATS/OU blend unchanged (D-19
+  static gating).
+- **UNEXPLAINED moves: NONE.** Every move traces to the one D-13 clean-weather driver.
+
+### Task-3 adoption decision (D-02): ADOPT
+
+The owner reviewed the annotated per-target table above and, with **every move EXPLAINED by
+the single clean-weather driver and ZERO unexplained moves**, selected **OPTION: ADOPT**. The
+corrected (rebuilt) gold is now the **canonical on-disk data**, regardless of metric direction
+(the ATS slight regression is an honest finding documented here, NOT reverted). This mirrors
+the 260524-svu rebuild+adopt+confirm precedent but, per D-02, does **not** gate on
+no-regression.
+
+### Web-cache verification (UIAP-01, D-01) -- cache REFRESHED
+
+The served `data/web_cache.duckdb` (last built 2026-05-26) was compared against the rebuilt
+gold / re-run backtest. Served values **DID change** as a result of the rebuild -- e.g.
+`headline_clv` wp -0.01645 -> -0.00207, ats 0.87013 -> 1.07622; flat-stake ROI -2.03143 ->
+-0.01849 (pct), win_rate 55.161 -> 56.768; and the `game_context` Elo/weather display fields.
+Because served values changed, the cache was **refreshed via
+`uv run python scripts/populate_cache.py`** (a downstream DATA refresh from the adopted gold +
+re-run backtest outputs, NOT a model re-fit -- D-01; UIAP-01's "no request-path math" is
+preserved: the cache still holds only precomputed values). Post-refresh the cache serves the
+adopted values (predictions 1139 rows; game_context 6263 rows; flat ROI -0.01849, win_rate
+56.768; headline_clv wp -0.00207). **No deployed model artifact was re-fit.**
+
+**Reminder (D-01):** the gold rebuild + backtest re-run (+ this cache refresh) is the full
+extent of the cascade. The deployed `artifacts/latest.json` models are **NEVER re-fit** this
+phase; the production-vs-backtest mismatch is DIAG-05's subject (Phase 22).
 
 ---
 
@@ -302,6 +383,24 @@ production-vs-backtest mismatch is DIAG-05's subject (Phase 22).
   repo-hygiene removal rather than a correctness fix). Do NOT delete blindly mid-audit;
   schedule as a tidy-up once Wave-3 confirms no lingering reference.
 
+### D-11-E -- `build_market_anchors.py` deprecated consensus path schema mismatch
+
+- **Where:** `features/market_anchors.py` `create_consensus_lines:499` reads
+  `group["ml_home"]` (`:519`) while the consensus-output records it feeds (`:675`, `:700`)
+  emit `opening_ml_home` / `snapshot_ml_home`. The deprecated `build_market_anchors.py`
+  pre-build path that calls `create_consensus_lines` (`:624`, `:629`) would raise
+  `KeyError 'ml_home'` (the column was renamed to `opening_ml_home` / `snapshot_ml_home`
+  upstream).
+- **Finding:** This is a latent `KeyError` on a **deprecated, non-canonical** market-anchor
+  path. It is NOT on the canonical gold path: the live `build_features.py` build constructs
+  the market-anchor features **on the fly** (it does not invoke `create_consensus_lines`), so
+  the rebuilt gold this phase never touched this code. Surfaced during Wave-3 triage while
+  confirming the market builder's contribution to the rebuild.
+- **Disposition:** Capture only (D-11). Out of FIX-01 correctness scope because it cannot
+  affect the canonical gold (dead path on the build_features-on-the-fly market route). A
+  future cleanup either repairs the consensus column references or removes the deprecated
+  path. NOT fixed this phase.
+
 ---
 
 ## Cross-references
@@ -310,10 +409,15 @@ production-vs-backtest mismatch is DIAG-05's subject (Phase 22).
 - **Wave-1 blocker fix (CR-01 cluster, FIX-01 / D-03):** plan `20-01-SUMMARY.md`
 - **Phase decisions (D-01..D-13):** `.planning/phases/20-data-feature-correctness-audit/20-CONTEXT.md`
 - **Canonical run sequence:** `PIPELINE.md`
-- **Wave-3 diagnostics (pending):** `outputs/diagnostics/` (AUDIT-02/03/04/05), folded in by
-  plan 20-06.
+- **Wave-2/3 diagnostics (folded in):** `outputs/diagnostics/audit_integrity.md` (AUDIT-02),
+  `audit_handtrace.md` + `audit_leakage.txt` + `audit_features.txt` (AUDIT-03/04),
+  `audit_freshness.md` (AUDIT-05/D-09) -- all folded into this report by plan 20-06.
+- **Enabling reproducibility fix (D-13):** commit `25c364f` (idempotent silver writes +
+  de-dup); single rebuild + backtest re-run on the corrected silver (plan 20-06).
 
 ---
 
 *Phase 20 -- Data & Feature Correctness Audit. As-found baseline seeded 2026-05-28 (Wave 2).
-Finalized by Wave 3 / plan 20-06.*
+Finalized by Wave 3 / plan 20-06 on 2026-05-28: one D-13 enabling reproducibility fix, one gold
+rebuild ADOPTED as canonical (D-02, every move explained), cache refreshed (UIAP-01 preserved,
+no artifact re-fit per D-01), all Wave-2 diagnostics folded in, D-11 deferred items captured.*
