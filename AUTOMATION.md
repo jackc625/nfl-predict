@@ -429,8 +429,8 @@ created successfully"; the old split task names were cleaned up), ran it once wi
 | Logon Mode | Interactive/Background (= `LogonType=S4U`) |
 | Task To Run | `uv run python scripts/friday_pipeline.py --log-level INFO` (via the absolute `uv.exe`) |
 | Start In | `C:\Users\jackc\Code\nfl-predict` |
-| Schedule | Weekly, Days = FRI, Start Time = 6:00 PM, Start Date = 9/12/2026 |
-| Next Run Time | 9/18/2026 6:00 PM (season-anchored -- correct for the offseason) |
+| Schedule | Weekly, Days = FRI, Start Time = 6:00 PM, Start Date = 9/11/2026 (Friday) |
+| Next Run Time | 9/11/2026 6:00 PM (the boundary date is itself the first Friday of the 2026 season; season-anchored -- correct for the offseason) |
 | State | Enabled |
 | Stop-after | 02:00:00 (`ExecutionTimeLimit=PT2H`) |
 | Last Result | `0` after `schtasks /run` (Last Run Time 5/29/2026 1:00 PM) |
@@ -442,6 +442,15 @@ required the two follow-up fixes in Section 8 (`02e8b6a` malformed-comment, `206
 absolute `uv.exe` path). **Final working `LogonType` = S4U** (the remedy for the
 `0x80070002` PATH failure was the absolute `uv.exe` path, NOT switching to
 `InteractiveTokenOrPassword`).
+
+> **Note (WR-03):** the committed `windows_scheduler.xml` `StartBoundary` was corrected
+> from the Saturday `2026-09-12T18:00:00` to the Friday `2026-09-11T18:00:00` (the first
+> Friday of the 2026 season), so the anchor weekday now matches the `DaysOfWeek=Friday`
+> trigger. The owner's ALREADY-REGISTERED OS task still carries the old `9/12` boundary;
+> re-installing (`uv run python deployment/setup_scheduling.py --install`) to pick up the
+> corrected boundary is OPTIONAL / non-urgent -- the registered task already fires on
+> Fridays (the Saturday anchor only ever shifted the first eligible fire to the next
+> Friday), so behavior is unchanged either way.
 
 ### D-05 (alert path) -- documented-only; email + Slack are inert [PASS]
 

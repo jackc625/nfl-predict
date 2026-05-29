@@ -123,17 +123,14 @@ class SchedulingSetup:
             for old_name in OLD_TASK_NAMES:
                 logger.info(f"DRY RUN: Would delete old task: {old_name}")
 
-        # Single unified task definition. The trigger time, principal, and command
-        # are carried by the committed XML (installed via /xml below); the fields
-        # here are informational labels only.
+        # Single unified task definition. ONLY the task name is consumed here; the
+        # trigger time, day, principal, and command all live in the committed XML
+        # (installed via /xml below), so there is no second copy of the trigger to
+        # drift out of sync with the XML (IN-02). Do NOT re-add time/day/description
+        # fields here -- they would be silently ignored and could mislead a maintainer
+        # into thinking editing them changes the schedule.
         tasks = [
-            {
-                "name": "NFL_Predict_Pipeline",
-                "description": "Friday 6:00 PM ET - Unified Pipeline (data + predictions)",
-                "script": "friday_pipeline.py",
-                "time": "18:00",
-                "day": "FRI",
-            },
+            {"name": "NFL_Predict_Pipeline"},
         ]
 
         # Path to the canonical task definition (single source of truth, D-07)

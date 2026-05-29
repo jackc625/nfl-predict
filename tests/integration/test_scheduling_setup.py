@@ -152,7 +152,7 @@ class TestWindowsScheduler:
                     result.returncode = 1
                     result.stderr = "ERROR: The system cannot find the file specified."
                     return result
-                if "/?":
+                if "/?" in cmd:
                     result.returncode = 0
                     return result
             result.returncode = 0
@@ -274,8 +274,10 @@ class TestWindowsSchedulerXml:
         assert "S4U" in xml
         assert "HighestAvailable" in xml
 
-        # Trigger: 18:00 local = 6 PM ET, no timezone offset (D-09)
-        assert "2026-09-12T18:00:00" in xml
+        # Trigger: 18:00 local = 6 PM ET, no timezone offset (D-09). The StartBoundary
+        # anchor is a real Friday (2026-09-11, the first Friday of the 2026 season),
+        # matching the ScheduleByWeek DaysOfWeek=Friday trigger (WR-03).
+        assert "2026-09-11T18:00:00" in xml
         assert "17:00" not in xml
 
         # Command: uv-run invocation, not the .venv python.exe (D-10).
@@ -340,7 +342,9 @@ class TestWindowsSchedulerXmlWellFormed:
             f"expected Command to resolve to uv (bare 'uv' or '...uv.exe'), got {command.text!r}"
         )
         assert start_boundary is not None
-        assert start_boundary.text == "2026-09-12T18:00:00"
+        # The StartBoundary anchor is a real Friday (2026-09-11), matching the
+        # ScheduleByWeek DaysOfWeek=Friday trigger (WR-03); 18:00 = 6 PM ET preserved.
+        assert start_boundary.text == "2026-09-11T18:00:00"
 
     def test_windows_scheduler_xml_comment_has_no_double_hyphen(self) -> None:
         """Verify the header comment contains no '--' (illegal inside an XML comment).
