@@ -6,6 +6,8 @@ old task cleanup, idempotent behavior, and command structure.
 
 from __future__ import annotations
 
+import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -293,3 +295,54 @@ class TestWindowsSchedulerXml:
         """Verify the XML declaration still pins UTF-16 (encoding not corrupted to utf-8)."""
         xml = _SCHEDULER_XML.read_text(encoding="utf-16")
         assert 'encoding="UTF-16"' in xml
+
+
+class TestWindowsSchedulerXmlWellFormed:
+    """Well-formedness guards on the committed canonical windows_scheduler.xml.
+
+    Regression guard for the malformed-comment defect (D-08): XML 1.0 forbids the
+    literal "--" sequence anywhere inside a comment, which made schtasks reject the
+    file with "incorrect comment syntax". The earlier content tests only string-matched
+    body text and never parsed the document, so the illegal comment shipped undetected.
+    """
+
+    def test_windows_scheduler_xml_is_well_formed(self) -> None:
+        """Verify the canonical XML parses without a ParseError (schtasks-importable).
+
+        ElementTree.parse honors the in-document encoding declaration (UTF-16), so it
+        reads the BOM-prefixed file directly; a malformed comment raises ParseError.
+        """
+        # Raises xml.etree.ElementTree.ParseError if the document is not well-formed.
+        tree = ET.parse(_SCHEDULER_XML)
+
+        ns = "{http://schemas.microsoft.com/windows/2004/02/mit/task}"
+        root = tree.getroot()
+
+        # The reconciled principal, trigger, and command survive the parse intact.
+        user_id = root.find(f".//{ns}Principal/{ns}UserId")
+        logon_type = root.find(f".//{ns}Principal/{ns}LogonType")
+        command = root.find(f".//{ns}Actions/{ns}Exec/{ns}Command")
+        start_boundary = root.find(f".//{ns}CalendarTrigger/{ns}StartBoundary")
+
+        assert user_id is not None and user_id.text == "jackc"
+        assert logon_type is not None and logon_type.text == "S4U"
+        assert command is not None and command.text == "uv"
+        assert start_boundary is not None
+        assert start_boundary.text == "2026-09-12T18:00:00"
+
+    def test_windows_scheduler_xml_comment_has_no_double_hyphen(self) -> None:
+        """Verify the header comment contains no '--' (illegal inside an XML comment).
+
+        A literal double-hyphen anywhere between '<!--' and '-->' is forbidden by the
+        XML 1.0 spec and causes schtasks to reject the task XML as malformed.
+        """
+        xml = _SCHEDULER_XML.read_text(encoding="utf-16")
+
+        match = re.search(r"<!--(.*?)-->", xml, re.DOTALL)
+        assert match is not None, "expected a header comment in windows_scheduler.xml"
+
+        comment_body = match.group(1)
+        assert "--" not in comment_body, (
+            "windows_scheduler.xml comment contains an illegal '--' sequence; "
+            "XML 1.0 forbids double-hyphens inside comments and schtasks will reject it"
+        )
