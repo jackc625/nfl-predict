@@ -212,8 +212,9 @@ cache require `--workers 1`).
 uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-- **Succeeded when:** FastAPI is reachable at http://localhost:8000 with pages `/`,
-  `/performance`, `/backtest`, `/insights`, `/games/{id}`, and a `/health` endpoint that
+- **Succeeded when:** FastAPI is reachable at http://localhost:8000 with the six nav pages
+  `/`, `/performance`, `/backtest`, `/insights`, `/betting`, `/season`, the `/games/{id}`
+  detail drill-down, and a `/health` endpoint that
   returns HTTP 200. `/health` returns 200 for BOTH a healthy and a `degraded` status; in the
   offseason it is expected to report `status: "degraded"` (a data-freshness state) while
   still returning 200 with `cache_ready: true` and `all_models_exist: true`.

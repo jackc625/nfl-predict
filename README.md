@@ -151,9 +151,9 @@ primary quality metric.
 FastAPI monolith with a shared read-only DuckDB connection. Jinja2
 templates rendered through `jinja2-fragments`'s `Jinja2Blocks` so
 full-page requests and HTMX fragment swaps share the same templates.
-Four pages (**This Week**, **Performance**, **Backtest**, **Insights**),
-game detail drill-down (`/games/{id}`), HTMX partials, CSV + JSON
-exports, and a `/health` endpoint.
+Six pages (**This Week**, **Performance**, **Backtest**, **Insights**,
+**Betting**, **Season**), game detail drill-down (`/games/{id}`), HTMX
+partials, CSV + JSON exports, and a `/health` endpoint.
 
 ---
 
@@ -207,7 +207,7 @@ exports, and a `/health` endpoint.
               v
    +---------------------------------------------------------------------------------------+
    | FastAPI  (api/main.py lifespan: shared read-only DuckDB; single-worker envelope)      |
-   |   Pages:     /, /performance, /backtest, /insights, /games/{id}                       |
+   |   Pages:     /, /performance, /backtest, /insights, /betting, /season, /games/{id}    |
    |   HTMX:      /fragments/games, /fragments/performance                                 |
    |   Exports:   /api/export/csv, /api/export/json                                        |
    |   Health:    /health                                                                  |
