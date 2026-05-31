@@ -8,8 +8,9 @@ spreads and totals), and served from a read-only DuckDB cache by a FastAPI +
 HTMX + Tailwind v4 web app.
 
 The project is both a personal decision-support tool and a portfolio piece.
-v1.0 MVP shipped on 2026-03-28; a v2.0 accuracy, automation, and polish
-milestone is in flight.
+v1.0 MVP shipped on 2026-03-28 and v2.0 (accuracy, automation, and polish)
+shipped on 2026-05-26. The current milestone, v2.1 "Trust & Reproducibility"
+(documentation, audit, and diagnosis -- not new features), is in progress.
 
 ---
 
@@ -54,24 +55,35 @@ reproducible, auditable, and honest about where it fails.
 model training, walk-forward backtest, market blending, and the web
 dashboard are all in production.
 
-**In flight (v2.0 accuracy / automation / polish).** Phases 11-16 are
-complete: Elo rebuild with snapshot-then-update, Optuna-driven retraining
-infrastructure, `DynamicBlendWeights` (week-of-season sigmoid schedule),
-a unified Friday orchestrator with retry and health gates, and data-quality
-monitoring. Phases 17-18 (betting dashboard + season tracking page) are
-not started.
+**Shipped (v2.0 accuracy / automation / polish, 2026-05-26).** Phases
+11-18 are complete: Elo rebuild with snapshot-then-update, Optuna-driven
+retraining infrastructure, `DynamicBlendWeights` (week-of-season sigmoid
+schedule, adopted per-target via gating), a unified Friday orchestrator
+with retry and health gates, data-quality monitoring, the model-insights
+page, the betting dashboard, and the season-tracking page.
+
+**In progress (v2.1 Trust & Reproducibility).** A trust/audit milestone
+with NO new product features: converge on one canonical, verified,
+documented pipeline; forensically audit the data and feature engineering
+for correctness and leakage; honestly diagnose real model accuracy; and
+verify, then explain, the automation. Phases 19-22 are complete (pipeline
+consolidation, correctness audit, automation audit, accuracy diagnosis);
+Phase 23 (documentation, runbook, state-of-system) is in progress. See
+`STATE-OF-SYSTEM.md` for the trustworthy/fixed/deferred summary and
+`MODEL-DIAGNOSIS.md` for the per-target accuracy verdict.
 
 **What is explicitly *not* in scope.** Automated bet placement (legal
-complexity — informational only), in-game / real-time predictions,
+complexity -- informational only), in-game / real-time predictions,
 player props, DFS optimization, multi-user access, native mobile apps.
 None of these exist in the codebase.
 
-**What is in code but not yet serving production.** `DynamicBlendWeights`
-shipped in Phase 13 but the v2.0 retrain meant to adopt it failed
-per-target gating, so the production blend artifact is
-`blend_20260324_023118` (the v1.0 static blend). See "Current
-Limitations" — dynamic blending is ready to activate the moment a
-future retrain clears gating.
+**What is in code but not fully serving production.** Production currently
+runs the v1.0 pre-Elo models with the static blend, except O/U, which
+serves the adopted dynamic blend (D-19). The v2.0 retrain meant to adopt
+the new Elo gold failed per-target gating (D-17), so WP/ATS retain the
+v1.0 artifacts. See "Current Limitations" and `MODEL-DIAGNOSIS.md`, which
+quantifies this production-vs-backtest mismatch and recommends a future
+gated re-fit.
 
 ---
 
@@ -295,7 +307,7 @@ points at the production versions; on 2026-04-16 those are
 | ATS / O/U model | XGBoost `XGBRegressor` | `>=3.2, <4` |
 | Hyperparameter tuning | Optuna (TPE + Hyperband, SQLite studies) | `==4.8.0` (pinned exact) |
 | Web framework | FastAPI | `>=0.115, <1` |
-| ASGI / production servers | uvicorn + gunicorn | uvicorn `>=0.34, <1` |
+| ASGI server | uvicorn (single-worker envelope) | uvicorn `>=0.34, <1` |
 | Templating | Jinja2 + `jinja2-fragments` (`Jinja2Blocks`) | `jinja2-fragments>=1.11` |
 | Frontend interactivity | HTMX 2.0.4 (CDN) | — |
 | Charts | Plotly (Python pre-render + JS CDN) | `plotly>=6.0, <7` |
@@ -420,9 +432,8 @@ connection in `app.state.db_conn`. `api/dependencies.py::get_db` runs a
 in a module-level `cachetools.TTLCache(maxsize=128, ttl=300)` with
 deep-copy on read and write plus an explicit `RLock`. This all assumes
 **single-worker uvicorn** (`--workers 1`). The module docstring says so
-plainly; multi-worker gunicorn is available in
-`deployment/gunicorn.conf.py` but would invalidate the shared-connection
-and shared-cache invariants — a deliberate concurrency envelope, not a
+plainly; running multiple workers would invalidate the shared-connection
+and shared-cache invariants -- a deliberate concurrency envelope, not a
 bug.
 
 ---
@@ -503,16 +514,16 @@ nfl-predict/
     templates/             #   base.html + pages/ + components/
     static/input.css       #   Tailwind v4 source with @theme { NFL palette }
 
-  deployment/              # Docker + Nginx + Gunicorn + cron
-    Dockerfile, docker-compose.yml, docker-entrypoint.sh
-    gunicorn.conf.py, uvicorn.conf.py, nginx.conf, security.py
-    crontab.txt            #   Friday 5pm + 6pm ET (predates Phase 14)
-    setup_scheduling.py    #   Cross-platform scheduler installer
+  deployment/              # Windows Task Scheduler setup (scheduling only)
+    setup_scheduling.py    #   Registers the Friday task from the committed XML
+    windows_scheduler.xml  #   Task definition (Fri 18:00 local = 6 PM ET)
+    README.md              #   Scheduling notes (Phase 19 trimmed)
 
   tools/tailwindcss.exe    # Vendored Tailwind v4 CLI binary
-  Makefile                 # 40+ targets: snapshot, backtest, tune-blend, serve, train
+  Makefile                 # Thin 9-target wrapper over PIPELINE.md (train, backtest,
+                           #   backtest-blend, predict, build-cache, serve,
+                           #   friday-production, test, lint)
   pyproject.toml           # Dependencies, Ruff, Pyright, pytest, coverage
-  .github/workflows/friday-production.yml  # Optional GH Actions backup scheduler
 ```
 
 ---
@@ -524,76 +535,60 @@ nfl-predict/
 | `tests/unit/` | 45 | Trainers, feature builders, leakage gate, Elo correctness + no-leakage, quality gates, temporal splits, CLV, static + dynamic blending, Optuna tuning, timezone handling, pipeline health + orchestrator + staleness + alerts + execution log, betting simulation, QB tracking, opponent adjustment, backtest engine + metrics + report |
 | `tests/integration/` | 16 | End-to-end pipeline, backtest comparison + report, data completeness, Elo convergence, idempotency, lift validation, nflreadpy + Open-Meteo smoke tests, Phase 15 integration, prediction pipeline, scheduling setup, training pipeline |
 | `tests/api/` | 9 | Pages, fragments, exports, cache headers, caching, connection management, error responses, health endpoint, **UIAP-01 import guard** |
-| `tests/ui/` | HTML snapshot | BeautifulSoup-based snapshot tests over rendered pages |
 
 Seven test files use Hypothesis for property-based testing (betting
 simulation, blending data, blend tuning, baseline capture, backtest
-comparison + report, market blending, health endpoint). `make test-quick`
-runs the fast subset; `make dev-test` runs the full suite with coverage
-and HTML report.
+comparison + report, market blending, health endpoint). Run the full
+suite with `make test` (= `uv run pytest tests/unit tests/integration
+tests/api -q`); for a faster loop, `uv run pytest tests/unit -q`.
 
 ---
 
 ## Deployment
 
-**What actually serves production.**
+**What actually serves production today.**
 
-- FastAPI app under a **single-worker** uvicorn (via `gunicorn` with
-  `UvicornWorker`, `preload_app = True`).
-- Nginx in front for TLS termination, rate limiting (`api_limit 10r/s`,
-  `health_limit 2r/s`, `static_limit 20r/s`), connection limiting
-  (20/IP), CSP/HSTS/OCSP stapling, and static asset caching.
-- DuckDB on local disk — one read-only connection shared by the app
+- FastAPI app under a **single-worker** uvicorn run locally
+  (`uv run uvicorn api.main:app --host 0.0.0.0 --port 8000`). The
+  shared read-only DuckDB connection and module-level `TTLCache`
+  require `--workers 1` (see the API concurrency envelope above).
+- DuckDB on local disk -- one read-only connection shared by the app
   (`data/web_cache.duckdb`).
-- A scheduler (cron on Linux, Task Scheduler on Windows, optional
-  GitHub Actions fallback at `.github/workflows/friday-production.yml`)
-  that triggers the Friday orchestrator.
-- Security headers middleware (`deployment/security.py`) layered into
-  the FastAPI stack.
-- Docker: multi-stage image (`builder → runtime → development →
-  testing`) with a non-root `nflpredict` user and a `/health`-based
-  container healthcheck.
+- The only automation is the **Windows Task Scheduler** Friday run that
+  triggers the orchestrator (`scripts/friday_pipeline.py`); see
+  `AUTOMATION.md` for what it does and `deployment/` for the task setup.
 
-**What `docker-compose.yml` also defines.** The compose file includes
-Redis, Postgres, Prometheus, Grafana, and an ELK stack
-(Elasticsearch + Logstash + Kibana). These are optional extras
-scaffolded during earlier exploration — the minimum runtime needs only
-the API, Nginx, DuckDB, and the scheduler. This is called out as a
-limitation below to avoid overstating operational maturity.
+**Hosted deployment is deliberately out of scope for now.** An earlier
+exploratory Docker / Nginx / Gunicorn / docker-compose stack (with
+optional Redis, Postgres, Prometheus, Grafana, and ELK extras) was
+**deleted in Phase 19** -- it overstated operational maturity and was
+not part of the real runtime. Packaging the app for a hosted server is
+a planned future milestone (see `.planning/PROJECT.md` Out-of-Scope);
+the architecture is kept deployment-friendly so that work stays small.
 
 ---
 
 ## Current Limitations
 
 1. **v2.0 retrain did not pass gating.** The v2.0 tuning pass produced
-   new candidate artifacts that failed per-target gating, so production
-   continues to run the v1.0 models and the static (pre-dynamic) blend
-   artifact `blend_20260324_023118`. `DynamicBlendWeights` is fully
-   implemented in code and under test — it will activate the moment a
-   future retrain clears gating.
-2. **Deployment docs partially stale.** `deployment/crontab.txt` and
-   `deployment/README.md` both predate the unified Friday orchestrator
-   introduced in Phase 14. The crontab still references
-   `friday_data_update.py` / `friday_predictions_run.py`, which were
-   replaced by `scripts/friday_pipeline.py` + `pipeline/orchestrator.py`.
-   Code is current; the docs need a refresh.
-3. **Single-worker concurrency envelope.** The shared DuckDB connection
-   and module-level `TTLCache` require `--workers 1`. Multi-worker
-   gunicorn would invalidate those invariants. This is documented in
+   new candidate artifacts that failed per-target gating (D-17), so
+   production continues to run the v1.0 WP/ATS models with the static
+   blend (O/U serves the adopted dynamic blend, D-19).
+   `DynamicBlendWeights` is fully implemented in code and under test.
+   The v2.1 accuracy diagnosis quantifies this production-vs-backtest
+   mismatch and recommends a future gated re-fit -- see
+   `MODEL-DIAGNOSIS.md` (DIAG-05) and `STATE-OF-SYSTEM.md`.
+2. **Single-worker concurrency envelope.** The shared DuckDB connection
+   and module-level `TTLCache` require `--workers 1`. Running multiple
+   workers would invalidate those invariants. This is documented in
    the `api/main.py` module docstring and is a deliberate envelope, not
    an accidental limit.
-4. **docker-compose ships more than is used.** Redis, Postgres, and the
-   ELK stack are optional scaffolding, not part of the minimum
-   deployment. Describing the compose file as "the production stack"
-   would overstate what's actually wired up.
-5. **Phases 17-18 are not started.** There is no betting dashboard
-   page and no season tracking page. The nav shows four tabs because
-   four tabs are what exist.
-6. **2025 season data is partial.** 2002-2024 seasons are fully
+3. **2025 season data is partial.** 2002-2024 seasons are fully
    ingested and exercised. 2025 Bronze / Silver captures exist but the
    current-season pipeline has only been run in partial exercises, not
-   in anger for a full season.
-7. **Legacy trainer modules coexist with new ones.** `models/train_wp.py`,
+   in anger for a full season. Backfilling 2025 into gold is a deferred
+   item -- see `AUDIT-REPORT.md` (AUDIT-05) and `STATE-OF-SYSTEM.md`.
+4. **Legacy trainer modules coexist with new ones.** `models/train_wp.py`,
    `models/train_ats.py`, and `models/train_ou.py` stay because
    `prediction_pipeline.py` still imports `ResidualDistributionConverter`
    and `TotalDistributionConverter` from them. A future refactor can
@@ -603,20 +598,27 @@ limitation below to avoid overstating operational maturity.
 
 ## Getting Started
 
-```bash
-uv sync                           # install everything (no pip, no venv dance)
-cp deployment/production.env .env # template; fill ODDS_API_KEY and anything else required
+The operating shell is **PowerShell on Windows 11**; every command runs
+through `uv run`, so nothing depends on an activated virtualenv. The
+canonical run sequence lives in `PIPELINE.md`, and `RUNBOOK.md` is the
+operator runbook (setup, each operation, how to tell whether a run
+succeeded, troubleshooting, recovery).
 
-make snapshot                     # ingest -> Silver -> Gold for the current week
-make train                        # train WP, ATS, O/U with Optuna tuning
-make backtest                     # walk-forward backtest over 2021-2024
-make build-cache                  # (re)build data/web_cache.duckdb
-make serve                        # FastAPI at http://localhost:8000
-make test-quick                   # fast test subset; `make dev-test` for the full suite
+```powershell
+uv sync                           # install everything (no pip, no venv dance)
+Copy-Item .env.example .env       # template; fill ODDS_API_KEY and anything else required
+
+uv run python scripts/train_models.py --target all      # train WP, ATS, O/U (Optuna)
+uv run python scripts/run_backtest.py                   # walk-forward backtest 2021-2024
+uv run python scripts/populate_cache.py                 # (re)build data/web_cache.duckdb
+uv run uvicorn api.main:app --host 0.0.0.0 --port 8000  # FastAPI at http://localhost:8000
 ```
 
-`make help` prints the full target list (40+ commands). Every target
-runs through `uv run`, so nothing depends on an activated virtualenv.
+The same steps are available as the thin Makefile targets `make train`,
+`make backtest`, `make build-cache`, and `make serve` (see `PIPELINE.md`
+for the full 7-stage sequence). Run the tests with `make test` (=
+`uv run pytest tests/unit tests/integration tests/api -q`) or, for a
+faster loop, `uv run pytest tests/unit -q`.
 
 ---
 
