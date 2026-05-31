@@ -325,18 +325,44 @@ class TestDiagDiagnosis:
                 f"diagnose.py must not import a trainer ({token!r}) on the scoring path"
             )
 
-        # The harness must never WRITE to data/gold/ (LOAD + predict only).
-        assert 'to_parquet("data/gold' not in source
-        assert (
-            "data/gold/features_"
-            not in source.replace(
-                'read_parquet(f"data/gold/features_{target}.parquet")', ""
-            )
-            or "write" not in source.lower()
-        ), "diagnose.py must not write any data/gold/ artifact"
-        # Explicit: no parquet writes targeting the gold layer.
-        assert "data/gold" not in source or ".to_parquet" not in source, (
-            "diagnose.py must not persist to the gold layer"
+        # The harness must never WRITE any parquet (LOAD + predict only). A single direct,
+        # intent-clear check replaces the earlier near-tautological compound assertion (WR-03):
+        # the runtime guard in test_run_diagnosis_writes_no_gold is the real behavioral assertion.
+        assert ".to_parquet(" not in source, "diagnose.py must not write any parquet"
+
+    def test_run_diagnosis_writes_no_gold(
+        self, gold_and_odds_2021_2024, monkeypatch
+    ) -> None:
+        """RUNTIME guard (WR-02): a real run_diagnosis call writes no data/gold/ parquet.
+
+        The source-grep guard above only inspects diagnose.py's own text; it cannot catch a gold
+        write performed through an imported helper, nor a writer reached transitively. This
+        monkeypatches ``DataFrame.to_parquet`` to record every write path during a real
+        production-half run and asserts none target the gold layer -- a behavioral assertion of
+        the milestone's namesake HARD BOUNDARY (LOAD + predict only, never re-fit, never rebuild).
+        """
+        from backtest.diagnose import run_diagnosis
+
+        calls: list[str] = []
+        orig_to_parquet = pd.DataFrame.to_parquet
+
+        def spy_to_parquet(self, path, *args, **kwargs):
+            calls.append(str(path))
+            return orig_to_parquet(self, path, *args, **kwargs)
+
+        monkeypatch.setattr(pd.DataFrame, "to_parquet", spy_to_parquet)
+
+        # Production half only: LOAD + predict over the deployed artifacts; no engine re-fit.
+        run_diagnosis(
+            gold=gold_and_odds_2021_2024["gold"],
+            odds=gold_and_odds_2021_2024["odds"],
+            run_backtest_half=False,
+        )
+
+        gold_writes = [c for c in calls if "data/gold" in c.replace("\\", "/")]
+        assert not gold_writes, (
+            "run_diagnosis must never write data/gold/ (LOAD + predict only); "
+            f"observed gold writes: {gold_writes}"
         )
 
 
