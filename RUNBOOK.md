@@ -80,17 +80,20 @@ Steps:
    - if you already have a populated `data/` from a prior run, the bundled artifacts +
      existing gold are enough to run **Predict**, **Build cache**, and **Serve** directly.
 
-`PIPELINE.md` is the canonical 7-stage run sequence; the per-operation sections below mirror
-its exact commands.
+`PIPELINE.md` is the canonical 7-stage run sequence; the per-operation sections below match
+its commands (the Build-features stage is summarized to its final assembly step -- see that
+section and `PIPELINE.md` for the full component-build sequence).
 
 ---
 
 ## Common operations
 
-There are 8 common operations. Each section gives the exact `uv run` PowerShell command
-(mirrored verbatim from `PIPELINE.md`), how to tell it succeeded, and a verification-basis
-label. Do NOT consult a second command table -- these mirror `PIPELINE.md` so the two never
-drift; when in doubt, `PIPELINE.md` is the source of truth.
+There are 8 common operations. Each section gives the `uv run` PowerShell command, how to
+tell it succeeded, and a verification-basis label. The canonical commands match `PIPELINE.md`;
+for "Build features" this runbook summarizes the stage down to its final assembly step
+(`build_features.py`) -- `PIPELINE.md` lists the full per-component build sequence (build_elo,
+build_team_form, build_contextual, build_weather, build_market_anchors, then build_features).
+When in doubt, `PIPELINE.md` is the command source of truth.
 
 ### 1. Ingest
 
