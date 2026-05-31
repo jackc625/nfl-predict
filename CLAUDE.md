@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An NFL Prediction System that generates pre-game Win Probability (WP), Against the Spread (ATS), and Over/Under (O/U) predictions. Built as a personal tool for informed NFL analysis, doubling as a portfolio project. v1.0 MVP shipped 2026-03-28. 10 phases complete across foundation, data pipeline, feature engineering, model training, backtesting, market blending, and web UI.
+An NFL Prediction System that generates pre-game Win Probability (WP), Against the Spread (ATS), and Over/Under (O/U) predictions. Built as a personal tool for informed NFL analysis, doubling as a portfolio project. v1.0 MVP (10 phases: foundation, data pipeline, feature engineering, model training, backtesting, market blending, web UI) shipped 2026-03-28; v2.0 (phases 11-18: Elo, hyperparameter tuning, dynamic blend, automation, dashboards) shipped 2026-05-26. The current milestone, v2.1 "Trust & Reproducibility" (phases 19-23: documentation, audit, and diagnosis -- NOT new features), is in progress with phases 19-22 complete.
 
-**Current Status**: v1.0 MVP shipped. End-to-end pipeline: data ingestion (nflreadpy, Odds API, Open-Meteo) -> Bronze/Silver/Gold layers -> temporal-safe feature engineering (FeatureBuilder Protocol, LeakageGate) -> walk-forward model training (WP LogReg+isotonic, ATS/O/U XGBoost) -> backtest reporting (2021-2024, Brier decomposition, betting simulation) -> market blending (log-odds WP, linear ATS/O/U, pre-2018 weight tuning) -> FastAPI + HTMX web dashboard with game detail drill-down and CSV/JSON exports.
+**Current Status**: v2.1 Trust & Reproducibility in progress. End-to-end pipeline: data ingestion (nflreadpy, Odds API, Open-Meteo) -> Bronze/Silver/Gold layers -> temporal-safe feature engineering (FeatureBuilder Protocol, LeakageGate) -> walk-forward model training (WP LogReg+isotonic, ATS/O/U XGBoost) -> backtest reporting (2021-2024, Brier decomposition, betting simulation) -> market blending (log-odds WP, linear ATS/O/U, pre-2018 weight tuning; O/U dynamic blend adopted per D-19) -> FastAPI + HTMX web dashboard with game detail drill-down, model-insights, betting, and season-tracking pages plus CSV/JSON exports. v2.0 added real Elo (2002 burn-in), Optuna tuning, and a Windows Task Scheduler Friday orchestrator. v2.1 has consolidated one canonical run sequence (`PIPELINE.md`), forensically audited data/feature correctness (`AUDIT-REPORT.md`), verified + explained the automation (`AUTOMATION.md`), and honestly diagnosed accuracy (`MODEL-DIAGNOSIS.md`). NOTE: production currently serves the v1.0 pre-Elo WP/ATS models (v2.0 retrain failed per-target gating, D-17); see `STATE-OF-SYSTEM.md`.
 
 
 ## Persistent Instructions for Claude
@@ -40,7 +40,7 @@ External Sources -> Ingestion (ETL) -> Data Lake (Parquet/DuckDB) -> Feature Bui
 
 **Data layers:**
 - `data/bronze/` -- Raw snapshots (append-only, timestamped)
-- `data/silver/` -- Cleaned tables (games, odds_snapshot, weather, team_stats; latest-wins upsert)
+- `data/silver/` -- Cleaned tables (games, odds_snapshot, weather, contextual, elo_game_snapshots, team_form_features, team_game_stats; latest-wins upsert)
 - `data/gold/` -- Feature matrices per target (wp, ats, ou)
 
 **Tech stack:** Python 3.13 (uv + Ruff + pyright), pandas, DuckDB/Parquet, scikit-learn, XGBoost, FastAPI, Jinja2/Tailwind CSS v4, HTMX 2.0
