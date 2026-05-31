@@ -87,6 +87,9 @@ re-assertion. Every item here STAYS deferred in this milestone (D-07).
   deferred future enhancement.
 - See `AUDIT-REPORT.md` + `AUTOMATION.md` S10: deferred robustness/hygiene catalog
   (broad-except, SQL string-build, etc.) -- one pointer; do not re-enumerate.
+- `scripts/build_features.py` `--save` is `action="store_true"` with `default=True` and there
+  is no `--no-save`, so the flag is a no-op and the gold-write cannot be disabled via CLI
+  (pre-existing; surfaced by 23-REVIEW.md CR-01) -> code fix for a future milestone.
 
 ## Cross-references
 
