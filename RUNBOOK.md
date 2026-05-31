@@ -39,8 +39,9 @@ Every operation below ends with a label stating HOW its command was verified, an
   was characterized without being repeated.
 
 The split exists because a trust milestone must not claim "verified" for a command it could
-never safely run. A "verified live" label NEVER appears on `train_models.py`,
-`build_features.py --save`, or live ingest -- those are AUDIT-01-cited by definition.
+never safely run. A "verified live" label NEVER appears on `train_models.py`, a real
+`build_features.py` build (it writes gold by default -- there is no dry mode), or live ingest
+-- those are AUDIT-01-cited by definition.
 
 ---
 
@@ -119,20 +120,20 @@ Build each feature component, then assemble the per-target Gold matrices.
 uv run python scripts/build_features.py --season <YEAR>
 ```
 
-- **Succeeded when:** the build completes without a LeakageGate failure. A dry build
-  (WITHOUT `--save`) validates the assembly but writes NO gold; the LeakageGate diagnostic
-  lands at `outputs/diagnostics/leakage_<ts>.json`.
-- **WARNING -- `--save` and `--all-seasons` are DESTRUCTIVE.** Adding `--save` materializes
-  the canonical gold matrices (`data/gold/features_{wp,ats,ou}.parquet`), and the
-  `build_*.py --all-seasons` feeders rebuild the full historical feature tables. That is a
-  GOLD REBUILD, forbidden under D-07. The terse `PIPELINE.md` command omits `--save` for
-  exactly this reason: run it WITHOUT `--save` to try the stage; only the historical
-  rebuild path adds it. Do NOT add `--save` "just to test the features stage."
-- **Verification basis (dry build, no `--save`):** verified live 2026-05-31 (`--help` exit 0
-  this session; the dry build writes no gold).
-- **Verification basis (`--save` / `--all-seasons` gold rebuild):** verified via AUDIT-01
-  stage runner; not re-run to preserve the D-01 no-re-fit/no-rebuild boundary
-  (AUDIT-REPORT.md Stages 2a-2f + the single D-10 Wave-3 rebuild is the cited evidence).
+- **WARNING -- `build_features.py` writes gold by DEFAULT; there is no dry mode.** `--save`
+  is defined `action="store_true"` with `default=True` and there is NO `--no-save`, so the
+  flag is effectively always on: any real `--season`/`--all-seasons` build materializes the
+  canonical gold matrices (`data/gold/features_{wp,ats,ou}.parquet`). That is a GOLD REBUILD,
+  forbidden under D-07. The `build_*.py --all-seasons` feeders likewise rebuild the full
+  historical feature tables. The only non-destructive invocation is `--help`. Do NOT run a
+  real build to "test the features stage" -- there is no way to validate the assembly without
+  writing gold.
+- **Succeeded when (a sanctioned rebuild, NOT this milestone):** the build completes without a
+  LeakageGate failure and the three gold matrices are written; a LeakageGate failure instead
+  lands a diagnostic at `outputs/diagnostics/leakage_<ts>.json`.
+- **Verification basis:** verified via AUDIT-01 stage runner (`--help` exit 0,
+  AUDIT-REPORT.md Stage 2f); the script has no dry-run, so a real build is DESTRUCTIVE and was
+  NOT re-run (the single D-10 Wave-3 rebuild is the cited evidence; D-01/D-07).
 
 ### 3. Train
 
@@ -303,7 +304,9 @@ Keyed off each stage's success signal above:
   production artifact dirs. Re-run predict for the target week.
 - **`build_features` fails the LeakageGate.** Read the diagnostic at
   `outputs/diagnostics/leakage_<ts>.json`; a leakage failure means a feature referenced
-  future data. Do NOT add `--save` to "force it through" -- that would rebuild gold.
+  future data. Note that `build_features.py` writes gold by default (there is no `--no-save`),
+  so running it at all is a GOLD REBUILD forbidden under D-07 -- do NOT re-run it to "force it
+  through."
 - **Ingest fails on a single bad row.** The Pydantic quality gate fails the whole batch on one
   bad row. Inspect the timestamped snapshot in `data/bronze/` and re-run the ingest for that
   season/week.
