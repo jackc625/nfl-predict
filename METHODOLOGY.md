@@ -102,7 +102,7 @@ Elo is a real, active rating system -- not an inactive default. Ground truth:
 - **Snapshot-then-update (no batch leakage)** -- each game's pre-kickoff rating is
   snapshotted BEFORE its outcome updates the rating, so a game never sees its own
   result. This produces 6263 per-game snapshots.
-- **2002 burn-in** -- ratings warm up from 2002 (16 seasons before the 2018 backtest
+- **2002 burn-in** -- ratings warm up from 2002 (about 19 seasons before the 2021 backtest
   start), so by the evaluation window ratings are stable rather than near a cold-start.
 
 ## 5. The three model trainers
@@ -142,8 +142,8 @@ The model output is blended with the market line. Ground truth: `models/blending
 - **WP blends in log-odds space** (probability-correct interpolation); **ATS/O-U blend
   linearly** on the line.
 - **Blend weights are tuned on pre-2018 data only** (`TUNING_SEASONS`), strictly
-  isolated from the 2018+ backtest window -- no information leakage from the evaluation
-  period into the weights.
+  isolated from both the 2018-2020 training window and the 2021-2024 backtest holdout --
+  no information leakage from the evaluation period into the weights.
 - **Dynamic (week-of-season) blending is gated per target (D-19).** Only the O/U
   dynamic blend is ADOPTED (it beat static CLV); WP and ATS stay on static weights.
   `mode_by_target` is persisted in the blend artifact.

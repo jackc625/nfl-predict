@@ -44,8 +44,9 @@ reproducible, auditable, and honest about where it fails.
   AST-walking import guard (`tests/api/test_import_guard.py`) fails CI if
   `api/` ever imports from `models/`, `features/`, or `ratings/`.
 - Market blend weights are tuned strictly on pre-2018 seasons, so the
-  2018-2024 backtest window is never seen during weight selection — a
-  harder constraint than the backtest itself.
+  2021-2024 backtest window is never seen during weight selection (weights
+  are tuned on pre-2018 seasons; even the 2018-2020 training window
+  post-dates them) — a harder constraint than the backtest itself.
 
 ---
 
