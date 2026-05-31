@@ -188,7 +188,7 @@ def _results_like(predictions: dict[str, pd.DataFrame]) -> BacktestResults:
 def both_population_hit_rates(
     results_like: BacktestResults,
     closing_odds_df: pd.DataFrame,
-) -> dict[str, dict[str, float]]:
+) -> dict[str, dict[str, float | None]]:
     """Compute both DIAG-01 hit-rate populations per target via the BettingSimulator.
 
     Population (a) straight_pick: ``min_edge_threshold=0.0`` -- every game graded against the
@@ -201,7 +201,12 @@ def both_population_hit_rates(
         closing_odds_df: Normalized closing odds (game_id, ml_home, ml_away, spread, total).
 
     Returns:
-        Dict per target with ``straight_pick``, ``edge_filtered``, and ``gap`` win-rates.
+        Dict per target with ``straight_pick``, ``edge_filtered``, and ``gap`` win-rates plus the
+        companion ``n_bets_*`` counts. A win-rate field is ``None`` when that population graded
+        ZERO bets (the simulator omits a zero-bet target from ``by_target``), which is distinct
+        from a 0.0 (0%) win-rate. ``gap`` is ``None`` whenever either side is ``None`` (no graded
+        bets to compare). With the canonical n~1087-per-target population every target grades
+        well over the minimum, so these fields are non-None in practice.
     """
     sim_all = BettingSimulator(SimulationConfig(min_edge_threshold=0.0))
     res_all = sim_all.simulate(results_like, closing_odds_df)
@@ -209,15 +214,23 @@ def both_population_hit_rates(
     sim_edge = BettingSimulator(SimulationConfig(min_edge_threshold=0.02))
     res_edge = sim_edge.simulate(results_like, closing_odds_df)
 
-    out: dict[str, dict[str, float]] = {}
+    def _win_rate(by_target: dict[str, Any], target: str) -> float | None:
+        """Win-rate for a target, or None when it graded no bets ("no bets" != "0% wins")."""
+        stats_for_target = by_target.get(target, {})
+        if not stats_for_target.get("n_bets", 0):
+            return None
+        return float(stats_for_target["win_rate"])
+
+    out: dict[str, dict[str, float | None]] = {}
     targets = set(res_all.by_target) | set(res_edge.by_target)
     for target in targets:
-        straight = float(res_all.by_target.get(target, {}).get("win_rate", 0.0))
-        edge = float(res_edge.by_target.get(target, {}).get("win_rate", 0.0))
+        straight = _win_rate(res_all.by_target, target)
+        edge = _win_rate(res_edge.by_target, target)
+        gap = straight - edge if straight is not None and edge is not None else None
         out[target] = {
             "straight_pick": straight,
             "edge_filtered": edge,
-            "gap": straight - edge,
+            "gap": gap,
             "n_bets_straight_pick": int(
                 res_all.by_target.get(target, {}).get("n_bets", 0)
             ),
