@@ -6,8 +6,8 @@
 
 > This is the portfolio-facing deep-dive into the system's modeling and feature-
 > engineering methodology. It is the consolidated, de-staled successor to the two
-> v1.0-era reference docs (`docs/model_methodology.md` + `docs/feature_engineering.md`,
-> both deleted in this plan). It deliberately CROSS-LINKS the current code that
+> v1.0-era reference docs (the former `model_methodology.md` + `feature_engineering.md`,
+> both deleted from the repo in this plan). It deliberately CROSS-LINKS the current code that
 > establishes ground truth rather than re-asserting ~1,274 lines of v1.0 prose that
 > has drifted past Elo activation (Phase 11), Optuna tuning (Phase 12), and dynamic
 > blending (Phase 13). Where a number or a per-target verdict matters, it points at
