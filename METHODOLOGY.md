@@ -189,7 +189,7 @@ the two populations.
 
 The ATS/O-U residual/total distribution converters still live in the legacy
 `models/train_ats.py` / `models/train_ou.py` modules alongside the newer
-`models/trainers/` package (README "Current Limitations" item 7). This coexistence is a
+`models/trainers/` package (README "Current Limitations" item 4). This coexistence is a
 catalogued, deferred refactor -- not a bug. It is recorded in `STATE-OF-SYSTEM.md`.
 
 ## Cross-references
