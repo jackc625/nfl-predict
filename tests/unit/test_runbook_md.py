@@ -55,29 +55,50 @@ class TestRunbookMdOperations:
     """All 8 common operations (DOC-01) must be documented."""
 
     def test_documents_all_eight_operations(self):
-        """Each of the 8 operations is documented by a substring anchor.
+        """Each of the 8 operations is documented by its numbered section heading.
 
-        Names the missing operations so a drift is actionable. Each entry is a
-        tuple of acceptable substrings (any one present satisfies the operation),
-        because the runbook may name an operation by its script or its verb.
+        Anchoring on the ``### N.`` operation headings (instead of a bare verb
+        like ``backtest`` that also appears in cross-references, the architecture
+        table, and troubleshooting) means deleting or gutting an operation
+        SECTION is actually caught -- a generic substring could pass even with the
+        section removed. Names the missing operations so a drift is actionable.
         """
         content = _read_runbook_md()
-        operations = {
-            "ingest": ("ingest",),
-            "build features": ("build_features", "build features"),
-            "train": ("train_models", "train models"),
-            "backtest": ("run_backtest", "backtest"),
-            "predict": ("generate_current_week_predictions", "predict"),
-            "serve": ("uvicorn", "serve"),
-            "build cache": ("populate_cache", "build-cache", "build cache"),
-            "automation": ("AUTOMATION.md",),
+        operation_headings = (
+            "### 1. Ingest",
+            "### 2. Build features",
+            "### 3. Train",
+            "### 4. Backtest",
+            "### 5. Predict",
+            "### 6. Build cache",
+            "### 7. Serve",
+            "### 8. Run automation",
+        )
+        missing = [heading for heading in operation_headings if heading not in content]
+        assert not missing, f"RUNBOOK.md missing operation sections: {missing}"
+
+    def test_documents_operation_canonical_commands(self):
+        """Each operation section carries its canonical script/command token.
+
+        Complements the heading anchor: the heading proves the section exists,
+        the command token proves it still documents the real operation (not an
+        empty stub). These are the unique script/command tokens, not bare verbs.
+        """
+        content = _read_runbook_md()
+        command_tokens = {
+            "ingest": "scripts/ingest_games.py",
+            "build features": "scripts/build_features.py",
+            "train": "scripts/train_models.py",
+            "backtest": "scripts/run_backtest.py",
+            "predict": "scripts/generate_current_week_predictions.py",
+            "build cache": "scripts/populate_cache.py",
+            "serve": "uvicorn api.main:app",
+            "automation": "scripts/friday_pipeline.py",
         }
         missing = [
-            label
-            for label, options in operations.items()
-            if not any(option in content for option in options)
+            label for label, token in command_tokens.items() if token not in content
         ]
-        assert not missing, f"RUNBOOK.md missing operations: {missing}"
+        assert not missing, f"RUNBOOK.md missing operation commands: {missing}"
 
 
 class TestRunbookMdCrossReferences:
