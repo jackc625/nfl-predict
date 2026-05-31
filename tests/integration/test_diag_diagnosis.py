@@ -129,7 +129,6 @@ class TestDiagDiagnosis:
             both_population_hit_rates,
             score_deployed_artifacts,
         )
-
         from backtest.simulation import BettingSimulator, SimulationConfig
 
         gold = gold_and_odds_2021_2024["gold"]
@@ -162,10 +161,13 @@ class TestDiagDiagnosis:
             "diagnose.py must NOT use metrics.over_accuracy for the hit-rate (D-01)"
         )
 
-        # The fixture must reuse the normalized-odds loader, not raw parquet.
+        # The fixture must reuse the normalized-odds loader, not the raw odds parquet. Check the
+        # genuine anti-pattern (a read_parquet call on the raw odds snapshot); the token is joined
+        # at runtime so this assertion does not match its own literal in the file source.
         test_source = Path(__file__).read_text(encoding="utf-8")
         assert "_load_closing_odds" in test_source
-        assert '"data/silver/odds_snapshot' not in test_source
+        raw_odds_antipattern = "read_parquet(" + chr(34) + "data/silver/odds_snapshot"
+        assert raw_odds_antipattern not in test_source
 
     def test_all_vs_edge_filtered_gap_reported(self, gold_and_odds_2021_2024) -> None:
         """Both populations (straight_pick min_edge=0.0 + edge_filtered 0.02) are computed."""
@@ -198,7 +200,6 @@ class TestDiagDiagnosis:
     def test_wp_calibration_reproducible(self, gold_and_odds_2021_2024) -> None:
         """WP ECE + Brier decomposition reproduced deterministically on the deployed cut."""
         from backtest.diagnose import score_deployed_artifacts
-
         from backtest.metrics import compute_wp_metrics
 
         gold = gold_and_odds_2021_2024["gold"]
@@ -230,7 +231,6 @@ class TestDiagDiagnosis:
             clv_significance,
             score_deployed_artifacts,
         )
-
         from models.clv import compute_clv_for_predictions
 
         gold = gold_and_odds_2021_2024["gold"]
