@@ -55,6 +55,16 @@ the **market-blended** output (D-02). The blend is static for WP/ATS and dynamic
 week-of-season for O/U (D-19); consequently the ATS/OU blended-vs-raw headline CLV delta is
 0.0 by design, while WP's blend is active.
 
+**Which blend path the blended cuts reproduce (important):** the blended cuts here apply the
+deployed dynamic blend artifact DIRECTLY via `MarketBlender.from_artifacts`, matching the
+LIVE current-week path (`scripts.generate_current_week_predictions.apply_blending`), which
+passes week/season and therefore exercises the O/U dynamic week-of-season schedule. Note that
+`backtest/run.py --blend` passes only the static `BlendConfig` to the engine (it does NOT pass
+`dynamic_weights`), so the backtest report's blended O/U cut is STATIC. The blended-backtest
+O/U number reported below (`+1.02185`) is therefore reproducible only via `run_diagnosis`
+(`backtest/diagnose.py`, mirroring live), NOT via `backtest/run.py --blend`. The harness
+deliberately mirrors the LIVE production blend, not the static backtest-report blend.
+
 ---
 
 ## DIAG-01 Accuracy
