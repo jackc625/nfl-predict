@@ -235,7 +235,7 @@ class TestVerifyDataArtifactsGoldGate:
         assert "features_ou.parquet" in str(exc_info.value)
 
     def test_required_artifact_list_matches_real_build_no_drift(self):
-        """The gate's required list contains only names a real build produces (D-02, B2).
+        """The gate's required list is a subset of a curated known-producer allowlist (D-02, B2).
 
         This is the recurrence-axis keystone for the v2.1 milestone-audit BLOCKER:
         ``step_verify_data_artifacts`` once required ``elo_ratings.parquet`` /
@@ -243,17 +243,30 @@ class TestVerifyDataArtifactsGoldGate:
         Friday run aborted at the DATA-phase gate. A stub that matched those wrong
         names hid the defect from every unit test.
 
-        To be genuinely drift-proof (NOT a second matching stub -- RESEARCH
-        Pitfall 1) this test imports ``_REQUIRED_ARTIFACTS`` from the gate as the
-        SINGLE source of truth and asserts every entry maps to a name a real build
-        script actually produces. It explicitly asserts the two dead names can
-        never reappear. It deliberately does NOT re-declare the corrected list as
-        an EXPECTED value; the allowed set is derived from the known producers, so
-        the test fails the instant the gate requires a path no build produces --
-        even if some fixture is later updated to match the drift.
+        To avoid the second-matching-stub trap (RESEARCH Pitfall 1 -- the very
+        thing that hid the original defect), this test imports
+        ``_REQUIRED_ARTIFACTS`` from the gate as the SINGLE source of truth rather
+        than re-declaring a parallel EXPECTED copy. It then makes two assertions:
 
-        The check is purely structural (no data-layer dependency), so it always
-        runs -- including on a clean checkout with no ``data/`` tree.
+        1. **Subset check.** Every gate entry is a member of ``allowed``, a curated
+           known-producer allowlist hand-maintained below (each entry annotated
+           with the build script that writes it). This is a static subset
+           assertion between the gate constant and a literal set -- NOT an
+           introspection of the build scripts. It catches a gate that requires a
+           name absent from the curated allowlist, but does NOT, on its own, catch
+           a future change that adds the same bogus name to BOTH the gate and this
+           allowlist (the same two-places-edited mistake that caused the original
+           BLOCKER).
+
+        2. **Dead-name guards.** The two specific historical dead names that caused
+           the BLOCKER (``elo_ratings.parquet`` / ``team_form.parquet``) are
+           negative-asserted to never reappear. These guard those two names only;
+           they do not generalize to arbitrary future drift.
+
+        When the curated allowlist drifts from the real producers, update both the
+        allowlist and its per-entry producer annotations together. The check is
+        purely structural (no data-layer dependency), so it always runs --
+        including on a clean checkout with no ``data/`` tree.
         """
         from pipeline.steps import _REQUIRED_ARTIFACTS
 
