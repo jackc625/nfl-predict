@@ -406,7 +406,7 @@ but performs no re-fit.
 
 - **Re-runnable DIAG harness (D-09, D-12/D-13):** `backtest/diagnose.py` (`run_diagnosis`
   produces the 2x2, both-population hit-rates, and CLV significance reported here);
-  guarded by `tests/integration/test_diag_diagnosis.py` (10 tests, green -- numbers
+  guarded by `tests/integration/test_diag_diagnosis.py` (11 tests, green -- numbers
   reproducible).
 - **Regenerated metrics + charts (DIAG-02/03 visual evidence):**
   `outputs/backtest/metrics_summary.json` and `outputs/backtest/backtest_report.html`
