@@ -152,3 +152,85 @@ def test_orchestrator_predictions_phase_e2e(tmp_path, monkeypatch):
     assert (tmp_path / f"predictions_{_SEASON}_week{_WEEK}.json").exists()
     assert (tmp_path / f"recommendations_{_SEASON}_week{_WEEK}.json").exists()
     assert (tmp_path / f"game_context_{_SEASON}_week{_WEEK}.csv").exists()
+
+
+@pytest.mark.slow
+def test_orchestrator_data_phase_reaches_verify_gate(monkeypatch):
+    """The REAL FridayPipeline DATA phase reaches and passes the verify gate (B1).
+
+    This closes the v2.1 milestone-audit BLOCKER (AUTO-01): a full-mode Friday run
+    aborted at ``step_verify_data_artifacts`` (DATA step 8/18, ``critical=True``)
+    because the gate required two silver filenames -- ``elo_ratings.parquet`` /
+    ``team_form.parquet`` -- that NO build script writes. The durable AUTO-01 guard
+    above never caught it because it runs ``mode="predictions-only"``, which
+    structurally filters OUT every ``PipelinePhase.DATA`` step (the gate included) --
+    the exact undersampling blind spot.
+
+    This test samples the failure directly: it drives the REAL step registry through
+    the DATA phase so the REAL ``step_verify_data_artifacts`` body executes against
+    the actual on-disk silver+gold layout and is asserted to return success.
+
+    Mode note (Open Question 2): the SCHEDULER uses ``mode="full"`` (no flag in
+    ``deployment/windows_scheduler.xml`` -> ``friday_pipeline.py`` defaults to full).
+    ``mode="data-only"`` is the minimal superset of full that runs the SAME
+    ``critical=True`` DATA-phase gate (full = DATA + PREDICTIONS; data-only = DATA),
+    so the proof transfers while avoiding a live odds pull. It is deliberately NOT
+    ``mode="predictions-only"`` (that filters the gate out -- the bug) and does NOT
+    patch ``build_step_registry`` or use ``make_mock_step`` (the cb61042 aliasing
+    blind spot that would prevent the real gate body from ever running, D-05).
+
+    HARD BOUNDARY (D-01): all seven non-gate DATA-phase step bodies are no-op'd, so
+    the test never re-ingests, never hits the network, never rebuilds Elo/form, and
+    never rewrites ``data/silver/`` or ``data/gold/``. The ONLY real body is
+    ``step_verify_data_artifacts`` (pure path-existence checks). Skip-guarded on the
+    real silver + gold layout so it skips cleanly when the data layer is absent.
+    """
+    # Skip-guard on the REAL on-disk layout (Pitfall 2: do NOT chdir to tmp_path --
+    # the gate is CWD-relative and must check the repo's real data/ tree).
+    if not Path("data/silver/elo_game_snapshots.parquet").exists():
+        pytest.skip("real silver layout absent")
+    if not _gold_has_season_week(_SEASON, _WEEK):
+        pytest.skip(f"gold matrix lacks {_SEASON} week {_WEEK}")
+
+    from pipeline import steps
+    from pipeline.orchestrator import FridayPipeline
+
+    # Pin the "current" week at BOTH import sites (Pitfall 4): the orchestrator
+    # resolves (season, week) in __init__ via pipeline.orchestrator.get_current_nfl_week,
+    # and step bodies re-import it deferred from utils.date_utils. The gate itself
+    # does not use the week, but the pre-flight gates + log do.
+    monkeypatch.setattr(
+        "pipeline.orchestrator.get_current_nfl_week", lambda: (_SEASON, _WEEK)
+    )
+    monkeypatch.setattr(
+        "utils.date_utils.get_current_nfl_week", lambda: (_SEASON, _WEEK)
+    )
+
+    # No-op ONLY the seven non-gate DATA-phase step bodies (D-01: no rebuild). This
+    # is the no-op-the-rebuild idiom the predictions-phase E2E uses, swapped to the
+    # DATA-phase steps. step_verify_data_artifacts is DELIBERATELY NOT patched -- it
+    # must run for real against the on-disk layout (that is the whole point).
+    for name in (
+        "step_ingest_games",
+        "step_ingest_weather",
+        "step_data_qa",
+        "step_build_elo",
+        "step_build_team_form",
+        "step_build_contextual",
+        "step_build_weather_features",
+    ):
+        monkeypatch.setattr(steps, name, lambda: None)
+
+    # Drive the REAL orchestrator loop through the DATA phase -- no build_step_registry
+    # patch, no make_mock_step (D-05). force=True makes the pre-flight staleness/health
+    # gates advisory so the run reaches the step loop out of season too.
+    pipeline = FridayPipeline(mode="data-only", force=True)
+    log = pipeline.run()
+
+    assert log.status == "success"
+
+    # The gate step ran (predictions-only would have filtered it out) and passed.
+    step_names = [s.name for s in log.steps]
+    assert "verify_data_artifacts" in step_names
+    gate = next(s for s in log.steps if s.name == "verify_data_artifacts")
+    assert gate.status == "success"  # StepStatus.SUCCESS.value as stored in the log
