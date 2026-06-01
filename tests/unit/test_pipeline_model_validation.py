@@ -176,7 +176,11 @@ class TestVerifyDataArtifactsGoldGate:
         """Create the three concrete silver files the gate also requires."""
         silver = root / "data" / "silver"
         silver.mkdir(parents=True, exist_ok=True)
-        for name in ("games.parquet", "elo_ratings.parquet", "team_form.parquet"):
+        for name in (
+            "games.parquet",
+            "elo_game_snapshots.parquet",
+            "team_form_features.parquet",
+        ):
             (silver / name).write_bytes(b"")
 
     def _write_gold(self, root, matrices):
