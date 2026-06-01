@@ -102,6 +102,21 @@ def _predictions_output_dir() -> Path:
     return Path("outputs/predictions")
 
 
+# Single source of truth for the data artifacts the DATA-phase integrity gate
+# (step_verify_data_artifacts) requires before the PREDICTIONS phase may run.
+# Factored into one place so a drift regression test can import the same list
+# the gate checks (rather than re-hardcoding a second copy that could silently
+# diverge from the real build-script output names).
+_REQUIRED_ARTIFACTS = [
+    "data/silver/games.parquet",
+    "data/silver/elo_game_snapshots.parquet",
+    "data/silver/team_form_features.parquet",
+    "data/gold/features_wp.parquet",
+    "data/gold/features_ats.parquet",
+    "data/gold/features_ou.parquet",
+]
+
+
 # ---------------------------------------------------------------------------
 # Step adapter functions -- deferred imports, no module-level script imports
 # ---------------------------------------------------------------------------
@@ -184,15 +199,7 @@ def step_verify_data_artifacts() -> None:
     """Verify all data artifacts exist before predictions phase."""
     from pathlib import Path
 
-    required = [
-        "data/silver/games.parquet",
-        "data/silver/elo_ratings.parquet",
-        "data/silver/team_form.parquet",
-        "data/gold/features_wp.parquet",
-        "data/gold/features_ats.parquet",
-        "data/gold/features_ou.parquet",
-    ]
-    missing = [p for p in required if not Path(p).exists()]
+    missing = [p for p in _REQUIRED_ARTIFACTS if not Path(p).exists()]
     if missing:
         raise RuntimeError(f"Missing data artifacts: {', '.join(missing)}")
 
