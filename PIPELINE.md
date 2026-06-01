@@ -52,7 +52,7 @@ uv run python scripts/build_features.py --season <YEAR>
 ```
 
 - **Live entry point:** `scripts/build_*.py`.
-- **Produces:** `data/silver/elo_ratings.parquet`, `data/silver/team_form.parquet`,
+- **Produces:** `data/silver/elo_game_snapshots.parquet`, `data/silver/team_form_features.parquet`,
   contextual / weather / market-anchor feature tables, then the Gold matrices
   `data/gold/features_wp.parquet`, `data/gold/features_ats.parquet`,
   `data/gold/features_ou.parquet`.
@@ -126,8 +126,10 @@ uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
 - **Live entry point:** `api/main.py:app`.
-- **Produces:** FastAPI at http://localhost:8000 — pages `/`, `/performance`,
-  `/backtest`, `/insights`, `/games/{id}`, and `/health`.
+- **Produces:** FastAPI at http://localhost:8000 — the six top-nav pages `/`
+  (This Week), `/performance`, `/backtest`, `/insights`, `/betting`, and
+  `/season`, plus the `/games/{id}` game-detail drill-down and a `/health`
+  endpoint.
 
 ---
 
