@@ -112,8 +112,15 @@ def test_orchestrator_predictions_phase_e2e(tmp_path, monkeypatch):
     if not _gold_has_season_week(_SEASON, _WEEK):
         pytest.skip(f"gold matrix lacks {_SEASON} week {_WEEK}")
 
-    from pipeline import steps
+    from pipeline import orchestrator, steps
     from pipeline.orchestrator import FridayPipeline
+
+    # Redirect the orchestrator's execution log into tmp_path so the test is
+    # hermetic. ``LOG_PATH`` is a module global the orchestrator writes on every
+    # step + finalize; without this redirect the run clobbers the repo's real
+    # ``logs/friday_pipeline.json`` -- the genuine runtime artifact a developer or
+    # the scheduler inspects after a live Friday run.
+    monkeypatch.setattr(orchestrator, "LOG_PATH", tmp_path / "friday_pipeline.json")
 
     # Pin the "current" week at BOTH import sites: the orchestrator resolves
     # (season, week) in __init__ via pipeline.orchestrator.get_current_nfl_week,
@@ -155,7 +162,7 @@ def test_orchestrator_predictions_phase_e2e(tmp_path, monkeypatch):
 
 
 @pytest.mark.slow
-def test_orchestrator_data_phase_reaches_verify_gate(monkeypatch):
+def test_orchestrator_data_phase_reaches_verify_gate(tmp_path, monkeypatch):
     """The REAL FridayPipeline DATA phase reaches and passes the verify gate (B1).
 
     This closes the v2.1 milestone-audit BLOCKER (AUTO-01): a full-mode Friday run
@@ -192,8 +199,15 @@ def test_orchestrator_data_phase_reaches_verify_gate(monkeypatch):
     if not _gold_has_season_week(_SEASON, _WEEK):
         pytest.skip(f"gold matrix lacks {_SEASON} week {_WEEK}")
 
-    from pipeline import steps
+    from pipeline import orchestrator, steps
     from pipeline.orchestrator import FridayPipeline
+
+    # Redirect the orchestrator's execution log into tmp_path so the test is
+    # hermetic. ``LOG_PATH`` is a module global the orchestrator writes on every
+    # step + finalize; without this redirect the run clobbers the repo's real
+    # ``logs/friday_pipeline.json`` -- the genuine runtime artifact a developer or
+    # the scheduler inspects after a live Friday run.
+    monkeypatch.setattr(orchestrator, "LOG_PATH", tmp_path / "friday_pipeline.json")
 
     # Pin the "current" week at BOTH import sites (Pitfall 4): the orchestrator
     # resolves (season, week) in __init__ via pipeline.orchestrator.get_current_nfl_week,
