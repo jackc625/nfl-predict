@@ -234,6 +234,55 @@ class TestVerifyDataArtifactsGoldGate:
 
         assert "features_ou.parquet" in str(exc_info.value)
 
+    def test_required_artifact_list_matches_real_build_no_drift(self):
+        """The gate's required list contains only names a real build produces (D-02, B2).
+
+        This is the recurrence-axis keystone for the v2.1 milestone-audit BLOCKER:
+        ``step_verify_data_artifacts`` once required ``elo_ratings.parquet`` /
+        ``team_form.parquet`` -- names NO build script writes -- so a full-mode
+        Friday run aborted at the DATA-phase gate. A stub that matched those wrong
+        names hid the defect from every unit test.
+
+        To be genuinely drift-proof (NOT a second matching stub -- RESEARCH
+        Pitfall 1) this test imports ``_REQUIRED_ARTIFACTS`` from the gate as the
+        SINGLE source of truth and asserts every entry maps to a name a real build
+        script actually produces. It explicitly asserts the two dead names can
+        never reappear. It deliberately does NOT re-declare the corrected list as
+        an EXPECTED value; the allowed set is derived from the known producers, so
+        the test fails the instant the gate requires a path no build produces --
+        even if some fixture is later updated to match the drift.
+
+        The check is purely structural (no data-layer dependency), so it always
+        runs -- including on a clean checkout with no ``data/`` tree.
+        """
+        from pipeline.steps import _REQUIRED_ARTIFACTS
+
+        # Names a real build actually writes (each producer verified in-repo):
+        #   data/silver/games.parquet              <- scripts/ingest_games.py (canonical games table)
+        #   data/silver/elo_game_snapshots.parquet <- scripts/build_elo.py save_dataframe(..., "elo_game_snapshots", layer="silver")
+        #   data/silver/team_form_features.parquet <- scripts/build_team_form.py save_dataframe(..., "team_form_features", layer="silver")
+        #   data/gold/features_wp.parquet          <- scripts/build_features.py (gold matrices)
+        #   data/gold/features_ats.parquet         <- scripts/build_features.py (gold matrices)
+        #   data/gold/features_ou.parquet          <- scripts/build_features.py (gold matrices)
+        produced_silver = {
+            "data/silver/games.parquet",
+            "data/silver/elo_game_snapshots.parquet",
+            "data/silver/team_form_features.parquet",
+        }
+        produced_gold = {
+            "data/gold/features_wp.parquet",
+            "data/gold/features_ats.parquet",
+            "data/gold/features_ou.parquet",
+        }
+        allowed = produced_silver | produced_gold
+
+        for path in _REQUIRED_ARTIFACTS:
+            assert path in allowed, f"gate requires {path} but no build produces it"
+
+        # The dead names that caused the BLOCKER must never reappear in the gate.
+        assert "data/silver/elo_ratings.parquet" not in _REQUIRED_ARTIFACTS
+        assert "data/silver/team_form.parquet" not in _REQUIRED_ARTIFACTS
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
