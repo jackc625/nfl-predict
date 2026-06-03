@@ -257,8 +257,24 @@ def build_candidate_bundle(
         bundle["ece"] = wp_metrics["ece"]
         bundle["brier_score"] = wp_metrics["brier_score"]
     else:
+        # Regression MAE is measured against the EXPLICIT line column (margin for ATS,
+        # total for OU), NEVER the overloaded "model_prob" (CR-01). model_prob is a
+        # convention-only alias the three producers (score_deployed_artifacts, ats_trainer,
+        # ou_trainer) happen to set equal to the line value today; if any future producer
+        # set model_prob to a cover/over PROBABILITY (the column name literally says it is)
+        # while leaving the line value in model_spread/model_total, a model_prob-based MAE
+        # would compute mean(|margin - probability|) ~= the raw margin magnitude and compare
+        # it to a ~9.5 baseline -- a meaningless pass/fail. Reading the line column and
+        # asserting its presence makes the units explicit and the gate robust to that drift.
+        line_col = "model_spread" if target == "ats" else "model_total"
+        if line_col not in valid.columns:
+            msg = (
+                f"{target} candidate frame missing required '{line_col}' column for the "
+                "regression MAE (the line value must be carried explicitly, not via model_prob)"
+            )
+            raise ValueError(msg)
         bundle["mae"] = float(
-            np.mean(np.abs(valid["actual"].to_numpy() - valid["model_prob"].to_numpy()))
+            np.mean(np.abs(valid["actual"].to_numpy() - valid[line_col].to_numpy()))
         )
 
     return bundle

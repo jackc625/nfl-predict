@@ -239,9 +239,11 @@ def _pooled_mae(
     """Compute pooled MAE for a regression target over games with closing odds.
 
     Mirrors ``models.deploy_gate.build_candidate_bundle``'s MAE so the frozen baseline MAE is
-    measured exactly like the candidate MAE the gate compares against (like-for-like). MAE is
-    over the SAME ``has_closing_odds`` population the CLV significance uses, keeping the pooled
-    secondary metric on one consistent population.
+    measured exactly like the candidate MAE the gate compares against (like-for-like): both
+    read the EXPLICIT line column (``model_spread`` for ATS, ``model_total`` for OU), never the
+    overloaded ``model_prob`` alias (CR-01). MAE is over the SAME ``has_closing_odds``
+    population the CLV significance uses, keeping the pooled secondary metric on one consistent
+    population.
 
     Args:
         target: "ats" or "ou".
@@ -259,8 +261,18 @@ def _pooled_mae(
     )
     clv_df = compute_clv_for_predictions(scored, odds_df, target)
     valid = clv_df.loc[clv_df["has_closing_odds"]]
+    # Measure MAE against the EXPLICIT line column (margin for ATS, total for OU), the SAME
+    # column build_candidate_bundle now reads (CR-01) -- never the overloaded "model_prob"
+    # alias -- so the frozen baseline MAE and the candidate MAE are measured like-for-like.
+    line_col = "model_spread" if target == "ats" else "model_total"
+    if line_col not in valid.columns:
+        msg = (
+            f"{target} baseline frame missing required '{line_col}' column for the "
+            "regression MAE (the line value must be carried explicitly, not via model_prob)"
+        )
+        raise ValueError(msg)
     return float(
-        np.mean(np.abs(valid["actual"].to_numpy() - valid["model_prob"].to_numpy()))
+        np.mean(np.abs(valid["actual"].to_numpy() - valid[line_col].to_numpy()))
     )
 
 
