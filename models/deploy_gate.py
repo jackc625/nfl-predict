@@ -520,6 +520,14 @@ def evaluate_target(
         )
 
     # (2) Per-season-must-pass CLV floor.
+    # NOTE (WR-01): this per-season floor is an ABSOLUTE floor (each season's CLV must not be
+    # significantly negative vs ZERO), NOT a floor relative to the frozen baseline. For the
+    # line-CLV targets (ATS/OU) the frozen v1.0 baseline is itself significantly negative in
+    # some seasons, so the deployed v1.0 model would not clear this absolute floor as a
+    # candidate -- i.e. ATS may be unable to PASS until the floor semantics for line-CLV
+    # targets are revisited. That is a deliberate Phase-25 policy decision (ATS re-fit), NOT a
+    # bug to be fixed by loosening the gate here; the strict absolute floor is this phase's
+    # intended safety rail.
     if gate.get("per_season_must_pass"):
         per_season = candidate.get("per_season", {})
         if not per_season:
