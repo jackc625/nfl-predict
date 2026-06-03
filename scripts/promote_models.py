@@ -221,6 +221,47 @@ def _clear_staging_dir(staging_dir: Path) -> None:
         stale_manifest.unlink()
 
 
+def _warn_skip_train_staleness(staging_dir: Path, *, promote: bool) -> None:
+    """Print a loud staleness warning for each staged candidate under --skip-train.
+
+    --skip-train reuses whatever already exists in ``staging_dir``; there is no guarantee those
+    artifacts correspond to the current code/gold (review concern WR-06). _clear_staging_dir
+    only runs on the real train path, so a stale dir from a previous (possibly buggy or
+    pre-gold-rebuild) run can be scored and -- under ``--promote`` -- swapped into production.
+
+    This makes the risk LOUD and visible: it reports each resolvable staged dir with its
+    embedded ``{YYYYMMDD}_{HHMMSS}`` timestamp so the operator can see exactly how old the
+    artifacts are. The strongest emphasis is reserved for ``--promote --skip-train`` (the
+    production foot-gun). A full freshness sentinel (gold hash + git SHA) is intentionally out
+    of scope here; this is the documented "loud warning + staged timestamp" mitigation.
+
+    Args:
+        staging_dir: The staging artifacts root being reused.
+        promote: Whether the production swap is armed (raises the warning severity).
+    """
+    severity = "WARNING (production swap armed)" if promote else "NOTICE"
+    print(
+        f"  [{severity}] --skip-train reuses existing staging artifacts WITHOUT verifying "
+        "they match the current code/gold."
+    )
+    for target in _TARGETS:
+        candidates = [p for p in staging_dir.glob(f"{target}_*") if p.is_dir()]
+        if not candidates:
+            print(f"    {target}: (no staged dir found)")
+            continue
+        for cand in sorted(candidates, key=lambda p: p.name):
+            try:
+                stamp = _parse_version_timestamp(cand.name).isoformat(sep=" ")
+            except ValueError:
+                stamp = "unparseable timestamp"
+            print(f"    {target}: {cand.name} (staged {stamp})")
+    if promote:
+        print(
+            "    Confirm these staged artifacts are fresh before trusting the swap; re-run "
+            "without --skip-train to train fresh candidates."
+        )
+
+
 def _load_gold_holdout(target: str, engine: BacktestEngine) -> pd.DataFrame:
     """Load the 2021-2024 gold holdout for a target via the canonical engine loader.
 
@@ -386,6 +427,10 @@ def main(argv: list[str] | None = None) -> int:
     print("\n[Step 1/4] Staging re-fit (straight, no Optuna) -> staging dir...")
     if args.skip_train:
         print("  --skip-train set: reusing existing staging artifacts.")
+        # WR-06: --skip-train scores whatever already exists with no freshness check; make the
+        # staleness LOUD and print each staged dir's embedded timestamp (strongest emphasis when
+        # --promote is also set, the production foot-gun).
+        _warn_skip_train_staleness(args.staging_dir, promote=args.promote)
     else:
         # Clear stale dirs first so newest-by-name resolution cannot pick a stale candidate.
         _clear_staging_dir(args.staging_dir)
@@ -422,6 +467,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {target}: {chosen}")
     if not staged_version:
         print("  No staged candidates resolved; nothing to gate.")
+        # WR-06: under an armed --promote, finding zero staged candidates is an operator
+        # error (e.g. --skip-train against an empty/wrong staging dir), not a clean no-op --
+        # exit non-zero so automation/CI observes that the requested promotion did nothing.
+        if args.promote:
+            print(
+                "  --promote was requested but no staged candidates exist to promote; "
+                "exiting non-zero."
+            )
+            return 1
         return 0
 
     # -- STEP 2: score the staged candidates on canonical 2021-2024 gold --

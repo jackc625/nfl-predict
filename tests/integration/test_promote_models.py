@@ -381,6 +381,54 @@ def test_fail_exits_nonzero(
 
 
 # ---------------------------------------------------------------------------
+# WR-06: --promote --skip-train against an empty staging dir exits non-zero
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_promote_skip_train_empty_staging_exits_nonzero(
+    tmp_artifacts: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """24-VALIDATION: pytest .../test_promote_models.py::test_promote_skip_train_empty_staging_exits_nonzero.
+
+    WR-06: a ``--promote --skip-train`` run against a staging dir with NO candidate dirs
+    resolves zero staged versions. Rather than silently exiting 0 (a no-op that masks an
+    operator error), the armed promote must exit non-zero and leave production untouched.
+    Uses the REAL _resolve_staged_version (skip_train=True returns None on the empty glob).
+    """
+    # Avoid the silver/gold reads in case any code path is reached; the run should short-circuit
+    # at "nothing to gate" before STEP 2, but stub defensively.
+    monkeypatch.setattr(
+        promote,
+        "score_deployed_artifacts",
+        lambda target, gold_df=None, artifacts_dir=None: pd.DataFrame(),
+    )
+    empty_stage = tmp_path / "empty_staging"
+    empty_stage.mkdir(parents=True, exist_ok=True)
+
+    latest = tmp_artifacts / "latest.json"
+    before = latest.read_bytes()
+
+    rc = promote.main(
+        [
+            "--promote",
+            "--artifacts-dir",
+            str(tmp_artifacts),
+            "--staging-dir",
+            str(empty_stage),
+            "--skip-train",
+        ]
+    )
+
+    assert rc != 0, (
+        "--promote --skip-train with no staged candidates must exit non-zero (WR-06)"
+    )
+    assert latest.read_bytes() == before, (
+        "an empty-staging promote must not touch production latest.json"
+    )
+
+
+# ---------------------------------------------------------------------------
 # ACTV-03: a dry / no-pass run produces ZERO production swaps
 # ---------------------------------------------------------------------------
 
