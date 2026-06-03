@@ -1,0 +1,588 @@
+"""Wave-4 integration suite for the staged-promotion rail (Phase 24, plan 24-05).
+
+Proves the load-bearing SAFETY behaviors of ``scripts/promote_models.py`` end-to-end
+WITHOUT real training, using the CORRECT seams (review concerns #1 and #2):
+
+  * The forced-FAIL / PASS control monkeypatches the SHARED bundle builder
+    ``scripts.promote_models.deploy_gate.build_candidate_bundle`` -- the function whose
+    output actually drives ``evaluate_target`` (and the name promote binds at call time,
+    which is identity-equal to ``models.deploy_gate.build_candidate_bundle``). It does NOT
+    monkeypatch ``score_deployed_artifacts`` to set CLV: ``build_candidate_bundle`` calls
+    ``compute_clv_for_predictions`` and RECOMPUTES the CLV column, so a pre-filled CLV frame
+    from a monkeypatched scorer would be silently overwritten -- a hollow proof. A
+    ``score_deployed_artifacts`` stub IS installed, but only to satisfy STEP 2 (so no real
+    staged artifact is loaded); the FORCED gate verdict comes from the bundle-builder seam.
+
+  * The swap / blend-preservation test SEEDS stub staging dirs (``wp_test``, ``ats_test``,
+    ``ou_test``) plus a staging ``latest.json`` so STEP 1b resolves a real ``staged_version``
+    and STEP 4's production ``update_manifest`` path GENUINELY executes (not a no-op) for
+    passing targets. The test then asserts the passing target key actually CHANGED to its
+    staged_version (proving a real swap) while the ``blend`` key is byte-preserved.
+
+Hermetic contract (T-24-20 / the Phase-23.1 tmp_path lesson): every artifact/manifest write
+is redirected to ``tmp_path``. No test touches the committed ``artifacts/latest.json``; a
+module-scoped guard snapshots its bytes before any test and asserts them unchanged afterwards.
+
+The gold-gated freshness anchor (D24-07) is the ONLY test that needs canonical gold; it is
+skip-guarded exactly like ``tests/integration/test_diag_diagnosis.py`` so the suite is
+offseason-safe and the FAIL/swap/dry-run tests are fully gold-independent.
+
+Test-name -> 24-VALIDATION.md command map (one comment per test cites its command):
+  test_fail_leaves_latest_unchanged   -> ::test_fail_leaves_latest_unchanged   (ACTV-02)
+  test_fail_exits_nonzero             -> ::test_fail_exits_nonzero             (ACTV-02)
+  test_dry_run_zero_swaps             -> ::test_dry_run_zero_swaps             (ACTV-03)
+  test_swap_preserves_blend_key       -> ::test_swap_preserves_blend_key       (ACTV-03)
+  test_dry_run_prints_2x2             -> ::test_dry_run_prints_2x2             (D24-11a)
+  test_frozen_baseline_matches_rescore-> ::test_frozen_baseline_matches_rescore (D24-07, gold-gated)
+
+ASCII only, no emoji (CLAUDE.md hard constraint).
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+import pandas as pd
+import pytest
+
+import scripts.promote_models as promote
+from models import deploy_gate
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+# Repo root resolved from this file: tests/integration/test_promote_models.py -> repo root.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Production manifest the suite must NEVER mutate (hermetic guard).
+_PROD_LATEST = REPO_ROOT / "artifacts" / "latest.json"
+
+# Gold presence skip-guard for the freshness anchor (mirrors test_diag_diagnosis.py:44/68-69).
+_GOLD_WP_PATH = REPO_ROOT / "data" / "gold" / "features_wp.parquet"
+
+# Freshness-anchor tolerance (the A2 anchor; same 5e-3 band as test_diag_diagnosis.py).
+_FRESHNESS_TOL = 5e-3
+
+# The seeded stub staging dir names -- the checkable contract (review concern #2). STEP 1b
+# globs {staging_dir}/{target}_* and STEP 4 swaps production[target] = staged_version[target],
+# so production should end up pointing at exactly these names for passing targets.
+_STUB_DIRS = {"wp": "wp_test", "ats": "ats_test", "ou": "ou_test"}
+
+# A realistic production manifest shape for the tmp copy when the real one is absent. The
+# "blend" key is the one Pitfall-4 must preserve across a partial-pass swap.
+_FALLBACK_MANIFEST = {
+    "wp": "wp_20260327_114739",
+    "ats": "ats_20260326_163724",
+    "ou": "ou_20260326_163930",
+    "blend": "blend_dynamic_20260526_194510",
+}
+
+
+# ---------------------------------------------------------------------------
+# Hermetic guard: snapshot the committed manifest, assert it is never mutated
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _committed_manifest_unchanged() -> Any:
+    """Snapshot artifacts/latest.json bytes before the module and assert unchanged after.
+
+    The real production manifest is gitignored (artifacts/ is in .gitignore), so a
+    ``git status`` check is vacuous; the meaningful hermetic assertion is byte-identity of the
+    on-disk file across the whole module run (T-24-20). All tests write only to tmp_path, so
+    this snapshot must be identical at teardown.
+    """
+    before = _PROD_LATEST.read_bytes() if _PROD_LATEST.exists() else None
+    yield
+    after = _PROD_LATEST.read_bytes() if _PROD_LATEST.exists() else None
+    assert before == after, (
+        "a test mutated the committed artifacts/latest.json; all writes must go to tmp_path"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fixtures: a self-contained tmp production dir + seeded stub staging dir
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tmp_artifacts(tmp_path: Path) -> Path:
+    """A throwaway production artifacts dir with a real latest.json (copied or synthesized).
+
+    Copies the committed artifacts/latest.json into tmp_path/"artifacts"/"latest.json" when it
+    exists (so the real update_manifest writes against a faithful manifest shape, never the
+    committed one); otherwise synthesizes the canonical {wp,ats,ou,blend} shape. This fixture is
+    self-contained -- it does NOT require any staged dir to exist.
+
+    Returns:
+        The tmp production artifacts dir (contains latest.json).
+    """
+    art = tmp_path / "artifacts"
+    art.mkdir(parents=True, exist_ok=True)
+    dest = art / "latest.json"
+    if _PROD_LATEST.exists():
+        shutil.copyfile(_PROD_LATEST, dest)
+    else:
+        dest.write_text(json.dumps(_FALLBACK_MANIFEST, indent=2))
+    return art
+
+
+@pytest.fixture
+def tmp_stage(tmp_path: Path) -> Path:
+    """Seed stub staging dirs + a staging latest.json so STEP 1b/STEP 4 run the REAL path.
+
+    Creates EXACTLY ``wp_test``, ``ats_test``, ``ou_test`` under a tmp staging root (each a real
+    directory with a placeholder model.pkl -- STEP 2 scoring is monkeypatched away, so no real
+    artifact load happens) AND writes a staging ``latest.json`` mapping wp/ats/ou to them. With
+    ``--skip-train`` set, ``_resolve_staged_version`` globs ``{stage}/{target}_*`` and finds these
+    dirs, so ``staged_version`` resolves and STEP 4's production ``update_manifest`` swap actually
+    executes for passing targets (review concern #2 -- not a no-op).
+
+    Returns:
+        The tmp staging root (contains wp_test/ats_test/ou_test + latest.json).
+    """
+    stage = tmp_path / "staging"
+    stage.mkdir(parents=True, exist_ok=True)
+    for stub in _STUB_DIRS.values():
+        stub_dir = stage / stub
+        stub_dir.mkdir(parents=True, exist_ok=True)
+        # A placeholder file is sufficient; scoring is stubbed so it is never loaded.
+        (stub_dir / "model.pkl").write_bytes(b"stub")
+    (stage / "latest.json").write_text(json.dumps(_STUB_DIRS, indent=2))
+    return stage
+
+
+# ---------------------------------------------------------------------------
+# Forced-bundle control (the CORRECT seam) + hermetic STEP-2 / data stubs
+# ---------------------------------------------------------------------------
+
+
+def _negative_bundle(target: str) -> dict[str, Any]:
+    """A deterministically significantly-NEGATIVE bundle for every target (forces gate FAIL).
+
+    clv_values is a constant -0.5 over 280 games: clv_significance reports mean<0 with a tiny
+    p (zero variance gives an extreme t), so the CLV floor FAILS. per_season carries the same
+    significantly-negative array for every holdout season (per-season-must-pass also fails). The
+    secondary metrics are set clearly WORSE than the frozen v1.0 baseline so even a hypothetical
+    floor pass could not rescue the target.
+    """
+    neg = np.full(280, -0.5)
+    pooled = deploy_gate.clv_significance(neg)
+    per_season = {
+        s: deploy_gate.clv_significance(neg) for s in (2021, 2022, 2023, 2024)
+    }
+    bundle: dict[str, Any] = {
+        "clv_values": neg,
+        "mean": pooled["mean"],
+        "t": pooled["t"],
+        "p": pooled["p"],
+        "n": pooled["n"],
+        "per_season": per_season,
+    }
+    if target == "wp":
+        # Clearly regressing vs frozen v1.0 (accuracy down, ECE/Brier up).
+        bundle["accuracy"] = 0.50
+        bundle["ece"] = 0.50
+        bundle["brier_score"] = 0.50
+    else:
+        bundle["mae"] = 99.0
+    return bundle
+
+
+def _passing_bundle(target: str) -> dict[str, Any]:
+    """A deterministically PASSING bundle (small-positive CLV, at-or-better secondary).
+
+    clv_values is a tiny-positive gaussian (mean approx +0.05, large p): not significantly
+    negative, so the floor passes; every season uses the same passing array. Secondary metrics
+    are set at-or-better than the frozen v1.0 baseline so the secondary/calibration gates pass.
+    """
+    rng = np.random.default_rng(24)
+    pos = rng.normal(0.05, 0.2, 280)
+    pooled = deploy_gate.clv_significance(pos)
+    per_season = {
+        s: deploy_gate.clv_significance(rng.normal(0.05, 0.2, 280))
+        for s in (2021, 2022, 2023, 2024)
+    }
+    bundle: dict[str, Any] = {
+        "clv_values": pos,
+        "mean": pooled["mean"],
+        "t": pooled["t"],
+        "p": pooled["p"],
+        "n": pooled["n"],
+        "per_season": per_season,
+    }
+    if target == "wp":
+        # At-or-better than frozen v1.0 (accuracy >= baseline, ECE/Brier <= baseline).
+        bundle["accuracy"] = 0.99
+        bundle["ece"] = 0.0
+        bundle["brier_score"] = 0.0
+    else:
+        bundle["mae"] = 0.0
+    return bundle
+
+
+def _install_hermetic_stubs(
+    monkeypatch: pytest.MonkeyPatch,
+    bundle_factory: Callable[[str], dict[str, Any]],
+) -> None:
+    """Wire promote_models for a hermetic run: stub STEP-2 data/scoring, force the bundle.
+
+    Stubs (so NO canonical gold/odds/artifact is needed):
+      * ``scripts.promote_models.score_deployed_artifacts`` -> a trivial 1-row frame (STEP 2
+        only; its CLV is irrelevant -- it is recomputed inside build_candidate_bundle, which is
+        itself replaced below).
+      * ``BacktestEngine._load_closing_odds`` -> a trivial odds frame (avoids the silver parquet
+        read).
+      * ``scripts.promote_models._load_gold_holdout`` -> a trivial gold frame (avoids the
+        gold parquet read via engine._load_features).
+
+    Forces the gate verdict via the LOAD-BEARING seam:
+      * ``scripts.promote_models.deploy_gate.build_candidate_bundle`` -> ``bundle_factory``
+        (identity-equal to models.deploy_gate.build_candidate_bundle; the name promote binds).
+
+    Also stubs ``_resolve_staged_version`` to return the canonical stub dir name for each
+    target (``wp`` -> ``wp_test`` ...). The real resolver sorts by the embedded
+    ``{YYYYMMDD}_{HHMMSS}`` timestamp and would raise on the contract-mandated ``wp_test`` names
+    (no parseable stamp); the timestamp-sort logic is exercised by promote's own unit path, while
+    this suite's load-bearing concern is the STEP-4 production swap. The seeded stub dirs +
+    staging latest.json still exist on disk, so the resolved name maps to a real staged dir and
+    STEP 4's production ``update_manifest`` genuinely executes for passing targets (not a no-op).
+    """
+    trivial_scored = pd.DataFrame(
+        {
+            "game_id": ["G0"],
+            "season": [2021],
+            "week": [1],
+            "model_prob": [0.5],
+            "actual": [1],
+        }
+    )
+    trivial_odds = pd.DataFrame(
+        {"game_id": ["G0"], "ml_home": [-110], "ml_away": [-110]}
+    )
+
+    monkeypatch.setattr(
+        promote,
+        "score_deployed_artifacts",
+        lambda target, gold_df=None, artifacts_dir=None: trivial_scored.copy(),
+    )
+    monkeypatch.setattr(
+        promote.BacktestEngine,
+        "_load_closing_odds",
+        lambda self: trivial_odds.copy(),
+    )
+    monkeypatch.setattr(
+        promote,
+        "_load_gold_holdout",
+        lambda target, engine: trivial_scored.copy(),
+    )
+    # Resolve each target to its seeded stub dir name (the contract-mandated wp_test/ats_test/
+    # ou_test). The real resolver sorts by an embedded timestamp those names lack; STEP 4's real
+    # production update_manifest still runs against the resolved (on-disk) stub dir.
+    monkeypatch.setattr(
+        promote,
+        "_resolve_staged_version",
+        lambda target, staging_dir, *, skip_train: _STUB_DIRS[target],
+    )
+    # THE correct seam (review concern #1): force the candidate bundle the gate consumes.
+    monkeypatch.setattr(
+        promote.deploy_gate,
+        "build_candidate_bundle",
+        lambda target, scored_df, odds_df, cfg: bundle_factory(target),
+    )
+
+
+# ---------------------------------------------------------------------------
+# ACTV-02: forced-FAIL leaves production latest.json byte-AND-mtime-unchanged + non-zero exit
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_fail_leaves_latest_unchanged(
+    tmp_artifacts: Path, tmp_stage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """24-VALIDATION: pytest .../test_promote_models.py::test_fail_leaves_latest_unchanged.
+
+    With build_candidate_bundle forced significantly-negative for every target, a
+    ``--promote`` run leaves the tmp production latest.json BYTE-identical AND mtime-identical
+    (the FAIL never even rewrites the file) and exits non-zero (ACTV-02 / T-24-16, T-24-17).
+    """
+    _install_hermetic_stubs(monkeypatch, _negative_bundle)
+
+    latest = tmp_artifacts / "latest.json"
+    before = latest.read_bytes()
+    before_mtime = latest.stat().st_mtime
+
+    rc = promote.main(
+        [
+            "--promote",
+            "--artifacts-dir",
+            str(tmp_artifacts),
+            "--staging-dir",
+            str(tmp_stage),
+            "--skip-train",
+        ]
+    )
+
+    after = latest.read_bytes()
+    after_mtime = latest.stat().st_mtime
+
+    assert rc != 0, (
+        "a forced-FAIL --promote run must exit non-zero (hard block observable)"
+    )
+    assert before == after, (
+        "FAIL must leave production latest.json byte-identical (zero swaps)"
+    )
+    assert before_mtime == after_mtime, (
+        "FAIL must not even rewrite production latest.json (mtime-identical)"
+    )
+
+
+@pytest.mark.integration
+def test_fail_exits_nonzero(
+    tmp_artifacts: Path, tmp_stage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """24-VALIDATION: pytest .../test_promote_models.py::test_fail_exits_nonzero.
+
+    The forced-FAIL run returns a non-zero exit code so CI/automation observes the hard block
+    (ACTV-02 / T-24-17). Asserted both with and without --promote (the exit code is gate-driven
+    even in dry-run, per D24-10).
+    """
+    _install_hermetic_stubs(monkeypatch, _negative_bundle)
+
+    rc_promote = promote.main(
+        [
+            "--promote",
+            "--artifacts-dir",
+            str(tmp_artifacts),
+            "--staging-dir",
+            str(tmp_stage),
+            "--skip-train",
+        ]
+    )
+    assert rc_promote != 0, "forced-FAIL --promote run must exit non-zero"
+
+    rc_dry = promote.main(
+        [
+            "--artifacts-dir",
+            str(tmp_artifacts),
+            "--staging-dir",
+            str(tmp_stage),
+            "--skip-train",
+        ]
+    )
+    assert rc_dry != 0, (
+        "forced-FAIL dry-run must ALSO exit non-zero (gate-driven, D24-10)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ACTV-03: a dry / no-pass run produces ZERO production swaps
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_dry_run_zero_swaps(
+    tmp_artifacts: Path, tmp_stage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """24-VALIDATION: pytest .../test_promote_models.py::test_dry_run_zero_swaps.
+
+    A bare run (NO --promote) leaves production latest.json byte-unchanged regardless of the
+    gate verdict -- proven here with a PASSING forced bundle so the only thing preventing a
+    swap is the missing --promote flag (ACTV-03 / T-24-18). mtime is also unchanged (the dry
+    path never writes production).
+    """
+    _install_hermetic_stubs(monkeypatch, _passing_bundle)
+
+    latest = tmp_artifacts / "latest.json"
+    before = latest.read_bytes()
+    before_mtime = latest.stat().st_mtime
+
+    rc = promote.main(
+        [
+            "--artifacts-dir",
+            str(tmp_artifacts),
+            "--staging-dir",
+            str(tmp_stage),
+            "--skip-train",
+        ]
+    )
+
+    after = latest.read_bytes()
+    after_mtime = latest.stat().st_mtime
+
+    assert rc == 0, "an all-pass dry-run should exit zero (no failing targets)"
+    assert before == after, "a dry-run (no --promote) must swap nothing in production"
+    assert before_mtime == after_mtime, (
+        "a dry-run must not rewrite production latest.json"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ACTV-03: a partial-pass swap preserves the blend key AND performs a REAL swap
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_swap_preserves_blend_key(
+    tmp_artifacts: Path, tmp_stage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """24-VALIDATION: pytest .../test_promote_models.py::test_swap_preserves_blend_key.
+
+    With WP forced to PASS and ATS/OU forced to FAIL, a ``--promote`` run (against the seeded
+    stub staging dirs so staged_version resolves and the real update_manifest executes):
+      * preserves the manifest "blend" key byte-for-byte (Pitfall 4 / T-24-18),
+      * swaps ONLY the passing target -- production["wp"] now equals its staged_version
+        ("wp_test"), proving a REAL, non-no-op swap occurred,
+      * leaves the failing targets' production keys unchanged.
+    """
+
+    def _partial(target: str) -> dict[str, Any]:
+        return _passing_bundle(target) if target == "wp" else _negative_bundle(target)
+
+    _install_hermetic_stubs(monkeypatch, _partial)
+
+    latest = tmp_artifacts / "latest.json"
+    before_manifest = json.loads(latest.read_text())
+    before_blend = before_manifest.get("blend")
+    before_ats = before_manifest.get("ats")
+    before_ou = before_manifest.get("ou")
+
+    rc = promote.main(
+        [
+            "--promote",
+            "--artifacts-dir",
+            str(tmp_artifacts),
+            "--staging-dir",
+            str(tmp_stage),
+            "--skip-train",
+        ]
+    )
+
+    after_manifest = json.loads(latest.read_text())
+
+    # Any-fail present (ATS/OU) so the run exits non-zero even though WP swapped.
+    assert rc != 0, "ATS/OU failed the gate, so the run must exit non-zero"
+    # Blend pointer preserved byte-for-byte (the sole-swapper never rewrites it).
+    assert after_manifest.get("blend") == before_blend, (
+        "the conditional swap must preserve the blend key (Pitfall 4)"
+    )
+    # The passing target ACTUALLY swapped to its staged_version (a real swap, not a no-op).
+    assert after_manifest.get("wp") == _STUB_DIRS["wp"], (
+        f"WP passed the gate, so production['wp'] must become its staged_version "
+        f"{_STUB_DIRS['wp']!r}; got {after_manifest.get('wp')!r}"
+    )
+    assert after_manifest.get("wp") != before_manifest.get("wp"), (
+        "WP must have changed from its pre-swap value (proves a real, non-no-op swap)"
+    )
+    # Failing targets unchanged in production.
+    assert after_manifest.get("ats") == before_ats, "failing ATS must not swap"
+    assert after_manifest.get("ou") == before_ou, "failing OU must not swap"
+
+
+# ---------------------------------------------------------------------------
+# D24-11a: the dry-run prints the per-target 2x2 readout (the acceptance artifact)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_dry_run_prints_2x2(
+    tmp_artifacts: Path,
+    tmp_stage: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """24-VALIDATION: pytest .../test_promote_models.py::test_dry_run_prints_2x2.
+
+    A dry run prints a per-target PASS/FAIL table with the candidate-vs-frozen-v1.0 CLV
+    (before/after) -- the D24-11a acceptance readout. Uses a partial verdict (WP pass, ATS/OU
+    fail) so BOTH [PASS] and [FAIL] tokens appear, and asserts each target token plus a
+    candidate-vs-frozen CLV indication is present.
+    """
+
+    def _partial(target: str) -> dict[str, Any]:
+        return _passing_bundle(target) if target == "wp" else _negative_bundle(target)
+
+    _install_hermetic_stubs(monkeypatch, _partial)
+
+    promote.main(
+        [
+            "--artifacts-dir",
+            str(tmp_artifacts),
+            "--staging-dir",
+            str(tmp_stage),
+            "--skip-train",
+        ]
+    )
+
+    out = capsys.readouterr().out
+
+    # Every target appears in the readout.
+    for token in ("WP", "ATS", "OU"):
+        assert token in out, f"2x2 readout must mention target {token}; got:\n{out}"
+    # Both verdicts present (partial pass).
+    assert "[PASS]" in out, f"readout must show a [PASS] verdict; got:\n{out}"
+    assert "[FAIL]" in out, f"readout must show a [FAIL] verdict; got:\n{out}"
+    # A candidate-vs-frozen CLV indication (the before/after column).
+    assert "Pooled CLV" in out, (
+        f"readout must show pooled CLV candidate vs frozen; got:\n{out}"
+    )
+    assert "candidate" in out and "frozen v1.0" in out, (
+        f"readout must contrast candidate vs frozen v1.0; got:\n{out}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# D24-07: the frozen gate.toml baseline matches a fresh diagnose re-score (gold-gated)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not _GOLD_WP_PATH.exists(),
+    reason=f"Canonical gold not present at {_GOLD_WP_PATH}",
+)
+def test_frozen_baseline_matches_rescore() -> None:
+    """24-VALIDATION: pytest .../test_promote_models.py::test_frozen_baseline_matches_rescore.
+
+    The frozen ``config/gate.toml`` baseline (WP pooled accuracy + headline CLV) matches a
+    fresh ``diagnose.run_diagnosis(run_backtest_half=False)`` production-half re-score of the
+    DEPLOYED v1.0 artifacts within tolerance -- proving the frozen judge has not drifted from
+    the deployed artifacts (D24-07 / T-24-19). Skips cleanly when canonical gold is absent.
+    """
+    from backtest.diagnose import run_diagnosis
+    from backtest.engine import BacktestEngine
+
+    cfg = deploy_gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
+    wp_pooled = cfg["baseline"]["wp"]["pooled"]
+    frozen_accuracy = wp_pooled["accuracy"]
+    frozen_clv_mean = wp_pooled["mean"]
+
+    # Re-score the deployed v1.0 production half on canonical 2021-2024 gold (LOAD + predict).
+    engine = BacktestEngine()
+    gold: dict[str, pd.DataFrame] = {}
+    for target in ("wp", "ats", "ou"):
+        df = engine._load_features(target)
+        in_holdout = (df["season"] >= 2021) & (df["season"] <= 2024)
+        holdout_df: pd.DataFrame = df.loc[in_holdout].copy()
+        gold[target] = holdout_df
+    odds = engine._load_closing_odds()
+
+    diag = run_diagnosis(gold=gold, odds=odds, run_backtest_half=False)
+    prod_wp = diag["production"]["wp"]
+
+    rescored_accuracy = prod_wp["pooled_accuracy"]
+    rescored_clv_mean = prod_wp["clv_significance_raw"]["mean"]
+
+    assert abs(rescored_accuracy - frozen_accuracy) < _FRESHNESS_TOL, (
+        f"frozen WP accuracy {frozen_accuracy} drifted from a fresh re-score "
+        f"{rescored_accuracy} (baseline no longer matches the deployed artifacts)"
+    )
+    assert abs(rescored_clv_mean - frozen_clv_mean) < _FRESHNESS_TOL, (
+        f"frozen WP pooled CLV mean {frozen_clv_mean} drifted from a fresh re-score "
+        f"{rescored_clv_mean} (baseline no longer matches the deployed artifacts)"
+    )
