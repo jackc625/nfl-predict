@@ -1,16 +1,36 @@
-"""Retrain all models with Optuna-tuned hyperparameters and compare to v1.0 baseline.
+"""Retrain all models with Optuna-tuned hyperparameters and compare to the frozen baseline.
 
 Runs:
 1. Optuna hyperparameter tuning for WP, ATS, O/U (100 trials each)
 2. Full backtest with retrained models
-3. v2.0 baseline capture at data/baselines/v2.0/
+3. v2.0 baseline capture at data/baselines/v2.0/ (human-readable comparison artifacts)
 4. Comparison template fill with deltas
-5. Per-target gating decision
+5. Per-target gating decision via the SHARED models.deploy_gate
+
+ENFORCING ROLE (Phase 24, D24-13 + review concern #7): this script is the Optuna-tuned
+COMPARISON harness. Its per-target gate decision now delegates to the ONE shared
+``models.deploy_gate`` -- the SAME ``build_candidate_bundle`` + ``evaluate_target`` that
+``scripts/promote_models.py`` uses -- judging the backtest candidate against the FROZEN
+``config/gate.toml`` baseline. There is exactly one gate implementation and one candidate
+bundle shape; the legacy ``headline_clv`` gate path and the gitignored ``data/baselines/``
+read for the GATE DECISION are gone (the ``data/baselines/`` read survives only for the
+human-readable comparison TEMPLATE, never for the deploy decision). ``main()`` returns
+non-zero on a gate FAIL, agreeing with ``promote_models.py`` that the gate is a hard block.
+
+Note on the candidate scored frame: the backtest engine fits fresh per-fold models and
+already produces a scored candidate frame (``BacktestResults.all_predictions[target]`` --
+game_id/season/model_prob/actual + merged odds), so that frame is fed directly to the shared
+``build_candidate_bundle`` (the engine IS this harness's scorer, the analog of promote's
+staged-artifact scoring). ``score_deployed_artifacts`` is NOT used here because retrain has
+no single deployed-artifact dir -- ``data/baselines/v2.0`` holds metrics/predictions, not
+model.pkl artifacts; the deployed-artifact gate path is ``promote_models.py``'s.
 
 Usage:
     python scripts/retrain_models.py
     python scripts/retrain_models.py --n-trials 50  # fewer trials for quick test
     python scripts/retrain_models.py --output-dir data/baselines/v2.0
+
+ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
 from __future__ import annotations
@@ -20,17 +40,18 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from backtest.engine import BacktestConfig, BacktestEngine, BacktestResults
+from models import deploy_gate
 from scripts.capture_baseline import BaselineCapture
+from scripts.promote_models import _baseline_bundle
 from utils import get_logger
 
-logger = get_logger(__name__)
+if TYPE_CHECKING:
+    import pandas as pd
 
-# Gating thresholds (per D-15 research recommendations)
-# WP: CLV must not regress > 0.005, accuracy must not drop > 1%
-_WP_CLV_REGRESSION_THRESHOLD = 0.005
-_WP_ACCURACY_DROP_THRESHOLD = 0.01
+logger = get_logger(__name__)
 
 # Default trial count per D-02
 _DEFAULT_N_TRIALS = 100
@@ -205,9 +226,7 @@ def _format_delta(v2_val: float, v1_val: float) -> str:
     return f"{sign}{delta:.4f}"
 
 
-def _extract_avg_metric(
-    metrics: dict, metric_key: str
-) -> float | None:
+def _extract_avg_metric(metrics: dict, metric_key: str) -> float | None:
     """Extract average of a metric across seasons from baseline metrics.
 
     Args:
@@ -310,9 +329,7 @@ def fill_comparison_template(
     return "\n".join(lines)
 
 
-def _get_season_clv(
-    metrics: dict, season: int
-) -> float | None:
+def _get_season_clv(metrics: dict, season: int) -> float | None:
     """Extract per-season CLV from baseline metrics.
 
     The baseline capture stores per-season results with metrics, but CLV
@@ -339,184 +356,88 @@ def _get_season_clv(
 
 
 def gate_targets(
-    v1_dir: Path,
-    v2_dir: Path,
+    results: BacktestResults,
+    closing_odds_df: pd.DataFrame,
 ) -> dict[str, dict]:
-    """Apply per-target gating logic to determine which models ship.
+    """Gate the backtest candidate per target via the SHARED models.deploy_gate.
 
-    Gating rules (per D-15):
-    - WP: Gate on CLV (must not regress > 0.005) AND accuracy (must not drop > 1%)
-    - ATS: Gate on MAE (must not increase) AND CLV (must not decrease)
-    - O/U: Gate on MAE (must not increase) AND CLV (must not decrease)
-
-    Args:
-        v1_dir: Path to v1.0 baseline directory.
-        v2_dir: Path to v2.0 baseline directory.
-
-    Returns:
-        Dict mapping target to gating result with keys:
-        - passed: bool
-        - reasons: list of str explaining the decision
-        - v1_metrics: dict of v1.0 key metrics
-        - v2_metrics: dict of v2.0 key metrics
-    """
-    v1 = load_baseline_metrics(v1_dir)
-    v2 = load_baseline_metrics(v2_dir)
-
-    results = {}
-
-    # WP gating: CLV and accuracy
-    wp_result = _gate_wp(v1["wp"], v2["wp"])
-    results["wp"] = wp_result
-
-    # ATS gating: MAE and CLV
-    ats_result = _gate_regression_target(v1["ats"], v2["ats"], "ats")
-    results["ats"] = ats_result
-
-    # O/U gating: MAE and CLV
-    ou_result = _gate_regression_target(v1["ou"], v2["ou"], "ou")
-    results["ou"] = ou_result
-
-    return results
-
-
-def _gate_wp(v1_metrics: dict, v2_metrics: dict) -> dict:
-    """Apply WP-specific gating logic.
-
-    WP gates on:
-    1. CLV must not regress by more than 0.005
-    2. Accuracy must not drop by more than 1%
+    Delegates the per-target deploy decision to the ONE shared gate (D24-13, review concern
+    #7): for each target it builds the candidate bundle through
+    ``deploy_gate.build_candidate_bundle`` (the SAME builder ``promote_models`` uses) on the
+    engine's scored candidate frame, reads the FROZEN ``config/gate.toml`` baseline via
+    ``deploy_gate.load_gate_config`` (never the gitignored per-version baseline dirs), and
+    calls ``deploy_gate.evaluate_target``. The legacy mean-CLV gate path is gone -- the gate
+    judges on the per-target significance-tested CLV array (``probability_clv`` for WP,
+    ``line_clv`` for ATS/OU). See the module docstring for the enforcing-vs-comparison role.
 
     Args:
-        v1_metrics: v1.0 WP metrics.
-        v2_metrics: v2.0 WP metrics.
+        results: The backtest results carrying ``all_predictions[target]`` -- the scored
+            candidate frame (game_id/season/model_prob/actual + merged odds) the shared bundle
+            builder consumes; the builder drops the pre-merged CLV/odds columns and recomputes
+            CLV, exactly as it does for promote's staged frame.
+        closing_odds_df: Normalized closing odds (the engine loader's output).
 
     Returns:
-        Gating result dict.
+        Dict mapping target to the ``evaluate_target`` result (keeps the
+        ``{passed, reasons, v1_metrics, v2_metrics, ...}`` shape ``print_gating_summary``
+        renders).
     """
-    reasons = []
-    passed = True
+    cfg = deploy_gate.load_gate_config()
+    deploy_gate.validate_gate_config(cfg)
 
-    v1_clv = v1_metrics["headline_clv"]
-    v2_clv = v2_metrics["headline_clv"]
-    clv_delta = v2_clv - v1_clv
+    gating: dict[str, dict] = {}
+    for target in ("wp", "ats", "ou"):
+        scored_df = results.all_predictions.get(target)
+        if scored_df is None or scored_df.empty:
+            gating[target] = {
+                "passed": False,
+                "reasons": [
+                    f"No candidate predictions for {target} (empty backtest frame)"
+                ],
+                "v1_metrics": {},
+                "v2_metrics": {},
+            }
+            continue
 
-    # CLV gate: regression must not exceed threshold
-    if clv_delta < -_WP_CLV_REGRESSION_THRESHOLD:
-        passed = False
-        reasons.append(
-            f"CLV regressed by {abs(clv_delta):.4f} "
-            f"(threshold: {_WP_CLV_REGRESSION_THRESHOLD})"
+        candidate = deploy_gate.build_candidate_bundle(
+            target, scored_df, closing_odds_df, cfg
         )
-    else:
-        reasons.append(
-            f"CLV delta: {clv_delta:+.4f} "
-            f"(within threshold of {_WP_CLV_REGRESSION_THRESHOLD})"
-        )
+        baseline = _baseline_bundle(target, cfg)
+        gating[target] = deploy_gate.evaluate_target(target, candidate, baseline, cfg)
 
-    # Accuracy gate
-    v1_accuracy = _extract_avg_metric(v1_metrics, "accuracy")
-    v2_accuracy = _extract_avg_metric(v2_metrics, "accuracy")
-
-    if v1_accuracy is not None and v2_accuracy is not None:
-        accuracy_delta = v2_accuracy - v1_accuracy
-        if accuracy_delta < -_WP_ACCURACY_DROP_THRESHOLD:
-            passed = False
-            reasons.append(
-                f"Accuracy dropped by {abs(accuracy_delta):.4f} "
-                f"(threshold: {_WP_ACCURACY_DROP_THRESHOLD})"
-            )
-        else:
-            reasons.append(
-                f"Accuracy delta: {accuracy_delta:+.4f} "
-                f"(within threshold of {_WP_ACCURACY_DROP_THRESHOLD})"
-            )
-    else:
-        reasons.append("Accuracy comparison skipped (metric not available)")
-
-    return {
-        "passed": passed,
-        "reasons": reasons,
-        "v1_metrics": {
-            "headline_clv": v1_clv,
-            "avg_accuracy": v1_accuracy,
-        },
-        "v2_metrics": {
-            "headline_clv": v2_clv,
-            "avg_accuracy": v2_accuracy,
-        },
-    }
+    return gating
 
 
-def _gate_regression_target(
-    v1_metrics: dict, v2_metrics: dict, target: str
-) -> dict:
-    """Apply regression target gating logic (ATS, O/U).
+def _summarize_metrics(target: str, bundle: dict) -> str:
+    """Render the scalar gate metrics for one side (baseline or candidate) of a target.
 
-    Gates on:
-    1. MAE must not increase (lower is better)
-    2. CLV must not decrease (higher is better)
+    Pulls only the human-readable scalars from a bundle -- pooled CLV mean/p plus the
+    secondary metric (WP accuracy/ECE/Brier, ATS/OU MAE) -- skipping the raw ``clv_values``
+    array and the ``per_season`` sub-bundles so the summary line stays compact.
 
     Args:
-        v1_metrics: v1.0 target metrics.
-        v2_metrics: v2.0 target metrics.
-        target: Target name ("ats" or "ou").
+        target: One of "wp", "ats", "ou".
+        bundle: A candidate or baseline bundle (evaluate_target's v2_metrics / v1_metrics).
 
     Returns:
-        Gating result dict.
+        A compact, single-line metric summary string.
     """
-    reasons = []
-    passed = True
 
-    # CLV gate
-    v1_clv = v1_metrics["headline_clv"]
-    v2_clv = v2_metrics["headline_clv"]
-    clv_delta = v2_clv - v1_clv
+    def _fmt(value: object) -> str:
+        if value is None:
+            return "N/A"
+        if isinstance(value, float):
+            return f"{value:.4f}"
+        return str(value)
 
-    if clv_delta < 0:
-        passed = False
-        reasons.append(
-            f"CLV decreased: {v1_clv:.4f} -> {v2_clv:.4f} "
-            f"(delta: {clv_delta:+.4f})"
-        )
+    parts = [f"clv_mean={_fmt(bundle.get('mean'))}", f"clv_p={_fmt(bundle.get('p'))}"]
+    if target == "wp":
+        parts.append(f"acc={_fmt(bundle.get('accuracy'))}")
+        parts.append(f"ece={_fmt(bundle.get('ece'))}")
+        parts.append(f"brier={_fmt(bundle.get('brier_score'))}")
     else:
-        reasons.append(
-            f"CLV improved or stable: {v1_clv:.4f} -> {v2_clv:.4f} "
-            f"(delta: {clv_delta:+.4f})"
-        )
-
-    # MAE gate (average across seasons)
-    v1_mae = _extract_avg_metric(v1_metrics, "mae")
-    v2_mae = _extract_avg_metric(v2_metrics, "mae")
-
-    if v1_mae is not None and v2_mae is not None:
-        mae_delta = v2_mae - v1_mae
-        if mae_delta > 0:
-            passed = False
-            reasons.append(
-                f"MAE increased: {v1_mae:.4f} -> {v2_mae:.4f} "
-                f"(delta: {mae_delta:+.4f})"
-            )
-        else:
-            reasons.append(
-                f"MAE improved or stable: {v1_mae:.4f} -> {v2_mae:.4f} "
-                f"(delta: {mae_delta:+.4f})"
-            )
-    else:
-        reasons.append("MAE comparison skipped (metric not available)")
-
-    return {
-        "passed": passed,
-        "reasons": reasons,
-        "v1_metrics": {
-            "headline_clv": v1_clv,
-            "avg_mae": v1_mae,
-        },
-        "v2_metrics": {
-            "headline_clv": v2_clv,
-            "avg_mae": v2_mae,
-        },
-    }
+        parts.append(f"mae={_fmt(bundle.get('mae'))}")
+    return ", ".join(parts)
 
 
 def print_gating_summary(gating_results: dict[str, dict]) -> None:
@@ -534,15 +455,19 @@ def print_gating_summary(gating_results: dict[str, dict]) -> None:
         status_icon = "[PASS]" if result["passed"] else "[FAIL]"
 
         print(f"\n{target.upper()} -- {status_icon}")
-        print(f"  v1.0: {result['v1_metrics']}")
-        print(f"  v2.0: {result['v2_metrics']}")
+        # v1_metrics is the frozen baseline bundle; v2_metrics is the candidate bundle
+        # (evaluate_target aliases). Print readable scalars rather than the raw CLV array.
+        baseline = result.get("v1_metrics", {})
+        candidate = result.get("v2_metrics", {})
+        print(f"  v1.0 (frozen): {_summarize_metrics(target, baseline)}")
+        print(f"  candidate:     {_summarize_metrics(target, candidate)}")
         for reason in result["reasons"]:
             print(f"  - {reason}")
 
         if not result["passed"]:
             print(f"  >> WARNING: Keep v1.0 model for {target.upper()}")
         else:
-            print(f"  >> Ship v2.0 model for {target.upper()}")
+            print(f"  >> Ship candidate model for {target.upper()}")
 
     print("\n" + "=" * 70)
 
@@ -614,12 +539,15 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(comparison)
 
-    # Step 4: Per-target gating
-    print("\n[Step 4/4] Applying per-target gating...")
-    gating_results = gate_targets(v1_dir, v2_dir)
+    # Step 4: Per-target gating via the SHARED deploy_gate (build_candidate_bundle +
+    # evaluate_target against the FROZEN config/gate.toml baseline; no headline_clv,
+    # no data/baselines/ read for the decision).
+    print("\n[Step 4/4] Applying per-target gating (shared deploy_gate)...")
+    closing_odds_df = BacktestEngine()._load_closing_odds()
+    gating_results = gate_targets(results, closing_odds_df)
     print_gating_summary(gating_results)
 
-    # Save gating results as JSON for programmatic access
+    # Save gating results as JSON for programmatic access (default=str handles numpy/arrays).
     gating_path = v2_dir / "gating_results.json"
     gating_path.write_text(json.dumps(gating_results, indent=2, default=str))
     print(f"\nGating results saved to {gating_path}")
@@ -627,7 +555,14 @@ def main(argv: list[str] | None = None) -> int:
     total_elapsed = time.monotonic() - start_time
     print(f"\nTotal pipeline time: {total_elapsed:.1f}s")
 
-    return 0
+    # Hard block: agree with promote_models.py that a gate FAIL is a non-zero exit (D24-10).
+    any_fail = any(not r["passed"] for r in gating_results.values())
+    if any_fail:
+        failing = [t for t, r in gating_results.items() if not r["passed"]]
+        print(
+            f"\nGate FAIL for: {', '.join(t.upper() for t in failing)} -- exiting non-zero."
+        )
+    return 1 if any_fail else 0
 
 
 if __name__ == "__main__":
