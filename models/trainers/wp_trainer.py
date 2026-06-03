@@ -112,9 +112,7 @@ class WPTrainer(BaseTrainer):
         else:  # l2
             # Use distinct Optuna name to avoid conflicts with fixed solver values,
             # but map back to "solver" for LogisticRegression compatibility
-            solver_choice = trial.suggest_categorical(
-                "solver_l2", ["lbfgs", "saga"]
-            )
+            solver_choice = trial.suggest_categorical("solver_l2", ["lbfgs", "saga"])
             params["solver"] = solver_choice
 
         return params
@@ -206,13 +204,14 @@ class WPTrainer(BaseTrainer):
         self,
         features_df: pd.DataFrame,
         closing_odds_df: pd.DataFrame | None = None,
+        tune: bool = True,
     ) -> dict:
         """Orchestrate WP training with isotonic calibration and ECE.
 
         Extends the base training pipeline with WP-specific steps:
         1. Select features on training window (locked for all holdout)
         2. Fit StandardScaler on training data
-        3. Tune hyperparameters on train + HP-val (temporal CV)
+        3. Tune hyperparameters on train + HP-val (temporal CV) or use defaults
         4. Fit calibrator on HP-validation predictions (NOT training data)
         5. Walk-forward through holdout applying locked features + calibrator
         6. Compute ECE on all holdout predictions
@@ -221,6 +220,10 @@ class WPTrainer(BaseTrainer):
         Args:
             features_df: Full feature matrix with ID cols, features, and target.
             closing_odds_df: Optional DataFrame with closing odds for CLV.
+            tune: When True (default), tune hyperparameters via Optuna. When
+                False, perform a straight re-fit using _get_default_params() and
+                skip the Optuna study (D24-12). The scaler and calibration steps
+                are unchanged -- only the params source changes.
 
         Returns:
             Dict with per-season metrics, overall metrics, feature names,
@@ -285,9 +288,13 @@ class WPTrainer(BaseTrainer):
             columns=self.feature_names,
             index=combined_train.index,
         )
-        best_params = self.tune_hyperparameters(
-            combined_X_scaled,
-            combined_targets,
+        best_params = (
+            self.tune_hyperparameters(
+                combined_X_scaled,
+                combined_targets,
+            )
+            if tune
+            else self._get_default_params()
         )
 
         # Step 4: Fit calibrator on HP-validation predictions

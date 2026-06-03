@@ -233,6 +233,7 @@ def train_target(
     closing_odds_df: pd.DataFrame | None = None,
     config: TemporalSplitConfig | None = None,
     artifacts_dir: Path = Path("artifacts"),
+    tune: bool = True,
 ) -> dict[str, Any]:
     """Train a single model target and optionally compute market baseline.
 
@@ -245,6 +246,9 @@ def train_target(
         closing_odds_df: Optional closing odds for CLV and market baseline.
         config: Temporal split configuration. Defaults to default split.
         artifacts_dir: Root directory for saving model artifacts.
+        tune: When True (default), tune hyperparameters via Optuna. When False,
+            perform a straight re-fit with default params and no Optuna sweep
+            (D24-12), threaded down to trainer.train_and_evaluate(tune=False).
 
     Returns:
         Dict with keys: model_metrics, market_baseline, artifact_path.
@@ -266,7 +270,7 @@ def train_target(
     logger.info("Starting training", target=target)
 
     # Train and evaluate
-    model_metrics = trainer.train_and_evaluate(features_df, closing_odds_df)
+    model_metrics = trainer.train_and_evaluate(features_df, closing_odds_df, tune=tune)
 
     # Save artifacts
     artifact_path = trainer.save(artifacts_dir)
@@ -438,6 +442,11 @@ def main() -> None:
         help="Skip CLV computation (train without closing odds).",
     )
     parser.add_argument(
+        "--no-tune",
+        action="store_true",
+        help="Straight re-fit with existing default params; skip Optuna tuning (D24-12).",
+    )
+    parser.add_argument(
         "--config-train-seasons",
         type=str,
         default="2018,2019",
@@ -525,6 +534,7 @@ def main() -> None:
             closing_odds_df=closing_odds_df,
             config=config,
             artifacts_dir=args.artifacts_dir,
+            tune=not args.no_tune,
         )
         all_results[target] = result
 

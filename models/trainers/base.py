@@ -310,11 +310,12 @@ class BaseTrainer(ABC):
         self,
         features_df: pd.DataFrame,
         closing_odds_df: pd.DataFrame | None = None,
+        tune: bool = True,
     ) -> dict:
         """Orchestrate full training and evaluation pipeline.
 
         1. Select features on training window
-        2. Tune hyperparameters on train + HP-val window
+        2. Tune hyperparameters on train + HP-val window (or use defaults)
         3. Walk-forward through holdout seasons
         4. Collect per-season metrics
         5. Compute CLV if closing odds provided
@@ -322,6 +323,10 @@ class BaseTrainer(ABC):
         Args:
             features_df: Full feature matrix with ID cols, features, and target.
             closing_odds_df: Optional DataFrame with closing odds for CLV.
+            tune: When True (default), tune hyperparameters via Optuna on the
+                train + HP-val window. When False, perform a straight re-fit
+                using _get_default_params() and skip the Optuna study entirely
+                (D24-12). The default preserves the existing tuned behavior.
 
         Returns:
             Dict with per-season metrics, overall metrics, feature names,
@@ -353,9 +358,13 @@ class BaseTrainer(ABC):
         combined_targets = pd.concat(
             [train_val_split.train_targets, train_val_split.test_targets]
         )
-        best_params = self.tune_hyperparameters(
-            combined_train[self.feature_names],
-            combined_targets,
+        best_params = (
+            self.tune_hyperparameters(
+                combined_train[self.feature_names],
+                combined_targets,
+            )
+            if tune
+            else self._get_default_params()
         )
 
         # Step 3: Walk-forward through holdout

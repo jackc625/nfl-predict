@@ -100,9 +100,7 @@ class ATSTrainer(BaseTrainer):
             Dict of parameter name to suggested value.
         """
         return {
-            "learning_rate": trial.suggest_float(
-                "learning_rate", 0.005, 0.3, log=True
-            ),
+            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3, log=True),
             "max_depth": trial.suggest_int("max_depth", 2, 8),
             "n_estimators": trial.suggest_int("n_estimators", 50, 500),
             "subsample": trial.suggest_float("subsample", 0.5, 1.0),
@@ -183,6 +181,7 @@ class ATSTrainer(BaseTrainer):
         self,
         features_df: pd.DataFrame,
         closing_odds_df: pd.DataFrame | None = None,
+        tune: bool = True,
     ) -> dict:
         """Orchestrate ATS training with residual converter fitting.
 
@@ -192,6 +191,10 @@ class ATSTrainer(BaseTrainer):
         Args:
             features_df: Full feature matrix with ID cols, features, and target.
             closing_odds_df: Optional DataFrame with closing odds for CLV.
+            tune: When True (default), tune hyperparameters via Optuna. When
+                False, perform a straight re-fit using _get_default_params() and
+                skip the Optuna study (D24-12). The residual-converter fitting is
+                unchanged -- only the params source changes.
 
         Returns:
             Dict with per-season metrics, feature names, best params, etc.
@@ -223,9 +226,13 @@ class ATSTrainer(BaseTrainer):
         combined_targets = pd.concat(
             [train_val_split.train_targets, train_val_split.test_targets]
         )
-        best_params = self.tune_hyperparameters(
-            combined_train[self.feature_names],
-            combined_targets,
+        best_params = (
+            self.tune_hyperparameters(
+                combined_train[self.feature_names],
+                combined_targets,
+            )
+            if tune
+            else self._get_default_params()
         )
 
         # Step 2b: Fit residual converter on HP-validation residuals
