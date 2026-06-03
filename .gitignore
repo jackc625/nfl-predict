@@ -30,6 +30,9 @@ outputs/
 artifacts/
 !artifacts/.gitkeep
 
+# Candidate staging artifacts (gitignored like artifacts/; written by promote_models.py)
+artifacts_staging/
+
 # Logs
 logs/
 *.log
