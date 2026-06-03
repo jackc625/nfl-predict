@@ -23,6 +23,12 @@ Coverage (each test cites its 24-VALIDATION.md automated command):
   - test_save_does_not_autoswap: save_model_artifact defaults leave no latest.json (depends on
     Plan 24-01's update_latest=False default) -- ACTV-03 / Crit 3.
   - test_gate_config_committed: config/gate.toml exists AND is in ``git ls-files`` -- ACTV-02.
+  - test_build_candidate_bundle_mae_uses_explicit_line_column: CR-01 regression guard --
+    ATS/OU MAE reads model_spread/model_total (not model_prob); fails if reverted (CR-01).
+  - test_build_candidate_bundle_missing_line_column_raises: CR-01 guard -- ValueError raised
+    when model_spread (ATS) or model_total (OU) is absent from the scored frame (CR-01).
+  - test_update_manifest_atomic_write_preserves_on_failure: WR-02 atomicity guard --
+    a simulated mid-rename crash leaves latest.json byte-unchanged and no temp file (WR-02).
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -458,4 +464,202 @@ def test_gate_config_committed() -> None:
     assert "config/gate.toml" in tracked.stdout, (
         "config/gate.toml must be git-tracked (the frozen gate config is committed, not "
         f"gitignored); git ls-files output: {tracked.stdout!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CR-01 regression guards: ATS/OU MAE reads the explicit line column (not model_prob)
+# ---------------------------------------------------------------------------
+
+
+def _tiny_scored_and_odds_distinct_line(
+    target: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build a tiny scored frame where model_prob and the explicit line column DIFFER.
+
+    This is the discriminating fixture for the CR-01 guard.  Every game gets a complete
+    odds row (ml_home/ml_away/spread/total present) so all 12 rows survive the
+    has_closing_odds filter.  model_prob is set to model_spread/model_total + 50.0 (a
+    large offset) so the two candidate MAEs are unmistakably distinct: a revert to reading
+    model_prob would produce a MAE ~50 larger than the correct model_spread/model_total MAE.
+    """
+    n = 12
+    game_ids = [f"H{i:02d}" for i in range(n)]
+    seasons = [2021] * 6 + [2022] * 6
+    rng = np.random.default_rng(42)
+
+    odds = pd.DataFrame(
+        {
+            "game_id": game_ids,
+            "ml_home": [-120] * n,
+            "ml_away": [100] * n,
+            "spread": rng.normal(-3.0, 1.0, n),
+            "total": rng.normal(46.0, 2.0, n),
+        }
+    )
+
+    scored = pd.DataFrame(
+        {
+            "game_id": game_ids,
+            "season": seasons,
+            "week": list(range(1, n + 1)),
+        }
+    )
+
+    if target == "ats":
+        line_values = rng.normal(-2.5, 3.0, n)
+        scored["model_spread"] = line_values
+        scored["model_prob"] = line_values + 50.0  # large offset -- clearly different
+        scored["actual"] = rng.normal(-2.5, 7.0, n)
+    else:  # ou
+        line_values = rng.normal(44.0, 3.0, n)
+        scored["model_total"] = line_values
+        scored["model_prob"] = line_values + 50.0  # large offset -- clearly different
+        scored["actual"] = rng.normal(44.0, 8.0, n)
+
+    return scored, odds
+
+
+def test_build_candidate_bundle_mae_uses_explicit_line_column() -> None:
+    """24-VALIDATION: CR-01 regression guard -- ATS/OU MAE reads model_spread/model_total.
+
+    Proves build_candidate_bundle computes the ATS regression MAE from model_spread (and
+    OU MAE from model_total), NEVER from the overloaded model_prob alias (CR-01, commit
+    934db5d).  The fixture sets model_prob = line_col + 50.0 so the two candidate MAEs
+    are unmistakably distinct: if the code reverted to reading model_prob the computed MAE
+    would be ~50 larger than the expected value, causing both assertions to fail.
+    """
+    for target, line_col_name in (("ats", "model_spread"), ("ou", "model_total")):
+        scored, odds = _tiny_scored_and_odds_distinct_line(target)
+
+        bundle = gate.build_candidate_bundle(target, scored, odds, _TEST_CFG)
+
+        # Expected MAE: mean(|actual - line_col|) over the full n=12 rows (all have
+        # complete odds, so has_closing_odds keeps all rows).
+        expected_mae_from_line = float(
+            np.mean(
+                np.abs(scored["actual"].to_numpy() - scored[line_col_name].to_numpy())
+            )
+        )
+        expected_mae_from_prob = float(
+            np.mean(
+                np.abs(scored["actual"].to_numpy() - scored["model_prob"].to_numpy())
+            )
+        )
+
+        # The offset is 50.0, so the two expected MAEs must themselves differ significantly.
+        assert abs(expected_mae_from_line - expected_mae_from_prob) > 10.0, (
+            f"{target}: fixture offset too small -- the two MAEs are not distinguishable"
+        )
+
+        assert bundle["mae"] == pytest.approx(expected_mae_from_line, rel=1e-6), (
+            f"{target}: bundle MAE {bundle['mae']:.6f} != expected line-col MAE "
+            f"{expected_mae_from_line:.6f}; a revert to model_prob would give "
+            f"{expected_mae_from_prob:.6f}"
+        )
+        assert bundle["mae"] != pytest.approx(expected_mae_from_prob, abs=1.0), (
+            f"{target}: bundle MAE should NOT equal the model_prob MAE "
+            f"({expected_mae_from_prob:.6f}) -- CR-01 fix is not in effect"
+        )
+
+
+def test_build_candidate_bundle_missing_line_column_raises() -> None:
+    """24-VALIDATION: CR-01 guard -- ValueError when the explicit line column is absent.
+
+    build_candidate_bundle must raise ValueError naming the missing column when:
+      - ATS scored frame has model_prob but is missing model_spread
+      - OU  scored frame has model_prob but is missing model_total
+    game_id/season/actual are present and odds are complete so the only trigger is the
+    absent line column (CR-01, deploy_gate.py:272-278).
+    """
+    n = 12
+    game_ids = [f"M{i:02d}" for i in range(n)]
+    seasons = [2021] * 6 + [2022] * 6
+    rng = np.random.default_rng(7)
+
+    odds = pd.DataFrame(
+        {
+            "game_id": game_ids,
+            "ml_home": [-110] * n,
+            "ml_away": [-110] * n,
+            "spread": rng.normal(-2.5, 1.0, n),
+            "total": rng.normal(45.0, 2.0, n),
+        }
+    )
+
+    # ATS: has model_prob, missing model_spread -> ValueError naming "model_spread".
+    ats_scored = pd.DataFrame(
+        {
+            "game_id": game_ids,
+            "season": seasons,
+            "week": list(range(1, n + 1)),
+            "model_prob": rng.normal(-2.5, 3.0, n),
+            "actual": rng.normal(-2.5, 7.0, n),
+        }
+    )
+    with pytest.raises(ValueError, match="model_spread"):
+        gate.build_candidate_bundle("ats", ats_scored, odds, _TEST_CFG)
+
+    # OU: has model_prob, missing model_total -> ValueError naming "model_total".
+    ou_scored = pd.DataFrame(
+        {
+            "game_id": game_ids,
+            "season": seasons,
+            "week": list(range(1, n + 1)),
+            "model_prob": rng.normal(44.0, 3.0, n),
+            "actual": rng.normal(44.0, 8.0, n),
+        }
+    )
+    with pytest.raises(ValueError, match="model_total"):
+        gate.build_candidate_bundle("ou", ou_scored, odds, _TEST_CFG)
+
+
+# ---------------------------------------------------------------------------
+# WR-02 atomicity guard: update_manifest leaves latest.json intact on mid-rename failure
+# ---------------------------------------------------------------------------
+
+
+def test_update_manifest_atomic_write_preserves_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """24-VALIDATION: WR-02 atomicity guard -- a simulated mid-rename crash is safe.
+
+    Proves _atomic_write_json's except-branch cleanup (deploy_gate.py commit 5749a19):
+      - The production latest.json is BYTE-UNCHANGED after a Path.replace failure
+        (the temp file was written but the atomic rename never landed).
+      - NO stray temp file remains (the except branch calls unlink before re-raising).
+    If the implementation dropped the except cleanup, the temp file would survive.
+    If it wrote directly (non-atomically), the manifest could be truncated or absent.
+    """
+    import json
+
+    from models.artifacts import update_manifest
+
+    # Write a known production manifest.
+    original_data = {"wp": "wp_old", "blend": {"ats": 0.5}}
+    manifest_path = tmp_path / "latest.json"
+    manifest_path.write_text(json.dumps(original_data, indent=2))
+    original_bytes = manifest_path.read_bytes()
+
+    # Monkeypatch Path.replace to simulate a crash mid-rename.  The temp file has been
+    # flushed and closed by this point; Path.replace is what would atomically land the
+    # new content over latest.json.  By raising here we confirm the except cleanup runs.
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise OSError("simulated crash mid-rename")
+
+    monkeypatch.setattr(Path, "replace", _boom)
+
+    # update_manifest must propagate the OSError (not swallow it).
+    with pytest.raises(OSError, match="simulated crash mid-rename"):
+        update_manifest("wp", "wp_new", tmp_path)
+
+    # The production manifest must be byte-unchanged.
+    assert manifest_path.read_bytes() == original_bytes, (
+        "latest.json was modified despite the rename failing -- atomic write is not safe"
+    )
+
+    # No stray temp file may remain (the except branch must have unlinked it).
+    remaining = sorted(p.name for p in tmp_path.iterdir())
+    assert remaining == ["latest.json"], (
+        f"stray temp file(s) left after failed rename: {remaining}"
     )
