@@ -1203,14 +1203,19 @@ class MarketBlender:
         weights_path = artifact_dir / "blend_weights.json"
         weights_path.write_text(json.dumps(payload, indent=2))
 
-        # Update latest.json manifest
+        # Update latest.json manifest. latest.json is the sole production swap surface, so the
+        # write must be atomic -- a partial write (crash/disk-full mid-write) would corrupt it
+        # and break all model loading (WR-02). Reuse the single atomic-write helper that
+        # update_manifest uses so there is one implementation.
+        from models.artifacts import _atomic_write_json
+
         latest_path = artifacts_dir / "latest.json"
         if latest_path.exists():
             manifest = json.loads(latest_path.read_text())
         else:
             manifest = {}
         manifest["blend"] = artifact_dir.name
-        latest_path.write_text(json.dumps(manifest, indent=2))
+        _atomic_write_json(latest_path, manifest)
 
         self.logger.info(
             "Saved blend artifacts",

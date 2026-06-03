@@ -20,6 +20,8 @@ Artifact directory structure:
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,33 @@ import joblib
 from utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    """Write a JSON manifest atomically (temp file in the same dir, then os.replace).
+
+    ``Path.write_text`` truncates the target and then writes; an interruption (crash, disk
+    full, Ctrl-C) between truncate and flush leaves a 0-byte or partial file. For
+    ``latest.json`` -- the ONLY production model-swap surface -- a partial write takes
+    production down (every consumer fails to parse it) with no backup. Serializing to a temp
+    file in the SAME directory and ``os.replace``-ing it over the target is an atomic rename on
+    the same filesystem, so a reader sees either the old complete manifest or the new complete
+    manifest, never a truncated one (WR-02).
+
+    Args:
+        path: Destination JSON path (overwritten atomically).
+        data: The manifest dict to serialize.
+    """
+    payload = json.dumps(data, indent=2)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
+        # Atomic rename on the same filesystem (Path.replace -> os.replace under the hood).
+        Path(tmp).replace(path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def save_model_artifact(
@@ -153,7 +182,9 @@ def update_manifest(
     latest_path = artifacts_dir / "latest.json"
     manifest = json.loads(latest_path.read_text()) if latest_path.exists() else {}
     manifest[target] = version
-    latest_path.write_text(json.dumps(manifest, indent=2))
+    # Atomic write: latest.json is the sole production swap surface, so a partial write
+    # (crash/disk-full mid-write) must never corrupt it (WR-02).
+    _atomic_write_json(latest_path, manifest)
 
 
 def load_model_artifact(
