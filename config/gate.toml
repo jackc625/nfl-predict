@@ -1,0 +1,117 @@
+# =============================================================================
+# config/gate.toml -- FROZEN deploy-gate configuration (Phase 24, ACTV-01/02)
+# =============================================================================
+#
+# Purpose: this file is the SINGLE frozen judge for the per-target model deploy
+# decision. models/deploy_gate.py reads these thresholds + flags and (with the
+# frozen baseline tables below) decides, per target, whether a candidate model
+# may replace the production model in artifacts/latest.json.
+#
+# Why a frozen, committed config: in v2.0 an ungated swap shipped a regression
+# (the D-17 precedent -- the deployed v1.0 pre-Elo models were retained only
+# because per-target gating caught the regression after the fact). The gate is
+# now a HARD deploy block, and its thresholds are FROZEN here. Loosening a
+# threshold to ship a model is therefore its own explicit, reviewed config edit
+# with a diff in git history -- not an invisible code change.
+#
+# Why TOML (and why git-tracked): TOML supports the inline rationale comments
+# this file needs, and config/gate.toml is intentionally git-tracked. A sibling
+# config/*.json file would be SILENTLY gitignored (the repo .gitignore blankets
+# *.json and negates only conf/*.json, NOT config/*.json) -- so the frozen
+# baseline is embedded INSIDE this .toml, not in a JSON sibling (D24-06/D24-07).
+#
+# ASCII only, no emoji (CLAUDE.md hard constraint).
+# =============================================================================
+
+[gate]
+# CLV significance level. MUST equal backtest.diagnose.SIGNIFICANCE_ALPHA (0.05);
+# the gate IMPORTS that constant and records it here for documentation/validation
+# (D24-13 parity -- the gate never re-declares the constant, it mirrors it).
+alpha = 0.05
+
+# CLV floor is one-sided IN SPIRIT (D24-01/D24-02): a target FAILS only when its
+# per-game CLV is SIGNIFICANTLY NEGATIVE -- mean < 0 AND two-sided p < alpha --
+# i.e. the logical complement of diagnose.clv_verdict's "systematically negative"
+# branch. A non-significant negative (or any positive) CLV PASSES the floor. The
+# test is scipy's two-sided ttest_1samp; we read the negative tail of it, which is
+# the one-sided-vs-two-sided handling D24-02 requires to be stated explicitly.
+
+per_season_must_pass = true  # D24-04: EVERY holdout season (2021-2024) must clear the CLV floor individually -- one lucky season must not carry a model whose other seasons are significantly negative. On ~270 games/season the absolute-floor-vs-zero bar has lower power, so a leak-free model rarely trips per-season; the floor only bites a season that genuinely IS significantly negative.
+
+calibration_in_gate = true  # D24-05 / Pitfall 14: WP ECE + Brier non-regression participate in the WP deploy decision because WP's core value IS calibration (when the model says 70% it should win ~70%). ATS/OU probability-converter calibration is DEFERRED to Phase 27 (the O/U monetization phase) and does NOT gate here.
+
+[gate.seasons]
+# The walk-forward holdout window (matches BacktestConfig + diagnose.py). Parsed
+# as a list of ints by tomllib. per_season_clv slices the per-game CLV arrays by
+# these seasons and each must clear the floor when per_season_must_pass is true.
+holdout = [2021, 2022, 2023, 2024]
+
+[gate.secondary]
+# Secondary (non-CLV) non-regression gates. Open Question A resolution: secondary
+# accuracy/MAE/ECE/Brier are evaluated POOLED, NOT per-season -- on ~270-game
+# per-season slices MAE/accuracy fire on sampling noise (DIAG-04 bands), so a
+# per-season secondary bar would reject leak-free models on chance. Per-season
+# secondary deltas are a PRINTED READOUT (an Open-Q-A diagnostic), not a blocker.
+evaluation = "pooled"
+
+# Tolerances carried forward from scripts/retrain_models.py, reframed onto the
+# significance-tested CLV gate. Lower is better for MAE/ECE/Brier; higher is
+# better for accuracy.
+wp_accuracy_max_drop = 0.01        # WP candidate accuracy may not drop more than this below baseline (was _WP_ACCURACY_DROP_THRESHOLD).
+regression_mae_max_increase = 0.0  # ATS/OU candidate MAE may not exceed baseline MAE at all (MAE must not increase).
+wp_ece_max_increase = 0.0          # WP candidate ECE may not exceed baseline ECE (calibration must not regress).
+wp_brier_max_increase = 0.0        # WP candidate Brier may not exceed baseline Brier (calibration must not regress).
+
+# =============================================================================
+# FROZEN BASELINE TABLES
+# =============================================================================
+# The frozen v1.0 production baseline the gate compares candidates against.
+# Values are EMPTY here -- they are filled by scripts/freeze_gate_baseline.py in
+# Plan 24-03 (FROZEN BY scripts/freeze_gate_baseline.py -- do not hand-edit
+# values). This plan (24-02) authors only the schema + section headers so the
+# freezer fills a known structure. Each target has a [baseline.<t>.pooled] block
+# and four [baseline.<t>.season.YYYY] blocks (2021-2024).
+#
+# NOTE on season keys: the dotted-integer keys 2021..2024 below are parsed by
+# stdlib tomllib as STRING keys "2021".."2024". models/deploy_gate.load_gate_config
+# normalizes them to int after loading.
+# =============================================================================
+
+# --- WP baseline (pooled CLV/accuracy/ECE/Brier + per-season CLV) -------------
+[baseline.wp.pooled]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+
+[baseline.wp.season.2021]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+[baseline.wp.season.2022]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+[baseline.wp.season.2023]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+[baseline.wp.season.2024]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+
+# --- ATS baseline (pooled CLV/MAE + per-season CLV) ---------------------------
+[baseline.ats.pooled]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+
+[baseline.ats.season.2021]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+[baseline.ats.season.2022]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+[baseline.ats.season.2023]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+[baseline.ats.season.2024]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+
+# --- OU baseline (pooled CLV/MAE + per-season CLV) ----------------------------
+[baseline.ou.pooled]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+
+[baseline.ou.season.2021]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+[baseline.ou.season.2022]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+[baseline.ou.season.2023]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
+[baseline.ou.season.2024]
+# FROZEN BY scripts/freeze_gate_baseline.py (Plan 24-03) -- do not hand-edit values
