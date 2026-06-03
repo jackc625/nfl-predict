@@ -284,20 +284,10 @@ def fill_comparison_template(
         f"| {ou_clv_v1} | {ou_clv_v2} | {_format_delta(ou_clv_v2, ou_clv_v1)} |"
     )
 
-    # Rows: Per-season CLV
-    for season in [2021, 2022, 2023, 2024]:
-        cells = []
-        for target in ["wp", "ats", "ou"]:
-            v1_season_clv = _get_season_clv(v1[target], season)
-            v2_season_clv = _get_season_clv(v2[target], season)
-            v1_str = f"{v1_season_clv:.4f}" if v1_season_clv is not None else "N/A"
-            v2_str = f"{v2_season_clv:.4f}" if v2_season_clv is not None else "N/A"
-            if v1_season_clv is not None and v2_season_clv is not None:
-                delta_str = _format_delta(v2_season_clv, v1_season_clv)
-            else:
-                delta_str = "N/A"
-            cells.append(f"{v1_str} | {v2_str} | {delta_str}")
-        lines.append(f"| CLV {season} | {' | '.join(cells)} |")
+    # Per-season CLV rows are intentionally omitted (WR-03): the baseline metrics JSON carries
+    # only the headline (pooled) CLV per target, not per-season CLV, so these rows could only
+    # ever render "N/A". The significance-tested per-season CLV floor lives in the deploy gate
+    # (deploy_gate.per_season_clv); this comparison template reports the headline CLV row above.
 
     # Row: Average MAE
     for metric_label, metric_key in [("Avg MAE", "mae"), ("Hit Rate", "accuracy")]:
@@ -327,32 +317,6 @@ def fill_comparison_template(
     lines.append("")
 
     return "\n".join(lines)
-
-
-def _get_season_clv(metrics: dict, season: int) -> float | None:
-    """Extract per-season CLV from baseline metrics.
-
-    The baseline capture stores per-season results with metrics, but CLV
-    is computed at the aggregate level. We look for it in the per-season
-    results if available.
-
-    Note: v1.0 baseline comparison_template.md has per-season CLV values
-    that were computed from the CLV DataFrame during capture. The metrics
-    JSON may not have per-season CLV directly. We approximate from the
-    structure available.
-
-    Args:
-        metrics: Target metrics dict from baseline JSON.
-        season: Season to look up.
-
-    Returns:
-        Season CLV value, or None if not available.
-    """
-    # The comparison_template generated during capture has per-season CLV
-    # but the metrics JSON has only headline CLV. Return None to indicate
-    # per-season CLV should be sourced from the comparison template
-    # or recomputed from predictions.
-    return None
 
 
 def gate_targets(
