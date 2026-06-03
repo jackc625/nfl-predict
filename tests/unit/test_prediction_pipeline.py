@@ -85,6 +85,7 @@ def saved_artifacts(tmp_path, tiny_wp_data, tiny_ats_data, tiny_ou_data):
         metadata={"version": "test-wp-v1", "residual_std": 13.5},
         feature_list=list(wp_X.columns),
         artifacts_dir=tmp_path,
+        update_latest=True,
     )
 
     # Against-the-spread artifact uses a gradient-boosted regressor.
@@ -97,6 +98,7 @@ def saved_artifacts(tmp_path, tiny_wp_data, tiny_ats_data, tiny_ou_data):
         metadata={"version": "test-ats-v1", "residual_std": 10.0},
         feature_list=list(ats_X.columns),
         artifacts_dir=tmp_path,
+        update_latest=True,
     )
 
     # Over/under artifact uses a gradient-boosted regressor.
@@ -109,6 +111,7 @@ def saved_artifacts(tmp_path, tiny_wp_data, tiny_ats_data, tiny_ou_data):
         metadata={"version": "test-ou-v1", "residual_std": 12.0},
         feature_list=list(ou_X.columns),
         artifacts_dir=tmp_path,
+        update_latest=True,
     )
 
     return tmp_path

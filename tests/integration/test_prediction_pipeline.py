@@ -63,6 +63,8 @@ def _fit_ou_model():
 @pytest.fixture
 def artifacts_dir(tmp_path):
     """Save minimal WP/ATS/O/U artifacts to tmp_path and return the path."""
+    # update_latest=True registers latest.json so load_models resolves
+    # (D24-08: save no longer auto-swaps by default).
     wp_model, wp_features = _fit_wp_model()
     save_model_artifact(
         model=wp_model,
@@ -70,6 +72,7 @@ def artifacts_dir(tmp_path):
         metadata={"version": "test-wp", "residual_std": 13.5},
         feature_list=wp_features,
         artifacts_dir=tmp_path,
+        update_latest=True,
     )
 
     ats_model, ats_features = _fit_ats_model()
@@ -79,6 +82,7 @@ def artifacts_dir(tmp_path):
         metadata={"version": "test-ats", "residual_std": 13.5},
         feature_list=ats_features,
         artifacts_dir=tmp_path,
+        update_latest=True,
     )
 
     ou_model, ou_features = _fit_ou_model()
@@ -88,6 +92,7 @@ def artifacts_dir(tmp_path):
         metadata={"version": "test-ou", "residual_std": 13.0},
         feature_list=ou_features,
         artifacts_dir=tmp_path,
+        update_latest=True,
     )
 
     return tmp_path

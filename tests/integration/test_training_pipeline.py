@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from models.artifacts import load_model_artifact
+from models.artifacts import load_model_artifact, update_manifest
 from models.temporal import TemporalSplitConfig
 from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.wp_trainer import WPTrainer
@@ -251,7 +251,10 @@ class TestWPTrainerEndToEnd:
         trainer = WPTrainer(config=small_config)
 
         trainer.train_and_evaluate(tiny_wp_features_df)
-        trainer.save(artifacts_dir=artifacts_dir)
+        artifact_path = trainer.save(artifacts_dir=artifacts_dir)
+        # .save() no longer auto-swaps (D24-08); register the manifest explicitly
+        # so load_model_artifact resolves the version.
+        update_manifest("wp", artifact_path.name, artifacts_dir=artifacts_dir)
 
         loaded = load_model_artifact(target="wp", artifacts_dir=artifacts_dir)
 
@@ -279,7 +282,10 @@ class TestATSTrainerSaveLoad:
         trainer = ATSTrainer(config=small_config)
 
         trainer.train_and_evaluate(tiny_ats_features_df)
-        trainer.save(artifacts_dir=artifacts_dir)
+        artifact_path = trainer.save(artifacts_dir=artifacts_dir)
+        # .save() no longer auto-swaps (D24-08); register the manifest explicitly
+        # so load_model_artifact resolves the version.
+        update_manifest("ats", artifact_path.name, artifacts_dir=artifacts_dir)
 
         loaded = load_model_artifact(target="ats", artifacts_dir=artifacts_dir)
 

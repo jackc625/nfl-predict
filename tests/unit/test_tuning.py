@@ -86,9 +86,7 @@ class TestOptunaTunerStorageUrl:
 class TestOptunaTunerOptimize:
     """Test OptunaTuner.optimize() method."""
 
-    def test_creates_study_with_tpe_sampler_and_hyperband(
-        self, tmp_path: Path
-    ) -> None:
+    def test_creates_study_with_tpe_sampler_and_hyperband(self, tmp_path: Path) -> None:
         """OptunaTuner.optimize() creates study with TPESampler and HyperbandPruner."""
         tuner = OptunaTuner(
             study_name="test_tpe",
@@ -216,9 +214,7 @@ def _make_tiny_model():
 class TestParamsSidecar:
     """Tests for the JSON params sidecar in save/load_model_artifact."""
 
-    def test_save_with_best_params_creates_params_json(
-        self, tmp_path: Path
-    ) -> None:
+    def test_save_with_best_params_creates_params_json(self, tmp_path: Path) -> None:
         """save_model_artifact with best_params creates {target}_params.json."""
         model = _make_tiny_model()
         best_params = {"C": 1.0, "penalty": "l2"}
@@ -254,9 +250,7 @@ class TestParamsSidecar:
         assert "best_params" in data
         assert data["best_params"] == {"C": 1.0, "penalty": "l2"}
 
-    def test_params_json_contains_tuning_metadata(
-        self, tmp_path: Path
-    ) -> None:
+    def test_params_json_contains_tuning_metadata(self, tmp_path: Path) -> None:
         """params.json contains 'tuning_metadata' key when provided."""
         model = _make_tiny_model()
         best_params = {"C": 0.5}
@@ -282,9 +276,7 @@ class TestParamsSidecar:
         assert data["tuning_metadata"]["study_name"] == "wp_tune"
         assert data["tuning_metadata"]["n_trials"] == 100
 
-    def test_save_without_best_params_no_params_json(
-        self, tmp_path: Path
-    ) -> None:
+    def test_save_without_best_params_no_params_json(self, tmp_path: Path) -> None:
         """save_model_artifact without best_params does NOT create _params.json."""
         model = _make_tiny_model()
 
@@ -304,6 +296,8 @@ class TestParamsSidecar:
         model = _make_tiny_model()
         best_params = {"C": 2.0, "penalty": "l1"}
 
+        # update_latest=True registers latest.json so load resolves (D24-08:
+        # save no longer auto-swaps by default).
         save_model_artifact(
             model=model,
             target="wp",
@@ -311,6 +305,7 @@ class TestParamsSidecar:
             feature_list=["feat1", "feat2"],
             best_params=best_params,
             artifacts_dir=tmp_path,
+            update_latest=True,
         )
 
         loaded = load_model_artifact(
@@ -322,18 +317,19 @@ class TestParamsSidecar:
         assert loaded["params"] is not None
         assert loaded["params"]["best_params"] == {"C": 2.0, "penalty": "l1"}
 
-    def test_load_returns_none_params_when_no_sidecar(
-        self, tmp_path: Path
-    ) -> None:
+    def test_load_returns_none_params_when_no_sidecar(self, tmp_path: Path) -> None:
         """load_model_artifact returns params=None when no _params.json."""
         model = _make_tiny_model()
 
+        # update_latest=True registers latest.json so load resolves (D24-08:
+        # save no longer auto-swaps by default).
         save_model_artifact(
             model=model,
             target="wp",
             metadata={"version": "test"},
             feature_list=["feat1", "feat2"],
             artifacts_dir=tmp_path,
+            update_latest=True,
         )
 
         loaded = load_model_artifact(
