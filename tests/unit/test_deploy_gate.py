@@ -151,6 +151,47 @@ def test_per_season_must_pass() -> None:
     assert result_good["passed"] is True, result_good["reasons"]
 
 
+def test_empty_per_season_fails_closed() -> None:
+    """24-VALIDATION: pytest .../test_deploy_gate.py::test_empty_per_season_fails_closed.
+
+    WR-04: when per_season_must_pass is on but the candidate supplies NO per-season slices
+    (empty or absent map), evaluate_target must FAIL closed -- it must NOT report a hollow
+    "all holdout seasons passed". A pooled-passing candidate with an empty per_season is the
+    minimal trigger.
+    """
+    rng = np.random.default_rng(13)
+    pooled_pass = rng.normal(0.05, 0.2, 1120)
+    candidate_empty = {
+        "clv_values": pooled_pass,
+        "mean": float(np.mean(pooled_pass)),
+        "t": 0.0,
+        "p": 1.0,
+        "per_season": {},  # no per-season evidence -> must fail closed
+        "mae": 10.0,
+    }
+    result = gate.evaluate_target("ats", candidate_empty, {"mae": 10.0}, _TEST_CFG)
+    assert result["passed"] is False, result["reasons"]
+    assert any("no per-season" in r.lower() for r in result["reasons"]), result[
+        "reasons"
+    ]
+    assert not any("all holdout seasons" in r.lower() for r in result["reasons"]), (
+        f"empty per_season must not claim an all-seasons PASS: {result['reasons']}"
+    )
+
+    # An absent per_season key (not just empty) is treated the same way.
+    candidate_absent = {
+        "clv_values": pooled_pass,
+        "mean": float(np.mean(pooled_pass)),
+        "t": 0.0,
+        "p": 1.0,
+        "mae": 10.0,
+    }
+    result_absent = gate.evaluate_target(
+        "ats", candidate_absent, {"mae": 10.0}, _TEST_CFG
+    )
+    assert result_absent["passed"] is False, result_absent["reasons"]
+
+
 # ---------------------------------------------------------------------------
 # WP calibration-in-gate (D24-05)
 # ---------------------------------------------------------------------------

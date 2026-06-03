@@ -522,27 +522,41 @@ def evaluate_target(
     # (2) Per-season-must-pass CLV floor.
     if gate.get("per_season_must_pass"):
         per_season = candidate.get("per_season", {})
-        for season in sorted(per_season):
-            season_sig = per_season[season]
-            season_arr = season_sig.get("clv_values")
-            # Synthetic test bundles may carry the raw array under "clv_values"; the real
-            # build_candidate_bundle stores clv_significance bundles. Re-test from the array
-            # when present, else re-derive the pass/fail from the stored {mean, t, p}.
-            if season_arr is not None:
-                season_pass = clv_floor_passes(season_arr, alpha=alpha)
-            elif season_sig.get("t") is None:
-                season_pass = False
-            else:
-                season_pass = not (season_sig["mean"] < 0 and season_sig["p"] < alpha)
-            if not season_pass:
-                passed = False
-                reasons.append(
-                    f"Season {season} CLV floor FAIL "
-                    f"(mean={season_sig.get('mean')}, p={season_sig.get('p')}, "
-                    f"n={season_sig.get('n')})"
-                )
-        if passed:
-            reasons.append("Per-season CLV floor PASS (all holdout seasons)")
+        if not per_season:
+            # Fail closed (WR-04): an empty/absent per-season map must NOT be reported as
+            # "all holdout seasons passed". The sanctioned build_candidate_bundle always
+            # populates four seasons, but evaluate_target is independently callable -- a
+            # caller that omits per_season has provided no evidence to clear the floor, so
+            # claiming a per-season PASS would be a hollow attestation the gate exists to
+            # prevent.
+            passed = False
+            reasons.append(
+                "Per-season-must-pass enabled but no per-season CLV slices provided"
+            )
+        else:
+            for season in sorted(per_season):
+                season_sig = per_season[season]
+                season_arr = season_sig.get("clv_values")
+                # Synthetic test bundles may carry the raw array under "clv_values"; the real
+                # build_candidate_bundle stores clv_significance bundles. Re-test from the
+                # array when present, else re-derive the pass/fail from the stored {mean, t, p}.
+                if season_arr is not None:
+                    season_pass = clv_floor_passes(season_arr, alpha=alpha)
+                elif season_sig.get("t") is None:
+                    season_pass = False
+                else:
+                    season_pass = not (
+                        season_sig["mean"] < 0 and season_sig["p"] < alpha
+                    )
+                if not season_pass:
+                    passed = False
+                    reasons.append(
+                        f"Season {season} CLV floor FAIL "
+                        f"(mean={season_sig.get('mean')}, p={season_sig.get('p')}, "
+                        f"n={season_sig.get('n')})"
+                    )
+            if passed:
+                reasons.append("Per-season CLV floor PASS (all holdout seasons)")
 
     # (3) Pooled secondary non-regression.
     sec_passed, sec_reasons = _secondary_reasons(target, candidate, baseline, secondary)
