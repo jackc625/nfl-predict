@@ -474,6 +474,10 @@ class BaseTrainer(ABC):
             best_params=best_params,
             tuning_metadata=tuning_metadata,
             artifacts_dir=artifacts_dir,
+            # D24-08: a train run (normal or staging) never auto-swaps the
+            # served model. Production promotion is the sole latest.json writer
+            # via models.artifacts.update_manifest / scripts/promote_models.
+            update_latest=False,
         )
 
     # ------------------------------------------------------------------

@@ -40,6 +40,7 @@ def save_model_artifact(
     artifacts_dir: Path = Path("artifacts"),
     best_params: dict | None = None,
     tuning_metadata: dict | None = None,
+    update_latest: bool = False,
 ) -> Path:
     """Save a trained model with versioned directory structure.
 
@@ -50,7 +51,15 @@ def save_model_artifact(
     - calibrator.pkl: Calibrator model (if provided)
     - {target}_params.json: Tuning parameters sidecar (if best_params provided)
 
-    Also updates latest.json manifest with the new artifact directory.
+    Updating the latest.json manifest is now OPT-IN via update_latest (D24-08).
+    By default the manifest is NOT touched: writing artifacts/latest.json is a
+    production deploy, and the only sanctioned production swapper is
+    update_manifest (invoked by scripts/promote_models on a passing gate). A
+    plain train run -- including a staging re-fit -- must never auto-swap the
+    served model. Pass update_latest=True only when the caller deliberately
+    wants this artifact registered as the latest for its target (e.g. a
+    self-contained staging dir or a test that immediately loads the artifact
+    back via load_model_artifact).
 
     Args:
         model: Trained model object (sklearn, xgboost, etc.).
@@ -63,6 +72,10 @@ def save_model_artifact(
             When provided, a JSON sidecar file is saved alongside the model.
         tuning_metadata: Optional dict of tuning study metadata
             (study name, n_trials, optimization metric, etc.).
+        update_latest: When True, register this artifact in latest.json for its
+            target via the per-key update_manifest helper. Defaults to False so
+            no train run auto-swaps production (D24-08); production swaps go
+            through update_manifest / scripts/promote_models.
 
     Returns:
         Path to the created artifact directory.
@@ -97,14 +110,11 @@ def save_model_artifact(
         params_path = artifact_dir / f"{target}_params.json"
         params_path.write_text(json.dumps(params_data, indent=2, default=str))
 
-    # Update latest.json manifest
-    latest_path = artifacts_dir / "latest.json"
-    if latest_path.exists():
-        manifest = json.loads(latest_path.read_text())
-    else:
-        manifest = {}
-    manifest[target] = artifact_dir.name
-    latest_path.write_text(json.dumps(manifest, indent=2))
+    # Update latest.json manifest only when explicitly requested (D24-08).
+    # A bare save no longer auto-swaps production; the sole production swapper
+    # is update_manifest (called by scripts/promote_models on a passing gate).
+    if update_latest:
+        update_manifest(target, artifact_dir.name, artifacts_dir)
 
     logger.info(
         "Saved model artifact",
@@ -113,9 +123,37 @@ def save_model_artifact(
         n_features=len(feature_list),
         has_calibrator=calibrator is not None,
         has_params=best_params is not None,
+        update_latest=update_latest,
     )
 
     return artifact_dir
+
+
+def update_manifest(
+    target: str,
+    version: str,
+    artifacts_dir: Path = Path("artifacts"),
+) -> None:
+    """Register an artifact version as the latest for a target (sole swapper).
+
+    This is the ONLY sanctioned writer of production artifacts/latest.json
+    (D24-08). It performs a per-key update on the existing manifest --
+    manifest[target] = version -- so every other key survives untouched. In
+    particular the "blend" pointer and any non-promoted target keep their
+    current value (Pitfall 4: never rewrite the whole manifest from a subset of
+    passing targets). If latest.json does not yet exist, an empty manifest is
+    created.
+
+    Args:
+        target: Model target type ("wp", "ats", "ou").
+        version: Artifact directory name to point this target at
+            (e.g. "wp_20260327_114739").
+        artifacts_dir: Root directory containing latest.json.
+    """
+    latest_path = artifacts_dir / "latest.json"
+    manifest = json.loads(latest_path.read_text()) if latest_path.exists() else {}
+    manifest[target] = version
+    latest_path.write_text(json.dumps(manifest, indent=2))
 
 
 def load_model_artifact(
