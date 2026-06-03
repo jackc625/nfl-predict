@@ -52,12 +52,24 @@ from typing import Any
 
 # Import-the-diagnosis parity seam (D24-13): the per-target CLV column map is IMPORTED, never
 # re-declared, so the frozen baseline is measured on the EXACT column the gate + diagnosis use.
-from backtest.diagnose import CLV_COLUMN_FOR, run_diagnosis, score_deployed_artifacts
+from backtest.diagnose import (
+    CLV_COLUMN_FOR,
+    clv_significance,
+    run_diagnosis,
+    score_deployed_artifacts,
+)
 from models.clv import compute_clv_for_predictions
 from models.deploy_gate import HOLDOUT_SEASONS, per_season_clv
 from utils import get_logger
 
 logger = get_logger(__name__)
+
+# Tolerance for the WR-05 cross-check that the pooled CLV mean from run_diagnosis matches the
+# pooled CLV mean re-derived from the single score_deployed_artifacts pass below. Both are
+# deterministic inference over the SAME artifacts on the SAME gold, so they must agree to
+# floating-point noise; a wider gap means the two paths filtered different games and the frozen
+# pooled-vs-per-season values would describe different populations.
+_POOLED_CLV_CROSSCHECK_TOL = 1e-6
 
 # Canonical-gold presence guard: the re-score needs the Phase-20 rebuilt gold + closing odds.
 _GOLD_WP_PATH = Path("data/gold/features_wp.parquet")
@@ -141,9 +153,13 @@ def compute_baseline(artifacts_dir: str | Path = "artifacts") -> dict[str, Any]:
     Loads the 2021-2024 canonical gold + normalized closing odds via the engine loaders
     (matching the ``test_diag_diagnosis`` fixture so the LAR->LA team-abbreviation mapping is
     canonical), runs ``diagnose.run_diagnosis(run_backtest_half=False)`` for the pooled
-    deployed-artifact bundle (per-target CLV significance + WP accuracy/ECE/Brier), then
-    re-scores each target with ``score_deployed_artifacts`` to compute the pooled regression MAE
-    (ATS/OU) and the per-season CLV slices (``deploy_gate.per_season_clv``).
+    deployed-artifact bundle (per-target CLV significance + WP accuracy/ECE/Brier), then scores
+    each target ONCE with ``score_deployed_artifacts`` and derives the pooled regression MAE
+    (ATS/OU), the per-season CLV slices (``deploy_gate.per_season_clv``), AND a pooled-CLV
+    cross-check from that single frame (WR-05). The cross-check asserts the pooled CLV mean from
+    ``run_diagnosis`` matches the pooled mean re-derived from the single score (same artifacts,
+    same gold, deterministic), so the frozen pooled and per-season CLV cannot describe different
+    game populations.
 
     LOAD + score only -- no trainer import, no ``data/gold/`` write (no ``.to_parquet``).
 
@@ -203,20 +219,43 @@ def compute_baseline(artifacts_dir: str | Path = "artifacts") -> dict[str, Any]:
         bundle = production[target]
         pooled = _pooled_clv_block(bundle["clv_significance_raw"])
 
-        if target == "wp":
-            pooled["accuracy"] = bundle["pooled_accuracy"]
-            pooled["ece"] = bundle["ece"]
-            pooled["brier"] = bundle["brier_score"]
-        else:
-            pooled["mae"] = _pooled_mae(target, gold[target], odds, artifacts_dir)
-
-        # Per-season CLV slices: re-score the target, recompute per-game CLV, filter to games
-        # with closing odds, then slice by season (the D24-04 per-season floor inputs).
+        # Score each target ONCE and derive MAE, per-season slices, AND a pooled-CLV
+        # cross-check from that single frame (WR-05). Previously the per-season path and
+        # _pooled_mae each re-scored independently (2-3 score passes per target), relying on
+        # determinism without asserting it; if run_diagnosis and this path ever filtered
+        # different games, the frozen pooled CLV and the per-season CLV would describe
+        # different populations with no warning.
         scored = score_deployed_artifacts(
             target, gold_df=gold[target], artifacts_dir=artifacts_dir
         )
         clv_df = compute_clv_for_predictions(scored, odds, target)
         valid = clv_df.loc[clv_df["has_closing_odds"]]
+
+        # Cross-check: the pooled CLV mean re-derived from THIS single score must match the
+        # pooled CLV mean run_diagnosis reported (same artifacts, same gold, deterministic).
+        crosscheck = clv_significance(valid[CLV_COLUMN_FOR[target]].to_numpy())
+        diag_mean = bundle["clv_significance_raw"].get("mean")
+        cross_mean = crosscheck.get("mean")
+        if diag_mean is not None and cross_mean is not None:
+            delta = abs(float(diag_mean) - float(cross_mean))
+            if delta > _POOLED_CLV_CROSSCHECK_TOL:
+                msg = (
+                    f"{target} pooled CLV mean from run_diagnosis ({diag_mean}) disagrees with "
+                    f"the single-score re-derivation ({cross_mean}) by {delta:.3e} "
+                    f"(> {_POOLED_CLV_CROSSCHECK_TOL:.0e}); the two scoring paths filtered "
+                    "different games, so the frozen pooled and per-season CLV would describe "
+                    "different populations. Refusing to emit an inconsistent baseline."
+                )
+                raise ValueError(msg)
+
+        if target == "wp":
+            pooled["accuracy"] = bundle["pooled_accuracy"]
+            pooled["ece"] = bundle["ece"]
+            pooled["brier"] = bundle["brier_score"]
+        else:
+            pooled["mae"] = _mae_from_valid(target, valid)
+
+        # Per-season CLV slices over the SAME valid frame (the D24-04 per-season floor inputs).
         season_sigs = per_season_clv(valid, target, seasons=HOLDOUT_SEASONS)
 
         baseline[target] = {
@@ -230,40 +269,25 @@ def compute_baseline(artifacts_dir: str | Path = "artifacts") -> dict[str, Any]:
     return baseline
 
 
-def _pooled_mae(
-    target: str,
-    gold_df: Any,
-    odds_df: Any,
-    artifacts_dir: Path,
-) -> float:
-    """Compute pooled MAE for a regression target over games with closing odds.
+def _mae_from_valid(target: str, valid: Any) -> float:
+    """Compute pooled MAE for a regression target from an already-scored, odds-filtered frame.
 
     Mirrors ``models.deploy_gate.build_candidate_bundle``'s MAE so the frozen baseline MAE is
     measured exactly like the candidate MAE the gate compares against (like-for-like): both
     read the EXPLICIT line column (``model_spread`` for ATS, ``model_total`` for OU), never the
-    overloaded ``model_prob`` alias (CR-01). MAE is over the SAME ``has_closing_odds``
-    population the CLV significance uses, keeping the pooled secondary metric on one consistent
-    population.
+    overloaded ``model_prob`` alias (CR-01). Takes the already-scored ``has_closing_odds`` frame
+    (the single ``compute_baseline`` score, WR-05) rather than re-scoring, so MAE is over the
+    exact same population as the CLV significance and per-season slices.
 
     Args:
         target: "ats" or "ou".
-        gold_df: The 2021-2024 gold frame for the target.
-        odds_df: Normalized closing odds.
-        artifacts_dir: Root directory for the deployed artifacts.
+        valid: The scored, ``has_closing_odds``-filtered predictions frame for the target.
 
     Returns:
         Pooled mean absolute error between predicted and actual (margin/total).
     """
     import numpy as np
 
-    scored = score_deployed_artifacts(
-        target, gold_df=gold_df, artifacts_dir=artifacts_dir
-    )
-    clv_df = compute_clv_for_predictions(scored, odds_df, target)
-    valid = clv_df.loc[clv_df["has_closing_odds"]]
-    # Measure MAE against the EXPLICIT line column (margin for ATS, total for OU), the SAME
-    # column build_candidate_bundle now reads (CR-01) -- never the overloaded "model_prob"
-    # alias -- so the frozen baseline MAE and the candidate MAE are measured like-for-like.
     line_col = "model_spread" if target == "ats" else "model_total"
     if line_col not in valid.columns:
         msg = (
