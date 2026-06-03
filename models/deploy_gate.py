@@ -230,6 +230,22 @@ def build_candidate_bundle(
         msg = f"Unknown target: '{target}'. Must be one of {sorted(CLV_COLUMN_FOR)}."
         raise ValueError(msg)
 
+    # CR-01 (fail early with a clear, named error): for ATS/OU the regression MAE is measured
+    # against the EXPLICIT line column (model_spread / model_total). This presence check MUST
+    # run BEFORE compute_clv_for_predictions -- when the line column is absent, models/clv.py's
+    # line_clv recompute silently no-ops, so the CLV_COLUMN_FOR[target] read below would
+    # otherwise raise an opaque KeyError('line_clv') and the documented ValueError would be
+    # unreachable dead code (caught by tests/unit/test_deploy_gate.py
+    # ::test_build_candidate_bundle_missing_line_column_raises).
+    if target in ("ats", "ou"):
+        line_col = "model_spread" if target == "ats" else "model_total"
+        if line_col not in scored_df.columns:
+            msg = (
+                f"{target} candidate frame missing required '{line_col}' column for the "
+                "regression MAE (the line value must be carried explicitly, not via model_prob)"
+            )
+            raise ValueError(msg)
+
     # Drop any pre-existing CLV/odds columns before the recompute-merge (mirrors
     # diagnose._measure_target raw_drop) so compute_clv_for_predictions's left-merge does not
     # duplicate odds columns.
@@ -260,22 +276,14 @@ def build_candidate_bundle(
         bundle["ece"] = wp_metrics["ece"]
         bundle["brier_score"] = wp_metrics["brier_score"]
     else:
-        # Regression MAE is measured against the EXPLICIT line column (margin for ATS,
-        # total for OU), NEVER the overloaded "model_prob" (CR-01). model_prob is a
-        # convention-only alias the three producers (score_deployed_artifacts, ats_trainer,
-        # ou_trainer) happen to set equal to the line value today; if any future producer
-        # set model_prob to a cover/over PROBABILITY (the column name literally says it is)
-        # while leaving the line value in model_spread/model_total, a model_prob-based MAE
-        # would compute mean(|margin - probability|) ~= the raw margin magnitude and compare
-        # it to a ~9.5 baseline -- a meaningless pass/fail. Reading the line column and
-        # asserting its presence makes the units explicit and the gate robust to that drift.
+        # Regression MAE is measured against the EXPLICIT line column (margin for ATS, total
+        # for OU), NEVER the overloaded "model_prob" (CR-01). model_prob is a convention-only
+        # alias the three producers (score_deployed_artifacts, ats_trainer, ou_trainer) happen
+        # to set equal to the line value today; if a future producer set model_prob to a
+        # cover/over PROBABILITY while leaving the line value in model_spread/model_total, a
+        # model_prob-based MAE would be a meaningless pass/fail. The line column was validated
+        # present at the top of this function, so this read is safe and unit-explicit.
         line_col = "model_spread" if target == "ats" else "model_total"
-        if line_col not in valid.columns:
-            msg = (
-                f"{target} candidate frame missing required '{line_col}' column for the "
-                "regression MAE (the line value must be carried explicitly, not via model_prob)"
-            )
-            raise ValueError(msg)
         bundle["mae"] = float(
             np.mean(np.abs(valid["actual"].to_numpy() - valid[line_col].to_numpy()))
         )
