@@ -322,6 +322,15 @@ def _baseline_bundle(target: str, cfg: dict[str, Any]) -> dict[str, Any]:
     return bundle
 
 
+def _fmt(value: Any) -> str:
+    """Format a metric for the readout (4dp float, or 'N/A' for None)."""
+    if value is None:
+        return "N/A"
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    return str(value)
+
+
 def _print_target_readout(
     target: str,
     result: dict[str, Any],
@@ -385,15 +394,6 @@ def _print_target_readout(
         print(f"  >> Ship candidate {target.upper()}")
     else:
         print(f"  >> Keep v1.0 {target.upper()} (gate FAIL)")
-
-
-def _fmt(value: Any) -> str:
-    """Format a metric for the readout (4dp float, or 'N/A' for None)."""
-    if value is None:
-        return "N/A"
-    if isinstance(value, float):
-        return f"{value:.4f}"
-    return str(value)
 
 
 def main(argv: list[str] | None = None) -> int:

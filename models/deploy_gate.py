@@ -88,6 +88,9 @@ __all__ = [
     "SIGNIFICANCE_ALPHA",
     "build_candidate_bundle",
     "clv_floor_passes",
+    # Re-exported from backtest.diagnose as part of the D24-13 parity surface; tests and
+    # callers reference it as gate.clv_significance (IN-01).
+    "clv_significance",
     "evaluate_target",
     "load_gate_config",
     "per_season_clv",

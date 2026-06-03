@@ -340,11 +340,14 @@ def print_summary(results: dict[str, dict]) -> None:
         baseline = result.get("market_baseline")
         metadata = model.get("metadata", {})
 
-        # Extract season range from season_results
+        # Extract season range from season_results. Guard the single-season case (avoid a
+        # "2024-24" render) and the bare % 100 modulo, which silently assumes all seasons
+        # share a century (IN-03). Display-only string for the training summary table.
         season_results = model.get("season_results", [])
         if season_results:
             seasons = [s["season"] for s in season_results]
-            season_range = f"{min(seasons)}-{max(seasons) % 100:02d}"
+            lo, hi = min(seasons), max(seasons)
+            season_range = f"{lo}" if lo == hi else f"{lo}-{hi}"
         else:
             season_range = "-"
 

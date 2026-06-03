@@ -264,8 +264,8 @@ def test_load_gate_config_season_keys_int() -> None:
     populated season key set is not the 2021-2024 holdout.
     """
     cfg = gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
-    # The committed baselines are empty in Wave 1, so this is vacuously true today; it guards
-    # against a future regression where load_gate_config forgets to int-normalize populated keys.
+    # The committed config/gate.toml baselines are now POPULATED (IN-04), so this exercises real
+    # season keys: it proves load_gate_config int-normalizes the str keys tomllib produces.
     for target in ("wp", "ats", "ou"):
         season = cfg["baseline"][target].get("season", {})
         assert all(isinstance(k, int) for k in season), (
@@ -286,12 +286,17 @@ def test_load_gate_config_season_keys_int() -> None:
 
 
 def test_validate_gate_config_tolerates_empty_baseline() -> None:
-    """24-VALIDATION: companion to the Wave-1 ordering note.
+    """24-VALIDATION: validate_gate_config accepts the committed config and a tolerated shape.
 
-    The committed gate.toml (empty baseline tables) validates; an empty dict raises.
+    The committed gate.toml (now populated baselines) validates; a present-but-empty baseline
+    table is also tolerated (the Wave-1 ordering contract); an empty dict raises (IN-04).
     """
     cfg = gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
-    gate.validate_gate_config(cfg)  # must not raise (empty Wave-1 baselines tolerated)
+    gate.validate_gate_config(cfg)  # the committed (populated) config must validate
+
+    # A present-but-empty baseline table is still tolerated (Wave-1 ordering contract).
+    tolerated = {"gate": _TEST_CFG["gate"], "baseline": {"wp": {}, "ats": {}, "ou": {}}}
+    gate.validate_gate_config(tolerated)  # must not raise
 
     with pytest.raises(ValueError):
         gate.validate_gate_config({})
