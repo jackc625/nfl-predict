@@ -418,20 +418,22 @@ def load_gate_config(path: Path = Path("config/gate.toml")) -> dict[str, Any]:
 def validate_gate_config(cfg: dict[str, Any]) -> None:
     """Validate the gate config structure, raising ``ValueError`` on a malformed config.
 
-    Input-validation mitigation (T-24-INTEGRITY): a malformed or partial gate config could
-    silently change the deploy decision, so the structure is checked explicitly. Required:
-    ``gate.alpha``, the four ``gate.secondary`` tolerance keys, and the ``baseline.{wp,ats,ou}``
-    TABLES. The baseline tables may be EMPTY in Wave 1 (Plan 24-02 ships empty baselines; Plan
-    24-03 fills the numbers), so a present-but-empty ``baseline.<target>`` is NOT an error here.
-    For any target whose ``baseline.<target>.season`` table IS populated, its (int-normalized)
-    key set must equal the 2021-2024 holdout exactly.
+    Input-validation mitigation (T-24-INTEGRITY / T-25-01-validate): a malformed or partial gate
+    config could silently change the deploy decision, so the structure is checked explicitly.
+    Required: ``gate.alpha``, ``gate.floor_mode`` (one of "non_regression"/"absolute", D25-01),
+    the four ``gate.secondary`` tolerance keys (including the D25-02 calibration-band keys
+    ``wp_ece_max_increase`` / ``wp_brier_max_increase``), and the ``baseline.{wp,ats,ou}`` TABLES.
+    The baseline tables may be EMPTY in Wave 1 (Plan 24-02 ships empty baselines; Plan 24-03 fills
+    the numbers), so a present-but-empty ``baseline.<target>`` is NOT an error here. For any target
+    whose ``baseline.<target>.season`` table IS populated, its (int-normalized) key set must equal
+    the 2021-2024 holdout exactly.
 
     Args:
         cfg: A loaded gate config (ideally from ``load_gate_config`` so season keys are ints).
 
     Raises:
-        ValueError: If a required key/table is missing, or a populated season table has the
-            wrong key set.
+        ValueError: If a required key/table is missing, ``gate.floor_mode`` is not a recognized
+            value, or a populated season table has the wrong key set.
     """
     gate = cfg.get("gate")
     if not isinstance(gate, dict):
@@ -440,6 +442,20 @@ def validate_gate_config(cfg: dict[str, Any]) -> None:
 
     if "alpha" not in gate:
         msg = "gate config missing required key gate.alpha"
+        raise ValueError(msg)
+
+    # D25-01 (T-25-01-validate): floor_mode is REQUIRED and must be a recognized value. A partial
+    # config that omits it -- or names an unrecognized mode -- must be rejected BEFORE any deploy
+    # decision, so a typo/loosening cannot silently change which floor the gate applies.
+    floor_mode = gate.get("floor_mode")
+    if floor_mode is None:
+        msg = "gate config missing required key gate.floor_mode"
+        raise ValueError(msg)
+    if floor_mode not in ("non_regression", "absolute"):
+        msg = (
+            f"gate config has invalid gate.floor_mode {floor_mode!r}; "
+            "must be one of 'non_regression' or 'absolute'"
+        )
         raise ValueError(msg)
 
     secondary = gate.get("secondary")

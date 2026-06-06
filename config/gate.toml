@@ -36,7 +36,25 @@ alpha = 0.05
 # test is scipy's two-sided ttest_1samp; we read the negative tail of it, which is
 # the one-sided-vs-two-sided handling D24-02 requires to be stated explicitly.
 
-per_season_must_pass = true  # D24-04: EVERY holdout season (2021-2024) must clear the CLV floor individually -- one lucky season must not carry a model whose other seasons are significantly negative. On ~270 games/season the absolute-floor-vs-zero bar has lower power, so a leak-free model rarely trips per-season; the floor only bites a season that genuinely IS significantly negative.
+per_season_must_pass = true  # D24-04: EVERY holdout season (2021-2024) must clear the CLV floor individually -- one lucky season must not carry a model whose other seasons are significantly worse. The floor mode (below) decides what "clear" means.
+
+# D25-01 / WR-01 (resolves the floor policy deferred from Phase 24): the per-season AND pooled
+# CLV floor is NON-REGRESSION vs the frozen v1.0 baseline. A candidate fails a slice (per-season
+# or pooled) ONLY when it is SIGNIFICANTLY WORSE than v1.0 for that slice -- a PAIRED per-game
+# CLV delta (candidate-minus-baseline on the same gold), read on the negative tail (mean < 0 AND
+# p < alpha -> FAIL), the same one-sided convention as the absolute floor (D24-02).
+#   * Why non-regression, not absolute-vs-zero: for a replace-or-retain decision an absolute
+#     floor can keep a significantly-WORSE incumbent in production over a technicality (WP serves
+#     -0.0567 while the leak-free -0.0443 candidate would be blocked). Non-regression is STRICTER
+#     where v1.0 is already positive (OU pooled +1.11 cannot regress) and achievable where v1.0
+#     is itself sub-floor (WP/ATS).
+#   * The absolute-vs-zero verdict is STILL computed and recorded on every candidate (the
+#     bettable-bar input for Phases 26-27); it is a readout, never the deploy decision here.
+#   * This is a DELIBERATE, REVIEWED edit with the rationale in git history -- NOT a silent
+#     loosening. The frozen baseline VALUES below are UNTOUCHED by this change (D25-01); the
+#     re-freeze is Plan 25-05 via the generator only.
+# Allowed values: "non_regression" (the D25-01 default) | "absolute" (the legacy D24-01 floor).
+floor_mode = "non_regression"
 
 calibration_in_gate = true  # D24-05 / Pitfall 14: WP ECE + Brier non-regression participate in the WP deploy decision because WP's core value IS calibration (when the model says 70% it should win ~70%). ATS/OU probability-converter calibration is DEFERRED to Phase 27 (the O/U monetization phase) and does NOT gate here.
 
@@ -59,8 +77,13 @@ evaluation = "pooled"
 # better for accuracy.
 wp_accuracy_max_drop = 0.01        # WP candidate accuracy may not drop more than this below baseline (was _WP_ACCURACY_DROP_THRESHOLD).
 regression_mae_max_increase = 0.0  # ATS/OU candidate MAE may not exceed baseline MAE at all (MAE must not increase).
-wp_ece_max_increase = 0.0          # WP candidate ECE may not exceed baseline ECE (calibration must not regress).
-wp_brier_max_increase = 0.0        # WP candidate Brier may not exceed baseline Brier (calibration must not regress).
+# D25-02 calibration noise band. These two tolerances stay at 0.0 in THIS plan (Plan 25-01) --
+# noise-band tolerance pending D25-02 bootstrap (Plan 25-02) -- value held at 0.0 until the
+# bootstrap lands. Plan 25-02 replaces the 0.0 with the bootstrap-justified band (a documented
+# decision rule on ~1087 games, NOT a blind loosening: WP's core value IS calibration). Do NOT
+# widen the band here.
+wp_ece_max_increase = 0.0          # WP candidate ECE may not exceed baseline ECE (calibration must not regress) -- noise-band tolerance pending D25-02 bootstrap (Plan 25-02), value held at 0.0 until the bootstrap lands.
+wp_brier_max_increase = 0.0        # WP candidate Brier may not exceed baseline Brier (calibration must not regress) -- noise-band tolerance pending D25-02 bootstrap (Plan 25-02), value held at 0.0 until the bootstrap lands.
 
 # =============================================================================
 # FROZEN BASELINE TABLES

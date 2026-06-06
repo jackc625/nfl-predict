@@ -338,6 +338,100 @@ def test_validate_gate_config_tolerates_empty_baseline() -> None:
 
 
 # ---------------------------------------------------------------------------
+# floor_mode + calibration-band config validation (D25-01 / D25-02) -- Plan 25-01
+# ---------------------------------------------------------------------------
+
+
+def test_committed_config_has_floor_mode_non_regression() -> None:
+    """25-01: the committed config/gate.toml carries floor_mode=non_regression and validates."""
+    cfg = gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
+    gate.validate_gate_config(cfg)  # must not raise
+    assert cfg["gate"]["floor_mode"] == "non_regression"
+
+
+def test_validate_gate_config_requires_floor_mode() -> None:
+    """25-01: a config missing gate.floor_mode raises ValueError (V5 input validation).
+
+    T-25-01-validate: a partial config must not silently change the deploy decision -- an
+    absent floor_mode is rejected BEFORE any decision.
+    """
+    no_floor_mode = {
+        "gate": {
+            "alpha": 0.05,
+            # floor_mode deliberately omitted
+            "per_season_must_pass": True,
+            "calibration_in_gate": True,
+            "seasons": {"holdout": [2021, 2022, 2023, 2024]},
+            "secondary": {
+                "evaluation": "pooled",
+                "wp_accuracy_max_drop": 0.01,
+                "regression_mae_max_increase": 0.0,
+                "wp_ece_max_increase": 0.0,
+                "wp_brier_max_increase": 0.0,
+            },
+        },
+        "baseline": {"wp": {}, "ats": {}, "ou": {}},
+    }
+    with pytest.raises(ValueError, match="floor_mode"):
+        gate.validate_gate_config(no_floor_mode)
+
+
+def test_validate_gate_config_rejects_unknown_floor_mode() -> None:
+    """25-01: a config whose floor_mode is neither non_regression nor absolute raises."""
+    bad = _cfg_with(floor_mode="loosened")
+    with pytest.raises(ValueError, match="floor_mode"):
+        gate.validate_gate_config(bad)
+
+
+def test_validate_gate_config_requires_calibration_band_keys() -> None:
+    """25-01: a config missing the calibration noise-band keys raises ValueError.
+
+    The wp_ece_max_increase / wp_brier_max_increase keys are required gate.secondary keys (the
+    calibration band the D25-02 bootstrap fills in Plan 25-02); a config omitting them is
+    rejected before any deploy decision.
+    """
+    missing_band = _cfg_with()
+    del missing_band["gate"]["secondary"]["wp_ece_max_increase"]
+    with pytest.raises(ValueError, match=r"wp_ece_max_increase|secondary"):
+        gate.validate_gate_config(missing_band)
+
+
+def test_committed_calibration_band_is_zero_placeholder() -> None:
+    """25-01: the committed gate.toml calibration band is STILL 0.0 after this plan.
+
+    D25-02 split: Plan 25-01 only introduces the validator requirement + a "pending Plan 25-02"
+    comment; the actual bootstrap-justified non-zero band is set by Plan 25-02. This test guards
+    against this plan implying a final non-zero band (Codex MEDIUM / Gemini LOW).
+    """
+    cfg = gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
+    secondary = cfg["gate"]["secondary"]
+    assert secondary["wp_ece_max_increase"] == 0.0
+    assert secondary["wp_brier_max_increase"] == 0.0
+
+
+def test_committed_frozen_baseline_values_unchanged() -> None:
+    """25-01: the frozen baseline VALUES in config/gate.toml are byte-unchanged by this plan.
+
+    D25-01 keeps the baseline VALUES untouched (only flags/comments added). A value-equality
+    assertion against the known frozen numbers (the DIAG-05 raw-prod anchors) guards against an
+    accidental hand-edit of a [baseline.*] table during the floor_mode change.
+    """
+    cfg = gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
+    baseline = cfg["baseline"]
+    # The DIAG-05 freshness anchors (Plan 24-03 frozen block).
+    assert baseline["wp"]["pooled"]["mean"] == pytest.approx(-0.05667940)
+    assert baseline["wp"]["pooled"]["accuracy"] == pytest.approx(0.66022827)
+    assert baseline["ats"]["pooled"]["mean"] == pytest.approx(-0.40523073)
+    assert baseline["ats"]["pooled"]["mae"] == pytest.approx(9.48065473)
+    assert baseline["ou"]["pooled"]["mean"] == pytest.approx(1.10954411)
+    assert baseline["ou"]["pooled"]["mae"] == pytest.approx(10.30555693)
+    # A per-season anchor from each target to catch a season-table edit.
+    assert baseline["wp"]["season"][2024]["mean"] == pytest.approx(-0.06658854)
+    assert baseline["ats"]["season"][2023]["mean"] == pytest.approx(-0.77347971)
+    assert baseline["ou"]["season"][2021]["mean"] == pytest.approx(-1.21316813)
+
+
+# ---------------------------------------------------------------------------
 # The single bundle builder shape
 # ---------------------------------------------------------------------------
 
