@@ -697,8 +697,11 @@ def test_frozen_baseline_matches_rescore() -> None:
 
     The frozen ``config/gate.toml`` baseline (WP pooled accuracy + headline CLV) matches a
     fresh ``diagnose.run_diagnosis(run_backtest_half=False)`` production-half re-score of the
-    DEPLOYED v1.0 artifacts within tolerance -- proving the frozen judge has not drifted from
-    the deployed artifacts (D24-07 / T-24-19). Skips cleanly when canonical gold is absent.
+    DEPLOYED incumbent artifacts within tolerance -- proving the frozen judge has not drifted
+    from the deployed artifacts (D24-07 / T-24-19). Post-Phase-25 (D25-11) the deployed WP/ATS
+    incumbents are the activated re-fits and OU is retained v1.0, so this re-scores the re-fit
+    WP and matches the re-frozen baseline; it is NO LONGER a v1.0 re-score. Skips cleanly when
+    canonical gold is absent.
     """
     from backtest.diagnose import run_diagnosis
     from backtest.engine import BacktestEngine
@@ -708,7 +711,8 @@ def test_frozen_baseline_matches_rescore() -> None:
     frozen_accuracy = wp_pooled["accuracy"]
     frozen_clv_mean = wp_pooled["mean"]
 
-    # Re-score the deployed v1.0 production half on canonical 2021-2024 gold (LOAD + predict).
+    # Re-score the deployed incumbent production half on canonical 2021-2024 gold (LOAD +
+    # predict). Post-D25-11 the WP incumbent is the activated re-fit, not v1.0.
     engine = BacktestEngine()
     gold: dict[str, pd.DataFrame] = {}
     for target in ("wp", "ats", "ou"):

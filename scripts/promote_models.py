@@ -398,9 +398,10 @@ def _assert_artifacts_dir_present(
 ) -> None:
     """Raise a clear, actionable error if a target's production artifact dir is missing.
 
-    The paired baseline re-score (D25-15) loads the DEPLOYED v1.0 artifacts from the production
-    artifacts dir; ``score_deployed_artifacts`` -> ``load_model_artifact`` would otherwise raise
-    an OPAQUE failure if the dir (or its metadata) is absent. The deployed v1.0 dirs are required
+    The paired baseline re-score (D25-15) loads the DEPLOYED INCUMBENT artifacts from the
+    production artifacts dir (post-Phase-25/D25-11: the WP/ATS re-fits, OU retained v1.0);
+    ``score_deployed_artifacts`` -> ``load_model_artifact`` would otherwise raise an OPAQUE
+    failure if the dir (or its metadata) is absent. The deployed incumbent dirs are required
     BOTH for the paired re-score AND as the rollback target (D25-17), so a missing dir is a
     deploy-blocking integrity problem, not a transient: it must surface a named-path error that
     points at the clean-checkout bootstrap remedy (documented in DIAGNOSIS-NOTES.md / RUNBOOK by
@@ -408,7 +409,7 @@ def _assert_artifacts_dir_present(
 
     Codex no-artifact-deletion guard: this check intentionally runs BEFORE the re-score so a
     missing production dir cannot be silently treated as "nothing to re-score". NEVER delete the
-    v1.0 artifact dirs -- they are the paired baseline AND the rollback target.
+    deployed incumbent artifact dirs -- they are the paired baseline AND the rollback target.
 
     Args:
         target: One of "wp", "ats", "ou".
@@ -478,11 +479,12 @@ def _score_baseline_clv(
     odds_df: pd.DataFrame,
     artifacts_dir: Path,
 ) -> pd.DataFrame:
-    """Re-score the DEPLOYED v1.0 artifacts and compute per-game baseline CLV (the paired side).
+    """Re-score the DEPLOYED INCUMBENT artifacts and compute per-game baseline CLV (paired side).
 
     Mirrors the candidate-side scoring (STEP 2) but against the PRODUCTION artifacts dir: scores
-    the deployed v1.0 artifact on the SAME gold the candidate was scored on, then computes the
-    per-game CLV (``probability_clv`` for WP, ``line_clv`` for ATS/OU) via the same
+    the deployed incumbent artifact (post-Phase-25/D25-11: the WP/ATS re-fits, OU retained v1.0)
+    on the SAME gold the candidate was scored on, then computes the per-game CLV
+    (``probability_clv`` for WP, ``line_clv`` for ATS/OU) via the same
     ``compute_clv_for_predictions`` path ``build_candidate_bundle`` uses internally. The returned
     frame carries ``game_id`` + ``season`` + the target's CLV column, restricted to games with
     closing odds -- the per-game baseline the candidate is paired against (D25-15).
@@ -491,7 +493,7 @@ def _score_baseline_clv(
         target: One of "wp", "ats", "ou".
         gold_df: The SAME 2021-2024 gold holdout frame the candidate was scored on.
         odds_df: Normalized closing odds.
-        artifacts_dir: The PRODUCTION artifacts dir (the deployed v1.0 swap surface).
+        artifacts_dir: The PRODUCTION artifacts dir (the deployed incumbent swap surface).
 
     Returns:
         A ``has_closing_odds``-filtered frame with ``game_id``, ``season``, and the target's CLV
