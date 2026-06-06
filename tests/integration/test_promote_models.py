@@ -655,3 +655,194 @@ def test_frozen_baseline_matches_rescore() -> None:
         f"frozen WP pooled CLV mean {frozen_clv_mean} drifted from a fresh re-score "
         f"{rescored_clv_mean} (baseline no longer matches the deployed artifacts)"
     )
+
+
+# ---------------------------------------------------------------------------
+# D25-15 (Plan 25-02): the paired baseline re-score + merge-on-game_id pairing
+# ---------------------------------------------------------------------------
+
+
+def _paired_frames() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build a candidate + baseline per-game CLV frame pair sharing game_ids across seasons.
+
+    Each frame carries ``game_id``, ``season``, and the WP CLV column (``probability_clv``). The
+    candidate has a small positive offset over the baseline so the paired delta is positive (a
+    non-regression PASS), and the two frames intersect on every game_id so the merge keeps full n.
+    """
+    rng = np.random.default_rng(2502)
+    rows = []
+    for season in (2021, 2022, 2023, 2024):
+        for i in range(50):
+            rows.append((f"{season}_G{i}", season))
+    game_ids = [r[0] for r in rows]
+    seasons = [r[1] for r in rows]
+    n = len(rows)
+    base_clv = rng.normal(-0.05, 0.1, n)
+    cand_clv = base_clv + 0.01  # candidate slightly better -> positive paired delta
+    candidate_valid = pd.DataFrame(
+        {"game_id": game_ids, "season": seasons, "probability_clv": cand_clv}
+    )
+    baseline_valid = pd.DataFrame(
+        {"game_id": game_ids, "season": seasons, "probability_clv": base_clv}
+    )
+    return candidate_valid, baseline_valid
+
+
+@pytest.mark.integration
+def test_paired_delta_keys_populated_on_game_id() -> None:
+    """Plan 25-02: _populate_paired_delta_keys merges on game_id and keeps the Plan 25-01 invariant.
+
+    The pinned keys (clv_values / baseline_clv_values / clv_delta_values + per-season equivalents)
+    are populated from a genuine per-game pairing; the internal-consistency invariant
+    clv_delta_values == clv_values - baseline_clv_values holds element-wise, and the per-season
+    arrays carry the integer holdout seasons.
+    """
+    candidate_valid, baseline_valid = _paired_frames()
+    candidate: dict[str, Any] = {
+        "clv_values": None,
+        "baseline_clv_values": None,
+        "clv_delta_values": None,
+        "per_season_clv_values": dict.fromkeys((2021, 2022, 2023, 2024), None),
+        "per_season_baseline_clv_values": dict.fromkeys((2021, 2022, 2023, 2024), None),
+        "per_season_clv_delta_values": dict.fromkeys((2021, 2022, 2023, 2024), None),
+        "per_season": {},
+    }
+
+    promote._populate_paired_delta_keys(
+        "wp", candidate, candidate_valid, baseline_valid
+    )
+
+    cand = candidate["clv_values"]
+    base = candidate["baseline_clv_values"]
+    delta = candidate["clv_delta_values"]
+    assert cand is not None and base is not None and delta is not None
+    # Equal n on the merged intersection (T-25-02-pairing).
+    assert len(cand) == len(base) == len(delta) == 200
+    # Plan 25-01 internal-consistency invariant holds element-wise.
+    assert np.allclose(delta, cand - base)
+    # The positive offset means the paired delta is positive on average (candidate not worse).
+    assert float(np.mean(delta)) > 0
+    # Per-season delta keys carry the integer holdout seasons with equal n.
+    for season in (2021, 2022, 2023, 2024):
+        season_delta = candidate["per_season_clv_delta_values"][season]
+        assert season_delta is not None
+        assert len(season_delta) == 50
+
+
+@pytest.mark.integration
+def test_drift_tripwire_aborts_on_baseline_drift() -> None:
+    """Plan 25-02: the gate-time drift tripwire HARD-aborts when re-scored v1.0 drifts from config.
+
+    A re-scored v1.0 baseline frame whose pooled WP CLV mean is far from the frozen
+    config/gate.toml value must raise (the deployed artifacts drifted; the paired test would use a
+    wrong baseline). The error names the recomputation tolerance so the abort is unambiguous.
+    """
+    cfg = deploy_gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
+    # A baseline frame whose pooled mean is +0.5 -- nowhere near the frozen WP pooled mean
+    # (~-0.0567), so the pooled-mean drift check must fire well outside the 5e-3 tolerance.
+    n_per_season = 50
+    rows_gid = []
+    rows_season = []
+    for season in (2021, 2022, 2023, 2024):
+        for i in range(n_per_season):
+            rows_gid.append(f"{season}_G{i}")
+            rows_season.append(season)
+    drifted = pd.DataFrame(
+        {
+            "game_id": rows_gid,
+            "season": rows_season,
+            "probability_clv": np.full(len(rows_gid), 0.5),
+        }
+    )
+    with pytest.raises(ValueError, match="Drift tripwire ABORT"):
+        promote._drift_tripwire("wp", drifted, cfg)
+
+
+@pytest.mark.integration
+def test_drift_tripwire_aborts_on_wrong_clv_column() -> None:
+    """Plan 25-02: the drift tripwire aborts if the re-scored frame lacks the frozen CLV column.
+
+    Codex MEDIUM: the CLV column identity is part of the drift check. A baseline frame missing the
+    target's CLV_COLUMN_FOR column means the baseline was measured on a different metric than the
+    gate reads -- a hard abort, not a tolerance question.
+    """
+    cfg = deploy_gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
+    wrong_col = pd.DataFrame(
+        {"game_id": ["2021_G0"], "season": [2021], "not_the_clv_column": [0.0]}
+    )
+    with pytest.raises(ValueError, match="lacks the frozen CLV column"):
+        promote._drift_tripwire("wp", wrong_col, cfg)
+
+
+@pytest.mark.integration
+def test_missing_dir_guard_actionable_error(tmp_path: Path) -> None:
+    """Plan 25-02: a missing production artifacts dir yields a NAMED-path actionable error.
+
+    Gemini consensus #2: a missing/empty production artifacts dir must produce a clear error that
+    names the missing path and points at the clean-checkout bootstrap remedy -- NOT an opaque
+    load_model_artifact failure. Asserted for both an absent dir and an absent target subdir.
+    """
+    # (a) Absent production artifacts dir entirely.
+    absent = tmp_path / "no_such_artifacts"
+    with pytest.raises(FileNotFoundError, match="Production artifacts dir not found"):
+        promote._assert_artifacts_dir_present("wp", absent, "wp_20260327_114739")
+
+    # (b) Dir present but the target's version subdir / metadata is missing.
+    present = tmp_path / "artifacts"
+    present.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(FileNotFoundError, match="missing at"):
+        promote._assert_artifacts_dir_present("wp", present, "wp_does_not_exist")
+
+    # The bootstrap remedy is named so the error is actionable (Plan 25-05 / DIAGNOSIS-NOTES.md).
+    try:
+        promote._assert_artifacts_dir_present("wp", absent, "wp_x")
+    except FileNotFoundError as exc:
+        assert "bootstrap" in str(exc).lower(), (
+            "the missing-dir error must point at the clean-checkout bootstrap remedy"
+        )
+
+
+@pytest.mark.integration
+def test_non_regression_forced_pass_and_fail_hermetic(
+    tmp_artifacts: Path, tmp_stage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plan 25-02: forced PASS/FAIL under floor_mode=non_regression via the bundle seam (hermetic).
+
+    A bundle whose paired delta is ~zero/positive PASSES the non-regression gate (exit 0 on a
+    bare dry-run); a bundle whose paired delta is significantly negative FAILS (non-zero exit) and
+    leaves production latest.json byte-unchanged. This re-asserts the non_regression forced
+    verdicts under the names the Plan 25-02 verify command filters on (-k non_regression).
+    """
+    # Forced PASS: a passing bundle -> exit 0 (no failing targets), production untouched (dry-run).
+    _install_hermetic_stubs(monkeypatch, _passing_bundle)
+    latest = tmp_artifacts / "latest.json"
+    before = latest.read_bytes()
+    rc_pass = promote.main(
+        [
+            "--artifacts-dir",
+            str(tmp_artifacts),
+            "--staging-dir",
+            str(tmp_stage),
+            "--skip-train",
+        ]
+    )
+    assert rc_pass == 0, "an all-pass non_regression dry-run must exit 0"
+    assert latest.read_bytes() == before, "dry-run must not touch production"
+
+    # Forced FAIL: a negative-delta bundle -> non-zero exit, production byte-unchanged.
+    _install_hermetic_stubs(monkeypatch, _negative_bundle)
+    rc_fail = promote.main(
+        [
+            "--artifacts-dir",
+            str(tmp_artifacts),
+            "--staging-dir",
+            str(tmp_stage),
+            "--skip-train",
+        ]
+    )
+    assert rc_fail != 0, (
+        "a significantly-negative non_regression delta must FAIL the gate"
+    )
+    assert latest.read_bytes() == before, (
+        "a forced-FAIL run must leave production latest.json byte-unchanged"
+    )

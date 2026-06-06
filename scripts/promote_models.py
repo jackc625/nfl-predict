@@ -48,10 +48,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from backtest.diagnose import score_deployed_artifacts
+import numpy as np
+
+from backtest.diagnose import CLV_COLUMN_FOR, clv_significance, score_deployed_artifacts
 from backtest.engine import BacktestEngine
 from models import deploy_gate
 from models.artifacts import update_manifest
+from models.clv import compute_clv_for_predictions
 from utils import get_logger
 
 if TYPE_CHECKING:
@@ -68,6 +71,17 @@ _TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
 # frozen baseline window in config/gate.toml.
 _HOLDOUT_FIRST_SEASON = 2021
 _HOLDOUT_LAST_SEASON = 2024
+
+# D25-15 gate-time drift tripwire: RECOMPUTATION tolerance for the re-scored v1.0 aggregates
+# vs the frozen config/gate.toml baseline. This is NOT a loosening of D25-15's "exact match"
+# SEMANTIC intent -- the baseline MUST be the same artifacts, the same gold, and the same CLV
+# column; drift in ANY of those is a hard abort, not a tolerance question. The tolerance covers
+# only float/library recomputation jitter: a deterministic re-score on the same artifacts should
+# reproduce the frozen numbers to within this band. The value mirrors the freshness band used by
+# tests/integration/test_promote_models.py::test_frozen_baseline_matches_rescore (_FRESHNESS_TOL)
+# and the test_diag_diagnosis anchor tolerance, so the gate-time abort uses the same recomputation
+# noise band the committed freshness test already trusts.
+_FRESHNESS_TOL = 5e-3
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -322,6 +336,317 @@ def _baseline_bundle(target: str, cfg: dict[str, Any]) -> dict[str, Any]:
     return bundle
 
 
+def _assert_artifacts_dir_present(
+    target: str, artifacts_dir: Path, version: str
+) -> None:
+    """Raise a clear, actionable error if a target's production artifact dir is missing.
+
+    The paired baseline re-score (D25-15) loads the DEPLOYED v1.0 artifacts from the production
+    artifacts dir; ``score_deployed_artifacts`` -> ``load_model_artifact`` would otherwise raise
+    an OPAQUE failure if the dir (or its metadata) is absent. The deployed v1.0 dirs are required
+    BOTH for the paired re-score AND as the rollback target (D25-17), so a missing dir is a
+    deploy-blocking integrity problem, not a transient: it must surface a named-path error that
+    points at the clean-checkout bootstrap remedy (documented in DIAGNOSIS-NOTES.md / RUNBOOK by
+    Plan 25-05) rather than an opaque load failure (Gemini consensus concern #2).
+
+    Codex no-artifact-deletion guard: this check intentionally runs BEFORE the re-score so a
+    missing production dir cannot be silently treated as "nothing to re-score". NEVER delete the
+    v1.0 artifact dirs -- they are the paired baseline AND the rollback target.
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        artifacts_dir: The production artifacts dir (the swap target + baseline re-score source).
+        version: The production version dir name for this target (from latest.json).
+
+    Raises:
+        FileNotFoundError: If the production artifacts dir, the target's version subdir, or its
+            metadata.json is missing/empty -- with a named-path message and the bootstrap remedy.
+    """
+    if not artifacts_dir.exists():
+        msg = (
+            f"Production artifacts dir not found at '{artifacts_dir}'. The paired baseline "
+            f"re-score (and rollback) needs the DEPLOYED v1.0 artifacts here. Do NOT delete the "
+            "v1.0 artifact dirs. On a fresh checkout, bootstrap the first artifacts/latest.json "
+            "per the clean-checkout bootstrap step (see DIAGNOSIS-NOTES.md / RUNBOOK, Plan 25-05)."
+        )
+        raise FileNotFoundError(msg)
+
+    version_dir = artifacts_dir / version
+    metadata = version_dir / "metadata.json"
+    if not version_dir.is_dir() or not metadata.exists():
+        msg = (
+            f"Production artifact for target '{target}' missing at '{version_dir}' "
+            f"(expected metadata at '{metadata}'). The paired baseline re-score (and rollback) "
+            "needs the DEPLOYED v1.0 artifact for this target. Do NOT delete the v1.0 artifact "
+            "dirs. On a fresh checkout, bootstrap the first artifacts/latest.json per the "
+            "clean-checkout bootstrap step (see DIAGNOSIS-NOTES.md / RUNBOOK, Plan 25-05)."
+        )
+        raise FileNotFoundError(msg)
+
+
+def _production_versions(artifacts_dir: Path) -> dict[str, str]:
+    """Read the per-target version pointers from the production ``latest.json`` manifest.
+
+    Used by the missing-dir guard to resolve which v1.0 artifact subdir each target points at,
+    so the guard can name the exact expected path.
+
+    Args:
+        artifacts_dir: The production artifacts dir containing ``latest.json``.
+
+    Returns:
+        ``{target: version_dir_name}`` for the gated targets present in the manifest.
+
+    Raises:
+        FileNotFoundError: If ``latest.json`` itself is absent (a missing production manifest is
+            the clean-checkout bootstrap gap; surface it with the bootstrap remedy).
+    """
+    import json
+
+    manifest = artifacts_dir / "latest.json"
+    if not manifest.exists():
+        msg = (
+            f"Production manifest not found at '{manifest}'. The paired baseline re-score needs "
+            "the DEPLOYED v1.0 artifacts the manifest points at. On a fresh checkout, bootstrap "
+            "the first artifacts/latest.json per the clean-checkout bootstrap step (see "
+            "DIAGNOSIS-NOTES.md / RUNBOOK, Plan 25-05)."
+        )
+        raise FileNotFoundError(msg)
+    with manifest.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _score_baseline_clv(
+    target: str,
+    gold_df: pd.DataFrame,
+    odds_df: pd.DataFrame,
+    artifacts_dir: Path,
+) -> pd.DataFrame:
+    """Re-score the DEPLOYED v1.0 artifacts and compute per-game baseline CLV (the paired side).
+
+    Mirrors the candidate-side scoring (STEP 2) but against the PRODUCTION artifacts dir: scores
+    the deployed v1.0 artifact on the SAME gold the candidate was scored on, then computes the
+    per-game CLV (``probability_clv`` for WP, ``line_clv`` for ATS/OU) via the same
+    ``compute_clv_for_predictions`` path ``build_candidate_bundle`` uses internally. The returned
+    frame carries ``game_id`` + ``season`` + the target's CLV column, restricted to games with
+    closing odds -- the per-game baseline the candidate is paired against (D25-15).
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        gold_df: The SAME 2021-2024 gold holdout frame the candidate was scored on.
+        odds_df: Normalized closing odds.
+        artifacts_dir: The PRODUCTION artifacts dir (the deployed v1.0 swap surface).
+
+    Returns:
+        A ``has_closing_odds``-filtered frame with ``game_id``, ``season``, and the target's CLV
+        column.
+    """
+    scored = score_deployed_artifacts(
+        target, gold_df=gold_df, artifacts_dir=artifacts_dir
+    )
+    clv_df = compute_clv_for_predictions(scored, odds_df, target)
+    valid = clv_df.loc[clv_df["has_closing_odds"]]
+    col = CLV_COLUMN_FOR[target]
+    return valid[["game_id", "season", col]].copy()
+
+
+def _candidate_clv_frame(
+    target: str,
+    scored_df: pd.DataFrame,
+    odds_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Compute the candidate per-game CLV frame the SAME way ``build_candidate_bundle`` does.
+
+    ``build_candidate_bundle`` internally drops pre-existing CLV/odds columns, recomputes CLV via
+    ``compute_clv_for_predictions``, and filters to ``has_closing_odds``; it does NOT expose the
+    per-game frame. This re-derives that exact frame (``game_id`` + ``season`` + the target's CLV
+    column) so the paired delta is built on the SAME population the bundle's pooled metrics used --
+    no second scoring pass, just the same recompute on the already-scored frame.
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        scored_df: The candidate scored frame from ``score_deployed_artifacts`` (staging dir).
+        odds_df: Normalized closing odds.
+
+    Returns:
+        A ``has_closing_odds``-filtered frame with ``game_id``, ``season``, and the target's CLV
+        column.
+    """
+    pre_drop = [c for c in deploy_gate._CLV_ODDS_COLS if c in scored_df.columns]
+    base = scored_df.drop(columns=pre_drop) if pre_drop else scored_df
+    clv_df = compute_clv_for_predictions(base, odds_df, target)
+    valid = clv_df.loc[clv_df["has_closing_odds"]]
+    col = CLV_COLUMN_FOR[target]
+    return valid[["game_id", "season", col]].copy()
+
+
+def _drift_tripwire(
+    target: str,
+    baseline_valid: pd.DataFrame,
+    cfg: dict[str, Any],
+) -> None:
+    """HARD-assert the re-scored v1.0 aggregates equal config/gate.toml BEFORE the paired test.
+
+    D25-15 anchor (T-25-02-drift): the paired non-regression delta is only meaningful if the
+    baseline side is the SAME frozen judge ``config/gate.toml`` describes. This re-derives the
+    re-scored v1.0 pooled AND per-season CLV aggregates from ``baseline_valid`` and HARD-asserts
+    they match the committed ``[baseline.<target>.*]`` values on ALL frozen fields, raising on ANY
+    mismatch so the gate aborts before forming a delta against a drifted baseline (Codex MEDIUM:
+    compare all fields, not only the means).
+
+    Fields compared:
+      * the CLV column identity -- ``CLV_COLUMN_FOR[target]`` is the column the re-score and the
+        frozen baseline were both measured on; a different column means a different metric;
+      * the pooled CLV mean;
+      * each per-season CLV mean AND its per-season sample size ``n`` (the frozen block carries
+        per-season ``n``; a different population is a hard drift signal).
+
+    The numeric comparison uses ``_FRESHNESS_TOL`` (5e-3), DOCUMENTED at its definition as a
+    RECOMPUTATION-noise tolerance -- NOT a loosening of D25-15's "exact match" SEMANTIC intent
+    (same artifacts, same gold, same column). The sample-size comparison is EXACT (an integer
+    population count cannot drift by float noise).
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        baseline_valid: The re-scored v1.0 per-game frame (``game_id``, ``season``, CLV column),
+            ``has_closing_odds``-filtered, from ``_score_baseline_clv``.
+        cfg: The loaded gate config (with int-normalized baseline season keys).
+
+    Raises:
+        ValueError: If the re-scored v1.0 aggregates drift from the frozen config on ANY field
+            (CLV column identity, pooled mean, a per-season mean, or a per-season sample size).
+    """
+    frozen = cfg.get("baseline", {}).get(target, {})
+    pooled_frozen = frozen.get("pooled", {})
+    col = CLV_COLUMN_FOR[target]
+
+    # Column-identity check: the frozen baseline and this re-score must be on the SAME CLV column.
+    if col not in baseline_valid.columns:
+        msg = (
+            f"Drift tripwire ABORT for '{target}': the re-scored v1.0 frame lacks the frozen CLV "
+            f"column '{col}' (CLV_COLUMN_FOR[{target!r}]). The baseline was measured on a "
+            "different column than the gate now reads -- the paired test would compare two metrics."
+        )
+        raise ValueError(msg)
+
+    # Pooled mean: re-derive from the re-scored v1.0 CLV and compare to the frozen pooled mean.
+    pooled_mean = float(np.mean(baseline_valid[col].to_numpy()))
+    frozen_pooled_mean = pooled_frozen.get("mean")
+    if frozen_pooled_mean is not None:
+        drift = abs(pooled_mean - float(frozen_pooled_mean))
+        if drift > _FRESHNESS_TOL:
+            msg = (
+                f"Drift tripwire ABORT for '{target}': re-scored v1.0 pooled CLV mean "
+                f"{pooled_mean:.8f} drifted from the frozen config {float(frozen_pooled_mean):.8f} "
+                f"by {drift:.3e} (> {_FRESHNESS_TOL:.0e} recomputation tolerance). The deployed "
+                "artifacts no longer match config/gate.toml; the paired test would use a wrong "
+                "baseline. Re-freeze the baseline (Plan 25-05) or restore the deployed artifacts."
+            )
+            raise ValueError(msg)
+
+    # Per-season means AND sample sizes (Codex MEDIUM: compare per-season fields, not only pooled).
+    season_frozen = frozen.get("season", {})
+    for season in deploy_gate.HOLDOUT_SEASONS:
+        season_block = season_frozen.get(int(season))
+        if not season_block:
+            continue
+        slice_clv = baseline_valid.loc[
+            baseline_valid["season"] == season, col
+        ].to_numpy()
+        # Sample size is an EXACT integer comparison -- a population-count change is a hard drift
+        # signal that no float-noise tolerance should absorb.
+        frozen_n = season_block.get("n")
+        if frozen_n is not None and len(slice_clv) != int(frozen_n):
+            msg = (
+                f"Drift tripwire ABORT for '{target}' season {season}: re-scored v1.0 sample size "
+                f"{len(slice_clv)} != frozen config n={int(frozen_n)}. The re-score covers a "
+                "different game population than the frozen baseline; the paired test would compare "
+                "mismatched populations. Re-freeze the baseline (Plan 25-05) or restore artifacts."
+            )
+            raise ValueError(msg)
+        frozen_season_mean = season_block.get("mean")
+        if frozen_season_mean is not None and len(slice_clv):
+            season_mean = float(np.mean(slice_clv))
+            drift = abs(season_mean - float(frozen_season_mean))
+            if drift > _FRESHNESS_TOL:
+                msg = (
+                    f"Drift tripwire ABORT for '{target}' season {season}: re-scored v1.0 CLV mean "
+                    f"{season_mean:.8f} drifted from the frozen config "
+                    f"{float(frozen_season_mean):.8f} by {drift:.3e} "
+                    f"(> {_FRESHNESS_TOL:.0e} recomputation tolerance). The deployed artifacts no "
+                    "longer match config/gate.toml; re-freeze (Plan 25-05) or restore artifacts."
+                )
+                raise ValueError(msg)
+
+
+def _populate_paired_delta_keys(
+    target: str,
+    candidate: dict[str, Any],
+    candidate_valid: pd.DataFrame,
+    baseline_valid: pd.DataFrame,
+) -> None:
+    """Populate the Plan 25-01 PINNED non-regression delta keys via merge-on-game_id pairing.
+
+    The Plan 25-01 ``build_candidate_bundle`` ships ``baseline_clv_values`` / ``clv_delta_values``
+    (and the per-season equivalents) as ``None`` placeholders; this populates them IN PLACE from a
+    genuine per-game pairing (D25-15). The candidate per-game CLV and the re-scored v1.0 per-game
+    CLV are merged on ``game_id`` so the delta is paired on the INTERSECTION of games both sides
+    scored with closing odds (T-25-02-pairing: equal n on the merged set, not a flattened
+    aggregate). The internal-consistency invariant Plan 25-01 asserts is preserved by construction:
+    ``clv_delta_values == clv_values - baseline_clv_values`` element-wise on the merged order.
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        candidate: The candidate bundle from ``build_candidate_bundle`` (mutated in place).
+        candidate_valid: The candidate per-game frame (``game_id``, ``season``, CLV column),
+            ``has_closing_odds``-filtered.
+        baseline_valid: The re-scored v1.0 per-game frame, ``has_closing_odds``-filtered.
+    """
+    col = CLV_COLUMN_FOR[target]
+    paired = candidate_valid.merge(
+        baseline_valid,
+        on="game_id",
+        how="inner",
+        suffixes=("_cand", "_base"),
+    )
+    cand_clv = paired[f"{col}_cand"].to_numpy()
+    base_clv = paired[f"{col}_base"].to_numpy()
+    delta = cand_clv - base_clv
+
+    # Pooled paired arrays (aligned by game_id on the intersection both sides scored).
+    candidate["clv_values"] = cand_clv
+    candidate["baseline_clv_values"] = base_clv
+    candidate["clv_delta_values"] = delta
+    pooled = clv_significance(cand_clv)
+    candidate["mean"] = pooled["mean"]
+    candidate["t"] = pooled["t"]
+    candidate["p"] = pooled["p"]
+    candidate["n"] = pooled["n"]
+
+    # Per-season paired arrays (the merged frame carries season from BOTH sides; they are equal on
+    # the intersection, so the candidate-side season suffix is the per-season slice key).
+    season_col = "season_cand"
+    per_season_baseline: dict[int, Any] = {}
+    per_season_delta: dict[int, Any] = {}
+    per_season_cand: dict[int, Any] = {}
+    for season in deploy_gate.HOLDOUT_SEASONS:
+        mask = paired[season_col] == season
+        per_season_cand[int(season)] = paired.loc[mask, f"{col}_cand"].to_numpy()
+        per_season_baseline[int(season)] = paired.loc[mask, f"{col}_base"].to_numpy()
+        per_season_delta[int(season)] = (
+            paired.loc[mask, f"{col}_cand"].to_numpy()
+            - paired.loc[mask, f"{col}_base"].to_numpy()
+        )
+    candidate["per_season_clv_values"] = per_season_cand
+    candidate["per_season_baseline_clv_values"] = per_season_baseline
+    candidate["per_season_clv_delta_values"] = per_season_delta
+    # Refresh the per-season raw-candidate significance bundles to the paired (intersection)
+    # population so the absolute-vs-zero per-season verdict matches the paired set.
+    candidate["per_season"] = {
+        int(season): clv_significance(per_season_cand[int(season)])
+        for season in deploy_gate.HOLDOUT_SEASONS
+    }
+
+
 def _fmt(value: Any) -> str:
     """Format a metric for the readout (4dp float, or 'N/A' for None)."""
     if value is None:
@@ -483,15 +808,28 @@ def main(argv: list[str] | None = None) -> int:
     engine = BacktestEngine()
     odds_df = engine._load_closing_odds()
     scored: dict[str, pd.DataFrame] = {}
+    gold_holdout: dict[str, pd.DataFrame] = {}
     for target in staged_version:
-        gold_df = _load_gold_holdout(target, engine)
+        gold_holdout[target] = _load_gold_holdout(target, engine)
         scored[target] = score_deployed_artifacts(
-            target, gold_df=gold_df, artifacts_dir=args.staging_dir
+            target, gold_df=gold_holdout[target], artifacts_dir=args.staging_dir
         )
         print(f"  {target}: scored {len(scored[target])} games")
 
-    # -- STEP 3: build bundles via the SHARED builder + run the gate; print the 2x2 readout --
-    print("\n[Step 3/4] Building candidate bundles + running the deploy gate...")
+    # -- STEP 3: build bundles via the SHARED builder, pair vs the re-scored v1.0 baseline, --
+    # -- then run the gate; print the 2x2 readout. --
+    # D25-15: the non-regression floor needs a PAIRED per-game CLV delta, so the deployed v1.0
+    # artifacts are re-scored on the SAME gold as each candidate (the baseline side), guarded by
+    # a missing-artifacts-dir check and a gate-time drift tripwire, then merged on game_id with the
+    # candidate per-game CLV to populate the Plan 25-01 pinned delta keys. The whole baseline
+    # pipeline runs ONLY when build_candidate_bundle shipped clv_delta_values as the None
+    # placeholder (the real path); a forced-verdict bundle (the hermetic integration seam) ships
+    # the delta keys pre-populated and is left untouched, so the gate's downstream consumers stay
+    # testable without canonical gold or the deployed v1.0 dirs.
+    print(
+        "\n[Step 3/4] Building candidate bundles, pairing vs the re-scored v1.0 baseline, "
+        "running the deploy gate..."
+    )
     cfg = deploy_gate.load_gate_config()
     deploy_gate.validate_gate_config(cfg)
 
@@ -500,6 +838,36 @@ def main(argv: list[str] | None = None) -> int:
         candidate = deploy_gate.build_candidate_bundle(
             target, scored[target], odds_df, cfg
         )
+        if candidate.get("clv_delta_values") is None:
+            # Real path: re-score the deployed v1.0 baseline, guard a missing dir, abort on drift,
+            # then pair on game_id to populate the pinned non-regression delta keys (D25-15).
+            prod_versions = _production_versions(args.artifacts_dir)
+            prod_version = prod_versions.get(target)
+            if prod_version is None:
+                msg = (
+                    f"Production manifest has no '{target}' pointer; cannot re-score the v1.0 "
+                    "baseline for the paired non-regression delta. Restore the manifest or "
+                    "bootstrap it (see DIAGNOSIS-NOTES.md / RUNBOOK, Plan 25-05)."
+                )
+                raise KeyError(msg)
+            _assert_artifacts_dir_present(target, args.artifacts_dir, prod_version)
+
+            # Reuse the gold frame loaded for the candidate side (same window, same target) so the
+            # baseline is paired on the SAME gold without a redundant parquet read.
+            baseline_valid = _score_baseline_clv(
+                target, gold_holdout[target], odds_df, args.artifacts_dir
+            )
+            # Gate-time drift tripwire: HARD-abort if the re-scored v1.0 drifted from gate.toml on
+            # ANY frozen field (CLV column, pooled mean, per-season means + sample sizes).
+            _drift_tripwire(target, baseline_valid, cfg)
+            print(
+                f"  {target}: baseline re-scored {len(baseline_valid)} games "
+                "(drift tripwire PASS)"
+            )
+            candidate_valid = _candidate_clv_frame(target, scored[target], odds_df)
+            _populate_paired_delta_keys(
+                target, candidate, candidate_valid, baseline_valid
+            )
         baseline = _baseline_bundle(target, cfg)
         gate_results[target] = deploy_gate.evaluate_target(
             target, candidate, baseline, cfg
