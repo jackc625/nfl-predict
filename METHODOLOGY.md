@@ -128,10 +128,13 @@ Hyperparameter tuning is `models/tuning.py` (`OptunaTuner`): a TPE sampler with 
 Hyperband pruner over SQLite-persisted (resumable) studies. This is NEW in v2.0
 (Phase 12); the prior random-search approach was replaced.
 
-Per-target gating decides what actually ships: a retrained model must beat the
-incumbent on both CLV and accuracy before it is deployed. In v2.0 the retrained models
-did not pass gating on any target, so production still serves the v1.0 pre-Elo
-artifacts (see landmine 3 below and `MODEL-DIAGNOSIS.md` DIAG-05).
+Per-target gating decides what actually ships: a candidate must clear the per-target
+non-regression CLV floor vs the frozen incumbent (plus the secondary accuracy/MAE and,
+for WP, calibration) before it is deployed. In v2.0 the retrained models did not pass
+gating on any target. The v3.0 Phase-25 gated re-fit on the canonical Elo gold then
+activated WP and ATS (ATS via one documented fix-cycle) and RETAINED v1.0 O/U (its re-fit
+failed the floor and was honestly refused). See landmine 3 below, `ACTIVATION-READOUT.md`
+for the activation record, and `MODEL-DIAGNOSIS.md` DIAG-05 for the frozen v2.1 diagnosis.
 
 ## 6. Market blending
 
@@ -172,17 +175,26 @@ These are the corrections that motivated this de-staled consolidation:
 2. **Tuning is Optuna, not random search.** Hyperparameter search is
    `OptunaTuner` (TPE + Hyperband + SQLite), new in Phase 12. The v1.0 random-search
    description is obsolete.
-3. **Production serves the v1.0 pre-Elo artifacts, not the v2.0 retrained models.**
-   Per-target gating (D-17) rejected the v2.0 retrained models on all three targets,
-   so the deployed artifacts are still the v1.0 ones. Do NOT assume the v2.0 models are
-   live.
+3. **Production serves a MIXED set after the v3.0 Phase-25 gated re-fit -- not a
+   uniform v1.0 or v2.0 set.** Per-target gating (D-17) first rejected the v2.0 retrained
+   models on all three targets. The v3.0 Phase-25 re-fit on canonical Elo gold then went
+   THROUGH the hardened non-regression gate: WP and ATS were activated (ATS via one
+   documented fix-cycle), and O/U RETAINED the v1.0 pre-Elo model (its re-fit failed the
+   floor and was honestly refused, D25-14). So the deployed set is WP/ATS re-fits +
+   retained v1.0 O/U. Do NOT assume all three are v1.0, and do NOT assume the v2.0
+   retrained models are live. The per-target record is in `ACTIVATION-READOUT.md`.
 4. **Dynamic blend is gated per target (only O/U adopted).** WP and ATS use static
    blend weights; only O/U uses the dynamic week-of-season blend (D-19). The v1.0 docs
    describe no dynamic blend at all.
 
-The deployed-v1.0 population and the new-canonical-gold backtest population are
-DISTINCT. `MODEL-DIAGNOSIS.md` quantifies that production-vs-backtest mismatch (DIAG-05)
-and carries the gated-re-fit recommendation. Read its numbers there; do not conflate
+The deployed-artifact population and the walk-forward backtest population remain DISTINCT
+populations (a single deployed artifact scored across the whole holdout vs fresh per-fold
+models) -- a distinction that holds regardless of which artifacts are deployed.
+`MODEL-DIAGNOSIS.md` quantifies the v2.1 production-vs-backtest mismatch (DIAG-05) and
+carried the gated-re-fit recommendation; the v3.0 Phase-25 activation that executed it (WP
+and ATS now on canonical Elo gold, O/U retained on v1.0) is recorded in
+`ACTIVATION-READOUT.md`, which reconciles DIAG-05's "~zero" prediction with the measured
+candidate CLV via that two-population distinction. Read the numbers there; do not conflate
 the two populations.
 
 ## 9. Deferred refactor (honest note)

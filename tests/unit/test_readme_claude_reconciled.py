@@ -98,6 +98,29 @@ class TestReadmeReconciled:
         content = _read(README_MD)
         assert "MODEL-DIAGNOSIS.md" in content
 
+    def test_no_stale_production_runs_v1_claim(self):
+        """Phase 25 (D25-10): the present-tense 'production currently runs the v1.0
+        pre-Elo models' / 'production continues to run the v1.0 WP/ATS models' claims
+        are gone -- WP + ATS were activated through the gate, O/U retained.
+        """
+        content = _read(README_MD)
+        stale_claims = (
+            "Production currently\nruns the v1.0 pre-Elo models",
+            "production\n   continues to run the v1.0 WP/ATS models",
+            "production continues to run the v1.0 WP/ATS models",
+        )
+        present = [c for c in stale_claims if c in content]
+        assert not present, (
+            f"README.md still carries stale production-serves-v1 claims: {present}"
+        )
+
+    def test_cross_links_activation_readout(self):
+        """README cross-links ACTIVATION-READOUT.md for the Phase-25 activation record."""
+        content = _read(README_MD)
+        assert "ACTIVATION-READOUT.md" in content, (
+            "README.md should cross-link ACTIVATION-READOUT.md (the Phase-25 activation record)"
+        )
+
 
 class TestClaudeReconciled:
     """CLAUDE.md's Project Overview / Current Status must reflect v2.1 reality."""
@@ -123,3 +146,31 @@ class TestClaudeReconciled:
         content = _read(CLAUDE_MD)
         assert "weather, team_stats" not in content
         assert "team_form_features" in content
+
+    def test_no_stale_production_serves_v1_claim(self):
+        """Phase 25 (D25-10): the present-tense 'production currently serves the v1.0
+        pre-Elo WP/ATS models' claim is gone -- WP + ATS were activated through the gate.
+
+        The post-activation reality (WP/ATS serve re-fits; O/U retained v1.0) replaced it.
+        A surviving 'production currently serves the v1.0 pre-Elo WP/ATS models' claim would
+        be a false present-tense statement.
+        """
+        content = _read(CLAUDE_MD)
+        assert (
+            "production currently serves the v1.0 pre-Elo WP/ATS models" not in content
+        ), (
+            "CLAUDE.md still claims production serves v1.0 pre-Elo WP/ATS (false post Phase 25)"
+        )
+
+    def test_post_activation_reality_present(self):
+        """CLAUDE.md states the post-activation reality + cross-links ACTIVATION-READOUT.md."""
+        content = _read(CLAUDE_MD)
+        assert "ACTIVATION-READOUT.md" in content, (
+            "CLAUDE.md should cross-link ACTIVATION-READOUT.md for the activation record"
+        )
+        assert "v3.0" in content, (
+            "CLAUDE.md should reference the in-progress v3.0 milestone"
+        )
+        assert "RETAINED" in content, (
+            "CLAUDE.md should record that O/U retained v1.0 (the honest-refusal outcome)"
+        )

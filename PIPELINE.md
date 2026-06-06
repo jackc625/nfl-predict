@@ -1,8 +1,8 @@
 # PIPELINE.md — Canonical Run Sequence
 
 This is the single source of truth for how to run the NFL prediction system end to
-end. There are **7 stages**: ingest -> features -> train -> backtest -> predict ->
-build-cache -> serve. Each stage below gives:
+end. There are **8 stages**: ingest -> features -> train -> promote -> backtest ->
+predict -> build-cache -> serve. Each stage below gives:
 
 - the **one canonical command** (runnable directly in PowerShell via `uv run`),
 - the **live entry point** it resolves to, and
@@ -19,7 +19,7 @@ the supported shell; there is no Unix-shell layer between you and the system.
 
 ---
 
-## The 7 canonical stages
+## The 8 canonical stages
 
 ### 1. Ingest
 
@@ -72,10 +72,54 @@ uv run python scripts/train_models.py --target all
 
 - **Live entry point:** `scripts/train_models.py` (thin wrapper over
   `models.train.main`; pass `--target wp|ats|ou` for a single target).
-- **Produces:** `artifacts/{target}_<UTCtimestamp>/` model directories plus the
-  `artifacts/latest.json` manifest that points at the production versions.
+- **Produces:** `artifacts/{target}_<UTCtimestamp>/` model directories ONLY.
+  Training does **not** touch production: `models.artifacts.save_model_artifact`
+  defaults `update_latest=False` and the trainer never overrides it (since Plan
+  24-01), so a train run writes versioned candidate dirs but never rewrites the
+  `artifacts/latest.json` manifest. The manifest is written ONLY by the Promote
+  stage below (`update_manifest`, the sole per-key swapper) and by the blend-mode
+  re-validation's `save_blend_artifacts` (the one sanctioned `latest.json['blend']`
+  writer). To deploy a freshly trained candidate, run the Promote stage; it is the
+  gate that decides, per target, whether a candidate may replace production.
 
-### 4. Backtest
+### 4. Promote
+
+Score the freshly trained candidates against the FROZEN per-target deploy gate
+(`config/gate.toml`) and, on `--promote`, conditionally swap ONLY the gate-passing
+targets into production. This is the ONLY path that rewrites `artifacts/latest.json`
+target keys -- training (stage 3) never does. Dry-run by default (scores + prints
+the per-target 2x2, swaps nothing); pass `--promote` to perform the conditional swap.
+
+```powershell
+uv run python -m scripts.promote_models
+uv run python -m scripts.promote_models --promote
+```
+
+- **Live entry point:** `scripts/promote_models.py` -> `models.deploy_gate` +
+  `models.artifacts.update_manifest` (the sole per-key swapper). The straight
+  re-fit trains candidates into a staging dir, the gate re-scores the deployed
+  baseline for the paired non-regression delta, and each passing target's
+  gate-scored artifact dir is copied verbatim into production before its manifest
+  key is swapped (byte-identical deploy).
+- **Produces (dry-run):** the per-target 2x2 readout (candidate vs frozen v1.0
+  baseline: pooled + per-season CLV non-regression, secondary metrics) and a
+  non-zero exit code if any target FAILS the gate -- observable to CI. No
+  production change.
+- **Produces (`--promote`):** the conditional per-target swap -- ONLY gate-passing
+  targets are copied into `artifacts/` and pointed at by `artifacts/latest.json`;
+  a FAILING target keeps its existing production entry (honest refusal is a valid
+  outcome). The prior version dirs are retained, so the swap is reversible (see
+  RUNBOOK.md "Rollback").
+
+> Bootstrap note (clean checkout): the gated Promote path REQUIRES a pre-existing
+> `artifacts/latest.json` (it re-scores the deployed baseline for the paired
+> non-regression delta, raising an actionable `FileNotFoundError` when the manifest
+> is absent). On a fresh checkout with no manifest, mint the FIRST one with a
+> one-time `update_manifest` per target after the first train (see RUNBOOK.md
+> "Setup from a fresh checkout"); every subsequent deploy goes through this gated
+> Promote stage.
+
+### 5. Backtest
 
 Run the walk-forward backtest across 2021-2024 with an interactive HTML report. Add
 `--blend` for the market-blended run.
@@ -90,7 +134,7 @@ uv run python scripts/run_backtest.py --blend
   `outputs/backtest/predictions_all.csv`, `outputs/backtest/season_metrics.csv`,
   `outputs/backtest/betting_simulation.csv`, `outputs/backtest/metrics_summary.json`.
 
-### 5. Predict
+### 6. Predict
 
 Generate predictions for a specific season/week using the trained artifacts.
 
@@ -103,7 +147,7 @@ uv run python scripts/generate_current_week_predictions.py --season <YEAR> --wee
 - **Produces:** `outputs/predictions/predictions_<YEAR>_week<WEEK>.csv` and `.json`,
   plus `outputs/predictions/game_context_<YEAR>_week<WEEK>.csv`.
 
-### 6. Build cache
+### 7. Build cache
 
 Build the read-only DuckDB web cache the API serves from. This stage sits **between
 predict and serve** because, under the UIAP-01 boundary, the FastAPI app reads ONLY
@@ -116,7 +160,7 @@ uv run python scripts/populate_cache.py
 - **Live entry point:** `scripts/populate_cache.py` -> `api.cache.populate_cache`.
 - **Produces:** `data/web_cache.duckdb` (~6 MB; the only data source the API reads).
 
-### 7. Serve
+### 8. Serve
 
 Start the FastAPI app + web UI (single worker — the shared DuckDB connection and
 in-process cache require `--workers 1`).
@@ -155,4 +199,5 @@ uv run python scripts/friday_pipeline.py --log-level INFO
 - **Scope:** ingest games/weather -> data QA -> build Elo/form/contextual/weather ->
   ingest odds -> market anchors -> build features -> validate features/models ->
   generate predictions/recommendations -> export -> validate outputs. It does **not**
-  train, backtest, or rebuild the web cache — run stages 3, 4, and 6 above for those.
+  train, promote, backtest, or rebuild the web cache — run stages 3 (train), 4
+  (promote), 5 (backtest), and 7 (build cache) above for those.

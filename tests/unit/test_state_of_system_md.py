@@ -86,3 +86,28 @@ class TestStateOfSystemMdLinks:
         """The deferred ALERT-WIRING source doc (AUTOMATION.md) is linked."""
         content = _read_state_of_system_md()
         assert "AUTOMATION.md" in content
+
+
+class TestStateOfSystemMdActivationReconciled:
+    """Phase 25 (D25-10): the DIAG-05 gated-re-fit RECOMMENDATION status is reconciled.
+
+    The DIAG-05 gated re-fit was a Deferred future-milestone recommendation in v2.1; v3.0
+    Phase 25 executed it (WP + ATS activated through the gate, O/U retained). This guards
+    that the registry records the recommendation as EXECUTED and links the activation record
+    (a recommendation-status update, not a literal 'pre-Elo' string swap -- no such literal
+    is present in this doc).
+    """
+
+    def test_diag05_recommendation_marked_executed(self):
+        """The DIAG-05 gated re-fit is recorded as EXECUTED, not still merely deferred."""
+        content = _read_state_of_system_md()
+        assert "EXECUTED in v3.0 Phase 25" in content, (
+            "STATE-OF-SYSTEM.md should record the DIAG-05 gated re-fit as EXECUTED in Phase 25"
+        )
+
+    def test_links_activation_readout(self):
+        """The Phase-25 activation record (ACTIVATION-READOUT.md) is linked."""
+        content = _read_state_of_system_md()
+        assert "ACTIVATION-READOUT.md" in content, (
+            "STATE-OF-SYSTEM.md should link ACTIVATION-READOUT.md (the Phase-25 activation)"
+        )

@@ -86,6 +86,36 @@ class TestMethodologyMdNoDriftLandmines:
             "METHODOLOGY.md still references RandomizedSearchCV (replaced by Optuna)"
         )
 
+    def test_no_stale_production_serves_v1_claim(self):
+        """Phase 25 (D25-10): the present-tense 'production still serves the v1.0 pre-Elo
+        artifacts' claim is gone -- WP + ATS were activated through the gate, O/U retained.
+        """
+        content = _read_methodology_md()
+        assert "production still serves the v1.0 pre-Elo" not in content, (
+            "METHODOLOGY.md still claims production serves v1.0 pre-Elo (false post Phase 25)"
+        )
+        assert "the deployed artifacts are still the v1.0 ones" not in content, (
+            "METHODOLOGY.md landmine 3 still claims the deployed artifacts are all v1.0"
+        )
+
+
+class TestMethodologyMdActivationReconciled:
+    """Phase 25 (D25-10): METHODOLOGY reflects the post-activation mixed deployed set."""
+
+    def test_cross_links_activation_readout(self):
+        """METHODOLOGY cross-links ACTIVATION-READOUT.md for the Phase-25 activation."""
+        content = _read_methodology_md()
+        assert "ACTIVATION-READOUT.md" in content, (
+            "METHODOLOGY.md should cross-link ACTIVATION-READOUT.md (the activation record)"
+        )
+
+    def test_records_retained_ou(self):
+        """METHODOLOGY records the honest-refusal outcome (O/U retained on v1.0)."""
+        content = _read_methodology_md()
+        assert "RETAINED" in content, (
+            "METHODOLOGY.md should record that O/U retained v1.0 (the honest-refusal outcome)"
+        )
+
 
 class TestStaleDocsRemoved:
     """The six stale docs/*.md and the docs/ directory must be gone (D-01/D-04).

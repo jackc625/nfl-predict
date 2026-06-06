@@ -97,3 +97,68 @@ class TestPipelineMdAnchors:
         assert "/health" in content, (
             "PIPELINE.md Stage 7 missing health endpoint: /health"
         )
+
+
+class TestPipelineMdPromoteStage:
+    """Phase 25 (D25-16): the Promote stage + the corrected stage count + the stale
+    stage-3 latest.json claim removal must stay in lockstep with the doc.
+
+    Phase 25 activated the first gated production swap. Three drift regressions are
+    guarded here:
+
+    1. PIPELINE.md now documents **8 stages** (a Promote stage was inserted between
+       Train and Backtest); the old "7 stages" count must not reappear.
+    2. The Promote stage exists and names its canonical command + the sole per-key
+       swapper (``update_manifest``).
+    3. The stale stage-3 claim that Train "Produces ... artifacts/latest.json
+       manifest" is GONE. Since Plan 24-01, ``save_model_artifact`` defaults
+       ``update_latest=False`` and the trainer never overrides it, so training writes
+       versioned candidate dirs but never the manifest. Re-introducing the claim that
+       training produces ``latest.json`` would be a false claim (new finding #4).
+    """
+
+    def test_eight_stage_count_present(self):
+        """The corrected 8-stage count is documented and the old 7-stage count is gone."""
+        content = _read_pipeline_md()
+        assert "8 stages" in content, (
+            "PIPELINE.md missing the corrected '8 stages' count"
+        )
+        assert "8 canonical stages" in content, (
+            "PIPELINE.md missing the corrected '8 canonical stages' heading"
+        )
+        assert "7 stages" not in content, (
+            "PIPELINE.md still carries the stale '7 stages' count"
+        )
+        assert "7 canonical stages" not in content, (
+            "PIPELINE.md still carries the stale '7 canonical stages' heading"
+        )
+
+    def test_promote_stage_present(self):
+        """D25-16 — a Promote stage with its canonical command + sole swapper is present."""
+        content = _read_pipeline_md()
+        assert "### 4. Promote" in content, (
+            "PIPELINE.md missing the '### 4. Promote' stage"
+        )
+        assert "scripts.promote_models --promote" in content, (
+            "PIPELINE.md Promote stage missing the canonical --promote command"
+        )
+        assert "update_manifest" in content, (
+            "PIPELINE.md Promote stage missing the sole per-key swapper update_manifest"
+        )
+
+    def test_train_no_longer_claims_it_produces_latest_json(self):
+        """new finding #4 — the stale 'stage 3 Train produces latest.json' claim is gone.
+
+        Training does not write the manifest (update_latest=False since Plan 24-01).
+        The exact stale phrase that asserted otherwise must not survive.
+        """
+        content = _read_pipeline_md()
+        stale_claim = "model directories plus the\n  `artifacts/latest.json` manifest"
+        assert stale_claim not in content, (
+            "PIPELINE.md Stage 3 still claims training produces artifacts/latest.json "
+            "(false since Plan 24-01: save_model_artifact defaults update_latest=False)"
+        )
+        assert "update_latest=False" in content, (
+            "PIPELINE.md Stage 3 should state training defaults update_latest=False "
+            "(it writes candidate dirs only, never the manifest)"
+        )

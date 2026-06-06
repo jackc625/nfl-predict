@@ -71,8 +71,11 @@ The SINGLE consolidated registry of items knowingly deferred at the v2.1 close. 
 one-line pointer to its source doc + anchor -- RECORD ONLY, NOT a fix and NOT a
 re-assertion. Every item here STAYS deferred in this milestone (D-07).
 
-- See `MODEL-DIAGNOSIS.md` DIAG-05: gated re-fit of WP/ATS on canonical gold = a future
-  model-improvement milestone.
+- See `MODEL-DIAGNOSIS.md` DIAG-05: the gated re-fit of WP/ATS on canonical gold was the
+  recommended future model-improvement work -- it has since been EXECUTED in v3.0 Phase 25
+  (WP + ATS activated through the per-target non-regression gate; O/U re-fit honestly
+  refused and retained on v1.0). No longer deferred; the activation record is
+  `ACTIVATION-READOUT.md`.
 - See `AUTOMATION.md` S10 ALERT-WIRING: email + Slack inert (console/log only); 3-part code
   remedy deferred.
 - See `AUDIT-REPORT.md`: 2025 ingested through ~wk4 then frozen; backfill deferred to the
@@ -96,6 +99,9 @@ re-assertion. Every item here STAYS deferred in this milestone (D-07).
 - **`MODEL-DIAGNOSIS.md`** -- the Phase 22 honest accuracy diagnosis (per-target verdict +
   the DIAG-05 production-vs-backtest mismatch and gated-re-fit recommendation this registry
   points to). The DOC-03 hard-required link.
+- **`ACTIVATION-READOUT.md`** -- the v3.0 Phase-25 activation record: the gated re-fit that
+  executed the DIAG-05 recommendation (WP + ATS activated, O/U retained on v1.0), with
+  per-target CLV before/after and the pre/post manifest state.
 - **`AUDIT-REPORT.md`** -- the Phase 20 data & feature correctness audit (AUDIT-01..05 PASS,
   the FIX-01 fixed cluster, and the deferred F-* findings + 2025 gap).
 - **`AUTOMATION.md`** -- the Phase 21 Friday-automation explanation (verified end-to-end +

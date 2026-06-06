@@ -78,13 +78,18 @@ complexity -- informational only), in-game / real-time predictions,
 player props, DFS optimization, multi-user access, native mobile apps.
 None of these exist in the codebase.
 
-**What is in code but not fully serving production.** Production currently
-runs the v1.0 pre-Elo models with the static blend, except O/U, which
-serves the adopted dynamic blend (D-19). The v2.0 retrain meant to adopt
-the new Elo gold failed per-target gating (D-17), so WP/ATS retain the
-v1.0 artifacts. See "Current Limitations" and `MODEL-DIAGNOSIS.md`, which
-quantifies this production-vs-backtest mismatch and recommends a future
-gated re-fit.
+**What serves production now (post Phase-25 gated activation).** WP and ATS
+serve re-fit models trained on the canonical Elo gold -- they passed the
+per-target non-regression deploy gate in Phase 25 (ATS via one documented
+fix-cycle), so they were promoted through the gate (D25-18). O/U RETAINED
+the v1.0 pre-Elo model: its re-fit failed the gate and was honestly refused
+(D25-14) because the v1.0 O/U carries a stronger line-CLV edge the
+non-regression floor protects. The dynamic blend (D-19) is live for all three
+targets. The v2.0 retrain that originally failed gating (D-17) is the history
+that motivated the hardened gate; the Phase-25 activation is recorded in
+`ACTIVATION-READOUT.md` (per-target CLV before/after + the deployed/retained
+2x2). See also "Current Limitations" and `MODEL-DIAGNOSIS.md`, the frozen v2.1
+diagnosis that recommended this gated re-fit.
 
 ---
 
@@ -287,9 +292,11 @@ any prediction is reproducible given the same input snapshot.
 
 `models/prediction_pipeline.py` imports *only* `load_model_artifact` — no
 trainer classes on the prediction path. The manifest at `artifacts/latest.json`
-points at the production versions; on 2026-04-16 those are
-`wp_20260327_114739`, `ats_20260326_163724`, `ou_20260326_163930`, and
-`blend_20260324_023118`.
+points at the production versions; after the Phase-25 gated activation those are
+`wp_20260605_215552` (re-fit, activated), `ats_20260605_220128` (re-fit, activated
+via fix-cycle), `ou_20260326_163930` (v1.0, retained -- gate refused the re-fit),
+and `blend_dynamic_20260606_020635`. The per-target before/after and the pre-swap
+mapping are in `ACTIVATION-READOUT.md`.
 
 ---
 
@@ -571,14 +578,18 @@ the architecture is kept deployment-friendly so that work stays small.
 
 ## Current Limitations
 
-1. **v2.0 retrain did not pass gating.** The v2.0 tuning pass produced
-   new candidate artifacts that failed per-target gating (D-17), so
-   production continues to run the v1.0 WP/ATS models with the static
-   blend (O/U serves the adopted dynamic blend, D-19).
-   `DynamicBlendWeights` is fully implemented in code and under test.
-   The v2.1 accuracy diagnosis quantifies this production-vs-backtest
-   mismatch and recommends a future gated re-fit -- see
-   `MODEL-DIAGNOSIS.md` (DIAG-05) and `STATE-OF-SYSTEM.md`.
+1. **O/U still serves the v1.0 model (gated re-fit honestly refused it).**
+   In Phase 25, WP and ATS were re-fit on the canonical Elo gold and
+   promoted through the per-target non-regression deploy gate (ATS via one
+   documented fix-cycle); O/U's re-fit FAILED the gate and was retained on
+   the v1.0 pre-Elo model -- a more-accurate O/U regressor predicts totals
+   closer to the market, shrinking its line-CLV below the v1.0 edge the
+   non-regression floor protects (honest refusal, D25-14). The dynamic blend
+   (D-19) is live for all three targets. The earlier v2.0 retrain that
+   failed gating on every target (D-17) is the history that motivated the
+   hardened gate. See `ACTIVATION-READOUT.md` for the per-target activation
+   record and `MODEL-DIAGNOSIS.md` (DIAG-05) / `STATE-OF-SYSTEM.md` for the
+   frozen v2.1 diagnosis that recommended this re-fit.
 2. **Single-worker concurrency envelope.** The shared DuckDB connection
    and module-level `TTLCache` require `--workers 1`. Running multiple
    workers would invalidate those invariants. This is documented in

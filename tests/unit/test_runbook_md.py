@@ -52,10 +52,17 @@ class TestRunbookMdExists:
 
 
 class TestRunbookMdOperations:
-    """All 8 common operations (DOC-01) must be documented."""
+    """All 10 common operations (DOC-01) must be documented.
 
-    def test_documents_all_eight_operations(self):
-        """Each of the 8 operations is documented by its numbered section heading.
+    Phase 25 (D25-16/17) inserted two operations to match the 8-stage PIPELINE
+    order and the new rollback path: Promote (operation 4, between Train and
+    Backtest) and Rollback (operation 9, reversing a Promote). Run automation
+    renumbered from 8 to 10. The heading anchors below are updated in lockstep
+    with that renumber (Pitfall 5).
+    """
+
+    def test_documents_all_ten_operations(self):
+        """Each of the 10 operations is documented by its numbered section heading.
 
         Anchoring on the ``### N.`` operation headings (instead of a bare verb
         like ``backtest`` that also appears in cross-references, the architecture
@@ -68,11 +75,13 @@ class TestRunbookMdOperations:
             "### 1. Ingest",
             "### 2. Build features",
             "### 3. Train",
-            "### 4. Backtest",
-            "### 5. Predict",
-            "### 6. Build cache",
-            "### 7. Serve",
-            "### 8. Run automation",
+            "### 4. Promote models",
+            "### 5. Backtest",
+            "### 6. Predict",
+            "### 7. Build cache",
+            "### 8. Serve",
+            "### 9. Rollback",
+            "### 10. Run automation",
         )
         missing = [heading for heading in operation_headings if heading not in content]
         assert not missing, f"RUNBOOK.md missing operation sections: {missing}"
@@ -89,10 +98,12 @@ class TestRunbookMdOperations:
             "ingest": "scripts/ingest_games.py",
             "build features": "scripts/build_features.py",
             "train": "scripts/train_models.py",
+            "promote": "scripts.promote_models --promote",
             "backtest": "scripts/run_backtest.py",
             "predict": "scripts/generate_current_week_predictions.py",
             "build cache": "scripts/populate_cache.py",
             "serve": "uvicorn api.main:app",
+            "rollback": "from models.artifacts import update_manifest",
             "automation": "scripts/friday_pipeline.py",
         }
         missing = [
@@ -164,3 +175,56 @@ class TestRunbookMdNoStaleReferences:
         )
         present = [token for token in forbidden if token in content]
         assert not present, f"RUNBOOK.md references deleted items: {present}"
+
+
+class TestRunbookMdBootstrapAndPromote:
+    """Phase 25 (D25-16/17): the corrected clean-checkout bootstrap + the Promote/
+    Rollback operations must stay in lockstep with the doc.
+
+    Three drift regressions are guarded:
+
+    1. The FALSE "the bundled v1.0 production artifacts ARE present in the checkout"
+       claim is GONE (``artifacts/`` is fully gitignored -- a fresh checkout has no
+       model dirs and no ``latest.json``; RESEARCH A1 / DIAGNOSIS-NOTES.md).
+    2. The corrected setup documents the sanctioned first-manifest bootstrap (a
+       one-time ``update_manifest`` per target after the first train) so a clean
+       checkout has a written path to its first ``artifacts/latest.json``.
+    3. The Promote + Rollback operations name their real surfaces (the ``--promote``
+       gate command and the ``update_manifest`` per-key swapper).
+    """
+
+    def test_false_bundled_artifacts_claim_absent(self):
+        """The stale 'bundled v1.0 artifacts ARE present' claim must be gone (RESEARCH A1)."""
+        content = _read_runbook_md()
+        assert "production\n  artifacts ARE present in the checkout" not in content, (
+            "RUNBOOK.md still carries the false 'bundled artifacts ARE present' claim"
+        )
+        assert "artifacts ARE present in the checkout" not in content, (
+            "RUNBOOK.md still carries the false 'artifacts ARE present in the checkout' claim"
+        )
+
+    def test_corrected_bootstrap_path_present(self):
+        """The sanctioned first-manifest bootstrap (one-time update_manifest) is documented."""
+        content = _read_runbook_md()
+        assert "from models.artifacts import update_manifest" in content, (
+            "RUNBOOK.md Setup missing the one-time update_manifest bootstrap call"
+        )
+        assert "update_latest=False" in content, (
+            "RUNBOOK.md Setup should explain training defaults update_latest=False "
+            "(why a manual first-manifest bootstrap is needed)"
+        )
+        assert "fully gitignored" in content or "ALL gitignored" in content, (
+            "RUNBOOK.md Setup should state artifacts/ is gitignored on a fresh checkout"
+        )
+
+    def test_promote_and_rollback_operations_present(self):
+        """The Promote (D25-16) + Rollback (D25-17) operations name their real surfaces."""
+        content = _read_runbook_md()
+        assert "scripts.promote_models --promote" in content, (
+            "RUNBOOK.md missing the Promote operation's canonical --promote command"
+        )
+        assert "Rollback" in content, "RUNBOOK.md missing the Rollback operation"
+        assert "ACTIVATION-READOUT.md" in content, (
+            "RUNBOOK.md Rollback should reference the pre-swap manifest record in "
+            "ACTIVATION-READOUT.md"
+        )
