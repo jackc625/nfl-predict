@@ -272,6 +272,117 @@ def test_wp_calibration_in_gate() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Calibration noise band honored (D25-02) -- Plan 25-01
+# ---------------------------------------------------------------------------
+
+
+def _wp_calibration_candidate(
+    ece: float, brier: float, *, accuracy: float = 0.667
+) -> dict:
+    """A WP candidate bundle that passes the CLV floor, parameterized on ECE/Brier.
+
+    Uses an exact-zero-mean delta and an exact-zero-mean per-season delta so the non_regression
+    CLV floor PASSES deterministically -- isolating the calibration gate as the only verdict
+    driver. The absolute candidate CLV may be anything; here it is ~0.
+    """
+    rng = np.random.default_rng(31)
+    cand_clv = rng.normal(0.0, 0.2, 1120)
+    base_clv = rng.normal(0.0, 0.2, 1120)
+    delta = _demeaned(cand_clv - base_clv)
+    per_season_delta = {
+        s: _demeaned(rng.normal(0.0, 0.2, 280)) for s in (2021, 2022, 2023, 2024)
+    }
+    return {
+        "clv_values": cand_clv,
+        "baseline_clv_values": base_clv,
+        "clv_delta_values": delta,
+        "per_season_clv_delta_values": per_season_delta,
+        "per_season": {s: _sig(per_season_delta[s]) for s in per_season_delta},
+        "accuracy": accuracy,
+        "ece": ece,
+        "brier_score": brier,
+    }
+
+
+def test_calibration_band_sub_noise_passes_over_band_fails() -> None:
+    """25-01 (D25-02): the WP calibration gate honors a config-driven non-zero noise band.
+
+    An ECE increase WITHIN the band PASSES (where the legacy 0.0 tolerance would have failed);
+    an ECE increase clearly OVER the band FAILS. The band is parameterized to a small non-zero
+    value IN THIS in-memory config -- it does NOT depend on the committed gate.toml (which stays
+    0.0 until Plan 25-02 lands the bootstrap-justified value). The non_regression CLV floor is
+    isolated to pass so the calibration verdict is the only driver.
+    """
+    band = 0.005  # a small non-zero noise band, set only in-memory for this test
+    cfg = _cfg_with(wp_ece_max_increase=band, wp_brier_max_increase=band)
+    baseline = {"accuracy": 0.667, "ece": 0.02, "brier_score": 0.21}
+
+    # ECE increase of +0.002 (< 0.005 band) -> PASS (would FAIL under the old 0.0 tolerance).
+    sub_noise = gate.evaluate_target(
+        "wp", _wp_calibration_candidate(ece=0.022, brier=0.21), baseline, cfg
+    )
+    assert sub_noise["passed"] is True, sub_noise["reasons"]
+
+    # ECE increase of +0.05 (>> 0.005 band) -> FAIL (a genuine calibration regression, Pitfall 4).
+    over_band = gate.evaluate_target(
+        "wp", _wp_calibration_candidate(ece=0.07, brier=0.21), baseline, cfg
+    )
+    assert over_band["passed"] is False, over_band["reasons"]
+    assert any("ece" in r.lower() for r in over_band["reasons"]), over_band["reasons"]
+
+
+def test_calibration_band_read_from_config_not_hardcoded() -> None:
+    """25-01 (D25-02): the same ECE increase flips verdict when the config band changes.
+
+    Proves the tolerance is READ from gate.secondary.wp_ece_max_increase, not hardcoded -- the
+    identical candidate FAILS under a 0.0 band and PASSES under a 0.01 band. A revert to a
+    hardcoded 0.0-only tolerance (or a hardcoded wide band) would make one of these flip.
+    """
+    baseline = {"accuracy": 0.667, "ece": 0.02, "brier_score": 0.21}
+    candidate = _wp_calibration_candidate(ece=0.025, brier=0.21)  # +0.005 ECE increase
+
+    # Under a 0.0 band -> a +0.005 increase FAILS.
+    zero_band = _cfg_with(wp_ece_max_increase=0.0, wp_brier_max_increase=0.0)
+    fail = gate.evaluate_target("wp", candidate, baseline, zero_band)
+    assert fail["passed"] is False, fail["reasons"]
+
+    # Under a 0.01 band -> the SAME +0.005 increase PASSES (the band is config-driven).
+    wide_band = _cfg_with(wp_ece_max_increase=0.01, wp_brier_max_increase=0.01)
+    ok = gate.evaluate_target("wp", candidate, baseline, wide_band)
+    assert ok["passed"] is True, ok["reasons"]
+
+
+def test_calibration_brier_band_honored() -> None:
+    """25-01 (D25-02): the Brier noise band is honored independently of ECE.
+
+    A Brier increase within the band passes; over the band fails -- proving wp_brier_max_increase
+    is read and compared (not only ECE).
+    """
+    band = 0.005
+    baseline = {"accuracy": 0.667, "ece": 0.02, "brier_score": 0.21}
+
+    sub = _cfg_with(wp_ece_max_increase=band, wp_brier_max_increase=band)
+    within = gate.evaluate_target(
+        "wp", _wp_calibration_candidate(ece=0.02, brier=0.213), baseline, sub
+    )
+    assert within["passed"] is True, within["reasons"]
+
+    over = gate.evaluate_target(
+        "wp", _wp_calibration_candidate(ece=0.02, brier=0.25), baseline, sub
+    )
+    assert over["passed"] is False, over["reasons"]
+    assert any("brier" in r.lower() for r in over["reasons"]), over["reasons"]
+
+
+def test_test_cfg_carries_floor_mode() -> None:
+    """25-01: the in-memory _TEST_CFG includes floor_mode so the unit tests exercise the revised
+    evaluate_target path without config/gate.toml (the new-mode path is exercised by default).
+    """
+    assert "floor_mode" in _TEST_CFG["gate"]
+    assert _TEST_CFG["gate"]["floor_mode"] == "non_regression"
+
+
+# ---------------------------------------------------------------------------
 # Near-zero non-degenerate floor (review concern #9)
 # ---------------------------------------------------------------------------
 

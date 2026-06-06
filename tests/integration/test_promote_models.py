@@ -162,21 +162,30 @@ def tmp_stage(tmp_path: Path) -> Path:
 
 
 def _negative_bundle(target: str) -> dict[str, Any]:
-    """A deterministically significantly-NEGATIVE bundle for every target (forces gate FAIL).
+    """A deterministically gate-FAILING bundle for every target.
 
-    clv_values is a constant -0.5 over 280 games: clv_significance reports mean<0 with a tiny
-    p (zero variance gives an extreme t), so the CLV floor FAILS. per_season carries the same
-    significantly-negative array for every holdout season (per-season-must-pass also fails). The
-    secondary metrics are set clearly WORSE than the frozen v1.0 baseline so even a hypothetical
-    floor pass could not rescue the target.
+    Under the committed floor_mode=non_regression (D25-01) the gate consumes the paired
+    candidate-minus-baseline DELTA. To force a FAIL the delta is a constant -0.5 over 280 games
+    (significantly WORSE than v1.0): clv_significance reports mean<0 with a tiny p, so the pooled
+    AND per-season non-regression floor FAIL. clv_values carries the same array (so the
+    absolute-vs-zero verdict computation is well-defined) and the secondary metrics are set
+    clearly WORSE than the frozen v1.0 baseline so even a hypothetical floor pass could not
+    rescue the target. (The legacy absolute floor also fails on this clv_values.)
     """
     neg = np.full(280, -0.5)
     pooled = deploy_gate.clv_significance(neg)
     per_season = {
         s: deploy_gate.clv_significance(neg) for s in (2021, 2022, 2023, 2024)
     }
+    per_season_delta = {s: np.full(280, -0.5) for s in (2021, 2022, 2023, 2024)}
     bundle: dict[str, Any] = {
         "clv_values": neg,
+        # floor_mode=non_regression delta keys: a significantly-negative delta -> FAIL. (These
+        # mirror the keys Plan 25-02 populates from the real merge-on-game_id pairing; here they
+        # are forced synthetically to drive the hermetic gate verdict.)
+        "baseline_clv_values": np.zeros(280),
+        "clv_delta_values": neg,
+        "per_season_clv_delta_values": per_season_delta,
         "mean": pooled["mean"],
         "t": pooled["t"],
         "p": pooled["p"],
@@ -194,11 +203,13 @@ def _negative_bundle(target: str) -> dict[str, Any]:
 
 
 def _passing_bundle(target: str) -> dict[str, Any]:
-    """A deterministically PASSING bundle (small-positive CLV, at-or-better secondary).
+    """A deterministically gate-PASSING bundle (not worse than v1.0, at-or-better secondary).
 
-    clv_values is a tiny-positive gaussian (mean approx +0.05, large p): not significantly
-    negative, so the floor passes; every season uses the same passing array. Secondary metrics
-    are set at-or-better than the frozen v1.0 baseline so the secondary/calibration gates pass.
+    Under the committed floor_mode=non_regression (D25-01) the gate consumes the paired
+    candidate-minus-baseline DELTA. To force a PASS the delta is pinned to an EXACT zero-mean
+    array (candidate ~= v1.0 baseline) so clv_significance reports mean 0 / large p -> the pooled
+    AND per-season non-regression floor PASS. Secondary metrics are at-or-better than the frozen
+    v1.0 baseline so the secondary/calibration gates pass.
     """
     rng = np.random.default_rng(24)
     pos = rng.normal(0.05, 0.2, 280)
@@ -207,8 +218,18 @@ def _passing_bundle(target: str) -> dict[str, Any]:
         s: deploy_gate.clv_significance(rng.normal(0.05, 0.2, 280))
         for s in (2021, 2022, 2023, 2024)
     }
+
+    def _zero_mean(n: int) -> np.ndarray:
+        arr = rng.normal(0.0, 0.2, n)
+        return arr - float(np.mean(arr))  # exact mean 0 -> deterministically not-worse
+
+    delta = _zero_mean(280)
+    per_season_delta = {s: _zero_mean(280) for s in (2021, 2022, 2023, 2024)}
     bundle: dict[str, Any] = {
         "clv_values": pos,
+        "baseline_clv_values": pos - delta,
+        "clv_delta_values": delta,
+        "per_season_clv_delta_values": per_season_delta,
         "mean": pooled["mean"],
         "t": pooled["t"],
         "p": pooled["p"],
