@@ -553,6 +553,71 @@ def test_swap_preserves_blend_key(
     assert after_manifest.get("ou") == before_ou, "failing OU must not swap"
 
 
+@pytest.mark.integration
+def test_swap_copies_passing_artifact_into_production(
+    tmp_artifacts: Path, tmp_stage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """25-03 REGRESSION: a passing target's artifact dir must be RESOLVABLE in production.
+
+    Bug (Phase 25 armed run): STEP 4 rewrote production ``latest.json`` to point at the staged
+    version but NEVER copied the staged artifact dir into the production dir. With the real run's
+    distinct ``--staging-dir artifacts_staging`` vs ``--artifacts-dir artifacts``, the deployed
+    version then resolved to ``artifacts/{version}`` -- a dir that only existed under staging --
+    so ``load_model_artifact(target)`` raised ``FileNotFoundError``: production was broken.
+
+    This asserts the fix: after a ``--promote`` swap (WP pass, ATS/OU fail) with a staging dir
+    DISTINCT from the production dir, the passing target's staged artifact dir is copied into the
+    production dir (so the manifest pointer resolves) and the copy is byte-identical to the
+    gate-scored staging artifact (D25-06). The failing targets' dirs are NOT copied.
+    """
+
+    def _partial(target: str) -> dict[str, Any]:
+        return _passing_bundle(target) if target == "wp" else _negative_bundle(target)
+
+    _install_hermetic_stubs(monkeypatch, _partial)
+
+    # Seed a recognizable payload in the staged WP dir so we can assert byte-identity post-copy.
+    staged_wp = tmp_stage / _STUB_DIRS["wp"]
+    (staged_wp / "model.pkl").write_bytes(b"wp-model-bytes")
+    (staged_wp / "metadata.json").write_text('{"target": "wp"}')
+
+    # Sanity: production and staging are DISTINCT roots (the bug's trigger condition).
+    assert tmp_artifacts.resolve() != tmp_stage.resolve()
+
+    rc = promote.main(
+        [
+            "--promote",
+            "--artifacts-dir",
+            str(tmp_artifacts),
+            "--staging-dir",
+            str(tmp_stage),
+            "--skip-train",
+        ]
+    )
+    assert rc != 0, "ATS/OU failed the gate, so the run must exit non-zero"
+
+    # The passing WP target's artifact dir is now PRESENT in production (the manifest pointer
+    # resolves) -- this is the assertion the pre-fix code failed.
+    prod_wp = tmp_artifacts / _STUB_DIRS["wp"]
+    assert prod_wp.is_dir(), (
+        f"the passing WP staged dir must be copied into production at {prod_wp} so the "
+        "manifest pointer resolves (Phase 25 armed-run bug)"
+    )
+    # The production copy is byte-identical to the gate-scored staging artifact (D25-06).
+    assert (prod_wp / "model.pkl").read_bytes() == b"wp-model-bytes", (
+        "the promoted artifact must be byte-identical to the gate-scored staging artifact"
+    )
+    assert (prod_wp / "metadata.json").read_text() == '{"target": "wp"}'
+
+    # The failing targets were NOT copied into production (only passing targets promote).
+    assert not (tmp_artifacts / _STUB_DIRS["ats"]).exists(), (
+        "failing ATS must not be copied"
+    )
+    assert not (tmp_artifacts / _STUB_DIRS["ou"]).exists(), (
+        "failing OU must not be copied"
+    )
+
+
 # ---------------------------------------------------------------------------
 # D24-11a: the dry-run prints the per-target 2x2 readout (the acceptance artifact)
 # ---------------------------------------------------------------------------

@@ -235,6 +235,63 @@ def _clear_staging_dir(staging_dir: Path) -> None:
         stale_manifest.unlink()
 
 
+def _promote_artifact_dir(
+    target: str,
+    version: str,
+    staging_dir: Path,
+    artifacts_dir: Path,
+) -> None:
+    """Copy a passing target's staged artifact dir into production (byte-identical, D25-06).
+
+    ``update_manifest`` only rewrites the per-target POINTER in production ``latest.json``; it
+    does NOT relocate the artifact files. The candidate was trained into -- and gate-scored from
+    -- ``staging_dir/{version}`` (STEP 1/STEP 2 both use ``artifacts_dir=staging_dir``). When the
+    staging dir differs from the production dir (the real run uses ``artifacts_staging`` vs
+    ``artifacts``), pointing production ``latest.json`` at ``{version}`` without copying the dir
+    leaves the deployed artifact UNRESOLVABLE: ``load_model_artifact(target)`` resolves
+    ``artifacts/{version}`` and raises ``FileNotFoundError`` because the files only exist under
+    staging. This copies the GATE-SCORED staging dir verbatim into production BEFORE the manifest
+    swap, so the deployed artifact is byte-identical to the one the gate scored (D25-06) and is
+    resolvable by every consumer.
+
+    The copy is verbatim (``shutil.copytree``) -- no re-train, no re-serialize, so byte-identity is
+    preserved. When staging and production are the SAME dir (e.g. ``--skip-train`` against the
+    production dir, or a test that stages directly into production) the artifact is already in
+    place and this is a no-op. A pre-existing production dir at the same version (re-promote of an
+    identical version) is left untouched -- the version stamp makes a collision astronomically
+    unlikely, and overwriting an in-place artifact would be the no-op staging==production case.
+
+    Args:
+        target: One of "wp", "ats", "ou" (for the log line).
+        version: The staged artifact dir name to promote (e.g. ``wp_20260605_215552``).
+        staging_dir: The staging artifacts root the candidate was trained/scored from.
+        artifacts_dir: The production artifacts root (the swap target).
+
+    Raises:
+        FileNotFoundError: If the staged artifact dir does not exist (the gate scored it, so its
+            absence here is an integrity failure, not a routine miss).
+    """
+    src = staging_dir / version
+    dst = artifacts_dir / version
+    if src.resolve() == dst.resolve():
+        # staging == production: the gate-scored artifact is already in place (no-op).
+        return
+    if not src.is_dir():
+        msg = (
+            f"Staged artifact dir for '{target}' not found at '{src}'; cannot promote it into "
+            f"production. The gate scored this exact dir, so its absence is an integrity failure."
+        )
+        raise FileNotFoundError(msg)
+    if dst.exists():
+        # Same version already present in production (re-promote of an identical stamp) -- the
+        # gate-scored artifact is effectively in place; leave it untouched.
+        return
+    import shutil
+
+    # Verbatim copy preserves byte-identity with the gate-scored staging artifact (D25-06).
+    shutil.copytree(src, dst)
+
+
 def _warn_skip_train_staleness(staging_dir: Path, *, promote: bool) -> None:
     """Print a loud staleness warning for each staged candidate under --skip-train.
 
@@ -892,6 +949,16 @@ def main(argv: list[str] | None = None) -> int:
     any_fail = bool(failing)
     if args.promote:
         for target in passing:
+            # Copy the GATE-SCORED staged artifact dir into production FIRST so the manifest
+            # pointer resolves to a real, byte-identical artifact (D25-06). update_manifest only
+            # rewrites the pointer; without this copy the deployed version would be unresolvable
+            # when staging_dir != artifacts_dir (the real run uses artifacts_staging vs artifacts).
+            _promote_artifact_dir(
+                target,
+                staged_version[target],
+                args.staging_dir,
+                args.artifacts_dir,
+            )
             # The SOLE production swapper: per-key update preserves blend + failing targets.
             update_manifest(
                 target, staged_version[target], artifacts_dir=args.artifacts_dir
