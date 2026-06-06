@@ -77,13 +77,19 @@ evaluation = "pooled"
 # better for accuracy.
 wp_accuracy_max_drop = 0.01        # WP candidate accuracy may not drop more than this below baseline (was _WP_ACCURACY_DROP_THRESHOLD).
 regression_mae_max_increase = 0.0  # ATS/OU candidate MAE may not exceed baseline MAE at all (MAE must not increase).
-# D25-02 calibration noise band. These two tolerances stay at 0.0 in THIS plan (Plan 25-01) --
-# noise-band tolerance pending D25-02 bootstrap (Plan 25-02) -- value held at 0.0 until the
-# bootstrap lands. Plan 25-02 replaces the 0.0 with the bootstrap-justified band (a documented
-# decision rule on ~1087 games, NOT a blind loosening: WP's core value IS calibration). Do NOT
-# widen the band here.
-wp_ece_max_increase = 0.0          # WP candidate ECE may not exceed baseline ECE (calibration must not regress) -- noise-band tolerance pending D25-02 bootstrap (Plan 25-02), value held at 0.0 until the bootstrap lands.
-wp_brier_max_increase = 0.0        # WP candidate Brier may not exceed baseline Brier (calibration must not regress) -- noise-band tolerance pending D25-02 bootstrap (Plan 25-02), value held at 0.0 until the bootstrap lands.
+# D25-02 calibration noise band (SET by Plan 25-02 from the bootstrap diagnosis -- see
+# .planning/phases/25-activate-the-gains-gated-wp-ats-re-fit/DIAGNOSIS-NOTES.md). The Plan 25-01
+# placeholders (0.0) are replaced with a bootstrap-justified tolerance, NOT a blind loosening
+# (Pitfall 4): a paired bootstrap (B=2000) of the candidate-minus-v1.0 ECE/Brier delta on the
+# ~1087-game 2021-2024 holdout found BOTH deltas statistically indistinguishable from zero --
+# ECE delta +0.0068 with 95% CI [-0.012, +0.035]; Brier delta +0.0019 with 95% CI [-0.003, +0.007]
+# (zero inside both CIs). The bands below sit at ~1 bootstrap-std of the delta: they admit the
+# observed sub-noise jitter while still REJECTING a genuine calibration regression of 2+ std
+# (WP's core value IS calibration -- when it says 70% it should win ~70%). The bands are NOT wide
+# enough to admit a visible regression. A genuine regression (delta outside the noise band) still
+# fails the WP gate and would route to the Plan 25-03 fix-cycle.
+wp_ece_max_increase = 0.0125       # WP candidate ECE may rise at most this above baseline -- ~1 bootstrap-std of the cand-v1.0 ECE delta (95% CI [-0.012, +0.035] includes 0); larger = genuine regression (D25-02, see DIAGNOSIS-NOTES.md).
+wp_brier_max_increase = 0.0030     # WP candidate Brier may rise at most this above baseline -- ~1.2 bootstrap-std of the cand-v1.0 Brier delta (95% CI [-0.003, +0.007] includes 0); larger = genuine regression (D25-02, see DIAGNOSIS-NOTES.md).
 
 # =============================================================================
 # FROZEN BASELINE TABLES

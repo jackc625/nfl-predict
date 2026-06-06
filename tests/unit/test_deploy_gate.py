@@ -507,17 +507,29 @@ def test_validate_gate_config_requires_calibration_band_keys() -> None:
         gate.validate_gate_config(missing_band)
 
 
-def test_committed_calibration_band_is_zero_placeholder() -> None:
-    """25-01: the committed gate.toml calibration band is STILL 0.0 after this plan.
+def test_committed_calibration_band_is_bootstrap_justified() -> None:
+    """25-02 (D25-02): the committed gate.toml calibration band is the bootstrap-justified value.
 
-    D25-02 split: Plan 25-01 only introduces the validator requirement + a "pending Plan 25-02"
-    comment; the actual bootstrap-justified non-zero band is set by Plan 25-02. This test guards
-    against this plan implying a final non-zero band (Codex MEDIUM / Gemini LOW).
+    Plan 25-01 held wp_ece_max_increase / wp_brier_max_increase at the 0.0 placeholder; Plan 25-02
+    replaces them with the bootstrap-justified noise band (paired bootstrap on the ~1087-game
+    holdout: ECE delta +0.0068 with 95% CI [-0.012, +0.035]; Brier delta +0.0019 with 95% CI
+    [-0.003, +0.007] -- both indistinguishable from zero). The band sits at ~1 bootstrap-std: it is
+    a documented tolerance (NOT a blind loosening, Pitfall 4) -- non-zero but tight enough to reject
+    a genuine 2+ std regression. The value is traceable to DIAGNOSIS-NOTES.md via a config comment.
     """
     cfg = gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
     secondary = cfg["gate"]["secondary"]
-    assert secondary["wp_ece_max_increase"] == 0.0
-    assert secondary["wp_brier_max_increase"] == 0.0
+    # The Plan 25-02 bootstrap-justified band (no longer the 0.0 placeholder).
+    assert secondary["wp_ece_max_increase"] == 0.0125
+    assert secondary["wp_brier_max_increase"] == 0.0030
+    # Both bands are non-zero (the bootstrap diagnosis landed) but tight (well below a 2+ std band).
+    assert 0.0 < secondary["wp_ece_max_increase"] < 0.05
+    assert 0.0 < secondary["wp_brier_max_increase"] < 0.01
+    # Traceability: the band must cite DIAGNOSIS-NOTES.md so the bootstrap justification is findable.
+    raw = (REPO_ROOT / "config" / "gate.toml").read_text(encoding="utf-8")
+    assert "DIAGNOSIS-NOTES" in raw, (
+        "the calibration band must be traceable to DIAGNOSIS-NOTES.md via a comment"
+    )
 
 
 def test_committed_frozen_baseline_values_unchanged() -> None:
