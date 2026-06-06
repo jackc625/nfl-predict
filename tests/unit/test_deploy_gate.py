@@ -533,24 +533,27 @@ def test_committed_calibration_band_is_bootstrap_justified() -> None:
 
 
 def test_committed_frozen_baseline_values_unchanged() -> None:
-    """25-01: the frozen baseline VALUES in config/gate.toml are byte-unchanged by this plan.
+    """25-05: the frozen baseline VALUES in config/gate.toml match the D25-11 re-freeze.
 
-    D25-01 keeps the baseline VALUES untouched (only flags/comments added). A value-equality
-    assertion against the known frozen numbers (the DIAG-05 raw-prod anchors) guards against an
-    accidental hand-edit of a [baseline.*] table during the floor_mode change.
+    Plan 25-05 deliberately re-froze the baseline against the DEPLOYED incumbent
+    (owner-approved generator block-paste, D25-11): WP/ATS move to the activated re-fit
+    values; OU stays byte-identical (retained on v1.0, honest refusal D25-14). A
+    value-equality assertion against the re-frozen numbers guards against an accidental
+    hand-edit of a [baseline.*] table after the re-freeze.
     """
     cfg = gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
     baseline = cfg["baseline"]
-    # The DIAG-05 freshness anchors (Plan 24-03 frozen block).
-    assert baseline["wp"]["pooled"]["mean"] == pytest.approx(-0.05667940)
-    assert baseline["wp"]["pooled"]["accuracy"] == pytest.approx(0.66022827)
-    assert baseline["ats"]["pooled"]["mean"] == pytest.approx(-0.40523073)
-    assert baseline["ats"]["pooled"]["mae"] == pytest.approx(9.48065473)
+    # The D25-11 re-freeze anchors (deployed wp_20260605_215552 / ats_20260605_220128
+    # / retained v1.0 ou_20260326_163930).
+    assert baseline["wp"]["pooled"]["mean"] == pytest.approx(-0.04429612)
+    assert baseline["wp"]["pooled"]["accuracy"] == pytest.approx(0.66637401)
+    assert baseline["ats"]["pooled"]["mean"] == pytest.approx(-0.06845102)
+    assert baseline["ats"]["pooled"]["mae"] == pytest.approx(8.45712175)
     assert baseline["ou"]["pooled"]["mean"] == pytest.approx(1.10954411)
     assert baseline["ou"]["pooled"]["mae"] == pytest.approx(10.30555693)
     # A per-season anchor from each target to catch a season-table edit.
-    assert baseline["wp"]["season"][2024]["mean"] == pytest.approx(-0.06658854)
-    assert baseline["ats"]["season"][2023]["mean"] == pytest.approx(-0.77347971)
+    assert baseline["wp"]["season"][2024]["mean"] == pytest.approx(-0.05428974)
+    assert baseline["ats"]["season"][2023]["mean"] == pytest.approx(-0.67986029)
     assert baseline["ou"]["season"][2021]["mean"] == pytest.approx(-1.21316813)
 
 
