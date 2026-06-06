@@ -178,6 +178,10 @@ def _negative_bundle(target: str) -> dict[str, Any]:
         s: deploy_gate.clv_significance(neg) for s in (2021, 2022, 2023, 2024)
     }
     per_season_delta = {s: np.full(280, -0.5) for s in (2021, 2022, 2023, 2024)}
+    # Raw per-season candidate CLV arrays (WR-04): build_candidate_bundle ALWAYS populates
+    # per_season_clv_values, so the forced bundle must too -- otherwise _absolute_verdict falls
+    # back to per_season and the synthetic fixture silently diverges from the real bundle shape.
+    per_season_clv_values = dict.fromkeys((2021, 2022, 2023, 2024), neg)
     bundle: dict[str, Any] = {
         "clv_values": neg,
         # floor_mode=non_regression delta keys: a significantly-negative delta -> FAIL. (These
@@ -191,6 +195,7 @@ def _negative_bundle(target: str) -> dict[str, Any]:
         "p": pooled["p"],
         "n": pooled["n"],
         "per_season": per_season,
+        "per_season_clv_values": per_season_clv_values,
     }
     if target == "wp":
         # Clearly regressing vs frozen v1.0 (accuracy down, ECE/Brier up).
@@ -214,8 +219,14 @@ def _passing_bundle(target: str) -> dict[str, Any]:
     rng = np.random.default_rng(24)
     pos = rng.normal(0.05, 0.2, 280)
     pooled = deploy_gate.clv_significance(pos)
+    # Raw per-season candidate CLV arrays (WR-04): capture each season's raw array so the
+    # per_season significance bundles AND per_season_clv_values describe the SAME population,
+    # matching the build_candidate_bundle contract (it always populates per_season_clv_values).
+    per_season_clv_values = {
+        s: rng.normal(0.05, 0.2, 280) for s in (2021, 2022, 2023, 2024)
+    }
     per_season = {
-        s: deploy_gate.clv_significance(rng.normal(0.05, 0.2, 280))
+        s: deploy_gate.clv_significance(per_season_clv_values[s])
         for s in (2021, 2022, 2023, 2024)
     }
 
@@ -235,6 +246,7 @@ def _passing_bundle(target: str) -> dict[str, Any]:
         "p": pooled["p"],
         "n": pooled["n"],
         "per_season": per_season,
+        "per_season_clv_values": per_season_clv_values,
     }
     if target == "wp":
         # At-or-better than frozen v1.0 (accuracy >= baseline, ECE/Brier <= baseline).
