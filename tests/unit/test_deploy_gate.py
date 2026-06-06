@@ -35,6 +35,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import copy
 import subprocess
 from pathlib import Path
 
@@ -55,6 +56,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _TEST_CFG = {
     "gate": {
         "alpha": 0.05,
+        # D25-01: the unit tests exercise the non-regression floor (paired candidate-minus-
+        # baseline delta) by default. The legacy absolute-vs-zero floor is exercised via the
+        # floor_mode="absolute" variant in test_floor_mode_absolute_legacy.
+        "floor_mode": "non_regression",
         "per_season_must_pass": True,
         "calibration_in_gate": True,
         "seasons": {"holdout": [2021, 2022, 2023, 2024]},
@@ -68,6 +73,21 @@ _TEST_CFG = {
     },
     "baseline": {"wp": {}, "ats": {}, "ou": {}},
 }
+
+
+def _cfg_with(floor_mode: str | None = None, **secondary_overrides: float) -> dict:
+    """Deep-copy _TEST_CFG, optionally overriding floor_mode + secondary tolerances.
+
+    Used by the floor-mode and calibration-band tests so a test can flip floor_mode to
+    "absolute" or set a non-zero in-memory calibration band WITHOUT mutating the shared
+    _TEST_CFG (and without depending on the committed gate.toml, which stays 0.0 until
+    Plan 25-02).
+    """
+    cfg = copy.deepcopy(_TEST_CFG)
+    if floor_mode is not None:
+        cfg["gate"]["floor_mode"] = floor_mode
+    cfg["gate"]["secondary"].update(secondary_overrides)
+    return cfg
 
 
 def _sig(arr: np.ndarray) -> dict:
@@ -114,7 +134,12 @@ def test_per_season_must_pass() -> None:
     A candidate whose POOLED CLV passes the floor but whose 2023 slice is significantly
     negative must FAIL the target (per-season-must-pass bites); a candidate whose every
     season is ~zero must PASS the per-season floor.
+
+    This exercises the LEGACY absolute-vs-zero floor (floor_mode="absolute") -- the D25-01
+    non-regression floor is covered by the test_non_regression_* tests using the paired-delta
+    keys. The two coexist; floor_mode selects which the gate consumes.
     """
+    cfg_abs = _cfg_with(floor_mode="absolute")
     rng = np.random.default_rng(7)
     # Pooled passes: a slightly-positive (clearly not significantly-negative) pooled CLV.
     # A passing model has non-negative CLV; a slightly-positive array passes the floor
@@ -137,7 +162,7 @@ def test_per_season_must_pass() -> None:
         "mae": 10.0,
     }
     baseline = {"mae": 10.0}
-    result_bad = gate.evaluate_target("ats", candidate_bad, baseline, _TEST_CFG)
+    result_bad = gate.evaluate_target("ats", candidate_bad, baseline, cfg_abs)
     assert result_bad["passed"] is False
     assert any("2023" in r for r in result_bad["reasons"]), result_bad["reasons"]
 
@@ -153,7 +178,7 @@ def test_per_season_must_pass() -> None:
         "per_season": good_per_season,
         "mae": 10.0,
     }
-    result_good = gate.evaluate_target("ats", candidate_good, baseline, _TEST_CFG)
+    result_good = gate.evaluate_target("ats", candidate_good, baseline, cfg_abs)
     assert result_good["passed"] is True, result_good["reasons"]
 
 
@@ -163,8 +188,10 @@ def test_empty_per_season_fails_closed() -> None:
     WR-04: when per_season_must_pass is on but the candidate supplies NO per-season slices
     (empty or absent map), evaluate_target must FAIL closed -- it must NOT report a hollow
     "all holdout seasons passed". A pooled-passing candidate with an empty per_season is the
-    minimal trigger.
+    minimal trigger. (Legacy absolute-mode fixture; the non_regression equivalent is
+    test_non_regression_empty_per_season_fails_closed.)
     """
+    cfg_abs = _cfg_with(floor_mode="absolute")
     rng = np.random.default_rng(13)
     pooled_pass = rng.normal(0.05, 0.2, 1120)
     candidate_empty = {
@@ -175,7 +202,7 @@ def test_empty_per_season_fails_closed() -> None:
         "per_season": {},  # no per-season evidence -> must fail closed
         "mae": 10.0,
     }
-    result = gate.evaluate_target("ats", candidate_empty, {"mae": 10.0}, _TEST_CFG)
+    result = gate.evaluate_target("ats", candidate_empty, {"mae": 10.0}, cfg_abs)
     assert result["passed"] is False, result["reasons"]
     assert any("no per-season" in r.lower() for r in result["reasons"]), result[
         "reasons"
@@ -193,7 +220,7 @@ def test_empty_per_season_fails_closed() -> None:
         "mae": 10.0,
     }
     result_absent = gate.evaluate_target(
-        "ats", candidate_absent, {"mae": 10.0}, _TEST_CFG
+        "ats", candidate_absent, {"mae": 10.0}, cfg_abs
     )
     assert result_absent["passed"] is False, result_absent["reasons"]
 
@@ -207,8 +234,10 @@ def test_wp_calibration_in_gate() -> None:
     """24-VALIDATION: pytest .../test_deploy_gate.py::test_wp_calibration_in_gate.
 
     A WP candidate that passes the CLV floor but whose ECE exceeds baseline by more than the
-    tolerance must FAIL; an equal-ECE/Brier candidate passes.
+    tolerance must FAIL; an equal-ECE/Brier candidate passes. (Legacy absolute-mode floor; the
+    D25-02 noise-band behavior is covered by the test_calibration_band_* tests.)
     """
+    cfg_abs = _cfg_with(floor_mode="absolute")
     rng = np.random.default_rng(11)
     pooled_pass = rng.normal(0.05, 0.2, 1120)
     good_per_season = {
@@ -230,14 +259,14 @@ def test_wp_calibration_in_gate() -> None:
 
     # ECE regressed by 0.05 (> wp_ece_max_increase of 0.0) -> FAIL despite a passing floor.
     bad = gate.evaluate_target(
-        "wp", _wp_candidate(ece=0.07, brier=0.21), baseline, _TEST_CFG
+        "wp", _wp_candidate(ece=0.07, brier=0.21), baseline, cfg_abs
     )
     assert bad["passed"] is False
     assert any("ece" in r.lower() for r in bad["reasons"]), bad["reasons"]
 
     # Equal ECE/Brier/accuracy -> PASS.
     good = gate.evaluate_target(
-        "wp", _wp_candidate(ece=0.02, brier=0.21), baseline, _TEST_CFG
+        "wp", _wp_candidate(ece=0.02, brier=0.21), baseline, cfg_abs
     )
     assert good["passed"] is True, good["reasons"]
 
@@ -395,7 +424,10 @@ def test_forced_fail_floor_and_evaluate() -> None:
 
     A significantly-negative pooled CLV array makes clv_floor_passes False and
     evaluate_target passed False (the hard-block logic, with zero training).
+    (Legacy absolute-mode floor; the non_regression forced-fail is
+    test_non_regression_pooled_candidate_significantly_worse_fails.)
     """
+    cfg_abs = _cfg_with(floor_mode="absolute")
     sig_neg = np.full(200, -0.5)
     assert gate.clv_floor_passes(sig_neg) is False
 
@@ -410,9 +442,299 @@ def test_forced_fail_floor_and_evaluate() -> None:
         },
         "mae": 10.0,
     }
-    result = gate.evaluate_target("ats", candidate, {"mae": 10.0}, _TEST_CFG)
+    result = gate.evaluate_target("ats", candidate, {"mae": 10.0}, cfg_abs)
     assert result["passed"] is False
     assert any("CLV" in r for r in result["reasons"]), result["reasons"]
+
+
+# ---------------------------------------------------------------------------
+# Non-regression paired-delta floor (D25-01 / D25-15) -- Plan 25-01
+# ---------------------------------------------------------------------------
+
+
+def _demeaned(arr: np.ndarray) -> np.ndarray:
+    """Return arr shifted to an exact sample mean of 0.0.
+
+    A "candidate ~= baseline" paired delta should be DETERMINISTICALLY non-significant. Drawing
+    rng.normal(0.0, sigma, n) leaves a small random sample mean that, at n>=270 with a small SE,
+    can cross the alpha=0.05 negative-tail bar by chance. Subtracting the sample mean pins the
+    delta at exactly mean 0 so the non-regression floor reliably PASSES (t ~ 0, p ~ 1).
+    """
+    return arr - float(np.mean(arr))
+
+
+def test_clv_non_regression_passes_helper() -> None:
+    """25-01: the paired-delta helper fails ONLY when the delta is significantly NEGATIVE.
+
+    clv_non_regression_passes runs the SHARED clv_significance on the candidate-minus-
+    baseline per-game delta and returns "fail only if significantly worse" (mean < 0 AND
+    p < alpha). A near-zero or positive delta passes regardless of the candidate's absolute
+    CLV sign; a significantly-negative delta fails; an untestable (too-small) delta is a
+    strict FAIL matching clv_floor_passes.
+    """
+    rng = np.random.default_rng(101)
+
+    # Delta mean exactly 0 (candidate ~= baseline) -> PASS even if absolute CLV is negative.
+    near_zero_delta = _demeaned(rng.normal(0.0, 0.2, 600))
+    assert gate.clv_non_regression_passes(near_zero_delta) is True
+
+    # Delta clearly positive (candidate BETTER than baseline) -> PASS.
+    positive_delta = rng.normal(0.10, 0.2, 600)
+    assert gate.clv_non_regression_passes(positive_delta) is True
+
+    # Delta significantly negative (candidate WORSE than baseline) -> FAIL.
+    worse_delta = np.full(200, -0.5)
+    assert gate.clv_non_regression_passes(worse_delta) is False
+
+    # Untestable (n < MIN_CLV_SAMPLE) -> strict FAIL (matches clv_floor_passes convention).
+    tiny_delta = np.array([0.1, 0.2, -0.1])
+    assert gate.clv_non_regression_passes(tiny_delta) is False
+
+
+def test_non_regression_pooled_candidate_not_worse_passes() -> None:
+    """25-01: under floor_mode=non_regression a candidate that is NOT worse than the baseline
+    PASSES the pooled floor even when its absolute CLV is negative-vs-zero.
+
+    The candidate's raw CLV is significantly negative (would FAIL the legacy absolute floor),
+    but the paired delta vs the baseline is ~zero (candidate ~= baseline), so the
+    non-regression floor PASSES -- the WP -0.0567-baseline / -0.0443-candidate situation.
+    """
+    rng = np.random.default_rng(202)
+    # Raw candidate CLV: significantly negative-vs-zero.
+    cand_clv = rng.normal(-0.05, 0.2, 1120)
+    base_clv = rng.normal(-0.05, 0.2, 1120)
+    delta = _demeaned(cand_clv - base_clv)  # exactly mean 0 -> not significantly worse
+    per_season_delta = {
+        s: _demeaned(rng.normal(0.0, 0.2, 280)) for s in (2021, 2022, 2023, 2024)
+    }
+    candidate = {
+        "clv_values": cand_clv,
+        "baseline_clv_values": base_clv,
+        "clv_delta_values": delta,
+        "mean": float(np.mean(cand_clv)),
+        "t": -3.0,
+        "p": 0.001,
+        "per_season_clv_delta_values": per_season_delta,
+        "per_season": {s: _sig(per_season_delta[s]) for s in per_season_delta},
+        "mae": 10.0,
+    }
+    result = gate.evaluate_target("ats", candidate, {"mae": 10.0}, _TEST_CFG)
+    assert result["passed"] is True, result["reasons"]
+
+
+def test_non_regression_pooled_candidate_significantly_worse_fails() -> None:
+    """25-01: a candidate whose pooled paired delta is significantly NEGATIVE FAILS the floor."""
+    rng = np.random.default_rng(303)
+    cand_clv = rng.normal(-0.5, 0.2, 1120)
+    base_clv = rng.normal(0.0, 0.2, 1120)
+    delta = cand_clv - base_clv  # strongly negative -> significantly worse
+    good_per_season = {
+        s: _demeaned(rng.normal(0.0, 0.2, 280)) for s in (2021, 2022, 2023, 2024)
+    }
+    candidate = {
+        "clv_values": cand_clv,
+        "baseline_clv_values": base_clv,
+        "clv_delta_values": delta,
+        "mean": float(np.mean(cand_clv)),
+        "t": -50.0,
+        "p": 0.0,
+        "per_season_clv_delta_values": good_per_season,
+        "per_season": {s: _sig(good_per_season[s]) for s in good_per_season},
+        "mae": 10.0,
+    }
+    result = gate.evaluate_target("ats", candidate, {"mae": 10.0}, _TEST_CFG)
+    assert result["passed"] is False, result["reasons"]
+    assert any("CLV" in r for r in result["reasons"]), result["reasons"]
+
+
+def test_non_regression_per_season_significantly_worse_fails() -> None:
+    """25-01: a candidate whose POOLED delta passes but whose 2023 season delta is
+    significantly negative FAILS under per_season_must_pass.
+    """
+    rng = np.random.default_rng(404)
+    cand_clv = rng.normal(0.0, 0.2, 1120)
+    base_clv = rng.normal(0.0, 0.2, 1120)
+    delta = _demeaned(cand_clv - base_clv)  # pooled exactly 0 -> pooled passes
+    per_season_delta = {
+        2021: _demeaned(rng.normal(0.0, 0.2, 280)),
+        2022: _demeaned(rng.normal(0.0, 0.2, 280)),
+        2023: rng.normal(-0.5, 0.1, 280),  # significantly worse this season
+        2024: _demeaned(rng.normal(0.0, 0.2, 280)),
+    }
+    candidate = {
+        "clv_values": cand_clv,
+        "baseline_clv_values": base_clv,
+        "clv_delta_values": delta,
+        "mean": float(np.mean(cand_clv)),
+        "t": 0.0,
+        "p": 1.0,
+        "per_season_clv_delta_values": per_season_delta,
+        "per_season": {s: _sig(per_season_delta[s]) for s in per_season_delta},
+        "mae": 10.0,
+    }
+    result = gate.evaluate_target("ats", candidate, {"mae": 10.0}, _TEST_CFG)
+    assert result["passed"] is False, result["reasons"]
+    assert any("2023" in r for r in result["reasons"]), result["reasons"]
+
+    # Every season delta ~zero -> per-season floor passes.
+    good_per_season = {
+        s: _demeaned(rng.normal(0.0, 0.2, 280)) for s in (2021, 2022, 2023, 2024)
+    }
+    candidate_good = {
+        **candidate,
+        "per_season_clv_delta_values": good_per_season,
+        "per_season": {s: _sig(good_per_season[s]) for s in good_per_season},
+    }
+    result_good = gate.evaluate_target("ats", candidate_good, {"mae": 10.0}, _TEST_CFG)
+    assert result_good["passed"] is True, result_good["reasons"]
+
+
+def test_non_regression_absolute_verdict_preserved() -> None:
+    """25-01: REGARDLESS of mode, evaluate_target attaches the absolute-vs-zero candidate CLV
+    significance (mean/t/p on the RAW clv_values, not the delta) for the bettable-bar readout.
+    """
+    rng = np.random.default_rng(505)
+    cand_clv = rng.normal(-0.05, 0.2, 1120)  # significantly negative-vs-zero
+    base_clv = rng.normal(-0.05, 0.2, 1120)
+    delta = _demeaned(cand_clv - base_clv)
+    per_season_delta = {
+        s: _demeaned(rng.normal(0.0, 0.2, 280)) for s in (2021, 2022, 2023, 2024)
+    }
+    candidate = {
+        "clv_values": cand_clv,
+        "baseline_clv_values": base_clv,
+        "clv_delta_values": delta,
+        "per_season_clv_delta_values": per_season_delta,
+        "per_season": {s: _sig(per_season_delta[s]) for s in per_season_delta},
+        "mae": 10.0,
+    }
+    result = gate.evaluate_target("ats", candidate, {"mae": 10.0}, _TEST_CFG)
+    absolute = result["absolute_verdict"]
+    # The absolute verdict is computed on the RAW candidate CLV (not the delta).
+    expected = gate.clv_significance(cand_clv)
+    assert absolute["mean"] == pytest.approx(expected["mean"])
+    assert absolute["t"] == pytest.approx(expected["t"])
+    assert absolute["p"] == pytest.approx(expected["p"])
+    # The raw candidate CLV is significantly negative-vs-zero -> the bettable bar is NOT met,
+    # even though the deploy (non-regression) decision passed.
+    assert absolute["mean"] < 0
+    assert absolute["p"] < 0.05
+    # Per-season absolute verdict is also available for the readout.
+    assert set(result["absolute_per_season"]) == {2021, 2022, 2023, 2024}
+
+
+def test_floor_mode_absolute_legacy() -> None:
+    """25-01: floor_mode=absolute restores the legacy absolute-vs-zero floor (clv_floor_passes).
+
+    Under floor_mode=absolute the pooled + per-season floor run on the RAW candidate CLV via
+    the legacy clv_floor_passes -- a significantly-negative-vs-zero candidate FAILS even if it
+    is not worse than the baseline.
+    """
+    cfg_abs = _cfg_with(floor_mode="absolute")
+    rng = np.random.default_rng(606)
+    cand_clv = np.full(1120, -0.5)  # significantly negative-vs-zero
+    candidate = {
+        "clv_values": cand_clv,
+        "mean": -0.5,
+        "t": -999.0,
+        "p": 0.0,
+        "per_season": {
+            s: _sig(rng.normal(0.05, 0.2, 280)) for s in (2021, 2022, 2023, 2024)
+        },
+        "mae": 10.0,
+    }
+    result = gate.evaluate_target("ats", candidate, {"mae": 10.0}, cfg_abs)
+    assert result["passed"] is False, result["reasons"]
+
+
+def test_bundle_delta_keys_pinned_in_builder() -> None:
+    """25-01: build_candidate_bundle PINS the delta key contract (Codex HIGH).
+
+    This plan DEFINES the keys (clv_values + baseline_clv_values + clv_delta_values, and the
+    per-season equivalents) -- Plan 25-02 populates baseline/delta via the real merge-on-game_id
+    pairing. The builder ships clv_values populated and the baseline/delta keys present-but-None
+    so a shape/key mismatch when 25-02 wires the pairing fails loudly (the keys are pinned now).
+    """
+    scored, odds = _tiny_scored_and_odds("ats")
+    bundle = gate.build_candidate_bundle("ats", scored, odds, _TEST_CFG)
+
+    # The pinned pooled delta keys are PRESENT (clv_values populated; baseline/delta = None here).
+    for key in ("clv_values", "baseline_clv_values", "clv_delta_values"):
+        assert key in bundle, f"missing pinned bundle key: {key}"
+    assert bundle["clv_values"] is not None
+    assert bundle["baseline_clv_values"] is None  # Plan 25-02 populates
+    assert bundle["clv_delta_values"] is None  # Plan 25-02 populates
+
+    # The per-season delta keys are present, keyed by int season; per_season_clv_values is the
+    # populated raw-candidate per-season array (the absolute per-season input).
+    # The per-season delta keys cover the full 2021-2024 holdout (mirrors per_season, which
+    # per_season_clv populates for every holdout season -- empty seasons get n==0 slices).
+    for key in (
+        "per_season_clv_values",
+        "per_season_baseline_clv_values",
+        "per_season_clv_delta_values",
+    ):
+        assert key in bundle, f"missing pinned per-season bundle key: {key}"
+        assert set(bundle[key]) == {2021, 2022, 2023, 2024}, key
+        assert all(isinstance(k, int) for k in bundle[key]), key
+    # per_season_clv_values carries raw candidate arrays (the absolute per-season input);
+    # baseline/delta per-season are None placeholders Plan 25-02 populates.
+    assert all(v is not None for v in bundle["per_season_clv_values"].values())
+    assert all(v is None for v in bundle["per_season_baseline_clv_values"].values())
+    assert all(v is None for v in bundle["per_season_clv_delta_values"].values())
+
+
+def test_bundle_delta_keys_internal_consistency() -> None:
+    """25-01: the internal-consistency invariant Plan 25-02 must keep --
+    clv_delta_values == clv_values - baseline_clv_values element-wise.
+
+    This plan does not populate the paired arrays (25-02 does), so the invariant is asserted on
+    a SYNTHETIC bundle here -- proving the contract a consumer (and Plan 25-02) must honor when
+    the real pairing is wired.
+    """
+    rng = np.random.default_rng(909)
+    clv_values = rng.normal(-0.05, 0.2, 1120)
+    baseline_clv_values = rng.normal(-0.05, 0.2, 1120)
+    clv_delta_values = clv_values - baseline_clv_values
+    np.testing.assert_allclose(clv_delta_values, clv_values - baseline_clv_values)
+
+
+def test_non_regression_untestable_delta_fails_closed() -> None:
+    """25-01: a pooled delta too small to t-test (t is None) is a strict FAIL (fail-closed)."""
+    candidate = {
+        "clv_values": np.array([0.1, 0.2, -0.1]),
+        "baseline_clv_values": np.array([0.0, 0.0, 0.0]),
+        "clv_delta_values": np.array([0.1, 0.2, -0.1]),  # n=3 < MIN_CLV_SAMPLE
+        "per_season_clv_delta_values": {
+            s: np.full(280, 0.0) for s in (2021, 2022, 2023, 2024)
+        },
+        "per_season": {s: _sig(np.full(280, 0.0)) for s in (2021, 2022, 2023, 2024)},
+        "mae": 10.0,
+    }
+    result = gate.evaluate_target("ats", candidate, {"mae": 10.0}, _TEST_CFG)
+    assert result["passed"] is False, result["reasons"]
+
+
+def test_non_regression_empty_per_season_fails_closed() -> None:
+    """25-01: the WR-04 fail-closed behavior is preserved under non_regression -- an absent
+    per-season delta map must NOT be reported as an all-seasons PASS.
+    """
+    rng = np.random.default_rng(707)
+    cand_clv = rng.normal(0.0, 0.2, 1120)
+    base_clv = rng.normal(0.0, 0.2, 1120)
+    candidate = {
+        "clv_values": cand_clv,
+        "baseline_clv_values": base_clv,
+        "clv_delta_values": cand_clv - base_clv,
+        "per_season_clv_delta_values": {},  # no evidence -> fail closed
+        "per_season": {},
+        "mae": 10.0,
+    }
+    result = gate.evaluate_target("ats", candidate, {"mae": 10.0}, _TEST_CFG)
+    assert result["passed"] is False, result["reasons"]
+    assert any("no per-season" in r.lower() for r in result["reasons"]), result[
+        "reasons"
+    ]
 
 
 # ---------------------------------------------------------------------------

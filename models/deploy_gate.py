@@ -15,26 +15,56 @@ models were retained only because per-target gating caught the regression after 
 gate is the safety rail: nothing ships that regresses. The frozen thresholds + baseline live
 in the git-tracked ``config/gate.toml``; a threshold change is its own reviewed config edit.
 
-The CLV floor (D24-01) is the LOGICAL COMPLEMENT of ``diagnose.clv_verdict``'s
-"systematically negative" branch (``mean < 0 and p < SIGNIFICANCE_ALPHA``): a target PASSES
-the floor unless its per-game CLV is significantly negative. A non-significant negative (or
-any positive) CLV passes -- consistent with an efficient-market ceiling rather than a
-methodology leak. Per-season-must-pass (D24-04) applies this same floor to every holdout
-season individually so one lucky season cannot carry a model whose other seasons are
-significantly negative. The secondary non-regression gates (accuracy/MAE, and for WP the
-calibration ECE/Brier per D24-05) are evaluated POOLED (Open Question A: ~270-game per-season
-secondary slices fire on sampling noise; per-season secondary deltas are a readout, not a
-blocker). diagnose.py is pooled-only, so per-season CLV slicing is the one genuinely-new
-piece here -- it reuses the season-agnostic ``clv_significance`` on per-season array slices.
+The CLV floor has TWO modes, selected by ``cfg["gate"]["floor_mode"]`` (D25-01):
 
-The candidate/baseline bundle contract (the output of ``build_candidate_bundle``):
+  * ``"non_regression"`` (the Phase-25 DEFAULT): a target PASSES a slice unless the candidate
+    is SIGNIFICANTLY WORSE than the re-scored v1.0 baseline on the same gold -- a PAIRED
+    per-game CLV delta (``candidate_clv - baseline_clv``) tested with ``clv_significance`` and
+    read on its negative tail (``mean < 0 and p < alpha`` -> FAIL). This is the replace-or-
+    retain decision: an absolute-vs-zero floor would keep a significantly-WORSE incumbent in
+    production over a technicality (WP serves -0.0567 while the -0.0443 candidate is blocked),
+    while where v1.0 is already positive (OU pooled +1.11) non-regression is STRICTER than
+    absolute (the edge cannot regress). See D25-01 / D25-15 + ``config/gate.toml`` floor_mode.
+  * ``"absolute"`` (the legacy D24-01 floor, retained): a target PASSES a slice unless its raw
+    per-game CLV is significantly negative-vs-zero -- the LOGICAL COMPLEMENT of
+    ``diagnose.clv_verdict``'s "systematically negative" branch
+    (``mean < 0 and p < SIGNIFICANCE_ALPHA``). Kept for backward-compatible unit fixtures and
+    as the bettable-bar verdict computation below.
+
+REGARDLESS of mode, the absolute-vs-zero ``clv_significance`` of the RAW candidate CLV is
+ALWAYS computed and attached to the result (``absolute_verdict`` + ``absolute_per_season``):
+it is the "bettable bar" readout for Phases 26-27 (removing a CLV leak is NOT a positive
+market edge -- D25-01, Pitfall 3), never removed.
+
+Per-season-must-pass (D24-04) applies the active floor to every holdout season individually so
+one lucky season cannot carry a model whose other seasons are significantly worse. The
+secondary non-regression gates (accuracy/MAE, and for WP the calibration ECE/Brier per D24-05)
+are evaluated POOLED (Open Question A: ~270-game per-season secondary slices fire on sampling
+noise; per-season secondary deltas are a readout, not a blocker). diagnose.py is pooled-only,
+so per-season CLV slicing is the one genuinely-new piece here -- it reuses the season-agnostic
+``clv_significance`` on per-season array slices (raw CLV under absolute, delta under
+non_regression).
+
+The candidate/baseline bundle contract (the output of ``build_candidate_bundle``). The PINNED
+paired-delta keys (D25-01, Codex HIGH) are DEFINED here in Plan 25-01 and POPULATED with the
+real merge-on-game_id pairing by Plan 25-02 in ``scripts/promote_models.py`` -- this plan ships
+them as ``None`` placeholders so a shape/key mismatch when 25-02 wires the pairing fails loudly:
 
     {
-        "clv_values": np.ndarray,          # per-game CLV on CLV_COLUMN_FOR[target]
-        "mean": float | None,              # pooled CLV mean (clv_significance)
-        "t": float | None,                 # pooled CLV t-stat
-        "p": float | None,                 # pooled CLV two-sided p-value
-        "per_season": {int: {...}, ...},   # {season -> clv_significance bundle}
+        # Pooled per-game arrays (all the SAME length, aligned by game_id):
+        "clv_values": np.ndarray,                 # raw candidate per-game CLV (absolute-verdict
+                                                  #   input + legacy absolute floor input)
+        "baseline_clv_values": np.ndarray | None, # raw re-scored v1.0 per-game CLV, game_id order
+        "clv_delta_values": np.ndarray | None,    # candidate-minus-baseline per game (the
+                                                  #   non_regression floor input); equals
+                                                  #   clv_values - baseline_clv_values
+        "mean": float | None,                     # pooled raw-candidate CLV mean
+        "t": float | None,                        # pooled raw-candidate CLV t-stat
+        "p": float | None,                        # pooled raw-candidate CLV two-sided p-value
+        "per_season": {int: {...}, ...},          # {season -> raw-candidate clv_significance}
+        "per_season_clv_values": {int: ndarray},  # {season -> raw candidate per-game CLV array}
+        "per_season_baseline_clv_values": {int: ndarray | None},  # {season -> baseline array}
+        "per_season_clv_delta_values": {int: ndarray | None},     # {season -> delta array}
         # WP only:
         "accuracy": float, "ece": float, "brier_score": float,
         # ATS/OU only:
@@ -88,6 +118,7 @@ __all__ = [
     "SIGNIFICANCE_ALPHA",
     "build_candidate_bundle",
     "clv_floor_passes",
+    "clv_non_regression_passes",
     # Re-exported from backtest.diagnose as part of the D24-13 parity surface; tests and
     # callers reference it as gate.clv_significance (IN-01).
     "clv_significance",
@@ -145,6 +176,46 @@ def clv_floor_passes(clv_values: Any, alpha: float = SIGNIFICANCE_ALPHA) -> bool
     if sig["t"] is None:
         # n < MIN_CLV_SAMPLE: the t-test cannot run, so the CLV is untestable. A model whose
         # CLV cannot be shown non-negative does not clear the floor (strict fail).
+        return False
+    return not (sig["mean"] < 0 and sig["p"] < alpha)
+
+
+def clv_non_regression_passes(
+    delta_values: Any, alpha: float = SIGNIFICANCE_ALPHA
+) -> bool:
+    """Return True unless the PAIRED CLV delta is SIGNIFICANTLY WORSE (the D25-01/D25-15 floor).
+
+    The non-regression complement of ``clv_floor_passes``: instead of testing the raw candidate
+    CLV against ZERO, this tests the per-game ``candidate_clv - baseline_clv`` delta (same
+    game_ids, same gold) against zero. A target passes the slice unless the candidate is
+    SIGNIFICANTLY WORSE than the re-scored v1.0 baseline -- i.e. ``mean(delta) < 0 AND
+    p < alpha`` is the only FAIL. A near-zero delta (candidate ~= baseline), a positive delta
+    (candidate better), or a non-significant negative delta all PASS, regardless of whether the
+    candidate's ABSOLUTE CLV is negative. This is the replace-or-retain reading (D25-01): the
+    gate must not keep a significantly-worse incumbent in production on a technicality, and it
+    must not block a leak-free re-fit that is merely sub-floor-vs-zero where v1.0 was too.
+
+    Reuses the SHARED ``clv_significance`` (the D24-13 parity seam, imported from
+    ``backtest.diagnose``, NEVER a new local ttest wrapper) and the one-sided negative-tail
+    reading convention of ``clv_floor_passes`` (D24-02). An untestable delta (below
+    ``MIN_CLV_SAMPLE``, where ``t is None``) is a STRICT FAIL, matching ``clv_floor_passes``:
+    the gate refuses to deploy on an untestable delta.
+
+    Args:
+        delta_values: 1-D array-like of per-game ``candidate_clv - baseline_clv`` deltas,
+            aligned by game_id (the merge-on-game_id pairing is Plan 25-02's job; this helper
+            consumes the already-paired delta array).
+        alpha: Significance level for the negative-tail test. Defaults to the imported
+            ``SIGNIFICANCE_ALPHA`` (0.05) so the floor and the diagnosis share one alpha.
+
+    Returns:
+        True if the delta is not significantly negative (passes non-regression); False if it is
+        significantly negative (candidate significantly worse) OR the sample is too small.
+    """
+    sig = clv_significance(delta_values)
+    if sig["t"] is None:
+        # n < MIN_CLV_SAMPLE: the paired delta is untestable -> strict fail (same convention as
+        # clv_floor_passes: the gate refuses to deploy on an untestable CLV delta).
         return False
     return not (sig["mean"] < 0 and sig["p"] < alpha)
 
@@ -258,14 +329,37 @@ def build_candidate_bundle(
     col = CLV_COLUMN_FOR[target]
     clv_values = valid[col].to_numpy()
     pooled = clv_significance(clv_values)
+    per_season = per_season_clv(valid, target)
+
+    # Per-season RAW candidate CLV arrays (keyed by int season), aligned with `per_season`
+    # significance bundles. These are the absolute-floor / absolute-verdict per-season input
+    # and the populate-target for the per-season delta keys below.
+    per_season_clv_values = {
+        int(s): valid.loc[valid["season"] == s, col].to_numpy() for s in HOLDOUT_SEASONS
+    }
 
     bundle: dict[str, Any] = {
         "clv_values": clv_values,
+        # PINNED non-regression delta keys (D25-01, Codex HIGH). Plan 25-01 DEFINES them here as
+        # None/placeholder; Plan 25-02's merge-on-game_id pairing in promote_models.py POPULATES
+        # baseline_clv_values + clv_delta_values (and the per-season equivalents). Shipping them
+        # as None now makes a shape/key mismatch when 25-02 wires the real pairing fail loudly
+        # (KeyError-free contract); the internal-consistency invariant Plan 25-02 must keep is
+        # clv_delta_values == clv_values - baseline_clv_values element-wise.
+        "baseline_clv_values": None,
+        "clv_delta_values": None,
         "mean": pooled["mean"],
         "t": pooled["t"],
         "p": pooled["p"],
         "n": pooled["n"],
-        "per_season": per_season_clv(valid, target),
+        "per_season": per_season,
+        "per_season_clv_values": per_season_clv_values,
+        "per_season_baseline_clv_values": dict.fromkeys(
+            (int(s) for s in HOLDOUT_SEASONS), None
+        ),
+        "per_season_clv_delta_values": dict.fromkeys(
+            (int(s) for s in HOLDOUT_SEASONS), None
+        ),
     }
 
     if target == "wp":
@@ -480,6 +574,150 @@ def _calibration_reasons(
     return passed, reasons
 
 
+def _pooled_floor_reasons(
+    candidate: dict[str, Any], floor_mode: str, alpha: float
+) -> tuple[bool, str]:
+    """Apply the POOLED CLV floor in the active ``floor_mode``; return (passed, reason).
+
+    Under ``"non_regression"`` (D25-01) the floor runs on the paired
+    ``candidate["clv_delta_values"]`` (candidate-minus-baseline per-game delta) via
+    ``clv_non_regression_passes`` -- fail only if significantly WORSE than the frozen v1.0
+    baseline. Under ``"absolute"`` (legacy D24-01) it runs on the raw
+    ``candidate["clv_values"]`` via ``clv_floor_passes`` -- fail if significantly negative-vs-zero.
+    """
+    mean = candidate.get("mean")
+    p = candidate.get("p")
+    if floor_mode == "non_regression":
+        delta = candidate.get("clv_delta_values")
+        if clv_non_regression_passes(delta, alpha=alpha):
+            return (
+                True,
+                "Pooled CLV non-regression floor PASS (not significantly worse than v1.0)",
+            )
+        return False, (
+            "Pooled CLV significantly WORSE than v1.0 baseline or untestable "
+            "(paired candidate-minus-baseline delta significantly negative)"
+        )
+    # Legacy absolute-vs-zero floor (floor_mode is "absolute").
+    if clv_floor_passes(candidate.get("clv_values"), alpha=alpha):
+        return True, f"Pooled CLV floor PASS (mean={mean}, p={p})"
+    return (
+        False,
+        f"Pooled CLV significantly negative or untestable (mean={mean}, p={p})",
+    )
+
+
+def _per_season_floor_reasons(
+    candidate: dict[str, Any], floor_mode: str, alpha: float
+) -> tuple[bool, list[str]]:
+    """Apply the per-season CLV floor in the active ``floor_mode``; return (passed, reasons).
+
+    Fail-closed (WR-04): an empty/absent per-season map provides NO evidence and must NOT be
+    reported as "all holdout seasons passed". Under ``"non_regression"`` each season's paired
+    DELTA slice (``per_season_clv_delta_values[season]``) is tested via
+    ``clv_non_regression_passes``; under ``"absolute"`` each season's raw CLV slice (the
+    ``per_season`` clv_significance bundle, or a raw ``clv_values`` array on a synthetic bundle)
+    is tested via the legacy absolute reading.
+    """
+    reasons: list[str] = []
+
+    if floor_mode == "non_regression":
+        per_season_delta = candidate.get("per_season_clv_delta_values", {})
+        if not per_season_delta:
+            return False, [
+                "Per-season-must-pass enabled but no per-season CLV slices provided"
+            ]
+        passed = True
+        for season in sorted(per_season_delta):
+            delta_arr = per_season_delta[season]
+            season_pass = clv_non_regression_passes(delta_arr, alpha=alpha)
+            if not season_pass:
+                passed = False
+                reasons.append(
+                    f"Season {season} CLV non-regression floor FAIL "
+                    "(paired delta significantly worse than v1.0 or untestable)"
+                )
+        if passed:
+            reasons.append(
+                "Per-season CLV non-regression floor PASS (all holdout seasons)"
+            )
+        return passed, reasons
+
+    # floor_mode == "absolute" (legacy D24-01 per-season floor).
+    per_season = candidate.get("per_season", {})
+    if not per_season:
+        return False, [
+            "Per-season-must-pass enabled but no per-season CLV slices provided"
+        ]
+    passed = True
+    for season in sorted(per_season):
+        season_sig = per_season[season]
+        season_arr = season_sig.get("clv_values")
+        # Synthetic test bundles may carry the raw array under "clv_values"; the real
+        # build_candidate_bundle stores clv_significance bundles. Re-test from the array when
+        # present, else re-derive the pass/fail from the stored {mean, t, p}.
+        if season_arr is not None:
+            season_pass = clv_floor_passes(season_arr, alpha=alpha)
+        elif season_sig.get("t") is None:
+            season_pass = False
+        else:
+            season_pass = not (season_sig["mean"] < 0 and season_sig["p"] < alpha)
+        if not season_pass:
+            passed = False
+            reasons.append(
+                f"Season {season} CLV floor FAIL "
+                f"(mean={season_sig.get('mean')}, p={season_sig.get('p')}, "
+                f"n={season_sig.get('n')})"
+            )
+    if passed:
+        reasons.append("Per-season CLV floor PASS (all holdout seasons)")
+    return passed, reasons
+
+
+def _absolute_verdict(
+    candidate: dict[str, Any],
+) -> tuple[dict[str, Any], dict[int, Any]]:
+    """Compute the always-on absolute-vs-zero verdict on the RAW candidate CLV (D25-01).
+
+    REGARDLESS of floor_mode, the gate records the absolute-vs-zero ``clv_significance`` of the
+    raw candidate CLV (``clv_values``) -- this is the bettable-bar readout for Phases 26-27
+    (removing a CLV leak is NOT a positive market edge -- Pitfall 3), never the deploy decision
+    under non_regression. Computed from the raw array when present; falls back to the bundle's
+    stored pooled {mean, t, p} when only those are supplied (synthetic fixtures).
+
+    Returns:
+        ``(pooled_absolute_verdict, {season: absolute_verdict})`` -- the pooled raw-candidate
+        CLV significance plus a per-season raw-candidate significance dict (empty if the raw
+        per-season arrays are not on the bundle).
+    """
+    clv_values = candidate.get("clv_values")
+    if clv_values is not None:
+        pooled = clv_significance(clv_values)
+    else:
+        pooled = {
+            "n": candidate.get("n"),
+            "mean": candidate.get("mean"),
+            "t": candidate.get("t"),
+            "p": candidate.get("p"),
+            "ci95": None,
+        }
+
+    # Per-season absolute verdict. The real build_candidate_bundle stores the raw-candidate
+    # per-season clv_significance under `per_season` (per_season_clv runs clv_significance on the
+    # raw CLV slice). That IS the per-season absolute-vs-zero verdict. When raw per-season arrays
+    # are supplied under per_season_clv_values, recompute from them (the authoritative array);
+    # otherwise fall back to the stored `per_season` significance bundles.
+    absolute_per_season: dict[int, Any] = {}
+    per_season_raw = candidate.get("per_season_clv_values", {})
+    for season, arr in per_season_raw.items():
+        if arr is not None:
+            absolute_per_season[int(season)] = clv_significance(arr)
+    if not absolute_per_season:
+        for season, sig in candidate.get("per_season", {}).items():
+            absolute_per_season[int(season)] = sig
+    return pooled, absolute_per_season
+
+
 def evaluate_target(
     target: str,
     candidate: dict[str, Any],
@@ -489,12 +727,20 @@ def evaluate_target(
     """Decide whether a candidate model may ship for one target (the per-target deploy gate).
 
     The decision is the AND of all applicable checks:
-      1. POOLED CLV floor on ``candidate["clv_values"]`` (D24-01 -- not significantly negative).
-      2. If ``gate.per_season_must_pass``: the CLV floor on EVERY season's slice in
-         ``candidate["per_season"]`` (D24-04 -- a single significantly-negative season fails
-         the target; an insufficient-sample season also fails per the strict floor rule).
+      1. POOLED CLV floor in ``gate.floor_mode`` (D25-01): under ``"non_regression"`` the paired
+         candidate-minus-baseline delta must not be significantly WORSE than the frozen v1.0
+         baseline; under ``"absolute"`` (legacy D24-01) the raw candidate CLV must not be
+         significantly negative-vs-zero.
+      2. If ``gate.per_season_must_pass``: the same floor on EVERY holdout season's slice (D24-04
+         -- one significantly-worse/negative season fails the target; an insufficient-sample
+         season also fails per the strict floor rule; an absent per-season map fails closed).
       3. POOLED secondary non-regression vs baseline (D24-05 secondary: WP accuracy / ATS-OU MAE).
       4. For WP, if ``gate.calibration_in_gate``: ECE + Brier non-regression vs baseline.
+
+    REGARDLESS of floor_mode the absolute-vs-zero verdict on the RAW candidate CLV is ALWAYS
+    computed and attached (``absolute_verdict`` pooled + ``absolute_per_season``) for the
+    bettable-bar readout (Phases 26-27, Pitfall 3) -- it is NEVER the deploy decision under
+    non_regression.
 
     Args:
         target: One of "wp", "ats", "ou".
@@ -502,80 +748,48 @@ def evaluate_target(
         baseline: The frozen baseline bundle for this target (from ``config/gate.toml``;
             same key shape as the candidate -- ``clv_values``/``mean``/``per_season`` plus
             ``accuracy``/``ece``/``brier_score`` for WP or ``mae`` for ATS/OU).
-        cfg: The loaded gate config (reads ``gate.alpha``, ``gate.per_season_must_pass``,
-            ``gate.calibration_in_gate``, ``gate.secondary``).
+        cfg: The loaded gate config (reads ``gate.alpha``, ``gate.floor_mode``,
+            ``gate.per_season_must_pass``, ``gate.calibration_in_gate``, ``gate.secondary``).
 
     Returns:
         ``{"passed": bool, "reasons": list[str], "candidate": {...}, "baseline": {...},
-        "per_season": {...}, "v1_metrics": {...}, "v2_metrics": {...}}``. The
-        ``v1_metrics``/``v2_metrics`` aliases keep the shape compatible with
-        ``scripts.retrain_models.print_gating_summary`` (Plan 24-04 rewire).
+        "per_season": {...}, "absolute_verdict": {...}, "absolute_per_season": {...},
+        "v1_metrics": {...}, "v2_metrics": {...}}``. The ``v1_metrics``/``v2_metrics`` aliases
+        keep the shape compatible with ``scripts.retrain_models.print_gating_summary``.
     """
     gate = cfg["gate"]
     alpha = gate["alpha"]
+    # floor_mode is a REQUIRED key (validate_gate_config enforces it); default to the D25-01
+    # non_regression mode if a raw in-memory dict omits it, but the committed config always
+    # carries it explicitly.
+    floor_mode = gate.get("floor_mode", "non_regression")
     secondary = gate["secondary"]
     reasons: list[str] = []
     passed = True
 
-    # (1) Pooled CLV floor.
-    pooled_clv = candidate.get("clv_values")
-    if clv_floor_passes(pooled_clv, alpha=alpha):
-        reasons.append(
-            f"Pooled CLV floor PASS (mean={candidate.get('mean')}, p={candidate.get('p')})"
-        )
-    else:
-        passed = False
-        reasons.append(
-            f"Pooled CLV significantly negative or untestable "
-            f"(mean={candidate.get('mean')}, p={candidate.get('p')})"
-        )
+    # Always-on absolute-vs-zero verdict on the RAW candidate CLV (the bettable bar, D25-01 /
+    # Pitfall 3). Computed in EVERY mode; never the deploy decision under non_regression.
+    absolute_verdict, absolute_per_season = _absolute_verdict(candidate)
 
-    # (2) Per-season-must-pass CLV floor.
-    # NOTE (WR-01): this per-season floor is an ABSOLUTE floor (each season's CLV must not be
-    # significantly negative vs ZERO), NOT a floor relative to the frozen baseline. For the
-    # line-CLV targets (ATS/OU) the frozen v1.0 baseline is itself significantly negative in
-    # some seasons, so the deployed v1.0 model would not clear this absolute floor as a
-    # candidate -- i.e. ATS may be unable to PASS until the floor semantics for line-CLV
-    # targets are revisited. That is a deliberate Phase-25 policy decision (ATS re-fit), NOT a
-    # bug to be fixed by loosening the gate here; the strict absolute floor is this phase's
-    # intended safety rail.
+    # (1) Pooled CLV floor (mode-aware).
+    pooled_pass, pooled_reason = _pooled_floor_reasons(candidate, floor_mode, alpha)
+    passed = passed and pooled_pass
+    reasons.append(pooled_reason)
+
+    # (2) Per-season-must-pass CLV floor (mode-aware; fail-closed on an absent map -- WR-04).
+    # WR-01/D25-01: under floor_mode=non_regression this per-season floor is a NON-REGRESSION
+    # floor -- each holdout season's PAIRED candidate-minus-baseline CLV delta must not be
+    # significantly WORSE than the frozen v1.0 baseline for that season (NOT an absolute-vs-zero
+    # floor). This is the deliberate, reviewed Phase-25 policy change (D25-01): an absolute floor
+    # would keep a significantly-worse incumbent in production over a technicality, and would
+    # block a leak-free re-fit on the line-CLV targets (ATS/OU) whose frozen v1.0 baseline is
+    # itself significantly negative in some seasons. The absolute-vs-zero verdict is still
+    # computed above (the bettable bar) -- it is recorded, not used to gate, under non_regression.
+    # Under floor_mode=absolute the legacy per-season absolute-vs-zero floor applies unchanged.
     if gate.get("per_season_must_pass"):
-        per_season = candidate.get("per_season", {})
-        if not per_season:
-            # Fail closed (WR-04): an empty/absent per-season map must NOT be reported as
-            # "all holdout seasons passed". The sanctioned build_candidate_bundle always
-            # populates four seasons, but evaluate_target is independently callable -- a
-            # caller that omits per_season has provided no evidence to clear the floor, so
-            # claiming a per-season PASS would be a hollow attestation the gate exists to
-            # prevent.
-            passed = False
-            reasons.append(
-                "Per-season-must-pass enabled but no per-season CLV slices provided"
-            )
-        else:
-            for season in sorted(per_season):
-                season_sig = per_season[season]
-                season_arr = season_sig.get("clv_values")
-                # Synthetic test bundles may carry the raw array under "clv_values"; the real
-                # build_candidate_bundle stores clv_significance bundles. Re-test from the
-                # array when present, else re-derive the pass/fail from the stored {mean, t, p}.
-                if season_arr is not None:
-                    season_pass = clv_floor_passes(season_arr, alpha=alpha)
-                elif season_sig.get("t") is None:
-                    season_pass = False
-                else:
-                    season_pass = not (
-                        season_sig["mean"] < 0 and season_sig["p"] < alpha
-                    )
-                if not season_pass:
-                    passed = False
-                    reasons.append(
-                        f"Season {season} CLV floor FAIL "
-                        f"(mean={season_sig.get('mean')}, p={season_sig.get('p')}, "
-                        f"n={season_sig.get('n')})"
-                    )
-            if passed:
-                reasons.append("Per-season CLV floor PASS (all holdout seasons)")
+        ps_pass, ps_reasons = _per_season_floor_reasons(candidate, floor_mode, alpha)
+        passed = passed and ps_pass
+        reasons.extend(ps_reasons)
 
     # (3) Pooled secondary non-regression.
     sec_passed, sec_reasons = _secondary_reasons(target, candidate, baseline, secondary)
@@ -594,6 +808,9 @@ def evaluate_target(
         "candidate": candidate,
         "baseline": baseline,
         "per_season": candidate.get("per_season", {}),
+        # Always-on absolute-vs-zero verdict on the raw candidate CLV (D25-01 bettable bar).
+        "absolute_verdict": absolute_verdict,
+        "absolute_per_season": absolute_per_season,
         # Aliases kept for print_gating_summary compatibility (Plan 24-04 rewire).
         "v1_metrics": baseline,
         "v2_metrics": candidate,
