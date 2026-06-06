@@ -840,6 +840,27 @@ def test_drift_tripwire_aborts_on_wrong_clv_column() -> None:
 
 
 @pytest.mark.integration
+def test_drift_tripwire_aborts_on_empty_baseline_frame() -> None:
+    """WR-01: a zero-row re-scored baseline frame is the most extreme drift -> loudest abort.
+
+    np.mean([]) is nan and `abs(nan - frozen) > tol` evaluates False, so without the empty-frame
+    guard the pooled-mean check silently no-ops on a degenerate baseline. The guard must HARD-abort
+    on a re-score that produced ZERO has_closing_odds rows (the baseline the gate pairs against does
+    not exist for the target), not rely solely on the downstream per-season exact-n check.
+    """
+    cfg = deploy_gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
+    empty = pd.DataFrame(
+        {
+            "game_id": pd.Series([], dtype="object"),
+            "season": pd.Series([], dtype="int64"),
+            "probability_clv": pd.Series([], dtype="float64"),
+        }
+    )
+    with pytest.raises(ValueError, match="ZERO"):
+        promote._drift_tripwire("wp", empty, cfg)
+
+
+@pytest.mark.integration
 def test_missing_dir_guard_actionable_error(tmp_path: Path) -> None:
     """Plan 25-02: a missing production artifacts dir yields a NAMED-path actionable error.
 

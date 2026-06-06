@@ -569,8 +569,10 @@ def _drift_tripwire(
         cfg: The loaded gate config (with int-normalized baseline season keys).
 
     Raises:
-        ValueError: If the re-scored v1.0 aggregates drift from the frozen config on ANY field
-            (CLV column identity, pooled mean, a per-season mean, or a per-season sample size).
+        ValueError: If the re-scored v1.0 frame is degenerate (zero has_closing_odds rows, the
+            most extreme drift -- WR-01) or its aggregates drift from the frozen config on ANY
+            field (CLV column identity, pooled mean, a per-season mean, or a per-season sample
+            size).
     """
     frozen = cfg.get("baseline", {}).get(target, {})
     pooled_frozen = frozen.get("pooled", {})
@@ -586,7 +588,21 @@ def _drift_tripwire(
         raise ValueError(msg)
 
     # Pooled mean: re-derive from the re-scored v1.0 CLV and compare to the frozen pooled mean.
-    pooled_mean = float(np.mean(baseline_valid[col].to_numpy()))
+    # Empty-frame guard (WR-01): a zero-row re-score is the MOST extreme drift (the baseline the
+    # gate pairs against does not exist for this target), so it must be the LOUDEST abort, not a
+    # silent pass. np.mean([]) is nan and `abs(nan - frozen) > tol` evaluates False, so without
+    # this guard the pooled check would no-op on a degenerate baseline and rely solely on the
+    # downstream per-season exact-n check to catch it.
+    clv_arr = baseline_valid[col].to_numpy()
+    if clv_arr.size == 0:
+        msg = (
+            f"Drift tripwire ABORT for '{target}': re-scored v1.0 frame has ZERO "
+            f"has_closing_odds rows on column '{col}'; the baseline is degenerate and "
+            "cannot be compared to the frozen config. Re-freeze the baseline (Plan 25-05) "
+            "or restore the deployed artifacts."
+        )
+        raise ValueError(msg)
+    pooled_mean = float(np.mean(clv_arr))
     frozen_pooled_mean = pooled_frozen.get("mean")
     if frozen_pooled_mean is not None:
         drift = abs(pooled_mean - float(frozen_pooled_mean))
