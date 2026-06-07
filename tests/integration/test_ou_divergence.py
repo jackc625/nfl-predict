@@ -304,6 +304,134 @@ class TestOuDivergence:
         frame_b = run_b["per_game"].sort_values("game_id").reset_index(drop=True)
         pd.testing.assert_frame_equal(frame_a, frame_b)
 
+    # -- orchestrator determinism: full + early-exit (D26-15) ------------------------------
+
+    def test_orchestrator_full_assembles_all_keys(
+        self, gold_and_odds_2021_2024
+    ) -> None:
+        """run_ou_divergence_diagnosis() returns all ten keys with a go-bar recommendation.
+
+        The full-path assembly (include_sweep=True, the owner PROCEED path) carries integrity,
+        bias, debiased, sweep, trial_registry, survivable, edge_magnitude, ev_preview,
+        go_bar_evaluation, and mode; go_bar_evaluation carries a recommendation in
+        {GO, SCOPED_GO, NO_GO} and a per-criterion pass/fail.
+        """
+        from backtest.ou_divergence import run_ou_divergence_diagnosis
+
+        odds = gold_and_odds_2021_2024["odds"]
+        result = run_ou_divergence_diagnosis(odds=odds, include_sweep=True)
+
+        expected_keys = {
+            "integrity",
+            "bias",
+            "debiased",
+            "sweep",
+            "trial_registry",
+            "survivable",
+            "edge_magnitude",
+            "ev_preview",
+            "go_bar_evaluation",
+            "mode",
+        }
+        assert expected_keys.issubset(result.keys()), (
+            f"missing orchestrator keys: {expected_keys - set(result.keys())}"
+        )
+        assert result["mode"] == "full"
+
+        go_bar = result["go_bar_evaluation"]
+        assert go_bar["recommendation"] in ("GO", "SCOPED_GO", "NO_GO")
+        assert go_bar["rests_on_full_sweep"] is True
+        for criterion in ("corrected_significance", "structural_bar", "ev_clearance"):
+            assert criterion in go_bar["criteria"], (
+                f"go_bar_evaluation missing per-criterion entry {criterion!r}"
+            )
+            assert "pass" in go_bar["criteria"][criterion]
+
+    def test_orchestrator_early_exit_is_skip_aware(
+        self, gold_and_odds_2021_2024
+    ) -> None:
+        """include_sweep=False returns the skipped sentinel for sweep keys and does NOT raise.
+
+        The early-exit branch (the owner EARLY-EXIT path) computes only integrity + bias +
+        debiased; sweep/trial_registry/survivable/edge_magnitude/ev_preview carry the
+        skipped_by_owner_early_exit sentinel, mode == "early_exit", and go_bar_evaluation is NO_GO
+        resting on the interim bias evidence.
+        """
+        from backtest.ou_divergence import run_ou_divergence_diagnosis
+
+        odds = gold_and_odds_2021_2024["odds"]
+        result = run_ou_divergence_diagnosis(odds=odds, include_sweep=False)
+
+        assert result["mode"] == "early_exit"
+        for skipped_key in (
+            "sweep",
+            "trial_registry",
+            "survivable",
+            "edge_magnitude",
+            "ev_preview",
+        ):
+            assert result[skipped_key].get("status") == "skipped_by_owner_early_exit", (
+                f"{skipped_key} must carry the early-exit sentinel"
+            )
+
+        # The always-on sections still compute on the early-exit path.
+        assert result["integrity"]["n_with_line"] == ANCHOR_N_WITH_LINE
+        assert (
+            abs(result["bias"]["pooled_line_clv"] - ANCHOR_OU_POOLED_LINE_CLV)
+            < _TOL_CLV
+        )
+
+        go_bar = result["go_bar_evaluation"]
+        assert go_bar["recommendation"] == "NO_GO"
+        assert go_bar["rests_on_full_sweep"] is False
+
+    def test_orchestrator_determinism_both_modes(self, gold_and_odds_2021_2024) -> None:
+        """Two run_ou_divergence_diagnosis() runs are value-identical, for BOTH closeout modes.
+
+        The primary anti-rot guard (D26-15): the doc's load-bearing numbers cannot silently drift
+        because paired full-orchestrator runs reproduce them. Guarded for include_sweep=True AND
+        include_sweep=False so both the PROCEED and the EARLY-EXIT closeout are determinism-locked.
+        """
+        from backtest.ou_divergence import run_ou_divergence_diagnosis
+
+        odds = gold_and_odds_2021_2024["odds"]
+
+        for include_sweep in (True, False):
+            run_a = run_ou_divergence_diagnosis(odds=odds, include_sweep=include_sweep)
+            run_b = run_ou_divergence_diagnosis(odds=odds, include_sweep=include_sweep)
+
+            # The per-game bias frame is the load-bearing slice -- assert it value-identical.
+            frame_a = (
+                run_a["bias"]["per_game"].sort_values("game_id").reset_index(drop=True)
+            )
+            frame_b = (
+                run_b["bias"]["per_game"].sort_values("game_id").reset_index(drop=True)
+            )
+            pd.testing.assert_frame_equal(frame_a, frame_b)
+
+            # The headline scalars + the go-bar recommendation must match exactly.
+            assert run_a["bias"]["pooled_line_clv"] == run_b["bias"]["pooled_line_clv"]
+            assert (
+                run_a["debiased"]["pooled_debiased_line_clv"]
+                == run_b["debiased"]["pooled_debiased_line_clv"]
+            )
+            assert (
+                run_a["go_bar_evaluation"]["recommendation"]
+                == run_b["go_bar_evaluation"]["recommendation"]
+            )
+            assert run_a["mode"] == run_b["mode"]
+
+            if include_sweep:
+                # The full path: the survivable classification + n_trials must be deterministic.
+                assert (
+                    run_a["trial_registry"]["n_trials"]
+                    == run_b["trial_registry"]["n_trials"]
+                )
+                assert (
+                    run_a["survivable"]["any_survivable"]
+                    == run_b["survivable"]["any_survivable"]
+                )
+
     # -- debiased re-score: prior-seasons-only estimation (D26-18) --------------------------
 
     def test_debiased_prior_season_only(self, gold_and_odds_2021_2024) -> None:

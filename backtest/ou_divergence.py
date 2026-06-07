@@ -83,6 +83,7 @@ __all__ = [
     "extended_bucket_sweep",
     "integrity_preamble",
     "name_survivable_subpopulation",
+    "run_ou_divergence_diagnosis",
     "throwaway_ev_preview",
 ]
 
@@ -1377,4 +1378,230 @@ def throwaway_ev_preview(
         "devig_method": devig_method,
         "breakeven": round(OU_BREAKEVEN_HIT_RATE, 4),
         "disclaimer": _EV_DISCLAIMER,
+    }
+
+
+# ---------------------------------------------------------------------------
+# (6) Top-level orchestrator (D26-15) -- the single re-runnable diagnosis entry
+# ---------------------------------------------------------------------------
+
+# The sentinel a skipped (early-exit) section carries instead of computed numbers, so a
+# downstream consumer (the doc, the doc-drift test) can detect the early-exit branch without
+# crashing on a missing key.
+_EARLY_EXIT_SENTINEL: dict[str, Any] = {"status": "skipped_by_owner_early_exit"}
+
+# The three pre-registered go-bar criteria keys (D26-13/16), in the order the doc presents them.
+_GO_BAR_CRITERIA = ("corrected_significance", "structural_bar", "ev_clearance")
+
+
+def _evaluate_go_bar(
+    survivable: dict[str, Any] | None,
+    ev_preview: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Mechanically weigh the assembled evidence against the pre-registered go bar (D26-13/16).
+
+    This is the HARNESS recommendation only -- the OWNER makes the final call at the Task 3
+    checkpoint (D26-13). The three pre-registered criteria (Plan 26-03 go bar, recorded verbatim
+    in the doc):
+      1. corrected_significance: a named sub-population's BH-FDR-adjusted p < 0.05.
+      2. structural_bar: N >= 175 AND the GRADED EDGE points the PROFITABLE direction in >= 3 of 4
+         seasons (the ``name_survivable_subpopulation`` "survivable" classification encodes exactly
+         this conjunction).
+      3. ev_clearance: the throwaway-EV estimate is positive under base assumptions AND remains
+         >= breakeven across the ENTIRE SD sensitivity band 12.5-14.5.
+
+    Recommendation mapping:
+      - any survivable sub-population AND full EV clearance across the band -> GO.
+      - any survivable sub-population BUT EV clears only at the optimistic end (or the survivable
+        edge is a restricted sub-population, not the whole stream) -> SCOPED_GO.
+      - no survivable sub-population -> NO_GO ("real but unpriceable at half-point").
+
+    On the early-exit path (survivable is None because the sweep was skipped), returns NO_GO with a
+    per-criterion "not evaluated -- owner early-exit on the bias evidence" note and a flag that the
+    recommendation rests on the interim bias evidence, not the full sweep.
+
+    Returns:
+        Dict with ``recommendation`` in {GO, SCOPED_GO, NO_GO}, ``criteria`` (per-criterion
+        pass/fail/None), ``rests_on_full_sweep`` (bool), and ``rationale`` (str).
+    """
+    if survivable is None:
+        return {
+            "recommendation": "NO_GO",
+            "criteria": {
+                c: {
+                    "pass": None,
+                    "note": "not evaluated -- owner early-exit on the bias evidence",
+                }
+                for c in _GO_BAR_CRITERIA
+            },
+            "rests_on_full_sweep": False,
+            "rationale": (
+                "Owner early-exit before the extended sweep: the go bar is not mechanically "
+                "evaluated. The harness recommendation rests on the interim bias evidence "
+                "(the systematic upward total bias + the 2021 sign-flip) alone; a NO-GO is the "
+                "conservative default until the sweep is run."
+            ),
+        }
+
+    survivable_candidates = [
+        c
+        for c in survivable.get("candidates", [])
+        if c.get("classification") == "survivable"
+    ]
+    any_survivable = bool(survivable_candidates)
+
+    # corrected_significance + structural_bar are jointly encoded by the "survivable"
+    # classification (BH-adj p < 0.05 AND N >= 175 AND profitable direction 3/4 seasons), but the
+    # doc weighs them as SEPARATE bar criteria, so report each from the candidate fields.
+    clears_significance = any(
+        c.get("clears_significance") for c in survivable_candidates
+    )
+    clears_structure = any(
+        c.get("clears_n_floor") and c.get("clears_structural_direction")
+        for c in survivable_candidates
+    )
+
+    # ev_clearance: positive base EV AND >= breakeven across the ENTIRE band (every grid point).
+    ev_clears = False
+    if ev_preview is not None and ev_preview is not _EARLY_EXIT_SENTINEL:
+        base = ev_preview.get("base", {})
+        base_positive = bool(base.get("ev") is not None and base["ev"] > 0.0)
+        band_above_breakeven = all(
+            row.get("above_breakeven") is True
+            for row in ev_preview.get("by_sd", {}).values()
+        ) and bool(ev_preview.get("by_sd"))
+        ev_clears = base_positive and band_above_breakeven
+
+    criteria = {
+        "corrected_significance": {
+            "pass": bool(clears_significance),
+            "note": (
+                "a named sub-population's BH-FDR-adjusted p < 0.05 across the trial registry"
+            ),
+        },
+        "structural_bar": {
+            "pass": bool(clears_structure),
+            "note": (
+                "N >= 175 AND graded-edge profitable direction in >= 3 of 4 seasons"
+            ),
+        },
+        "ev_clearance": {
+            "pass": bool(ev_clears),
+            "note": (
+                "throwaway-EV positive at base AND >= breakeven across the full 12.5-14.5 SD band"
+            ),
+        },
+    }
+
+    if any_survivable and clears_significance and clears_structure and ev_clears:
+        # The named edge is a RESTRICTED sub-population (the model's UNDER picks / high-total
+        # games), not the whole stream, so the strongest mechanical recommendation is SCOPED_GO.
+        recommendation = "SCOPED_GO"
+        rationale = (
+            "At least one sub-population clears all three pre-registered criteria, but the "
+            "survivable edge is a restricted sub-population (not the whole stream), so the "
+            "harness recommends SCOPED_GO -- with the burned-holdout caveat (D26-09) and the "
+            "exploratory flat-110 EV approximation weighed by the owner at the final checkpoint."
+        )
+    elif any_survivable and clears_significance and clears_structure:
+        recommendation = "SCOPED_GO"
+        rationale = (
+            "A sub-population clears corrected significance and the structural bar but the "
+            "throwaway-EV does not clear the entire SD band; +EV only at the optimistic end is "
+            "SCOPED_GO at best (D26-16)."
+        )
+    else:
+        recommendation = "NO_GO"
+        rationale = (
+            "No sub-population clears all three criteria; the edge is real-but-unpriceable at "
+            "half-point. NO-GO is the conservative, defensible recommendation."
+        )
+
+    return {
+        "recommendation": recommendation,
+        "criteria": criteria,
+        "rests_on_full_sweep": True,
+        "rationale": rationale,
+    }
+
+
+def run_ou_divergence_diagnosis(
+    preds: pd.DataFrame | None = None,
+    odds: pd.DataFrame | None = None,
+    include_sweep: bool = True,
+) -> dict[str, Any]:
+    """Assemble the full O/U divergence diagnosis into ONE structured result (D26-15).
+
+    This is the single re-runnable entry point the committed ``OU-DIVERGENCE-DIAGNOSIS.md`` doc and
+    its doc-drift guard run: every load-bearing number in the doc is reproducible from this
+    function's output, so the doc cannot silently drift (the determinism test is the anti-rot
+    guard). The orchestrator CALLS each section once and assembles the results; it never re-derives
+    a metric and never writes ``data/`` (the HARD BOUNDARY guards still hold on the extended module).
+
+    Args:
+        preds: Optional deployed-artifact OU prediction frame. When None, scored single-pass.
+        odds: Optional normalized closing odds. When None, loaded once via the engine loader and
+            reused across every section (so the assembly is a single load).
+        include_sweep: When True (the owner PROCEED path, D26-19), the full extended sweep + trial
+            registry + structural bar + edge-magnitude + EV preview all run and ``mode == "full"``.
+            When False (the owner EARLY-EXIT path), only the integrity preamble + bias + de-biased
+            sections are computed; the sweep/trial_registry/survivable/edge_magnitude/ev_preview
+            keys carry the skipped sentinel and ``mode == "early_exit"``. The orchestrator must NOT
+            crash when the sweep is skipped.
+
+    Returns:
+        Dict with keys: ``integrity``, ``bias``, ``debiased``, ``sweep``, ``trial_registry``,
+        ``survivable``, ``edge_magnitude``, ``ev_preview``, ``go_bar_evaluation``, and ``mode``.
+        On the early-exit path the sweep-dependent keys carry ``_EARLY_EXIT_SENTINEL``.
+    """
+    # Load the normalized closing odds ONCE and reuse it across every section (single assembly).
+    if odds is None:
+        from backtest.engine import BacktestEngine
+
+        odds = BacktestEngine()._load_closing_odds()
+
+    # Always-on sections (computed on both the full and the early-exit path).
+    integrity = integrity_preamble(odds_df=odds)
+    bias = bias_vs_anticipation(preds=preds, odds=odds)
+    debiased = debiased_rescore(preds=preds, odds=odds)
+
+    if include_sweep:
+        sweep_result = extended_bucket_sweep(preds=preds, odds=odds)
+        survivable = name_survivable_subpopulation(sweep_result)
+        edge_magnitude = edge_magnitude_sweep(preds=preds, odds=odds)
+
+        # The throwaway EV preview runs on the model's UNDER-pick sub-population (the survivable
+        # graded-edge direction the sweep named). Built from the with-line per-game frame so the
+        # preview's numbers tie to the sweep's, never a fresh re-score.
+        per_game, _, _ = _sweep_per_game(preds, odds)
+        under_subpop = per_game[~per_game["model_over"]].copy()
+        ev_preview = throwaway_ev_preview(under_subpop)
+
+        go_bar_evaluation = _evaluate_go_bar(survivable, ev_preview)
+        mode = "full"
+        sweep_section: dict[str, Any] = sweep_result["sweep"]
+        trial_registry: Any = {
+            "registry": sweep_result["trial_registry"],
+            "n_trials": sweep_result["n_trials"],
+        }
+    else:
+        sweep_section = _EARLY_EXIT_SENTINEL
+        trial_registry = _EARLY_EXIT_SENTINEL
+        survivable = _EARLY_EXIT_SENTINEL
+        edge_magnitude = _EARLY_EXIT_SENTINEL
+        ev_preview = _EARLY_EXIT_SENTINEL
+        go_bar_evaluation = _evaluate_go_bar(None, None)
+        mode = "early_exit"
+
+    return {
+        "integrity": integrity,
+        "bias": bias,
+        "debiased": debiased,
+        "sweep": sweep_section,
+        "trial_registry": trial_registry,
+        "survivable": survivable,
+        "edge_magnitude": edge_magnitude,
+        "ev_preview": ev_preview,
+        "go_bar_evaluation": go_bar_evaluation,
+        "mode": mode,
     }
