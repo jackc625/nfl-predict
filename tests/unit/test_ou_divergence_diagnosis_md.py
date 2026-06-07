@@ -162,3 +162,44 @@ class TestDiagnosisMdMatchesHarness:
         assert rec in ("GO", "SCOPED_GO", "NO_GO"), (
             f"bad harness recommendation {rec!r}"
         )
+
+
+class TestStateVerdict:
+    """The go/no-go verdict is recorded in .planning/STATE.md as a LOCKED Phase-27 input (D26-14).
+
+    This is the repo-precedent placement for the STATE-verdict assertion (Task 4): it lives in
+    THIS doc-drift module, not a second ``scripts/check_state_verdict.py`` throwaway. It is
+    skip-guarded because ``.planning/STATE.md`` is gitignored (commit_docs:false) and may be absent
+    on a clean CI checkout -- the working-tree edit is the deliverable, not a committed artifact.
+
+    Guards T-26-11 (repudiation of the verdict): the verdict + its basis MUST be present in STATE.md
+    as a recorded, LOCKED Phase-27 input, not left informal.
+    """
+
+    # One of the three pre-registered verdict tokens must appear in the Phase-26 entry.
+    _VERDICT_TOKENS = ("GO", "SCOPED GO", "NO-GO")
+
+    def test_state_md_records_phase26_verdict(self) -> None:
+        """STATE.md carries a Phase-26 verdict entry with one of the three verdict tokens."""
+        if not STATE_MD.exists():
+            pytest.skip(
+                f"STATE.md not present at {STATE_MD} (gitignored; absent on clean checkout)"
+            )
+
+        content = STATE_MD.read_text(encoding="utf-8")
+
+        # A Phase-26 verdict decision entry must exist (the D26-14 LOCKED Phase-27 input).
+        assert "D26-14" in content, (
+            "STATE.md is missing the D26-14 go/no-go verdict decision entry"
+        )
+
+        # At least one of the three pre-registered verdict tokens must appear in STATE.md.
+        assert any(tok in content for tok in self._VERDICT_TOKENS), (
+            "STATE.md does not record any of the verdict tokens "
+            f"{self._VERDICT_TOKENS!r} (the go/no-go ruling)"
+        )
+
+        # The verdict must be recorded as a LOCKED input to Phase 27 (not informal).
+        assert "LOCKED" in content and "Phase 27" in content, (
+            "STATE.md must record the verdict as a LOCKED input to Phase 27 (D26-14)"
+        )
