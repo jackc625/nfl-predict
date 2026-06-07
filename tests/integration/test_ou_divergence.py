@@ -299,6 +299,72 @@ class TestOuDivergence:
         frame_b = run_b["per_game"].sort_values("game_id").reset_index(drop=True)
         pd.testing.assert_frame_equal(frame_a, frame_b)
 
+    # -- debiased re-score: prior-seasons-only estimation (D26-18) --------------------------
+
+    def test_debiased_prior_season_only(self, gold_and_odds_2021_2024) -> None:
+        """The de-biased read covers 2022-2024 (NOT 2021) with prior-seasons-only bias estimation.
+
+        Acceptance (D26-18): season 2021 is absent; the 2022 bias-subtracted equals the 2021-only
+        mean(model_total - actual); the output carries an interpretation, a pooled value, and the
+        no-prior-seasons caveat.
+        """
+        from backtest.diagnose import score_deployed_artifacts
+        from backtest.ou_divergence import debiased_rescore
+        from models.clv import compute_clv_for_predictions
+
+        odds = gold_and_odds_2021_2024["odds"]
+        result = debiased_rescore(preds=None, odds=odds)
+
+        per_season = result["per_season_debiased_line_clv"]
+        assert set(per_season) == {2022, 2023, 2024}, (
+            f"de-biased read must cover 2022-2024 only, got {sorted(per_season)}"
+        )
+        assert 2021 not in per_season, (
+            "2021 must be absent (no prior seasons to de-bias from)"
+        )
+        assert result["interpretation"] in (
+            "nothing underneath",
+            "residual anticipation",
+        )
+        assert result["pooled_debiased_line_clv"] is not None
+        assert "no prior seasons" in result["caveat"].lower()
+
+        # The 2022 bias must equal the 2021-ONLY mean(model_total - actual) (walk-forward).
+        preds = score_deployed_artifacts("ou")
+        clv = compute_clv_for_predictions(preds, odds, "ou")
+        valid = clv[clv["has_closing_odds"]]
+        s2021 = valid[valid["season"] == 2021]
+        expected_bias_2022 = float((s2021["model_total"] - s2021["actual"]).mean())
+        assert (
+            abs(result["per_season_bias_subtracted"][2022] - expected_bias_2022) < 1e-9
+        ), (
+            "2022 bias must be estimated on 2021 ONLY (no season-2022 row in its own estimate)"
+        )
+
+    def test_debiased_uses_production_clv_no_hand_roll(self) -> None:
+        """The de-biased re-score recomputes line_clv via the production CLV function, not by hand.
+
+        Source-grep: ``debiased_rescore`` must call ``compute_clv_for_predictions`` and must NOT
+        contain a hand-rolled ``model_total - closing_total`` (or ``- total``) subtraction outside
+        the production CLV call (Codex MEDIUM: CLV reuse, not hand-coding).
+        """
+        import inspect
+
+        from backtest.ou_divergence import debiased_rescore
+
+        source = inspect.getsource(debiased_rescore)
+        assert "compute_clv_for_predictions" in source, (
+            "debiased_rescore must recompute line_clv via the production CLV function"
+        )
+        for hand_rolled in (
+            "model_total - closing_total",
+            "- closing_total",
+            "model_total - total",
+        ):
+            assert hand_rolled not in source, (
+                f"debiased_rescore must not hand-roll CLV ({hand_rolled!r})"
+            )
+
 
 def test_fixture_uses_normalized_odds_loader() -> None:
     """The fixture reuses the normalized-odds loader, not the raw odds parquet (LAR->LA mapping)."""

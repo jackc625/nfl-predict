@@ -56,9 +56,11 @@ logger = get_logger(__name__)
 # Re-export the consumed significance constants so callers/tests do not redefine them.
 __all__ = [
     "CLV_COLUMN_FOR",
+    "DEBIAS_RESIDUAL_THRESHOLD",
     "DEPLOYED_OU_ARTIFACT",
     "SIGNIFICANCE_ALPHA",
     "bias_vs_anticipation",
+    "debiased_rescore",
     "integrity_preamble",
 ]
 
@@ -119,6 +121,13 @@ COVERAGE_FLOOR = 0.80
 # SD sensitivity band for the EV preview (D26-16): the reproduced pooled residual SD ~12.95 is
 # centered in-band. (Plan 26-03 consumes this in the EV preview.)
 SD_SENSITIVITY_BAND = (12.5, 14.5)
+
+# Pre-registered residual threshold for the de-biased re-score interpretation (D26-18): if the
+# pooled prior-season bias-adjusted line_clv collapses below this magnitude (in total points), the
+# +1.11 was "nothing underneath" the bias (strong no-go evidence); otherwise "residual
+# anticipation" remains (previews a Phase-27 bias-correction design). A mechanical threshold the
+# harness applies -- NOT adjusted after seeing results (forking-paths guard).
+DEBIAS_RESIDUAL_THRESHOLD = 0.25
 
 
 # ---------------------------------------------------------------------------
@@ -379,4 +388,117 @@ def bias_vs_anticipation(
         "per_game": per_game,
         "bias_reading": bias_reading,
         "anticipation_measurable": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# (2) Prior-season bias-adjusted re-score (D26-18)
+# ---------------------------------------------------------------------------
+
+
+def debiased_rescore(
+    preds: pd.DataFrame | None = None,
+    odds: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """Prior-season bias-adjusted deployed-model read (D26-18, walk-forward estimation only).
+
+    LOCKED decision D26-18: "walk-forward estimation only" -- the correction for season N is
+    estimated ONLY on seasons < N. This is NOT a true walk-forward model RE-FIT (the deployed
+    single-pass frame is corrected, not re-trained); per the Codex review the output is labeled a
+    "prior-season bias-adjusted deployed-model read." Analysis-layer only: no model artifact is
+    touched, no ``data/`` is written, and production ``models/clv.py`` is byte-identical.
+
+    For each season N in 2022-2024: estimate the model's mean total bias as the prior-seasons
+    mean of (predicted total minus actual total) (seasons < N only), construct a CORRECTED
+    prediction-frame copy whose predicted total has the prior-season bias subtracted off for
+    season N, then recompute that season's line_clv by CALLING the production CLV function
+    ``compute_clv_for_predictions`` on the corrected copy (the production definition is reused
+    verbatim -- the harness never re-derives the CLV subtraction by hand). Season 2021 has no
+    prior seasons and is EXCLUDED from the de-biased read (the no-prior-seasons caveat is recorded).
+
+    The ``interpretation`` is a MECHANICAL pre-registered threshold (D26-18): if
+    ``abs(pooled_debiased_line_clv) < DEBIAS_RESIDUAL_THRESHOLD`` (0.25 points) the +1.11 was
+    "nothing underneath" the bias (strong no-go evidence); otherwise "residual anticipation"
+    remains (previews a Phase-27 bias-correction design).
+
+    Args:
+        preds: Optional deployed-artifact OU prediction frame. When None, scored single-pass.
+        odds: Optional normalized closing odds. When None, loaded via the engine loader.
+
+    Returns:
+        Dict with: ``per_season_debiased_line_clv`` (dict[int season -> {n, debiased_line_clv,
+        bias_subtracted}] for 2022-2024 ONLY), ``pooled_debiased_line_clv`` (float over 2022-2024),
+        ``per_season_bias_subtracted`` (dict[int season -> float]), ``caveat`` (str mentioning the
+        no-prior-seasons 2021 exclusion), ``interpretation`` ("nothing underneath" |
+        "residual anticipation"), ``residual_threshold`` (the pre-registered cut), and
+        ``estimation`` (the D26-18 "walk-forward estimation only" decision language, verbatim).
+    """
+    if odds is None:
+        from backtest.engine import BacktestEngine
+
+        odds = BacktestEngine()._load_closing_odds()
+
+    preds = _deployed_ou_preds(preds)
+    valid = _ou_clv_valid(preds, odds)
+
+    # The de-biased read covers seasons WITH at least one prior season (2022-2024); 2021 excluded.
+    debias_seasons = [
+        s
+        for s in sorted(int(s) for s in valid["season"].unique())
+        if s > HOLDOUT_FIRST_SEASON
+    ]
+
+    per_season_debiased: dict[int, dict[str, Any]] = {}
+    per_season_bias_subtracted: dict[int, float] = {}
+    pooled_debiased_values: list[float] = []
+
+    for season in debias_seasons:
+        # Bias estimated on PRIOR seasons ONLY (walk-forward; no season N row in its own estimate).
+        prior = valid[valid["season"] < season]
+        bias_n = float((prior["model_total"] - prior["actual"]).mean())
+
+        # CORRECTED prediction-frame copy for season N: predicted total with bias_N subtracted off.
+        # Recompute line_clv by CALLING the production CLV function (the subtraction is never
+        # re-derived by hand here -- the production definition is reused verbatim).
+        season_game_ids = valid[valid["season"] == season]["game_id"]
+        corrected = preds[preds["game_id"].isin(season_game_ids)].copy()
+        corrected["model_total"] = corrected["model_total"] - bias_n
+        rescored = compute_clv_for_predictions(corrected, odds, "ou")
+        rescored_valid = rescored[rescored["has_closing_odds"]]
+
+        season_clv = float(rescored_valid["line_clv"].mean())
+        per_season_debiased[season] = {
+            "n": len(rescored_valid),
+            "debiased_line_clv": season_clv,
+            "bias_subtracted": bias_n,
+        }
+        per_season_bias_subtracted[season] = bias_n
+        pooled_debiased_values.extend(rescored_valid["line_clv"].tolist())
+
+    pooled_debiased_line_clv = (
+        float(sum(pooled_debiased_values) / len(pooled_debiased_values))
+        if pooled_debiased_values
+        else None
+    )
+
+    interpretation = (
+        "nothing underneath"
+        if pooled_debiased_line_clv is not None
+        and abs(pooled_debiased_line_clv) < DEBIAS_RESIDUAL_THRESHOLD
+        else "residual anticipation"
+    )
+
+    caveat = (
+        "Season 2021 is excluded from the de-biased read: it has no prior seasons to estimate a "
+        "bias from (walk-forward estimation only, D26-18). The de-biased read covers 2022-2024."
+    )
+
+    return {
+        "per_season_debiased_line_clv": per_season_debiased,
+        "pooled_debiased_line_clv": pooled_debiased_line_clv,
+        "per_season_bias_subtracted": per_season_bias_subtracted,
+        "caveat": caveat,
+        "interpretation": interpretation,
+        "residual_threshold": DEBIAS_RESIDUAL_THRESHOLD,
+        "estimation": "walk-forward estimation only",
     }
