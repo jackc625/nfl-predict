@@ -716,12 +716,20 @@ def _bucket_masks(per_game: pd.DataFrame) -> dict[str, dict[str, pd.Series]]:
     masks: dict[str, dict[str, pd.Series]] = {}
 
     # key-total distance bands (0.0, 0.5, 1.0, >=1.5 from the nearest integer total).
+    # Derive the bucket edges from the LOCKED KEY_TOTAL_DISTANCE_BANDS constant so the
+    # pre-registration is enforced by code, not decorative: each edge is the midpoint between
+    # adjacent band centers, i.e. a 0.25-wide capture window around each pre-registered distance.
+    # Editing KEY_TOTAL_DISTANCE_BANDS now provably shifts these masks (forking-paths guard, WR-02).
+    b0, b1, b2, b3 = KEY_TOTAL_DISTANCE_BANDS
+    edge_01 = (b0 + b1) / 2  # 0.25
+    edge_12 = (b1 + b2) / 2  # 0.75
+    edge_23 = (b2 + b3) / 2  # 1.25
     dist = per_game["key_total_distance"]
     masks["key_total_distance"] = {
-        "0.0": (dist < 0.25),
-        "0.5": (dist >= 0.25) & (dist < 0.75),
-        "1.0": (dist >= 0.75) & (dist < 1.25),
-        ">=1.5": (dist >= 1.25),
+        "0.0": (dist < edge_01),
+        "0.5": (dist >= edge_01) & (dist < edge_12),
+        "1.0": (dist >= edge_12) & (dist < edge_23),
+        ">=1.5": (dist >= edge_23),
     }
 
     # over vs under (split by model bet direction).
@@ -1299,9 +1307,10 @@ def throwaway_ev_preview(
 
     Returns:
         Dict with ``per_bet`` (one row per game: game_id, bet_side, p_side, ev), ``base`` (the base
-        EV summary), ``by_sd`` (EV summary at each SD in SD_PREVIEW_GRID plus the in-harness fit),
-        ``fit_sd`` (the in-harness residual SD), ``devig_method``, ``breakeven`` (0.5238), and
-        ``disclaimer`` (containing "EXPLORATORY").
+        EV summary), ``by_sd`` (EV summary at each SD in SD_PREVIEW_GRID -- the pre-registered band
+        ONLY, never merged with the fit), ``fit_sd_summary`` (the EV summary at the in-harness fit
+        SD, or None when the fit is NaN), ``fit_sd`` (the in-harness residual SD), ``devig_method``,
+        ``breakeven`` (0.5238), and ``disclaimer`` (containing "EXPLORATORY").
     """
     frame = subpopulation_frame.copy()
     actual = frame["actual"].to_numpy(dtype=float)
@@ -1362,17 +1371,20 @@ def throwaway_ev_preview(
             ),
         }
 
-    # EV across the pre-registered SD band PLUS the in-harness fit SD.
+    # EV across the pre-registered SD band, kept STRICTLY to SD_PREVIEW_GRID. The in-harness fit
+    # SD is reported separately as fit_sd_summary so a fit value that rounds onto a grid point can
+    # never overwrite (and silently shrink) the band the go bar evaluates over by_sd (WR-03). The
+    # go bar's ev_clearance therefore checks exactly the pre-registered 12.5-14.5 grid.
     by_sd: dict[float, dict[str, Any]] = {
         sd_point: _summary(sd_point) for sd_point in SD_PREVIEW_GRID
     }
-    if not np.isnan(fit_sd):
-        by_sd[round(fit_sd, 4)] = _summary(fit_sd)
+    fit_sd_summary = _summary(fit_sd) if not np.isnan(fit_sd) else None
 
     return {
         "per_bet": per_bet,
         "base": _summary(base_sd),
         "by_sd": by_sd,
+        "fit_sd_summary": fit_sd_summary,
         "fit_sd": fit_sd,
         "sd_band": SD_SENSITIVITY_BAND,
         "devig_method": devig_method,
