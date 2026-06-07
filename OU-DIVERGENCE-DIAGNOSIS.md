@@ -1,7 +1,7 @@
 # O/U CLV-to-ROI Divergence Diagnosis (Phase 26, OUM-01)
 
 **Status:** FULL closeout (owner chose PROCEED / run at the D26-19 interim checkpoint).
-**Verdict:** PENDING -- to be recorded by the owner at the D26-13 final go/no-go checkpoint (see Section 8).
+**Verdict:** GO (D26-13, owner-attended final checkpoint, 2026-06-07) -- see Section 8 for the full ruling, basis, and rationale.
 **Deployed artifact under diagnosis:** `ou_20260326_163930` (the RETAINED v1.0 O/U model, D25-14).
 **Window:** 2021-2024 canonical Elo gold, single-pass over the deployed artifact (D26-01).
 **Reproducibility:** Every load-bearing number below is reproducible from
@@ -310,35 +310,55 @@ Section 8.
 
 ---
 
-## 8. Verdict (D26-13/14) -- TO BE RECORDED BY THE OWNER
+## 8. Verdict (D26-13/14) -- RECORDED BY THE OWNER
 
-> PENDING. This section is filled at the D26-13 final owner-attended checkpoint. The owner reads
-> Sections 1-7, weighs the evidence against the pre-registered go bar (Section 7), and rules. The
-> agent records the ruling verbatim here -- it does NOT decide the verdict.
+> RECORDED at the D26-13 final owner-attended checkpoint (2026-06-07). The owner read Sections 1-7,
+> weighed the evidence against the pre-registered go bar (Section 7), and ruled. The agent recorded
+> the ruling verbatim here -- it did NOT decide the verdict.
 
-**Verdict:** _PENDING -- owner decision at the D26-13 checkpoint._
+**Verdict:** GO.
 
-**Basis:** _PENDING -- full sweep (the owner chose PROCEED / run at the D26-19 interim checkpoint,
-so this closeout rests on the FULL extended sweep, not an interim early exit)._
+**Basis:** FULL SWEEP. The owner chose PROCEED / run at the D26-19 interim checkpoint (26-02
+OWNER_DECISION: INTERIM_DECISION=PROCEED, SWEEP_DISPOSITION=run), so this verdict rests on the
+COMPLETE extended sweep -- the full 36-trial BH-FDR registry, the D26-11 structural bar on
+graded-edge direction, and the band-wide throwaway-EV preview -- NOT on the interim bias evidence
+alone.
 
-**Rationale:** _PENDING -- owner's written rationale._
+**Rationale (owner, recorded verbatim):** Owner ruled GO. The pre-registered go bar was met in full:
+two named sub-populations (the model's UNDER picks, n=297, graded 0.5758; and high-total games,
+n=326, graded 0.5521) cleared all three criteria in BOTH raw and blended streams -- corrected
+significance (BH-FDR-adjusted p < 0.05 across the 36-trial registry), the D26-11 structural bar
+(N >= 175 and profitable graded direction in 4/4 seasons), and EV clearance (positive throwaway EV
+across the entire 12.5-14.5 SD sensitivity band, not just the optimistic end). The owner judged the
+in-sample survival sufficient to proceed to Phase 27 monetization and accepts the documented caveats
+-- the partially-burned 2023-2024 holdout (D26-09), the exploratory flat-110 normal-approximation EV
+preview, and the fact that the survivable slice is the inverse of the model's dominant over-bias --
+as risks to be managed WITHIN Phase 27 rather than blockers to entering it. The dominant +1.11
+over-bias slice itself remains the CLV-positive / ROI-negative trap (over_under=over, graded 0.4747,
+suggestive_not_survivable) and is explicitly NOT the basis for GO.
 
-**Verdict semantics (D26-14), for reference when recording:**
-- **GO** -- Phase 27 proceeds as roadmapped for the named population/stream.
+**LOCKED Phase-27 input (D26-14):** GO. Phase 27 (O/U Monetization: EV Chain, BetSelector & Sizing,
+OUM-02..06 / BET-01/02/03) proceeds. The candidate edge it builds on is the named survivable
+sub-population set: the model's UNDER picks (over_under=under, n=297, graded 0.5758, 4/4 seasons) and
+high-total games (totals_regime=high, n=326, graded 0.5521, 4/4 seasons), in BOTH the raw and the
+blended stream. Phase 27 MUST treat the 2023-2024 numbers as in-sample-contaminated (the burned
+holdout, Section 6) and re-establish a clean out-of-sample estimate -- a fresh holdout window, or the
+Phase-30 widened-gold re-fit's holdout (OUM-03). The EV chain Phase 27 builds replaces the
+exploratory flat-110 preview (Section 5) with the real empirically-locked residual-SD devig (OUM-02);
+the preview is NOT carried forward as a production number.
+
+**Verdict semantics (D26-14), for reference:**
+- **GO** -- Phase 27 proceeds as roadmapped for the named population/stream. (THIS verdict.)
 - **SCOPED GO** -- Phase 27 proceeds RESTRICTED to the named sub-population; that restriction is
-  recorded as a LOCKED input to Phase 27 planning. (The harness-named candidate is the model's
-  UNDER picks / high-total games, both streams.)
+  recorded as a LOCKED input to Phase 27 planning. (Not the ruling; recorded for completeness.)
 - **NO-GO** -- no monetization code is built; this doc records the verdict + a RECOMMENDED redirect
-  (the actual roadmap change is a SEPARATE owner decision through the normal planning flow -- this
-  phase does NOT perform scope surgery on the milestone). On a NO-GO, the Researcher Observation
-  paragraph below is completed to seed Phase 28/29.
+  (the actual roadmap change is a SEPARATE owner decision through the normal planning flow). On a
+  NO-GO, a Researcher Observation paragraph seeds Phase 28/29. (Not the ruling.)
 
-**Researcher Observation (completed ONLY on a NO-GO, Gemini suggestion -- analysis-layer observation
-only, no new feature work this phase):** _PENDING -- on a NO-GO, note here whether any simple raw
-signal (e.g. the bet-direction asymmetry, the totals-regime split, or the residual structure)
-correlates with the residuals in a way that could seed a Phase 28/29 signal. The most salient
-candidate from this diagnosis: the model's UNDER picks / high-total games grade above breakeven 4/4
-seasons while its dominant OVER picks lose -- a directional asymmetry worth a leakage-safe re-look._
+The Researcher Observation paragraph is completed ONLY on a NO-GO. This is a GO; it is intentionally
+omitted. The directional asymmetry it would have flagged (UNDER picks / high-total games grade above
+breakeven 4/4 seasons while the dominant OVER picks lose) is instead carried forward as the LOCKED
+Phase-27 monetization candidate above.
 
 ---
 
