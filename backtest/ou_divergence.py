@@ -41,7 +41,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import false_discovery_control
+from scipy.stats import false_discovery_control, norm
 
 from backtest.diagnose import (
     CLV_COLUMN_FOR,
@@ -82,6 +82,8 @@ __all__ = [
     "edge_magnitude_sweep",
     "extended_bucket_sweep",
     "integrity_preamble",
+    "name_survivable_subpopulation",
+    "throwaway_ev_preview",
 ]
 
 # Backtest holdout window (walk-forward, 2021-2024). Matches BacktestConfig defaults.
@@ -1145,3 +1147,220 @@ def edge_magnitude_sweep(
     monotone_improving = all(b >= a for a, b in itertools.pairwise(rates))
 
     return {"grid": grid, "monotone_improving": monotone_improving}
+
+
+# ---------------------------------------------------------------------------
+# (4) Structural bar for NAMING a sub-population (D26-11)
+# ---------------------------------------------------------------------------
+
+
+def name_survivable_subpopulation(sweep_result: dict[str, Any]) -> dict[str, Any]:
+    """Classify each trial-registry candidate against the D26-11 structural bar.
+
+    Given the ``extended_bucket_sweep`` result, a bucket is named "survivable" ONLY if it clears
+    ALL of:
+      - BH-adjusted p < SIGNIFICANCE_ALPHA (0.05) across the full trial-registry denominator,
+      - N >= N_FLOOR (175) graded bets across the 2021-2024 window, AND
+      - the GRADED EDGE points the same direction in >= MIN_SEASONS_SAME_DIRECTION (3) of the 4
+        seasons individually.
+
+    The per-season direction is the GRADED-EDGE direction (the season's graded ROI sign / hit-rate
+    above-or-below the 0.5238 breakeven) -- it consumes the ``graded_edge_direction_by_season``
+    field the sweep recorded, NOT line_clv sign (pre-registered in the Plan 26-03 go bar per the
+    Codex MED fix: ROI/EV direction leads because the phase goal is ROI divergence; a CLV-only
+    direction can name a false edge -- the very pitfall this phase diagnoses).
+
+    A bucket that clears raw significance but fails BH-FDR correction OR the structural bar is
+    classified "suggestive_not_survivable" -- a finding that dies under correction is explicitly
+    "suggestive, not survivable" (D26-10), not named.
+
+    Args:
+        sweep_result: The dict returned by ``extended_bucket_sweep`` (carries ``trial_registry``).
+
+    Returns:
+        Dict with ``candidates`` (a list, one per registry entry that has a testable raw p, each
+        carrying cut_name/bucket_label/stream/raw_p/adjusted_p/n/direction/structural fields and a
+        ``classification`` in {"survivable", "suggestive_not_survivable"}), ``any_survivable``
+        (bool), and ``n_trials`` (the BH-FDR denominator, echoed for the doc).
+    """
+    registry = sweep_result["trial_registry"]
+    candidates: list[dict[str, Any]] = []
+
+    for entry in registry:
+        if entry["raw_p"] is None:
+            continue  # unavailable / insufficient-sample entries are never named candidates
+
+        direction = entry["graded_edge_direction_by_season"]
+        # Same-direction agreement: the count of seasons sharing the modal non-zero sign.
+        pos = sum(1 for d in direction if d > 0)
+        neg = sum(1 for d in direction if d < 0)
+        seasons_same_direction = max(pos, neg)
+
+        adjusted_p = entry["adjusted_p"]
+        clears_significance = adjusted_p is not None and adjusted_p < SIGNIFICANCE_ALPHA
+        clears_n = entry["n"] >= N_FLOOR
+        clears_structure = seasons_same_direction >= MIN_SEASONS_SAME_DIRECTION
+
+        is_survivable = clears_significance and clears_n and clears_structure
+        classification = "survivable" if is_survivable else "suggestive_not_survivable"
+
+        candidates.append(
+            {
+                "cut_name": entry["cut_name"],
+                "bucket_label": entry["bucket_label"],
+                "stream": entry["stream"],
+                "raw_p": entry["raw_p"],
+                "adjusted_p": adjusted_p,
+                "n": entry["n"],
+                "hit_rate": entry["hit_rate"],
+                "line_clv_mean": entry["line_clv_mean"],
+                "direction": direction,
+                "seasons_same_direction": seasons_same_direction,
+                "clears_significance": clears_significance,
+                "clears_n_floor": clears_n,
+                "clears_structural_direction": clears_structure,
+                "classification": classification,
+            }
+        )
+
+    any_survivable = any(c["classification"] == "survivable" for c in candidates)
+    return {
+        "candidates": candidates,
+        "any_survivable": any_survivable,
+        "n_trials": sweep_result.get("n_trials"),
+        "n_floor": N_FLOOR,
+        "min_seasons_same_direction": MIN_SEASONS_SAME_DIRECTION,
+        "significance_alpha": SIGNIFICANCE_ALPHA,
+        "direction_metric": (
+            "graded-edge direction (graded hit-rate vs 0.5238 breakeven at -110), NOT line_clv "
+            "sign (D26-11 pre-registered metric, Codex MED fix)"
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# (5) Throwaway EV preview (D26-07/16) -- EXPLORATORY, never imported by production
+# ---------------------------------------------------------------------------
+
+_EV_DISCLAIMER = (
+    "EXPLORATORY throwaway EV preview (D26-07/16). Fits a residual SD in-harness, uses a "
+    "side-specific normal-approximation cover probability with the half-point applied against "
+    "the bet side, and a flat -110 devig fallback. NOT a production EV estimate -- Phase 27 "
+    "(OUM-02) builds the real chain from scratch with an empirically-locked residual SD. This "
+    "function is never imported by production code."
+)
+
+
+def throwaway_ev_preview(
+    subpopulation_frame: pd.DataFrame,
+    sd: float | None = None,
+) -> dict[str, Any]:
+    """Exploratory per-bet EV preview for a candidate sub-population (D26-07/16).
+
+    Reuses the residual-SD -> ``norm.cdf`` cover-probability MATH PATTERN from the production O/U
+    total-distribution converter WITHOUT importing that class (coupling a throwaway to production
+    is forbidden, T-26-08). Computes a SIDE-SPECIFIC cover probability with
+    the half-point applied AGAINST the bet side (the Codex/consensus fix):
+      - OVER bet (model_total > closing_total):  p_side = P(actual > closing_total + 0.5)
+                                                        = 1 - norm.cdf((closing_total + 0.5 - model_total) / sd)
+      - UNDER bet (model_total <= closing_total): p_side = P(actual < closing_total - 0.5)
+                                                        = norm.cdf((closing_total - 0.5 - model_total) / sd)
+
+    Devig: prefers real over/under juice if present on the frame (an ``over_odds``/``under_odds``
+    column sourced from nflreadpy/bronze); else falls back to a flat -110 devig (breakeven 0.5238).
+    The method used is reported in ``devig_method``. Per-bet EV at -110 is
+    ``p_side * (100/110) - (1 - p_side)``.
+
+    EV is reported under the base assumption (the in-harness fit SD when ``sd`` is None, else the
+    supplied SD) AND across the pre-registered SD_PREVIEW_GRID (12.5 .. 14.5) so the go bar can read
+    the band (D26-16: +EV only at the optimistic end -> SCOPED GO at best).
+
+    Args:
+        subpopulation_frame: A per-game frame with at least ``model_total``, ``total`` (the closing
+            total), and ``actual`` (the realized total). Optional ``over_odds``/``under_odds`` for a
+            real devig.
+        sd: Optional residual SD to use for the base assumption. When None, fit in-harness as
+            ``np.std(actual - model_total, ddof=1)``.
+
+    Returns:
+        Dict with ``per_bet`` (one row per game: game_id, bet_side, p_side, ev), ``base`` (the base
+        EV summary), ``by_sd`` (EV summary at each SD in SD_PREVIEW_GRID plus the in-harness fit),
+        ``fit_sd`` (the in-harness residual SD), ``devig_method``, ``breakeven`` (0.5238), and
+        ``disclaimer`` (containing "EXPLORATORY").
+    """
+    frame = subpopulation_frame.copy()
+    actual = frame["actual"].to_numpy(dtype=float)
+    model_total = frame["model_total"].to_numpy(dtype=float)
+    closing_total = frame["total"].to_numpy(dtype=float)
+
+    fit_sd = (
+        float(np.std(actual - model_total, ddof=1)) if len(frame) > 1 else float("nan")
+    )
+    base_sd = sd if sd is not None else fit_sd
+
+    # Devig method: real over/under juice if present, else flat -110.
+    has_real_juice = "over_odds" in frame.columns and "under_odds" in frame.columns
+    devig_method = "real_nflreadpy" if has_real_juice else "flat_-110"
+
+    def _p_side(
+        model_t: np.ndarray, closing_t: np.ndarray, use_sd: float
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Side-specific cover probability with the half-point applied against the bet side."""
+        is_over = model_t > closing_t
+        # OVER: P(actual > closing + 0.5); UNDER: P(actual < closing - 0.5).
+        over_p = 1.0 - norm.cdf((closing_t + _EV_SLIPPAGE_POINTS - model_t) / use_sd)
+        under_p = norm.cdf((closing_t - _EV_SLIPPAGE_POINTS - model_t) / use_sd)
+        p_side = np.where(is_over, over_p, under_p)
+        return p_side, is_over
+
+    def _ev_from_p(p_side: np.ndarray) -> np.ndarray:
+        """Per-bet EV at -110: p_side * payout - (1 - p_side)."""
+        return p_side * _MINUS_110_PAYOUT - (1.0 - p_side)
+
+    # Per-bet detail at the base SD (for the side-specific-slippage numeric check + the doc table).
+    base_p_side, base_is_over = _p_side(model_total, closing_total, base_sd)
+    base_ev = _ev_from_p(base_p_side)
+    game_ids = (
+        frame["game_id"].tolist()
+        if "game_id" in frame.columns
+        else [f"row_{i}" for i in range(len(frame))]
+    )
+    per_bet = [
+        {
+            "game_id": game_ids[i],
+            "bet_side": "over" if base_is_over[i] else "under",
+            "p_side": float(base_p_side[i]),
+            "ev": float(base_ev[i]),
+        }
+        for i in range(len(frame))
+    ]
+
+    def _summary(use_sd: float) -> dict[str, Any]:
+        p_side, _ = _p_side(model_total, closing_total, use_sd)
+        ev = _ev_from_p(p_side)
+        return {
+            "sd": use_sd,
+            "mean_p_side": float(np.mean(p_side)) if len(p_side) else None,
+            "ev": float(np.mean(ev)) if len(ev) else None,
+            "above_breakeven": (
+                bool(np.mean(p_side) >= OU_BREAKEVEN_HIT_RATE) if len(p_side) else None
+            ),
+        }
+
+    # EV across the pre-registered SD band PLUS the in-harness fit SD.
+    by_sd: dict[float, dict[str, Any]] = {
+        sd_point: _summary(sd_point) for sd_point in SD_PREVIEW_GRID
+    }
+    if not np.isnan(fit_sd):
+        by_sd[round(fit_sd, 4)] = _summary(fit_sd)
+
+    return {
+        "per_bet": per_bet,
+        "base": _summary(base_sd),
+        "by_sd": by_sd,
+        "fit_sd": fit_sd,
+        "sd_band": SD_SENSITIVITY_BAND,
+        "devig_method": devig_method,
+        "breakeven": round(OU_BREAKEVEN_HIT_RATE, 4),
+        "disclaimer": _EV_DISCLAIMER,
+    }
