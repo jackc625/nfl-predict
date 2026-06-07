@@ -153,9 +153,14 @@ class TestDiagnosisMdMatchesHarness:
         )
 
         # 4. n_trials (the BH-FDR denominator) -- only on the full path.
+        # Anchor on the labeled line, not the bare "36": a substring "36" is also satisfied by the
+        # unrelated 0.5036 earlier in the doc, so it would not actually guard against the
+        # n_trials anchor drifting or being deleted (WR-01).
         n_trials = result["trial_registry"]["n_trials"]
         assert n_trials == 36, f"harness n_trials {n_trials} != 36"
-        assert "36" in content, "the doc must record the 36-trial BH-FDR denominator"
+        assert "BH-FDR denominator) : 36" in content, (
+            "the doc must record the 36-trial BH-FDR denominator"
+        )
 
         # 5. the harness emits a recommendation in the doc's pre-registered token set.
         rec = result["go_bar_evaluation"]["recommendation"]
