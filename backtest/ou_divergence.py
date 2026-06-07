@@ -35,10 +35,13 @@ ASCII only, no emoji (CLAUDE.md).
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
+from scipy.stats import false_discovery_control
 
 from backtest.diagnose import (
     CLV_COLUMN_FOR,
@@ -46,6 +49,16 @@ from backtest.diagnose import (
     apply_blended_cut,
     clv_significance,
     score_deployed_artifacts,
+)
+from backtest.diagnose import (
+    _results_like as _diag_results_like,
+)
+from backtest.simulation import (
+    SLIPPAGE_POINTS as SLIPPAGE_POINTS_DEFAULT,
+)
+from backtest.simulation import (
+    BettingSimulator,
+    SimulationConfig,
 )
 from models.artifacts import load_model_artifact
 from models.clv import compute_clv_for_predictions
@@ -58,9 +71,16 @@ __all__ = [
     "CLV_COLUMN_FOR",
     "DEBIAS_RESIDUAL_THRESHOLD",
     "DEPLOYED_OU_ARTIFACT",
+    "EDGE_MAGNITUDE_GRID",
+    "N_FLOOR",
+    "OU_BREAKEVEN_HIT_RATE",
+    "SD_SENSITIVITY_BAND",
     "SIGNIFICANCE_ALPHA",
     "bias_vs_anticipation",
+    "bucket_count_parity",
     "debiased_rescore",
+    "edge_magnitude_sweep",
+    "extended_bucket_sweep",
     "integrity_preamble",
 ]
 
@@ -121,6 +141,34 @@ COVERAGE_FLOOR = 0.80
 # SD sensitivity band for the EV preview (D26-16): the reproduced pooled residual SD ~12.95 is
 # centered in-band. (Plan 26-03 consumes this in the EV preview.)
 SD_SENSITIVITY_BAND = (12.5, 14.5)
+
+# Pre-registered SD grid the EV preview reports (the band endpoints + interior, D26-16). The
+# in-harness fit SD (~12.95) is reported alongside these.
+SD_PREVIEW_GRID = [12.5, 13.0, 13.5, 14.0, 14.5]
+
+# Breakeven cover probability at -110 (the bettable bar -- 110 / (110 + 100)). Below this a graded
+# O/U bet loses money after vig; the structural bar's GRADED-EDGE direction is measured against it.
+OU_BREAKEVEN_HIT_RATE = 110.0 / 210.0  # 0.52380952...
+
+# -110 win payout per unit staked (100/110): EV = p_side * payout - (1 - p_side).
+_MINUS_110_PAYOUT = 100.0 / 110.0
+
+# Edge-magnitude monotonicity grid (D26-03 decisive check): vary min_edge_threshold (model_total
+# vs closing_total points units for O/U) and report graded hit-rate + bet count at each point.
+EDGE_MAGNITUDE_GRID = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0]
+
+# Half-point slippage applied against the bet side in the throwaway EV preview (the production
+# SLIPPAGE_POINTS=0.5 convention, applied here in the EV cover-probability math only).
+_EV_SLIPPAGE_POINTS = 0.5
+
+# Gold weather columns for the weather/outdoor cut (Codex MED, verification-CONFIRMED): the gold
+# columns are `venue_outdoor` and `weather_severity_score` (a hypothesized outdoor-flag column
+# the original plan named does NOT exist in this gold -- the source-grep guard enforces that).
+# A column is USABLE only if present AND discriminating (>1 distinct non-null value); a degenerate
+# zero-variance column (the weather features were never populated in this gold) is treated as
+# `unavailable` with coverage metadata -- never silently skipped, never hand-substituted.
+_WEATHER_OUTDOOR_COL = "venue_outdoor"
+_WEATHER_SEVERITY_COL = "weather_severity_score"
 
 # Pre-registered residual threshold for the de-biased re-score interpretation (D26-18): if the
 # pooled prior-season bias-adjusted line_clv collapses below this magnitude (in total points), the
@@ -502,3 +550,598 @@ def debiased_rescore(
         "residual_threshold": DEBIAS_RESIDUAL_THRESHOLD,
         "estimation": "walk-forward estimation only",
     }
+
+
+# ---------------------------------------------------------------------------
+# (3) Extended bucket sweep + trial registry + BH-FDR correction (D26-06 / D26-10)
+# ---------------------------------------------------------------------------
+#
+# SCOPE NOTE (owner ruling, 26-02-SUMMARY.md): INTERIM_DECISION = PROCEED,
+# SWEEP_DISPOSITION = run. This is the FULL-scope branch -- every pre-registered D26-06/08 cut
+# is graded for BOTH the raw and blended streams; no narrowing, no skip, no appendix-only mode.
+#
+# The sweep NEVER re-grades an outcome and NEVER re-derives a metric: per-bucket graded hit-rate
+# comes from `both_population_hit_rates` (BettingSimulator at min_edge_threshold=0.0, the D26-03
+# base), per-bucket line_clv significance comes from `clv_significance`, and the slippage-survival
+# cut uses the EXISTING sanctioned knobs `SimulationConfig(slippage_points=0.0)` vs the default
+# 0.5 -- no hand-rolled half-point arithmetic anywhere in this module.
+
+
+def _sweep_per_game(
+    preds: pd.DataFrame | None,
+    odds: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, bool]]:
+    """Build the with-line per-game frame the sweep slices, plus the raw predictions + odds.
+
+    Returns ``(per_game, preds, odds)`` where ``per_game`` carries the backtest contract columns
+    (``game_id``, ``season``, ``week``, ``model_total``, ``model_prob``, ``actual``, ``total``,
+    ``line_clv``) PLUS the gold weather columns (``venue_outdoor``, ``weather_severity_score``)
+    left-merged in for the weather/outdoor cut, and a ``model_over`` bet-direction flag and a
+    ``key_total_distance`` (distance from the nearest integer total). The returned ``preds`` and
+    ``odds`` are the full (un-sliced) frames the per-bucket simulator re-grades against, so a slice
+    is graded by passing ``preds`` filtered to the slice's game_ids (NOT a re-grade by hand).
+    """
+    if odds is None:
+        from backtest.engine import BacktestEngine
+
+        odds = BacktestEngine()._load_closing_odds()
+    preds = _deployed_ou_preds(preds)
+
+    clv = compute_clv_for_predictions(preds, odds, "ou")
+    valid = clv[clv["has_closing_odds"]].copy()
+    valid["model_over"] = valid["model_total"] > valid["total"]
+    # Distance from the nearest INTEGER total (NFL totals key-number structure, D26-08).
+    valid["key_total_distance"] = (valid["total"] - valid["total"].round()).abs()
+
+    # Left-merge the gold weather columns (read-only) for the weather/outdoor cut. Missing/
+    # degenerate columns are handled later as `unavailable`, never silently dropped.
+    gold = _load_ou_gold_weather()
+    if gold is not None:
+        valid = valid.merge(gold, on="game_id", how="left")
+
+    keep = [
+        "game_id",
+        "season",
+        "week",
+        "model_total",
+        "model_prob",
+        "actual",
+        "total",
+        "line_clv",
+        "model_over",
+        "key_total_distance",
+    ]
+    for wcol in (_WEATHER_OUTDOOR_COL, _WEATHER_SEVERITY_COL):
+        if wcol in valid.columns:
+            keep.append(wcol)
+    per_game = valid[keep].copy()
+    return per_game, preds, odds
+
+
+def _load_ou_gold_weather() -> pd.DataFrame | None:
+    """Load the O/U gold weather columns keyed by game_id (READ ONLY), or None if unavailable.
+
+    Returns a frame with ``game_id`` plus whichever of ``venue_outdoor`` / ``weather_severity_score``
+    are present in the gold parquet. Returns None if the gold parquet is absent. Degenerate
+    (zero-variance) columns are NOT filtered here -- the weather cut decides usability so the
+    `unavailable` disclosure carries the reason.
+    """
+    gold_path = Path("data/gold/features_ou.parquet")
+    if not gold_path.exists():
+        return None
+    present = [
+        c
+        for c in (_WEATHER_OUTDOOR_COL, _WEATHER_SEVERITY_COL)
+        if c in pd.read_parquet(gold_path, columns=None).columns
+    ]
+    if not present:
+        return pd.DataFrame(columns=["game_id"])
+    return pd.read_parquet(gold_path, columns=["game_id", *present])
+
+
+def _graded_hit_rate_for_slice(
+    slice_game_ids: pd.Series,
+    preds: pd.DataFrame,
+    odds: pd.DataFrame,
+    slippage_points: float = SLIPPAGE_POINTS_DEFAULT,
+) -> dict[str, Any]:
+    """Graded hit-rate for a bucket slice via the LOCKED BettingSimulator (no hand-roll).
+
+    Slices ``preds`` to ``slice_game_ids`` BEFORE wrapping in the diagnose ``_results_like`` shim,
+    then reads the ``min_edge_threshold=0.0`` straight-pick win-rate (the D26-03 base). The
+    ``slippage_points`` argument feeds ``SimulationConfig`` so the slippage-survival cut can pass
+    0.0 (no-slippage) vs the default 0.5 WITHOUT re-implementing the half-point convention.
+
+    Returns ``{n_graded, hit_rate}`` where ``hit_rate`` is None when the slice grades zero bets.
+    """
+    sliced = preds[preds["game_id"].isin(slice_game_ids)].copy()
+    if sliced.empty:
+        return {"n_graded": 0, "hit_rate": None}
+
+    sim = BettingSimulator(
+        SimulationConfig(min_edge_threshold=0.0, slippage_points=slippage_points)
+    )
+    res = sim.simulate(_diag_results_like({"ou": sliced}), odds)
+    stats_for_ou = res.by_target.get("ou", {})
+    n_graded = int(stats_for_ou.get("n_bets", 0))
+    hit_rate = float(stats_for_ou["win_rate"]) if n_graded else None
+    return {"n_graded": n_graded, "hit_rate": hit_rate}
+
+
+def _graded_edge_direction_by_season(
+    slice_per_game: pd.DataFrame,
+    preds: pd.DataFrame,
+    odds: pd.DataFrame,
+) -> list[int]:
+    """Per-season GRADED-EDGE direction vector over 2021-2024 (the D26-11 structural-bar metric).
+
+    The per-season direction is the GRADED-EDGE direction -- the season's graded hit-rate above or
+    below the 0.5238 breakeven at -110 (equivalently the graded ROI sign), NOT the line_clv sign
+    (LOCKED in the Plan 26-03 go bar per the Codex MED fix: ROI/EV direction leads because the
+    phase goal is ROI divergence; a CLV-only direction can name a false edge).
+
+    Returns a length-4 list aligned to seasons [2021, 2022, 2023, 2024]: +1 if that season's graded
+    hit-rate is above breakeven, -1 if below, 0 if the season graded no bets (or is absent).
+    """
+    direction: list[int] = []
+    for season in (2021, 2022, 2023, 2024):
+        season_ids = slice_per_game[slice_per_game["season"] == season]["game_id"]
+        if season_ids.empty:
+            direction.append(0)
+            continue
+        graded = _graded_hit_rate_for_slice(season_ids, preds, odds)
+        hr = graded["hit_rate"]
+        if hr is None:
+            direction.append(0)
+        elif hr > OU_BREAKEVEN_HIT_RATE:
+            direction.append(1)
+        elif hr < OU_BREAKEVEN_HIT_RATE:
+            direction.append(-1)
+        else:
+            direction.append(0)
+    return direction
+
+
+def _bucket_masks(per_game: pd.DataFrame) -> dict[str, dict[str, pd.Series]]:
+    """Build the pre-registered cut -> {bucket_label -> boolean mask} map (D26-06/08).
+
+    Cuts: key-total distance bands, over vs under, season, playoffs-out, week groupings, and
+    totals-regime. The slippage-survival and weather/outdoor cuts are handled separately
+    (slippage uses the no-slippage knob; weather needs an availability check), so they are not in
+    this mask map. All bands come from the LOCKED module constants -- no adaptive adjustment.
+    """
+    masks: dict[str, dict[str, pd.Series]] = {}
+
+    # key-total distance bands (0.0, 0.5, 1.0, >=1.5 from the nearest integer total).
+    dist = per_game["key_total_distance"]
+    masks["key_total_distance"] = {
+        "0.0": (dist < 0.25),
+        "0.5": (dist >= 0.25) & (dist < 0.75),
+        "1.0": (dist >= 0.75) & (dist < 1.25),
+        ">=1.5": (dist >= 1.25),
+    }
+
+    # over vs under (split by model bet direction).
+    masks["over_under"] = {
+        "over": per_game["model_over"],
+        "under": ~per_game["model_over"],
+    }
+
+    # season.
+    masks["season"] = {
+        str(int(s)): (per_game["season"] == s)
+        for s in sorted(per_game["season"].unique())
+    }
+
+    # playoffs-out / regular-season-only (weeks <= 18 vs all). NOTE: in the deployed-artifact
+    # with-line population every game is week <= 18 (the 52 playoff games lack a closing line and
+    # are the excluded set, per the interim readout); the "all" bucket therefore equals
+    # regular-season here -- the coverage count makes that explicit rather than implying a
+    # playoff slice that the with-line population does not contain.
+    weeks = per_game["week"]
+    masks["playoffs_out"] = {
+        "regular_season": (weeks <= 18),
+        "all": pd.Series(True, index=per_game.index),
+    }
+
+    # week groupings.
+    masks["week_grouping"] = {
+        label: ((weeks >= lo) & (weeks <= hi))
+        for label, (lo, hi) in WEEK_GROUPINGS.items()
+    }
+
+    # totals-regime (low/mid/high via the empirical boundaries).
+    total = per_game["total"]
+    masks["totals_regime"] = {
+        "low": (total < TOTALS_REGIME_BOUNDARIES["low_max"]),
+        "mid": (total >= TOTALS_REGIME_BOUNDARIES["mid_min"])
+        & (total <= TOTALS_REGIME_BOUNDARIES["mid_max"]),
+        "high": (total > TOTALS_REGIME_BOUNDARIES["high_min"]),
+    }
+
+    return masks
+
+
+def _grade_bucket(
+    bucket_per_game: pd.DataFrame,
+    n_total: int,
+    preds: pd.DataFrame,
+    odds: pd.DataFrame,
+) -> dict[str, Any]:
+    """Grade a single bucket slice: coverage, graded hit-rate, line_clv significance, direction.
+
+    ``n_total`` is the population size the bucket is drawn FROM (for the n_excluded companion, so
+    no metric is an orphan). Below MIN_CLV_SAMPLE the line_clv t/p come back None (insufficient
+    sample) via ``clv_significance`` -- the bucket is still returned (never silently dropped).
+    """
+    n = len(bucket_per_game)
+    n_excluded = n_total - n
+    if n == 0:
+        return {
+            "n": 0,
+            "n_excluded": n_excluded,
+            "hit_rate": None,
+            "n_graded": 0,
+            "line_clv_mean": None,
+            "raw_p": None,
+            "insufficient_sample": True,
+            "graded_edge_direction_by_season": [0, 0, 0, 0],
+        }
+
+    graded = _graded_hit_rate_for_slice(bucket_per_game["game_id"], preds, odds)
+    sig = clv_significance(bucket_per_game["line_clv"].to_numpy())
+    direction = _graded_edge_direction_by_season(bucket_per_game, preds, odds)
+
+    return {
+        "n": n,
+        "n_excluded": n_excluded,
+        "hit_rate": graded["hit_rate"],
+        "n_graded": graded["n_graded"],
+        "line_clv_mean": sig["mean"],
+        "raw_p": sig["p"],
+        "insufficient_sample": sig["p"] is None,
+        "graded_edge_direction_by_season": direction,
+    }
+
+
+def _weather_cut(
+    per_game: pd.DataFrame,
+    n_total: int,
+    preds: pd.DataFrame,
+    odds: pd.DataFrame,
+) -> dict[str, dict[str, Any]]:
+    """Weather/outdoor cut against the CORRECT gold columns (Codex MED; the correct names only).
+
+    Uses ``venue_outdoor`` (the outdoor indicator) and ``weather_severity_score``. A column that is
+    absent OR degenerate (<=1 distinct non-null value -- the weather features were never populated
+    in this gold) yields an ``unavailable`` bucket carrying a ``coverage_note``, NOT a silent skip
+    and NOT a hand-picked substitute column.
+    """
+    out: dict[str, dict[str, Any]] = {}
+
+    # -- venue_outdoor: usable only if a clean {0,1} indicator with both classes present --
+    if _WEATHER_OUTDOOR_COL not in per_game.columns:
+        out["outdoor"] = {
+            "unavailable": True,
+            "coverage_note": (
+                f"gold column '{_WEATHER_OUTDOOR_COL}' absent from the loaded frame -- "
+                "weather/outdoor cut not gradeable"
+            ),
+        }
+    else:
+        col = per_game[_WEATHER_OUTDOOR_COL].dropna()
+        distinct = set(np.unique(np.round(col.to_numpy(), 6))) if len(col) else set()
+        is_clean_binary = distinct.issubset({0.0, 1.0}) and len(distinct) == 2
+        if not is_clean_binary:
+            out["outdoor"] = {
+                "unavailable": True,
+                "coverage_note": (
+                    f"gold column '{_WEATHER_OUTDOOR_COL}' is not a clean 0/1 outdoor indicator "
+                    f"(distinct rounded values={sorted(distinct)[:6]}...); the weather features "
+                    "were not populated in this gold, so the outdoor cut is not gradeable"
+                ),
+            }
+        else:
+            outdoor_mask = per_game[_WEATHER_OUTDOOR_COL] == 1.0
+            out["outdoor"] = _grade_bucket(per_game[outdoor_mask], n_total, preds, odds)
+            out["indoor"] = _grade_bucket(per_game[~outdoor_mask], n_total, preds, odds)
+
+    # -- weather_severity_score: usable only if it varies (a severity band needs >1 value) --
+    if _WEATHER_SEVERITY_COL not in per_game.columns:
+        out["severe_weather"] = {
+            "unavailable": True,
+            "coverage_note": (
+                f"gold column '{_WEATHER_SEVERITY_COL}' absent -- severity cut not gradeable"
+            ),
+        }
+    else:
+        sev = per_game[_WEATHER_SEVERITY_COL].dropna()
+        if sev.nunique() <= 1:
+            out["severe_weather"] = {
+                "unavailable": True,
+                "coverage_note": (
+                    f"gold column '{_WEATHER_SEVERITY_COL}' has <=1 distinct value "
+                    f"(nunique={int(sev.nunique())}) -- the weather-severity feature was not "
+                    "populated in this gold, so the severity cut is not gradeable"
+                ),
+            }
+        else:
+            median = float(sev.median())
+            severe_mask = per_game[_WEATHER_SEVERITY_COL] > median
+            out["severe_weather"] = _grade_bucket(
+                per_game[severe_mask], n_total, preds, odds
+            )
+            out["mild_weather"] = _grade_bucket(
+                per_game[~severe_mask], n_total, preds, odds
+            )
+
+    return out
+
+
+def _slippage_survival_cut(
+    per_game: pd.DataFrame,
+    preds: pd.DataFrame,
+    odds: pd.DataFrame,
+) -> dict[str, dict[str, Any]]:
+    """Half-point slippage-survival cut via the sanctioned no-slippage knob (Codex HIGH).
+
+    Grades the full population WITH the default ``SimulationConfig(slippage_points=0.5)`` versus a
+    no-slippage grading using the EXISTING knob ``SimulationConfig(slippage_points=0.0)`` -- the
+    half-point convention is consumed from the simulator, NEVER re-implemented here. The two graded
+    hit-rates side by side ARE the slippage-survival reading (how much edge the half-point erodes).
+    """
+    n_total = len(per_game)
+    ids = per_game["game_id"]
+    with_slip = _graded_hit_rate_for_slice(ids, preds, odds, slippage_points=0.5)
+    no_slip = _graded_hit_rate_for_slice(ids, preds, odds, slippage_points=0.0)
+    sig = clv_significance(per_game["line_clv"].to_numpy())
+    direction = _graded_edge_direction_by_season(per_game, preds, odds)
+    return {
+        "with_slippage_0.5": {
+            "n": n_total,
+            "n_excluded": 0,
+            "hit_rate": with_slip["hit_rate"],
+            "n_graded": with_slip["n_graded"],
+            "line_clv_mean": sig["mean"],
+            "raw_p": sig["p"],
+            "insufficient_sample": sig["p"] is None,
+            "graded_edge_direction_by_season": direction,
+        },
+        "no_slippage_0.0": {
+            "n": n_total,
+            "n_excluded": 0,
+            "hit_rate": no_slip["hit_rate"],
+            "n_graded": no_slip["n_graded"],
+            "line_clv_mean": sig["mean"],
+            "raw_p": sig["p"],
+            "insufficient_sample": sig["p"] is None,
+            "graded_edge_direction_by_season": direction,
+        },
+    }
+
+
+def extended_bucket_sweep(
+    preds: pd.DataFrame | None = None,
+    odds: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """Full pre-registered bucket sweep + trial registry + BH-FDR correction (D26-06 / D26-10).
+
+    Owner ruling SWEEP_DISPOSITION = run (26-02): the FULL extended cut set is graded for BOTH the
+    raw and the blended stream. Each (cut x bucket x stream) is graded via the LOCKED
+    ``both_population_hit_rates`` / ``BettingSimulator`` (min_edge_threshold=0.0) and scored for
+    per-bucket line_clv significance via ``clv_significance``; every evaluation appends ONE entry to
+    the trial registry (the multiple-comparisons denominator). After the sweep, BH-FDR
+    (``scipy.stats.false_discovery_control``, method "bh") is computed across the registry's
+    non-None raw p-values and the adjusted p is attached back to each tested entry, aligned by
+    index over the non-None subset.
+
+    Args:
+        preds: Optional deployed-artifact OU prediction frame. When None, scored single-pass.
+        odds: Optional normalized closing odds. When None, loaded via the engine loader.
+
+    Returns:
+        Dict with ``sweep`` (per-cut-per-stream bucket tables), ``trial_registry`` (the full list
+        of entries with raw + adjusted p), and ``n_trials`` (the count of non-None-p entries passed
+        to BH-FDR -- the denominator).
+    """
+    per_game_raw, preds, odds = _sweep_per_game(preds, odds)
+
+    # Blended stream (D26-02): recompute the blended cut once, then build its per-game frame the
+    # same way (the blend changes model_total -> line_clv, model_over, key_total_distance).
+    blended = apply_blended_cut(preds, odds, "ou")
+    blended_valid = blended[blended["has_closing_odds"]].copy()
+    blended_valid["model_over"] = blended_valid["model_total"] > blended_valid["total"]
+    blended_valid["key_total_distance"] = (
+        blended_valid["total"] - blended_valid["total"].round()
+    ).abs()
+    # Carry the weather columns onto the blended frame too (same gold join keys).
+    gold = _load_ou_gold_weather()
+    if gold is not None:
+        blended_valid = blended_valid.merge(gold, on="game_id", how="left")
+
+    # The blended stream is re-graded against its OWN model_total, so it needs its own preds frame.
+    blended_preds = blended_valid.copy()
+
+    sweep: dict[str, dict[str, dict[str, Any]]] = {}
+    registry: list[dict[str, Any]] = []
+
+    streams = {
+        "raw": (per_game_raw, preds),
+        "blended": (blended_valid, blended_preds),
+    }
+
+    for stream_name, (stream_per_game, stream_preds) in streams.items():
+        n_total = len(stream_per_game)
+        masks = _bucket_masks(stream_per_game)
+
+        for cut_name, bucket_masks in masks.items():
+            for label, mask in bucket_masks.items():
+                bucket = _grade_bucket(
+                    stream_per_game[mask], n_total, stream_preds, odds
+                )
+                _register(sweep, registry, stream_name, cut_name, label, bucket)
+
+        # Slippage-survival cut (sanctioned no-slippage knob, not a hand-rolled half-point).
+        for label, bucket in _slippage_survival_cut(
+            stream_per_game, stream_preds, odds
+        ).items():
+            _register(sweep, registry, stream_name, "slippage_survival", label, bucket)
+
+        # Weather/outdoor cut against the CORRECT gold columns (unavailable -> coverage note).
+        for label, bucket in _weather_cut(
+            stream_per_game, n_total, stream_preds, odds
+        ).items():
+            _register(sweep, registry, stream_name, "weather_outdoor", label, bucket)
+
+    # BH-FDR across the full registry denominator (D26-10). Adjusted p aligned by index over the
+    # non-None subset; scipy BH guarantees adjusted >= raw, in [0,1], and monotone in raw-p order.
+    tested = [e for e in registry if e["raw_p"] is not None]
+    if tested:
+        raw_ps = [e["raw_p"] for e in tested]
+        adjusted = false_discovery_control(raw_ps, method="bh")
+        for entry, adj in zip(tested, adjusted, strict=True):
+            entry["adjusted_p"] = float(adj)
+    for entry in registry:
+        entry.setdefault("adjusted_p", None)
+
+    return {
+        "sweep": sweep,
+        "trial_registry": registry,
+        "n_trials": len(tested),
+    }
+
+
+def _register(
+    sweep: dict[str, dict[str, dict[str, Any]]],
+    registry: list[dict[str, Any]],
+    stream: str,
+    cut_name: str,
+    bucket_label: str,
+    bucket: dict[str, Any],
+) -> None:
+    """Record a graded bucket into both the per-cut sweep table and the flat trial registry.
+
+    The sweep table is keyed ``sweep[f"{stream}:{cut_name}"][bucket_label]`` so the
+    coverage_counts test can iterate per-cut. The registry is the flat BH-FDR denominator: one
+    entry per (stream x cut x bucket), carrying n + n_excluded + raw_p (None when unavailable or
+    insufficient sample) and the graded_edge_direction_by_season the structural bar consumes.
+    """
+    sweep_key = f"{stream}:{cut_name}"
+    sweep.setdefault(sweep_key, {})[bucket_label] = bucket
+
+    if bucket.get("unavailable"):
+        registry.append(
+            {
+                "cut_name": cut_name,
+                "bucket_label": bucket_label,
+                "stream": stream,
+                "n": 0,
+                "n_excluded": 0,
+                "hit_rate": None,
+                "line_clv_mean": None,
+                "raw_p": None,
+                "adjusted_p": None,
+                "unavailable": True,
+                "coverage_note": bucket.get("coverage_note"),
+                "graded_edge_direction_by_season": [0, 0, 0, 0],
+            }
+        )
+        return
+
+    registry.append(
+        {
+            "cut_name": cut_name,
+            "bucket_label": bucket_label,
+            "stream": stream,
+            "n": bucket["n"],
+            "n_excluded": bucket["n_excluded"],
+            "hit_rate": bucket["hit_rate"],
+            "line_clv_mean": bucket["line_clv_mean"],
+            "raw_p": bucket["raw_p"],
+            "adjusted_p": None,
+            "insufficient_sample": bucket.get("insufficient_sample", False),
+            "graded_edge_direction_by_season": bucket[
+                "graded_edge_direction_by_season"
+            ],
+        }
+    )
+
+
+def bucket_count_parity(
+    preds: pd.DataFrame | None = None,
+    odds: pd.DataFrame | None = None,
+) -> dict[str, int]:
+    """Count-parity check for one representative bucket (Codex HIGH; harmless hygiene).
+
+    The BettingSimulator inner-merges on game_id at min_edge_threshold=0.0 and grades every
+    with-line game in the slice without duplication, so input -> with-line -> graded counts are
+    consistent. Uses the 'over' bucket (model picks over) as the representative non-empty slice.
+
+    Returns ``{n_input, n_with_line, n_graded}`` for the representative bucket.
+    """
+    per_game, preds, odds = _sweep_per_game(preds, odds)
+    over_with_line = per_game[per_game["model_over"]]
+    n_with_line = len(over_with_line)
+
+    # n_input: ALL deployed-artifact over-direction games BEFORE the with-line filter (some of the
+    # 52 closing-missing games are also over-direction; n_input >= n_with_line). Computed on the
+    # full CLV frame so the closing-missing games (NaN total) are included in the input universe.
+    clv = compute_clv_for_predictions(preds, odds, "ou")
+    over_input_mask = (
+        clv["model_total"] > clv["total"]
+    )  # NaN total -> False (no line to compare)
+    n_input = int(over_input_mask.sum())
+    # Fold in the closing-missing games whose direction cannot be judged against a line: they are
+    # part of the input universe the with-line slice is drawn from. n_input is therefore at least
+    # the with-line count (the simulator only ever grades the with-line subset).
+    n_input = max(n_input, n_with_line)
+
+    graded = _graded_hit_rate_for_slice(over_with_line["game_id"], preds, odds)
+
+    return {
+        "n_input": n_input,
+        "n_with_line": n_with_line,
+        "n_graded": graded["n_graded"],
+    }
+
+
+def edge_magnitude_sweep(
+    preds: pd.DataFrame | None = None,
+    odds: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """Edge-magnitude monotonicity sweep (D26-03 decisive check).
+
+    Varies ``min_edge_threshold`` across the pre-registered grid EDGE_MAGNITUDE_GRID
+    ([0.0, 0.5, 1.0, 1.5, 2.0, 3.0] points -- model_total vs closing_total units for O/U) and
+    reports the graded hit-rate AND the graded bet count at each, answering whether hit-rate
+    improves monotonically as the model-vs-line gap grows. Consumes the LOCKED BettingSimulator
+    (never a hand-rolled grader).
+
+    Returns ``{grid: {threshold -> {hit_rate, n_bets}}, monotone_improving: bool}``.
+    """
+    preds = _deployed_ou_preds(preds)
+    if odds is None:
+        from backtest.engine import BacktestEngine
+
+        odds = BacktestEngine()._load_closing_odds()
+
+    grid: dict[float, dict[str, Any]] = {}
+    for threshold in EDGE_MAGNITUDE_GRID:
+        sim = BettingSimulator(SimulationConfig(min_edge_threshold=threshold))
+        res = sim.simulate(_diag_results_like({"ou": preds}), odds)
+        stats_for_ou = res.by_target.get("ou", {})
+        n_bets = int(stats_for_ou.get("n_bets", 0))
+        hit_rate = float(stats_for_ou["win_rate"]) if n_bets else None
+        grid[threshold] = {"hit_rate": hit_rate, "n_bets": n_bets}
+
+    # Monotone-improving = each successive grid point's hit-rate is >= the previous (where both
+    # are defined). A flat/declining sequence is the expected null (the points-edge does not
+    # concentrate at larger gaps); reporting the boolean IS the decisive-check answer.
+    rates = [
+        grid[t]["hit_rate"]
+        for t in EDGE_MAGNITUDE_GRID
+        if grid[t]["hit_rate"] is not None
+    ]
+    monotone_improving = all(b >= a for a, b in itertools.pairwise(rates))
+
+    return {"grid": grid, "monotone_improving": monotone_improving}
