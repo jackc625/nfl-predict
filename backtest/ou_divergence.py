@@ -1170,6 +1170,14 @@ def name_survivable_subpopulation(sweep_result: dict[str, Any]) -> dict[str, Any
     Codex MED fix: ROI/EV direction leads because the phase goal is ROI divergence; a CLV-only
     direction can name a false edge -- the very pitfall this phase diagnoses).
 
+    A "survivable EDGE" must be a PROFITABLE direction (graded hit-rate ABOVE the 0.5238 breakeven,
+    direction = +1) in >= 3 of 4 seasons -- NOT merely "consistent". A sub-population that is
+    consistently BELOW breakeven (direction = -1 in 3+ seasons) is a consistently-LOSING slice, the
+    opposite of a survivable edge; it is "suggestive_not_survivable" no matter how significant its
+    line_clv. (Naming a below-breakeven slice "survivable" because it loses consistently would
+    invert the phase's entire goal -- the structural bar names a POSITIVE-EV direction, the go
+    bar's EV clearance then confirms it; a consistently-negative direction fails both.)
+
     A bucket that clears raw significance but fails BH-FDR correction OR the structural bar is
     classified "suggestive_not_survivable" -- a finding that dies under correction is explicitly
     "suggestive, not survivable" (D26-10), not named.
@@ -1191,15 +1199,19 @@ def name_survivable_subpopulation(sweep_result: dict[str, Any]) -> dict[str, Any
             continue  # unavailable / insufficient-sample entries are never named candidates
 
         direction = entry["graded_edge_direction_by_season"]
-        # Same-direction agreement: the count of seasons sharing the modal non-zero sign.
-        pos = sum(1 for d in direction if d > 0)
-        neg = sum(1 for d in direction if d < 0)
-        seasons_same_direction = max(pos, neg)
+        # Seasons graded ABOVE breakeven (profitable, +1) vs BELOW (losing, -1).
+        seasons_profitable = sum(1 for d in direction if d > 0)
+        seasons_losing = sum(1 for d in direction if d < 0)
+        # Reported for transparency: the larger consistent block (either direction).
+        seasons_same_direction = max(seasons_profitable, seasons_losing)
 
         adjusted_p = entry["adjusted_p"]
         clears_significance = adjusted_p is not None and adjusted_p < SIGNIFICANCE_ALPHA
         clears_n = entry["n"] >= N_FLOOR
-        clears_structure = seasons_same_direction >= MIN_SEASONS_SAME_DIRECTION
+        # The structural bar for a survivable EDGE: the PROFITABLE direction (above breakeven) must
+        # hold in >= 3 of 4 seasons. A consistently-below-breakeven slice fails this (it is a
+        # consistent NON-edge), even though its seasons_same_direction count is high.
+        clears_structure = seasons_profitable >= MIN_SEASONS_SAME_DIRECTION
 
         is_survivable = clears_significance and clears_n and clears_structure
         classification = "survivable" if is_survivable else "suggestive_not_survivable"
@@ -1216,6 +1228,8 @@ def name_survivable_subpopulation(sweep_result: dict[str, Any]) -> dict[str, Any
                 "line_clv_mean": entry["line_clv_mean"],
                 "direction": direction,
                 "seasons_same_direction": seasons_same_direction,
+                "seasons_profitable_direction": seasons_profitable,
+                "seasons_losing_direction": seasons_losing,
                 "clears_significance": clears_significance,
                 "clears_n_floor": clears_n,
                 "clears_structural_direction": clears_structure,
