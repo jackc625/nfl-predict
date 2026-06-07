@@ -4,8 +4,10 @@ Mirrors ``tests/integration/test_diag_diagnosis.py`` structure (the canonical di
 smoke pattern, D26-15). Covers the OUM-01 measurement correctness for the FIRST HALF of
 ``backtest/ou_divergence.py`` -- the integrity preamble (D26-04), the bias-vs-anticipation
 decomposition (D26-05, the LEAD section), and the prior-season bias-adjusted re-score (D26-18).
-The extended bucket sweep, trial registry, and EV preview are Plan 26-03 (the ``trial_registry``
-selector is added there and may be absent here).
+The extended bucket sweep (D26-06), the trial registry + BH-FDR correction (D26-10), the
+structural bar (D26-11), the edge-magnitude monotonicity sweep (D26-03), and the throwaway EV
+preview (D26-07/16) are added by Plan 26-03 (the ``trial_registry`` / ``count_parity`` /
+``ev_preview_not_imported`` selectors live here too).
 
 Load-bearing number anchors (reproduced this session against the DEPLOYED v1.0 OU artifact
 ``ou_20260326_163930`` over 2021-2024 canonical gold):
@@ -14,7 +16,9 @@ Load-bearing number anchors (reproduced this session against the DEPLOYED v1.0 O
   - pooled residual SD 12.946
 
 Selectors (``-k``): deployed_population, bias_over_share, coverage_counts,
-provenance_label_split, no_train_no_write, production_files_untouched, determinism.
+provenance_label_split, no_train_no_write, production_files_untouched, determinism,
+trial_registry, count_parity, edge_magnitude, survivable_subpopulation, ev_preview,
+ev_preview_not_imported.
 
 Self-judging boundary (T-26-02): a real harness run must leave models/clv.py, config/gate.toml,
 and backtest/simulation.py byte-identical (the diagnosis must not edit its own judge). The
@@ -37,6 +41,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import itertools
 from pathlib import Path
 
 import pandas as pd
@@ -364,6 +369,305 @@ class TestOuDivergence:
             assert hand_rolled not in source, (
                 f"debiased_rescore must not hand-roll CLV ({hand_rolled!r})"
             )
+
+    # -- trial_registry: BH-FDR denominator with the strengthened invariants (D26-10) -----
+
+    def test_trial_registry(self, gold_and_odds_2021_2024) -> None:
+        """The trial registry is the full BH-FDR denominator with the strengthened invariants.
+
+        Asserts (Codex HIGH, verification-refuted-but-kept): the registry is non-empty; every
+        entry carries an n + n_excluded; for the non-None-p subset the BH-adjusted p is
+        element-wise >= the raw p (holds by construction for scipy BH), every adjusted_p is in
+        [0,1], adjusted_p is monotone non-decreasing when sorted by raw_p, and each adjusted_p is
+        aligned to the same entry as its raw_p (alignment by index over the non-None subset).
+        """
+        from backtest.ou_divergence import extended_bucket_sweep
+
+        odds = gold_and_odds_2021_2024["odds"]
+        result = extended_bucket_sweep(preds=None, odds=odds)
+
+        assert "trial_registry" in result and "n_trials" in result
+        registry = result["trial_registry"]
+        assert len(registry) > 0, "the trial registry must log at least one bucket/test"
+
+        for entry in registry:
+            assert "n" in entry, f"registry entry missing n: {entry}"
+            assert "n_excluded" in entry, f"registry entry missing n_excluded: {entry}"
+            assert "cut_name" in entry and "bucket_label" in entry and "stream" in entry
+            assert "raw_p" in entry and "adjusted_p" in entry
+
+        # n_trials == the count of non-None-p entries fed to BH-FDR.
+        tested = [e for e in registry if e["raw_p"] is not None]
+        assert result["n_trials"] == len(tested), (
+            f"n_trials {result['n_trials']} != non-None-p count {len(tested)}"
+        )
+        assert len(tested) > 0, "at least one bucket must have a testable p-value"
+
+        # Every tested entry: adjusted_p present, in [0,1], and >= raw_p (scipy BH invariant).
+        for e in tested:
+            adj = e["adjusted_p"]
+            assert adj is not None, f"tested entry has no adjusted_p: {e}"
+            assert 0.0 <= adj <= 1.0, f"adjusted_p {adj} out of [0,1]"
+            assert adj >= e["raw_p"] - 1e-9, (
+                f"adjusted_p {adj} < raw_p {e['raw_p']} (BH must not shrink below raw)"
+            )
+
+        # Sorted-by-raw-p monotonicity of adjusted_p (the safer invariant Codex named).
+        by_raw = sorted(tested, key=lambda e: e["raw_p"])
+        adj_sorted = [e["adjusted_p"] for e in by_raw]
+        for prev, curr in itertools.pairwise(adj_sorted):
+            assert curr >= prev - 1e-9, (
+                f"adjusted_p not monotone in raw-p order: {prev} -> {curr}"
+            )
+
+        # Entries with no testable sample are flagged insufficient_sample, not dropped.
+        insufficient = [e for e in registry if e["raw_p"] is None]
+        for e in insufficient:
+            assert (
+                e.get("insufficient_sample") is True or e.get("unavailable") is True
+            ), f"a None-p entry must be flagged insufficient_sample/unavailable: {e}"
+
+    # -- count_parity: simulator inner-merge preserves bucket membership (Codex HIGH) ------
+
+    def test_count_parity(self, gold_and_odds_2021_2024) -> None:
+        """For one representative bucket, graded bet count equals the with-line game count.
+
+        The BettingSimulator inner-merges on game_id at min_edge_threshold=0.0 and grades every
+        with-line game in the slice (no duplication). The count-parity assert is cheap insurance
+        (Codex HIGH, verification-refuted as harmless hygiene): input -> with-line -> graded are
+        consistent for the slice.
+        """
+        from backtest.ou_divergence import bucket_count_parity
+
+        odds = gold_and_odds_2021_2024["odds"]
+        parity = bucket_count_parity(preds=None, odds=odds)
+
+        assert parity["n_with_line"] > 0, "representative bucket must be non-empty"
+        assert parity["n_graded"] == parity["n_with_line"], (
+            f"graded bets {parity['n_graded']} != with-line games {parity['n_with_line']} "
+            "(simulator inner-merge must preserve membership at min_edge=0.0)"
+        )
+        assert parity["n_input"] >= parity["n_with_line"], (
+            "input games must be >= with-line games (some lack a closing line)"
+        )
+
+    # -- coverage_counts (extended to the sweep buckets) -----------------------------------
+
+    def test_coverage_counts_sweep(self, gold_and_odds_2021_2024) -> None:
+        """Every sweep bucket carries both an n and a coverage/exclusion count (no orphan)."""
+        from backtest.ou_divergence import extended_bucket_sweep
+
+        odds = gold_and_odds_2021_2024["odds"]
+        result = extended_bucket_sweep(preds=None, odds=odds)
+
+        assert "sweep" in result, "extended_bucket_sweep must return per-cut tables"
+        for cut_name, buckets in result["sweep"].items():
+            assert isinstance(buckets, dict), (
+                f"cut {cut_name} must map to a bucket dict"
+            )
+            for label, bucket in buckets.items():
+                if bucket.get("unavailable"):
+                    # An unavailable cut still carries coverage metadata, never a silent skip.
+                    assert "coverage_note" in bucket, (
+                        f"unavailable bucket {cut_name}/{label} must carry a coverage_note"
+                    )
+                    continue
+                assert "n" in bucket, f"bucket {cut_name}/{label} must carry an n"
+                assert "n_excluded" in bucket, (
+                    f"bucket {cut_name}/{label} must carry an n_excluded (no orphan metric)"
+                )
+
+        # The weather cut must reference the CORRECT gold columns (NOT is_outdoor).
+        source_path = Path("backtest/ou_divergence.py")
+        src = source_path.read_text(encoding="utf-8")
+        assert "venue_outdoor" in src, "weather cut must reference venue_outdoor"
+        assert "weather_severity_score" in src, (
+            "weather cut must reference weather_severity_score"
+        )
+        assert "is_outdoor" not in src, (
+            "the non-existent gold column is_outdoor must not be referenced (Codex MED)"
+        )
+
+    # -- edge_magnitude: monotonicity sweep over min_edge_threshold (D26-03) ----------------
+
+    def test_edge_magnitude(self, gold_and_odds_2021_2024) -> None:
+        """The edge-magnitude sweep reports hit-rate AND bet count at each grid threshold."""
+        from backtest.ou_divergence import EDGE_MAGNITUDE_GRID, edge_magnitude_sweep
+
+        odds = gold_and_odds_2021_2024["odds"]
+        result = edge_magnitude_sweep(preds=None, odds=odds)
+
+        assert "grid" in result
+        for threshold in EDGE_MAGNITUDE_GRID:
+            assert threshold in result["grid"], f"missing grid point {threshold}"
+            row = result["grid"][threshold]
+            assert "n_bets" in row, f"grid {threshold} must carry n_bets"
+            assert "hit_rate" in row, f"grid {threshold} must carry hit_rate"
+        # The base (0.0) point is the D26-03 all-games straight-pick.
+        assert 0.0 in result["grid"]
+        assert result["grid"][0.0]["n_bets"] > 0
+
+    # -- survivable_subpopulation: the D26-11 structural bar (graded-edge direction) --------
+
+    def test_survivable_subpopulation_classification(
+        self, gold_and_odds_2021_2024
+    ) -> None:
+        """name_survivable_subpopulation classifies on graded-edge direction, not line_clv sign.
+
+        Acceptance (Codex MED): each candidate carries raw_p, adjusted_p, n, a length-4 per-season
+        graded-edge direction vector, and a classification in {survivable,
+        suggestive_not_survivable}. A bucket failing N>=175 or <3-of-4-seasons graded-edge
+        agreement is suggestive_not_survivable even with adjusted_p < 0.05.
+        """
+        from backtest.ou_divergence import (
+            extended_bucket_sweep,
+            name_survivable_subpopulation,
+        )
+
+        odds = gold_and_odds_2021_2024["odds"]
+        sweep = extended_bucket_sweep(preds=None, odds=odds)
+        result = name_survivable_subpopulation(sweep)
+
+        assert "candidates" in result and "any_survivable" in result
+        for cand in result["candidates"]:
+            assert "raw_p" in cand and "adjusted_p" in cand and "n" in cand
+            assert "direction" in cand, (
+                "candidate must carry a per-season direction vector"
+            )
+            assert len(cand["direction"]) == 4, (
+                f"direction vector must be length 4, got {len(cand['direction'])}"
+            )
+            assert cand["classification"] in (
+                "survivable",
+                "suggestive_not_survivable",
+            ), f"bad classification {cand['classification']!r}"
+
+        # The structural-bar direction consumes graded_edge_direction_by_season, not line_clv sign.
+        source = Path("backtest/ou_divergence.py").read_text(encoding="utf-8")
+        assert "graded_edge_direction_by_season" in source, (
+            "the structural bar must consume graded_edge_direction_by_season (Codex MED)"
+        )
+
+    # -- ev_preview: side-specific slippage-adjusted cover probability (D26-07/16) -----------
+
+    def test_ev_preview_side_specific_slippage(self, gold_and_odds_2021_2024) -> None:
+        """The EV preview applies the half-point AGAINST the bet side (over: +0.5, under: -0.5).
+
+        Numeric check (Codex MED + consensus): flipping the bet side flips which half-point offset
+        is used. For a fixed model_total/closing_total/sd, the over-side p_side uses
+        (closing_total + 0.5) and the under-side p_side uses (closing_total - 0.5).
+        """
+        from backtest.ou_divergence import (
+            SD_SENSITIVITY_BAND,
+            throwaway_ev_preview,
+        )
+
+        # A small synthetic frame: one over-pick game, one under-pick game, same line.
+        frame = pd.DataFrame(
+            {
+                "game_id": ["g_over", "g_under"],
+                "season": [2023, 2023],
+                "model_total": [48.0, 40.0],  # over pick / under pick vs a 44.0 line
+                "total": [44.0, 44.0],
+                "actual": [47.0, 41.0],
+            }
+        )
+        result = throwaway_ev_preview(frame, sd=13.0)
+
+        assert "disclaimer" in result and "EXPLORATORY" in result["disclaimer"]
+        assert "devig_method" in result
+        assert result["devig_method"] in ("real_nflreadpy", "flat_-110")
+        assert abs(result["breakeven"] - 0.5238) < 1e-3, (
+            "breakeven must be 0.5238 at -110"
+        )
+
+        # EV reported across the SD band plus the in-harness fit.
+        assert "by_sd" in result
+        lo, hi = SD_SENSITIVITY_BAND
+        for sd_point in (lo, hi):
+            assert sd_point in result["by_sd"], f"missing SD band point {sd_point}"
+            assert "ev" in result["by_sd"][sd_point]
+
+        # Side-specific slippage numeric check: the over and under p_side use opposite offsets.
+        from scipy.stats import norm
+
+        sd = 13.0
+        # over pick: model 48 vs line 44 -> p_side = P(actual > 44.5)
+        expected_over = 1.0 - norm.cdf((44.0 + 0.5 - 48.0) / sd)
+        # under pick: model 40 vs line 44 -> p_side = P(actual < 43.5)
+        expected_under = norm.cdf((44.0 - 0.5 - 40.0) / sd)
+        per_bet = {b["game_id"]: b for b in result["per_bet"]}
+        assert abs(per_bet["g_over"]["p_side"] - expected_over) < 1e-9, (
+            "over-side p_side must apply +0.5 against the bet"
+        )
+        assert abs(per_bet["g_under"]["p_side"] - expected_under) < 1e-9, (
+            "under-side p_side must apply -0.5 against the bet"
+        )
+        assert per_bet["g_over"]["bet_side"] == "over"
+        assert per_bet["g_under"]["bet_side"] == "under"
+
+
+def test_ev_preview_not_imported_by_production() -> None:
+    """No production module DEFINES or CALLS throwaway_ev_preview (no-leak guard, T-26-08).
+
+    The ``throwaway_ev_preview(`` call/def token must appear only in backtest/ou_divergence.py and
+    the test files -- never in scripts/, app/, api/, or models/ (Phase 27 builds the real chain).
+    The bare symbol may appear in a comment/docstring of the harness/test (Codex LOW: grep the
+    call/def form, tolerant of prose mentions).
+    """
+    from pathlib import Path
+
+    call_token = "throwaway_ev_preview" + "("
+    search_roots = ["scripts", "app", "api", "models"]
+    offenders: list[str] = []
+    for root in search_roots:
+        root_path = Path(root)
+        if not root_path.exists():
+            continue
+        for py in root_path.rglob("*.py"):
+            text = py.read_text(encoding="utf-8")
+            if call_token in text or f"def {call_token}" in text:
+                offenders.append(str(py))
+    assert not offenders, (
+        f"throwaway_ev_preview must not be defined/called in production modules: {offenders}"
+    )
+
+    # Positive confirmation: the call/def token IS present in the harness.
+    harness = Path("backtest/ou_divergence.py").read_text(encoding="utf-8")
+    assert call_token in harness or "def throwaway_ev_preview" in harness, (
+        "the harness must define throwaway_ev_preview"
+    )
+
+
+def test_ev_preview_does_not_import_total_converter() -> None:
+    """throwaway_ev_preview reuses the converter MATH pattern but does NOT import the class."""
+    import inspect
+
+    from backtest.ou_divergence import throwaway_ev_preview
+
+    source = inspect.getsource(throwaway_ev_preview)
+    assert "TotalDistributionConverter" not in source, (
+        "the throwaway preview must not couple to the production converter class (T-26-08)"
+    )
+
+
+def test_sweep_uses_simulator_not_hand_rolled_grader() -> None:
+    """The sweep grades via both_population_hit_rates / BettingSimulator, never a hand-roll."""
+    from pathlib import Path
+
+    src = Path("backtest/ou_divergence.py").read_text(encoding="utf-8")
+    assert "both_population_hit_rates" in src or "BettingSimulator" in src, (
+        "the sweep must consume the LOCKED simulator hit-rate"
+    )
+    # The forbidden hand-rolled graders (MODEL-DIAGNOSIS.md explicitly warns against these).
+    assert "cover_accuracy" not in src, (
+        "must not use the non-line-graded cover_accuracy"
+    )
+    assert "over_accuracy" not in src, "must not use the non-line-graded over_accuracy"
+    # The no-slippage survival path uses the sanctioned knob, not hand-rolled half-point math.
+    assert "slippage_points=0.0" in src, (
+        "the slippage-survival cut must use SimulationConfig(slippage_points=0.0)"
+    )
 
 
 def test_fixture_uses_normalized_odds_loader() -> None:
