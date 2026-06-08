@@ -508,3 +508,82 @@ class TestBetSelectorSelectedAndRejected:
         assert {"not_subpop", "ev_below_floor", "real_odds_failed"} <= set(
             REJECTION_REASONS
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 27 code-review fixes (WR-03 / WR-05 / WR-07)
+# ---------------------------------------------------------------------------
+
+
+class TestPhase27ReviewFixes:
+    """Regression coverage for the WR-03/05/07 review fixes."""
+
+    def test_nan_high_total_boundary_rejected(self) -> None:
+        """WR-03: a non-finite high_total_boundary hard-fails construction.
+
+        Without the guard, ``closing_total > NaN`` is always False, silently collapsing the
+        under-OR-high UNION to under-only. The selector must refuse to construct.
+        """
+        from backtest.bet_selector import BetSelector
+
+        with pytest.raises(ValueError, match="finite"):
+            BetSelector(
+                frozen_sd=_FIXTURE_SD,
+                season_bias_by_season=_FIXTURE_BIAS,
+                high_total_boundary=float("nan"),
+            )
+
+    def test_assert_real_odds_missing_game_id_raises_valueerror(self) -> None:
+        """WR-05: an offending row on a frame missing 'game_id' raises a named ValueError.
+
+        The provenance hard-fail must not degrade to a bare ``KeyError`` when the frame lacks
+        a game_id column; it names offenders by row index instead and still raises ValueError.
+        """
+        from backtest.bet_selector import assert_real_odds
+
+        df = pd.DataFrame(
+            {"sportsbook": ["bovada"], "is_live": [False]}
+        )  # bad book, no game_id
+        with pytest.raises(ValueError, match="provenance"):
+            assert_real_odds(df)
+
+    def test_admitted_bet_zeroed_by_kelly_is_rejected_not_booked(self) -> None:
+        """WR-07: a bet admitted by a negative EV floor but zeroed by the Kelly -110 gate is
+        rejected with 'zero_kelly_stake', never booked as a zero-stake 'selected' bet.
+        """
+        selector = _make_selector(
+            ev_floor_t=-1.0
+        )  # a negative floor admits a sub-breakeven side
+        # calibrated_p_side 0.50 is below the -110 breakeven (0.5238): admitted (per_bet_ev -0.02
+        # exceeds the -1.0 floor) but the inner Kelly calculator zeroes the stake.
+        zeroed = {
+            "game_id": "Z",
+            "season": 2023,
+            "week": 5,
+            "bet_side": "under",
+            "calibrated_p_side": 0.50,
+            "per_bet_ev": -0.02,
+        }
+        selected: list[dict] = []
+        rejected: list[dict] = []
+        selector._admit_and_size_week([zeroed], selected, rejected)
+        assert selected == []
+        assert len(rejected) == 1
+        assert rejected[0]["rejection_reason"] == "zero_kelly_stake"
+
+        # Positive control: a genuinely stakeable admitted bet is still selected with a > 0 stake.
+        ok = {
+            "game_id": "Y",
+            "season": 2023,
+            "week": 5,
+            "bet_side": "under",
+            "calibrated_p_side": 0.60,
+            "per_bet_ev": 0.05,
+            "slipped_line": 44.5,
+            "_actual_total": 40.0,
+        }
+        sel2: list[dict] = []
+        rej2: list[dict] = []
+        _make_selector(ev_floor_t=0.0)._admit_and_size_week([ok], sel2, rej2)
+        assert len(sel2) == 1
+        assert sel2[0]["kelly_stake"] > 0.0

@@ -35,14 +35,12 @@ import pytest
 
 from utils.kelly_criterion import (
     CAP_ORDER,
-    HALF_KELLY_CEILING,
     PER_BET_CAP_PCT,
     UNIT_PCT_OF_BANKROLL,
     WEEKLY_CAP_PCT,
     apply_same_side_deweight,
     apply_sizing_pipeline,
     apply_weekly_exposure_cap,
-    clamp_to_half_kelly,
     unit_size,
 )
 
@@ -72,10 +70,6 @@ class TestPreRegisteredConstants:
     def test_per_bet_cap_constant(self) -> None:
         """BET-03 / D27-09: the existing 5% per-bet cap is retained + named."""
         assert PER_BET_CAP_PCT == 0.05
-
-    def test_half_kelly_ceiling_constant(self) -> None:
-        """BET-03 / D27-09: full-Kelly excluded; half-Kelly 0.5 ceiling."""
-        assert HALF_KELLY_CEILING == 0.5
 
     def test_cap_order_is_locked(self) -> None:
         """Review #2: the LOCKED cap order is documented as a tuple."""
@@ -347,22 +341,38 @@ class TestReleasedRoomReuse:
 
 
 # ---------------------------------------------------------------------------
-# (8) full-Kelly excluded -- hard clamp half-Kelly
+# (8) full-Kelly excluded -- the operative per-bet fraction ceiling is the 5% cap
 # ---------------------------------------------------------------------------
 
 
 class TestFullKellyExcluded:
-    """Full-Kelly is not exposed; the half-Kelly 0.5 ceiling is a hard clamp."""
+    """Full-Kelly is excluded by the operative 5% per-bet cap (no separate half-Kelly clamp).
 
-    def test_full_kelly_excluded_hard_clamp(self) -> None:
-        """BET-03 / D27-09: a fraction > 0.5 is clamped to EXACTLY 0.5."""
-        assert clamp_to_half_kelly(0.75) == pytest.approx(0.5, abs=_TOL)
-        assert clamp_to_half_kelly(1.0) == pytest.approx(0.5, abs=_TOL)
+    The half-Kelly ceiling was removed (WR-01): given the upstream quarter-Kelly fraction and
+    the 5% per-bet cap, a 0.5 bankroll-fraction clamp could never bind, so it advertised a
+    protection it did not provide. These tests pin the protection that IS real -- the pipeline
+    caps every per-bet stake at PER_BET_CAP_PCT (5%) of bankroll.
+    """
 
-    def test_half_kelly_clamp_noop_below_ceiling(self) -> None:
-        """BET-03 / D27-09: a fraction <= 0.5 is returned unchanged."""
-        assert clamp_to_half_kelly(0.25) == pytest.approx(0.25, abs=_TOL)
-        assert clamp_to_half_kelly(0.5) == pytest.approx(0.5, abs=_TOL)
+    def test_per_bet_cap_is_operative_fraction_ceiling(self) -> None:
+        """BET-03 / D27-09 / WR-01: a lone stake far above 5% is capped to EXACTLY 5%.
+
+        A single bet (de-weight group size 1) well under the 10% weekly cap, so the 5% per-bet
+        cap is the only binding step -- it is the operative per-bet fraction ceiling.
+        """
+        bankroll = 10_000.0
+        result = apply_sizing_pipeline(
+            [{"bet_side": "under", "stake": 5_000.0}], bankroll
+        )
+        assert result[0]["weekly_scaled_stake"] == pytest.approx(
+            PER_BET_CAP_PCT * bankroll, abs=_TOL
+        )
+
+    def test_stake_below_every_cap_passes_through(self) -> None:
+        """A lone stake below the 5% per-bet and 10% weekly caps is returned unchanged."""
+        bankroll = 10_000.0
+        result = apply_sizing_pipeline([{"bet_side": "over", "stake": 200.0}], bankroll)
+        assert result[0]["weekly_scaled_stake"] == pytest.approx(200.0, abs=_TOL)
 
 
 # ---------------------------------------------------------------------------

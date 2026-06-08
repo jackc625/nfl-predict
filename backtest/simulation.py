@@ -579,9 +579,17 @@ class BettingSimulator:
                         "calibrated_p_side"
                     ]  # the calibrated P(side) for Kelly
                     market_value = decision["closing_total"]
+                    # WR-06: for the O/U+selector path `edge` carries the per-bet EV, NOT the
+                    # points/probability edge BetRecord.edge documents. This is the selector's
+                    # native decision value and is NOT load-bearing here: the selector's consumer is
+                    # the `ou_bet_list` cache table (which stores per_bet_ev in its own column), not
+                    # `betting_bets`. WARNING -- if O/U-via-selector rows ever flow into
+                    # `betting_bets` / the edge-bucket UI (api/cache._compute_confidence, D-15/16/20),
+                    # the EV scale will misclassify them; store the points/prob edge or make those
+                    # consumers target-aware before that happens.
                     edge = decision[
                         "per_bet_ev"
-                    ]  # the per-bet EV (not a points distance)
+                    ]  # per-bet EV (NOT a points distance -- see WR-06 note above)
                     slipped_line = decision["slipped_line"]
                     odds = config.standard_vig_odds
                     outcome = decision["outcome"]

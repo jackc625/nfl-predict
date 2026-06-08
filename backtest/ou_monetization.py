@@ -527,13 +527,17 @@ def _assert_fit_window(
     chosen_t_window: str,
     high_total_boundary: float,
 ) -> dict[str, Any]:
-    """Prove NO hold season fed the SD fit, the threshold tuning, or any self-bias estimate (#5).
+    """Prove NO hold season fed the SD fit, the threshold tuning, or the TUNE-season self-bias (#5).
 
     Raises :class:`LeakageError` if any hold season (2023/2024) appears in:
       - the seasons consumed by the frozen-SD fit,
       - the seasons the EV-floor t was tuned on (the sample_window string),
-      - any season's self-bias estimate input (each season's bias is fit on STRICTLY-PRIOR
-        seasons, so a tune-season bias can only see earlier seasons -- asserted here),
+      - any TUNE-season self-bias estimate input (check (c) iterates ``fit["bias_seasons"]`` = the
+        tune seasons; each is fit on STRICTLY-PRIOR seasons, asserted here). The HOLD seasons'
+        walk-forward bias may, BY DESIGN, include the strictly-prior 2023 outcomes (correct
+        walk-forward: 2023 is known before betting 2024); that does NOT feed the frozen t / SD /
+        boundary decision and is therefore out of this fence's scope (WR-04 -- the fence asserts the
+        inputs to the FROZEN decision are hold-free, not every per-season walk-forward bias pool),
       - the high-total boundary derivation input (the boundary is the Plan-03 pre-hold value;
         re-derive it leakage-clean and assert it matches, so a drifted boundary is caught).
 

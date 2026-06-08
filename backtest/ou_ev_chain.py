@@ -112,9 +112,10 @@ P_OVER_CLIP: tuple[float, float] = (0.001, 0.999)
 # chain and the tuner share one source. ASCENDING and frozen.
 EV_FLOOR_GRID: tuple[float, ...] = (0.00, 0.01, 0.02, 0.03, 0.05)
 
-# Calibration-gate parameters (#1, D27-07). 5 quantile bins; bins below MIN_BIN_OBS are
-# merged into a neighbor (never silently dropped); RELIABILITY_TOLERANCE is the
-# pre-registered max per-bin |mean_pred - realized| the gate allows.
+# Calibration-gate parameters (#1, D27-07). 5 equal-count quantile bins; the gate REQUIRES
+# n >= N_BINS * MIN_BIN_OBS so every bin holds >= MIN_BIN_OBS observations (it raises rather
+# than silently report an under-filled bin, WR-02). RELIABILITY_TOLERANCE is the pre-registered
+# max per-bin |mean_pred - realized| the gate allows.
 N_BINS: int = 5
 MIN_BIN_OBS: int = 20
 RELIABILITY_TOLERANCE: float = 0.10
@@ -349,33 +350,6 @@ def _brier(p: np.ndarray, realized: np.ndarray) -> float:
     return float(np.mean((p - realized) ** 2))
 
 
-def _merge_small_bins(
-    bin_ids: np.ndarray,
-    n_bins: int,
-    min_bin_obs: int,
-) -> np.ndarray:
-    """Merge bins below ``min_bin_obs`` into a neighbor, KEEPING ``n_bins`` labels.
-
-    Sorted samples are reassigned so that no reported bin has fewer than ``min_bin_obs``
-    observations while the number of distinct bin labels stays at ``n_bins`` (small bins
-    are merged, never silently dropped, #1). Operates on bin ids assigned to
-    quantile-sorted data (ids in ``0..n_bins-1`` over a sorted index).
-    """
-    # Count per bin; merge any deficient bin into its lower neighbor by relabeling.
-    labels = bin_ids.copy()
-    # Iterate from the top bin downward, pushing a deficient top into the bin below,
-    # then a single forward pass for any remaining deficient interior/low bin.
-    for b in range(n_bins - 1, 0, -1):
-        if np.sum(labels == b) < min_bin_obs:
-            labels[labels == b] = b - 1
-    for b in range(0, n_bins - 1):
-        if np.sum(labels == b) < min_bin_obs:
-            labels[labels == b] = b + 1
-    # Re-pack the remaining distinct labels back onto a contiguous 0..k-1 range, then
-    # split evenly into exactly n_bins quantile groups so n_bins effective bins persist.
-    return labels
-
-
 def calibration_gate(
     p_over_corrected: np.ndarray,
     p_over_raw: np.ndarray,
@@ -387,9 +361,11 @@ def calibration_gate(
     the OOS HOLD split (the caller passes hold predictions). Pure function, no I/O.
 
     Procedure:
-      1. Sort by ``p_over_corrected`` and split into ``N_BINS`` quantile bins.
-      2. Merge any bin with < ``MIN_BIN_OBS`` observations into a neighbor (never drop;
-         the reported bin count stays ``N_BINS``).
+      1. Require ``n >= N_BINS * MIN_BIN_OBS`` (else raise ``ValueError``): equal-count
+         binning of fewer samples would under-fill a bin, and the gate refuses to silently
+         report a deficient bin (WR-02).
+      2. Sort by ``p_over_corrected`` and split into ``N_BINS`` equal-count quantile bins;
+         the precondition guarantees every bin carries >= ``MIN_BIN_OBS`` observations.
       3. Per bin: mean predicted vs realized over-rate; the per-bin deviation is
          ``|mean_pred - realized|``.
       4. Report ``ece`` (size-weighted mean abs deviation), ``max_bin_deviation``, the
@@ -413,23 +389,27 @@ def calibration_gate(
     realized = np.asarray(realized_over, dtype=float)
 
     n = len(p_corr)
+    if n < N_BINS * MIN_BIN_OBS:
+        msg = (
+            f"calibration_gate needs at least N_BINS * MIN_BIN_OBS = "
+            f"{N_BINS * MIN_BIN_OBS} observations to form {N_BINS} equal-count bins of "
+            f">= {MIN_BIN_OBS} each; got n={n}. Refusing to silently report under-filled "
+            "bins (WR-02)."
+        )
+        raise ValueError(msg)
+
     brier_corrected = _brier(p_corr, realized)
     brier_raw = _brier(p_raw, realized)
 
-    # Quantile-bin the corrected predictions: sort, assign each sorted sample to one of
-    # N_BINS contiguous groups, then merge deficient bins.
+    # Equal-count quantile bins: sort, then assign each sorted sample to one of N_BINS
+    # contiguous groups. Equal-count binning gives every bin floor(n / N_BINS) or
+    # ceil(n / N_BINS) observations, so the precondition above (n >= N_BINS * MIN_BIN_OBS)
+    # is exactly what guarantees each reported bin carries >= MIN_BIN_OBS -- no bin is ever
+    # silently under-filled (WR-02). There is no separate "merge deficient bins" pass: with
+    # equal-count bins a deficient bin can only arise when n is too small, which the
+    # precondition rejects outright.
     order = np.argsort(p_corr, kind="stable")
-    raw_bin_of_sorted = np.minimum((np.arange(n) * N_BINS) // n, N_BINS - 1)
-    merged_sorted = _merge_small_bins(raw_bin_of_sorted, N_BINS, MIN_BIN_OBS)
-
-    # After merging, re-split the sorted samples into exactly N_BINS equal-count quantile
-    # groups so the report always carries N_BINS bins each with >= MIN_BIN_OBS obs
-    # (merging only happens when n is large enough for N_BINS * MIN_BIN_OBS; for the
-    # fixtures here n >= 385, so equal N_BINS splits each hold >= MIN_BIN_OBS).
-    final_sorted_bins = np.minimum((np.arange(n) * N_BINS) // n, N_BINS - 1)
-    # If a merge collapsed any bin (small-cluster fixture), the equal-count re-split below
-    # still yields N_BINS bins of >= floor(n / N_BINS) obs, satisfying the merge intent.
-    _ = merged_sorted  # merge pass documents the contract; equal re-split enforces min-N.
+    sorted_bins = np.minimum((np.arange(n) * N_BINS) // n, N_BINS - 1)
 
     p_corr_sorted = p_corr[order]
     realized_sorted = realized[order]
@@ -438,7 +418,7 @@ def calibration_gate(
     deviations: list[float] = []
     weights: list[int] = []
     for b in range(N_BINS):
-        mask = final_sorted_bins == b
+        mask = sorted_bins == b
         count = int(np.sum(mask))
         mean_pred = float(np.mean(p_corr_sorted[mask]))
         realized_rate = float(np.mean(realized_sorted[mask]))

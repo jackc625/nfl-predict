@@ -37,9 +37,12 @@ PER_BET_CAP_PCT = 0.05
 # Documented as a string so the chosen formula is auditable as a constant.
 SAME_SIDE_DEWEIGHT = "stake / sqrt(group_size)"
 
-# Full-Kelly is EXCLUDED (ruin risk). The half-Kelly ceiling is a hard clamp
-# applied at the END of the pipeline (D27-09).
-HALF_KELLY_CEILING = 0.5
+# Full-Kelly is EXCLUDED (ruin risk). The exclusion is enforced UPSTREAM, where the Kelly
+# fraction is computed: KellyCalculator applies a 0.25 (quarter-Kelly) fraction by default
+# and caps every bet at PER_BET_CAP_PCT (5%) of bankroll. The sizing pipeline below re-applies
+# that 5% per-bet cap as its operative per-bet fraction ceiling. There is deliberately NO
+# separate half-Kelly clamp: given quarter-Kelly + the 5% cap it could never bind, so it only
+# advertised a protection it did not provide (WR-01, removed 2026-06-08; D27-09).
 
 # The LOCKED cap order (review tightening #2). The single orchestration helper
 # apply_sizing_pipeline applies these four steps in EXACTLY this order; the
@@ -85,16 +88,6 @@ def unit_size(bankroll: float) -> float:
     """
     _validate_bankroll(bankroll)
     return bankroll * UNIT_PCT_OF_BANKROLL
-
-
-def clamp_to_half_kelly(fraction: float) -> float:
-    """Hard-clamp a Kelly fraction to the half-Kelly ceiling (D27-09).
-
-    Full-Kelly is excluded; this clamp is applied at the END so the effective
-    fraction never exceeds HALF_KELLY_CEILING (0.5). A fraction already at or
-    below the ceiling is returned unchanged.
-    """
-    return min(float(fraction), HALF_KELLY_CEILING)
 
 
 def apply_same_side_deweight(bets: list[dict]) -> list[dict]:
@@ -209,10 +202,11 @@ def apply_sizing_pipeline(bets: list[dict], bankroll: float) -> list[dict]:
     BetSelector does NOT re-order the steps.
 
     Each input bet carries a ``bet_side`` and a ``stake`` (the calibrated Kelly
-    stake -- step 1, already computed upstream). The half-Kelly ceiling is a
-    hard clamp on the fraction; here stakes arrive as dollar amounts, so the
-    fraction clamp is enforced via ``clamp_to_half_kelly`` on the implied
-    bankroll fraction before the per-bet cap.
+    stake -- step 1, already computed upstream by ``KellyCalculator`` with its
+    quarter-Kelly fraction and 5% per-bet cap). Step 2 re-applies the 5% per-bet
+    cap (``PER_BET_CAP_PCT``) here as the operative per-bet fraction ceiling;
+    full-Kelly is excluded by that cap together with the upstream quarter-Kelly
+    fraction (there is no separate half-Kelly clamp -- see the module header).
 
     Args:
         bets: A week's bets; each dict carries ``bet_side`` and ``stake``.
@@ -232,14 +226,12 @@ def apply_sizing_pipeline(bets: list[dict], bankroll: float) -> list[dict]:
 
     per_bet_cap = bankroll * PER_BET_CAP_PCT
 
-    # Step 1 (kelly_stake) is the provided stake. Validate + clamp the implied
-    # fraction to the half-Kelly ceiling, then apply Step 2 (5% per-bet cap).
+    # Step 1 (kelly_stake) is the provided stake. Apply Step 2 (the 5% per-bet cap),
+    # the operative per-bet fraction ceiling.
     capped_bets: list[dict] = []
     for bet in bets:
         original = _validate_stake(bet["stake"])
-        clamped_fraction = clamp_to_half_kelly(original / bankroll)
-        clamped_stake = clamped_fraction * bankroll
-        capped_stake = min(clamped_stake, per_bet_cap)
+        capped_stake = min(original, per_bet_cap)
         capped_bets.append({"bet_side": bet["bet_side"], "stake": capped_stake})
 
     # Step 3 (same_side_deweight): operate on the per-bet-capped stakes.

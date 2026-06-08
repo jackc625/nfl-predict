@@ -47,6 +47,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -82,6 +83,7 @@ REJECTION_REASONS: tuple[str, ...] = (
     "not_subpop",  # outside the UNION {under} OR {high-total} (D27-04/05)
     "ev_below_floor",  # eligible but per-bet EV < the EV-floor t (D27-14)
     "real_odds_failed",  # provenance hard-fail (OUM-06) -- raised before selection
+    "zero_kelly_stake",  # admitted by EV but the Kelly calculator zeroed the stake (WR-07)
 )
 
 __all__ = [
@@ -127,14 +129,22 @@ def assert_real_odds(raw_odds_df: pd.DataFrame) -> None:
     if not offending_mask.any():
         return
 
-    offenders = raw_odds_df.loc[offending_mask, "game_id"].head(10).tolist()
+    # Name offenders by game_id when present; fall back to row indices on a frame missing the
+    # game_id column so a malformed provenance frame still raises the named ValueError (never a
+    # bare KeyError, WR-05).
+    if "game_id" in raw_odds_df.columns:
+        offenders = raw_odds_df.loc[offending_mask, "game_id"].head(10).tolist()
+        offender_label = f"offending game_ids={offenders}"
+    else:
+        offenders = raw_odds_df.index[offending_mask].tolist()[:10]
+        offender_label = f"offending row indices (no game_id column)={offenders}"
     bad_books = sorted(
         set(raw_odds_df.loc[bad_book_mask, "sportsbook"].dropna().unique())
     )
     msg = (
         "Odds provenance check FAILED (mock/synthetic-odds contamination, OUM-06): "
         f"unexpected sportsbooks={bad_books}, is_live rows={int(live_mask.sum())}; "
-        f"offending game_ids={offenders}"
+        f"{offender_label}"
     )
     raise ValueError(msg)
 
@@ -187,6 +197,13 @@ class BetSelector:
         self.ev_floor_t = float(ev_floor_t)
         self.bankroll = float(bankroll)
         self.high_total_boundary = float(high_total_boundary)
+        if not math.isfinite(self.high_total_boundary):
+            msg = (
+                "high_total_boundary must be finite; got a non-finite value (the pre-hold "
+                "boundary did not resolve -- the silver odds lake is required, LOCKED-1). A NaN "
+                "boundary would silently collapse the under-OR-high UNION to under-only (WR-03)."
+            )
+            raise ValueError(msg)
         self.slippage_points = float(slippage_points)
         self.odds = int(odds)
 
@@ -413,22 +430,45 @@ class BetSelector:
             return
 
         # Kelly stake on the CALIBRATED P(side) (BET-02 fix -- NEVER implied + points_edge).
+        # An admitted bet that the inner Kelly calculator zeroes is the EV/Kelly double-gate
+        # boundary (WR-07): the EV floor admitted it, but Kelly stakes nothing because its
+        # calibrated P(side) is at/below the -110 breakeven. At ev_floor_t >= 0 this is
+        # zero-measure (admission already requires p_side >= breakeven); for a NEGATIVE floor the
+        # two gates diverge. Rather than silently book a zero-stake "selected" bet, surface it:
+        # reject with reason "zero_kelly_stake" and warn, so `selected` holds only genuinely
+        # stakeable bets and the latent double-gate is observable.
         kelly_inputs: list[dict[str, Any]] = []
+        staked_admitted: list[dict[str, Any]] = []
         for record in admitted:
             kelly_result = self._kelly.calculate_optimal_bet_size(
                 model_prob=record["calibrated_p_side"],
                 market_odds=self.odds,
                 mode=KellyMode.FRACTIONAL,
             )
+            if kelly_result.recommended_bet <= 0.0:
+                logger.warning(
+                    "BetSelector admitted a bet the Kelly calculator zeroed (EV/Kelly "
+                    "double-gate boundary); rejecting instead of booking a zero stake.",
+                    game_id=record.get("game_id"),
+                    calibrated_p_side=record.get("calibrated_p_side"),
+                    per_bet_ev=record.get("per_bet_ev"),
+                    ev_floor_t=self.ev_floor_t,
+                )
+                rejected.append({**record, "rejection_reason": "zero_kelly_stake"})
+                continue
+            staked_admitted.append(record)
             kelly_inputs.append(
                 {"bet_side": record["bet_side"], "stake": kelly_result.recommended_bet}
             )
+
+        if not kelly_inputs:
+            return
 
         # LOCKED-order sizing pipeline (Plan-02): kelly -> 5% per-bet -> same-side de-weight ->
         # 10% weekly cap. The BetSelector consumes this helper and does NOT re-order the steps.
         sized = apply_sizing_pipeline(kelly_inputs, self.bankroll)
 
-        for record, sized_rec in zip(admitted, sized, strict=True):
+        for record, sized_rec in zip(staked_admitted, sized, strict=True):
             record["kelly_stake"] = sized_rec["weekly_scaled_stake"]
             record["outcome"] = self._grade(record)
             selected.append(record)

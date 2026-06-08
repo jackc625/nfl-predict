@@ -28,6 +28,7 @@ import inspect
 from pathlib import Path
 
 import numpy as np
+import pytest
 from scipy.stats import norm
 
 from backtest.ou_ev_chain import (
@@ -189,16 +190,18 @@ class TestCalibrationGate:
         assert passed is False
         assert report["passed"] is False
 
-    def test_calibration_gate_merges_small_bins(self) -> None:
-        """OUM-02 / #1: bins below MIN_BIN_OBS are merged, not silently dropped.
+    def test_calibration_gate_bins_meet_min_obs(self) -> None:
+        """OUM-02 / #1 / WR-02: equal-count binning gives N_BINS bins each >= MIN_BIN_OBS.
 
-        A fixture with one sparse high-prediction cluster still reports N_BINS effective
-        bins (the merge keeps the bin count fixed) and every reported bin carries at
-        least MIN_BIN_OBS observations.
+        With n >= N_BINS * MIN_BIN_OBS the equal-count quantile split guarantees every bin
+        carries at least MIN_BIN_OBS observations -- no bin is silently under-filled. A sparse
+        top cluster is simply absorbed into the top quantile bin; there is no separate merge.
         """
         rng = np.random.default_rng(99)
         dense = rng.uniform(0.30, 0.55, size=380)
-        sparse = rng.uniform(0.95, 0.98, size=5)  # a sparse top cluster < MIN_BIN_OBS
+        sparse = rng.uniform(
+            0.95, 0.98, size=5
+        )  # a sparse top cluster, absorbed by binning
         p_corrected = np.clip(np.concatenate([dense, sparse]), *P_OVER_CLIP)
         p_raw = np.clip(p_corrected + 0.05, *P_OVER_CLIP)
         realized = self._make_realized(p_corrected, seed=3)
@@ -206,9 +209,24 @@ class TestCalibrationGate:
         _, report = calibration_gate(p_corrected, p_raw, realized)
 
         assert report["n_bins"] == N_BINS
-        # Every reported bin survived the merge with at least MIN_BIN_OBS obs.
+        # Every reported bin carries at least MIN_BIN_OBS obs (the precondition guarantees it).
         for row in report["bins"]:
             assert row["count"] >= MIN_BIN_OBS
+
+    def test_calibration_gate_raises_on_insufficient_data(self) -> None:
+        """WR-02: fewer than N_BINS * MIN_BIN_OBS observations is a hard ValueError.
+
+        The gate refuses to silently report under-filled bins; too few samples to form
+        N_BINS bins of >= MIN_BIN_OBS each raises rather than producing a deficient bin.
+        """
+        n = N_BINS * MIN_BIN_OBS - 1  # one short of the minimum
+        rng = np.random.default_rng(7)
+        p_corrected = np.clip(rng.uniform(0.35, 0.6, size=n), *P_OVER_CLIP)
+        p_raw = np.clip(p_corrected + 0.05, *P_OVER_CLIP)
+        realized = self._make_realized(p_corrected, seed=5)
+
+        with pytest.raises(ValueError, match="under-filled"):
+            calibration_gate(p_corrected, p_raw, realized)
 
 
 # ---------------------------------------------------------------------------
