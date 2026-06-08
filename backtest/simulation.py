@@ -262,9 +262,19 @@ class BettingSimulator:
         print(results.flat_stake.roi, results.kelly.roi)
     """
 
-    def __init__(self, config: SimulationConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: SimulationConfig | None = None,
+        ou_bet_selector: Any | None = None,
+    ) -> None:
         self.config = config or SimulationConfig()
         self.logger = get_logger(__name__)
+        # LOCKED-2 (BET-01): when a BetSelector is injected, the O/U decision -- eligibility, side,
+        # threshold, EV admission, AND sizing -- is owned END-TO-END by it (proof == production).
+        # WP/ATS are out of scope and unaffected. When None, the O/U target is skipped (no inline
+        # O/U decision logic remains -- the points-distance admission and the BET-02 `implied+edge`
+        # Kelly branch were removed; O/U decisions live ONLY in the BetSelector).
+        self.ou_bet_selector = ou_bet_selector
 
     # -- Bet side determination -----------------------------------------------
 
@@ -364,6 +374,46 @@ class BettingSimulator:
             return int(ml_home)
         return int(ml_away)
 
+    # -- O/U routing (LOCKED-2: decisions owned by the BetSelector) ------------
+
+    def _select_ou_decisions(self, merged: pd.DataFrame) -> dict[str, dict[str, Any]]:
+        """Build the per-game O/U decision lookup from BetSelector.select() (LOCKED-2, BET-01).
+
+        Passes the merged O/U prediction frame (carrying game_id, season, week, model_total, the
+        closing ``total``, and the ``actual`` label) to the injected BetSelector and returns a
+        ``{game_id -> selected-record}`` map for the bets the selector SELECTED. The simulator then
+        grades ONLY those games, with the calibrated ``calibrated_p_side`` / ``kelly_stake`` /
+        ``slipped_line`` / ``outcome`` the selector supplied. The eligibility, side, EV-floor
+        threshold, EV admission, and sizing are ALL the selector's -- the simulator adds no inline
+        O/U decision logic (proof == production).
+
+        Args:
+            merged: The chronologically-sorted, odds-merged O/U prediction frame.
+
+        Returns:
+            A dict keyed by game_id of the selector's selected per-bet records (empty when nothing
+            was selected). Rows lacking ``model_total`` are dropped before selection.
+        """
+        if "model_total" not in merged.columns:
+            return {}
+
+        candidate_cols = ["game_id", "season", "week", "model_total"]
+        candidates = merged[merged["model_total"].notna()].copy()
+        if candidates.empty:
+            return {}
+
+        # The BetSelector expects ``closing_total`` (and ``actual`` for grading); map from the
+        # merged frame's ``total`` / ``actual`` columns without mutating the simulator's row schema.
+        candidates["closing_total"] = candidates["total"].astype(float)
+        if "actual" in candidates.columns:
+            candidates["actual"] = candidates["actual"].astype(float)
+        keep = [*candidate_cols, "closing_total"]
+        if "actual" in candidates.columns:
+            keep.append("actual")
+
+        result = self.ou_bet_selector.select(candidates[keep])
+        return {rec["game_id"]: rec for rec in result.selected}
+
     # -- Main simulation ------------------------------------------------------
 
     def simulate(
@@ -438,6 +488,21 @@ class BettingSimulator:
             # Sort chronologically
             merged = merged.sort_values(["season", "week"]).reset_index(drop=True)
 
+            # LOCKED-2 (BET-01): when a BetSelector is injected, route the ENTIRE O/U decision --
+            # eligibility, side, EV-floor threshold, EV admission, and sizing -- through
+            # BetSelector.select() so proof == production. The simulator then grades ONLY the bets
+            # it returned, with the calibrated p_side it supplied for Kelly. When no BetSelector is
+            # injected (the Phase-26 DIAGNOSIS consumers that grade every game at
+            # min_edge_threshold=0.0), the simulator retains the LOCKED side/grading path for
+            # backward-compatible O/U GRADING -- but the BET-02 points-distance Kelly bug is removed
+            # in BOTH paths (the legacy O/U path no longer sizes Kelly off `implied + edge`). WP/ATS
+            # are unaffected (out of scope).
+            ou_decisions: dict[str, dict[str, Any]] = {}
+            if target == "ou" and self.ou_bet_selector is not None:
+                ou_decisions = self._select_ou_decisions(merged)
+                if not ou_decisions:
+                    continue
+
             for _, row in merged.iterrows():
                 game_id = row["game_id"]
                 season = int(row["season"])
@@ -498,7 +563,35 @@ class BettingSimulator:
                         bet_side, actual_margin, slipped_line
                     )
 
+                elif target == "ou" and self.ou_bet_selector is not None:
+                    # LOCKED-2 monetization path: the ENTIRE O/U decision is owned by the
+                    # BetSelector (eligibility, side, threshold, EV admission, sizing). Grade ONLY a
+                    # game the selector returned; the calibrated p_side it supplied drives Kelly (the
+                    # BET-02 fix -- NO inline `implied + edge` for O/U). The LOCKED grading helpers
+                    # (apply_slippage_total / _resolve_ou_outcome) are reused INSIDE the selector,
+                    # unchanged (D-18).
+                    decision = ou_decisions.get(game_id)
+                    if decision is None:
+                        continue  # not selected by the BetSelector -> no O/U bet (proof==production)
+
+                    bet_side = decision["bet_side"]
+                    model_value = decision[
+                        "calibrated_p_side"
+                    ]  # the calibrated P(side) for Kelly
+                    market_value = decision["closing_total"]
+                    edge = decision[
+                        "per_bet_ev"
+                    ]  # the per-bet EV (not a points distance)
+                    slipped_line = decision["slipped_line"]
+                    odds = config.standard_vig_odds
+                    outcome = decision["outcome"]
+
                 elif target == "ou":
+                    # Legacy DIAGNOSIS path (no BetSelector injected): grade O/U with the LOCKED
+                    # side/slippage/outcome convention (D-18) for backward-compatible grading (the
+                    # Phase-26 divergence harness reads the flat-stake win-rate at
+                    # min_edge_threshold=0.0). The BET-02 bug is removed: Kelly is NOT sized off the
+                    # points distance here (see the sizing block below).
                     if "model_total" not in row.index:
                         continue
                     model_total = float(row["model_total"])
@@ -529,21 +622,36 @@ class BettingSimulator:
                 payout_flat = _calculate_payout(flat_bet, odds, outcome)
 
                 # -- Kelly sizing --
-                # For Kelly, we need model probability and market odds
-                if target == "wp":
-                    kelly_model_prob = model_value
+                if target == "ou" and self.ou_bet_selector is not None:
+                    # LOCKED-2 monetization path: O/U sizing is owned by the BetSelector (BET-02
+                    # fix). The stake already went through the LOCKED-order Kelly + cap pipeline on
+                    # the calibrated p_side. Use it directly; do NOT re-run the inline `implied +
+                    # edge` sizing for O/U.
+                    kelly_bet = decision["kelly_stake"]
+                elif target == "ou":
+                    # Legacy DIAGNOSIS path: the BET-02 points-distance Kelly sizing is REMOVED.
+                    # Without the calibrated p_side there is no honest Kelly probability for O/U, so
+                    # the legacy path does NOT size Kelly off `implied + abs(model_total -
+                    # closing_total)` (the bug). It is flat-stake-graded only (the Phase-26 harness
+                    # reads the flat-stake win-rate); the O/U Kelly stake here is 0 by design.
+                    kelly_bet = 0.0
                 else:
-                    # For ATS/O/U at -110, implied prob is ~52.4%
-                    # Use edge to derive an equivalent model probability
-                    implied = moneyline_to_probability(odds)
-                    kelly_model_prob = implied + edge
+                    # WP/ATS (out of scope, unchanged): WP uses the model prob directly; ATS uses
+                    # the legacy implied + edge equivalent-probability path.
+                    if target == "wp":
+                        kelly_model_prob = model_value
+                    else:
+                        # For ATS at -110, implied prob is ~52.4%; use edge to derive an equivalent
+                        # model probability.
+                        implied = moneyline_to_probability(odds)
+                        kelly_model_prob = implied + edge
 
-                kelly_result = kelly_calc.calculate_optimal_bet_size(
-                    model_prob=kelly_model_prob,
-                    market_odds=odds,
-                    mode=KellyMode.FRACTIONAL,
-                )
-                kelly_bet = kelly_result.recommended_bet
+                    kelly_result = kelly_calc.calculate_optimal_bet_size(
+                        model_prob=kelly_model_prob,
+                        market_odds=odds,
+                        mode=KellyMode.FRACTIONAL,
+                    )
+                    kelly_bet = kelly_result.recommended_bet
                 payout_kelly = _calculate_payout(kelly_bet, odds, outcome)
 
                 # -- Update flat-stake bankroll --
