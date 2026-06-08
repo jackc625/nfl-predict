@@ -72,13 +72,18 @@ __all__ = [
     "DEBIAS_RESIDUAL_THRESHOLD",
     "DEPLOYED_OU_ARTIFACT",
     "EDGE_MAGNITUDE_GRID",
+    "HIGH_TOTAL_BOUNDARY_PREHOLD",
+    "HOLD_SEASONS",
     "N_FLOOR",
     "OU_BREAKEVEN_HIT_RATE",
+    "PRE_HOLD_SEASONS",
     "SD_SENSITIVITY_BAND",
     "SIGNIFICANCE_ALPHA",
+    "HoldSeasonLeakageError",
     "bias_vs_anticipation",
     "bucket_count_parity",
     "debiased_rescore",
+    "derive_high_total_boundary",
     "edge_magnitude_sweep",
     "extended_bucket_sweep",
     "integrity_preamble",
@@ -117,12 +122,53 @@ KEY_TOTAL_DISTANCE_BANDS = [0.0, 0.5, 1.0, 1.5]
 KEY_TOTAL_CLUSTER = (43.0, 44.0)
 
 # Totals-regime boundaries (empirical tertiles): low < 42.0, mid [42.0, 46.5], high > 46.5.
+#
+# PHASE-26 DIAGNOSIS ONLY (HOLD-INFORMED): these tertiles were resolved from the EMPIRICAL
+# 2021-2024 closing-totals window, which INCLUDES the 2023-2024 hold split. That hold-informed
+# boundary is fine for the Phase-26 backward-looking diagnosis (the extended_bucket_sweep
+# consumes it below) but it LEAKS future info into eligibility if used for selection. Phase-27
+# eligibility therefore uses the leakage-clean HIGH_TOTAL_BOUNDARY_PREHOLD constant defined
+# below (re-derived on pre-hold 2018-2022 data only, LOCKED-1). DO NOT use this constant for
+# Phase-27 high-total eligibility.
 TOTALS_REGIME_BOUNDARIES = {
     "low_max": 42.0,
     "mid_min": 42.0,
     "mid_max": 46.5,
     "high_min": 46.5,
 }
+
+# ---------------------------------------------------------------------------
+# Phase-27 leakage-clean high-total eligibility boundary (LOCKED-1).
+#
+# The Phase-26 TOTALS_REGIME_BOUNDARIES "high" cut (> 46.5) was derived from a window that
+# INCLUDES the 2023-2024 hold split, so reusing it for Phase-27 high-total eligibility would leak
+# future information into the sub-population filter (threat T-27-22). LOCKED-1 requires the
+# high-total boundary to be RE-DERIVED on PRE-HOLD data ONLY -- the same distributional cut (the
+# upper tertile that produced 46.5) recomputed over the 2018-2022 closing-totals window,
+# EXCLUDING the 2023-2024 hold. derive_high_total_boundary() performs that derivation with a hard
+# leakage assertion (it raises if any hold-season row reaches the derivation input). The resulting
+# value is exposed below as HIGH_TOTAL_BOUNDARY_PREHOLD and is what the Phase-27 BetSelector
+# consumes for high-total eligibility.
+# ---------------------------------------------------------------------------
+
+# Hold seasons EXCLUDED from the pre-hold boundary derivation (mirrors ou_ev_chain.HOLD_SEASONS;
+# 2023-2024 are the burned holdout per D26-09 / D27-01). Stated locally so this module does not
+# import the EV chain (keeping the diagnosis harness dependency-free of the monetization chain).
+HOLD_SEASONS: tuple[int, int] = (2023, 2024)
+
+# The pre-hold derivation window (2018-2022 closing totals). 2018-2022 is the leakage-clean window
+# for eligibility: it EXCLUDES the 2023-2024 hold and the silver odds carry only
+# consensus/draftkings is_live=False lines across it (RESEARCH.md Finding 1). The upper-tertile
+# quantile (2/3) is the SAME distributional cut that produced the legacy 46.5; recomputed on the
+# pre-hold window it lands at HIGH_TOTAL_BOUNDARY_PREHOLD (compared to legacy 46.5 below).
+PRE_HOLD_SEASONS: tuple[int, ...] = (2018, 2019, 2020, 2021, 2022)
+
+# The upper-tertile quantile that defines the "high" regime (the same 2/3 quantile that produced
+# the legacy 46.5). Frozen before the derivation runs (forking-paths guard).
+_HIGH_TOTAL_QUANTILE: float = 2.0 / 3.0
+
+# The legacy hold-informed high boundary, retained as a literal for the readout comparison only.
+_LEGACY_HIGH_TOTAL_BOUNDARY: float = 46.5
 
 # Week groupings (the dynamic blend varies by week, D26-06).
 WEEK_GROUPINGS = {
@@ -218,6 +264,150 @@ def _resolve_deployed_ou_artifact() -> str:
     """
     artifact = load_model_artifact("ou")
     return Path(artifact["artifact_dir"]).name
+
+
+# ---------------------------------------------------------------------------
+# Phase-27 leakage-clean high-total boundary derivation (LOCKED-1)
+# ---------------------------------------------------------------------------
+
+
+class HoldSeasonLeakageError(ValueError):
+    """Raised when the high-total boundary derivation input contains a HOLD-season row.
+
+    The pre-hold high-total boundary (LOCKED-1) MUST be derived from PRE-HOLD data only
+    (2018-2022, EXCLUDING the 2023-2024 hold). If a HOLD season reaches the derivation input,
+    the eligibility boundary would leak future information (threat T-27-22); this hard error
+    forbids it rather than silently degrading to a hold-informed boundary.
+    """
+
+
+def _season_from_game_id(game_id: str) -> int:
+    """Extract the integer season from a game_id of the form ``YYYY_WXX_AWAY@HOME``.
+
+    The silver odds frame carries no explicit ``season`` column, so the season is parsed from the
+    game_id prefix (the same convention the engine uses for the week). Raises ValueError on a
+    malformed id rather than guessing.
+    """
+    head = str(game_id).split("_", 1)[0]
+    if not (len(head) == 4 and head.isdigit()):
+        msg = f"cannot parse season from game_id {game_id!r} (expected 'YYYY_WXX_...')"
+        raise ValueError(msg)
+    return int(head)
+
+
+def derive_high_total_boundary(
+    pre_hold_seasons: tuple[int, ...] = PRE_HOLD_SEASONS,
+    quantile: float = _HIGH_TOTAL_QUANTILE,
+    odds_df: pd.DataFrame | None = None,
+) -> float:
+    """Re-derive the high-total regime boundary on PRE-HOLD data only (LOCKED-1).
+
+    Loads the raw closing ``total`` from SILVER (NEVER the gold z-scored ``snapshot_total``),
+    filters to the pre-hold seasons (2018-2022, EXCLUDING the 2023-2024 hold), and returns the
+    upper-tertile ``quantile`` (default 2/3 -- the SAME distributional cut that produced the legacy
+    46.5). The derivation is leakage-clean: a hard assertion raises
+    :class:`HoldSeasonLeakageError` if any HOLD-season row reaches the input, and the seasons
+    actually read are asserted to be a subset of ``pre_hold_seasons``.
+
+    Two calling modes, both leakage-clean:
+
+    - ``odds_df is None`` (the default / production path): the FULL raw silver lake (all seasons)
+      is read and FILTERED to ``pre_hold_seasons``. The lake naturally contains the hold seasons;
+      filtering them out IS the leakage control. After filtering, the assertion below proves no
+      hold row survived into the derivation set.
+    - ``odds_df`` provided (the test / caller-supplied path): the frame is treated as the
+      derivation INPUT directly and must ALREADY be pre-hold only. If it carries any hold-season
+      row, :class:`HoldSeasonLeakageError` is raised -- the caller asserted a clean input and it
+      was not (the ``test_high_total_boundary_excludes_hold`` contract).
+
+    Args:
+        pre_hold_seasons: The leakage-clean derivation window (default ``PRE_HOLD_SEASONS`` =
+            2018-2022). MUST NOT intersect ``HOLD_SEASONS``.
+        quantile: The upper-tertile quantile defining the "high" regime (default 2/3).
+        odds_df: Optional derivation-input odds frame. When None, the raw silver
+            ``odds_snapshot.parquet`` is read read-only and filtered to the pre-hold window. When
+            provided, it is treated as the derivation input and must be pre-hold only.
+
+    Returns:
+        The pre-hold high-total boundary as a float (the closing-total quantile over 2018-2022).
+
+    Raises:
+        HoldSeasonLeakageError: if ``pre_hold_seasons`` intersects ``HOLD_SEASONS``, or if a
+            caller-supplied ``odds_df`` contains a HOLD-season (2023/2024) row, or if the filtered
+            derivation set somehow still carries a hold season.
+        ValueError: if no pre-hold rows remain after filtering (an empty derivation is a hard
+            error, never a silent fallback to the legacy boundary).
+    """
+    # Forking-paths / leakage guard on the REQUESTED window itself.
+    hold = set(HOLD_SEASONS)
+    requested = set(pre_hold_seasons)
+    if requested & hold:
+        msg = (
+            "pre_hold_seasons must not intersect HOLD_SEASONS "
+            f"(requested={sorted(requested)}, hold={sorted(hold)}); the eligibility boundary "
+            "must be leakage-clean (LOCKED-1)."
+        )
+        raise HoldSeasonLeakageError(msg)
+
+    if odds_df is not None:
+        # Caller-supplied derivation input: it MUST already be pre-hold only. A hold-season row in
+        # an explicitly-passed input is a leakage error (the test contract).
+        seasons_in = odds_df["game_id"].map(_season_from_game_id)
+        leaked = sorted(set(seasons_in.unique()) & hold)
+        if leaked:
+            n_leaked = int(seasons_in.isin(hold).sum())
+            msg = (
+                f"caller-supplied derivation input contains HOLD seasons {leaked} "
+                f"({n_leaked} rows); the derivation input must be PRE-HOLD only "
+                f"({sorted(requested)}) so eligibility is leakage-clean (LOCKED-1, T-27-22)."
+            )
+            raise HoldSeasonLeakageError(msg)
+        pre_hold = odds_df[seasons_in.isin(requested)]
+    else:
+        # Production path: read the full lake and FILTER to the pre-hold window (filtering out the
+        # hold seasons IS the leakage control).
+        raw = pd.read_parquet(_RAW_SILVER_ODDS_PATH)
+        seasons_read = raw["game_id"].map(_season_from_game_id)
+        pre_hold = raw[seasons_read.isin(requested)]
+
+    # POST-FILTER LEAKAGE ASSERTION: the derivation set actually used must be a SUBSET of the
+    # pre-hold window and must NOT intersect the hold seasons (proves no hold row leaked through).
+    used = set(pre_hold["game_id"].map(_season_from_game_id).unique())
+    if used & hold:
+        msg = (
+            f"derivation set still contains HOLD seasons {sorted(used & hold)} after filtering "
+            f"(window={sorted(requested)}); leakage control failed (LOCKED-1, T-27-22)."
+        )
+        raise HoldSeasonLeakageError(msg)
+    if not used.issubset(requested):
+        msg = (
+            f"derivation read seasons {sorted(used)} outside the pre-hold window "
+            f"{sorted(requested)} (LOCKED-1)."
+        )
+        raise HoldSeasonLeakageError(msg)
+
+    totals = pd.to_numeric(pre_hold["total"], errors="coerce").dropna()
+    if totals.empty:
+        msg = (
+            "no pre-hold closing totals available to derive the high-total boundary "
+            f"(window={sorted(requested)}); never fall back to the legacy 46.5."
+        )
+        raise ValueError(msg)
+    return float(totals.quantile(quantile))
+
+
+# The leakage-clean Phase-27 high-total eligibility boundary, derived ONCE at import on the
+# pre-hold (2018-2022) closing totals -- the SAME upper-tertile (2/3) cut that produced the legacy
+# 46.5, recomputed on the leakage-clean window. Phase-27 high-total eligibility uses THIS value
+# (NOT the hold-informed TOTALS_REGIME_BOUNDARIES["high_min"] = 46.5). Empirically this lands at
+# ~48.0 on the 2018-2022 window (vs the legacy 46.5); the BetSelector + readout report both.
+try:
+    HIGH_TOTAL_BOUNDARY_PREHOLD: float = derive_high_total_boundary()
+except (FileNotFoundError, OSError):
+    # The silver odds parquet is unavailable in a bare checkout (artifacts/ + data/ are
+    # gitignored). Defer the derivation to call-time so importing the module never hard-fails on a
+    # missing data lake; callers/tests on a populated lake recompute via derive_high_total_boundary.
+    HIGH_TOTAL_BOUNDARY_PREHOLD = float("nan")
 
 
 # ---------------------------------------------------------------------------
