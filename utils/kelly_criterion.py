@@ -6,12 +6,267 @@ advanced risk management features including drawdown limits, confidence
 adjustments, and bankroll management.
 """
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
 
 from utils.probability_utils import moneyline_to_probability
+
+# ---------------------------------------------------------------------------
+# Honest-sizing exposure controls (Phase 27, BET-03; D27-09/10/11).
+#
+# These module constants are PRE-REGISTERED and FROZEN. They name the sizing
+# discipline the BetSelector (Plan 03) consumes. The helpers below are ADDITIVE:
+# the existing KellyCalculator / calculate_optimal_bet_size /
+# calculate_simultaneous_kelly interfaces are NOT changed.
+# ---------------------------------------------------------------------------
+
+# 1 unit = 1% of bankroll (D27-09).
+UNIT_PCT_OF_BANKROLL = 0.01
+
+# Per-week total-exposure cap = 10% of bankroll, pro-rata scaled (D27-10, NEW).
+WEEKLY_CAP_PCT = 0.10
+
+# The existing 5%-of-bankroll per-bet cap (KellyCalculator.max_bet_pct),
+# named here for the LOCKED cap-order convention (D27-09; rarely-binding net).
+PER_BET_CAP_PCT = 0.05
+
+# Same-week SAME-SIDE de-weight rule, FROZEN (D27-11; review tightening #2).
+# Documented as a string so the chosen formula is auditable as a constant.
+SAME_SIDE_DEWEIGHT = "stake / sqrt(group_size)"
+
+# Full-Kelly is EXCLUDED (ruin risk). The half-Kelly ceiling is a hard clamp
+# applied at the END of the pipeline (D27-09).
+HALF_KELLY_CEILING = 0.5
+
+# The LOCKED cap order (review tightening #2). The single orchestration helper
+# apply_sizing_pipeline applies these four steps in EXACTLY this order; the
+# BetSelector calls that helper so the order is enforced in one place.
+CAP_ORDER = (
+    "kelly_stake",
+    "per_bet_5pct_cap",
+    "same_side_deweight",
+    "weekly_10pct_cap",
+)
+
+
+def _validate_bankroll(bankroll: float) -> None:
+    """Raise a named ValueError when the bankroll is not strictly positive.
+
+    Edge-case guard (review tightening #8): an invalid bankroll (<= 0) is a
+    hard error, never a silent divide-by-zero or a nonsense unit/cap.
+    """
+    if not bankroll > 0:
+        raise ValueError(f"bankroll must be > 0, got {bankroll!r}")
+
+
+def _validate_stake(stake: float) -> float:
+    """Coerce + validate a single stake, raising a named ValueError on NaN.
+
+    Edge-case guard (review tightening #8): a NaN stake is a hard error rather
+    than silently propagating through the pro-rata math.
+    """
+    value = float(stake)
+    if math.isnan(value):
+        raise ValueError("stake must not be NaN")
+    return value
+
+
+def unit_size(bankroll: float) -> float:
+    """Return the size of one betting unit (1% of bankroll, D27-09).
+
+    Args:
+        bankroll: Current bankroll (must be strictly positive).
+
+    Returns:
+        The dollar value of one unit (bankroll * UNIT_PCT_OF_BANKROLL).
+    """
+    _validate_bankroll(bankroll)
+    return bankroll * UNIT_PCT_OF_BANKROLL
+
+
+def clamp_to_half_kelly(fraction: float) -> float:
+    """Hard-clamp a Kelly fraction to the half-Kelly ceiling (D27-09).
+
+    Full-Kelly is excluded; this clamp is applied at the END so the effective
+    fraction never exceeds HALF_KELLY_CEILING (0.5). A fraction already at or
+    below the ceiling is returned unchanged.
+    """
+    return min(float(fraction), HALF_KELLY_CEILING)
+
+
+def apply_same_side_deweight(bets: list[dict]) -> list[dict]:
+    """De-weight SAME-WEEK SAME-SIDE concentration (D27-11; review #2).
+
+    Uses the FROZEN formula ``stake / sqrt(group_size)``. Bets are grouped by a
+    CASE-INSENSITIVELY normalized ``bet_side`` (lower-cased): all UNDERs are one
+    group; a high-total OVER and a normal OVER are one "over" group (overs are
+    NOT split by ``totals_regime``). Each bet's de-weighted stake is
+    ``original_stake / sqrt(len(group))``.
+
+    The covariance / joint-Kelly path is REJECTED (D27-11: overfit-prone on
+    limited data, weather features degenerate). There is deliberately NO
+    ``correlation_matrix`` argument -- this is SIMPLE same-side grouping only.
+
+    Args:
+        bets: A week's bets; each dict carries ``bet_side`` and ``stake``.
+
+    Returns:
+        Per-bet records (input order preserved) carrying metadata:
+        ``original_stake``, ``deweighted_stake``, ``scale_factor``
+        (where ``scale_factor = 1 / sqrt(group_size)``).
+
+    Raises:
+        ValueError: if any stake is NaN (review tightening #8).
+    """
+    if not bets:
+        return []
+
+    # Count group sizes by case-insensitively normalized side.
+    group_sizes: dict[str, int] = {}
+    for bet in bets:
+        side = str(bet["bet_side"]).strip().lower()
+        group_sizes[side] = group_sizes.get(side, 0) + 1
+
+    records: list[dict] = []
+    for bet in bets:
+        side = str(bet["bet_side"]).strip().lower()
+        original = _validate_stake(bet["stake"])
+        factor = 1.0 / math.sqrt(group_sizes[side])
+        records.append(
+            {
+                "bet_side": side,
+                "original_stake": original,
+                "deweighted_stake": original * factor,
+                "scale_factor": factor,
+            }
+        )
+    return records
+
+
+def apply_weekly_exposure_cap(
+    stakes: list[float],
+    bankroll: float,
+    weekly_cap_pct: float = WEEKLY_CAP_PCT,
+) -> list[dict]:
+    """Pro-rata scale a week's stakes to the 10% total-exposure cap (D27-10).
+
+    Copies the EXACT pro-rata shape from ``calculate_simultaneous_kelly`` (lines
+    531-539): ``max_total = bankroll * weekly_cap_pct``; if ``sum(stakes) <=
+    max_total`` the stakes are returned UNCHANGED (scale_factor 1.0); otherwise
+    ``scale = max_total / sum(stakes)`` scales every stake. Ratios are preserved
+    and NO bets are dropped (D27-10).
+
+    Because this runs on the ALREADY-de-weighted stakes (the LOCKED cap order),
+    any room freed by de-weighting is naturally reflected -- the smaller summed
+    input divides under the cap (review #2 Gemini interaction-order note).
+
+    Args:
+        stakes: The (already-de-weighted) per-bet stakes for one week.
+        bankroll: Current bankroll (must be strictly positive).
+        weekly_cap_pct: Fraction of bankroll allowed across the week.
+
+    Returns:
+        Per-bet records (input order preserved) carrying metadata:
+        ``deweighted_stake`` (the input), ``weekly_scaled_stake``,
+        ``scale_factor``.
+
+    Raises:
+        ValueError: if bankroll <= 0 or any stake is NaN (review #8).
+    """
+    _validate_bankroll(bankroll)
+    if not stakes:
+        return []
+
+    validated = [_validate_stake(s) for s in stakes]
+    total = sum(validated)
+    max_total = bankroll * weekly_cap_pct
+
+    # Guard the zero-sum (and the under-cap no-op) before dividing.
+    if total <= max_total or total == 0:
+        scale = 1.0
+    else:
+        scale = max_total / total
+
+    return [
+        {
+            "deweighted_stake": stake,
+            "weekly_scaled_stake": stake * scale,
+            "scale_factor": scale,
+        }
+        for stake in validated
+    ]
+
+
+def apply_sizing_pipeline(bets: list[dict], bankroll: float) -> list[dict]:
+    """Apply the four sizing steps in the LOCKED CAP_ORDER (review #2).
+
+    Order (CAP_ORDER): calibrated Kelly stake -> 5% per-bet cap -> same-side
+    de-weight -> 10% weekly cap. This single orchestration helper is what the
+    BetSelector (Plan 03) consumes, so the order is enforced in ONE place; the
+    BetSelector does NOT re-order the steps.
+
+    Each input bet carries a ``bet_side`` and a ``stake`` (the calibrated Kelly
+    stake -- step 1, already computed upstream). The half-Kelly ceiling is a
+    hard clamp on the fraction; here stakes arrive as dollar amounts, so the
+    fraction clamp is enforced via ``clamp_to_half_kelly`` on the implied
+    bankroll fraction before the per-bet cap.
+
+    Args:
+        bets: A week's bets; each dict carries ``bet_side`` and ``stake``.
+        bankroll: Current bankroll (must be strictly positive).
+
+    Returns:
+        Per-bet records (input order preserved) carrying the full metadata set:
+        ``original_stake``, ``deweighted_stake``, ``weekly_scaled_stake``,
+        ``scale_factor`` (the COMBINED de-weight x weekly factor).
+
+    Raises:
+        ValueError: if bankroll <= 0 or any stake is NaN (review #8).
+    """
+    _validate_bankroll(bankroll)
+    if not bets:
+        return []
+
+    per_bet_cap = bankroll * PER_BET_CAP_PCT
+
+    # Step 1 (kelly_stake) is the provided stake. Validate + clamp the implied
+    # fraction to the half-Kelly ceiling, then apply Step 2 (5% per-bet cap).
+    capped_bets: list[dict] = []
+    for bet in bets:
+        original = _validate_stake(bet["stake"])
+        clamped_fraction = clamp_to_half_kelly(original / bankroll)
+        clamped_stake = clamped_fraction * bankroll
+        capped_stake = min(clamped_stake, per_bet_cap)
+        capped_bets.append({"bet_side": bet["bet_side"], "stake": capped_stake})
+
+    # Step 3 (same_side_deweight): operate on the per-bet-capped stakes.
+    deweighted = apply_same_side_deweight(capped_bets)
+
+    # Step 4 (weekly_10pct_cap): operate on the already-de-weighted stakes.
+    weekly = apply_weekly_exposure_cap(
+        [rec["deweighted_stake"] for rec in deweighted], bankroll
+    )
+
+    # Merge: original_stake is the pre-cap Kelly stake; scale_factor is the
+    # COMBINED de-weight x weekly factor relative to that original.
+    records: list[dict] = []
+    for bet, dw, wk in zip(bets, deweighted, weekly, strict=True):
+        original = float(bet["stake"])
+        final_stake = wk["weekly_scaled_stake"]
+        combined = final_stake / original if original != 0 else 1.0
+        records.append(
+            {
+                "bet_side": dw["bet_side"],
+                "original_stake": original,
+                "deweighted_stake": dw["deweighted_stake"],
+                "weekly_scaled_stake": final_stake,
+                "scale_factor": combined,
+            }
+        )
+    return records
 
 
 class KellyMode(Enum):
