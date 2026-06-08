@@ -28,6 +28,8 @@ import inspect
 from pathlib import Path
 
 import numpy as np
+from scipy.stats import norm
+
 from backtest.ou_ev_chain import (
     EV_FLOOR_GRID,
     HOLD_SEASONS,
@@ -48,7 +50,6 @@ from backtest.ou_ev_chain import (
     fit_frozen_residual_sd,
     per_bet_ev,
 )
-from scipy.stats import norm
 
 # ---------------------------------------------------------------------------
 # Tolerances
@@ -358,18 +359,18 @@ class TestExtremeZAndClip:
     def test_extreme_z_and_clip_disclosure(self) -> None:
         """OUM-02 / #10: extreme-Z P(over) clips to [0.001, 0.999].
 
-        ``calibrated_p_over(model_total=60.0, line=40.0, ...)`` (a huge over signal)
-        clips to the upper bound 0.999 (not > 1, not NaN); the symmetric extreme-under
-        case clips to 0.001.
+        A huge over signal (model_total far above the line relative to the SD; here
+        z ~ -8.5) drives ``1 - norm.cdf(z)`` toward 1.0, which clips to the upper bound
+        0.999 (not > 1, not NaN); the symmetric extreme-under case clips to 0.001.
         """
         upper = calibrated_p_over(
-            model_total=60.0, line=40.0, frozen_sd=13.0, season_bias=0.0
+            model_total=120.0, line=10.0, frozen_sd=13.0, season_bias=0.0
         )
         assert upper == P_OVER_CLIP[1]
         assert upper == 0.999
 
         lower = calibrated_p_over(
-            model_total=40.0, line=60.0, frozen_sd=13.0, season_bias=0.0
+            model_total=10.0, line=120.0, frozen_sd=13.0, season_bias=0.0
         )
         assert lower == P_OVER_CLIP[0]
         assert lower == 0.001
