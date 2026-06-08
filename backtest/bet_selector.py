@@ -355,6 +355,13 @@ class BetSelector:
             "slipped_line": None,
             "kelly_stake": 0.0,
             "outcome": None,
+            # Carry the private realized-total stash forward so ``_grade`` can resolve the push-aware
+            # outcome (the LOCKED ``_resolve_ou_outcome``). ``_to_records`` stashes the candidate's
+            # ``actual`` under ``_actual_total``; without carrying it onto the decision record every
+            # graded outcome would be None (no win/loss ever resolved) -- the bug that zeroed every
+            # graded ROI (Rule 1, Plan 27-04). It is NOT in the public schema; downstream stores a
+            # missing/ungraded outcome as SQL NULL.
+            "_actual_total": row.get("_actual_total"),
             # CLV (D27-06, REPORT-ONLY): the model-edge line_clv (model_total - closing_total),
             # DISTINCT from the freeze-vs-close forward metric (~0); never a selection gate.
             "clv": compute_line_clv(model_total, closing_total, direction="total"),
