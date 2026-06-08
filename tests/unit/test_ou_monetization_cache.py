@@ -106,6 +106,17 @@ def _conn() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(":memory:")
 
 
+def _table_columns(conn: duckdb.DuckDBPyConnection, table: str) -> set[str]:
+    """Return the set of column names for a table via information_schema (name not ordinal)."""
+    return {
+        row[0]
+        for row in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+            [table],
+        ).fetchall()
+    }
+
+
 class TestMaterializeOuBetList:
     """Smoke / column-order / edge-case guards for the thin cache-population fn."""
 
@@ -154,10 +165,7 @@ class TestMaterializeOuBetList:
         """The NEW O/U columns are all present + populated (calibrated P(side), EV, sub-pop, etc.)."""
         conn = _conn()
         materialize_ou_bet_list(conn, _selector_frame())
-        cols = {
-            row[0]
-            for row in conn.execute("PRAGMA table_info('ou_bet_list')").fetchall()
-        }
+        cols = _table_columns(conn, "ou_bet_list")
         for required in (
             "calibrated_p_side",
             "per_bet_ev",
@@ -234,9 +242,7 @@ def test_betting_bets_unaffected() -> None:
         if stmt:
             conn.execute(stmt)
     # betting_bets still exists with its 15 columns (untouched by the additive sibling table).
-    cols = {
-        row[0] for row in conn.execute("PRAGMA table_info('betting_bets')").fetchall()
-    }
+    cols = _table_columns(conn, "betting_bets")
     assert "kelly_stake" in cols
     assert "validation_type" not in cols  # the new column lives ONLY on ou_bet_list
     # Materializing into the sibling table leaves betting_bets empty.

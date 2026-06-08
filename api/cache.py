@@ -153,6 +153,29 @@ CREATE TABLE IF NOT EXISTS cache_meta (
     value VARCHAR,
     updated_at TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS ou_bet_list (
+    game_id VARCHAR,
+    season INTEGER,
+    week INTEGER,
+    bet_side VARCHAR,
+    totals_regime VARCHAR,
+    subpop_label VARCHAR,
+    model_total DOUBLE,
+    closing_total DOUBLE,
+    calibrated_p_side DOUBLE,
+    per_bet_ev DOUBLE,
+    slipped_line DOUBLE,
+    kelly_stake DOUBLE,
+    outcome BOOLEAN,
+    clv DOUBLE,
+    validation_type VARCHAR
+    -- No PRIMARY KEY (mirrors betting_bets WR-02): a flat per-bet O/U ledger so a
+    -- re-bet on a game is never silently dropped. This is the SECOND consumer of the
+    -- BetSelector decision blob (Phase 27, BET-01). Phase 31 reads this table for the
+    -- bet list. validation_type carries PROVISIONAL_CONTAMINATED so a burned-holdout
+    -- bet can never be read as a clean proof (#6, D27-01).
+);
 """
 
 
@@ -546,6 +569,131 @@ def _load_betting_bets(
     # PRIMARY KEY, so every per-bet row is preserved (no silent same-target
     # re-bet drop). See schema note above (WR-02).
     conn.execute("INSERT INTO betting_bets SELECT * FROM subset")
+    return len(subset)
+
+
+# ---------------------------------------------------------------------------
+# O/U BetSelector bet-list materialization (Phase 27, plan 27-04; BET-01, D27-15)
+# ---------------------------------------------------------------------------
+
+# The LOCKED column order for the sibling ou_bet_list table (mirrors the CREATE TABLE block above).
+# The explicit-column INSERT spells this order out so the write is NEVER positional (#9, T-27-24):
+# a shuffled input DataFrame still lands every value in the correct column. This list is the single
+# source of the column order shared by the schema, the INSERT, and the smoke test.
+OU_BET_LIST_COLUMNS: list[str] = [
+    "game_id",
+    "season",
+    "week",
+    "bet_side",
+    "totals_regime",
+    "subpop_label",
+    "model_total",
+    "closing_total",
+    "calibrated_p_side",
+    "per_bet_ev",
+    "slipped_line",
+    "kelly_stake",
+    "outcome",
+    "clv",
+]
+
+# The structural honesty label every materialized O/U bet-list row carries (#6, D27-01): a
+# burned-2023-2024-holdout bet can never be read as a clean proof. The binding clean verdict is
+# Phase 30; until then every persisted row is PROVISIONAL_CONTAMINATED.
+_OU_VALIDATION_TYPE_PROVISIONAL = "PROVISIONAL_CONTAMINATED"
+
+# The standalone CREATE for the sibling table, so materialize_ou_bet_list can run against any
+# connection (the web cache, or an in-memory test DB) without first building the whole CACHE_SCHEMA.
+# This is the SAME definition embedded in CACHE_SCHEMA above (the LOCKED column order + no PK).
+OU_BET_LIST_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ou_bet_list (
+    game_id VARCHAR,
+    season INTEGER,
+    week INTEGER,
+    bet_side VARCHAR,
+    totals_regime VARCHAR,
+    subpop_label VARCHAR,
+    model_total DOUBLE,
+    closing_total DOUBLE,
+    calibrated_p_side DOUBLE,
+    per_bet_ev DOUBLE,
+    slipped_line DOUBLE,
+    kelly_stake DOUBLE,
+    outcome BOOLEAN,
+    clv DOUBLE,
+    validation_type VARCHAR
+)
+"""
+
+
+def materialize_ou_bet_list(
+    conn: duckdb.DuckDBPyConnection,
+    bet_list_df: pd.DataFrame,
+) -> int:
+    """Materialize the BetSelector bet-list blob into the sibling ou_bet_list table (BET-01, D27-15).
+
+    The THIN cache-population fn -- BET-01's SECOND consumer (the backtest is the first). It WRITES
+    the blob the BetSelector produced and performs ZERO metric math (UIAP-01: every number arrives
+    precomputed; no request-path computation, no re-derivation). Phase 31 reads this table for the
+    ``/bets`` list -- NO ``/bets`` UI and NO request-path computation are added here.
+
+    Materialization (the integrity controls):
+      - the table is created via ``CREATE TABLE IF NOT EXISTS ou_bet_list (...)`` with a LOCKED column
+        order (no PRIMARY KEY, mirroring betting_bets so a re-bet on a game is never silently
+        dropped, WR-02);
+      - an EXPLICIT-COLUMN INSERT spells out the column list in the LOCKED ``OU_BET_LIST_COLUMNS``
+        order -- NOT a positional ``INSERT ... SELECT *`` (#9, T-27-24); a shuffled input frame still
+        lands every value in the correct column;
+      - the push-NULL convention (``df["outcome"].where(notna, None)``) stores a push (or an ungraded
+        forward game) as SQL NULL -- never coerced to win/loss (the betting_bets pitfall);
+      - every row gets ``validation_type = PROVISIONAL_CONTAMINATED`` (#6).
+
+    Args:
+        conn: An open DuckDB connection (the web cache, or an in-memory test DB). The
+            ``ou_bet_list`` table is created if absent.
+        bet_list_df: The BetSelector ``selected`` records as a DataFrame, carrying at least the
+            ``OU_BET_LIST_COLUMNS`` (game_id, season, week, bet_side, totals_regime, subpop_label,
+            model_total, closing_total, calibrated_p_side, per_bet_ev, slipped_line, kelly_stake,
+            outcome, clv). Column order is irrelevant (the INSERT is explicit-column).
+
+    Returns:
+        The number of rows inserted.
+
+    Raises:
+        KeyError: if ``bet_list_df`` is missing a required ``OU_BET_LIST_COLUMNS`` column (a named
+            error, never a silent mis-write).
+    """
+    # Create the sibling table (additive; existing betting_bets consumers untouched).
+    conn.execute(OU_BET_LIST_SCHEMA)
+
+    # An empty BetSelector frame writes zero rows without error (#8 edge case).
+    if bet_list_df.empty:
+        return 0
+
+    missing = [c for c in OU_BET_LIST_COLUMNS if c not in bet_list_df.columns]
+    if missing:
+        msg = (
+            f"materialize_ou_bet_list: bet_list_df missing required column(s) {missing}; "
+            "the BetSelector blob must carry every OU_BET_LIST_COLUMNS field (no silent mis-write)."
+        )
+        raise KeyError(msg)
+
+    # Select the LOCKED column order (so the explicit-column INSERT below is order-stable) and add
+    # the structural validation_type label. The fn performs ZERO metric math -- it only re-shapes the
+    # precomputed blob and stamps the honesty label (UIAP-01).
+    subset = bet_list_df[OU_BET_LIST_COLUMNS].copy()
+
+    # Push-NULL convention (the betting_bets pitfall): a push / ungraded game (outcome None or NaN)
+    # is stored as SQL NULL, never coerced. df.where(notna, None) leaves real booleans intact.
+    subset["outcome"] = subset["outcome"].where(subset["outcome"].notna(), None)
+
+    subset["validation_type"] = _OU_VALIDATION_TYPE_PROVISIONAL
+
+    insert_cols = [*OU_BET_LIST_COLUMNS, "validation_type"]
+    col_list = ", ".join(insert_cols)
+    # EXPLICIT-COLUMN INSERT (#9, T-27-24): the column list is spelled out in the LOCKED order, so a
+    # shuffled input frame still lands every value in the correct column (NOT positional SELECT *).
+    conn.execute(f"INSERT INTO ou_bet_list ({col_list}) SELECT {col_list} FROM subset")
     return len(subset)
 
 
