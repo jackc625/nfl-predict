@@ -1078,6 +1078,7 @@ class ContextualFeaturesCalculator:
             # the schedule degrades to neutral 0.0 flags and never breaks the
             # contextual build.
             spot_flags: dict[str, dict[str, float]] = {}
+            full_schedule: pd.DataFrame | None = None
             if len(games_df) > 0:
                 try:
                     target_seasons = sorted(
@@ -1094,6 +1095,25 @@ class ContextualFeaturesCalculator:
                         error=str(e),
                     )
                     spot_flags = {}
+                    full_schedule = None
+
+            # Rest-days source (WR-02): in the target-week (--current-week) build,
+            # games_df is filtered to the target week (above), so a team's prior
+            # game is invisible and rest collapses to the 7.0 first-game default
+            # -- taking off_bye / short_rest / both_short_rest with it. Derive
+            # rest from the FULL season schedule in that path (the same
+            # independently-loaded schedule the spot flags use), so a team's prior
+            # game is visible regardless of build mode. The full-batch build
+            # (target=None) keeps games_df as the source so its already-built gold
+            # numbers are byte-unchanged.
+            rest_source_df = games_df
+            if (
+                target_season
+                and target_week
+                and full_schedule is not None
+                and len(full_schedule) > 0
+            ):
+                rest_source_df = full_schedule
 
             contextual_features = []
 
@@ -1134,12 +1154,15 @@ class ContextualFeaturesCalculator:
                 venue_features = self.encode_venue_features(venue_id)
                 game_features.update(venue_features)
 
-                # Rest days: use only games with kickoff before as_of_datetime
-                kickoff_series = pd.to_datetime(games_df["kickoff_et"])
+                # Rest days: use only games with kickoff before as_of_datetime.
+                # Source from rest_source_df (the full schedule in the
+                # target-week build, games_df in the full-batch build) so a
+                # team's prior game is always visible (WR-02).
+                kickoff_series = pd.to_datetime(rest_source_df["kickoff_et"])
                 cutoff_ts = pd.Timestamp(as_of_datetime)
                 if kickoff_series.dt.tz is not None and cutoff_ts.tz is None:
                     cutoff_ts = cutoff_ts.tz_localize(kickoff_series.dt.tz)
-                prior_games = games_df[kickoff_series < cutoff_ts]
+                prior_games = rest_source_df[kickoff_series < cutoff_ts]
                 home_rest = self.calculate_rest_days(home_team, kickoff_dt, prior_games)
                 away_rest = self.calculate_rest_days(away_team, kickoff_dt, prior_games)
 

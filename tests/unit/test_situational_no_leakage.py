@@ -247,6 +247,72 @@ class TestSituationalOffBye:
         assert result.loc["BYE_W3", "home_off_bye"] == 1.0
         assert result.loc["BYE_W1", "home_off_bye"] == 0.0
 
+    def test_target_week_build_rest_days_from_full_schedule(self, calc):
+        """WR-02: a single-week (--current-week) build derives rest from the FULL
+        schedule, not the target-week-filtered games_df.
+
+        With games_df filtered to the W3 target, the team's W1 prior game is
+        invisible in games_df; the old code collapsed rest to the 7.0 first-game
+        default, zeroing off_bye. Sourcing rest from the full schedule recovers
+        the real 14-day bye rest and off_bye = 1.0.
+        """
+        games = pd.DataFrame(
+            [
+                {
+                    "game_id": "BYE_W1",
+                    "season": 2024,
+                    "week": 1,
+                    "home_team": "KC",
+                    "away_team": "MIA",
+                    "venue": "KC Stadium",
+                    "kickoff_et": datetime(2024, 9, 10, 13, 0),
+                },
+                {
+                    "game_id": "BYE_W3",
+                    "season": 2024,
+                    "week": 3,
+                    "home_team": "KC",
+                    "away_team": "DEN",
+                    "venue": "KC Stadium",
+                    "kickoff_et": datetime(2024, 9, 24, 13, 0),  # 14 days -> bye
+                },
+            ]
+        )
+        # The full-season schedule the deploy path reloads: it carries KC's W1
+        # game (the prior game invisible in the W3-filtered games_df).
+        full_schedule = pd.DataFrame(
+            {
+                "game_id": ["BYE_W1", "BYE_W3"],
+                "season": [2024, 2024],
+                "week": [1, 3],
+                "home_team": ["KC", "KC"],
+                "away_team": ["MIA", "DEN"],
+                "home_elo_pre": [1600.0, 1600.0],
+                "away_elo_pre": [1550.0, 1500.0],
+                "kickoff_et": pd.to_datetime(
+                    ["2024-09-10T13:00:00", "2024-09-24T13:00:00"]
+                ),
+                "home_score": [24.0, np.nan],
+                "away_score": [17.0, np.nan],
+            }
+        )
+
+        with patch.object(
+            calc, "_load_full_season_schedule", return_value=full_schedule
+        ):
+            result = calc.build_features(
+                games,
+                datetime(2024, 9, 20, 18, 0),  # freeze after W1, before W3
+                target_season=2024,
+                target_week=3,
+            )
+
+        row = result.set_index("game_id").loc["BYE_W3"]
+        # Rest + off_bye are NON-default: the W1 prior game is visible via the
+        # full schedule even though games_df was filtered to W3.
+        assert row["home_rest_days"] == 14.0
+        assert row["home_off_bye"] == 1.0
+
 
 class TestSituationalFullSchedule:
     """Part 4 (review #4): a target-week build sources the FULL schedule."""
