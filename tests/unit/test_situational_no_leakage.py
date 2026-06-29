@@ -76,30 +76,41 @@ def _make_trap_schedule(*, reveal_future: bool = True) -> pd.DataFrame:
       * W3 KC(1710) vs DEN(1500): DEN is weak (210 below KC) the week AFTER the
         emotional BUF win -> a classic letdown.
 
+    A BUF week-1 game (BUF 1700 vs NYJ 1690) is also included so the look-ahead
+    can read BUF's FREEZE-KNOWN (entering-week-1) Elo rather than BUF's
+    entering-week-2 Elo, which would embed BUF's week-1 result -- future at KC's
+    week-1 freeze (WR-01). BUF is not in a spot in its own week-1 game (NYJ is
+    not weak), so it contributes only the freeze-known rating lookup.
+
     Args:
         reveal_future: When False, the W2 and W3 RESULTS are withheld (NaN
             scores) -- the leakage-sensitive future information. The schedule
             (identity) and pre-freeze Elo are always present.
 
     Returns:
-        A 3-row schedule DataFrame with raw Elo, kickoff, and results.
+        A 4-row schedule DataFrame with raw Elo, kickoff, and results.
     """
     w2_home, w2_away = (28.0, 24.0) if reveal_future else (np.nan, np.nan)
     w3_home, w3_away = (31.0, 17.0) if reveal_future else (np.nan, np.nan)
     return pd.DataFrame(
         {
-            "game_id": ["TRAP_W1", "TRAP_W2", "TRAP_W3"],
-            "season": [2023, 2023, 2023],
-            "week": [1, 2, 3],
-            "home_team": ["KC", "KC", "KC"],
-            "away_team": ["CAR", "BUF", "DEN"],
-            "home_elo_pre": [1720.0, 1725.0, 1710.0],
-            "away_elo_pre": [1480.0, 1690.0, 1500.0],
+            "game_id": ["TRAP_W1", "BUF_W1", "TRAP_W2", "TRAP_W3"],
+            "season": [2023, 2023, 2023, 2023],
+            "week": [1, 1, 2, 3],
+            "home_team": ["KC", "BUF", "KC", "KC"],
+            "away_team": ["CAR", "NYJ", "BUF", "DEN"],
+            "home_elo_pre": [1720.0, 1700.0, 1725.0, 1710.0],
+            "away_elo_pre": [1480.0, 1690.0, 1690.0, 1500.0],
             "kickoff_et": pd.to_datetime(
-                ["2023-09-10T13:00:00", "2023-09-17T13:00:00", "2023-09-24T13:00:00"]
+                [
+                    "2023-09-10T13:00:00",
+                    "2023-09-10T13:00:00",
+                    "2023-09-17T13:00:00",
+                    "2023-09-24T13:00:00",
+                ]
             ),
-            "home_score": [27.0, w2_home, w3_home],
-            "away_score": [13.0, w2_away, w3_away],
+            "home_score": [27.0, 20.0, w2_home, w3_home],
+            "away_score": [13.0, 17.0, w2_away, w3_away],
         }
     )
 
@@ -156,6 +167,36 @@ class TestSituationalWithholdFuture:
         assert flags_hidden == flags_revealed
         # And the proof is non-trivial: the W1 look-ahead trap actually fires.
         assert flags_revealed["TRAP_W1"]["home_look_ahead_spot"] == 1.0
+
+
+class TestSituationalFutureEloNoLeak:
+    """Part 2b (WR-01): the look-ahead must not read the next opponent's W+1
+    pre-game Elo, which embeds the as-yet-unplayed week-W result."""
+
+    def test_perturbing_future_elo_pre_does_not_change_look_ahead(self, calc):
+        """Build the W1 look-ahead flag, then perturb the next opponent's (BUF)
+        pre-game Elo ENTERING week 2 -- a value that incorporates BUF's week-1
+        result, future relative to KC's week-1 Friday freeze. A leakage-free
+        look-ahead reads BUF's freeze-known (week<=1) Elo instead, so the flag
+        must be byte-unchanged.
+        """
+        schedule = _make_trap_schedule()
+        target = schedule[schedule["week"] == 1]
+
+        baseline = calc._derive_spot_flags(target, schedule, _AS_OF_AFTER_W1)
+        assert baseline["TRAP_W1"]["home_look_ahead_spot"] == 1.0
+
+        perturbed_sched = schedule.copy()
+        w2_mask = perturbed_sched["week"] == 2
+        # Drive BUF's entering-week-2 Elo down to "weak"; the OLD (leaky)
+        # implementation read this directly and would flip the flag to 0.0.
+        perturbed_sched.loc[w2_mask, "away_elo_pre"] = 1480.0
+        perturbed = calc._derive_spot_flags(target, perturbed_sched, _AS_OF_AFTER_W1)
+
+        assert (
+            perturbed["TRAP_W1"]["home_look_ahead_spot"]
+            == baseline["TRAP_W1"]["home_look_ahead_spot"]
+        )
 
 
 class TestSituationalOffBye:

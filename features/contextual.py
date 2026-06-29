@@ -674,7 +674,7 @@ class ContextualFeaturesCalculator:
                 prev_games = team_sched[team_sched["week"] < week]
 
                 game_flags[f"{side}_look_ahead_spot"] = self._look_ahead_flag(
-                    team, opp_elo, next_games
+                    team, opp_elo, next_games, sched, season, week
                 )
                 game_flags[f"{side}_letdown_spot"] = self._letdown_flag(
                     team, opp_elo, prev_games, cutoff_ts
@@ -682,20 +682,54 @@ class ContextualFeaturesCalculator:
 
         return flags
 
+    def _freeze_known_elo(
+        self, sched: pd.DataFrame, season: int, team: str, week: int
+    ) -> float | None:
+        """Return ``team``'s most-recent pre-game Elo from a week <= ``week`` game.
+
+        This is the opponent strength KNOWN AT THE FREEZE (WR-01). The pre-game
+        Elo entering week ``W`` is computed from results through week ``W-1``,
+        all settled at the week-``W`` Friday freeze; the pre-game Elo entering
+        week ``W+1`` is NOT -- it embeds the as-yet-unplayed week-``W`` result.
+        So a next-opponent's strength must be read from a ``week <= W`` row,
+        never their ``W+1`` pre-game Elo. Mirrors the letdown path, which only
+        reads prior (``week < W``) rows.
+        """
+        team_rows = sched[
+            ((sched["home_team"] == team) | (sched["away_team"] == team))
+            & (sched["season"] == season)
+            & (sched["week"] <= week)
+        ].sort_values("week")
+        for _, row in team_rows.iloc[::-1].iterrows():
+            elo = self._team_elo_in_game(row, team)
+            if elo is not None:
+                return elo
+        return None
+
     def _look_ahead_flag(
-        self, team: str, opp_elo: float, next_games: pd.DataFrame
+        self,
+        team: str,
+        opp_elo: float,
+        next_games: pd.DataFrame,
+        sched: pd.DataFrame,
+        season: int,
+        week: int,
     ) -> float:
         """Look-ahead (trap): current opp weak AND next opp notably stronger.
 
-        "Notably stronger" = next-week opponent Elo exceeds this week's opponent
-        Elo by >= ELO_SPOT_STEP, OR the next-week opponent is divisional. Uses
-        schedule + pre-freeze Elo only (no result) -- not leakage.
+        "Notably stronger" = the next opponent's FREEZE-KNOWN Elo exceeds this
+        week's opponent Elo by >= ELO_SPOT_STEP, OR the next opponent is
+        divisional. The next opponent's strength is read via ``_freeze_known_elo``
+        (their most recent ``week <= W`` pre-game Elo), NOT their ``W+1`` pre-game
+        Elo, which would embed the as-yet-unplayed week-W result (WR-01). Uses
+        the published schedule (next-opponent identity) + pre-freeze Elo only
+        (no result) -- not leakage.
         """
         if len(next_games) == 0:
             return 0.0
         nrow = next_games.iloc[0]
         next_opp = nrow["away_team"] if nrow["home_team"] == team else nrow["home_team"]
-        next_opp_elo = self._team_elo_in_game(nrow, next_opp)
+        next_opp_elo = self._freeze_known_elo(sched, season, next_opp, week)
         notably_stronger = (
             next_opp_elo is not None and (next_opp_elo - opp_elo) >= ELO_SPOT_STEP
         )
