@@ -39,10 +39,12 @@ sys.path.insert(0, str(project_root))
 from data.storage import load_dataframe, save_dataframe
 from features.contextual import ContextualFeaturesCalculator
 from features.elo_features import EloFeatureBuilder
+from features.injury import InjuryBuilder
 from features.market_anchors import MarketAnchorFeaturesCalculator
 from features.normalization import compute_prior_season_stats, expanding_normalize
 from features.opponent_adj import OpponentAdjuster
 from features.qb_tracking import QBTracker
+from features.snaps import SnapCountBuilder
 from features.team_form import TeamFormCalculator
 from features.validation import LeakageGate, LeakageViolation
 from features.weather import WeatherFeaturesCalculator
@@ -71,6 +73,15 @@ class FeatureMatrixBuilder:
         self.market_calc = MarketAnchorFeaturesCalculator()
         self.qb_tracker = QBTracker()
         self.opponent_adj = OpponentAdjuster(window=10, min_opponent_games=4)
+
+        # Snaps are constructed (and invoked) BEFORE injuries (D-09 build order):
+        # InjuryBuilder consumes the SnapCountBuilder per-position prior shares as
+        # its availability weights via the constructor handoff (review #6), which
+        # LOCKS the snaps-before-injuries order rather than relying on an implicit
+        # re-load. The contextual situational-spot features (Plan 28-04) already
+        # flow through self.contextual_calc; no separate builder is needed here.
+        self.snap_builder = SnapCountBuilder()
+        self.injury_builder = InjuryBuilder(snap_builder=self.snap_builder)
 
         # Leakage gate for hard-fail validation
         self.leakage_gate = LeakageGate()
@@ -201,6 +212,38 @@ class FeatureMatrixBuilder:
             except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 logger.warning("Failed to load QB tracking features", error=str(e))
                 feature_sources["qb_tracking"] = pd.DataFrame()
+
+            # Snap-count features (computed via SnapCountBuilder). CRITICAL build
+            # order (D-09): snaps are invoked BEFORE injuries so the per-position
+            # prior snap shares are available to the injury availability metric.
+            try:
+                snap_features_df = self.snap_builder.build_features(
+                    games_df,
+                    as_of_datetime,
+                    target_season=target_season,
+                    target_week=target_week,
+                )
+                feature_sources["snaps"] = snap_features_df
+                logger.info("Built snap-count features", records=len(snap_features_df))
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+                logger.warning("Failed to build snap-count features", error=str(e))
+                feature_sources["snaps"] = pd.DataFrame()
+
+            # Injury features (computed via InjuryBuilder AFTER snaps; the builder
+            # draws its D-09 availability weights from the constructor-injected
+            # SnapCountBuilder's per-position prior shares, review #6).
+            try:
+                injury_features_df = self.injury_builder.build_features(
+                    games_df,
+                    as_of_datetime,
+                    target_season=target_season,
+                    target_week=target_week,
+                )
+                feature_sources["injury"] = injury_features_df
+                logger.info("Built injury features", records=len(injury_features_df))
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+                logger.warning("Failed to build injury features", error=str(e))
+                feature_sources["injury"] = pd.DataFrame()
 
             return feature_sources
 
@@ -1184,7 +1227,15 @@ def main():
         "--save",
         action="store_true",
         default=True,
-        help="Save feature matrices to gold layer",
+        help="Save feature matrices to gold layer (default: on)",
+    )
+    # The bare --save flag was a no-op (store_true with default=True can never
+    # turn saving OFF). --no-save is the real toggle for a read-only build.
+    parser.add_argument(
+        "--no-save",
+        action="store_false",
+        dest="save",
+        help="Build the feature matrices without writing them to the gold layer",
     )
     parser.add_argument(
         "--validate",
