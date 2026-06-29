@@ -49,6 +49,12 @@ def _make_fixture_gold(seed: int = 7) -> pd.DataFrame:
     decoy columns that must NOT be mis-classified as snap features.
     """
     rng = np.random.default_rng(seed)
+    # The 11 ADDED injury columns (CR-01 fixture widening) draw from an
+    # INDEPENDENT generator so they never perturb the main ``rng`` stream that
+    # produces the baseline / snap / situational values. This keeps the
+    # snap-group determinism run byte-identical to the pre-widening fixture
+    # (only ``home_injury_coverage`` stays on the main stream, exactly as before).
+    inj_rng = np.random.default_rng(seed + 1000)
     seasons = [2018, 2019, 2020, 2021]
     n_per_season = 40
     rows: list[dict] = []
@@ -77,10 +83,28 @@ def _make_fixture_gold(seed: int = 7) -> pd.DataFrame:
                     # decoy odds-snapshot columns (carry "snap" substring -- NOT snap features)
                     "snapshot_spread": float(rng.normal()),
                     "snapshot_total": float(rng.normal()),
-                    # one column per Phase-28 group
+                    # one column per Phase-28 group (snap / situational) plus the
+                    # FULL home_/away_ injury column set (CR-01: the buggy
+                    # "injury" substring predicate matched only *_injury_coverage,
+                    # so a single-injury-column fixture could not catch it).
                     "home_rolling_snap_share_qb": float(rng.normal()),
                     "away_snap_continuity": float(rng.normal()),
+                    # home_injury_coverage stays on the MAIN rng (original draw);
+                    # the other 11 injury columns come from inj_rng so the main
+                    # stream -- and thus the snap-group determinism run -- is
+                    # unchanged from the pre-widening fixture.
                     "home_injury_coverage": float(rng.normal()),
+                    "away_injury_coverage": float(inj_rng.integers(0, 2)),
+                    "home_qb_out_flag": float(inj_rng.integers(0, 2)),
+                    "away_qb_out_flag": float(inj_rng.integers(0, 2)),
+                    "home_backup_quality_delta": float(inj_rng.normal()),
+                    "away_backup_quality_delta": float(inj_rng.normal()),
+                    "home_availability_fraction": float(inj_rng.uniform(0.5, 1.0)),
+                    "away_availability_fraction": float(inj_rng.uniform(0.5, 1.0)),
+                    "home_availability_coverage": float(inj_rng.integers(0, 2)),
+                    "away_availability_coverage": float(inj_rng.integers(0, 2)),
+                    "home_date_modified_coverage": float(inj_rng.integers(0, 2)),
+                    "away_date_modified_coverage": float(inj_rng.integers(0, 2)),
                     "home_off_bye": int(rng.integers(0, 2)),
                     "away_look_ahead_spot": int(rng.integers(0, 2)),
                 }
@@ -183,7 +207,22 @@ class TestSelectGroupColumns:
         situational = group_columns(gold, "situational")
 
         assert snap == ["away_snap_continuity", "home_rolling_snap_share_qb"]
-        assert injury == ["home_injury_coverage"]
+        # CR-01: the injury group must return ALL 12 home_/away_ injury columns,
+        # not just the coverage flag the old "injury" substring predicate matched.
+        assert injury == [
+            "away_availability_coverage",
+            "away_availability_fraction",
+            "away_backup_quality_delta",
+            "away_date_modified_coverage",
+            "away_injury_coverage",
+            "away_qb_out_flag",
+            "home_availability_coverage",
+            "home_availability_fraction",
+            "home_backup_quality_delta",
+            "home_date_modified_coverage",
+            "home_injury_coverage",
+            "home_qb_out_flag",
+        ]
         assert situational == ["away_look_ahead_spot", "home_off_bye"]
 
         # The decoy snapshot_* odds columns are NOT classified as snap features.

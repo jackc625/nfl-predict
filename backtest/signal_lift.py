@@ -126,9 +126,26 @@ def _is_snap_col(col: str) -> bool:
     )
 
 
+# The InjuryBuilder's per-side feature basenames (features/injury.py:96-103,
+# enumerated in scripts/data_qa.py:38-39). A bare ``"injury" in col`` substring
+# test matches ONLY ``*_injury_coverage`` (2 of the 12 injury columns), so the
+# screen measured a near-constant coverage flag instead of the real injury signal
+# and the missed columns silently survived into the "baseline" leg (CR-01). Match
+# by known basename instead -- mirroring ``_is_situational_col`` below.
+_INJURY_COLUMN_BASENAMES = (
+    "qb_out_flag",
+    "backup_quality_delta",
+    "availability_fraction",
+    "injury_coverage",
+    "availability_coverage",
+    "date_modified_coverage",
+)
+
+
 def _is_injury_col(col: str) -> bool:
-    """Match an injury-availability feature (home_/away_injury_coverage)."""
-    return "injury" in col.lower()
+    """Match an injury feature (home_/away_ + an InjuryBuilder basename)."""
+    cl = col.lower()
+    return cl.startswith(("home_", "away_")) and cl.endswith(_INJURY_COLUMN_BASENAMES)
 
 
 # The genuinely-NEW situational spots (D-15/D-16). Existing rest/travel/short-week/bye features are
