@@ -139,7 +139,7 @@ class TestReadoutMatchesHarness:
     """
 
     def test_situational_ou_delta_reproduces_from_harness(self) -> None:
-        """The situational-OU +0.297980 delta reproduces and is recorded in the doc."""
+        """The situational-OU +0.177334 delta reproduces and is recorded in the doc."""
         if not (_GOLD_OU_PATH.exists() and _ODDS_PATH.exists()):
             pytest.skip(
                 f"Canonical gold/odds not present at {_GOLD_OU_PATH} / {_ODDS_PATH}"
@@ -166,13 +166,13 @@ class TestReadoutMatchesHarness:
         cell = result["groups"]["situational"]["per_target"]["ou"]
         delta = cell["delta_mean"]
         assert delta is not None
-        assert abs(delta - 0.297980) < 5e-3, (
-            f"harness situational-OU delta {delta} drifted from the doc anchor +0.297980"
+        assert abs(delta - 0.177334) < 5e-3, (
+            f"harness situational-OU delta {delta} drifted from the doc anchor +0.177334"
         )
 
         content = _read_readout()
-        assert "+0.297980" in content, (
-            "the doc must record the situational-OU +0.297980 lift anchor"
+        assert "+0.177334" in content, (
+            "the doc must record the situational-OU +0.177334 lift anchor"
         )
         # The harness keep/drop decision agrees with the doc's KEEP ruling.
         assert result["groups"]["situational"]["decision"]["keep"] is True

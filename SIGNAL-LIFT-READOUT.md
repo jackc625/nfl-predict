@@ -52,32 +52,31 @@ Each cell is the PAIRED add-one-in delta (candidate minus baseline) over n = 101
 
 | Target | n_paired | delta (mean) | t       | p        | keep  | veto  |
 |--------|----------|--------------|---------|----------|-------|-------|
-| WP     | 1019     | -0.000379    | -0.839  | 0.40186  | False | False |
-| ATS    | 1019     | +0.195151    | +2.411  | 0.01609  | True  | False |
-| OU     | 1019     | +0.172355    | +2.191  | 0.02865  | True  | False |
+| WP     | 1019     | +0.001272    | +2.190  | 0.02876  | True  | False |
+| ATS    | 1019     | +0.438649    | +4.916  | 0.00000  | True  | False |
+| OU     | 1019     | +0.153966    | +1.736  | 0.08292  | True  | False |
 
-**Decision: KEEP** -- positive point-estimate on ATS and OU, not significantly-negative on any
-target. Carried to Phase 30 for the binding gate.
+**Decision: KEEP** -- positive point-estimate on all three targets, not significantly-negative on
+any target. Carried to Phase 30 for the binding gate.
 
 ### Snap group (coverage: snaps 2013+; measured 2021-2024)
 
 | Target | n_paired | delta (mean) | t       | p        | keep  | veto  |
 |--------|----------|--------------|---------|----------|-------|-------|
-| WP     | 1019     | +0.009531    | +4.952  | 0.00000  | True  | False |
-| ATS    | 1019     | -0.020642    | -0.184  | 0.85373  | False | False |
-| OU     | 1019     | +0.158061    | +1.600  | 0.10995  | True  | False |
+| WP     | 1019     | +0.010884    | +5.204  | 0.00000  | True  | False |
+| ATS    | 1019     | +0.144580    | +1.390  | 0.16494  | True  | False |
+| OU     | 1019     | +0.046731    | +0.483  | 0.62909  | True  | False |
 
-**Decision: KEEP** -- positive point-estimate on WP and OU, not significantly-negative on any
-target (the ATS delta is negative but NOT significant, so no veto). Carried to Phase 30 for the
-binding gate.
+**Decision: KEEP** -- positive point-estimate on all three targets, not significantly-negative on
+any target. Carried to Phase 30 for the binding gate.
 
 ### Situational group (the NEW look-ahead / letdown / off-bye spots; measured 2021-2024)
 
 | Target | n_paired | delta (mean) | t       | p        | keep  | veto  |
 |--------|----------|--------------|---------|----------|-------|-------|
-| WP     | 1019     | +0.000377    | +1.843  | 0.06562  | True  | False |
-| ATS    | 1019     | +0.129396    | +1.311  | 0.19030  | True  | False |
-| OU     | 1019     | +0.297980    | +3.096  | 0.00202  | True  | False |
+| WP     | 1019     | +0.001622    | +3.881  | 0.00011  | True  | False |
+| ATS    | 1019     | +0.214298    | +2.285  | 0.02254  | True  | False |
+| OU     | 1019     | +0.177334    | +1.841  | 0.06586  | True  | False |
 
 **Decision: KEEP** -- positive point-estimate on all three targets, not significantly-negative on
 any. Carried to Phase 30 for the binding gate. See the weak / priced-in caveat in Section 3 --
@@ -89,21 +88,22 @@ this KEEP is a permissive screening signal, NOT evidence of a standing bet angle
 
 | Group       | Decision | Positive targets   | Vetoed targets | Carried to Phase 30? |
 |-------------|----------|--------------------|----------------|----------------------|
-| Injury      | KEEP     | ATS, OU            | none           | Yes                  |
-| Snap        | KEEP     | WP, OU             | none           | Yes                  |
+| Injury      | KEEP     | WP, ATS, OU        | none           | Yes                  |
+| Snap        | KEEP     | WP, ATS, OU        | none           | Yes                  |
 | Situational | KEEP     | WP, ATS, OU        | none           | Yes                  |
 
 Under the D-05 rule (keep if point-estimate > 0 on >= 1 target AND not significantly-negative on
 any target), all three groups screen KEEP and are carried into widened gold for the Phase-30
-binding gate. No group is significantly-negative on any target, so none is dropped this round.
+binding gate. Every cell is positive this round, and no group is significantly-negative on any
+target, so none is dropped.
 
 **Multiplicity note (the 3x3 grid).** This is a 3x3 (group x target) screen reported RAW. The
 per-target p-values are NOT multiple-comparison-corrected here -- the screen is a permissive
 add-one-in filter, and the binding BH-FDR / p < 0.05 correction stays in the Phase-30 deploy
-gate (D-05). Across nine cells, a few will clear a nominal alpha = 0.05 by chance alone; treat any
-single nominally-significant cell (e.g. snap-WP p < 1e-5, situational-OU p = 0.00202) as a
-screening signal to CARRY, not as a stand-alone result. The corrected, binding judgment is
-Phase 30's job.
+gate (D-05). Across nine cells, several clear a nominal alpha = 0.05 (injury-WP/ATS, snap-WP,
+situational-WP/ATS) and some of that is chance alone; treat any single nominally-significant cell
+(e.g. snap-WP p < 1e-6, injury-ATS p ~ 1e-6) as a screening signal to CARRY, not as a stand-alone
+result. The corrected, binding judgment is Phase 30's job.
 
 ---
 
@@ -113,10 +113,10 @@ The situational group screened KEEP above, but it MUST be read with the standing
 the new look-ahead / letdown / off-bye spots are WEAK and largely PRICED-IN. Short-week, rest,
 travel, and bye information is among the most public, most-modeled situational context in the
 market; by the closing line the books have already moved on it. These spots are NOT a standing
-bet angle on their own. The single nominally-significant situational cell (OU, p = 0.00202) is one
-of nine grid cells and is exactly the kind of result the multiplicity note above says to carry,
-not to lean on. The screen KEEP means "worth measuring under the binding gate in Phase 30", not
-"this is an edge".
+bet angle on their own. The nominally-significant situational cells (WP, p = 0.00011; ATS,
+p = 0.02254) are among nine grid cells and are exactly the kind of result the multiplicity note
+above says to carry, not to lean on. The screen KEEP means "worth measuring under the binding gate
+in Phase 30", not "this is an edge".
 
 ---
 
