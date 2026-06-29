@@ -403,6 +403,30 @@ class FeatureMatrixBuilder:
 
             feature_counts["qb_tracking"] = 2  # home + away qb_adjustment
 
+        # Snap-count features (game-level; SnapCountBuilder already emits the
+        # home_/away_-expanded columns, so merge on game_id like the elo block).
+        # combine_features has NO generic loop over feature_sources keys -- without
+        # this explicit block the registered snap columns pass the LeakageGate but
+        # are SILENTLY DROPPED from gold (review #1, orchestrator-verified).
+        snaps_df = feature_sources.get("snaps", pd.DataFrame())
+        if len(snaps_df) > 0:
+            snap_cols = [c for c in snaps_df.columns if c != "game_id"]
+            combined_features = combined_features.merge(
+                snaps_df[["game_id", *snap_cols]], on="game_id", how="left"
+            )
+            feature_counts["snaps"] = len(snap_cols)
+
+        # Injury features (game-level; InjuryBuilder already emits the home_/away_-
+        # expanded columns). Same rationale as the snap block (review #1): merge on
+        # game_id so the columns actually reach all three gold matrices.
+        injury_df = feature_sources.get("injury", pd.DataFrame())
+        if len(injury_df) > 0:
+            injury_cols = [c for c in injury_df.columns if c != "game_id"]
+            combined_features = combined_features.merge(
+                injury_df[["game_id", *injury_cols]], on="game_id", how="left"
+            )
+            feature_counts["injury"] = len(injury_cols)
+
         # Add feature timestamp (tz-aware UTC; the storage layer rejects naive
         # datetimes, and feature_timestamp is persisted into every gold matrix)
         combined_features["feature_timestamp"] = datetime.now(UTC)
