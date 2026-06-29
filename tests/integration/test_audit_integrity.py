@@ -125,7 +125,11 @@ class TestGoldIntegrity:
     """AUDIT-02: gold matrices load with expected schema width and non-empty rows."""
 
     def test_all_three_matrices_have_expected_columns_and_rows(self, gold_result: dict):
-        """features_wp/ats/ou load with column counts 156/157/156 and >0 rows."""
+        """features_wp/ats/ou load with the GOLD_FEATURE_MATRICES widths and >0 rows.
+
+        Widths are 194/195/194 after the Phase 28 snap/injury/spot widening (the
+        expected counts are read from GOLD_FEATURE_MATRICES, not hardcoded here).
+        """
         for table, expected_columns in GOLD_FEATURE_MATRICES.items():
             check = gold_result["checks"][table]
             assert check["status"] == "pass", check
