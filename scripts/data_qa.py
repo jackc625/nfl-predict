@@ -28,13 +28,22 @@ from utils.team_data import get_all_teams, normalize_team_abbreviation
 logger = get_logger(__name__)
 
 # Gold-layer feature matrices and their expected column counts (AUDIT-02).
-# Verified on-disk 2026-05-28: features_wp 156, features_ats 157, features_ou 156.
-# The single-column ATS difference is its extra target/margin columns
-# (target_ats, home_margin, point_differential).
+# Verified on-disk 2026-06-29 after the Phase 28 widening: features_wp 194,
+# features_ats 195, features_ou 194. The single-column ATS difference is its
+# extra target/margin columns (target_ats, home_margin, point_differential).
+#
+# Phase 28 widened each matrix by +38 columns vs the prior 156/157/156 baseline
+# (SIG-06, Plan 28-06): +20 snap columns (home_/away_ x {snap_continuity,
+# snap_concentration, rolling_snap_share_{db,dl,lb,ol,qb,rb,te,wr}}), +12 injury
+# columns (home_/away_ x {qb_out_flag, backup_quality_delta, availability_fraction,
+# injury_coverage, availability_coverage, date_modified_coverage}), and +6
+# contextual situational-spot columns (home_/away_ x {look_ahead_spot,
+# letdown_spot, off_bye}). This count is DELIBERATELY reconciled to the real
+# rebuilt widths (IN-03, Pitfall 6 -- count empirically, never silence).
 GOLD_FEATURE_MATRICES = {
-    "features_wp": 156,
-    "features_ats": 157,
-    "features_ou": 156,
+    "features_wp": 194,
+    "features_ats": 195,
+    "features_ou": 194,
 }
 
 # Last season for which gold is considered fully ingested. Seasons beyond this
