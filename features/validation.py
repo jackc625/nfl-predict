@@ -85,6 +85,19 @@ class LeakageGate:
         "loser",
         "margin",
         "total_score",
+        # Phase 28 (D-13): raw post-game snap columns -- exact spellings only.
+        # The guard is substring-match (`if keyword in col_lower`, below), so the
+        # bare `snap`/`snaps` keyword is DELIBERATELY absent -- it would collide
+        # with the derived `rolling_snap_*` / `snap_continuity` / `snap_concentration`
+        # names introduced in Plan 28-03. The three `*_pct` spellings are safe ONLY
+        # because every derived share feature is named `*_share` / `*_concentration`
+        # (no derived name contains `_pct`).
+        "offense_snaps",
+        "defense_snaps",
+        "st_snaps",
+        "offense_pct",
+        "defense_pct",
+        "st_pct",
     ]
 
     # Required feature groups: at least one feature from each must exist
@@ -101,6 +114,11 @@ class LeakageGate:
         "qb": "qb_",
         "contextual_new": "season_progress",
         "divisional": "is_divisional",
+        # Phase 28 (D-13): absence of snap-derived features warns, does not hard-fail.
+        # `snap_` here matches our DERIVED columns (rolling_snap_*, snap_continuity,
+        # snap_concentration) -- a separate mechanism from the raw-spelling leakage
+        # keywords above; the two must not be conflated.
+        "snap": "snap_",
     }
 
     def __init__(self) -> None:
@@ -380,6 +398,19 @@ class FeatureValidator:
             "loser",
             "margin",
             "total_score",
+            # Phase 28 (D-13, review #7): raw post-game snap columns -- exact
+            # spellings only. This is the SECOND live keyword list, consumed by
+            # pipeline/steps.py::step_validate_features via check_data_leakage over
+            # the gold matrices; it must stay in sync with
+            # LeakageGate.LEAKAGE_KEYWORDS to avoid a defense-in-depth coverage gap.
+            # The bare `snap`/`snaps` keyword is DELIBERATELY absent (substring guard
+            # below would collide with derived `rolling_snap_*` / `snap_continuity`).
+            "offense_snaps",
+            "defense_snaps",
+            "st_snaps",
+            "offense_pct",
+            "defense_pct",
+            "st_pct",
         ]
 
         # Features that should be constant within games
