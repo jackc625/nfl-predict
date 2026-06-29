@@ -18,9 +18,19 @@ Carried-D-01 HARD BOUNDARY (the milestone's namesake): the scoring path imports 
 module and NEVER writes ``data/gold/`` -- LOAD + predict only, NO re-fit, NO gold rebuild. The
 no-train/no-write-gold guard and the postseason-population flag are asserted here directly.
 
-Number anchoring (T-22-02): the regenerated pooled WP accuracy (~0.66725) and headline_clv wp
-(~ -0.00207) must reproduce the AUDIT-REPORT post-rebuild values within float tolerance, guarding
-against silent drift.
+Number anchoring (T-22-02): the regenerated pooled WP accuracy and headline_clv wp must reproduce
+the deterministic walk-forward backtest values within float tolerance, guarding against silent
+drift. The anchors were the v2.1 AUDIT-REPORT post-rebuild figures (WP accuracy 0.66725,
+headline_clv wp -0.00207). Phase 28 (new signal -- injuries/snaps/situational, plan 28-06)
+DELIBERATELY widened the gold matrices (156/157/156 -> 194/195/194 columns; +38 columns/matrix),
+so the per-fold walk-forward backtest now trains on the wider feature set and the deterministic WP
+accuracy moved 0.66725 -> 0.67691 (it IMPROVED -- the new signal helps) and headline_clv wp moved
+-0.00207 -> -0.00469. The anchors below are reconciled to those NEW post-widening deterministic
+values (IN-03 convention: a deliberate, documented update -- NEVER silenced -- exactly analogous to
+the GOLD_FEATURE_MATRICES width tripwire that plan 28-06 already reconciled). The literal v2.1
+AUDIT-REPORT.md figures are intentionally NOT edited (that file is a frozen v2.1 forensic record of
+the Phase-20 weather rebuild at the 156/157/156 width); the anchors are moved past those literal
+figures here so the Phase-28 provenance is honest.
 
 Reproducibility convention: the shared fixture loads gold + normalized closing odds via the
 engine loaders (``_load_features`` / ``_load_closing_odds``) rather than re-reading parquet so the
@@ -43,9 +53,15 @@ from backtest.engine import BacktestEngine
 # Gold presence skip-guard: the integration tests need the Phase-20 rebuilt canonical gold.
 _GOLD_WP_PATH = Path("data/gold/features_wp.parquet")
 
-# AUDIT-REPORT post-rebuild anchors (n-games-weighted pooled, 2021-2024).
-ANCHOR_WP_ACCURACY = 0.66725
-ANCHOR_HEADLINE_CLV_WP = -0.00207
+# Deterministic walk-forward backtest anchors (n-games-weighted pooled, 2021-2024).
+# Reconciled in Phase 28 (plan 28-06 post-merge fix) after the deliberate gold widening
+# (+38 snap/injury/situational columns/matrix) moved the per-fold WP backtest:
+#   accuracy     0.66725 (v2.1 AUDIT-REPORT) -> 0.67691 (Phase-28 widened gold; improved)
+#   headline_clv -0.00207 (v2.1 AUDIT-REPORT) -> -0.00469 (Phase-28 widened gold)
+# IN-03 convention: a deliberate, DOCUMENTED anchor update -- never silenced. AUDIT-REPORT.md
+# stays frozen at its v2.1 156/157/156-width figures (it is a historical forensic record).
+ANCHOR_WP_ACCURACY = 0.67691
+ANCHOR_HEADLINE_CLV_WP = -0.00469
 
 # Expected holdout population (verified): 1139 games per target across 2021-2024.
 EXPECTED_GAMES_PER_TARGET = 1139
