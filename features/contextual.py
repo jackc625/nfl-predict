@@ -28,13 +28,35 @@ import pandas as pd
 from conf.settings import get_settings
 from data.storage import load_dataframe
 from ratings.elo import is_divisional_game
-from utils import get_logger
+from utils import DataIngestionError, get_logger
 
 logger = get_logger(__name__)
 
 # Surface categories for mismatch detection (FEAT-18)
 # Grass surfaces vs synthetic -- categories that differ cause a mismatch
 GRASS_SURFACES: set[str] = {"Bermuda Grass", "Kentucky Bluegrass"}
+
+# Look-ahead / letdown spot threshold (D-16), grounded in the RAW silver Elo
+# scale (data/silver/elo_game_snapshots.parquet, home_elo_pre/away_elo_pre,
+# std ~125). A 100-Elo step is ~0.8 std -- a CHOSEN, in-scale value, NOT a
+# tuned one. The screen (Plan 28-07) adjudicates whether it carries signal.
+ELO_SPOT_STEP: float = 100.0
+
+# Bye-week rest threshold: a bye gives ~13-14 days between games, so
+# off_bye = 1.0 when rest_days >= 13 (the genuinely-new add per D-15).
+OFF_BYE_REST_DAYS: float = 13.0
+
+# Exceptions tolerated when reloading the full-season schedule for the
+# (weak, optional) spot flags -- a failure must degrade to neutral 0.0
+# flags, never break the contextual build.
+_SCHEDULE_LOAD_ERRORS = (
+    ValueError,
+    KeyError,
+    TypeError,
+    AttributeError,
+    OSError,
+    DataIngestionError,
+)
 
 
 class ContextualFeaturesCalculator:
@@ -487,6 +509,235 @@ class ContextualFeaturesCalculator:
             logger.error("Failed to calculate rest days", team=team, error=str(e))
             return 7.0  # Default to standard week
 
+    # ------------------------------------------------------------------
+    # Situational spot features (D-15/D-16, SIG-03)
+    #
+    # off_bye, look_ahead_spot (trap) and letdown_spot are the genuinely-new
+    # adds for this signal phase. They are WEAK signals, largely priced-in by
+    # the market, and are NOT a standing bet angle (SC3) -- a drop in the Plan
+    # 28-07 add-one-in lift screen is an expected, acceptable outcome (D-17).
+    # The existing rest/travel/short-week/bye/divisional features are REUSED,
+    # not re-derived (D-15, they are already in gold).
+    # ------------------------------------------------------------------
+
+    def _load_full_season_schedule(self, seasons: list[int]) -> pd.DataFrame:
+        """Load the FULL-season schedule with raw silver Elo + results.
+
+        Review #4 / T-28-08b: the look-ahead/letdown derivation needs the full
+        season schedule (next-opponent identity/Elo and the "beat last week"
+        prior result) -- but ``build_features`` hands this builder a ``games_df``
+        already filtered to the target week (the :783 reassignment), which then
+        collapses prior/next context to ~empty in a ``--current-week``
+        incremental build. So the schedule is reloaded here INDEPENDENTLY of the
+        handed-in frame. The full schedule + the pre-freeze Elo ratings are known
+        at the Friday freeze, so next-opponent identity and Elo are NOT leakage;
+        only a future game RESULT would be (and this builder never reads one).
+
+        The raw silver Elo (``home_elo_pre``/``away_elo_pre``, std ~125) is the
+        contract -- NEVER the z-scored gold Elo (T-28-09).
+
+        Args:
+            seasons: Seasons to load the schedule for.
+
+        Returns:
+            Per-game schedule with game_id, season, week, home_team, away_team,
+            home_elo_pre, away_elo_pre, kickoff_et, home_score, away_score.
+        """
+        elo = load_dataframe("elo_game_snapshots", layer="silver")
+        games = load_dataframe("games", layer="silver")
+
+        elo = elo[elo["season"].isin(seasons)]
+        score_cols = ["game_id", "kickoff_et", "home_score", "away_score"]
+        games = games[games["season"].isin(seasons)][score_cols]
+
+        # Bring kickoff + results onto the Elo schedule (keyed by game_id). The
+        # Elo snapshot frame is the source of the raw pre-game ratings.
+        return elo.merge(games, on="game_id", how="left")
+
+    @staticmethod
+    def _team_elo_in_game(row: pd.Series, team: str) -> float | None:
+        """Return ``team``'s raw pre-game Elo in a schedule ``row``, or None."""
+        if row["home_team"] == team:
+            value = row.get("home_elo_pre")
+        elif row["away_team"] == team:
+            value = row.get("away_elo_pre")
+        else:
+            return None
+        return float(value) if pd.notna(value) else None
+
+    @staticmethod
+    def _team_result_in_game(
+        row: pd.Series, team: str
+    ) -> tuple[float | None, float | None]:
+        """Return ``(team_score, opp_score)`` for a schedule ``row``.
+
+        Either side may be None when the score is missing (e.g. a future game
+        whose result is not yet known).
+        """
+        if row["home_team"] == team:
+            team_score, opp_score = row.get("home_score"), row.get("away_score")
+        elif row["away_team"] == team:
+            team_score, opp_score = row.get("away_score"), row.get("home_score")
+        else:
+            return None, None
+        team_score = float(team_score) if pd.notna(team_score) else None
+        opp_score = float(opp_score) if pd.notna(opp_score) else None
+        return team_score, opp_score
+
+    def _derive_spot_flags(
+        self,
+        target_games: pd.DataFrame,
+        full_schedule: pd.DataFrame,
+        as_of_datetime: datetime,
+    ) -> dict[str, dict[str, float]]:
+        """Derive look-ahead (trap) and letdown spot flags per target game.
+
+        These spots are WEAK and largely priced-in (SC3); they are added for
+        completeness and the Plan 28-07 screen, not as a bet angle.
+
+        Leakage contract (D-16, T-28-08): the next-opponent identity and the
+        pre-freeze Elo ratings are KNOWN at the freeze and are NOT leakage. Only
+        a future (>= current week) game RESULT is future information, and this
+        derivation NEVER reads one -- so revealing a future look-ahead result
+        leaves the flags byte-unchanged (proven by
+        tests/unit/test_situational_no_leakage.py). The letdown's "beat last
+        week" component only counts a prior game whose kickoff is before
+        ``as_of_datetime`` (the freeze), so a not-yet-played prior game
+        contributes nothing.
+
+        Thresholds use the raw silver Elo scale (``ELO_SPOT_STEP`` = 100 Elo,
+        ~0.8 std) and reuse ``ratings.elo.is_divisional_game`` (T-28-09).
+
+        Args:
+            target_games: Games to emit spot flags for.
+            full_schedule: FULL-season schedule with raw Elo + results, loaded
+                independently of any target-week filter (review #4).
+            as_of_datetime: Freeze cutoff; a prior RESULT only counts toward a
+                letdown if its kickoff precedes this cutoff.
+
+        Returns:
+            Mapping game_id -> the four home/away look_ahead/letdown spot flags.
+        """
+        flags: dict[str, dict[str, float]] = {}
+        if full_schedule is None or len(full_schedule) == 0:
+            return flags
+
+        sched = full_schedule.copy()
+        # tz-aligned freeze cutoff for prior-result gating (mirrors the rest
+        # fence idiom at build_features :829-833).
+        kickoff_series = pd.to_datetime(sched["kickoff_et"])
+        cutoff_ts = pd.Timestamp(as_of_datetime)
+        if kickoff_series.dt.tz is not None and cutoff_ts.tz is None:
+            cutoff_ts = cutoff_ts.tz_localize(kickoff_series.dt.tz)
+        sched = sched.assign(_kickoff_ts=kickoff_series)
+
+        for _, game in target_games.iterrows():
+            game_id = game["game_id"]
+            season = game["season"]
+            week = game["week"]
+            home_team = game["home_team"]
+            away_team = game["away_team"]
+
+            game_flags = {
+                "home_look_ahead_spot": 0.0,
+                "away_look_ahead_spot": 0.0,
+                "home_letdown_spot": 0.0,
+                "away_letdown_spot": 0.0,
+            }
+            flags[game_id] = game_flags
+
+            cur = sched[sched["game_id"] == game_id]
+            if cur.empty:
+                # No raw Elo for this game -> leave neutral defaults.
+                continue
+            cur_row = cur.iloc[0]
+
+            for side, team, opp in (
+                ("home", home_team, away_team),
+                ("away", away_team, home_team),
+            ):
+                team_elo = self._team_elo_in_game(cur_row, team)
+                opp_elo = self._team_elo_in_game(cur_row, opp)
+                if team_elo is None or opp_elo is None:
+                    continue
+
+                # Current opponent is "weak": their Elo is >= one step below us.
+                current_weak = (team_elo - opp_elo) >= ELO_SPOT_STEP
+                if not current_weak:
+                    continue
+
+                team_mask = (
+                    (sched["home_team"] == team) | (sched["away_team"] == team)
+                ) & (sched["season"] == season)
+                team_sched = sched[team_mask].sort_values("week")
+                next_games = team_sched[team_sched["week"] > week]
+                prev_games = team_sched[team_sched["week"] < week]
+
+                game_flags[f"{side}_look_ahead_spot"] = self._look_ahead_flag(
+                    team, opp_elo, next_games
+                )
+                game_flags[f"{side}_letdown_spot"] = self._letdown_flag(
+                    team, opp_elo, prev_games, cutoff_ts
+                )
+
+        return flags
+
+    def _look_ahead_flag(
+        self, team: str, opp_elo: float, next_games: pd.DataFrame
+    ) -> float:
+        """Look-ahead (trap): current opp weak AND next opp notably stronger.
+
+        "Notably stronger" = next-week opponent Elo exceeds this week's opponent
+        Elo by >= ELO_SPOT_STEP, OR the next-week opponent is divisional. Uses
+        schedule + pre-freeze Elo only (no result) -- not leakage.
+        """
+        if len(next_games) == 0:
+            return 0.0
+        nrow = next_games.iloc[0]
+        next_opp = nrow["away_team"] if nrow["home_team"] == team else nrow["home_team"]
+        next_opp_elo = self._team_elo_in_game(nrow, next_opp)
+        notably_stronger = (
+            next_opp_elo is not None and (next_opp_elo - opp_elo) >= ELO_SPOT_STEP
+        )
+        next_divisional = is_divisional_game(team, next_opp)
+        return 1.0 if (notably_stronger or next_divisional) else 0.0
+
+    def _letdown_flag(
+        self,
+        team: str,
+        opp_elo: float,
+        prev_games: pd.DataFrame,
+        cutoff_ts: pd.Timestamp,
+    ) -> float:
+        """Letdown: current opp weak AND last week was an emotional game.
+
+        "Emotional game" = last week the team BEAT an opponent whose pre-game
+        Elo was >= ELO_SPOT_STEP above this week's opponent, OR last week's
+        opponent was divisional. The "beat" component reads the prior RESULT, so
+        the prior game must have been PLAYED before the freeze
+        (``_kickoff_ts < cutoff_ts``) -- a not-yet-played prior game contributes
+        nothing (the time-fence, T-28-08).
+        """
+        if len(prev_games) == 0:
+            return 0.0
+        prow = prev_games.iloc[-1]
+        if not (prow["_kickoff_ts"] < cutoff_ts):
+            # Last week's game has not been played as-of the freeze.
+            return 0.0
+        prev_opp = prow["away_team"] if prow["home_team"] == team else prow["home_team"]
+        prev_opp_elo = self._team_elo_in_game(prow, prev_opp)
+        team_score, opp_score = self._team_result_in_game(prow, team)
+        won = (
+            team_score is not None and opp_score is not None and team_score > opp_score
+        )
+        beat_strong = (
+            won
+            and prev_opp_elo is not None
+            and (prev_opp_elo - opp_elo) >= ELO_SPOT_STEP
+        )
+        prev_divisional = is_divisional_game(team, prev_opp)
+        return 1.0 if (beat_strong or prev_divisional) else 0.0
+
     def build_contextual_features(
         self,
         games_df: pd.DataFrame,
@@ -786,6 +1037,30 @@ class ContextualFeaturesCalculator:
                     & (games_df["week"] == target_week)
                 ].copy()
 
+            # Situational spot flags (D-16, SIG-03): derive look-ahead/letdown
+            # from the FULL season schedule reloaded INDEPENDENTLY of the
+            # (possibly target-week-filtered) games_df above (review #4 /
+            # T-28-08b). These spots are weak / optional, so any failure to load
+            # the schedule degrades to neutral 0.0 flags and never breaks the
+            # contextual build.
+            spot_flags: dict[str, dict[str, float]] = {}
+            if len(games_df) > 0:
+                try:
+                    target_seasons = sorted(
+                        {int(s) for s in games_df["season"].unique()}
+                    )
+                    full_schedule = self._load_full_season_schedule(target_seasons)
+                    spot_flags = self._derive_spot_flags(
+                        games_df, full_schedule, as_of_datetime
+                    )
+                except _SCHEDULE_LOAD_ERRORS as e:
+                    logger.warning(
+                        "Situational spot-flag derivation skipped; "
+                        "emitting neutral flags",
+                        error=str(e),
+                    )
+                    spot_flags = {}
+
             contextual_features = []
 
             for _, game in games_df.iterrows():
@@ -846,6 +1121,36 @@ class ContextualFeaturesCalculator:
                         "away_short_rest": 1.0 if away_rest <= 4 else 0.0,
                     }
                 )
+
+                # SIG-03: off_bye is the genuinely-new add, derived from the
+                # existing rest-days output (a bye gives ~13-14 days). The
+                # existing rest/travel/short-week/bye/divisional features are
+                # reused, not re-derived (D-15).
+                game_features.update(
+                    {
+                        "home_off_bye": (
+                            1.0 if home_rest >= OFF_BYE_REST_DAYS else 0.0
+                        ),
+                        "away_off_bye": (
+                            1.0 if away_rest >= OFF_BYE_REST_DAYS else 0.0
+                        ),
+                    }
+                )
+
+                # SIG-03: look-ahead (trap) / letdown spots. These are weak /
+                # largely priced-in and not a standing bet angle (SC3); a drop
+                # in the Plan 28-07 lift screen is an expected outcome. Sourced
+                # from the full-season schedule + raw silver Elo (D-16).
+                game_spots = spot_flags.get(
+                    game_id,
+                    {
+                        "home_look_ahead_spot": 0.0,
+                        "away_look_ahead_spot": 0.0,
+                        "home_letdown_spot": 0.0,
+                        "away_letdown_spot": 0.0,
+                    },
+                )
+                game_features.update(game_spots)
 
                 # FEAT-17: Season-week position features
                 season_progress = float(week) / 18.0
