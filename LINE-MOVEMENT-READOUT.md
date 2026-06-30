@@ -99,15 +99,38 @@ Phase 30, never asserted as an edge on the basis of this spike.
 <!-- Machine-readable branch marker. Downstream branch gating (Plans 29-02..29-08) reads this
 literal token, not the prose. Task 2 (the blocking owner checkpoint) overwrites PENDING with
 exactly one of: full-backfill | forward-collect-only | slip. -->
-selected_branch: PENDING
+selected_branch: full-backfill
 
-**Status:** PENDING owner checkpoint (Task 2). The tiered cost menu (Section 1) and the D-02
-plausibility argument (Section 2) are recorded; the owner now makes the live go/no-go call with
-the real numbers in hand (D-01: NO pre-registered dollar ceiling) and selects exactly one
-branch. All three outcomes are honest, complete, successful phases (D-14, SC3). On selection,
-this marker is overwritten with the chosen literal token and the rationale is recorded here in
-screen-not-deploy language; SC1 is satisfied the moment the decision is recorded, before any
-29-02+ build runs.
+**Status:** DECIDED at the Task-2 blocking owner checkpoint -- the owner selected
+**full-backfill** (build + screen) with the tiered cost menu (Section 1) and the D-02
+plausibility argument (Section 2) in hand. SC1 is satisfied: the budget-gate decision is
+recorded HERE, before any 29-02+ build runs.
+
+**Owner rationale (full-backfill):**
+- **Cost is not the binding constraint (D-01).** Every tier in Section 1 -- including the
+  richest (a)/2020-2024 at 8,800 credits -- is a trivial single $30 month of the 20K plan
+  with large headroom. With NO pre-registered dollar ceiling (D-01), the spend does not gate
+  the decision.
+- **The D-02 plausibility edge is genuine but bounded.** Line-movement is plausibly
+  non-redundant only through the opening-total LEVEL and the path shape; net drift against the
+  already-known freeze line is largely what the model already sees (the freeze anchor is a
+  feature in `features/market_anchors.py`), and part of any measured movement is a noisier
+  proxy for the Phase-28 injury signal the market reacts to. The edge is real enough to be
+  worth measuring, not strong enough to assume.
+- **The add-one-in CLV lift screen is the arbiter.** Because the edge is bounded, the owner
+  declines to pre-decide it. The backfill path's in-process walk-forward CLV lift screen
+  (Plan 29-07) measures the per-target line-movement lift against the activated baseline; that
+  screen, not optimism, rules. The line-movement signal is SCREENED in Phase 29 and CARRIED TO
+  PHASE 30 for the binding deploy gate -- never asserted as an edge on the basis of this spike.
+- **Paid-key provisioning (D-04).** The owner will provision a paid ODDS_API_KEY for a
+  one-month historical pull (one-month-paid-then-downgrade; not pre-committed). Plan 29-05
+  pauses at its OWN blocking checkpoint before any paid historical call is made, so the bulk
+  spend is gated a second time at execution.
+
+**Downstream routing:** the full-backfill branch runs Plans 29-02, 29-03, 29-04, 29-05, 29-06,
+and 29-07. (Section 5's scope-down/slip note stays a placeholder -- it is populated only on the
+forward-collect-only or slip branches; Section 4's lift results stay pending the backfill path,
+Plan 29-07.)
 
 **The three branches:**
 - **full-backfill** -- buy the 2020-2024 historical archive (one paid month, then downgrade --
