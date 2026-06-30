@@ -24,6 +24,22 @@ from utils.game_id_utils import is_valid_game_id
 
 logger = get_logger(__name__)
 
+# Sentinel substituted for the live API key in any logged params dict so the
+# secret never reaches the DEBUG log (review 29-03 MED).
+_API_KEY_REDACTION = "***REDACTED***"
+
+
+def _redact_api_key(params: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return a shallow copy of *params* with ``apiKey`` redacted.
+
+    Defense-in-depth so the live ``ODDS_API_KEY`` never appears in the DEBUG
+    params log even when DEBUG logging is enabled (review 29-03 MED). The
+    original params dict passed to the HTTP client is unchanged.
+    """
+    if not params or "apiKey" not in params:
+        return params
+    return {**params, "apiKey": _API_KEY_REDACTION}
+
 
 class OddsAPIClient:
     """Client for fetching odds from external APIs."""
@@ -80,7 +96,12 @@ class OddsAPIClient:
         params["apiKey"] = self.api_key
 
         try:
-            logger.debug("Making odds API request", url=url, params=params)
+            # Redact the live apiKey before logging params at DEBUG -- the key
+            # must never reach the log even with DEBUG enabled (review 29-03 MED;
+            # defense-in-depth beyond "keep DEBUG off in automation").
+            logger.debug(
+                "Making odds API request", url=url, params=_redact_api_key(params)
+            )
 
             response = self.client.get(url, params=params)
             response.raise_for_status()
@@ -91,6 +112,69 @@ class OddsAPIClient:
             )
 
             return data
+
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "Odds API HTTP error",
+                url=url,
+                status_code=e.response.status_code,
+                response=e.response.text,
+            )
+            raise ExternalAPIError(
+                f"HTTP error {e.response.status_code}: {e.response.text}"
+            )
+
+        except httpx.RequestError as e:
+            logger.error("Odds API request error", url=url, error=str(e))
+            raise ExternalAPIError(f"Request error: {e}")
+
+        except Exception as e:
+            logger.error("Odds API unexpected error", url=url, error=str(e))
+            raise ExternalAPIError(f"Unexpected error: {e}")
+
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=60)
+    )
+    def _make_request_with_headers(
+        self, endpoint: str, params: dict[str, Any] | None = None
+    ) -> tuple[dict[str, Any], httpx.Headers]:
+        """Make an odds API request returning BOTH the JSON body AND the headers.
+
+        Mirrors :meth:`_make_request` (inherited auth via ``apiKey`` param,
+        ``raise_for_status``, error mapping, and tenacity retry) but returns
+        ``(response.json(), response.headers)`` instead of discarding the headers
+        (the plain ``_make_request`` returns JSON only, ingest_odds.py:88-93).
+        Plan 29-05's cost guard reads the credit headers (``x-requests-last`` /
+        ``x-requests-remaining``) from the returned headers before the bulk paid
+        backfill loop (review 29-05 HIGH).
+        """
+        if self.mock_mode:
+            return self._generate_mock_odds(), httpx.Headers({})
+
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+
+        if params is None:
+            params = {}
+        params["apiKey"] = self.api_key
+
+        try:
+            logger.debug(
+                "Making odds API request (headers)",
+                url=url,
+                params=_redact_api_key(params),
+            )
+
+            response = self.client.get(url, params=params)
+            response.raise_for_status()
+
+            data = response.json()
+            logger.info(
+                "Odds API request successful",
+                url=url,
+                status_code=response.status_code,
+            )
+
+            return data, response.headers
 
         except httpx.HTTPStatusError as e:
             logger.error(
@@ -332,6 +416,64 @@ class OddsAPIClient:
 
         logger.info("Fetched NFL odds", total_games=len(games))
         return games
+
+    def get_historical_nfl_odds(
+        self,
+        date_iso: str,
+        markets: list[str],
+        regions: str = "us",
+        return_headers: bool = False,
+    ) -> dict[str, Any] | tuple[dict[str, Any], httpx.Headers]:
+        """Fetch ONE historical NFL odds snapshot at/near ``date_iso``.
+
+        Calls the PAID historical endpoint
+        ``historical/sports/americanfootball_nfl/odds`` through the inherited
+        ``_make_request`` (auth via ``apiKey`` + tenacity retry), returning the
+        ``{timestamp, previous_timestamp, next_timestamp, data}`` envelope. The
+        envelope's ``timestamp`` is the ACTUAL snapshot at/earlier than the
+        requested ``date_iso`` (the closest available, per the Odds API v4 docs)
+        -- callers must stamp the stored row from that envelope ``timestamp``,
+        NOT the requested ``date_iso`` (review 29-03 HIGH).
+
+        One call returns the WHOLE NFL board for that snapshot. Cost =
+        ``10 x len(markets) x 1 region`` credits per call, PAID plan ONLY.
+
+        Args:
+            date_iso: ISO8601 ``Z`` timestamp, e.g. ``2021-10-15T22:00:00Z``.
+            markets: Markets to fetch (e.g. ``["totals"]`` or
+                ``["totals", "spreads"]``).
+            regions: Odds region (default ``"us"``).
+            return_headers: When ``True``, route through
+                ``_make_request_with_headers`` and return
+                ``(envelope, response.headers)`` so Plan 29-05's cost guard can
+                read ``x-requests-last`` / ``x-requests-remaining`` (review
+                29-05 HIGH). Default ``False`` preserves the JSON-only return
+                used by the backfill loop.
+
+        Returns:
+            The trajectory envelope dict, or ``(envelope, headers)`` when
+            ``return_headers=True``.
+        """
+        params = {
+            "regions": regions,
+            "markets": ",".join(markets),
+            "oddsFormat": "american",
+            "dateFormat": "iso",
+            "date": date_iso,
+        }
+        endpoint = "historical/sports/americanfootball_nfl/odds"
+
+        logger.info(
+            "Fetching historical NFL odds snapshot",
+            date=date_iso,
+            markets=markets,
+            regions=regions,
+        )
+
+        if return_headers:
+            return self._make_request_with_headers(endpoint, params)
+
+        return self._make_request(endpoint, params)
 
 
 class OddsDataIngester:
