@@ -1,0 +1,478 @@
+"""Line-Movement Feature Builder (SIG-04).
+
+This module turns the additive ``odds_timeline`` trajectory silver table (Plan
+29-02 storage, keyed ``(game_id, snapshot_ts)``) into leakage-safe, game-level
+line-movement features, all fenced strictly to snapshots at/before EACH game's
+OWN Friday 6 PM ET freeze:
+
+- ``opening_total`` -- the totals line in the earliest captured pre-freeze
+  snapshot (the genuinely-new information; the freeze line is already a model
+  feature via ``market_anchors.snapshot_total``, D-02).
+- ``total_drift`` / ``total_drift_dir`` -- net drift ``freeze_total -
+  opening_total`` and its sign (D-09 i).
+- ``total_late_drift`` -- drift over the last ~24-48h before the freeze, the
+  steam feature that rests on the FULL trajectory, not a two-anchor capture
+  (D-08/D-09 iii).
+- ``total_abs_travel`` / ``total_reversals`` / ``total_range`` -- path shape:
+  summed absolute movement, count of sign flips, and max-min span (D-09 iv).
+- ``line_movement_coverage`` -- 1.0 when >=2 pre-freeze snapshots exist
+  (2020-06-06+ coverage), else 0.0 with neutral defaults (D-10).
+
+The load-bearing temporal control is a PER-GAME Friday-6PM-ET freeze (D-15):
+``odds_timeline`` spans many game-weeks across 2020-2024, so there is no single
+Friday. Each game's freeze is derived from its own kickoff date and the builder
+fences to ``snapshot_ts <= min(as_of_datetime, that_game_freeze)``. The cutoff
+is localized to ``America/New_York`` (ET), NEVER UTC -- a UTC-localized Friday
+18:00 cutoff would be 14:00 ET and wrongly drop the legitimate ET-evening
+snapshots (the WR-02 lesson, borrowed from
+``market_anchors.identify_snapshot_lines`` but NOT its global-max cutoff).
+
+``as_of_datetime`` is canonicalized to tz-aware UTC FIRST (review 29-04 HIGH):
+the full-build default is a naive-local ``datetime.now()`` (build_features.py
+:111-112/:852-853), and comparing a naive datetime against the tz-aware UTC
+``snapshot_ts`` would raise ``TypeError``.
+
+CRITICAL (D-15): the TRUE closing line is NEVER emitted -- only snapshots
+strictly ``<= freeze`` are used; the closing total is reserved for CLV grading.
+
+CRITICAL (Pitfall 1, review 29-04 MED): historical odds start 2020-06-06, so the
+2018-2019 train window has ZERO trajectory coverage. Uncovered games get
+drift/path families = 0.0 and ``line_movement_coverage`` = 0.0, but
+``opening_total`` is imputed from a NON-LEAKY in-row anchor (the single available
+pre-freeze snapshot total) or a prior-only constant -- never a literal 0.0,
+which is out-of-distribution for a ~40-50 totals line and would let the model
+learn a coverage/season artifact instead of keying on the coverage flag.
+
+CRITICAL (Pitfall 2): every column name is DISTINCT from the structurally-zero
+``total_movement`` / ``spread_movement`` that ``market_anchors`` already emits.
+"""
+
+from datetime import datetime, timedelta
+
+import pandas as pd
+
+from data.storage import load_dataframe
+from utils import get_logger
+from utils.date_utils import ET, UTC, ensure_utc_aware
+
+logger = get_logger(__name__)
+
+# The late/steam window: drift over the last ~24-48h before the freeze (D-09 iii).
+# A CHOSEN, not-tuned span -- 48h is the standard "late money" horizon and is the
+# reason a full trajectory (not a two-anchor capture) is worth buying (D-08).
+LATE_WINDOW_HOURS = 48
+
+# Prior-only, non-leaky fallback for ``opening_total`` on games with ZERO
+# pre-freeze snapshots (the pre-2020 train window, Pitfall 1). A league-average
+# NFL game total -- IN-DISTRIBUTION for a ~40-50 line, unlike a literal 0.0 which
+# is out-of-distribution and lets the model learn a coverage/season artifact
+# (review 29-04 MED). A CHOSEN constant, never tuned.
+LEAGUE_AVERAGE_TOTAL = 44.0
+
+# Game-level totals feature columns (the primary family, D-07). Names are DISTINCT
+# from the structurally-zero ``total_movement`` market_anchors emits (Pitfall 2).
+_TOTAL_FEATURE_COLUMNS = [
+    "opening_total",
+    "total_drift",
+    "total_drift_dir",
+    "total_late_drift",
+    "total_abs_travel",
+    "total_reversals",
+    "total_range",
+]
+
+# Conditional spread siblings (Tier (a) only) -- emitted ONLY when odds_timeline
+# carries non-null spread data (D-07 keeps totals primary).
+_SPREAD_FEATURE_COLUMNS = [
+    "opening_spread",
+    "spread_drift",
+    "spread_drift_dir",
+    "spread_late_drift",
+    "spread_abs_travel",
+    "spread_reversals",
+    "spread_range",
+]
+
+# The shared coverage flag (one per game; the totals family is primary, D-07).
+_COVERAGE_COLUMN = "line_movement_coverage"
+
+# Candidate columns a games row may carry the kickoff date in (ET wall clock).
+_KICKOFF_COLUMNS = ("kickoff_et", "gameday", "game_date", "start_time")
+
+
+class LineMovementBuilder:
+    """Build leakage-safe game-level line-movement features from odds_timeline.
+
+    Conforms to the FeatureBuilder Protocol (``build_features`` with the
+    ``as_of_datetime`` Friday-freeze fence + ``get_features_for_game``). Emits one
+    row per game with the four D-09 totals families + ``line_movement_coverage``
+    (and ``spread_*`` siblings only when the trajectory carries spreads).
+
+    The binding temporal control is a PER-GAME Friday-6PM-ET freeze (D-15): each
+    game's freeze is derived from its own kickoff date and localized to ET (NOT
+    UTC, WR-02); the fence is ``snapshot_ts <= min(as_of_datetime, game_freeze)``
+    with ``as_of_datetime`` canonicalized to tz-aware UTC first (review 29-04
+    HIGH). The true closing line is never emitted -- only snapshots ``<= freeze``.
+    """
+
+    def __init__(self, *, timeline_df: pd.DataFrame | None = None) -> None:
+        """Initialize the line-movement builder.
+
+        Args:
+            timeline_df: Optional ``odds_timeline`` trajectory frame to use
+                directly (the test-injection seam). When ``None`` the builder
+                loads ``odds_timeline`` from the silver layer.
+        """
+        self._timeline_df = timeline_df
+        self._games_cache: pd.DataFrame | None = None
+
+    # ------------------------------------------------------------------
+    # odds_timeline loading
+    # ------------------------------------------------------------------
+
+    def _load_timeline(self) -> pd.DataFrame:
+        """Load the trajectory silver (or the injected frame), snapshot_ts UTC.
+
+        ``snapshot_ts`` is coerced to a tz-aware UTC datetime so the on-disk
+        round-trip (which may surface it as an ISO string) drives the per-game
+        fence comparison correctly.
+        """
+        if self._timeline_df is not None:
+            timeline = self._timeline_df
+        else:
+            try:
+                timeline = load_dataframe("odds_timeline", layer="silver")
+            except (FileNotFoundError, OSError, ValueError) as exc:
+                logger.warning("odds_timeline silver not available", error=str(exc))
+                return pd.DataFrame(columns=["game_id", "snapshot_ts", "total"])
+
+        if timeline is None or len(timeline) == 0:
+            return pd.DataFrame(columns=["game_id", "snapshot_ts", "total"])
+
+        timeline = timeline.copy()
+        timeline["snapshot_ts"] = pd.to_datetime(
+            timeline["snapshot_ts"], utc=True, errors="coerce"
+        )
+        return timeline
+
+    # ------------------------------------------------------------------
+    # Per-game Friday 6 PM ET freeze (NOT a global cutoff, review 29-04 HIGH)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _game_friday_freeze(game_date: datetime) -> datetime:
+        """Return THAT game's own Friday-6PM-ET freeze from its kickoff date.
+
+        The freeze is the most recent Friday at/before the game's kickoff date,
+        at 18:00 ET. This is a PER-GAME freeze -- it does NOT derive one global
+        Friday from ``odds_df['snapshot_ts'].max()`` the way
+        ``identify_snapshot_lines`` does (correct for a single game-week, WRONG
+        across a multi-season odds_timeline, review 29-04 HIGH).
+
+        The Friday 18:00 cutoff is localized to ``America/New_York`` (ET), NEVER
+        UTC (WR-02), then returned -- callers convert to UTC for the comparison so
+        the wall-clock instant is preserved (18:00 ET == 22:00/23:00 UTC).
+        """
+        if game_date.tzinfo is None:
+            et_date = game_date.replace(tzinfo=ET)
+        else:
+            et_date = game_date.astimezone(ET)
+
+        # Most recent Friday (weekday 4) at/before the kickoff date.
+        days_since_friday = (et_date.weekday() - 4) % 7
+        friday = et_date.date() - timedelta(days=days_since_friday)
+        return datetime(friday.year, friday.month, friday.day, 18, 0, 0, tzinfo=ET)
+
+    @staticmethod
+    def _resolve_game_date(row: pd.Series) -> datetime | None:
+        """Resolve a game's kickoff date (ET wall clock) from a games row."""
+        for col in _KICKOFF_COLUMNS:
+            if col in row.index and pd.notna(row[col]):
+                ts = pd.to_datetime(row[col], errors="coerce")
+                if pd.notna(ts):
+                    return ts.to_pydatetime()
+        return None
+
+    # ------------------------------------------------------------------
+    # Family derivation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _derive_family(
+        pairs: list[tuple[pd.Timestamp, float]],
+        fence_utc: datetime,
+        prefix: str,
+        uncovered_open: float,
+    ) -> tuple[dict[str, float], bool]:
+        """Derive one D-09 family (totals or spread) from sorted pre-freeze pairs.
+
+        Args:
+            pairs: ``(snapshot_ts, value)`` pairs, ascending, non-null values,
+                already fenced to ``<= freeze``.
+            fence_utc: The per-game UTC freeze instant (for the late window).
+            prefix: ``"total"`` or ``"spread"`` -- drives the column names.
+            uncovered_open: The non-leaky prior-only opening level for games with
+                ZERO pre-freeze snapshots (never a literal 0.0, review 29-04 MED).
+
+        Returns:
+            ``(family_dict, covered)`` where ``covered`` is True iff >=2 pre-freeze
+            snapshots exist. Drift/path stay 0.0 when uncovered; ``opening`` is the
+            single in-row snapshot anchor (1 snapshot) or ``uncovered_open`` (0).
+        """
+        if len(pairs) >= 2:
+            values = [float(v) for _, v in pairs]
+            opening = values[0]
+            freeze_value = values[-1]
+            drift = freeze_value - opening
+
+            late_start = fence_utc - timedelta(hours=LATE_WINDOW_HOURS)
+            late_values = [float(v) for ts, v in pairs if ts >= late_start]
+            late_drift = (
+                late_values[-1] - late_values[0] if len(late_values) >= 2 else 0.0
+            )
+
+            diffs = [values[i] - values[i - 1] for i in range(1, len(values))]
+            abs_travel = sum(abs(d) for d in diffs)
+            signs = [1 if d > 0 else -1 for d in diffs if d != 0]
+            reversals = sum(1 for i in range(1, len(signs)) if signs[i] != signs[i - 1])
+            value_range = max(values) - min(values)
+
+            family = {
+                f"opening_{prefix}": opening,
+                f"{prefix}_drift": drift,
+                f"{prefix}_drift_dir": float((drift > 0) - (drift < 0)),
+                f"{prefix}_late_drift": late_drift,
+                f"{prefix}_abs_travel": abs_travel,
+                f"{prefix}_reversals": float(reversals),
+                f"{prefix}_range": value_range,
+            }
+            return family, True
+
+        # Uncovered: drift/path = 0.0; opening from the single in-row snapshot
+        # anchor (non-leaky, <= freeze) or the prior-only constant -- never 0.0.
+        opening = float(pairs[0][1]) if len(pairs) == 1 else uncovered_open
+        family = {
+            f"opening_{prefix}": opening,
+            f"{prefix}_drift": 0.0,
+            f"{prefix}_drift_dir": 0.0,
+            f"{prefix}_late_drift": 0.0,
+            f"{prefix}_abs_travel": 0.0,
+            f"{prefix}_reversals": 0.0,
+            f"{prefix}_range": 0.0,
+        }
+        return family, False
+
+    @staticmethod
+    def _pairs_for(
+        game_rows: pd.DataFrame, fence_utc: datetime, value_col: str
+    ) -> list[tuple[pd.Timestamp, float]]:
+        """Return ascending ``(snapshot_ts, value)`` pairs fenced ``<= freeze``.
+
+        Only snapshots strictly at/before the freeze are kept (D-15 -- the closing
+        line is never used); rows with a null value or null snapshot_ts are
+        dropped so a covered game's families are never NaN.
+        """
+        if len(game_rows) == 0 or value_col not in game_rows.columns:
+            return []
+        fenced = game_rows[
+            game_rows["snapshot_ts"].notna()
+            & (game_rows["snapshot_ts"] <= fence_utc)
+            & game_rows[value_col].notna()
+        ].sort_values("snapshot_ts")
+        return [
+            (ts, float(val))
+            for ts, val in zip(fenced["snapshot_ts"], fenced[value_col], strict=True)
+        ]
+
+    def _compute_game_features(
+        self,
+        game_id: str,
+        game_date: datetime | None,
+        as_of_utc: datetime,
+        timeline: pd.DataFrame,
+        emit_spread: bool,
+    ) -> dict[str, float]:
+        """Compute the line-movement feature dict for a single game."""
+        if game_date is None:
+            return self._neutral_features(emit_spread)
+
+        freeze = self._game_friday_freeze(game_date).astimezone(UTC)
+        fence_utc = min(as_of_utc, freeze)
+
+        game_rows = (
+            timeline[timeline["game_id"] == game_id] if len(timeline) > 0 else timeline
+        )
+
+        total_pairs = self._pairs_for(game_rows, fence_utc, "total")
+        total_family, covered = self._derive_family(
+            total_pairs, fence_utc, "total", LEAGUE_AVERAGE_TOTAL
+        )
+
+        record: dict[str, float] = dict(total_family)
+        record[_COVERAGE_COLUMN] = 1.0 if covered else 0.0
+
+        if emit_spread:
+            spread_pairs = self._pairs_for(game_rows, fence_utc, "spread")
+            # Impute an uncovered opening spread from a pick'em prior (0.0 IS the
+            # in-distribution neutral spread, unlike a 0.0 totals line).
+            spread_family, _ = self._derive_family(
+                spread_pairs, fence_utc, "spread", 0.0
+            )
+            record.update(spread_family)
+
+        return record
+
+    # ------------------------------------------------------------------
+    # FeatureBuilder Protocol methods
+    # ------------------------------------------------------------------
+
+    def build_features(
+        self,
+        games_df: pd.DataFrame,
+        as_of_datetime: datetime,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """Build game-level line-movement features for games.
+
+        Conforms to the FeatureBuilder Protocol. ``as_of_datetime`` is
+        canonicalized to tz-aware UTC FIRST (review 29-04 HIGH); each game is
+        fenced to ``snapshot_ts <= min(as_of_utc, that_game's_Friday_6PM_ET
+        freeze)`` (D-15). The closing line is never emitted.
+
+        Args:
+            games_df: DataFrame of games to build features for.
+            as_of_datetime: Time-fence cutoff (capped per-game by the Friday
+                freeze). A naive datetime is reinterpreted as UTC; ``None``
+                defaults to ``datetime.now(UTC)``.
+            target_season: Optional season to filter games for.
+            target_week: Optional week to filter games for.
+
+        Returns:
+            One row per game with the line-movement feature columns.
+        """
+        emit_spread = self._timeline_has_spread()
+        cols = ["game_id", *self._feature_columns(emit_spread)]
+
+        if games_df is None or len(games_df) == 0:
+            return pd.DataFrame(columns=cols)
+
+        self._games_cache = games_df
+
+        # Canonicalize as_of to tz-aware UTC BEFORE any snapshot comparison
+        # (review 29-04 HIGH -- the full-build default is naive-local now()).
+        as_of_utc = (
+            datetime.now(UTC)
+            if as_of_datetime is None
+            else ensure_utc_aware(as_of_datetime)
+        )
+
+        target_games = games_df
+        if target_season is not None and "season" in games_df.columns:
+            target_games = target_games[target_games["season"] == target_season]
+        if target_week is not None and "week" in target_games.columns:
+            target_games = target_games[target_games["week"] == target_week]
+        if len(target_games) == 0:
+            return pd.DataFrame(columns=cols)
+
+        timeline = self._load_timeline()
+
+        rows: list[dict] = []
+        for _, game in target_games.iterrows():
+            game_date = self._resolve_game_date(game)
+            feats = self._compute_game_features(
+                str(game["game_id"]), game_date, as_of_utc, timeline, emit_spread
+            )
+            rows.append({"game_id": game["game_id"], **feats})
+
+        return pd.DataFrame(rows, columns=cols)
+
+    def get_features_for_game(
+        self,
+        game_id: str,
+        as_of_datetime: datetime,
+    ) -> dict[str, float]:
+        """Get line-movement features for a single game.
+
+        Conforms to the FeatureBuilder Protocol.
+
+        Args:
+            game_id: Unique game identifier.
+            as_of_datetime: Time-fence cutoff (capped by the game's Friday freeze).
+
+        Returns:
+            Dict of line-movement feature values (neutral defaults when the game
+            is unknown or has no covered trajectory).
+        """
+        emit_spread = self._timeline_has_spread()
+        as_of_utc = (
+            datetime.now(UTC)
+            if as_of_datetime is None
+            else ensure_utc_aware(as_of_datetime)
+        )
+
+        game_date = self._resolve_game_date_for(game_id)
+        if game_date is None:
+            return self._neutral_features(emit_spread)
+
+        timeline = self._load_timeline()
+        return self._compute_game_features(
+            game_id, game_date, as_of_utc, timeline, emit_spread
+        )
+
+    # ------------------------------------------------------------------
+    # Column / default helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _feature_columns(emit_spread: bool) -> list[str]:
+        """The emitted feature column order (totals primary; spread conditional)."""
+        cols = [*_TOTAL_FEATURE_COLUMNS, _COVERAGE_COLUMN]
+        if emit_spread:
+            cols = cols + list(_SPREAD_FEATURE_COLUMNS)
+        return cols
+
+    def _timeline_has_spread(self) -> bool:
+        """True iff odds_timeline carries non-null spread data (Tier (a), D-07)."""
+        timeline = self._load_timeline()
+        return (
+            len(timeline) > 0
+            and "spread" in timeline.columns
+            and bool(timeline["spread"].notna().any())
+        )
+
+    def _neutral_features(self, emit_spread: bool) -> dict[str, float]:
+        """Neutral defaults (D-10): non-null, opening imputed from a prior."""
+        record: dict[str, float] = {
+            "opening_total": LEAGUE_AVERAGE_TOTAL,
+            "total_drift": 0.0,
+            "total_drift_dir": 0.0,
+            "total_late_drift": 0.0,
+            "total_abs_travel": 0.0,
+            "total_reversals": 0.0,
+            "total_range": 0.0,
+            _COVERAGE_COLUMN: 0.0,
+        }
+        if emit_spread:
+            record.update(
+                {
+                    "opening_spread": 0.0,
+                    "spread_drift": 0.0,
+                    "spread_drift_dir": 0.0,
+                    "spread_late_drift": 0.0,
+                    "spread_abs_travel": 0.0,
+                    "spread_reversals": 0.0,
+                    "spread_range": 0.0,
+                }
+            )
+        return record
+
+    def _resolve_game_date_for(self, game_id: str) -> datetime | None:
+        """Resolve a game's kickoff date from the cached games frame."""
+        if self._games_cache is None:
+            return None
+        match = self._games_cache[self._games_cache["game_id"] == game_id]
+        if len(match) == 0:
+            return None
+        return self._resolve_game_date(match.iloc[0])
