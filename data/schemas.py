@@ -212,6 +212,92 @@ class OddsSchema(BaseModel):
         return v
 
 
+class OddsTimelineSchema(BaseModel):
+    """Schema for a single odds-trajectory snapshot row (silver layer).
+
+    Represents ONE point on a game's line-movement trajectory at the
+    ``(game_id, snapshot_ts)`` grain -- the additive sibling of
+    ``odds_snapshot`` (D-11). ``odds_snapshot`` is ``game_id`` latest-wins
+    (the freeze/closing anchor consumed by ``market_anchors`` + CLV grading);
+    this schema instead keeps every distinct snapshot so the PATH of the line
+    can be reconstructed.
+
+    Totals are primary for the line-movement signal (D-07); the consensus
+    spread is conditional/optional.
+
+    CRITICAL (review 29-02 HIGH): unlike ``OddsSchema`` -- whose timestamp
+    validator silently attaches UTC to a NAIVE datetime (schemas.py:194-195) --
+    a timezone-naive ``snapshot_ts`` is REJECTED here, never coerced. The
+    trajectory grain must never store an ambiguous wall-clock time as if it
+    were UTC.
+    """
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    game_id: str = Field(..., description="Foreign key to games table")
+    snapshot_ts: datetime = Field(
+        ...,
+        description="Trajectory snapshot timestamp (tz-aware UTC; naive rejected)",
+    )
+
+    # Totals are primary for the line-movement signal (D-07); spread optional.
+    total: float | None = Field(None, description="Consensus game total (over/under)")
+    spread: float | None = Field(
+        None, description="Consensus point spread (home perspective; optional)"
+    )
+
+    # Provenance: which book/region the consensus snapshot was derived from,
+    # so a stored row's source is auditable (mirrors OddsSchema.sportsbook).
+    sportsbook: str | None = Field(
+        None, description="Sportsbook / consensus source identifier"
+    )
+    region: str | None = Field(None, description="Odds region (e.g. 'us')")
+
+    # Data lineage metadata
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        description="Timestamp when record was created/ingested",
+    )
+
+    @field_validator("snapshot_ts", mode="before")
+    @classmethod
+    def reject_naive_snapshot_ts(cls, v):
+        """Require a tz-aware ``snapshot_ts``; REJECT naive (review 29-02 HIGH).
+
+        Unlike ``OddsSchema.validate_timestamps`` (which silently attaches UTC
+        to a naive datetime, schemas.py:194-195), a naive ``snapshot_ts`` is a
+        HARD error here -- it is never silently coerced to UTC.
+        """
+        if v is None:
+            raise ValueError("snapshot_ts is required and must be timezone-aware")
+        if isinstance(v, str):
+            v = pd.to_datetime(v)
+        tzinfo = getattr(v, "tzinfo", None)
+        if tzinfo is None:
+            raise ValueError(
+                "snapshot_ts must be timezone-aware (tz-aware UTC); a naive "
+                "datetime was rejected and is never silently coerced to UTC "
+                "(review 29-02 HIGH)"
+            )
+        return v
+
+    @field_validator("total")
+    @classmethod
+    def validate_total_range(cls, v):
+        """Validate total is reasonable (mirrors OddsSchema)."""
+        if v is not None and not (10.0 <= v <= 100.0):
+            raise ValueError("Total must be between 10.0 and 100.0 points")
+        return v
+
+    @field_validator("spread")
+    @classmethod
+    def validate_spread_range(cls, v):
+        """Validate spread is reasonable (mirrors OddsSchema)."""
+        if v is not None and not (-50.0 <= v <= 50.0):
+            raise ValueError("Spread must be between -50.0 and +50.0 points")
+        return v
+
+
 class WeatherSchema(BaseModel):
     """Schema for weather forecast data (silver layer)."""
 
