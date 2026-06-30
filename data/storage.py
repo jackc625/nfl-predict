@@ -1044,6 +1044,138 @@ def upsert_silver(
     return silver_path
 
 
+def _canonicalize_snapshot_ts_utc(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of *df* with ``snapshot_ts`` as tz-aware UTC datetime64.
+
+    FAILS FAST on any naive (timezone-unaware) ``snapshot_ts`` value rather
+    than silently assuming UTC (review 29-02 HIGH). This closes the
+    object-dtype / assume-naive==UTC bypass in
+    ``ParquetManager._normalize_parquet_datetime_columns``
+    (storage.py:277-279 stringifies an object-typed ``snapshot_ts`` verbatim;
+    storage.py:306/:313 assume a naive datetime is UTC). For the trajectory
+    grain, a naive timestamp must be a hard error, never coerced.
+
+    Coercing the column to ``datetime64[ns, UTC]`` here (instead of leaving it
+    object-typed) also makes the parquet round-trip lossless, which is what the
+    composite-key dedupe relies on for idempotency across re-runs.
+    """
+    if "snapshot_ts" not in df.columns:
+        return df
+
+    df = df.copy()
+    col = df["snapshot_ts"]
+
+    if pd.api.types.is_datetime64_any_dtype(col):
+        if getattr(col.dt, "tz", None) is None:
+            raise ValueError(
+                "upsert_silver_composite: 'snapshot_ts' is timezone-naive. "
+                "Trajectory timestamps must be tz-aware UTC; naive values are "
+                "rejected and never silently coerced. Use "
+                "utils.date_utils.ensure_utc_aware() to fix-forward."
+            )
+        df["snapshot_ts"] = col.dt.tz_convert("UTC")
+        return df
+
+    # Object dtype (strings / Python datetimes / pandas Timestamps / mixed):
+    # reject any naive element BEFORE coercing the whole column to tz-aware UTC.
+    def _require_aware(x):
+        if pd.isna(x):
+            return x
+        ts = pd.Timestamp(x)
+        if ts.tzinfo is None:
+            raise ValueError(
+                "upsert_silver_composite: 'snapshot_ts' contains a "
+                f"timezone-naive value ({x!r}). Trajectory timestamps must be "
+                "tz-aware UTC; naive values are rejected and never silently "
+                "coerced to UTC."
+            )
+        return ts
+
+    col.map(_require_aware)  # raises on the first naive value
+    df["snapshot_ts"] = pd.to_datetime(col, utc=True)
+    return df
+
+
+def upsert_silver_composite(
+    new_df: pd.DataFrame,
+    table_name: str,
+    key_columns: list[str] | None = None,
+    base_path: Path | None = None,
+) -> Path:
+    """Upsert into a Silver table deduping on a COMPOSITE key (keep='last').
+
+    Derived from :func:`upsert_silver`, but diverges in two ways for the
+    ``odds_timeline`` trajectory table (D-11):
+
+    1. ``snapshot_ts`` is canonicalized to tz-aware UTC and a naive/mixed
+       timestamp FAILS FAST *before* the dedupe (review 29-02 HIGH). The
+       existing ``_normalize_parquet_datetime_columns`` guard only rejects
+       *datetime64*-typed naive columns; an object-typed ``snapshot_ts`` is
+       otherwise stringified (storage.py:277-279) and the object-datetime
+       normalization assumes naive==UTC (storage.py:306/:313). This function
+       closes that bypass so a naive trajectory timestamp can never be
+       silently stored as UTC.
+    2. Dedup is on the COMPOSITE ``key_columns`` (default
+       ``["game_id", "snapshot_ts"]``) with ``keep="last"`` -- so distinct
+       ``(game_id, snapshot_ts)`` pairs coexist (never the ``game_id``
+       latest-wins clobber of :func:`upsert_silver`), while a re-run of the
+       same pairs is idempotent.
+
+    :func:`upsert_silver` and the ``odds_snapshot`` write path are untouched
+    (D-11).
+
+    Args:
+        new_df: Validated trajectory rows to upsert.
+        table_name: e.g. "odds_timeline".
+        key_columns: Composite dedup key (default ``["game_id", "snapshot_ts"]``).
+        base_path: Base data directory (default from settings).
+
+    Returns:
+        Path to the Silver file.
+    """
+    if key_columns is None:
+        key_columns = ["game_id", "snapshot_ts"]
+
+    if base_path is None:
+        settings = get_settings()
+        base_path = Path(settings.config.data.root_path)
+
+    silver_path = base_path / "silver" / f"{table_name}.parquet"
+    silver_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Fail fast on naive snapshot_ts BEFORE any read/concat/dedupe.
+    new_df = _canonicalize_snapshot_ts_utc(new_df)
+
+    if silver_path.exists():
+        existing = pd.read_parquet(silver_path, engine="pyarrow")
+        existing = _canonicalize_snapshot_ts_utc(existing)
+        combined = (
+            pd.concat([existing, new_df], ignore_index=True)
+            .drop_duplicates(subset=key_columns, keep="last")
+            .reset_index(drop=True)
+        )
+    else:
+        combined = new_df.drop_duplicates(subset=key_columns, keep="last").reset_index(
+            drop=True
+        )
+
+    # Normalize datetime columns before writing (snapshot_ts is now a tz-aware
+    # datetime64 column, so it round-trips as a real timestamp -- not a string).
+    pm = ParquetManager(str(base_path))
+    combined_normalized = pm._normalize_parquet_datetime_columns(combined)
+    table = pa.Table.from_pandas(combined_normalized)
+    pq.write_table(table, silver_path, compression="snappy")
+
+    logger.info(
+        "Upserted Silver table (composite key)",
+        table=table_name,
+        path=str(silver_path),
+        key_columns=key_columns,
+        rows=len(combined),
+    )
+    return silver_path
+
+
 def get_latest_bronze_file(
     table_name: str,
     season: int,
