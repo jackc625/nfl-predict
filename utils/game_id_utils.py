@@ -61,6 +61,13 @@ _FULL_NAME_MAP = {
     "DALLAS_COWBOYS": "DAL",
     "PHILADELPHIA_EAGLES": "PHI",
     "WASHINGTON_COMMANDERS": "WAS",
+    # The franchise's OFFICIAL name for the 2020 and 2021 seasons, before the
+    # 2022 rebrand to "Washington Commanders". Historical odds archives (The
+    # Odds API 2020-2024 backfill) send this exact string, so it must resolve to
+    # the same canonical WAS. This is a canonical-alias ADDITION for a real
+    # franchise name -- it does NOT weaken the hard-fail on genuinely unknown
+    # team names.
+    "WASHINGTON_FOOTBALL_TEAM": "WAS",
     "ARIZONA_CARDINALS": "ARI",
     "SAN_FRANCISCO_49ERS": "SF",
     "SEATTLE_SEAHAWKS": "SEA",

@@ -29,6 +29,11 @@ CRITICAL invariants:
   ``odds_timeline`` (OUM-06 discipline).
 * This script writes ONLY ``odds_timeline`` + bronze; it never writes
   ``odds_snapshot`` (D-11).
+* SPEND SAFETY: the backfill SKIPS the paid call for any requested timestamp
+  already covered in ``odds_timeline`` (see :func:`_snapshot_already_stored`).
+  ``upsert_silver_composite`` makes the WRITE idempotent, but not the paid CALL
+  -- without this guard a crash at 80% of a 360-timestamp backfill would re-buy
+  ~288 timestamps of data already on disk.
 """
 
 import argparse
@@ -40,6 +45,7 @@ from typing import Any
 
 import pandas as pd
 
+from conf.settings import get_settings
 from data.schemas import OddsTimelineSchema
 from data.storage import save_bronze_snapshot, upsert_silver_composite
 from scripts.ingest_odds import OddsAPIClient
@@ -63,6 +69,22 @@ CONSENSUS_SOURCE = "consensus_median"
 
 # Regular-season weeks captured by a full-season backfill.
 _REGULAR_SEASON_WEEKS = 18
+
+# Lookback window used to decide whether a requested snapshot timestamp T is
+# ALREADY covered in odds_timeline (the spend-safety skip guard).
+#
+# The subtlety this window exists for: the stored ``snapshot_ts`` is the
+# ENVELOPE timestamp -- the actual archived snapshot at/EARLIER than the
+# requested T (review 29-03 HIGH) -- so an exact-equality check against T would
+# NEVER match and the guard would be a silent no-op. Observed 2021 drift is ~5
+# minutes (10-minute archive cadence), but older seasons may be coarser, so the
+# window is deliberately generous.
+#
+# 12 hours is safe against FALSE skips by construction: consecutive D-12 cadence
+# timestamps are at least 24h apart (Tue noon -> Wed noon -> Thu noon -> Fri
+# 18:00 ET), so a snapshot stored for one cadence point can never fall inside
+# the next cadence point's ``(T - 12h, T]`` window.
+_SNAPSHOT_MATCH_LOOKBACK = timedelta(hours=12)
 
 
 class MockModeBackfillError(DataIngestionError):
@@ -278,6 +300,42 @@ def _write_timeline_rows(
     return len(timeline_df)
 
 
+def _load_stored_snapshot_timestamps(
+    base_path: Path | None = None,
+) -> set[pd.Timestamp]:
+    """Return the distinct ``snapshot_ts`` values already stored in odds_timeline.
+
+    Read ONCE at the start of a backfill so the spend-safety guard costs a single
+    parquet read rather than a read per timestamp. Returns an empty set when the
+    silver table does not exist yet (the first run).
+    """
+    if base_path is None:
+        base_path = Path(get_settings().config.data.root_path)
+
+    silver_path = base_path / "silver" / "odds_timeline.parquet"
+    if not silver_path.exists():
+        return set()
+
+    stored = pd.read_parquet(silver_path, columns=["snapshot_ts"], engine="pyarrow")[
+        "snapshot_ts"
+    ]
+    return set(pd.to_datetime(stored, utc=True).unique())
+
+
+def _snapshot_already_stored(requested_t: datetime, stored: set[pd.Timestamp]) -> bool:
+    """Return True when *requested_t* is already covered by a stored snapshot.
+
+    The API returns the closest archived snapshot at/EARLIER than the requested
+    T, and that ENVELOPE timestamp is what gets stored -- so coverage is tested
+    as "a stored snapshot falls in ``(T - _SNAPSHOT_MATCH_LOOKBACK, T]``", never
+    as equality with T (which would never match; see
+    :data:`_SNAPSHOT_MATCH_LOOKBACK`).
+    """
+    upper = pd.Timestamp(requested_t)
+    lower = upper - _SNAPSHOT_MATCH_LOOKBACK
+    return any(lower < ts <= upper for ts in stored)
+
+
 def backfill_timeline(
     seasons: list[int],
     client: OddsAPIClient,
@@ -295,6 +353,12 @@ def backfill_timeline(
     HARD-FAILS on mock mode -- only real archived odds enter ``odds_timeline``
     (OUM-06). The check runs BEFORE any call so no synthetic data is ever
     fetched.
+
+    SPEND SAFETY: any requested timestamp already covered in ``odds_timeline``
+    is SKIPPED without issuing the paid call, so resuming an interrupted
+    backfill re-buys nothing (``upsert_silver_composite`` makes the WRITE
+    idempotent, not the CALL). Coverage is tested against the stored ENVELOPE
+    timestamps via :func:`_snapshot_already_stored`.
 
     Args:
         seasons: Seasons to backfill.
@@ -320,7 +384,13 @@ def backfill_timeline(
     if markets is None:
         markets = DEFAULT_MARKETS
 
+    # Spend-safety guard: one read of what is already on disk, kept current as
+    # the loop writes so a resumed backfill never re-buys stored timestamps.
+    stored_snapshots = _load_stored_snapshot_timestamps(base_path)
+
     total_written = 0
+    calls_made = 0
+    snapshots_skipped = 0
     for season in seasons:
         target_weeks = (
             weeks if weeks is not None else range(1, _REGULAR_SEASON_WEEKS + 1)
@@ -328,6 +398,18 @@ def backfill_timeline(
         for week in target_weeks:
             for label, snapshot_t in weekly_snapshot_timestamps(season, week):
                 t_iso = snapshot_t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                if _snapshot_already_stored(snapshot_t, stored_snapshots):
+                    snapshots_skipped += 1
+                    logger.info(
+                        "Skipping already-stored trajectory snapshot (no paid call)",
+                        season=season,
+                        week=week,
+                        cadence=label,
+                        requested_t=t_iso,
+                    )
+                    continue
+
                 logger.info(
                     "Backfilling trajectory snapshot",
                     season=season,
@@ -336,15 +418,21 @@ def backfill_timeline(
                     requested_t=t_iso,
                 )
                 envelope = client.get_historical_nfl_odds(t_iso, markets, regions="us")
+                calls_made += 1
                 rows = normalize_envelope_to_timeline_rows(envelope, markets)
                 total_written += _write_timeline_rows(
                     rows, season, week, base_path=base_path
+                )
+                stored_snapshots.update(
+                    pd.Timestamp(row["snapshot_ts"]) for row in rows
                 )
 
     logger.info(
         "Odds-timeline backfill completed",
         seasons=seasons,
         rows_written=total_written,
+        paid_calls_made=calls_made,
+        snapshots_skipped=snapshots_skipped,
     )
     return total_written
 
@@ -404,8 +492,8 @@ def capture_current_week(
     return written
 
 
-def main():
-    """CLI entry point for odds-timeline ingest/capture."""
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser (extracted so argument wiring is unit-testable)."""
     parser = argparse.ArgumentParser(
         description="Ingest NFL odds trajectory snapshots into odds_timeline"
     )
@@ -431,8 +519,22 @@ def main():
         default=DEFAULT_MARKETS,
         help="Markets to capture (default: totals; add spreads for Tier (a))",
     )
+    parser.add_argument(
+        "--weeks",
+        nargs="+",
+        type=int,
+        metavar="WEEK",
+        help="Explicit week list for --backfill (default: weeks 1-18). Bounds a "
+        "paid pull to a few timestamps -- used for the pre-bulk smoke check and "
+        "for targeted recovery after an interrupted backfill",
+    )
     parser.add_argument("--api-key", type=str, help="Odds API key (overrides config)")
+    return parser
 
+
+def main():
+    """CLI entry point for odds-timeline ingest/capture."""
+    parser = _build_parser()
     args = parser.parse_args()
 
     client = None
@@ -446,8 +548,12 @@ def main():
         if args.backfill:
             start_season, end_season = args.backfill
             seasons = list(range(start_season, end_season + 1))
-            logger.info("Starting odds-timeline backfill", seasons=seasons)
-            rows = backfill_timeline(seasons, client, markets=args.markets)
+            logger.info(
+                "Starting odds-timeline backfill", seasons=seasons, weeks=args.weeks
+            )
+            rows = backfill_timeline(
+                seasons, client, markets=args.markets, weeks=args.weeks
+            )
             print(f"Backfilled {rows} odds_timeline rows across seasons {seasons}")
         else:
             logger.info("Starting current-week odds-timeline capture")
