@@ -40,6 +40,7 @@ from data.storage import load_dataframe, save_dataframe
 from features.contextual import ContextualFeaturesCalculator
 from features.elo_features import EloFeatureBuilder
 from features.injury import InjuryBuilder
+from features.line_movement import LineMovementBuilder
 from features.market_anchors import MarketAnchorFeaturesCalculator
 from features.normalization import compute_prior_season_stats, expanding_normalize
 from features.opponent_adj import OpponentAdjuster
@@ -82,6 +83,13 @@ class FeatureMatrixBuilder:
         # flow through self.contextual_calc; no separate builder is needed here.
         self.snap_builder = SnapCountBuilder()
         self.injury_builder = InjuryBuilder(snap_builder=self.snap_builder)
+
+        # Line-movement features (Phase 29, SIG-04) read the additive
+        # `odds_timeline` trajectory silver. The builder degrades to neutral,
+        # non-null defaults plus `line_movement_coverage` = 0.0 when the table is
+        # absent or a game has no pre-freeze trajectory, so it is safe to
+        # construct unconditionally.
+        self.line_movement_builder = LineMovementBuilder()
 
         # Leakage gate for hard-fail validation
         self.leakage_gate = LeakageGate()
@@ -244,6 +252,26 @@ class FeatureMatrixBuilder:
             except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
                 logger.warning("Failed to build injury features", error=str(e))
                 feature_sources["injury"] = pd.DataFrame()
+
+            # Line-movement features (Phase 29, SIG-04; computed via
+            # LineMovementBuilder from the `odds_timeline` trajectory silver).
+            # Registration here routes the source through the LeakageGate; the
+            # EXPLICIT merge block in combine_features is what actually lands the
+            # columns in gold (the 28-06 lesson -- both seams are mandatory).
+            try:
+                line_movement_df = self.line_movement_builder.build_features(
+                    games_df,
+                    as_of_datetime,
+                    target_season=target_season,
+                    target_week=target_week,
+                )
+                feature_sources["line_movement"] = line_movement_df
+                logger.info(
+                    "Built line-movement features", records=len(line_movement_df)
+                )
+            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+                logger.warning("Failed to build line-movement features", error=str(e))
+                feature_sources["line_movement"] = pd.DataFrame()
 
             return feature_sources
 
@@ -426,6 +454,20 @@ class FeatureMatrixBuilder:
                 injury_df[["game_id", *injury_cols]], on="game_id", how="left"
             )
             feature_counts["injury"] = len(injury_cols)
+
+        # Line-movement features (game-level; LineMovementBuilder emits one
+        # un-prefixed row per game -- a line trajectory belongs to the game, not
+        # to a side). Same rationale as the snap/injury blocks: combine_features
+        # has NO generic loop over feature_sources, so without this EXPLICIT merge
+        # the registered line-movement columns pass the LeakageGate and are then
+        # SILENTLY DROPPED from gold (the load-bearing 28-06 lesson).
+        line_movement_df = feature_sources.get("line_movement", pd.DataFrame())
+        if len(line_movement_df) > 0:
+            lm_cols = [c for c in line_movement_df.columns if c != "game_id"]
+            combined_features = combined_features.merge(
+                line_movement_df[["game_id", *lm_cols]], on="game_id", how="left"
+            )
+            feature_counts["line_movement"] = len(lm_cols)
 
         # Add feature timestamp (tz-aware UTC; the storage layer rejects naive
         # datetimes, and feature_timestamp is persisted into every gold matrix)

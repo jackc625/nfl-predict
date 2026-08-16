@@ -119,6 +119,21 @@ class LeakageGate:
         # snap_concentration) -- a separate mechanism from the raw-spelling leakage
         # keywords above; the two must not be conflated.
         "snap": "snap_",
+        # Phase 29 (SIG-04): absence of the line-movement family warns, does not
+        # hard-fail -- `odds_timeline` starts 2020-06-06, so a build restricted to
+        # earlier seasons (or one run before the backfill) legitimately carries no
+        # line-movement columns. `line_movement` matches only the
+        # `line_movement_coverage` flag emitted by LineMovementBuilder.
+        #
+        # NOTE (D-13): NO line-movement keyword is added to LEAKAGE_KEYWORDS. The
+        # bare substrings a naive guard would reach for -- `total` / `open` /
+        # `line` / `snapshot` -- all collide with legitimate non-leaky columns
+        # (`snapshot_total`, `snapshot_spread`, `opening_total`) and would
+        # hard-fail the entire build. The temporal control for this family is that
+        # the builder never EMITS a closing line (only snapshots <= the per-game
+        # Friday-6PM-ET freeze, D-15), not a keyword ban; `closing` is already in
+        # LEAKAGE_KEYWORDS and covers any accidental closing-line column.
+        "line_movement": "line_movement",
     }
 
     def __init__(self) -> None:
