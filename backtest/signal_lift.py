@@ -1,11 +1,23 @@
-"""Add-one-in signal-lift SCREEN for the Phase-28 new feature groups (SIG-05).
+"""Add-one-in signal-lift SCREEN for the Phase-28 / Phase-29 new feature groups (SIG-05, SIG-04).
 
 This is a thin ``backtest/diagnose.py`` / ``backtest/ou_divergence.py``-style orchestrator:
-per feature group (injury / snap / situational) and per target (WP / ATS / OU) it measures
-each group's PAIRED incremental Closing-Line-Value (CLV) lift and applies the D-05 keep/drop
-rule. It composes the canonical significance primitives (``clv_significance``,
+per feature group (injury / snap / situational / line_movement) and per target (WP / ATS / OU)
+it measures each group's PAIRED incremental Closing-Line-Value (CLV) lift and applies the
+keep/drop rule. It composes the canonical significance primitives (``clv_significance``,
 ``CLV_COLUMN_FOR``, ``SIGNIFICANCE_ALPHA``) -- it NEVER re-derives a bespoke paired-delta or
 t-test (the D24-13 import-parity lesson).
+
+PHASE-29 BASELINE (SIG-04, review 29-07 HIGH -- load-bearing): the Phase-28 screen removes the
+union over ``GROUPS`` from the baseline leg. Phase 29 screens ``line_movement`` and must measure
+it INCREMENTAL TO the post-Phase-28 feature set, because the D-02 question the whole phase exists
+for is "is line-movement redundant WITH the injury signal the market reacts to?". Registering
+``line_movement`` in ``GROUPS`` would strip injury/snap/situational from the baseline too and
+answer a different, useless question. So ``line_movement`` lives in ``_GROUP_PREDICATE`` ONLY,
+``select_group_columns`` takes an ``exclude_groups`` parameter (default ``GROUPS`` --
+Phase-28 behaviour byte-preserved) and ``run_signal_lift_screen`` takes
+``baseline_exclude_groups`` (default ``GROUPS``) threaded into BOTH legs. The Phase-29
+invocation is ``groups=("line_movement",), baseline_exclude_groups=("line_movement",)``, run
+by ``python -m backtest.signal_lift --phase 29``.
 
 MECHANISM (review #2 / #3 -- the load-bearing correction):
   The lift is anchored on an IN-PROCESS per-season walk-forward re-fit via
@@ -24,15 +36,16 @@ MECHANISM (review #2 / #3 -- the load-bearing correction):
 ADD-ONE-IN (D-02): per group G the candidate dataframe = baseline feature columns PLUS ONLY
 group G's NEW columns (the ``select_group_columns`` helper). Dropping a feature column from the
 dataframe excludes it from the trainer's feature set (``WalkForwardSplitter`` derives features
-as the numeric non-ID columns), so the baseline leg simply omits every Phase-28 new column and
-each candidate leg re-admits exactly one group. Both legs go through the SAME walk-forward, so
-the per-game delta merged on ``game_id`` is PAIRED and free of whole-frame in-sample
+as the numeric non-ID columns), so the baseline leg simply omits every column belonging to
+``baseline_exclude_groups`` and each candidate leg re-admits exactly one group. Both legs go
+through the SAME walk-forward and the SAME exclusion set, so they differ by exactly the group
+under screen and the per-game delta merged on ``game_id`` is PAIRED and free of whole-frame in-sample
 contamination. The D25-11 re-frozen ``config/gate.toml`` post-activation baseline remains the
 DOCUMENTED reference cross-check (D-04 paired intent preserved) -- it is not the lift anchor.
 
-D-05 keep/drop rule (per group, applied across WP/ATS/OU):
+D-05 (Phase 28) / D-13 (Phase 29) keep/drop rule (per group, applied across WP/ATS/OU):
   KEEP iff the point-estimate delta is > 0 on >=1 target AND no target is significantly-negative
-  (mean < 0 AND p < SIGNIFICANCE_ALPHA). A 3x3 grid is reported RAW with a multiplicity NOTE; the
+  (mean < 0 AND p < SIGNIFICANCE_ALPHA). The grid is reported RAW with a multiplicity NOTE; the
   binding p<0.05 multiple-comparison correction stays in Phase 30's deploy gate (D-05).
 
 SITUATIONAL honesty (SC3 / D-17): the new look-ahead / letdown / off-bye spots are documented as
@@ -42,16 +55,18 @@ HARD BOUNDARY (T-28-19): this is a READ-ONLY measurement harness. It NEVER write
 and never mutates ``data/gold``; the selection helper returns an in-memory copy. Invoke via the
 project venv: ``.venv\\Scripts\\python.exe -m backtest.signal_lift``.
 
-SCREEN-NOT-DEPLOY (D-01 / D-20): Phase 28 SCREENS; Phase 30 runs the binding deploy gate. Kept
-groups are CARRIED into widened gold for Phase 30; dropped groups are documented and never enter
-gold. This harness and the ``SIGNAL-LIFT-READOUT.md`` it feeds say "screened / carried to Phase
-30", NEVER "deployed" / "proven".
+SCREEN-NOT-DEPLOY (D-01 / D-20, D-16): Phases 28 and 29 SCREEN; Phase 30 runs the binding deploy
+gate. Kept groups are CARRIED to Phase 30; dropped groups are documented. This harness and the
+readouts it feeds (``SIGNAL-LIFT-READOUT.md``, ``LINE-MOVEMENT-READOUT.md``) say "screened /
+carried to Phase 30", NEVER "deployed" / "proven". A flat or negative screen is a COMPLETE
+result, not a failure: it is what stops Phase 30 chasing a signal that is not there.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
 from __future__ import annotations
 
+import argparse
 import warnings
 from pathlib import Path
 from typing import Any
@@ -71,17 +86,30 @@ from utils import get_logger
 
 logger = get_logger(__name__)
 
-# The three targets and the three NEW feature groups under screen.
+# The three targets and the three PHASE-28 feature groups under screen. ``GROUPS`` is the
+# Phase-28 baseline-exclusion set (the union removed from the baseline leg); Phase-29's
+# ``line_movement`` is deliberately NOT a member (see the module docstring / review 29-07 HIGH).
 TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
 GROUPS: tuple[str, ...] = ("injury", "snap", "situational")
 
+# The Phase-29 (SIG-04) screen: line_movement measured against a baseline that KEEPS the Phase-28
+# groups, so the delta answers the D-02 "redundant WITH the injury signal?" question.
+PHASE29_GROUPS: tuple[str, ...] = ("line_movement",)
+
 # Per-group data-coverage floors (RESEARCH): outside coverage the gold carries neutral defaults
-# + a coverage flag (D-10 / D-18d). The 2021-2024 measurement window is fully inside every floor;
-# these spans are REPORTED beside each lift number so the readout states the covered span (D-18d).
+# + a coverage flag (D-10 / D-18d). The 2021-2024 measurement window is fully inside every
+# Phase-28 floor; these spans are REPORTED beside each lift number so the readout states the
+# covered span (D-18d). line_movement is the exception worth naming: its archive floor is
+# 2020-06-06 and the stored 2020 rows are additionally orphaned (D29-06-01), so every gold row
+# before 2021 carries neutral defaults and the measure-2021 training fold sees NO line movement.
 GROUP_COVERAGE: dict[str, str] = {
     "injury": "injuries 2009+ (measured 2021-2024)",
     "snap": "snaps 2013+ (measured 2021-2024)",
     "situational": "full history (measured 2021-2024)",
+    "line_movement": (
+        "odds-timeline 2020-06-06+ (measured 2021-2024; the stored 2020 rows are orphaned "
+        "by D29-06-01, so all pre-2021 rows carry neutral defaults)"
+    ),
 }
 
 # The walk-forward measurement window (matches config/gate.toml [gate.seasons].holdout + diagnose).
@@ -159,10 +187,61 @@ def _is_situational_col(col: str) -> bool:
     return cl.startswith(("home_", "away_")) and cl.endswith(_SITUATIONAL_SUFFIXES)
 
 
+# The Phase-29 LineMovementBuilder family (D-09), game-level -- a line trajectory belongs to the
+# game, not to a side, so these columns carry NO home_/away_ prefix.
+#
+# Tier (a) WAS bought at Plan 29-05 (`--backfill 2020 2024 --markets totals spreads`), so gold
+# carries the seven spread siblings alongside the seven totals features. Both halves are listed
+# here DELIBERATELY (review 29-07 HIGH): a suffix set covering only the totals half would leave
+# spread movement sitting in the "baseline" leg, so the measured delta would be
+# line-movement-incremental-to-line-movement -- a contaminated, meaningless number.
+#
+# ``line_movement_coverage`` is a member of the family for the same reason: it is a Phase-29
+# column, and leaving it in the baseline would hand the baseline leg a Phase-29 signal.
+#
+# Every entry is an exact endswith SUFFIX, never a bare substring: ``"total" in col`` matches
+# ``snapshot_total`` (the freeze anchor, a pre-existing baseline feature) and ``total_points``
+# (the OU target), and ``"spread" in col`` matches ``snapshot_spread`` / ``spread_movement``.
+# This is the ``_is_snap_col`` lesson (RESEARCH D-13) applied to a second family.
+_LINE_MV_SUFFIXES: tuple[str, ...] = (
+    "line_movement_coverage",
+    # totals family (D-07 primary)
+    "opening_total",
+    "total_drift",
+    "total_drift_dir",
+    "total_late_drift",
+    "total_abs_travel",
+    "total_reversals",
+    "total_range",
+    # spread siblings (Tier (a), bought at 29-05)
+    "opening_spread",
+    "spread_drift",
+    "spread_drift_dir",
+    "spread_late_drift",
+    "spread_abs_travel",
+    "spread_reversals",
+    "spread_range",
+)
+
+
+def _is_line_movement_col(col: str) -> bool:
+    """Match a Phase-29 line-movement feature by exact suffix (never a bare ``total`` substring).
+
+    Deliberately does NOT match ``snapshot_total`` / ``snapshot_spread`` (the already-modelled
+    freeze anchors), ``total_movement`` / ``spread_movement`` (the pre-existing, historically
+    identically-0.0 MarketAnchor columns) or ``total_points`` (the OU target).
+    """
+    return col.lower().endswith(_LINE_MV_SUFFIXES)
+
+
 _GROUP_PREDICATE = {
     "snap": _is_snap_col,
     "injury": _is_injury_col,
     "situational": _is_situational_col,
+    # Phase 29 (SIG-04). Registered HERE and NOT in ``GROUPS`` on purpose: ``GROUPS`` is the
+    # default baseline-exclusion set, and adding line_movement to it would strip the kept
+    # Phase-28 signal from the baseline leg (review 29-07 HIGH).
+    "line_movement": _is_line_movement_col,
 }
 
 
@@ -175,34 +254,51 @@ def group_columns(gold_df: pd.DataFrame, group: str) -> list[str]:
     return sorted(c for c in gold_df.columns if predicate(c))
 
 
-def phase28_new_columns(gold_df: pd.DataFrame) -> list[str]:
-    """Return every Phase-28 NEW column (union of all three groups) present in ``gold_df``."""
+def excluded_columns(
+    gold_df: pd.DataFrame, exclude_groups: tuple[str, ...] | list[str] = GROUPS
+) -> list[str]:
+    """Return the union of ``exclude_groups``' columns -- the set the baseline leg removes."""
     cols: list[str] = []
-    for group in GROUPS:
+    for group in exclude_groups:
         cols.extend(group_columns(gold_df, group))
     return sorted(set(cols))
 
 
-def select_group_columns(gold_df: pd.DataFrame, group: str | None) -> pd.DataFrame:
+def phase28_new_columns(gold_df: pd.DataFrame) -> list[str]:
+    """Return every Phase-28 NEW column (union of all three GROUPS) present in ``gold_df``."""
+    return excluded_columns(gold_df, GROUPS)
+
+
+def select_group_columns(
+    gold_df: pd.DataFrame,
+    group: str | None,
+    exclude_groups: tuple[str, ...] | list[str] = GROUPS,
+) -> pd.DataFrame:
     """Return baseline columns + ONLY the requested group's NEW columns (in memory, read-only).
 
-    The baseline is the widened gold with EVERY Phase-28 new column removed (the pre-Phase-28
-    activated feature set + ID/target cols + the unrelated odds-snapshot/rest/travel cols).
+    The baseline is the widened gold with every column belonging to ``exclude_groups`` removed.
     Passing a ``group`` re-admits exactly that group's new columns (the add-one-in seam, D-02);
     passing ``group=None`` returns the baseline leg. NEVER mutates ``data/gold`` -- it returns a
     fresh in-memory copy (HARD BOUNDARY, review #3).
 
+    ``exclude_groups`` defaults to ``GROUPS``, which is the Phase-28 behaviour byte-for-byte
+    (baseline = the pre-Phase-28 activated feature set). Phase 29 passes
+    ``exclude_groups=("line_movement",)`` so the baseline RETAINS the kept Phase-28
+    injury/snap/situational columns and only line-movement is the add-one-in delta -- the only
+    wiring under which the D-02 redundancy question is answerable (review 29-07 HIGH).
+
     Args:
-        gold_df: The Plan 28-06 widened gold feature matrix for one target.
-        group: One of "snap" / "injury" / "situational", or None for the baseline leg.
+        gold_df: The widened gold feature matrix for one target.
+        group: A registered group name, or None for the baseline leg.
+        exclude_groups: The groups removed from the baseline. Defaults to the Phase-28 ``GROUPS``.
 
     Returns:
         A copy of ``gold_df`` restricted to baseline columns + (when ``group`` is not None) that
         group's new columns.
     """
-    new_all = set(phase28_new_columns(gold_df))
+    removed = set(excluded_columns(gold_df, exclude_groups))
     group_cols = set(group_columns(gold_df, group)) if group is not None else set()
-    keep = [c for c in gold_df.columns if c not in new_all or c in group_cols]
+    keep = [c for c in gold_df.columns if c not in removed or c in group_cols]
     return gold_df[keep].copy()
 
 
@@ -289,9 +385,16 @@ def _screen_target(
     closing_odds_df: pd.DataFrame,
     config: TemporalSplitConfig,
     group: str,
+    exclude_groups: tuple[str, ...] | list[str] = GROUPS,
 ) -> dict[str, Any]:
-    """Screen one (group, target): paired incremental CLV delta + the per-target keep/veto flags."""
-    candidate_df = select_group_columns(gold_df, group=group)
+    """Screen one (group, target): paired incremental CLV delta + the per-target keep/veto flags.
+
+    ``exclude_groups`` MUST be the same set used for the baseline leg, otherwise the two legs
+    differ by more than the one group under screen and the delta is not an add-one-in.
+    """
+    candidate_df = select_group_columns(
+        gold_df, group=group, exclude_groups=exclude_groups
+    )
     candidate_clv = _walkforward_clv(target, candidate_df, closing_odds_df, config)
     delta, n_paired = _paired_delta(baseline_clv, candidate_clv)
     sig = clv_significance(delta)
@@ -378,6 +481,7 @@ def run_signal_lift_screen(
     config: TemporalSplitConfig | None = None,
     targets: tuple[str, ...] | list[str] = TARGETS,
     groups: tuple[str, ...] | list[str] = GROUPS,
+    baseline_exclude_groups: tuple[str, ...] | list[str] = GROUPS,
 ) -> dict[str, Any]:
     """Run the add-one-in lift screen over all groups x targets into ONE structured dict.
 
@@ -396,26 +500,34 @@ def run_signal_lift_screen(
             (train 2018-2019 / hp_val 2020 / holdout 2021-2024).
         targets: Targets to screen. Defaults to ("wp", "ats", "ou").
         groups: Feature groups to screen. Defaults to ("injury", "snap", "situational").
+        baseline_exclude_groups: The groups removed from the BASELINE leg. Defaults to ``GROUPS``
+            (the Phase-28 behaviour). Phase 29 passes ``("line_movement",)`` so the baseline
+            RETAINS the kept Phase-28 groups and the delta is line-movement incremental to the
+            post-Phase-28 feature set (review 29-07 HIGH). It is threaded into BOTH legs, so the
+            two legs differ by exactly the group under screen.
 
     Returns:
         Dict with ``measure_window``, ``alpha``, ``anchor`` (the LIFT_ANCHOR string),
-        ``multiplicity_note``, ``targets``, and ``groups`` -- the last a mapping group ->
-        {``coverage_span``, ``per_target`` (target -> screen result), ``decision`` (the D-05
-        keep/drop)}.
+        ``baseline_excludes`` (what the baseline leg dropped), ``multiplicity_note``, ``targets``,
+        and ``groups`` -- the last a mapping group -> {``coverage_span``, ``per_target``
+        (target -> screen result), ``decision`` (the keep/drop)}.
     """
     config = config or TemporalSplitConfig.default()
     targets = list(targets)
     groups = list(groups)
+    baseline_exclude_groups = list(baseline_exclude_groups)
 
     if closing_odds_df is None:
         closing_odds_df = pd.read_parquet(_ODDS_PATH)
     if gold_by_target is None:
         gold_by_target = {t: pd.read_parquet(_GOLD_PATH_FOR[t]) for t in targets}
 
-    # Baseline per target: computed ONCE (no Phase-28 columns) and reused for every group.
+    # Baseline per target: computed ONCE (minus baseline_exclude_groups) and reused per group.
     baseline_clv_by_target: dict[str, pd.DataFrame] = {}
     for target in targets:
-        baseline_df = select_group_columns(gold_by_target[target], group=None)
+        baseline_df = select_group_columns(
+            gold_by_target[target], group=None, exclude_groups=baseline_exclude_groups
+        )
         baseline_clv_by_target[target] = _walkforward_clv(
             target, baseline_df, closing_odds_df, config
         )
@@ -423,6 +535,8 @@ def run_signal_lift_screen(
             "Baseline walk-forward CLV computed",
             target=target,
             n_games=len(baseline_clv_by_target[target]),
+            baseline_excludes=list(baseline_exclude_groups),
+            n_baseline_cols=len(baseline_df.columns),
         )
 
     groups_out: dict[str, Any] = {}
@@ -436,6 +550,7 @@ def run_signal_lift_screen(
                 closing_odds_df,
                 config,
                 group,
+                exclude_groups=baseline_exclude_groups,
             )
         decision = decide_group_keep(per_target)
         groups_out[group] = {
@@ -454,6 +569,7 @@ def run_signal_lift_screen(
         "measure_window": MEASURE_WINDOW,
         "alpha": SIGNIFICANCE_ALPHA,
         "anchor": LIFT_ANCHOR,
+        "baseline_excludes": list(baseline_exclude_groups),
         "multiplicity_note": _MULTIPLICITY_NOTE,
         "targets": targets,
         "groups": groups_out,
@@ -474,6 +590,11 @@ def _format_screen_report(result: dict[str, Any]) -> str:
     lines.append(f"  Anchor        : {result['anchor']} (out-of-sample walk-forward)")
     lines.append(f"  Measure window: {result['measure_window']}")
     lines.append(f"  Alpha         : {result['alpha']}")
+    excludes = result.get("baseline_excludes")
+    if excludes is not None:
+        lines.append(
+            f"  Baseline drops: {excludes} (every OTHER feature group stays in the baseline)"
+        )
     lines.append("")
     for group, gdata in result["groups"].items():
         lines.append("-" * 78)
@@ -505,14 +626,55 @@ def _format_screen_report(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser (extracted so the argument wiring is unit-testable)."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Add-one-in signal-lift screen. --phase 28 (default) screens the Phase-28 groups "
+            "against a pre-Phase-28 baseline; --phase 29 screens line_movement against a "
+            "baseline that KEEPS the Phase-28 groups (SIG-04)."
+        )
+    )
+    parser.add_argument(
+        "--phase",
+        type=int,
+        choices=(28, 29),
+        default=28,
+        help=(
+            "28 = the Phase-28 injury/snap/situational screen (default, unchanged). "
+            "29 = the SIG-04 line_movement screen: groups=('line_movement',), "
+            "baseline_exclude_groups=('line_movement',)."
+        ),
+    )
+    return parser
+
+
+def screen_kwargs_for_phase(phase: int) -> dict[str, Any]:
+    """Return the ``run_signal_lift_screen`` kwargs for a phase's screen.
+
+    Phase 28 uses the module defaults (baseline = pre-Phase-28 feature set). Phase 29 screens
+    ONLY ``line_movement`` and excludes ONLY ``line_movement`` from the baseline, so the kept
+    Phase-28 groups stay in the baseline and the delta is incremental to the post-Phase-28
+    feature set (review 29-07 HIGH). Exposed as a function so the readout doc-drift guard runs
+    exactly the invocation the CLI runs -- the doc and the command cannot drift apart.
+    """
+    if phase == 29:
+        return {
+            "groups": PHASE29_GROUPS,
+            "baseline_exclude_groups": PHASE29_GROUPS,
+        }
+    return {}
+
+
+def main(argv: list[str] | None = None) -> None:
     """Run the screen on the canonical widened gold and print the structured report.
 
     READ-ONLY: loads gold + odds, prints the report, and exits. Never writes ``data/``.
     """
+    args = _build_parser().parse_args(argv)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        result = run_signal_lift_screen()
+        result = run_signal_lift_screen(**screen_kwargs_for_phase(args.phase))
     print(_format_screen_report(result))  # noqa: T201 -- CLI report to stdout (read-only harness)
 
 

@@ -128,6 +128,63 @@ def _make_fixture_odds(gold: pd.DataFrame, seed: int = 11) -> pd.DataFrame:
     )
 
 
+# The Phase-29 line-movement family (D-09), game-level (no home_/away_ prefix). Added by a
+# SEPARATE fixture builder on a SEPARATE generator so the Phase-28 fixture above is untouched and
+# every pre-existing Phase-28 assertion keeps measuring exactly what it measured before.
+_LINE_MOVEMENT_COLUMNS = (
+    "line_movement_coverage",
+    "opening_total",
+    "total_drift",
+    "total_drift_dir",
+    "total_late_drift",
+    "total_abs_travel",
+    "total_reversals",
+    "total_range",
+    "opening_spread",
+    "spread_drift",
+    "spread_drift_dir",
+    "spread_late_drift",
+    "spread_abs_travel",
+    "spread_reversals",
+    "spread_range",
+)
+
+
+def _make_fixture_gold_with_line_movement(seed: int = 7) -> pd.DataFrame:
+    """The Phase-28 fixture widened with the Phase-29 line-movement family.
+
+    Mirrors the real Plan 29-06 gold: 15 game-level line-movement columns sitting alongside the
+    Phase-28 groups AND the ``snapshot_*`` / ``*_movement`` decoys that must never be swept into
+    the line_movement group.
+    """
+    gold = _make_fixture_gold(seed)
+    rng = np.random.default_rng(seed + 5000)
+    n = len(gold)
+    drift = rng.normal(0, 1.5, size=n)
+    spread_drift = rng.normal(0, 1.0, size=n)
+    widened = gold.copy()
+    widened["line_movement_coverage"] = rng.choice([0.0, 1.0], size=n)
+    widened["opening_total"] = rng.normal(44, 4, size=n)
+    widened["total_drift"] = drift
+    widened["total_drift_dir"] = np.sign(drift)
+    widened["total_late_drift"] = rng.normal(0, 0.5, size=n)
+    widened["total_abs_travel"] = np.abs(rng.normal(0, 2, size=n))
+    widened["total_reversals"] = rng.integers(0, 3, size=n).astype(float)
+    widened["total_range"] = np.abs(rng.normal(0, 3, size=n))
+    widened["opening_spread"] = rng.normal(0, 3, size=n)
+    widened["spread_drift"] = spread_drift
+    widened["spread_drift_dir"] = np.sign(spread_drift)
+    widened["spread_late_drift"] = rng.normal(0, 0.4, size=n)
+    widened["spread_abs_travel"] = np.abs(rng.normal(0, 1.5, size=n))
+    widened["spread_reversals"] = rng.integers(0, 3, size=n).astype(float)
+    widened["spread_range"] = np.abs(rng.normal(0, 2, size=n))
+    # A pre-existing MarketAnchor decoy pair: historically identically 0.0, already in the
+    # baseline, and NOT part of the Phase-29 family (they must not be captured by the predicate).
+    widened["total_movement"] = 0.0
+    widened["spread_movement"] = 0.0
+    return widened
+
+
 _FIXTURE_CONFIG = TemporalSplitConfig(
     train_seasons=[2018],
     hp_val_seasons=[2019],
@@ -371,3 +428,213 @@ class TestSignalLiftDeterminism:
                 assert cell["target"] == target
                 assert cell["n_paired"] > 0
                 assert cell["clv_column"] in ("probability_clv", "line_clv")
+
+
+# ---------------------------------------------------------------------------
+# (5) Phase 29 (SIG-04): the line_movement group + the baseline that KEEPS Phase 28
+# ---------------------------------------------------------------------------
+
+
+class TestLineMovementGroupSelection:
+    """The line_movement suffix predicate selects the family and nothing that merely looks like it."""
+
+    def test_predicate_selects_exactly_the_line_movement_family(self) -> None:
+        gold = _make_fixture_gold_with_line_movement()
+        selected = group_columns(gold, "line_movement")
+        assert selected == sorted(_LINE_MOVEMENT_COLUMNS)
+
+    def test_predicate_does_not_match_the_lookalike_columns(self) -> None:
+        """A bare ``total`` / ``spread`` substring would sweep in four baseline columns."""
+        gold = _make_fixture_gold_with_line_movement()
+        selected = set(group_columns(gold, "line_movement"))
+        for decoy in (
+            "snapshot_total",  # the freeze anchor -- already a baseline feature
+            "snapshot_spread",
+            "total_points",  # the OU target
+            "total_movement",  # pre-existing MarketAnchor column, historically 0.0
+            "spread_movement",
+        ):
+            assert decoy in gold.columns, f"fixture lost its {decoy!r} decoy"
+            assert decoy not in selected, (
+                f"{decoy!r} was mis-classified as a line-movement feature"
+            )
+
+    def test_line_movement_is_not_in_the_default_groups_tuple(self) -> None:
+        """Registered in the predicate map ONLY (review 29-07 HIGH).
+
+        Membership in ``GROUPS`` would put line_movement in the DEFAULT baseline-exclusion
+        union, stripping the kept Phase-28 signal out of the Phase-29 baseline leg.
+        """
+        assert "line_movement" not in signal_lift.GROUPS
+        assert "line_movement" in signal_lift._GROUP_PREDICATE
+        assert "line_movement" in signal_lift.GROUP_COVERAGE
+        assert "2020-06-06" in signal_lift.GROUP_COVERAGE["line_movement"]
+        assert "2021-2024" in signal_lift.GROUP_COVERAGE["line_movement"]
+
+
+class TestBaselineRetainsPhase28:
+    """The load-bearing review 29-07 HIGH fixture: the Phase-29 baseline KEEPS the Phase-28 groups."""
+
+    def test_phase29_baseline_keeps_phase28_columns_and_drops_only_line_movement(
+        self,
+    ) -> None:
+        gold = _make_fixture_gold_with_line_movement()
+        baseline = select_group_columns(
+            gold, group=None, exclude_groups=("line_movement",)
+        )
+
+        phase28 = phase28_new_columns(gold)
+        assert phase28, (
+            "fixture must carry Phase-28 columns for this test to mean anything"
+        )
+        # Named spot-check so a future predicate regression names the column it lost.
+        assert "home_qb_out_flag" in phase28
+        for col in phase28:
+            assert col in baseline.columns, (
+                f"Phase-28 column {col!r} was stripped from the Phase-29 baseline -- the "
+                "D-02 'redundant WITH the injury signal?' question is then unanswerable"
+            )
+        for col in _LINE_MOVEMENT_COLUMNS:
+            assert col not in baseline.columns
+        assert len(baseline.columns) == len(gold.columns) - len(_LINE_MOVEMENT_COLUMNS)
+
+    def test_phase28_default_baseline_is_unchanged_by_the_new_parameter(self) -> None:
+        """Default ``exclude_groups=GROUPS`` reproduces the Phase-28 baseline exactly."""
+        gold = _make_fixture_gold_with_line_movement()
+        implicit = select_group_columns(gold, group=None)
+        explicit = select_group_columns(
+            gold, group=None, exclude_groups=signal_lift.GROUPS
+        )
+        assert list(implicit.columns) == list(explicit.columns)
+        # The Phase-28 default drops the Phase-28 columns and RETAINS line-movement.
+        for col in phase28_new_columns(gold):
+            assert col not in implicit.columns
+        for col in _LINE_MOVEMENT_COLUMNS:
+            assert col in implicit.columns
+
+    def test_candidate_leg_is_baseline_plus_exactly_the_line_movement_family(
+        self,
+    ) -> None:
+        gold = _make_fixture_gold_with_line_movement()
+        baseline = select_group_columns(
+            gold, group=None, exclude_groups=("line_movement",)
+        )
+        candidate = select_group_columns(
+            gold, group="line_movement", exclude_groups=("line_movement",)
+        )
+        added = set(candidate.columns) - set(baseline.columns)
+        assert added == set(_LINE_MOVEMENT_COLUMNS)
+        assert not set(baseline.columns) - set(candidate.columns)
+
+
+class TestLineMovementScreen:
+    """The Phase-29 screen runs on the walk-forward anchor and applies the keep/drop rule."""
+
+    def test_screen_measures_line_movement_via_walkforward_anchor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gold = _make_fixture_gold_with_line_movement()
+        odds = _make_fixture_odds(gold)
+
+        calls: list[dict] = []
+        from models.trainers.wp_trainer import WPTrainer
+
+        original = WPTrainer.train_and_evaluate
+
+        def _spy(self, features_df, closing_odds_df=None, tune=True):
+            calls.append({"tune": tune, "cols": list(features_df.columns)})
+            return original(self, features_df, closing_odds_df, tune=tune)
+
+        monkeypatch.setattr(WPTrainer, "train_and_evaluate", _spy)
+
+        from backtest import diagnose
+
+        def _poisoned(*args, **kwargs):  # pragma: no cover - must never be reached
+            raise AssertionError(
+                "score_deployed_artifacts must NOT be the lift anchor (review #2)"
+            )
+
+        monkeypatch.setattr(diagnose, "score_deployed_artifacts", _poisoned)
+
+        result = run_signal_lift_screen(
+            gold_by_target={"wp": gold},
+            closing_odds_df=odds,
+            config=_FIXTURE_CONFIG,
+            targets=["wp"],
+            groups=["line_movement"],
+            baseline_exclude_groups=["line_movement"],
+        )
+
+        assert len(calls) == 2, "expected one baseline leg + one candidate leg"
+        assert all(c["tune"] is False for c in calls)
+        baseline_cols, candidate_cols = calls[0]["cols"], calls[1]["cols"]
+        # The BASELINE leg that actually reached the trainer keeps the Phase-28 signal.
+        assert "home_qb_out_flag" in baseline_cols
+        assert "away_look_ahead_spot" in baseline_cols
+        assert "total_drift" not in baseline_cols
+        assert set(candidate_cols) - set(baseline_cols) == set(_LINE_MOVEMENT_COLUMNS)
+
+        assert result["anchor"] == "BaseTrainer.train_and_evaluate(tune=False)"
+        assert result["baseline_excludes"] == ["line_movement"]
+        cell = result["groups"]["line_movement"]["per_target"]["wp"]
+        assert cell["n_paired"] > 0
+        assert cell["clv_column"] == "probability_clv"
+
+    def test_keep_drop_rule_is_applied_to_the_line_movement_group(self) -> None:
+        gold = _make_fixture_gold_with_line_movement()
+        odds = _make_fixture_odds(gold)
+
+        result = run_signal_lift_screen(
+            gold_by_target={"wp": gold},
+            closing_odds_df=odds,
+            config=_FIXTURE_CONFIG,
+            targets=["wp"],
+            groups=["line_movement"],
+            baseline_exclude_groups=["line_movement"],
+        )
+
+        gdata = result["groups"]["line_movement"]
+        decision = gdata["decision"]
+        assert isinstance(decision["keep"], bool)
+        assert decision["keep"] == (
+            decision["any_positive"] and not decision["any_veto"]
+        )
+        assert "2020-06-06" in gdata["coverage_span"]
+        # A DROP must read as a drop, never as a silent retention.
+        if not decision["keep"]:
+            assert "DROP" in decision["reason"]
+            assert "dropped, not silently retained" in decision["reason"]
+
+    def test_screen_is_deterministic_and_never_mutates_gold(self) -> None:
+        gold = _make_fixture_gold_with_line_movement()
+        odds = _make_fixture_odds(gold)
+        before = list(gold.columns)
+
+        kwargs = {
+            "gold_by_target": {"wp": gold},
+            "closing_odds_df": odds,
+            "config": _FIXTURE_CONFIG,
+            "targets": ["wp"],
+            "groups": ["line_movement"],
+            "baseline_exclude_groups": ["line_movement"],
+        }
+        assert run_signal_lift_screen(**kwargs) == run_signal_lift_screen(**kwargs)
+        assert list(gold.columns) == before
+
+
+class TestPhase29CliWiring:
+    """``--phase 29`` is the single deterministic command the doc-drift guard re-runs."""
+
+    def test_default_phase_is_28_and_carries_no_overrides(self) -> None:
+        args = signal_lift._build_parser().parse_args([])
+        assert args.phase == 28
+        assert signal_lift.screen_kwargs_for_phase(28) == {}
+
+    def test_phase_29_selects_the_line_movement_screen_on_both_legs(self) -> None:
+        args = signal_lift._build_parser().parse_args(["--phase", "29"])
+        assert args.phase == 29
+        kwargs = signal_lift.screen_kwargs_for_phase(29)
+        assert kwargs == {
+            "groups": ("line_movement",),
+            "baseline_exclude_groups": ("line_movement",),
+        }
