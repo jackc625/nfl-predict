@@ -7,9 +7,9 @@ from zoneinfo import ZoneInfo
 
 from dateutil import parser
 
-# NFL season typically starts first Thursday in September
+# NFL season starts the Thursday after Labor Day (first Monday in September)
 NFL_SEASON_START_MONTH = 9
-NFL_SEASON_START_DAY_RANGE = (3, 10)  # First Thursday is between Sept 3-10
+NFL_SEASON_START_DAY_RANGE = (4, 10)  # Kickoff Thursday falls between Sept 4-10
 
 # Regular season is 18 weeks, playoffs add ~4 more weeks
 NFL_REGULAR_SEASON_WEEKS = 18
@@ -42,27 +42,38 @@ def get_current_nfl_season() -> int:
 
 def get_nfl_season_start(season: int) -> datetime:
     """
-    Get the approximate start date of an NFL season.
+    Get the kickoff date of an NFL season.
+
+    The season opens on the Thursday following Labor Day (the first Monday in
+    September), so kickoff always lands between Sept 4 and Sept 10.
+
+    A plain "first Thursday in September" rule agrees with this in most years
+    but diverges whenever Sept 1 falls on a Tuesday: the first Thursday
+    (Sept 3) then precedes Labor Day (Sept 7), and every week number derived
+    from it runs a week high for the entire season. That hits 2020 and 2026.
 
     Args:
         season: NFL season year
 
     Returns:
-        Season start datetime (first Thursday in September)
+        Season kickoff datetime (Thursday after Labor Day, ET)
     """
-    # Start with September 1st of the season year
-    year = season
-    sept_first = datetime(year, NFL_SEASON_START_MONTH, 1, tzinfo=ET)
+    sept_first = datetime(season, NFL_SEASON_START_MONTH, 1, tzinfo=ET)
 
-    # Find first Thursday (weekday 3)
-    days_to_thursday = (3 - sept_first.weekday()) % 7
-    first_thursday = sept_first + timedelta(days=days_to_thursday)
+    # Labor Day is the first Monday in September (weekday 0).
+    labor_day = sept_first + timedelta(days=(0 - sept_first.weekday()) % 7)
 
-    # If first Thursday is before Sept 3, move to next week
-    if first_thursday.day < NFL_SEASON_START_DAY_RANGE[0]:
-        first_thursday += timedelta(days=7)
+    # Kickoff Thursday is three days after Labor Day.
+    kickoff = labor_day + timedelta(days=3)
 
-    return first_thursday
+    earliest, latest = NFL_SEASON_START_DAY_RANGE
+    if not earliest <= kickoff.day <= latest:
+        raise ValueError(
+            f"Derived NFL kickoff {kickoff.date()} for season {season} falls "
+            f"outside the expected Sept {earliest}-{latest} window"
+        )
+
+    return kickoff
 
 
 def get_current_nfl_week() -> tuple[int, int]:
