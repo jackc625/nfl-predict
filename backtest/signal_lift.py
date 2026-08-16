@@ -120,6 +120,24 @@ MEASURE_WINDOW = "2021-2024"
 # test and recorded in the readout's METHOD line.
 LIFT_ANCHOR = "BaseTrainer.train_and_evaluate(tune=False)"
 
+# A DIAGNOSTIC temporal config for groups whose data floor lands after the canonical selection
+# window (Plan 29-07). Every trainer selects its features on ``config.train_seasons`` ONLY and
+# LOCKS that set for the whole holdout walk-forward. The canonical window is train 2018-2019, and
+# the odds-timeline archive floor is 2020-06-06, so under the canonical config every
+# line-movement column is constant across the entire selection window, has zero importance by
+# construction, and CANNOT be selected -- the screen then measures selection churn instead of the
+# group. This config slides train/hp_val into covered seasons so the selector can actually see
+# the family.
+#
+# It is a DIAGNOSTIC, never the canonical measurement: it trains on holdout seasons, leaving a
+# single measured season (2024, ~255 paired games), so it is low-powered and consumes holdout.
+# Results from it are reported as such and never presented as the pre-registered screen.
+COVERAGE_WINDOW_CONFIG = TemporalSplitConfig(
+    train_seasons=[2021, 2022],
+    hp_val_seasons=[2023],
+    holdout_seasons=[2024],
+)
+
 _TRAINER_FOR: dict[str, type] = {
     "wp": WPTrainer,
     "ats": ATSTrainer,
@@ -337,23 +355,33 @@ def _walkforward_clv(
     features_df: pd.DataFrame,
     closing_odds_df: pd.DataFrame,
     config: TemporalSplitConfig,
-) -> pd.DataFrame:
-    """Run ONE in-process walk-forward re-fit (tune=False) and return its per-game CLV.
+) -> tuple[pd.DataFrame, list[str]]:
+    """Run ONE in-process walk-forward re-fit (tune=False); return per-game CLV + the LOCKED
+    feature set.
 
     A fresh trainer is instantiated per call (trainers carry fit state). The trainer's
     ``train_and_evaluate(..., tune=False)`` performs the train<=Y-1 / measure-Y walk-forward and
     returns ``clv_results``; this function extracts the per-game CLV series. No artifact is saved
     and nothing is written under ``data/`` (the trainer's ``save()`` is never called here).
+
+    The second element is the trainer's SELECTED feature list. Every trainer runs its own
+    ``SelectFromModel`` pass on the ``config.train_seasons`` window and LOCKS the result for the
+    whole holdout walk-forward, so a column that is present in the candidate dataframe has still
+    not necessarily reached a single model. Returning the selection is what lets the screen tell
+    "this group did not help" apart from "this group was never used" (Plan 29-07, SIG-04).
     """
     trainer_cls = _TRAINER_FOR[target]
     trainer = trainer_cls(config=config)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         result = trainer.train_and_evaluate(features_df, closing_odds_df, tune=False)
+    selected = list(
+        result.get("feature_names") or getattr(trainer, "feature_names", [])
+    )
     clv_results = result.get("clv_results")
     if clv_results is None or len(clv_results) == 0:
-        return pd.DataFrame(columns=["game_id", "clv"])
-    return _walkforward_clv_series(clv_results, target)
+        return pd.DataFrame(columns=["game_id", "clv"]), selected
+    return _walkforward_clv_series(clv_results, target), selected
 
 
 def _paired_delta(
@@ -395,9 +423,20 @@ def _screen_target(
     candidate_df = select_group_columns(
         gold_df, group=group, exclude_groups=exclude_groups
     )
-    candidate_clv = _walkforward_clv(target, candidate_df, closing_odds_df, config)
+    candidate_clv, selected = _walkforward_clv(
+        target, candidate_df, closing_odds_df, config
+    )
     delta, n_paired = _paired_delta(baseline_clv, candidate_clv)
     sig = clv_significance(delta)
+
+    # Did the group under screen actually REACH the model? A column can sit in the candidate
+    # dataframe and still be discarded by the trainer's train-window SelectFromModel pass. When
+    # NONE of the group's columns are selected, the candidate leg's model saw none of them, so the
+    # delta is NOT this group's lift -- it is selection churn among the OTHER features (adding
+    # columns to the pool perturbs the fitted importances and hence which features get locked).
+    # Reporting that delta as a lift would be reporting noise as a finding.
+    group_cols = group_columns(gold_df, group)
+    selected_group_cols = sorted(set(selected) & set(group_cols))
 
     mean = sig["mean"]
     p = sig["p"]
@@ -413,6 +452,10 @@ def _screen_target(
         "delta_ci95": sig["ci95"],
         "keep_target": bool(keep_target),
         "veto": bool(veto),
+        "n_group_columns": len(group_cols),
+        "n_group_columns_selected": len(selected_group_cols),
+        "group_columns_selected": selected_group_cols,
+        "measurable": bool(selected_group_cols),
     }
 
 
@@ -528,7 +571,7 @@ def run_signal_lift_screen(
         baseline_df = select_group_columns(
             gold_by_target[target], group=None, exclude_groups=baseline_exclude_groups
         )
-        baseline_clv_by_target[target] = _walkforward_clv(
+        baseline_clv_by_target[target], _ = _walkforward_clv(
             target, baseline_df, closing_odds_df, config
         )
         logger.info(
@@ -553,20 +596,49 @@ def run_signal_lift_screen(
                 exclude_groups=baseline_exclude_groups,
             )
         decision = decide_group_keep(per_target)
+        measurable_targets = [t for t, r in per_target.items() if r["measurable"]]
         groups_out[group] = {
             "coverage_span": GROUP_COVERAGE.get(group, "full history"),
             "per_target": per_target,
             "decision": decision,
+            "measurability": {
+                "measurable": bool(measurable_targets),
+                "measurable_targets": measurable_targets,
+                "note": (
+                    ""
+                    if measurable_targets
+                    else (
+                        "NOT MEASURED: no column of this group was selected by ANY target's "
+                        "feature selector, so no candidate model ever saw the group. The deltas "
+                        "below are selection churn among the other features, NOT this group's "
+                        "lift, and the keep/drop ruling they produce is not evidence about this "
+                        "group."
+                    )
+                ),
+            },
         }
         logger.info(
             "Group screened",
             group=group,
             keep=decision["keep"],
             reason=decision["reason"],
+            measurable=bool(measurable_targets),
         )
 
+    # Report the window ACTUALLY measured, derived from the config's holdout seasons. A run under
+    # COVERAGE_WINDOW_CONFIG measures 2024 alone; printing the canonical "2021-2024" there would
+    # mislabel a one-season diagnostic as the four-season screen.
+    holdout = sorted(config.holdout_seasons)
+    measure_window = (
+        f"{holdout[0]}-{holdout[-1]}"
+        if len(holdout) > 1
+        else str(holdout[0])
+        if holdout
+        else MEASURE_WINDOW
+    )
+
     return {
-        "measure_window": MEASURE_WINDOW,
+        "measure_window": measure_window,
         "alpha": SIGNIFICANCE_ALPHA,
         "anchor": LIFT_ANCHOR,
         "baseline_excludes": list(baseline_exclude_groups),
@@ -602,7 +674,7 @@ def _format_screen_report(result: dict[str, Any]) -> str:
         lines.append("-" * 78)
         header = (
             f"    {'target':<8}{'n_paired':<10}{'delta_mean':<14}"
-            f"{'t':<10}{'p':<12}{'keep':<6}{'veto':<6}"
+            f"{'t':<10}{'p':<12}{'keep':<6}{'veto':<6}{'grp_cols_used':<14}"
         )
         lines.append(header)
         for target, r in gdata["per_target"].items():
@@ -612,12 +684,21 @@ def _format_screen_report(result: dict[str, Any]) -> str:
             mean_s = f"{mean:+.6f}" if mean is not None else "n/a"
             t_s = f"{t_stat:+.3f}" if t_stat is not None else "n/a"
             p_s = f"{p:.5f}" if p is not None else "n/a"
+            used = (
+                f"{r.get('n_group_columns_selected', 0)}/{r.get('n_group_columns', 0)}"
+            )
             lines.append(
                 f"    {target:<8}{r['n_paired']:<10}{mean_s:<14}"
-                f"{t_s:<10}{p_s:<12}{r['keep_target']!s:<6}{r['veto']!s:<6}"
+                f"{t_s:<10}{p_s:<12}{r['keep_target']!s:<6}{r['veto']!s:<6}{used:<14}"
             )
+        measurability = gdata.get("measurability", {})
+        if measurability and not measurability.get("measurable", True):
+            lines.append("")
+            lines.append("    *** " + measurability["note"])
         decision = gdata["decision"]
-        lines.append(f"    DECISION: {'KEEP' if decision['keep'] else 'DROP'}")
+        lines.append(
+            f"    DECISION (rule as written): {'KEEP' if decision['keep'] else 'DROP'}"
+        )
         lines.append(f"      {decision['reason']}")
         lines.append("")
     lines.append("-" * 78)
@@ -646,24 +727,38 @@ def _build_parser() -> argparse.ArgumentParser:
             "baseline_exclude_groups=('line_movement',)."
         ),
     )
+    parser.add_argument(
+        "--coverage-window",
+        action="store_true",
+        help=(
+            "DIAGNOSTIC: run under COVERAGE_WINDOW_CONFIG (train 2021-2022 / hp_val 2023 / "
+            "measure 2024) so a group whose data floor lands after the canonical 2018-2019 "
+            "selection window can actually be selected. Low-powered (one season) and it trains "
+            "on holdout seasons -- it is NOT the canonical screen."
+        ),
+    )
     return parser
 
 
-def screen_kwargs_for_phase(phase: int) -> dict[str, Any]:
+def screen_kwargs_for_phase(
+    phase: int, coverage_window: bool = False
+) -> dict[str, Any]:
     """Return the ``run_signal_lift_screen`` kwargs for a phase's screen.
 
     Phase 28 uses the module defaults (baseline = pre-Phase-28 feature set). Phase 29 screens
     ONLY ``line_movement`` and excludes ONLY ``line_movement`` from the baseline, so the kept
     Phase-28 groups stay in the baseline and the delta is incremental to the post-Phase-28
-    feature set (review 29-07 HIGH). Exposed as a function so the readout doc-drift guard runs
-    exactly the invocation the CLI runs -- the doc and the command cannot drift apart.
+    feature set (review 29-07 HIGH). ``coverage_window`` swaps in the diagnostic
+    ``COVERAGE_WINDOW_CONFIG``. Exposed as a function so the readout doc-drift guard runs exactly
+    the invocation the CLI runs -- the doc and the command cannot drift apart.
     """
+    kwargs: dict[str, Any] = {}
     if phase == 29:
-        return {
-            "groups": PHASE29_GROUPS,
-            "baseline_exclude_groups": PHASE29_GROUPS,
-        }
-    return {}
+        kwargs["groups"] = PHASE29_GROUPS
+        kwargs["baseline_exclude_groups"] = PHASE29_GROUPS
+    if coverage_window:
+        kwargs["config"] = COVERAGE_WINDOW_CONFIG
+    return kwargs
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -674,7 +769,9 @@ def main(argv: list[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        result = run_signal_lift_screen(**screen_kwargs_for_phase(args.phase))
+        result = run_signal_lift_screen(
+            **screen_kwargs_for_phase(args.phase, args.coverage_window)
+        )
     print(_format_screen_report(result))  # noqa: T201 -- CLI report to stdout (read-only harness)
 
 

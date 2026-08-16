@@ -622,6 +622,65 @@ class TestLineMovementScreen:
         assert list(gold.columns) == before
 
 
+class TestMeasurabilityAccounting:
+    """A screen must be able to say "never used" instead of silently reporting selection churn.
+
+    Every trainer runs its own ``SelectFromModel`` pass on the ``train_seasons`` window and LOCKS
+    the result for the whole holdout walk-forward. A group whose columns are constant in that
+    window has zero importance by construction and can NEVER be selected -- so the candidate
+    model never sees it and the paired delta measures churn among the OTHER features, not the
+    group. Without this accounting that delta is indistinguishable from a real lift.
+    """
+
+    @staticmethod
+    def _screen(gold: pd.DataFrame) -> dict:
+        return run_signal_lift_screen(
+            gold_by_target={"wp": gold},
+            closing_odds_df=_make_fixture_odds(gold),
+            config=_FIXTURE_CONFIG,
+            targets=["wp"],
+            groups=["line_movement"],
+            baseline_exclude_groups=["line_movement"],
+        )
+
+    def test_cells_report_how_many_group_columns_the_model_actually_used(self) -> None:
+        gold = _make_fixture_gold_with_line_movement()
+        cell = self._screen(gold)["groups"]["line_movement"]["per_target"]["wp"]
+        assert cell["n_group_columns"] == len(_LINE_MOVEMENT_COLUMNS)
+        assert 0 <= cell["n_group_columns_selected"] <= cell["n_group_columns"]
+        assert cell["measurable"] == (cell["n_group_columns_selected"] > 0)
+        assert set(cell["group_columns_selected"]) <= set(_LINE_MOVEMENT_COLUMNS)
+
+    def test_group_constant_in_the_selection_window_is_flagged_not_measured(
+        self,
+    ) -> None:
+        """The real Phase-29 shape: the family is constant across the whole train window."""
+        gold = _make_fixture_gold_with_line_movement()
+        train_mask = gold["season"].isin(_FIXTURE_CONFIG.train_seasons)
+        for col in _LINE_MOVEMENT_COLUMNS:
+            gold.loc[train_mask, col] = 0.0
+        assert gold.loc[train_mask, "total_drift"].nunique() == 1
+
+        gdata = self._screen(gold)["groups"]["line_movement"]
+        assert gdata["per_target"]["wp"]["n_group_columns_selected"] == 0
+        assert gdata["per_target"]["wp"]["measurable"] is False
+        assert gdata["measurability"]["measurable"] is False
+        assert gdata["measurability"]["measurable_targets"] == []
+        assert "NOT MEASURED" in gdata["measurability"]["note"]
+        assert "selection churn" in gdata["measurability"]["note"]
+
+    def test_not_measured_groups_are_called_out_in_the_printed_report(self) -> None:
+        gold = _make_fixture_gold_with_line_movement()
+        train_mask = gold["season"].isin(_FIXTURE_CONFIG.train_seasons)
+        for col in _LINE_MOVEMENT_COLUMNS:
+            gold.loc[train_mask, col] = 0.0
+
+        report = signal_lift._format_screen_report(self._screen(gold))
+        assert "NOT MEASURED" in report
+        assert "grp_cols_used" in report
+        assert f"0/{len(_LINE_MOVEMENT_COLUMNS)}" in report
+
+
 class TestPhase29CliWiring:
     """``--phase 29`` is the single deterministic command the doc-drift guard re-runs."""
 
@@ -633,8 +692,39 @@ class TestPhase29CliWiring:
     def test_phase_29_selects_the_line_movement_screen_on_both_legs(self) -> None:
         args = signal_lift._build_parser().parse_args(["--phase", "29"])
         assert args.phase == 29
+        assert args.coverage_window is False
         kwargs = signal_lift.screen_kwargs_for_phase(29)
         assert kwargs == {
             "groups": ("line_movement",),
             "baseline_exclude_groups": ("line_movement",),
         }
+
+    def test_coverage_window_flag_swaps_in_the_diagnostic_config(self) -> None:
+        """The diagnostic window must be opt-in and must not touch the canonical run."""
+        args = signal_lift._build_parser().parse_args(
+            ["--phase", "29", "--coverage-window"]
+        )
+        assert args.coverage_window is True
+        kwargs = signal_lift.screen_kwargs_for_phase(29, coverage_window=True)
+        assert kwargs["config"] is signal_lift.COVERAGE_WINDOW_CONFIG
+        assert kwargs["groups"] == ("line_movement",)
+        # The diagnostic trains on covered seasons and measures ONE season.
+        assert signal_lift.COVERAGE_WINDOW_CONFIG.train_seasons == [2021, 2022]
+        assert signal_lift.COVERAGE_WINDOW_CONFIG.holdout_seasons == [2024]
+        # ...and it is NOT what a default run uses.
+        assert "config" not in signal_lift.screen_kwargs_for_phase(29)
+
+    def test_report_labels_the_window_actually_measured(self) -> None:
+        """A one-season diagnostic must not be printed under the canonical 2021-2024 label."""
+        gold = _make_fixture_gold_with_line_movement()
+        result = run_signal_lift_screen(
+            gold_by_target={"wp": gold},
+            closing_odds_df=_make_fixture_odds(gold),
+            config=_FIXTURE_CONFIG,
+            targets=["wp"],
+            groups=["line_movement"],
+            baseline_exclude_groups=["line_movement"],
+        )
+        assert (
+            result["measure_window"] == "2020-2021"
+        )  # the fixture's holdout, not the constant
