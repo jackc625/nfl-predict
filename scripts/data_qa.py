@@ -28,22 +28,35 @@ from utils.team_data import get_all_teams, normalize_team_abbreviation
 logger = get_logger(__name__)
 
 # Gold-layer feature matrices and their expected column counts (AUDIT-02).
-# Verified on-disk 2026-06-29 after the Phase 28 widening: features_wp 194,
-# features_ats 195, features_ou 194. The single-column ATS difference is its
+# Verified on-disk 2026-08-16 after the Phase 29 widening: features_wp 209,
+# features_ats 210, features_ou 209. The single-column ATS difference is its
 # extra target/margin columns (target_ats, home_margin, point_differential).
 #
-# Phase 28 widened each matrix by +38 columns vs the prior 156/157/156 baseline
-# (SIG-06, Plan 28-06): +20 snap columns (home_/away_ x {snap_continuity,
-# snap_concentration, rolling_snap_share_{db,dl,lb,ol,qb,rb,te,wr}}), +12 injury
-# columns (home_/away_ x {qb_out_flag, backup_quality_delta, availability_fraction,
-# injury_coverage, availability_coverage, date_modified_coverage}), and +6
-# contextual situational-spot columns (home_/away_ x {look_ahead_spot,
-# letdown_spot, off_bye}). This count is DELIBERATELY reconciled to the real
-# rebuilt widths (IN-03, Pitfall 6 -- count empirically, never silence).
+# Phase 29 widened each matrix by +15 columns vs the 194/195/194 Phase-28
+# baseline (SIG-04, Plan 29-06): the seven D-09 totals line-movement features
+# (opening_total, total_drift, total_drift_dir, total_late_drift,
+# total_abs_travel, total_reversals, total_range), the shared
+# line_movement_coverage flag, and the seven Tier (a) spread siblings
+# (opening_spread, spread_drift, spread_drift_dir, spread_late_drift,
+# spread_abs_travel, spread_reversals, spread_range). These are GAME-level
+# columns (a line trajectory belongs to the game), so unlike the Phase-28
+# families they are not home_/away_-expanded.
+#
+# Phase 28 had widened each matrix by +38 columns vs the prior 156/157/156
+# baseline (SIG-06, Plan 28-06): +20 snap columns (home_/away_ x
+# {snap_continuity, snap_concentration, rolling_snap_share_{db,dl,lb,ol,qb,rb,
+# te,wr}}), +12 injury columns (home_/away_ x {qb_out_flag,
+# backup_quality_delta, availability_fraction, injury_coverage,
+# availability_coverage, date_modified_coverage}), and +6 contextual
+# situational-spot columns (home_/away_ x {look_ahead_spot, letdown_spot,
+# off_bye}).
+#
+# These counts are DELIBERATELY reconciled to the real rebuilt widths
+# (IN-03, Pitfall 6 -- count empirically, never silence).
 GOLD_FEATURE_MATRICES = {
-    "features_wp": 194,
-    "features_ats": 195,
-    "features_ou": 194,
+    "features_wp": 209,
+    "features_ats": 210,
+    "features_ou": 209,
 }
 
 # Last season for which gold is considered fully ingested. Seasons beyond this
@@ -510,8 +523,9 @@ class DataQualityMonitor:
         features_ou) this checks:
 
         - the matrix loads and is non-empty (row count),
-        - its column count matches the expected schema width
-          (wp 156, ats 157, ou 156),
+        - its column count matches the expected schema width declared in
+          ``GOLD_FEATURE_MATRICES`` (named there rather than repeated here, so
+          the two cannot drift apart across phase widenings),
         - the season span and the latest season present,
         - no feature column is entirely null (an all-null column signals a
           broken builder),
