@@ -15,8 +15,12 @@ failure modes that would silently corrupt the gate record:
     unknown token (downstream branch gating reads this literal token, not prose -- review 29-01
     LOW: assert EXACTLY ONE valid branch token).
 
-This is the Plan-29-01 language-invariant guard; Plan 29-07 (backfill path only) extends it with
-the numeric lift-reproduction check, exactly as the Phase-28 readout guard does.
+Plan 29-07 (the backfill path) extends it with the NUMERIC lift-reproduction check
+(``TestReadoutMatchesHarness``), exactly as the Phase-28 readout guard does: the Section-4 numbers
+must reproduce from a live ``backtest.signal_lift`` run, and -- the load-bearing one for this
+phase -- the claim that NO line-movement column reached any model under the canonical window must
+reproduce too. If a future gold rebuild or config change makes the family selectable, that
+assertion fails and Section 4 has to be rewritten rather than silently going stale.
 
 ASCII only, no emoji (CLAUDE.md).
 """
@@ -26,9 +30,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 # Repo root resolved from this file: tests/unit/test_line_movement_readout_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 READOUT_MD = REPO_ROOT / "LINE-MOVEMENT-READOUT.md"
+
+# Gold/odds presence skip-guard: the harness-run validation needs the Plan 29-06 rebuilt gold.
+_GOLD_ATS_PATH = REPO_ROOT / "data" / "gold" / "features_ats.parquet"
+_ODDS_PATH = REPO_ROOT / "data" / "silver" / "odds_snapshot.parquet"
 
 # Required section markers (the D-16 five-section contract). A substring of each section header so
 # a benign reword does not trip the guard but a dropped section does.
@@ -46,6 +56,23 @@ _REQUIRED_PHRASES = (
     "carried to Phase 30",  # the screen-not-deploy carry phrase
     "checked 2026-06-29",  # the 7-day-freshness re-confirmation stamp (D-04)
 )
+
+# Section 4 (Plan 29-07) content contract: the lift grid must carry the per-target deltas, the
+# covered-span annotation, the D-02 priced-in caveat, the METHOD line, and -- the honesty clause
+# this phase turns on -- the disclosure that the canonical grid's columns never reached a model.
+_REQUIRED_SECTION4_MARKERS = (
+    "METHOD",
+    "baseline_exclude_groups=('line_movement',)",  # the baseline KEEPS Phase 28 (review 29-07 HIGH)
+    "train_and_evaluate(tune=False)",  # the out-of-sample walk-forward anchor
+    "priced-in",  # the D-02 redundancy caveat (Section 2 phrasing, carried into 4)
+    "2020-06-06",  # the archive floor / covered span
+    "D29-06-01",  # the orphaned-2020 disclosure
+    "selection churn",  # what the canonical deltas actually are
+    "7,210 credits",  # the real cost, recorded against what was learned
+)
+
+# The three canonical-window per-target deltas as published in Section 4a.
+_CANONICAL_DELTAS = {"wp": 0.000000, "ats": 0.147814, "ou": -0.221188}
 
 # The screen-not-deploy invariant: these over-claim words must NEVER appear (mirrors the negative
 # grep in the plan's acceptance: ``grep -ci 'deployed\\|proven'`` must return 0).
@@ -155,3 +182,122 @@ class TestSelectedBranchMarker:
         assert token in _VALID_BRANCH_TOKENS, (
             f"selected_branch token {token!r} is not one of {sorted(_VALID_BRANCH_TOKENS)}"
         )
+
+
+class TestLiftSectionContent:
+    """Section 4 (Plan 29-07) carries the grid, the caveats, and the not-measured disclosure."""
+
+    def test_required_section4_markers_present(self) -> None:
+        content = _read_readout()
+        missing = [m for m in _REQUIRED_SECTION4_MARKERS if m not in content]
+        assert not missing, f"LINE-MOVEMENT-READOUT.md Section 4 missing: {missing}"
+
+    def test_per_target_grid_covers_all_three_targets(self) -> None:
+        """Both grids report WP / ATS / OU (the D-13 rule is per-target)."""
+        content = _read_readout()
+        for label in ("| WP ", "| ATS ", "| OU "):
+            assert content.count(label) >= 2, (
+                f"expected {label!r} in both the canonical and the coverage-window grid"
+            )
+
+    def test_canonical_deltas_are_recorded(self) -> None:
+        """The published canonical numbers are in the doc (the doc-drift anchor)."""
+        content = _read_readout()
+        for token in ("+0.147814", "-0.221188", "+0.816061", "0.00044"):
+            assert token in content, (
+                f"the readout is missing the published number {token}"
+            )
+
+    def test_not_measured_disclosure_is_present(self) -> None:
+        """The canonical grid MUST be labelled as not evidence about the group.
+
+        Publishing the 4a deltas as a lift -- without saying no model ever used the columns --
+        is the exact honesty-of-record failure this phase's threat register calls out.
+        """
+        content = _read_readout()
+        assert "0 / 15" in content, (
+            "Section 4a must state that 0 of 15 group columns reached the model"
+        )
+        assert "not evidence about line movement" in content.lower()
+
+    def test_screen_not_deploy_ruling_language(self) -> None:
+        """A KEEP is a CARRY to Phase 30, never a ship."""
+        content = _read_readout()
+        assert "CARRY the line-movement family to Phase 30" in content
+        assert "not shipped" in content.lower()
+
+
+@pytest.mark.integration
+class TestReadoutMatchesHarness:
+    """The doc's numbers ARE the harness numbers -- re-run, not re-typed.
+
+    Runs the ATS cell of BOTH published grids (the load-bearing cell in each) and asserts the
+    reproduced delta matches the doc. Also pins the structural claim the whole ruling rests on:
+    under the canonical window NO line-movement column is selected, and under the coverage window
+    some are. If a future rebuild changes either fact, this fails and Section 4 must be rewritten.
+    """
+
+    @staticmethod
+    def _run(coverage_window: bool) -> dict:
+        import warnings
+
+        import pandas as pd
+
+        from backtest.signal_lift import run_signal_lift_screen, screen_kwargs_for_phase
+
+        gold = pd.read_parquet(_GOLD_ATS_PATH)
+        odds = pd.read_parquet(_ODDS_PATH)
+        kwargs = screen_kwargs_for_phase(29, coverage_window=coverage_window)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return run_signal_lift_screen(
+                gold_by_target={"ats": gold},
+                closing_odds_df=odds,
+                targets=["ats"],
+                **kwargs,
+            )
+
+    def test_canonical_ats_cell_reproduces_and_used_no_group_columns(self) -> None:
+        if not (_GOLD_ATS_PATH.exists() and _ODDS_PATH.exists()):
+            pytest.skip(
+                f"Canonical gold/odds not present at {_GOLD_ATS_PATH} / {_ODDS_PATH}"
+            )
+
+        cell = self._run(coverage_window=False)["groups"]["line_movement"][
+            "per_target"
+        ]["ats"]
+
+        assert cell["delta_mean"] is not None
+        assert abs(cell["delta_mean"] - _CANONICAL_DELTAS["ats"]) < 5e-3, (
+            f"canonical ATS delta {cell['delta_mean']} drifted from the readout's +0.147814"
+        )
+        # The load-bearing claim: the canonical window cannot select the family at all.
+        assert cell["n_group_columns"] == 15
+        assert cell["n_group_columns_selected"] == 0, (
+            "a line-movement column is now selectable under the canonical window -- Section 4a's "
+            "'not evidence' framing no longer holds and must be rewritten"
+        )
+        assert cell["measurable"] is False
+        assert "+0.147814" in _read_readout()
+
+    def test_coverage_window_ats_cell_reproduces_and_used_group_columns(self) -> None:
+        if not (_GOLD_ATS_PATH.exists() and _ODDS_PATH.exists()):
+            pytest.skip(
+                f"Canonical gold/odds not present at {_GOLD_ATS_PATH} / {_ODDS_PATH}"
+            )
+
+        result = self._run(coverage_window=True)
+        cell = result["groups"]["line_movement"]["per_target"]["ats"]
+
+        assert result["measure_window"] == "2024", (
+            "the diagnostic measures one season and must be labelled as such"
+        )
+        assert cell["delta_mean"] is not None
+        assert abs(cell["delta_mean"] - 0.816061) < 5e-3, (
+            f"coverage-window ATS delta {cell['delta_mean']} drifted from the readout's +0.816061"
+        )
+        assert cell["n_group_columns_selected"] > 0, (
+            "the diagnostic window is only meaningful if the family is actually selected"
+        )
+        assert cell["measurable"] is True
+        assert "+0.816061" in _read_readout()
