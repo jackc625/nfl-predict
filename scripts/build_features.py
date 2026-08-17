@@ -50,8 +50,31 @@ from features.team_form import TeamFormCalculator
 from features.validation import LeakageGate, LeakageViolation
 from features.weather import WeatherFeaturesCalculator
 from utils import get_logger
+from utils.exceptions import DataIngestionError
 
 logger = get_logger(__name__)
+
+# Every optional-source guard below catches THIS tuple, and nothing else.
+#
+# This is not a line-movement problem. ``DataIngestionError`` derives from
+# ``NFLPredictException`` and therefore from ``Exception`` directly -- it is NOT a
+# subclass of ValueError, OSError or FileNotFoundError -- and ``load_dataframe``
+# raises it (``data/storage.py:923``) whenever a table is absent from both DuckDB
+# and parquet. Every optional silver source below guards a ``load_dataframe`` call
+# or a builder that makes one, so before CR-03 they ALL shared the same false
+# graceful-degradation contract: on a fresh clone the guard could not fire, the
+# error escaped, and gold could not be built at all -- which falsifies the
+# degradation contract this module asserts in prose for the line-movement builder.
+#
+# One constant is what stops the twelve sites drifting apart again.
+_SOURCE_LOAD_ERRORS = (
+    DataIngestionError,
+    ValueError,
+    KeyError,
+    TypeError,
+    FileNotFoundError,
+    OSError,
+)
 
 
 class FeatureMatrixBuilder:
@@ -147,7 +170,7 @@ class FeatureMatrixBuilder:
                     ]
                 feature_sources["team_form"] = team_form_df
                 logger.info("Loaded team form features", records=len(team_form_df))
-            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+            except _SOURCE_LOAD_ERRORS as e:
                 logger.warning("Failed to load team form features", error=str(e))
                 feature_sources["team_form"] = pd.DataFrame()
 
@@ -161,7 +184,7 @@ class FeatureMatrixBuilder:
                 )
                 feature_sources["elo"] = elo_df
                 logger.info("Built Elo features", records=len(elo_df))
-            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+            except _SOURCE_LOAD_ERRORS as e:
                 logger.warning("Failed to build Elo features", error=str(e))
                 feature_sources["elo"] = pd.DataFrame()
 
@@ -175,7 +198,7 @@ class FeatureMatrixBuilder:
                 )
                 feature_sources["contextual"] = contextual_df
                 logger.info("Built contextual features", records=len(contextual_df))
-            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+            except _SOURCE_LOAD_ERRORS as e:
                 logger.warning("Failed to build contextual features", error=str(e))
                 feature_sources["contextual"] = pd.DataFrame()
 
@@ -189,7 +212,7 @@ class FeatureMatrixBuilder:
                     ]
                 feature_sources["weather"] = weather_df
                 logger.info("Loaded weather features", records=len(weather_df))
-            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+            except _SOURCE_LOAD_ERRORS as e:
                 logger.warning("Failed to load weather features", error=str(e))
                 feature_sources["weather"] = pd.DataFrame()
 
@@ -203,7 +226,7 @@ class FeatureMatrixBuilder:
                 )
                 feature_sources["market"] = market_df
                 logger.info("Built market anchor features", records=len(market_df))
-            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+            except _SOURCE_LOAD_ERRORS as e:
                 logger.warning("Failed to build market anchor features", error=str(e))
                 feature_sources["market"] = pd.DataFrame()
 
@@ -217,7 +240,7 @@ class FeatureMatrixBuilder:
                 )
                 feature_sources["qb_tracking"] = qb_features_df
                 logger.info("Loaded QB tracking features", records=len(qb_features_df))
-            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+            except _SOURCE_LOAD_ERRORS as e:
                 logger.warning("Failed to load QB tracking features", error=str(e))
                 feature_sources["qb_tracking"] = pd.DataFrame()
 
@@ -233,7 +256,7 @@ class FeatureMatrixBuilder:
                 )
                 feature_sources["snaps"] = snap_features_df
                 logger.info("Built snap-count features", records=len(snap_features_df))
-            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+            except _SOURCE_LOAD_ERRORS as e:
                 logger.warning("Failed to build snap-count features", error=str(e))
                 feature_sources["snaps"] = pd.DataFrame()
 
@@ -249,7 +272,7 @@ class FeatureMatrixBuilder:
                 )
                 feature_sources["injury"] = injury_features_df
                 logger.info("Built injury features", records=len(injury_features_df))
-            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+            except _SOURCE_LOAD_ERRORS as e:
                 logger.warning("Failed to build injury features", error=str(e))
                 feature_sources["injury"] = pd.DataFrame()
 
@@ -269,13 +292,13 @@ class FeatureMatrixBuilder:
                 logger.info(
                     "Built line-movement features", records=len(line_movement_df)
                 )
-            except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+            except _SOURCE_LOAD_ERRORS as e:
                 logger.warning("Failed to build line-movement features", error=str(e))
                 feature_sources["line_movement"] = pd.DataFrame()
 
             return feature_sources
 
-        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+        except _SOURCE_LOAD_ERRORS as e:
             logger.error("Failed to load feature sources", error=str(e))
             raise
 
@@ -1171,7 +1194,7 @@ class FeatureMatrixBuilder:
 
             return feature_matrices
 
-        except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+        except _SOURCE_LOAD_ERRORS as e:
             logger.error("Failed to generate feature matrices", error=str(e))
             raise
 
@@ -1420,7 +1443,7 @@ def main():
 
         logger.info("Feature matrix building completed successfully")
 
-    except (ValueError, KeyError, TypeError, FileNotFoundError, OSError) as e:
+    except _SOURCE_LOAD_ERRORS as e:
         logger.error("Failed to build feature matrices", error=str(e))
         raise
 

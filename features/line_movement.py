@@ -54,6 +54,7 @@ import pandas as pd
 from data.storage import load_dataframe
 from utils import get_logger
 from utils.date_utils import ET, UTC, ensure_utc_aware
+from utils.exceptions import DataIngestionError
 
 logger = get_logger(__name__)
 
@@ -142,7 +143,7 @@ class LineMovementBuilder:
         else:
             try:
                 timeline = load_dataframe("odds_timeline", layer="silver")
-            except (FileNotFoundError, OSError, ValueError) as exc:
+            except (DataIngestionError, FileNotFoundError, OSError, ValueError) as exc:
                 logger.warning("odds_timeline silver not available", error=str(exc))
                 return pd.DataFrame(columns=["game_id", "snapshot_ts", "total"])
 
