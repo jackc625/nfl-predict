@@ -26,12 +26,17 @@ Parts:
      and the emitted columns do not collide with the LeakageGate keywords.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
+import pytest
 
 from features.line_movement import LEAGUE_AVERAGE_TOTAL, LineMovementBuilder
 from features.validation import LeakageGate
+
+# The week whose governing Friday is Black Friday 2023-11-24 -- the CR-01 shape.
+_WEEK_MONDAY = datetime(2023, 11, 20)
+_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # Two games on DIFFERENT kickoff dates -> DIFFERENT per-game Friday freezes
 # (review 29-04 HIGH). Game A: Sun 2023-09-10 -> freeze Fri 2023-09-08 18:00 ET
@@ -238,6 +243,153 @@ class TestWithholdFuture:
         assert base_a == 1.0
         assert moved_a == 3.5
         assert base_a != moved_a
+
+    # -- CR-01: the fence must be capped at KICKOFF, on every weekday ----------
+
+    @pytest.mark.parametrize("weekday_index", range(7))
+    @pytest.mark.parametrize("hour", [13, 15, 20])
+    def test_no_snapshot_at_or_after_kickoff_enters_the_features(
+        self, weekday_index: int, hour: int
+    ) -> None:
+        """D-15: a snapshot AFTER kickoff is an in-play line and must never be fenced in.
+
+        Parametrized over ALL SEVEN kickoff weekdays because the per-game freeze is
+        "the most recent Friday 18:00 ET at/before the kickoff DATE" -- which for a
+        Friday-afternoon kickoff is AFTER kickoff. Every fixture in this module and in
+        test_line_movement_data_shape.py uses a Sunday or Thursday kickoff, so the
+        committed three-part proof was STRUCTURALLY INCAPABLE of reaching that branch.
+        That is how a four-sigma in-play value sat in gold while this file passed.
+
+        Black Friday has been annual since 2023, so the affected population grows by
+        at least one game per season.
+        """
+        kickoff = _WEEK_MONDAY + timedelta(days=weekday_index, hours=hour)
+        kickoff_utc = (
+            pd.Timestamp(kickoff).tz_localize("America/New_York").tz_convert("UTC")
+        )
+
+        games = pd.DataFrame(
+            [
+                {
+                    "game_id": "G",
+                    "season": 2023,
+                    "week": 12,
+                    "home_team": "NYJ",
+                    "away_team": "MIA",
+                    "kickoff_et": kickoff,
+                }
+            ]
+        )
+        timeline = pd.DataFrame(
+            {
+                "game_id": ["G", "G", "G"],
+                "snapshot_ts": [
+                    kickoff_utc - pd.Timedelta(days=3),
+                    kickoff_utc - pd.Timedelta(hours=2),
+                    kickoff_utc + pd.Timedelta(minutes=55),  # POISONED in-play row
+                ],
+                "total": [44.0, 44.5, 99.0],
+            }
+        )
+
+        out = (
+            LineMovementBuilder(timeline_df=timeline)
+            .build_features(games, datetime(2024, 1, 1, 12, 0))
+            .set_index("game_id")
+        )
+
+        assert out.loc["G", "total_range"] <= 1.0, (
+            f"{_WEEKDAYS[weekday_index]} {hour}:00 kickoff admitted an in-play "
+            f"snapshot: opening={out.loc['G', 'opening_total']} "
+            f"range={out.loc['G', 'total_range']}"
+        )
+
+    def test_the_named_black_friday_archive_case_is_excluded(self) -> None:
+        """The concrete regression: 2023_W12_MIA@NYJ.
+
+        Kickoff Fri 2023-11-24 15:00 ET; the archive's Friday 17:55 ET cadence
+        snapshot is an IN-PLAY line (the spread moved 9.5 -> 20.5 during the game)
+        and its own Friday-18:00-ET freeze does not exclude it. Only a kickoff cap
+        does.
+        """
+        kickoff = datetime(2023, 11, 24, 15, 0)
+        games = pd.DataFrame(
+            [
+                {
+                    "game_id": "2023_W12_MIA@NYJ",
+                    "season": 2023,
+                    "week": 12,
+                    "home_team": "NYJ",
+                    "away_team": "MIA",
+                    "kickoff_et": kickoff,
+                }
+            ]
+        )
+        timeline = pd.DataFrame(
+            {
+                "game_id": ["2023_W12_MIA@NYJ"] * 2,
+                "snapshot_ts": [
+                    pd.Timestamp("2023-11-23 16:55:40Z"),  # legitimate pre-game
+                    pd.Timestamp("2023-11-24 22:55:39Z"),  # 17:55 ET -- IN PLAY
+                ],
+                "total": [41.0, 47.5],
+                "spread": [9.5, 20.5],
+            }
+        )
+
+        out = (
+            LineMovementBuilder(timeline_df=timeline)
+            .build_features(games, datetime(2024, 1, 1, 12, 0))
+            .set_index("game_id")
+        )
+
+        assert out.loc["2023_W12_MIA@NYJ", "total_range"] == 0.0, (
+            "the Friday 17:55 ET in-play snapshot was admitted"
+        )
+        assert out.loc["2023_W12_MIA@NYJ", "spread_range"] == 0.0
+
+    def test_a_snapshot_exactly_at_the_kickoff_instant_is_excluded(self) -> None:
+        """D-15 says no snapshot AT OR AFTER kickoff may enter a feature.
+
+        ``_pairs_for`` filters with ``<=``, so an exactly-at-kickoff snapshot would
+        be admitted by a fence set to the kickoff instant itself. The fence is set
+        one second earlier so the strict form matches the contract. No archive
+        snapshot lands on an exact kickoff instant, so this changes no real value --
+        it makes this case pass by construction rather than by luck.
+        """
+        kickoff = datetime(2023, 11, 24, 15, 0)
+        kickoff_utc = (
+            pd.Timestamp(kickoff).tz_localize("America/New_York").tz_convert("UTC")
+        )
+        games = pd.DataFrame(
+            [
+                {
+                    "game_id": "G",
+                    "season": 2023,
+                    "week": 12,
+                    "home_team": "NYJ",
+                    "away_team": "MIA",
+                    "kickoff_et": kickoff,
+                }
+            ]
+        )
+        timeline = pd.DataFrame(
+            {
+                "game_id": ["G", "G"],
+                "snapshot_ts": [kickoff_utc - pd.Timedelta(days=2), kickoff_utc],
+                "total": [44.0, 77.0],
+            }
+        )
+
+        out = (
+            LineMovementBuilder(timeline_df=timeline)
+            .build_features(games, datetime(2024, 1, 1, 12, 0))
+            .set_index("game_id")
+        )
+
+        assert out.loc["G", "total_range"] == 0.0, (
+            "a snapshot landing exactly ON the kickoff instant was admitted"
+        )
 
 
 class TestKeywordGuard:
