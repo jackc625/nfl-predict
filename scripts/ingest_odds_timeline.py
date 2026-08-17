@@ -33,7 +33,15 @@ CRITICAL invariants:
   already covered in ``odds_timeline`` (see :func:`_snapshot_already_stored`).
   ``upsert_silver_composite`` makes the WRITE idempotent, but not the paid CALL
   -- without this guard a crash at 80% of a 360-timestamp backfill would re-buy
-  ~288 timestamps of data already on disk.
+  ~288 timestamps of data already on disk. Coverage is recorded from the
+  ENVELOPE timestamp, so a paid call that returns an empty board is not re-bought
+  either (WR-04).
+* SPEND CEILING: the skip guard bounds RE-spend, not spend. The loop also reads
+  the ``x-requests-remaining`` credit header on EVERY paid call and aborts on a
+  credit floor or a hard call ceiling (:class:`SpendGuardError`, WR-03). Before
+  that guard was wired in, the header reader had zero call sites in the repo and
+  nothing stood between a typo'd ``--backfill 2015 2024`` and the account
+  balance.
 """
 
 import argparse
@@ -91,6 +99,22 @@ _REGULAR_SEASON_WEEKS = 18
 # the next cadence point's ``(T - 12h, T]`` window.
 _SNAPSHOT_MATCH_LOOKBACK = timedelta(hours=12)
 
+# WR-03 spend ceiling. The skip guard bounds RE-spend; these bound spend itself.
+#
+# A full single-season pull is 18 weeks x 4 cadence points = 72 paid calls, so 400
+# leaves room for a deliberate multi-season run while keeping a typo'd
+# `--backfill 2015 2024` (which would otherwise issue ~720 calls with nothing
+# between the loop and the account balance) bounded and re-runnable.
+DEFAULT_MAX_PAID_CALLS = 400
+
+# Abort when the API reports fewer than this many credits left. A FLOOR, not a
+# budget: it preserves headroom for the weekly forward-collect job rather than
+# draining the account to zero inside one backfill.
+DEFAULT_MIN_CREDITS_REMAINING = 100
+
+# The Odds API returns per-request credit accounting in these response headers.
+_CREDITS_REMAINING_HEADER = "x-requests-remaining"
+
 
 class MockModeBackfillError(DataIngestionError):
     """Raised when a historical backfill is attempted with a mock-mode client.
@@ -99,6 +123,41 @@ class MockModeBackfillError(DataIngestionError):
     would synthesize fake lines, contaminating the trajectory table (OUM-06
     discipline).
     """
+
+
+class SpendGuardError(DataIngestionError):
+    """Raised when a paid backfill hits its credit floor or its call ceiling.
+
+    Deliberately a hard stop rather than a warning. Rows already written are
+    retained and the skip guard makes a re-run resume without re-buying them, so
+    aborting costs nothing but an operator decision -- which is the point.
+    """
+
+
+def _credits_remaining(headers: Any) -> int | None:
+    """Read ``x-requests-remaining`` off a response headers mapping.
+
+    Returns ``None`` when the header is absent or unparseable, which the caller
+    treats as "unknown" rather than as "zero": a missing header must not abort a
+    legitimate backfill, and the call ceiling still bounds the run.
+    """
+    if headers is None:
+        return None
+    try:
+        raw = headers.get(_CREDITS_REMAINING_HEADER)
+    except AttributeError:
+        return None
+    if raw is None:
+        return None
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "Unparseable Odds API credit header",
+            header=_CREDITS_REMAINING_HEADER,
+            value=str(raw),
+        )
+        return None
 
 
 def weekly_snapshot_timestamps(season: int, week: int) -> list[tuple[str, datetime]]:
@@ -371,6 +430,8 @@ def backfill_timeline(
     markets: list[str] | None = None,
     weeks: list[int] | None = None,
     base_path: Path | None = None,
+    max_paid_calls: int = DEFAULT_MAX_PAID_CALLS,
+    min_credits_remaining: int = DEFAULT_MIN_CREDITS_REMAINING,
 ) -> int:
     """Backfill the odds trajectory from the PAID historical endpoint.
 
@@ -392,6 +453,16 @@ def backfill_timeline(
     non-null value there, so widening ``markets`` re-fetches instead of silently
     skipping and leaving the new market's column null forever.
 
+    SPEND CEILING (WR-03): the skip guard bounds RE-spend, not spend. Before this
+    fix nothing sat between this loop and the account balance: a wrong
+    ``--backfill 2015 2024`` issued 18 weeks x 4 cadence points x N seasons paid
+    calls, and the credit-header reader that the module's prose credited as "the
+    cost guard" had ZERO call sites anywhere in the repo -- it existed only as an
+    unused method. The guard is now wired in. Every call reads
+    ``x-requests-remaining`` off the response and the loop ABORTS on either a
+    credit floor or a hard call ceiling, so an operator typo costs at most
+    ``max_paid_calls`` credits' worth of calls instead of the whole balance.
+
     Args:
         seasons: Seasons to backfill.
         client: A REAL (non-mock) ``OddsAPIClient``.
@@ -399,12 +470,21 @@ def backfill_timeline(
             Tier (a)).
         weeks: Optional explicit week list (default weeks 1..18).
         base_path: Optional data root (for tests); defaults to settings.
+        max_paid_calls: Hard ceiling on PAID calls in one invocation. Sized above
+            a full single-season pull (18 weeks x 4 cadence points = 72) with room
+            for a multi-season run, and far below a runaway.
+        min_credits_remaining: Abort when the API reports fewer remaining credits
+            than this. A floor, not a budget: it leaves headroom for the weekly
+            forward-collect job rather than draining the account to zero.
 
     Returns:
         Total rows written across all snapshots.
 
     Raises:
         MockModeBackfillError: If ``client`` is in mock mode.
+        SpendGuardError: If the credit floor or the call ceiling is hit. Raised
+            AFTER the current snapshot's rows are written, so an abort never
+            discards a call that was already paid for.
     """
     if client.mock_mode:
         raise MockModeBackfillError(
@@ -450,15 +530,67 @@ def backfill_timeline(
                     cadence=label,
                     requested_t=t_iso,
                 )
-                envelope = client.get_historical_nfl_odds(t_iso, markets, regions="us")
+                envelope, headers = client.get_historical_nfl_odds(
+                    t_iso, markets, regions="us", return_headers=True
+                )
                 calls_made += 1
+
+                # WR-04: record coverage from the ENVELOPE timestamp, not from the
+                # emitted rows. When ``rows`` is empty -- an envelope with no
+                # board, or every game skipped by the "No usable book lines"
+                # branch -- nothing used to be added to ``stored_snapshots`` and
+                # nothing was written, so the next run re-requested that exact
+                # timestamp and PAID for it again, forever. The envelope timestamp
+                # is what ``_snapshot_already_stored`` compares against, and it is
+                # available whether or not any row survived normalization.
+                envelope_ts = _parse_envelope_timestamp(envelope.get("timestamp"))
+                stored_snapshots.add(pd.Timestamp(envelope_ts))
+
                 rows = normalize_envelope_to_timeline_rows(envelope, markets)
+                if not rows:
+                    # Visible rather than silent: a paid call that bought nothing
+                    # is exactly the event an operator needs to see. Note this
+                    # in-memory record does NOT survive a process crash -- a
+                    # durable fix would write a zero-row marker or a sidecar
+                    # "requested timestamps" file, which is recorded as follow-up.
+                    logger.warning(
+                        "Paid snapshot returned NO usable rows; recording coverage "
+                        "from the envelope timestamp so it is not re-bought",
+                        season=season,
+                        week=week,
+                        cadence=label,
+                        requested_t=t_iso,
+                        envelope_ts=envelope_ts.isoformat(),
+                    )
                 total_written += _write_timeline_rows(
                     rows, season, week, base_path=base_path
                 )
                 stored_snapshots.update(
                     pd.Timestamp(row["snapshot_ts"]) for row in rows
                 )
+
+                # WR-03: the cost guard, AFTER the write so an abort never
+                # discards a call that has already been paid for.
+                remaining = _credits_remaining(headers)
+                logger.info(
+                    "Odds API credit usage",
+                    last=headers.get("x-requests-last"),
+                    remaining=remaining,
+                    calls_made=calls_made,
+                )
+                if remaining is not None and remaining < min_credits_remaining:
+                    raise SpendGuardError(
+                        f"Aborting backfill: only {remaining} Odds API credits "
+                        f"remain (floor {min_credits_remaining}); {calls_made} "
+                        f"paid calls made, {total_written} rows written."
+                    )
+                if calls_made >= max_paid_calls:
+                    raise SpendGuardError(
+                        f"Aborting backfill: hit the {max_paid_calls}-paid-call "
+                        f"ceiling; {total_written} rows written. Re-run to "
+                        f"continue -- stored snapshots are skipped without a "
+                        f"paid call."
+                    )
 
     logger.info(
         "Odds-timeline backfill completed",
@@ -561,6 +693,25 @@ def _build_parser() -> argparse.ArgumentParser:
         "paid pull to a few timestamps -- used for the pre-bulk smoke check and "
         "for targeted recovery after an interrupted backfill",
     )
+    # WR-03: the spend ceiling is operator-visible and operator-tunable. Defaults
+    # are the safe ones; raising them is a deliberate act, which is the point.
+    parser.add_argument(
+        "--max-paid-calls",
+        type=int,
+        default=DEFAULT_MAX_PAID_CALLS,
+        help=f"Hard ceiling on PAID historical calls in one --backfill run "
+        f"(default: {DEFAULT_MAX_PAID_CALLS}). A full season is 72 calls "
+        f"(18 weeks x 4 cadence points). Hitting the ceiling aborts; re-run to "
+        f"continue, since stored snapshots are skipped without a paid call",
+    )
+    parser.add_argument(
+        "--min-credits-remaining",
+        type=int,
+        default=DEFAULT_MIN_CREDITS_REMAINING,
+        help=f"Abort --backfill when the Odds API reports fewer remaining "
+        f"credits than this (default: {DEFAULT_MIN_CREDITS_REMAINING}). A floor, "
+        f"not a budget: it leaves headroom for the weekly forward-collect job",
+    )
     parser.add_argument("--api-key", type=str, help="Odds API key (overrides config)")
     return parser
 
@@ -585,7 +736,12 @@ def main():
                 "Starting odds-timeline backfill", seasons=seasons, weeks=args.weeks
             )
             rows = backfill_timeline(
-                seasons, client, markets=args.markets, weeks=args.weeks
+                seasons,
+                client,
+                markets=args.markets,
+                weeks=args.weeks,
+                max_paid_calls=args.max_paid_calls,
+                min_credits_remaining=args.min_credits_remaining,
             )
             print(f"Backfilled {rows} odds_timeline rows across seasons {seasons}")
         else:

@@ -7,7 +7,12 @@ from typing import Any
 
 import httpx
 import pandas as pd
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from conf.settings import get_settings
 from data.schemas import OddsSchema
@@ -78,15 +83,52 @@ class OddsAPIClient:
         """Close HTTP client."""
         self.client.close()
 
+    # WR-11: RETRY ONLY ExternalAPIError. tenacity's default retries EVERY
+    # exception, so narrowing the except arms below is not by itself enough --
+    # a MemoryError, a KeyboardInterrupt-adjacent bug or any other programming
+    # error escaping the body was still retried three times with exponential
+    # backoff, i.e. three PAID HTTP calls to recover from something that cannot
+    # be recovered from. Every recoverable failure is already mapped to
+    # ExternalAPIError inside the body, so this predicate loses no retry coverage.
     @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=60)
+        retry=retry_if_exception_type(ExternalAPIError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=60),
     )
     def _make_request(
-        self, endpoint: str, params: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        """Make HTTP request to odds API with retries."""
+        self,
+        endpoint: str,
+        params: dict[str, Any] | None = None,
+        *,
+        with_headers: bool = False,
+    ) -> dict[str, Any] | tuple[dict[str, Any], httpx.Headers]:
+        """Make an HTTP request to the odds API, with retries.
+
+        WR-11: this used to have a near-verbatim twin, ``_make_request_with_headers``
+        -- about 45 lines duplicating this method character-for-character apart
+        from the return value (same retry decorator, same mock-mode branch, same
+        three except arms, same messages) -- with no test on the copy and no
+        production caller. Any change to auth, retry policy or error mapping had to
+        be made twice. One implementation, one optional return shape.
+
+        Args:
+            endpoint: Path under ``base_url``.
+            params: Query parameters; ``apiKey`` is added here.
+            with_headers: When True return ``(json, response.headers)`` so the
+                caller can read the Odds API credit headers
+                (``x-requests-last`` / ``x-requests-remaining``) that the paid
+                backfill's cost guard depends on.
+
+        Returns:
+            The decoded JSON, or ``(json, headers)`` when ``with_headers`` is True.
+
+        Raises:
+            ExternalAPIError: On an HTTP status error, a transport error, or a
+                malformed response body.
+        """
         if self.mock_mode:
-            return self._generate_mock_odds()
+            mock = self._generate_mock_odds()
+            return (mock, httpx.Headers({})) if with_headers else mock
 
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
 
@@ -111,7 +153,7 @@ class OddsAPIClient:
                 "Odds API request successful", url=url, status_code=response.status_code
             )
 
-            return data
+            return (data, response.headers) if with_headers else data
 
         except httpx.HTTPStatusError as e:
             logger.error(
@@ -122,78 +164,22 @@ class OddsAPIClient:
             )
             raise ExternalAPIError(
                 f"HTTP error {e.response.status_code}: {e.response.text}"
-            )
+            ) from e
 
         except httpx.RequestError as e:
             logger.error("Odds API request error", url=url, error=str(e))
-            raise ExternalAPIError(f"Request error: {e}")
+            raise ExternalAPIError(f"Request error: {e}") from e
 
-        except Exception as e:
-            logger.error("Odds API unexpected error", url=url, error=str(e))
-            raise ExternalAPIError(f"Unexpected error: {e}")
-
-    @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=60)
-    )
-    def _make_request_with_headers(
-        self, endpoint: str, params: dict[str, Any] | None = None
-    ) -> tuple[dict[str, Any], httpx.Headers]:
-        """Make an odds API request returning BOTH the JSON body AND the headers.
-
-        Mirrors :meth:`_make_request` (inherited auth via ``apiKey`` param,
-        ``raise_for_status``, error mapping, and tenacity retry) but returns
-        ``(response.json(), response.headers)`` instead of discarding the headers
-        (the plain ``_make_request`` returns JSON only, ingest_odds.py:88-93).
-        Plan 29-05's cost guard reads the credit headers (``x-requests-last`` /
-        ``x-requests-remaining``) from the returned headers before the bulk paid
-        backfill loop (review 29-05 HIGH).
-        """
-        if self.mock_mode:
-            return self._generate_mock_odds(), httpx.Headers({})
-
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-
-        if params is None:
-            params = {}
-        params["apiKey"] = self.api_key
-
-        try:
-            logger.debug(
-                "Making odds API request (headers)",
-                url=url,
-                params=_redact_api_key(params),
-            )
-
-            response = self.client.get(url, params=params)
-            response.raise_for_status()
-
-            data = response.json()
-            logger.info(
-                "Odds API request successful",
-                url=url,
-                status_code=response.status_code,
-            )
-
-            return data, response.headers
-
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                "Odds API HTTP error",
-                url=url,
-                status_code=e.response.status_code,
-                response=e.response.text,
-            )
-            raise ExternalAPIError(
-                f"HTTP error {e.response.status_code}: {e.response.text}"
-            )
-
-        except httpx.RequestError as e:
-            logger.error("Odds API request error", url=url, error=str(e))
-            raise ExternalAPIError(f"Request error: {e}")
-
-        except Exception as e:
-            logger.error("Odds API unexpected error", url=url, error=str(e))
-            raise ExternalAPIError(f"Unexpected error: {e}")
+        # WR-11: NARROWED from a bare `except Exception`. A blanket catch here
+        # converted programming errors (a KeyError, a typo in the response
+        # handling) into ExternalAPIError, which tenacity then RETRIED three times
+        # with exponential backoff -- three PAID HTTP calls to recover from a bug
+        # that cannot be recovered from. These three are the genuine
+        # malformed-body failures; anything else propagates un-retried, with its
+        # own traceback. `from e` preserves the cause, which neither copy did.
+        except (ValueError, TypeError, KeyError) as e:
+            logger.error("Odds API malformed response", url=url, error=str(e))
+            raise ExternalAPIError(f"Malformed response: {e}") from e
 
     def _generate_mock_odds(
         self, season: int | None = None, week: int | None = None
@@ -443,12 +429,10 @@ class OddsAPIClient:
             markets: Markets to fetch (e.g. ``["totals"]`` or
                 ``["totals", "spreads"]``).
             regions: Odds region (default ``"us"``).
-            return_headers: When ``True``, route through
-                ``_make_request_with_headers`` and return
-                ``(envelope, response.headers)`` so Plan 29-05's cost guard can
-                read ``x-requests-last`` / ``x-requests-remaining`` (review
-                29-05 HIGH). Default ``False`` preserves the JSON-only return
-                used by the backfill loop.
+            return_headers: When ``True``, return ``(envelope, response.headers)``
+                so the backfill's cost guard can read ``x-requests-last`` /
+                ``x-requests-remaining`` (review 29-05 HIGH). Default ``False``
+                preserves the JSON-only return.
 
         Returns:
             The trajectory envelope dict, or ``(envelope, headers)`` when
@@ -470,10 +454,7 @@ class OddsAPIClient:
             regions=regions,
         )
 
-        if return_headers:
-            return self._make_request_with_headers(endpoint, params)
-
-        return self._make_request(endpoint, params)
+        return self._make_request(endpoint, params, with_headers=return_headers)
 
 
 class OddsDataIngester:

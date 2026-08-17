@@ -17,6 +17,13 @@ Plan 29-05 under a paid key. They prove:
    than the requested T (an equality check would be a silent no-op guard).
 7. SPEND SAFETY (Plan 29-05): ``--weeks`` is exposed on the CLI so a paid pull
    can be bounded to a few timestamps.
+8. SPEND CEILING (WR-03): the credit-header guard and the paid-call ceiling are
+   WIRED INTO the loop and abort it. Before the fix the header reader had zero
+   call sites in the repo -- production or test -- while the module's prose
+   credited it as "the cost guard", and nothing bounded total spend.
+9. SPEND SAFETY (WR-04): a paid call that yields ZERO usable rows still records
+   coverage from the envelope timestamp, so a resumed backfill does not re-buy
+   it forever.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -29,6 +36,7 @@ import pytest
 from scripts.ingest_odds import OddsAPIClient
 from scripts.ingest_odds_timeline import (
     MockModeBackfillError,
+    SpendGuardError,
     _build_parser,
     _load_stored_snapshot_timestamps,
     _snapshot_already_stored,
@@ -95,15 +103,25 @@ def _mock_client(mock_mode: bool = False) -> OddsAPIClient:
     return client
 
 
+def _fake_headers(remaining: int = 20000, last: int = 10) -> dict[str, str]:
+    """Synthetic Odds API credit headers (WR-03).
+
+    The cost guard is exercised entirely against these -- no live call is needed
+    to prove the abort arms fire.
+    """
+    return {"x-requests-remaining": str(remaining), "x-requests-last": str(last)}
+
+
 def test_backfill_stamps_envelope_timestamp_and_is_idempotent(tmp_path):
     """Stored snapshot_ts == envelope timestamp (not requested T); re-run no-op."""
     client = _mock_client(mock_mode=False)
 
     requested_ts: list[str] = []
 
-    def fake_hist(date_iso, markets, regions="us"):
+    def fake_hist(date_iso, markets, regions="us", return_headers=False):
         requested_ts.append(date_iso)
-        return _fake_envelope()
+        envelope = _fake_envelope()
+        return (envelope, _fake_headers()) if return_headers else envelope
 
     client.get_historical_nfl_odds = fake_hist
 
@@ -210,9 +228,10 @@ def test_backfill_skips_already_stored_snapshots_on_rerun(tmp_path):
 
     first_calls: list[str] = []
 
-    def fake_hist_first(date_iso, markets, regions="us"):
+    def fake_hist_first(date_iso, markets, regions="us", return_headers=False):
         first_calls.append(date_iso)
-        return _fake_envelope_at(date_iso)
+        envelope = _fake_envelope_at(date_iso)
+        return (envelope, _fake_headers()) if return_headers else envelope
 
     client.get_historical_nfl_odds = fake_hist_first
 
@@ -233,9 +252,10 @@ def test_backfill_skips_already_stored_snapshots_on_rerun(tmp_path):
 
     second_calls: list[str] = []
 
-    def fake_hist_second(date_iso, markets, regions="us"):
+    def fake_hist_second(date_iso, markets, regions="us", return_headers=False):
         second_calls.append(date_iso)
-        return _fake_envelope_at(date_iso)
+        envelope = _fake_envelope_at(date_iso)
+        return (envelope, _fake_headers()) if return_headers else envelope
 
     client.get_historical_nfl_odds = fake_hist_second
 
@@ -415,3 +435,239 @@ def test_debug_params_log_redacts_api_key():
     logged = str(debug_calls)
     assert secret not in logged
     assert "***REDACTED***" in logged
+
+
+# ---------------------------------------------------------------------------
+# WR-03: the credit-header cost guard and the paid-call ceiling
+#
+# Repo-wide grep found `return_headers=True` and the header-reading request
+# method had ZERO call sites outside their own definitions -- no production
+# caller, no test -- while the module docstring credited them as "the cost
+# guard". `backfill_timeline` called the JSON-only path, never read a credit
+# header, and had no cap on `calls_made`. A wrong `--backfill 2015 2024` issued
+# 18 weeks x 4 cadence points x N seasons paid calls with nothing between the
+# loop and the account balance.
+# ---------------------------------------------------------------------------
+
+
+def _counting_client(headers_for_call, tmp_path=None):
+    """A stub client that returns a fresh envelope + caller-chosen headers."""
+    client = _mock_client(mock_mode=False)
+    calls: list[str] = []
+
+    def fake_hist(date_iso, markets, regions="us", return_headers=False):
+        calls.append(date_iso)
+        envelope = _fake_envelope_at(date_iso)
+        if not return_headers:
+            return envelope
+        return envelope, headers_for_call(len(calls))
+
+    client.get_historical_nfl_odds = fake_hist
+    return client, calls
+
+
+def test_backfill_reads_the_credit_headers_on_every_paid_call(tmp_path):
+    """The guard is WIRED IN: the loop requests headers, not the JSON-only path."""
+    seen_return_headers: list[bool] = []
+    client = _mock_client(mock_mode=False)
+
+    def fake_hist(date_iso, markets, regions="us", return_headers=False):
+        seen_return_headers.append(return_headers)
+        envelope = _fake_envelope_at(date_iso)
+        return (envelope, _fake_headers()) if return_headers else envelope
+
+    client.get_historical_nfl_odds = fake_hist
+
+    backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+
+    assert seen_return_headers, "no paid call was made"
+    assert all(seen_return_headers), (
+        "the backfill called the JSON-only path, so the credit headers are "
+        "never read and the cost guard is dead code (WR-03)"
+    )
+
+
+def test_backfill_aborts_when_credits_fall_below_the_floor(tmp_path):
+    """A credit floor stops the loop rather than draining the account."""
+    client, calls = _counting_client(
+        lambda n: _fake_headers(remaining=5 if n >= 2 else 20000)
+    )
+
+    with pytest.raises(SpendGuardError, match="credits"):
+        backfill_timeline(
+            [2021], client, weeks=[6], base_path=tmp_path, min_credits_remaining=100
+        )
+
+    # Stopped ON the offending call, not after burning the rest of the cadence.
+    assert len(calls) == 2
+
+
+def test_backfill_aborts_at_the_paid_call_ceiling(tmp_path):
+    """A hard ceiling bounds a typo'd multi-season backfill."""
+    client, calls = _counting_client(lambda _n: _fake_headers())
+
+    with pytest.raises(SpendGuardError, match="ceiling"):
+        backfill_timeline(
+            [2021], client, weeks=[6, 7, 8], base_path=tmp_path, max_paid_calls=3
+        )
+
+    assert len(calls) == 3
+
+
+def test_rows_bought_before_an_abort_are_kept(tmp_path):
+    """The guard fires AFTER the write, so a paid call is never discarded.
+
+    Aborting before persisting would mean the operator paid for a snapshot and
+    threw it away -- and the re-run would then buy it a second time.
+    """
+    client, _calls = _counting_client(lambda _n: _fake_headers())
+
+    with pytest.raises(SpendGuardError):
+        backfill_timeline(
+            [2021], client, weeks=[6], base_path=tmp_path, max_paid_calls=2
+        )
+
+    silver = pd.read_parquet(tmp_path / "silver" / "odds_timeline.parquet")
+    assert len(silver) == 2
+
+
+def test_a_missing_credit_header_does_not_abort_a_legitimate_backfill(tmp_path):
+    """An absent header reads as UNKNOWN, not as zero credits.
+
+    The call ceiling still bounds the run, so treating a missing header as an
+    abort would only break legitimate backfills against a proxy that strips it.
+    """
+    client, calls = _counting_client(lambda _n: {})
+
+    backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+
+    assert len(calls) == 4
+
+
+# ---------------------------------------------------------------------------
+# WR-04: a paid call yielding zero usable rows must not be re-bought
+# ---------------------------------------------------------------------------
+
+
+def _empty_board_envelope(requested_iso: str) -> dict:
+    """An envelope with a real timestamp but NO games (nothing to normalize)."""
+    envelope = _fake_envelope_at(requested_iso)
+    envelope["data"] = []
+    return envelope
+
+
+def test_an_empty_envelope_still_records_coverage_within_the_run(tmp_path):
+    """Coverage comes from the ENVELOPE timestamp, not from the emitted rows.
+
+    Pre-fix, an envelope with no usable board added nothing to
+    ``stored_snapshots`` and wrote nothing, so a later requested timestamp that
+    the SAME archived snapshot already answers was bought all over again.
+
+    The fixture returns a CONSTANT envelope timestamp (21:57Z Friday), which the
+    12-hour lookback window means also covers the Friday-18:00-ET (22:00Z)
+    cadence request. Four cadence points, three purchases: the fourth is skipped
+    because the third call's envelope already answered it. Pre-fix that skip
+    could not happen for an empty board and all four were bought.
+
+    SCOPE, stated rather than implied: this record is IN-MEMORY, so it bounds
+    re-spend within one invocation only. It is deliberately not durable -- a
+    zero-row marker or a sidecar "requested timestamps" file would be needed for
+    that, and adding an artifact to the data lake is a design decision, not a
+    review fix. The WARNING log below is what makes the event visible meanwhile.
+    """
+    client = _mock_client(mock_mode=False)
+    requested: list[str] = []
+
+    def fake_hist(date_iso, markets, regions="us", return_headers=False):
+        requested.append(date_iso)
+        envelope = _fake_envelope()  # constant ENVELOPE_TS, no usable board
+        envelope["data"] = []
+        return (envelope, _fake_headers()) if return_headers else envelope
+
+    client.get_historical_nfl_odds = fake_hist
+
+    written = backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+
+    assert written == 0
+    assert len(requested) == 3, (
+        f"expected the covered 4th cadence point to be skipped, bought "
+        f"{len(requested)} -- coverage is still being recorded from the emitted "
+        f"rows instead of the envelope timestamp (WR-04)"
+    )
+    assert ENVELOPE_TS not in requested
+
+
+def test_an_empty_envelope_is_logged_at_warning(tmp_path):
+    """A paid call that bought nothing is exactly what an operator must see."""
+    client = _mock_client(mock_mode=False)
+
+    def fake_hist(date_iso, markets, regions="us", return_headers=False):
+        envelope = _empty_board_envelope(date_iso)
+        return (envelope, _fake_headers()) if return_headers else envelope
+
+    client.get_historical_nfl_odds = fake_hist
+
+    with patch("scripts.ingest_odds_timeline.logger") as mock_logger:
+        backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+
+    warnings_logged = str(mock_logger.warning.call_args_list)
+    assert "NO usable rows" in warnings_logged
+
+
+# ---------------------------------------------------------------------------
+# WR-11: one request implementation, two return shapes
+# ---------------------------------------------------------------------------
+
+
+def test_make_request_returns_headers_on_demand():
+    """``with_headers=True`` returns ``(json, headers)`` from the SAME method.
+
+    The header-returning path used to be a ~45-line near-verbatim duplicate with
+    no test at all, so any change to auth, retry policy or error mapping had to
+    be made twice.
+    """
+    client = OddsAPIClient.__new__(OddsAPIClient)
+    client.mock_mode = False
+    client.api_key = "k"
+    client.base_url = "https://api.example.com/v4"
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.json.return_value = {"timestamp": ENVELOPE_TS, "data": []}
+    fake_response.status_code = 200
+    fake_response.headers = {"x-requests-remaining": "19990"}
+    client.client = MagicMock()
+    client.client.get.return_value = fake_response
+
+    plain = client._make_request("some/endpoint", {"regions": "us"})
+    body, headers = client._make_request(
+        "some/endpoint", {"regions": "us"}, with_headers=True
+    )
+
+    assert plain == {"timestamp": ENVELOPE_TS, "data": []}
+    assert body == plain
+    assert headers["x-requests-remaining"] == "19990"
+
+
+def test_make_request_does_not_retry_a_programming_error():
+    """A bare ``except Exception`` turned bugs into three PAID retries.
+
+    Anything outside the malformed-body family now propagates un-retried.
+    """
+    client = OddsAPIClient.__new__(OddsAPIClient)
+    client.mock_mode = False
+    client.api_key = "k"
+    client.base_url = "https://api.example.com/v4"
+
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.json.side_effect = MemoryError("not a transport failure")
+    client.client = MagicMock()
+    client.client.get.return_value = fake_response
+
+    with pytest.raises(MemoryError):
+        client._make_request("some/endpoint")
+
+    assert client.client.get.call_count == 1, (
+        "a non-recoverable error was retried; each retry is a PAID HTTP call"
+    )
