@@ -20,17 +20,23 @@ ET = ZoneInfo("America/New_York")
 UTC = _UTC
 
 
-def get_current_nfl_season() -> int:
+def get_current_nfl_season(now: datetime | None = None) -> int:
     """
     Get the current NFL season year.
 
     The NFL season spans two calendar years. We use the year the season starts.
     For example, the 2024 season runs from Sept 2024 to Feb 2025.
 
+    Args:
+        now: Reference instant, for testing against a frozen clock. Defaults to
+            ``datetime.now(ET)``. Purely additive -- every existing call site
+            passes nothing and behaves identically.
+
     Returns:
         NFL season year
     """
-    now = datetime.now(ET)
+    if now is None:
+        now = datetime.now(ET)
 
     # If it's January-July, we're in the previous season's playoffs/offseason
     if now.month <= 7:
@@ -76,7 +82,7 @@ def get_nfl_season_start(season: int) -> datetime:
     return kickoff
 
 
-def get_current_nfl_week() -> tuple[int, int]:
+def get_current_nfl_week(now: datetime | None = None) -> tuple[int, int]:
     """
     Get the current NFL season and week based on when games actually finish.
 
@@ -84,35 +90,46 @@ def get_current_nfl_week() -> tuple[int, int]:
     (typically Monday Night Football). This ensures consistency with betting
     markets and data availability.
 
+    WR-05 correction. The previous implementation returned a week ONE TOO HIGH on
+    Thursday, Friday, Saturday and Sunday -- every game day except Monday -- for
+    every week of the season, contradicting the contract stated in the paragraph
+    above. The cause was double counting: ``days_since_start // 7 + 1`` is measured
+    from the season's opening THURSDAY and is therefore already Thursday-anchored,
+    so the conditional ``+1`` for "Tuesday or later" added a second week from
+    Thursday onward. Every consumer (the Friday orchestrator, the ingest scripts,
+    the prediction filename) uses the value verbatim with no compensation, so the
+    orchestrator was generating NEXT week's predictions.
+
+    The fix anchors the buckets on the transition day itself -- the Tuesday two days
+    before the opening Thursday -- instead of patching a Thursday-anchored bucket.
+    The pre-season guard below is deliberately KEPT: without it, anchoring two days
+    earlier would also flip the pre-season Tuesday and Wednesday from the previous
+    season's week 18 to the new season's week 1, which is a behaviour change nobody
+    asked for.
+
+    Args:
+        now: Reference instant, for testing against a frozen clock. Defaults to
+            ``datetime.now(ET)``. Purely additive -- every existing call site passes
+            nothing and behaves identically.
+
     Returns:
         Tuple of (season, week) where week is 1-18 for regular season
     """
-    season = get_current_nfl_season()
+    if now is None:
+        now = datetime.now(ET)
+
+    season = get_current_nfl_season(now)
     season_start = get_nfl_season_start(season)
-    now = datetime.now(ET)
 
     # Calculate weeks since season start
     if now < season_start:
         # We're before the season starts, return previous season's last week
         return season - 1, NFL_REGULAR_SEASON_WEEKS
 
-    # Calculate the basic week number
-    days_since_start = (now - season_start).days
-    basic_week = min(days_since_start // 7 + 1, NFL_TOTAL_WEEKS)
-
-    # NFL weeks transition on Tuesday (weekday 1)
-    # If it's Tuesday or later in the week, we've moved to the next week
-    current_weekday = now.weekday()  # 0=Monday, 1=Tuesday, etc.
-
-    if current_weekday >= 1:  # Tuesday or later
-        # We're in the week that started this Tuesday
-        # The "current" week for betting/data purposes is basic_week + 1
-        current_week = min(basic_week + 1, NFL_TOTAL_WEEKS)
-    else:
-        # It's Monday - we're still in the previous week until games finish
-        current_week = basic_week
-
-    return season, current_week
+    # NFL weeks transition on the Tuesday after the previous week's last game
+    # (Monday Night Football), so bucket from that Tuesday.
+    week_anchor = season_start - timedelta(days=2)
+    return season, min((now - week_anchor).days // 7 + 1, NFL_TOTAL_WEEKS)
 
 
 def parse_nfl_date(date_str: str) -> datetime:
@@ -147,12 +164,18 @@ def parse_nfl_date(date_str: str) -> datetime:
                 return dt
 
     # Fall back to dateutil parser
+    #
+    # WR-04: this branch previously called ``ET.localize(dt)`` -- the pytz API on a
+    # ``zoneinfo.ZoneInfo`` object, which has no such method. So any date string
+    # that missed all three regexes and parsed naive raised ``AttributeError``, and
+    # ``AttributeError`` was not in the except tuple, which made the documented
+    # ValueError below unreachable.
     try:
         dt = parser.parse(date_str)
-        # Convert to ET if timezone-naive
-        dt = ET.localize(dt) if dt.tzinfo is None else dt.astimezone(ET)
+        # Attach ET to a naive parse; convert an aware one.
+        dt = dt.replace(tzinfo=ET) if dt.tzinfo is None else dt.astimezone(ET)
         return dt
-    except (ValueError, TypeError) as e:
+    except (ValueError, TypeError, AttributeError) as e:
         raise ValueError(f"Unable to parse date string: {date_str}") from e
 
 

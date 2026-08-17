@@ -304,13 +304,25 @@ def test_no_shipped_config_has_an_empty_hp_val_list() -> None:
     assert COVERED_SELECTION_WINDOW_CONFIG.hp_val_seasons
 
     literal_empty = []
+    scanned = 0
     for path in REPO_ROOT.glob("**/*.py"):
         parts = set(path.parts)
         if parts & {".venv", "tests", "__pycache__"}:
             continue
+        scanned += 1
         text = path.read_text(encoding="utf-8")
         if "hp_val_seasons=[]" in text or "hp_val_seasons = []" in text:
             literal_empty.append(path.relative_to(REPO_ROOT).as_posix())
+
+    # Self-check (WR-11 hardening). A scan that silently matches NOTHING passes
+    # this test vacuously and would keep passing forever. The glob pattern above
+    # is the correct portable forward-slash form and visits ~142 production files
+    # today; the floor is set far below that so it is a real tripwire against the
+    # scan degrading, not a count that has to be maintained.
+    assert scanned > 50, (
+        f"the production scan visited only {scanned} files -- it is matching "
+        f"almost nothing, so the assertion below would pass vacuously"
+    )
 
     assert not literal_empty, (
         f"an empty hp_val_seasons list appeared in production code: "
