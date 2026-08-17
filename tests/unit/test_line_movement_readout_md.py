@@ -28,6 +28,7 @@ ASCII only, no emoji (CLAUDE.md).
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -66,13 +67,46 @@ _REQUIRED_SECTION4_MARKERS = (
     "train_and_evaluate(tune=False)",  # the out-of-sample walk-forward anchor
     "priced-in",  # the D-02 redundancy caveat (Section 2 phrasing, carried into 4)
     "2020-06-06",  # the archive floor / covered span
-    "D29-06-01",  # the orphaned-2020 disclosure
+    "D29-06-01",  # the orphaned-2020 disclosure (now marked RESOLVED)
     "selection churn",  # what the canonical deltas actually are
     "7,210 credits",  # the real cost, recorded against what was learned
+    # Quick task 260816-u0e: the re-key, the pre-registration audit trail, and the
+    # headline grid. Each marker names a piece of Section 4 that would otherwise be
+    # free to go stale unnoticed.
+    "SUPERSEDED",  # 4c is retained verbatim and labelled, never deleted
+    "4c-bis",  # the superseding pre-registration
+    "pre_registration_commit:",  # the machine-readable ordering marker
+    "RE-MEASURED",  # 4b's figures are current, not preserved-and-stale
+    "HEADLINE",  # 4d exists
+    "764 paired games",  # the headline's measured sample
+    "confound tell",  # the pre-registered line_movement_coverage season-proxy tell
+    "NON-DEFAULT",  # the D-Q2 consequence for Phase 30
 )
 
-# The three canonical-window per-target deltas as published in Section 4a.
+# The three canonical-window per-target deltas as published in Section 4a. UNCHANGED by the
+# 2020 re-key and the full gold rebuild -- 4a is the upstream-drift control precisely because
+# its 2018-2019 selection window cannot see the re-keyed season, so a change here means
+# something OTHER than this project's own edits moved the gold.
 _CANONICAL_DELTAS = {"wp": 0.000000, "ats": 0.147814, "ou": -0.221188}
+
+# The coverage-window diagnostic (4b), RE-MEASURED on the re-keyed archive. Its walk-forward
+# trains on every season below 2024, which includes the re-keyed 2020, so this number moved
+# (from the pre-re-key +0.816061, retained in the doc as history).
+_COVERAGE_WINDOW_ATS_DELTA = 1.012106
+
+# The pre-registered headline grid (4d): train 2018-2020 / hp-val 2021 / measure 2022-2024.
+_HEADLINE_ATS_DELTA = 0.151237
+_HEADLINE_ATS_GROUP_COLS_SELECTED = 5
+_HEADLINE_MEASURE_WINDOW = "2022-2024"
+
+# Delta tokens that must NOT appear in either pre-registration commit's diff: if a headline
+# number is present in the commit that registered the rule, the rule was not written first.
+_HEADLINE_DELTA_TOKENS = ("0.151237", "0.001429", "0.001592", "1.012106")
+
+# The machine-readable pre-registration ordering markers (4d).
+_PRE_REGISTRATION_MARKER_RE = re.compile(
+    r"^(?:superseding_)?pre_registration_commit:\s*([0-9a-f]{40})\s*$", re.MULTILINE
+)
 
 # The screen-not-deploy invariant: these over-claim words must NEVER appear (mirrors the negative
 # grep in the plan's acceptance: ``grep -ci 'deployed\\|proven'`` must return 0).
@@ -201,9 +235,22 @@ class TestLiftSectionContent:
             )
 
     def test_canonical_deltas_are_recorded(self) -> None:
-        """The published canonical numbers are in the doc (the doc-drift anchor)."""
+        """The published numbers are in the doc (the doc-drift anchor).
+
+        Includes the pre-re-key 4b readings (+0.816061 / 0.00044), which the doc
+        retains in prose as history rather than deleting, and the re-measured and
+        headline numbers that superseded them.
+        """
         content = _read_readout()
-        for token in ("+0.147814", "-0.221188", "+0.816061", "0.00044"):
+        for token in (
+            "+0.147814",
+            "-0.221188",
+            "+0.816061",
+            "0.00044",
+            "+1.012106",
+            "+0.151237",
+            "+0.001429",
+        ):
             assert token in content, (
                 f"the readout is missing the published number {token}"
             )
@@ -238,7 +285,15 @@ class TestReadoutMatchesHarness:
     """
 
     @staticmethod
-    def _run(coverage_window: bool) -> dict:
+    def _run(
+        coverage_window: bool = False, covered_selection_window: bool = False
+    ) -> dict:
+        """Run the ATS cell under one of the three published windows.
+
+        Takes the window rather than duplicating the invocation per test, and
+        goes through ``screen_kwargs_for_phase`` so the guard runs exactly what
+        the CLI runs.
+        """
         import warnings
 
         import pandas as pd
@@ -247,7 +302,11 @@ class TestReadoutMatchesHarness:
 
         gold = pd.read_parquet(_GOLD_ATS_PATH)
         odds = pd.read_parquet(_ODDS_PATH)
-        kwargs = screen_kwargs_for_phase(29, coverage_window=coverage_window)
+        kwargs = screen_kwargs_for_phase(
+            29,
+            coverage_window=coverage_window,
+            covered_selection_window=covered_selection_window,
+        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             return run_signal_lift_screen(
@@ -293,11 +352,135 @@ class TestReadoutMatchesHarness:
             "the diagnostic measures one season and must be labelled as such"
         )
         assert cell["delta_mean"] is not None
-        assert abs(cell["delta_mean"] - 0.816061) < 5e-3, (
-            f"coverage-window ATS delta {cell['delta_mean']} drifted from the readout's +0.816061"
+        assert abs(cell["delta_mean"] - _COVERAGE_WINDOW_ATS_DELTA) < 5e-3, (
+            f"coverage-window ATS delta {cell['delta_mean']} drifted from the "
+            f"readout's re-measured +{_COVERAGE_WINDOW_ATS_DELTA}"
         )
         assert cell["n_group_columns_selected"] > 0, (
             "the diagnostic window is only meaningful if the family is actually selected"
         )
         assert cell["measurable"] is True
+        assert "+1.012106" in _read_readout()
+        # The pre-re-key reading is retained as history and must not be dropped.
         assert "+0.816061" in _read_readout()
+
+    def test_headline_ats_cell_reproduces_from_the_covered_selection_window(
+        self,
+    ) -> None:
+        """The 4d headline is the harness's number, re-run rather than re-typed."""
+        if not (_GOLD_ATS_PATH.exists() and _ODDS_PATH.exists()):
+            pytest.skip(
+                f"Canonical gold/odds not present at {_GOLD_ATS_PATH} / {_ODDS_PATH}"
+            )
+
+        result = self._run(covered_selection_window=True)
+        cell = result["groups"]["line_movement"]["per_target"]["ats"]
+
+        assert result["measure_window"] == _HEADLINE_MEASURE_WINDOW, (
+            "the headline measures three seasons and must be labelled as such"
+        )
+        assert cell["delta_mean"] is not None
+        assert abs(cell["delta_mean"] - _HEADLINE_ATS_DELTA) < 5e-3, (
+            f"headline ATS delta {cell['delta_mean']} drifted from the readout's "
+            f"+{_HEADLINE_ATS_DELTA}"
+        )
+        # The measurability precondition the whole grid's meaning rests on: under
+        # this window the family IS selected, so the cell is evidence about line
+        # movement rather than selection churn.
+        assert cell["n_group_columns"] == 15
+        assert cell["n_group_columns_selected"] == _HEADLINE_ATS_GROUP_COLS_SELECTED, (
+            f"the readout publishes {_HEADLINE_ATS_GROUP_COLS_SELECTED}/15 group "
+            f"columns used for ATS; the harness now reports "
+            f"{cell['n_group_columns_selected']}"
+        )
+        assert cell["measurable"] is True
+        content = _read_readout()
+        assert "+0.151237" in content
+        assert f"{_HEADLINE_ATS_GROUP_COLS_SELECTED} / 15" in content
+
+    def test_headline_confound_tell_is_applied_as_pre_registered(self) -> None:
+        """``line_movement_coverage`` selected => the doc must call the cell confounded.
+
+        4c-bis item 6 registered this tell BEFORE the run. The doc currently
+        reports that it did not fire; if a rebuild makes it fire, that claim
+        becomes false and Section 4d has to be rewritten rather than silently
+        going stale.
+        """
+        if not (_GOLD_ATS_PATH.exists() and _ODDS_PATH.exists()):
+            pytest.skip(
+                f"Canonical gold/odds not present at {_GOLD_ATS_PATH} / {_ODDS_PATH}"
+            )
+
+        cell = self._run(covered_selection_window=True)["groups"]["line_movement"][
+            "per_target"
+        ]["ats"]
+        fired = "line_movement_coverage" in cell["group_columns_selected"]
+        assert not fired, (
+            "line_movement_coverage is now selected under the covered window -- per "
+            "the pre-registered tell that cell is CONFOUNDED (a season proxy, not "
+            "market information) and Section 4d must say so"
+        )
+        assert "did not fire" in _read_readout()
+
+
+class TestPreRegistrationOrdering:
+    """The D-Q4 claim is checked from git, not asserted in prose.
+
+    The whole value of a pre-registration is that the rule existed before the
+    numbers did. That is only worth something if it is verifiable, so the readout
+    carries the registering commits as machine-readable SHAs and this test
+    resolves them: each must be an ancestor of HEAD, and neither commit's own diff
+    may contain a headline number.
+    """
+
+    @staticmethod
+    def _git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", *args],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @staticmethod
+    def _marker_shas() -> list[str]:
+        return _PRE_REGISTRATION_MARKER_RE.findall(_read_readout())
+
+    def test_both_registration_markers_are_present(self) -> None:
+        assert len(self._marker_shas()) == 2, (
+            "Section 4d must carry both the original and the superseding "
+            "pre_registration_commit markers"
+        )
+
+    def test_registration_commits_precede_head(self) -> None:
+        """`git merge-base --is-ancestor` -- the ordering claim, checked."""
+        if self._git("rev-parse", "--git-dir").returncode != 0:
+            pytest.skip("not a git checkout")
+
+        for sha in self._marker_shas():
+            if self._git("cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
+                pytest.skip(f"commit {sha} not available in this checkout")
+            result = self._git("merge-base", "--is-ancestor", sha, "HEAD")
+            assert result.returncode == 0, (
+                f"pre-registration commit {sha} is NOT an ancestor of HEAD -- the "
+                "rule cannot be shown to have been written before the results"
+            )
+
+    def test_registration_commits_carry_no_headline_numbers(self) -> None:
+        """A registration that already knew the answer is not a registration."""
+        if self._git("rev-parse", "--git-dir").returncode != 0:
+            pytest.skip("not a git checkout")
+
+        for sha in self._marker_shas():
+            if self._git("cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
+                pytest.skip(f"commit {sha} not available in this checkout")
+            diff = self._git("show", sha, "--", "LINE-MOVEMENT-READOUT.md").stdout
+            added = "\n".join(
+                line for line in diff.splitlines() if line.startswith("+")
+            )
+            leaked = [token for token in _HEADLINE_DELTA_TOKENS if token in added]
+            assert not leaked, (
+                f"pre-registration commit {sha} already contains headline numbers "
+                f"{leaked} -- it was not written before the results existed"
+            )

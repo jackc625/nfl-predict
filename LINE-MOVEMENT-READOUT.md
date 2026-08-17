@@ -169,7 +169,7 @@ identically-0.0 `total_movement` / `spread_movement` columns.
 
 | Season | Covered | Note |
 |---|---|---|
-| 2020 | **0 / 262** | the whole 2020 archive is orphaned by a `game_id` off-by-one (D29-06-01): every 2020 timeline id is one week high. The upstream `get_nfl_season_start` derivation was corrected in `45bff24`, but the STORED rows were written under the old rule and have not been re-keyed. ~1,780 paid rows contribute nothing today. A re-key needs NO further paid calls. |
+| 2020 | **256 / 262 ids; 244 / 269 games** | **D29-06-01 RESOLVED 2026-08-16 by quick task 260816-u0e**, with NO further paid call. The whole 2020 archive had been orphaned by a `game_id` off-by-one: `get_nfl_season_start` derived the opener as the first Thursday in September instead of the Thursday after Labor Day, so every 2020 id ran one week high and 2020 coverage was `0 / 262`. The FUNCTION was corrected in `45bff24`; the 1,780 STORED rows were re-keyed in place afterwards by replaying the old rule over `games` silver and inverting it. The 262 stored ids collapse onto 256 true ids (six early-September board listings whose provisional dates later moved merge into the id holding that game's in-week snapshots, across disjoint timestamps), all of which join `games`. Zero paid rows were lost: 1,780 rows and 1,780 distinct `(game_id, snapshot_ts)` pairs before and after. |
 | 2021 | 261 / 272 | |
 | 2022 | 257 / 271 | |
 | 2023 | 271 / 272 | |
@@ -208,17 +208,45 @@ t-statistic) is the clean control: WP's top-20 was unchanged, so its two legs we
 The harness now reports this itself -- the run prints `grp_cols_used` per cell and a `NOT
 MEASURED` banner -- so this failure mode cannot be published as a lift again.
 
-### 4b. Coverage-window diagnostic: `python -m backtest.signal_lift --phase 29 --coverage-window`
+**RE-RUN 2026-08-16 as the upstream-drift control, and it did not move.** After the 2020 re-key
+and a full gold rebuild, this exact command was re-run. All three cells reproduce to the digit --
+WP +0.000000, ATS +0.147814, OU -0.221188 -- and all three still report **0 / 15**, so the `NOT
+MEASURED` banner still fires and this section's "not evidence" framing still holds.
+
+That non-movement is doing real work, and it is why the control was run. 4a's selection window is
+2018-2019, which the 2020 re-key cannot reach: the family is constant there before and after, so
+no line-movement column enters any locked feature set and 4a's walk-forward training frames are
+untouched by the re-key even though they span 2020. Any movement in these numbers would therefore
+have been upstream data drift entering through the rebuild (which reaches nflreadpy live with no
+cache), and it would have contaminated the headline grid below in a way nothing else would catch.
+There was none. The gold fingerprint agrees: comparing every column, per season, before and after
+the rebuild, the ONLY columns that moved are the 15 line-movement columns and `feature_timestamp`
+(the build stamp, which is not a feature and is excluded from the matrices). **No modelled feature
+outside the line-movement family changed at all**, so nothing in 4d needs to be discounted for
+upstream drift.
+
+### 4b. Coverage-window diagnostic, RE-MEASURED on the re-keyed archive: `python -m backtest.signal_lift --phase 29 --coverage-window`
 
 To find out whether the signal is *measurable at all*, the same screen was re-run under a
 diagnostic window that puts covered seasons in the selection fold: train 2021-2022, hp-val 2023,
 measure **2024 only**; 255 paired games. Here the selector CAN see the family, and it chose it.
 
+The grid below was **re-measured on 2026-08-16 against the re-keyed archive and the rebuilt gold.**
+It had to be: this window's walk-forward trains on every season below 2024, which includes 2020,
+whose line-movement values changed from neutral defaults to real trajectories. A preserved number
+that no longer reproduces is worse than no number, so the figures are the current ones and the
+originals are kept below as history rather than presented as reproducible.
+
 | Target | Paired CLV delta | t | p | Group columns the model used |
 |---|---|---|---|---|
-| WP | -0.001537 | -0.859 | 0.39111 | 3 / 15 (`spread_abs_travel`, `spread_range`, `total_drift`) |
-| ATS | **+0.816061** | +3.562 | **0.00044** | 3 / 15 (`opening_spread`, `spread_drift_dir`, `total_range`) |
-| OU | +0.281204 | +1.614 | 0.10784 | 3 / 15 (`opening_total`, `spread_late_drift`, `total_drift`) |
+| WP | -0.003559 | -1.506 | 0.13324 | 4 / 15 (`opening_spread`, `spread_abs_travel`, `spread_range`, `total_drift`) |
+| ATS | **+1.012106** | +4.198 | **0.00004** | 4 / 15 (`opening_spread`, `spread_drift`, `spread_drift_dir`, `total_range`) |
+| OU | +0.655771 | +3.352 | 0.00092 | 3 / 15 (`opening_total`, `spread_late_drift`, `total_drift`) |
+
+**Pre-re-key readings, retained as history:** the originally published grid read WP -0.001537
+(p=0.39111), ATS **+0.816061** (t=+3.562, p=**0.00044**), OU +0.281204 (p=0.10784), each with
+3 / 15 columns used. Those numbers were correct for the archive as it stood; they no longer
+reproduce, and nothing about them was deleted.
 
 **D-13 rule as written on this grid: KEEP** (positive on ATS and OU, not significantly-negative
 on any target).
@@ -230,10 +258,16 @@ are load-bearing, not decorative:
 - **It trains on holdout seasons.** 2021-2022 selection and 2023 validation are holdout years, and
   D26-09 already records 2023-24 as partially burned. This configuration spends holdout to buy a
   measurement.
-- **It was chosen after seeing the canonical result.** Six cells now exist across two windows with
-  no multiple-comparison correction. The ATS p=0.00044 would clear a naive Bonferroni over six
-  cells (0.0083), but a window picked post hoc is exactly the garden-of-forking-paths risk that
-  Phase 30's binding gate exists to settle.
+- **It was chosen after seeing the canonical result.** Nine cells now exist across three windows
+  with no multiple-comparison correction. The ATS p would clear a naive Bonferroni over nine cells
+  (0.0056), but a window picked post hoc is exactly the garden-of-forking-paths risk that Phase
+  30's binding gate exists to settle.
+- **The pre-registered grid in 4d does not corroborate it.** Measured over three seasons on a
+  window registered in advance, the ATS effect is +0.151237 (p=0.25739) -- roughly a seventh of
+  this cell's +1.012106, and nowhere near significance. When a single-season post-hoc window and a
+  three-season pre-registered window disagree by that margin, the pre-registered one is the
+  reading that counts, and this cell is best understood as what a window chosen after seeing
+  results tends to produce.
 
 ### 4c. Pre-registration, ORIGINAL (SUPERSEDED by 4c-bis -- retained verbatim, nothing edited)
 
@@ -405,6 +439,64 @@ result will be softened, hedged, buried, or re-run until it is favourable.
 target set, and the measurement span. If any of them must change, the change will be reported as a
 NEW post-hoc diagnostic with its own label, never folded into the headline grid.
 
+### 4d. HEADLINE: the pre-registered covered-window screen (train 2018-2020, hp-val 2021, measure 2022-2024)
+
+Reproduce with, verbatim:
+
+```
+uv run python -m backtest.signal_lift --phase 29 --covered-selection-window
+```
+
+Run ONCE, on 2026-08-16, against the re-keyed archive and the rebuilt gold, under the rule
+committed in 4c-bis before the run. 764 paired games per target.
+
+<!-- Machine-readable ordering markers. Both commits touch ONLY this file, contain no measured
+number from any covered selection window, and are git ancestors of the commit that published the
+grid below. The guard test in tests/unit/test_line_movement_readout_md.py resolves these SHAs and
+checks that with `git merge-base --is-ancestor`, so the ordering is checkable rather than
+asserted. -->
+pre_registration_commit: 05878f671cc304ea280aa6341dcec2b00ad1d86a
+superseding_pre_registration_commit: 5660ee387d20ba5c96441a3c4a1033b9a94bc4a1
+
+| Target | Paired CLV delta | t | p | 95% CI | Group columns the model used |
+|---|---|---|---|---|---|
+| WP | -0.001592 | -0.975 | 0.32981 | [-0.004798, +0.001613] | 2 / 15 (`opening_spread`, `spread_drift_dir`) |
+| ATS | **+0.151237** | +1.133 | 0.25739 | [-0.110701, +0.413175] | 5 / 15 (`opening_spread`, `spread_drift`, `total_abs_travel`, `total_drift_dir`, `total_late_drift`) |
+| OU | +0.001429 | +0.011 | 0.99107 | [-0.249192, +0.252050] | 4 / 15 (`opening_total`, `total_drift`, `total_drift_dir`, `total_range`) |
+
+**D-13 rule as written on this grid: KEEP** -- positive point-estimate on ATS and OU, and no
+target significantly-negative. That is what `decide_group_keep` returns and it is published
+unchanged.
+
+**The result is FLAT, and that is the finding.** Read the grid rather than the ruling. The
+family was finally VISIBLE to the selector -- 2, 5 and 4 of its 15 columns were chosen, the `NOT
+MEASURED` banner does not fire, and every one of these cells is genuine evidence about line
+movement rather than selection churn. Given the chance to help, it did essentially nothing. OU's
++0.001429 (p=0.99107) is indistinguishable from zero. WP is slightly negative and not significant.
+ATS's +0.151237 is the largest cell and it carries p=0.25739 with a confidence interval
+comfortably spanning zero -- and it is, to three decimal places, the same magnitude as the
++0.147814 that 4a produced from models that never saw the family at all.
+
+The KEEP is therefore a weak, permissive pass by a screening rule, not a result. The rule asks
+only for one positive point estimate and no significant harm; a family that does nothing at all
+passes it. Read together with 4a and 4b, the honest summary is: **where line movement could not be
+measured it looked like nothing, where it was measured on one post-hoc season it looked large, and
+where it was measured on three pre-registered seasons it is flat.**
+
+**The confound tell did not fire.** `line_movement_coverage` appears in NO target's selected set,
+so no cell here is discounted as a season proxy (4c-bis item 6). The selected columns are led by
+level (`opening_spread`, `opening_total`) and path (`total_abs_travel`, `total_range`,
+`total_late_drift`), broadly the families Section 2 predicted would be the non-redundant ones --
+which makes the flatness harder to dismiss, not easier: the selector picked the columns the
+hypothesis said to pick, and they still did not pay.
+
+**What this grid does and does not license.** It is a SCREEN. It licenses carrying the family into
+Phase 30's binding gate under a covered selection window, and it licenses saying that the large
+4b ATS effect is not corroborated. It does NOT license treating line movement as an edge, and no
+part of it is a gate ruling. Three measured seasons (2022-2024) on a non-default configuration,
+reported raw with no multiplicity correction, on a holdout that D26-09 already records as
+partially burned, is a screen -- not a verdict.
+
 ### 4e. Ruling, and the D-02 question answered
 
 **The binding constraint was never redundancy -- it was the calendar.** Section 2 predicted the
@@ -414,38 +506,58 @@ feature-selection window (2018-2019). Under the configuration the project trains
 line-movement family is **inert**: it sits in gold, adds 15 columns to all three matrices, and can
 never be selected into a model no matter how informative it is.
 
-**On the D-02 priced-in risk: where the signal could be measured, it is not redundant.** The
-priced-in worry from Section 2 was that the market moves on the same injury news the Phase-28
-features already encode, making line movement a noisier proxy for signal the model can read
-directly. In 4b the
-baseline already contained the freeze anchor AND the Phase-28 injury / snap / situational signal,
-and the models still chose line-movement columns over the alternatives and gained CLV on ATS. The
-Section-2 prediction was that only the opening **LEVEL** and the **PATH** would be non-redundant,
-not net drift. That is *partly* borne out: the selected columns are led by level (`opening_total`,
-`opening_spread`) and path (`total_range`, `spread_range`, `spread_abs_travel`,
-`spread_late_drift`), but `total_drift` -- plain net drift -- was also selected by two targets. So
-the plausibility argument was directionally right and not exactly right.
+That calendar blocker has now been REMOVED rather than merely described: the 2020 archive was
+re-keyed in place (no paid call), gold was rebuilt, and a covered selection window was registered
+in advance and run. So the question Section 2 actually asked can finally be answered with a
+measurement instead of a structural excuse. **The answer is: measured over three pre-registered
+seasons, the line-movement family adds essentially nothing.**
 
-**Ruling (owner-ratified, SIG-04):** **CARRY the line-movement family to Phase 30, CONDITIONAL on
-the training window.** It is carried to Phase 30 for the binding gate and is not treated as an
-edge on the strength of one diagnostic season. Two things must be true for Phase 30 to get a real
-answer, and if neither is done the family should be dropped rather than carried indefinitely:
+**On the D-02 priced-in risk: the family is CHOSEN, and it does not pay.** The priced-in worry
+from Section 2 was that the market moves on the same injury news the Phase-28 features already
+encode, making line movement a noisier proxy for signal the model can read directly. The headline
+grid is the cleanest test of that yet run: the baseline contained the freeze anchor AND the
+Phase-28 injury / snap / situational signal, the selector still chose 2-5 line-movement columns
+per target over the alternatives, and the resulting CLV delta was flat (OU +0.001429 at p=0.99107;
+ATS +0.151237 at p=0.25739; WP slightly negative). Being selected is not the same as being worth
+something, and this is what that distinction looks like when it is finally measurable.
 
-1. **Re-key the 2020 archive** (D29-06-01). No paid calls; recovers ~1,780 rows and 262 games.
-2. **Phase 30 must select features on a window that has coverage.** If Phase 30 keeps train
-   2018-2019, line movement cannot enter a candidate model and the 7,210 credits buy nothing
-   further. This is a gate-configuration decision, not a feature-engineering one.
+The Section-2 prediction was that only the opening **LEVEL** and the **PATH** would be
+non-redundant, not net drift. The selected columns do line up with that -- led by `opening_spread`
+/ `opening_total` and by `total_abs_travel` / `total_range` / `total_late_drift` -- so the
+plausibility argument picked the right columns. They simply did not produce CLV. The most likely
+reading, consistent with Section 2's own priced-in caveat, is that the freeze anchor plus the
+Phase-28 injury features already carry most of what the market's movement encodes.
+
+**Ruling (SIG-04): SCREENED, with a flat result and a named condition.** The rule as written says
+CARRY the line-movement family to Phase 30, and that is what happens -- `decide_group_keep`
+returns KEEP on the headline grid and is published unchanged. But the rule is permissive by
+design, and a family that does nothing passes it. Nothing here establishes an edge.
+Two things are now true and both belong in Phase 30's decision:
+
+1. **The 2020 re-key is DONE** (D29-06-01, resolved 2026-08-16 by quick task 260816-u0e, no paid
+   calls; 1,780 rows recovered, 244 of 269 games covered).
+2. **The verdict rests on a NON-DEFAULT configuration (D-Q2).** The canonical training window was
+   deliberately not mutated. If Phase 30 keeps train 2018-2019, the family remains **inert** --
+   it cannot enter a candidate model at all, and the flat headline above is the *best* case rather
+   than the expected one. So Phase 30 must either adopt a covered selection window DELIBERATELY as
+   its binding config, or DROP the family. Carrying it indefinitely under a window that cannot see
+   it is the one option ruled out.
+
+Given the headline is flat, the honest default recommendation into Phase 30 is DROP unless the
+binding gate is run under a covered selection window and produces something the screen did not.
 
 **Cost against learning, stated plainly.** The archive cost **7,210 credits** of a 20,000-credit
-$30 month (12,790 unused), and it is final -- no further paid call is needed for any of the work
-above. What that bought: a real 2020-2024 trajectory archive (9,957 rows, 1,359 games); the
-measured fact that market movement is genuinely non-degenerate where the old `total_movement`
-column was identically 0.0 (drift non-zero in 87.5% of games); one diagnostic season of evidence
-that the signal is non-redundant against both the freeze anchor and the Phase-28 injury features;
-and -- the finding with the most leverage -- the discovery that the project's feature-selection
-window silently excludes any signal whose data floor is later than 2019. That last one applies to
-every future signal purchase, not just this one. A flat or negative screen would have been an
-equally complete result; what would NOT have been acceptable is publishing the 4a grid as a lift.
+$30 month (12,790 unused), and it is final -- no further paid call was needed for any of the work
+above, including the re-key. What that bought: a real 2020-2024 trajectory archive (9,957 rows);
+the measured fact that market movement is genuinely non-degenerate where the old `total_movement`
+column was identically 0.0; a pre-registered three-season reading that the family is FLAT once it
+is visible to the selector, which is a genuine answer where before there was only a structural
+excuse; the demonstration that the eye-catching single-season 4b effect does not survive a
+pre-registered window; and -- the finding with the most leverage -- the discovery that the
+project's feature-selection window silently excludes any signal whose data floor is later than
+2019. That last one applies to every future signal purchase, not just this one. A flat result was
+accepted in advance as a complete outcome, and it is what came out; what would NOT have been
+acceptable is publishing the 4a grid as a lift, or publishing 4b's +1.012106 as the answer.
 
 ---
 
@@ -465,7 +577,19 @@ named prerequisite, not with a measured four-season lift number. Two follow-ups 
 the phase's `deferred-items.md` rather than being quietly done here: the 2020 re-key (no paid
 calls) and the Phase-30 training-window decision.
 
+**UPDATE 2026-08-16 (quick task 260816-u0e): both follow-ups are now closed, and the phase has a
+measured number.** The paragraph above describes the state at the end of Plan 29-07 and is left
+standing as the record of it. Since then: the 2020 re-key was done in place with no paid call
+(D29-06-01 RESOLVED), gold was rebuilt, a covered selection window was registered in advance and
+run once, and Section 4d carries a pre-registered THREE-season grid. So Phase 29 no longer ends on
+a conditional carry with no number -- it ends on a FLAT measured result. The one thing that did not
+change is the D-Q2 consequence: the number rests on a non-default configuration, so the Phase-30
+training-window decision (D29-07-01) is still open and still the thing that decides whether this
+family is worth anything at all.
+
 **Framing, unchanged from Section 3.** The line-movement signal is SCREENED and carried to Phase
 30 for the binding gate. It is not shipped, not serving, and not established as an edge. Phase 29
-screens; Phase 30 rules. A null result would have been a first-class success outcome (D-14) and
-was accepted as such in advance -- the screen, not optimism, rules (D-10).
+screens; Phase 30 rules. A null result would have been a first-class success outcome (D-14) and was
+accepted as such in advance -- the screen, not optimism, rules (D-10). It is worth saying plainly
+that this is now the outcome that actually occurred, and it is being reported with the same
+prominence a positive one would have received.
