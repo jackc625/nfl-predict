@@ -196,9 +196,17 @@ No candidate model in this grid ever saw the signal. The reason is structural, n
 - the canonical training window is **2018-2019**, and The Odds API historical floor is
   **2020-06-06**, so no 2018-2019 game can ever have a trajectory;
 - measured on the rebuilt gold, all 15 columns are therefore **exactly constant (0.0) across all
-  534 rows of the selection window** -- and constant across hp-val 2020 too, because of the
-  D29-06-01 orphaning above. A constant column has zero model importance by construction and can
-  never be selected.
+  534 rows of the selection window**. A constant column has zero model importance by construction
+  and can never be selected.
+  - *(Corrected 2026-08-17, WR-12.)* This bullet previously added "and constant across hp-val 2020
+    too, because of the D29-06-01 orphaning above". That is **no longer true**: the D29-06-01
+    re-key restored real trajectories for 244 of 269 games in 2020, as the coverage table in
+    Section 4 states, so 2020 is NOT constant any more. The stated cause was therefore false while
+    the table two hundred lines above said the opposite -- and in a record whose whole value
+    proposition is that nothing is deleted and every superseded reading is retained WITH the reason
+    it was superseded, a live self-contradiction is the one failure mode that matters. The `0 / 15`
+    result is **unchanged**, for the correct reason: selection runs on `config.train_seasons`
+    (2018-2019) **alone**, so the hp-val fold's contents never entered the question.
 
 So the three deltas above are **selection churn**: adding 15 constant columns to the candidate
 pool perturbs the fitted importances and the selection threshold, and each target's leg locks a

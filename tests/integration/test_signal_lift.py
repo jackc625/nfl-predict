@@ -860,6 +860,62 @@ class TestMeasurabilityAccounting:
         assert "grp_cols_used" in report
         assert f"0/{len(_LINE_MOVEMENT_COLUMNS)}" in report
 
+    # -- WR-13: the report's own labels must describe the run that produced it --
+
+    def test_a_line_movement_run_is_labelled_sig_04_not_sig_05(self) -> None:
+        """The header used to print SIG-05 for every run, including --phase 29.
+
+        The Phase-29 report therefore named the wrong requirement, on the line a
+        reader uses to decide what the numbers below are about.
+        """
+        report = signal_lift._format_screen_report(
+            self._screen(_make_fixture_gold_with_line_movement())
+        )
+
+        assert "SIGNAL-LIFT SCREEN (SIG-04)" in report
+        assert "SIG-05" not in report
+
+    def test_the_multiplicity_note_counts_the_grid_actually_run(self) -> None:
+        """It was a constant reading '3x3' and was printed under a 1x3 run.
+
+        The multiplicity count is load-bearing in the readout's own
+        garden-of-forking-paths argument, so overstating it is not cosmetic.
+        """
+        result = self._screen(_make_fixture_gold_with_line_movement())
+        note = result["multiplicity_note"]
+
+        assert (
+            f"{len(result['groups'])}x{len(result['targets'])} (group x target)" in note
+        )
+        assert "3x3" not in note
+
+
+class TestWindowLabelsAreDerivedNotTyped:
+    """WR-13: every human-facing window label comes from the config it names."""
+
+    def test_the_covered_selection_window_span_is_derived(self) -> None:
+        """Two prose sites said 2021-2024; it measures 2022-2024.
+
+        That number is what the whole 4c-bis registration turns on.
+        """
+        assert signal_lift._span(signal_lift.COVERED_SELECTION_WINDOW_CONFIG) == (
+            "2022-2024"
+        )
+
+    def test_the_diagnostic_window_span_is_derived(self) -> None:
+        assert signal_lift._span(signal_lift.COVERAGE_WINDOW_CONFIG) == "2024"
+
+    def test_the_mutual_exclusion_error_quotes_the_real_spans(self) -> None:
+        """The error message no longer hardcodes a superseded span."""
+        with pytest.raises(ValueError) as exc:
+            signal_lift.screen_kwargs_for_phase(
+                29, coverage_window=True, covered_selection_window=True
+            )
+
+        message = str(exc.value)
+        assert "2022-2024" in message
+        assert "2021-2024" not in message
+
 
 class TestPhase29CliWiring:
     """``--phase 29`` is the single deterministic command the doc-drift guard re-runs."""

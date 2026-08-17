@@ -97,6 +97,23 @@ GROUPS: tuple[str, ...] = ("injury", "snap", "situational")
 # groups, so the delta answers the D-02 "redundant WITH the injury signal?" question.
 PHASE29_GROUPS: tuple[str, ...] = ("line_movement",)
 
+
+def _REQUIREMENT_FOR_GROUPS(groups) -> str:
+    """The requirement ID the screened groups belong to (WR-13).
+
+    ``_format_screen_report`` printed the literal ``SIG-05`` for EVERY run,
+    including ``--phase 29``, which is SIG-04 -- so the header on the Phase-29
+    report named the wrong requirement. Derived from the groups screened rather
+    than passed in, so it cannot drift from what was actually measured.
+    """
+    names = set(groups)
+    if names and names <= set(PHASE29_GROUPS):
+        return "SIG-04"
+    if names & set(PHASE29_GROUPS):
+        return "SIG-04/SIG-05"
+    return "SIG-05"
+
+
 # Per-group data-coverage floors (RESEARCH): outside coverage the gold carries neutral defaults
 # + a coverage flag (D-10 / D-18d). The 2021-2024 measurement window is fully inside every
 # Phase-28 floor; these spans are REPORTED beside each lift number so the readout states the
@@ -175,6 +192,23 @@ COVERED_SELECTION_WINDOW_CONFIG = TemporalSplitConfig(
     hp_val_seasons=[2021],
     holdout_seasons=[2022, 2023, 2024],
 )
+
+
+def _span(config: TemporalSplitConfig) -> str:
+    """The measured season span of a config, DERIVED from its holdout seasons.
+
+    WR-13: every human-facing label for a window is now computed from the config
+    it names. Two prose sites said "COVERED_SELECTION_WINDOW_CONFIG measures
+    2021-2024" when it measures 2022-2024 -- and that number is what the whole
+    4c-bis registration turns on, so it is not a cosmetic error.
+    """
+    holdout = sorted(config.holdout_seasons or [])
+    if not holdout:
+        return MEASURE_WINDOW
+    if len(holdout) == 1:
+        return str(holdout[0])
+    return f"{holdout[0]}-{holdout[-1]}"
+
 
 _TRAINER_FOR: dict[str, type] = {
     "wp": WPTrainer,
@@ -625,12 +659,23 @@ def decide_group_keep(per_target: dict[str, dict[str, Any]]) -> dict[str, Any]:
 # (5) Single re-runnable orchestrator -- one structured dict over all groups x targets
 # ---------------------------------------------------------------------------
 
-_MULTIPLICITY_NOTE = (
-    "Multiplicity: this is a 3x3 (group x target) screen reported RAW. Per-target p-values are "
-    "NOT multiple-comparison-corrected here -- the screen is a permissive add-one-in filter and "
-    "the binding BH-FDR / p<0.05 correction stays in the Phase-30 deploy gate (D-05). Treat any "
-    "single nominally-significant cell as a screening signal, not a deploy decision."
-)
+
+def _multiplicity_note(n_groups: int, n_targets: int) -> str:
+    """The RAW-reporting multiplicity note, sized to the grid ACTUALLY run.
+
+    WR-13: this was a constant reading "this is a 3x3 (group x target) screen",
+    printed verbatim under a Phase-29 run, which is 1x3. The multiplicity count is
+    load-bearing in the readout's own garden-of-forking-paths argument, so a note
+    that overstates the grid is not a cosmetic error.
+    """
+    return (
+        f"Multiplicity: this is a {n_groups}x{n_targets} (group x target) screen reported RAW. "
+        "Per-target p-values are "
+        "NOT multiple-comparison-corrected here -- the screen is a permissive add-one-in filter "
+        "and the binding BH-FDR / p<0.05 correction stays in the Phase-30 deploy gate (D-05). "
+        "Treat any single nominally-significant cell as a screening signal, not a deploy "
+        "decision."
+    )
 
 
 def run_signal_lift_screen(
@@ -743,21 +788,16 @@ def run_signal_lift_screen(
     # Report the window ACTUALLY measured, derived from the config's holdout seasons. A run under
     # COVERAGE_WINDOW_CONFIG measures 2024 alone; printing the canonical "2021-2024" there would
     # mislabel a one-season diagnostic as the four-season screen.
-    holdout = sorted(config.holdout_seasons)
-    measure_window = (
-        f"{holdout[0]}-{holdout[-1]}"
-        if len(holdout) > 1
-        else str(holdout[0])
-        if holdout
-        else MEASURE_WINDOW
-    )
+    measure_window = _span(config)
 
     return {
         "measure_window": measure_window,
         "alpha": SIGNIFICANCE_ALPHA,
         "anchor": LIFT_ANCHOR,
         "baseline_excludes": list(baseline_exclude_groups),
-        "multiplicity_note": _MULTIPLICITY_NOTE,
+        # WR-13: sized to the grid actually run, not hardcoded 3x3.
+        "multiplicity_note": _multiplicity_note(len(groups_out), len(targets)),
+        "requirement": _REQUIREMENT_FOR_GROUPS(groups_out),
         "targets": targets,
         "groups": groups_out,
     }
@@ -772,7 +812,10 @@ def _format_screen_report(result: dict[str, Any]) -> str:
     """Render the structured screen result as an ASCII report for the CLI / readout authoring."""
     lines: list[str] = []
     lines.append("=" * 78)
-    lines.append("  SIGNAL-LIFT SCREEN (SIG-05) -- add-one-in paired incremental CLV")
+    lines.append(
+        f"  SIGNAL-LIFT SCREEN ({result.get('requirement', 'SIG-05')}) "
+        f"-- add-one-in paired incremental CLV"
+    )
     lines.append("=" * 78)
     lines.append(f"  Anchor        : {result['anchor']} (out-of-sample walk-forward)")
     lines.append(f"  Measure window: {result['measure_window']}")
@@ -883,12 +926,18 @@ def screen_kwargs_for_phase(
     different measurement spans, so a run under both would be ambiguous. Exposed as a function so
     the readout doc-drift guard runs exactly the invocation the CLI runs -- the doc and the
     command cannot drift apart.
+
+    WR-13: the span labels below are DERIVED from each config's ``holdout_seasons``
+    rather than written out. Both the docstring and the error message used to say
+    "COVERED_SELECTION_WINDOW_CONFIG measures 2021-2024"; it measures 2022-2024,
+    and that number is what the whole 4c-bis registration turns on.
     """
     if coverage_window and covered_selection_window:
         msg = (
             "coverage_window and covered_selection_window are mutually exclusive: "
-            "COVERAGE_WINDOW_CONFIG measures 2024 alone while "
-            "COVERED_SELECTION_WINDOW_CONFIG measures 2021-2024. Pick one."
+            f"COVERAGE_WINDOW_CONFIG measures {_span(COVERAGE_WINDOW_CONFIG)} while "
+            f"COVERED_SELECTION_WINDOW_CONFIG measures "
+            f"{_span(COVERED_SELECTION_WINDOW_CONFIG)}. Pick one."
         )
         raise ValueError(msg)
 

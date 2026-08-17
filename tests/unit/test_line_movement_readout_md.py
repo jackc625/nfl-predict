@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -51,12 +52,24 @@ _REQUIRED_SECTION_MARKERS = (
     "Honest scope-down",  # 5 -- the scope-down / slip note
 )
 
-# The cost-method honesty stamp (D-04: estimate, free key not called) + the freshness re-confirm
-# date (review 29-01 LOW) must both be present in the tiered-cost section.
-_REQUIRED_PHRASES = (
-    "carried to Phase 30",  # the screen-not-deploy carry phrase
-    "checked 2026-06-29",  # the 7-day-freshness re-confirmation stamp (D-04)
-)
+# Literal phrases the doc must carry. The D-04 pricing freshness stamp used to live
+# here too and no longer does -- see _FRESHNESS_RE below for why a literal is the
+# wrong tool for a recency claim.
+_REQUIRED_PHRASES = ("carried to Phase 30",)  # the screen-not-deploy carry phrase
+
+# WR-13: the D-04 pricing-freshness stamp is checked for RECENCY, not for a fixed
+# literal.
+#
+# _REQUIRED_PHRASES used to assert the literal "checked 2026-06-29" as "the
+# 7-day-freshness re-confirmation stamp". That guard can never fail on staleness
+# -- it asserts the presence of a frozen string, so it passes just as happily when
+# the stamp is a year old. A freshness check that cannot detect staleness is worse
+# than none: it reads as assurance. Parse the dates and assert an age bound.
+_FRESHNESS_RE = re.compile(r"checked (\d{4}-\d{2}-\d{2})")
+
+# Generous on purpose. The point is not to nag; it is that a credit/dollar figure
+# quoted from a vendor's price list must not be presented as current indefinitely.
+_MAX_STAMP_AGE_DAYS = 400
 
 # Section 4 (Plan 29-07) content contract: the lift grid must carry the per-target deltas, the
 # covered-span annotation, the D-02 priced-in caveat, the METHOD line, and -- the honesty clause
@@ -208,6 +221,29 @@ class TestScreenNotDeployInvariant:
         missing = [p for p in _REQUIRED_PHRASES if p not in content]
         assert not missing, (
             f"LINE-MOVEMENT-READOUT.md missing required phrases: {missing}"
+        )
+
+    def test_pricing_stamp_is_present_and_not_ancient(self) -> None:
+        """WR-13: the D-04 freshness stamp is checked for RECENCY, not presence.
+
+        The old guard asserted the literal "checked 2026-06-29", so it could never
+        go red as that stamp aged -- a freshness check incapable of failing on
+        staleness is worse than none, because it reads as assurance. The readout
+        quotes Odds API credit and dollar figures; those must not be presented as
+        current indefinitely.
+        """
+        stamps = [date.fromisoformat(s) for s in _FRESHNESS_RE.findall(_read_readout())]
+
+        assert stamps, (
+            "the D-04 pricing freshness stamp is missing -- the tiered-cost "
+            "section must record when the pricing was last confirmed"
+        )
+
+        age = (datetime.now(UTC).date() - max(stamps)).days
+        assert age <= _MAX_STAMP_AGE_DAYS, (
+            f"the newest pricing stamp is {age} days old (max "
+            f"{_MAX_STAMP_AGE_DAYS}); re-confirm Odds API pricing before quoting "
+            f"these credit figures again, then update the stamp"
         )
 
     def test_no_over_claim_words(self) -> None:
@@ -366,8 +402,13 @@ class TestReadoutMatchesHarness:
         ]["ats"]
 
         assert cell["delta_mean"] is not None
+        # WR-13: the message INTERPOLATES the module constant. It used to compare
+        # against _CANONICAL_DELTAS["ats"] (-0.136848) while printing "+0.147814"
+        # -- a superseded number -- so the one artefact a maintainer reads when
+        # the guard fires named a value the guard was not checking.
         assert abs(cell["delta_mean"] - _CANONICAL_DELTAS["ats"]) < 5e-3, (
-            f"canonical ATS delta {cell['delta_mean']} drifted from the readout's +0.147814"
+            f"canonical ATS delta {cell['delta_mean']} drifted from the readout's "
+            f"{_CANONICAL_DELTAS['ats']:+f}"
         )
         # The load-bearing claim: the canonical window cannot select the family at all.
         assert cell["n_group_columns"] == 15
@@ -419,9 +460,12 @@ class TestReadoutMatchesHarness:
             "the headline measures three seasons and must be labelled as such"
         )
         assert cell["delta_mean"] is not None
+        # WR-13: `+{constant}` printed "+-0.208582" for the negative headline.
+        # The corrected result being NEGATIVE is the phase's finding, so a failure
+        # message that mangles its sign is the wrong place to be sloppy.
         assert abs(cell["delta_mean"] - _HEADLINE_ATS_DELTA) < 5e-3, (
             f"headline ATS delta {cell['delta_mean']} drifted from the readout's "
-            f"+{_HEADLINE_ATS_DELTA}"
+            f"{_HEADLINE_ATS_DELTA:+f}"
         )
         # The measurability precondition the whole grid's meaning rests on: under
         # this window the family IS selected, so the cell is evidence about line
