@@ -675,10 +675,8 @@ class FeatureMatrixBuilder:
                     processed_df[col] = processed_df[col].fillna(
                         neutral_line_movement[col]
                     )
-                    missing_stats[col] = original_missing
-                    continue
                 # For team-based features, use team's season average
-                if any(prefix in col for prefix in ["home_", "away_"]):
+                elif any(prefix in col for prefix in ["home_", "away_"]):
                     processed_df[col] = self._impute_team_features(processed_df, col)
                 else:
                     # For game-level features, use overall median
@@ -686,6 +684,41 @@ class FeatureMatrixBuilder:
                     processed_df[col] = processed_df[col].fillna(median_value)
 
                 missing_stats[col] = original_missing
+
+            # CR-02: a DISCRETE INDICATOR has no outliers to winsorize, and
+            # clipping one destroys the distinction it exists to encode.
+            #
+            # The WR-10 guard above correctly refuses to median-impute the
+            # line-movement family, because the median of line_movement_coverage is
+            # 1.0. But that guard used to sit inside `if original_missing > 0:` and
+            # end in `continue`. In the normal case the builder emits a row for
+            # every game, so original_missing == 0, the guard never ran, and
+            # execution fell straight into the unconditional winsorization below.
+            #
+            # On a single covered season the uncovered fraction is far below 1%
+            # (2023 is 271/272 covered), so q01 == q99 == 1.0 and the clip stamped
+            # EVERY uncovered game as COVERED: `--season 2023` produced gold whose
+            # line_movement_coverage was a constant 1.0. That is precisely the
+            # fabrication WR-10 was written to prevent, arriving through a different
+            # door, and it additionally destroyed the column's variance before
+            # expanding_normalize saw it. The full-history rebuild happened to be
+            # safe (q01 = 0.0 at ~13% uncovered), which is why the published gold is
+            # unaffected and why nothing caught it. It is a general defect for any
+            # rare binary flag -- `saturday_game` is another candidate.
+            #
+            # The old shape was also internally inconsistent: the `continue` skipped
+            # winsorization entirely whenever the family DID have NaNs, so the same
+            # column was winsorized or not depending on whether a gap happened to
+            # exist. Missing-handling and outlier-handling are now independent.
+            #
+            # The test is deliberately a VALUE test, not a name test: any column
+            # whose values are all indicator levels is discrete, however it is
+            # spelled. Continuous line-movement columns (opening_total, the drift
+            # and path families) are NOT exempted -- they are genuine continuous
+            # measurements with genuine outliers, and the published readout's
+            # argument about what the model saw rests on their winsorization bound.
+            if self._is_discrete_indicator(processed_df[col]):
+                continue
 
             # Handle outliers with winsorization
             if processed_df[col].notna().sum() > 10:  # Need minimum data points
@@ -711,10 +744,39 @@ class FeatureMatrixBuilder:
             "Completed missing data and outlier handling",
             missing_imputed=len(missing_stats),
             outliers_winsorized=len(outlier_stats),
+            discrete_indicators_exempt=sum(
+                1 for c in numeric_cols if self._is_discrete_indicator(processed_df[c])
+            ),
             total_features_processed=len(numeric_cols),
         )
 
         return processed_df
+
+    @staticmethod
+    def _is_discrete_indicator(series: pd.Series) -> bool:
+        """True when a column's values are indicator levels, not measurements.
+
+        CR-02. Winsorization answers "is this value an implausible extreme of a
+        continuous distribution". That question is meaningless for a column whose
+        values are drawn from {-1, 0, 1} -- a coverage flag, a sign, a boolean
+        game-context marker. For such a column the 1st and 99th percentiles are
+        simply the modal level whenever the minority level is rarer than 1%, so
+        the clip does not remove an outlier: it OVERWRITES every minority row with
+        the majority level and leaves a constant.
+
+        That is how ``--season 2023`` produced gold whose
+        ``line_movement_coverage`` was a constant 1.0, encoding "we measured this
+        game's trajectory" for games that have none -- the exact conflation the
+        flag exists to prevent.
+
+        Args:
+            series: The (already imputed) numeric feature column.
+
+        Returns:
+            True iff every non-null value is one of -1.0, 0.0 or 1.0.
+        """
+        values = pd.unique(series.dropna())
+        return len(values) > 0 and set(values.tolist()) <= {-1.0, 0.0, 1.0}
 
     def _impute_team_features(self, df: pd.DataFrame, col: str) -> pd.Series:
         """Impute missing team features using team's season average."""
