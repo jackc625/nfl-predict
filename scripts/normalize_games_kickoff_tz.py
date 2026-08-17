@@ -179,17 +179,36 @@ def normalize_kickoffs(df: pd.DataFrame) -> pd.DataFrame:
     column = pd.to_datetime(out["kickoff_et"])
     original_tz = column.dt.tz  # preserved, so the column's dtype does not change
 
+    # WR-09 (1): REJECT a tz-naive copy instead of half-handling it.
+    #
+    # The naive branch used to take ``in_utc = column[mask]`` (already naive) and
+    # then assign a tz-AWARE ``corrected`` back into a tz-NAIVE column, which
+    # pandas either upcasts to object or refuses -- so the frame that was then
+    # WRITTEN would not be the frame the invariants below assume. The branch
+    # exists precisely for a copy typed differently from today's two, i.e. it
+    # would fire the first time it is actually needed.
+    #
+    # It cannot be fixed by guessing, either: the whole correction turns on
+    # knowing WHICH label the stale wall clock carries, and an unlabelled column
+    # does not say. Refusing is the honest answer for a tool whose entire job is
+    # to repair a mislabelled timestamp.
+    if original_tz is None:
+        raise NormalizeInvariantError(
+            "kickoff_et is timezone-naive in this copy; the mislabelled wall "
+            "clock cannot be identified without a label. Refusing to guess -- "
+            "label the column (UTC for the parquet shape, America/New_York for "
+            "the DuckDB shape) and re-run."
+        )
+
     # Read the UTC wall clock -- that is the mislabelled one, in BOTH copies.
-    in_utc = column[mask] if original_tz is None else column[mask].dt.tz_convert(UTC)
+    in_utc = column[mask].dt.tz_convert(UTC)
 
     # Drop the (wrong) label, then re-attach ET to the SAME wall clock -- that is
     # what turns "13:00 labelled UTC" into "13:00 ET", i.e. 17:00/18:00 UTC.
     wall_clock = in_utc.dt.tz_localize(None)
     corrected = wall_clock.dt.tz_localize(
         ET, ambiguous=True, nonexistent="shift_forward"
-    )
-    if original_tz is not None:
-        corrected = corrected.dt.tz_convert(original_tz)
+    ).dt.tz_convert(original_tz)
 
     column.loc[mask] = corrected
     out["kickoff_et"] = column
@@ -219,24 +238,36 @@ def dst_correlation_holds(df: pd.DataFrame) -> dict[str, bool]:
     kickoff time at a domestic venue. Skipping the empty band is what made an earlier
     version of this check return a vacuous all-clear on the pre-fix data.
     """
-    values = pd.to_datetime(df["kickoff_et"], utc=True)
-    et_wall = _et_wall_clock(df["kickoff_et"])
-    et_hour = et_wall.dt.hour
-    stored_hour = values.dt.hour
-    month = et_wall.dt.month
+    # WR-09 (2): work POSITIONALLY, never through label lookup.
+    #
+    # This used to index with ``month.loc[i]`` / ``et_hour.loc[i]`` /
+    # ``stored_hour.loc[i]`` using labels taken from ``df.groupby("season").groups``.
+    # On a frame with a DUPLICATED index -- which any ``pd.concat`` without
+    # ``ignore_index=True`` produces -- ``.loc[i]`` returns a Series, and
+    # ``Series in (9, 10)`` raises. This function is the sole staleness
+    # discriminator AND is re-run on the reloaded copy inside ``apply()``, so a
+    # raise there happens AFTER the write. Resetting the index makes the whole
+    # body immune to how the caller happened to build the frame.
+    frame = df.reset_index(drop=True)
+
+    values = pd.to_datetime(frame["kickoff_et"], utc=True)
+    et_wall = _et_wall_clock(frame["kickoff_et"])
+    et_hour = et_wall.dt.hour.to_numpy()
+    stored_hour = values.dt.hour.to_numpy()
+    month = et_wall.dt.month.to_numpy()
 
     result: dict[str, bool] = {}
-    for season, group_idx in df.groupby("season").groups.items():
+    for season, group_idx in frame.groupby("season").groups.items():
         idx = list(group_idx)
-        has_edt = any(month.loc[i] in (9, 10) for i in idx)
-        has_est = any(month.loc[i] in (12, 1, 2) for i in idx)
+        has_edt = any(month[i] in (9, 10) for i in idx)
+        has_est = any(month[i] in (12, 1, 2) for i in idx)
         if not (has_edt and has_est):
             # A partial season (e.g. an in-progress one) cannot answer the question.
             continue
 
-        early = [i for i in idx if et_hour.loc[i] == _EARLY_WINDOW_ET_HOUR]
-        edt = {stored_hour.loc[i] for i in early if month.loc[i] in (9, 10)}
-        est = {stored_hour.loc[i] for i in early if month.loc[i] in (12, 1, 2)}
+        early = [i for i in idx if et_hour[i] == _EARLY_WINDOW_ET_HOUR]
+        edt = {stored_hour[i] for i in early if month[i] in (9, 10)}
+        est = {stored_hour[i] for i in early if month[i] in (12, 1, 2)}
         if not edt or not est:
             result[str(season)] = False
             continue
@@ -416,10 +447,24 @@ def apply(base_path: Path | None = None) -> dict:
         not cohort_is_stale(reloaded),
         "the cohort still reads as stale after the write -- the shift did not take",
     )
+    # WR-09 (3): assert against the copy load_dataframe ACTUALLY resolved, not a
+    # disjunction over both.
+    #
+    # This used to be `reloaded == shifted_duckdb OR reloaded == shifted_parquet`.
+    # Both expected values are 1,926 today, so the disjunction was vacuous -- it
+    # could not fail -- and it could not say WHICH copy was resolved, which is
+    # exactly the N-01 ambiguity the module docstring names as the reason
+    # single-copy fixes are dangerous here. Resolve the source the same way
+    # load_dataframe does (DuckDB when the table exists, else parquet) and assert
+    # against that one number.
+    resolved = "duckdb" if get_db_connection().table_exists("games") else "parquet"
+    expected = report[f"shifted_{resolved}"]
+    report["reloaded_source"] = resolved
     _assert(
-        int(shifted_mask(reloaded).sum()) == report["shifted_duckdb"]
-        or int(shifted_mask(reloaded).sum()) == report["shifted_parquet"],
-        "the created_at cohort itself changed size across the write",
+        int(shifted_mask(reloaded).sum()) == expected,
+        f"the created_at cohort changed size across the write in the {resolved} "
+        f"copy (expected {expected}, reloaded "
+        f"{int(shifted_mask(reloaded).sum())})",
     )
     failing = sorted(
         season for season, ok in dst_correlation_holds(reloaded).items() if not ok

@@ -34,11 +34,10 @@ import pytest
 from data.storage import get_db_connection
 from scripts.normalize_games_kickoff_tz import (
     ANCHOR_GAME_ID,
-    EXPECTED_DUCKDB_ROWS,
-    EXPECTED_PARQUET_ROWS,
     EXPECTED_SHIFTED_ROWS,
     cohort_is_stale,
     dst_correlation_holds,
+    normalize_kickoffs,
     shifted_mask,
 )
 
@@ -98,13 +97,32 @@ class TestTheTwoCopiesAgree:
     ) -> None:
         """The normalization shifted values in place; it must never add or drop rows.
 
-        The 207-row gap between the copies is the SEPARATE, still-open N-01 coverage
-        divergence (2025 games written by upsert_silver into the parquet only). It is
-        deliberately NOT closed here: re-syncing would change the gold row set and
-        confound the corrected line-movement screen.
+        WR-10: this asserted absolute counts (6499 / 6292). ``games`` silver GROWS
+        every time ``scripts/ingest_games.py`` runs -- weekly in season -- so the
+        test turned red on the next routine ingest, for a reason having nothing to
+        do with what its own docstring claims to guard. A brittle red test in a
+        permanent suite gets muted, and this one sits beside the genuinely
+        valuable instants-agree and DST-correlation assertions that would be muted
+        with it.
+
+        The INVARIANT is asserted instead: running the normalization changes no
+        row count, whatever the current size. Contrast
+        ``test_cohort_membership_is_deliberately_preserved``, which pins 1,926 --
+        a fixed HISTORICAL cohort that cannot grow -- and is correctly stable.
+
+        The gap between the copies is the SEPARATE, still-open N-01 coverage
+        divergence (2025 games written by upsert_silver into the parquet only). It
+        is deliberately NOT closed here -- re-syncing would change the gold row set
+        and confound the corrected line-movement screen -- so it is asserted as a
+        RELATION rather than as the constant 207.
         """
-        assert len(games_parquet) == EXPECTED_PARQUET_ROWS
-        assert len(games_duckdb) == EXPECTED_DUCKDB_ROWS
+        assert len(normalize_kickoffs(games_parquet)) == len(games_parquet)
+        assert len(normalize_kickoffs(games_duckdb)) == len(games_duckdb)
+
+        assert len(games_parquet) >= len(games_duckdb), (
+            "the DuckDB copy has overtaken the parquet; the N-01 coverage "
+            "divergence has changed direction and needs re-diagnosing"
+        )
 
 
 class TestNoRowIsStale:
