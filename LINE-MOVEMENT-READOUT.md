@@ -235,7 +235,13 @@ are load-bearing, not decorative:
   cells (0.0083), but a window picked post hoc is exactly the garden-of-forking-paths risk that
   Phase 30's binding gate exists to settle.
 
-### 4c. Pre-registration (written and committed BEFORE the covered-window screen was run)
+### 4c. Pre-registration, ORIGINAL (SUPERSEDED by 4c-bis -- retained verbatim, nothing edited)
+
+**This registration was never executed.** The window it names cannot be run at all, for a reason
+discovered on the FIRST attempt to run its command and BEFORE any number from any covered window
+existed. It is preserved here unedited, because deleting a registration that did not survive
+contact with the code would be exactly the kind of tidy-up that makes a pre-registration
+worthless. The superseding registration is 4c-bis; what changed and why is stated there.
 
 This subsection was written and committed to git ALONE, before any number from the covered
 selection window existed anywhere in this repository -- and, in fact, before the window itself
@@ -296,6 +302,102 @@ re-purchased. The headline rests on a non-default configuration (item 2).
 will be published as the phase's answer with the same prominence and detail as a positive one. The
 7,210 credits already spent create no obligation to find a signal, and no result will be softened,
 hedged, buried, or re-run until it is favourable.
+
+**9. No further spend.** No Odds API call of any kind is made for this measurement.
+
+**10. What will NOT change after seeing results.** The window definition, the decision rule, the
+target set, and the measurement span. If any of them must change, the change will be reported as a
+NEW post-hoc diagnostic with its own label, never folded into the headline grid.
+
+### 4c-bis. Pre-registration, SUPERSEDING (written and committed BEFORE the covered-window screen was run)
+
+This registration replaces 4c. Like 4c it was committed ALONE, before any number from any covered
+selection window existed anywhere in this repository. The original 4c above is retained verbatim.
+
+**Why 4c had to be replaced.** Running its command for the first time aborted before a single cell
+was computed:
+
+```
+ValueError: Found array with 0 sample(s) (shape=(0, 20)) while a minimum of 1 is required
+by StandardScaler.        models/trainers/wp_trainer.py:311
+```
+
+4c's window carried NO hp-val season, on the reasoning that an hp-val fold is unused when the
+screen runs with `tune=False`. **That reasoning was wrong.** It is true of `BaseTrainer`, where
+`hp_val` feeds only `combined_train` / `combined_targets`
+(`models/trainers/base.py:355-360`) inside the `if tune` branch (`base.py:361-368`). It is false
+of all three CONCRETE trainers, each of which overrides `train_and_evaluate` and fits a post-hoc
+conversion component on the hp-val fold OUTSIDE that branch:
+
+| Trainer | hp-val consumer | file:line | Behaviour with an empty fold |
+|---|---|---|---|
+| WP | Platt/isotonic probability calibrator | `wp_trainer.py:310-326` | hard crash (StandardScaler on 0 samples) |
+| ATS | `ResidualDistributionConverter` on residuals | `ats_trainer.py:244-250` | runs, but `residual_std = np.std([]) = NaN` |
+| OU | same pattern | `ou_trainer.py:244-252` | same |
+
+So the original window would have produced one crash and two silently degenerate models. The
+error was in the plan's premise, not in the measurement; it is recorded here rather than quietly
+corrected. `TemporalSplitConfig.validate` now rejects an empty hp-val fold by name.
+
+**1. The command, run exactly once.** Verbatim, copy-pasteable:
+
+```
+uv run python -m backtest.signal_lift --phase 29 --covered-selection-window
+```
+
+**2. The window.** Train seasons 2018, 2019, 2020; hp-val season 2021; holdout / measure seasons
+2022, 2023, 2024. Roughly 764 paired games. `groups=('line_movement',)`,
+`baseline_exclude_groups=('line_movement',)`, `tune=False`, anchor
+`BaseTrainer.train_and_evaluate(tune=False)`.
+
+The cost of this change is stated plainly and accepted in advance: roughly 25% less sample than
+4c's window (about 764 paired games instead of about 1,019), and 2021 -- a covered season -- is
+spent as a calibration fold rather than measured. What it buys is the only version of this window
+in which all three targets are measured by models of the SAME CLASS as the canonical 4a grid's:
+no uncalibrated WP, no NaN-scale residual converter, no dropped target, and no patch to the
+trainers that would silently change what "the model" means and make the headline
+non-comparable. Temporal ordering is strict and unchanged --
+max(train)=2020 < hp-val=2021 < min(measure)=2022 -- so no season is both trained on and measured.
+
+This remains a NON-DEFAULT configuration. The project's canonical training window is still
+DELIBERATELY not mutated (D-Q2), so Phase 30 must adopt a covered selection window DELIBERATELY,
+or the family remains inert under the canonical window and should be dropped (D29-07-01).
+
+**3. The keep/drop rule.** Unchanged from 4c, and unchanged from the committed code: exactly as
+`decide_group_keep` implements it (`backtest/signal_lift.py:462-506`), KEEP if and only if the
+point-estimate delta is above zero on at least one target AND no target is significantly-negative
+(mean below zero with p < `SIGNIFICANCE_ALPHA`). Whatever that function returns on the headline
+grid is what gets published. The rule does not become easier to satisfy because the window moved.
+
+**4. The measurability precondition, and the pre-committed answer if it fails.** Unchanged from
+4c. The grid is evidence about line movement only for targets whose `n_group_columns_selected` is
+above zero. If the family is STILL selected 0/15 even under a window that can see it, that is a
+real and complete finding -- the family is not competitive on train-window importance even when
+visible -- and it will be published as the phase's answer in the same voice as any other outcome.
+The Phase-30 recommendation in that case is pre-committed as DROP, unless the family is admitted
+by some route that does not depend on train-window importance.
+
+**5. Multiplicity.** Unchanged from 4c. The grid is reported RAW with the existing multiplicity
+note. These three cells bring the phase to nine cells across three windows with no correction
+applied here. The binding BH-FDR / p<0.05 correction stays in the Phase-30 deploy gate. A single
+nominally significant cell is a screening signal, not a gate ruling.
+
+**6. The confound tell, registered before the run.** Unchanged from 4c. Inside the train 2018-2020
+selection window the family is exactly 0.0 for all 534 rows of 2018-2019 and real for roughly 244
+of the 269 rows of 2020, so `line_movement_coverage` -- and anything collinear with it -- can be
+selected as a SEASON PROXY rather than as market information. Tell: if `line_movement_coverage`
+appears in a target's `group_columns_selected`, that cell is declared CONFOUNDED and is not read
+as market information.
+
+**7. Limitations accepted in advance.** 2020 is a COVID season and it sits inside the selection
+window. The 2020 rows are recovered by an in-place re-key of already-purchased data, not
+re-purchased. The headline rests on a non-default configuration. The measured span is three
+seasons, not four, and 2023-2024 is recorded as partially burned holdout (D26-09).
+
+**8. Null-result clause.** Unchanged from 4c. A flat, null, or negative grid is a COMPLETE and
+SUCCESSFUL outcome and will be published as the phase's answer with the same prominence and detail
+as a positive one. The 7,210 credits already spent create no obligation to find a signal, and no
+result will be softened, hedged, buried, or re-run until it is favourable.
 
 **9. No further spend.** No Odds API call of any kind is made for this measurement.
 
