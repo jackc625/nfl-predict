@@ -779,11 +779,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--covered-selection-window",
         action="store_true",
         help=(
-            "Run under COVERED_SELECTION_WINDOW_CONFIG (train 2018-2020 / no hp_val / measure "
-            "the full 2021-2024 holdout). Slides the selection window forward only as far as "
-            "2020 so the selector can see a group whose archive floor is 2020-06-06, while "
-            "keeping the whole four-season holdout as the measurement span. NON-DEFAULT: the "
-            "canonical training window is not mutated."
+            "Run under COVERED_SELECTION_WINDOW_CONFIG (train 2018-2020 / hp_val 2021 / measure "
+            "2022-2024). Slides the selection window forward only as far as 2020 so the selector "
+            "can see a group whose archive floor is 2020-06-06. 2021 is spent as the calibration "
+            "fold because every concrete trainer fits a conversion component there, so the fold "
+            "cannot be empty. NON-DEFAULT: the canonical training window is not mutated."
         ),
     )
     return parser
