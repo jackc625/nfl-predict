@@ -30,6 +30,7 @@ from scripts.ingest_odds import OddsAPIClient
 from scripts.ingest_odds_timeline import (
     MockModeBackfillError,
     _build_parser,
+    _load_stored_snapshot_timestamps,
     _snapshot_already_stored,
     backfill_timeline,
     normalize_envelope_to_timeline_rows,
@@ -244,6 +245,71 @@ def test_backfill_skips_already_stored_snapshots_on_rerun(tmp_path):
     assert second_calls == []
     assert written == 0
     assert len(pd.read_parquet(silver_path)) == 4
+
+
+def test_spend_guard_is_markets_aware_on_a_synthetic_archive(tmp_path):
+    """WR-03: a timestamp counts as covered only for the markets already stored.
+
+    The guard previously read the ``snapshot_ts`` column alone, so a
+    ``--markets totals`` run followed by ``--markets totals spreads`` would find
+    every timestamp present, skip all of them, make ZERO calls, write zero rows and
+    leave ``spread`` null forever -- precisely the resumed-backfill case the guard
+    exists to serve.
+
+    SYNTHETIC ONLY: this writes a small parquet by hand and never constructs an
+    ``OddsAPIClient`` or exercises a real backfill. The live archive cost 7,210 real
+    credits and is never touched by a test.
+    """
+    silver_dir = tmp_path / "silver"
+    silver_dir.mkdir(parents=True)
+    stored_ts = pd.Timestamp("2021-10-15T21:55:00Z")
+    pd.DataFrame(
+        {
+            "game_id": ["2021_W06_A@B"],
+            "snapshot_ts": [stored_ts],
+            "total": [44.0],
+            "spread": [None],  # totals-only run: the spread column is null
+        }
+    ).to_parquet(silver_dir / "odds_timeline.parquet", index=False)
+
+    totals_only = _load_stored_snapshot_timestamps(tmp_path, markets=["totals"])
+    assert stored_ts in totals_only, "a stored total must count as totals coverage"
+
+    with_spreads = _load_stored_snapshot_timestamps(
+        tmp_path, markets=["totals", "spreads"]
+    )
+    assert with_spreads == set(), (
+        "a timestamp with a null spread must NOT count as covered when spreads are "
+        "requested, or the widened run silently skips and never fills the column"
+    )
+
+    requested = datetime(2021, 10, 15, 22, 0, tzinfo=UTC)
+    assert _snapshot_already_stored(requested, totals_only) is True
+    assert _snapshot_already_stored(requested, with_spreads) is False
+
+
+def test_spend_guard_counts_a_timestamp_covered_when_all_markets_present(tmp_path):
+    """The other direction: both markets stored means the skip correctly fires."""
+    silver_dir = tmp_path / "silver"
+    silver_dir.mkdir(parents=True)
+    stored_ts = pd.Timestamp("2021-10-15T21:55:00Z")
+    pd.DataFrame(
+        {
+            "game_id": ["2021_W06_A@B"],
+            "snapshot_ts": [stored_ts],
+            "total": [44.0],
+            "spread": [-3.5],
+        }
+    ).to_parquet(silver_dir / "odds_timeline.parquet", index=False)
+
+    assert _load_stored_snapshot_timestamps(
+        tmp_path, markets=["totals", "spreads"]
+    ) == {stored_ts}
+
+
+def test_spend_guard_returns_empty_set_when_the_archive_does_not_exist(tmp_path):
+    """First run: nothing stored, nothing skipped."""
+    assert _load_stored_snapshot_timestamps(tmp_path, markets=["totals"]) == set()
 
 
 def test_snapshot_guard_window_matches_earlier_envelope_not_prior_cadence():

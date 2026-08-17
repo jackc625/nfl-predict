@@ -24,6 +24,9 @@ from __future__ import annotations
 import inspect
 import textwrap
 
+import numpy as np
+import pandas as pd
+
 
 def test_gold_write_call_has_no_partition_cols():
     """The save_dataframe(..., layer="gold") call in build_features must NOT pass
@@ -89,6 +92,90 @@ def test_gold_write_call_has_no_partition_cols():
         "(season=YYYY/ dirs in gold/, multiplying cardinality on every rebuild). "
         f"Offending call fragment(s): {regressions_found}"
     )
+
+
+class TestPartialBuildsCannotFabricateLineMovementCoverage:
+    """WR-10: a season-only build must never median-impute the line-movement family.
+
+    ``load_all_feature_sources`` previously filtered ``games_df`` only when BOTH
+    ``--season`` and ``--week`` were given, while ``LineMovementBuilder`` filters on
+    each independently and ``main()`` declares the two options independently. So
+    ``--season 2024`` alone left most rows NaN across the family after the left
+    merge, and those NaNs were filled with the COLUMN MEDIAN -- which for
+    ``line_movement_coverage`` is 1.0, stamping every uncovered game as covered and
+    inverting the flag the family's whole semantics rest on.
+
+    Value impact on the canonical full rebuild is nil (gold has zero NaN in
+    ``line_movement_coverage``), so this is purely defensive -- and the test says so
+    by constructing the gap rather than waiting for one.
+    """
+
+    @staticmethod
+    def _frame_with_a_coverage_gap() -> pd.DataFrame:
+        """Nine covered games and three with the whole family missing."""
+        covered, missing = 9, 3
+        return pd.DataFrame(
+            {
+                "game_id": [f"G{i}" for i in range(covered + missing)],
+                "season": [2024] * (covered + missing),
+                "week": list(range(1, covered + missing + 1)),
+                "line_movement_coverage": [1.0] * covered + [np.nan] * missing,
+                "opening_total": [44.0] * covered + [np.nan] * missing,
+                "total_drift": [0.5] * covered + [np.nan] * missing,
+            }
+        )
+
+    def test_missing_coverage_is_filled_with_zero_not_the_median(self) -> None:
+        import scripts.build_features as build_features_mod
+
+        builder = build_features_mod.FeatureMatrixBuilder()
+        frame = self._frame_with_a_coverage_gap()
+        assert frame["line_movement_coverage"].median() == 1.0, (
+            "fixture sanity: the median IS 1.0, which is what made the old fill "
+            "fabricate coverage"
+        )
+
+        out = builder.handle_missing_data_and_outliers(frame)
+
+        filled = out["line_movement_coverage"].tail(3)
+        assert (filled == 0.0).all(), (
+            "a game with no trajectory must read as NOT covered; filling from the "
+            f"column median stamps it covered. Got {list(filled)}"
+        )
+
+    def test_missing_opening_total_is_filled_from_the_league_average(self) -> None:
+        """0.0 would be out of distribution for a 40-to-50 totals line."""
+        import scripts.build_features as build_features_mod
+        from features.line_movement import LEAGUE_AVERAGE_TOTAL
+
+        builder = build_features_mod.FeatureMatrixBuilder()
+        out = builder.handle_missing_data_and_outliers(
+            self._frame_with_a_coverage_gap()
+        )
+
+        assert (out["opening_total"].tail(3) == LEAGUE_AVERAGE_TOTAL).all()
+
+    def test_missing_drift_is_filled_with_the_neutral_zero(self) -> None:
+        import scripts.build_features as build_features_mod
+
+        builder = build_features_mod.FeatureMatrixBuilder()
+        out = builder.handle_missing_data_and_outliers(
+            self._frame_with_a_coverage_gap()
+        )
+
+        assert (out["total_drift"].tail(3) == 0.0).all()
+
+    def test_the_two_games_filters_agree_on_season_only(self) -> None:
+        """Source guard: the season filter must not require a week (WR-10)."""
+        import scripts.build_features as build_features_mod
+
+        source = inspect.getsource(build_features_mod.FeatureMatrixBuilder)
+        assert (
+            "if target_season and target_week:\n                games_df" not in source
+        ), (
+            "the games filter still requires BOTH season and week, so a season-only "
+            "build leaves games unfiltered while the builders filter independently"
+        )
 
 
 def test_gold_write_call_targets_correct_table_names():

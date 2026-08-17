@@ -64,6 +64,11 @@ logger = get_logger(__name__)
 # (Tier (a)).
 DEFAULT_MARKETS = ["totals"]
 
+# The odds_timeline value column each requested market populates. The spend guard
+# needs this to answer "is this timestamp covered FOR THE MARKETS I am about to
+# request", which is a different question from "does this timestamp exist" (WR-03).
+_VALUE_COLUMN_FOR = {"totals": "total", "spreads": "spread"}
+
 # Provenance label for the per-game consensus row (median across US books).
 CONSENSUS_SOURCE = "consensus_median"
 
@@ -302,24 +307,48 @@ def _write_timeline_rows(
 
 def _load_stored_snapshot_timestamps(
     base_path: Path | None = None,
+    markets: list[str] | None = None,
 ) -> set[pd.Timestamp]:
-    """Return the distinct ``snapshot_ts`` values already stored in odds_timeline.
+    """Return the ``snapshot_ts`` values already stored FOR EVERY REQUESTED MARKET.
+
+    WR-03. This previously read only the ``snapshot_ts`` column, so the requested
+    markets never entered the coverage question. A ``--markets totals`` run followed
+    by ``--markets totals spreads`` would find every timestamp already present, skip
+    all of them, make ZERO paid calls, write zero rows, log a large skip count, exit
+    zero, and leave ``spread`` null forever -- which is precisely the resumed-backfill
+    case this guard's own docstring claims to serve.
+
+    A timestamp now counts as covered only when EVERY requested market has a
+    non-null value at it, so a widened market list correctly re-fetches.
 
     Read ONCE at the start of a backfill so the spend-safety guard costs a single
     parquet read rather than a read per timestamp. Returns an empty set when the
     silver table does not exist yet (the first run).
+
+    Args:
+        base_path: Optional data root (for tests); defaults to settings.
+        markets: The markets this run will request. Defaults to
+            :data:`DEFAULT_MARKETS`.
     """
     if base_path is None:
         base_path = Path(get_settings().config.data.root_path)
+    if markets is None:
+        markets = DEFAULT_MARKETS
 
     silver_path = base_path / "silver" / "odds_timeline.parquet"
     if not silver_path.exists():
         return set()
 
-    stored = pd.read_parquet(silver_path, columns=["snapshot_ts"], engine="pyarrow")[
-        "snapshot_ts"
+    value_columns = [
+        _VALUE_COLUMN_FOR[market] for market in markets if market in _VALUE_COLUMN_FOR
     ]
-    return set(pd.to_datetime(stored, utc=True).unique())
+    stored = pd.read_parquet(
+        silver_path, columns=["snapshot_ts", *value_columns], engine="pyarrow"
+    )
+    if value_columns:
+        stored = stored.dropna(subset=value_columns)
+
+    return set(pd.to_datetime(stored["snapshot_ts"], utc=True).unique())
 
 
 def _snapshot_already_stored(requested_t: datetime, stored: set[pd.Timestamp]) -> bool:
@@ -358,7 +387,10 @@ def backfill_timeline(
     is SKIPPED without issuing the paid call, so resuming an interrupted
     backfill re-buys nothing (``upsert_silver_composite`` makes the WRITE
     idempotent, not the CALL). Coverage is tested against the stored ENVELOPE
-    timestamps via :func:`_snapshot_already_stored`.
+    timestamps via :func:`_snapshot_already_stored`, and is MARKETS-AWARE (WR-03):
+    a timestamp counts as covered only when every requested market already has a
+    non-null value there, so widening ``markets`` re-fetches instead of silently
+    skipping and leaving the new market's column null forever.
 
     Args:
         seasons: Seasons to backfill.
@@ -384,9 +416,10 @@ def backfill_timeline(
     if markets is None:
         markets = DEFAULT_MARKETS
 
-    # Spend-safety guard: one read of what is already on disk, kept current as
-    # the loop writes so a resumed backfill never re-buys stored timestamps.
-    stored_snapshots = _load_stored_snapshot_timestamps(base_path)
+    # Spend-safety guard: one read of what is already on disk FOR THESE MARKETS,
+    # kept current as the loop writes so a resumed backfill never re-buys stored
+    # timestamps -- and never skips a timestamp that lacks a requested market.
+    stored_snapshots = _load_stored_snapshot_timestamps(base_path, markets=markets)
 
     total_written = 0
     calls_made = 0

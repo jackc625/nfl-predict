@@ -44,7 +44,7 @@ import hashlib
 import shutil
 import sys
 from collections.abc import Iterable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -92,6 +92,15 @@ _OLD_SEASON_START_DAY_MIN = 3
 
 # Weekday index of Thursday (Monday == 0), used by the frozen replay.
 _THURSDAY = 3
+
+# The last regular-season week. The matchup fallback in :func:`build_rekey_map` is
+# built from REG games only, so it may only be consulted for a REG stored id (WR-07).
+_MAX_REGULAR_SEASON_WEEK = 18
+
+# Stored ids that collapse onto an ALREADY-EXISTING true id: six early-September
+# board listings whose provisional dates later moved. Asserted as a post-state
+# invariant so a fallback that silently merged extra ids cannot pass unnoticed.
+EXPECTED_COLLAPSED_IDS = EXPECTED_STORED_2020_IDS - EXPECTED_TRUE_2020_IDS
 
 _BRONZE_GLOB = "odds_timeline_raw_bronze_*.parquet"
 
@@ -234,7 +243,15 @@ def build_rekey_map(
             continue
         parsed = parse_game_id(stored_id)
         key = (parsed["away_team"], parsed["home_team"])
-        if key in matchup:
+        # WR-07: the matchup map is built from REG games ONLY (:199), so a stored
+        # POST id such as 2020_W20_CLE@KC that is neither a fixed point nor an
+        # old-rule key would be silently re-keyed onto the same two teams' REGULAR
+        # SEASON meeting -- attributing a playoff trajectory to a September game. No
+        # post-state invariant would catch it: the row count is unchanged,
+        # _distinct_pairs fires only on an exact (new_id, snapshot_ts) collision, and
+        # the distinct-id count is satisfied because the merge target already existed.
+        # Gate the fallback on the regular season so a POST id fails loudly instead.
+        if parsed["week"] <= _MAX_REGULAR_SEASON_WEEK and key in matchup:
             mapping[stored_id] = matchup[key]
             continue
         unmapped.append(stored_id)
@@ -472,6 +489,32 @@ def prepare_rekey(base_path: Path | None = None) -> dict:
         f"2020 collapsed to {true_id_count} distinct ids, expected "
         f"{EXPECTED_TRUE_2020_IDS}",
     )
+    # WR-07: how many stored ids landed on a true id that ANOTHER stored id also
+    # produced. The distinct-id count above cannot see this on its own -- merging one
+    # more id onto an already-existing target leaves the id count unchanged.
+    #
+    # The magnitude is only pinned in the archive's ORIGINAL state (262 stored ids,
+    # six early-September board listings collapsing onto six existing ids). Once the
+    # re-key has been applied the map is the identity over 256 ids and the correct
+    # expectation is ZERO, so the expectation is derived from the observed stored-id
+    # count and the original-state figure is asserted only when that state holds.
+    # The hard protection against a playoff id being merged onto a regular-season
+    # meeting is the week gate in build_rekey_map, which now sends such an id to
+    # `unmapped` and raises; this invariant pins the collapse magnitude alongside it.
+    collapsed = len(mapping) - len(set(mapping.values()))
+    expected_collapsed = max(len(mapping) - EXPECTED_TRUE_2020_IDS, 0)
+    _assert(
+        collapsed == expected_collapsed,
+        f"{collapsed} stored 2020 ids collapsed onto an already-existing true id, "
+        f"expected {expected_collapsed} for {len(mapping)} stored ids; an extra "
+        "collapse means the matchup fallback merged an id it should have refused",
+    )
+    if len(mapping) == EXPECTED_STORED_2020_IDS:
+        _assert(
+            collapsed == EXPECTED_COLLAPSED_IDS,
+            f"the archive is in its original {EXPECTED_STORED_2020_IDS}-id state but "
+            f"{collapsed} ids collapsed, expected exactly {EXPECTED_COLLAPSED_IDS}",
+        )
     missing = sorted(set(slice_2020_after["game_id"]) - true_ids)
     _assert(
         not missing,
@@ -557,6 +600,18 @@ def apply_rekey(base_path: Path | None = None) -> dict:
     path = timeline_path(base_path)
     report = prepare_rekey(base_path)
 
+    # WR-08: refresh BEFORE the no-op early return, so the no-op path can still
+    # repair a stale DuckDB copy. Otherwise there is no path back to a consistent
+    # DuckDB copy short of manual intervention.
+    #
+    # The review judged this blast radius nil because db.table_exists("odds_timeline")
+    # is False. That much is true -- but db.table_exists("games") is True, and that
+    # copy is already 207 rows divergent from its parquet, because upsert_silver
+    # writes parquet only while load_dataframe resolves DuckDB first. So the
+    # shadowing mechanism the review dismissed as hypothetical is live right now in a
+    # neighbouring table (N-01).
+    report["duckdb_refreshed"] = _refresh_duckdb_copy(report["after"])
+
     if report["already_rekeyed"]:
         print("Archive is already re-keyed: 0 orphaned 2020 ids. Nothing written.")
         report["written"] = False
@@ -564,7 +619,6 @@ def apply_rekey(base_path: Path | None = None) -> dict:
 
     _atomic_write(report["after"], path, base_path)
     report["written"] = True
-    report["duckdb_refreshed"] = _refresh_duckdb_copy(report["after"])
 
     # The decisive assertion goes THROUGH load_dataframe, not a direct parquet
     # read, so it proves what the feature builders will actually see.
@@ -640,12 +694,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Rewrite the whole odds_timeline table with the 2020 rows re-keyed.",
     )
+    # WR-08: the backup is ON by default. A 7,210-credit archive is not the place
+    # for an opt-in safety net, and the previous optional flag meant the default
+    # invocation wrote with no recovery path at all.
     parser.add_argument(
         "--backup-to",
         type=Path,
-        help="Copy the archive to this path before --apply writes.",
+        help="Copy the archive to this path before --apply writes. Defaults to "
+        "<archive>.bak-<UTC timestamp>.",
+    )
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip the pre-write backup. Must be requested explicitly.",
     )
     return parser
+
+
+def default_backup_path(base_path: Path | None = None) -> Path:
+    """Return ``<archive>.bak-<UTC timestamp>`` -- the default --apply backup."""
+    stamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
+    path = timeline_path(base_path)
+    return path.with_suffix(path.suffix + f".bak-{stamp}")
 
 
 def main() -> None:
@@ -660,10 +730,15 @@ def main() -> None:
             _print_report(prepare_rekey(), mode="dry run -- nothing written")
             sys.exit(0)
 
-        if args.backup_to is not None:
-            args.backup_to.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(timeline_path(), args.backup_to)
-            print(f"Backed up archive to {args.backup_to}")
+        if not args.no_backup:
+            backup_to = (
+                args.backup_to if args.backup_to is not None else default_backup_path()
+            )
+            backup_to.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(timeline_path(), backup_to)
+            print(f"Backed up archive to {backup_to}")
+        else:
+            print("Skipping the pre-write backup (--no-backup was requested)")
 
         report = apply_rekey()
         _print_report(report, mode="applied" if report["written"] else "no-op")

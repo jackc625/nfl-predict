@@ -196,6 +196,50 @@ class TestBuildRekeyMap:
         mapping = build_rekey_map(games, ["2020_W02_HOU@KC"])
         assert mapping == {"2020_W02_HOU@KC": "2020_W01_HOU@KC"}
 
+    def test_a_stored_postseason_id_is_refused_not_merged_onto_the_reg_meeting(
+        self,
+    ) -> None:
+        """WR-07: the UNSAFE direction the test above does not cover.
+
+        The matchup map is built from REG games only, and the fallback discarded
+        ``parsed["week"]``. So a stored POST id that is neither a fixed point nor an
+        old-rule key would have been silently re-keyed onto the same two teams'
+        REGULAR-SEASON meeting -- attributing a January playoff trajectory to a
+        September game. No post-state invariant could catch it: the row count is
+        unchanged, the pair check fires only on an exact collision, and the
+        distinct-id count is satisfied because the merge target already existed.
+
+        Gating the fallback on week <= 18 turns that silent corruption into a loud
+        refusal.
+        """
+        games = _games_frame(
+            [
+                _reg_game("2020_W01_HOU@KC", "2020-09-10 20:20:00", "HOU", "KC"),
+                {
+                    "game_id": "2020_W20_HOU@KC",
+                    "season": 2020,
+                    "game_type": "POST",
+                    "kickoff_et": pd.Timestamp("2021-01-17 15:05:00"),
+                    "away_team": "HOU",
+                    "home_team": "KC",
+                },
+            ]
+        )
+
+        # A stored POST id that is NOT a true id and cannot be recovered by the
+        # old-rule inverse: before the week gate it would have mapped onto
+        # 2020_W01_HOU@KC.
+        with pytest.raises(RekeyInvariantError, match="could not be resolved"):
+            build_rekey_map(games, ["2020_W21_HOU@KC"])
+
+    def test_a_regular_season_stored_id_still_uses_the_matchup_fallback(self) -> None:
+        """The week gate must not break the residue case the fallback exists for."""
+        games = _games_frame(
+            [_reg_game("2020_W01_HOU@KC", "2020-09-10 20:20:00", "HOU", "KC")]
+        )
+        mapping = build_rekey_map(games, ["2020_W02_HOU@KC"])
+        assert mapping == {"2020_W02_HOU@KC": "2020_W01_HOU@KC"}
+
     def test_map_is_idempotent(self) -> None:
         """Applying the map to its own output is the identity."""
         games = _games_frame(

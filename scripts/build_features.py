@@ -150,13 +150,23 @@ class FeatureMatrixBuilder:
         feature_sources = {}
 
         try:
-            # Core game data
+            # Core game data.
+            #
+            # WR-10: filter by season when a season is given, and narrow by week only
+            # when a week is ALSO given. This previously required BOTH, while
+            # LineMovementBuilder.build_features filters on each independently and
+            # main() declares --season and --week as independent options -- so a
+            # season-only build left most games unfiltered here, produced
+            # line-movement rows only for the target season, and left the rest NaN
+            # after the left merge. Those NaNs were then filled with the column
+            # median, which for line_movement_coverage is 1.0, stamping every
+            # uncovered game as covered and inverting the flag the family's whole
+            # semantics rest on.
             games_df = load_dataframe("games", layer="silver")
-            if target_season and target_week:
-                games_df = games_df[
-                    (games_df["season"] == target_season)
-                    & (games_df["week"] == target_week)
-                ]
+            if target_season:
+                games_df = games_df[games_df["season"] == target_season]
+                if target_week:
+                    games_df = games_df[games_df["week"] == target_week]
             feature_sources["games"] = games_df
             logger.info("Loaded games data", records=len(games_df))
 
@@ -635,11 +645,27 @@ class FeatureMatrixBuilder:
         missing_stats = {}
         outlier_stats = {}
 
+        # WR-10: the line-movement family must NEVER be median-imputed. Its neutral
+        # state is a defined thing -- LEAGUE_AVERAGE_TOTAL for the opening anchors,
+        # 0.0 for the drift/path families and 0.0 for the coverage flag -- and the
+        # column median for line_movement_coverage is 1.0, so a median fill would
+        # fabricate coverage for games that have none. Fill from the builder's own
+        # neutral defaults instead, so a gap can only ever read as "not covered".
+        neutral_line_movement = self.line_movement_builder._neutral_features(
+            emit_spread=True
+        )
+
         for col in numeric_cols:
             original_missing = processed_df[col].isna().sum()
 
             # Handle missing data
             if original_missing > 0:
+                if col in neutral_line_movement:
+                    processed_df[col] = processed_df[col].fillna(
+                        neutral_line_movement[col]
+                    )
+                    missing_stats[col] = original_missing
+                    continue
                 # For team-based features, use team's season average
                 if any(prefix in col for prefix in ["home_", "away_"]):
                     processed_df[col] = self._impute_team_features(processed_df, col)
