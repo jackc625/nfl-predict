@@ -100,6 +100,99 @@ def test_check_time_fence_passes_clean_data(gate, clean_features, as_of_dt):
 
 
 # ---------------------------------------------------------------------------
+# WR-01: an inert check must announce itself, not read as a pass
+# ---------------------------------------------------------------------------
+
+
+class _RecordingLogger:
+    """Captures logger.warning calls without depending on log routing."""
+
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, message, **kwargs):
+        self.warnings.append((message, kwargs))
+
+    def debug(self, *args, **kwargs):
+        pass
+
+    def info(self, *args, **kwargs):
+        pass
+
+
+@pytest.fixture
+def line_movement_shaped_output():
+    """The real LineMovementBuilder output shape: game_id plus fifteen floats.
+
+    No ``game_date``, no ``kickoff_et``, no ``snapshot_ts`` -- which is exactly why
+    ``check_time_fence`` never entered its loop body for this builder and was a
+    guaranteed pass, while build_features.py claimed registration routed the source
+    "through the LeakageGate".
+    """
+    return pd.DataFrame(
+        {
+            "game_id": ["G1", "G2"],
+            "opening_total": [44.0, 41.5],
+            "total_drift": [-0.5, 1.0],
+            "total_drift_dir": [-1.0, 1.0],
+            "total_late_drift": [0.0, 0.5],
+            "total_abs_travel": [1.5, 2.0],
+            "total_reversals": [1.0, 0.0],
+            "total_range": [1.5, 2.0],
+            "line_movement_coverage": [1.0, 1.0],
+            "opening_spread": [-2.5, 3.0],
+            "spread_drift": [1.0, -0.5],
+            "spread_drift_dir": [1.0, -1.0],
+            "spread_late_drift": [0.5, 0.0],
+            "spread_abs_travel": [1.0, 0.5],
+            "spread_reversals": [0.0, 0.0],
+            "spread_range": [1.0, 0.5],
+        }
+    )
+
+
+def test_time_fence_warns_when_it_inspects_nothing(
+    gate, line_movement_shaped_output, as_of_dt
+):
+    """WR-01: a structural no-op is recorded, not mistaken for a pass."""
+    recorder = _RecordingLogger()
+    gate.logger = recorder
+
+    gate.check_time_fence(line_movement_shaped_output, as_of_dt, "line_movement")
+
+    assert len(recorder.warnings) == 1
+    message, fields = recorder.warnings[0]
+    assert "inspected NOTHING" in message
+    assert fields["builder"] == "line_movement"
+    assert set(fields["expected_any_of"]) == {"game_date", "kickoff_et", "snapshot_ts"}
+
+
+def test_time_fence_stays_silent_when_it_has_a_timestamp_to_inspect(
+    gate, line_movement_shaped_output, as_of_dt
+):
+    """A frame carrying snapshot_ts is genuinely checked, so no warning fires."""
+    frame = line_movement_shaped_output.copy()
+    frame["snapshot_ts"] = [
+        as_of_dt - timedelta(hours=2),
+        as_of_dt - timedelta(days=1),
+    ]
+
+    recorder = _RecordingLogger()
+    gate.logger = recorder
+
+    gate.check_time_fence(frame, as_of_dt, "line_movement")
+
+    assert recorder.warnings == []
+
+
+def test_the_inert_check_still_returns_without_raising(
+    gate, line_movement_shaped_output, as_of_dt
+):
+    """The warning changes visibility, not behaviour: no new hard failure."""
+    gate.check_time_fence(line_movement_shaped_output, as_of_dt, "line_movement")
+
+
+# ---------------------------------------------------------------------------
 # Test 3: validate_combined_matrix raises on leakage keyword columns
 # ---------------------------------------------------------------------------
 

@@ -161,6 +161,27 @@ class LeakageGate:
         """
         timestamp_cols = ["game_date", "kickoff_et", "snapshot_ts"]
 
+        # WR-01: make an inert check VISIBLE rather than indistinguishable from a
+        # pass. A builder emitting no timestamp column at all -- LineMovementBuilder
+        # emits game_id plus fifteen floats -- never enters the loop body below, so
+        # this check is a guaranteed pass, while build_features.py states that
+        # registration "routes the source through the LeakageGate". It routes it
+        # through a no-op, and that no-op is one of the two seams CR-01 crossed.
+        #
+        # The alternative (emitting the per-game fence as a snapshot_ts column) is
+        # more invasive and adds a column that would then have to be suppressed in
+        # exactly the right place in combine_features. An explicit warning records
+        # the absence instead of letting it read as evidence of safety.
+        inspected = [col for col in timestamp_cols if col in features_df.columns]
+        if not inspected:
+            self.logger.warning(
+                "Time-fence check inspected NOTHING -- this builder emits no "
+                "timestamp column, so the check is a structural no-op, not a pass",
+                builder=builder_name,
+                expected_any_of=timestamp_cols,
+                columns_present=len(features_df.columns),
+            )
+
         for col in timestamp_cols:
             if col not in features_df.columns:
                 continue

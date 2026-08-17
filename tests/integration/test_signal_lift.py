@@ -27,6 +27,7 @@ import pandas as pd
 import pytest
 
 from backtest import signal_lift
+from backtest.diagnose import MIN_CLV_SAMPLE
 from backtest.signal_lift import (
     decide_group_keep,
     group_columns,
@@ -247,6 +248,185 @@ class TestKeepDropRule:
         assert decision["any_positive"] is False
         assert decision["any_veto"] is False
         assert "no incremental CLV lift" in decision["reason"]
+
+
+class TestSufficientCellsAreRuledOnExactlyAsBefore:
+    """WR-02's refusal arm must be INERT at or above MIN_CLV_SAMPLE (D-R3).
+
+    ``decide_group_keep`` IS the implementation the frozen Section 4c-bis
+    pre-registration points at, so the WR-02 edit is only admissible if the KEEP and
+    DROP arms behave identically for every cell the real screen produces (n roughly
+    764, far above MIN_CLV_SAMPLE = 10). This walks the whole existing truth table
+    with sufficient n and asserts the ruling AND the reason string, rather than
+    asserting the claim in prose.
+    """
+
+    @staticmethod
+    def _cell(mean: float | None, p: float | None, n_paired: int = 764) -> dict:
+        keep_target = mean is not None and mean > 0
+        veto = mean is not None and mean < 0 and p is not None and p < 0.05
+        return {
+            "delta_mean": mean,
+            "delta_p": p,
+            "keep_target": keep_target,
+            "veto": veto,
+            "n_paired": n_paired,
+            "paired_sufficient": n_paired >= MIN_CLV_SAMPLE,
+        }
+
+    def test_positive_only_is_unchanged(self) -> None:
+        decision = decide_group_keep(
+            {
+                "wp": self._cell(0.01, 0.20),
+                "ats": self._cell(-0.02, 0.40),
+                "ou": self._cell(0.00, 0.90),
+            }
+        )
+        assert decision["keep"] is True
+        assert decision["positive_targets"] == ["wp"]
+        assert decision["veto_targets"] == []
+        assert decision["reason"] == (
+            "KEEP: positive point-estimate on ['wp'] and not "
+            "significantly-negative on any target -- carried to Phase 30 for the binding gate"
+        )
+
+    def test_negative_but_not_significant_is_unchanged(self) -> None:
+        decision = decide_group_keep(
+            {
+                "wp": self._cell(-0.01, 0.60),
+                "ats": self._cell(0.00, 0.99),
+                "ou": self._cell(-0.03, 0.20),
+            }
+        )
+        assert decision["keep"] is False
+        assert decision["reason"] == (
+            "DROP: no positive point-estimate on any target (no incremental CLV lift); "
+            "dropped, not silently retained"
+        )
+
+    def test_significantly_negative_is_unchanged(self) -> None:
+        decision = decide_group_keep(
+            {
+                "wp": self._cell(0.05, 0.01),
+                "ats": self._cell(-0.10, 0.001),
+                "ou": self._cell(0.02, 0.30),
+            }
+        )
+        assert decision["keep"] is False
+        assert decision["veto_targets"] == ["ats"]
+        assert decision["reason"] == (
+            "DROP: significantly-negative on ['ats'] (D-05 veto); "
+            "dropped, not silently retained"
+        )
+
+    def test_mixed_positive_and_vetoed_is_unchanged(self) -> None:
+        decision = decide_group_keep(
+            {
+                "wp": self._cell(0.02, 0.10),
+                "ats": self._cell(-0.20, 0.0001),
+                "ou": self._cell(-0.01, 0.70),
+            }
+        )
+        assert decision["keep"] is False
+        assert decision["positive_targets"] == ["wp"]
+        assert decision["veto_targets"] == ["ats"]
+
+    def test_no_refusal_language_appears_for_sufficient_cells(self) -> None:
+        """The screen's published reason must not acquire new text at real n."""
+        for cells in (
+            {"wp": self._cell(0.01, 0.2)},
+            {"wp": self._cell(-0.01, 0.6)},
+            {"wp": self._cell(-0.1, 0.001)},
+        ):
+            decision = decide_group_keep(cells)
+            assert "NOT MEASURED" not in decision["reason"]
+            assert decision["insufficient_targets"] == []
+            assert decision["measured"] is True
+
+    def test_the_real_screen_n_is_far_above_the_threshold(self) -> None:
+        """Sanity anchor: the corrected run's n is roughly 764, MIN_CLV_SAMPLE is 10."""
+        assert MIN_CLV_SAMPLE == 10
+        assert self._cell(0.01, 0.2)["paired_sufficient"] is True
+
+
+class TestInsufficientCellsAreRefusedNotRuledOn:
+    """WR-02: below MIN_CLV_SAMPLE the harness reports NOT MEASURED."""
+
+    _cell = staticmethod(TestSufficientCellsAreRuledOnExactlyAsBefore._cell)
+
+    def test_zero_paired_reports_not_measured_instead_of_a_confident_drop(self) -> None:
+        """The pre-WR-02 defect: n=0 gave all-None significance, both flags False,
+        and the rule published 'DROP: no positive point-estimate on any target' --
+        a substantive negative finding about a cell that measured nothing."""
+        decision = decide_group_keep(
+            {
+                "wp": self._cell(None, None, n_paired=0),
+                "ats": self._cell(None, None, n_paired=0),
+                "ou": self._cell(None, None, n_paired=0),
+            }
+        )
+        assert decision["keep"] is False
+        assert decision["measured"] is False
+        assert "NOT MEASURED" in decision["reason"]
+        assert "no positive point-estimate" not in decision["reason"]
+        assert "wp=0" in decision["reason"]
+
+    def test_three_paired_games_cannot_produce_a_keep(self) -> None:
+        """Below the threshold clv_significance returns a mean with NO p-value, so
+        the veto is structurally impossible while keep_target can be True off a
+        fluke. Refusing is what stops a three-game artefact reading as a KEEP."""
+        decision = decide_group_keep(
+            {
+                "wp": self._cell(0.5, None, n_paired=3),
+                "ats": self._cell(0.4, None, n_paired=3),
+                "ou": self._cell(0.3, None, n_paired=3),
+            }
+        )
+        assert decision["keep"] is False
+        assert decision["measured"] is False
+        assert "NOT MEASURED" in decision["reason"]
+
+    def test_mixed_sufficiency_rules_on_the_sufficient_targets_only(self) -> None:
+        """The adjudication the plan-checker asked to be written down (W2).
+
+        Unreachable at the real n, so it is documented and pinned rather than left
+        for whoever next runs the harness at lower n to discover. An insufficient
+        row contributes no evidence in either direction: it is excluded from both
+        the positive and the veto set, the ruling is made on the sufficient subset,
+        and the excluded targets are named in the reason.
+        """
+        decision = decide_group_keep(
+            {
+                "wp": self._cell(0.01, 0.20, n_paired=764),  # sufficient, positive
+                "ats": self._cell(0.90, None, n_paired=2),  # insufficient fluke
+                "ou": self._cell(-0.02, 0.40, n_paired=500),  # sufficient, no veto
+            }
+        )
+        assert decision["keep"] is True
+        assert decision["measured"] is True
+        assert decision["positive_targets"] == ["wp"], (
+            "the 2-game 'ats' fluke must not count toward the positive set"
+        )
+        assert decision["insufficient_targets"] == ["ats"]
+        assert "NOT MEASURED on ['ats'] (ats=2)" in decision["reason"]
+        assert "carried to Phase 30" in decision["reason"]
+
+    def test_an_insufficient_target_can_never_rescue_a_dropped_group(self) -> None:
+        """Exclusion is conservative: it can only make a KEEP harder, never easier."""
+        decision = decide_group_keep(
+            {
+                "wp": self._cell(-0.01, 0.60, n_paired=764),
+                "ats": self._cell(0.90, None, n_paired=4),
+            }
+        )
+        assert decision["keep"] is False
+        assert decision["positive_targets"] == []
+        assert "no positive point-estimate" in decision["reason"]
+
+    def test_screen_cell_carries_the_sufficiency_flag(self) -> None:
+        """``measurable`` now requires BOTH a selected column and a usable n."""
+        cell = self._cell(0.01, 0.2, n_paired=3)
+        assert cell["paired_sufficient"] is False
 
 
 # ---------------------------------------------------------------------------

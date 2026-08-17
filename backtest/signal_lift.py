@@ -75,6 +75,7 @@ import pandas as pd
 
 from backtest.diagnose import (
     CLV_COLUMN_FOR,
+    MIN_CLV_SAMPLE,
     SIGNIFICANCE_ALPHA,
     clv_significance,
 )
@@ -479,6 +480,18 @@ def _screen_target(
     p = sig["p"]
     keep_target = mean is not None and mean > 0
     veto = mean is not None and mean < 0 and p is not None and p < SIGNIFICANCE_ALPHA
+
+    # WR-02: n_paired was recorded and never read by any rule, so a cell that
+    # measured NOTHING was ruled on as if it had. clv_significance returns all-None
+    # at n == 0 (both flags False -> "DROP: no positive point-estimate on any
+    # target", a substantive negative finding published for an empty measurement)
+    # and a mean with NO p-value at 1 <= n < MIN_CLV_SAMPLE (so keep_target can be
+    # True off a three-game fluke while the veto is structurally impossible).
+    #
+    # ``paired_sufficient`` mirrors the existing measurability accounting so an
+    # unmeasurable cell can be REFUSED rather than ruled on. At the screen's actual
+    # n of roughly 764 this is inert by construction -- see decide_group_keep.
+    paired_sufficient = bool(n_paired >= MIN_CLV_SAMPLE)
     return {
         "target": target,
         "clv_column": CLV_COLUMN_FOR[target],
@@ -492,7 +505,8 @@ def _screen_target(
         "n_group_columns": len(group_cols),
         "n_group_columns_selected": len(selected_group_cols),
         "group_columns_selected": selected_group_cols,
-        "measurable": bool(selected_group_cols),
+        "paired_sufficient": paired_sufficient,
+        "measurable": bool(selected_group_cols) and paired_sufficient,
     }
 
 
@@ -504,18 +518,70 @@ def decide_group_keep(per_target: dict[str, dict[str, Any]]) -> dict[str, Any]:
     is flat/negative everywhere, or significantly-negative on ANY target, is DROPPED. The binding
     multiple-comparison correction stays in the Phase-30 deploy gate (multiplicity note).
 
+    WR-02 REFUSAL ARM, and its exact adjudication -- written down because it is
+    unreachable at the screen's actual n and would otherwise be discovered only by
+    whoever next runs the harness at lower n:
+
+    * A per-target row with ``paired_sufficient`` False measured nothing usable, so
+      it contributes NO evidence in either direction and is EXCLUDED from both the
+      positive set and the veto set.
+    * If NO target is sufficient, the group is REFUSED: ``keep`` is False, and the
+      reason reads NOT MEASURED with the per-target n_paired, rather than the
+      substantive "DROP: no positive point-estimate on any target" the pre-WR-02
+      code published for a cell that measured nothing.
+    * MIXED case (some targets sufficient, some not): the group IS ruled on, using
+      the sufficient targets ONLY, and the insufficient ones are named in the reason
+      so the ruling's evidence base is visible. Ruling on the sufficient subset is
+      the conservative choice in both directions -- an insufficient row can never
+      carry a veto anyway (``clv_significance`` returns no p-value below
+      MIN_CLV_SAMPLE, so ``veto`` is structurally False there), while it CAN set
+      ``keep_target`` True off a handful of games, so excluding it can only make a
+      KEEP harder to obtain, never easier.
+
+    D-R3 INTEGRITY. This function is the implementation the frozen Section 4c-bis
+    pre-registration points at. The exclusion above is a no-op when every cell is at
+    or above MIN_CLV_SAMPLE -- the positive and veto sets are then identical to the
+    pre-WR-02 sets, so the KEEP and DROP arms and their reason strings are
+    byte-identical. ``tests/integration/test_signal_lift.py`` walks the whole truth
+    table at n >= 10 to demonstrate that, rather than asserting it.
+
     Args:
-        per_target: Mapping target -> the ``_screen_target`` result dict (carries keep_target/veto).
+        per_target: Mapping target -> the ``_screen_target`` result dict (carries keep_target/veto
+            and paired_sufficient).
 
     Returns:
         Dict with ``keep`` (bool), ``any_positive``, ``any_veto``, ``positive_targets``,
-        ``veto_targets``, and a human-readable ``reason``.
+        ``veto_targets``, ``insufficient_targets``, ``measured`` and a human-readable ``reason``.
     """
-    positive_targets = [t for t, r in per_target.items() if r["keep_target"]]
-    veto_targets = [t for t, r in per_target.items() if r["veto"]]
+    sufficient = {
+        t: r for t, r in per_target.items() if r.get("paired_sufficient", True)
+    }
+    insufficient_targets = [t for t in per_target if t not in sufficient]
+
+    positive_targets = [t for t, r in sufficient.items() if r["keep_target"]]
+    veto_targets = [t for t, r in sufficient.items() if r["veto"]]
     any_positive = bool(positive_targets)
     any_veto = bool(veto_targets)
     keep = any_positive and not any_veto
+
+    if not sufficient:
+        counts = ", ".join(
+            f"{t}={per_target[t]['n_paired']}" for t in sorted(per_target)
+        )
+        return {
+            "keep": False,
+            "any_positive": False,
+            "any_veto": False,
+            "positive_targets": [],
+            "veto_targets": [],
+            "insufficient_targets": insufficient_targets,
+            "measured": False,
+            "reason": (
+                f"NOT MEASURED: n_paired below MIN_CLV_SAMPLE={MIN_CLV_SAMPLE} on every "
+                f"target ({counts}); this cell measured nothing, so no keep/drop ruling "
+                "is made on it"
+            ),
+        }
 
     if any_veto:
         reason = (
@@ -533,12 +599,24 @@ def decide_group_keep(per_target: dict[str, dict[str, Any]]) -> dict[str, Any]:
             "significantly-negative on any target -- carried to Phase 30 for the binding gate"
         )
 
+    if insufficient_targets:
+        counts = ", ".join(
+            f"{t}={per_target[t]['n_paired']}" for t in sorted(insufficient_targets)
+        )
+        reason = (
+            f"{reason} [ruled on the sufficient targets only; NOT MEASURED on "
+            f"{sorted(insufficient_targets)} ({counts}), below "
+            f"MIN_CLV_SAMPLE={MIN_CLV_SAMPLE}]"
+        )
+
     return {
         "keep": keep,
         "any_positive": any_positive,
         "any_veto": any_veto,
         "positive_targets": positive_targets,
         "veto_targets": veto_targets,
+        "insufficient_targets": insufficient_targets,
+        "measured": True,
         "reason": reason,
     }
 

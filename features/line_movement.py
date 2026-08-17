@@ -7,7 +7,9 @@ OWN Friday 6 PM ET freeze:
 
 - ``opening_total`` -- the totals line in the earliest captured pre-freeze
   snapshot (the genuinely-new information; the freeze line is already a model
-  feature via ``market_anchors.snapshot_total``, D-02).
+  feature via ``market_anchors.snapshot_total``, D-02). "Earliest captured" is
+  NOT a fixed horizon, and the spread of horizons is wide enough to change what
+  the whole family means -- see the WR-09 note below.
 - ``total_drift`` / ``total_drift_dir`` -- net drift ``freeze_total -
   opening_total`` and its sign (D-09 i).
 - ``total_late_drift`` -- drift over the last ~24-48h before the freeze, the
@@ -45,6 +47,27 @@ learn a coverage/season artifact instead of keying on the coverage flag.
 
 CRITICAL (Pitfall 2): every column name is DISTINCT from the structurally-zero
 ``total_movement`` / ``spread_movement`` that ``market_anchors`` already emits.
+
+WR-09 -- "OPENING" HAS NO HORIZON CONTROL, AND THE HORIZONS ARE NOT COMPARABLE.
+``opening_*`` is simply ``values[0]`` of the admitted trajectory: whatever the
+archive happened to capture first. Measured on the live archive (1,347 games
+carrying a total): median 8.8 days before kickoff, p75 12.0, p90 68.6, max 124.2;
+290 games (22 percent) open more than 14 days out and 166 more than 60 days out.
+The horizons can differ WITHIN a single game -- ``2020_W16_MIN@NO`` draws its
+opening spread from a 2020-09-01 line and its opening total from a 2020-12-22
+line, 16 weeks apart.
+
+So the drift, travel, reversal and range families mean materially different things
+for different games: for one game they describe a week of movement, for another a
+four-month repricing that spans roster and season-context changes. NO horizon
+covariate is emitted, so a model cannot tell those cases apart.
+
+This is stated rather than fixed on purpose. Bounding the trajectory would move
+feature values for about 22 percent of covered games, and emitting a lead-days
+covariate would widen the ``line_movement`` group by one column -- either would
+make a corrected screen non-attributable to the CR-01 leak fix and would re-open a
+frozen pre-registration. The choice is recorded as an owner decision for Phase 30
+in the quick-task 260817-dyp ``deferred-items.md``.
 """
 
 from datetime import datetime, timedelta
