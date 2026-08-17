@@ -235,7 +235,75 @@ are load-bearing, not decorative:
   cells (0.0083), but a window picked post hoc is exactly the garden-of-forking-paths risk that
   Phase 30's binding gate exists to settle.
 
-### 4c. Ruling, and the D-02 question answered
+### 4c. Pre-registration (written and committed BEFORE the covered-window screen was run)
+
+This subsection was written and committed to git ALONE, before any number from the covered
+selection window existed anywhere in this repository -- and, in fact, before the window itself
+existed in the codebase at all: the `--covered-selection-window` flag and the config it needs were
+added in a LATER commit. Its whole value is that `git log` can check the ordering rather than
+this document asserting it. The 4b diagnostic's central weakness was a window chosen after seeing
+results; repeating that would make a new grid worth no more than the old one.
+
+**1. The command, run exactly once.** Verbatim, copy-pasteable:
+
+```
+uv run python -m backtest.signal_lift --phase 29 --covered-selection-window
+```
+
+**2. The window.** Train seasons 2018, 2019, 2020; NO hp-val season; holdout / measure seasons
+2021, 2022, 2023, 2024 -- the full four-season holdout. `groups=('line_movement',)`,
+`baseline_exclude_groups=('line_movement',)`, `tune=False`, anchor
+`BaseTrainer.train_and_evaluate(tune=False)`. This is a NON-DEFAULT configuration. The project's
+canonical training window (train 2018-2019, hp-val 2020, holdout 2021-2024) is DELIBERATELY not
+mutated (D-Q2): it is a project-wide gate-configuration decision that feeds Phase 30's binding
+gate and every trainer, and changing it as a side effect of a measurement would be an invisible
+global change made for a local reason. The consequence is stated in advance: Phase 30 must adopt a
+covered selection window DELIBERATELY, or the family remains inert under the canonical window and
+should be dropped (D29-07-01).
+
+**3. The keep/drop rule.** Exactly as `decide_group_keep` implements it today
+(`backtest/signal_lift.py:462-506`): KEEP if and only if the point-estimate delta is above zero on
+at least one target AND no target is significantly-negative (mean below zero with
+p < `SIGNIFICANCE_ALPHA`). Whatever that function returns on the headline grid is what gets
+published. The rule is not re-stated in fresh prose that could be shaded after the fact -- it is
+the committed function.
+
+**4. The measurability precondition, and the pre-committed answer if it fails.** The grid is
+evidence about line movement only for targets whose `n_group_columns_selected` is above zero. If
+the family is STILL selected 0/15 even under a window that can see it, that is a real and complete
+finding -- the family is not competitive on train-window importance even when visible -- and it
+will be published as the phase's answer in the same voice as any other outcome. The Phase-30
+recommendation in that case is pre-committed here as DROP, unless the family is admitted by some
+route that does not depend on train-window importance.
+
+**5. Multiplicity.** The grid is reported RAW with the existing multiplicity note. These three
+cells bring the phase to nine cells across three windows with no correction applied here. The
+binding BH-FDR / p<0.05 correction stays in the Phase-30 deploy gate. A single nominally
+significant cell is a screening signal, not a gate ruling.
+
+**6. The confound tell, registered before the run.** Inside the train 2018-2020 selection window
+the family is exactly 0.0 for all 534 rows of 2018-2019 and real for roughly 244 of the 269 rows
+of 2020. `line_movement_coverage` -- and anything collinear with it -- can therefore be selected
+as a SEASON PROXY rather than as market information. Tell: if `line_movement_coverage` appears in
+a target's `group_columns_selected`, that cell is declared CONFOUNDED and is not read as market
+information.
+
+**7. Limitations accepted in advance.** 2020 is a COVID season, and it sits inside the selection
+window. The 2020 rows are recovered by an in-place re-key of already-purchased data, not
+re-purchased. The headline rests on a non-default configuration (item 2).
+
+**8. Null-result clause.** A flat, null, or negative grid is a COMPLETE and SUCCESSFUL outcome and
+will be published as the phase's answer with the same prominence and detail as a positive one. The
+7,210 credits already spent create no obligation to find a signal, and no result will be softened,
+hedged, buried, or re-run until it is favourable.
+
+**9. No further spend.** No Odds API call of any kind is made for this measurement.
+
+**10. What will NOT change after seeing results.** The window definition, the decision rule, the
+target set, and the measurement span. If any of them must change, the change will be reported as a
+NEW post-hoc diagnostic with its own label, never folded into the headline grid.
+
+### 4e. Ruling, and the D-02 question answered
 
 **The binding constraint was never redundancy -- it was the calendar.** Section 2 predicted the
 go/no-go would turn on whether line movement carries information the model does not already have.
