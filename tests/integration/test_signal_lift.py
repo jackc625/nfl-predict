@@ -731,14 +731,38 @@ class TestPhase29CliWiring:
         assert "config" not in signal_lift.screen_kwargs_for_phase(29)
 
     def test_covered_selection_window_config_shape(self) -> None:
-        """Train 2018-2020 with NO hp-val fold; measure the whole 2021-2024 holdout."""
+        """Train 2018-2020, hp-val 2021, measure 2022-2024.
+
+        2021 is spent as the hp-val fold rather than measured because every
+        trainer fits a calibration/conversion component on that fold outside the
+        tuning branch (wp_trainer.py:310-326, ats_trainer.py:244-250,
+        ou_trainer.py:244-252). An empty fold crashes WP and silently hands
+        ATS/OU a NaN-scale residual converter, so the cheaper-looking window
+        would not have measured all three targets with models of the same class
+        as the canonical grid's.
+        """
         config = signal_lift.COVERED_SELECTION_WINDOW_CONFIG
         assert config.train_seasons == [2018, 2019, 2020]
-        assert config.hp_val_seasons == []
-        assert config.holdout_seasons == [2021, 2022, 2023, 2024]
+        assert config.hp_val_seasons == [2021]
+        assert config.holdout_seasons == [2022, 2023, 2024]
         config.validate()
         # The canonical window is NOT mutated by adding this sibling (D-Q2).
         assert TemporalSplitConfig.default().train_seasons == [2018, 2019]
+
+    def test_covered_selection_window_is_strictly_ordered(self) -> None:
+        """max(train) < hp_val < min(measure): no season is trained on and measured."""
+        config = signal_lift.COVERED_SELECTION_WINDOW_CONFIG
+        assert max(config.train_seasons) < min(config.hp_val_seasons)
+        assert max(config.hp_val_seasons) < min(config.holdout_seasons)
+
+    def test_an_empty_hp_val_window_is_rejected(self) -> None:
+        """The window that cannot be run is refused at construction, not at crash time."""
+        with pytest.raises(ValueError, match="hp_val_seasons must not be empty"):
+            TemporalSplitConfig(
+                train_seasons=[2018, 2019, 2020],
+                hp_val_seasons=[],
+                holdout_seasons=[2021, 2022, 2023, 2024],
+            ).validate()
 
     def test_the_two_window_flags_are_mutually_exclusive(self) -> None:
         """Rejected at the parser AND at the helper -- they name different spans."""

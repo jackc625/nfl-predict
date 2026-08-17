@@ -144,17 +144,26 @@ COVERAGE_WINDOW_CONFIG = TemporalSplitConfig(
 # The COVERED SELECTION WINDOW (quick task 260816-u0e, D-Q2). It answers the objection that
 # COVERAGE_WINDOW_CONFIG above trains on holdout seasons and measures a single season: here the
 # selection window is slid forward only as far as 2020 -- which became a covered season once the
-# orphaned 2020 archive rows were re-keyed -- so the selector can see the family while the FULL
-# four-season 2021-2024 holdout stays intact as the measurement span (~1,019 paired games).
+# orphaned 2020 archive rows were re-keyed -- so the selector can actually see the family, while
+# 2022-2024 (~764 paired games) is measured out of sample.
 #
-# ``hp_val_seasons`` is EMPTY, and deliberately so: train ending 2020 and holdout starting 2021
-# leave no integer season in between. That is safe here precisely because the screen always runs
-# ``tune=False`` (see ``_walkforward_clv``): the hp-val fold feeds ONLY ``combined_train`` /
-# ``combined_targets`` in ``models/trainers/base.py:355-360``, which are consumed ONLY inside the
-# ``if tune`` branch (``base.py:361-368``). Feature selection uses ``train_val_split.train_data``
-# -- the ``train_seasons`` mask -- alone, and the walk-forward uses ``season < holdout_season``
-# independently of both lists. The alternative (borrowing 2021 into hp_val) would spend a covered
-# holdout season on a slot nothing reads, costing ~25% of the measurement sample.
+# 2021 is spent as the hp-val fold, and that cost is REAL and was accepted deliberately. The
+# original design left ``hp_val_seasons`` EMPTY to keep the whole 2021-2024 holdout as the
+# measurement span (~1,019 games), on the reasoning that an hp-val fold does nothing under
+# ``tune=False``. That reasoning was WRONG, and it is worth recording why rather than quietly
+# fixing it: it is true of ``BaseTrainer``, where hp_val feeds only ``combined_train`` /
+# ``combined_targets`` (``models/trainers/base.py:355-360``) inside the ``if tune`` branch
+# (``base.py:361-368``) -- but all three CONCRETE trainers override ``train_and_evaluate`` and fit
+# a post-hoc conversion component on the hp-val fold OUTSIDE that branch:
+#
+#   models/trainers/wp_trainer.py:310-326   Platt/isotonic probability calibrator
+#   models/trainers/ats_trainer.py:244-250  ResidualDistributionConverter on hp-val residuals
+#   models/trainers/ou_trainer.py:244-252   same pattern
+#
+# An empty fold therefore crashes WP inside StandardScaler and hands ATS/OU a converter with
+# ``residual_std = np.std([]) = NaN``. Borrowing 2021 is what keeps all three targets measured by
+# models of the SAME CLASS as the canonical grid's -- the only version of this window whose numbers
+# are comparable to 4a's. ``TemporalSplitConfig.validate`` now rejects an empty hp_val by name.
 #
 # This is a NON-DEFAULT configuration reachable only through the explicit
 # ``--covered-selection-window`` flag. ``TemporalSplitConfig.default()`` is NOT touched, so Phase
@@ -162,8 +171,8 @@ COVERAGE_WINDOW_CONFIG = TemporalSplitConfig(
 # 30 adopts a covered window deliberately (D29-07-01).
 COVERED_SELECTION_WINDOW_CONFIG = TemporalSplitConfig(
     train_seasons=[2018, 2019, 2020],
-    hp_val_seasons=[],
-    holdout_seasons=[2021, 2022, 2023, 2024],
+    hp_val_seasons=[2021],
+    holdout_seasons=[2022, 2023, 2024],
 )
 
 _TRAINER_FOR: dict[str, type] = {

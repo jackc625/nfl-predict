@@ -22,18 +22,6 @@ from utils import get_logger
 
 logger = get_logger(__name__)
 
-# Sentinel ``test_season`` for a train/val split that has NO validation fold.
-#
-# Produced ONLY by ``WalkForwardSplitter.get_train_val_split`` when
-# ``config.hp_val_seasons`` is empty -- a configuration that is legitimate for a
-# screen run with ``tune=False``, where the hp-val fold is never consumed. It is
-# a plain int rather than None on purpose: ``TrainTestSplit.test_season`` is
-# coerced with ``int(...)`` by existing consumers (models/utils.py:775), so
-# widening the type would ripple into code that legitimately treats it as an
-# integer.
-NO_HP_VAL_SEASON = -1
-
-
 # ---------------------------------------------------------------------------
 # Three-Fold Temporal Split Configuration
 # ---------------------------------------------------------------------------
@@ -82,38 +70,51 @@ class TemporalSplitConfig:
             msg = f"Seasons overlap between hp_val and holdout: {overlap}"
             raise ValueError(msg)
 
-        # Check temporal ordering. The two hp_val-relative checks are only
-        # meaningful when there IS an hp_val fold; an empty hp_val_seasons is
-        # legitimate for a screen run with tune=False (hp_val feeds ONLY the
-        # tuning branch of BaseTrainer.train_and_evaluate), and calling
-        # max()/min() on it would raise "min() iterable argument is empty".
+        # An empty hp_val fold is REJECTED, explicitly and by name.
         #
-        # Skipping them must NOT open a hole through which train and holdout
-        # could overlap in time, so the empty branch asserts the underlying
-        # temporal invariant DIRECTLY instead of inheriting it transitively.
-        if self.hp_val_seasons:
-            if max(self.train_seasons) >= min(self.hp_val_seasons):
-                msg = (
-                    f"train seasons must precede hp_val seasons: "
-                    f"max(train)={max(self.train_seasons)} >= "
-                    f"min(hp_val)={min(self.hp_val_seasons)}"
-                )
-                raise ValueError(msg)
-
-            if max(self.hp_val_seasons) >= min(self.holdout_seasons):
-                msg = (
-                    f"hp_val seasons must precede holdout seasons: "
-                    f"max(hp_val)={max(self.hp_val_seasons)} >= "
-                    f"min(holdout)={min(self.holdout_seasons)}"
-                )
-                raise ValueError(msg)
-        elif max(self.train_seasons) >= min(self.holdout_seasons):
+        # It is tempting to tolerate one for a screen run with tune=False, on the
+        # reasoning that hp_val feeds only combined_train / combined_targets in
+        # BaseTrainer.train_and_evaluate (base.py:355-360), consumed only inside
+        # the `if tune` branch (base.py:361-368). That reasoning is TRUE of
+        # BaseTrainer and FALSE of every concrete trainer: all three override
+        # train_and_evaluate and fit a post-hoc conversion component on the
+        # hp-val fold OUTSIDE the tune branch --
+        #
+        #   wp_trainer.py:310-326   Platt/isotonic probability calibrator
+        #   ats_trainer.py:244-250  ResidualDistributionConverter on residuals
+        #   ou_trainer.py:244-252   same pattern
+        #
+        # With an empty fold WP raises inside StandardScaler and ATS/OU fit a
+        # converter with residual_std = np.std([]) = NaN -- i.e. one hard crash
+        # and two SILENTLY degenerate models. Rejecting here with a message that
+        # names the cause is worth more than the bare "min() iterable argument is
+        # empty" this used to raise from the ordering check below.
+        if not self.hp_val_seasons:
             msg = (
-                f"train seasons must precede holdout seasons: "
+                "hp_val_seasons must not be empty: every trainer fits a "
+                "calibration/conversion component on the hp-val fold OUTSIDE the "
+                "tuning branch (wp_trainer.py:310-326 probability calibrator, "
+                "ats_trainer.py:244-250 and ou_trainer.py:244-252 residual "
+                "converter), so an empty fold crashes WP and silently gives "
+                "ATS/OU a NaN-scale converter. Borrow a season into hp_val "
+                "instead of leaving it empty."
+            )
+            raise ValueError(msg)
+
+        # Check temporal ordering
+        if max(self.train_seasons) >= min(self.hp_val_seasons):
+            msg = (
+                f"train seasons must precede hp_val seasons: "
                 f"max(train)={max(self.train_seasons)} >= "
-                f"min(holdout)={min(self.holdout_seasons)} "
-                f"(no hp_val fold, so the train/holdout ordering is asserted "
-                f"directly)"
+                f"min(hp_val)={min(self.hp_val_seasons)}"
+            )
+            raise ValueError(msg)
+
+        if max(self.hp_val_seasons) >= min(self.holdout_seasons):
+            msg = (
+                f"hp_val seasons must precede holdout seasons: "
+                f"max(hp_val)={max(self.hp_val_seasons)} >= "
+                f"min(holdout)={min(self.holdout_seasons)}"
             )
             raise ValueError(msg)
 
@@ -272,10 +273,7 @@ class WalkForwardSplitter:
 
         Returns:
             TrainTestSplit where train is the training window and test is the
-            HP-validation window. When ``config.hp_val_seasons`` is empty the
-            validation fold is empty and ``test_season`` is
-            :data:`NO_HP_VAL_SEASON`; the train side is unaffected, which is what
-            keeps feature selection identical under a ``tune=False`` screen.
+            HP-validation window.
         """
         if "game_id" in features_df.columns:
             features_df = features_df.set_index("game_id", drop=True)
@@ -294,11 +292,7 @@ class WalkForwardSplitter:
             test_data=val_df[feature_cols],
             test_targets=val_df[self.target_col],
             train_seasons=sorted(train_df["season"].unique().tolist()),
-            test_season=(
-                self.config.hp_val_seasons[0]
-                if self.config.hp_val_seasons
-                else NO_HP_VAL_SEASON
-            ),
+            test_season=self.config.hp_val_seasons[0],
         )
 
 
