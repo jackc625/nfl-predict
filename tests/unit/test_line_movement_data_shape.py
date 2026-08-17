@@ -19,6 +19,8 @@ identically. ``TestCoverageSeparatesMeasuredFromUnmeasurable`` pins that contras
 directly.
 """
 
+from unittest.mock import patch
+
 import pandas as pd
 
 from features.line_movement import LEAGUE_AVERAGE_TOTAL, LineMovementBuilder
@@ -223,3 +225,127 @@ class TestCoverageSeparatesMeasuredFromUnmeasurable:
 
         assert out.loc[_GAME_FLAT_MEASURED, "opening_total"] == 47.0
         assert out.loc[_GAME_FLAT_MEASURED, "opening_total"] != LEAGUE_AVERAGE_TOTAL
+
+
+# ---------------------------------------------------------------------------
+# WR-07: the per-game accessor must not depend on call ordering
+#
+# _resolve_game_date_for read self._games_cache and nothing else, and that cache
+# is only ever populated by build_features. So a caller using the FeatureBuilder
+# Protocol's documented per-game entry point -- exactly how a serving path wires
+# a builder in -- got all-neutral features for EVERY game, with no exception, no
+# log line, and no way to tell "this game has no trajectory" apart from "you
+# called the wrong method first".
+# ---------------------------------------------------------------------------
+
+
+class TestPerGameAccessorLoadsGamesItself:
+    """``get_features_for_game`` works as the FIRST call on a fresh builder."""
+
+    @staticmethod
+    def _games_frame() -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "game_id": _GAME_FLAT_MEASURED,
+                    "season": 2023,
+                    "week": 2,
+                    "home_team": "KC",
+                    "away_team": "DET",
+                    "kickoff_et": _KICKOFF,
+                }
+            ]
+        )
+
+    def test_it_returns_real_features_without_a_prior_build_call(self, monkeypatch):
+        """No build_features first, yet the real trajectory is used.
+
+        Pre-fix this returned the neutral dict -- opening_total 44.0, coverage
+        0.0 -- for every game, silently.
+        """
+        monkeypatch.setattr(
+            "features.line_movement.load_dataframe",
+            lambda *_a, **_k: self._games_frame(),
+        )
+        builder = LineMovementBuilder(timeline_df=_timeline())
+
+        feats = builder.get_features_for_game(_GAME_FLAT_MEASURED, _AS_OF)
+
+        assert feats["line_movement_coverage"] == 1.0
+        assert feats["opening_total"] == 47.0
+        assert feats["opening_total"] != LEAGUE_AVERAGE_TOTAL
+
+    def test_an_unknown_game_id_is_logged_not_silently_neutral(self, monkeypatch):
+        """Neutral is still returned -- but it is no longer indistinguishable."""
+        monkeypatch.setattr(
+            "features.line_movement.load_dataframe",
+            lambda *_a, **_k: self._games_frame(),
+        )
+        builder = LineMovementBuilder(timeline_df=_timeline())
+
+        with patch("features.line_movement.logger") as mock_logger:
+            feats = builder.get_features_for_game("2023_02_NOT_A_GAME", _AS_OF)
+
+        assert feats["line_movement_coverage"] == 0.0
+        assert feats["opening_total"] == LEAGUE_AVERAGE_TOTAL
+        assert "not present in games silver" in str(mock_logger.warning.call_args_list)
+
+    def test_unavailable_games_silver_degrades_with_a_warning(self, monkeypatch):
+        """A missing games table must warn, not raise, and not read as data."""
+
+        def _boom(*_a, **_k):
+            raise FileNotFoundError("no games silver in this environment")
+
+        monkeypatch.setattr("features.line_movement.load_dataframe", _boom)
+        builder = LineMovementBuilder(timeline_df=_timeline())
+
+        with patch("features.line_movement.logger") as mock_logger:
+            feats = builder.get_features_for_game(_GAME_FLAT_MEASURED, _AS_OF)
+
+        assert feats["line_movement_coverage"] == 0.0
+        assert "games silver unavailable" in str(mock_logger.warning.call_args_list)
+
+
+# ---------------------------------------------------------------------------
+# WR-08: the trajectory load is memoized, and the emitted schema is logged
+# ---------------------------------------------------------------------------
+
+
+class TestTimelineLoadIsMemoized:
+    """One load per builder, not one per predicate call and one per game."""
+
+    def test_the_archive_is_loaded_once_per_builder(self, monkeypatch):
+        """Pre-fix a 16-game weekly loop cost 32 full parquet reads + coercions."""
+        calls: list[str] = []
+
+        def _counting_load(table, **_kwargs):
+            calls.append(table)
+            return _timeline() if table == "odds_timeline" else pd.DataFrame()
+
+        monkeypatch.setattr("features.line_movement.load_dataframe", _counting_load)
+        builder = LineMovementBuilder()
+
+        builder._load_timeline()
+        builder._timeline_has_spread()
+        builder._load_timeline()
+
+        assert calls.count("odds_timeline") == 1, (
+            f"odds_timeline was loaded {calls.count('odds_timeline')} times; the "
+            f"memoization is not in place (WR-08)"
+        )
+
+    def test_the_resolved_schema_is_logged_once(self):
+        """A gold-width change must be traceable to a cause, not discovered."""
+        builder = LineMovementBuilder(timeline_df=_timeline())
+
+        with patch("features.line_movement.logger") as mock_logger:
+            builder._timeline_has_spread()
+            builder._timeline_has_spread()
+
+        info_calls = [
+            c
+            for c in mock_logger.info.call_args_list
+            if "emitted schema resolved" in str(c)
+        ]
+        assert len(info_calls) == 1
+        assert "emit_spread" in str(info_calls[0])

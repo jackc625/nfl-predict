@@ -473,7 +473,11 @@ class ContextualFeaturesCalculator:
         }
 
     def calculate_rest_days(
-        self, team: str, current_game_date: datetime, games_df: pd.DataFrame
+        self,
+        team: str,
+        current_game_date: datetime,
+        games_df: pd.DataFrame,
+        kickoffs: pd.Series | None = None,
     ) -> float:
         """
         Calculate rest days for a team since their last game.
@@ -489,12 +493,21 @@ class ContextualFeaturesCalculator:
             team: Team abbreviation
             current_game_date: Date of current game
             games_df: DataFrame with all games
+            kickoffs: Optional PRE-COMPUTED ET wall clocks for ``games_df``,
+                index-aligned to it. WR-08: mapping ``kickoff_wall_clock_et``
+                over the whole games frame costs one ``pd.Timestamp``
+                construction per row, and this method is called TWICE per game
+                (home and away) inside the per-game loop -- roughly 13,000 x
+                6,499 constructions on a full rebuild. Callers in a loop should
+                compute the series ONCE and pass it in. Omitting it is still
+                correct, just slow.
 
         Returns:
             Number of rest days
         """
         try:
-            kickoffs = games_df["kickoff_et"].map(kickoff_wall_clock_et)
+            if kickoffs is None:
+                kickoffs = games_df["kickoff_et"].map(kickoff_wall_clock_et)
             current = kickoff_wall_clock_et(current_game_date)
 
             # Find team's previous games before current date
@@ -824,6 +837,12 @@ class ContextualFeaturesCalculator:
 
             contextual_features = []
 
+            # WR-08: hoist the ET wall-clock map OUT of the per-game loop. It was
+            # recomputed inside calculate_rest_days on every call -- twice per
+            # game -- so a full rebuild paid ~13,000 x 6,499 pd.Timestamp
+            # constructions for a series that never changes.
+            all_kickoffs = games_df["kickoff_et"].map(kickoff_wall_clock_et)
+
             for _, game in games_df.iterrows():
                 game_id = game["game_id"]
                 home_team = game["home_team"]
@@ -880,10 +899,10 @@ class ContextualFeaturesCalculator:
 
                 # Rest days (calculate for both teams)
                 home_rest_days = self.calculate_rest_days(
-                    home_team, kickoff_dt, games_df
+                    home_team, kickoff_dt, games_df, kickoffs=all_kickoffs
                 )
                 away_rest_days = self.calculate_rest_days(
-                    away_team, kickoff_dt, games_df
+                    away_team, kickoff_dt, games_df, kickoffs=all_kickoffs
                 )
 
                 game_features.update(
@@ -1134,6 +1153,17 @@ class ContextualFeaturesCalculator:
             ):
                 rest_source_df = full_schedule
 
+            # WR-08: hoist the ET wall-clock map for the rest source OUT of the
+            # per-game loop. calculate_rest_days used to rebuild it on every call
+            # -- twice per game -- costing one pd.Timestamp construction per row
+            # of the source frame each time. Sliced per game below by index, which
+            # is cheap; the map itself is paid once.
+            rest_kickoffs = (
+                rest_source_df["kickoff_et"].map(kickoff_wall_clock_et)
+                if len(rest_source_df) > 0
+                else None
+            )
+
             contextual_features = []
 
             for _, game in games_df.iterrows():
@@ -1191,8 +1221,17 @@ class ContextualFeaturesCalculator:
                 if kickoff_series.dt.tz is not None and cutoff_ts.tz is None:
                     cutoff_ts = cutoff_ts.tz_localize(kickoff_series.dt.tz)
                 prior_games = rest_source_df[kickoff_series < cutoff_ts]
-                home_rest = self.calculate_rest_days(home_team, kickoff_dt, prior_games)
-                away_rest = self.calculate_rest_days(away_team, kickoff_dt, prior_games)
+                prior_kickoffs = (
+                    None
+                    if rest_kickoffs is None
+                    else rest_kickoffs.loc[prior_games.index]
+                )
+                home_rest = self.calculate_rest_days(
+                    home_team, kickoff_dt, prior_games, kickoffs=prior_kickoffs
+                )
+                away_rest = self.calculate_rest_days(
+                    away_team, kickoff_dt, prior_games, kickoffs=prior_kickoffs
+                )
 
                 game_features.update(
                     {

@@ -205,6 +205,13 @@ class LineMovementBuilder:
         """
         self._timeline_df = timeline_df
         self._games_cache: pd.DataFrame | None = None
+        # WR-08: memoize the loaded+coerced trajectory. ``_load_timeline`` was
+        # called once via ``_timeline_has_spread()`` and again for the build, and
+        # ``get_features_for_game`` did the same PER GAME -- so a 16-game weekly
+        # loop performed 32 full parquet reads plus 32 full ``pd.to_datetime``
+        # coercions of the ~10k-row archive.
+        self._timeline_cache: pd.DataFrame | None = None
+        self._emit_spread_logged = False
 
     # ------------------------------------------------------------------
     # odds_timeline loading
@@ -216,7 +223,16 @@ class LineMovementBuilder:
         ``snapshot_ts`` is coerced to a tz-aware UTC datetime so the on-disk
         round-trip (which may surface it as an ISO string) drives the per-game
         fence comparison correctly.
+
+        WR-08: MEMOIZED for the lifetime of the builder. The load is
+        deterministic for a given builder, and it used to run at least twice per
+        ``build_features`` call and twice PER GAME in ``get_features_for_game``.
+        A builder is constructed per build, so the cache cannot serve stale data
+        across a rebuild.
         """
+        if self._timeline_cache is not None:
+            return self._timeline_cache
+
         if self._timeline_df is not None:
             timeline = self._timeline_df
         else:
@@ -224,15 +240,22 @@ class LineMovementBuilder:
                 timeline = load_dataframe("odds_timeline", layer="silver")
             except (DataIngestionError, FileNotFoundError, OSError, ValueError) as exc:
                 logger.warning("odds_timeline silver not available", error=str(exc))
-                return pd.DataFrame(columns=["game_id", "snapshot_ts", "total"])
+                self._timeline_cache = pd.DataFrame(
+                    columns=["game_id", "snapshot_ts", "total"]
+                )
+                return self._timeline_cache
 
         if timeline is None or len(timeline) == 0:
-            return pd.DataFrame(columns=["game_id", "snapshot_ts", "total"])
+            self._timeline_cache = pd.DataFrame(
+                columns=["game_id", "snapshot_ts", "total"]
+            )
+            return self._timeline_cache
 
         timeline = timeline.copy()
         timeline["snapshot_ts"] = pd.to_datetime(
             timeline["snapshot_ts"], utc=True, errors="coerce"
         )
+        self._timeline_cache = timeline
         return timeline
 
     # ------------------------------------------------------------------
@@ -535,13 +558,38 @@ class LineMovementBuilder:
         return cols
 
     def _timeline_has_spread(self) -> bool:
-        """True iff odds_timeline carries non-null spread data (Tier (a), D-07)."""
+        """True iff odds_timeline carries non-null spread data (Tier (a), D-07).
+
+        WR-08, stated rather than hidden: this is a GLOBAL predicate over the
+        whole multi-season table, so the emitted column SET is data-dependent --
+        the seven ``spread_*`` columns appear or vanish according to whether ANY
+        row anywhere carries a spread. A totals-only re-pull or a partial archive
+        restore therefore FLIPS the gold schema (202 vs 209/210/209 columns,
+        which ``scripts/data_qa.py`` hardcodes) rather than raising. The schema
+        actually emitted is logged at INFO below so a width change is traceable
+        to a cause instead of being discovered by the tripwire. Making the column
+        set an unconditional contract would widen gold, so it belongs with the
+        deliberate Phase-30 input rebuild, not here.
+        """
         timeline = self._load_timeline()
-        return (
-            len(timeline) > 0
-            and "spread" in timeline.columns
-            and bool(timeline["spread"].notna().any())
+        spread_non_null = (
+            int(timeline["spread"].notna().sum())
+            if len(timeline) > 0 and "spread" in timeline.columns
+            else 0
         )
+        emit_spread = spread_non_null > 0
+
+        if not self._emit_spread_logged:
+            self._emit_spread_logged = True
+            logger.info(
+                "line_movement emitted schema resolved",
+                emit_spread=emit_spread,
+                timeline_rows=len(timeline),
+                spread_non_null=spread_non_null,
+                emitted_columns=len(self._feature_columns(emit_spread)),
+            )
+
+        return emit_spread
 
     def _neutral_features(self, emit_spread: bool) -> dict[str, float]:
         """Neutral defaults (D-10): non-null, opening imputed from a prior."""
@@ -570,10 +618,39 @@ class LineMovementBuilder:
         return record
 
     def _resolve_game_date_for(self, game_id: str) -> datetime | None:
-        """Resolve a game's kickoff date from the cached games frame."""
+        """Resolve a game's kickoff date, loading ``games`` silver if needed.
+
+        WR-07: this used to read ``self._games_cache`` and nothing else, and that
+        cache is only ever populated by ``build_features``. So a caller using the
+        FeatureBuilder Protocol's documented per-game entry point -- which is
+        exactly how a serving path wires a builder in -- got all-neutral features
+        for EVERY game (``opening_total`` 44.0, coverage 0.0, every drift and
+        path 0.0), with no exception, no log line, and no way to tell "this game
+        has no trajectory" apart from "you called the wrong method first". The
+        same silent answer came back for a genuinely unknown ``game_id``.
+
+        It now loads games itself and DISTINGUISHES the two cases in the log. The
+        neutral return is preserved (the degradation contract is deliberate), but
+        it is no longer indistinguishable from a correct answer.
+        """
         if self._games_cache is None:
-            return None
+            try:
+                self._games_cache = load_dataframe("games", layer="silver")
+            except (DataIngestionError, FileNotFoundError, OSError, ValueError) as exc:
+                logger.warning(
+                    "games silver unavailable for per-game line-movement lookup; "
+                    "emitting neutral features",
+                    game_id=game_id,
+                    error=str(exc),
+                )
+                return None
+
         match = self._games_cache[self._games_cache["game_id"] == game_id]
         if len(match) == 0:
+            logger.warning(
+                "game_id not present in games silver; emitting neutral "
+                "line-movement features",
+                game_id=game_id,
+            )
             return None
         return self._resolve_game_date(match.iloc[0])
