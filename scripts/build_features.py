@@ -779,14 +779,20 @@ class FeatureMatrixBuilder:
         return len(values) > 0 and set(values.tolist()) <= {-1.0, 0.0, 1.0}
 
     def _impute_team_features(self, df: pd.DataFrame, col: str) -> pd.Series:
-        """Impute missing team features using team's season average."""
-        # Extract team and prefix from column name
+        """Impute missing team features using team's season average.
+
+        WR-14: the two ``col.replace("home_", "")`` / ``col.replace("away_", "")``
+        statements that used to sit here were no-ops -- ``str`` is immutable and
+        the results were discarded -- so they looked like they computed a base
+        column name and did not. Nothing downstream ever needed one: the imputation
+        works on ``col`` itself and only needs to know WHICH team column to group
+        by. The dead lines are gone rather than "fixed", because there was no bug
+        to fix, only a false suggestion that a base name was in play.
+        """
         if col.startswith("home_"):
             team_col = "home_team"
-            col.replace("home_", "")
         elif col.startswith("away_"):
             team_col = "away_team"
-            col.replace("away_", "")
         else:
             # Not a team feature, use median
             return df[col].fillna(df[col].median())

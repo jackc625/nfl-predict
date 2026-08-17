@@ -209,11 +209,17 @@ class LeakageGate:
                 # Naive columns carry an ET wall clock, so compare in ET.
                 as_of_ts = as_of_ts.tz_convert(ET).tz_localize(None)
 
-            # For snapshot_ts: use <= (snapshot at the cutoff is allowed)
-            if col == "snapshot_ts":
-                future_mask = col_values > as_of_ts
-            else:
-                future_mask = col_values > as_of_ts
+            # WR-14: EVERY inspected column is fenced with a strict ``>``, so a
+            # value landing exactly AT the cutoff is admissible.
+            #
+            # This used to be an if/else whose two branches were character-for-
+            # character identical, under a comment asserting that ``snapshot_ts``
+            # was fenced differently ("use <="). A reader auditing the gate -- which
+            # is what this file exists for -- was told the two column classes have
+            # different semantics when they do not. In an audit surface, a comment
+            # that documents behaviour the code does not implement is worse than no
+            # comment: it is read as evidence.
+            future_mask = col_values > as_of_ts
 
             future_count = future_mask.sum()
             if future_count > 0:
