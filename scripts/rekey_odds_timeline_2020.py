@@ -49,11 +49,11 @@ from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from conf.settings import get_settings
 from data.storage import (
     ParquetManager,
+    _atomic_write_parquet,
     _canonicalize_snapshot_ts_utc,
     get_db_connection,
     load_dataframe,
@@ -534,20 +534,22 @@ def _refresh_duckdb_copy(df: pd.DataFrame) -> bool:
 def _atomic_write(df: pd.DataFrame, path: Path, base_path: Path | None) -> None:
     """Write *df* to *path* as one file, atomically.
 
-    Mirrors the write tail of ``upsert_silver_composite``
-    (``data/storage.py:1162-1167``) -- canonicalize ``snapshot_ts`` to tz-aware
-    UTC, normalize datetimes, snappy parquet -- but REPLACES the table instead of
-    merging into it, then an ``os.replace`` (via ``Path.replace``) swaps the
-    finished file into position so a crash cannot leave a truncated archive.
+    Mirrors the write tail of ``upsert_silver_composite`` -- canonicalize
+    ``snapshot_ts`` to tz-aware UTC, normalize datetimes, snappy parquet -- but
+    REPLACES the table instead of merging into it.
+
+    The write tail itself is ``data/storage._atomic_write_parquet``, shared with
+    ``upsert_silver``, ``upsert_silver_composite`` and ``ParquetManager.save``, so
+    the four call sites cannot drift apart again (CR-02 / N-04). It swaps a
+    finished sibling temp file into position via ``os.replace``, so a crash cannot
+    leave a truncated archive.
     """
     canonical = _canonicalize_snapshot_ts_utc(df)
     pm = ParquetManager(str(data_root(base_path)))
     normalized = pm._normalize_parquet_datetime_columns(canonical)
     table = pa.Table.from_pandas(normalized)
 
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    pq.write_table(table, tmp_path, compression="snappy")
-    tmp_path.replace(path)
+    _atomic_write_parquet(table, path)
 
 
 def apply_rekey(base_path: Path | None = None) -> dict:

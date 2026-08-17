@@ -33,6 +33,28 @@ except (ImportError, AttributeError):  # pragma: no cover -- defensive
     _PYARROW_EXCEPTIONS = ()
 
 
+def _atomic_write_parquet(
+    table: pa.Table, path: Path, compression: str = "snappy"
+) -> None:
+    """Write *table* to *path* via a temp file plus ``os.replace``.
+
+    Every full-table writer in this module reads the whole table, rebuilds it in
+    memory and then rewrites it straight over the live path. A crash, interrupt,
+    power loss or full disk partway through that rewrite leaves a truncated or
+    zero-length file where a complete one used to be, and there is no second copy
+    to recover from (CR-02 of the Phase-29 code review).
+
+    The temp file is deliberately a SIBLING of the target -- ``path`` with a
+    ``.tmp`` suffix -- and never a system temp directory. ``os.replace`` is atomic
+    only WITHIN a filesystem; across filesystems it degrades to a copy plus
+    delete, which reintroduces exactly the partial-write window this function
+    exists to close.
+    """
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    pq.write_table(table, tmp_path, compression=compression)
+    tmp_path.replace(path)
+
+
 class DuckDBConnection:
     """DuckDB connection manager with utilities."""
 
@@ -372,8 +394,10 @@ class ParquetManager:
                     partitions=partition_cols,
                 )
             else:
-                # Single file
-                pq.write_table(table, full_path, compression=compression)
+                # Single file, written atomically -- this is the gold-matrix
+                # writer, so an interrupted gold rebuild would otherwise
+                # truncate gold (CR-02 / N-04).
+                _atomic_write_parquet(table, full_path, compression=compression)
                 logger.info(
                     "Saved Parquet file",
                     path=str(full_path),
@@ -987,6 +1011,10 @@ def save_bronze_snapshot(
     filepath = base_path / "bronze" / filename
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
+    # Deliberately NOT _atomic_write_parquet: every call writes a NEW timestamped
+    # file and never overwrites an existing one, so there is no complete previous
+    # file for a partial write to destroy. Its real defect is the second-resolution
+    # filename collision, which is a documented known defect and out of scope here.
     table = pa.Table.from_pandas(df)
     pq.write_table(table, filepath, compression="snappy")
 
@@ -1033,7 +1061,7 @@ def upsert_silver(
     pm = ParquetManager(str(base_path))
     combined_normalized = pm._normalize_parquet_datetime_columns(combined)
     table = pa.Table.from_pandas(combined_normalized)
-    pq.write_table(table, silver_path, compression="snappy")
+    _atomic_write_parquet(table, silver_path)
 
     logger.info(
         "Upserted Silver table",
@@ -1164,7 +1192,7 @@ def upsert_silver_composite(
     pm = ParquetManager(str(base_path))
     combined_normalized = pm._normalize_parquet_datetime_columns(combined)
     table = pa.Table.from_pandas(combined_normalized)
-    pq.write_table(table, silver_path, compression="snappy")
+    _atomic_write_parquet(table, silver_path)
 
     logger.info(
         "Upserted Silver table (composite key)",
