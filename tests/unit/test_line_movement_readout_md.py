@@ -81,27 +81,58 @@ _REQUIRED_SECTION4_MARKERS = (
     "764 paired games",  # the headline's measured sample
     "confound tell",  # the pre-registered line_movement_coverage season-proxy tell
     "NON-DEFAULT",  # the D-Q2 consequence for Phase 30
+    # Quick task 260817-dyp: the leak fix, the corrected grid, and the audit trail that keeps
+    # every superseded reading in place beside it.
+    "4d-bis",  # the corrected headline subsection exists
+    "PRE-LEAK-FIX",  # 4d is retained and relabelled, never overwritten
+    "4e-bis",  # the corrected ruling
+    "THE RULE WAS NOT RE-OPENED",  # the D-R3 claim, stated where it can be checked
+    "paired_sufficient",  # the WR-02 sufficiency field, recorded per cell
+    "MIN_CLV_SAMPLE",  # the threshold the refusal arm was inert against
+    "zero games admit a snapshot at or after kickoff",  # the leak-purge verification
 )
 
-# The three canonical-window per-target deltas as published in Section 4a. UNCHANGED by the
-# 2020 re-key and the full gold rebuild -- 4a is the upstream-drift control precisely because
-# its 2018-2019 selection window cannot see the re-keyed season, so a change here means
-# something OTHER than this project's own edits moved the gold.
-_CANONICAL_DELTAS = {"wp": 0.000000, "ats": 0.147814, "ou": -0.221188}
+# The three canonical-window per-target deltas, RE-ANCHORED 2026-08-17 to the post-leak-fix
+# reading (quick task 260817-dyp).
+#
+# 4a IS NO LONGER AN UPSTREAM-DRIFT CONTROL, and this constant is where that shows up. Its
+# 2018-2019 selection window cannot see the line-movement family (still 0/15 selected), but the
+# WR-06 timezone normalization moved home_rest_days / away_rest_days / rest_advantage in
+# seasons 2018-2025 -- BASELINE features inside that very window -- so both legs' models changed
+# and the deltas moved with them. The pre-leak-fix values (wp +0.000000, ats +0.147814,
+# ou -0.221188) are retained in the doc as history and asserted by the token list below.
+_CANONICAL_DELTAS = {"wp": 0.000000, "ats": -0.136848, "ou": -0.294672}
 
-# The coverage-window diagnostic (4b), RE-MEASURED on the re-keyed archive. Its walk-forward
-# trains on every season below 2024, which includes the re-keyed 2020, so this number moved
-# (from the pre-re-key +0.816061, retained in the doc as history).
-_COVERAGE_WINDOW_ATS_DELTA = 1.012106
+# The coverage-window diagnostic (4b), third reading -- RE-MEASURED 2026-08-17 on post-leak-fix
+# gold. Its walk-forward trains on every season below 2024, so it sees both the corrected
+# line-movement values and the corrected rest-days values. The sequence of readings is
+# pre-re-key, then post-re-key pre-leak-fix, then post-leak-fix; all three are retained in the
+# doc and asserted by the token list below.
+_COVERAGE_WINDOW_ATS_DELTA = 0.750368
 
-# The pre-registered headline grid (4d): train 2018-2020 / hp-val 2021 / measure 2022-2024.
-_HEADLINE_ATS_DELTA = 0.151237
-_HEADLINE_ATS_GROUP_COLS_SELECTED = 5
+# The pre-registered headline grid, CORRECTED (4d-bis): train 2018-2020 / hp-val 2021 / measure
+# 2022-2024, re-run once on post-leak-fix gold under the rule already committed in 5660ee3.
+# The pre-leak-fix reading (+0.151237 on 5/15 columns) is retained in 4d and asserted below.
+_HEADLINE_ATS_DELTA = -0.208582
+_HEADLINE_ATS_GROUP_COLS_SELECTED = 4
 _HEADLINE_MEASURE_WINDOW = "2022-2024"
 
 # Delta tokens that must NOT appear in either pre-registration commit's diff: if a headline
 # number is present in the commit that registered the rule, the rule was not written first.
-_HEADLINE_DELTA_TOKENS = ("0.151237", "0.001429", "0.001592", "1.012106")
+_HEADLINE_DELTA_TOKENS = (
+    "0.151237",
+    "0.001429",
+    "0.001592",
+    "1.012106",
+    # The corrected readings (quick task 260817-dyp). Neither registration commit may contain
+    # these either -- the rule was written before ANY of these numbers existed.
+    "0.208582",
+    "0.003519",
+    "0.001594",
+    "0.750368",
+    "0.136848",
+    "0.294672",
+)
 
 # The machine-readable pre-registration ordering markers (4d).
 _PRE_REGISTRATION_MARKER_RE = re.compile(
@@ -243,6 +274,7 @@ class TestLiftSectionContent:
         """
         content = _read_readout()
         for token in (
+            # Pre-leak-fix history -- every one of these must STAY in the doc.
             "+0.147814",
             "-0.221188",
             "+0.816061",
@@ -250,6 +282,13 @@ class TestLiftSectionContent:
             "+1.012106",
             "+0.151237",
             "+0.001429",
+            # Post-leak-fix readings (quick task 260817-dyp).
+            "-0.136848",
+            "-0.294672",
+            "+0.750368",
+            "-0.208582",
+            "-0.003519",
+            "-0.001594",
         ):
             assert token in content, (
                 f"the readout is missing the published number {token}"

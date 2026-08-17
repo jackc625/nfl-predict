@@ -225,6 +225,38 @@ the rebuild, the ONLY columns that moved are the 15 line-movement columns and `f
 outside the line-movement family changed at all**, so nothing in 4d needs to be discounted for
 upstream drift.
 
+**RE-RUN 2026-08-17 after the leak fix, and this time IT MOVED. 4a IS NO LONGER A CLEAN
+UPSTREAM-DRIFT CONTROL, and the paragraphs above must be read with that in mind.** The figures
+above are retained verbatim as the reading taken before the leak fix; they are not the current
+ones. Re-run after quick task 260817-dyp:
+
+| Target | Paired CLV delta | t | p | Group columns the model used |
+|---|---|---|---|---|
+| WP | +0.000000 | n/a | n/a | **0 / 15** |
+| ATS | -0.136848 | -1.417 | 0.15682 | **0 / 15** |
+| OU | -0.294672 | -3.045 | 0.00239 | **0 / 15** |
+
+The ATS cell moved from +0.147814 to -0.136848 and the OU cell from -0.221188 to -0.294672. The
+`0 / 15` fact is unchanged, so the "not evidence about line movement" framing above still holds
+and the D-13 ruling on this grid is still DROP (OU veto). What does NOT hold any more is the
+claim that 4a is insulated from this project's own edits.
+
+**Column-level attribution for the movement, from the gold fingerprint.** The rebuild changed
+exactly 16 columns per matrix and nothing else. Twelve are line-movement drift/path columns
+(seasons 2020+), which 4a's 2018-2019 selection window still cannot see -- the family is constant
+0.0 there, which is why `0 / 15` is unchanged. One is `feature_timestamp`, a build stamp that is
+not a feature. **The remaining three are `home_rest_days`, `away_rest_days` and `rest_advantage`,
+and they moved in seasons 2018-2025 -- including 2018 and 2019, which ARE 4a's selection window.**
+Those are BASELINE features present in both legs, so both legs' models changed: a different
+locked feature set produces a different pair of models and hence a different paired delta. That is
+the whole of the movement, and it is this project's own timezone correction (WR-06), not upstream
+drift.
+
+The honest consequence: this phase no longer has a clean control separating upstream nflreadpy
+drift from its own edits. What it has instead is a complete per-column, per-season fingerprint
+showing that NO column outside the line-movement family and the rest-days family changed at all,
+which answers the same question directly rather than by proxy.
+
 ### 4b. Coverage-window diagnostic, RE-MEASURED on the re-keyed archive: `python -m backtest.signal_lift --phase 29 --coverage-window`
 
 To find out whether the signal is *measurable at all*, the same screen was re-run under a
@@ -268,6 +300,28 @@ are load-bearing, not decorative:
   three-season pre-registered window disagree by that margin, the pre-registered one is the
   reading that counts, and this cell is best understood as what a window chosen after seeing
   results tends to produce.
+
+**THIRD READING, 2026-08-17, after the leak fix (quick task 260817-dyp).** The grid above is now
+itself a superseded reading, retained in full rather than replaced. Re-run on post-leak-fix gold:
+
+| Target | Paired CLV delta | t | p | Group columns the model used |
+|---|---|---|---|---|
+| WP | -0.003521 | -1.493 | 0.13669 | 4 / 15 |
+| ATS | **+0.750368** | +3.446 | **0.00067** | 4 / 15 |
+| OU | +0.445762 | +2.481 | 0.01375 | 2 / 15 |
+
+**D-13 rule as written on this third reading: KEEP** (positive on ATS and OU, none
+significantly-negative). This window's walk-forward trains on every season below 2024, so it sees
+the corrected 2020-2023 line-movement values AND the corrected 2018-2024 rest-days values; both
+legs moved. The ATS cell fell from +1.012106 to +0.750368 -- still the largest number anywhere in
+this document, and still the one the pre-registered window does not corroborate. Its three
+weaknesses above are unchanged and still load-bearing, and the corrected pre-registered grid in
+4d-bis now disagrees with it far more sharply than the pre-leak-fix one did: this cell is
++0.750368 where the pre-registered three-season reading is **-0.208582**.
+
+So the sequence of readings for this diagnostic is +0.816061 (pre-re-key), +1.012106 (post-re-key,
+pre-leak-fix), +0.750368 (post-leak-fix). Each was correct for the inputs it was measured on. None
+is deleted.
 
 ### 4c. Pre-registration, ORIGINAL (SUPERSEDED by 4c-bis -- retained verbatim, nothing edited)
 
@@ -439,7 +493,19 @@ result will be softened, hedged, buried, or re-run until it is favourable.
 target set, and the measurement span. If any of them must change, the change will be reported as a
 NEW post-hoc diagnostic with its own label, never folded into the headline grid.
 
-### 4d. HEADLINE: the pre-registered covered-window screen (train 2018-2020, hp-val 2021, measure 2022-2024)
+### 4d. HEADLINE, PRE-LEAK-FIX (SUPERSEDED by 4d-bis -- retained verbatim, every number intact)
+
+**Why this reading was superseded.** It was measured on gold that contained POST-KICKOFF, IN-PLAY
+line values for three games. `features/line_movement.py` derived each game's freeze as the most
+recent Friday 18:00 ET at or before the kickoff DATE and never capped it at kickoff, so a
+Friday-afternoon kickoff was fenced AFTER it had started -- finding CR-01 of the Phase-29 deep code
+review. `2023_W12_MIA@NYJ` (Black Friday, kickoff Fri 2023-11-24 15:00 ET) admitted a Friday 17:55
+ET snapshot taken while the game was in play, by which point its spread had moved 9.5 to 20.5.
+`2020_W16_MIN@NO` and `2024_W13_LV@KC` were affected the same way.
+
+The grid below is therefore a measurement taken on contaminated inputs. It is retained here in
+full, with every figure exactly as published on 2026-08-16, because deleting or silently
+overwriting a superseded reading is how a record stops being one. The corrected reading is 4d-bis.
 
 Reproduce with, verbatim:
 
@@ -497,7 +563,125 @@ part of it is a gate ruling. Three measured seasons (2022-2024) on a non-default
 reported raw with no multiplicity correction, on a holdout that D26-09 already records as
 partially burned, is a screen -- not a verdict.
 
+### 4d-bis. HEADLINE, CORRECTED: the same pre-registered window, re-run on post-leak-fix gold
+
+Reproduce with, verbatim:
+
+```
+uv run python -m backtest.signal_lift --phase 29 --covered-selection-window
+```
+
+Run ONCE, on 2026-08-17, after quick task 260817-dyp rebuilt gold on corrected inputs. 764 paired
+games per target -- the same sample as 4d.
+
+**THE RULE WAS NOT RE-OPENED.** Sections 4c and 4c-bis are BYTE-UNCHANGED by this correction, and
+that is checkable rather than asserted: `git diff 5660ee3 HEAD -- LINE-MOVEMENT-READOUT.md` shows
+no change inside either block, and the committed `TestPreRegistrationOrdering` still resolves both
+`pre_registration_commit` SHAs and confirms they are ancestors of HEAD carrying no headline number
+in their own diffs. This is a re-measurement of the SAME hypothesis under the SAME rule on
+corrected inputs, not a new experiment. Re-registering after a flat result was already known is
+exactly what the pre-registration discipline exists to prevent.
+
+One bookkeeping note recorded HERE rather than by editing the frozen text: quick task 260817-dyp's
+WR-02 fix added a `paired_sufficient` field and a NOT-MEASURED refusal arm to
+`backtest/signal_lift.py`, which shifts the line numbers that 4c-bis item 3 cites as
+`backtest/signal_lift.py:462-506`. The cited FUNCTION (`decide_group_keep`) and its behaviour at
+or above `MIN_CLV_SAMPLE` are unchanged; only the line numbers moved.
+
+| Target | Paired CLV delta | t | p | 95% CI | Group columns the model used |
+|---|---|---|---|---|---|
+| WP | -0.001594 | -0.981 | 0.32680 | [-0.004782, +0.001595] | 2 / 15 (`opening_spread`, `spread_drift_dir`) |
+| ATS | **-0.208582** | -1.646 | 0.10021 | [-0.457372, +0.040209] | 4 / 15 (`opening_spread`, `spread_drift`, `total_drift_dir`, `total_late_drift`) |
+| OU | -0.003519 | -0.025 | 0.97981 | [-0.276446, +0.269408] | 3 / 15 (`opening_total`, `total_abs_travel`, `total_drift`) |
+
+**Every cell cleared the sufficiency threshold.** `n_paired` is 764 on all three targets against
+`MIN_CLV_SAMPLE = 10`, and each cell reports `paired_sufficient: true` and `measurable: true`. The
+NOT-MEASURED refusal arm added by WR-02 was therefore structurally unreachable in this run: the
+ruling below comes from the same KEEP/DROP arms that produced 4d, not from the new one.
+
+**D-13 rule as written on this grid: DROP** -- no positive point-estimate on any target. That is
+what `decide_group_keep` returns and it is published unchanged. Note the ruling FLIPPED: the
+pre-leak-fix grid returned KEEP on the strength of ATS +0.151237 and OU +0.001429, and both of
+those point estimates are now negative.
+
+**The corrected result is NEGATIVE, and that is the finding.** It is reported here with exactly
+the prominence and detail a positive result would have received. All three targets are below zero.
+No cell is significant: ATS at p=0.10021 is the closest and its confidence interval
+[-0.457372, +0.040209] still spans zero, so this is not evidence that line movement HARMS CLV
+either. The honest reading is that the family is flat-to-slightly-negative once the in-play values
+are removed, and the direction of the correction is the informative part: **removing three games'
+post-kickoff line values moved the ATS cell by -0.359819, from +0.151237 to -0.208582.** The
+apparent ATS lift in 4d was substantially an artifact of the leak.
+
+**Why three corrected games can move a 764-game paired delta by that much.** Two mechanisms, and
+neither is a bug. Gold is expanding-window z-scored, so a corrected raw value shifts every
+SUBSEQUENT row's normalized value within its season -- the fingerprint shows twelve line-movement
+columns moving across seasons 2020-2025, not three rows. And the corrected inputs change which
+features the trainer's `SelectFromModel` pass locks: ATS went from 5 of 15 group columns to 4, and
+its selected set changed composition (`total_abs_travel` out, `total_drift_dir` and
+`total_late_drift` in), so the candidate leg is a different model, not the same model on slightly
+different numbers.
+
+**The confound tell did not fire.** `line_movement_coverage` appears in NO target's selected set,
+so no cell here is discounted as a season proxy -- the tell is applied exactly as 4c-bis item 6
+registered it in advance.
+
+**What changed in the inputs, and what did not.** Two of this project's own corrections reached
+gold, and nothing else did:
+
+- **CR-01, the leak fix.** Three games' raw line-movement values changed, reproducing the
+  independently computed corrected table exactly: `2020_W16_MIN@NO` total 51.5 to 50.5 (drift
+  -1.0), spread -6.0 to -7.0; `2023_W12_MIA@NYJ` total 46.5 to 41.0 (drift -5.5), spread -2.5 to
+  9.5 (drift +12.0, down from a leaked +23.0); `2024_W13_LV@KC` total 46.0 to 42.5 (drift -3.5),
+  spread -7.5 to -13.0.
+- **WR-06, the timezone normalization.** 1,926 stale `games.kickoff_et` rows were shifted so the
+  stored instant is true, in BOTH silver copies, with the row sets unchanged. This moved
+  `home_rest_days`, `away_rest_days` and `rest_advantage` in seasons 2018-2025.
+
+**Fingerprint attribution: nothing is unexplained.** Comparing every column, per season, before
+and after the rebuild, exactly 16 columns moved in each of the three matrices: twelve
+line-movement drift/path columns (CR-01), three rest-days columns (WR-06), and
+`feature_timestamp`, which is a build stamp and not a feature. **No other modelled feature moved
+at all, so there is no named upstream-drift column to discount this grid for.** The weekday family
+(`thursday_game`, `monday_game`, `saturday_game`, `short_week`, `game_day_of_week`) and the
+bye/short-rest flags did not move, which is the check that the timezone shift preserved every
+kickoff DATE. `opening_total`, `opening_spread` and `line_movement_coverage` also did not move:
+the kickoff cap removes only the in-play tail of a trajectory, never its earliest snapshot.
+
+**One measured qualification, recorded because it cuts against the headline.** In the ATS matrix
+the 2023 `spread_drift` column did NOT change, and `2023_W12_MIA@NYJ` still carries the same gold
+value of +1.894965 that the code review flagged. That is not residual leakage. Gold winsorizes at
+the 1st/99th percentile before normalizing, and that bound for `spread_drift` is +5.5, so the
+leaked +23.0 and the corrected +12.0 both clamp to +5.5 and produce an identical cell. The
+consequence is worth stating plainly in both directions: for that one column-season the model
+never saw the leak, because winsorization had already absorbed it -- and the corrected +12.0 is a
+genuinely large, genuinely legitimate pre-kickoff move, so a large value there is now CORRECT
+rather than contaminated. The leak's effect on gold was real but smaller than the raw values
+suggest wherever winsorization was already clamping.
+
+**Leak-purge verification, on gold rather than in memory.** For every Friday-kickoff game present
+in gold, the admitted-snapshot window was recomputed and checked against that game's own kickoff:
+**zero games admit a snapshot at or after kickoff** (8 Friday-kickoff games in gold, 4 of them with
+archive rows). Gold is 6,263 rows at widths 209 / 210 / 209 with no `_x` / `_y` merge-collision
+columns. The paid archive was untouched throughout: 9,957 rows and 9,957 distinct
+`(game_id, snapshot_ts)` pairs, per-season 2020=1,780 / 2021=1,219 / 2022=1,452 / 2023=2,759 /
+2024=2,747, asserted through `load_dataframe` before and after every destructive step. No Odds API
+call was made at any point.
+
+**What this grid does and does not license.** Unchanged in kind from 4d: it is a SCREEN. It
+licenses carrying nothing forward on the strength of a positive number, because there is no
+positive number. It licenses saying that the pre-leak-fix KEEP rested on a contaminated ATS cell.
+It does NOT license calling line movement harmful -- no cell is significant. Three measured
+seasons on a non-default configuration, reported raw with no multiplicity correction, on a holdout
+D26-09 already records as partially burned, remains a screen and not a verdict.
+
 ### 4e. Ruling, and the D-02 question answered
+
+> **SUPERSEDED IN ITS CONCLUSION, 2026-08-17 -- see 4e-bis below.** Everything from here to the
+> end of 4e was written against the PRE-LEAK-FIX headline grid (4d) and is retained verbatim as
+> the record of that ruling. Its structural analysis of the calendar blocker still stands; its
+> ruling of a flat KEEP does not, because the corrected grid is negative on all three targets and
+> the rule returns DROP.
 
 **The binding constraint was never redundancy -- it was the calendar.** Section 2 predicted the
 go/no-go would turn on whether line movement carries information the model does not already have.
@@ -559,6 +743,45 @@ project's feature-selection window silently excludes any signal whose data floor
 accepted in advance as a complete outcome, and it is what came out; what would NOT have been
 acceptable is publishing the 4a grid as a lift, or publishing 4b's +1.012106 as the answer.
 
+### 4e-bis. Ruling, CORRECTED (2026-08-17, on the post-leak-fix headline grid)
+
+**Ruling (SIG-04): SCREENED, with a NEGATIVE result.** The rule as written returns DROP on the
+corrected headline grid -- no positive point-estimate on any target -- and that is published
+unchanged. The line-movement family is SCREENED and its screening outcome is negative. It is not
+shipped, not serving, and not established as an edge; nor is it established as harmful, since no
+cell reaches significance.
+
+**What changed from 4e, and why.** 4e ruled a flat KEEP on ATS +0.151237 and OU +0.001429. Those
+cells were measured on gold holding post-kickoff, in-play line values for three games. Corrected,
+they are ATS -0.208582 and OU -0.003519, and the ruling flips to DROP. The single largest
+contributor is ATS, which moved -0.359819. So the earlier KEEP was carried by a cell that the leak
+was inflating.
+
+**The D-02 question, answered again on corrected inputs, with the same answer only stronger.**
+Section 2 asked whether line movement carries information the model does not already have, or is a
+noisier proxy for the injury news the Phase-28 features already encode. The baseline contained the
+freeze anchor AND the Phase-28 injury / snap / situational groups; the selector still chose 2, 4
+and 3 line-movement columns per target over the alternatives; and the resulting CLV deltas are all
+negative. Being selected is still not the same as being worth something. The Section-2 prediction
+that only the opening LEVEL and the PATH would be non-redundant is still borne out in WHICH columns
+get picked -- `opening_spread`, `opening_total`, `total_abs_travel`, `total_late_drift` -- and they
+still do not pay.
+
+**Recommendation into Phase 30: DROP.** The pre-leak-fix text recommended DROP unless the binding
+gate is run under a covered selection window and produces something the screen did not. That
+recommendation stands and is now firmer, because the screen's own best window produces a negative
+number rather than a flat one. The D-Q2 point is unchanged: under the canonical 2018-2019 training
+window the family is inert and cannot enter a candidate model at all, so carrying it indefinitely
+under a window that cannot see it remains the one option ruled out.
+
+**Cost against learning, restated.** The 7,210 credits are unchanged and final; no paid call was
+made by this correction. What the correction added to what the archive bought: a temporal leak
+found and closed before it reached Phase 30's binding gate; the measured fact that the earlier
+ATS lift was substantially an artifact of that leak; one documented timezone contract under the
+whole feature layer; and a corrected pre-registered reading that answers the SIG-04 question in
+the negative. A negative result was accepted in advance as a complete outcome (D-14), and it is
+what came out.
+
 ---
 
 ## 5. Honest scope-down / slip note (if applicable) -- carried to Phase 30, not a deploy outcome
@@ -593,3 +816,19 @@ screens; Phase 30 rules. A null result would have been a first-class success out
 accepted as such in advance -- the screen, not optimism, rules (D-10). It is worth saying plainly
 that this is now the outcome that actually occurred, and it is being reported with the same
 prominence a positive one would have received.
+
+**UPDATE 2026-08-17 (quick task 260817-dyp): the measured result is now NEGATIVE, not flat, and
+the reason is a temporal leak that was in gold when the paragraphs above were written.** The
+Phase-29 deep code review found that each game's freeze fence was derived from its kickoff DATE
+and never capped at kickoff, so a Friday-afternoon kickoff was fenced after the game had started.
+Three games in the archive carried in-play lines into gold. The fence is now capped at one second
+before kickoff, demonstrated by a seven-weekday leakage test that was RED against the pre-fix code
+before the fix landed; the `games.kickoff_et` timezone contract it compares against was settled
+first, in both silver copies; gold was rebuilt; and the pre-registered covered-window screen was
+re-run ONCE under the rule already committed in `5660ee3`, which was not re-opened.
+
+The corrected headline is WP -0.001594 / ATS -0.208582 / OU -0.003519 over the same 764 paired
+games, and the rule returns DROP. The recommendation into Phase 30 is DROP. Everything above this
+paragraph is left standing as the record of what was believed before the leak was found, and every
+superseded grid is retained in place with the reason it was superseded. Nothing was deleted, and
+the negative outcome is reported in the same voice the flat one was.

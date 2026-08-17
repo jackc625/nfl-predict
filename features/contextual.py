@@ -478,6 +478,13 @@ class ContextualFeaturesCalculator:
         """
         Calculate rest days for a team since their last game.
 
+        Both sides of the comparison are resolved through ``kickoff_wall_clock_et``
+        (WR-06) so a tz-aware caller can never meet a tz-naive ``kickoff_et`` column.
+        That mismatch raises ``TypeError``, which the guard below would swallow and
+        silently return the 7.0 default for -- turning a bye week into an ordinary
+        week with no error and no log line. The live path carries a tz-aware column,
+        so this is defensive; the cost of getting it wrong is a wrong ``off_bye``.
+
         Args:
             team: Team abbreviation
             current_game_date: Date of current game
@@ -487,22 +494,24 @@ class ContextualFeaturesCalculator:
             Number of rest days
         """
         try:
+            kickoffs = games_df["kickoff_et"].map(kickoff_wall_clock_et)
+            current = kickoff_wall_clock_et(current_game_date)
+
             # Find team's previous games before current date
             team_games = games_df[
                 ((games_df["home_team"] == team) | (games_df["away_team"] == team))
-                & (games_df["kickoff_et"] < current_game_date)
-            ].sort_values("kickoff_et")
+                & (kickoffs < current)
+            ]
 
             if len(team_games) == 0:
                 # First game of season, use standard rest
                 return 7.0
 
             # Get most recent game
-            last_game = team_games.iloc[-1]
-            last_game_date = last_game["kickoff_et"]
+            last_game_date = kickoffs.loc[team_games.index].max()
 
             # Calculate rest days
-            rest_days = (current_game_date - last_game_date).days
+            rest_days = (current - last_game_date).days
 
             return float(rest_days)
 
