@@ -33,6 +33,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from utils import get_logger
+from utils.date_utils import ET
 
 logger = get_logger(__name__)
 
@@ -189,11 +190,24 @@ class LeakageGate:
             col_values = pd.to_datetime(features_df[col], errors="coerce")
             as_of_ts = pd.Timestamp(as_of_datetime)
 
-            # Align timezone awareness: if column is tz-aware, make cutoff tz-aware too
+            # Align timezone awareness. CR-01: every wall clock in this project is
+            # ET -- kickoff_et, game_date and the Friday 6 PM freeze -- so ET is the
+            # ONE zone a naive value on either side denotes.
+            #
+            # This previously read `as_of_ts.tz_localize(col_values.dt.tz)`, which
+            # STAMPS the cutoff's wall clock with the column's zone (UTC for
+            # snapshot_ts) instead of converting it. A naive 18:05 ET cutoff became
+            # 18:05Z == 14:05 ET, four hours early, silently fencing out the
+            # Friday-freeze snapshot; on a host east of UTC the same mislabelling
+            # points the other way and ADMITS post-cutoff rows, i.e. it leaks. The
+            # error was exactly the host's UTC offset, and nothing pins the host
+            # timezone. Localize to ET first, then convert, so the instant is
+            # preserved whatever the host.
             if col_values.dt.tz is not None and as_of_ts.tz is None:
-                as_of_ts = as_of_ts.tz_localize(col_values.dt.tz)
+                as_of_ts = as_of_ts.tz_localize(ET).tz_convert(col_values.dt.tz)
             elif col_values.dt.tz is None and as_of_ts.tz is not None:
-                as_of_ts = as_of_ts.tz_localize(None)
+                # Naive columns carry an ET wall clock, so compare in ET.
+                as_of_ts = as_of_ts.tz_convert(ET).tz_localize(None)
 
             # For snapshot_ts: use <= (snapshot at the cutoff is allowed)
             if col == "snapshot_ts":

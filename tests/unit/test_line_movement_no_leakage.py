@@ -185,11 +185,19 @@ class TestTimeFence:
     def test_naive_now_default_does_not_raise(self):
         """A naive-local `datetime.now()` as_of must not raise TypeError.
 
-        The full-build default is a naive-local `datetime.now()`
-        (build_features.py:111-112/:852-853); the builder canonicalizes it to
-        tz-aware UTC before comparing against the tz-aware snapshot_ts (review
-        29-04 HIGH). `now()` is far after the 2023 freezes, so the per-game freeze
-        still binds and the drifts are unchanged.
+        The builder canonicalizes any as_of to tz-aware UTC before comparing
+        against the tz-aware snapshot_ts (review 29-04 HIGH). `now()` is far after
+        the 2023 freezes, so the per-game freeze still binds and the drifts are
+        unchanged.
+
+        CR-01 NOTE: build_features.py no longer produces a naive default -- both
+        sites now pass a tz-aware `datetime.now(ET)`, because a naive LOCAL clock
+        was being re-labelled as UTC and shifting the fence by the host's UTC
+        offset. This test still covers the defense-in-depth path: a naive as_of
+        from any other caller is interpreted as ET (`_as_of_to_utc`), never UTC.
+        The shift itself is asserted in tests/unit/test_build_features_as_of_fence.py;
+        this fixture cannot observe it, because a 2023 freeze dominates a 2026 as_of
+        under either interpretation.
         """
         builder = LineMovementBuilder(timeline_df=_full_timeline())
         out = builder.build_features(_make_games(), datetime.now()).set_index("game_id")

@@ -50,6 +50,7 @@ from features.team_form import TeamFormCalculator
 from features.validation import LeakageGate, LeakageViolation
 from features.weather import WeatherFeaturesCalculator
 from utils import get_logger
+from utils.date_utils import ET
 from utils.exceptions import DataIngestionError
 
 logger = get_logger(__name__)
@@ -134,13 +135,23 @@ class FeatureMatrixBuilder:
             target_season: Specific season to load
             target_week: Specific week to load
             as_of_datetime: Time-fence cutoff for builders that need it
-                (QBTracker, OpponentAdjuster). Defaults to datetime.now().
+                (QBTracker, OpponentAdjuster). Defaults to ``datetime.now(ET)``.
 
         Returns:
             Dictionary with all feature DataFrames
         """
+        # CR-01: the default MUST be tz-aware. A naive ``datetime.now()`` is a LOCAL
+        # wall clock, and every downstream consumer re-labels it as UTC without
+        # shifting it (``ensure_utc_aware`` reinterprets, and
+        # ``LeakageGate.check_time_fence`` tz_localizes). On the owner's ET machine
+        # the Friday 18:05 ET orchestrator slot became 18:05Z == 14:05 ET, silently
+        # fencing OUT the Friday-6PM-ET freeze snapshot that the whole D-12 cadence
+        # exists to capture; east of UTC the same bug points the other way and LEAKS.
+        # ET is the project's canonical wall clock (kickoffs, the Friday freeze), so
+        # that is what "now" means here; being aware, it CONVERTS correctly instead
+        # of being reinterpreted.
         if as_of_datetime is None:
-            as_of_datetime = datetime.now()
+            as_of_datetime = datetime.now(ET)
         logger.info(
             "Loading all feature sources",
             target_season=target_season,
@@ -935,13 +946,17 @@ class FeatureMatrixBuilder:
             target_season: Specific season to process.
             target_week: Specific week to process.
             as_of_datetime: Time-fence cutoff for leakage validation.
-                Defaults to datetime.now() if not provided.
+                Defaults to ``datetime.now(ET)`` if not provided -- tz-AWARE, see
+                the CR-01 note on ``load_all_feature_sources``.
 
         Returns:
             Dictionary with feature matrices for each target.
         """
+        # CR-01: tz-aware ET, never a naive local clock. ``pipeline/steps.py:235``
+        # calls this with no arguments, so this default IS the live orchestrator
+        # fence.
         if as_of_datetime is None:
-            as_of_datetime = datetime.now()
+            as_of_datetime = datetime.now(ET)
 
         logger.info(
             "Generating feature matrices",
@@ -1361,10 +1376,19 @@ def main():
 
     args = parser.parse_args()
 
-    # Parse --as-of datetime if provided
+    # Parse --as-of datetime if provided.
+    #
+    # CR-01: a bare ISO string on the command line means ET -- the freeze this
+    # project fences on is "Friday 6 PM ET", and an operator typing
+    # `--as-of 2024-10-04T18:00:00` means 18:00 ET, not 18:00 UTC. Attaching ET
+    # here makes the value tz-AWARE, so `ensure_utc_aware` downstream CONVERTS it
+    # (22:00Z) instead of re-labelling it (18:00Z == 14:00 ET, four hours early).
+    # An explicit offset in the string is honoured as given.
     as_of_dt = None
     if args.as_of:
         as_of_dt = datetime.fromisoformat(args.as_of)
+        if as_of_dt.tzinfo is None:
+            as_of_dt = as_of_dt.replace(tzinfo=ET)
 
     logger.info("Building unified feature matrices", season=args.season, week=args.week)
 

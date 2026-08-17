@@ -29,10 +29,24 @@ is localized to ``America/New_York`` (ET), NEVER UTC -- a UTC-localized Friday
 snapshots (the WR-02 lesson, borrowed from
 ``market_anchors.identify_snapshot_lines`` but NOT its global-max cutoff).
 
-``as_of_datetime`` is canonicalized to tz-aware UTC FIRST (review 29-04 HIGH):
-the full-build default is a naive-local ``datetime.now()`` (build_features.py
-:111-112/:852-853), and comparing a naive datetime against the tz-aware UTC
-``snapshot_ts`` would raise ``TypeError``.
+``as_of_datetime`` is canonicalized to tz-aware UTC FIRST (review 29-04 HIGH),
+because comparing a naive datetime against the tz-aware UTC ``snapshot_ts``
+would raise ``TypeError``.
+
+CRITICAL (CR-01, second occurrence): a NAIVE ``as_of`` is interpreted as ET, not
+as UTC. ``build_features.py`` now defaults to a tz-aware ``datetime.now(ET)``, so
+on the canonical path nothing naive arrives here at all -- but the previous
+default was a naive LOCAL ``datetime.now()`` that ``ensure_utc_aware``
+RE-LABELLED as UTC without shifting the wall clock (its own docstring forbids
+exactly this use). On the owner's ET machine the Friday 18:05 ET orchestrator
+slot became 18:05Z == 14:05 ET, so the fence ``min(as_of, freeze, kickoff)``
+collapsed to 14:05 ET and silently dropped the Friday-6PM-ET freeze snapshot --
+the single most important point on every trajectory. East of UTC the same
+mislabelling points the other way and admits post-cutoff rows, i.e. it LEAKS.
+Training gold was built with an ``as_of`` decades after every freeze, so the
+fence never bound there: it was textbook train/serve skew. ET is this module's
+one wall clock (kickoffs, the Friday freeze, ``kickoff_wall_clock_et``), so ET is
+what a naive ``as_of`` must mean here.
 
 CRITICAL (D-15): the TRUE closing line is NEVER emitted -- only snapshots
 strictly ``<= freeze`` are used; the closing total is reserved for CLV grading.
@@ -135,6 +149,35 @@ _COVERAGE_COLUMN = "line_movement_coverage"
 
 # Candidate columns a games row may carry the kickoff date in (ET wall clock).
 _KICKOFF_COLUMNS = ("kickoff_et", "gameday", "game_date", "start_time")
+
+
+def _as_of_to_utc(as_of_datetime: datetime | None) -> datetime:
+    """Canonicalize an ``as_of`` fence to tz-aware UTC, reading NAIVE as ET.
+
+    CR-01. ``ensure_utc_aware`` reinterprets a naive datetime as UTC without
+    shifting the wall clock, which is correct only when the caller knows the
+    source was already UTC. Nothing in this module's world is UTC: kickoffs, the
+    Friday 18:00 freeze and ``kickoff_wall_clock_et`` are all ET wall clocks, and
+    the historical naive default was a LOCAL ``datetime.now()``. So a naive value
+    is localized to ET and then CONVERTED, exactly as the ``ensure_utc_aware``
+    docstring instructs callers whose source is a different timezone to do.
+
+    Args:
+        as_of_datetime: The fence cutoff, tz-aware or naive, or ``None``.
+
+    Returns:
+        The same instant as a tz-aware UTC ``datetime``; ``datetime.now(UTC)``
+        when ``as_of_datetime`` is ``None``.
+    """
+    if as_of_datetime is None:
+        return datetime.now(UTC)
+    if as_of_datetime.tzinfo is None:
+        logger.warning(
+            "naive as_of received; interpreting it as ET, not UTC (CR-01)",
+            as_of=str(as_of_datetime),
+        )
+        return as_of_datetime.replace(tzinfo=ET).astimezone(UTC)
+    return ensure_utc_aware(as_of_datetime)
 
 
 class LineMovementBuilder:
@@ -409,8 +452,8 @@ class LineMovementBuilder:
         Args:
             games_df: DataFrame of games to build features for.
             as_of_datetime: Time-fence cutoff (capped per-game by the Friday
-                freeze). A naive datetime is reinterpreted as UTC; ``None``
-                defaults to ``datetime.now(UTC)``.
+                freeze). A naive datetime is interpreted as ET and CONVERTED
+                (CR-01); ``None`` defaults to ``datetime.now(UTC)``.
             target_season: Optional season to filter games for.
             target_week: Optional week to filter games for.
 
@@ -426,12 +469,8 @@ class LineMovementBuilder:
         self._games_cache = games_df
 
         # Canonicalize as_of to tz-aware UTC BEFORE any snapshot comparison
-        # (review 29-04 HIGH -- the full-build default is naive-local now()).
-        as_of_utc = (
-            datetime.now(UTC)
-            if as_of_datetime is None
-            else ensure_utc_aware(as_of_datetime)
-        )
+        # (review 29-04 HIGH). A naive value is read as ET, never as UTC (CR-01).
+        as_of_utc = _as_of_to_utc(as_of_datetime)
 
         target_games = games_df
         if target_season is not None and "season" in games_df.columns:
@@ -464,18 +503,15 @@ class LineMovementBuilder:
 
         Args:
             game_id: Unique game identifier.
-            as_of_datetime: Time-fence cutoff (capped by the game's Friday freeze).
+            as_of_datetime: Time-fence cutoff (capped by the game's Friday
+                freeze). A naive value is interpreted as ET (CR-01).
 
         Returns:
             Dict of line-movement feature values (neutral defaults when the game
             is unknown or has no covered trajectory).
         """
         emit_spread = self._timeline_has_spread()
-        as_of_utc = (
-            datetime.now(UTC)
-            if as_of_datetime is None
-            else ensure_utc_aware(as_of_datetime)
-        )
+        as_of_utc = _as_of_to_utc(as_of_datetime)
 
         game_date = self._resolve_game_date_for(game_id)
         if game_date is None:
