@@ -59,7 +59,7 @@ from data.storage import (
     load_dataframe,
 )
 from utils import get_logger
-from utils.date_utils import ET
+from utils.date_utils import ET, kickoff_wall_clock_et
 from utils.game_id_utils import create_standard_game_id, parse_game_id
 
 logger = get_logger(__name__)
@@ -155,19 +155,6 @@ def old_rule_week(kickoff_et: datetime, season: int) -> int:
     return max(1, min(days_since_start // 7 + 1, 22))
 
 
-def kickoff_as_et(value: object) -> datetime:
-    """Return a games-row kickoff as an ET-localized datetime.
-
-    ``games.kickoff_et`` is stored as a tz-aware column whose WALL CLOCK is
-    already Eastern (the column name is the contract), so the wall clock is read
-    off and re-attached to ET rather than converted.
-    """
-    ts = pd.Timestamp(value)
-    if ts.tzinfo is not None:
-        ts = ts.tz_localize(None)
-    return datetime(ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second, tzinfo=ET)
-
-
 # ----------------------------------------------------------------------
 # The re-key map
 # ----------------------------------------------------------------------
@@ -210,7 +197,7 @@ def build_rekey_map(
     old_inverse: dict[str, str] = {}
     matchup: dict[tuple[str, str], str] = {}
     for row in reg.itertuples(index=False):
-        week = old_rule_week(kickoff_as_et(row.kickoff_et), TARGET_SEASON)
+        week = old_rule_week(kickoff_wall_clock_et(row.kickoff_et), TARGET_SEASON)
         old_id = create_standard_game_id(
             season=TARGET_SEASON,
             week=week,

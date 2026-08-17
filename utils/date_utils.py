@@ -368,6 +368,47 @@ def get_timezone_difference(home_timezone: str, away_timezone: str) -> float:
         return 0.0  # Default to no difference if calculation fails
 
 
+def kickoff_wall_clock_et(value) -> datetime:
+    """Return the ET WALL CLOCK of a ``games.kickoff_et`` value.
+
+    THE ONE ACCESSOR for ``games.kickoff_et``, and the one place its contract is
+    written down (WR-06).
+
+    THE CONTRACT: ``games.kickoff_et`` is a TRUE INSTANT whose ET wall clock is the
+    kickoff. So an aware value is CONVERTED (``astimezone(ET)``), never relabelled.
+
+    The direction matters more than the mechanism. Reading the column the other way
+    -- treating a stored UTC instant as though its wall clock were already ET --
+    turns 156 Thursday, Sunday and Monday NIGHT games into phantom Friday
+    00:15-to-01:30 ET kickoffs, every one of which would then be fenced at a Friday
+    18:00 ET freeze roughly EIGHTEEN HOURS AFTER its real kickoff. That is a leak two
+    orders of magnitude larger than the one this remediation exists to close, so any
+    instruction to "make the readers agree" that does not name the direction is not a
+    fix.
+
+    NAIVE VALUES ARE LOCALIZED AS ET, and that is deliberately NOT the convention
+    ``ensure_utc_aware`` uses for a naive value (it reinterprets naive as UTC). The
+    two differ and the difference is load-bearing: this accessor must match the
+    WRITER, and the writer is ``GameSchema.validate_timestamps``
+    (``data/schemas.py:98-102``), which ET-localizes any naive kickoff. Matching the
+    other helper in this same module instead would shift every naive kickoff by four
+    or five hours.
+
+    Args:
+        value: A ``games.kickoff_et`` cell -- a ``datetime``, a ``pd.Timestamp``, or
+            anything ``pd.Timestamp`` accepts. Aware or naive.
+
+    Returns:
+        A tz-aware ``datetime`` in ET whose wall clock is the kickoff.
+    """
+    import pandas as pd  # local import: utils.date_utils is imported by non-pandas code
+
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        return ts.tz_localize(ET).to_pydatetime()
+    return ts.tz_convert(ET).to_pydatetime()
+
+
 def ensure_utc_aware(dt: datetime) -> datetime:
     """Return *dt* as a timezone-aware datetime in UTC.
 

@@ -16,14 +16,17 @@ assertions are about arithmetic rather than about the day the suite happens to r
 
 from datetime import datetime, timedelta
 
+import pandas as pd
 import pytest
 
 from utils.date_utils import (
     ET,
     NFL_REGULAR_SEASON_WEEKS,
     NFL_TOTAL_WEEKS,
+    ensure_utc_aware,
     get_current_nfl_week,
     get_nfl_season_start,
+    kickoff_wall_clock_et,
     parse_nfl_date,
 )
 
@@ -115,6 +118,115 @@ class TestCurrentNflWeekAcrossEveryWeekday:
         season, week = get_current_nfl_week()
         assert 1 <= week <= NFL_TOTAL_WEEKS
         assert 2000 < season < 2100
+
+
+class TestKickoffWallClockAccessor:
+    """WR-06: the ONE accessor for games.kickoff_et, and its three semantics."""
+
+    def test_a_true_utc_instant_is_converted(self) -> None:
+        # A 1 PM ET kickoff on 2020-09-13 is stored as 17:00 UTC (EDT).
+        assert (
+            kickoff_wall_clock_et(pd.Timestamp("2020-09-13 17:00:00+00:00")).hour == 13
+        )
+
+    def test_an_et_aware_value_is_an_identity(self) -> None:
+        # The dtype the DuckDB games copy carries.
+        assert (
+            kickoff_wall_clock_et(pd.Timestamp("2020-09-13 13:00:00-04:00")).hour == 13
+        )
+
+    def test_a_naive_value_is_localized_as_et_matching_the_writer(self) -> None:
+        """Deliberately NOT ensure_utc_aware's naive-equals-UTC convention.
+
+        The accessor has to match the WRITER -- GameSchema.validate_timestamps
+        (data/schemas.py:98-102) ET-localizes a naive kickoff. Matching the other
+        helper in the same module would shift every naive kickoff by four or five
+        hours.
+        """
+        assert kickoff_wall_clock_et(pd.Timestamp("2020-11-01 20:20:00")).hour == 20
+
+    def test_the_two_naive_conventions_really_do_differ(self) -> None:
+        """Pins the difference the accessor's docstring calls load-bearing."""
+        naive = datetime(2020, 11, 1, 20, 20)
+        assert (
+            kickoff_wall_clock_et(naive).utcoffset()
+            != ensure_utc_aware(naive).utcoffset()
+        )
+
+    def test_a_night_game_never_becomes_a_phantom_friday(self) -> None:
+        """The catastrophic wrong direction, pinned as a should-never-happen.
+
+        A Sunday-night 20:20 ET kickoff is stored as 01:20 UTC the next day.
+        Relabelling that instant as ET (rather than converting) would move 156
+        Thursday/Sunday/Monday night games onto the following day -- and for those
+        nearest the boundary, onto a phantom FRIDAY that a Friday-18:00-ET freeze
+        would then fence roughly eighteen hours AFTER the real kickoff.
+        """
+        converted = kickoff_wall_clock_et(pd.Timestamp("2023-11-27 01:20:00+00:00"))
+        assert converted.strftime("%a") == "Sun"
+        assert (converted.hour, converted.minute) == (20, 20)
+
+
+class TestWeekdayFamilyIsCorrectForEitherDtype:
+    """N-02: the weekday family must not depend on which games copy was resolved.
+
+    ``detect_short_week`` emits thursday_game, monday_game, saturday_game, short_week
+    and game_day_of_week -- all five land in gold. Before WR-06 it read the raw cell,
+    so it was correct on the ET-typed DuckDB table and WRONG for 718 of 6,499 rows on
+    the UTC-typed parquet: 286 Sunday-night games read as Monday, 212 Monday-night as
+    Tuesday, 153 Thursday-night as Friday. That is one ``db.table_exists()`` away from
+    silently breaking 11 percent of gold, which is why it is pinned for BOTH dtypes
+    rather than for whichever copy happens to be resolved today.
+    """
+
+    @staticmethod
+    def _family(kickoff: pd.Timestamp) -> dict:
+        from features.contextual import ContextualFeaturesCalculator
+
+        return ContextualFeaturesCalculator().detect_short_week(
+            kickoff_wall_clock_et(kickoff), 2023, 1
+        )
+
+    def test_thursday_night_reads_as_thursday_from_a_utc_typed_value(self) -> None:
+        # TNF 20:15 ET on Thursday 2023-09-07 == 2023-09-08 00:15 UTC.
+        family = self._family(pd.Timestamp("2023-09-08 00:15:00+00:00"))
+        assert family["thursday_game"] == 1.0
+        assert family["game_day_of_week"] == 3.0
+        assert family["short_week"] == 1.0
+
+    def test_thursday_night_reads_as_thursday_from_an_et_typed_value(self) -> None:
+        family = self._family(pd.Timestamp("2023-09-07 20:15:00-04:00"))
+        assert family["thursday_game"] == 1.0
+        assert family["game_day_of_week"] == 3.0
+
+    def test_monday_night_reads_as_monday_from_a_utc_typed_value(self) -> None:
+        # MNF 20:15 ET on Monday 2023-09-11 == 2023-09-12 00:15 UTC.
+        family = self._family(pd.Timestamp("2023-09-12 00:15:00+00:00"))
+        assert family["monday_game"] == 1.0
+        assert family["game_day_of_week"] == 0.0
+        assert family["short_week"] == 1.0
+
+    def test_monday_night_reads_as_monday_from_an_et_typed_value(self) -> None:
+        family = self._family(pd.Timestamp("2023-09-11 20:15:00-04:00"))
+        assert family["monday_game"] == 1.0
+
+    def test_sunday_night_does_not_read_as_monday(self) -> None:
+        """The single largest pre-fix error class: 286 SNF games read as Monday."""
+        family = self._family(pd.Timestamp("2023-11-27 01:20:00+00:00"))
+        assert family["monday_game"] == 0.0
+        assert family["game_day_of_week"] == 6.0
+
+    def test_saturday_night_does_not_read_as_sunday(self) -> None:
+        # 20:15 ET Saturday 2023-12-16 == 2023-12-17 01:15 UTC.
+        family = self._family(pd.Timestamp("2023-12-17 01:15:00+00:00"))
+        assert family["saturday_game"] == 1.0
+        assert family["game_day_of_week"] == 5.0
+
+    def test_friday_afternoon_reads_as_friday(self) -> None:
+        """The Black Friday shape CR-01 turns on: 15:00 ET Friday == 20:00 UTC."""
+        family = self._family(pd.Timestamp("2023-11-24 20:00:00+00:00"))
+        assert family["game_day_of_week"] == 4.0
+        assert family["saturday_game"] == 0.0
 
 
 class TestParseNflDateFallback:

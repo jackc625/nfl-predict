@@ -76,7 +76,7 @@ import pandas as pd
 
 from data.storage import load_dataframe
 from utils import get_logger
-from utils.date_utils import ET, UTC, ensure_utc_aware
+from utils.date_utils import ET, UTC, ensure_utc_aware, kickoff_wall_clock_et
 from utils.exceptions import DataIngestionError
 
 logger = get_logger(__name__)
@@ -197,10 +197,11 @@ class LineMovementBuilder:
         UTC (WR-02), then returned -- callers convert to UTC for the comparison so
         the wall-clock instant is preserved (18:00 ET == 22:00/23:00 UTC).
         """
-        if game_date.tzinfo is None:
-            et_date = game_date.replace(tzinfo=ET)
-        else:
-            et_date = game_date.astimezone(ET)
+        # WR-06: the ET wall clock comes from the ONE documented accessor, so this
+        # module and every other kickoff reader share a single contract instead of
+        # each re-deriving one (the two Phase-29 readers assumed OPPOSITE contracts
+        # and agreed only by luck).
+        et_date = kickoff_wall_clock_et(game_date)
 
         # Most recent Friday (weekday 4) at/before the kickoff date.
         days_since_friday = (et_date.weekday() - 4) % 7

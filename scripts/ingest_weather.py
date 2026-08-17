@@ -27,6 +27,7 @@ from utils import (
     get_logger,
     log_data_operation,
 )
+from utils.date_utils import kickoff_wall_clock_et
 from utils.exceptions import WeatherDataError
 from utils.game_id_utils import is_valid_game_id
 from utils.team_data import normalize_team_abbreviation
@@ -427,10 +428,17 @@ class WeatherDataIngester:
                 game["home_team"], venues_df
             )
 
-            # Convert game time to UTC
-            game_time_utc = self._convert_timezone(
-                game["kickoff_et"], "America/New_York", to_utc=True
-            )
+            # Convert game time to UTC through the ONE kickoff accessor (WR-06).
+            #
+            # Recorded honestly: this is uniformity, NOT a behaviour fix.
+            # _convert_timezone attaches the named zone only to a NAIVE value and
+            # otherwise calls astimezone(UTC) on the aware one, so it already behaved
+            # as the true-instant contract for every aware kickoff -- which is what
+            # the column carries. The delta here is zero on both an aware-UTC and a
+            # naive input (pinned in tests/unit/test_date_utils_contract.py). The
+            # point is that there is now exactly one place that decides what
+            # kickoff_et means.
+            game_time_utc = kickoff_wall_clock_et(game["kickoff_et"]).astimezone(UTC)
 
             if not self._is_outdoor_game(roof_type):
                 # Indoor game: use zeroed weather record (no API call)

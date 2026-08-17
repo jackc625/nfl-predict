@@ -29,6 +29,7 @@ from conf.settings import get_settings
 from data.storage import load_dataframe
 from ratings.elo import is_divisional_game
 from utils import DataIngestionError, get_logger
+from utils.date_utils import kickoff_wall_clock_et
 
 logger = get_logger(__name__)
 
@@ -821,7 +822,16 @@ class ContextualFeaturesCalculator:
                 # Map venue name to venue_id
                 venue_name = game.get("venue", "")
                 venue_id = self._get_venue_id_by_name(venue_name)
-                kickoff_dt = game["kickoff_et"]
+                # WR-06 / N-02: resolve the kickoff to its ET WALL CLOCK exactly
+                # once, here, so detect_short_week, the travel metrics and the
+                # rest-days call all read the same instant through the one
+                # documented accessor. Reading the raw cell makes the weekday
+                # family (thursday_game / monday_game / saturday_game /
+                # short_week / game_day_of_week) depend on which games copy
+                # load_dataframe happened to resolve: it is correct on the
+                # ET-typed DuckDB table and WRONG for 718 of 6,499 rows on the
+                # UTC-typed parquet.
+                kickoff_dt = kickoff_wall_clock_et(game["kickoff_et"])
                 season = game["season"]
                 week = game["week"]
 
@@ -1123,7 +1133,16 @@ class ContextualFeaturesCalculator:
                 away_team = game["away_team"]
                 venue_name = game.get("venue", "")
                 venue_id = self._get_venue_id_by_name(venue_name)
-                kickoff_dt = game["kickoff_et"]
+                # WR-06 / N-02: resolve the kickoff to its ET WALL CLOCK exactly
+                # once, here, so detect_short_week, the travel metrics and the
+                # rest-days call all read the same instant through the one
+                # documented accessor. Reading the raw cell makes the weekday
+                # family (thursday_game / monday_game / saturday_game /
+                # short_week / game_day_of_week) depend on which games copy
+                # load_dataframe happened to resolve: it is correct on the
+                # ET-typed DuckDB table and WRONG for 718 of 6,499 rows on the
+                # UTC-typed parquet.
+                kickoff_dt = kickoff_wall_clock_et(game["kickoff_et"])
                 season = game["season"]
                 week = game["week"]
 

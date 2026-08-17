@@ -20,11 +20,10 @@ import pytest
 from scripts.rekey_odds_timeline_2020 import (
     RekeyInvariantError,
     build_rekey_map,
-    kickoff_as_et,
     old_rule_season_start,
     old_rule_week,
 )
-from utils.date_utils import ET, get_nfl_season_start
+from utils.date_utils import ET, get_nfl_season_start, kickoff_wall_clock_et
 
 # The pre-45bff24 rule's output, verified against `git show 45bff24`. Only 2020
 # (and future 2026) diverge from the corrected rule.
@@ -92,19 +91,54 @@ class TestOldRuleWeek:
         assert old_rule_week(kickoff, 2020) == 22
 
 
-class TestKickoffAsEt:
-    """games.kickoff_et carries an ET wall clock; it is re-attached, not shifted."""
+class TestKickoffContract:
+    """games.kickoff_et is a TRUE INSTANT whose ET wall clock is the kickoff (WR-06).
 
-    def test_wall_clock_is_preserved(self) -> None:
-        value = pd.Timestamp("2020-09-13 13:00:00+00:00")
-        converted = kickoff_as_et(value)
+    RE-PINNED, and the change is deliberate. This class previously asserted that a
+    UTC-aware 13:00 value keeps the wall clock 13:00 when read as ET -- i.e. that the
+    stored wall clock is already Eastern and is re-attached rather than converted.
+    That is the FALSE half of the contract: it matches the 1,926 stale rows written
+    by an older validator, but not what the current ingest path writes.
+    ``GameSchema.validate_timestamps`` (data/schemas.py:98-102) ET-localizes a naive
+    kickoff, so a 1 PM ET kickoff is stored as 17:00 UTC and reading its wall clock
+    as 13:00 requires a CONVERSION.
+
+    Keeping the old assertion would have pinned the contract that, applied to the
+    true-UTC seasons, turns 156 Thursday/Sunday/Monday night games into phantom
+    Friday 00:15-01:30 ET kickoffs. This is the one test change the quick task's
+    CONTEXT sanctions in advance, and it is justified here rather than silently made.
+
+    ``test_naive_input_is_localized`` below is unchanged -- it was already correct.
+    """
+
+    def test_true_instant_is_converted_to_the_et_wall_clock(self) -> None:
+        # A 1 PM ET kickoff on 2020-09-13 is 17:00 UTC (EDT). Its ET wall clock is 13:00.
+        converted = kickoff_wall_clock_et(pd.Timestamp("2020-09-13 17:00:00+00:00"))
         assert (converted.hour, converted.day) == (13, 13)
-        assert converted.tzinfo is ET
+        assert converted.utcoffset().total_seconds() == -4 * 3600
+
+    def test_et_aware_input_is_an_identity(self) -> None:
+        # The dtype the DuckDB games copy carries today.
+        converted = kickoff_wall_clock_et(pd.Timestamp("2020-09-13 13:00:00-04:00"))
+        assert (converted.hour, converted.day) == (13, 13)
 
     def test_naive_input_is_localized(self) -> None:
-        converted = kickoff_as_et(pd.Timestamp("2020-11-01 20:20:00"))
+        # Matches GameSchema's naive convention -- NOT ensure_utc_aware's naive==UTC.
+        converted = kickoff_wall_clock_et(pd.Timestamp("2020-11-01 20:20:00"))
         assert (converted.hour, converted.day) == (20, 1)
-        assert converted.tzinfo is ET
+        assert converted.tzinfo is not None
+
+    def test_a_night_game_does_not_become_a_phantom_friday(self) -> None:
+        """The catastrophic reading, pinned as a should-never-happen.
+
+        A Sunday-night 20:20 ET kickoff is stored as 2023-11-27 01:20 UTC. Relabelling
+        that instant as ET would make it a MONDAY 01:20 kickoff -- and for the
+        Thursday/Sunday games nearest the boundary, a phantom FRIDAY, fenced ~18 hours
+        after the real kickoff.
+        """
+        converted = kickoff_wall_clock_et(pd.Timestamp("2023-11-27 01:20:00+00:00"))
+        assert converted.strftime("%a") == "Sun"
+        assert (converted.hour, converted.minute) == (20, 20)
 
 
 def _games_frame(rows: list[dict]) -> pd.DataFrame:
