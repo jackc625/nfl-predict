@@ -37,6 +37,19 @@ the full-build default is a naive-local ``datetime.now()`` (build_features.py
 CRITICAL (D-15): the TRUE closing line is NEVER emitted -- only snapshots
 strictly ``<= freeze`` are used; the closing total is reserved for CLV grading.
 
+CRITICAL (CR-01): the fence is ``min(as_of, that game's Friday freeze, one second
+before kickoff)``. The kickoff term is not redundant. The freeze is derived from the
+kickoff DATE, so for a Friday-afternoon kickoff it lands AFTER kickoff and admits an
+IN-PLAY line -- which is how three archive games carried post-kickoff values into
+gold. For every weekday except Friday the freeze already falls on a prior calendar
+day, so the cap does not bind.
+
+DEGRADED-INPUT EDGE, stated rather than hidden: ``_resolve_game_date`` walks
+``_KICKOFF_COLUMNS`` in order, so a games frame carrying only a date-only ``gameday``
+column yields a MIDNIGHT-ET kickoff and hence a fence tighter than necessary. That is
+conservative -- never leaky -- and does not arise on the canonical path, where
+``kickoff_et`` is present.
+
 CRITICAL (Pitfall 1, review 29-04 MED): historical odds start 2020-06-06, so the
 2018-2019 train window has ZERO trajectory coverage. Uncovered games get
 drift/path families = 0.0 and ``line_movement_coverage`` = 0.0, but
@@ -196,6 +209,17 @@ class LineMovementBuilder:
         The Friday 18:00 cutoff is localized to ``America/New_York`` (ET), NEVER
         UTC (WR-02), then returned -- callers convert to UTC for the comparison so
         the wall-clock instant is preserved (18:00 ET == 22:00/23:00 UTC).
+
+        THIS FUNCTION IS NOT THE WHOLE FENCE. For a Friday kickoff
+        ``(4 - 4) % 7 == 0``, so the freeze is that SAME day at 18:00 ET -- after any
+        Friday kickoff earlier than 6 PM. ``_compute_game_features`` caps the fence at
+        one second before kickoff for exactly that reason (CR-01).
+
+        The Friday derivation here is deliberately UNCHANGED. Shifting it to the
+        PRIOR Friday would also close the leak, but it would discard the entire game
+        week of legitimate movement for those games, and if both landed the
+        prior-Friday shift would dominate and make the kickoff cap dead code for
+        precisely the games it was written for.
         """
         # WR-06: the ET wall clock comes from the ONE documented accessor, so this
         # module and every other kickoff reader share a single contract instead of
@@ -321,8 +345,24 @@ class LineMovementBuilder:
         if game_date is None:
             return self._neutral_features(emit_spread)
 
-        freeze = self._game_friday_freeze(game_date).astimezone(UTC)
-        fence_utc = min(as_of_utc, freeze)
+        freeze_utc = self._game_friday_freeze(game_date).astimezone(UTC)
+
+        # CR-01: cap the fence at KICKOFF. The Friday freeze is "the most recent
+        # Friday 18:00 ET at/before the kickoff DATE", so for a Friday-afternoon
+        # kickoff -- Black Friday, Christmas -- that freeze is AFTER kickoff and the
+        # Friday-18:00 cadence snapshot it admits is an IN-PLAY line. Three games in
+        # the archive carried one; 2023_W12_MIA@NYJ's spread moved 9.5 -> 20.5 DURING
+        # the game. For every other weekday the freeze already lands on a prior
+        # calendar day, so this term simply does not bind.
+        #
+        # The one-second offset is deliberate: _pairs_for filters with <=, and D-15
+        # says no snapshot AT OR AFTER kickoff may enter a feature, so the strict form
+        # is the one that matches the contract. No archive snapshot lands on an exact
+        # kickoff instant, so it changes no real value.
+        kickoff_fence_utc = kickoff_wall_clock_et(game_date).astimezone(
+            UTC
+        ) - timedelta(seconds=1)
+        fence_utc = min(as_of_utc, freeze_utc, kickoff_fence_utc)
 
         game_rows = (
             timeline[timeline["game_id"] == game_id] if len(timeline) > 0 else timeline
