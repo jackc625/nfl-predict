@@ -6,11 +6,14 @@ Verifies:
 - Temporal CV splits for hyperparameter tuning
 """
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from models.temporal import (
+    NO_HP_VAL_SEASON,
     TemporalSplitConfig,
     WalkForwardSplitter,
     make_temporal_cv_splits,
@@ -196,3 +199,194 @@ def test_default_config():
 
     # Should validate cleanly
     config.validate()
+
+
+# ---------------------------------------------------------------------------
+# Test 8: the empty-hp_val tolerance is PROVABLY ADDITIVE (quick task 260816-u0e, D-Q2)
+# ---------------------------------------------------------------------------
+#
+# A guard added to shared temporal code is only acceptable if it cannot change
+# behaviour for anything that exists today. These tests are the proof, in three
+# parts: (a) every non-empty-hp_val config validates or raises exactly as before,
+# with the same messages; (b) no config shipped anywhere in the repo has an empty
+# hp_val list, so the new branch is unreachable for every existing consumer;
+# (c) the new branch does what it claims, INCLUDING still enforcing the
+# train-before-holdout invariant that the skipped checks used to imply.
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Every config shape that exists today, paired with the behaviour it must keep.
+# The four raising variants are the four ways validate() can currently fail on
+# ordering/overlap with a non-empty hp_val.
+_NON_EMPTY_HP_VAL_CASES = {
+    "canonical_default": (TemporalSplitConfig.default(), None),
+    "coverage_window": (
+        TemporalSplitConfig(
+            train_seasons=[2021, 2022],
+            hp_val_seasons=[2023],
+            holdout_seasons=[2024],
+        ),
+        None,
+    ),
+    "walkforward_engine_style": (
+        TemporalSplitConfig(
+            train_seasons=[2002, 2003, 2004],
+            hp_val_seasons=[2005],
+            holdout_seasons=[2006],
+        ),
+        None,
+    ),
+    "train_hp_val_overlap": (
+        TemporalSplitConfig(
+            train_seasons=[2018, 2019],
+            hp_val_seasons=[2019],
+            holdout_seasons=[2021],
+        ),
+        "overlap between train and hp_val",
+    ),
+    "hp_val_holdout_overlap": (
+        TemporalSplitConfig(
+            train_seasons=[2018],
+            hp_val_seasons=[2020],
+            holdout_seasons=[2020, 2021],
+        ),
+        "overlap between hp_val and holdout",
+    ),
+    "train_not_before_hp_val": (
+        TemporalSplitConfig(
+            train_seasons=[2018, 2020],
+            hp_val_seasons=[2019],
+            holdout_seasons=[2021],
+        ),
+        "train seasons must precede hp_val seasons",
+    ),
+    "hp_val_not_before_holdout": (
+        TemporalSplitConfig(
+            train_seasons=[2018],
+            hp_val_seasons=[2022],
+            holdout_seasons=[2021, 2023],
+        ),
+        "hp_val seasons must precede holdout seasons",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_NON_EMPTY_HP_VAL_CASES))
+def test_non_empty_hp_val_configs_behave_identically(case: str) -> None:
+    """Every existing config shape validates or raises exactly as it did before."""
+    config, expected_error = _NON_EMPTY_HP_VAL_CASES[case]
+    if expected_error is None:
+        config.validate()
+        return
+    with pytest.raises(ValueError, match=expected_error):
+        config.validate()
+
+
+def test_no_shipped_config_has_an_empty_hp_val_list() -> None:
+    """The reachability proof: today's consumers never construct an empty hp_val.
+
+    Without this, "the change is additive" would rest on inspection. The two
+    runtime-constructed configs build hp_val from a single expression that is
+    non-empty by construction (``[holdout_season - 1]`` in backtest/engine.py and
+    a parsed CLI list defaulting to 2020 in models/train.py), and the only
+    literal empty hp_val in production code is the new covered-selection window
+    itself.
+    """
+    from backtest.signal_lift import COVERAGE_WINDOW_CONFIG
+
+    assert TemporalSplitConfig.default().hp_val_seasons
+    assert COVERAGE_WINDOW_CONFIG.hp_val_seasons
+
+    literal_empty = []
+    for path in REPO_ROOT.glob("**/*.py"):
+        parts = set(path.parts)
+        if parts & {".venv", "tests", "__pycache__"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "hp_val_seasons=[]" in text or "hp_val_seasons = []" in text:
+            literal_empty.append(path.relative_to(REPO_ROOT).as_posix())
+
+    assert literal_empty == ["backtest/signal_lift.py"], (
+        "an empty hp_val_seasons list appeared in production code outside the "
+        f"covered-selection window: {literal_empty}. The empty-hp_val branch is "
+        "no longer unreachable for existing consumers, so the 'provably "
+        "additive' claim needs re-checking."
+    )
+
+
+def test_empty_hp_val_validates() -> None:
+    """An empty hp_val no longer raises 'min() iterable argument is empty'."""
+    TemporalSplitConfig(
+        train_seasons=[2018, 2019, 2020],
+        hp_val_seasons=[],
+        holdout_seasons=[2021, 2022, 2023, 2024],
+    ).validate()
+
+
+def test_empty_hp_val_still_enforces_train_before_holdout() -> None:
+    """The skipped checks must not become a hole (the load-bearing assertion).
+
+    With no hp_val fold there is nothing to chain the ordering through, so the
+    train-before-holdout invariant is asserted DIRECTLY. If it were merely
+    skipped, an empty hp_val would silently license a config that trains on a
+    season it later measures.
+    """
+    # Non-overlapping but mis-ordered: max(train)=2023 is not below
+    # min(holdout)=2021, so the direct assertion is the ONLY thing that catches it.
+    with pytest.raises(ValueError, match="train seasons must precede holdout"):
+        TemporalSplitConfig(
+            train_seasons=[2018, 2023],
+            hp_val_seasons=[],
+            holdout_seasons=[2021, 2022],
+        ).validate()
+
+
+def test_empty_hp_val_still_rejects_train_holdout_overlap() -> None:
+    """The three overlap checks are untouched and already handle empty sets."""
+    with pytest.raises(ValueError, match="overlap between train and holdout"):
+        TemporalSplitConfig(
+            train_seasons=[2018, 2021],
+            hp_val_seasons=[],
+            holdout_seasons=[2021],
+        ).validate()
+
+
+def test_empty_hp_val_train_val_split_has_no_validation_fold(
+    synthetic_features_df,
+) -> None:
+    """get_train_val_split returns an empty val fold labelled NO_HP_VAL_SEASON.
+
+    The train side is restricted to train_seasons exactly as before, which is
+    what keeps feature selection (the only consumer under ``tune=False``)
+    unchanged.
+    """
+    config = TemporalSplitConfig(
+        train_seasons=[2018, 2019, 2020],
+        hp_val_seasons=[],
+        holdout_seasons=[2021, 2022, 2023, 2024],
+    )
+    splitter = WalkForwardSplitter(config=config, target_col="home_win")
+    split = splitter.get_train_val_split(synthetic_features_df)
+
+    assert split.test_season == NO_HP_VAL_SEASON
+    assert NO_HP_VAL_SEASON == -1
+    assert len(split.test_data) == 0
+    assert len(split.test_targets) == 0
+    assert split.train_seasons == [2018, 2019, 2020]
+    assert len(split.train_data) == 30
+
+
+def test_empty_hp_val_walk_forward_is_unaffected(synthetic_features_df) -> None:
+    """The holdout walk-forward keys off ``season < holdout_season``, not hp_val."""
+    config = TemporalSplitConfig(
+        train_seasons=[2018, 2019, 2020],
+        hp_val_seasons=[],
+        holdout_seasons=[2021, 2022, 2023, 2024],
+    )
+    splitter = WalkForwardSplitter(config=config, target_col="home_win")
+    splits = list(splitter.generate_splits(synthetic_features_df))
+
+    assert [s.test_season for s in splits] == [2021, 2022, 2023, 2024]
+    assert splits[0].train_seasons == [2018, 2019, 2020]
+    for split in splits:
+        assert max(split.train_seasons) < split.test_season

@@ -714,6 +714,43 @@ class TestPhase29CliWiring:
         # ...and it is NOT what a default run uses.
         assert "config" not in signal_lift.screen_kwargs_for_phase(29)
 
+    def test_covered_selection_window_flag_swaps_in_its_config(self) -> None:
+        """The covered selection window is opt-in and leaves the default run untouched."""
+        args = signal_lift._build_parser().parse_args(
+            ["--phase", "29", "--covered-selection-window"]
+        )
+        assert args.covered_selection_window is True
+        assert args.coverage_window is False
+        kwargs = signal_lift.screen_kwargs_for_phase(29, covered_selection_window=True)
+        assert kwargs["config"] is signal_lift.COVERED_SELECTION_WINDOW_CONFIG
+        assert kwargs["groups"] == ("line_movement",)
+
+    def test_covered_selection_window_is_absent_from_a_default_run(self) -> None:
+        args = signal_lift._build_parser().parse_args(["--phase", "29"])
+        assert args.covered_selection_window is False
+        assert "config" not in signal_lift.screen_kwargs_for_phase(29)
+
+    def test_covered_selection_window_config_shape(self) -> None:
+        """Train 2018-2020 with NO hp-val fold; measure the whole 2021-2024 holdout."""
+        config = signal_lift.COVERED_SELECTION_WINDOW_CONFIG
+        assert config.train_seasons == [2018, 2019, 2020]
+        assert config.hp_val_seasons == []
+        assert config.holdout_seasons == [2021, 2022, 2023, 2024]
+        config.validate()
+        # The canonical window is NOT mutated by adding this sibling (D-Q2).
+        assert TemporalSplitConfig.default().train_seasons == [2018, 2019]
+
+    def test_the_two_window_flags_are_mutually_exclusive(self) -> None:
+        """Rejected at the parser AND at the helper -- they name different spans."""
+        with pytest.raises(SystemExit):
+            signal_lift._build_parser().parse_args(
+                ["--phase", "29", "--coverage-window", "--covered-selection-window"]
+            )
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            signal_lift.screen_kwargs_for_phase(
+                29, coverage_window=True, covered_selection_window=True
+            )
+
     def test_report_labels_the_window_actually_measured(self) -> None:
         """A one-season diagnostic must not be printed under the canonical 2021-2024 label."""
         gold = _make_fixture_gold_with_line_movement()

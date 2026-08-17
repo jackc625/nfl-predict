@@ -100,15 +100,18 @@ PHASE29_GROUPS: tuple[str, ...] = ("line_movement",)
 # + a coverage flag (D-10 / D-18d). The 2021-2024 measurement window is fully inside every
 # Phase-28 floor; these spans are REPORTED beside each lift number so the readout states the
 # covered span (D-18d). line_movement is the exception worth naming: its archive floor is
-# 2020-06-06 and the stored 2020 rows are additionally orphaned (D29-06-01), so every gold row
-# before 2021 carries neutral defaults and the measure-2021 training fold sees NO line movement.
+# 2020-06-06, so 2018-2019 has ZERO trajectory coverage and those rows carry neutral defaults.
+# The stored 2020 rows WERE orphaned by a game_id off-by-one (D29-06-01) and were re-keyed in
+# place by quick task 260816-u0e, so 2020 now carries real trajectories; 2018-2019 remain
+# uncovered because no archive exists before the floor.
 GROUP_COVERAGE: dict[str, str] = {
     "injury": "injuries 2009+ (measured 2021-2024)",
     "snap": "snaps 2013+ (measured 2021-2024)",
     "situational": "full history (measured 2021-2024)",
     "line_movement": (
-        "odds-timeline 2020-06-06+ (measured 2021-2024; the stored 2020 rows are orphaned "
-        "by D29-06-01, so all pre-2021 rows carry neutral defaults)"
+        "odds-timeline 2020-06-06+ (measured 2021-2024; the stored 2020 rows were re-keyed "
+        "in place by quick task 260816-u0e and now carry real trajectories, while 2018-2019 "
+        "predate the archive floor and carry neutral defaults)"
     ),
 }
 
@@ -136,6 +139,31 @@ COVERAGE_WINDOW_CONFIG = TemporalSplitConfig(
     train_seasons=[2021, 2022],
     hp_val_seasons=[2023],
     holdout_seasons=[2024],
+)
+
+# The COVERED SELECTION WINDOW (quick task 260816-u0e, D-Q2). It answers the objection that
+# COVERAGE_WINDOW_CONFIG above trains on holdout seasons and measures a single season: here the
+# selection window is slid forward only as far as 2020 -- which became a covered season once the
+# orphaned 2020 archive rows were re-keyed -- so the selector can see the family while the FULL
+# four-season 2021-2024 holdout stays intact as the measurement span (~1,019 paired games).
+#
+# ``hp_val_seasons`` is EMPTY, and deliberately so: train ending 2020 and holdout starting 2021
+# leave no integer season in between. That is safe here precisely because the screen always runs
+# ``tune=False`` (see ``_walkforward_clv``): the hp-val fold feeds ONLY ``combined_train`` /
+# ``combined_targets`` in ``models/trainers/base.py:355-360``, which are consumed ONLY inside the
+# ``if tune`` branch (``base.py:361-368``). Feature selection uses ``train_val_split.train_data``
+# -- the ``train_seasons`` mask -- alone, and the walk-forward uses ``season < holdout_season``
+# independently of both lists. The alternative (borrowing 2021 into hp_val) would spend a covered
+# holdout season on a slot nothing reads, costing ~25% of the measurement sample.
+#
+# This is a NON-DEFAULT configuration reachable only through the explicit
+# ``--covered-selection-window`` flag. ``TemporalSplitConfig.default()`` is NOT touched, so Phase
+# 30's binding gate and every trainer keep the canonical 2018-2019 selection window unless Phase
+# 30 adopts a covered window deliberately (D29-07-01).
+COVERED_SELECTION_WINDOW_CONFIG = TemporalSplitConfig(
+    train_seasons=[2018, 2019, 2020],
+    hp_val_seasons=[],
+    holdout_seasons=[2021, 2022, 2023, 2024],
 )
 
 _TRAINER_FOR: dict[str, type] = {
@@ -727,7 +755,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "baseline_exclude_groups=('line_movement',)."
         ),
     )
-    parser.add_argument(
+    window = parser.add_mutually_exclusive_group()
+    window.add_argument(
         "--coverage-window",
         action="store_true",
         help=(
@@ -737,11 +766,24 @@ def _build_parser() -> argparse.ArgumentParser:
             "on holdout seasons -- it is NOT the canonical screen."
         ),
     )
+    window.add_argument(
+        "--covered-selection-window",
+        action="store_true",
+        help=(
+            "Run under COVERED_SELECTION_WINDOW_CONFIG (train 2018-2020 / no hp_val / measure "
+            "the full 2021-2024 holdout). Slides the selection window forward only as far as "
+            "2020 so the selector can see a group whose archive floor is 2020-06-06, while "
+            "keeping the whole four-season holdout as the measurement span. NON-DEFAULT: the "
+            "canonical training window is not mutated."
+        ),
+    )
     return parser
 
 
 def screen_kwargs_for_phase(
-    phase: int, coverage_window: bool = False
+    phase: int,
+    coverage_window: bool = False,
+    covered_selection_window: bool = False,
 ) -> dict[str, Any]:
     """Return the ``run_signal_lift_screen`` kwargs for a phase's screen.
 
@@ -749,15 +791,28 @@ def screen_kwargs_for_phase(
     ONLY ``line_movement`` and excludes ONLY ``line_movement`` from the baseline, so the kept
     Phase-28 groups stay in the baseline and the delta is incremental to the post-Phase-28
     feature set (review 29-07 HIGH). ``coverage_window`` swaps in the diagnostic
-    ``COVERAGE_WINDOW_CONFIG``. Exposed as a function so the readout doc-drift guard runs exactly
-    the invocation the CLI runs -- the doc and the command cannot drift apart.
+    ``COVERAGE_WINDOW_CONFIG``; ``covered_selection_window`` swaps in
+    ``COVERED_SELECTION_WINDOW_CONFIG``. The two window flags are mutually exclusive -- they name
+    different measurement spans, so a run under both would be ambiguous. Exposed as a function so
+    the readout doc-drift guard runs exactly the invocation the CLI runs -- the doc and the
+    command cannot drift apart.
     """
+    if coverage_window and covered_selection_window:
+        msg = (
+            "coverage_window and covered_selection_window are mutually exclusive: "
+            "COVERAGE_WINDOW_CONFIG measures 2024 alone while "
+            "COVERED_SELECTION_WINDOW_CONFIG measures 2021-2024. Pick one."
+        )
+        raise ValueError(msg)
+
     kwargs: dict[str, Any] = {}
     if phase == 29:
         kwargs["groups"] = PHASE29_GROUPS
         kwargs["baseline_exclude_groups"] = PHASE29_GROUPS
     if coverage_window:
         kwargs["config"] = COVERAGE_WINDOW_CONFIG
+    elif covered_selection_window:
+        kwargs["config"] = COVERED_SELECTION_WINDOW_CONFIG
     return kwargs
 
 
@@ -770,7 +825,11 @@ def main(argv: list[str] | None = None) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         result = run_signal_lift_screen(
-            **screen_kwargs_for_phase(args.phase, args.coverage_window)
+            **screen_kwargs_for_phase(
+                args.phase,
+                args.coverage_window,
+                args.covered_selection_window,
+            )
         )
     print(_format_screen_report(result))  # noqa: T201 -- CLI report to stdout (read-only harness)
 

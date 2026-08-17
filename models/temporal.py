@@ -22,6 +22,17 @@ from utils import get_logger
 
 logger = get_logger(__name__)
 
+# Sentinel ``test_season`` for a train/val split that has NO validation fold.
+#
+# Produced ONLY by ``WalkForwardSplitter.get_train_val_split`` when
+# ``config.hp_val_seasons`` is empty -- a configuration that is legitimate for a
+# screen run with ``tune=False``, where the hp-val fold is never consumed. It is
+# a plain int rather than None on purpose: ``TrainTestSplit.test_season`` is
+# coerced with ``int(...)`` by existing consumers (models/utils.py:775), so
+# widening the type would ripple into code that legitimately treats it as an
+# integer.
+NO_HP_VAL_SEASON = -1
+
 
 # ---------------------------------------------------------------------------
 # Three-Fold Temporal Split Configuration
@@ -71,20 +82,38 @@ class TemporalSplitConfig:
             msg = f"Seasons overlap between hp_val and holdout: {overlap}"
             raise ValueError(msg)
 
-        # Check temporal ordering
-        if max(self.train_seasons) >= min(self.hp_val_seasons):
-            msg = (
-                f"train seasons must precede hp_val seasons: "
-                f"max(train)={max(self.train_seasons)} >= "
-                f"min(hp_val)={min(self.hp_val_seasons)}"
-            )
-            raise ValueError(msg)
+        # Check temporal ordering. The two hp_val-relative checks are only
+        # meaningful when there IS an hp_val fold; an empty hp_val_seasons is
+        # legitimate for a screen run with tune=False (hp_val feeds ONLY the
+        # tuning branch of BaseTrainer.train_and_evaluate), and calling
+        # max()/min() on it would raise "min() iterable argument is empty".
+        #
+        # Skipping them must NOT open a hole through which train and holdout
+        # could overlap in time, so the empty branch asserts the underlying
+        # temporal invariant DIRECTLY instead of inheriting it transitively.
+        if self.hp_val_seasons:
+            if max(self.train_seasons) >= min(self.hp_val_seasons):
+                msg = (
+                    f"train seasons must precede hp_val seasons: "
+                    f"max(train)={max(self.train_seasons)} >= "
+                    f"min(hp_val)={min(self.hp_val_seasons)}"
+                )
+                raise ValueError(msg)
 
-        if max(self.hp_val_seasons) >= min(self.holdout_seasons):
+            if max(self.hp_val_seasons) >= min(self.holdout_seasons):
+                msg = (
+                    f"hp_val seasons must precede holdout seasons: "
+                    f"max(hp_val)={max(self.hp_val_seasons)} >= "
+                    f"min(holdout)={min(self.holdout_seasons)}"
+                )
+                raise ValueError(msg)
+        elif max(self.train_seasons) >= min(self.holdout_seasons):
             msg = (
-                f"hp_val seasons must precede holdout seasons: "
-                f"max(hp_val)={max(self.hp_val_seasons)} >= "
-                f"min(holdout)={min(self.holdout_seasons)}"
+                f"train seasons must precede holdout seasons: "
+                f"max(train)={max(self.train_seasons)} >= "
+                f"min(holdout)={min(self.holdout_seasons)} "
+                f"(no hp_val fold, so the train/holdout ordering is asserted "
+                f"directly)"
             )
             raise ValueError(msg)
 
@@ -243,7 +272,10 @@ class WalkForwardSplitter:
 
         Returns:
             TrainTestSplit where train is the training window and test is the
-            HP-validation window.
+            HP-validation window. When ``config.hp_val_seasons`` is empty the
+            validation fold is empty and ``test_season`` is
+            :data:`NO_HP_VAL_SEASON`; the train side is unaffected, which is what
+            keeps feature selection identical under a ``tune=False`` screen.
         """
         if "game_id" in features_df.columns:
             features_df = features_df.set_index("game_id", drop=True)
@@ -262,7 +294,11 @@ class WalkForwardSplitter:
             test_data=val_df[feature_cols],
             test_targets=val_df[self.target_col],
             train_seasons=sorted(train_df["season"].unique().tolist()),
-            test_season=self.config.hp_val_seasons[0],
+            test_season=(
+                self.config.hp_val_seasons[0]
+                if self.config.hp_val_seasons
+                else NO_HP_VAL_SEASON
+            ),
         )
 
 
