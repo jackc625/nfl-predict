@@ -83,6 +83,11 @@ CONSENSUS_SOURCE = "consensus_median"
 # Regular-season weeks captured by a full-season backfill.
 _REGULAR_SEASON_WEEKS = 18
 
+# The highest week number a real NFL game_id can carry (18 regular + playoffs).
+# A derived week outside 1.._MAX_DERIVABLE_WEEK is an out-of-season listing and
+# is REFUSED rather than clamped into a valid-looking key (WR-05).
+_MAX_DERIVABLE_WEEK = 22
+
 # Lookback window used to decide whether a requested snapshot timestamp T is
 # ALREADY covered in odds_timeline (the spend-safety skip guard).
 #
@@ -114,6 +119,11 @@ DEFAULT_MIN_CREDITS_REMAINING = 100
 
 # The Odds API returns per-request credit accounting in these response headers.
 _CREDITS_REMAINING_HEADER = "x-requests-remaining"
+
+# Per-data-root cache of the games silver game_id set, so the WR-05 orphan check
+# costs one parquet read per backfill rather than one per snapshot written.
+# ``None`` means "games silver unavailable", which reads as "cannot check".
+_GAMES_ID_CACHE: dict[str, set[str] | None] = {}
 
 
 class MockModeBackfillError(DataIngestionError):
@@ -223,7 +233,24 @@ def _derive_season_week(commence_time: str | None) -> tuple[int, int]:
 
     The NFL season spans Sept-Feb, so a January/February game belongs to the
     PRIOR calendar year's season. The week is the number of weeks elapsed since
-    the season's first Thursday, clamped to a valid range.
+    the season's first Thursday.
+
+    WR-05: this REFUSES to clamp an out-of-range week into a valid-looking key.
+    The old ``max(1, min(week, 22))`` turned a board listing whose
+    ``commence_time`` precedes the season opener into ``{season}_W01_AWAY@HOME``
+    -- a key that can COLLIDE with the real Week-1 meeting of the same two teams.
+    ``upsert_silver_composite`` dedupes with ``keep="last"``, so a same-timestamp
+    collision silently overwrites a real paid row and a different-timestamp
+    collision silently corrupts that game's trajectory. An out-of-season listing
+    is a data error and must read as one.
+
+    This whole derive-don't-reconcile mechanism is what orphaned the entire 2020
+    archive (D29-06-01) and cost a re-key of 1,780 paid rows;
+    :func:`_warn_on_orphaned_game_ids` is the second half of the fix.
+
+    Raises:
+        ValueError: If ``commence_time`` is missing, or derives a week outside
+            1-22 for its season.
     """
     if not commence_time:
         raise ValueError("Game envelope is missing its 'commence_time' field")
@@ -233,7 +260,13 @@ def _derive_season_week(commence_time: str | None) -> tuple[int, int]:
     season = kickoff.year if kickoff.month >= 8 else kickoff.year - 1
     season_start = get_nfl_season_start(season)
     days_since_start = (kickoff - season_start).days
-    week = max(1, min(days_since_start // 7 + 1, 22))
+    week = days_since_start // 7 + 1
+    if not 1 <= week <= _MAX_DERIVABLE_WEEK:
+        raise ValueError(
+            f"commence_time {commence_time} derives week {week} for season "
+            f"{season} (season start {season_start.date()}); refusing to clamp an "
+            f"out-of-season listing onto a valid game_id"
+        )
     return season, week
 
 
@@ -291,7 +324,22 @@ def normalize_envelope_to_timeline_rows(
     for game in envelope.get("data", []):
         home_name = game.get("home_team")
         away_name = game.get("away_team")
-        season, week = _derive_season_week(game.get("commence_time"))
+
+        # WR-05: an out-of-season board listing is SKIPPED with a warning, not
+        # clamped onto a valid-looking key and not allowed to discard the rest of
+        # a paid snapshot. Mirrors the "No usable book lines" skip below.
+        try:
+            season, week = _derive_season_week(game.get("commence_time"))
+        except ValueError as exc:
+            logger.warning(
+                "Skipping game whose commence_time does not derive a valid week",
+                home_team=home_name,
+                away_team=away_name,
+                commence_time=game.get("commence_time"),
+                error=str(exc),
+                snapshot_ts=snapshot_ts.isoformat(),
+            )
+            continue
 
         # Canonical, hard-fail-on-unknown team mapping (CLAUDE.md constraint);
         # create_standard_game_id normalizes the full API team names internally.
@@ -338,6 +386,80 @@ def _validate_timeline_rows(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(validated)
 
 
+def _games_game_ids(base_path: Path | None = None) -> set[str] | None:
+    """Return the ``game_id`` set from ``games`` silver, cached per base_path.
+
+    Returns ``None`` when ``games`` silver is unavailable, which callers treat as
+    "cannot check" rather than "everything is an orphan".
+    """
+    if base_path is None:
+        base_path = Path(get_settings().config.data.root_path)
+
+    key = str(base_path)
+    if key in _GAMES_ID_CACHE:
+        return _GAMES_ID_CACHE[key]
+
+    ids: set[str] | None
+    games_path = base_path / "silver" / "games.parquet"
+    try:
+        games = pd.read_parquet(games_path, columns=["game_id"], engine="pyarrow")
+        ids = set(games["game_id"].astype(str))
+    except (FileNotFoundError, OSError, ValueError, KeyError) as e:
+        # Read directly rather than via load_dataframe: this module's other
+        # silver reads are base_path-parameterized parquet reads (tests point at
+        # tmp_path), and load_dataframe resolves the configured root only.
+        logger.debug(
+            "games silver unavailable for orphan check",
+            path=str(games_path),
+            error=str(e),
+        )
+        ids = None
+
+    _GAMES_ID_CACHE[key] = ids
+    return ids
+
+
+def _warn_on_orphaned_game_ids(
+    timeline_df: pd.DataFrame, base_path: Path | None = None
+) -> int:
+    """Log the count of derived ``game_id``s that do NOT join ``games`` silver.
+
+    WR-05. The ``game_id`` written here is DERIVED arithmetically from
+    ``commence_time`` and never RECONCILED against the games table. That is the
+    exact mechanism that orphaned the entire 2020 archive (D29-06-01) and cost a
+    re-key of 1,780 paid rows: ``get_nfl_season_start`` was wrong, every derived
+    week was off by one, and nothing between the API and the parquet noticed.
+    ``get_nfl_season_start`` has since been corrected, but the structural
+    weakness had not been: rescheduled games (2020 had many -- "early-September
+    board listings whose provisional dates later moved") would silently orphan
+    again.
+
+    A single WARNING line with the orphan count would have surfaced D29-06-01 on
+    the day it happened, so that is what this emits. It WARNS rather than raises:
+    a legitimately-not-yet-ingested future game must not block a paid snapshot
+    from being persisted, and the paid call has already been made.
+
+    Returns:
+        The number of orphaned ``game_id`` values (0 when the check cannot run).
+    """
+    known = _games_game_ids(base_path)
+    if known is None or not known:
+        return 0
+
+    derived = set(timeline_df["game_id"].astype(str))
+    orphans = sorted(derived - known)
+    if orphans:
+        logger.warning(
+            "Derived odds_timeline game_ids do NOT join games silver -- the "
+            "trajectory for these games will be invisible to the feature builder "
+            "(the D29-06-01 failure mode)",
+            orphan_count=len(orphans),
+            total_rows=len(timeline_df),
+            sample=orphans[:5],
+        )
+    return len(orphans)
+
+
 def _write_timeline_rows(
     rows: list[dict[str, Any]],
     season: int,
@@ -352,6 +474,7 @@ def _write_timeline_rows(
         return 0
 
     timeline_df = _validate_timeline_rows(rows)
+    _warn_on_orphaned_game_ids(timeline_df, base_path=base_path)
     save_bronze_snapshot(
         timeline_df, "odds_timeline", season=season, week=week, base_path=base_path
     )

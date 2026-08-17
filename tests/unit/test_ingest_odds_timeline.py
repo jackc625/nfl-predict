@@ -35,9 +35,11 @@ import pytest
 
 from scripts.ingest_odds import OddsAPIClient
 from scripts.ingest_odds_timeline import (
+    _GAMES_ID_CACHE,
     MockModeBackfillError,
     SpendGuardError,
     _build_parser,
+    _derive_season_week,
     _load_stored_snapshot_timestamps,
     _snapshot_already_stored,
     backfill_timeline,
@@ -671,3 +673,126 @@ def test_make_request_does_not_retry_a_programming_error():
     assert client.client.get.call_count == 1, (
         "a non-recoverable error was retried; each retry is a PAID HTTP call"
     )
+
+
+# ---------------------------------------------------------------------------
+# WR-05: the derived game_id is neither clamped nor unreconciled
+#
+# The week is DERIVED arithmetically from commence_time and was never
+# RECONCILED against games silver -- the exact mechanism that orphaned the whole
+# 2020 archive (D29-06-01) and cost a re-key of 1,780 paid rows. Additionally the
+# max(1, min(week, 22)) clamp turned an out-of-range date into a VALID-LOOKING
+# key: a listing before the season opener became {season}_W01_AWAY@HOME, which
+# can collide with the real Week-1 meeting of the same two teams. Because
+# upsert_silver_composite dedupes with keep="last", a same-timestamp collision
+# silently overwrites a real paid row.
+# ---------------------------------------------------------------------------
+
+
+def test_an_out_of_season_listing_is_refused_not_clamped():
+    """A pre-opener commence_time must not become a valid Week-1 game_id."""
+    with pytest.raises(ValueError, match="refusing to clamp"):
+        _derive_season_week("2021-07-04T17:00:00Z")
+
+
+def test_a_far_future_listing_is_refused_not_clamped():
+    """Nor may a listing past week 22 be clamped down onto the last playoff week."""
+    with pytest.raises(ValueError, match="refusing to clamp"):
+        _derive_season_week("2022-07-20T17:00:00Z")
+
+
+def test_a_normal_in_season_listing_still_derives():
+    """Positive control: the refusal must not break the ordinary path."""
+    season, week = _derive_season_week("2021-10-17T17:00:00Z")
+
+    assert season == 2021
+    assert 1 <= week <= 22
+
+
+def test_an_out_of_season_game_is_skipped_without_discarding_the_board():
+    """One bad listing must not throw away the rest of a PAID snapshot."""
+    envelope = _fake_envelope()
+    bad_game = dict(envelope["data"][0])
+    bad_game["commence_time"] = "2021-07-04T17:00:00Z"
+    bad_game["home_team"] = "Chicago Bears"
+    bad_game["away_team"] = "Green Bay Packers"
+    envelope["data"] = [bad_game, *envelope["data"]]
+
+    rows = normalize_envelope_to_timeline_rows(envelope, ["totals"])
+
+    assert len(rows) == 1
+    assert rows[0]["game_id"] == "2021_W06_KC@BUF"
+
+
+def test_orphaned_game_ids_are_reported_at_warning(tmp_path):
+    """A derived key that does not join games silver gets ONE warning line.
+
+    That single line would have surfaced D29-06-01 on the day it happened.
+    """
+    _GAMES_ID_CACHE.clear()
+    (tmp_path / "silver").mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"game_id": ["2021_W06_SOMETHING_ELSE"]}).to_parquet(
+        tmp_path / "silver" / "games.parquet"
+    )
+
+    client = _mock_client(mock_mode=False)
+
+    def fake_hist(date_iso, markets, regions="us", return_headers=False):
+        envelope = _fake_envelope_at(date_iso)
+        return (envelope, _fake_headers()) if return_headers else envelope
+
+    client.get_historical_nfl_odds = fake_hist
+
+    with patch("scripts.ingest_odds_timeline.logger") as mock_logger:
+        backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+
+    logged = str(mock_logger.warning.call_args_list)
+    _GAMES_ID_CACHE.clear()
+
+    assert "do NOT join games silver" in logged
+    assert "2021_W06_KC@BUF" in logged
+
+
+def test_no_orphan_warning_when_the_key_joins(tmp_path):
+    """Positive control: a joining key must be silent, or the warning is noise."""
+    _GAMES_ID_CACHE.clear()
+    (tmp_path / "silver").mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"game_id": ["2021_W06_KC@BUF"]}).to_parquet(
+        tmp_path / "silver" / "games.parquet"
+    )
+
+    client = _mock_client(mock_mode=False)
+
+    def fake_hist(date_iso, markets, regions="us", return_headers=False):
+        envelope = _fake_envelope_at(date_iso)
+        return (envelope, _fake_headers()) if return_headers else envelope
+
+    client.get_historical_nfl_odds = fake_hist
+
+    with patch("scripts.ingest_odds_timeline.logger") as mock_logger:
+        backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+
+    logged = str(mock_logger.warning.call_args_list)
+    _GAMES_ID_CACHE.clear()
+
+    assert "do NOT join games silver" not in logged
+
+
+def test_a_missing_games_table_does_not_block_the_write(tmp_path):
+    """The check WARNS; it must never turn a missing games table into data loss.
+
+    The paid call has already been made by the time this runs.
+    """
+    _GAMES_ID_CACHE.clear()
+    client = _mock_client(mock_mode=False)
+
+    def fake_hist(date_iso, markets, regions="us", return_headers=False):
+        envelope = _fake_envelope_at(date_iso)
+        return (envelope, _fake_headers()) if return_headers else envelope
+
+    client.get_historical_nfl_odds = fake_hist
+
+    written = backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+    _GAMES_ID_CACHE.clear()
+
+    assert written == 4
