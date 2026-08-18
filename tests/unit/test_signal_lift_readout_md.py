@@ -129,29 +129,36 @@ class TestScreenNotDeployInvariant:
 
 @pytest.mark.integration
 class TestReadoutMatchesHarness:
-    """The deeper doc-to-harness validation: the doc's numbers ARE the harness numbers.
+    """The doc-to-harness validation: the doc's RULING is the harness's ruling.
 
-    Runs the (situational, OU) cell and asserts the reproduced delta agrees with and appears in
-    the doc. The determinism guard in tests/integration guarantees stability; this ties the number
-    to the committed prose so the doc cannot silently drift.
+    SCOPE, and why it is not the point estimate (D29-06-02, owner decision). This guard used to
+    assert that re-running the harness reproduced the committed +0.177334 situational-OU delta.
+    That assumes gold is frozen. v3.0 rebuilds gold on purpose -- Phase 29 widened it, Phase 30
+    re-fits on it, and upstream nflreadpy revised 2018-2024 play-by-play underneath both -- so the
+    assumption is permanently false and the assertion was guaranteed to keep going red for
+    reasons that are not drift. Re-anchoring it to each new measurement was explicitly considered
+    and rejected: it rewrites a published record to match a moving input, and drifts again on the
+    next rebuild.
+
+    What IS permanent, and is asserted here: the recorded KEEP ruling must still reproduce. A
+    point estimate moving with gold is expected; the D-05 ruling flipping is exactly the thing a
+    tripwire should catch, and it stays caught. The measured divergence and its three-cause
+    decomposition live in Section 0a of the readout, dated, beside the original numbers rather
+    than replacing them.
 
     THE BASELINE MUST BE PINNED, and this test is why the pin exists. It used to call
     ``run_signal_lift_screen`` with the module-default ``baseline_exclude_groups`` and justify
     itself with "the baseline leg excludes ALL Phase-28 columns". That default is ``GROUPS``, a
     deny-list of three names, and it could not name Phase 29's fifteen ``line_movement`` columns --
-    which therefore landed in the BASELINE leg, so this test stopped reproducing the recorded
-    measurement and started computing a different one. It reported the difference as doc drift:
-    situational-OU read -0.195371 against a doc anchor of +0.177334, a D-05 veto against a
-    recorded KEEP, purely from baseline composition.
-
-    Going through ``screen_kwargs_for_phase(28)`` is the fix, and it is deliberately the same seam
-    ``main()`` uses, so the guard runs exactly the invocation the CLI runs and the doc, the
-    command and this assertion cannot drift apart. A group registered by a later phase is pinned
-    out of the Phase-28 baseline automatically.
+    which therefore landed in the BASELINE leg. With them there the cell reads -0.195371, a D-05
+    veto, against a recorded KEEP: a ruling flip produced purely by baseline composition. Going
+    through ``screen_kwargs_for_phase(28)`` is the fix, and it is deliberately the same seam
+    ``main()`` uses, so the guard runs exactly the invocation the CLI runs. A group registered by
+    a later phase is pinned out of the Phase-28 baseline automatically.
     """
 
-    def test_situational_ou_delta_reproduces_from_harness(self) -> None:
-        """The situational-OU +0.209526 delta reproduces and is recorded in the doc."""
+    def test_situational_ou_keep_ruling_reproduces_from_harness(self) -> None:
+        """The recorded KEEP ruling still reproduces, and the doc still records its anchor."""
         if not (_GOLD_OU_PATH.exists() and _ODDS_PATH.exists()):
             pytest.skip(
                 f"Canonical gold/odds not present at {_GOLD_OU_PATH} / {_ODDS_PATH}"
@@ -176,19 +183,28 @@ class TestReadoutMatchesHarness:
                 **screen_kwargs_for_phase(28),
             )
 
+        decision = result["groups"]["situational"]["decision"]
         cell = result["groups"]["situational"]["per_target"]["ou"]
-        delta = cell["delta_mean"]
-        assert delta is not None
-        assert abs(delta - 0.209526) < 5e-3, (
-            f"harness situational-OU delta {delta} drifted from the doc anchor +0.209526"
+
+        # The permanent invariant: the ruling the doc records must still be the ruling the
+        # harness returns. A moved point estimate is expected; a flipped ruling is not.
+        assert decision["keep"] is True, (
+            f"situational no longer screens KEEP: {decision['reason']} "
+            f"(situational-OU delta {cell['delta_mean']}). The readout records KEEP -- a flipped "
+            "ruling is a real finding, not point-estimate drift, and must be reconciled in the "
+            "doc rather than re-anchored."
         )
+        assert cell["veto"] is False, "situational-OU must not carry a D-05 veto"
 
         content = _read_readout()
-        assert "+0.209526" in content, (
-            "the doc must record the situational-OU +0.209526 lift anchor"
+        # The published Phase-28 record stays recorded, with its measurement date and the
+        # dated drift record that explains why re-running returns something else.
+        assert "+0.177334" in content, (
+            "the doc must keep recording the 2026-06-29 situational-OU +0.177334 anchor"
         )
-        # The harness keep/drop decision agrees with the doc's KEEP ruling.
-        assert result["groups"]["situational"]["decision"]["keep"] is True
+        assert "DRIFT RECORD" in content, (
+            "the doc must carry the dated drift record explaining the divergence (D29-06-02)"
+        )
 
     def test_phase28_baseline_is_pinned_against_later_widening(self) -> None:
         """The Phase-28 baseline excludes EVERY registered group, not just the three names.
