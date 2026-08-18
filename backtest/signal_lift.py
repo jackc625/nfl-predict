@@ -7,17 +7,24 @@ keep/drop rule. It composes the canonical significance primitives (``clv_signifi
 ``CLV_COLUMN_FOR``, ``SIGNIFICANCE_ALPHA``) -- it NEVER re-derives a bespoke paired-delta or
 t-test (the D24-13 import-parity lesson).
 
-PHASE-29 BASELINE (SIG-04, review 29-07 HIGH -- load-bearing): the Phase-28 screen removes the
-union over ``GROUPS`` from the baseline leg. Phase 29 screens ``line_movement`` and must measure
-it INCREMENTAL TO the post-Phase-28 feature set, because the D-02 question the whole phase exists
-for is "is line-movement redundant WITH the injury signal the market reacts to?". Registering
-``line_movement`` in ``GROUPS`` would strip injury/snap/situational from the baseline too and
-answer a different, useless question. So ``line_movement`` lives in ``_GROUP_PREDICATE`` ONLY,
-``select_group_columns`` takes an ``exclude_groups`` parameter (default ``GROUPS`` --
-Phase-28 behaviour byte-preserved) and ``run_signal_lift_screen`` takes
-``baseline_exclude_groups`` (default ``GROUPS``) threaded into BOTH legs. The Phase-29
-invocation is ``groups=("line_movement",), baseline_exclude_groups=("line_movement",)``, run
-by ``python -m backtest.signal_lift --phase 29``.
+PHASE-28 BASELINE PIN (load-bearing): the Phase-28 screen removes the union over
+``ALL_REGISTERED_GROUPS`` -- every registered signal group -- from its baseline leg, so its
+baseline is the non-signal core and STAYS the non-signal core as later phases widen gold. It
+previously removed only ``GROUPS``, a deny-list of three names, which let Phase-29's fifteen
+line-movement columns into the Phase-28 baseline and silently changed what the recorded Phase-28
+grid measured. See ``ALL_REGISTERED_GROUPS`` for the full account and the numbers it moved.
+
+PHASE-29 BASELINE (SIG-04, review 29-07 HIGH -- load-bearing): Phase 29 screens ``line_movement``
+and must measure it INCREMENTAL TO the post-Phase-28 feature set, because the D-02 question the
+whole phase exists for is "is line-movement redundant WITH the injury signal the market reacts
+to?". Excluding every group from its baseline would strip injury/snap/situational too and answer
+a different, useless question. So ``select_group_columns`` takes an ``exclude_groups`` parameter
+and ``run_signal_lift_screen`` takes ``baseline_exclude_groups`` (both defaulting to ``GROUPS``,
+so every pre-existing caller is byte-preserved) threaded into BOTH legs, and each phase states its
+own baseline explicitly at the ``screen_kwargs_for_phase`` seam. The Phase-29 invocation is
+``groups=("line_movement",), baseline_exclude_groups=("line_movement",)``, run by
+``python -m backtest.signal_lift --phase 29``; the Phase-28 invocation is
+``baseline_exclude_groups=ALL_REGISTERED_GROUPS``, run by ``--phase 28`` (the default).
 
 MECHANISM (review #2 / #3 -- the load-bearing correction):
   The lift is anchored on an IN-PROCESS per-season walk-forward re-fit via
@@ -333,6 +340,31 @@ _GROUP_PREDICATE = {
     # Phase-28 signal from the baseline leg (review 29-07 HIGH).
     "line_movement": _is_line_movement_col,
 }
+
+
+# EVERY registered signal group -- the Phase-28 baseline PIN.
+#
+# ``GROUPS`` is a DENY-LIST of three group names, and a deny-list cannot name a group that does
+# not exist yet. When Phase 29 widened gold by fifteen ``line_movement`` columns, those columns
+# were matched by no entry in ``GROUPS`` and so fell straight through into the BASELINE leg of the
+# Phase-28 screen. Nothing failed; the recorded Phase-28 numbers simply stopped being reproducible,
+# because re-running them now measured each group incremental to a baseline that had silently
+# grown. The situational-OU cell moved from +0.177334 to -0.195371 and flipped the D-05 ruling
+# from KEEP to a veto -- entirely from baseline composition, not from any change to the group.
+#
+# The Phase-28 baseline was never "gold minus these three names". It was "gold minus every signal
+# column we know about" -- which happened to equal the three names at the time. Deriving the pin
+# from ``_GROUP_PREDICATE`` states that invariant directly, so a group registered by a LATER phase
+# is excluded from the Phase-28 baseline automatically and the recorded grid stays reproducible.
+# Appending "line_movement" to ``GROUPS`` would fix today's symptom and re-arm the identical trap
+# for the next phase that widens gold.
+#
+# This is deliberately NOT the default of ``select_group_columns`` / ``run_signal_lift_screen``:
+# those keep ``GROUPS`` so every existing caller is byte-preserved, and the Phase-29 invocation
+# still passes its own explicit ``("line_movement",)`` to keep the kept Phase-28 groups IN its
+# baseline (review 29-07 HIGH). The pin is applied at the Phase-28 invocation seam only, in
+# ``screen_kwargs_for_phase``.
+ALL_REGISTERED_GROUPS: tuple[str, ...] = tuple(_GROUP_PREDICATE)
 
 
 def group_columns(gold_df: pd.DataFrame, group: str) -> list[str]:
@@ -917,7 +949,11 @@ def screen_kwargs_for_phase(
 ) -> dict[str, Any]:
     """Return the ``run_signal_lift_screen`` kwargs for a phase's screen.
 
-    Phase 28 uses the module defaults (baseline = pre-Phase-28 feature set). Phase 29 screens
+    Phase 28 PINS its baseline to ``ALL_REGISTERED_GROUPS`` -- "gold minus every signal column we
+    know about", which is what its recorded grid was actually measured against. It used to rely on
+    the module default ``GROUPS``, a deny-list of three names; Phase 29's fifteen ``line_movement``
+    columns matched none of them, fell through into the baseline leg, and silently changed what
+    the Phase-28 screen measured (see the ``ALL_REGISTERED_GROUPS`` note). Phase 29 screens
     ONLY ``line_movement`` and excludes ONLY ``line_movement`` from the baseline, so the kept
     Phase-28 groups stay in the baseline and the delta is incremental to the post-Phase-28
     feature set (review 29-07 HIGH). ``coverage_window`` swaps in the diagnostic
@@ -942,6 +978,10 @@ def screen_kwargs_for_phase(
         raise ValueError(msg)
 
     kwargs: dict[str, Any] = {}
+    if phase == 28:
+        # The PIN. Not ``GROUPS``: see ALL_REGISTERED_GROUPS for why a deny-list of three names
+        # let Phase-29 columns into the Phase-28 baseline and moved a published number.
+        kwargs["baseline_exclude_groups"] = ALL_REGISTERED_GROUPS
     if phase == 29:
         kwargs["groups"] = PHASE29_GROUPS
         kwargs["baseline_exclude_groups"] = PHASE29_GROUPS

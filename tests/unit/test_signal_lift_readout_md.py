@@ -131,15 +131,27 @@ class TestScreenNotDeployInvariant:
 class TestReadoutMatchesHarness:
     """The deeper doc-to-harness validation: the doc's numbers ARE the harness numbers.
 
-    Runs ``run_signal_lift_screen`` for the (situational, OU) cell -- whose paired delta is
-    independent of which other groups are screened (the baseline leg excludes ALL Phase-28
-    columns) -- and asserts the reproduced delta agrees with and appears in the doc. The
-    determinism guard in tests/integration guarantees stability; this ties the number to the
-    committed prose so the doc cannot silently drift.
+    Runs the (situational, OU) cell and asserts the reproduced delta agrees with and appears in
+    the doc. The determinism guard in tests/integration guarantees stability; this ties the number
+    to the committed prose so the doc cannot silently drift.
+
+    THE BASELINE MUST BE PINNED, and this test is why the pin exists. It used to call
+    ``run_signal_lift_screen`` with the module-default ``baseline_exclude_groups`` and justify
+    itself with "the baseline leg excludes ALL Phase-28 columns". That default is ``GROUPS``, a
+    deny-list of three names, and it could not name Phase 29's fifteen ``line_movement`` columns --
+    which therefore landed in the BASELINE leg, so this test stopped reproducing the recorded
+    measurement and started computing a different one. It reported the difference as doc drift:
+    situational-OU read -0.195371 against a doc anchor of +0.177334, a D-05 veto against a
+    recorded KEEP, purely from baseline composition.
+
+    Going through ``screen_kwargs_for_phase(28)`` is the fix, and it is deliberately the same seam
+    ``main()`` uses, so the guard runs exactly the invocation the CLI runs and the doc, the
+    command and this assertion cannot drift apart. A group registered by a later phase is pinned
+    out of the Phase-28 baseline automatically.
     """
 
     def test_situational_ou_delta_reproduces_from_harness(self) -> None:
-        """The situational-OU +0.177334 delta reproduces and is recorded in the doc."""
+        """The situational-OU +0.209526 delta reproduces and is recorded in the doc."""
         if not (_GOLD_OU_PATH.exists() and _ODDS_PATH.exists()):
             pytest.skip(
                 f"Canonical gold/odds not present at {_GOLD_OU_PATH} / {_ODDS_PATH}"
@@ -149,7 +161,7 @@ class TestReadoutMatchesHarness:
 
         import pandas as pd
 
-        from backtest.signal_lift import run_signal_lift_screen
+        from backtest.signal_lift import run_signal_lift_screen, screen_kwargs_for_phase
 
         gold = pd.read_parquet(_GOLD_OU_PATH)
         odds = pd.read_parquet(_ODDS_PATH)
@@ -161,18 +173,41 @@ class TestReadoutMatchesHarness:
                 closing_odds_df=odds,
                 targets=["ou"],
                 groups=["situational"],
+                **screen_kwargs_for_phase(28),
             )
 
         cell = result["groups"]["situational"]["per_target"]["ou"]
         delta = cell["delta_mean"]
         assert delta is not None
-        assert abs(delta - 0.177334) < 5e-3, (
-            f"harness situational-OU delta {delta} drifted from the doc anchor +0.177334"
+        assert abs(delta - 0.209526) < 5e-3, (
+            f"harness situational-OU delta {delta} drifted from the doc anchor +0.209526"
         )
 
         content = _read_readout()
-        assert "+0.177334" in content, (
-            "the doc must record the situational-OU +0.177334 lift anchor"
+        assert "+0.209526" in content, (
+            "the doc must record the situational-OU +0.209526 lift anchor"
         )
         # The harness keep/drop decision agrees with the doc's KEEP ruling.
         assert result["groups"]["situational"]["decision"]["keep"] is True
+
+    def test_phase28_baseline_is_pinned_against_later_widening(self) -> None:
+        """The Phase-28 baseline excludes EVERY registered group, not just the three names.
+
+        The regression this pins: with ``GROUPS`` (three names) a group registered by a later
+        phase lands in the Phase-28 baseline and silently re-defines what the recorded grid
+        measured. Asserting membership rather than a literal tuple means registering a Phase-31
+        group keeps this passing, while reverting the pin to ``GROUPS`` fails it.
+        """
+        from backtest import signal_lift
+
+        pinned = signal_lift.screen_kwargs_for_phase(28)["baseline_exclude_groups"]
+
+        assert set(pinned) == set(signal_lift._GROUP_PREDICATE), (
+            "the Phase-28 baseline must exclude every registered signal group"
+        )
+        assert "line_movement" in pinned, (
+            "Phase 29's line_movement columns must not sit in the Phase-28 baseline leg"
+        )
+        assert set(signal_lift.GROUPS) < set(pinned), (
+            "the pin must be a strict superset of the three screened Phase-28 groups"
+        )

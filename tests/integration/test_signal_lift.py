@@ -920,10 +920,23 @@ class TestWindowLabelsAreDerivedNotTyped:
 class TestPhase29CliWiring:
     """``--phase 29`` is the single deterministic command the doc-drift guard re-runs."""
 
-    def test_default_phase_is_28_and_carries_no_overrides(self) -> None:
+    def test_default_phase_is_28_and_pins_its_baseline(self) -> None:
+        """Phase 28 carries exactly one override: the baseline pin.
+
+        This assertion used to read ``== {}`` -- Phase 28 rode the module default
+        ``baseline_exclude_groups=GROUPS``. That default is a deny-list of three
+        names, so Phase 29's line_movement columns fell through it into the
+        Phase-28 baseline leg and moved the published grid. Phase 28 now names its
+        baseline explicitly, and no window config is implied.
+        """
         args = signal_lift._build_parser().parse_args([])
         assert args.phase == 28
-        assert signal_lift.screen_kwargs_for_phase(28) == {}
+
+        kwargs = signal_lift.screen_kwargs_for_phase(28)
+        assert kwargs == {"baseline_exclude_groups": signal_lift.ALL_REGISTERED_GROUPS}
+        # Phase 28 still screens the module-default groups, and picks up no config override.
+        assert "groups" not in kwargs
+        assert "config" not in kwargs
 
     def test_phase_29_selects_the_line_movement_screen_on_both_legs(self) -> None:
         args = signal_lift._build_parser().parse_args(["--phase", "29"])
