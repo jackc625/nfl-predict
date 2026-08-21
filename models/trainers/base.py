@@ -31,6 +31,55 @@ from models.temporal import (
 from models.tuning import OptunaTuner, TuningResult
 from utils import get_logger
 
+# ---------------------------------------------------------------------------
+# Phase-30 Optuna study identity + storage (Plan 30-01, T-30-02 / T-30-14)
+# ---------------------------------------------------------------------------
+
+# The per-PHASE study-identity tag. It exists because OptunaTuner.optimize computes remaining
+# trials as ``max(0, n_trials - len(study.trials))`` under ``load_if_exists=True``: resuming a
+# study that already holds the full budget runs ZERO new trials while still reporting a full
+# trial count, so a "tuned" candidate would silently carry the OLD phase's parameters.
+#
+# The rule, plainly: a study identity is per-phase. A future phase that re-tunes MUST bump this
+# tag. What this tag is NOT allowed to do is revert to the v2.0 ``_tuning_v1`` literal -- those
+# three studies are the v2.0 historical record and are already at budget, so reusing their
+# identity guarantees a vacuous search. Nothing in this phase deletes them either.
+TUNING_STUDY_TAG: str = "p30"
+
+# Where the SQLite study files live. OptunaTuner defaults storage_dir to ``data/optuna``, which
+# collides with this phase's own prohibition on writing under ``data/`` outside the one
+# sanctioned fingerprinted rebuild -- and the prohibition's before/after hash manifest reads
+# through ``load_dataframe``, so it would NOT have caught an ``data/optuna/`` write.
+# ``outputs/`` is gitignored and is the right home. What this constant is NOT allowed to be is
+# any path under ``data/``; tests/unit/test_promote_models_tuned_path.py asserts that directly.
+TUNING_STORAGE_DIR: Path = Path("outputs/optuna")
+
+
+def _existing_trial_count(tuner: OptunaTuner) -> int:
+    """Return how many trials the tuner's study ALREADY holds in storage.
+
+    Read BEFORE ``optimize`` so the caller can compute how many trials the search genuinely
+    added. A missing study file, or a storage file with no such study, is 0 -- the fresh case.
+
+    Args:
+        tuner: The configured OptunaTuner (read-only; its storage is not created here).
+
+    Returns:
+        The stored trial count, or 0 when the study does not exist yet.
+    """
+    db_path = tuner.storage_dir / f"{tuner.study_name}.db"
+    if not db_path.exists():
+        return 0
+    try:
+        study = optuna.load_study(
+            study_name=tuner.study_name, storage=tuner.storage_url
+        )
+    except KeyError:
+        # The storage file exists but holds no study by this name (the fresh-identity case,
+        # e.g. right after TUNING_STUDY_TAG was bumped).
+        return 0
+    return len(study.trials)
+
 
 class BaseTrainer(ABC):
     """Abstract base class for model trainers.
@@ -276,16 +325,39 @@ class BaseTrainer(ABC):
         # in sklearn convention, but we want to minimize the raw metric
         direction = "minimize"
 
-        study_name = f"{self.target}_tuning_v1"
+        # Phase-scoped study identity + non-data/ storage (T-30-02 / T-30-14). Reusing the v2.0
+        # ``{target}_tuning_v1`` identity would resume a study already at budget and run zero
+        # trials; omitting storage_dir would let the tuner default to ``data/optuna``.
+        study_name = f"{self.target}_tuning_{TUNING_STUDY_TAG}"
 
         tuner = OptunaTuner(
             study_name=study_name,
             direction=direction,
+            storage_dir=TUNING_STORAGE_DIR,
             n_trials=n_trials,
         )
 
+        # Read the stored trial count BEFORE the search so a vacuous resume is detectable.
+        trials_before = _existing_trial_count(tuner)
+
         objective = self._make_objective(X_train, y_train, cv_splits)
         result = tuner.optimize(objective)
+
+        # HARD-fail a search that added nothing. A resumed full study returns the STORED best
+        # parameters while reporting a full trial count, so without this assertion an untuned
+        # candidate is indistinguishable from a tuned one in every downstream artifact.
+        trials_added = result.n_trials - trials_before
+        if trials_added <= 0:
+            msg = (
+                f"Optuna study '{study_name}' added ZERO new trials "
+                f"(stored before={trials_before}, after={result.n_trials}, budget={n_trials}). "
+                "The study was resumed already at budget, so the 'best params' returned are the "
+                "STORED ones -- this candidate would be reported as tuned without having been "
+                f"tuned. Remediation: bump TUNING_STUDY_TAG in {__name__} to open a fresh study "
+                "identity. Do NOT delete the existing study file to work around this -- study "
+                "files are the historical record of what was searched."
+            )
+            raise RuntimeError(msg)
 
         # Replay best params through _define_search_space to get
         # model-compatible parameter names (e.g., "solver_l2" -> "solver")
@@ -298,6 +370,9 @@ class BaseTrainer(ABC):
             best_value=result.best_value,
             best_params=best_params,
             n_trials=result.n_trials,
+            trials_added=trials_added,
+            study_name=study_name,
+            storage_dir=str(TUNING_STORAGE_DIR),
             top_importances=dict(list(result.param_importances.items())[:5]),
         )
 

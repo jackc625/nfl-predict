@@ -23,6 +23,15 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 
+# D30-01/D30-02: the feature-group vocabulary and the selection primitive are IMPORTED from
+# backtest.signal_lift, never re-declared here. This models -> backtest direction mirrors the
+# import-the-primitive seam at models/deploy_gate.py:99 (D24-13): a second, locally-declared
+# group list is exactly what silently broke the Phase-28 baseline in 29-06 (T-30-15), because
+# the two copies can drift without anything failing.
+#
+# select_group_columns returns a FRESH in-memory copy and never mutates data/gold, which is why
+# a Stage-2 exclusion needs no second gold-shaped artifact (D30-01's rejected alternative).
+from backtest.signal_lift import ALL_REGISTERED_GROUPS, select_group_columns
 from models.temporal import TemporalSplitConfig
 from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.ou_trainer import OUTrainer
@@ -34,6 +43,24 @@ logger = get_logger(__name__)
 
 # Valid target choices
 _VALID_TARGETS = ("wp", "ats", "ou", "all")
+
+
+def parse_exclude_groups(raw: str) -> tuple[str, ...]:
+    """Parse the ``--exclude-groups`` scalar token into a tuple of group names.
+
+    The comprehension's ``if g.strip()`` filter is LOAD-BEARING, not defensive tidying:
+    ``"".split(",")`` returns ``[""]`` -- a one-element list holding the empty string -- which
+    would reach ``group_columns`` as an unregistered name and raise. Under the naive form the
+    DEFAULT invocation (the one that must reproduce today's behaviour byte-for-byte) would
+    hard-fail. The same filter absorbs a trailing comma and any all-whitespace token.
+
+    Args:
+        raw: The raw comma-separated flag value (``""`` by default).
+
+    Returns:
+        The parsed group names, empty when nothing was requested.
+    """
+    return tuple(g.strip() for g in raw.split(",") if g.strip())
 
 
 def compute_market_baseline(
@@ -415,13 +442,14 @@ def print_summary(results: dict[str, dict]) -> None:
     print()
 
 
-def main() -> None:
-    """Main entry point for unified model training.
+def build_parser() -> argparse.ArgumentParser:
+    """Build the ``models.train`` argument parser.
 
-    Usage:
-        python -m models.train --target all
-        python -m models.train --target wp
-        python -m models.train --target ats --artifacts-dir custom/path
+    Extracted from ``main()`` so the argv surface is testable without running a train
+    (the house shape used by tests/unit/test_friday_pipeline_cli.py).
+
+    Returns:
+        The configured parser.
     """
     parser = argparse.ArgumentParser(
         description="Train NFL prediction models with walk-forward temporal validation.",
@@ -467,8 +495,39 @@ def main() -> None:
         default="2021,2022,2023,2024",
         help="Comma-separated holdout seasons. Default: 2021,2022,2023,2024",
     )
+    parser.add_argument(
+        "--exclude-groups",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated feature GROUPS to drop from the frame before training "
+            f"(D30-01). Registered vocabulary: {', '.join(ALL_REGISTERED_GROUPS)}. "
+            "The default excludes nothing and reproduces today's behaviour exactly. "
+            "An unregistered name is a hard failure, never a silent no-op. A registered "
+            "group with zero columns present IS a legal no-op. A single scalar token, "
+            "matching the --config-*-seasons convention (deliberately not nargs='+', "
+            "which is an argv foot-gun under PowerShell when followed by another flag)."
+        ),
+    )
+    return parser
+
+
+def main() -> None:
+    """Main entry point for unified model training.
+
+    Usage:
+        python -m models.train --target all
+        python -m models.train --target wp
+        python -m models.train --target ats --artifacts-dir custom/path
+        python -m models.train --target ats --exclude-groups line_movement
+    """
+    parser = build_parser()
 
     args = parser.parse_args()
+
+    # D30-01: the Stage-2 feature-group exclusion, applied IN MEMORY between the parquet read
+    # and train_target. Empty by default, which is a true no-op (see parse_exclude_groups).
+    exclude_groups = parse_exclude_groups(args.exclude_groups)
 
     # Parse season lists
     train_seasons = [int(s.strip()) for s in args.config_train_seasons.split(",")]
@@ -530,6 +589,41 @@ def main() -> None:
             n_rows=len(features_df),
             n_cols=len(features_df.columns),
         )
+
+        # D30-01: apply the Stage-2 feature-group exclusion in memory, BEFORE train_target.
+        #
+        # The call is SKIPPED entirely on the empty default -- calling select_group_columns
+        # with no explicit exclude_groups is NOT equivalent, because its default is the
+        # Phase-28 GROUPS deny-list and would silently strip three whole families.
+        #
+        # group=None is the baseline-leg semantic: every column minus the excluded groups'
+        # columns, nothing re-admitted. select_group_columns returns a fresh copy, so
+        # data/gold is never touched (HARD BOUNDARY) and no second gold-shaped artifact is
+        # needed. train_target's signature is unchanged -- it already accepts any DataFrame.
+        #
+        # The before/after counts are logged around the call so the exclusion's real effect on
+        # the feature set is visible in the run log rather than inferred from a downstream
+        # artifact.
+        if exclude_groups:
+            n_cols_before = len(features_df.columns)
+            logger.info(
+                "Applying feature-group exclusion",
+                target=target,
+                exclude_groups=list(exclude_groups),
+                n_cols_before=n_cols_before,
+            )
+            features_df = select_group_columns(
+                features_df, None, exclude_groups=exclude_groups
+            )
+            n_cols_after = len(features_df.columns)
+            logger.info(
+                "Feature-group exclusion applied",
+                target=target,
+                exclude_groups=list(exclude_groups),
+                n_cols_before=n_cols_before,
+                n_cols_after=n_cols_after,
+                n_cols_dropped=n_cols_before - n_cols_after,
+            )
 
         result = train_target(
             target=target,

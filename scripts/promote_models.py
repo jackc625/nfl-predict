@@ -42,8 +42,10 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
+import tomllib
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -82,6 +84,19 @@ _HOLDOUT_LAST_SEASON = 2024
 # and the test_diag_diagnosis anchor tolerance, so the gate-time abort uses the same recomputation
 # noise band the committed freshness test already trusts.
 _FRESHNESS_TOL = 5e-3
+
+# The ratified Stage-1 group verdict (D24-07 generator-output-over-transcription: Plan 30-05
+# writes the emitter, Plan 30-10 writes this file). When it exists and no explicit
+# --exclude-groups was given, the Stage-2 exclusion list is DERIVED from it rather than typed.
+_GROUP_GATE_VERDICT_PATH = Path("config/group_gate_verdict.toml")
+
+# The season lists ``_incumbent_window`` derives, mapped from the metadata config key to the
+# ``models.train --config-*-seasons`` flag stem.
+_WINDOW_KEYS: tuple[tuple[str, str], ...] = (
+    ("train_seasons", "train"),
+    ("hp_val_seasons", "hp_val"),
+    ("holdout_seasons", "holdout"),
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -129,7 +144,202 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "(keeps the gate path testable without a long train)"
         ),
     )
+    parser.add_argument(
+        "--exclude-groups",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated feature GROUPS to exclude from the Stage-2 candidate train, "
+            "passed through to models.train --exclude-groups (D30-01). Omitting the flag "
+            "derives the list from the ratified Stage-1 verdict "
+            f"({_GROUP_GATE_VERDICT_PATH}) when that file exists, and otherwise excludes "
+            "nothing with a loud warning. Passing the flag explicitly is an OVERRIDE and is "
+            "announced as such -- an empty value ('') is a valid override meaning 'exclude "
+            "nothing' and does NOT fall through to the verdict file."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def _resolve_exclude_groups(args: argparse.Namespace) -> tuple[list[str], str]:
+    """Resolve the Stage-2 feature-group exclusion list and where it came from.
+
+    Precedence, in order:
+
+      1. An explicit ``--exclude-groups`` value WINS and is announced as an OVERRIDE -- the
+         list came from the command line and NOT from the ratified Stage-1 verdict. The branch
+         tests ``is not None``, not truthiness, so ``--exclude-groups ""`` is an explicit
+         "exclude nothing" rather than a silent fall-through.
+      2. The ratified verdict file's ``excluded_groups`` key, DERIVED not transcribed (D24-07).
+      3. An empty list, with a loud warning that no Stage-1 verdict has been ratified.
+
+    Args:
+        args: The parsed promote arguments.
+
+    Returns:
+        ``(groups, provenance)`` where provenance is ``"override"``, ``"verdict"`` or
+        ``"none"``. The provenance rides into the banner so checkpoint 4 can see whether the
+        single most consequential input to what gets trained was ratified or hand-typed.
+    """
+    if args.exclude_groups is not None:
+        groups = [g.strip() for g in args.exclude_groups.split(",") if g.strip()]
+        print(
+            "  [OVERRIDE] --exclude-groups was supplied on the COMMAND LINE; this list is "
+            "NOT the ratified Stage-1 verdict."
+        )
+        return groups, "override"
+
+    if _GROUP_GATE_VERDICT_PATH.exists():
+        with _GROUP_GATE_VERDICT_PATH.open("rb") as handle:
+            verdict = tomllib.load(handle)
+        groups = [str(g) for g in verdict.get("excluded_groups", [])]
+        print(
+            f"  Exclusion list DERIVED from the ratified Stage-1 verdict "
+            f"({_GROUP_GATE_VERDICT_PATH})."
+        )
+        return groups, "verdict"
+
+    print(
+        f"  [WARNING] No ratified Stage-1 verdict at {_GROUP_GATE_VERDICT_PATH} and no "
+        "--exclude-groups override: the candidate will be trained on EVERY feature group. "
+        "That is a legitimate configuration, but it is not a Stage-1-selected feature set."
+    )
+    return [], "none"
+
+
+def _incumbent_window(target: str, artifacts_dir: Path) -> dict[str, str]:
+    """Derive one target's selection window from ITS OWN deployed incumbent's metadata.
+
+    D30-12: the deployed ATS incumbent is the D25-05 fix-cycle artifact and records a FIVE-season
+    train window, while ``promote_models`` trained every candidate on the two-season
+    ``TemporalSplitConfig.default()``. The ATS candidate therefore faced its own incumbent from a
+    strictly worse configuration -- a handicap nobody chose. Deriving each window from the
+    incumbent's own metadata removes the asymmetry by construction.
+
+    Every failure branch RAISES with the offending path or key named. This function silently
+    underwrites every gate comparison the phase records, so an unresolvable window must be a stop,
+    never a guess: falling back to ``TemporalSplitConfig.default()`` is precisely the bug this
+    function exists to eliminate, and it would still print a confident 2x2.
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        artifacts_dir: The PRODUCTION artifacts dir holding ``latest.json`` and the version dirs.
+
+    Returns:
+        ``{"train": "2015,2016,...", "hp_val": "2020", "holdout": "2021,..."}`` -- the three
+        comma-joined season strings, ready to hand to ``models.train --config-*-seasons``.
+
+    Raises:
+        FileNotFoundError: If ``latest.json`` or the resolved ``{version}/metadata.json`` is
+            absent, naming the exact missing path.
+        KeyError: If the manifest has no pointer for the target, or the metadata has no
+            ``config`` block or is missing one of the season lists, naming the missing key.
+    """
+    manifest_path = artifacts_dir / "latest.json"
+    if not manifest_path.exists():
+        msg = (
+            f"Cannot derive the '{target}' selection window: production manifest not found at "
+            f"'{manifest_path}'. The window must be DERIVED from the deployed incumbent's own "
+            "metadata (D30-12), never typed and never defaulted. Inspect that path; on a fresh "
+            "checkout, bootstrap it per the clean-checkout step (RUNBOOK, Plan 25-05)."
+        )
+        raise FileNotFoundError(msg)
+
+    with manifest_path.open(encoding="utf-8") as handle:
+        versions = json.load(handle)
+
+    version = versions.get(target)
+    if version is None:
+        msg = (
+            f"Cannot derive the '{target}' selection window: manifest '{manifest_path}' has no "
+            f"'{target}' pointer (it holds {sorted(versions)}). The window must be DERIVED from "
+            "the deployed incumbent for THIS target; restore the pointer rather than supplying a "
+            "window by hand."
+        )
+        raise KeyError(msg)
+
+    metadata_path = artifacts_dir / version / "metadata.json"
+    if not metadata_path.exists():
+        msg = (
+            f"Cannot derive the '{target}' selection window: metadata.json not found at "
+            f"'{metadata_path}' (manifest points '{target}' at '{version}'). Do NOT delete the "
+            "deployed incumbent artifact dirs -- they are the paired baseline AND the rollback "
+            "target (D25-17). Restore that dir; the window is derived from it, not typed."
+        )
+        raise FileNotFoundError(msg)
+
+    with metadata_path.open(encoding="utf-8") as handle:
+        metadata = json.load(handle)
+
+    config = metadata.get("config")
+    if not config:
+        msg = (
+            f"Cannot derive the '{target}' selection window: '{metadata_path}' has no 'config' "
+            "block, so it cannot supply a window. Inspect that file. Inventing a window here "
+            "would reintroduce the D30-12 asymmetry the derivation exists to eliminate."
+        )
+        raise KeyError(msg)
+
+    window: dict[str, str] = {}
+    for metadata_key, flag_stem in _WINDOW_KEYS:
+        seasons = config.get(metadata_key)
+        if not seasons:
+            msg = (
+                f"Cannot derive the '{target}' selection window: '{metadata_path}' config block "
+                f"has no '{metadata_key}' season list. An empty window would reach models.train's "
+                "season parser and fail deep inside a subprocess instead of here. Inspect that "
+                "file; do not substitute a default."
+            )
+            raise KeyError(msg)
+        window[flag_stem] = ",".join(str(int(season)) for season in seasons)
+    return window
+
+
+def _build_train_argv(
+    target: str,
+    staging_dir: Path,
+    window: dict[str, str],
+    exclude_groups: list[str],
+) -> list[str]:
+    """Build the STEP 1 ``models.train`` argv for ONE target.
+
+    Pure and side-effect free so the argv contract is testable without spawning a subprocess.
+
+    Two properties are load-bearing:
+
+      * ``--no-tune`` is ABSENT. SPEC R5 requires the Stage-2 candidate to be trained WITH Optuna
+        tuning; the flag that STEP 1 carried through Phases 24-25 would silently downgrade every
+        candidate to a straight re-fit.
+      * the three ``--config-*-seasons`` values come from ``_incumbent_window``, which is why
+        STEP 1 must issue one subprocess PER TARGET: a single ``--target all`` invocation cannot
+        carry three different windows (D30-12).
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        staging_dir: The staging artifacts root -- never production (D24-08).
+        window: The derived window from ``_incumbent_window``.
+        exclude_groups: The resolved Stage-2 exclusion list (may be empty).
+
+    Returns:
+        The argv list for ``subprocess.run``.
+    """
+    return [
+        sys.executable,
+        "-m",
+        "models.train",
+        "--target",
+        target,
+        "--artifacts-dir",
+        str(staging_dir),
+        "--config-train-seasons",
+        window["train"],
+        "--config-hp-val-seasons",
+        window["hp_val"],
+        "--config-holdout-seasons",
+        window["holdout"],
+        "--exclude-groups",
+        ",".join(exclude_groups),
+    ]
 
 
 def _parse_version_timestamp(version_dir_name: str) -> datetime:
@@ -217,8 +427,19 @@ def _clear_staging_dir(staging_dir: Path) -> None:
     Called ONLY on the real (non --skip-train) path; --skip-train must keep the supplied
     staging dirs intact.
 
+    Removal failures are re-raised with the offending path NAMED (F8). ``shutil.rmtree`` raises
+    ``PermissionError`` on Windows whenever a file underneath is read-only or is held open -- a
+    live DuckDB/SQLite handle from an earlier run, or a file browser sitting in the directory.
+    This host is Windows 11, so it is a real failure mode, and an unhandled traceback here is the
+    worst available outcome: it lands BETWEEN clearing one staging dir and training the next,
+    leaving the staging tree half-cleared with no message saying what to close.
+
     Args:
         staging_dir: The staging artifacts root to clear (created if absent).
+
+    Raises:
+        RuntimeError: If a stale dir or the stale manifest cannot be removed, naming the exact
+            locked path and the two likely holders.
     """
     if not staging_dir.exists():
         staging_dir.mkdir(parents=True, exist_ok=True)
@@ -229,10 +450,37 @@ def _clear_staging_dir(staging_dir: Path) -> None:
     for target in _TARGETS:
         for stale in staging_dir.glob(f"{target}_*"):
             if stale.is_dir():
-                shutil.rmtree(stale)
+                try:
+                    shutil.rmtree(stale)
+                except OSError as exc:
+                    msg = _locked_path_message(stale, exc)
+                    raise RuntimeError(msg) from exc
     stale_manifest = staging_dir / "latest.json"
     if stale_manifest.exists():
-        stale_manifest.unlink()
+        try:
+            stale_manifest.unlink()
+        except OSError as exc:
+            msg = _locked_path_message(stale_manifest, exc)
+            raise RuntimeError(msg) from exc
+
+
+def _locked_path_message(path: Path, exc: OSError) -> str:
+    """Build the actionable message for a staging path that could not be removed.
+
+    Args:
+        path: The exact path whose removal failed.
+        exc: The underlying OSError (typically PermissionError / WinError 32).
+
+    Returns:
+        A runbook-style message naming the path, the underlying error and the remediation.
+    """
+    return (
+        f"Cannot clear the staging path '{path}': {type(exc).__name__}: {exc}. On Windows this "
+        "is almost always a HELD HANDLE or a read-only file. The two likely holders are (1) an "
+        "open DuckDB/SQLite connection left behind by an earlier run, and (2) a file browser or "
+        "editor sitting in that directory. Close the holder and re-run. Staging was NOT fully "
+        "cleared, so do not re-run with --skip-train -- a stale candidate could be scored."
+    )
 
 
 def _promote_artifact_dir(
@@ -458,8 +706,6 @@ def _production_versions(artifacts_dir: Path) -> dict[str, str]:
         FileNotFoundError: If ``latest.json`` itself is absent (a missing production manifest is
             the clean-checkout bootstrap gap; surface it with the bootstrap remedy).
     """
-    import json
-
     manifest = artifacts_dir / "latest.json"
     if not manifest.exists():
         msg = (
@@ -821,10 +1067,36 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Production artifacts dir: {args.artifacts_dir}")
     print(f"  Staging artifacts dir:    {args.staging_dir}")
     print(f"  Skip train (reuse staging): {args.skip_train}")
+
+    # The exclusion list is the single most consequential input to WHAT gets trained, and the
+    # per-target selection window is what each candidate is compared against. Both are printed
+    # here, with the exclusion's provenance, because checkpoint 4 reviews this output.
+    exclude_groups, exclusion_provenance = _resolve_exclude_groups(args)
+    print(
+        f"  Exclude groups: {exclude_groups or '(none)'} "
+        f"[provenance: {exclusion_provenance}]"
+    )
+
+    windows: dict[str, dict[str, str]] = {}
+    try:
+        for target in _TARGETS:
+            windows[target] = _incumbent_window(target, args.artifacts_dir)
+    except (FileNotFoundError, KeyError) as exc:
+        if not args.skip_train:
+            # A window that cannot be derived is a STOP, never a default (D30-12).
+            raise
+        # --skip-train trains nothing, so an underivable window is not fatal here; say so.
+        windows = {}
+        print(f"  Selection windows: UNAVAILABLE ({exc}) -- no train will run.")
+    for target, window in windows.items():
+        print(
+            f"  Selection window [{target}]: train={window['train']} "
+            f"hp_val={window['hp_val']} holdout={window['holdout']}"
+        )
     print("=" * 70)
 
-    # -- STEP 1: staging straight re-fit (no Optuna), into the staging dir only --
-    print("\n[Step 1/4] Staging re-fit (straight, no Optuna) -> staging dir...")
+    # -- STEP 1: staging TUNED re-fit (Optuna ON, SPEC R5), into the staging dir only --
+    print("\n[Step 1/4] Staging re-fit (TUNED, Optuna ON) -> staging dir...")
     if args.skip_train:
         print("  --skip-train set: reusing existing staging artifacts.")
         # WR-06: --skip-train scores whatever already exists with no freshness check; make the
@@ -833,20 +1105,19 @@ def main(argv: list[str] | None = None) -> int:
         _warn_skip_train_staleness(args.staging_dir, promote=args.promote)
     else:
         # Clear stale dirs first so newest-by-name resolution cannot pick a stale candidate.
+        # This stays OUTSIDE the per-target loop on purpose: its glob is per-target
+        # (``{target}_*``), so moving it inside would delete a sibling candidate that a
+        # previous iteration of this same run had just trained.
         _clear_staging_dir(args.staging_dir)
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "models.train",
-                "--target",
-                "all",
-                "--artifacts-dir",
-                str(args.staging_dir),
-                "--no-tune",
-            ],
-            check=True,
-        )
+        # One subprocess PER TARGET (D30-12). A single ``--target all`` invocation cannot carry
+        # three different per-target selection windows, and the untuned flag is gone so Optuna
+        # actually runs (SPEC R5).
+        for target in _TARGETS:
+            argv_train = _build_train_argv(
+                target, args.staging_dir, windows[target], exclude_groups
+            )
+            print(f"  Training {target.upper()} candidate: {' '.join(argv_train[2:])}")
+            subprocess.run(argv_train, check=True)
         print("  Staging re-fit complete.")
 
     # -- STEP 1b: write the STAGING manifest + deterministic staged_version resolution --
