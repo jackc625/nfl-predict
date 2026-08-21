@@ -25,6 +25,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import shutil
@@ -89,6 +90,11 @@ def _write_artifacts_tree(
                 json.dumps(payload), encoding="utf-8"
             )
     return root
+
+
+def _sha256(path: Path) -> str:
+    """Return the sha256 of a file (byte-identity, not just size+mtime)."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _good_metadata(train: list[int]) -> dict[str, Any]:
@@ -610,15 +616,23 @@ def _prefill_study(storage_dir: Path, study_name: str, n_trials: int) -> None:
     study.optimize(lambda trial: trial.suggest_float("x", 0.0, 1.0), n_trials=n_trials)
 
 
+def _training_frame(n_rows: int = 60) -> tuple[pd.DataFrame, pd.Series]:
+    """A frame large enough for make_temporal_cv_splits; the objective is never invoked."""
+    return (
+        pd.DataFrame({"f1": np.arange(n_rows, dtype=float)}),
+        pd.Series(np.arange(n_rows) % 2),
+    )
+
+
 def test_zero_new_trials_raises_with_the_remediation_named(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A study already at the trial budget makes ``tune_hyperparameters`` RAISE.
+    """For an OPTED-IN trainer, a study already at budget makes tune_hyperparameters RAISE.
 
     Without this guard a resumed full study returns the STORED (v2.0) best parameters while
     ``TuningResult.n_trials`` reports the full count -- a "tuned" Phase-30 candidate that was
     never tuned (T-30-02). Remediation if this goes red: restore the
-    ``result.n_trials - trials_before <= 0`` RuntimeError in tune_hyperparameters.
+    ``require_fresh_search and trials_added <= 0`` RuntimeError in tune_hyperparameters.
     """
     n_trials = 3
     monkeypatch.setattr(base_trainer, "TUNING_STORAGE_DIR", tmp_path / "optuna")
@@ -626,9 +640,8 @@ def test_zero_new_trials_raises_with_the_remediation_named(
     _prefill_study(tmp_path / "optuna", study_name, n_trials)
 
     trainer = _DummyTrainer()
-    n_rows = 60
-    X_train = pd.DataFrame({"f1": np.arange(n_rows, dtype=float)})
-    y_train = pd.Series(np.arange(n_rows) % 2)
+    trainer.use_phase30_tuning()
+    X_train, y_train = _training_frame()
 
     with pytest.raises(RuntimeError) as excinfo:
         trainer.tune_hyperparameters(X_train, y_train, n_trials=n_trials)
@@ -640,6 +653,84 @@ def test_zero_new_trials_raises_with_the_remediation_named(
     assert "TUNING_STUDY_TAG" in message, (
         f"The zero-new-trials RuntimeError does not name the remediation "
         f"(bump TUNING_STUDY_TAG): {message!r}."
+    )
+
+
+def test_use_phase30_tuning_switches_identity_storage_and_guard() -> None:
+    """The opt-in flips all three: study tag, storage dir, and the freshness requirement.
+
+    Remediation if this goes red: a partial opt-in is the worst outcome -- e.g. the fresh
+    identity WITHOUT the guard silently changes what is searched while still allowing a
+    vacuous resume later.
+    """
+    trainer = _DummyTrainer()
+    assert trainer.tuning_study_tag == base_trainer.LEGACY_TUNING_STUDY_TAG
+    assert trainer.tuning_storage_dir == base_trainer.LEGACY_TUNING_STORAGE_DIR
+    assert trainer.require_fresh_search is False
+
+    trainer.use_phase30_tuning()
+
+    assert trainer.tuning_study_tag == TUNING_STUDY_TAG, (
+        "use_phase30_tuning did not switch the study tag."
+    )
+    assert trainer.tuning_storage_dir == TUNING_STORAGE_DIR, (
+        "use_phase30_tuning did not switch the storage dir; the Stage-2 search would write "
+        "under data/optuna."
+    )
+    assert trainer.require_fresh_search is True, (
+        "use_phase30_tuning did not arm the freshness guard; a vacuous resume would pass."
+    )
+
+
+def test_non_opted_in_trainer_keeps_the_legacy_identity_and_does_not_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trainer that did NOT opt in resumes its legacy study and does NOT raise.
+
+    This is the SCOPING INVARIANT. ``backtest.engine.run_backtest`` (engine.py:339) trains
+    with tune=True as a diagnostic, and the frozen v2.1 AUDIT-REPORT anchors in
+    tests/integration/test_diag_diagnosis.py were measured with it resuming the v2.0 study at
+    budget. Arming the guard globally makes that path raise on every repeat run, and handing
+    it a fresh study makes it search real trials, land on different parameters and drift those
+    anchors -- both verified empirically during Plan 30-01. Remediation if this goes red: do
+    NOT make the Phase-30 identity the default; keep the opt-in at models.train.train_target.
+    """
+    legacy_dir = tmp_path / "legacy_optuna"
+    monkeypatch.setattr(base_trainer, "LEGACY_TUNING_STORAGE_DIR", legacy_dir)
+
+    trainer = _DummyTrainer()
+    # Re-point the instance the way __init__ would have on a fresh construction.
+    trainer.tuning_storage_dir = legacy_dir
+    n_trials = 3
+    _prefill_study(legacy_dir, f"wp_tuning_{trainer.tuning_study_tag}", n_trials)
+
+    X_train, y_train = _training_frame()
+    # Must NOT raise: this is the backtest/retrain contract, unchanged from before Phase 30.
+    best_params = trainer.tune_hyperparameters(X_train, y_train, n_trials=n_trials)
+
+    assert "x" in best_params, (
+        f"The legacy resume path returned {best_params!r}; it must still return the stored "
+        "best parameters rather than raising (pre-Phase-30 behaviour, byte-for-byte)."
+    )
+    assert trainer.tuning_study_tag == base_trainer.LEGACY_TUNING_STUDY_TAG, (
+        "A non-opted-in trainer must keep the legacy study identity."
+    )
+
+
+def test_train_target_opts_the_tuned_path_in() -> None:
+    """``models.train.train_target`` arms the Phase-30 tuning on its tuned path.
+
+    That call site IS the Stage-2 candidate train (promote STEP 1 shells out to
+    ``python -m models.train``), so if the opt-in is dropped the Stage-2 search silently
+    reverts to resuming the v2.0 study -- the exact T-30-02 failure. Remediation if this goes
+    red: restore ``trainer.use_phase30_tuning()`` under ``if tune:`` in train_target.
+    """
+    import models.train as train_mod
+
+    source = inspect.getsource(train_mod.train_target)
+    assert "use_phase30_tuning()" in source, (
+        "models.train.train_target no longer opts into the Phase-30 tuning identity; the "
+        "Stage-2 candidate would resume the v2.0 study and never actually search."
     )
 
 
@@ -669,6 +760,47 @@ def test_existing_trial_count_reads_a_prefilled_study(tmp_path: Path) -> None:
     )
     assert _existing_trial_count(tuner) == 2, (
         f"_existing_trial_count returned {_existing_trial_count(tuner)}, expected 2."
+    )
+
+
+def test_v2_study_files_are_byte_untouched_across_a_stage2_tuned_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real opted-in tuned search leaves ``data/optuna/*_tuning_v1.db`` byte-unchanged.
+
+    The Plan 30-01 prohibition is 'MUST NOT write under data/ outside the one sanctioned
+    fingerprinted rebuild', and the prohibition's own before/after hash manifest reads through
+    ``load_dataframe`` -- it would NOT have noticed a ``data/optuna/`` write. This runs an
+    ACTUAL search (small budget) with the Phase-30 storage redirected into tmp_path and
+    compares size + mtime + sha256 of each v2.0 study file. Remediation if this goes red: the
+    tuner is falling back to its ``data/optuna`` default; pass storage_dir explicitly.
+    """
+    v2_dir = REPO_ROOT / "data" / "optuna"
+    v2_dbs = sorted(v2_dir.glob("*_tuning_v1.db"))
+    if not v2_dbs:
+        pytest.skip(f"No v2.0 study files under {v2_dir} to guard")
+
+    before = {
+        db: (db.stat().st_size, db.stat().st_mtime_ns, _sha256(db)) for db in v2_dbs
+    }
+
+    monkeypatch.setattr(base_trainer, "TUNING_STORAGE_DIR", tmp_path / "optuna")
+    trainer = _DummyTrainer()
+    trainer.use_phase30_tuning()
+    X_train, y_train = _training_frame()
+    trainer.tune_hyperparameters(X_train, y_train, n_trials=2)
+
+    for db, (size, mtime, digest) in before.items():
+        now = db.stat()
+        assert (now.st_size, now.st_mtime_ns, _sha256(db)) == (size, mtime, digest), (
+            f"{db} changed across a Stage-2 tuned search. The v2.0 studies are the "
+            "historical record; the Phase-30 search must write only under "
+            "TUNING_STORAGE_DIR (outside data/)."
+        )
+
+    assert (tmp_path / "optuna").exists(), (
+        "The Phase-30 search wrote nothing under the redirected storage dir, so this test "
+        "did not actually exercise a search."
     )
 
 

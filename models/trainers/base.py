@@ -32,8 +32,31 @@ from models.tuning import OptunaTuner, TuningResult
 from utils import get_logger
 
 # ---------------------------------------------------------------------------
-# Phase-30 Optuna study identity + storage (Plan 30-01, T-30-02 / T-30-14)
+# Optuna study identity + storage (Plan 30-01, T-30-02 / T-30-14)
 # ---------------------------------------------------------------------------
+#
+# There are TWO identities here on purpose, and which one a trainer uses is an EXPLICIT
+# opt-in, never a global default. The Phase-30 identity changes what a tuned train actually
+# searches, and this method is shared by callers with very different contracts:
+#
+#   * ``models.train`` (the Stage-2 candidate train that scripts/promote_models invokes) MUST
+#     genuinely search -- SPEC R5. It opts in via ``use_phase30_tuning()``.
+#   * ``backtest.engine.run_backtest`` (engine.py:339) trains with tune=True as a DIAGNOSTIC,
+#     and the frozen v2.1 AUDIT-REPORT anchors in tests/integration/test_diag_diagnosis.py were
+#     measured with it resuming the v2.0 study. Handing it a fresh study makes it search real
+#     trials, land on different parameters, and drift those anchors -- verified empirically,
+#     twice, during Plan 30-01. It therefore keeps the LEGACY identity, byte-for-byte.
+#   * ``scripts.retrain_models`` likewise keeps the legacy identity.
+#
+# The legacy path's resume-at-budget IS a genuine latent issue (those "tuned" runs have been
+# returning stored v2.0 parameters since March), but it is PRE-EXISTING and out of this plan's
+# scope: silently changing what the backtest trains with inside a plumbing tracer is exactly
+# the uninstructed side effect this phase is careful about. It is recorded for a later phase.
+
+# The v2.0 identity every pre-Phase-30 caller keeps. Reusing it is what makes a search vacuous
+# (those studies are already at budget), which is precisely why the Stage-2 path must not.
+LEGACY_TUNING_STUDY_TAG: str = "v1"
+LEGACY_TUNING_STORAGE_DIR: Path = Path("data/optuna")
 
 # The per-PHASE study-identity tag. It exists because OptunaTuner.optimize computes remaining
 # trials as ``max(0, n_trials - len(study.trials))`` under ``load_if_exists=True``: resuming a
@@ -46,12 +69,12 @@ from utils import get_logger
 # identity guarantees a vacuous search. Nothing in this phase deletes them either.
 TUNING_STUDY_TAG: str = "p30"
 
-# Where the SQLite study files live. OptunaTuner defaults storage_dir to ``data/optuna``, which
-# collides with this phase's own prohibition on writing under ``data/`` outside the one
-# sanctioned fingerprinted rebuild -- and the prohibition's before/after hash manifest reads
-# through ``load_dataframe``, so it would NOT have caught an ``data/optuna/`` write.
-# ``outputs/`` is gitignored and is the right home. What this constant is NOT allowed to be is
-# any path under ``data/``; tests/unit/test_promote_models_tuned_path.py asserts that directly.
+# Where the Phase-30 SQLite study files live. OptunaTuner defaults storage_dir to
+# ``data/optuna``, which collides with this phase's own prohibition on writing under ``data/``
+# outside the one sanctioned fingerprinted rebuild -- and the prohibition's before/after hash
+# manifest reads through ``load_dataframe``, so it would NOT have caught a ``data/optuna/``
+# write. ``outputs/`` is gitignored and is the right home. What this constant is NOT allowed to
+# be is any path under ``data/``; tests/unit/test_promote_models_tuned_path.py asserts that.
 TUNING_STORAGE_DIR: Path = Path("outputs/optuna")
 
 
@@ -123,6 +146,28 @@ class BaseTrainer(ABC):
         self.feature_names: list[str] = []
         self.metadata: dict[str, Any] = {}
         self._tuning_result: TuningResult | None = None
+
+        # Tuning identity defaults to LEGACY so every pre-Phase-30 caller (backtest.engine,
+        # scripts.retrain_models) is byte-identical to its prior behaviour. The Stage-2 train
+        # opts in explicitly via use_phase30_tuning().
+        self.tuning_study_tag: str = LEGACY_TUNING_STUDY_TAG
+        self.tuning_storage_dir: Path = LEGACY_TUNING_STORAGE_DIR
+        self.require_fresh_search: bool = False
+
+    def use_phase30_tuning(self) -> None:
+        """Opt this trainer into the Phase-30 study identity, storage and freshness guard.
+
+        Called by ``models.train.train_target`` on the tuned path -- the Stage-2 candidate
+        train that ``scripts/promote_models`` STEP 1 invokes. After this call the trainer
+        searches a FRESH per-phase study under a non-``data/`` storage dir, and a search that
+        adds zero trials is a hard failure rather than a silent return of stored parameters.
+
+        Deliberately NOT the default: see the module-level note above. Making it the default
+        would change what ``backtest.engine`` trains with and drift the frozen v2.1 anchors.
+        """
+        self.tuning_study_tag = TUNING_STUDY_TAG
+        self.tuning_storage_dir = TUNING_STORAGE_DIR
+        self.require_fresh_search = True
 
     # ------------------------------------------------------------------
     # Abstract methods -- subclasses must implement
@@ -325,15 +370,16 @@ class BaseTrainer(ABC):
         # in sklearn convention, but we want to minimize the raw metric
         direction = "minimize"
 
-        # Phase-scoped study identity + non-data/ storage (T-30-02 / T-30-14). Reusing the v2.0
-        # ``{target}_tuning_v1`` identity would resume a study already at budget and run zero
-        # trials; omitting storage_dir would let the tuner default to ``data/optuna``.
-        study_name = f"{self.target}_tuning_{TUNING_STUDY_TAG}"
+        # Study identity + storage come from INSTANCE state, so the Stage-2 opt-in
+        # (use_phase30_tuning) can require a genuinely fresh search without changing what any
+        # other caller trains with (T-30-02 / T-30-14). storage_dir is passed explicitly --
+        # omitting it lets OptunaTuner default to ``data/optuna`` regardless of this tag.
+        study_name = f"{self.target}_tuning_{self.tuning_study_tag}"
 
         tuner = OptunaTuner(
             study_name=study_name,
             direction=direction,
-            storage_dir=TUNING_STORAGE_DIR,
+            storage_dir=self.tuning_storage_dir,
             n_trials=n_trials,
         )
 
@@ -347,7 +393,7 @@ class BaseTrainer(ABC):
         # parameters while reporting a full trial count, so without this assertion an untuned
         # candidate is indistinguishable from a tuned one in every downstream artifact.
         trials_added = result.n_trials - trials_before
-        if trials_added <= 0:
+        if self.require_fresh_search and trials_added <= 0:
             msg = (
                 f"Optuna study '{study_name}' added ZERO new trials "
                 f"(stored before={trials_before}, after={result.n_trials}, budget={n_trials}). "
@@ -372,7 +418,7 @@ class BaseTrainer(ABC):
             n_trials=result.n_trials,
             trials_added=trials_added,
             study_name=study_name,
-            storage_dir=str(TUNING_STORAGE_DIR),
+            storage_dir=str(self.tuning_storage_dir),
             top_importances=dict(list(result.param_importances.items())[:5]),
         )
 

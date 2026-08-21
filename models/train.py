@@ -294,6 +294,16 @@ def train_target(
     trainer_class = trainers[target]
     trainer = trainer_class(config=config)
 
+    if tune:
+        # SPEC R5 / T-30-02: this entry point IS the Stage-2 candidate train that
+        # scripts/promote_models STEP 1 invokes, so a tuned run here must genuinely search --
+        # a fresh per-phase study identity, storage outside data/, and a hard failure if zero
+        # new trials ran. The opt-in is explicit and scoped to this call site on purpose:
+        # backtest.engine.run_backtest also trains with tune=True, and giving IT a fresh study
+        # changes the parameters it lands on and drifts the frozen v2.1 AUDIT-REPORT anchors
+        # (verified empirically during Plan 30-01). Those callers keep the legacy identity.
+        trainer.use_phase30_tuning()
+
     logger.info("Starting training", target=target)
 
     # Train and evaluate
