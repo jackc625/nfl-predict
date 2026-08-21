@@ -161,6 +161,7 @@ extend-immutable-calls = ["fastapi.Depends"]
 "models/train.py" = ["T201"]  # CLI entry point prints summary tables to stdout
 "backtest/run.py" = ["T201"]  # CLI entry point prints backtest summary to stdout
 "backtest/tune.py" = ["T201"]  # CLI entry point prints tuning summary to stdout
+"backtest/group_gate.py" = ["T201"]  # CLI entry point prints the Stage-1 9-cell grid to stdout
 "scripts/generate_current_week_predictions.py" = ["BLE001"]  # Operations script
 "scripts/ingest_*.py" = ["BLE001"]  # Ingestion scripts, fix incrementally
 "scripts/load_venues.py" = ["BLE001"]  # Utility script
