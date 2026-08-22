@@ -126,7 +126,9 @@ def fingerprint_matrix(df: pd.DataFrame) -> dict:
             str(season): int((df["season"] == season).sum()) for season in seasons
         },
         "columns": columns,
-        "column_meta": {column: _column_meta(df[column]) for column in df.columns},
+        "column_meta": {
+            str(column): _column_meta(series) for column, series in df.items()
+        },
     }
 
 
@@ -274,7 +276,8 @@ def _line_movement_columns(column_names) -> list[str]:
     """
     from backtest.signal_lift import group_columns
 
-    return group_columns(pd.DataFrame(columns=list(column_names)), "line_movement")
+    frame = pd.DataFrame(columns=pd.Index(list(column_names)))
+    return group_columns(frame, "line_movement")
 
 
 def _expected_signature(rung: int, before: dict | None = None) -> dict:

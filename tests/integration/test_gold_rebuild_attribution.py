@@ -76,7 +76,8 @@ def _pre_drop_columns() -> list[str]:
 
 def _line_movement_family() -> list[str]:
     """Derive the line_movement family from the ONE registry against the pre-drop fixture."""
-    return group_columns(pd.DataFrame(columns=_pre_drop_columns()), "line_movement")
+    frame = pd.DataFrame(columns=pd.Index(_pre_drop_columns()))
+    return group_columns(frame, "line_movement")
 
 
 def _before_document() -> dict:
