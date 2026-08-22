@@ -36,7 +36,9 @@ SPEC R2 asserts.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -84,6 +86,25 @@ def _stack(*blocks: pd.DataFrame) -> pd.DataFrame:
 def _self_fit_seasons(builder: FeatureMatrixBuilder) -> list[int]:
     """The distinct seasons recorded in the builder's machine-readable self-fit log."""
     return sorted({s for seasons in builder.self_fit_seasons.values() for s in seasons})
+
+
+def _method_calls(method, receiver: str, attr: str) -> list[str]:
+    """Return every ``{receiver}[...].{attr}(...)`` call parsed out of *method*.
+
+    Structural, never textual: a guard that greps a method's own source matches the
+    docstring in which that method explains what it removed.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
+    return [
+        ast.unparse(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == attr
+        and isinstance(node.func.value, ast.Subscript)
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == receiver
+    ]
 
 
 def _real_gold_seasons() -> list[int]:
@@ -523,18 +544,39 @@ class TestImputeTeamFeaturesFallbacks:
         The behavioural tests prove the observable outcome; this one names the exact
         expression that used to sit at lines 798 and 817, so a re-introduction is
         caught even in a shape whose effect a future frame happens to hide.
-        """
-        source = inspect.getsource(FeatureMatrixBuilder._impute_team_features)
 
-        assert "df[col].median()" not in source, (
+        It asserts on STRUCTURE (the parsed call), never on the source text. A
+        textual guard here matches the method's own docstring, which necessarily
+        quotes the expression it removed -- the self-referential guard hazard Plan
+        30-04 hit and recorded.
+        """
+        assert not _method_calls(
+            FeatureMatrixBuilder._impute_team_features, "df", "median"
+        ), (
             "_impute_team_features computes a median over the WHOLE frame again -- "
             "that is the third WR-06 surface (T-30-28)"
         )
 
     def test_the_within_season_means_are_deliberately_retained(self) -> None:
         """D30-16 accepts the within-season residual; removing it silently would be a
-        larger behavioural change than the phase authorises in this file."""
-        source = inspect.getsource(FeatureMatrixBuilder._impute_team_features)
+        larger behavioural change than the phase authorises in this file.
 
-        assert "team_values.mean()" in source
-        assert "season_data[col].mean()" in source
+        Structural for the same reason as the guard above, and additionally because
+        this is a PRESENCE assertion: a textual form would pass vacuously the moment
+        the expression survived only in a comment.
+        """
+        source = inspect.getsource(FeatureMatrixBuilder._impute_team_features)
+        tree = ast.parse(textwrap.dedent(source))
+
+        means = {
+            ast.unparse(node.func)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "mean"
+        }
+
+        assert "team_values.mean" in means, "the within-season TEAM mean was removed"
+        assert "season_data[col].mean" in means, (
+            "the within-season SEASON mean was removed"
+        )

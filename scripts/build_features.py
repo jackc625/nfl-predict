@@ -86,6 +86,13 @@ class FeatureMatrixBuilder:
     into complete feature matrices ready for model training.
     """
 
+    # WR-06: the minimum number of non-null values a FIT SOURCE must hold before it
+    # can support an imputation median or a winsorization bound. The threshold is
+    # preserved verbatim from the pre-WR-06 shape (``notna().sum() > 10``); what
+    # moved is WHAT it is applied to -- the strictly-prior slice the statistic is
+    # actually estimated from, rather than the whole multi-season column.
+    _MIN_FIT_POINTS = 10
+
     def __init__(self):
         """Initialize feature matrix builder."""
         self.logger = get_logger(__name__)
@@ -121,6 +128,16 @@ class FeatureMatrixBuilder:
         # Feature processing parameters
         self.outlier_percentiles = (1, 99)  # Winsorization bounds
         self.min_games_for_stats = 10  # Minimum games for normalization
+
+        # WR-06: the machine-readable self-fit flag. Maps a column name to the
+        # seasons whose imputation median / winsorization bounds were fitted on
+        # their OWN rows because no usable strictly-prior slice existed. Reset at
+        # the start of every ``handle_missing_data_and_outliers`` call and logged at
+        # its end, so the flag is observable in a build log AND assertable by a
+        # test. A self-fit outside the earliest data-bearing season is a per-column
+        # coverage floor -- a fact worth surfacing, which a log line alone would
+        # never make checkable.
+        self.self_fit_seasons: dict[str, list[int]] = {}
 
     def load_all_feature_sources(
         self,
@@ -618,6 +635,29 @@ class FeatureMatrixBuilder:
         """
         Handle missing data and outliers with winsorization.
 
+        WR-06: every distributional statistic below is fitted on the seasons
+        STRICTLY BEFORE the season it is applied to. Before this, the imputation
+        median and the q01/q99 bounds were computed over the whole multi-season
+        frame, so season 2025 could move a 2021 feature value -- the temporal
+        boundary this phase turns on, and the reason SPEC R2's byte-identity
+        control exists.
+
+        DELIBERATE DIVERGENCE FROM THE HOUSE PRECEDENT. ``features.normalization.
+        compute_prior_season_stats`` fits on season Y-1 ONLY; this fits on ALL
+        seasons before Y. Both are point-in-time; they differ in sample size, and
+        D30-16's own rationale asks for a full-season-or-more sample so
+        winsorization stays stable -- a q01/q99 estimate from roughly 285 games is
+        materially noisier than one from thousands. The two also run at different
+        stages on different statistics (mean and standard deviation for a z-score
+        bootstrap, versus median and quantiles for imputation and clipping), so
+        they are NOT required to agree. Do not "fix" one to match the other.
+
+        ACCEPTED RESIDUAL, documented rather than left unstated: within-season
+        lookahead remains. A self-fitting season's week-1 bound still sees that
+        season's week 18, and ``_impute_team_features``' team mean and season mean
+        are still within-season. D30-16 accepts both, and neither can be moved by
+        adding a LATER season's rows -- which is exactly what SPEC R2 asserts.
+
         Args:
             features_df: Feature matrix
             target_columns: Columns to exclude from processing
@@ -656,6 +696,14 @@ class FeatureMatrixBuilder:
         missing_stats = {}
         outlier_stats = {}
 
+        # WR-06: the per-season passes, computed ONCE. ``season`` sits in the
+        # target-column exclusion list above, which removes it from ``numeric_cols``
+        # but leaves the column in the frame -- so a per-season pass can group on it
+        # directly. Each entry is (season, season_mask, strictly_prior_mask).
+        self.self_fit_seasons = {}
+        season_passes = self._season_passes(processed_df)
+        earliest_season = season_passes[0][0] if season_passes else None
+
         # WR-10: the line-movement family must NEVER be median-imputed. Its neutral
         # state is a defined thing -- LEAGUE_AVERAGE_TOTAL for the opening anchors,
         # 0.0 for the drift/path families and 0.0 for the coverage flag -- and the
@@ -679,9 +727,13 @@ class FeatureMatrixBuilder:
                 elif any(prefix in col for prefix in ["home_", "away_"]):
                     processed_df[col] = self._impute_team_features(processed_df, col)
                 else:
-                    # For game-level features, use overall median
-                    median_value = processed_df[col].median()
-                    processed_df[col] = processed_df[col].fillna(median_value)
+                    # WR-06 surface 1: for game-level features this was
+                    # ``processed_df[col].median()`` over the WHOLE frame, so a 2002
+                    # gap was filled from a statistic that saw 2025. It is now a
+                    # per-season, strictly-prior median.
+                    processed_df[col] = self._impute_game_level_features(
+                        processed_df, col, season_passes, earliest_season
+                    )
 
                 missing_stats[col] = original_missing
 
@@ -717,28 +769,60 @@ class FeatureMatrixBuilder:
             # and path families) are NOT exempted -- they are genuine continuous
             # measurements with genuine outliers, and the published readout's
             # argument about what the model saw rests on their winsorization bound.
+            #
+            # WR-06 note on WHERE this test sits. It is evaluated ONCE per column,
+            # over the whole frame, OUTSIDE the per-season loop below. That is a
+            # correctness requirement, not tidiness: a column that is {0, 1} overall
+            # is discrete and a per-season evaluation would still classify it
+            # correctly, but a column that is continuous overall yet happens to be
+            # constant at one of -1 / 0 / 1 within a single season would be
+            # misclassified as an indicator for that season and would silently
+            # escape winsorization there (T-30-29). It is evaluated AFTER the
+            # missing-handling above, exactly as it was before this rewrite, so the
+            # predicate still sees the already-imputed column its docstring names.
             if self._is_discrete_indicator(processed_df[col]):
                 continue
 
-            # Handle outliers with winsorization
-            if processed_df[col].notna().sum() > 10:  # Need minimum data points
-                lower_bound = processed_df[col].quantile(
-                    self.outlier_percentiles[0] / 100
-                )
-                upper_bound = processed_df[col].quantile(
-                    self.outlier_percentiles[1] / 100
+            # Handle outliers with winsorization, per season, on strictly-prior
+            # bounds (WR-06 surface 2). The pre-WR-06 shape computed one q01/q99 pair
+            # from the whole frame and clipped every row against it.
+            outliers_count = 0
+            for season, season_mask, prior_mask in season_passes:
+                fit_source, self_fit = self._season_fit_source(
+                    self._column(processed_df, col),
+                    season,
+                    season_mask,
+                    prior_mask,
+                    earliest_season,
                 )
 
-                outliers_count = (
-                    (processed_df[col] < lower_bound)
-                    | (processed_df[col] > upper_bound)
-                ).sum()
+                # The pre-WR-06 minimum-data-points condition, now applied to the fit
+                # source rather than to the whole column.
+                if fit_source.notna().sum() <= self._MIN_FIT_POINTS:
+                    continue
 
-                if outliers_count > 0:
-                    processed_df[col] = processed_df[col].clip(
+                lower_bound = fit_source.quantile(self.outlier_percentiles[0] / 100)
+                upper_bound = fit_source.quantile(self.outlier_percentiles[1] / 100)
+                if pd.isna(lower_bound) or pd.isna(upper_bound):
+                    continue
+
+                if self_fit:
+                    self._record_self_fit(col, season)
+
+                season_values = processed_df.loc[season_mask, col]
+                season_outliers = int(
+                    (
+                        (season_values < lower_bound) | (season_values > upper_bound)
+                    ).sum()
+                )
+                if season_outliers > 0:
+                    processed_df.loc[season_mask, col] = season_values.clip(
                         lower=lower_bound, upper=upper_bound
                     )
-                    outlier_stats[col] = outliers_count
+                    outliers_count += season_outliers
+
+            if outliers_count > 0:
+                outlier_stats[col] = outliers_count
 
         logger.info(
             "Completed missing data and outlier handling",
@@ -748,9 +832,128 @@ class FeatureMatrixBuilder:
                 1 for c in numeric_cols if self._is_discrete_indicator(processed_df[c])
             ),
             total_features_processed=len(numeric_cols),
+            # WR-06: the self-fit flag, made observable in a build log. A season
+            # other than the earliest appearing here is a per-column coverage floor
+            # -- the column's upstream source simply starts later -- and is a finding
+            # worth reading, not an error.
+            self_fit_columns=len(self.self_fit_seasons),
+            self_fit_seasons=sorted(
+                {
+                    season
+                    for seasons in self.self_fit_seasons.values()
+                    for season in seasons
+                }
+            ),
         )
 
         return processed_df
+
+    # ------------------------------------------------------------------
+    # WR-06 helpers: prior-seasons-only fitting
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _column(df: pd.DataFrame, col: str) -> pd.Series:
+        """Return ``df[col]`` narrowed to a Series.
+
+        pandas types ``df[col]`` as ``Series | DataFrame`` because a DUPLICATED
+        column label yields a frame. The gold matrices carry no duplicate labels, so
+        the frame arm is unreachable here; stating that once beats repeating a cast
+        at every call site, and it keeps the WR-06 helpers honestly typed.
+        """
+        values = df[col]
+        if isinstance(values, pd.DataFrame):
+            values = values.iloc[:, 0]
+        return values
+
+    @staticmethod
+    def _season_passes(df: pd.DataFrame) -> list[tuple]:
+        """Return ``[(season, season_mask, strictly_prior_mask), ...]`` ascending.
+
+        Computed once per call and reused across every column, because the masks are
+        the expensive part of a per-season pass over two hundred columns.
+
+        A frame with no ``season`` column is never the production path -- the column
+        is carried through ``combine_features`` and is required by
+        ``_impute_team_features`` -- but some unit frames omit it. Such a frame
+        degrades to ONE self-fitting pass over the whole frame, i.e. to the
+        pre-WR-06 whole-frame behaviour, rather than to no processing at all.
+        """
+        if "season" not in df.columns:
+            everything = pd.Series(True, index=df.index)
+            return [(None, everything, pd.Series(False, index=df.index))]
+
+        seasons = sorted(df["season"].dropna().unique())
+        return [
+            (season, df["season"] == season, df["season"] < season)
+            for season in seasons
+        ]
+
+    def _record_self_fit(self, col: str, season) -> None:
+        """Record that *col*'s statistic for *season* was fitted on its own rows."""
+        if season is None:
+            return
+        seasons = self.self_fit_seasons.setdefault(col, [])
+        if int(season) not in seasons:
+            seasons.append(int(season))
+
+    def _season_fit_source(
+        self,
+        values: pd.Series,
+        season,
+        season_mask: pd.Series,
+        prior_mask: pd.Series,
+        earliest_season,
+    ) -> tuple[pd.Series, bool]:
+        """Return ``(fit_source, self_fit)`` for *season*.
+
+        The fit source is the strictly-prior slice. The earliest data-bearing season
+        has none, and a column whose upstream source starts mid-history has an EMPTY
+        prior slice in its first populated season -- a naive prior-only rewrite would
+        hand both of them NaN bounds or raise (T-30-55). Both cases fall back to the
+        season's own rows under the SAME documented flag, so a per-column coverage
+        floor is handled by the general rule rather than by a per-family exception.
+        """
+        if season != earliest_season:
+            prior = values.loc[prior_mask]
+            if prior.notna().sum() > self._MIN_FIT_POINTS:
+                return prior, False
+        return values.loc[season_mask], True
+
+    def _impute_game_level_features(
+        self,
+        df: pd.DataFrame,
+        col: str,
+        season_passes: list[tuple],
+        earliest_season,
+    ) -> pd.Series:
+        """Fill a game-level column's gaps with a prior-seasons-only median (WR-06).
+
+        Replaces ``df[col].fillna(df[col].median())``, whose median saw every future
+        season. A season with no usable fit source at all keeps its NaNs rather than
+        borrowing a value from the future: that is the deliberate consequence of the
+        fix, not an oversight, and downstream ``expanding_normalize`` already maps an
+        un-normalizable position to the neutral 0.0 z-score.
+        """
+        result = self._column(df, col).copy()
+
+        for season, season_mask, prior_mask in season_passes:
+            season_values = result.loc[season_mask]
+            if not season_values.isna().any():
+                continue
+
+            fit_source, self_fit = self._season_fit_source(
+                result, season, season_mask, prior_mask, earliest_season
+            )
+            median_value = float(fit_source.median())
+            if np.isnan(median_value):
+                continue
+
+            if self_fit:
+                self._record_self_fit(col, season)
+            result.loc[season_mask] = season_values.fillna(median_value)
+
+        return result
 
     @staticmethod
     def _is_discrete_indicator(series: pd.Series) -> bool:
@@ -788,23 +991,51 @@ class FeatureMatrixBuilder:
         works on ``col`` itself and only needs to know WHICH team column to group
         by. The dead lines are gone rather than "fixed", because there was no bug
         to fix, only a false suggestion that a base name was in play.
+
+        WR-06 SURFACE 3, named by neither the SPEC nor CONTEXT (T-30-28). Both
+        last-resort fallbacks below used to be ``df[col].median()`` over the WHOLE
+        frame, and this is the branch every ``home_*`` / ``away_*`` column takes --
+        the large majority of features. Any 2021-2024 row reaching either of them
+        WOULD move when the N-01 re-sync adds 2025 rows, failing SPEC R2's
+        byte-identity control for a cause unrelated to the two surfaces D30-16
+        names. Both now fit on the strictly-prior seasons.
+
+        The two WITHIN-SEASON statistics -- the team mean and the season mean -- are
+        DELIBERATELY left exactly as they are. Neither can be moved by adding a
+        later season's rows, so neither threatens SPEC R2, and converting them would
+        be a larger behavioural change than D30-16 authorises in the
+        highest-blast-radius file in this phase.
         """
+        season_passes = self._season_passes(df)
+        earliest_season = season_passes[0][0] if season_passes else None
+
         if col.startswith("home_"):
             team_col = "home_team"
         elif col.startswith("away_"):
             team_col = "away_team"
         else:
-            # Not a team feature, use median
-            return df[col].fillna(df[col].median())
+            # Not a team feature. The dispatch in handle_missing_data_and_outliers
+            # routes on ``"home_" in col`` while this method routes on
+            # ``col.startswith("home_")``, so a column carrying the substring
+            # anywhere but the front lands here. WR-06 surface 3, first site.
+            return self._impute_game_level_features(
+                df, col, season_passes, earliest_season
+            )
 
-        result = df[col].copy()
+        result = self._column(df, col).copy()
 
         # For each team with missing data, use their season average
-        for season in df["season"].unique():
-            season_data = df[df["season"] == season]
+        for season, season_mask, prior_mask in season_passes:
+            season_data = df.loc[season_mask]
+            # Computed LAZILY, and only when the two within-season statistics have
+            # both come back NaN: computing it eagerly would record a self-fit for
+            # every season of a late-arriving column, whose prior slices are empty
+            # but whose fallback is never actually reached.
+            prior_median = None
+            prior_median_computed = False
 
             for team in season_data[team_col].unique():
-                team_mask = (df["season"] == season) & (df[team_col] == team)
+                team_mask = season_mask & (df[team_col] == team)
                 team_values = df.loc[team_mask, col]
 
                 if team_values.isna().any():
@@ -813,12 +1044,49 @@ class FeatureMatrixBuilder:
                         # Use season average if team has no data
                         team_mean = season_data[col].mean()
                     if pd.isna(team_mean):
-                        # Use overall median as last resort
-                        team_mean = df[col].median()
+                        # WR-06 surface 3, second site: the last resort is the
+                        # median of the seasons STRICTLY BEFORE this one, not of
+                        # the whole frame.
+                        if not prior_median_computed:
+                            prior_median = self._prior_season_median(
+                                result,
+                                col,
+                                season,
+                                season_mask,
+                                prior_mask,
+                                earliest_season,
+                            )
+                            prior_median_computed = True
+                        if prior_median is None:
+                            # Nothing at or before this season can fill the
+                            # gap. Leave it NaN rather than borrow from the
+                            # future -- the deliberate consequence of WR-06.
+                            continue
+                        team_mean = prior_median
 
                     result.loc[team_mask & result.isna()] = team_mean
 
         return result
+
+    def _prior_season_median(
+        self,
+        values: pd.Series,
+        col: str,
+        season,
+        season_mask: pd.Series,
+        prior_mask: pd.Series,
+        earliest_season,
+    ) -> float | None:
+        """Return the strictly-prior-seasons median for *col* in *season* (WR-06)."""
+        fit_source, self_fit = self._season_fit_source(
+            values, season, season_mask, prior_mask, earliest_season
+        )
+        median_value = float(fit_source.median())
+        if np.isnan(median_value):
+            return None
+        if self_fit:
+            self._record_self_fit(col, season)
+        return float(median_value)
 
     def normalize_features_within_seasons(
         self, features_df: pd.DataFrame, target_columns: list[str] | None = None
