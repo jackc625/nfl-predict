@@ -24,9 +24,13 @@ kind in its docstring), and this module has BOTH kinds, deliberately:
   carry ``@pytest.mark.integration`` and skip cleanly, with a remediation-carrying message,
   when the live lake is absent.
 
-THE LIVE HALF IS HONEST IN BOTH PHASE STATES. Before Plan 30-08's re-sync the live check
-LEGITIMATELY returns ``fail``, so the live half asserts the divergence SHAPE and the reported
-counts rather than asserting ``pass``; Plan 30-08 adds the post-re-sync pass assertion. The
+THE LIVE HALF WAS HONEST IN BOTH PHASE STATES, AND IS NOW FLIPPED. Before Plan 30-08's rung-4
+re-sync the live check LEGITIMATELY returned ``fail``, so the live half asserted the divergence
+SHAPE and the reported counts rather than asserting ``pass``. Plan 30-08 re-synced the stale
+copy, so the live half now asserts ``pass`` -- and, IN THE SAME CLASS, re-asserts that the very
+same check still returns ``fail`` on an injected divergence. Both must hold: a check that now
+only ever passes would be indistinguishable from a check that cannot fail (T-30-24), which is
+the whole reason the hermetic control below exists in the first place. The
 expected counts come from the git-TRACKED ``tests.phase30_state``, never from the gitignored
 ``outputs/n01/divergence_before.json`` -- which is absent on any checkout that did not just run
 Plan 30-04 Task 2. Where that scratch document IS present it is read only to CROSS-CHECK the
@@ -248,32 +252,56 @@ def _require_live_silver_games() -> None:
 
 @pytest.mark.integration
 class TestLiveSilverGames:
-    """The real N-01 divergence, asserted by SHAPE against the tracked manifest."""
+    """N-01 is CLOSED: the live check now passes, and can still fail."""
 
-    def test_the_live_check_reports_the_tracked_divergence_shape(self):
+    def test_the_live_check_now_reports_pass_for_silver_games(self):
         _require_live_silver_games()
         entry = DataQualityMonitor().check_duckdb_parquet_consistency()["checks"][
             "games"
         ]
 
-        if entry["only_in_parquet_count"] == 0 and entry["only_in_duckdb_count"] == 0:
-            pytest.skip(
-                "silver games' DuckDB and parquet copies now agree -- the N-01 re-sync "
-                "has landed (Plan 30-08), which adds the post-re-sync pass assertion. "
-                "This pre-re-sync shape assertion no longer applies."
-            )
-
-        assert entry["status"] == "fail", (
-            "before Plan 30-08's re-sync the live check MUST report fail; a pass here "
-            "would mean the guard cannot see the divergence it was written for"
+        assert entry["status"] == "pass", (
+            "the N-01 divergence is back. Plan 30-08 rung 4 re-synced the DuckDB copy of "
+            f"silver games from its authoritative parquet; this reads {entry['db_rows']} "
+            f"against {entry['parquet_rows']}, with {entry['only_in_parquet_count']} rows "
+            f"only in parquet and {entry['only_in_duckdb_count']} only in DuckDB. "
+            "load_dataframe(source='auto') prefers DuckDB, so a re-divergence makes every "
+            "upsert_silver write since it invisible to the whole pipeline, silently. "
+            "Re-sync with `python -m scripts.resync_games_duckdb --apply`."
         )
-        assert entry["parquet_rows"] == N01_PARQUET_ROWS_BEFORE
-        assert entry["db_rows"] == N01_DB_ROWS_BEFORE
-        assert entry["only_in_parquet_count"] == N01_DIVERGENCE_BEFORE
+        assert entry["db_rows"] == entry["parquet_rows"] == N01_PARQUET_ROWS_BEFORE, (
+            "both copies must now hold the parquet's pre-re-sync row count -- the "
+            "re-sync brought the STALE copy up, it did not move the authoritative one"
+        )
+        assert entry["only_in_parquet_count"] == 0
         assert entry["only_in_duckdb_count"] == 0, (
-            "N-01 is a mirror that fell BEHIND; rows present only in DuckDB would be a "
+            "N-01 was a mirror that fell BEHIND; rows present only in DuckDB would be a "
             "different and worse defect"
         )
+
+    def test_the_check_that_now_passes_is_still_capable_of_failing(
+        self, tmp_path: Path
+    ):
+        """T-30-24, and this is why it lives in the LIVE class rather than only above.
+
+        The moment a check flips from 'observed failing' to 'observed passing' it stops
+        carrying its own evidence: a passing check and a check that cannot fail are
+        indistinguishable from the outside. So the flip to a pass assertion above is
+        paired, in the same class, with the same check being driven to a fail on an
+        injected divergence. Both must hold or the guard has become decorative.
+        """
+        parquet = _rows(10)
+        entry = _bare_monitor().check_duckdb_parquet_consistency(
+            loader=_injected_loader(tmp_path, parquet, parquet.iloc[:8])
+        )["checks"]["games"]
+
+        assert entry["status"] == "fail"
+        assert entry["only_in_parquet_count"] == 2
+
+    def test_the_pre_resync_divergence_is_still_recorded_and_was_real(self):
+        """The closed defect keeps its measurement; a fixed bug is not an unrecorded one."""
+        assert N01_PARQUET_ROWS_BEFORE - N01_DB_ROWS_BEFORE == N01_DIVERGENCE_BEFORE
+        assert N01_DIVERGENCE_BEFORE > 0
 
     def test_the_scratch_capture_agrees_with_the_tracked_manifest(self):
         """T-30-52: a regenerated scratch file must not silently supersede the manifest."""
