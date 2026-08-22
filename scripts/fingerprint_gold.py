@@ -266,13 +266,29 @@ BUILD_CLOCK_COLUMNS = ("feature_timestamp",)
 # the one control it exists to run.
 _UPSTREAM_ESCAPE_RUNGS = (1, 2, 3)
 
-# Rungs at which a PROVEN value-preserving dtype change may be attributed. Rung 4 is
-# excluded for the same reason it is excluded from the upstream-drift escape: SPEC R2
-# makes an unexplained 2021-2024 move a hard blocker, and the one control this phase
-# rests on does not get a new way to be talked past. The exclusion is conservative
-# rather than necessary -- a reproduced per-season hash is a PROOF, not a hypothesis --
-# but widening rung 4's criterion is not this change's business (D30-OWNER-08).
-_DTYPE_PROOF_RUNGS = (1, 2, 3)
+# Rungs at which a PROVEN value-preserving dtype change may be attributed. ALL FOUR,
+# deliberately -- unlike _UPSTREAM_ESCAPE_RUNGS above, which stops at 3.
+#
+# The two are not the same kind of thing, and that is the whole reason they differ.
+# Upstream drift is a HYPOTHESIS: the judge cannot check it, so it hands the reader a
+# candidate cause to go verify, and offering that at rung 4 would let the phase talk
+# itself past the one control it exists to run. The dtype rule is a PROOF, executed
+# in-process, and it must clear three independent conditions before it attributes
+# anything -- the loaded frame reproduces the AFTER document's digests (identity), the
+# re-encode round-trips back to the frame's own values (losslessness, which is what
+# stops a truncating float64 1.5 -> int32 1 cast from reproducing a hash while the
+# value moved), and the PRIOR per-season digests return exactly in every season. A
+# column that clears all three is byte-identical in value and therefore cannot be
+# evidence of a whole-frame statistic leaking into a prior season, which is precisely
+# what SPEC R2's control is looking for.
+#
+# Excluding rung 4 would not make the control stricter in any way that carries
+# information; it would make it fire falsely on a replace_mode dtype restoration -- the
+# exact mechanism seen at rung 3, where the append path's own silent upcast was undone.
+# A control that fires falsely gets overridden, and overrides erode a gate faster than
+# a well-proven exemption does. Owner ruled (D30-OWNER-10) after Plan 30-18 flagged its
+# own conservative choice as arguably wrong on the merits.
+_DTYPE_PROOF_RUNGS = (1, 2, 3, 4)
 
 # The reasons a column may have moved and still be a candidate for the dtype proof.
 # A null-count move is a real change in the data and is never storage-only, so a
