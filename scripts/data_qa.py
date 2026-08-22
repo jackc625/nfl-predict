@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import numpy as np
 import pandas as pd
 
@@ -21,7 +22,7 @@ from utils import (
     validate_odds_data,
     validate_temporal_consistency,
 )
-from utils.exceptions import DataValidationError
+from utils.exceptions import DataIngestionError, DataValidationError
 from utils.game_id_utils import parse_game_id
 from utils.team_data import get_all_teams, normalize_team_abbreviation
 
@@ -58,6 +59,35 @@ GOLD_FEATURE_MATRICES = {
     "features_ats": 210,
     "features_ou": 209,
 }
+
+# Tables whose DuckDB and parquet copies must agree on row-set MEMBERSHIP (D30-18).
+#
+# Data, not logic: a future table is added here without touching
+# ``check_duckdb_parquet_consistency``. Seeded with silver ``games``, the table the
+# N-01 divergence was measured on (6,499 parquet rows against 6,292 in DuckDB at
+# Phase-30 start, all 207 of them season 2025).
+_DUCKDB_PARQUET_CONSISTENCY_TABLES: dict[str, dict[str, str]] = {
+    "games": {"layer": "silver", "key": "game_id"},
+}
+
+# A table that is absent from ONE of the two stores is not a consistency FAILURE --
+# it is a check that could not run, and it is reported as not_applicable. The tuple
+# spans both what ``load_dataframe`` raises (``DataIngestionError``, wrapping
+# ``duckdb.Error``) and what a directly-connected reader raises, so an injected
+# loader and the real one degrade the same way.
+_COPY_READ_ERRORS = (
+    DataIngestionError,
+    duckdb.Error,
+    ValueError,
+    KeyError,
+    TypeError,
+    FileNotFoundError,
+    OSError,
+)
+
+# A QA report that inlines two hundred missing ids is a report nobody reads. The
+# COUNT is exact; the id list is a bounded sample for diagnosis.
+_CONSISTENCY_SAMPLE_LIMIT = 20
 
 # Last season for which gold is considered fully ingested. Seasons beyond this
 # are treated as expected, documented trailing-coverage gaps (D-05), NOT failures.
@@ -610,6 +640,130 @@ class DataQualityMonitor:
 
         return result
 
+    def check_duckdb_parquet_consistency(self, loader=None) -> dict[str, Any]:
+        """Verify each store's copy of a table agrees with the other (D30-18, N-01).
+
+        THE MECHANISM THIS GUARDS. ``data.storage.load_dataframe(source="auto")``
+        prefers DuckDB whenever the table exists and only falls back to parquet.
+        So a DuckDB copy that has fallen behind its parquet makes every
+        ``upsert_silver`` write since the divergence INVISIBLE to the whole
+        pipeline -- silently, with no error raised anywhere and no warning logged.
+        That is not hypothetical: silver ``games`` was measured at 6,499 parquet
+        rows against 6,292 DuckDB rows at Phase-30 start, a 207-row gap, all of it
+        season 2025.
+
+        WHAT THIS CHECK DELIBERATELY DOES NOT DO. It does not touch the shared read
+        path. The ``upsert_silver`` / ``load_dataframe`` write-path asymmetry that
+        CAUSES the divergence is explicitly out of scope (D30-18) -- correcting the
+        seam every builder, trainer and backtest reads through, inside the phase
+        that is trying to measure a gold rebuild, would put an uncontrolled change
+        in the same artifact as the measurement. This guard instead sits where the
+        pipeline already looks and fires loudly on a re-divergence.
+
+        MEMBERSHIP, NOT COUNTS. Equal row counts with DIFFERENT membership is the
+        subtler failure and is reported as one. Pairing the integer with a named
+        delta is the 29-06 lesson applied to rows: a swapped row must not be able
+        to hide behind a matching total.
+
+        THE GOLD MIRROR TOO. Gold lives in both stores and they agree today, but
+        they are read by different consumers -- ``check_gold_integrity`` reads gold
+        through the DuckDB-preferring ``auto`` path while ``models/train.py``,
+        ``backtest/diagnose.py``, ``backtest/signal_lift.py`` and
+        ``scripts/fingerprint_gold.py`` all read the parquet directly. A phase whose
+        whole premise is "a DuckDB copy fell behind its parquet" must not assume the
+        gold mirror is exempt, so the three widths are compared too.
+
+        Args:
+            loader: A ``load_dataframe``-shaped callable, injected by the hermetic
+                positive control so the guard can be proven capable of failing
+                without a live lake. Defaults to ``data.storage.load_dataframe``.
+                This method opens no DuckDB connection of its own -- every read goes
+                through the loader, so no handle is left for the next opener to
+                collide with (T-30-53, and on Windows that collision is fatal, not
+                tolerated).
+
+        Returns:
+            The house per-check contract: ``{"timestamp", "checks"}`` where each
+            entry carries a ``status`` of ``pass`` / ``fail`` / ``not_applicable``.
+        """
+        logger.info("Checking DuckDB-vs-parquet consistency")
+
+        read = loader if loader is not None else load_dataframe
+        result = {"timestamp": datetime.now(), "checks": {}}
+
+        for table_name, spec in _DUCKDB_PARQUET_CONSISTENCY_TABLES.items():
+            layer = spec["layer"]
+            key = spec["key"]
+            try:
+                # The accepted source literals are "auto", "db" and "parquet".
+                # "duckdb" raises ValueError -- see data/storage.py load_dataframe.
+                db_df = read(table_name, layer=layer, source="db")
+                parquet_df = read(table_name, layer=layer, source="parquet")
+            except _COPY_READ_ERRORS as e:
+                result["checks"][table_name] = {
+                    "status": "not_applicable",
+                    "message": f"could not read both copies of {layer}.{table_name}: {e}",
+                }
+                continue
+
+            db_keys = set(db_df[key])
+            parquet_keys = set(parquet_df[key])
+            only_in_parquet = sorted(parquet_keys - db_keys)
+            only_in_duckdb = sorted(db_keys - parquet_keys)
+            consistent = not only_in_parquet and not only_in_duckdb
+
+            result["checks"][table_name] = {
+                "status": "pass" if consistent else "fail",
+                "layer": layer,
+                "key_column": key,
+                "db_rows": len(db_df),
+                "parquet_rows": len(parquet_df),
+                "only_in_parquet_count": len(only_in_parquet),
+                "only_in_duckdb_count": len(only_in_duckdb),
+                "only_in_parquet_sample": only_in_parquet[:_CONSISTENCY_SAMPLE_LIMIT],
+                "only_in_duckdb_sample": only_in_duckdb[:_CONSISTENCY_SAMPLE_LIMIT],
+                "message": (
+                    "DuckDB and parquet copies agree on row-set membership"
+                    if consistent
+                    else (
+                        f"{len(only_in_parquet)} row(s) present only in parquet and "
+                        f"{len(only_in_duckdb)} only in DuckDB. load_dataframe's 'auto' "
+                        "source prefers DuckDB, so the parquet-only rows are invisible "
+                        "to every consumer of this table."
+                    )
+                ),
+            }
+
+        for matrix in GOLD_FEATURE_MATRICES:
+            try:
+                db_width = len(read(matrix, layer="gold", source="db").columns)
+                parquet_width = len(
+                    read(matrix, layer="gold", source="parquet").columns
+                )
+            except _COPY_READ_ERRORS as e:
+                result["checks"][f"{matrix}_width"] = {
+                    "status": "not_applicable",
+                    "message": f"could not read both copies of gold.{matrix}: {e}",
+                }
+                continue
+
+            result["checks"][f"{matrix}_width"] = {
+                "status": "pass" if db_width == parquet_width else "fail",
+                "db_width": db_width,
+                "parquet_width": parquet_width,
+                "message": (
+                    "the gold DuckDB mirror and the gold parquet agree on width"
+                    if db_width == parquet_width
+                    else (
+                        "the width tripwire reads gold through the DuckDB-preferring "
+                        "auto path while the training path reads the parquet directly, "
+                        "so the two are now checking different artifacts"
+                    )
+                ),
+            }
+
+        return result
+
     def check_team_abbreviations(self) -> dict[str, Any]:
         """Verify 32-team completeness, canonical mapping, and no abbreviation
         mismatches against on-disk data (AUDIT-02).
@@ -758,6 +912,7 @@ class DataQualityMonitor:
             "consistency_check": {},
             "gold_integrity": {},
             "team_abbreviations": {},
+            "duckdb_parquet_consistency": {},
             "database_stats": {},
             "recommendations": [],
         }
@@ -837,19 +992,28 @@ class DataQualityMonitor:
             report["gold_integrity"] = self.check_gold_integrity()
             report["team_abbreviations"] = self.check_team_abbreviations()
 
+            # DuckDB-vs-parquet consistency (D30-18). Wired in beside gold_integrity
+            # so the guard runs wherever the pipeline already runs data QA -- a check
+            # that has to be remembered is a check that will not be run.
+            report["duckdb_parquet_consistency"] = (
+                self.check_duckdb_parquet_consistency()
+            )
+
             # Count check results from the flat-checks sections. The trailing
             # "expected_gap" status (D-05) is intentionally NOT counted as a
-            # pass/fail/warning -- it is an informational documented gap.
+            # pass/fail/warning -- it is an informational documented gap. Neither is
+            # "not_applicable", which means a copy could not be read at all.
             for section in (
                 "consistency_check",
                 "gold_integrity",
                 "team_abbreviations",
+                "duckdb_parquet_consistency",
             ):
                 section_checks = report[section].get("checks", {})
                 for _check_name, check_result in section_checks.items():
                     if isinstance(check_result, dict) and "status" in check_result:
                         status = check_result["status"]
-                        if status == "expected_gap":
+                        if status in ("expected_gap", "not_applicable"):
                             continue
                         total_checks += 1
                         if status == "pass":
@@ -1014,6 +1178,7 @@ def main():
             "consistency",
             "gold_integrity",
             "team_abbreviations",
+            "duckdb_parquet_consistency",
         ],
         help="Run specific check only",
     )
@@ -1040,10 +1205,18 @@ def main():
         # Initialize monitor
         monitor = DataQualityMonitor()
 
-        if args.check in ("gold_integrity", "team_abbreviations") and not args.table:
-            # Table-independent AUDIT-02 checks (gold matrices / canonical teams)
+        table_independent = (
+            "gold_integrity",
+            "team_abbreviations",
+            "duckdb_parquet_consistency",
+        )
+        if args.check in table_independent and not args.table:
+            # Table-independent checks: AUDIT-02 gold matrices / canonical teams, and
+            # the D30-18 DuckDB-vs-parquet membership guard.
             if args.check == "gold_integrity":
                 result = monitor.check_gold_integrity()
+            elif args.check == "duckdb_parquet_consistency":
+                result = monitor.check_duckdb_parquet_consistency()
             else:
                 result = monitor.check_team_abbreviations()
 
