@@ -29,11 +29,27 @@ from utils.team_data import get_all_teams, normalize_team_abbreviation
 logger = get_logger(__name__)
 
 # Gold-layer feature matrices and their expected column counts (AUDIT-02).
-# Verified on-disk 2026-08-16 after the Phase 29 widening: features_wp 209,
-# features_ats 210, features_ou 209. The single-column ATS difference is its
+# Verified on-disk 2026-08-22 after the Phase 30 rung-3 narrowing: features_wp
+# 194, features_ats 195, features_ou 194. The single-column ATS difference is its
 # extra target/margin columns (target_ats, home_margin, point_differential).
 #
-# Phase 29 widened each matrix by +15 columns vs the 194/195/194 Phase-28
+# The record below is ADDED TO, never overwritten: each phase's paragraph states
+# what IT moved, so the width's history reads in order.
+#
+# Phase 30 NARROWED each matrix by -15 columns, back to the Phase-28 widths
+# (SPEC R3, D29-07-01, Plan 30-07 -- rung 3 of the D30-17 rebuild ladder). The
+# removed set is exactly the fifteen Phase-29 line-movement columns listed in the
+# Phase-29 paragraph below. This is the FIRST rebuild in this project's history
+# that removes columns rather than adding them, which is why the gold write now
+# passes replace_mode=True: the append path's concat unions columns and would
+# have written the fifteen back as all-null. The family's removal is a deliberate
+# decision about what belongs in gold; the paid odds_timeline archive,
+# features/line_movement.py and the line_movement group registration all remain.
+# Only line_movement physically leaves gold (D30-03) -- any group the Phase-30
+# Stage-1 gate drops or leaves undetermined keeps its columns here and is excluded
+# at TRAIN time instead, which is what makes 194/195/194 the correct width.
+#
+# Phase 29 had widened each matrix by +15 columns vs the 194/195/194 Phase-28
 # baseline (SIG-04, Plan 29-06): the seven D-09 totals line-movement features
 # (opening_total, total_drift, total_drift_dir, total_late_drift,
 # total_abs_travel, total_reversals, total_range), the shared
@@ -53,11 +69,16 @@ logger = get_logger(__name__)
 # off_bye}).
 #
 # These counts are DELIBERATELY reconciled to the real rebuilt widths
-# (IN-03, Pitfall 6 -- count empirically, never silence).
+# (IN-03, Pitfall 6 -- count empirically, never silence). A width that moves for a
+# reason nobody can name is the finding; widening a tolerance to make it pass is
+# the failure this tripwire exists to prevent. The companion assertion in
+# tests/unit/test_data_qa_gold_width.py pins the DELTA to a named column set, so a
+# build that removed one intended column while incidentally adding an unrelated
+# one cannot satisfy the integer alone.
 GOLD_FEATURE_MATRICES = {
-    "features_wp": 209,
-    "features_ats": 210,
-    "features_ou": 209,
+    "features_wp": 194,
+    "features_ats": 195,
+    "features_ou": 194,
 }
 
 # Tables whose DuckDB and parquet copies must agree on row-set MEMBERSHIP (D30-18).

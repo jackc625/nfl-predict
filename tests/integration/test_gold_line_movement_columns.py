@@ -1,32 +1,43 @@
-"""Integration: line-movement columns survive the merge into all three gold matrices.
+"""Integration: the line-movement family has LEFT gold, via both merge seams.
 
-Plan 29-06 / SIG-04. This is the Phase-28 (28-06) anti-silent-drop proof applied to
-the line-movement family. ``combine_features`` in ``scripts/build_features.py`` has
-NO generic loop over ``feature_sources`` -- it merges each source through an EXPLICIT
-per-source block. Registering ``LineMovementBuilder`` into ``feature_sources`` routes
-it through the LeakageGate, but its columns are SILENTLY DROPPED from gold unless
-``combine_features`` also gets an explicit line-movement merge block. Phase 28 hit
-exactly this, which is why a builder unit test alone is not sufficient evidence.
+Plan 30-07 / SPEC R3 / D29-07-01, inverting the Plan 29-06 module of the same name.
+Phase 29 landed fifteen line-movement columns in all three gold matrices and this
+file proved they arrived; Phase 30 rung 3 removes them as a deliberate decision
+about what belongs in gold, and this file now proves they are gone.
+
+WHY THE FILE IS INVERTED RATHER THAN DELETED. Three of its assertions go
+legitimately RED after the drop and two become VACUOUS PASSES -- iterations over a
+column list that is now empty, where ``all(...)`` over nothing is trivially true.
+A green test whose subject vanished is worse than a red one, because nobody
+revisits it. Both are rewritten below into assertions about the absence.
 
 Three layers of proof, in increasing distance from the code:
 
-1. ``TestCombineFeaturesSeam`` -- in-process, with a negative control: the columns
-   appear in ``combine_features`` output ONLY when the ``line_movement`` source is
-   present. This localizes the proof to the merge block itself.
-2. ``TestBuilderSignalBeforeNormalization`` -- raw builder output for a covered
-   season carries ``line_movement_coverage == 1.0`` and genuinely non-zero drift.
-3. ``TestGoldMatrices`` -- the rebuilt on-disk parquet in ALL THREE matrices.
+1. ``TestCombineFeaturesSeam`` -- in-process, the 28-06 lesson run in REVERSE.
+   ``combine_features`` in ``scripts/build_features.py`` has NO generic loop over
+   ``feature_sources``; it merges each source through an EXPLICIT per-source block.
+   That is what made the family need TWO seams to reach gold (registration AND a
+   merge block), and it is why removing one and leaving the other would look fixed
+   and resurrect the columns on the next rebuild. Handing ``combine_features`` a
+   POPULATED line-movement source and getting none of its columns back is the
+   strongest available proof that the merge seam is genuinely gone rather than
+   merely unfed -- and the source frame is asserted populated FIRST, or "none
+   arrived" would be trivially true.
+2. ``TestBuilderSignalBeforeNormalization`` -- UNCHANGED. What left gold is the
+   columns, not the builder and not the paid ``odds_timeline`` archive behind it.
+   ``features/line_movement.py`` still works and the archive still carries real
+   trajectory signal for a covered season; that remains true and remains asserted,
+   because a phase that quietly broke the builder while claiming to have dropped
+   its output would be indistinguishable from this one otherwise.
+3. ``TestLineMovementDropped`` -- the rebuilt on-disk parquet in ALL THREE matrices.
 
-**Why layer 3 does not assert ``line_movement_coverage == 1.0``.** Gold is
-expanding-window Z-SCORED (``scripts/build_features.py`` -> ``expanding_normalize``),
-so no gold feature retains its raw value -- a literal ``== 1.0`` assertion on the
-gold parquet would be asserting something false about every feature in the project,
-not a weaker version of the real check. The raw-value check lives in layer 2, where
-raw values actually exist. Layer 3 instead proves REAL SIGNAL landed the only way
-that survives normalization: a covered season carries genuine VARIANCE in the
-drift/path family, while an uncovered season (before the 2020-06-06 archive floor)
-is exactly degenerate. Presence + non-null alone would pass even if every value were
-a neutral default, which is the failure this pair of assertions rules out.
+**On ``total_points``.** It is the O/U LABEL column and lives only in
+``features_ou`` (``backtest/diagnose.py``'s label map). It is asserted PRESENT in
+``features_ou`` AND ABSENT from ``features_wp`` and ``features_ats`` -- both
+directions, deliberately. A bare loop over all three would fail on WP and ATS for a
+reason with nothing to do with the drop; a presence check on ``features_ou`` alone
+would not catch an over-eager suffix or regex prune that took the label along with
+the family it resembles.
 """
 
 from datetime import datetime
@@ -35,6 +46,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from backtest.signal_lift import group_columns
 from data.storage import load_dataframe
 from features.line_movement import LineMovementBuilder
 from scripts.build_features import FeatureMatrixBuilder
@@ -54,9 +66,7 @@ LINE_MOVEMENT_COLUMNS = (
     "line_movement_coverage",
 )
 
-# Tier (a) spread siblings -- emitted only when odds_timeline carries spreads
-# (D-07 keeps totals primary), so they are asserted all-or-none rather than
-# unconditionally required.
+# Tier (a) spread siblings -- the other half of the fifteen.
 SPREAD_SIBLING_COLUMNS = (
     "opening_spread",
     "spread_drift",
@@ -66,6 +76,9 @@ SPREAD_SIBLING_COLUMNS = (
     "spread_reversals",
     "spread_range",
 )
+
+# The whole removed family, as the drop and the rung-3 attribution see it.
+FULL_FAMILY = LINE_MOVEMENT_COLUMNS + SPREAD_SIBLING_COLUMNS
 
 # The drift/path metrics that carry the actual movement signal (as opposed to
 # the opening LEVEL, which has a non-zero neutral default even when uncovered).
@@ -77,13 +90,23 @@ DRIFT_PATH_COLUMNS = (
     "total_range",
 )
 
+# Market columns that must SURVIVE. The freeze anchors (snapshot_*) and the
+# pre-existing, historically identically-0.0 MarketAnchor movement columns are all
+# baseline features and all near-misses for a careless substring prune.
+MARKET_SURVIVORS = (
+    "snapshot_total",
+    "snapshot_spread",
+    "total_movement",
+    "spread_movement",
+)
+
+# The O/U label column, and the ONLY matrix it has ever been in.
+OU_LABEL_COLUMN = "total_points"
+OU_LABEL_MATRIX = "features_ou"
+
 # 2023 sits fully inside the 2020-06-06 historical-odds floor: 271 of 272
 # regular-season games have a real multi-snapshot trajectory (Plan 29-05).
 COVERED_SEASON = 2023
-
-# 2019 is entirely BEFORE the floor -- zero trajectory rows exist by
-# construction, so every drift/path metric is a neutral default.
-UNCOVERED_SEASON = 2019
 
 
 @pytest.fixture(scope="module")
@@ -106,7 +129,7 @@ def covered_season_games() -> pd.DataFrame:
 
 
 class TestCombineFeaturesSeam:
-    """The 28-06 merge block is what lands the columns -- with a negative control."""
+    """The 28-06 merge block is GONE -- proved by feeding it, not by inspecting it."""
 
     def _sources(self, games: pd.DataFrame) -> dict[str, pd.DataFrame]:
         line_movement = LineMovementBuilder().build_features(
@@ -114,40 +137,51 @@ class TestCombineFeaturesSeam:
         )
         return {"games": games, "line_movement": line_movement}
 
-    def test_columns_reach_combined_matrix(
+    def test_a_populated_source_lands_none_of_its_columns(
         self, covered_season_games: pd.DataFrame
     ) -> None:
-        """combine_features emits the line-movement columns when the source is present."""
-        combined = FeatureMatrixBuilder().combine_features(
-            self._sources(covered_season_games)
-        )
-        missing = [c for c in LINE_MOVEMENT_COLUMNS if c not in combined.columns]
-        assert not missing, (
-            f"combine_features dropped {missing} -- the explicit line-movement merge "
-            f"block is missing or wrong (registration alone is NOT enough, 28-06)."
-        )
+        """Hand ``combine_features`` the real builder output; nothing must arrive.
 
-    def test_columns_absent_without_the_source(
-        self, covered_season_games: pd.DataFrame
-    ) -> None:
-        """Negative control: no OTHER source supplies these columns.
-
-        Without this, the presence test above could pass on a coincidence (some
-        unrelated builder emitting a same-named column) rather than on the merge
-        block actually working.
+        The source frame is asserted POPULATED first. Without that pin this test
+        would pass just as happily against a builder that silently produced an
+        empty frame, which is the vacuous-pass shape this rewrite exists to
+        eliminate.
         """
-        combined = FeatureMatrixBuilder().combine_features(
-            {"games": covered_season_games}
+        sources = self._sources(covered_season_games)
+        offered = group_columns(sources["line_movement"], "line_movement")
+        assert len(sources["line_movement"]) > 0, (
+            "fixture sanity: the builder produced no rows, so 'nothing arrived' "
+            "would be trivially true"
         )
-        leaked = [c for c in LINE_MOVEMENT_COLUMNS if c in combined.columns]
-        assert not leaked, (
-            f"{leaked} appeared without the line_movement source -- the presence "
-            f"test above is not proving what it claims to prove."
+        assert len(offered) == len(FULL_FAMILY), (
+            "fixture sanity: the source frame must CARRY the whole family before "
+            f"this test can say the merge dropped it. Offered: {offered}"
+        )
+
+        combined = FeatureMatrixBuilder().combine_features(sources)
+
+        arrived = group_columns(combined, "line_movement")
+        assert arrived == [], (
+            f"combine_features merged {arrived} from a registered line_movement "
+            f"source -- the explicit merge block has returned, and the family will "
+            f"be back in gold on the next rebuild (SPEC R3). Registration alone "
+            f"never landed these columns; the merge block did."
+        )
+
+    def test_the_source_is_not_registered_in_the_first_place(self) -> None:
+        """The other seam. Both are removed, so neither can land the family alone."""
+        import inspect
+
+        source = inspect.getsource(FeatureMatrixBuilder.load_all_feature_sources)
+        assert 'feature_sources["line_movement"]' not in source, (
+            "load_all_feature_sources registers a line_movement source again. On "
+            "its own that does not reach gold -- it routes the frame through the "
+            "LeakageGate -- but it is half of the seam pair."
         )
 
 
 class TestBuilderSignalBeforeNormalization:
-    """Raw builder values for a covered season (gold is z-scored; see docstring)."""
+    """UNCHANGED. The builder and the paid archive survive the drop intact."""
 
     @pytest.fixture(scope="class")
     def builder_output(self, covered_season_games: pd.DataFrame) -> pd.DataFrame:
@@ -183,7 +217,9 @@ class TestBuilderSignalBeforeNormalization:
         """At least one drift/path metric carries a genuinely non-zero value.
 
         A column can be present, non-null and entirely neutral-default; this is the
-        assertion that rules that out on RAW values.
+        assertion that rules that out on RAW values. It also keeps the drop honest:
+        what left gold is a family that MEASURED something, not a family that was
+        already inert.
         """
         non_zero = {
             col: int((builder_output[col] != 0.0).sum()) for col in DRIFT_PATH_COLUMNS
@@ -201,32 +237,73 @@ class TestBuilderSignalBeforeNormalization:
         assert not closing, closing
 
 
-class TestGoldMatrices:
-    """The rebuilt on-disk gold -- the artifact the 29-07 lift screen consumes."""
+class TestLineMovementDropped:
+    """The rebuilt on-disk gold -- the artifact the Phase-30 gate consumes."""
 
     @pytest.mark.parametrize("matrix", MATRICES)
-    def test_line_movement_columns_present(
+    def test_no_line_movement_column_remains(
         self, gold_frames: dict[str, pd.DataFrame], matrix: str
     ) -> None:
-        """Each gold matrix carries the full totals family + the coverage flag."""
-        cols = set(gold_frames[matrix].columns)
-        missing = [c for c in LINE_MOVEMENT_COLUMNS if c not in cols]
-        assert not missing, (
-            f"{matrix} is missing line-movement columns {missing} -- the merge block "
-            f"did not deliver them to this matrix. Line-ish columns present: "
-            f"{sorted(c for c in cols if 'total' in c or 'line_movement' in c)[:12]}"
+        """Not one of the fifteen survives, in any matrix.
+
+        Derived from the group registry as well as from the named tuple, so a
+        column the predicate matches but the tuple forgot is still caught.
+        """
+        df = gold_frames[matrix]
+        named_survivors = [c for c in FULL_FAMILY if c in df.columns]
+        assert not named_survivors, (
+            f"{matrix} still carries {named_survivors}. A PARTIAL drop is worse "
+            f"than none: the three matrices then disagree about the candidate "
+            f"feature set and the rung-3 attribution cannot balance."
+        )
+        assert group_columns(df, "line_movement") == [], (
+            f"{matrix} carries a column the line_movement predicate matches but "
+            f"the named tuple above does not list"
         )
 
     @pytest.mark.parametrize("matrix", MATRICES)
-    def test_spread_siblings_are_all_or_none(
+    def test_the_market_survivors_are_present(
         self, gold_frames: dict[str, pd.DataFrame], matrix: str
     ) -> None:
-        """The Tier (a) spread family lands whole or not at all (D-07)."""
+        """The freeze anchors and the MarketAnchor movement columns must remain.
+
+        ``snapshot_total`` ends in ``total``; ``spread_movement`` contains
+        ``spread``. A substring prune rather than an exact-suffix one would take
+        all four with the family and silently delete the market leg's anchors.
+        """
         cols = set(gold_frames[matrix].columns)
-        present = [c for c in SPREAD_SIBLING_COLUMNS if c in cols]
-        assert len(present) in (0, len(SPREAD_SIBLING_COLUMNS)), (
-            f"{matrix} carries a PARTIAL spread family {present} -- a partial merge "
-            f"is the silent-drop failure mode in a subtler form."
+        missing = [c for c in MARKET_SURVIVORS if c not in cols]
+        assert not missing, (
+            f"{matrix} lost market columns {missing} to the drop. These are "
+            f"pre-existing baseline features, not Phase-29 line-movement columns."
+        )
+
+    def test_the_ou_label_survives_in_its_own_matrix(
+        self, gold_frames: dict[str, pd.DataFrame]
+    ) -> None:
+        """``total_points`` is the O/U LABEL and must survive in ``features_ou``."""
+        assert OU_LABEL_COLUMN in gold_frames[OU_LABEL_MATRIX].columns, (
+            f"{OU_LABEL_MATRIX} lost {OU_LABEL_COLUMN} -- that is the O/U label "
+            f"column, and an over-eager prune that matched on 'total' would take "
+            f"it along with the family"
+        )
+
+    @pytest.mark.parametrize("matrix", ["features_wp", "features_ats"])
+    def test_the_ou_label_is_absent_from_the_other_two(
+        self, gold_frames: dict[str, pd.DataFrame], matrix: str
+    ) -> None:
+        """The other direction, and the half that makes the pair meaningful.
+
+        ``total_points`` has only ever been in ``features_ou`` -- it is that
+        matrix's label. Asserting only its PRESENCE there would pass while it
+        quietly vanished from nowhere; asserting presence across all three would
+        fail on WP and ATS for a reason with nothing to do with the drop. Both
+        directions, together, say what is actually meant: this column belongs to
+        exactly one matrix and the drop did not move it.
+        """
+        assert OU_LABEL_COLUMN not in gold_frames[matrix].columns, (
+            f"{matrix} carries {OU_LABEL_COLUMN}, which is the O/U label column "
+            f"and has never belonged to this matrix"
         )
 
     @pytest.mark.parametrize("matrix", MATRICES)
@@ -236,103 +313,9 @@ class TestGoldMatrices:
         """No ``closing_*`` column exists in gold (SC2, carried from D-15).
 
         The closing line is the CLV grading anchor; a model feature derived from it
-        would be post-freeze information.
+        would be post-freeze information. Unchanged by the drop, and still
+        meaningful: it is a statement about every column in gold, not about the
+        fifteen that left.
         """
         closing = [c for c in gold_frames[matrix].columns if "closing" in c.lower()]
         assert not closing, f"{matrix} carries closing-line columns: {closing}"
-
-    @pytest.mark.parametrize("matrix", MATRICES)
-    def test_line_movement_columns_are_non_null(
-        self, gold_frames: dict[str, pd.DataFrame], matrix: str
-    ) -> None:
-        """Every line-movement value is non-null, including pre-2020 rows.
-
-        Uncovered seasons get NEUTRAL DEFAULTS, not NaN -- which is what keeps the
-        ``scripts/data_qa.py`` all-null check satisfied on a matrix whose coverage
-        starts mid-history.
-        """
-        df = gold_frames[matrix]
-        null_counts = {
-            c: int(df[c].isna().sum()) for c in LINE_MOVEMENT_COLUMNS if c in df.columns
-        }
-        assert all(v == 0 for v in null_counts.values()), (
-            f"{matrix} has null line-movement values: "
-            f"{ {k: v for k, v in null_counts.items() if v} }"
-        )
-
-    @pytest.mark.parametrize("matrix", MATRICES)
-    def test_covered_season_carries_real_variance(
-        self, gold_frames: dict[str, pd.DataFrame], matrix: str
-    ) -> None:
-        """A covered season's drift/path family is non-degenerate in gold.
-
-        Variance is the normalization-proof signature of real movement: an
-        all-default column is constant within a season no matter how it is scaled.
-        """
-        df = gold_frames[matrix]
-        season_rows = df[df["season"] == COVERED_SEASON]
-        if len(season_rows) == 0:
-            pytest.skip(f"{matrix} has no {COVERED_SEASON} rows")
-
-        varying = [
-            c
-            for c in DRIFT_PATH_COLUMNS
-            if c in season_rows.columns and season_rows[c].nunique() > 1
-        ]
-        assert varying, (
-            f"{matrix}: every drift/path column is CONSTANT across {COVERED_SEASON} "
-            f"-- the columns reached gold but carry no line-movement signal."
-        )
-
-    @pytest.mark.parametrize("matrix", MATRICES)
-    def test_uncovered_season_is_degenerate(
-        self, gold_frames: dict[str, pd.DataFrame], matrix: str
-    ) -> None:
-        """A pre-floor season's drift/path family is exactly constant.
-
-        This is the counterpart that makes the variance test above meaningful: if
-        an uncovered season ALSO varied, the "signal" would be an artifact of the
-        pipeline rather than measured market movement. The archive genuinely starts
-        2020-06-06, so 2019 must be flat.
-        """
-        df = gold_frames[matrix]
-        season_rows = df[df["season"] == UNCOVERED_SEASON]
-        if len(season_rows) == 0:
-            pytest.skip(f"{matrix} has no {UNCOVERED_SEASON} rows")
-
-        varying = {
-            c: int(season_rows[c].nunique())
-            for c in DRIFT_PATH_COLUMNS
-            if c in season_rows.columns and season_rows[c].nunique() > 1
-        }
-        assert not varying, (
-            f"{matrix}: {UNCOVERED_SEASON} predates the 2020-06-06 archive floor yet "
-            f"carries varying drift/path values {varying} -- movement was fabricated "
-            f"for a season with no trajectory data."
-        )
-
-    @pytest.mark.parametrize("matrix", MATRICES)
-    def test_coverage_flag_distinguishes_the_two_regimes(
-        self, gold_frames: dict[str, pd.DataFrame], matrix: str
-    ) -> None:
-        """``line_movement_coverage`` separates covered from uncovered seasons.
-
-        The flag exists so a MEASURED zero drift and an UNMEASURABLE trajectory are
-        not encoded identically. If the flag were constant across both regimes it
-        would carry no information and the uncovered rows would masquerade as real
-        zero-movement observations.
-        """
-        df = gold_frames[matrix]
-        covered = df[df["season"] == COVERED_SEASON]["line_movement_coverage"]
-        uncovered = df[df["season"] == UNCOVERED_SEASON]["line_movement_coverage"]
-        if len(covered) == 0 or len(uncovered) == 0:
-            pytest.skip(f"{matrix} lacks rows for both coverage regimes")
-
-        assert uncovered.nunique() == 1, (
-            f"{matrix}: {UNCOVERED_SEASON} coverage flag is not constant -- every "
-            f"pre-floor game is uncovered by construction."
-        )
-        assert covered.nunique() > 1, (
-            f"{matrix}: {COVERED_SEASON} coverage flag is constant -- the covered/"
-            f"uncovered distinction did not reach gold."
-        )
