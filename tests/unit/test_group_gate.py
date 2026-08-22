@@ -20,6 +20,7 @@ import re
 import subprocess
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 from scipy import stats
@@ -945,7 +946,7 @@ def test_run_group_gate_pins_the_baseline_to_every_registered_group(
     "gold minus every signal column we know about" -- which is exactly the failure mode this
     pin exists to prevent (backtest/signal_lift.py:345-367, the 29-06 incident).
     """
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
     sentinel_screen = _mixed_verdict_screen()
 
     def _spy(**kwargs) -> dict:
@@ -973,7 +974,7 @@ def test_run_group_gate_pins_the_baseline_to_every_registered_group(
 
 def test_run_group_gate_measures_the_frozen_grid(monkeypatch) -> None:
     """The targets and groups come from the FROZEN constants, never from the module defaults."""
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     def _spy(**kwargs) -> dict:
         captured.update(kwargs)
