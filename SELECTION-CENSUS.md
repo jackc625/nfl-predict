@@ -199,3 +199,104 @@ resolve an inconsistency that has never fired is a larger change than the incons
 
 *Instrument: `scripts/selection_census.py`. Machine-readable output:
 `outputs/selection/selection_census.json`.*
+
+---
+
+# ADDENDUM -- what Task 2 changed, and the after-measurement
+
+**Plan 30-17, Task 2. Measured 2026-08-22 immediately after the change, same gold, same
+config, same instrument.**
+
+## 7. The change
+
+Two edits in `models/trainers/base.py`, both inside `select_features`, neither touching an
+estimator, a hyperparameter, or a per-target budget:
+
+1. **A zero-variance pre-filter on the fit input.** `informative_columns(X)` withholds every
+   column that does not vary over the fit window (all-NaN counts as constant) before the
+   scoring model is fitted. A wholly-constant frame falls back to fitting on the frame as it
+   stands rather than on nothing.
+2. **`threshold="mean"` stated explicitly.** This is the rule `threshold=None` already
+   resolved to for an L2 `LogisticRegression` and an `XGBRegressor`, so it is a documentation
+   change and not a behavioural one -- but stating it means a future switch to an L1 penalty
+   cannot silently re-resolve the rule to `1e-5` without someone deciding to.
+
+`base.py`'s own `train_and_evaluate` was NOT changed. Its `max_features=None` asymmetry is
+documented at that call site with the measurement that shows it unreachable, and a test now
+fails if any concrete trainer stops overriding it.
+
+**Why a pre-filter and not the pure top-K the plan expected.** Section 4 measured the cap
+already binding for every target, so `threshold=-inf` would have been a no-op, and the
+dependence lives in the fit rather than in the rule that ranks the fit's output. A pre-filter
+removes the dependence at its source: identical post-filter input gives an identical fit, so
+the invariance is exact by construction rather than tuned. Two options were considered and not
+taken -- fitting the selection model with `colsample_bytree=1.0` (prohibited: it changes the
+estimator), and replacing model-based selection with a univariate filter (architectural, and
+far beyond what this plan authorises).
+
+## 8. Count-independence, after
+
+Same grid, same instrument, re-run on the changed code.
+
+| Target | const N=10/25/50 | const-nonzero N=10/25/50 | drop 15 | drop all 82 | noise N=10/25/50 |
+|---|---|---|---|---|---|
+| WP | 0 / 0 / 0 | 0 / 0 / 0 | **0** | **0** | 4 / 4 / 8 |
+| ATS | **0 / 0 / 0** | **0 / 0 / 0** | **0** | **0** | 18 / 22 / 20 |
+| O/U | **0 / 0 / 0** | **0 / 0 / 0** | **0** | **0** | 22 / 16 / 26 |
+
+Every zero-variance cell is now exactly zero, in both directions, for all three targets.
+`count_dependent_on_zero_variance_columns` is `false` for wp, ats and ou.
+
+**Noise sensitivity is unchanged and is not claimed to be fixed.** A column with variance but
+no relationship to the target is indistinguishable from a weak real signal at fit time. No
+pre-filter can exclude it without looking at the target, and doing so would be a different
+selection rule. It is reported here and pinned as a boundary in
+`tests/unit/test_feature_selection_stability.py` rather than asserted away.
+
+The cap still binds after the change -- 36 / 35 / 48 features clear the threshold against caps
+of 20 / 25 / 25 -- so the threshold remains a no-op and the rule remains top-K in effect.
+
+## 9. What actually moved, by name
+
+The change is behaviour-preserving for WP and moves 9 of ATS's 25 and 5 of O/U's 25.
+
+**Cross-check:** the post-change selection is byte-identical to the PRE-change 82-column
+ablation for all three targets, which is what a correct pre-filter must produce and is
+therefore a real check rather than a restatement.
+
+**WP -- unchanged.** Symmetric difference 0. All 20 features identical.
+
+**ATS -- 9 out, 9 in (symmetric difference 18 of 25 selected).**
+
+| Removed | Added |
+|---|---|
+| `away_def_rolling_opp_adj_epa_per_play` | `away_off_bye` |
+| `away_eastward_travel` | `away_off_rolling_opp_adj_pass_epa` |
+| `away_elo_rank` | `away_rolling_snap_share_te` |
+| `away_off_rolling_opp_adj_epa_per_play` | `away_rolling_snap_share_wr` |
+| `away_rolling_snap_share_db` | `away_timezone_diff_hours` |
+| `home_look_ahead_spot` | `away_travel_fatigue_score` |
+| `home_off_rolling_opp_adj_epa_per_play` | `home_backup_quality_delta` |
+| `home_off_rolling_opp_adj_pass_epa` | `home_def_rolling_opp_adj_rush_epa` |
+| `home_qb_out_flag` | `home_rolling_snap_share_rb` |
+
+**O/U -- 5 out, 5 in (symmetric difference 10 of 25 selected).**
+
+| Removed | Added |
+|---|---|
+| `away_backup_quality_delta` | `away_travel_fatigue_score` |
+| `away_look_ahead_spot` | `home_def_rolling_opp_adj_epa_per_play` |
+| `away_off_bye` | `home_look_ahead_spot` |
+| `home_def_rolling_opp_adj_pass_epa` | `home_snap_concentration` |
+| `home_rolling_snap_share_dl` | `venue_elevation_ft` |
+
+This is a REAL behavioural change to which features ATS and O/U train on, landed deliberately
+before Plan 30-09's baseline re-freeze and Plans 30-10 and 30-11's binding measurements -- the
+only point at which it is cheap. Nothing was tuned, re-fitted or promoted:
+`artifacts/latest.json` and all three gold parquets are byte-unchanged by sha256.
+
+## 10. Re-running this document
+
+`uv run python -m scripts.selection_census` now regenerates the AFTER state. The BEFORE census
+is preserved alongside it as `outputs/selection/selection_census_before_fix.json`, with the
+after state at `outputs/selection/selection_census_after_fix.json`.

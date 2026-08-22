@@ -104,6 +104,67 @@ def _existing_trial_count(tuner: OptunaTuner) -> int:
     return len(study.trials)
 
 
+# ---------------------------------------------------------------------------
+# Feature-selection semantics (Plan 30-17, D30-OWNER-07)
+# ---------------------------------------------------------------------------
+#
+# THE RULE, stated once so nobody has to re-derive it from a library default:
+# ``select_features`` fits a scoring model on the training window, then keeps the
+# top ``max_features`` columns by importance among those scoring at or above the MEAN
+# importance. That is an INTERSECTION of a cap and a threshold, not a cap alone --
+# scikit-learn's ``SelectFromModel._get_support_mask`` takes the top-K by score and then
+# discards anything below the threshold. Measured on the accepted rung-4 gold
+# (SELECTION-CENSUS.md), the CAP is what binds for every target: 56 / 85 / 91 features
+# clear the mean against caps of 20 / 25 / 25, so the threshold currently removes nothing
+# and the effective rule is pure top-K.
+#
+# THE PRE-FILTER, and why it is a pre-filter rather than a different threshold. Before
+# the scoring model is fitted, columns carrying no information over the fit window --
+# zero variance, including all-NaN -- are withheld from the FIT. Without this, selection
+# depends on how many dead columns happen to be in the frame: the census measured that
+# adding ten literally-constant columns moved 5 of ATS's 25 selected features and 9 of
+# O/U's 25, and that removing the dead block moved 9 and 5.
+#
+# The mechanism is the FIT, not the threshold, which is why changing the threshold could
+# not have fixed it. ``XGBRegressor`` runs with ``colsample_bytree=0.8`` and
+# ``subsample=0.8``, so every added column changes which columns each tree samples and
+# therefore the gain importances of the REAL features. ``LogisticRegression`` has no such
+# sampling, which is why WP was already invariant to constants on live gold. Withholding
+# the dead columns makes the fit input identical regardless of how many were present, so
+# the invariance holds BY CONSTRUCTION.
+#
+# WHAT THE PRE-FILTER DOES NOT DO. It cannot make selection invariant to columns that
+# have variance but no relationship to the target -- pure noise is indistinguishable from
+# a weak signal without looking at the target, and the census measured noise columns
+# being selected outright. That boundary is pinned by
+# tests/unit/test_feature_selection_stability.py rather than papered over.
+#
+# WHAT IT DOES NOT CHANGE. No estimator and no default hyperparameter is touched, and the
+# per-target budgets (``_WP_MAX_FEATURES`` 20, ``_ATS_MAX_FEATURES`` 25,
+# ``_OU_MAX_FEATURES`` 25) are incumbent values that this change deliberately leaves
+# alone. It changes the RULE, not the budget. A withheld column was never selectable in
+# practice anyway: on the accepted gold no target selected a single column that was
+# constant over its own fit window.
+
+
+def informative_columns(X: pd.DataFrame) -> list[str]:
+    """Return the columns of ``X`` that vary over these rows, in their original order.
+
+    "Informative" here means only "not constant over the fit window". A column that is
+    constant, or entirely NaN, carries nothing a model can learn from -- but it still
+    perturbs a column-sampling estimator's fit, which is the defect this exists to close.
+
+    Args:
+        X: The frame the scoring model is about to be fitted on.
+
+    Returns:
+        The subset of ``X.columns`` with more than one distinct value (NaN counted as a
+        value, so an all-NaN column is correctly treated as constant).
+    """
+    distinct = X.nunique(dropna=False)
+    return [column for column in X.columns if distinct[column] > 1]
+
+
 class BaseTrainer(ABC):
     """Abstract base class for model trainers.
 
@@ -237,10 +298,19 @@ class BaseTrainer(ABC):
         y: pd.Series,
         max_features: int | None = None,
     ) -> list[str]:
-        """Select features using model-based importance on the training window.
+        """Select features by model importance on the training window.
 
-        Uses SelectFromModel with the model type to rank features.
-        If max_features is specified, limits to that count.
+        THE RULE: fit a scoring model on the columns that VARY over this window, then
+        keep the top ``max_features`` of them by importance among those scoring at or
+        above the mean importance. See the module-level "Feature-selection semantics"
+        note for why the zero-variance pre-filter is there, what it does not promise,
+        and which of the cap and the threshold actually binds in production.
+
+        ``threshold="mean"`` is stated rather than left to scikit-learn's
+        ``threshold=None`` default. It is the same rule that default already resolved to
+        for this codebase's two estimators (an L2 ``LogisticRegression`` and an
+        ``XGBRegressor``); stating it means a future switch to an L1 penalty would not
+        silently re-resolve the rule to ``1e-5`` without anyone deciding to.
 
         Args:
             X: Training features.
@@ -250,16 +320,27 @@ class BaseTrainer(ABC):
         Returns:
             Sorted list of selected feature names.
         """
-        model = self._create_model(self._get_default_params())
-        model.fit(X, y)
+        # Withhold columns that carry no information over THIS window from the fit. The
+        # fallback covers a degenerate frame in which nothing varies: selecting from an
+        # empty frame would raise, and refusing to select at all is worse than scoring
+        # the frame as it stands.
+        informative = informative_columns(X)
+        fit_frame = X[informative] if informative else X
 
-        selector = SelectFromModel(model, max_features=max_features, prefit=True)
+        model = self._create_model(self._get_default_params())
+        model.fit(fit_frame, y)
+
+        selector = SelectFromModel(
+            model, max_features=max_features, threshold="mean", prefit=True
+        )
         selected_mask = selector.get_support()
-        selected_features = sorted(X.columns[selected_mask].tolist())
+        selected_features = sorted(fit_frame.columns[selected_mask].tolist())
 
         self.logger.info(
             "Feature selection completed",
             total_features=len(X.columns),
+            informative_features=len(fit_frame.columns),
+            withheld_zero_variance=len(X.columns) - len(fit_frame.columns),
             selected_features=len(selected_features),
             max_features=max_features,
         )
@@ -459,7 +540,23 @@ class BaseTrainer(ABC):
             target_col=target_col,
         )
 
-        # Step 1: Feature selection on training window
+        # Step 1: Feature selection on training window.
+        #
+        # ASYMMETRY, stated rather than left to be discovered (Plan 30-17). This call
+        # passes NO max_features, i.e. it selects every feature clearing the mean
+        # importance -- a different rule from the one production runs. On the accepted
+        # rung-4 gold it would select 56 / 85 / 91 features where the three concrete
+        # trainers select 20 / 25 / 25.
+        #
+        # It is UNREACHABLE on any production path, measured rather than assumed:
+        # BaseTrainer is abstract (five abstract methods), and all three concrete
+        # subclasses -- the only ones in the codebase, and the only values in
+        # backtest.engine._TRAINER_MAP and backtest.signal_lift._TRAINER_FOR -- override
+        # train_and_evaluate and pass their own budget. Instrumented production runs
+        # confirmed this method is never entered (SELECTION-CENSUS.md section 6), and
+        # tests/unit/test_feature_selection_stability.py fails if a trainer ever stops
+        # overriding it. It is documented rather than deleted because removing a base
+        # method to resolve an inconsistency that has never fired is the larger change.
         train_val_split = splitter.get_train_val_split(features_df)
         self.feature_names = self.select_features(
             train_val_split.train_data,
