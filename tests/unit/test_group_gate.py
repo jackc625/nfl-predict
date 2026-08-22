@@ -16,19 +16,30 @@ from __future__ import annotations
 
 import itertools
 import math
+import re
+import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
 from scipy import stats
 from scipy.stats import false_discovery_control
 
+from backtest import group_gate, signal_lift
 from backtest.diagnose import (
     CLV_COLUMN_FOR,
     MIN_CLV_SAMPLE,
     SIGNIFICANCE_ALPHA,
     clv_significance,
 )
-from backtest.group_gate import decide_group_verdicts
+from backtest.group_gate import (
+    build_parser,
+    decide_group_verdicts,
+    main,
+    preregistration_commit,
+    render_verdict_toml,
+    run_group_gate,
+)
 from backtest.group_gate_constants import (
     ALPHA,
     BH_DENOMINATOR,
@@ -865,3 +876,387 @@ def test_exclusion_predicate_checks_zero_columns_before_everything_else() -> Non
         "that is the branch SPEC R4 names and the one the readout must publish."
     )
     assert bh_family_exclusion_reason(make_cell("wp", 0.01, 0.5)) is None
+
+
+# ---------------------------------------------------------------------------
+# (5) The Stage-1 ORCHESTRATOR: the baseline PIN and the ratified-verdict block
+# ---------------------------------------------------------------------------
+#
+# These cover Plan 30-05's additions, which live OUTSIDE the frozen pre-registration on
+# purpose: a bug in the mechanics must be fixable without touching the module whose
+# last-modifying commit is the git-ancestry anchor.
+
+
+def _mixed_verdict_screen(snap_zero_columns: bool = False) -> dict:
+    """A synthetic 3x3 screen carrying three DIFFERENT verdicts at once.
+
+    ``injury`` is KEEP (its WP cell survives the correction), ``situational`` is UNDETERMINED
+    (positive everywhere, nothing survives), and ``snap`` is either DROP (no positive point
+    estimate anywhere) or NOT MEASURED (zero columns of the group are present in gold).
+    """
+    cells_by_group: dict[str, dict[str, dict]] = {
+        "injury": {
+            "wp": make_cell("wp", 0.5, 0.0001),
+            "ats": make_cell("ats", 0.01, 0.9),
+            "ou": make_cell("ou", 0.01, 0.9),
+        },
+        "situational": {
+            target: make_cell(target, 0.01, 0.9) for target in GRID_TARGETS
+        },
+    }
+    if snap_zero_columns:
+        cells_by_group["snap"] = {
+            target: make_cell(
+                target,
+                0.0,
+                float("nan"),
+                n_group_columns=0,
+                n_group_columns_selected=0,
+            )
+            for target in GRID_TARGETS
+        }
+    else:
+        cells_by_group["snap"] = {
+            target: make_cell(target, -0.01, 0.9) for target in GRID_TARGETS
+        }
+    return make_screen(cells_by_group)
+
+
+_FAKE_COMMIT = "0" * 40
+
+
+def _gate_result(snap_zero_columns: bool = False) -> dict:
+    """A judged result with a FIXED pre-registration SHA, so rendering tests stay hermetic."""
+    result = decide_group_verdicts(_mixed_verdict_screen(snap_zero_columns))
+    result["preregistration_commit"] = _FAKE_COMMIT
+    return result
+
+
+# --- the baseline PIN ------------------------------------------------------
+
+
+def test_run_group_gate_pins_the_baseline_to_every_registered_group(
+    monkeypatch,
+) -> None:
+    """T-30-15: the baseline leg excludes EVERY registered group, not the three-name default.
+
+    Written as MEMBERSHIP against the live registry rather than as a literal tuple. A literal
+    would still pass after a Phase-31 group is registered while silently no longer meaning
+    "gold minus every signal column we know about" -- which is exactly the failure mode this
+    pin exists to prevent (backtest/signal_lift.py:345-367, the 29-06 incident).
+    """
+    captured: dict[str, object] = {}
+    sentinel_screen = _mixed_verdict_screen()
+
+    def _spy(**kwargs) -> dict:
+        captured.update(kwargs)
+        return sentinel_screen
+
+    monkeypatch.setattr(group_gate, "run_signal_lift_screen", _spy)
+    run_group_gate()
+
+    pinned = captured["baseline_exclude_groups"]
+    assert set(pinned) == set(signal_lift._GROUP_PREDICATE), (
+        "run_group_gate must pass baseline_exclude_groups=ALL_REGISTERED_GROUPS -- the FULL "
+        "registered set derived from _GROUP_PREDICATE. The module default is GROUPS, a "
+        "three-name deny-list, and a deny-list cannot name a group that does not exist yet."
+    )
+    assert set(signal_lift.GROUPS) < set(pinned), (
+        "The pin must be a STRICT superset of the three screened Phase-28 groups; a later "
+        "phase's group must be excluded from the baseline automatically."
+    )
+    assert "line_movement" in pinned, (
+        "line_movement stays in the pin even after Plan 30-07 removes its columns from gold: "
+        "group_columns then returns [] and the family contributes nothing, which is correct."
+    )
+
+
+def test_run_group_gate_measures_the_frozen_grid(monkeypatch) -> None:
+    """The targets and groups come from the FROZEN constants, never from the module defaults."""
+    captured: dict[str, object] = {}
+
+    def _spy(**kwargs) -> dict:
+        captured.update(kwargs)
+        return _mixed_verdict_screen()
+
+    monkeypatch.setattr(group_gate, "run_signal_lift_screen", _spy)
+    run_group_gate()
+
+    assert tuple(captured["targets"]) == GRID_TARGETS, (
+        "run_group_gate must screen the pre-registered GRID_TARGETS."
+    )
+    assert tuple(captured["groups"]) == GRID_GROUPS, (
+        "run_group_gate must screen the pre-registered GRID_GROUPS."
+    )
+
+
+def test_run_group_gate_passes_the_screen_through_unmodified(monkeypatch) -> None:
+    """The raw screen output survives the orchestrator untouched (SPEC R8 raw-beside-corrected)."""
+    sentinel_screen = _mixed_verdict_screen()
+    monkeypatch.setattr(
+        group_gate, "run_signal_lift_screen", lambda **_kwargs: sentinel_screen
+    )
+    result = run_group_gate()
+
+    assert result["screen"] is sentinel_screen, (
+        "run_group_gate must return the screen dict it received, unmodified, so the readout "
+        "can publish the raw grid beside the corrected one."
+    )
+    assert set(result["verdicts"]) == set(GRID_GROUPS), (
+        "run_group_gate must return one verdict per screened group."
+    )
+    assert result["verdicts"]["injury"]["verdict"] == VERDICT_KEEP
+
+
+def test_run_group_gate_records_the_preregistration_commit(monkeypatch) -> None:
+    """The result carries the frozen rule's anchor SHA, so the JSON record is self-describing."""
+    monkeypatch.setattr(
+        group_gate, "run_signal_lift_screen", lambda **_kwargs: _mixed_verdict_screen()
+    )
+    result = run_group_gate()
+    assert re.fullmatch(r"[0-9a-f]{40}", result["preregistration_commit"]), (
+        "run_group_gate must record the last-modifying commit of "
+        "backtest/group_gate_constants.py, the SPEC R4 ancestry anchor."
+    )
+
+
+def test_the_pin_is_written_as_the_derived_symbol_not_the_module_default() -> None:
+    """Source-scan: the pin is spelled with the DERIVED symbol, never re-typed as a literal."""
+    source = _GATE_PATH.read_text(encoding="utf-8")
+    needle = "baseline_exclude_groups=" + "ALL_REGISTERED_GROUPS"
+    assert source.count(needle) >= 1, (
+        f"backtest/group_gate.py must pass {needle} explicitly. Relying on the module default "
+        "silently measures each group against a baseline that already contains every group "
+        "registered after Phase 28."
+    )
+
+
+def test_the_preregistration_commit_resolves_from_git() -> None:
+    """The anchor SHA is RESOLVED from git, never transcribed into the source."""
+    resolved = preregistration_commit()
+    expected = subprocess.run(
+        ["git", "log", "-1", "--format=%H", "--", "backtest/group_gate_constants.py"],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    assert resolved == expected, (
+        "preregistration_commit must return git's own answer for the frozen rule module's "
+        f"last-modifying commit. Got {resolved}, git says {expected}."
+    )
+    assert re.fullmatch(r"[0-9a-f]{40}", resolved), (
+        "The anchor must be a full 40-character SHA so Plan 30-13's strict-ancestor assertion "
+        "has an unambiguous target."
+    )
+
+
+# --- the ratified-verdict block --------------------------------------------
+
+
+def test_rendered_block_parses_as_toml() -> None:
+    parsed = tomllib.loads(render_verdict_toml(_gate_result()))
+    assert "excluded_groups" in parsed, (
+        "excluded_groups must be a TOP-LEVEL key: scripts/promote_models.py reads "
+        "verdict.get('excluded_groups', []) off the parsed document root."
+    )
+    assert parsed["stage1"]["bh_denominator"] == 9
+    assert parsed["stage1"]["correction_method"] == CORRECTION_METHOD
+    assert parsed["stage1"]["bh_denominator_rule"] == BH_DENOMINATOR
+    assert parsed["stage1"]["preregistration_commit"] == _FAKE_COMMIT
+
+
+def test_excluded_groups_is_drop_plus_undetermined() -> None:
+    result = _gate_result()
+    parsed = tomllib.loads(render_verdict_toml(result))
+    verdicts = result["verdicts"]
+    expected = sorted(
+        group
+        for group, entry in verdicts.items()
+        if entry["verdict"]
+        in (VERDICT_DROP, VERDICT_UNDETERMINED, VERDICT_NOT_MEASURED)
+    )
+    assert verdicts["snap"]["verdict"] == VERDICT_DROP
+    assert verdicts["situational"]["verdict"] == VERDICT_UNDETERMINED
+    assert parsed["excluded_groups"] == expected == ["situational", "snap"], (
+        "excluded_groups is DERIVED as DROP + UNDETERMINED + NOT MEASURED, so the Stage-2 "
+        "exclusion list can never be a transcription (T-30-26)."
+    )
+    assert "injury" not in parsed["excluded_groups"], (
+        "A KEEP group must never appear in the exclusion list."
+    )
+
+
+def test_excluded_groups_includes_a_not_measured_group() -> None:
+    result = _gate_result(snap_zero_columns=True)
+    parsed = tomllib.loads(render_verdict_toml(result))
+    assert result["verdicts"]["snap"]["verdict"] == VERDICT_NOT_MEASURED
+    assert parsed["excluded_groups"] == ["situational", "snap"], (
+        "A NOT MEASURED group produced no evidence for carrying it, so it is excluded -- and "
+        "is REPORTED as NOT MEASURED, never as DROP."
+    )
+
+
+def test_each_excluded_group_carries_its_verdict_word_in_the_comment() -> None:
+    for zero_columns in (False, True):
+        result = _gate_result(snap_zero_columns=zero_columns)
+        block = render_verdict_toml(result)
+        comment = block.split("excluded_groups =")[0]
+        for group in tomllib.loads(block)["excluded_groups"]:
+            word = result["verdicts"][group]["verdict"]
+            assert re.search(rf"^#.*\b{group}\b.*{re.escape(word)}", comment, re.M), (
+                f"The comment above excluded_groups must name '{group}' with its own verdict "
+                f"word '{word}', so a reader cannot mistake the exclusion list for a collapse "
+                "of the three-valued vocabulary (SPEC R4/R8, T-30-19)."
+            )
+
+
+def test_the_undetermined_token_survives_into_the_rendered_block() -> None:
+    block = render_verdict_toml(_gate_result())
+    assert VERDICT_UNDETERMINED in block, (
+        "A group carrying the UNDETERMINED verdict must have that literal word in the rendered "
+        "block. UNDETERMINED resolves to DROP for the DEPLOY decision and is nonetheless "
+        "REPORTED as UNDETERMINED (SPEC R4/R8)."
+    )
+    assert tomllib.loads(block)["stage1"]["verdicts"]["situational"]["verdict"] == (
+        VERDICT_UNDETERMINED
+    )
+    assert "resolves to DROP" in block, (
+        "The block must carry the prose resolution rule in its own comment, so the config file "
+        "explains itself without the readout."
+    )
+
+
+def test_every_cell_reports_its_delta_p_rejection_rank_q_and_mde() -> None:
+    parsed = tomllib.loads(render_verdict_toml(_gate_result()))
+    cell = parsed["stage1"]["cells"]["injury"]["wp"]
+    for key in ("delta_mean", "delta_p", "bh_rejected", "bh_rank", "q_display", "mde"):
+        assert key in cell, f"Cell block is missing '{key}'."
+    assert cell["bh_rejected"] is True
+    assert cell["bh_rank"] == 1
+    assert cell["delta_mean"] == pytest.approx(0.5)
+    assert cell["delta_p"] == pytest.approx(0.0001)
+
+
+def test_alpha_mde_power_and_denominator_are_all_emitted() -> None:
+    parsed = tomllib.loads(render_verdict_toml(_gate_result()))["stage1"]
+    assert parsed["alpha"] == pytest.approx(ALPHA)
+    assert parsed["mde_power"] == pytest.approx(MDE_POWER)
+    assert parsed["bh_denominator"] == 9, (
+        "The BH denominator ACTUALLY USED must be recorded, not just the rule that produced it."
+    )
+
+
+_NON_COMMENT_FLOAT = re.compile(
+    r"(?<![\w.])-?(?:\d+\.\d+(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)"
+)
+
+
+def test_every_float_is_emitted_through_the_fixed_precision_specifier() -> None:
+    """T-30-54: no float reaches the block through Python's default repr.
+
+    The default float repr is shortest-round-trip and its output is not contractually stable
+    across platforms or patch releases. Plan 30-10 asserts config/group_gate_verdict.toml is
+    byte-identical to this generator's output, so rendering drift there would read as
+    tampering with a committed measurement artifact.
+    """
+    assert group_gate._FLOAT_FORMAT == ".17g", (
+        "The precision must be an EXPLICIT specifier constant. .17g is the precision at which "
+        "no two distinct IEEE-754 doubles can collide, so a fixed number of decimal places "
+        "(which would flatten a 1e-30 p-value to 0.000000000000) is not an option here."
+    )
+    block = render_verdict_toml(_gate_result())
+    tokens = [
+        token
+        for line in block.splitlines()
+        if not line.lstrip().startswith("#")
+        for token in _NON_COMMENT_FLOAT.findall(line)
+    ]
+    assert tokens, "The block must contain at least one float."
+    for token in tokens:
+        assert token == group_gate._fmt_float(float(token)), (
+            f"Float token {token} is not the fixed-precision rendering of its own value. "
+            "Every float must go through _fmt_float; never interpolate a bare float."
+        )
+
+
+def test_rendering_the_same_structure_twice_is_byte_identical() -> None:
+    result = _gate_result()
+    assert render_verdict_toml(result) == render_verdict_toml(result), (
+        "render_verdict_toml must be deterministic: same structure in, byte-identical text out."
+    )
+
+
+def test_the_rendering_path_uses_no_repr() -> None:
+    source = _GATE_PATH.read_text(encoding="utf-8")
+    needle = "re" + "pr("
+    assert source.count(needle) == 0, (
+        f"backtest/group_gate.py must not call {needle} anywhere in the rendering path "
+        "(T-30-54)."
+    )
+
+
+def test_render_verdict_toml_writes_no_file(monkeypatch) -> None:
+    """The generator PRINTS; the human block-pastes. It never writes config/ (D24-07)."""
+
+    def _forbidden(*_args, **_kwargs):
+        message = "render_verdict_toml must not open or write any file"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(Path, "write_text", _forbidden)
+    monkeypatch.setattr(Path, "write_bytes", _forbidden)
+    monkeypatch.setattr(Path, "open", _forbidden)
+    monkeypatch.setattr("builtins.open", _forbidden)
+
+    block = render_verdict_toml(_gate_result())
+    assert isinstance(block, str)
+    assert block.endswith("\n")
+
+
+def test_the_block_says_it_is_generator_output_and_names_the_anchor() -> None:
+    block = render_verdict_toml(_gate_result())
+    lowered = block.lower()
+    assert "generator output" in lowered and "hand-edit" in lowered, (
+        "The block must state that it is generator output and must never be hand-edited "
+        "(D24-07 block-paste discipline)."
+    )
+    assert _FAKE_COMMIT in block, (
+        "The block must carry the frozen rule module's last-modifying commit SHA."
+    )
+    assert block.isascii(), "ASCII only, no emoji (CLAUDE.md hard constraint)."
+
+
+def test_the_block_is_a_complete_paste_covering_every_screened_group() -> None:
+    parsed = tomllib.loads(render_verdict_toml(_gate_result()))
+    assert set(parsed["stage1"]["verdicts"]) == set(GRID_GROUPS), (
+        "The block covers every screened group in ONE paste, so a transcription cannot drop a "
+        "group (D24-07)."
+    )
+    assert set(parsed["stage1"]["cells"]) == set(GRID_GROUPS)
+
+
+# --- the CLI ---------------------------------------------------------------
+
+
+def test_build_parser_defaults_the_output_under_outputs() -> None:
+    args = build_parser().parse_args([])
+    assert Path(args.output).parts[0] == "outputs", (
+        "The CLI's default result path must sit under outputs/, never under data/."
+    )
+    assert "group_gate" in Path(args.output).parts
+
+
+def test_the_cli_refuses_an_output_path_under_data() -> None:
+    """T-30-14: the no-writes-under-data prohibition is enforced BEFORE anything runs."""
+    with pytest.raises(ValueError, match="data/") as excinfo:
+        main(["--output", "data/gold/group_gate_result.json"])
+    message = str(excinfo.value)
+    assert "data/" in message, "The error must name the prohibited location."
+    assert "outputs/" in message, (
+        "The error must name where the result belongs instead."
+    )
+
+
+def test_the_data_path_refusal_accepts_a_path_outside_data(tmp_path) -> None:
+    accepted = group_gate._reject_data_path(tmp_path / "result.json")
+    assert accepted == (tmp_path / "result.json").resolve()
