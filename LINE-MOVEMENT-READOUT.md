@@ -840,3 +840,100 @@ games, and the rule returns DROP. The recommendation into Phase 30 is DROP. Ever
 paragraph is left standing as the record of what was believed before the leak was found, and every
 superseded grid is retained in place with the reason it was superseded. Nothing was deleted, and
 the negative outcome is reported in the same voice the flat one was.
+
+---
+
+## 6. Phase-30 annotation (2026-08-22): the confound tell was structurally inert (CR-03), and the DROP is a DECISION
+
+Appended by Phase 30, Plan 30-03. **Nothing above this line is edited, deleted or re-anchored.**
+Every published reading stays exactly where it is with its date and its reason (D29-06-02); this
+section sits BESIDE the record, not over it. It exists because two separate things about the
+line-movement family became true after Section 5 was written, and a reader who met only one of
+them would draw the wrong conclusion about the other.
+
+### 6a. The confound tell named in 4c-bis item 6 was measured, and it is STRUCTURALLY INERT (CR-03)
+
+Item 6 of the 4c-bis pre-registration registered this tell: if `line_movement_coverage` -- **or
+anything collinear with it** -- appears in a target's `group_columns_selected`, that cell is
+declared CONFOUNDED and is not read as market information. Sections 4d and 4d-bis report that the
+tell **did not fire**, and that report is accurate as far as the guard goes.
+
+**What the guard actually checks is literal name membership.** The "or anything collinear with it"
+half was never implemented. The Phase-29 deep code review raised this as CR-03, a collinearity-based
+fix was written and measured against committed gold, and it was then **REVERTED rather than
+shipped**. The measurement is why:
+
+- Gold is **expanding-window z-scored**, so `line_movement_coverage` does not carry two values
+  inside the train 2018-2020 selection window -- it carries **238 distinct values**. The
+  season-proxy structure the tell was reaching for is not visible as a two-level flag.
+- **Every candidate statistic came back inert or inverted.** Spearman `|rho|` against the
+  line-movement family ran **0.004 to 0.19**, against **0.46** for `game_day_of_week` -- an
+  unrelated column. A "constant within a season" flag lit up **104 of 205 columns**. Any threshold
+  low enough to fire on the family fires on a dozen unrelated features first.
+
+So the tell is **structurally inert**: on this gold it cannot fire on what it was written to catch,
+and any threshold that made it fire would fire mostly on the wrong things. The full measurement
+table is in `29-REVIEW-FIX.md`.
+
+**Why an inert guard was annotated rather than replaced.** Shipping a wrong guard into Phase 30's
+money gate is worse than annotating an inert one. A guard that fires on `game_day_of_week` before
+it fires on `line_movement_coverage` would have started vetoing cells for reasons unrelated to the
+confound it was named after, inside the one gate whose whole job is to be trustworthy. That is the
+SPEC's own out-of-scope ruling, applied here. The honest state is therefore recorded rather than
+patched over: **the published "the confound tell did not fire" claim rests on a guard that, on this
+gold, could not have fired.** The readings that cite it -- 4d and 4d-bis -- are retained unchanged,
+with this annotation beside them.
+
+### 6b. The Phase-30 DROP of the 15-column family, and what it actually rests on
+
+The 15 `line_movement` columns leave all three gold matrices in Phase 30. **This is a DECISION, not
+an accident of the calendar**, taken under SPEC R3 and the standing D29-07-01 recommendation, and
+it is recorded as one so no future reader has to reconstruct the reasoning from a width change.
+
+**The grounds are structural, and they are stated in Section 4a and 4e-bis already.** The Odds API
+historical archive floor is **2020-06-06**. The project's canonical feature-selection window is
+train 2018-2019. Every trainer selects its features on the train seasons ONLY and locks that set
+for the whole holdout walk-forward. So across the entire canonical selection window all 15 columns
+are exactly constant, carry zero importance by construction, and **0 of 15 can EVER be selected**
+into a candidate model no matter how informative the underlying signal is. A family that cannot
+enter a model is not a candidate feature set; it is 15 columns of width. Carrying it indefinitely
+under a window that cannot see it was the one option 4e ruled out.
+
+**The DROP does NOT rest on the confound tell.** This is the reason 6a and 6b are in the same
+section. The tell is inert (6a); the calendar fact is structural, measured, and independent of it.
+If the tell had been implemented perfectly and had never fired, the DROP would be identical --
+and if it had fired on every cell, the DROP would still be identical. Reading 6a as the
+justification for 6b would be a mistake, and this paragraph exists so nobody makes it.
+
+**What the DROP explicitly does NOT change:**
+
+| Retained unchanged | Why it matters |
+|---|---|
+| The canonical 2018-2019 selection window | Phase 30 declined to adopt a covered selection window as its binding config. The window is NOT mutated to rescue the family (D-Q2 / D29-07-01). |
+| The paid `odds_timeline` archive on disk | The 7,210 credits bought a real 2020-2024 trajectory archive. It is **retained on disk untouched** -- not deleted, not overwritten, not re-pulled. A later phase that adopts a covered window can rebuild the family from it with no further spend. |
+| `features/line_movement.py` and its leakage-keyword entry | The builder stays in the tree. |
+| `line_movement` in the `backtest.signal_lift` group registry | With the entry retained, `group_columns` on post-drop gold returns an empty list and every screen's baseline leg automatically excludes the family if it ever returns. Removing the registration would re-arm the 29-06 trap for the next phase that widens gold. |
+
+**One consequence, stated so it is not mistaken for breakage.** After the DROP,
+`python -m backtest.signal_lift --phase 29` becomes a **NOT-MEASURED run by construction**: zero
+group columns are present, so there is nothing to add in, and the same is true of the
+`--coverage-window` and `--covered-selection-window` diagnostics. That is correct and expected. The
+harness still runs and now **honestly reports the family as absent**, rather than having been
+removed or quietly returning a number from a group that is no longer there.
+
+### 6c. Where the Phase-29 numbers above are reproduced from now
+
+Every published reading in Sections 4a through 4e-bis was measured on the gold that existed before
+Phase 30 rebuilt it. Phase 30 rebuilds gold four times on purpose, so the guard that reproduces
+those readings -- `tests/unit/test_line_movement_readout_md.py` -- no longer runs against live
+`data/gold`. It runs against a **committed frozen fixture** of the pre-Phase-30 ATS matrix and its
+closing-odds slice, captured at repository SHA `dc4d1c0` before any rebuild rung ran and pinned by
+sha256. The capture record -- source paths, capture date, both digests beside the digests of the
+source files they were copied from, and the regenerate-together-or-not-at-all rule -- sits next to
+the fixture under `tests/fixtures/gold/`.
+
+What those four reproductions assert is therefore narrower and more honest than before: the
+published Phase-29 numbers came from the committed harness **on the gold that produced them**. They
+say nothing about live gold. The present-tense claim -- that the family is gone from all three live
+matrices -- is asserted separately, and the fixture cannot be regenerated to rescue a failing
+assertion without turning the identity test red.

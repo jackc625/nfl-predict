@@ -118,6 +118,31 @@ _REQUIRED_SECTION_MARKERS = (
     "Decision:",  # 3 -- the owner branch decision
     "Lift results",  # 4 -- the backfill-path lift placeholder
     "Honest scope-down",  # 5 -- the scope-down / slip note
+    "Phase-30 annotation",  # 6 -- the CR-03 inert-tell finding + the DROP-as-decision record
+)
+
+# Section 6 (Plan 30-03) content contract: the literal tokens the CR-03 annotation must carry.
+#
+# Two claims are load-bearing and are pinned as phrases rather than as section presence, because
+# a section can survive while its meaning is edited out from under it:
+#
+#   1. the tell is STRUCTURALLY INERT -- so the published "did not fire" readings are annotated
+#      rather than silently trusted;
+#   2. the DROP is a DECISION taken on the structural 2018-2019 selection-window fact, and
+#      explicitly NOT on the tell -- so no reader can mistake one for the other (T-30-21).
+_REQUIRED_SECTION6_MARKERS = (
+    "CR-03",
+    "structurally inert",  # (1) the finding, in the words the SPEC asks for
+    "the DROP is a DECISION",  # (2) the grounds, stated as a decision not a calendar accident
+    "does NOT rest on the confound tell",  # (2) the separation, stated where it is checkable
+    "SPEC R3",
+    "D29-07-01",
+    "2020-06-06",  # the archive floor that makes the family unselectable
+    "0 of 15 can EVER be selected",  # the structural fact the DROP actually rests on
+    "canonical 2018-2019 selection window",  # retained unchanged
+    "retained on disk untouched",  # the paid odds_timeline archive is not destroyed
+    "NOT-MEASURED run by construction",  # what --phase 29 becomes after the drop
+    "honestly reports the family as absent",  # ... rather than having been removed
 )
 
 # Literal phrases the doc must carry. The D-04 pricing freshness stamp used to live
@@ -415,6 +440,57 @@ class TestLiftSectionContent:
         content = _read_readout()
         assert "CARRY the line-movement family to Phase 30" in content
         assert "not shipped" in content.lower()
+
+
+class TestCR03Annotation:
+    """Section 6 (Plan 30-03): the inert-tell finding and the DROP-as-decision record.
+
+    D25-10 Pitfall 5 -- the doc and its guard move in the SAME commit, or the suite is left red
+    in a way that reads as unrelated to whoever runs it next.
+    """
+
+    def test_cr03_annotation_is_present(self) -> None:
+        """Every load-bearing phrase of the annotation is present, and named if missing."""
+        content = _read_readout()
+        missing = [m for m in _REQUIRED_SECTION6_MARKERS if m not in content]
+        assert not missing, (
+            f"LINE-MOVEMENT-READOUT.md Section 6 (the CR-03 annotation) is missing: {missing}. "
+            "These are not decorative: the annotation exists so a reader cannot mistake the "
+            "structurally inert confound tell for the grounds of the Phase-30 DROP, which rest "
+            "on the 2018-2019 selection window instead (T-30-21)."
+        )
+
+    def test_annotation_is_appended_beside_the_published_record(self) -> None:
+        """Section 6 sits AFTER every published Phase-29 reading, never among or over them.
+
+        The append discipline is what makes a superseded number recoverable (D29-06-02). If the
+        annotation ever migrates above Section 5, it has started editing the record rather than
+        annotating it.
+        """
+        content = _read_readout()
+        annotation_at = content.index("## 6. Phase-30 annotation")
+        for earlier in ("### 4e-bis.", "## 5. Honest scope-down"):
+            assert content.index(earlier) < annotation_at, (
+                f"the Phase-30 annotation must come AFTER {earlier} -- it is appended beside "
+                "the published record, not inserted into it"
+            )
+
+    def test_the_published_tell_readings_are_retained_not_rewritten(self) -> None:
+        """4d / 4d-bis still say the tell did not fire; the annotation sits beside that claim.
+
+        The failure this pins is the tempting one: having found the tell inert, rewrite the
+        sections that cite it. That would destroy the record of what was believed when the
+        headline was published.
+        """
+        content = _read_readout()
+        assert "did not fire" in content, (
+            "the published 'the confound tell did not fire' reading must be RETAINED -- the "
+            "CR-03 annotation goes beside it, never over it"
+        )
+        assert "rests on a guard that, on this" in content, (
+            "the annotation must state plainly that the retained claim rests on a guard which "
+            "could not have fired on this gold"
+        )
 
 
 def _require_fixture() -> None:
