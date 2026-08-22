@@ -25,7 +25,10 @@ The contract these tests pin:
   whole frame, so a globally-continuous column that happens to be constant within
   one season is not misclassified as an indicator in that season.
 * Missing-handling and outlier-handling stay independent.
-* The WR-10 neutral-default guard is untouched: it is removed at rung 3, not here.
+* The WR-10 neutral-default guard was untouched HERE and removed at rung 3 (Plan
+  30-07) together with the line-movement family it guarded. Its two tests are
+  inverted rather than deleted, because "no name-based interception survives" is
+  the fact the next family with a defined neutral state needs to know.
 
 The residual this does NOT close, deliberately: within-season lookahead. Season Y's
 week-1 bound still sees season Y's week 18 whenever Y self-fits, and
@@ -500,13 +503,36 @@ class TestMissingAndOutlierHandlingStayIndependent:
         assert processed.max() < 20.0, "the outlier was not winsorized"
 
 
-class TestTheWr10GuardIsPreserved:
-    """Removed at rung 3, not bundled into the WR-06 commit."""
+class TestTheWr10GuardIsGoneWithItsFamily:
+    """Rung 3 removed the guard, exactly as this class's earlier form predicted.
 
-    def test_the_line_movement_family_is_filled_from_neutral_defaults(
+    Plan 30-06 wrote these two tests to hold the WR-10 neutral-default guard steady
+    across the WR-06 change and left a note that rung 3 owns its removal, so that
+    bundling the two would not destroy one-cause-per-rung attribution. Plan 30-07
+    is that rung: the line-movement family has left gold (SPEC R3, D29-07-01), the
+    guard was its last consumer in ``scripts/build_features.py``, and it is gone.
+
+    They are INVERTED rather than deleted, because the fact they now record is
+    load-bearing for whoever adds the next family with a defined neutral state: a
+    column whose gaps must NOT read as the column median no longer gets that
+    protection automatically. What makes the removal safe today is placement, not
+    luck -- ``_enforce_line_movement_dropped`` runs on the COMBINED matrix, before
+    this method is ever called, so a family reinstated by a returning seam is
+    already gone before any imputation could see it. That placement is asserted in
+    ``tests/unit/test_build_features_gold_write.py``.
+    """
+
+    def test_a_family_named_column_now_takes_the_generic_prior_median_path(
         self, builder
     ) -> None:
-        """A median fill would stamp uncovered games COVERED; the neutral fill is 0.0."""
+        """No name-based interception survives: the gap fills from the prior season.
+
+        Under the guard these three gaps filled with the builder's neutral 0.0, so
+        an uncovered game read as NOT covered. Under the general rule they fill with
+        the strictly-prior-season median, which here is 1.0 -- i.e. the very
+        fabrication WR-10 existed to prevent. That is correct behaviour for a
+        general-purpose imputer and it is why the family must not be in gold.
+        """
         n = 200
         coverage_early = np.ones(n)
         coverage_late = np.ones(n)
@@ -520,15 +546,22 @@ class TestTheWr10GuardIsPreserved:
         out = builder.handle_missing_data_and_outliers(frame)
         later = out.loc[out["season"] == 2002, "line_movement_coverage"]
 
-        assert (later == 0.0).sum() == 3, (
-            "the WR-10 neutral-default guard no longer fills line_movement_coverage "
-            "from the builder's own defaults"
+        assert later.isna().sum() == 0, "the gap was not imputed at all"
+        assert (later == 0.0).sum() == 0, (
+            "a neutral-default fill still fires for a family-named column -- the "
+            "WR-10 guard, or a successor to it, survived the family it guarded"
         )
-        assert later.isna().sum() == 0
+        assert (later == 1.0).sum() == n
 
-    def test_the_neutral_opening_total_default_still_wins_over_a_median(
+    def test_a_totals_level_now_fills_from_the_fitted_median_not_a_constant(
         self, builder
     ) -> None:
+        """The companion inversion, on a continuous column rather than a flag.
+
+        ``LEAGUE_AVERAGE_TOTAL`` is 44.0 and the prior-season median here is ~60.
+        Under the guard the constant won; under the general rule the fitted
+        prior-season median does.
+        """
         n = 200
         rng = np.random.default_rng(44)
         early = rng.normal(60.0, 1.0, n)
@@ -543,12 +576,9 @@ class TestTheWr10GuardIsPreserved:
         out = builder.handle_missing_data_and_outliers(frame)
         filled = out.loc[out["season"] == 2002, "opening_total"].iloc[:3]
 
-        # LEAGUE_AVERAGE_TOTAL is 44.0; the prior-season median is ~60. The neutral
-        # default must win, then survive winsorization against the prior season's
-        # lower bound.
-        assert (filled < 58.0).all(), (
-            "opening_total's gap was filled from a fitted median rather than from the "
-            f"builder's neutral default -- observed {filled.tolist()}"
+        assert (filled > 58.0).all(), (
+            "the gap was filled from a constant near LEAGUE_AVERAGE_TOTAL rather "
+            f"than from the prior-season median -- observed {filled.tolist()}"
         )
 
 

@@ -24,6 +24,15 @@ Phase-29 number is unaffected.
 
 These tests pin the corrected contract, including the positive controls that stop
 it being satisfied by simply disabling winsorization.
+
+PHASE-30 NOTE (Plan 30-07, rung 3). The line-movement family has since been
+removed from gold (SPEC R3, D29-07-01), and the WR-10 neutral-fill guard was
+removed with it. The CR-02 exemption asserted here is UNCHANGED and outlives that
+family by design: it is a VALUE test, and ``saturday_game`` is a live candidate for
+the identical defect. The synthetic frames below still use the family's column
+names because they are the shape the defect was found on; nothing here reads gold.
+The one assertion that DID depend on the removed guard is inverted in place, under
+``TestMissingHandlingAndWinsorizationAreIndependent``, rather than deleted.
 """
 
 import numpy as np
@@ -196,14 +205,26 @@ class TestMissingHandlingAndWinsorizationAreIndependent:
             with_gap["spread_drift"].max()
         )
 
-    def test_a_gap_in_the_coverage_flag_still_reads_as_not_covered(
+    def test_a_gap_in_a_rare_binary_flag_now_fills_from_the_median(
         self, builder
     ) -> None:
-        """WR-10's contract is unchanged: a NaN fills to 0.0, never to the median.
+        """WR-10's neutral fill is GONE with the family it guarded (Plan 30-07).
 
-        The column median of ``line_movement_coverage`` is 1.0, so a median fill
-        would fabricate coverage. The neutral fill must still win, and the row
-        must then survive winsorization as a zero.
+        Inverted, not deleted. It used to assert that a NaN in the coverage flag
+        filled to the neutral 0.0 rather than to the median, because the median is
+        1.0 and a median fill fabricates coverage. Rung 3 removed the line-movement
+        family from gold (SPEC R3, D29-07-01) and removed the guard with it, so this
+        method now has NO name-based interception at all: a gap in a rare binary
+        flag fills from the column's own fitted median, majority level and all.
+
+        That is correct for a general-purpose imputer, and it is exactly why the
+        family must not be in gold. It is also why the next family with a defined
+        neutral state must bring its own guard rather than assume one exists -- this
+        test is the record of that, which is worth more than a deleted assertion.
+
+        What makes the removal safe TODAY is placement:
+        ``_enforce_line_movement_dropped`` runs on the combined matrix, before this
+        method is ever reached, so a reinstated seam cannot route the family here.
         """
         coverage = np.ones(_SEASON_ROWS)
         coverage[:_UNCOVERED] = np.nan
@@ -212,8 +233,14 @@ class TestMissingHandlingAndWinsorizationAreIndependent:
 
         out = builder.handle_missing_data_and_outliers(frame)
 
-        assert (out["line_movement_coverage"] == 0.0).sum() == _UNCOVERED
-        assert out["line_movement_coverage"].isna().sum() == 0
+        assert out["line_movement_coverage"].isna().sum() == 0, (
+            "the gap was not imputed at all"
+        )
+        assert (out["line_movement_coverage"] == 0.0).sum() == 0, (
+            "a neutral-default fill still fires for a family-named column -- the "
+            "WR-10 guard, or a successor to it, outlived the family it guarded"
+        )
+        assert (out["line_movement_coverage"] == 1.0).sum() == _SEASON_ROWS
 
 
 class TestTheIndicatorPredicateItself:

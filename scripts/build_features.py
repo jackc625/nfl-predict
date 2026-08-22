@@ -40,7 +40,6 @@ from data.storage import load_dataframe, save_dataframe
 from features.contextual import ContextualFeaturesCalculator
 from features.elo_features import EloFeatureBuilder
 from features.injury import InjuryBuilder
-from features.line_movement import LineMovementBuilder
 from features.market_anchors import MarketAnchorFeaturesCalculator
 from features.normalization import compute_prior_season_stats, expanding_normalize
 from features.opponent_adj import OpponentAdjuster
@@ -77,6 +76,61 @@ _SOURCE_LOAD_ERRORS = (
     FileNotFoundError,
     OSError,
 )
+
+# The Phase-29 signal group this build removes from gold (SPEC R3, D29-07-01).
+#
+# WHAT DELIBERATELY STAYS, so a reviewer does not read any of it as an oversight:
+# ``features/line_movement.py`` stays in the tree, the ``line_movement`` leakage
+# keyword stays in ``features/validation.py``, and ``line_movement`` stays
+# registered in ``backtest.signal_lift._GROUP_PREDICATE``. Three reasons, all of
+# them about the registry:
+#
+#   1. The registry's own comment block warns against editing it to fix a symptom
+#      -- that is the 29-06 trap (a deny-list that cannot name a group which does
+#      not exist yet) re-armed for the next phase that widens gold.
+#   2. A committed test asserts the registration, and reddening it buys nothing.
+#   3. With the entry retained, ``group_columns`` on post-drop gold returns an
+#      EMPTY list, ``excluded_columns`` adds nothing, and the family is excluded
+#      again AUTOMATICALLY if it ever returns.
+_LINE_MOVEMENT_GROUP = "line_movement"
+
+
+def drop_feature_group(df: pd.DataFrame, group: str) -> pd.DataFrame:
+    """Return *df* without any column belonging to *group*.
+
+    The column set is obtained from ``backtest.signal_lift.group_columns`` -- the
+    ONE group registry the Phase-28 screen, the Phase-29 screen and the Phase-30
+    gate all already read (D30-02). This module therefore carries no second list
+    of the family's names, which is exactly the failure mode that let Phase 29's
+    fifteen columns fall into the Phase-28 baseline.
+
+    The import is deferred rather than module-level because ``backtest.signal_lift``
+    pulls in ``backtest.diagnose`` and all three trainers, i.e. the whole model
+    stack -- far too heavy for a data-layer build script to import eagerly, and a
+    layering inversion besides. ``scripts/fingerprint_gold.py`` defers the identical
+    import for the identical reason.
+
+    Raises:
+        ValueError: when *group* matches NO column in *df*. A drop expressed as a
+            predicate can be misspelled, and a misspelled predicate removes nothing
+            while every downstream width count and presence check reads exactly as
+            it would after a successful drop. Refusing is what stops this build
+            emitting gold that only LOOKS dropped.
+    """
+    from backtest.signal_lift import group_columns
+
+    columns = group_columns(df, group)
+    if not columns:
+        msg = (
+            f"drop_feature_group('{group}') matched NO column of the "
+            f"{len(df.columns)}-column frame it was asked to drop from. A drop that "
+            "removes nothing is indistinguishable downstream from a drop that "
+            "worked, so this build refuses to emit gold that only LOOKS dropped. "
+            "Check the group predicate in backtest.signal_lift._GROUP_PREDICATE "
+            "against the frame's actual column names."
+        )
+        raise ValueError(msg)
+    return df.drop(columns=columns)
 
 
 class FeatureMatrixBuilder:
@@ -115,13 +169,6 @@ class FeatureMatrixBuilder:
         # flow through self.contextual_calc; no separate builder is needed here.
         self.snap_builder = SnapCountBuilder()
         self.injury_builder = InjuryBuilder(snap_builder=self.snap_builder)
-
-        # Line-movement features (Phase 29, SIG-04) read the additive
-        # `odds_timeline` trajectory silver. The builder degrades to neutral,
-        # non-null defaults plus `line_movement_coverage` = 0.0 when the table is
-        # absent or a game has no pre-freeze trajectory, so it is safe to
-        # construct unconditionally.
-        self.line_movement_builder = LineMovementBuilder()
 
         # Leakage gate for hard-fail validation
         self.leakage_gate = LeakageGate()
@@ -182,15 +229,17 @@ class FeatureMatrixBuilder:
             # Core game data.
             #
             # WR-10: filter by season when a season is given, and narrow by week only
-            # when a week is ALSO given. This previously required BOTH, while
-            # LineMovementBuilder.build_features filters on each independently and
-            # main() declares --season and --week as independent options -- so a
-            # season-only build left most games unfiltered here, produced
-            # line-movement rows only for the target season, and left the rest NaN
-            # after the left merge. Those NaNs were then filled with the column
-            # median, which for line_movement_coverage is 1.0, stamping every
-            # uncovered game as covered and inverting the flag the family's whole
-            # semantics rest on.
+            # when a week is ALSO given. This previously required BOTH, while every
+            # builder's ``build_features`` filters on each independently and main()
+            # declares --season and --week as independent options -- so a season-only
+            # build left most games unfiltered here, produced builder rows only for
+            # the target season, and left the rest NaN after the left merge, where
+            # the whole-column median then filled them.
+            #
+            # The defect was FOUND on the Phase-29 coverage flag, whose median is 1.0
+            # -- so the fill stamped every uncovered game as covered. That family has
+            # since left gold (SPEC R3), but the filter defect is general to every
+            # left-merged source and the fix stays.
             games_df = load_dataframe("games", layer="silver")
             if target_season:
                 games_df = games_df[games_df["season"] == target_season]
@@ -315,25 +364,14 @@ class FeatureMatrixBuilder:
                 logger.warning("Failed to build injury features", error=str(e))
                 feature_sources["injury"] = pd.DataFrame()
 
-            # Line-movement features (Phase 29, SIG-04; computed via
-            # LineMovementBuilder from the `odds_timeline` trajectory silver).
-            # Registration here routes the source through the LeakageGate; the
-            # EXPLICIT merge block in combine_features is what actually lands the
-            # columns in gold (the 28-06 lesson -- both seams are mandatory).
-            try:
-                line_movement_df = self.line_movement_builder.build_features(
-                    games_df,
-                    as_of_datetime,
-                    target_season=target_season,
-                    target_week=target_week,
-                )
-                feature_sources["line_movement"] = line_movement_df
-                logger.info(
-                    "Built line-movement features", records=len(line_movement_df)
-                )
-            except _SOURCE_LOAD_ERRORS as e:
-                logger.warning("Failed to build line-movement features", error=str(e))
-                feature_sources["line_movement"] = pd.DataFrame()
+            # SEAM 1 of 2 for the Phase-29 line-movement family is DELIBERATELY
+            # ABSENT here (SPEC R3, D29-07-01). The family used to be registered at
+            # this point and merged by an explicit block in ``combine_features``;
+            # BOTH have been removed, because ``combine_features`` has no generic
+            # loop and leaving either one behind resurrects the columns on the next
+            # rebuild. The paid ``odds_timeline`` archive and
+            # ``features/line_movement.py`` are untouched -- what left is gold, not
+            # the data or the builder.
 
             return feature_sources
 
@@ -517,19 +555,15 @@ class FeatureMatrixBuilder:
             )
             feature_counts["injury"] = len(injury_cols)
 
-        # Line-movement features (game-level; LineMovementBuilder emits one
-        # un-prefixed row per game -- a line trajectory belongs to the game, not
-        # to a side). Same rationale as the snap/injury blocks: combine_features
-        # has NO generic loop over feature_sources, so without this EXPLICIT merge
-        # the registered line-movement columns pass the LeakageGate and are then
-        # SILENTLY DROPPED from gold (the load-bearing 28-06 lesson).
-        line_movement_df = feature_sources.get("line_movement", pd.DataFrame())
-        if len(line_movement_df) > 0:
-            lm_cols = [c for c in line_movement_df.columns if c != "game_id"]
-            combined_features = combined_features.merge(
-                line_movement_df[["game_id", *lm_cols]], on="game_id", how="left"
-            )
-            feature_counts["line_movement"] = len(lm_cols)
+        # SEAM 2 of 2 for the Phase-29 line-movement family is DELIBERATELY ABSENT
+        # here (SPEC R3, D29-07-01). This is where an explicit merge block used to
+        # sit, and it is the seam that actually landed the columns in gold: a
+        # source registered in ``feature_sources`` but not merged here passes the
+        # LeakageGate and is then silently dropped (the 28-06 lesson). Read in
+        # reverse, that is exactly why removing only the registration would not
+        # have been enough on its own, and why removing only this block would not
+        # either -- a later reader restoring one seam must restore both, and
+        # ``_enforce_line_movement_dropped`` will remove the result anyway.
 
         # Add feature timestamp (tz-aware UTC; the storage layer rejects naive
         # datetimes, and feature_timestamp is persisted into every gold matrix)
@@ -543,6 +577,48 @@ class FeatureMatrixBuilder:
         )
 
         return combined_features
+
+    def _enforce_line_movement_dropped(
+        self, combined_features: pd.DataFrame
+    ) -> pd.DataFrame:
+        """Guarantee the Phase-29 line-movement family does not reach gold.
+
+        SPEC R3 / D29-07-01. On the intended path this finds nothing and returns
+        the frame untouched, because BOTH seams that could land the family have
+        been removed -- the ``feature_sources`` registration and the explicit
+        ``combine_features`` merge block. That is the structural removal, and it
+        is the one that matters.
+
+        This is nevertheless not dead code, and the ``if`` is not a formality.
+        ``combine_features`` has NO generic loop over ``feature_sources``, so a
+        seam restored by a later edit lands its columns in gold SILENTLY -- the
+        LeakageGate passes them and nothing else looks. This is the one place that
+        would notice, and it sits before ``handle_missing_data_and_outliers``, so a
+        reinstated family is removed before any imputation or winsorization can see
+        it (which is what makes removing the WR-10 neutral-default guard safe).
+
+        NOTE ON THE EMPTY CASE, because the asymmetry is deliberate.
+        ``drop_feature_group`` REFUSES a zero match -- a drop asked to remove
+        something and removing nothing is indistinguishable downstream from one
+        that worked. A build whose seams are gone was never asking, so it must not
+        raise; the refusal guards the drop, and the seam removal guards the build.
+        """
+        # Deferred for the same reason as in ``drop_feature_group``: importing
+        # ``backtest.signal_lift`` eagerly pulls the whole model stack into a
+        # data-layer build script.
+        from backtest.signal_lift import group_columns
+
+        present = group_columns(combined_features, _LINE_MOVEMENT_GROUP)
+        if not present:
+            return combined_features
+
+        logger.warning(
+            "Line-movement columns reached the combined matrix and were dropped "
+            "before gold; a removed merge/registration seam has returned",
+            columns=present,
+            count=len(present),
+        )
+        return drop_feature_group(combined_features, _LINE_MOVEMENT_GROUP)
 
     def _get_team_features(
         self,
@@ -705,27 +781,23 @@ class FeatureMatrixBuilder:
         season_passes = self._season_passes(processed_df)
         earliest_season = season_passes[0][0] if season_passes else None
 
-        # WR-10: the line-movement family must NEVER be median-imputed. Its neutral
-        # state is a defined thing -- LEAGUE_AVERAGE_TOTAL for the opening anchors,
-        # 0.0 for the drift/path families and 0.0 for the coverage flag -- and the
-        # column median for line_movement_coverage is 1.0, so a median fill would
-        # fabricate coverage for games that have none. Fill from the builder's own
-        # neutral defaults instead, so a gap can only ever read as "not covered".
-        neutral_line_movement = self.line_movement_builder._neutral_features(
-            emit_spread=True
-        )
-
+        # The WR-10 neutral-default branch that used to open this loop is GONE with
+        # the family it guarded (SPEC R3). It filled the Phase-29 line-movement
+        # columns from the builder's own neutral defaults rather than from a
+        # median, because the median of the coverage flag is 1.0 and a median fill
+        # therefore fabricated coverage. Nothing is weakened by its removal: the
+        # SPEC R3 drop runs on the COMBINED matrix, before this method is ever
+        # called, so a family reinstated by a returning seam is already gone by the
+        # time any imputation could see it. Keeping an unreachable guard that names
+        # a builder this module no longer imports would be a false statement about
+        # what the code does.
         for col in numeric_cols:
             original_missing = processed_df[col].isna().sum()
 
             # Handle missing data
             if original_missing > 0:
-                if col in neutral_line_movement:
-                    processed_df[col] = processed_df[col].fillna(
-                        neutral_line_movement[col]
-                    )
                 # For team-based features, use team's season average
-                elif any(prefix in col for prefix in ["home_", "away_"]):
+                if any(prefix in col for prefix in ["home_", "away_"]):
                     processed_df[col] = self._impute_team_features(processed_df, col)
                 else:
                     # WR-06 surface 1: for game-level features this was
@@ -741,35 +813,32 @@ class FeatureMatrixBuilder:
             # CR-02: a DISCRETE INDICATOR has no outliers to winsorize, and
             # clipping one destroys the distinction it exists to encode.
             #
-            # The WR-10 guard above correctly refuses to median-impute the
-            # line-movement family, because the median of line_movement_coverage is
-            # 1.0. But that guard used to sit inside `if original_missing > 0:` and
-            # end in `continue`. In the normal case the builder emits a row for
-            # every game, so original_missing == 0, the guard never ran, and
-            # execution fell straight into the unconditional winsorization below.
+            # The defect was found on a rare binary coverage flag. Its guard against
+            # median-imputation used to sit inside `if original_missing > 0:` and end
+            # in `continue`, so in the normal case -- a builder emitting a row for
+            # every game, original_missing == 0 -- the guard never ran and execution
+            # fell straight into the unconditional winsorization below.
             #
-            # On a single covered season the uncovered fraction is far below 1%
-            # (2023 is 271/272 covered), so q01 == q99 == 1.0 and the clip stamped
-            # EVERY uncovered game as COVERED: `--season 2023` produced gold whose
-            # line_movement_coverage was a constant 1.0. That is precisely the
-            # fabrication WR-10 was written to prevent, arriving through a different
-            # door, and it additionally destroyed the column's variance before
-            # expanding_normalize saw it. The full-history rebuild happened to be
-            # safe (q01 = 0.0 at ~13% uncovered), which is why the published gold is
-            # unaffected and why nothing caught it. It is a general defect for any
-            # rare binary flag -- `saturday_game` is another candidate.
+            # On a single covered season the minority level was far below 1% (271 of
+            # 272 games), so q01 == q99 == 1.0 and the clip stamped EVERY minority row
+            # with the majority level: a `--season 2023` build produced gold whose
+            # flag was a constant 1.0, destroying the column's variance before
+            # expanding_normalize saw it. The full-history rebuild happened to be safe
+            # (q01 = 0.0 at ~13% minority), which is why the published gold was
+            # unaffected and why nothing caught it. It is a GENERAL defect for any
+            # rare binary flag -- `saturday_game` is a live candidate, and it is why
+            # this exemption outlives the family it was found on.
             #
             # The old shape was also internally inconsistent: the `continue` skipped
-            # winsorization entirely whenever the family DID have NaNs, so the same
+            # winsorization entirely whenever the column DID have NaNs, so the same
             # column was winsorized or not depending on whether a gap happened to
             # exist. Missing-handling and outlier-handling are now independent.
             #
             # The test is deliberately a VALUE test, not a name test: any column
             # whose values are all indicator levels is discrete, however it is
-            # spelled. Continuous line-movement columns (opening_total, the drift
-            # and path families) are NOT exempted -- they are genuine continuous
-            # measurements with genuine outliers, and the published readout's
-            # argument about what the model saw rests on their winsorization bound.
+            # spelled. A continuous column is NOT exempted merely because it belongs
+            # to a family whose flag is -- a totals level or a drift measurement has
+            # genuine outliers and stays winsorized.
             #
             # WR-06 note on WHERE this test sits. It is evaluated ONCE per column,
             # over the whole frame, OUTSIDE the per-season loop below. That is a
@@ -1362,6 +1431,11 @@ class FeatureMatrixBuilder:
                 logger.error("No features to process")
                 return {}
 
+            # -- SPEC R3: the line-movement family must not reach gold --
+            # Runs on the COMBINED matrix, before every downstream stage and
+            # therefore long before the gold write.
+            combined_features = self._enforce_line_movement_dropped(combined_features)
+
             # -- Replace raw EPA with opponent-adjusted EPA --
             # OpponentAdjuster needs per-game stats (with game_id, raw EPA),
             # not the rolling averages from the silver table.
@@ -1681,18 +1755,32 @@ class FeatureMatrixBuilder:
             # silently multiplying gold cardinality and cross-contaminating the
             # three matrices.
             #
-            # save_dataframe's default append_mode=True path reads any existing
-            # single-file gold table, concats the rebuilt rows, drops duplicate
-            # game_ids keeping the latest, and writes one file. So the
-            # current-week/per-season path is now idempotent (re-running cannot
-            # append-bloat or cross-contaminate), and the full-rebuild path
-            # (target_season=None) still writes the complete single file as
-            # before. This mirrors scripts/build_weather.py /
-            # scripts/build_contextual.py and pipeline/steps.py. (CR-01, D-10)
+            # replace_mode=True: the passed frame IS the table (SPEC R3, T-30-05).
+            #
+            # Removing partition_cols alone left save_dataframe's DEFAULT
+            # append_mode=True path, which reads the existing gold table, drops the
+            # rows whose game_id appears in the new frame -- on a full rebuild that
+            # is ALL of them, leaving an empty but still full-width frame -- and
+            # then concatenates. A pd.concat UNIONS columns even when one operand
+            # has zero rows. Every previous rebuild in this project only ADDED
+            # columns, where that union is a harmless no-op, which is why the append
+            # path has never misbehaved. The Phase-30 rung-3 drop is the first
+            # rebuild that REMOVES columns, and under append mode its 194-column
+            # in-memory frame would have been written back 209 columns wide with the
+            # fifteen dropped columns present and entirely NULL -- failing
+            # check_gold_integrity's all-null check for a reason that looks nothing
+            # like the actual cause.
+            #
+            # Replace mode also makes a rung-level re-run idempotent for the
+            # current-week / per-season paths as well as the full rebuild, which is
+            # what SPEC R1's byte-identical re-run acceptance needs. The
+            # partitioned-append antipattern above stays excluded either way:
+            # replace_mode forces partition_cols to None. (CR-01, D-10)
             save_dataframe(
                 matrix_df,
                 table_name=table_name,
                 layer="gold",
+                replace_mode=True,
             )
 
             logger.info(
