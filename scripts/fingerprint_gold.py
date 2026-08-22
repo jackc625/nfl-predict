@@ -21,6 +21,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -265,6 +266,19 @@ BUILD_CLOCK_COLUMNS = ("feature_timestamp",)
 # the one control it exists to run.
 _UPSTREAM_ESCAPE_RUNGS = (1, 2, 3)
 
+# Rungs at which a PROVEN value-preserving dtype change may be attributed. Rung 4 is
+# excluded for the same reason it is excluded from the upstream-drift escape: SPEC R2
+# makes an unexplained 2021-2024 move a hard blocker, and the one control this phase
+# rests on does not get a new way to be talked past. The exclusion is conservative
+# rather than necessary -- a reproduced per-season hash is a PROOF, not a hypothesis --
+# but widening rung 4's criterion is not this change's business (D30-OWNER-08).
+_DTYPE_PROOF_RUNGS = (1, 2, 3)
+
+# The reasons a column may have moved and still be a candidate for the dtype proof.
+# A null-count move is a real change in the data and is never storage-only, so a
+# column carrying it is never offered to the proof.
+_VALUE_PRESERVING_REASONS = frozenset({"values", "dtype"})
+
 _UPSTREAM_DRIFT_NOTE = (
     "CANDIDATE CAUSE: upstream drift. A full gold rebuild reads nflreadpy LIVE with "
     "no cache configured, so a play-by-play or depth-chart revision published between "
@@ -300,6 +314,129 @@ def _line_movement_columns(column_names) -> list[str]:
 
     frame = pd.DataFrame(columns=pd.Index(list(column_names)))
     return group_columns(frame, "line_movement")
+
+
+def _per_season_digests(
+    frame: pd.DataFrame, column: str, recode_to: str | None = None
+) -> dict[str, str]:
+    """Return *column*'s per-season digests under ``fingerprint_matrix``'s exact rule.
+
+    The row ordering, the season grouping and the byte encoding are the SAME ones that
+    wrote the documents being compared. Re-hashing under any other rule would produce
+    digests that prove nothing about them.
+
+    With *recode_to*, the column is cast to that dtype first -- which is what makes a
+    dtype change checkable at all: a digest cannot be re-encoded, only values can.
+    """
+    ordered = frame.sort_values("game_id")
+    series = cast("pd.Series", ordered[column])
+    if recode_to is not None:
+        series = series.astype(recode_to)
+    seasons = ordered["season"].to_numpy()
+    return {
+        str(season): hashlib.sha256(
+            _column_bytes(cast("pd.Series", series[seasons == season]))
+        ).hexdigest()[:16]
+        for season in sorted(int(value) for value in frame["season"].dropna().unique())
+    }
+
+
+def _gold_frame_loader(base_path: Path | None = None):
+    """Return a lazy, cached ``matrix -> DataFrame | None`` reader over live gold.
+
+    The dtype proof needs the AFTER frame's VALUES, and no fingerprint document
+    carries them. Reading them is strictly READ-ONLY with respect to ``data/``, and
+    the proof's first step requires what it read to reproduce the AFTER document's own
+    digests -- so a frame that has moved on since the document was written proves
+    nothing, rather than proving the wrong thing.
+    """
+    cache: dict[str, pd.DataFrame | None] = {}
+
+    def load(matrix: str) -> pd.DataFrame | None:
+        if matrix not in cache:
+            root = (
+                Path(base_path)
+                if base_path is not None
+                else Path(get_settings().config.data.root_path)
+            )
+            path = root / "gold" / f"{matrix}.parquet"
+            cache[matrix] = (
+                pd.read_parquet(path, engine="pyarrow") if path.exists() else None
+            )
+        return cache[matrix]
+
+    return load
+
+
+def _prove_value_preserving_dtype(
+    matrix: str,
+    column: str,
+    meta: dict,
+    before: dict | None,
+    after: dict | None,
+    frame_loader,
+) -> bool:
+    """Return True only when *column*'s dtype move is PROVEN to preserve every value.
+
+    "It is only a dtype change" is an assertion, and an assertion is not evidence.
+    The attribution has to be EARNED, in three steps, and any one of them failing
+    leaves the column exactly where it was -- a moved column, judged by its rung's
+    ordinary criterion:
+
+    1. **Identity.** Re-hashing the loaded frame's column AS IT STANDS must reproduce
+       the AFTER document's per-season digests. Without this the proof could be run
+       against some other frame that merely has a column of the same name.
+    2. **Losslessness.** Re-encode to the prior dtype, then encode BACK, and require
+       the frame's own values to return. A truncating cast (``float64`` 1.5 ->
+       ``int32`` 1) can reproduce a prior hash while the value genuinely moved; this
+       is the hole that closes.
+    3. **Reproduction.** The PRIOR per-season digests must return EXACTLY, in every
+       season. This is the proof; steps 1 and 2 only make it mean what it says.
+
+    Plan 30-07 ran exactly this argument by hand for ``home_win`` and reproduced the
+    rung-2 digest in 24 of 24 seasons (D30-DEFER-11). Nothing here is special-cased to
+    that column, or to any column: the rule is about proof, not about a name. A dtype
+    pair whose re-encode cannot even be attempted is not a forgiven change -- it is one
+    the instrument cannot check, and it stays a failure.
+    """
+    dtype_before = meta.get("dtype_before")
+    dtype_after = meta.get("dtype_after")
+    if not dtype_before or not dtype_after or dtype_before == dtype_after:
+        return False
+    if not set(meta.get("reasons") or []) <= _VALUE_PRESERVING_REASONS:
+        return False
+    if before is None or after is None or frame_loader is None:
+        return False
+
+    before_names = _canonical_map(before.get(matrix, {}).get("columns", {}))
+    after_names = _canonical_map(after.get(matrix, {}).get("columns", {}))
+    if column not in before_names or column not in after_names:
+        return False
+    before_digests = before[matrix]["columns"][before_names[column]]
+    after_digests = after[matrix]["columns"][after_names[column]]
+
+    try:
+        frame = frame_loader(matrix)
+    except (OSError, ValueError):
+        return False
+    if frame is None or not {"game_id", "season"} <= set(frame.columns):
+        return False
+    live_names = _canonical_map(frame.columns)
+    if column not in live_names:
+        return False
+    name = live_names[column]
+
+    try:
+        if _per_season_digests(frame, name) != after_digests:
+            return False
+        recoded = frame[name].astype(dtype_before)
+        if not recoded.astype(dtype_after).equals(frame[name]):
+            return False
+        if _per_season_digests(frame, name, recode_to=dtype_before) != before_digests:
+            return False
+    except (TypeError, ValueError, OverflowError, KeyError):
+        return False
+    return True
 
 
 def _expected_signature(rung: int, before: dict | None = None) -> dict:
@@ -366,6 +503,16 @@ def _matrix_verdict() -> dict:
         "ok": True,
         "attributed": [],
         "unattributed": [],
+        # The per-build clock, reported as its own category so it is neither an
+        # explanation for anything nor evidence of anything.
+        "build_clock": [],
+        # Dtype moves that EARNED their attribution by reproducing the prior
+        # per-season hash, each carrying the two dtypes by name.
+        "value_preserving_dtype": [],
+        # Dtype moves offered to the proof that did NOT reproduce. Recorded so the
+        # verdict shows the proof was attempted; these columns stay in the changed
+        # set and are judged by the rung's ordinary criterion.
+        "dtype_proof_failed": [],
         "renamed_case_only": [],
         "failures": [],
     }
@@ -396,7 +543,52 @@ def _normalized_diff(detail: dict) -> dict:
         "renames": [[removed[name], added[name]] for name in renames],
         "changed": changed,
         "details": details,
+        # Filled by _split_value_preserving_dtype. A column here MOVED -- it just
+        # moved provably in storage only, so it still counts as the rebuild having
+        # done something, and never as an unexplained value change.
+        "dtype_preserved": [],
     }
+
+
+def _split_build_clock(diff: dict, verdict: dict) -> None:
+    """Move BUILD_CLOCK_COLUMNS out of the changed set into their own category."""
+    clock = {_canonical(name) for name in BUILD_CLOCK_COLUMNS}
+    for column in sorted(name for name in diff["changed"] if name in clock):
+        verdict["build_clock"].append(column)
+        del diff["changed"][column]
+
+
+def _split_value_preserving_dtype(
+    matrix: str,
+    diff: dict,
+    verdict: dict,
+    before: dict | None,
+    after: dict | None,
+    frame_loader,
+) -> None:
+    """Move PROVEN value-preserving dtype changes out of the changed set."""
+    if diff["details"] is None:
+        return
+    for column in sorted(diff["changed"]):
+        meta = diff["details"].get(column) or {}
+        if not meta.get("dtype_before") or meta.get("dtype_before") == meta.get(
+            "dtype_after"
+        ):
+            continue
+        if _prove_value_preserving_dtype(
+            matrix, column, meta, before, after, frame_loader
+        ):
+            verdict["value_preserving_dtype"].append(
+                {
+                    "column": column,
+                    "dtype_before": meta["dtype_before"],
+                    "dtype_after": meta["dtype_after"],
+                }
+            )
+            diff["dtype_preserved"].append(column)
+            del diff["changed"][column]
+        else:
+            verdict["dtype_proof_failed"].append(column)
 
 
 def _grown_seasons(detail: dict) -> list[str]:
@@ -410,7 +602,13 @@ def _grown_seasons(detail: dict) -> list[str]:
     )
 
 
-def attribute_rung(report: dict, rung: int, before: dict | None = None) -> dict:
+def attribute_rung(
+    report: dict,
+    rung: int,
+    before: dict | None = None,
+    after: dict | None = None,
+    frame_loader=None,
+) -> dict:
     """Attribute every moved column in *report* to *rung*'s one named cause.
 
     Returns a structured VERDICT rather than raising, so the caller decides
@@ -426,6 +624,17 @@ def attribute_rung(report: dict, rung: int, before: dict | None = None) -> dict:
                      a FINDING: it may be upstream nflreadpy drift, and every
                      message at those rungs says so.
 
+    Two categories are split out of the changed set before any rung criterion sees
+    it, and each is reported in its own verdict slot rather than silently forgiven:
+
+    - ``build_clock`` -- see ``BUILD_CLOCK_COLUMNS``. A per-build clock moves on every
+      rebuild by construction, so it is neither an explanation nor evidence.
+    - ``value_preserving_dtype`` -- a dtype move that reproduced the PRIOR per-season
+      hash exactly under re-encoding. This requires *after* and *frame_loader*,
+      because no fingerprint document carries the values a re-encode needs; without
+      them the proof cannot run and the column stays in the changed set. That
+      fail-closed default is deliberate: an unverifiable change is not a forgiven one.
+
     The comparison is deterministic with respect to both column ordering and case:
     every column set is normalized to a sorted set under ``_canonical`` on BOTH
     sides before anything is compared, and the emitted attributed / unattributed
@@ -439,6 +648,13 @@ def attribute_rung(report: dict, rung: int, before: dict | None = None) -> dict:
         if rung in _UPSTREAM_ESCAPE_RUNGS
         else ""
     )
+
+    # The STRONG expected removed-set: derived per matrix from the pre-drop document
+    # by _expected_signature. It was already being computed and recorded in the
+    # signature, and was then never handed to the matrix judge -- which is what made
+    # rung 3's partial-drop arm vacuous (D30-DEFER-12). It is handed over now.
+    signature_removed = signature.get("columns_removed")
+    derived_removed = signature_removed if isinstance(signature_removed, dict) else None
 
     matrices: dict[str, dict] = {}
     failures: list[str] = []
@@ -462,6 +678,11 @@ def attribute_rung(report: dict, rung: int, before: dict | None = None) -> dict:
             continue
 
         diff = _normalized_diff(detail)
+        _split_build_clock(diff, verdict)
+        if rung in _DTYPE_PROOF_RUNGS:
+            _split_value_preserving_dtype(
+                matrix, diff, verdict, before, after, frame_loader
+            )
 
         for original_before, original_after in diff["renames"]:
             verdict["renamed_case_only"].append([original_before, original_after])
@@ -471,7 +692,16 @@ def attribute_rung(report: dict, rung: int, before: dict | None = None) -> dict:
                 "renames a column"
             )
 
-        blocking |= _attribute_one_matrix(rung, detail, diff, verdict, fail)
+        blocking |= _attribute_one_matrix(
+            rung,
+            detail,
+            diff,
+            verdict,
+            fail,
+            expected_removed=derived_removed.get(matrix)
+            if derived_removed is not None
+            else None,
+        )
 
     ok = all(verdict["ok"] for verdict in matrices.values())
     return {
@@ -485,7 +715,9 @@ def attribute_rung(report: dict, rung: int, before: dict | None = None) -> dict:
     }
 
 
-def _attribute_one_matrix(rung, detail, diff, verdict, fail) -> bool:
+def _attribute_one_matrix(
+    rung, detail, diff, verdict, fail, expected_removed=None
+) -> bool:
     """Apply *rung*'s predicted signature to one matrix. Returns whether it blocks."""
     cause = RUNG_CAUSES[rung]
     width_before = detail["width_before"]
@@ -499,6 +731,7 @@ def _attribute_one_matrix(rung, detail, diff, verdict, fail) -> bool:
         and not diff["removed"]
         and not diff["renames"]
         and not diff["changed"]
+        and not diff["dtype_preserved"]
         and rows_before == rows_after
     )
     if diff_is_empty:
@@ -510,7 +743,7 @@ def _attribute_one_matrix(rung, detail, diff, verdict, fail) -> bool:
             blocking = True
 
     if rung == 3:
-        expected_removed = _rung3_expected_removed(diff)
+        expected_removed = _rung3_expected_removed(diff, expected_removed)
         for column in diff["removed"]:
             if column in expected_removed:
                 verdict["attributed"].append(column)
@@ -577,8 +810,24 @@ def _attribute_one_matrix(rung, detail, diff, verdict, fail) -> bool:
     return blocking
 
 
-def _rung3_expected_removed(diff: dict) -> list[str]:
-    """Return the expected rung-3 removed set, derived from the registry."""
+def _rung3_expected_removed(diff: dict, derived: list[str] | None = None) -> list[str]:
+    """Return the expected rung-3 removed set, canonical and sorted.
+
+    With *derived* -- the per-matrix family read out of the PRE-DROP fingerprint
+    document by ``_expected_signature`` -- this is the EXACT set the drop must remove,
+    so the two loops in ``_attribute_one_matrix`` together form an EQUALITY: a removed
+    column outside it is unattributed, and a member of it that survived is a PARTIAL
+    drop.
+
+    The fallback below filters ``diff["removed"]`` by the family predicate, which makes
+    it a SUBSET of the observed set BY CONSTRUCTION -- so the partial-drop arm could
+    never fire, and a family removed from two matrices and retained in a third sailed
+    through on width arithmetic a partial drop satisfies trivially (D30-DEFER-12). It
+    is kept only for a caller that supplied no BEFORE document, where it is the most
+    the tool can say.
+    """
+    if derived is not None:
+        return sorted({_canonical(name) for name in derived})
     return [_canonical(name) for name in _line_movement_columns(diff["removed"])]
 
 
@@ -682,6 +931,19 @@ def _print_attribution(verdict: dict) -> None:
         print(f"  {matrix}:")
         print(f"    attributed:   {detail['attributed']}")
         print(f"    unattributed: {detail['unattributed']}")
+        if detail.get("build_clock"):
+            print(f"    build clock:  {detail['build_clock']} (moves every build)")
+        for preserved in detail.get("value_preserving_dtype", []):
+            print(
+                f"    dtype only:   {preserved['column']} "
+                f"{preserved['dtype_before']} -> {preserved['dtype_after']} "
+                "(prior per-season hash reproduced exactly)"
+            )
+        if detail.get("dtype_proof_failed"):
+            print(
+                f"    dtype UNPROVEN: {detail['dtype_proof_failed']} "
+                "(re-encode did not reproduce the prior hash)"
+            )
         if detail["renamed_case_only"]:
             print(f"    case renames: {detail['renamed_case_only']}")
     if verdict["failures"]:
@@ -753,7 +1015,11 @@ def main() -> None:
         before = json.loads(args.compare[0].read_text(encoding="utf-8"))
         after = json.loads(args.compare[1].read_text(encoding="utf-8"))
         verdict = attribute_rung(
-            compare_fingerprints(before, after), args.attribute_rung, before=before
+            compare_fingerprints(before, after),
+            args.attribute_rung,
+            before=before,
+            after=after,
+            frame_loader=_gold_frame_loader(),
         )
         _print_attribution(verdict)
         if args.out is not None:
