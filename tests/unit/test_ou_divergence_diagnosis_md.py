@@ -116,6 +116,20 @@ class TestDiagnosisMdMatchesHarness:
     committed prose so the doc cannot silently drift.
     """
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "QUARANTINED by Plan 30-15 Task 2 (owner ruling D30-OWNER-05); register entry "
+            "D30-DEFER-08; resolved by Plan 30-16. MEASURED on Phase-30 rung-2 gold: the "
+            "harness reproduces pooled line_clv +1.09908061 against the +1.1095 committed in "
+            "OU-DIVERGENCE-DIAGNOSIS.md, a drift of 1.0419e-2 against the 5e-3 band. The doc "
+            "is NOT wrong -- it is a frozen Phase-26 forensic record, and the Plan 30-06 "
+            "rung-2 rebuild moved the gold underneath the reproduction. Plan 30-16 resolves it "
+            "on the Phase-28 precedent (commit 57e3a4e): record the drift BESIDE the published "
+            "number, never over it. Do NOT edit the number in the doc and do NOT widen the "
+            "tolerance to make this pass."
+        ),
+    )
     def test_doc_numbers_reproduce_from_harness(self) -> None:
         """Selected harness numbers (pooled line_clv, n, over-share, n_trials) match the doc."""
         if not _GOLD_WP_PATH.exists():

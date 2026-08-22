@@ -108,6 +108,21 @@ class TestOuDivergence:
 
     # -- deployed_population: the harness scores the DEPLOYED OU artifact ------------------
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "QUARANTINED by Plan 30-15 Task 2 (owner ruling D30-OWNER-05); register entry "
+            "D30-DEFER-08; resolved by Plan 30-16. MEASURED on Phase-30 rung-2 gold: pooled "
+            "line_clv moved +1.1095 -> +1.09908061, a drift of 1.0419e-2 against the 5e-3 "
+            "band (about twice the tolerance). The n=1087 with-line population and the "
+            "deployed-artifact provenance assertions still hold; only the CLV anchor fails. "
+            "Cause: the Plan 30-06 rung-2 rebuild (WR-06) moved snapshot_total and the "
+            "opponent-adjusted EPA and weather families the deployed O/U artifact scores on. "
+            "This Phase-26 reproduction still reads data/gold/ live -- Plan 30-03 froze only "
+            "features_ats, never features_ou, so it was never re-scoped onto a fixture. Do NOT "
+            "widen the tolerance and do NOT re-freeze the anchor here."
+        ),
+    )
     def test_deployed_population(self, gold_and_odds_2021_2024) -> None:
         """Preamble reports n=1087 with-line, pooled line_clv ~+1.1095 from the deployed artifact.
 
@@ -347,6 +362,20 @@ class TestOuDivergence:
             )
             assert "pass" in go_bar["criteria"][criterion]
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "QUARANTINED by Plan 30-15 Task 2 (owner ruling D30-OWNER-05); register entry "
+            "D30-DEFER-08; resolved by Plan 30-16. Same anchor, same measured drift as "
+            "test_deployed_population: pooled line_clv moved +1.1095 -> +1.09908061, a drift "
+            "of 1.0419e-2 against the 5e-3 band, because the Plan 30-06 rung-2 rebuild moved "
+            "the columns the deployed O/U artifact scores on. The early-exit BEHAVIOUR under "
+            "test -- the skipped_by_owner_early_exit sentinels, mode == 'early_exit', the "
+            "NO_GO resting on interim evidence -- is unaffected; only the embedded CLV anchor "
+            "assertion fails. Plan 30-16 must keep the behavioural assertions and re-ratify "
+            "only the number. Do NOT widen the tolerance and do NOT delete the assertion."
+        ),
+    )
     def test_orchestrator_early_exit_is_skip_aware(
         self, gold_and_odds_2021_2024
     ) -> None:

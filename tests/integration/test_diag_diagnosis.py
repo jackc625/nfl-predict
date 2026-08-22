@@ -298,6 +298,21 @@ class TestDiagDiagnosis:
 
     # -- T-22-02: number anchoring -------------------------------------------------------
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "QUARANTINED by Plan 30-15 Task 2 (owner ruling D30-OWNER-05); register entry "
+            "D30-DEFER-08; resolved by Plan 30-16. MEASURED on Phase-30 rung-2 gold: "
+            "headline_clv wp moved -0.00469 -> +0.00103305, a drift of 5.723e-3 against the "
+            "5e-3 band -- it crossed ZERO, so the WP backtest CLV changed sign. The WP pooled "
+            "accuracy anchor 0.67691 still holds; only the CLV assertion fails. Two causes are "
+            "entangled here and Plan 30-16 must separate them: (a) the Plan 30-06 rung-2 "
+            "rebuild moved the features this backtest re-fits on, and (b) Plan 30-16 itself "
+            "gives backtest.engine a FRESH Optuna study identity (D30-DEFER-01 Option 2), so "
+            "these anchors are re-ratified there ONCE rather than twice. Do NOT widen the "
+            "tolerance and do NOT re-freeze the anchor here."
+        ),
+    )
     def test_backtest_numbers_match_audit_report(self, gold_and_odds_2021_2024) -> None:
         """Backtest WP pooled accuracy ~0.66725 and headline_clv wp ~ -0.00207 (AUDIT-REPORT)."""
         from backtest.diagnose import run_diagnosis
