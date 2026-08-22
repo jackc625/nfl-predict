@@ -1150,6 +1150,7 @@ def test_alpha_mde_power_and_denominator_are_all_emitted() -> None:
 _NON_COMMENT_FLOAT = re.compile(
     r"(?<![\w.])-?(?:\d+\.\d+(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)"
 )
+_TOML_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
 def test_every_float_is_emitted_through_the_fixed_precision_specifier() -> None:
@@ -1166,11 +1167,13 @@ def test_every_float_is_emitted_through_the_fixed_precision_specifier() -> None:
         "(which would flatten a 1e-30 p-value to 0.000000000000) is not an option here."
     )
     block = render_verdict_toml(_gate_result())
+    # Strip comments and quoted strings first: the frozen reason text legitimately quotes
+    # "alpha=0.05" inside a TOML basic string, and that is prose, not an emitted float.
     tokens = [
         token
         for line in block.splitlines()
         if not line.lstrip().startswith("#")
-        for token in _NON_COMMENT_FLOAT.findall(line)
+        for token in _NON_COMMENT_FLOAT.findall(_TOML_STRING.sub("", line))
     ]
     assert tokens, "The block must contain at least one float."
     for token in tokens:
