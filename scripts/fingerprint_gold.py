@@ -237,6 +237,28 @@ RUNG_CAUSES: dict[int, str] = {
     4: "N-01",
 }
 
+# The per-build clock stamp, and the ONLY column exempted by name anywhere in this
+# module. It is different IN KIND from every other column in a gold matrix:
+# ``scripts/build_features.py`` writes ``datetime.now(UTC)`` into it once per build,
+# so it takes exactly one distinct value per build and MUST move on every rebuild by
+# construction. It records WHEN the frame was built; it measures nothing about the
+# games in the frame, and no model consumes it (``models/temporal.py`` excludes it).
+#
+# Two consequences follow, and both are why it gets its own category rather than a
+# tolerance:
+#
+# 1. Filing it under the upstream-drift candidate cause would be FALSE. That note
+#    tells a reader to go find the nflreadpy revision that moved the column; for a
+#    clock there is none, and the reader burns the search anyway.
+# 2. Counting it as a moved value makes rung 3's empty-changed-set criterion
+#    structurally UNSATISFIABLE -- no correct rebuild can ever satisfy it, so the
+#    criterion stops discriminating between a right rebuild and a wrong one.
+#
+# Plan 30-06 already reported it this way at rung 1, by hand, in its SUMMARY. Owner
+# ruling D30-OWNER-08 makes the instrument do it, at EVERY rung. This exempts ONE
+# named build artifact; every other column is judged exactly as before.
+BUILD_CLOCK_COLUMNS = ("feature_timestamp",)
+
 # Rungs whose failures may legitimately be upstream drift rather than a wrong fix.
 # Rung 4 is DELIBERATELY excluded: SPEC R2 makes an unexplained 2021-2024 move a
 # hard blocker, and offering an escape there would let the phase talk itself past

@@ -44,6 +44,7 @@ import pytest
 
 from backtest.signal_lift import group_columns
 from scripts.fingerprint_gold import (
+    BUILD_CLOCK_COLUMNS,
     GOLD_MATRICES,
     RUNG_CAUSES,
     _expected_signature,
@@ -357,6 +358,304 @@ class TestRung3LineMovementDrop:
         report = self._dropped_report(removed=("home_rest_days",))
         message = _all_failures(attribute_rung(report, 3)).lower()
         assert "nflreadpy" in message
+
+    def test_a_partial_drop_FAILS_and_names_every_retained_column(self):
+        """D30-DEFER-12: the family gone from two matrices and retained in a third.
+
+        The check this exercises used to be vacuous. ``_rung3_expected_removed``
+        filtered ``diff["removed"]`` by the line-movement predicate, so the expected
+        set was a SUBSET of the observed set by construction and the partial-drop
+        loop could never fire. The strong per-matrix expectation was derived from the
+        BEFORE document, landed in ``signature.columns_removed``, and was then never
+        handed to the matrix judge.
+        """
+        before = _before_document()
+        widths = _widths()
+        report = self._dropped_report()
+        # features_ou keeps the whole family: nothing removed, width unmoved.
+        report["features_ou"] = _detail(
+            width_before=widths["features_ou"],
+            width_after=widths["features_ou"],
+        )
+
+        verdict = attribute_rung(report, 3, before=before)
+
+        assert verdict["ok"] is False, (
+            "a family removed from two matrices and retained in a third is a PARTIAL "
+            "drop and must fail"
+        )
+        failures = _all_failures(verdict)
+        assert "PARTIAL" in failures
+        assert "features_ou" in failures
+        for column in _line_movement_family():
+            assert column in failures, (
+                f"the partial-drop failure must NAME the retained column {column!r}"
+            )
+
+    def test_the_expected_removed_set_is_an_EQUALITY_not_a_subset(self):
+        """Removing 14 of the 15 satisfies the width arithmetic and must still fail."""
+        before = _before_document()
+        family = _line_movement_family()
+        retained = sorted(family)[0]
+        partial = tuple(name for name in family if name != retained)
+        widths = _widths()
+        report = {
+            matrix: _detail(
+                width_before=widths[matrix],
+                width_after=widths[matrix] - len(partial),
+                removed=partial,
+            )
+            for matrix in GOLD_MATRICES
+        }
+
+        verdict = attribute_rung(report, 3, before=before)
+
+        assert verdict["ok"] is False
+        failures = _all_failures(verdict)
+        assert "PARTIAL" in failures
+        assert retained in failures
+
+
+# ---------------------------------------------------------------------------
+# The build clock -- a column that is different in KIND (D30-OWNER-08)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildClockColumn:
+    """``feature_timestamp`` is a per-build ``datetime.now(UTC)`` stamp.
+
+    It moves on EVERY rebuild by construction, so counting it as a moved value makes
+    rung 3's empty-changed-set criterion structurally unsatisfiable -- no correct
+    rebuild can ever satisfy it. Plan 30-06 already reported it as its own category
+    at rung 1 rather than filing it under the upstream-drift escape; these tests make
+    the instrument do that at every rung.
+    """
+
+    _CLOCK = BUILD_CLOCK_COLUMNS[0]
+
+    def _dropped_report(self, **overrides) -> dict:
+        widths = _widths()
+        family = _line_movement_family()
+        return {
+            matrix: _detail(
+                width_before=widths[matrix],
+                width_after=widths[matrix] - len(family),
+                removed=tuple(family),
+                **overrides,
+            )
+            for matrix in GOLD_MATRICES
+        }
+
+    def test_a_clock_only_move_does_not_block_rung_3(self):
+        report = self._dropped_report(changed={self._CLOCK: ["2002", "2024"]})
+        verdict = attribute_rung(report, 3, before=_before_document())
+
+        assert verdict["blocking"] is False, (
+            "a per-build clock stamp cannot be evidence that a dropped column was "
+            "participating in a whole-frame statistic"
+        )
+        assert verdict["ok"] is True
+        for matrix in GOLD_MATRICES:
+            assert verdict["matrices"][matrix]["build_clock"] == [self._CLOCK]
+            assert self._CLOCK not in verdict["matrices"][matrix]["unattributed"]
+            assert self._CLOCK not in verdict["matrices"][matrix]["attributed"]
+
+    @pytest.mark.parametrize("rung", [1, 2, 3, 4])
+    def test_the_clock_is_reported_in_its_own_category_at_every_rung(self, rung: int):
+        widths = _widths()
+        report = {
+            matrix: _detail(
+                width_before=widths[matrix],
+                width_after=widths[matrix],
+                rows_after=6421,
+                rows_per_season_before={"2024": 285, "2025": 49},
+                rows_per_season_after={"2024": 285, "2025": 207},
+                changed={self._CLOCK: ["2024"], "home_rest_days": ["2025"]},
+            )
+            for matrix in GOLD_MATRICES
+        }
+        verdict = attribute_rung(report, rung)
+
+        for matrix in GOLD_MATRICES:
+            detail = verdict["matrices"][matrix]
+            assert detail["build_clock"] == [self._CLOCK]
+            assert self._CLOCK not in detail["attributed"]
+            assert self._CLOCK not in detail["unattributed"]
+
+    @pytest.mark.parametrize("rung", [1, 2, 3])
+    def test_the_clock_is_never_filed_under_the_upstream_drift_escape(self, rung: int):
+        """Calling a build clock an nflreadpy revision would send a reader hunting."""
+        report = self._dropped_report(changed={self._CLOCK: ["2024"]})
+        verdict = attribute_rung(report, rung, before=_before_document())
+
+        for message in verdict["failures"]:
+            assert self._CLOCK not in message, (
+                f"rung {rung} named the build clock in a failure: {message}"
+            )
+
+    def test_a_real_data_column_still_BLOCKS_rung_3_alongside_the_clock(self):
+        report = self._dropped_report(
+            changed={self._CLOCK: ["2024"], "home_rest_days": ["2019"]}
+        )
+        verdict = attribute_rung(report, 3, before=_before_document())
+
+        assert verdict["blocking"] is True
+        failures = _all_failures(verdict)
+        assert "home_rest_days" in failures
+        assert self._CLOCK not in failures
+
+
+# ---------------------------------------------------------------------------
+# The value-preserving dtype cause -- attribution that must be EARNED
+# ---------------------------------------------------------------------------
+
+
+def _dtype_documents(before_values, before_dtype, after_values, after_dtype):
+    """Return (before_doc, after_doc, after_frame) for a one-column dtype move.
+
+    Real frames fingerprinted by ``fingerprint_matrix``, so the per-season digests
+    the proof must reproduce are the genuine article rather than hand-written.
+    """
+    games = [f"2024_W{index + 1:02d}_A@B" for index in range(len(before_values))]
+
+    def frame(values, dtype):
+        return pd.DataFrame(
+            {
+                "game_id": games,
+                "season": [2024] * len(values),
+                "home_win": pd.Series(values, dtype=dtype),
+            }
+        )
+
+    before_frame = frame(before_values, before_dtype)
+    after_frame = frame(after_values, after_dtype)
+    before_doc = {matrix: fingerprint_matrix(before_frame) for matrix in GOLD_MATRICES}
+    after_doc = {matrix: fingerprint_matrix(after_frame) for matrix in GOLD_MATRICES}
+    return before_doc, after_doc, after_frame
+
+
+class TestValuePreservingDtypeCause:
+    """An "it is only a dtype change" claim is an assertion; this phase refuses those.
+
+    The attribution is granted ONLY when re-encoding the new values back to the prior
+    dtype reproduces the prior per-season hash EXACTLY, in every season. Plan 30-07
+    performed that proof by hand for ``home_win`` in 24 of 24 seasons; these tests
+    make the judge perform it, and make it refuse when the proof does not land.
+    """
+
+    _VALUES = [1, 0, 1, 1, 0]
+
+    def _judge(self, before_doc, after_doc, after_frame, rung=3):
+        report = compare_fingerprints(before_doc, after_doc)
+        return attribute_rung(
+            report,
+            rung,
+            before=before_doc,
+            after=after_doc,
+            frame_loader=lambda matrix: after_frame,
+        )
+
+    def test_a_reproduced_hash_earns_the_attribution_and_does_not_block(self):
+        before_doc, after_doc, after_frame = _dtype_documents(
+            self._VALUES, "float64", self._VALUES, "int32"
+        )
+        verdict = self._judge(before_doc, after_doc, after_frame)
+
+        assert verdict["blocking"] is False
+        assert verdict["ok"] is True
+        for matrix in GOLD_MATRICES:
+            preserved = verdict["matrices"][matrix]["value_preserving_dtype"]
+            assert preserved == [
+                {
+                    "column": "home_win",
+                    "dtype_before": "float64",
+                    "dtype_after": "int32",
+                }
+            ]
+
+    def test_an_unprovable_dtype_change_stays_BLOCKING(self):
+        """Same dtype move, one value genuinely different: a move wearing a costume."""
+        moved = [1, 0, 1, 0, 0]
+        assert moved != self._VALUES
+        before_doc, after_doc, after_frame = _dtype_documents(
+            self._VALUES, "float64", moved, "int32"
+        )
+        verdict = self._judge(before_doc, after_doc, after_frame)
+
+        assert verdict["blocking"] is True
+        assert verdict["ok"] is False
+        for matrix in GOLD_MATRICES:
+            assert verdict["matrices"][matrix]["value_preserving_dtype"] == []
+        assert "home_win" in _all_failures(verdict)
+
+    def test_a_LOSSY_re_encode_stays_BLOCKING_even_though_the_hash_reproduces(self):
+        """int32 <- float64 truncation reproduces the prior hash and is still a move.
+
+        Re-encoding ``[1.5, 0.0, 1.0, 1.0, 0.0]`` to ``int32`` yields the prior
+        ``[1, 0, 1, 1, 0]`` exactly, so the per-season hash reproduces. The round-trip
+        does not: casting back gives ``1.0`` where the frame holds ``1.5``. Without
+        the round-trip guard this is the hole a real value change escapes through.
+        """
+        lossy = [1.5, 0.0, 1.0, 1.0, 0.0]
+        before_doc, after_doc, after_frame = _dtype_documents(
+            self._VALUES, "int32", lossy, "float64"
+        )
+        verdict = self._judge(before_doc, after_doc, after_frame)
+
+        assert verdict["blocking"] is True
+        for matrix in GOLD_MATRICES:
+            assert verdict["matrices"][matrix]["value_preserving_dtype"] == []
+
+    def test_without_the_after_values_the_proof_cannot_run_and_it_stays_BLOCKING(self):
+        """Fail-closed: an unverifiable dtype change is not a forgiven one."""
+        before_doc, after_doc, _ = _dtype_documents(
+            self._VALUES, "float64", self._VALUES, "int32"
+        )
+        report = compare_fingerprints(before_doc, after_doc)
+        verdict = attribute_rung(report, 3, before=before_doc, after=after_doc)
+
+        assert verdict["blocking"] is True
+        for matrix in GOLD_MATRICES:
+            assert verdict["matrices"][matrix]["value_preserving_dtype"] == []
+
+    def test_a_frame_that_is_not_the_after_document_cannot_prove_anything(self):
+        """The loaded frame must BE the judged artifact, not merely resemble it."""
+        before_doc, after_doc, _ = _dtype_documents(
+            self._VALUES, "float64", self._VALUES, "int32"
+        )
+        _, _, other_frame = _dtype_documents(
+            self._VALUES, "float64", [0, 0, 0, 0, 0], "int32"
+        )
+        report = compare_fingerprints(before_doc, after_doc)
+        verdict = attribute_rung(
+            report,
+            3,
+            before=before_doc,
+            after=after_doc,
+            frame_loader=lambda matrix: other_frame,
+        )
+
+        assert verdict["blocking"] is True
+        for matrix in GOLD_MATRICES:
+            assert verdict["matrices"][matrix]["value_preserving_dtype"] == []
+
+    def test_a_moved_data_column_is_untouched_by_the_dtype_cause(self):
+        """A plain value move, no dtype change, still blocks rung 3."""
+        widths = _widths()
+        family = _line_movement_family()
+        report = {
+            matrix: _detail(
+                width_before=widths[matrix],
+                width_after=widths[matrix] - len(family),
+                removed=tuple(family),
+                changed={"home_rest_days": ["2019"]},
+            )
+            for matrix in GOLD_MATRICES
+        }
+        verdict = attribute_rung(report, 3, before=_before_document())
+
+        assert verdict["blocking"] is True
+        assert "home_rest_days" in _all_failures(verdict)
 
 
 # ---------------------------------------------------------------------------
