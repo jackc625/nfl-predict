@@ -19,6 +19,7 @@ from sklearn.model_selection import TimeSeriesSplit
 
 from models.utils import TrainTestSplit
 from utils import get_logger
+from utils.feature_columns import display_only_columns
 
 logger = get_logger(__name__)
 
@@ -203,8 +204,17 @@ class WalkForwardSplitter:
         self.logger = get_logger(__name__)
 
     def _feature_cols(self, df: pd.DataFrame) -> list[str]:
-        """Determine feature columns by excluding ID, target, and non-numeric columns."""
-        exclude = set(self.id_cols) | {self.target_col}
+        """Determine feature columns by excluding ID, target, display-only and non-numeric columns.
+
+        Display-only columns are the un-normalized ``raw_*`` passthroughs
+        ``scripts.build_features`` writes for the API cache to render. They
+        duplicate a normalized twin that IS a feature, they are deliberately
+        skipped by ``expanding_normalize`` (so their nulls never become the
+        neutral 0.0 z-score), and they were never intended as model inputs --
+        their presence here was a latent defect, closed by Plan 30-15 under
+        owner ruling D30-OWNER-04. See ``utils.feature_columns``.
+        """
+        exclude = set(self.id_cols) | {self.target_col} | display_only_columns()
         numeric_df = df.select_dtypes(include=["number"])
         return [c for c in numeric_df.columns if c not in exclude]
 

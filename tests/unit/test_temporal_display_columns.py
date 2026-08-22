@@ -40,14 +40,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+
+from models.temporal import TemporalSplitConfig, WalkForwardSplitter
 from utils.feature_columns import (
     DISPLAY_ONLY_COLUMNS,
     NORMALIZATION_IDENTIFIER_COLUMNS,
     display_only_columns,
     normalization_exclude_columns,
 )
-
-from models.temporal import TemporalSplitConfig, WalkForwardSplitter
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GOLD_DIR = _REPO_ROOT / "data" / "gold"

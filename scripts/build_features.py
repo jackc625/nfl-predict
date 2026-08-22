@@ -52,6 +52,7 @@ from features.weather import WeatherFeaturesCalculator
 from utils import get_logger
 from utils.date_utils import ET
 from utils.exceptions import DataIngestionError
+from utils.feature_columns import normalization_exclude_columns
 
 logger = get_logger(__name__)
 
@@ -1458,22 +1459,14 @@ class FeatureMatrixBuilder:
             ]
 
             # -- Expanding-window normalization (replaces within-season Z-scores) --
-            exclude_cols = [
-                "game_id",
-                "season",
-                "week",
-                "home_team",
-                "away_team",
-                "home_score",
-                "away_score",
-                "feature_timestamp",
-                "raw_wind_mph",
-                "raw_temp_f",
-                "raw_precip_prob",
-                "raw_precip_mm",
-                "raw_humidity_pct",
-                "raw_weather_severity",
-            ]
+            #
+            # Identifier columns plus the display-only raw_* passthroughs. The
+            # display half is DERIVED from utils.feature_columns, the single
+            # place those names are stated, so the same list also governs which
+            # columns models.temporal keeps out of the MODEL feature set
+            # (Plan 30-15 / D30-OWNER-04). A display column added there needs no
+            # edit here.
+            exclude_cols = normalization_exclude_columns()
             feature_cols = [
                 col for col in processed_features.columns if col not in exclude_cols
             ]
