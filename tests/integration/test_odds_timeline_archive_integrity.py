@@ -30,6 +30,7 @@ remediation-carrying message when that state is absent -- the
 
 from __future__ import annotations
 
+import ast
 import hashlib
 from pathlib import Path
 
@@ -153,16 +154,26 @@ class TestPaidArchiveIntegrity:
         assertion here is mechanical rather than textual: this module runs no subprocess at
         all, and without a subprocess there is no git check to reach for.
         """
-        source = Path(__file__).read_text(encoding="utf-8")
-        for forbidden in (
-            "import subprocess",
-            "subprocess.run",
-            "check_output",
-            "os.system",
-            "os.popen",
-        ):
-            assert forbidden not in source, (
-                f"'{forbidden}' appears in this module. Integrity here is asserted from "
-                "CONTENT read through load_dataframe, never from a shell-out -- a git "
-                "check on gitignored data/ reports success on a destroyed archive (N-03)."
-            )
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        called = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+        forbidden = ({"subprocess", "os", "sh", "commands"} & imported) | (
+            {"__import__", "eval", "exec"} & called
+        )
+        assert forbidden == set(), (
+            f"this module reaches for {sorted(forbidden)}, which is how a shell-out gets "
+            "written. Integrity here is asserted from CONTENT read through load_dataframe, "
+            "never from a git check -- a git check on gitignored data/ reports success on "
+            "a destroyed archive (N-03). The assertion is on the parsed imports rather "
+            "than on the source text, so it cannot match its own wording."
+        )
