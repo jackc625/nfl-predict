@@ -192,6 +192,80 @@ class TestBoundsComeFromStrictlyPriorSeasons:
         pd.testing.assert_frame_equal(earlier_before, earlier_after)
 
 
+class TestANeutralConstantPrehistoryDoesNotEraseTheFeature:
+    """The bound is fitted on a PRE-CLIP snapshot, and a degenerate bound is skipped.
+
+    Both guards exist because of a measured failure. A first implementation of
+    WR-06 read the LIVE frame inside the season loop, so season Y's bound was
+    fitted on the ALREADY-CLIPPED values of the seasons before it. For a column
+    whose early history is a neutral constant -- the Phase-28 injury family's
+    ``availability_fraction`` default of 1.0, the Phase-29 line-movement family's
+    WR-10 zeros over the seventeen seasons ``odds_timeline`` does not cover -- that
+    cascade is fatal:
+
+      * the first season whose prior slice is dominated by the neutral value gets
+        q01 == q99 == that value,
+      * clipping to ``[c, c]`` overwrites every genuine observation in the season,
+      * which makes the NEXT season's prior slice even more constant,
+      * so the column can never recover, even after real data arrives.
+
+    On the real matrices that form destroyed 18 columns outright, including all 15
+    line-movement columns and all four injury availability columns. The fix is two
+    parts, and this class pins both: fit on the pre-clip snapshot, and treat a
+    degenerate bound as "no informative prior", not as a clip.
+    """
+
+    _N = 120
+
+    def _frame(self) -> pd.DataFrame:
+        """Neutral 1.0 for 2002-2012; real, varying values from 2013 on."""
+        rng = np.random.default_rng(2806)
+        blocks = []
+        for season in range(2002, 2020):
+            if season < 2013:
+                values = np.ones(self._N)
+            else:
+                values = rng.uniform(0.55, 1.0, self._N)
+            blocks.append(_season_block(season, self._N, availability=values))
+        return _stack(*blocks)
+
+    def test_the_first_covered_season_is_not_erased_by_a_degenerate_bound(
+        self, builder
+    ) -> None:
+        out = builder.handle_missing_data_and_outliers(self._frame())
+        first = out.loc[out["season"] == 2013, "availability"]
+
+        assert first.nunique() > 1, (
+            "2013's prior slice is a wall of the neutral 1.0, so q01 == q99 == 1.0. "
+            "Clipping to that degenerate bound erases the first season of real "
+            "data -- CR-02's finding in continuous clothing"
+        )
+
+    def test_every_covered_season_after_the_first_keeps_its_variance(
+        self, builder
+    ) -> None:
+        out = builder.handle_missing_data_and_outliers(self._frame())
+
+        flattened = [
+            season
+            for season in range(2013, 2020)
+            if out.loc[out["season"] == season, "availability"].nunique() <= 1
+        ]
+
+        assert not flattened, (
+            f"seasons {flattened} were flattened to a constant. The bound is being "
+            "fitted on already-clipped prior seasons, so the neutral prehistory "
+            "cascades forward and the feature never recovers"
+        )
+
+    def test_the_neutral_prehistory_itself_is_left_alone(self, builder) -> None:
+        """A season with no informative prior bound is not clipped, not erased."""
+        out = builder.handle_missing_data_and_outliers(self._frame())
+        prehistory = out.loc[out["season"] < 2013, "availability"]
+
+        assert (prehistory == 1.0).all()
+
+
 class TestTheSelfFitLog:
     """The earliest season self-fits, and the flag that says so is machine-readable."""
 

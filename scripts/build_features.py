@@ -786,14 +786,27 @@ class FeatureMatrixBuilder:
             # Handle outliers with winsorization, per season, on strictly-prior
             # bounds (WR-06 surface 2). The pre-WR-06 shape computed one q01/q99 pair
             # from the whole frame and clipped every row against it.
+            #
+            # Every season's bound is fitted on a PRE-CLIP SNAPSHOT of the column,
+            # taken once here -- after this column's missing-handling, before any
+            # season is clipped. Reading the live frame inside the loop instead
+            # would make season Y's bound depend on the ALREADY-CLIPPED values of
+            # the seasons before it, and for a column whose early history is a
+            # neutral constant that cascade is fatal: the first season whose prior
+            # slice is dominated by the neutral value gets a degenerate bound, is
+            # flattened to that constant, which makes the NEXT season's prior slice
+            # even more constant, and the column can never recover even after real
+            # data arrives. Measured on the real matrices, the live-frame form
+            # destroyed 18 columns outright -- the whole Phase-28 injury
+            # availability family and the whole Phase-29 line-movement family.
+            # The snapshot is also the statistically correct source: a quantile
+            # estimated from already-winsorized data understates its own tail.
+            fit_values = self._column(processed_df, col).copy()
+
             outliers_count = 0
             for season, season_mask, prior_mask in season_passes:
                 fit_source, self_fit = self._season_fit_source(
-                    self._column(processed_df, col),
-                    season,
-                    season_mask,
-                    prior_mask,
-                    earliest_season,
+                    fit_values, season, season_mask, prior_mask, earliest_season
                 )
 
                 # The pre-WR-06 minimum-data-points condition, now applied to the fit
@@ -804,6 +817,19 @@ class FeatureMatrixBuilder:
                 lower_bound = fit_source.quantile(self.outlier_percentiles[0] / 100)
                 upper_bound = fit_source.quantile(self.outlier_percentiles[1] / 100)
                 if pd.isna(lower_bound) or pd.isna(upper_bound):
+                    continue
+
+                # A DEGENERATE bound is not a winsorization, it is an erasure. When
+                # the fit source is dominated by one value -- a neutral default over
+                # seasons the feature's upstream source does not cover -- q01 and
+                # q99 collapse onto that value, and clipping to [c, c] overwrites
+                # every genuine observation in the season with c. That is exactly
+                # CR-02's finding, generalized from indicator columns to any column
+                # with a constant-dominated prehistory: the clip removes no outlier,
+                # it removes the feature. A season with no informative prior bound
+                # is left unclipped, and the next season -- whose prior slice now
+                # contains this season's real spread -- gets a real bound.
+                if lower_bound >= upper_bound:
                     continue
 
                 if self_fit:
@@ -934,8 +960,14 @@ class FeatureMatrixBuilder:
         borrowing a value from the future: that is the deliberate consequence of the
         fix, not an oversight, and downstream ``expanding_normalize`` already maps an
         un-normalizable position to the neutral 0.0 z-score.
+
+        Like the winsorization pass, the median is fitted on the column as it
+        ENTERED this pass -- ``source`` below -- never on the partially-filled
+        frame. One rule for both passes, and no season's statistic can depend on
+        values another season's fill just wrote.
         """
-        result = self._column(df, col).copy()
+        source = self._column(df, col)
+        result = source.copy()
 
         for season, season_mask, prior_mask in season_passes:
             season_values = result.loc[season_mask]
@@ -943,7 +975,7 @@ class FeatureMatrixBuilder:
                 continue
 
             fit_source, self_fit = self._season_fit_source(
-                result, season, season_mask, prior_mask, earliest_season
+                source, season, season_mask, prior_mask, earliest_season
             )
             median_value = float(fit_source.median())
             if np.isnan(median_value):
@@ -1049,7 +1081,7 @@ class FeatureMatrixBuilder:
                         # the whole frame.
                         if not prior_median_computed:
                             prior_median = self._prior_season_median(
-                                result,
+                                self._column(df, col),
                                 col,
                                 season,
                                 season_mask,
