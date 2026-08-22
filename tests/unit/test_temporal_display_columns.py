@@ -70,7 +70,18 @@ _EXPECTED_DISPLAY_COLUMNS = frozenset(
 # (fourteen observations). Within 2025 the column is filled by WR-06's documented
 # self-fit path -- a season with no prior slice to fit from uses its own -- which never
 # crosses a season boundary backwards and is therefore not the future-to-past broadcast
-# WR-06 removed. Pinned as an ANCHOR, not a tolerance: the whole point of Plan 30-15 is
+# WR-06 removed.
+#
+# That cross-season claim is the ONLY temporal claim made here. Whether the within-2025
+# fit is POINT-IN-TIME -- whether a given 2025 row's imputed value is free of information
+# dated after that row's own game -- is NOT established, and is registered as
+# D30-DEFER-14 rather than assumed in either direction. It is a documentation question
+# and not a gate question only because the column reaches no model: Plan 30-15 excluded
+# all six raw_* display siblings from the model feature set under D30-OWNER-04. If the
+# weather family is ever backfilled (D30-DEFER-09, an ingestion phase), it becomes a gate
+# question and must be settled first.
+#
+# Pinned as an ANCHOR, not a tolerance: the whole point of Plan 30-15 is
 # that the consumer was fixed and the DATA was left alone. A legitimate historical
 # weather backfill (D30-DEFER-09, an ingestion phase, explicitly out of Phase-30 scope)
 # must update this number deliberately.

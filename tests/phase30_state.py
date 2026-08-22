@@ -751,3 +751,30 @@ SLICE_DIGESTS_2021_2024: Final[dict[str, dict[str, str]]] = {
         "wind_severe": "175c912e97c90825e0565ed098b986099622dffed9ac8465e3b730b35a0c372b",
     },
 }
+# ---------------------------------------------------------------------------
+# The rung-4 gold the ENTIRE Phase-30 record is anchored to.
+#
+# APPENDED by Plan 30-08 Task 4 on 2026-08-22, at the moment of the D30-10 checkpoint-2
+# owner acceptance (D30-OWNER-11). This is the sha256 of the fingerprint document
+# outputs/fingerprints/rung4.json that the owner accepted -- the document whose
+# rung3 -> rung4 attribution exited 0 with unattributed=[] and dtype_proof_failed=[] in
+# all three matrices, at widths 194/195/194 and 6,499 rows.
+#
+# It lives here because .planning/ is gitignored (.gitignore:229, commit_docs false) and
+# outputs/ is gitignored (.gitignore:26), so neither the plan SUMMARY nor the fingerprint
+# itself is a durable home for the identity of the gold every later binding number is
+# computed on. Plan 30-13 publishes it into GATED-REFIT-READOUT.md as its second tracked
+# home.
+#
+# WHAT THIS DIGEST DOES AND DOES NOT PIN. It identifies the accepted fingerprint DOCUMENT,
+# not the bytes of the gold parquets. Two full-history builds on unchanged inputs produce
+# gold that is identical in every column EXCEPT feature_timestamp, a per-build
+# datetime.now(UTC) clock -- so no digest of gold itself could be stable across a rebuild,
+# and the accepted document is the right thing to pin. The standing gold on disk is the
+# SPEC R1 re-run's (outputs/fingerprints/rung4_rerun.json), which differs from the
+# accepted document in exactly the three build-clock entries and in nothing else, and
+# which re-judges to exit 0 on its own account.
+# ---------------------------------------------------------------------------
+ACCEPTED_RUNG4_FINGERPRINT_SHA256: Final[str] = (
+    "c3a1177423415ed34b7349ccb8d909c883460a1e5c76b5d2baaa409de1e444ac"
+)
