@@ -43,6 +43,7 @@ data problem and is not. ``TestNoLockIsLeftHeld`` proves it directly.
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
@@ -340,8 +341,9 @@ class TestLiveGoldMirrorWidth:
         measure a gold rebuild -- exactly the confound this phase is built to avoid.
         """
         assert load_dataframe.__module__ == "data.storage"
-        signature_defaults = load_dataframe.__defaults__
-        assert signature_defaults[:2] == ("silver", "auto"), (
+        parameters = inspect.signature(load_dataframe).parameters
+        defaults = (parameters["layer"].default, parameters["source"].default)
+        assert defaults == ("silver", "auto"), (
             "load_dataframe's defaults moved. The D30-18 guard exists precisely BECAUSE "
             "source defaults to 'auto' and 'auto' prefers DuckDB; a change here changes "
             "what the whole pipeline reads."
