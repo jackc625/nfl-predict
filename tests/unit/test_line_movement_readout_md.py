@@ -687,6 +687,21 @@ class TestReadoutMatchesHarness:
                 **kwargs,
             )
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "QUARANTINED by Plan 30-15 Task 3 (owner ruling D30-OWNER-06); register entry "
+            "D30-DEFER-10; resolved by Plan 30-16. ANCHOR-vs-HARNESS drift -- a DIFFERENT "
+            "class from the four D30-DEFER-08 quarantines, which are anchor-vs-DATA. The "
+            "frozen fixture is byte-identical and this test never reads data/gold, so nothing "
+            "moved underneath it; what moved is Plan 30-15's own exclusion of the six "
+            "display-only raw_* columns from the model feature set, which changes which "
+            "features SelectFromModel keeps. MEASURED: canonical ATS delta_mean -0.136848 -> "
+            "-0.28594926, a drift of 1.4910e-1 against the 5e-3 band. Do NOT widen the "
+            "tolerance, do NOT regenerate the fixture, and do NOT edit LINE-MOVEMENT-READOUT.md "
+            "here -- Plan 30-16 owns the correction, in one place."
+        ),
+    )
     def test_canonical_ats_cell_reproduces_and_used_no_group_columns(self) -> None:
         """4a reproduces from the frozen gold that produced it."""
         _require_fixture()
@@ -713,6 +728,20 @@ class TestReadoutMatchesHarness:
         assert cell["measurable"] is False
         assert "+0.147814" in _read_readout()
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "QUARANTINED by Plan 30-15 Task 3 (owner ruling D30-OWNER-06); register entry "
+            "D30-DEFER-10; resolved by Plan 30-16. ANCHOR-vs-HARNESS drift -- a DIFFERENT "
+            "class from the four D30-DEFER-08 quarantines, which are anchor-vs-DATA. The "
+            "frozen fixture is byte-identical; Plan 30-15's exclusion of the six display-only "
+            "raw_* columns from the model feature set moved the selection, and the selection "
+            "moved the number. MEASURED: coverage-window (2024) ATS delta_mean +0.750368 -> "
+            "+1.03624595, a drift of 2.8588e-1 against the 5e-3 band. The measure_window label "
+            "and the 'family is actually selected' precondition still hold; only the magnitude "
+            "moved. Do NOT widen the tolerance and do NOT edit LINE-MOVEMENT-READOUT.md here."
+        ),
+    )
     def test_coverage_window_ats_cell_reproduces_and_used_group_columns(self) -> None:
         """4b reproduces from the frozen gold that produced it."""
         _require_fixture()
@@ -736,6 +765,23 @@ class TestReadoutMatchesHarness:
         # The pre-re-key reading is retained as history and must not be dropped.
         assert "+0.816061" in _read_readout()
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "QUARANTINED by Plan 30-15 Task 3 (owner ruling D30-OWNER-06); register entry "
+            "D30-DEFER-10; resolved by Plan 30-16. ANCHOR-vs-HARNESS drift -- a DIFFERENT "
+            "class from the four D30-DEFER-08 quarantines, which are anchor-vs-DATA. The "
+            "frozen fixture is byte-identical; Plan 30-15's exclusion of the six display-only "
+            "raw_* columns from the model feature set is what moved. MEASURED: headline "
+            "(covered-selection-window) ATS delta_mean -0.208582 -> +0.23875263, a drift of "
+            "4.4733e-1 against the 5e-3 band -- it CROSSED ZERO, so the sign of the phase's "
+            "headline finding flips on the corrected harness. The companion assertion "
+            "n_group_columns_selected == 4 also fails (now 2); see "
+            "test_headline_confound_tell_is_applied_as_pre_registered for why that number is "
+            "the more consequential of the two. Do NOT widen the tolerance and do NOT edit "
+            "LINE-MOVEMENT-READOUT.md here -- Plan 30-16 owns the correction, in one place."
+        ),
+    )
     def test_headline_ats_cell_reproduces_from_the_covered_selection_window(
         self,
     ) -> None:
@@ -770,6 +816,35 @@ class TestReadoutMatchesHarness:
         assert "+0.151237" in content
         assert f"{_HEADLINE_ATS_GROUP_COLS_SELECTED} / 15" in content
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "QUARANTINED by Plan 30-15 Task 3 (owner ruling D30-OWNER-06); register entry "
+            "D30-DEFER-10; resolved by Plan 30-16. ANCHOR-vs-HARNESS drift -- a DIFFERENT "
+            "class from the four D30-DEFER-08 quarantines, which are anchor-vs-DATA. The "
+            "frozen fixture is byte-identical; Plan 30-15's exclusion of the six display-only "
+            "raw_* columns from the model feature set is what moved. MEASURED, and this is the "
+            "consequential one: under the covered selection window the harness now selects TWO "
+            "line-movement columns, ['line_movement_coverage', 'spread_drift'], where "
+            "LINE-MOVEMENT-READOUT.md publishes FOUR of 15. Stated plainly, because it is a "
+            "claim about a published readout and must not be softened: the published Phase-29 "
+            "four-column selection was PARTLY THRESHOLD-DILUTED -- six information-free "
+            "columns were sitting in the feature matrix while SelectFromModel's threshold is "
+            "the MEAN of the feature importances, and two of the four published columns do not "
+            "survive their removal. That the selection moved is MEASURED (byte-identical "
+            "fixture, sole change = the exclusion). That mean-importance dilution is the whole "
+            "mechanism is INFERRED and not yet established -- the six are only 6 of 59 columns "
+            "constant over the fixture (104 of 201 over the 2018-2019 fit window), and "
+            "changing the column count also perturbs the XGBoost fit itself. Plan 30-17 owns "
+            "the mechanism reconciliation; see D30-DEFER-10. Worse for the doc either way: "
+            "with line_movement_coverage among "
+            "the two survivors the PRE-REGISTERED CONFOUND TELL NOW FIRES, so Section 4d's "
+            "'did not fire' claim is false on the corrected harness and the 4d cell reads as "
+            "CONFOUNDED (a season proxy, not market information). Plan 30-16 must rewrite "
+            "Section 4d rather than re-anchor a number. Do NOT edit LINE-MOVEMENT-READOUT.md "
+            "here -- correcting it in two places risks two different corrections."
+        ),
+    )
     def test_headline_confound_tell_is_applied_as_pre_registered(self) -> None:
         """``line_movement_coverage`` selected => the doc must call the cell confounded.
 
