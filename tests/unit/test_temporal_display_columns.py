@@ -65,14 +65,30 @@ _EXPECTED_DISPLAY_COLUMNS = frozenset(
     }
 )
 
-# ``raw_humidity_pct`` after the Plan 30-06 rung-2 rebuild: honestly unpopulated
-# for every row outside the fourteen season-2025 silver observations. Pinned as
-# an ANCHOR, not a tolerance -- the whole point of Plan 30-15 is that the
-# consumer was fixed and the DATA was left alone. A legitimate historical
-# weather backfill (D30-DEFER-09, an ingestion phase, explicitly out of Phase-30
-# scope) must update this number deliberately.
+# ``raw_humidity_pct`` after the Plan 30-06 rung-2 rebuild: honestly unpopulated for
+# every row outside season 2025, the ONLY season ``data/silver/weather.parquet`` covers
+# (fourteen observations). Within 2025 the column is filled by WR-06's documented
+# self-fit path -- a season with no prior slice to fit from uses its own -- which never
+# crosses a season boundary backwards and is therefore not the future-to-past broadcast
+# WR-06 removed. Pinned as an ANCHOR, not a tolerance: the whole point of Plan 30-15 is
+# that the consumer was fixed and the DATA was left alone. A legitimate historical
+# weather backfill (D30-DEFER-09, an ingestion phase, explicitly out of Phase-30 scope)
+# must update this number deliberately.
 _RAW_HUMIDITY_NAN_ROWS = 6214
-_GOLD_ROWS = 6263
+
+# Rung 4 (Plan 30-08, the N-01 re-sync) grew gold from 6,263 to 6,499 rows: the DuckDB
+# copy of silver ``games`` was 207 rows behind its authoritative parquet, and once it was
+# re-synced the rebuild carried season 2025 from weeks 1-4 (49 rows) to weeks 1-22 (285).
+# The row count is a COMPANION anchor and it moved for that sanctioned reason.
+#
+# ``_RAW_HUMIDITY_NAN_ROWS`` did NOT move, and that is the load-bearing fact: all 236 new
+# rows are season-2025 games, 2025 is the only season ``data/silver/weather.parquet``
+# covers, and 6,499 - 285 == 6,214 exactly. The column is still honestly unpopulated
+# everywhere there is no upstream observation, and still imputed nowhere. The test below
+# now also asserts that identity directly, so a future legitimate row addition cannot
+# make this anchor stale without the claim itself being re-examined.
+_GOLD_ROWS = 6499
+_GOLD_2025_ROWS = 285
 
 
 def _splitter(target_col: str = "target_wp") -> WalkForwardSplitter:
@@ -226,7 +242,14 @@ class TestOneConstantTwoConsumers:
     reason="data/gold not built on this checkout",
 )
 class TestRealGold:
-    """Measured against the on-disk rung-2 gold, not a synthetic stand-in."""
+    """Measured against the on-disk gold, not a synthetic stand-in.
+
+    Written against rung-2 gold by Plan 30-15; re-anchored to rung-4 gold by Plan
+    30-08, whose N-01 re-sync legitimately grew the frame from 6,263 to 6,499 rows.
+    The re-anchoring moved the COMPANION row count only -- the claim these tests
+    exist for, that the six display columns leave the feature set at the CONSUMER
+    while the data is left alone, is unchanged and its NaN anchor did not move.
+    """
 
     @pytest.mark.parametrize(
         ("table", "target_col"),
@@ -264,6 +287,16 @@ class TestRealGold:
         frame = pd.read_parquet(_GOLD_DIR / "features_wp.parquet")
         assert len(frame) == _GOLD_ROWS
         assert int(frame["raw_humidity_pct"].isna().sum()) == _RAW_HUMIDITY_NAN_ROWS
+
+        # The same claim, stated so it survives a legitimate row addition: the column is
+        # NaN in every season the upstream weather table does not cover, and populated in
+        # the one season it does. Rung 4 added 236 season-2025 rows and moved the NaN
+        # count by zero, which is what "excluded, not imputed" actually means.
+        outside_2025 = frame["season"] != 2025
+        assert int(outside_2025.sum()) == _RAW_HUMIDITY_NAN_ROWS
+        assert bool(frame.loc[outside_2025, "raw_humidity_pct"].isna().all())
+        assert int((~outside_2025).sum()) == _GOLD_2025_ROWS
+        assert not bool(frame.loc[~outside_2025, "raw_humidity_pct"].isna().any())
 
     @pytest.mark.parametrize("table", ["features_wp", "features_ats", "features_ou"])
     def test_the_display_columns_are_still_present_in_gold(self, table: str) -> None:
