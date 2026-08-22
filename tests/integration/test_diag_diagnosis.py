@@ -298,20 +298,34 @@ class TestDiagDiagnosis:
 
     # -- T-22-02: number anchoring -------------------------------------------------------
 
-    @pytest.mark.xfail(
-        strict=True,
+    @pytest.mark.skip(
         reason=(
             "QUARANTINED by Plan 30-15 Task 2 (owner ruling D30-OWNER-05); register entry "
-            "D30-DEFER-08; resolved by Plan 30-16. MEASURED on Phase-30 rung-2 gold: "
-            "headline_clv wp moved -0.00469 -> +0.00103305, a drift of 5.723e-3 against the "
-            "5e-3 band -- it crossed ZERO, so the WP backtest CLV changed sign. The WP pooled "
-            "accuracy anchor 0.67691 still holds; only the CLV assertion fails. Two causes are "
-            "entangled here and Plan 30-16 must separate them: (a) the Plan 30-06 rung-2 "
-            "rebuild moved the features this backtest re-fits on, and (b) Plan 30-16 itself "
-            "gives backtest.engine a FRESH Optuna study identity (D30-DEFER-01 Option 2), so "
-            "these anchors are re-ratified there ONCE rather than twice. Do NOT widen the "
-            "tolerance and do NOT re-freeze the anchor here."
-        ),
+            "D30-DEFER-08; converted from xfail(strict=True) to skip by Plan 30-18 Task 3 "
+            "under owner ruling D30-OWNER-09; re-ratification still belongs to Plan 30-16. "
+            "(1) A FROZEN-GOLD ANCHOR CANNOT BE MEANINGFULLY EVALUATED WHILE THE FOUR-RUNG "
+            "REBUILD LADDER IS STILL MOVING GOLD -- this test re-fits backtest.engine on "
+            "whatever gold is on disk, so it is measuring the ladder, not a regression. "
+            "(2) It has now taken THREE states: green pre-phase; headline_clv wp "
+            "+0.00103305 after rung 2 (drift 5.723e-3, sign FLIPPED, outside the 5e-3 band); "
+            "-0.00282341 after rung 3 (drift 1.867e-3, back INSIDE the band) against the "
+            "-0.00469 anchor. Under strict xfail the third state turned the suite RED as "
+            "XPASS, which is exactly the marker doing its job and exactly what destroys the "
+            "post-wave gate's ability to tell this known flip from new breakage. "
+            "(3) The rung-3 movement came from the WP selector choosing its 20 features out "
+            "of 180 numeric candidates rather than 195: the fifteen line_movement columns "
+            "left the pool when Plan 30-07 dropped them. That is a live PRODUCTION-path "
+            "observation that a column-count change moved a WP metric, and it is recorded as "
+            "an input to Plan 30-17's selection count-dependence census. "
+            "(4) Plan 30-08's N-01 re-sync will move gold a FOURTH time, so un-quarantining "
+            "now would simply redden this test again. "
+            "(5) Plan 30-16 OWNS the re-ratification, and gives backtest.engine a fresh "
+            "Optuna study identity (D30-DEFER-01 Option 2, D30-OWNER-02) which will move "
+            "these anchors again -- so they are re-ratified there ONCE rather than twice. "
+            "The WP pooled accuracy anchor 0.67691 was never in question (0.6769096 "
+            "measured on rung-3 gold); only the CLV assertion moved. Do NOT widen the "
+            "tolerance, do NOT re-freeze the anchor, and do NOT remove this marker here."
+        )
     )
     def test_backtest_numbers_match_audit_report(self, gold_and_odds_2021_2024) -> None:
         """Backtest WP pooled accuracy ~0.66725 and headline_clv wp ~ -0.00207 (AUDIT-REPORT)."""
