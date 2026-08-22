@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -46,11 +47,66 @@ def _column_bytes(series: pd.Series) -> bytes:
     return "\x1f".join(repr(value) for value in series.to_numpy()).encode("utf-8")
 
 
+_DISCRETE_INDICATOR_PREDICATE = None
+
+
+def _discrete_indicator_predicate():
+    """Return ``FeatureMatrixBuilder._is_discrete_indicator``, imported lazily and once.
+
+    The predicate is imported rather than re-expressed. CR-02's exemption is
+    deliberately a VALUE test, not a name test (``scripts/build_features.py``
+    comment at the exemption), so a second copy of the rule here would be free to
+    drift away from the one the rebuild actually applies -- the 29-06 second-list
+    failure mode in a different costume (D30-02). The import is deferred because
+    ``scripts.build_features`` pulls the whole feature stack and this module is
+    also used as a plain fingerprint reader.
+    """
+    global _DISCRETE_INDICATOR_PREDICATE
+    if _DISCRETE_INDICATOR_PREDICATE is None:
+        from scripts.build_features import FeatureMatrixBuilder
+
+        _DISCRETE_INDICATOR_PREDICATE = FeatureMatrixBuilder._is_discrete_indicator
+    return _DISCRETE_INDICATOR_PREDICATE
+
+
+def _column_meta(series: pd.Series) -> dict:
+    """Return the per-column facts an attribution needs to say WHY a column moved.
+
+    ``_column_bytes`` already makes a dtype change or a null-count change move the
+    per-season hash, so the adjacency is satisfied today -- but only IMPLICITLY, and
+    an implicit signal cannot be reported. Recording the three facts explicitly lets
+    ``attribute_rung`` distinguish "this column's values moved" from "this column's
+    storage moved", and lets rung 1 attribute a move to CR-02 without consulting a
+    name list.
+
+    Discreteness is evaluated ONCE over the whole column, never per season: a column
+    that is continuous overall but happens to be constant within one season would be
+    misclassified as discrete for that season.
+    """
+    is_discrete = _discrete_indicator_predicate()
+    try:
+        discrete = bool(is_discrete(series))
+    except (TypeError, ValueError):
+        # Unhashable or non-comparable values (never numeric features) are not
+        # indicators. Record the fact rather than letting the fingerprint fail.
+        discrete = False
+    return {
+        "dtype": str(series.dtype),
+        "null_count": int(series.isna().sum()),
+        "discrete_indicator": discrete,
+    }
+
+
 def fingerprint_matrix(df: pd.DataFrame) -> dict:
     """Return per-column, per-season hashes plus shape metadata for *df*.
 
     Each cell hashes the column's values ordered by ``game_id`` within the
     season, so a row-order change alone never registers as drift.
+
+    The ``columns`` map and every existing key are unchanged, so fingerprint
+    documents written before Plan 30-04 stay comparable. The growth is additive:
+    a sibling ``column_meta`` map carrying each column's dtype, null count and
+    CR-02 discreteness.
     """
     seasons = sorted(int(season) for season in df["season"].dropna().unique())
     columns: dict[str, dict[str, str]] = {}
@@ -70,6 +126,7 @@ def fingerprint_matrix(df: pd.DataFrame) -> dict:
             str(season): int((df["season"] == season).sum()) for season in seasons
         },
         "columns": columns,
+        "column_meta": {column: _column_meta(df[column]) for column in df.columns},
     }
 
 
@@ -91,34 +148,522 @@ def fingerprint_gold(base_path: Path | None = None) -> dict:
 
 
 def compare_fingerprints(before: dict, after: dict) -> dict:
-    """Return, per matrix, the columns whose hash moved and in which seasons."""
+    """Return, per matrix, the columns whose hash moved and in which seasons.
+
+    A column counts as MOVED when its values moved, OR when its dtype moved, OR
+    when its null count moved. The last two matter because a column can be
+    value-identical and still be a different artifact -- an ``int64`` that became
+    a ``float64``, or a column that gained a NaN somewhere the season hashes
+    happen not to separate. Such a column appears in ``columns_changed`` with an
+    EMPTY season list, and ``column_details[column]["reasons"]`` says which of
+    the three moved.
+
+    Documents written before Plan 30-04 carry no ``column_meta``, so the dtype and
+    null-count comparisons are simply absent for them and the report is exactly
+    what it always was.
+    """
     report: dict[str, dict] = {}
     for matrix in GOLD_MATRICES:
         b = before.get(matrix, {})
         a = after.get(matrix, {})
         b_cols = b.get("columns", {})
         a_cols = a.get("columns", {})
+        b_meta = b.get("column_meta", {})
+        a_meta = a.get("column_meta", {})
 
         changed: dict[str, list[str]] = {}
+        details: dict[str, dict] = {}
         for column in sorted(set(b_cols) & set(a_cols)):
             seasons = [
                 season
                 for season in sorted(set(b_cols[column]) | set(a_cols[column]))
                 if b_cols[column].get(season) != a_cols[column].get(season)
             ]
+            bm = b_meta.get(column, {})
+            am = a_meta.get(column, {})
+
+            reasons: list[str] = []
             if seasons:
-                changed[column] = seasons
+                reasons.append("values")
+            if bm and am:
+                if bm.get("dtype") != am.get("dtype"):
+                    reasons.append("dtype")
+                if bm.get("null_count") != am.get("null_count"):
+                    reasons.append("null_count")
+
+            if not reasons:
+                continue
+
+            changed[column] = seasons
+            details[column] = {
+                "seasons": seasons,
+                "reasons": reasons,
+                "dtype_before": bm.get("dtype"),
+                "dtype_after": am.get("dtype"),
+                "null_count_before": bm.get("null_count"),
+                "null_count_after": am.get("null_count"),
+                "discrete_indicator_before": bm.get("discrete_indicator"),
+                "discrete_indicator_after": am.get("discrete_indicator"),
+            }
 
         report[matrix] = {
             "width_before": b.get("width"),
             "width_after": a.get("width"),
             "rows_before": b.get("rows"),
             "rows_after": a.get("rows"),
+            "rows_per_season_before": b.get("rows_per_season", {}),
+            "rows_per_season_after": a.get("rows_per_season", {}),
             "columns_added": sorted(set(a_cols) - set(b_cols)),
             "columns_removed": sorted(set(b_cols) - set(a_cols)),
             "columns_changed": changed,
+            "column_details": details,
         }
     return report
+
+
+# ---------------------------------------------------------------------------
+# Per-rung cause attribution (SPEC R1, Plan 30-04)
+# ---------------------------------------------------------------------------
+
+# The ONE named cause each rung of the D30-17 rebuild ladder is allowed to move
+# columns for. A moved column that cannot be attributed to its rung's cause FAILS
+# the step -- the whole point of running four separate rebuilds instead of one.
+RUNG_CAUSES: dict[int, str] = {
+    1: "CR-02",
+    2: "WR-06",
+    3: "line_movement drop",
+    4: "N-01",
+}
+
+# Rungs whose failures may legitimately be upstream drift rather than a wrong fix.
+# Rung 4 is DELIBERATELY excluded: SPEC R2 makes an unexplained 2021-2024 move a
+# hard blocker, and offering an escape there would let the phase talk itself past
+# the one control it exists to run.
+_UPSTREAM_ESCAPE_RUNGS = (1, 2, 3)
+
+_UPSTREAM_DRIFT_NOTE = (
+    "CANDIDATE CAUSE: upstream drift. A full gold rebuild reads nflreadpy LIVE with "
+    "no cache configured, so a play-by-play or depth-chart revision published between "
+    "two rungs lands in this rung's artifact. Check the nflreadpy revision date for the "
+    "affected column BEFORE concluding the {cause} fix is wrong."
+)
+
+
+# The single case convention every column set is normalized to before comparison.
+# A fingerprint document is JSON, whose key ordering carries no meaning, and gold
+# column names are lower-case by construction. Normalizing BOTH sides means a
+# verdict cannot differ between two runs over identical data, and an upstream
+# rename that changes only capitalization is reported as a RENAME rather than as a
+# simultaneous add and remove.
+def _canonical(name: str) -> str:
+    """Return *name* under the module's one case convention (lower-case)."""
+    return name.lower()
+
+
+def _canonical_map(names) -> dict[str, str]:
+    """Map canonical name -> the original spelling, for a list of column names."""
+    return {_canonical(name): name for name in names}
+
+
+def _line_movement_columns(column_names) -> list[str]:
+    """Return the ``line_movement`` family present in *column_names*, sorted.
+
+    Derived from ``backtest.signal_lift.group_columns`` -- the ONE group registry.
+    A second list of the family's names inside this module is precisely the 29-06
+    failure mode that D30-02 exists to prevent, so there is none.
+    """
+    from backtest.signal_lift import group_columns
+
+    return group_columns(pd.DataFrame(columns=list(column_names)), "line_movement")
+
+
+def _expected_signature(rung: int, before: dict | None = None) -> dict:
+    """Return the predicted ``compare_fingerprints`` diff shape for *rung*.
+
+    When *before* (the pre-rung fingerprint document) is supplied, rung 3's expected
+    removed-set is DERIVED per matrix from that document's column list rather than
+    described. That is the difference between "every removed column looks like a
+    line-movement column" and "the removed set IS the line-movement family".
+    """
+    if rung not in RUNG_CAUSES:
+        msg = f"Unknown rung {rung!r}. Must be one of {sorted(RUNG_CAUSES)}."
+        raise ValueError(msg)
+
+    signature = {
+        "rung": rung,
+        "cause": RUNG_CAUSES[rung],
+        "columns_added": "empty",
+        "columns_removed": "empty",
+        "columns_changed": "",
+        "rows": "unchanged",
+        "width": "unchanged",
+    }
+
+    if rung == 1:
+        signature["columns_changed"] = (
+            "restricted to columns whose values are indicator levels "
+            "(FeatureMatrixBuilder._is_discrete_indicator is True)"
+        )
+    elif rung == 2:
+        signature["columns_changed"] = (
+            "any column whose values were imputed or clipped; seasons broad, "
+            "because the prior-seasons-only bounds move everywhere"
+        )
+    elif rung == 3:
+        signature["columns_changed"] = (
+            "EMPTY -- dropping columns must not move a surviving value"
+        )
+        signature["width"] = "reduced by exactly the number of removed columns"
+        if before is not None:
+            signature["columns_removed"] = {
+                matrix: _line_movement_columns(
+                    before.get(matrix, {}).get("columns", {})
+                )
+                for matrix in GOLD_MATRICES
+            }
+        else:
+            signature["columns_removed"] = (
+                "exactly the line_movement family, identical in all three matrices"
+            )
+    else:
+        signature["columns_changed"] = (
+            "every changed column's season list equals exactly the seasons that "
+            "gained rows; any other season BLOCKS the phase (SPEC R2)"
+        )
+        signature["rows"] = "strictly increased"
+
+    return signature
+
+
+def _matrix_verdict() -> dict:
+    """Return an empty per-matrix verdict slot."""
+    return {
+        "ok": True,
+        "attributed": [],
+        "unattributed": [],
+        "renamed_case_only": [],
+        "failures": [],
+    }
+
+
+def _normalized_diff(detail: dict) -> dict:
+    """Return one matrix's diff with every column set canonicalized and deduped."""
+    added = _canonical_map(detail.get("columns_added", []))
+    removed = _canonical_map(detail.get("columns_removed", []))
+
+    # A name present on both sides under the case convention is a RENAME, not a
+    # simultaneous add and remove.
+    renames = sorted(set(added) & set(removed))
+
+    changed_raw = detail.get("columns_changed", {})
+    details_raw = detail.get("column_details")
+
+    changed = {_canonical(name): list(seasons) for name, seasons in changed_raw.items()}
+    details = (
+        None
+        if details_raw is None
+        else {_canonical(name): value for name, value in details_raw.items()}
+    )
+
+    return {
+        "added": sorted(name for name in added if name not in renames),
+        "removed": sorted(name for name in removed if name not in renames),
+        "renames": [[removed[name], added[name]] for name in renames],
+        "changed": changed,
+        "details": details,
+    }
+
+
+def _grown_seasons(detail: dict) -> list[str]:
+    """Return the seasons whose row count increased, sorted."""
+    before = detail.get("rows_per_season_before") or {}
+    after = detail.get("rows_per_season_after") or {}
+    return sorted(
+        season
+        for season in set(before) | set(after)
+        if int(after.get(season, 0)) > int(before.get(season, 0))
+    )
+
+
+def attribute_rung(report: dict, rung: int, before: dict | None = None) -> dict:
+    """Attribute every moved column in *report* to *rung*'s one named cause.
+
+    Returns a structured VERDICT rather than raising, so the caller decides
+    severity. The verdict carries:
+
+    - ``ok``      -- False when anything at all is unexplained. An unattributed
+                     moved column FAILS the step (SPEC R1); so does a diff that
+                     moved nothing, because WR-06 plus CR-02 plus a fifteen-column
+                     drop must move something and an empty diff means the rebuild
+                     did not do what it claimed.
+    - ``blocking`` -- True only for a rung-4 anomaly (SPEC R2) and for a rung-3
+                     non-empty changed set. At rungs 1-3 an unattributed column is
+                     a FINDING: it may be upstream nflreadpy drift, and every
+                     message at those rungs says so.
+
+    The comparison is deterministic with respect to both column ordering and case:
+    every column set is normalized to a sorted set under ``_canonical`` on BOTH
+    sides before anything is compared, and the emitted attributed / unattributed
+    sets are canonical and sorted. A verdict that changed with JSON key order would
+    differ between two runs over identical data.
+    """
+    signature = _expected_signature(rung, before=before)
+    cause = RUNG_CAUSES[rung]
+    upstream = (
+        " " + _UPSTREAM_DRIFT_NOTE.format(cause=cause)
+        if rung in _UPSTREAM_ESCAPE_RUNGS
+        else ""
+    )
+
+    matrices: dict[str, dict] = {}
+    failures: list[str] = []
+    blocking = False
+
+    for matrix in sorted(report):
+        detail = report[matrix]
+        verdict = _matrix_verdict()
+        matrices[matrix] = verdict
+
+        def fail(message: str, verdict: dict = verdict, matrix: str = matrix) -> None:
+            verdict["ok"] = False
+            verdict["failures"].append(message + upstream)
+            failures.append(f"{matrix}: {message}{upstream}")
+
+        if detail.get("width_before") is None or detail.get("width_after") is None:
+            fail(
+                f"matrix {matrix} is absent from one or both fingerprint documents, so "
+                f"rung {rung} cannot be attributed at all"
+            )
+            continue
+
+        diff = _normalized_diff(detail)
+
+        for original_before, original_after in diff["renames"]:
+            verdict["renamed_case_only"].append([original_before, original_after])
+            fail(
+                f"case-only rename '{original_before}' -> '{original_after}'. The column "
+                "survived, but its spelling moved, and nothing in this rung's cause "
+                "renames a column"
+            )
+
+        blocking |= _attribute_one_matrix(rung, detail, diff, verdict, fail)
+
+    ok = all(verdict["ok"] for verdict in matrices.values())
+    return {
+        "rung": rung,
+        "cause": cause,
+        "ok": ok,
+        "blocking": bool(blocking),
+        "signature": signature,
+        "matrices": matrices,
+        "failures": failures,
+    }
+
+
+def _attribute_one_matrix(rung, detail, diff, verdict, fail) -> bool:
+    """Apply *rung*'s predicted signature to one matrix. Returns whether it blocks."""
+    cause = RUNG_CAUSES[rung]
+    width_before = detail["width_before"]
+    width_after = detail["width_after"]
+    rows_before = detail.get("rows_before")
+    rows_after = detail.get("rows_after")
+    blocking = False
+
+    diff_is_empty = (
+        not diff["added"]
+        and not diff["removed"]
+        and not diff["renames"]
+        and not diff["changed"]
+        and rows_before == rows_after
+    )
+    if diff_is_empty:
+        fail(
+            f"rung {rung} ({cause}) moved no column and changed no row count. An empty "
+            "diff means the rebuild did not do what it claimed"
+        )
+        if rung == 4:
+            blocking = True
+
+    if rung == 3:
+        expected_removed = _rung3_expected_removed(diff)
+        for column in diff["removed"]:
+            if column in expected_removed:
+                verdict["attributed"].append(column)
+            else:
+                verdict["unattributed"].append(column)
+                fail(
+                    f"column '{column}' was REMOVED at rung 3 but is not a member of the "
+                    "line_movement family derived from backtest.signal_lift.group_columns"
+                )
+        for column in sorted(set(expected_removed) - set(diff["removed"])):
+            fail(
+                f"column '{column}' is a line_movement family member but was NOT removed "
+                "at rung 3 -- the drop is PARTIAL"
+            )
+        for column in diff["added"]:
+            fail(f"column '{column}' was ADDED at rung 3; the drop adds nothing")
+        if width_after != width_before - len(diff["removed"]):
+            fail(
+                f"width moved {width_before} -> {width_after}, which is not "
+                f"{width_before} minus the {len(diff['removed'])} removed columns"
+            )
+        if diff["changed"]:
+            blocking = True
+            moved = ", ".join(sorted(diff["changed"]))
+            fail(
+                "rung 3 moved surviving values, which dropping columns must never do: "
+                f"{moved}. That means the dropped columns were participating in some "
+                "whole-frame statistic"
+            )
+        if rows_before != rows_after:
+            fail(f"rows moved {rows_before} -> {rows_after}; the drop adds no row")
+        return blocking
+
+    if rung == 4:
+        blocking |= _attribute_rung4(detail, diff, verdict, fail)
+        return blocking
+
+    # Rungs 1 and 2 share their structural expectations: nothing added, nothing
+    # removed, width unchanged. They differ only in which changed columns count as
+    # explained.
+    for column in diff["added"]:
+        fail(f"column '{column}' was ADDED at rung {rung}; {cause} adds no column")
+    for column in diff["removed"]:
+        fail(f"column '{column}' was REMOVED at rung {rung}; {cause} removes no column")
+    if width_before != width_after:
+        fail(
+            f"width moved {width_before} -> {width_after} at rung {rung}; {cause} "
+            "changes no column count"
+        )
+    if rows_before != rows_after:
+        fail(
+            f"rows moved {rows_before} -> {rows_after} at rung {rung}; {cause} adds no row"
+        )
+
+    if rung == 1:
+        _attribute_rung1(diff, verdict, fail)
+    else:
+        # WR-06 refits every imputation and winsorization bound on the strictly-prior
+        # seasons, so ANY column that had a value imputed or clipped may move. The
+        # rung's discipline is structural (nothing added, removed or resized) plus the
+        # empty-diff refusal above, not a per-column allow-list.
+        verdict["attributed"].extend(sorted(diff["changed"]))
+
+    return blocking
+
+
+def _rung3_expected_removed(diff: dict) -> list[str]:
+    """Return the expected rung-3 removed set, derived from the registry."""
+    return [_canonical(name) for name in _line_movement_columns(diff["removed"])]
+
+
+def _attribute_rung1(diff: dict, verdict: dict, fail) -> None:
+    """CR-02 exempts DISCRETE INDICATORS from winsorization, and nothing else."""
+    if diff["details"] is None:
+        for column in sorted(diff["changed"]):
+            verdict["unattributed"].append(column)
+        if diff["changed"]:
+            fail(
+                "this fingerprint pair carries no column_details, so rung 1 cannot tell "
+                "a discrete indicator from a measurement. Re-run scripts/fingerprint_gold.py "
+                "on both sides so column_meta is recorded"
+            )
+        return
+
+    for column in sorted(diff["changed"]):
+        meta = diff["details"].get(column, {})
+        discrete = bool(meta.get("discrete_indicator_before")) or bool(
+            meta.get("discrete_indicator_after")
+        )
+        if discrete:
+            verdict["attributed"].append(column)
+        else:
+            verdict["unattributed"].append(column)
+            fail(
+                f"column '{column}' moved at rung 1 but is not a discrete indicator, so "
+                "CR-02's winsorization exemption cannot explain it"
+            )
+
+
+def _attribute_rung4(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """N-01 may move the re-synced seasons and NOTHING else (SPEC R2)."""
+    blocking = False
+    width_before = detail["width_before"]
+    width_after = detail["width_after"]
+    rows_before = detail.get("rows_before")
+    rows_after = detail.get("rows_after")
+
+    for column in diff["added"]:
+        blocking = True
+        fail(f"column '{column}' was ADDED at rung 4; the re-sync adds no column")
+    for column in diff["removed"]:
+        blocking = True
+        fail(f"column '{column}' was REMOVED at rung 4; the re-sync removes no column")
+    if width_before != width_after:
+        blocking = True
+        fail(
+            f"width moved {width_before} -> {width_after} at rung 4; the re-sync changes "
+            "no column count"
+        )
+    if diff["renames"]:
+        blocking = True
+
+    grown = _grown_seasons(detail)
+    if rows_after is None or rows_before is None or rows_after <= rows_before:
+        blocking = True
+        fail(
+            f"rows moved {rows_before} -> {rows_after} at rung 4, but the N-01 re-sync "
+            "exists to ADD rows; a re-sync that adds none proves nothing"
+        )
+    if not grown:
+        blocking = True
+        fail(
+            "no season gained rows at rung 4, so there is no re-synced season to attribute "
+            "a move to"
+        )
+    if not diff["changed"]:
+        blocking = True
+        fail(
+            "no column moved at rung 4 even though rows were expected to arrive; a "
+            "re-synced season must move that season's column hashes"
+        )
+
+    allowed = set(grown)
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        outside = [season for season in seasons if season not in allowed]
+        if outside:
+            blocking = True
+            verdict["unattributed"].append(column)
+            fail(
+                f"column '{column}' moved in season(s) {', '.join(outside)}, outside the "
+                f"re-synced season(s) {', '.join(grown) or '(none)'}. The WR-06 fix is "
+                "INCOMPLETE -- a whole-frame statistic is still reaching prior seasons -- "
+                "and the phase is BLOCKED (SPEC R2). Do not proceed to the gate"
+            )
+        else:
+            verdict["attributed"].append(column)
+
+    return blocking
+
+
+def _print_attribution(verdict: dict) -> None:
+    """Print an attribution verdict in the shape a human reads at checkpoint 2."""
+    status = (
+        "OK" if verdict["ok"] else ("BLOCKED" if verdict["blocking"] else "FINDING")
+    )
+    print(f"rung {verdict['rung']} ({verdict['cause']}): {status}")
+    for matrix, detail in verdict["matrices"].items():
+        print(f"  {matrix}:")
+        print(f"    attributed:   {detail['attributed']}")
+        print(f"    unattributed: {detail['unattributed']}")
+        if detail["renamed_case_only"]:
+            print(f"    case renames: {detail['renamed_case_only']}")
+    if verdict["failures"]:
+        print("  FAILURES:")
+        for message in verdict["failures"]:
+            print(f"    - {message}")
+    print()
 
 
 def _print_comparison(report: dict) -> None:
@@ -154,12 +699,59 @@ def build_parser() -> argparse.ArgumentParser:
         metavar=("BEFORE", "AFTER"),
         help="Compare two previously written fingerprint JSON documents",
     )
+    parser.add_argument(
+        "--attribute-rung",
+        type=int,
+        choices=sorted(RUNG_CAUSES),
+        metavar="N",
+        help=(
+            "Attribute the --compare diff to rebuild rung N's one named cause "
+            f"({', '.join(f'{k}={v}' for k, v in sorted(RUNG_CAUSES.items()))}). "
+            "Exits 1 when the verdict BLOCKS the phase, 3 when it is a non-blocking "
+            "finding, 0 when every moved column is attributed."
+        ),
+    )
     return parser
 
 
 def main() -> None:
     """CLI entry point for gold fingerprinting."""
     args = build_parser().parse_args()
+
+    if args.attribute_rung is not None:
+        if not args.compare:
+            print(
+                "ERROR: --attribute-rung requires --compare BEFORE AFTER",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        before = json.loads(args.compare[0].read_text(encoding="utf-8"))
+        after = json.loads(args.compare[1].read_text(encoding="utf-8"))
+        verdict = attribute_rung(
+            compare_fingerprints(before, after), args.attribute_rung, before=before
+        )
+        _print_attribution(verdict)
+        if args.out is not None:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            # The run timestamp lives on the VERDICT document, never on the
+            # fingerprint document: a fingerprint carrying a timestamp could not be
+            # byte-compared across two runs, and that byte-comparison is what makes
+            # "unchanged gold hashes identically" checkable. Recording it here is what
+            # makes the upstream-drift hypothesis checkable after the fact -- an
+            # unattributed column is only diagnosable against the nflreadpy revision
+            # date if the rung's run time is on record.
+            document = {
+                **verdict,
+                "attributed_at": datetime.now(UTC).isoformat(),
+                "before_document": str(args.compare[0]),
+                "after_document": str(args.compare[1]),
+            }
+            args.out.write_text(json.dumps(document, indent=2), encoding="utf-8")
+        if verdict["blocking"]:
+            sys.exit(1)
+        if not verdict["ok"]:
+            sys.exit(3)
+        return
 
     if args.compare:
         before = json.loads(args.compare[0].read_text(encoding="utf-8"))
