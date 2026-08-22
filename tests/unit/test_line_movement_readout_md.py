@@ -22,11 +22,48 @@ phase -- the claim that NO line-movement column reached any model under the cano
 reproduce too. If a future gold rebuild or config change makes the family selectable, that
 assertion fails and Section 4 has to be rewritten rather than silently going stale.
 
+PHASE 30 RE-SCOPE (Plan 30-03, D30-06)
+--------------------------------------
+``TestReadoutMatchesHarness`` now runs against a COMMITTED FIXTURE of the pre-Phase-30 gold
+(``tests/fixtures/gold/``), not against live ``data/gold``. Two reasons, and the second is the
+one that matters:
+
+  1. Phase 30 rebuilds gold four times on purpose (WR-06 bounds, the CR-02 flag repair, the
+     line_movement drop, the N-01 re-sync). Any one of those moves the ATS deltas far past the
+     ``5e-3`` tolerance these tests compare within, so pinned-to-live-gold reproductions were
+     always going to go stale -- with or without the drop.
+  2. The drop specifically turns two of the four reproductions into VACUOUS PASSES. The old
+     skip-guard does NOT fire after the drop (gold still exists, it is merely 15 columns
+     narrower), so the assertions run, and both ``n_group_columns_selected == 0`` and
+     ``"line_movement_coverage" not in group_columns_selected`` become trivially true over an
+     EMPTY selected-column list. A green test that proves nothing is worse than a red one,
+     because nobody revisits it.
+
+So the scope of these four tests is now explicit and narrower: they prove the published Phase-29
+numbers were produced by the COMMITTED HARNESS ON THE GOLD THAT PRODUCED THEM. They say nothing
+whatsoever about live gold. What they used to assert about the present is replaced by
+``test_line_movement_family_is_absent_from_live_gold``, and the fixture's own identity is pinned
+by ``test_fixture_is_the_pre_drop_gold`` so it cannot be quietly regenerated to rescue a failing
+assertion.
+
+NOT AN OVERSIGHT: what Phase 30 deliberately LEAVES IN PLACE
+-----------------------------------------------------------
+``features/line_movement.py`` and the ``features/validation.py`` leakage-keyword entry are
+deliberately retained by this phase, and ``"line_movement"`` STAYS registered in
+``backtest.signal_lift._GROUP_PREDICATE``. With the registration retained,
+``group_columns(post_drop_gold, "line_movement")`` returns an empty list, ``excluded_columns``
+adds nothing, and the committed registry-membership assertion in
+``tests/unit/test_signal_lift_readout_md.py`` (``test_phase28_baseline_is_pinned_against_later_widening``)
+stays green. Removing the registration would turn that test red for no benefit AND would re-arm
+the 29-06 trap -- a family registered by no predicate falls straight into the BASELINE leg of
+every screen -- for the next phase that widens gold.
+
 ASCII only, no emoji (CLAUDE.md).
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 from datetime import UTC, date, datetime
@@ -38,9 +75,40 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 READOUT_MD = REPO_ROOT / "LINE-MOVEMENT-READOUT.md"
 
-# Gold/odds presence skip-guard: the harness-run validation needs the Plan 29-06 rebuilt gold.
-_GOLD_ATS_PATH = REPO_ROOT / "data" / "gold" / "features_ats.parquet"
-_ODDS_PATH = REPO_ROOT / "data" / "silver" / "odds_snapshot.parquet"
+# ---------------------------------------------------------------------------
+# The Phase-30 frozen fixture (Plan 30-03, D30-06).
+#
+# COMMITTED artifacts, captured at repository SHA dc4d1c0 before any rung of the D30-17 rebuild
+# ladder ran, byte-for-byte copies of data/gold/features_ats.parquet and
+# data/silver/odds_snapshot.parquet as they stood when every published Phase-29 reading was
+# measured. They are tracked only because .gitignore carries the narrow file-level negation
+# `!tests/fixtures/gold/*.parquet` after the repository-wide `*.parquet` rule.
+#
+# Digests, shape and column count are transcribed from tests/fixtures/gold/PROVENANCE.md, which
+# also prints each fixture digest beside the digest of the SOURCE it was copied from.
+# ---------------------------------------------------------------------------
+_FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "gold"
+_FIXTURE_GOLD = _FIXTURE_DIR / "features_ats_pre_phase30.parquet"
+_FIXTURE_ODDS = _FIXTURE_DIR / "odds_snapshot_pre_phase30.parquet"
+_FIXTURE_PROVENANCE = _FIXTURE_DIR / "PROVENANCE.md"
+
+_FIXTURE_GOLD_SHA256 = (
+    "733a1273fde4067607480540fd1357e50b81d31e5793b386d4f916e3057a5728"
+)
+_FIXTURE_ODDS_SHA256 = (
+    "405133f16de9167ee37d1ff81b85456572029d8a936fc0a6b922d564f662a790"
+)
+_FIXTURE_GOLD_SHAPE = (6263, 210)
+_FIXTURE_GOLD_LINE_MOVEMENT_COLUMNS = 15
+
+# Live gold -- read ONLY by test_line_movement_family_is_absent_from_live_gold, which is the
+# Phase-30 DROP proof (SPEC R3). `data/` is gitignored, so live gold can legitimately be absent
+# on a fresh checkout and that test skip-guards on presence. The four harness reproductions do
+# NOT read these paths any more.
+_LIVE_GOLD_PATHS = {
+    target: REPO_ROOT / "data" / "gold" / f"features_{target}.parquet"
+    for target in ("wp", "ats", "ou")
+}
 
 # Required section markers (the D-16 five-section contract). A substring of each section header so
 # a benign reword does not trip the guard but a dropped section does.
@@ -349,14 +417,164 @@ class TestLiftSectionContent:
         assert "not shipped" in content.lower()
 
 
+def _require_fixture() -> None:
+    """Assert the committed pre-Phase-30 fixture is present.
+
+    This is deliberately a FAILURE, not a ``pytest.skip``. The old guard skipped on missing
+    ``data/gold`` because ``data/`` is gitignored and may genuinely be absent. The fixture is
+    the opposite: it is a COMMITTED artifact of this repository, so its absence means the
+    checkout is broken or somebody deleted it -- neither of which should pass silently. A skip
+    here would let the whole reproduction class vanish without a sound, which is the exact
+    failure mode the Phase-30 re-scope exists to eliminate.
+    """
+    missing = [p for p in (_FIXTURE_GOLD, _FIXTURE_ODDS) if not p.exists()]
+    assert not missing, (
+        f"the committed pre-Phase-30 gold fixture is missing: {[str(p) for p in missing]}. "
+        "These files are tracked (see .gitignore's !tests/fixtures/gold/*.parquet negation) "
+        f"and described in {_FIXTURE_PROVENANCE}. Restore them from git rather than "
+        "regenerating them -- a regenerated fixture is not the gold that produced the "
+        "published Phase-29 numbers."
+    )
+
+
+class TestFixtureIdentity:
+    """The frozen fixture cannot be quietly regenerated to rescue a failing assertion."""
+
+    def test_fixture_is_the_pre_drop_gold(self) -> None:
+        """Shape, the 15-column line_movement count, and BOTH sha256 digests are pinned.
+
+        Without this, the four reproductions below could be "fixed" after any future rebuild by
+        re-capturing the fixture from whatever gold happens to be on disk -- which would make
+        them reproduce a number they were never measured against and quietly destroy the only
+        evidence that the published Phase-29 readings came from the committed harness.
+        """
+        _require_fixture()
+
+        import pandas as pd
+
+        from backtest.signal_lift import group_columns
+
+        gold = pd.read_parquet(_FIXTURE_GOLD)
+
+        regenerated = (
+            "If this failed because the fixture was RE-CAPTURED from current gold, that is "
+            "the failure this test exists to catch, not a reason to update the constant. The "
+            f"fixture and {_FIXTURE_PROVENANCE.name} are regenerated together or not at all; "
+            "a red assertion in this module is a finding about the harness or the record, "
+            "never a licence to re-capture."
+        )
+
+        assert gold.shape == _FIXTURE_GOLD_SHAPE, (
+            f"the fixture is {gold.shape}, not the pre-Phase-30 ATS gold "
+            f"{_FIXTURE_GOLD_SHAPE}. {regenerated}"
+        )
+        assert (
+            len(group_columns(gold, "line_movement"))
+            == _FIXTURE_GOLD_LINE_MOVEMENT_COLUMNS
+        ), (
+            "the fixture must still carry the full 15-column line_movement family -- it is the "
+            f"PRE-drop gold by definition. {regenerated}"
+        )
+
+        for path, expected in (
+            (_FIXTURE_GOLD, _FIXTURE_GOLD_SHA256),
+            (_FIXTURE_ODDS, _FIXTURE_ODDS_SHA256),
+        ):
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            assert actual == expected, (
+                f"{path.name} sha256 is {actual}, not the digest recorded in "
+                f"{_FIXTURE_PROVENANCE} ({expected}). {regenerated}"
+            )
+
+    def test_provenance_records_both_digests(self) -> None:
+        """The module constants are transcribed FROM PROVENANCE.md, so they must agree with it.
+
+        A digest pinned in code but absent from the provenance record is unauditable: a reader
+        has no way to check what the fixture was copied from, which is the whole point of the
+        record.
+        """
+        assert _FIXTURE_PROVENANCE.is_file(), f"missing: {_FIXTURE_PROVENANCE}"
+        content = _FIXTURE_PROVENANCE.read_text(encoding="utf-8")
+        assert content.isascii(), "PROVENANCE.md must stay pure ASCII (CLAUDE.md)"
+        for digest in (_FIXTURE_GOLD_SHA256, _FIXTURE_ODDS_SHA256):
+            assert digest in content, (
+                f"digest {digest} is pinned in this module but is not recorded in "
+                f"{_FIXTURE_PROVENANCE}"
+            )
+        assert "MATCH LINE" in content, (
+            "PROVENANCE.md must print each fixture digest beside the digest of the SOURCE file "
+            "it was copied from, with an explicit statement that the two were equal at capture "
+            "time -- that comparison is only checkable before the rebuild destroys the source"
+        )
+
+
+class TestLineMovementDropInLiveGold:
+    """The Phase-30 DROP proof (SPEC R3) -- what the reproductions used to say about the present.
+
+    The four reproductions below are now scoped to a frozen artifact and deliberately say NOTHING
+    about live gold. This is the test that does.
+    """
+
+    def test_line_movement_family_is_absent_from_live_gold(self) -> None:
+        """Zero line_movement columns in all three live matrices, once Plan 30-07 has landed.
+
+        Honest in BOTH states, and deliberately not a tautology:
+
+          - while the family is still present in ALL THREE matrices, this SKIPS with a message
+            naming Plan 30-07 -- that is the expected pre-drop state, not a pass;
+          - once the drop has landed it ASSERTS, and a partial drop (gone from some matrices but
+            not others) falls through to the assertion and goes RED rather than being swallowed
+            by the skip.
+        """
+        import pandas as pd
+
+        from backtest.signal_lift import group_columns
+
+        absent = [t for t, p in _LIVE_GOLD_PATHS.items() if not p.exists()]
+        if absent:
+            pytest.skip(
+                f"live gold not present for {absent} (data/ is gitignored); "
+                "the DROP proof needs a built data lake"
+            )
+
+        per_target = {
+            target: group_columns(pd.read_parquet(path), "line_movement")
+            for target, path in _LIVE_GOLD_PATHS.items()
+        }
+
+        if all(cols for cols in per_target.values()):
+            counts = {t: len(c) for t, c in per_target.items()}
+            pytest.skip(
+                f"the line_movement family is still in every live matrix ({counts}) -- this is "
+                "the expected PRE-drop state. Plan 30-07 performs the SPEC R3 drop; this "
+                "assertion turns live at that point and must not be softened before then."
+            )
+
+        for target, cols in per_target.items():
+            assert cols == [], (
+                f"features_{target}.parquet still carries {len(cols)} line_movement columns "
+                f"{cols} while at least one other matrix has none. The SPEC R3 drop is "
+                "PARTIAL, which is worse than not having run: the three matrices no longer "
+                "agree on the candidate feature set."
+            )
+
+
 @pytest.mark.integration
 class TestReadoutMatchesHarness:
     """The doc's numbers ARE the harness numbers -- re-run, not re-typed.
 
+    SCOPE (Phase 30, Plan 30-03): these four run against the COMMITTED FIXTURE of the
+    pre-Phase-30 gold, so what they prove is that the published Phase-29 readings were produced
+    by the committed harness ON THE GOLD THAT PRODUCED THEM. That gold is now itself a committed
+    artifact, pinned by ``TestFixtureIdentity``. They assert NOTHING about live ``data/gold`` --
+    see ``TestLineMovementDropInLiveGold`` for the present-tense claim.
+
     Runs the ATS cell of BOTH published grids (the load-bearing cell in each) and asserts the
     reproduced delta matches the doc. Also pins the structural claim the whole ruling rests on:
     under the canonical window NO line-movement column is selected, and under the coverage window
-    some are. If a future rebuild changes either fact, this fails and Section 4 must be rewritten.
+    some are. If a change to the HARNESS makes either fact false against the frozen gold, this
+    fails and Section 4 must be rewritten -- which is now the only thing that can make it fail,
+    because the input can no longer move underneath it.
     """
 
     @staticmethod
@@ -368,6 +586,8 @@ class TestReadoutMatchesHarness:
         Takes the window rather than duplicating the invocation per test, and
         goes through ``screen_kwargs_for_phase`` so the guard runs exactly what
         the CLI runs.
+
+        Reads the COMMITTED FIXTURE, not ``data/gold`` / ``data/silver`` (Plan 30-03).
         """
         import warnings
 
@@ -375,8 +595,8 @@ class TestReadoutMatchesHarness:
 
         from backtest.signal_lift import run_signal_lift_screen, screen_kwargs_for_phase
 
-        gold = pd.read_parquet(_GOLD_ATS_PATH)
-        odds = pd.read_parquet(_ODDS_PATH)
+        gold = pd.read_parquet(_FIXTURE_GOLD)
+        odds = pd.read_parquet(_FIXTURE_ODDS)
         kwargs = screen_kwargs_for_phase(
             29,
             coverage_window=coverage_window,
@@ -392,10 +612,8 @@ class TestReadoutMatchesHarness:
             )
 
     def test_canonical_ats_cell_reproduces_and_used_no_group_columns(self) -> None:
-        if not (_GOLD_ATS_PATH.exists() and _ODDS_PATH.exists()):
-            pytest.skip(
-                f"Canonical gold/odds not present at {_GOLD_ATS_PATH} / {_ODDS_PATH}"
-            )
+        """4a reproduces from the frozen gold that produced it."""
+        _require_fixture()
 
         cell = self._run(coverage_window=False)["groups"]["line_movement"][
             "per_target"
@@ -420,10 +638,8 @@ class TestReadoutMatchesHarness:
         assert "+0.147814" in _read_readout()
 
     def test_coverage_window_ats_cell_reproduces_and_used_group_columns(self) -> None:
-        if not (_GOLD_ATS_PATH.exists() and _ODDS_PATH.exists()):
-            pytest.skip(
-                f"Canonical gold/odds not present at {_GOLD_ATS_PATH} / {_ODDS_PATH}"
-            )
+        """4b reproduces from the frozen gold that produced it."""
+        _require_fixture()
 
         result = self._run(coverage_window=True)
         cell = result["groups"]["line_movement"]["per_target"]["ats"]
@@ -448,10 +664,7 @@ class TestReadoutMatchesHarness:
         self,
     ) -> None:
         """The 4d headline is the harness's number, re-run rather than re-typed."""
-        if not (_GOLD_ATS_PATH.exists() and _ODDS_PATH.exists()):
-            pytest.skip(
-                f"Canonical gold/odds not present at {_GOLD_ATS_PATH} / {_ODDS_PATH}"
-            )
+        _require_fixture()
 
         result = self._run(covered_selection_window=True)
         cell = result["groups"]["line_movement"]["per_target"]["ats"]
@@ -485,19 +698,35 @@ class TestReadoutMatchesHarness:
         """``line_movement_coverage`` selected => the doc must call the cell confounded.
 
         4c-bis item 6 registered this tell BEFORE the run. The doc currently
-        reports that it did not fire; if a rebuild makes it fire, that claim
-        becomes false and Section 4d has to be rewritten rather than silently
-        going stale.
+        reports that it did not fire; if a harness change makes it fire, that
+        claim becomes false and Section 4d has to be rewritten rather than
+        silently going stale.
+
+        The non-emptiness assertion below is load-bearing, not defensive. Against
+        post-drop gold the selected-column list is EMPTY, and ``"x" not in []`` is
+        trivially true -- so the tell assertion would have reported "the tell did
+        not fire" about a run in which nothing could possibly fire. That vacuous
+        pass is precisely what D30-06 warns about, and pinning the list non-empty
+        is what keeps this assertion substantive.
         """
-        if not (_GOLD_ATS_PATH.exists() and _ODDS_PATH.exists()):
-            pytest.skip(
-                f"Canonical gold/odds not present at {_GOLD_ATS_PATH} / {_ODDS_PATH}"
-            )
+        _require_fixture()
 
         cell = self._run(covered_selection_window=True)["groups"]["line_movement"][
             "per_target"
         ]["ats"]
-        fired = "line_movement_coverage" in cell["group_columns_selected"]
+        selected = cell["group_columns_selected"]
+        assert selected, (
+            "the covered window selected NO line-movement column, so the confound tell below "
+            "would pass over an empty list and assert nothing. The pre-registered tell is only "
+            "meaningful when the family was actually selectable -- see "
+            f"{_FIXTURE_PROVENANCE.name}: the fixture is the PRE-drop gold precisely so this "
+            "cell stays measurable"
+        )
+        assert len(selected) == _HEADLINE_ATS_GROUP_COLS_SELECTED, (
+            f"the covered window selected {len(selected)} columns {selected}; the readout "
+            f"publishes {_HEADLINE_ATS_GROUP_COLS_SELECTED}"
+        )
+        fired = "line_movement_coverage" in selected
         assert not fired, (
             "line_movement_coverage is now selected under the covered window -- per "
             "the pre-registered tell that cell is CONFOUNDED (a season proxy, not "
