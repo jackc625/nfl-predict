@@ -383,6 +383,22 @@ apm/
 !tests/data/
 !tests/fixtures/
 
+# Keep the Phase-30 frozen gold fixture (D30-06).
+#
+# The two entries above are DIRECTORY patterns -- a trailing-slash pattern matches the
+# directory, NOT the files inside it -- so neither re-includes a parquet. The blanket
+# `*.parquet` rule in the PROJECT SPECIFIC block above (line ~252) therefore still wins for
+# tests/fixtures/gold/*.parquet, and `git add` on those paths would silently no-op.
+#
+# tests/fixtures/gold/ holds the pre-Phase-30 ATS gold matrix and its closing-odds slice,
+# frozen so the four Phase-29 harness reproductions in
+# tests/unit/test_line_movement_readout_md.py keep proving the published numbers came from
+# the committed harness even after Phase 30 rebuilds gold. Without this file-level negation
+# the fixture is never committed and those reproductions pass only on the author's machine.
+# This is deliberately NARROW: it re-includes parquets under tests/fixtures/gold/ ONLY, and
+# leaves `data/` and every other parquet ignored.
+!tests/fixtures/gold/*.parquet
+
 # Keep documentation
 !docs/
 !*.md
