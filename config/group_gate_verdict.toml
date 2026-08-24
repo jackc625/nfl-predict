@@ -1,0 +1,237 @@
+# =============================================================================
+# config/group_gate_verdict.toml -- the RATIFIED Stage-1 feature-group verdict
+# Phase 30 (re-fit on widened gold, gated) -- requirement PROD-01, SPEC R4 / R8.
+#
+# GENERATOR OUTPUT. Produced by `python -m backtest.group_gate` and block-pasted in
+# ONE operation (D24-07). Do NOT hand-edit any value below: re-run the generator and
+# paste its complete block. A hand-edited value is indistinguishable from a tampered
+# one, and Plan 30-10 asserts this file is byte-identical to the generator's output.
+#
+# The rule that produced these verdicts was FROZEN before any number existed:
+#   frozen rule module : backtest/group_gate_constants.py
+#   pre-registration   : dc4d1c0c09ed3b4f5835c801e991aa945f23b479
+# SPEC R4 requires that commit to be a STRICT git ancestor of -- and not equal to --
+# the commit recording the Stage-1 measurement output.
+#
+# ASCII only, no emoji (CLAUDE.md hard constraint).
+# =============================================================================
+
+# The Stage-2 exclusion seam, DERIVED and never transcribed:
+# scripts/promote_models.py reads this key to build the candidate's --exclude-groups
+# list, so what the rule decided and what actually gets trained cannot diverge by a
+# typo (T-30-26). Each excluded group with the verdict it actually carries:
+#   injury  DROP
+#
+# UNDETERMINED resolves to DROP for the DEPLOY decision and is nonetheless REPORTED
+# as UNDETERMINED, never collapsed into DROP (SPEC R4/R8): 'we could not tell' and
+# 'we measured it and it did not help' are different findings, and this file must be
+# able to say which one happened. NOT MEASURED is not a verdict about the group at
+# all -- it is a refusal to rule, and such a group is excluded because no evidence
+# for carrying it was produced, not because it was found wanting.
+excluded_groups = ["injury"]
+
+[stage1]
+requirement = "SIG-05"
+frozen_rule_module = "backtest/group_gate_constants.py"
+preregistration_commit = "dc4d1c0c09ed3b4f5835c801e991aa945f23b479"
+alpha = 0.050000000000000003
+mde_power = 0.80000000000000004
+correction_method = "benjamini-hochberg"
+bh_denominator_rule = "full-grid"
+bh_denominator = 6
+measure_window = "2021-2024"
+anchor = "BaseTrainer.train_and_evaluate(tune=False)"
+baseline_excludes = ["snap", "injury", "situational", "line_movement"]
+bh_family = ["injury/ats", "injury/ou", "situational/ou", "snap/ats", "snap/ou", "snap/wp"]
+bh_rank_order = ["snap/wp", "situational/ou", "injury/ats", "snap/ats", "snap/ou", "injury/ou"]
+# scipy's adjusted q-values are a DISPLAY column only; the binding decision is the
+# vendored inclusive step-up in the frozen rule module.
+q_values_are_display_only = true
+fix_cycle_levers = ["D25-05 feature-selection train-window widening (widen the SelectFromModel train window to the incumbent's own selection window, as Phase 25 did for ATS)"]
+
+# Cells EXCLUDED from the BH family, with the pre-registered reason. Every exclusion
+# reduces m, so this table is what makes the denominator above auditable.
+[stage1.excluded_cells]
+"injury/wp" = "no column of this group was selected by this target's own feature selection, so the candidate model never saw the group and the delta is selection churn, not lift"
+"situational/ats" = "no column of this group was selected by this target's own feature selection, so the candidate model never saw the group and the delta is selection churn, not lift"
+"situational/wp" = "no column of this group was selected by this target's own feature selection, so the candidate model never saw the group and the delta is selection churn, not lift"
+
+[stage1.verdicts.injury]
+verdict = "DROP"
+reason = "DROP: significantly NEGATIVE after correction on ['ats']; this group measurably hurt a target and is dropped, not silently retained."
+coverage_span = "injuries 2009+ (measured 2021-2024)"
+measured_targets = ["ats", "ou"]
+positive_targets = []
+rejected_positive_targets = []
+rejected_negative_targets = ["ats"]
+
+[stage1.verdicts.snap]
+verdict = "KEEP"
+reason = "KEEP: significantly positive after Benjamini-Hochberg correction on ['wp'] at alpha=0.05 with m=6 (full-grid family). Carried into the Stage-2 candidate feature set."
+coverage_span = "snaps 2013+ (measured 2021-2024)"
+measured_targets = ["ats", "ou", "wp"]
+positive_targets = ["wp"]
+rejected_positive_targets = ["wp"]
+rejected_negative_targets = ["ats", "ou"]
+
+[stage1.verdicts.situational]
+verdict = "KEEP"
+reason = "KEEP: significantly positive after Benjamini-Hochberg correction on ['ou'] at alpha=0.05 with m=6 (full-grid family). Carried into the Stage-2 candidate feature set."
+coverage_span = "full history (measured 2021-2024)"
+measured_targets = ["ou"]
+positive_targets = ["ou"]
+rejected_positive_targets = ["ou"]
+rejected_negative_targets = []
+
+[stage1.cells.injury.wp]
+clv_column = "probability_clv"
+measured = false
+exclusion_reason = "no column of this group was selected by this target's own feature selection, so the candidate model never saw the group and the delta is selection churn, not lift"
+n_paired = 1019
+n_group_columns = 12
+n_group_columns_selected = 0
+delta_mean = 0.0042965829234908638
+delta_p = 3.6458684579405426e-15
+delta_ci95_lo = 0.0032413181609280356
+delta_ci95_hi = 0.005351847686053692
+bh_rejected = false
+bh_rank = 0
+q_display = nan
+mde = 0.0015080534912250553
+selection_churn = true
+
+[stage1.cells.injury.ats]
+clv_column = "line_clv"
+measured = true
+exclusion_reason = ""
+n_paired = 1019
+n_group_columns = 12
+n_group_columns_selected = 1
+delta_mean = -0.29530725687453424
+delta_p = 0.00079270926946554152
+delta_ci95_lo = -0.46749209130084796
+delta_ci95_hi = -0.12312242244822053
+bh_rejected = true
+bh_rank = 3
+q_display = 0.001585418538931083
+mde = 0.24606520553381092
+selection_churn = false
+
+[stage1.cells.injury.ou]
+clv_column = "line_clv"
+measured = true
+exclusion_reason = ""
+n_paired = 1019
+n_group_columns = 12
+n_group_columns_selected = 1
+delta_mean = -0.15657806396484375
+delta_p = 0.095412462784364077
+delta_ci95_lo = -0.34066503913780655
+delta_ci95_hi = 0.027508911208119047
+bh_rejected = false
+bh_rank = 6
+q_display = 0.095412462784364077
+mde = 0.26307426860765493
+selection_churn = false
+
+[stage1.cells.snap.wp]
+clv_column = "probability_clv"
+measured = true
+exclusion_reason = ""
+n_paired = 1019
+n_group_columns = 20
+n_group_columns_selected = 6
+delta_mean = 0.013158148731575845
+delta_p = 4.5994249393048066e-10
+delta_ci95_lo = 0.0090555931929537196
+delta_ci95_hi = 0.01726070427019797
+bh_rejected = true
+bh_rank = 1
+q_display = 2.7596549635828839e-09
+mde = 0.005862863446646575
+selection_churn = false
+
+[stage1.cells.snap.ats]
+clv_column = "line_clv"
+measured = true
+exclusion_reason = ""
+n_paired = 1019
+n_group_columns = 20
+n_group_columns_selected = 6
+delta_mean = -0.24067777241429386
+delta_p = 0.037264631273674374
+delta_ci95_lo = -0.46712782410512943
+delta_ci95_hi = -0.014227720723458265
+bh_rejected = true
+bh_rank = 4
+q_display = 0.04869754353654273
+mde = 0.32361432235365367
+selection_churn = false
+
+[stage1.cells.snap.ou]
+clv_column = "line_clv"
+measured = true
+exclusion_reason = ""
+n_paired = 1019
+n_group_columns = 20
+n_group_columns_selected = 7
+delta_mean = -0.22706850330775807
+delta_p = 0.040581286280452274
+delta_ci95_lo = -0.44438040869653572
+delta_ci95_hi = -0.0097565979189804253
+bh_rejected = true
+bh_rank = 5
+q_display = 0.04869754353654273
+mde = 0.31055521726169971
+selection_churn = false
+
+[stage1.cells.situational.wp]
+clv_column = "probability_clv"
+measured = false
+exclusion_reason = "no column of this group was selected by this target's own feature selection, so the candidate model never saw the group and the delta is selection churn, not lift"
+n_paired = 1019
+n_group_columns = 6
+n_group_columns_selected = 0
+delta_mean = 0.0018056162140838293
+delta_p = 1.2291794516962765e-09
+delta_ci95_lo = 0.0012279374245339533
+delta_ci95_hi = 0.0023832950036337054
+bh_rejected = false
+bh_rank = 0
+q_display = nan
+mde = 0.00082554686396579748
+selection_churn = true
+
+[stage1.cells.situational.ats]
+clv_column = "line_clv"
+measured = false
+exclusion_reason = "no column of this group was selected by this target's own feature selection, so the candidate model never saw the group and the delta is selection churn, not lift"
+n_paired = 1019
+n_group_columns = 6
+n_group_columns_selected = 0
+delta_mean = -0.024307479855025935
+delta_p = 0.76364454490301525
+delta_ci95_lo = -0.18289075014275374
+delta_ci95_hi = 0.13427579043270188
+bh_rejected = false
+bh_rank = 0
+q_display = nan
+mde = 0.22662753736463928
+selection_churn = true
+
+[stage1.cells.situational.ou]
+clv_column = "line_clv"
+measured = true
+exclusion_reason = ""
+n_paired = 1019
+n_group_columns = 6
+n_group_columns_selected = 3
+delta_mean = 0.36163086933289473
+delta_p = 0.00075631198225108848
+delta_ci95_lo = 0.1515917445804876
+delta_ci95_hi = 0.57166999408530184
+bh_rejected = true
+bh_rank = 2
+q_display = 0.001585418538931083
+mde = 0.30016186137729001
+selection_churn = false
