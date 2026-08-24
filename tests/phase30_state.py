@@ -830,3 +830,47 @@ MEASUREMENT_COMMIT: Final[str] = "68eb6425eb379701bf1b9d1937feb8c520877394"
 GROUP_VERDICT_FILE_SHA256: Final[str] = (
     "58da75ac62428a863ecbdaf2fb86078a12db44f3672286dbe89069a6ac7fa36a"
 )
+
+# ---------------------------------------------------------------------------
+# The phase's ONE irreversible production mutation, recorded before and after.
+#
+# APPENDED by Plan 30-11 Task 3 on 2026-08-24, at the moment of the D30-10
+# checkpoint-4 owner authorisation ("arm") and the armed conditional swap.
+#
+# artifacts/ is gitignored (.gitignore:30) and .planning/ is gitignored
+# (.gitignore:229, commit_docs false), and outputs/gate/manifest_before.json and
+# manifest_after.json live under the gitignored outputs/ tree (.gitignore:26). So
+# the record of what production pointed at immediately before and immediately after
+# the phase's only production write would otherwise survive in no place a fresh
+# checkout can read -- and those two digests are the anchor the rollback story is
+# told against.
+#
+# WHAT ACTUALLY HAPPENED. One of three gated targets passed. WP swapped to
+# wp_20260824_113325; ATS and OU FAILED the frozen non-regression gate and kept
+# their incumbents (ats_20260605_220128, ou_20260326_163930) with their manifest
+# lines byte-identical across the write, as did blend
+# (blend_dynamic_20260606_020635). The armed run exited 1 -- non-zero because a
+# gated target failed, which is the specified behaviour for a partial pass and not
+# an error. A refusal is a result: see the SUMMARY's D25-14 lineage note.
+#
+# BEFORE != AFTER here precisely because a target DID swap. Had zero targets passed,
+# these two constants would be equal, and that equality would itself have been the
+# record of a zero-swap phase.
+#
+# THESE DIGESTS ARE OVER RAW WORKING-TREE BYTES, and artifacts/latest.json is
+# CRLF on this Windows checkout because models.artifacts._atomic_write_json writes
+# it through a text-mode handle. Unlike GROUP_VERDICT_FILE_SHA256 above, no
+# newline normalization is applied: that constant pins a git BLOB (which is LF in
+# the object store on every platform), while this one pins a runtime file git never
+# sees, so the reproducible thing is the bytes the writer actually produced. The
+# LF-normalized equivalents, for reconciling a manifest written on a POSIX host,
+# are:
+#   before  14cbc3b3bf98fc998b15190d096df12fac7c25484572751211dd3737dd35bee1
+#   after   21e204779accecb7fb38cd029ebbbd81c58bea305967789670a88791a4ded1e1
+# ---------------------------------------------------------------------------
+MANIFEST_SHA256_BEFORE: Final[str] = (
+    "9139e748b5c37167a048b08bba188c74beedbf71309d3ab37cbdd7ca359ebd11"
+)
+MANIFEST_SHA256_AFTER: Final[str] = (
+    "7ff78a506b1cb06e206705c5900438a5388be64e963bcc8a39c7ed6a8d0f66f1"
+)
