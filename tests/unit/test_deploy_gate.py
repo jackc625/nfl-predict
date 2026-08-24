@@ -1223,3 +1223,46 @@ def test_update_manifest_atomic_write_preserves_on_failure(
     assert remaining == ["latest.json"], (
         f"stray temp file(s) left after failed rename: {remaining}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan 30-09 / SPEC R5: the phase-start threshold snapshot (T-30-39)
+# ---------------------------------------------------------------------------
+
+
+def assert_phase_start_thresholds_unchanged(cfg: dict) -> None:
+    """Assert every non-baseline gate setting still equals its phase-start value.
+
+    NOT IMPLEMENTED YET (Plan 30-09 Task 2, RED). The snapshot and the comparison land in
+    the GREEN step; this stub exists so the fail-closed control below expresses the
+    pre-implementation state honestly -- the guard is reachable and does not guard.
+
+    Args:
+        cfg: A loaded gate config (``models.deploy_gate.load_gate_config`` shape).
+    """
+
+
+def test_threshold_snapshot_catches_a_widened_band() -> None:
+    """30-09 (T-30-39): the snapshot check FAILS on a loosened band, not just on nothing.
+
+    The fail-closed control for the snapshot test below. A check that has only ever been
+    observed passing is indistinguishable from a check that cannot fail, and this one exists
+    solely to make a loosening impossible to slip through -- so it has to be shown catching
+    one. Widens ``wp_ece_max_increase`` in an in-memory copy of the committed config (the
+    exact shape of the move SPEC R5 prohibits: nudging a band until a failing target passes)
+    and asserts the check rejects it and says why.
+    """
+    cfg = gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
+    loosened = copy.deepcopy(cfg)
+    loosened["gate"]["secondary"]["wp_ece_max_increase"] = 0.05
+
+    with pytest.raises(AssertionError) as excinfo:
+        assert_phase_start_thresholds_unchanged(loosened)
+
+    message = str(excinfo.value)
+    assert "wp_ece_max_increase" in message, (
+        f"the failure must name the setting that moved; got: {message}"
+    )
+    assert "candidate-side" in message, (
+        f"the failure must state the remediation (a fix-cycle is candidate-side); got: {message}"
+    )
