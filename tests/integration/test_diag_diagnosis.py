@@ -32,6 +32,61 @@ AUDIT-REPORT.md figures are intentionally NOT edited (that file is a frozen v2.1
 the Phase-20 weather rebuild at the 156/157/156 width); the anchors are moved past those literal
 figures here so the Phase-28 provenance is honest.
 
+THIRD ANCHOR STATE (Plan 30-16, 2026-08-24; owner ruling D30-OWNER-02, plus the owner's
+2026-08-24 ruling on this plan's Task 3 halt). TWO things moved the anchors at once, and both
+are named here because this file's whole convention is that an anchor never moves silently:
+
+  1. The four-rung Phase-30 gold rebuild (Plans 30-07 / 30-08 / 30-10), which this test re-fits
+     ``backtest.engine`` on.
+  2. For the FIRST TIME, a tuned train that ACTUALLY SEARCHED. ``backtest/engine.py`` called
+     ``train_and_evaluate(tune=True)`` but kept the LEGACY Optuna identity ``{target}_tuning_v1``,
+     whose three study files were written 2026-03-31 and were already at the full 100-trial
+     budget. ``OptunaTuner.optimize`` computes remaining trials as
+     ``max(0, n_trials - len(study.trials))`` under ``load_if_exists=True``, so the "search" ran
+     ZERO trials, returned the STORED v2.0 parameters, and still reported ``n_trials=100``. Every
+     "tuned" backtest between 2026-03-31 and Plan 30-16 was a straight re-fit on frozen v2.0
+     hyperparameters (D30-DEFER-01, fixed under D30-OWNER-02).
+
+The measured move, with the arithmetic and the direction stated:
+
+  WP pooled accuracy    0.67691 ->  0.6769095697980685   drift 4.3e-7    -- did NOT move
+  headline_clv wp      -0.00469 -> -0.0028010282747504   drift 1.889e-3  -- moved, and IMPROVED
+
+Both readings were already inside the 5e-3 band. The band was NOT widened, re-expressed or made
+relative, and the constants are re-ratified to the measured values rather than left pointing at a
+superseded figure that happens to still pass. The CLV anchor moved TOWARD zero: the genuinely
+searched backtest gives up less to the closing line than the frozen-v2.0-parameter one did.
+
+REPRODUCIBILITY, because this anchor is now produced by a search that runs fresh on EVERY
+invocation and a single reading could not pin it. The diagnosis was run TWICE and returned
+BYTE-IDENTICAL values both times (0.6769095697980685 / -0.0028010282747504157), matching the
+plain ``scripts/run_backtest.py`` headline from the same code; and three independent production
+backtest runs returned byte-identical Optuna best parameters for all three targets. That
+reproducibility is neither free nor a seeding accident. Optuna's ``HyperbandPruner`` assigns each
+trial to a bracket by a CRC32 of the STUDY NAME (``optuna/pruners/_hyperband.py:255-258``), so
+Plan 30-16's FIRST attempt -- which put the engine run id in the study NAME -- made two readings
+of this very anchor land 3.51e-3 apart, 70% of the band, with five runs choosing three different
+WP penalties. The owner ruled the identity split: constant study NAME, per-run study STORAGE. If
+this test ever starts oscillating again, check ``models.trainers.base.BACKTEST_TUNING_STUDY_TAG``
+before anything else.
+
+``AUDIT-REPORT.md`` and ``METHODOLOGY.md`` are deliberately NOT edited by Plan 30-16. They are
+frozen v2.1 forensic records, and D30-OWNER-02 assigned their reconciliation to Plan 30-14 as
+additional (doc, guard) pairs.
+
+RETRACTED, recorded here because lifting the quarantine DELETES the text that carried it: the
+skip reason removed below asserted, as its point (3), that the rung-3 anchor movement came from
+the WP selector choosing its 20 features out of 180 numeric candidates rather than 195. Plan
+30-17's census DISPROVED exactly that -- WP's selected set is invariant to dropping the 15
+window-constant columns, to dropping all 82, and to padding -- because WP's ``LogisticRegression``
+has no column subsampling. No replacement mechanism is offered: two hypotheses remain open, the
+census cannot discriminate between them because those columns no longer exist in gold, and an
+honest open question beats a tidy wrong answer (D30-DEFER-17).
+
+COST: this test now runs a genuine 100-trial search per target and takes about 225 seconds
+(measured 225.3s and 228.7s), against roughly 35 seconds when the search was vacuous. It carries
+the repository's ``slow`` marker for that reason, and for that reason alone.
+
 Reproducibility convention: the shared fixture loads gold + normalized closing odds via the
 engine loaders (``_load_features`` / ``_load_closing_odds``) rather than re-reading parquet so the
 LAR->LA canonical team-abbreviation normalization matches the backtest exactly (CLAUDE.md).
@@ -54,14 +109,17 @@ from backtest.engine import BacktestEngine
 _GOLD_WP_PATH = Path("data/gold/features_wp.parquet")
 
 # Deterministic walk-forward backtest anchors (n-games-weighted pooled, 2021-2024).
-# Reconciled in Phase 28 (plan 28-06 post-merge fix) after the deliberate gold widening
-# (+38 snap/injury/situational columns/matrix) moved the per-fold WP backtest:
-#   accuracy     0.66725 (v2.1 AUDIT-REPORT) -> 0.67691 (Phase-28 widened gold; improved)
-#   headline_clv -0.00207 (v2.1 AUDIT-REPORT) -> -0.00469 (Phase-28 widened gold)
-# IN-03 convention: a deliberate, DOCUMENTED anchor update -- never silenced. AUDIT-REPORT.md
-# stays frozen at its v2.1 156/157/156-width figures (it is a historical forensic record).
+# THREE states, all of them on the page. See the module docstring for the cause of each move:
+#   accuracy     0.66725 (v2.1) -> 0.67691 (Phase-28 widened gold) -> 0.67691 (Plan 30-16)
+#   headline_clv -0.00207 (v2.1) -> -0.00469 (Phase-28 widened gold) -> -0.00280 (Plan 30-16)
+# The Plan 30-16 state was measured 2026-08-24 on the four-rung Phase-30 gold through a backtest
+# whose tuned train GENUINELY SEARCHES for the first time: 0.6769095697980685 and
+# -0.0028010282747504157, byte-identical across two independent runs.
+# IN-03 convention: a deliberate, DOCUMENTED anchor update -- never silenced, and never absorbed
+# by widening the 5e-3 band below. AUDIT-REPORT.md stays frozen at its v2.1 156/157/156-width
+# figures (it is a historical forensic record; Plan 30-14 owns its reconciliation).
 ANCHOR_WP_ACCURACY = 0.67691
-ANCHOR_HEADLINE_CLV_WP = -0.00469
+ANCHOR_HEADLINE_CLV_WP = -0.00280
 
 # Expected holdout population (verified): 1139 games per target across 2021-2024.
 EXPECTED_GAMES_PER_TARGET = 1139
@@ -298,37 +356,24 @@ class TestDiagDiagnosis:
 
     # -- T-22-02: number anchoring -------------------------------------------------------
 
-    @pytest.mark.skip(
-        reason=(
-            "QUARANTINED by Plan 30-15 Task 2 (owner ruling D30-OWNER-05); register entry "
-            "D30-DEFER-08; converted from xfail(strict=True) to skip by Plan 30-18 Task 3 "
-            "under owner ruling D30-OWNER-09; re-ratification still belongs to Plan 30-16. "
-            "(1) A FROZEN-GOLD ANCHOR CANNOT BE MEANINGFULLY EVALUATED WHILE THE FOUR-RUNG "
-            "REBUILD LADDER IS STILL MOVING GOLD -- this test re-fits backtest.engine on "
-            "whatever gold is on disk, so it is measuring the ladder, not a regression. "
-            "(2) It has now taken THREE states: green pre-phase; headline_clv wp "
-            "+0.00103305 after rung 2 (drift 5.723e-3, sign FLIPPED, outside the 5e-3 band); "
-            "-0.00282341 after rung 3 (drift 1.867e-3, back INSIDE the band) against the "
-            "-0.00469 anchor. Under strict xfail the third state turned the suite RED as "
-            "XPASS, which is exactly the marker doing its job and exactly what destroys the "
-            "post-wave gate's ability to tell this known flip from new breakage. "
-            "(3) The rung-3 movement came from the WP selector choosing its 20 features out "
-            "of 180 numeric candidates rather than 195: the fifteen line_movement columns "
-            "left the pool when Plan 30-07 dropped them. That is a live PRODUCTION-path "
-            "observation that a column-count change moved a WP metric, and it is recorded as "
-            "an input to Plan 30-17's selection count-dependence census. "
-            "(4) Plan 30-08's N-01 re-sync will move gold a FOURTH time, so un-quarantining "
-            "now would simply redden this test again. "
-            "(5) Plan 30-16 OWNS the re-ratification, and gives backtest.engine a fresh "
-            "Optuna study identity (D30-DEFER-01 Option 2, D30-OWNER-02) which will move "
-            "these anchors again -- so they are re-ratified there ONCE rather than twice. "
-            "The WP pooled accuracy anchor 0.67691 was never in question (0.6769096 "
-            "measured on rung-3 gold); only the CLV assertion moved. Do NOT widen the "
-            "tolerance, do NOT re-freeze the anchor, and do NOT remove this marker here."
-        )
-    )
+    @pytest.mark.slow
     def test_backtest_numbers_match_audit_report(self, gold_and_odds_2021_2024) -> None:
-        """Backtest WP pooled accuracy ~0.66725 and headline_clv wp ~ -0.00207 (AUDIT-REPORT)."""
+        """Backtest WP pooled accuracy ~0.67691 and headline_clv wp ~ -0.00280.
+
+        UN-QUARANTINED by Plan 30-16 Task 3 (2026-08-24). The skip marker placed by Plan 30-15
+        under D30-OWNER-05, and converted from xfail(strict) by Plan 30-18 under D30-OWNER-09,
+        is REMOVED rather than swapped for another marker: D30-OWNER-05 placed it so that a
+        re-passing anchor would force a deliberate re-ratification, and this is that
+        re-ratification. The four-rung ladder has stopped moving gold (D30-OWNER-11 accepted
+        rung 4) and the tuned search this test runs is now genuine and reproducible, so the
+        two conditions the quarantine was waiting on are both discharged.
+
+        The full drift trail, both anchor moves and their causes, is in the module docstring.
+        Do NOT widen the 5e-3 band. If this reddens, re-measure TWICE and re-ratify with the
+        drift recorded, or report a HALT -- never absorb a drift into the tolerance.
+
+        Marked slow: a genuine 100-trial search per target costs about 225 seconds.
+        """
         from backtest.diagnose import run_diagnosis
 
         diag = run_diagnosis(
