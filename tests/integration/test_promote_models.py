@@ -738,6 +738,93 @@ def test_frozen_baseline_matches_rescore() -> None:
     )
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not _GOLD_WP_PATH.exists(),
+    reason=f"Canonical gold not present at {_GOLD_WP_PATH}",
+)
+def test_frozen_baseline_matches_rescore_all_fields() -> None:
+    """30-09 (T-30-38): EVERY frozen [baseline.*] field matches a fresh generator re-score.
+
+    Why this exists alongside ``test_frozen_baseline_matches_rescore``: that test asserts the
+    two WP freshness ANCHORS (pooled accuracy + pooled CLV mean). The Phase-30 threat register
+    claims the freshness test "independently re-verifies all pooled and per-season values
+    against a fresh re-score" -- which was NOT true of the anchor test. A hand-edit to any ATS
+    or O/U value, or to any per-season mean/t/p, passed the anchor test untouched, so the
+    prohibition "MUST NOT hand-edit the frozen [baseline.*] values -- generator block-paste
+    only" rested on discipline rather than on a check. This closes that: it re-runs
+    ``scripts.freeze_gate_baseline.compute_baseline`` -- the SAME generator whose printed block
+    is the only sanctioned way to write those values -- and compares the committed config to it
+    field by field.
+
+    Tolerances: floats use ``_FRESHNESS_TOL`` (the SAME recomputation band the drift tripwire
+    and the anchor test use -- no new tolerance is introduced, SPEC R5). Per-season sample
+    sizes are compared EXACTLY, matching ``_drift_tripwire``'s reasoning that an integer
+    population count cannot drift by float noise.
+
+    A failure means one of two things and the message says which to check first: either the
+    committed block was hand-edited, or the deployed artifacts / gold moved under it and the
+    baseline needs a generator re-freeze.
+    """
+    from scripts.freeze_gate_baseline import compute_baseline
+
+    cfg = deploy_gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
+    frozen = cfg["baseline"]
+    fresh = compute_baseline(artifacts_dir=REPO_ROOT / "artifacts")
+
+    remediation = (
+        "Either a [baseline.*] value was hand-edited (forbidden -- generator block-paste only, "
+        "D24-07), or the deployed artifacts/gold moved and the baseline needs a re-freeze via "
+        "`python -m scripts.freeze_gate_baseline`. Do NOT nudge the number to make this pass."
+    )
+
+    compared = 0
+    for target in ("wp", "ats", "ou"):
+        frozen_pooled = frozen[target]["pooled"]
+        fresh_pooled = fresh[target]["pooled"]
+        assert set(frozen_pooled) == set(fresh_pooled), (
+            f"{target} pooled baseline KEYS differ from the generator's: committed "
+            f"{sorted(frozen_pooled)} vs generated {sorted(fresh_pooled)}. {remediation}"
+        )
+        for key, frozen_value in frozen_pooled.items():
+            fresh_value = fresh_pooled[key]
+            assert abs(float(frozen_value) - float(fresh_value)) < _FRESHNESS_TOL, (
+                f"frozen baseline.{target}.pooled.{key} = {frozen_value} does not match a "
+                f"fresh re-score {fresh_value} (tol {_FRESHNESS_TOL}). {remediation}"
+            )
+            compared += 1
+
+        for season in (2021, 2022, 2023, 2024):
+            frozen_season = frozen[target]["season"][season]
+            fresh_season = fresh[target]["season"][int(season)]
+            # Sample size EXACT: a population-count change is hard drift, not float noise.
+            assert int(frozen_season["n"]) == int(fresh_season["n"]), (
+                f"frozen baseline.{target}.season.{season}.n = {frozen_season['n']} does not "
+                f"match a fresh re-score {fresh_season['n']}; the holdout population changed. "
+                f"{remediation}"
+            )
+            compared += 1
+            for key in ("mean", "t", "p"):
+                assert (
+                    abs(float(frozen_season[key]) - float(fresh_season[key]))
+                    < _FRESHNESS_TOL
+                ), (
+                    f"frozen baseline.{target}.season.{season}.{key} = {frozen_season[key]} "
+                    f"does not match a fresh re-score {fresh_season[key]} "
+                    f"(tol {_FRESHNESS_TOL}). {remediation}"
+                )
+                compared += 1
+
+    # Guard the guard: if the loop silently compared nothing, the test would be vacuous.
+    pooled_fields = 8 + 6 + 6  # wp (incl. accuracy/ece/brier) + ats (mae) + ou (mae)
+    season_fields = 3 * 4 * 4  # 3 targets x 4 holdout seasons x (mean, t, p, n)
+    expected_fields = pooled_fields + season_fields
+    assert compared == expected_fields, (
+        f"expected to compare {expected_fields} frozen fields, compared {compared} -- the "
+        "baseline schema changed and this test is no longer covering all of it"
+    )
+
+
 # ---------------------------------------------------------------------------
 # D25-15 (Plan 25-02): the paired baseline re-score + merge-on-game_id pairing
 # ---------------------------------------------------------------------------
