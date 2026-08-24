@@ -95,28 +95,60 @@ wp_brier_max_increase = 0.0030     # WP candidate Brier may rise at most this ab
 # FROZEN BASELINE TABLES
 # =============================================================================
 # The frozen DEPLOYED INCUMBENT baseline the gate compares candidates against.
-# Values were RE-FROZEN in Plan 25-05 (D25-11) by re-scoring the DEPLOYED
-# INCUMBENT production artifacts on canonical Phase-20 gold (run_diagnosis
-# production half) via scripts/freeze_gate_baseline.py -- do NOT hand-edit values.
-# Post-Phase-25 the incumbents are the activated re-fits for WP/ATS
-# (wp_20260605_215552 / ats_20260605_220128, promoted through this gate) with OU
-# RETAINED on v1.0 (the re-fit failed the gate, honest refusal D25-14). The
-# original Plan 24-03 freeze was against the v1.0 artifacts; the D25-11 re-freeze
-# re-points the baseline at the now-deployed mixed incumbent so the gate judges
-# the NEXT candidate against what is actually in production. To refresh, re-run
-# `python -m scripts.freeze_gate_baseline` and paste its complete block here as a
-# single block-replace (the generator emits the entire [baseline.*] section
-# deterministically, so the paste cannot introduce a transcription typo). Each
-# target has a [baseline.<t>.pooled] block and four [baseline.<t>.season.YYYY]
-# blocks (2021-2024).
+# Values are ALWAYS generator output: run `python -m scripts.freeze_gate_baseline`
+# and paste its complete print here as a single block-replace -- do NOT hand-edit
+# a value. The generator emits the entire [baseline.*] section deterministically,
+# so the paste cannot introduce a transcription typo. Each target has a
+# [baseline.<t>.pooled] block and four [baseline.<t>.season.YYYY] blocks
+# (2021-2024).
 #
-# Owner reviewed and approved these re-frozen numbers at the Plan 25-05 re-freeze
-# checkpoint. The deployed-incumbent freshness anchors are now the ACTIVATED WP
-# values (WP accuracy 0.66637401 / WP pooled probability_clv -0.04429612, the
-# re-fit) -- NOT the historical DIAG-05 v1.0 row (0.66023 / -0.05668), which
-# described the pre-activation v1.0 WP and no longer matches the deployed model.
-# A baseline edit is a judge edit, hence the review gate (D24-07 / Pitfall 1/3
-# anti-drift control).
+# RE-FREEZE LINEAGE (every entry is a deliberate, reviewed judge edit):
+#   * Plan 24-03 -- first freeze, against the deployed v1.0 pre-Elo artifacts.
+#   * Plan 25-05 (D25-11) -- re-frozen against the then-deployed incumbent after
+#     the Phase-25 activation: WP/ATS on their activated re-fits, OU RETAINED on
+#     v1.0 (its re-fit failed the gate, honest refusal D25-14). Scored on the
+#     canonical Phase-20 gold.
+#   * Plan 30-09 (SPEC R7) -- re-frozen PRE-promotion against the SAME three
+#     incumbents, because Plans 30-06..30-08 REBUILT the gold underneath them. A
+#     rebuild alone invalidates a baseline, so this re-freeze was required even
+#     though nothing had swapped.
+#   * Plan 30-12 (SPEC R7) -- re-frozen POST-promotion against the END-STATE
+#     deployed artifacts; that is the block below. Phase 30's armed gate run
+#     promoted WP to wp_20260824_113325 and REFUSED ATS and O/U on line-CLV
+#     regression, so those two retain ats_20260605_220128 and ou_20260326_163930.
+#     ONLY the WP tables moved; the ATS and O/U tables are byte-identical to the
+#     Plan 30-09 block, which is the no-op demonstration SPEC R7 asks for on a
+#     target that did not swap. This re-freeze deliberately comes AFTER the armed
+#     run (the D25-11 sequence): re-freezing inside the plan that rendered the
+#     verdict would retroactively move the judge that produced it.
+#
+# CURRENT SCORING BASIS: the Phase-30 REBUILT gold (the owner-accepted rung-4
+# fingerprint), NOT the canonical Phase-20 gold the Plan 24-03 and Plan 25-05
+# freezes were taken on.
+#
+# CURRENT DEPLOYED-INCUMBENT FRESHNESS ANCHORS: WP accuracy 0.67076383 / WP
+# pooled probability_clv -0.03800034 (the Phase-30 re-fit). NOT the Phase-25 WP
+# values (0.66637401 / -0.04429612) and NOT the historical DIAG-05 v1.0 row
+# (0.66023 / -0.05668) -- both describe superseded WP models.
+#
+# KNOWN STALE PROSE, recorded rather than silently corrected (D30-DEFER-17): the
+# comment header immediately below is emitted VERBATIM by
+# scripts/freeze_gate_baseline.py's render_baseline_toml and still reads
+# "canonical Phase-20 gold" and "Post-Phase-25 the incumbents are the activated
+# WP/ATS re-fits". Both statements are now out of date, per the two paragraphs
+# above. Correcting them is a GENERATOR edit, not a config edit: it changes the
+# generator's output bytes, and the acceptance control on every re-freeze is that
+# this file's [baseline.*] section be BYTE-IDENTICAL to the generator's print.
+# Editing the text here would break that control; editing the generator would put
+# header lines into the refreeze-1-vs-refreeze-2 diff that the SPEC R7 no-op
+# demonstration needs to stay purely numeric. It is left for a plan that owns
+# scripts/freeze_gate_baseline.py.
+#
+# Owner review: a baseline edit IS a judge edit, hence the review gate (D24-07 /
+# Pitfall 1/3 anti-drift control). The Plan 25-05 numbers were approved at that
+# plan's re-freeze checkpoint; the two Phase-30 re-freezes ran under the SPEC R7
+# always-re-freeze requirement, with the armed promotion between them authorised
+# by the owner at the Plan 30-11 checkpoint 4.
 #
 # NOTE on season keys: the dotted-integer keys 2021..2024 below are parsed by
 # stdlib tomllib as STRING keys "2021".."2024". models/deploy_gate.load_gate_config
