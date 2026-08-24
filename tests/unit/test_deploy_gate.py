@@ -534,35 +534,44 @@ def test_committed_calibration_band_is_bootstrap_justified() -> None:
 
 
 def test_committed_frozen_baseline_values_unchanged() -> None:
-    """30-09: the frozen baseline VALUES in config/gate.toml match the Plan 30-09 re-freeze.
+    """30-12: the frozen baseline VALUES in config/gate.toml match the Plan 30-12 re-freeze.
 
     History of this anchor set, kept rather than overwritten so the re-freezes are legible:
 
       * Plan 24-03 froze the baseline against the v1.0 artifacts.
       * Plan 25-05 (D25-11) re-froze it against the then-deployed incumbent -- WP/ATS moved to
         the activated re-fit values, OU stayed on retained v1.0 (honest refusal D25-14).
-      * Plan 30-09 (SPEC R7) re-freezes it AGAIN. Nothing swapped: the SAME three incumbents
-        (wp_20260605_215552 / ats_20260605_220128 / ou_20260326_163930) are re-scored on the
-        gold Plans 30-06..30-08 REBUILT. The rebuild alone invalidates a baseline, which is
-        why the re-freeze is required even on a zero-swap outcome.
+      * Plan 30-09 (SPEC R7) re-froze it AGAIN, pre-promotion. Nothing had swapped: the SAME
+        three incumbents (wp_20260605_215552 / ats_20260605_220128 / ou_20260326_163930) were
+        re-scored on the gold Plans 30-06..30-08 REBUILT. The rebuild alone invalidates a
+        baseline, which is why that re-freeze was required even on a zero-swap outcome.
+      * Plan 30-12 (SPEC R7) re-freezes it a SECOND time, post-promotion, against the END-STATE
+        deployed artifacts. Plan 30-11's armed run promoted WP to ``wp_20260824_113325`` and
+        REFUSED ATS and O/U on line-CLV regression, so they retain ``ats_20260605_220128`` and
+        ``ou_20260326_163930``. Only the WP tables move here; the ATS and O/U tables are
+        byte-identical to the Plan 30-09 block, which is the no-op demonstration SPEC R7 asks
+        for on a target that did not swap. The D25-11 precedent puts this second re-freeze
+        AFTER activation deliberately: re-freezing inside the plan that rendered the verdict
+        would retroactively move the judge that produced it.
 
     The values are generator output block-pasted from ``scripts/freeze_gate_baseline.py``
     (D24-07), never hand-transcribed; this assertion is the guard against an accidental
-    hand-edit of a [baseline.*] table AFTER a re-freeze. When Plan 30-12 re-freezes against
-    the end-state incumbents, this anchor set is re-pointed the same way -- by reading the
-    regenerated block, not by nudging a number until the test goes green.
+    hand-edit of a [baseline.*] table AFTER a re-freeze. Each re-point is made by reading the
+    regenerated block (``outputs/gate/baseline_refreeze_2.toml`` for this one), not by nudging
+    a number until the test goes green.
     """
     cfg = gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
     baseline = cfg["baseline"]
-    # The Plan 30-09 re-freeze anchors (same deployed incumbents, rebuilt gold).
-    assert baseline["wp"]["pooled"]["mean"] == pytest.approx(-0.04409386)
-    assert baseline["wp"]["pooled"]["accuracy"] == pytest.approx(0.66549605)
+    # The Plan 30-12 re-freeze anchors: WP re-pointed at the promoted re-fit; ATS and O/U
+    # unchanged from the Plan 30-09 block because the gate REFUSED both candidates.
+    assert baseline["wp"]["pooled"]["mean"] == pytest.approx(-0.03800034)
+    assert baseline["wp"]["pooled"]["accuracy"] == pytest.approx(0.67076383)
     assert baseline["ats"]["pooled"]["mean"] == pytest.approx(-0.00149507)
     assert baseline["ats"]["pooled"]["mae"] == pytest.approx(8.58072427)
     assert baseline["ou"]["pooled"]["mean"] == pytest.approx(1.09908061)
     assert baseline["ou"]["pooled"]["mae"] == pytest.approx(10.30191577)
     # A per-season anchor from each target to catch a season-table edit.
-    assert baseline["wp"]["season"][2024]["mean"] == pytest.approx(-0.05413238)
+    assert baseline["wp"]["season"][2024]["mean"] == pytest.approx(-0.04886401)
     assert baseline["ats"]["season"][2023]["mean"] == pytest.approx(-0.63325109)
     assert baseline["ou"]["season"][2021]["mean"] == pytest.approx(-1.22226360)
     # The per-season SAMPLE SIZES did NOT move across the rebuild (the 2021-2024 holdout
