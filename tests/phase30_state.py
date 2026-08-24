@@ -778,3 +778,55 @@ SLICE_DIGESTS_2021_2024: Final[dict[str, dict[str, str]]] = {
 ACCEPTED_RUNG4_FINGERPRINT_SHA256: Final[str] = (
     "c3a1177423415ed34b7349ccb8d909c883460a1e5c76b5d2baaa409de1e444ac"
 )
+
+# ---------------------------------------------------------------------------
+# SPEC R4's anti-rule-shopping chain: the FROZEN rule, the commit recording the
+# measurement it produced, and the bytes of the ratified verdict.
+#
+# APPENDED by Plan 30-10 Task 3 on 2026-08-24, at the moment of the D30-10
+# checkpoint-3 owner ratification.
+#
+# The phase's ONLY mechanical proof that the Stage-1 keep rule was fixed before any
+# p-value existed is a git ancestry relation between two commits -- and that proof
+# is worth nothing if the two SHAs live only in files no checkout carries.
+# .planning/ is gitignored (.gitignore:229, commit_docs false) and outputs/ is
+# gitignored (.gitignore:26), so neither this plan's SUMMARY nor
+# outputs/group_gate/stage1_result.json survives a fresh clone. These constants are
+# the tracked home, and Plan 30-13's readout guard cross-checks
+# GATED-REFIT-READOUT.md's marker lines against them.
+#
+# The relation, asserted at append time and reproducible from any checkout:
+# `git merge-base --is-ancestor` from the pre-registration SHA to the measurement
+# SHA exits 0, and the two SHAs are NOT equal.
+# The inequality is not pedantry. A rule and the results it produced landing in one
+# commit is not a pre-registration; it is only a claim of one.
+#
+# PRE_REGISTRATION_COMMIT is the last commit to touch
+# backtest/group_gate_constants.py -- Plan 30-02's frozen rule, owner-ratified at
+# D30-10 checkpoint 1. MEASUREMENT_COMMIT is the single-file commit that ADDED
+# config/group_gate_verdict.toml and touches no other path, so its message's claim
+# to be the measurement commit is checkable rather than merely asserted.
+# ---------------------------------------------------------------------------
+PRE_REGISTRATION_COMMIT: Final[str] = "dc4d1c0c09ed3b4f5835c801e991aa945f23b479"
+MEASUREMENT_COMMIT: Final[str] = "68eb6425eb379701bf1b9d1937feb8c520877394"
+
+# sha256 of config/group_gate_verdict.toml's NEWLINE-NORMALIZED bytes -- every CRLF
+# folded to LF before hashing.
+#
+# The normalization is load-bearing here, not tidiness. This repository has
+# core.autocrlf=true and no .gitattributes, so the file is LF in the git blob and
+# CRLF in a fresh Windows working tree. A digest over raw working-tree bytes would
+# pin a value that holds on the machine that measured it and fails on every other
+# checkout -- the exact opposite of what a tracked constant is for. Normalized, this
+# equals the sha256 of
+# `git cat-file blob <MEASUREMENT_COMMIT>:config/group_gate_verdict.toml` and is
+# reproducible on any platform.
+#
+# The file itself is a BLOCK-PASTE of `python -m backtest.group_gate`'s printed
+# ratified-verdict block (D24-07). It was verified byte-identical to that block as
+# captured in BOTH binding runs' stdout, and to an independent in-process re-render
+# of render_verdict_toml() from outputs/group_gate/stage1_result.json. No value in
+# it was hand-edited.
+GROUP_VERDICT_FILE_SHA256: Final[str] = (
+    "58da75ac62428a863ecbdaf2fb86078a12db44f3672286dbe89069a6ac7fa36a"
+)
