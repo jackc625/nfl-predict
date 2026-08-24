@@ -631,6 +631,87 @@ def test_swap_copies_passing_artifact_into_production(
 
 
 # ---------------------------------------------------------------------------
+# SPEC R5 idempotency: a SECOND armed run on the same staged artifacts is a no-op
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_second_armed_run_is_a_noop(
+    tmp_artifacts: Path, tmp_stage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SPEC R5 idempotency: re-running the armed promotion changes nothing.
+
+    Two INDEPENDENT mechanisms make this true, and naming both is the point of this
+    docstring:
+
+      1. ``_promote_artifact_dir``'s destination-exists early return -- when
+         ``artifacts_dir/{version}`` is already present (the re-promote of an identical
+         version stamp), it returns before ``shutil.copytree`` and leaves the in-place
+         production artifact untouched.
+      2. ``update_manifest``'s per-key write is idempotent -- writing the same target the
+         same version reproduces the same manifest bytes.
+
+    The test does NOT infer the property from those two mechanisms; it ASSERTS the property
+    directly, which is what SPEC R5's idempotency acceptance criterion asks for. The
+    distinction matters because the two mechanisms can be individually correct and the
+    property still break -- e.g. a later ``dirs_exist_ok=True`` on the copy would keep both
+    docstrings honest while silently re-copying over production on every re-run.
+
+    The no-re-copy assertion is made with a SENTINEL rather than an mtime: after the first
+    run, the production copy's payload is overwritten with a marker. A second run that
+    re-copies would restore the staged bytes and erase the marker. An mtime comparison would
+    not catch a same-second re-copy on a coarse-resolution filesystem; the marker cannot be
+    restored by accident.
+    """
+
+    def _partial(target: str) -> dict[str, Any]:
+        return _passing_bundle(target) if target == "wp" else _negative_bundle(target)
+
+    _install_hermetic_stubs(monkeypatch, _partial)
+
+    staged_wp = tmp_stage / _STUB_DIRS["wp"]
+    (staged_wp / "model.pkl").write_bytes(b"wp-model-bytes")
+
+    argv = [
+        "--promote",
+        "--artifacts-dir",
+        str(tmp_artifacts),
+        "--staging-dir",
+        str(tmp_stage),
+        "--skip-train",
+    ]
+
+    rc_first = promote.main(argv)
+    latest = tmp_artifacts / "latest.json"
+    manifest_after_first = latest.read_bytes()
+    prod_wp = tmp_artifacts / _STUB_DIRS["wp"]
+    assert prod_wp.is_dir(), (
+        "the first armed run must have promoted the passing WP target"
+    )
+
+    # SENTINEL: if the second run re-copies the staged dir, this marker is erased.
+    sentinel = b"do-not-overwrite-me"
+    (prod_wp / "model.pkl").write_bytes(sentinel)
+
+    rc_second = promote.main(argv)
+
+    assert rc_second == rc_first, (
+        "the second armed run must reach the same gate verdict as the first "
+        f"(first={rc_first}, second={rc_second})"
+    )
+    # THE property, asserted directly: the manifest bytes did not move.
+    assert latest.read_bytes() == manifest_after_first, (
+        "a second armed run against the same staged artifacts must leave "
+        "artifacts/latest.json BYTE-identical (SPEC R5 idempotency)"
+    )
+    # THE property, second half: the already-present production dir was not copied again.
+    assert (prod_wp / "model.pkl").read_bytes() == sentinel, (
+        "the second armed run must not re-copy the staged artifact over the in-place "
+        "production one -- _promote_artifact_dir returns early when the destination exists"
+    )
+
+
+# ---------------------------------------------------------------------------
 # D24-11a: the dry-run prints the per-target 2x2 readout (the acceptance artifact)
 # ---------------------------------------------------------------------------
 
