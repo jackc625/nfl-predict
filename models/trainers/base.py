@@ -32,26 +32,52 @@ from models.tuning import OptunaTuner, TuningResult
 from utils import get_logger
 
 # ---------------------------------------------------------------------------
-# Optuna study identity + storage (Plan 30-01, T-30-02 / T-30-14)
+# Optuna study identity + storage (Plan 30-01 T-30-02/T-30-14; Plan 30-16 T-30-63..68)
 # ---------------------------------------------------------------------------
 #
-# There are TWO identities here on purpose, and which one a trainer uses is an EXPLICIT
-# opt-in, never a global default. The Phase-30 identity changes what a tuned train actually
-# searches, and this method is shared by callers with very different contracts:
+# There are THREE identities here on purpose, with THREE different lifetimes, and which one a
+# trainer uses is an EXPLICIT opt-in -- only the first is a default. An identity decides what a
+# "tuned" train actually searches, and ``tune_hyperparameters`` is shared by callers with very
+# different contracts:
 #
-#   * ``models.train`` (the Stage-2 candidate train that scripts/promote_models invokes) MUST
-#     genuinely search -- SPEC R5. It opts in via ``use_phase30_tuning()``.
-#   * ``backtest.engine.run_backtest`` (engine.py:339) trains with tune=True as a DIAGNOSTIC,
-#     and the frozen v2.1 AUDIT-REPORT anchors in tests/integration/test_diag_diagnosis.py were
-#     measured with it resuming the v2.0 study. Handing it a fresh study makes it search real
-#     trials, land on different parameters, and drift those anchors -- verified empirically,
-#     twice, during Plan 30-01. It therefore keeps the LEGACY identity, byte-for-byte.
-#   * ``scripts.retrain_models`` likewise keeps the legacy identity.
+#   * DEFAULT / LEGACY -- lifetime FOREVER. ``{target}_tuning_v1`` under ``data/optuna/``. Every
+#     caller that does not opt in keeps it, byte-for-byte: ``scripts.retrain_models`` and any
+#     future caller. Those three study files are already at budget, so this identity's searches
+#     resume and return the stored v2.0 parameters. That is a known property of the default and
+#     is NOT changed here -- Plan 30-16's dispatched scope (D30-OWNER-02) is the backtest alone.
+#   * PER-PHASE -- ``models.train`` (the Stage-2 candidate train that scripts/promote_models
+#     invokes) MUST genuinely search, SPEC R5. It opts in via ``use_phase30_tuning()``, which
+#     also ARMS ``require_fresh_search`` so a zero-trial resume is a hard RuntimeError. A phase
+#     that re-tunes bumps ``TUNING_STUDY_TAG`` (D30-DEFER-02).
+#   * PER-RUN -- ``backtest.engine`` opts in via ``use_backtest_tuning(run_id)``. Added by Plan
+#     30-16 under owner ruling **D30-OWNER-02**, which selected Option 2 of D30-DEFER-01.
 #
-# The legacy path's resume-at-budget IS a genuine latent issue (those "tuned" runs have been
-# returning stored v2.0 parameters since March), but it is PRE-EXISTING and out of this plan's
-# scope: silently changing what the backtest trains with inside a plumbing tracer is exactly
-# the uninstructed side effect this phase is careful about. It is recorded for a later phase.
+# WHAT D30-OWNER-02 OVERTURNED, stated plainly because this note previously asserted the
+# opposite. Until Plan 30-16 this comment read that ``backtest.engine`` "therefore keeps the
+# LEGACY identity, byte-for-byte" and that its resume-at-budget was "PRE-EXISTING and out of
+# this plan's scope ... recorded for a later phase". That was true when Plan 30-01 wrote it.
+# It is no longer true. Every "tuned" backtest between 2026-03-31 and Plan 30-16 was a straight
+# re-fit on frozen v2.0 hyperparameters that still reported ``n_trials=100``; the owner ruled
+# that the backtest must genuinely search, that the frozen v2.1 AUDIT-REPORT anchors would move,
+# and that they be re-ratified with the drift RECORDED (Plan 30-16 Task 3). Option 1 -- document
+# the freeze and move on -- was considered and explicitly NOT taken.
+#
+# WHY THE BACKTEST IDENTITY IS PER-RUN AND NOT PER-PHASE. The backtest is run repeatedly: three
+# engine runs in the canonical PIPELINE sequence alone (``--blend`` runs the engine twice --
+# blended, then the unblended baseline) plus every execution of the anchor test. A static tag
+# would make run 1 genuine and every later run a resume at budget: the same vacuity with a newer
+# date on it.
+#
+# WHAT THE PER-RUN CHOICE COSTS, stated rather than left to be discovered. The study name carries
+# the RUN, not the holdout season, so within one run the EARLIEST holdout season fills the study
+# and the later ones resume it and add zero. Every fold of a run therefore trains under
+# parameters searched on the earliest fold's train+hp_val window. Because holdout seasons are
+# processed in ASCENDING order that is the temporally safe direction -- later folds use
+# parameters chosen from strictly prior data -- and ``BacktestEngine.run()`` hard-fails a
+# non-ascending holdout list so the safety is guarded rather than emergent. A per-FOLD identity
+# would remove the reuse entirely and was considered; it multiplies every engine run by roughly
+# four, forever, including inside the suite, and its only additional protection is against a
+# reordered holdout list, which the guard closes directly and for free.
 
 # The v2.0 identity every pre-Phase-30 caller keeps. Reusing it is what makes a search vacuous
 # (those studies are already at budget), which is precisely why the Stage-2 path must not.
@@ -87,6 +113,21 @@ TUNING_STUDY_TAG: str = "p30s2"
 # write. ``outputs/`` is gitignored and is the right home. What this constant is NOT allowed to
 # be is any path under ``data/``; tests/unit/test_promote_models_tuned_path.py asserts that.
 TUNING_STORAGE_DIR: Path = Path("outputs/optuna")
+
+# The PER-RUN backtest identity (Plan 30-16, D30-OWNER-02). The tag is a PREFIX: the resolved
+# tag is ``{prefix}_{run_id}`` and ``BacktestEngine`` mints a fresh run id per INSTANCE, so the
+# two engine runs inside one ``--blend`` invocation cannot share a search.
+#
+# What this prefix must never be: ``v1`` (the v2.0 identity -- reusing it guarantees a vacuous
+# resume) or ``TUNING_STUDY_TAG`` (the Stage-2 identity -- a diagnostic backtest would then eat
+# the binding candidate search's trial budget).
+BACKTEST_TUNING_STUDY_TAG_PREFIX: str = "p30bt"
+
+# Where the per-run backtest study files live: ``outputs/optuna/backtest/{run_id}/``. The same
+# T-30-14 constraint the Stage-2 storage carries -- NEVER under ``data/`` -- because OptunaTuner
+# defaults its storage to ``data/optuna`` and this phase forbids writes there. The per-run
+# subdirectory also keeps the tuning provenance record beside the studies it describes.
+BACKTEST_TUNING_STORAGE_DIR: Path = Path("outputs/optuna/backtest")
 
 
 def _existing_trial_count(tuner: OptunaTuner) -> int:
@@ -219,27 +260,69 @@ class BaseTrainer(ABC):
         self.metadata: dict[str, Any] = {}
         self._tuning_result: TuningResult | None = None
 
-        # Tuning identity defaults to LEGACY so every pre-Phase-30 caller (backtest.engine,
-        # scripts.retrain_models) is byte-identical to its prior behaviour. The Stage-2 train
-        # opts in explicitly via use_phase30_tuning().
+        # Tuning identity defaults to LEGACY so every caller that does not opt in
+        # (scripts.retrain_models, and any future one) is byte-identical to its prior
+        # behaviour. The Stage-2 train opts in via use_phase30_tuning(); backtest.engine opts
+        # in via use_backtest_tuning(run_id).
         self.tuning_study_tag: str = LEGACY_TUNING_STUDY_TAG
         self.tuning_storage_dir: Path = LEGACY_TUNING_STORAGE_DIR
         self.require_fresh_search: bool = False
 
+        # What the LAST tuning search on this instance actually did. Initialised here so the
+        # attributes exist even on an untuned path (tune=False never sets them). These three
+        # values already existed as locals inside tune_hyperparameters and were already logged;
+        # keeping them on the instance is what lets backtest.engine write a tuning provenance
+        # record a reader can check, instead of a plan asserting the search was real.
+        self.last_tuning_study_name: str | None = None
+        self.last_tuning_trials_before: int | None = None
+        self.last_tuning_trials_added: int | None = None
+
     def use_phase30_tuning(self) -> None:
-        """Opt this trainer into the Phase-30 study identity, storage and freshness guard.
+        """Opt this trainer into the PER-PHASE Stage-2 identity, storage and freshness guard.
 
         Called by ``models.train.train_target`` on the tuned path -- the Stage-2 candidate
         train that ``scripts/promote_models`` STEP 1 invokes. After this call the trainer
         searches a FRESH per-phase study under a non-``data/`` storage dir, and a search that
         adds zero trials is a hard failure rather than a silent return of stored parameters.
 
-        Deliberately NOT the default: see the module-level note above. Making it the default
-        would change what ``backtest.engine`` trains with and drift the frozen v2.1 anchors.
+        Deliberately NOT the default: see the module-level note above. Making any non-legacy
+        identity the default would change what every non-opted-in caller trains with in one
+        move, which is the elevation-of-scope this repository's three-identity split prevents.
+        This is the PER-PHASE identity; ``use_backtest_tuning`` is the PER-RUN one, and they
+        are separate so a diagnostic backtest can never consume the binding search's budget.
         """
         self.tuning_study_tag = TUNING_STUDY_TAG
         self.tuning_storage_dir = TUNING_STORAGE_DIR
         self.require_fresh_search = True
+
+    def use_backtest_tuning(self, run_id: str) -> None:
+        """Opt this trainer into the PER-RUN backtest study identity (Plan 30-16).
+
+        Called by ``BacktestEngine._create_trainer`` for every trainer it builds -- every
+        target, every holdout season -- so the identity cannot be forgotten for one of them.
+        After this call the trainer searches a study named for THIS engine run, stored under
+        ``outputs/optuna/backtest/{run_id}/``, so no backtest run can ever inherit another
+        run's stored parameters. That is the defect D30-DEFER-01 recorded and D30-OWNER-02
+        ruled must be fixed.
+
+        WHY THE FRESHNESS GUARD IS DELIBERATELY LEFT DISARMED. ``require_fresh_search`` raises
+        when a search adds zero trials. Within ONE engine run that is the normal, correct case
+        for every holdout season after the first: the study name carries the run and not the
+        season, so the earliest season fills it and the later ones resume it. Arming the guard
+        here would make every multi-season backtest raise on its second fold. The property that
+        replaces the guard is the per-run identity itself -- cross-run vacuity is impossible by
+        construction, and within-run reuse is stated here, recorded in the run's tuning
+        provenance file, and made temporally safe by the engine's ascending-holdout hard
+        failure.
+
+        Args:
+            run_id: The engine instance's unique run id. Must be unique per BacktestEngine
+                instance, not merely per second -- ``run_backtest(blend=True)`` constructs two
+                engines in immediate succession.
+        """
+        self.tuning_study_tag = f"{BACKTEST_TUNING_STUDY_TAG_PREFIX}_{run_id}"
+        self.tuning_storage_dir = BACKTEST_TUNING_STORAGE_DIR / run_id
+        self.require_fresh_search = False
 
     # ------------------------------------------------------------------
     # Abstract methods -- subclasses must implement
@@ -485,6 +568,15 @@ class BaseTrainer(ABC):
         # parameters while reporting a full trial count, so without this assertion an untuned
         # candidate is indistinguishable from a tuned one in every downstream artifact.
         trials_added = result.n_trials - trials_before
+
+        # Keep what the search DID where a caller can read it after train_and_evaluate returns.
+        # backtest.engine reads these three per (target, holdout season) to write its tuning
+        # provenance record, which is what makes "this run genuinely searched" checkable by a
+        # reader rather than asserted by a plan (Plan 30-16, T-30-63).
+        self.last_tuning_study_name = study_name
+        self.last_tuning_trials_before = trials_before
+        self.last_tuning_trials_added = trials_added
+
         if self.require_fresh_search and trials_added <= 0:
             msg = (
                 f"Optuna study '{study_name}' added ZERO new trials "

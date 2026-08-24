@@ -16,12 +16,21 @@ Key design decisions:
 - Fresh trainer instances per season (no state leakage)
 - 2025 data filtered before processing
 - CLV computed via models/clv.py (single source of truth)
+- PER-RUN Optuna identity (Plan 30-16, D30-OWNER-02): each BacktestEngine instance mints
+  its own run id and opts every trainer it builds into it, so a "tuned" backtest genuinely
+  searches instead of resuming a study that was already at budget. Within one run the
+  earliest holdout season fills the study and the later ones reuse it, which is why
+  ascending holdout order is hard-enforced; every run writes tuning_provenance.json naming
+  the trials it actually added.
 """
 
 from __future__ import annotations
 
+import json
+import secrets
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +39,7 @@ import pandas as pd
 from backtest.era import get_covid_hfa_annotation, get_season_total_weeks
 from models.temporal import TemporalSplitConfig
 from models.trainers.ats_trainer import ATSTrainer
-from models.trainers.base import BaseTrainer
+from models.trainers.base import BACKTEST_TUNING_STORAGE_DIR, BaseTrainer
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WPTrainer
 from utils import get_logger
@@ -161,11 +170,26 @@ class BacktestEngine:
     def __init__(self, config: BacktestConfig | None = None) -> None:
         """Initialize the backtest engine.
 
+        Mints this instance's Optuna run id. It is per INSTANCE and not per second on
+        purpose: ``backtest.run.run_backtest(blend=True)`` constructs and runs the engine
+        TWICE (blended primary, then the unblended baseline), typically inside the same
+        clock second, and a colliding id would make the second run a resume-at-budget of
+        the first -- the exact vacuity Plan 30-16 exists to end (D30-DEFER-01,
+        D30-OWNER-02). The timestamp is kept because a human reading
+        ``outputs/optuna/backtest/`` needs to know WHEN, and the random suffix is what makes
+        it unique.
+
         Args:
             config: Backtest configuration. Defaults to BacktestConfig().
         """
         self.config = config or BacktestConfig()
         self.logger = get_logger(__name__)
+        self.run_id = (
+            f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}_{secrets.token_hex(4)}"
+        )
+        # Per (target, holdout season) record of what the tuned search actually did, filled
+        # during run() and written out as tuning_provenance.json.
+        self._tuning_provenance: list[dict[str, Any]] = []
 
     def _create_split_config(self, holdout_season: int) -> TemporalSplitConfig:
         """Create a TemporalSplitConfig for a single holdout season.
@@ -198,12 +222,18 @@ class BacktestEngine:
         Always creates a NEW instance to prevent state leakage between
         holdout seasons.
 
+        Every trainer is opted into THIS engine run's Optuna identity here rather than at
+        the call site, so the identity cannot be forgotten for one target or one holdout
+        season. Before Plan 30-16 the trainer kept the LEGACY identity and its "tuned"
+        search resumed a study written 2026-03-31 that was already at budget: zero trials
+        run, stored v2.0 parameters returned, a full trial count reported (D30-DEFER-01).
+
         Args:
             target: Model target type (wp/ats/ou).
             config: Temporal split configuration.
 
         Returns:
-            Fresh BaseTrainer subclass instance.
+            Fresh BaseTrainer subclass instance, opted into this run's tuning identity.
 
         Raises:
             ValueError: If target is not recognized.
@@ -212,7 +242,95 @@ class BacktestEngine:
         if trainer_class is None:
             msg = f"Unknown target: '{target}'. Must be one of {list(_TRAINER_MAP.keys())}"
             raise ValueError(msg)
-        return trainer_class(config=config)
+        trainer = trainer_class(config=config)
+        trainer.use_backtest_tuning(self.run_id)
+        return trainer
+
+    def _validate_holdout_order(self) -> None:
+        """Reject a holdout season list that is not STRICTLY ASCENDING.
+
+        This guards a temporal property, not a style preference. One Optuna study per target
+        per run is filled by the FIRST holdout season processed and RESUMED by every later
+        one, so the whole run trains under hyperparameters searched on the first-processed
+        season's train + hp_val window. Ascending order makes that safe -- later folds use
+        parameters chosen from strictly prior data. A descending or shuffled list inverts it:
+        holdout 2024's window (train 2018-2022, hp_val 2023) would supply the hyperparameters
+        used to backtest holdout 2021, which is future information reaching a past fold.
+
+        Raises rather than silently sorting, because silently reordering what the caller
+        asked for hides the problem instead of reporting it. Called at the very top of
+        ``run()`` so a bad config fails in a second rather than twenty minutes in.
+
+        Raises:
+            ValueError: If holdout_seasons is not strictly ascending.
+        """
+        seasons = list(self.config.holdout_seasons)
+        if seasons == sorted(set(seasons)) and len(seasons) == len(set(seasons)):
+            return
+
+        msg = (
+            f"holdout_seasons must be STRICTLY ASCENDING, got {seasons}. This is a temporal "
+            "requirement, not a style rule: one Optuna study per target per run is filled by "
+            "the FIRST holdout season processed and resumed by the rest, so the whole run "
+            "trains under hyperparameters searched on that first season's train + hp_val "
+            "window. Out of order, a LATER season's window would supply the hyperparameters "
+            "used to backtest an EARLIER fold -- future information reaching a past fold. "
+            f"Remediation: pass sorted(set(...)) = {sorted(set(seasons))}."
+        )
+        raise ValueError(msg)
+
+    def _write_tuning_provenance(self) -> Path | None:
+        """Write this run's tuning provenance record beside its study files.
+
+        The record is what makes the honesty claim CHECKABLE by a reader instead of asserted
+        by a plan: per (target, holdout season) it names the study, the trials it already
+        held, and the trials this run actually ADDED. A genuine run shows a full budget added
+        on the first season of each target and zero on the rest; the old vacuous behaviour
+        showed zero added on ALL of them against a study written 2026-03-31.
+
+        Returns:
+            The path written, or None when the run tuned nothing (tune=False paths).
+        """
+        if not self._tuning_provenance:
+            return None
+
+        totals: dict[str, int] = {}
+        for row in self._tuning_provenance:
+            added = row["trials_added"]
+            totals[row["target"]] = totals.get(row["target"], 0) + (
+                int(added) if added is not None else 0
+            )
+
+        record = {
+            "run_id": self.run_id,
+            "written_at_utc": datetime.now(UTC).isoformat(),
+            "holdout_seasons": list(self.config.holdout_seasons),
+            "targets": list(self.config.targets),
+            "per_target_trials_added": totals,
+            "folds": self._tuning_provenance,
+            "how_to_read_this": (
+                "trials_added > 0 means the search genuinely ran that many trials. Within ONE "
+                "run the study name carries the run and not the holdout season, so the "
+                "EARLIEST season fills the study and every later season resumes it and adds "
+                "ZERO -- those zeros are expected and are stated within-run reuse, not the "
+                "cross-run resume Plan 30-16 exists to end. Ascending holdout order is what "
+                "makes that reuse temporally safe and is hard-enforced by "
+                "BacktestEngine._validate_holdout_order. Before Plan 30-16 this same command "
+                "added zero trials on EVERY fold and returned parameters searched 2026-03-31 "
+                "while reporting a full trial count (D30-DEFER-01, D30-OWNER-02)."
+            ),
+        }
+
+        out_dir = BACKTEST_TUNING_STORAGE_DIR / self.run_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "tuning_provenance.json"
+        out_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        self.logger.info(
+            "Tuning provenance written",
+            path=str(out_path),
+            per_target_trials_added=totals,
+        )
+        return out_path
 
     def _load_features(self, target: str) -> pd.DataFrame:
         """Load Gold feature matrix for the given target.
@@ -299,9 +417,13 @@ class BacktestEngine:
         Returns:
             BacktestResults with all metrics, predictions, and CLV.
         """
+        # Before ANY loading, so a bad config fails in a second rather than twenty minutes in.
+        self._validate_holdout_order()
+
         run_start = time.monotonic()
         self.logger.info(
             "Starting backtest",
+            run_id=self.run_id,
             holdout_seasons=self.config.holdout_seasons,
             targets=self.config.targets,
         )
@@ -337,6 +459,22 @@ class BacktestEngine:
 
                 # Train and evaluate
                 result = trainer.train_and_evaluate(features_df, closing_odds_df)
+
+                # Record what this fold's tuned search actually did. None means the fold did
+                # not tune at all (a tune=False path), which is recorded as such rather than
+                # as a zero -- a zero and an absence are different claims.
+                self._tuning_provenance.append(
+                    {
+                        "target": target,
+                        "holdout_season": holdout_season,
+                        "train_seasons": list(split_config.train_seasons),
+                        "hp_val_seasons": list(split_config.hp_val_seasons),
+                        "study_name": trainer.last_tuning_study_name,
+                        "trials_before": trainer.last_tuning_trials_before,
+                        "trials_added": trainer.last_tuning_trials_added,
+                        "tuned": trainer.last_tuning_study_name is not None,
+                    }
+                )
 
                 # Extract predictions from trainer result
                 # The trainer's season_results contains per-season metrics
@@ -499,9 +637,12 @@ class BacktestEngine:
         for season in self.config.holdout_seasons:
             era_info[season] = get_season_total_weeks(season)
 
+        self._write_tuning_provenance()
+
         total_elapsed = time.monotonic() - run_start
         self.logger.info(
             "Backtest complete",
+            run_id=self.run_id,
             duration_s=round(total_elapsed, 1),
             headline_clv=headline_clv,
         )
