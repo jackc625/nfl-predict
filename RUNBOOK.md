@@ -122,14 +122,15 @@ section and `PIPELINE.md` for the full component-build sequence).
 
 ## Common operations
 
-There are 10 common operations. Each section gives the `uv run` PowerShell command, how to
+There are 11 common operations. Each section gives the `uv run` PowerShell command, how to
 tell it succeeded, and a verification-basis label. The canonical commands match `PIPELINE.md`;
 for "Build features" this runbook summarizes the stage down to its final assembly step
 (`build_features.py`) -- `PIPELINE.md` lists the full per-component build sequence (build_elo,
 build_team_form, build_contextual, build_weather, build_market_anchors, then build_features).
 When in doubt, `PIPELINE.md` is the command source of truth. Operations 1-8 follow the
 8-stage PIPELINE order (Promote is stage 4, between Train and Backtest); Rollback (operation
-9) reverses a Promote, and Run automation (operation 10) is the Friday orchestrator.
+9) reverses a Promote, Run automation (operation 10) is the Friday orchestrator, and Rebuild
+gold (operation 11) is the attributed full-history rebuild Phase 30 added.
 
 ### 1. Ingest
 
@@ -159,14 +160,17 @@ Build each feature component, then assemble the per-target Gold matrices.
 uv run python scripts/build_features.py --season <YEAR>
 ```
 
-- **WARNING -- `build_features.py` writes gold by DEFAULT; there is no dry mode.** `--save`
-  is defined `action="store_true"` with `default=True` and there is NO `--no-save`, so the
-  flag is effectively always on: any real `--season`/`--all-seasons` build materializes the
-  canonical gold matrices (`data/gold/features_{wp,ats,ou}.parquet`). That is a GOLD REBUILD,
-  forbidden under D-07. The `build_*.py --all-seasons` feeders likewise rebuild the full
-  historical feature tables. The only non-destructive invocation is `--help`. Do NOT run a
-  real build to "test the features stage" -- there is no way to validate the assembly without
-  writing gold.
+- **WARNING -- `build_features.py` writes gold by DEFAULT.** `--save` is defined
+  `action="store_true"` with `default=True`, so the bare flag can never turn saving OFF;
+  any real `--season`/`--all-seasons` build materializes the canonical gold matrices
+  (`data/gold/features_{wp,ats,ou}.parquet`). That is a GOLD REBUILD, forbidden under D-07.
+  The `build_*.py --all-seasons` feeders likewise rebuild the full historical feature tables.
+- **The read-only build IS available now: pass `--no-save`.** An earlier version of this
+  runbook recorded that the save flag was a no-op with no way to disable the gold write. That
+  defect is FIXED in the code: `scripts/build_features.py` defines a real `--no-save`
+  (`action="store_false"`, `dest="save"`) beside an explaining comment, so a build can be run
+  without writing gold. `--help` remains non-destructive. A build WITHOUT `--no-save` is still
+  a gold rebuild -- the off switch has to be passed, not assumed.
 - **Succeeded when (a sanctioned rebuild, NOT this milestone):** the build completes without a
   LeakageGate failure and the three gold matrices are written; a LeakageGate failure instead
   lands a diagnostic at `outputs/diagnostics/leakage_<ts>.json`.
@@ -204,13 +208,23 @@ target keys; training (operation 3) never does. Dry-run by default (prints the p
 
 ```powershell
 uv run python -m scripts.promote_models
-uv run python -m scripts.promote_models --promote
+uv run python -m scripts.promote_models --promote --skip-train
 ```
 
-- **Succeeded when (dry-run):** the per-target 2x2 readout prints (candidate vs frozen v1.0
-  baseline: pooled + per-season CLV non-regression and the secondary metrics) and the process
-  exits NON-ZERO if any target FAILS the gate (the hard block is observable to CI). Nothing in
-  production changes.
+- **Arm the run you REVIEWED.** A bare `--promote` re-trains the candidates into staging
+  first, so the artifact that ships is not the artifact the dry run scored. The sequence to
+  use is: bare dry-run (trains into staging and scores) -> read the printed 2x2 ->
+  `--promote --skip-train`, which REUSES the exact gate-scored staging directories. The armed
+  run prints a staleness warning naming each staged directory and its timestamp; read it, do
+  not suppress it. This is the sequence the Phase-30 armed run used.
+- **Succeeded when (dry-run):** the per-target 2x2 readout prints (candidate vs the FROZEN
+  `[baseline.*]` block in `config/gate.toml`: pooled + per-season CLV non-regression and the
+  secondary metrics) and the process exits NON-ZERO if any target FAILS the gate (the hard
+  block is observable to CI). Nothing in production changes. The frozen baseline describes the
+  DEPLOYED incumbent, not v1.0 -- it was re-pointed at the deployed set in Phase 25 (D25-11)
+  and re-frozen twice more in Phase 30, once before the gate ran because the gold rebuild had
+  moved the values it was measured on, and once after the promotion so it describes the end
+  state. A non-zero exit on a PARTIAL pass is correct reporting, not an error to suppress.
 - **Succeeded when (`--promote`):** ONLY gate-passing targets are copied into `artifacts/`
   and pointed at by `artifacts/latest.json` (verify with
   `uv run python -c "import json,pathlib; print(pathlib.Path('artifacts/latest.json').read_text())"`);
@@ -227,6 +241,14 @@ uv run python -m scripts.promote_models --promote
   the dry-run 2x2 then the armed `--promote` ran this session and activated WP + ATS while
   retaining v1.0 OU; the full record (pre/post manifest content + sha256, the gate 2x2, the
   fix-cycle deltas) is in `ACTIVATION-READOUT.md`.
+- **Verification basis (Phase 30, the most recent armed run):** the same two-step sequence ran
+  again on 2026-08-24 against the rebuilt gold, this time arming with
+  `--promote --skip-train`. WP PASSED and was promoted to `wp_20260824_113325`; ATS and O/U
+  FAILED the gate and RETAINED their incumbents (`ats_20260605_220128` and
+  `ou_20260326_163930`) byte-unchanged. The run exited 1, which is the correct partial-pass
+  report. Two of three targets refusing is the gate doing its job, in the same D25-14 lineage
+  as the Phase-25 O/U refusal -- a refusal is a RESULT, not a failed run. The per-target
+  numbers behind BOTH the promotion and the two refusals are in `GATED-REFIT-READOUT.md`.
 
 ### 5. Backtest
 
@@ -257,9 +279,13 @@ uv run python scripts/generate_current_week_predictions.py --season <YEAR> --wee
   plus `game_context_<YEAR>_week<WEEK>.csv` are written; `wp_prob` must fall in `[0,1]`.
   Pass `--no-blend` to skip market blending.
 - **SAFE:** loads the deployed artifacts via `artifacts/latest.json` (no train); writes only
-  gitignored `outputs/predictions/`. As of the Phase 25 activation the deployed set is the
+  gitignored `outputs/predictions/`. As of the Phase 25 activation the deployed set was the
   activated WP + ATS re-fits on canonical Elo gold plus the retained v1.0 O/U (see
-  `ACTIVATION-READOUT.md`); predict always follows whatever `latest.json` points at.
+  `ACTIVATION-READOUT.md`). After the Phase-30 gated re-fit the deployed set is WP
+  `wp_20260824_113325` (promoted in Phase 30), ATS `ats_20260605_220128` (the Phase-25 re-fit,
+  RETAINED -- its Phase-30 candidate was refused) and O/U `ou_20260326_163930` (the v1.0
+  pre-Elo model, RETAINED through both gates); see `GATED-REFIT-READOUT.md`. Predict always
+  follows whatever `latest.json` points at, so it needs no update when a pointer moves.
 - **Verification basis:** verified live 2026-05-31 -- ran `--season 2024 --week 18` that
   session: exit 0, 16 games, loaded the THEN-deployed v1.0 artifacts
   (`wp_20260327_114739` / `ats_20260326_163724` / `ou_20260326_163930`), wrote
@@ -314,9 +340,24 @@ and no copy is needed. There is no `--rollback` CLI flag: rollback is the same p
 `update_manifest` call used elsewhere, run once per key against the recorded pre-swap mapping.
 
 The pre-swap (and post-swap) manifest version map + sha256 are recorded in
-`ACTIVATION-READOUT.md` (the D25-17 rollback record), so the rollback target is a verifiable,
-written-down mapping rather than a guess. To roll back the Phase 25 activation to the
-pre-swap v1.0 mapping:
+`ACTIVATION-READOUT.md` (the D25-17 rollback record) and, for the Phase-30 swap, in
+`GATED-REFIT-READOUT.md`, so the rollback target is a verifiable, written-down mapping rather
+than a guess.
+
+**To roll back the Phase-30 swap (the most recent one).** Phase 30 moved exactly ONE key: WP,
+from `wp_20260605_215552` to `wp_20260824_113325`. ATS, O/U and the blend pointer were not
+touched, so reversing Phase 30 is a single-key restore:
+
+```powershell
+uv run python -c "from models.artifacts import update_manifest; update_manifest('wp', 'wp_20260605_215552')"
+```
+
+The pre-swap and post-swap manifest sha256 are published as `MANIFEST_SHA256_BEFORE` and
+`MANIFEST_SHA256_AFTER` in the tracked `tests/phase30_state.py` and in
+`GATED-REFIT-READOUT.md`, so the restore is checkable rather than assumed.
+
+**To roll back the Phase 25 activation to the pre-swap v1.0 mapping** (this reverses BOTH
+swaps if applied after the single-key restore above):
 
 ```powershell
 uv run python -c "from models.artifacts import update_manifest; update_manifest('wp', 'wp_20260327_114739'); update_manifest('ats', 'ats_20260326_163724'); update_manifest('ou', 'ou_20260326_163930')"
@@ -368,6 +409,41 @@ uv run python scripts/friday_pipeline.py --dry-run
   registered and ran the scheduled task (`Last Result = 0`); see `AUTOMATION.md` Section 9.
   Not re-run here.
 
+### 11. Rebuild gold (attributed)
+
+A full-history gold rebuild, judged mechanically against a signature declared BEFORE the
+rebuild runs. This is the Phase-30 discipline and it exists because a rebuild run for several
+reasons at once makes every moved column unattributable. Capture a fingerprint, rebuild for
+exactly ONE named cause, then have the judge attribute the diff to that cause:
+
+```powershell
+uv run python scripts/fingerprint_gold.py --out outputs/fingerprints/before.json
+uv run python scripts/build_features.py --all-seasons
+uv run python scripts/fingerprint_gold.py --out outputs/fingerprints/after.json
+uv run python scripts/fingerprint_gold.py --compare outputs/fingerprints/before.json outputs/fingerprints/after.json --attribute-rung 2
+```
+
+- **Succeeded when:** the attribution judge EXITS 0 -- every moved column is attributed to the
+  rung's one named cause and `unattributed` is empty. Judge by the exit code, not by reading
+  the printed report, and do not pipe the command through anything that masks `$?`. Exit 1 is
+  a BLOCKING verdict, exit 3 a non-blocking finding, exit 0 clean.
+- **Attribution is NOT health.** A rung whose signature attributes every changed column can
+  still have destroyed columns silently -- that happened in Phase 30, where a rung attributed
+  perfectly cleanly while a bound-fitting cascade had flattened 18 columns. Re-measure
+  per-column health (newly constant, newly all-NaN, newly constant within any season) against
+  a committed pre-rebuild fixture as well. Measurement beats attribution.
+- **Count widths off the parquet, not off the build's summary print.** The build's own
+  `Features:` line is low by a constant and was never used for any published Phase-30 number.
+- **DESTRUCTIVE:** this rewrites `data/gold/features_{wp,ats,ou}.parquet`. It reads
+  `nflreadpy` LIVE with no cache, so an upstream revision landing between two rungs is
+  indistinguishable from the rung's own named cause by inspection alone -- publish the build
+  timestamps so that hypothesis stays checkable. Pass `--no-save` to `build_features.py` for a
+  read-only build that writes no gold.
+- **Verification basis:** verified via the Phase-30 four-rung rebuild ladder (2026-08-22) --
+  four rungs plus a reproduction re-run, each judged by exit code; gold moved from 209/210/209
+  at 6,263 rows to 194/195/194 at 6,499 rows. The per-rung causes, timestamps, verdicts and
+  the reproduction result are in `GATED-REFIT-READOUT.md`. Not re-run here.
+
 ---
 
 ## Architecture & Data Flow
@@ -388,7 +464,7 @@ data location is gitignored, so on a fresh checkout you build it from ingest (se
 | Ingest | live APIs (nflreadpy, Odds API, Open-Meteo) | `data/bronze/*.parquet` (append-only) -> `data/silver/{games,odds_snapshot,weather}.parquet` | `data/bronze/` timestamped snapshots; a Pydantic quality-gate error fails the whole batch (1 bad row fails all) |
 | Features | silver | `data/silver/` (elo, team_form, contextual/weather/market tables) -> `data/gold/features_{wp,ats,ou}.parquet` | `data/gold/` (3 matrices); the LeakageGate diagnostic at `outputs/diagnostics/leakage_<ts>.json` |
 | Train | gold | `artifacts/{target}_{ts}/` candidate dirs ONLY (NOT `latest.json` -- `update_latest=False` since Plan 24-01) | the new `artifacts/{target}_{ts}/` candidate dirs; training never rewrites the manifest |
-| Promote | gold + candidate artifacts + frozen `config/gate.toml` baseline | (on `--promote`) gate-passing target dirs copied into `artifacts/` + `artifacts/latest.json` target keys swapped (`update_manifest`, the sole per-key swapper) | the per-target 2x2 readout (non-zero exit on FAIL); `artifacts/latest.json`; `ACTIVATION-READOUT.md` for the pre/post manifest record |
+| Promote | gold + candidate artifacts + frozen `config/gate.toml` baseline | (on `--promote`) gate-passing target dirs copied into `artifacts/` + `artifacts/latest.json` target keys swapped (`update_manifest`, the sole per-key swapper) | the per-target 2x2 readout (non-zero exit on FAIL); `artifacts/latest.json`; `ACTIVATION-READOUT.md` (Phase 25) and `GATED-REFIT-READOUT.md` (Phase 30) for the pre/post manifest records |
 | Backtest | gold + artifacts | `outputs/backtest/*.{html,csv,json}` | `outputs/backtest/backtest_report.html` + `metrics_summary.json` |
 | Predict | gold + artifacts (via `latest.json`) | `outputs/predictions/predictions_<S>_week<W>.{csv,json}` + `game_context_*.csv` | `outputs/predictions/`; `wp_prob` must be in `[0,1]` |
 | Build cache | gold + artifacts + backtest outputs | `data/web_cache.duckdb` (~6 MB, the read-only API source) | UIAP-01: the API reads ONLY this file; skip it -> serve shows stale/empty |
@@ -425,9 +501,11 @@ Keyed off each stage's success signal above:
   production artifact dirs. Re-run predict for the target week.
 - **`build_features` fails the LeakageGate.** Read the diagnostic at
   `outputs/diagnostics/leakage_<ts>.json`; a leakage failure means a feature referenced
-  future data. Note that `build_features.py` writes gold by default (there is no `--no-save`),
-  so running it at all is a GOLD REBUILD forbidden under D-07 -- do NOT re-run it to "force it
-  through."
+  future data. Note that `build_features.py` writes gold by default, so re-running it bare is a
+  GOLD REBUILD -- do NOT re-run it to "force it through." Pass `--no-save` if you need to
+  reproduce the failure without writing gold; that flag is real (added in Phase 30), and the
+  earlier note here claiming no such switch existed was true of the code at the time and is
+  no longer.
 - **Ingest fails on a single bad row.** The Pydantic quality gate fails the whole batch on one
   bad row. Inspect the timestamped snapshot in `data/bronze/` and re-run the ingest for that
   season/week.
@@ -461,6 +539,12 @@ Keyed off each stage's success signal above:
   swapped WP + ATS onto the canonical Elo gold while retaining v1.0 O/U, with per-target CLV
   before/after, the deployed/retained 2x2, and the pre/post manifest state (the Rollback
   operation's source of the pre-swap mapping + sha256).
+- **`GATED-REFIT-READOUT.md`** -- the Phase 30 gated re-fit record: the four attributed
+  rebuild rungs, the frozen feature-group selection rule and its three verdicts (injury
+  DROPPED, snap and situational KEPT), the per-target deploy outcome (WP promoted, ATS and
+  O/U REFUSED and their incumbents retained), the two gate-baseline re-freezes, the blend
+  re-check that changed nothing in production, and the registers and quarantines the phase
+  deliberately left open. The Rollback operation's source of the Phase-30 pre-swap mapping.
 - **`AUDIT-REPORT.md`** -- the Phase 20 data & feature correctness audit: the adopted
   canonical gold, the FIX-01 cluster, the AUDIT-01 stage-runner evidence cited by the
   DESTRUCTIVE-command labels above, and the deferred findings.

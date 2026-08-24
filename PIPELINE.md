@@ -62,6 +62,12 @@ uv run python scripts/build_features.py --season <YEAR>
 > builders take `--season` and `--week`. The commands above are for the
 > historical/full build; for the current-week build use the orchestrator (see below).
 
+> Note: `build_features.py` WRITES gold by default. `--no-save` is the real off
+> switch for a read-only build (the bare `--save` flag cannot turn saving off --
+> it is `store_true` with `default=True`). Gold currently stands at 194 / 195 / 194
+> columns (wp / ats / ou) over 6,499 rows spanning 2002-2025, after the four
+> attributed rebuild rungs recorded in `GATED-REFIT-READOUT.md`.
+
 ### 3. Train
 
 Train all three models (WP, ATS, O/U) with walk-forward temporal validation.
@@ -92,7 +98,7 @@ the per-target 2x2, swaps nothing); pass `--promote` to perform the conditional 
 
 ```powershell
 uv run python -m scripts.promote_models
-uv run python -m scripts.promote_models --promote
+uv run python -m scripts.promote_models --promote --skip-train
 ```
 
 - **Live entry point:** `scripts/promote_models.py` -> `models.deploy_gate` +
@@ -101,15 +107,32 @@ uv run python -m scripts.promote_models --promote
   baseline for the paired non-regression delta, and each passing target's
   gate-scored artifact dir is copied verbatim into production before its manifest
   key is swapped (byte-identical deploy).
-- **Produces (dry-run):** the per-target 2x2 readout (candidate vs frozen v1.0
-  baseline: pooled + per-season CLV non-regression, secondary metrics) and a
-  non-zero exit code if any target FAILS the gate -- observable to CI. No
-  production change.
+- **Produces (dry-run):** the per-target 2x2 readout (candidate vs the FROZEN
+  `[baseline.*]` block in `config/gate.toml`: pooled + per-season CLV
+  non-regression, secondary metrics) and a non-zero exit code if any target FAILS
+  the gate -- observable to CI. No production change. The frozen baseline describes
+  the DEPLOYED incumbent, not v1.0: it was re-pointed at the deployed set in Phase 25
+  (D25-11) and re-frozen twice more in Phase 30 -- once before the gate ran, because
+  the gold rebuild had moved the values it was measured on, and once after the
+  promotion so it describes the end state.
 - **Produces (`--promote`):** the conditional per-target swap -- ONLY gate-passing
   targets are copied into `artifacts/` and pointed at by `artifacts/latest.json`;
   a FAILING target keeps its existing production entry (honest refusal is a valid
   outcome). The prior version dirs are retained, so the swap is reversible (see
   RUNBOOK.md "Rollback").
+
+> **Arming the run you actually reviewed (`--skip-train`).** A bare `--promote`
+> re-trains the candidates into staging FIRST, so the artifact that ships is not
+> the artifact the dry run scored. The safer two-step sequence -- and the one the
+> Phase-30 armed run used -- is: run the bare dry-run (it trains into staging and
+> scores), review the printed 2x2, then arm with
+> `--promote --skip-train`, which REUSES the exact gate-scored staging directories
+> instead of re-training. The run prints a staleness warning naming each staged
+> directory and its timestamp; read it rather than suppress it. Note that the armed
+> run exits NON-ZERO whenever ANY gated target failed, which is correct reporting
+> for a partial pass -- Phase 30 promoted WP and refused ATS and O/U, and exited 1.
+> The per-target record of that run is `GATED-REFIT-READOUT.md`; the Phase-25
+> activation before it is `ACTIVATION-READOUT.md`.
 
 > Bootstrap note (clean checkout): the gated Promote path REQUIRES a pre-existing
 > `artifacts/latest.json` (it re-scores the deployed baseline for the paired

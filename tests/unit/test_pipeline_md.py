@@ -1,6 +1,7 @@
 """Permanent content check for the repo-root PIPELINE.md.
 
-PIPELINE.md is the single source of truth for the canonical 7-stage run sequence.
+PIPELINE.md is the single source of truth for the canonical run sequence -- 7 stages
+when this guard was first written, 8 since Phase 25 inserted the Promote stage.
 Phase 23.1 corrected two critical errors in this document:
 
 1. Stage 2 "Produces" listed dead silver filenames (``elo_ratings.parquet`` and
@@ -161,4 +162,57 @@ class TestPipelineMdPromoteStage:
         assert "update_latest=False" in content, (
             "PIPELINE.md Stage 3 should state training defaults update_latest=False "
             "(it writes candidate dirs only, never the manifest)"
+        )
+
+
+class TestPipelineMdPhase30Reconciled:
+    """Phase 30 (30-14): the promote stage reflects the Phase-30 promotion path.
+
+    Three drift regressions are guarded here:
+
+    1. The armed run is documented as the ``--skip-train`` variant, which REUSES
+       the gate-scored staging dirs so the artifact that ships is the artifact the
+       dry run scored. A bare ``--promote`` re-trains first and ships something
+       else; that is the sequence this document must not present as the default.
+    2. The stale "frozen v1.0 baseline" description of the gate's paired baseline
+       is GONE. Since D25-11 the frozen ``[baseline.*]`` block describes the
+       DEPLOYED incumbent, and Phase 30 re-froze it twice more. Calling it the
+       "v1.0 baseline" misstates what a candidate is actually measured against.
+    3. The Phase-30 readout is cross-linked, so a reader arriving at the promote
+       stage can reach the per-target record of the last gated run.
+    """
+
+    def test_skip_train_armed_variant_documented(self):
+        """The reviewed-artifact arming sequence (--skip-train) is documented."""
+        content = _read_pipeline_md()
+        assert "--promote --skip-train" in content, (
+            "PIPELINE.md Promote stage missing the --skip-train armed variant "
+            "(a bare --promote re-trains, shipping an artifact the dry run never scored)"
+        )
+
+    def test_stale_v1_baseline_claim_absent(self):
+        """The gate's paired baseline is no longer described as the v1.0 baseline."""
+        content = _read_pipeline_md()
+        assert "frozen v1.0\n  baseline" not in content, (
+            "PIPELINE.md still describes the gate baseline as the frozen v1.0 baseline "
+            "(false since D25-11: it describes the DEPLOYED incumbent)"
+        )
+        assert "frozen v1.0 baseline" not in content, (
+            "PIPELINE.md still describes the gate baseline as the frozen v1.0 baseline "
+            "(false since D25-11: it describes the DEPLOYED incumbent)"
+        )
+
+    def test_cross_links_gated_refit_readout(self):
+        """The Phase-30 gated re-fit record is cross-linked."""
+        content = _read_pipeline_md()
+        assert "GATED-REFIT-READOUT.md" in content, (
+            "PIPELINE.md should cross-link GATED-REFIT-READOUT.md (the Phase-30 record)"
+        )
+
+    def test_no_save_is_documented_as_the_real_off_switch(self):
+        """The feature build's real off switch is named (the bare --save cannot turn saving off)."""
+        content = _read_pipeline_md()
+        assert "--no-save" in content, (
+            "PIPELINE.md should name --no-save as the real read-only-build switch "
+            "for scripts/build_features.py"
         )

@@ -10,8 +10,9 @@ doc cannot silently drift out of sync with the code/docs it points at:
 - the file exists at the repo root,
 - the content is ASCII-only (no emoji, per CLAUDE.md / the Windows cp1252
   constraint),
-- all 8 common operations are documented (ingest, build features, train,
-  backtest, predict, serve, build-cache, run automation),
+- all 11 common operations are documented (ingest, build features, train,
+  promote, backtest, predict, build-cache, serve, rollback, run automation,
+  rebuild gold),
 - the PIPELINE.md / AUTOMATION.md / README.md cross-references are present
   (link-don't-duplicate: PIPELINE = commands, AUTOMATION = automation,
   README = the architecture diagram for the DOC-02 section),
@@ -52,17 +53,18 @@ class TestRunbookMdExists:
 
 
 class TestRunbookMdOperations:
-    """All 10 common operations (DOC-01) must be documented.
+    """All 11 common operations (DOC-01) must be documented.
 
     Phase 25 (D25-16/17) inserted two operations to match the 8-stage PIPELINE
     order and the new rollback path: Promote (operation 4, between Train and
     Backtest) and Rollback (operation 9, reversing a Promote). Run automation
-    renumbered from 8 to 10. The heading anchors below are updated in lockstep
-    with that renumber (Pitfall 5).
+    renumbered from 8 to 10. Phase 30 (30-14) APPENDED an eleventh, Rebuild gold
+    -- appended rather than inserted precisely so the ten existing heading
+    anchors below do not renumber (Pitfall 5).
     """
 
-    def test_documents_all_ten_operations(self):
-        """Each of the 10 operations is documented by its numbered section heading.
+    def test_documents_all_eleven_operations(self):
+        """Each of the 11 operations is documented by its numbered section heading.
 
         Anchoring on the ``### N.`` operation headings (instead of a bare verb
         like ``backtest`` that also appears in cross-references, the architecture
@@ -82,6 +84,7 @@ class TestRunbookMdOperations:
             "### 8. Serve",
             "### 9. Rollback",
             "### 10. Run automation",
+            "### 11. Rebuild gold",
         )
         missing = [heading for heading in operation_headings if heading not in content]
         assert not missing, f"RUNBOOK.md missing operation sections: {missing}"
@@ -105,6 +108,7 @@ class TestRunbookMdOperations:
             "serve": "uvicorn api.main:app",
             "rollback": "from models.artifacts import update_manifest",
             "automation": "scripts/friday_pipeline.py",
+            "rebuild gold": "scripts/fingerprint_gold.py",
         }
         missing = [
             label for label, token in command_tokens.items() if token not in content
@@ -227,4 +231,95 @@ class TestRunbookMdBootstrapAndPromote:
         assert "ACTIVATION-READOUT.md" in content, (
             "RUNBOOK.md Rollback should reference the pre-swap manifest record in "
             "ACTIVATION-READOUT.md"
+        )
+
+
+class TestRunbookMdPhase30Reconciled:
+    """Phase 30 (30-14): the operator record matches the Phase-30 end state.
+
+    Four drift regressions are guarded here:
+
+    1. The stale note describing the feature-build save flag as a no-op with no
+       way to disable the gold write is GONE. ``scripts/build_features.py`` now
+       defines a real ``--no-save`` (``action="store_false"``, ``dest="save"``),
+       so the note described a defect the code no longer has. The absence
+       assertion is deliberately narrow -- it targets the specific stale sentence
+       fragments, not the word "no-op", so it cannot be satisfied by gutting the
+       Build-features section.
+    2. The gate's paired baseline is no longer described as the frozen v1.0
+       baseline. Since D25-11 it describes the DEPLOYED incumbent, and Phase 30
+       re-froze it twice more.
+    3. The armed run is documented as the ``--skip-train`` variant, which reuses
+       the gate-scored staging dirs rather than re-training and shipping an
+       artifact the dry run never scored.
+    4. The Phase-30 record is cross-linked, so the Rollback operation's Phase-30
+       pre-swap mapping has a written-down source.
+    """
+
+    def test_stale_save_flag_noop_note_absent(self):
+        """The 'the save flag is a no-op and there is no --no-save' note is gone."""
+        content = _read_runbook_md()
+        stale_fragments = (
+            "there is NO `--no-save`",
+            "the\n  flag is effectively always on",
+            "flag is effectively always on",
+            "there is no `--no-save`)",
+        )
+        present = [f for f in stale_fragments if f in content]
+        assert not present, (
+            f"RUNBOOK.md still claims build_features.py has no --no-save switch: {present} "
+            "(false -- scripts/build_features.py defines a real --no-save)"
+        )
+
+    def test_no_save_documented_as_the_real_off_switch(self):
+        """The real read-only-build switch is named in the runbook."""
+        content = _read_runbook_md()
+        assert "--no-save" in content, (
+            "RUNBOOK.md should name --no-save as the real read-only-build switch"
+        )
+
+    def test_stale_v1_baseline_claim_absent(self):
+        """The gate baseline is no longer called the frozen v1.0 baseline."""
+        content = _read_runbook_md()
+        assert "frozen v1.0\n  baseline" not in content, (
+            "RUNBOOK.md still describes the gate baseline as the frozen v1.0 baseline "
+            "(false since D25-11: it describes the DEPLOYED incumbent)"
+        )
+        assert "frozen v1.0 baseline" not in content, (
+            "RUNBOOK.md still describes the gate baseline as the frozen v1.0 baseline "
+            "(false since D25-11: it describes the DEPLOYED incumbent)"
+        )
+
+    def test_skip_train_armed_variant_documented(self):
+        """The reviewed-artifact arming sequence (--skip-train) is documented."""
+        content = _read_runbook_md()
+        assert "--promote --skip-train" in content, (
+            "RUNBOOK.md Promote should document the --skip-train armed variant "
+            "(a bare --promote re-trains, shipping an artifact the dry run never scored)"
+        )
+
+    def test_cross_links_gated_refit_readout(self):
+        """The Phase-30 gated re-fit record is cross-linked."""
+        content = _read_runbook_md()
+        assert "GATED-REFIT-READOUT.md" in content, (
+            "RUNBOOK.md should cross-link GATED-REFIT-READOUT.md (the Phase-30 record)"
+        )
+
+    def test_records_the_phase30_refusals_as_retained(self):
+        """The two Phase-30 refusals are recorded with their retained incumbents.
+
+        A refusal is a RESULT. The runbook must show what production actually
+        points at after a partial pass, not only that a run happened.
+        """
+        content = _read_runbook_md()
+        for version in (
+            "wp_20260824_113325",
+            "ats_20260605_220128",
+            "ou_20260326_163930",
+        ):
+            assert version in content, (
+                f"RUNBOOK.md missing the Phase-30 end-state artifact version: {version}"
+            )
+        assert "RETAINED" in content, (
+            "RUNBOOK.md should record that the two refused targets RETAINED their incumbents"
         )
