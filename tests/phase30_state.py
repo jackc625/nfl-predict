@@ -874,3 +874,40 @@ MANIFEST_SHA256_BEFORE: Final[str] = (
 MANIFEST_SHA256_AFTER: Final[str] = (
     "7ff78a506b1cb06e206705c5900438a5388be64e963bcc8a39c7ed6a8d0f66f1"
 )
+
+
+# ---------------------------------------------------------------------------
+# The blend re-validation's isolation anchors.
+#
+# APPENDED by Plan 30-12 Task 3 on 2026-08-24, immediately BEFORE the blend
+# re-validation ran.
+#
+# Why these live here. `backtest.tune.run_comparison` is a DIAGNOSTIC that
+# rewrites the production swap surface by default: its final step calls
+# MarketBlender.save_blend_artifacts, whose own docstring says it "Updates
+# artifacts/latest.json with 'blend' key", and whose default report directory is
+# data/baselines/v2.0. Run as documented it would swap production outside
+# scripts/promote_models.py (Phase 30's sole-swap-surface constraint) AND write
+# under data/ (the no-writes-under-data prohibition). Phase 30 therefore ran it
+# against a throwaway copytree of artifacts/ with its report directory under
+# outputs/. artifacts/, artifacts_staging/, outputs/ and data/ are ALL gitignored,
+# so without these constants the proof that production was left alone would
+# survive nowhere a fresh checkout can read.
+#
+# DATA_BASELINES_TREE_SHA256 digests the ENTIRE data/baselines tree -- every
+# relative path plus every file's sha256, in sorted order -- so it catches a new
+# FILE as well as a new directory. That matters here: the Phase-25 blend
+# re-validation did not create a directory under data/baselines, it OVERWROTE two
+# files inside the existing data/baselines/v2.0 (comparison_dynamic_vs_static.md
+# and gating_dynamic_vs_static.json, both still carrying their 2026-06-05
+# timestamps). A directory-only check would have called that clean.
+# ---------------------------------------------------------------------------
+DATA_BASELINES_TREE_SHA256: Final[str] = (
+    "49d23f82ff0cdf6b569f5abb5ea30c638d804e4f50946a72429cbdbd38518a29"
+)
+
+# The deployed blend pointer, unchanged by the re-validation. Recorded separately
+# from MANIFEST_SHA256_AFTER so a manifest re-serialization that preserved the
+# pointer, or a pointer change that happened to preserve the digest, are told
+# apart rather than conflated.
+DEPLOYED_BLEND_VERSION: Final[str] = "blend_dynamic_20260606_020635"
