@@ -63,11 +63,22 @@ LEGACY_TUNING_STORAGE_DIR: Path = Path("data/optuna")
 # study that already holds the full budget runs ZERO new trials while still reporting a full
 # trial count, so a "tuned" candidate would silently carry the OLD phase's parameters.
 #
-# The rule, plainly: a study identity is per-phase. A future phase that re-tunes MUST bump this
-# tag. What this tag is NOT allowed to do is revert to the v2.0 ``_tuning_v1`` literal -- those
-# three studies are the v2.0 historical record and are already at budget, so reusing their
-# identity guarantees a vacuous search. Nothing in this phase deletes them either.
-TUNING_STUDY_TAG: str = "p30"
+# The rule, plainly: a study identity is per-RUN of a binding search, not merely per-phase. A
+# future phase (or a second binding search inside one phase) that re-tunes MUST bump this tag.
+# What this tag is NOT allowed to do is revert to the v2.0 ``_tuning_v1`` literal -- those three
+# studies are the v2.0 historical record and are already at budget, so reusing their identity
+# guarantees a vacuous search. Nothing in this phase deletes them either.
+#
+# BUMPED ``p30`` -> ``p30s2`` by Plan 30-11 before the BINDING Stage-2 run, closing the
+# D30-DEFER-02 item Plan 30-01 recorded. The Plan 30-01 tracer's dry run filled
+# ``outputs/optuna/{target}_tuning_p30.db`` with the full 100-trial budget for all three
+# targets (measured: 100/100/100 stored). ``OptunaTuner.optimize`` computes remaining as
+# ``max(0, n_trials - len(study.trials))``, so a binding run on the ``p30`` identity would
+# have added ZERO trials and hit the RuntimeError below -- at the moment of the phase's one
+# irreversible action. The tag is bumped rather than the tracer's study files deleted:
+# study files are the historical record of what was searched, and the guard's own remediation
+# message says so.
+TUNING_STUDY_TAG: str = "p30s2"
 
 # Where the Phase-30 SQLite study files live. OptunaTuner defaults storage_dir to
 # ``data/optuna``, which collides with this phase's own prohibition on writing under ``data/``
