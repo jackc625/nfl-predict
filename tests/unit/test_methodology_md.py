@@ -117,6 +117,117 @@ class TestMethodologyMdActivationReconciled:
         )
 
 
+class TestMethodologyMdPhase30Method:
+    """Phase 30 (30-14): the methodology record carries the two-stage decision unit.
+
+    Phase 30 added the project's most methodologically substantial machinery, and a
+    deep-dive that omits it is stale in the way that matters most for this document --
+    it would describe a per-target gate as the whole decision when the decision is now
+    two stages answering two different questions. Guarded here:
+
+    1. The two-stage decision unit is described (a per-GROUP selection rule feeding a
+       per-TARGET deploy gate), because the split is what stops a group's cost on one
+       target riding into production on another target's benefit.
+    2. The pre-registration discipline is described, INCLUDING that its ordering is
+       checked from git rather than asserted in prose. "The rule predates the result"
+       is only worth writing down if it is checkable.
+    3. The full-grid correction and its denominator are described.
+    4. The three-valued verdict vocabulary is present and UNDETERMINED is stated as
+       reported-not-collapsed. Merging "it hurt" with "we could not tell" destroys the
+       finding a later phase needs.
+    5. The prior-seasons-only bounds are described WITH their accepted within-season
+       residual. Describing the fix without the residual would overstate it.
+    """
+
+    def test_cross_links_gated_refit_readout(self):
+        """METHODOLOGY cross-links GATED-REFIT-READOUT.md (the Phase-30 record)."""
+        content = _read_methodology_md()
+        assert "GATED-REFIT-READOUT.md" in content, (
+            "METHODOLOGY.md should cross-link GATED-REFIT-READOUT.md (the Phase-30 record)"
+        )
+
+    def test_describes_the_two_stage_decision_unit(self):
+        """The per-GROUP selection rule and the per-TARGET deploy gate are both named."""
+        content = _read_methodology_md()
+        assert "two-stage decision unit" in content, (
+            "METHODOLOGY.md should describe the Phase-30 two-stage decision unit"
+        )
+        assert "per-GROUP selection rule" in content, (
+            "METHODOLOGY.md should name Stage 1 as a per-GROUP selection rule"
+        )
+        assert "per-TARGET deploy gate" in content, (
+            "METHODOLOGY.md should name Stage 2 as the per-TARGET deploy gate"
+        )
+
+    def test_describes_pre_registration_checked_from_git(self):
+        """The pre-registration is described as a git-checkable ancestry relation."""
+        content = _read_methodology_md()
+        lowered = content.lower()
+        assert "pre-registration" in lowered or "pre-registered" in lowered, (
+            "METHODOLOGY.md should describe the Phase-30 pre-registration discipline"
+        )
+        assert "ancestry" in lowered, (
+            "METHODOLOGY.md should state that the pre-registration's ordering is an "
+            "ANCESTRY relation checked from git, not a claim asserted in prose"
+        )
+
+    def test_describes_the_full_grid_correction_and_its_denominator(self):
+        """The correction method, its family and the realized denominator are described."""
+        content = _read_methodology_md()
+        assert "Benjamini-Hochberg" in content, (
+            "METHODOLOGY.md should name the Benjamini-Hochberg correction"
+        )
+        assert "m = 6" in content, (
+            "METHODOLOGY.md should state the REALIZED denominator (m = 6, not 9) and that "
+            "the exclusions made the surviving family easier to reject in, not harder"
+        )
+
+    def test_describes_the_three_valued_verdict_vocabulary(self):
+        """All four verdict words appear and UNDETERMINED is reported, not collapsed."""
+        content = _read_methodology_md()
+        for verdict in ("KEEP", "DROP", "UNDETERMINED", "NOT MEASURED"):
+            assert verdict in content, (
+                f"METHODOLOGY.md missing verdict-vocabulary term: {verdict}"
+            )
+        assert "never collapsed into DROP" in content, (
+            "METHODOLOGY.md should state that UNDETERMINED is reported as UNDETERMINED "
+            "and never collapsed into DROP"
+        )
+
+    def test_describes_prior_seasons_bounds_with_their_residual(self):
+        """The bounds fix is described together with the residual it does NOT close."""
+        content = _read_methodology_md()
+        assert (
+            "strictly prior seasons" in content or "strictly-prior seasons" in content
+        ), (
+            "METHODOLOGY.md should describe the prior-seasons-only imputation/winsorization "
+            "bounds introduced in Phase 30"
+        )
+        assert "within-season" in content, (
+            "METHODOLOGY.md should state the accepted within-season residual the "
+            "prior-seasons-only bounds fix does NOT close"
+        )
+
+    def test_no_stale_ou_only_dynamic_blend_claim(self):
+        """The 'only O/U dynamic blend is adopted' claim is gone.
+
+        The deployed blend artifact runs dynamic for all three targets. The stale
+        claim contradicted the production manifest, which is the kind of drift this
+        guard exists to catch.
+        """
+        content = _read_methodology_md()
+        stale_claims = (
+            "Only the O/U\n  dynamic blend is ADOPTED",
+            "Only the O/U dynamic blend is ADOPTED",
+            "**Dynamic blend is gated per target (only O/U adopted).**",
+        )
+        present = [c for c in stale_claims if c in content]
+        assert not present, (
+            f"METHODOLOGY.md still claims only O/U runs the dynamic blend: {present} "
+            "(the deployed artifact runs dynamic for all three targets)"
+        )
+
+
 class TestStaleDocsRemoved:
     """The six stale docs/*.md and the docs/ directory must be gone (D-01/D-04).
 

@@ -111,3 +111,102 @@ class TestStateOfSystemMdActivationReconciled:
         assert "ACTIVATION-READOUT.md" in content, (
             "STATE-OF-SYSTEM.md should link ACTIVATION-READOUT.md (the Phase-25 activation)"
         )
+
+
+class TestStateOfSystemMdPhase30Reconciled:
+    """Phase 30 (30-14): the registry records what Phase 30 closed and what stayed open.
+
+    This registry is the SINGLE consolidated open list, so it is the one place where
+    "is this still a problem?" gets answered. Two failure modes are guarded:
+
+    1. An item Phase 30 CLOSED still being listed as deferred, which sends a future
+       reader to fix something already fixed.
+    2. An item Phase 30 LEFT OPEN quietly disappearing, which is the worse of the two --
+       it makes the phase look cleaner than it was. The seven quarantines, the six
+       deferred registers and the two deliberate residuals are all asserted present.
+    """
+
+    def test_links_gated_refit_readout(self):
+        """The Phase-30 gated re-fit record is linked."""
+        content = _read_state_of_system_md()
+        assert "GATED-REFIT-READOUT.md" in content, (
+            "STATE-OF-SYSTEM.md should link GATED-REFIT-READOUT.md (the Phase-30 record)"
+        )
+
+    def test_closed_items_no_longer_listed_as_deferred(self):
+        """The two Deferred entries Phase 30 closed are gone from the registry.
+
+        Both were listed under 'Deferred' and both are now fixed in code/data:
+        the 2025 trailing-coverage backfill (gold's 2025 slice is now weeks 1-22),
+        and the build_features --save no-op (a real --no-save exists).
+        """
+        content = _read_state_of_system_md()
+        stale_deferred = (
+            "2025 ingested through ~wk4 then frozen; backfill deferred to the",
+            "so the flag is a no-op and the gold-write cannot be disabled via CLI",
+        )
+        present = [c for c in stale_deferred if c in content]
+        assert not present, (
+            f"STATE-OF-SYSTEM.md still defers items Phase 30 closed: {present}"
+        )
+
+    def test_records_the_two_deliberate_residuals(self):
+        """The two residuals Phase 30 deliberately left open are NAMED, not dropped.
+
+        (a) the within-season lookahead the prior-seasons-only bounds fix does not
+        close, and (b) the dropped group's columns remaining physically in gold with
+        no marker recording the exclusion. A residual that is not written down is
+        indistinguishable from one that was never noticed.
+        """
+        content = _read_state_of_system_md()
+        assert "within-season" in content, (
+            "STATE-OF-SYSTEM.md should name the accepted within-season lookahead residual "
+            "(the prior-seasons-only bounds fix closes the cross-season case only)"
+        )
+        assert "remain physically in gold" in content, (
+            "STATE-OF-SYSTEM.md should record that the DROPPED group's columns remain "
+            "physically in gold and are excluded at train time, with no marker in gold"
+        )
+
+    def test_records_the_seven_open_quarantines(self):
+        """The seven still-open quarantined reproductions are recorded with their proof."""
+        content = _read_state_of_system_md()
+        assert "7 xfailed" in content, (
+            "STATE-OF-SYSTEM.md should cite the suite's standing '7 xfailed' as the "
+            "mechanical proof that seven quarantined reproductions are still open"
+        )
+
+    def test_records_the_six_open_deferred_registers(self):
+        """Each of the six still-open Phase-30 registers is named individually."""
+        content = _read_state_of_system_md()
+        registers = (
+            "D30-DEFER-04",
+            "D30-DEFER-17",
+            "D30-DEFER-22",
+            "D30-DEFER-23",
+            "D30-DEFER-24",
+            "D30-DEFER-25",
+        )
+        missing = [r for r in registers if r not in content]
+        assert not missing, (
+            f"STATE-OF-SYSTEM.md missing still-OPEN Phase-30 registers: {missing}"
+        )
+
+    def test_ou_headline_clv_hazard_is_not_published_as_a_clv(self):
+        """The +45.81 export figure never appears without its warning.
+
+        ``BacktestResults.headline_clv`` is the mean of ``probability_clv`` for every
+        target, and for O/U that column is not a line-CLV. Quoting +45.81 as an O/U
+        CLV overstates a quantity that does not exist by roughly 40x. The registry may
+        MENTION the figure -- that is the point of a reading hazard -- but only beside
+        the true line_clv mean.
+        """
+        content = _read_state_of_system_md()
+        if "45.81" in content:
+            assert "1.8954569" in content, (
+                "STATE-OF-SYSTEM.md quotes the +45.81 export figure without the true "
+                "O/U line_clv mean (+1.8954569) beside it"
+            )
+            assert "NOT a CLV" in content, (
+                "STATE-OF-SYSTEM.md quotes +45.81 without stating it is NOT a CLV"
+            )

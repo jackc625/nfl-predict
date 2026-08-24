@@ -17,6 +17,12 @@
 > Read the "Drift landmines / what changed since v1.0" section first if you last read
 > the v1.0 docs -- four things changed materially.
 >
+> MAINTAINED FORWARD (2026-08-24, Phase 30). This file is authored as a v2.1 document and
+> is kept current rather than frozen. Section 10 adds the two-stage decision unit and the
+> pre-registration discipline that v3.0 Phase 30 introduced; Sections 3, 4, 5, 6 and
+> landmines 3 and 4 are reconciled to the Phase-30 end state. Superseded readings are
+> relabelled with their reason rather than deleted.
+>
 > Status tags are ASCII (no emoji, per CLAUDE.md). Arrows are `->`, dashes are `--`.
 
 ---
@@ -84,10 +90,24 @@ All builders conform to a structural `FeatureBuilder` Protocol (not an ABC), in
 Validation and normalization are shared infrastructure: `features/validation.py`
 (LeakageGate + FeatureValidator) and `features/normalization.py` (expanding-window).
 
-Note on counts: the v1.0 feature doc quoted "89 features (31/29/29)". Those counts
-predate the Phase-20 canonical-gold rebuild -- current gold widths are 156/157/156
-(WP/ATS/O-U) over 6263 rows / 2002-2025. Treat the code and the gold schema as ground
-truth, not any quoted count. See `AUDIT-REPORT.md` for the rebuilt schema.
+Note on counts: the v1.0 feature doc quoted "89 features (31/29/29)". Those counts predate
+the Phase-20 canonical-gold rebuild, which read 156/157/156 over 6263 rows / 2002-2025.
+Both readings are superseded. Gold stands at **194/195/194 (WP/ATS/O-U) over 6,499 rows /
+2002-2025** after the Phase-30 four-rung rebuild, counted empirically off the parquet --
+NOT off the build's own summary print, which is low by a constant and was never used for
+any published number. Treat the code and the gold schema as ground truth, not any quoted
+count. See `AUDIT-REPORT.md` for the Phase-20 schema and `GATED-REFIT-READOUT.md` for the
+Phase-30 rebuild and its per-rung attribution.
+
+Two later families are in gold and are worth naming, because their presence is easy to
+misread as endorsement. The Phase-28 `snap`, `injury` and `situational` groups were
+SCREENED in Phase 28 and BINDINGLY ruled on in Phase 30 (Section 10): `snap` and
+`situational` were KEPT, `injury` was DROPPED and is excluded at TRAIN time while its
+columns stay physically in gold. The Phase-29 `line_movement` family LEFT gold entirely
+at rebuild rung 3 -- not because it was measured unhelpful, but because the historical
+archive floor post-dates the canonical feature-selection window, so 0 of its 15 columns
+could ever be selected into a candidate. A family that cannot enter a model is not a
+candidate feature set.
 
 ## 4. Elo ratings (ACTIVE -- a 538-style sequential system)
 
@@ -101,7 +121,10 @@ Elo is a real, active rating system -- not an inactive default. Ground truth:
   from nfelo research).
 - **Snapshot-then-update (no batch leakage)** -- each game's pre-kickoff rating is
   snapshotted BEFORE its outcome updates the rating, so a game never sees its own
-  result. This produces 6263 per-game snapshots.
+  result. One snapshot per game; a count is deliberately not pinned here, because the
+  game population moved in Phase 30 (gold went 6,263 -> 6,499 rows when the stale silver
+  `games` mirror was re-synced) and a restated count is a drift liability. Gold's Elo
+  columns are populated for every row of the widened frame.
 - **2002 burn-in** -- ratings warm up from 2002 (about 19 seasons before the 2021 backtest
   start), so by the evaluation window ratings are stable rather than near a cold-start.
 
@@ -133,8 +156,18 @@ non-regression CLV floor vs the frozen incumbent (plus the secondary accuracy/MA
 for WP, calibration) before it is deployed. In v2.0 the retrained models did not pass
 gating on any target. The v3.0 Phase-25 gated re-fit on the canonical Elo gold then
 activated WP and ATS (ATS via one documented fix-cycle) and RETAINED v1.0 O/U (its re-fit
-failed the floor and was honestly refused). See landmine 3 below, `ACTIVATION-READOUT.md`
-for the activation record, and `MODEL-DIAGNOSIS.md` DIAG-05 for the frozen v2.1 diagnosis.
+failed the floor and was honestly refused). The v3.0 Phase-30 re-fit on rebuilt, widened
+gold ran the same gate a second time: WP passed and was promoted, ATS and O/U both failed
+and RETAINED their incumbents. See landmine 3 below, `ACTIVATION-READOUT.md` for the
+Phase-25 record, `GATED-REFIT-READOUT.md` for the Phase-30 record, Section 10 for the
+two-stage decision unit Phase 30 introduced, and `MODEL-DIAGNOSIS.md` DIAG-05 for the
+frozen v2.1 diagnosis.
+
+**What the gate does NOT assert.** Under `floor_mode = non_regression` it asks whether a
+candidate is not WORSE than the incumbent, never whether it is positive in absolute terms.
+WP ships on a pooled probability CLV of -0.0380: an improvement on its incumbent, and still
+negative. Removing closing-line-value leakage and having a market edge are different claims,
+and this methodology keeps those two bars apart deliberately.
 
 ## 6. Market blending
 
@@ -147,9 +180,18 @@ The model output is blended with the market line. Ground truth: `models/blending
 - **Blend weights are tuned on pre-2018 data only** (`TUNING_SEASONS`), strictly
   isolated from both the 2018-2020 training window and the 2021-2024 backtest holdout --
   no information leakage from the evaluation period into the weights.
-- **Dynamic (week-of-season) blending is gated per target (D-19).** Only the O/U
-  dynamic blend is ADOPTED (it beat static CLV); WP and ATS stay on static weights.
-  `mode_by_target` is persisted in the blend artifact.
+- **Dynamic (week-of-season) blending is gated per target (D-19), and the deployed
+  artifact currently runs dynamic for ALL THREE targets.** `mode_by_target` is persisted
+  in the blend artifact (`blend_dynamic_20260606_020635`). An earlier version of this
+  section said only O/U was adopted with WP and ATS on static weights; that described a
+  superseded artifact and is corrected here. Phase 30 re-ran the comparison against the
+  newly serving models, in a throwaway COPY of the artifacts tree so production could not
+  be mutated, and measured that the gating rule would now select static for WP and ATS and
+  dynamic for O/U. The WP and ATS margins are 1.3e-4 and 2.8e-5, so the honest reading is
+  "indistinguishable", not "harmful". **That verdict landed in the copy and was NOT applied
+  to production** -- it is recorded as an open register, and acting on it would need the
+  same paired-significance treatment the model gate uses rather than a bare relative-delta
+  rule. See `GATED-REFIT-READOUT.md` and `STATE-OF-SYSTEM.md`.
 
 ## 7. Evaluation (CLV-first, calibration-aware)
 
@@ -175,17 +217,29 @@ These are the corrections that motivated this de-staled consolidation:
 2. **Tuning is Optuna, not random search.** Hyperparameter search is
    `OptunaTuner` (TPE + Hyperband + SQLite), new in Phase 12. The v1.0 random-search
    description is obsolete.
-3. **Production serves a MIXED set after the v3.0 Phase-25 gated re-fit -- not a
-   uniform v1.0 or v2.0 set.** Per-target gating (D-17) first rejected the v2.0 retrained
-   models on all three targets. The v3.0 Phase-25 re-fit on canonical Elo gold then went
-   THROUGH the hardened non-regression gate: WP and ATS were activated (ATS via one
-   documented fix-cycle), and O/U RETAINED the v1.0 pre-Elo model (its re-fit failed the
-   floor and was honestly refused, D25-14). So the deployed set is WP/ATS re-fits +
-   retained v1.0 O/U. Do NOT assume all three are v1.0, and do NOT assume the v2.0
-   retrained models are live. The per-target record is in `ACTIVATION-READOUT.md`.
-4. **Dynamic blend is gated per target (only O/U adopted).** WP and ATS use static
-   blend weights; only O/U uses the dynamic week-of-season blend (D-19). The v1.0 docs
-   describe no dynamic blend at all.
+3. **Production serves a MIXED set, from THREE different vintages -- not a uniform v1.0
+   or v2.0 set.** Per-target gating (D-17) first rejected the v2.0 retrained models on all
+   three targets. The v3.0 Phase-25 re-fit on canonical Elo gold then went THROUGH the
+   hardened non-regression gate: WP and ATS were activated (ATS via one documented
+   fix-cycle), and O/U RETAINED the v1.0 pre-Elo model (its re-fit failed the floor and was
+   honestly refused, D25-14). The v3.0 Phase-30 re-fit on rebuilt, widened gold ran the same
+   gate again and moved exactly one key. The deployed set today:
+
+   | Target | Serving | Vintage |
+   |---|---|---|
+   | WP | `wp_20260824_113325` | the Phase-30 re-fit -- PROMOTED |
+   | ATS | `ats_20260605_220128` | the Phase-25 re-fit -- RETAINED, its Phase-30 candidate REFUSED |
+   | O/U | `ou_20260326_163930` | v1.0 pre-Elo -- RETAINED, refused by the gate TWICE |
+
+   Do NOT assume all three are v1.0, do NOT assume the v2.0 retrained models are live, and
+   do NOT assume a phase that ran a re-fit therefore deployed one. The per-target records
+   are `ACTIVATION-READOUT.md` (Phase 25) and `GATED-REFIT-READOUT.md` (Phase 30).
+4. **Dynamic blend is gated per target, and all three targets currently run dynamic.**
+   The deployed blend artifact carries `mode_by_target` dynamic for WP, ATS and O/U (D-19).
+   An earlier version of this landmine said only O/U was adopted with WP and ATS on static
+   weights; that is superseded and corrected in Section 6, together with the Phase-30
+   re-measurement that would now prefer static for WP and ATS by margins too small to call
+   a difference -- recorded, and NOT applied. The v1.0 docs describe no dynamic blend at all.
 
 The deployed-artifact population and the walk-forward backtest population remain DISTINCT
 populations (a single deployed artifact scored across the whole holdout vs fresh per-fold
@@ -204,6 +258,100 @@ The ATS/O-U residual/total distribution converters still live in the legacy
 `models/trainers/` package (README "Current Limitations" item 4). This coexistence is a
 catalogued, deferred refactor -- not a bug. It is recorded in `STATE-OF-SYSTEM.md`.
 
+## 10. The two-stage decision unit (v3.0 Phase 30)
+
+Phase 30 added the most methodologically interesting machinery in the project, and it is
+worth reading as a method rather than as a phase log. The problem it solves: when you widen
+gold with several new feature groups and re-fit three targets on it, "did this help?" is not
+one question, and answering it as one question is how a group's cost on one target rides
+into production on another target's benefit.
+
+**The decision is split into two stages that answer different questions.**
+
+- **Stage 1 is a per-GROUP selection rule.** For each (group, target) cell it measures the
+  add-one-in CLV delta -- a baseline leg trained WITHOUT any of the registered signal groups
+  against a candidate leg with exactly one group added -- on the 2021-2024 holdout, paired
+  per game, both legs untuned so the comparison is not a hyperparameter search in disguise.
+  The verdict is per-group, not per-cell, so a group whose evidence is directionally split is
+  carried whole.
+- **Stage 2 is the existing per-TARGET deploy gate.** It takes Stage 1's kept set as the
+  candidate feature set and asks the separate question of whether THIS target's candidate is
+  not worse than THIS target's incumbent.
+
+**The split is what makes a split verdict safe.** On the Phase-30 run `snap` was KEPT on the
+strength of its WP cell while being significantly NEGATIVE on ATS and O/U. Stage 1 carried
+the group whole; Stage 2 then refused the ATS and O/U candidates, in the same neighbourhood
+Stage 1 had predicted. Stage 1 measured the cost and Stage 2 refused it. Two refusals were
+the predicted outcome of a ratified rule, not a surprise to debug.
+
+**Pre-registration, checked from git rather than asserted in prose.** The Stage-1 rule --
+alpha, the minimum detectable effect, the correction method, the family, the rank order, the
+verdict vocabulary, the measurement-exclusion reasons and the permitted fix-cycle levers --
+lives in a single frozen module and was committed in a commit containing no measurement. The
+claim "the rule predates the result" is then an ANCESTRY relation between two specific
+commits, both published, both resolved from git by a committed test, and asserted to be
+non-equal: a rule and the results it produced landing in one commit is not a pre-registration,
+only a claim of one. The MDE is pre-registered as a FORMULA at 80% power rather than as a
+number, so the bar survives the rebuild moving the underlying standard deviations and nothing
+can be shopped after the fact.
+
+**The exclusion rule had to be frozen because it DETERMINES the denominator.** A cell is
+excluded from the family for four pre-registered reasons, the sharpest being "no column of
+this group was selected by this target's own feature selection" -- the candidate model never
+saw the group, so the delta is selection churn rather than lift. That rule threw out the most
+significant cell in the entire grid (`injury`/wp at p = 3.6e-15), and had that cell been
+admitted the `injury` verdict would have flipped from DROP to KEEP on the strength of a number
+that says nothing about injuries. Every exclusion also reduces `m`, so a denominator chosen
+after seeing which cells were awkward would be the rule-shopping the correction exists to
+prevent.
+
+**The correction is applied across the FULL grid, and what that costs is stated rather than
+hidden.** The family is all 3 groups x 3 targets, using Benjamini-Hochberg as a vendored
+inclusive step-up. Choosing the full grid rather than a per-target family is the stricter
+option and was chosen for that reason. Honesty runs in both directions here: the REALIZED
+denominator was m = 6 rather than 9, because three cells were excluded, which made the
+surviving family EASIER to reject in, not harder. The anticipating plan text stated the m = 9
+case; that was wrong in the permissive direction, which is the direction that matters, and it
+is corrected on the record rather than quietly restated.
+
+**The verdict vocabulary is three-valued, and UNDETERMINED is never collapsed into DROP.**
+`KEEP` / `DROP` / `UNDETERMINED` / `NOT MEASURED`. UNDETERMINED resolves to DROP for the
+DEPLOY decision -- an undetermined group is excluded from the candidate set for the same
+practical reason a dropped one is -- but it is REPORTED as UNDETERMINED, because "we measured
+this and it hurt" and "we could not tell" are different findings and a record that merges them
+loses the one a later phase needs. NOT MEASURED is not a verdict about the group at all; it is
+a refusal to rule. On the Phase-30 run nothing landed on either arm, and that is stated rather
+than passed over: the machinery exists, is tested, and simply had no occasion to fire.
+The arm order is KEEP-before-DROP, which resolves a split group toward KEEP; it reverses
+Phase 28's rule and was ratified AS a reversal rather than adopted silently.
+
+**Normalization bounds are fitted on strictly-prior seasons, with an accepted residual.**
+Imputation medians and q01/q99 winsorization bounds are refitted per season on strictly
+prior seasons, which removes the cross-season leak that whole-frame fitting introduces.
+It does NOT establish the within-season property -- that a value is fitted only on
+information available before its own kickoff inside its own season. That residual is
+accepted and recorded rather than closed, and `STATE-OF-SYSTEM.md` names it.
+
+**One thing the deltas above cannot be read as.** Feature selection on the 534-row 2018-2019
+training window was measured admitting synthetic noise columns over real features: with 50
+unit-variance Gaussian columns appended, 6 of ATS's 25 and 9 of O/U's 25 selected features
+were pure noise. So the per-group deltas are DIRECTIONAL EVIDENCE, not precise estimates.
+That is a statement about how the numbers are read, not a task waiting to be done: a column
+with variance but no target relationship is indistinguishable from a weak real signal at fit
+time, and excluding it would require peeking at the target during selection -- a different
+rule, and a leakage hazard of its own. `GATED-REFIT-READOUT.md` section 5d and
+`SELECTION-CENSUS.md` carry the measurement.
+
+**Rebuild attribution, and why it is not the same as health.** Gold was rebuilt FOUR times,
+one named cause per rung, each judged mechanically against a signature declared before the
+rung ran, because rebuilding once for four reasons makes every moved column unattributable.
+The load-bearing lesson is the failure it did NOT catch: one rung attributed perfectly
+cleanly while having silently flattened 18 columns through a bound-fitting cascade and a
+degenerate clip. The judge could not see it, because that rung's signature deliberately
+attributes every changed column. Only re-measuring per-column health against a committed
+pre-rebuild fixture found it. **Measurement beats attribution**, and every later rung was
+re-measured the same way.
+
 ## Cross-references
 
 - **`MODEL-DIAGNOSIS.md`** -- the Phase 22 honest accuracy diagnosis: per-target
@@ -211,6 +359,18 @@ catalogued, deferred refactor -- not a bug. It is recorded in `STATE-OF-SYSTEM.m
   mismatch (DIAG-05). The source for every quantified claim referenced above.
 - **`AUDIT-REPORT.md`** -- the Phase 20 data & feature correctness audit: canonical-gold
   schema, the leakage/temporal verdict, and the F-* catalogue.
+- **`ACTIVATION-READOUT.md`** -- the v3.0 Phase-25 activation record: the first gated
+  re-fit, per-target CLV before/after, and the origin of the retained ATS and O/U
+  incumbents.
+- **`GATED-REFIT-READOUT.md`** -- the v3.0 Phase-30 gated re-fit record and the source for
+  every Phase-30 number referenced above: the four attributed rebuild rungs, the frozen
+  Stage-1 rule and its corrected 9-cell grid, the three group verdicts, the per-target
+  deploy outcome (one promotion, two refusals), and the open registers and quarantines.
+- **`SELECTION-CENSUS.md`** -- the feature-selection census behind Section 10's noise-column
+  finding, including the ratified selection rule quoted verbatim.
+- **`STATE-OF-SYSTEM.md`** -- the consolidated registry of what is trustworthy, what was
+  fixed, and the single open list (including the accepted within-season residual named in
+  Section 10).
 - **`README.md`** -- the portfolio front door and the single architecture diagram.
 - **`PIPELINE.md`** -- the canonical run sequence that produces the gold, artifacts,
   and predictions this methodology describes.
