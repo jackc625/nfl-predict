@@ -36,6 +36,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import copy
+import re
 import subprocess
 from pathlib import Path
 
@@ -1230,16 +1231,164 @@ def test_update_manifest_atomic_write_preserves_on_failure(
 # ---------------------------------------------------------------------------
 
 
+# The PHASE-START snapshot of every NON-BASELINE setting in config/gate.toml, read at the
+# start of Phase 30 (Plan 30-09) and asserted unchanged for the rest of the phase.
+#
+# Why it exists: 30-SPEC's prohibition "MUST NOT loosen any config/gate.toml threshold, band,
+# or frozen value to make a target pass" (R5) is assigned to the TEST tier, not the judgment
+# tier. This snapshot IS that test. Phase 30 re-fits three targets against a frozen judge; the
+# cheapest way to rescue a failing target is to widen a band by a hair, and that would be a
+# silent redefinition of what "passing" means. Here it is a RED.
+#
+# The [baseline.*] block is DELIBERATELY EXCLUDED. It is regenerated TWICE in this phase by
+# design -- Plan 30-09 re-freezes it against the still-deployed incumbents on the rebuilt gold
+# (the rebuild alone invalidates it), and Plan 30-12 re-freezes it again against the end-state
+# incumbents. Snapshotting it here would make this test fail for the wrong reason: a sanctioned
+# generator block-paste would look identical to the prohibited hand-edit. The baseline has its
+# own guards -- test_committed_frozen_baseline_values_unchanged (above) pins the current values,
+# and tests/integration/test_promote_models.py::test_frozen_baseline_matches_rescore_all_fields
+# re-verifies all 68 frozen fields against a fresh generator re-score.
+#
+# If a future phase deliberately changes one of these settings, RE-READ the snapshot from the
+# new committed config in the same commit as the config edit, with the rationale -- do not
+# delete the test.
+PHASE_START_GATE_SETTINGS: dict[str, object] = {
+    "alpha": 0.05,
+    "per_season_must_pass": True,
+    "floor_mode": "non_regression",
+    "calibration_in_gate": True,
+    "seasons.holdout": [2021, 2022, 2023, 2024],
+    "secondary.evaluation": "pooled",
+    "secondary.wp_accuracy_max_drop": 0.01,
+    "secondary.regression_mae_max_increase": 0.0,
+    "secondary.wp_ece_max_increase": 0.0125,
+    "secondary.wp_brier_max_increase": 0.0030,
+}
+
+# The two declaration sites of the gate-time freshness tolerance. There are exactly TWO today
+# and SPEC R5 says no new tolerance is introduced in this phase; test_freshness_tolerance_parity
+# below IMPORTS both values and asserts they agree, rather than trusting the comment at
+# scripts/promote_models.py:78-85 that names the places which must agree.
+_FRESHNESS_TOL_SITES: tuple[str, ...] = (
+    "scripts/promote_models.py",
+    "tests/integration/test_promote_models.py",
+)
+
+# The phase-start READING of that tolerance, recorded so a WIDENED tolerance is caught as well
+# as a DIVERGENT one. This is a historical reading for change-detection, NOT a third usable
+# declaration: no comparison anywhere -- in production, in the gate, or in these tests -- reads
+# a tolerance from here. The two live declarations above remain two.
+_PHASE_START_FRESHNESS_TOL = 5e-3
+
+# Matches a module-level declaration of the tolerance, so the "no third copy" scan below finds
+# real declarations rather than the many places that merely mention the name.
+_FRESHNESS_TOL_DECL = re.compile(r"^_FRESHNESS_TOL\s*=", re.MULTILINE)
+
+
 def assert_phase_start_thresholds_unchanged(cfg: dict) -> None:
     """Assert every non-baseline gate setting still equals its phase-start value.
 
-    NOT IMPLEMENTED YET (Plan 30-09 Task 2, RED). The snapshot and the comparison land in
-    the GREEN step; this stub exists so the fail-closed control below expresses the
-    pre-implementation state honestly -- the guard is reachable and does not guard.
+    Diagnostic by design: a failure names the setting, prints the snapshotted value beside the
+    current one, and states the remediation -- because the tempting response to a failing target
+    is to move the bar, and the message has to close that door at the moment it is opened.
 
     Args:
         cfg: A loaded gate config (``models.deploy_gate.load_gate_config`` shape).
+
+    Raises:
+        AssertionError: If any snapshotted setting has moved, or is missing from the config.
     """
+    node_root = cfg["gate"]
+    for key, expected in PHASE_START_GATE_SETTINGS.items():
+        node: object = node_root
+        for part in key.split("."):
+            assert isinstance(node, dict) and part in node, (
+                f"gate setting '{key}' is MISSING from config/gate.toml. 30-SPEC prohibition "
+                "R5: MUST NOT loosen any config/gate.toml threshold, band, or frozen value to "
+                "make a target pass -- removing a setting is a loosening. A fix-cycle must be "
+                "a candidate-side change; the only permitted lever is the one pre-registered "
+                "in backtest/group_gate_constants.py (D30-11)."
+            )
+            node = node[part]
+        assert node == expected, (
+            f"gate setting '{key}' MOVED: phase-start {expected!r} -> current {node!r}. "
+            "30-SPEC prohibition R5: MUST NOT loosen any config/gate.toml threshold, band, or "
+            "frozen value to make a target pass. If a target is failing, the fix-cycle must be "
+            "a candidate-side change -- the only permitted lever is the one pre-registered in "
+            "backtest/group_gate_constants.py (D30-11), never the judge. If this change IS "
+            "deliberate, re-read PHASE_START_GATE_SETTINGS from the new committed config in "
+            "the same commit as the config edit, with the rationale."
+        )
+
+
+def test_committed_thresholds_match_phase_start_snapshot() -> None:
+    """30-09 (T-30-39): every non-baseline gate setting is unchanged since the phase start.
+
+    The whole of Phase 30 measures candidates against config/gate.toml. This asserts the judge
+    did not move underneath them: alpha, the per-season-must-pass flag, the floor mode, the
+    calibration-in-gate flag, the holdout season list, the secondary evaluation mode and each
+    secondary band. The [baseline.*] block is excluded on purpose -- see the comment on
+    PHASE_START_GATE_SETTINGS.
+    """
+    cfg = gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
+    gate.validate_gate_config(cfg)
+    assert_phase_start_thresholds_unchanged(cfg)
+
+
+def test_freshness_tolerance_parity() -> None:
+    """30-09 (T-30-40): the freshness tolerance is declared twice, agrees, and has not widened.
+
+    ``_FRESHNESS_TOL`` is the recomputation band ``_drift_tripwire`` uses to decide whether a
+    re-score of the deployed incumbents still reproduces the frozen [baseline.*] block. It is
+    declared independently in TWO places -- ``scripts/promote_models.py`` (the gate-time abort)
+    and ``tests/integration/test_promote_models.py`` (the committed freshness test). Two
+    independent declarations of the same tolerance can drift silently, and a drifted test-side
+    copy is the dangerous direction: a stale baseline would pass its own freshness check while
+    the gate aborted on it -- or, if both were loosened, a baseline measured on gold that no
+    longer exists would sail through both.
+
+    Three assertions, because there are three ways this goes wrong:
+      1. the two declarations DISAGREE -- IMPORTED through their modules and compared, never
+         re-declared here;
+      2. the shared value has WIDENED since the phase start (SPEC R5: no new tolerance is
+         introduced in this phase);
+      3. a THIRD declaration appears somewhere in the tree -- the source scan is what makes
+         "no new tolerance anywhere" checkable rather than a promise.
+
+    The constant's own comment names the places that must agree; this asserts the agreement
+    instead of trusting the comment.
+    """
+    from scripts.promote_models import _FRESHNESS_TOL as promote_tol
+    from tests.integration.test_promote_models import _FRESHNESS_TOL as test_tol
+
+    assert promote_tol == test_tol, (
+        f"the freshness tolerance DIVERGED: scripts/promote_models.py declares {promote_tol} "
+        f"but tests/integration/test_promote_models.py declares {test_tol}. The gate-time drift "
+        "abort and the committed freshness test would then disagree about whether the frozen "
+        "baseline still describes the deployed artifacts. Bring the two back into step; do not "
+        "pick whichever is more permissive."
+    )
+    assert promote_tol == _PHASE_START_FRESHNESS_TOL, (
+        f"the freshness tolerance MOVED: phase-start {_PHASE_START_FRESHNESS_TOL} -> current "
+        f"{promote_tol}. 30-SPEC R5: no new tolerance is introduced in this phase, and a widened "
+        "recomputation band would let a baseline measured on different gold pass the drift "
+        "tripwire. A fix-cycle must be a candidate-side change."
+    )
+
+    declarations = tuple(
+        sorted(
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in REPO_ROOT.rglob("*.py")
+            if ".venv" not in path.parts
+            and _FRESHNESS_TOL_DECL.search(path.read_text(encoding="utf-8"))
+        )
+    )
+    assert declarations == _FRESHNESS_TOL_SITES, (
+        f"the freshness tolerance is declared in {list(declarations)}, expected exactly "
+        f"{list(_FRESHNESS_TOL_SITES)}. SPEC R5 forbids introducing a new tolerance in this "
+        "phase; a third copy is one more thing that can drift silently. Import one of the two "
+        "existing declarations instead of adding another."
+    )
 
 
 def test_threshold_snapshot_catches_a_widened_band() -> None:
