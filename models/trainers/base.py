@@ -64,11 +64,25 @@ from utils import get_logger
 #
 # WHY THE BACKTEST IDENTITY IS PER-RUN AND NOT PER-PHASE. The backtest is run repeatedly: three
 # engine runs in the canonical PIPELINE sequence alone (``--blend`` runs the engine twice --
-# blended, then the unblended baseline) plus every execution of the anchor test. A static tag
-# would make run 1 genuine and every later run a resume at budget: the same vacuity with a newer
-# date on it.
+# blended, then the unblended baseline) plus every execution of the anchor test. A per-phase
+# identity would make run 1 genuine and every later run a resume at budget: the same vacuity
+# with a newer date on it.
 #
-# WHAT THE PER-RUN CHOICE COSTS, stated rather than left to be discovered. The study name carries
+# WHERE THE RUN ID GOES, AND WHY IT IS NOT IN THE STUDY NAME. The run id lives in the STORAGE
+# PATH; the study NAME is the constant ``BACKTEST_TUNING_STUDY_TAG`` below. Both placements
+# defeat cross-run vacuity equally -- a fresh run gets empty storage either way, so the stored
+# trial count is 0 and the search genuinely runs. Only the storage placement ALSO keeps the
+# search REPRODUCIBLE, because ``optuna.pruners.HyperbandPruner._get_bracket_id`` brackets each
+# trial by a crc32 of the STUDY NAME (see that constant's own note for the citation and the
+# arithmetic). Plan 30-16 first put the run id in the NAME and measured the consequence rather
+# than assuming it: two runs of the identical anchor command came out 3.51e-3 apart on WP pooled
+# accuracy -- 70% of the 5e-3 anchor band -- and five runs selected THREE different WP penalties.
+# The owner ruled the split on 2026-08-24. Dropping or reconfiguring the pruner was considered
+# and REJECTED: the backtest is a DIAGNOSTIC of the production models and the Stage-2 search runs
+# under HyperbandPruner, so a backtest that searched without it would measure something
+# production does not do.
+#
+# WHAT THE PER-RUN CHOICE COSTS, stated rather than left to be discovered. The storage carries
 # the RUN, not the holdout season, so within one run the EARLIEST holdout season fills the study
 # and the later ones resume it and add zero. Every fold of a run therefore trains under
 # parameters searched on the earliest fold's train+hp_val window. Because holdout seasons are
@@ -114,19 +128,41 @@ TUNING_STUDY_TAG: str = "p30s2"
 # be is any path under ``data/``; tests/unit/test_promote_models_tuned_path.py asserts that.
 TUNING_STORAGE_DIR: Path = Path("outputs/optuna")
 
-# The PER-RUN backtest identity (Plan 30-16, D30-OWNER-02). The tag is a PREFIX: the resolved
-# tag is ``{prefix}_{run_id}`` and ``BacktestEngine`` mints a fresh run id per INSTANCE, so the
-# two engine runs inside one ``--blend`` invocation cannot share a search.
+# The backtest study tag (Plan 30-16, D30-OWNER-02, as amended by the owner's 2026-08-24 ruling
+# on the Task 3 halt). It is CONSTANT across runs. What varies per run is the STORAGE DIRECTORY
+# below, not this name.
 #
-# What this prefix must never be: ``v1`` (the v2.0 identity -- reusing it guarantees a vacuous
+# THIS LITERAL'S VALUE IS LOAD-BEARING. It is not a cosmetic label, and it must NOT be bumped the
+# way ``TUNING_STUDY_TAG`` above is deliberately bumped per phase.
+# ``optuna.pruners.HyperbandPruner._get_bracket_id``
+# (``optuna/pruners/_hyperband.py:255-258``, verified against the installed library) assigns each
+# trial to a Hyperband bracket by taking the CRC32 of the study name joined to the trial number
+# by an underscore, modulo the pruner's total trial allocation budget. So the study NAME decides
+# which trials get PRUNED. Change this string and a different set of
+# trials is pruned, the search returns different hyperparameters, and the v2.1 AUDIT-REPORT
+# anchors that tests/integration/test_diag_diagnosis.py pins to 5e-3 MOVE -- silently, because
+# nothing else would fail. Measured, not theorised: with the run id in the study name (this
+# plan's first attempt) two runs of the identical anchor command differed by 3.51e-3 on WP
+# pooled accuracy, 70% of the anchor band, and five runs chose three different WP penalties.
+# The control -- constant name, separate storage -- returned byte-identical best parameters.
+# tests/unit/test_backtest_tuning_identity.py asserts this EXACT string, so a rename fails
+# loudly instead of drifting the anchors under a green suite.
+#
+# If it must ever change, that change is a RE-RATIFICATION, not a rename: re-measure the anchors
+# TWICE, confirm the two readings agree, and move them with the drift recorded (IN-03).
+#
+# What this tag must never be: ``v1`` (the v2.0 identity -- reusing it guarantees a vacuous
 # resume) or ``TUNING_STUDY_TAG`` (the Stage-2 identity -- a diagnostic backtest would then eat
 # the binding candidate search's trial budget).
-BACKTEST_TUNING_STUDY_TAG_PREFIX: str = "p30bt"
+BACKTEST_TUNING_STUDY_TAG: str = "p30bt"
 
-# Where the per-run backtest study files live: ``outputs/optuna/backtest/{run_id}/``. The same
-# T-30-14 constraint the Stage-2 storage carries -- NEVER under ``data/`` -- because OptunaTuner
-# defaults its storage to ``data/optuna`` and this phase forbids writes there. The per-run
-# subdirectory also keeps the tuning provenance record beside the studies it describes.
+# Where the per-run backtest study files live: ``outputs/optuna/backtest/{run_id}/``. The
+# per-run SUBDIRECTORY is what carries the run id, and it is the whole anti-vacuity property:
+# a fresh run resolves a directory that does not exist yet, so the stored trial count is 0 and
+# the search actually runs. The same T-30-14 constraint the Stage-2 storage carries applies --
+# NEVER under ``data/`` -- because OptunaTuner defaults its storage to ``data/optuna`` and this
+# phase forbids writes there. The per-run subdirectory also keeps the tuning provenance record
+# beside the studies it describes.
 BACKTEST_TUNING_STORAGE_DIR: Path = Path("outputs/optuna/backtest")
 
 
@@ -296,31 +332,39 @@ class BaseTrainer(ABC):
         self.require_fresh_search = True
 
     def use_backtest_tuning(self, run_id: str) -> None:
-        """Opt this trainer into the PER-RUN backtest study identity (Plan 30-16).
+        """Opt this trainer into the PER-RUN backtest study storage (Plan 30-16).
 
         Called by ``BacktestEngine._create_trainer`` for every trainer it builds -- every
         target, every holdout season -- so the identity cannot be forgotten for one of them.
-        After this call the trainer searches a study named for THIS engine run, stored under
-        ``outputs/optuna/backtest/{run_id}/``, so no backtest run can ever inherit another
-        run's stored parameters. That is the defect D30-DEFER-01 recorded and D30-OWNER-02
-        ruled must be fixed.
+        After this call the trainer searches under ``outputs/optuna/backtest/{run_id}/``, a
+        directory no earlier run has written, so no backtest run can inherit another run's
+        stored parameters. That is the defect D30-DEFER-01 recorded and D30-OWNER-02 ruled must
+        be fixed.
+
+        THE STUDY NAME IS CONSTANT, AND ONLY THE STORAGE IS PER RUN. Putting the run id in the
+        NAME would defeat vacuity just as well and would ALSO break reproducibility, because
+        ``HyperbandPruner`` brackets trials by a crc32 of the study name -- see the
+        ``BACKTEST_TUNING_STUDY_TAG`` note above for the citation and the measured consequence.
+        The owner ruled this split on 2026-08-24 after Plan 30-16 measured two anchor readings
+        3.51e-3 apart under per-run naming.
 
         WHY THE FRESHNESS GUARD IS DELIBERATELY LEFT DISARMED. ``require_fresh_search`` raises
         when a search adds zero trials. Within ONE engine run that is the normal, correct case
-        for every holdout season after the first: the study name carries the run and not the
-        season, so the earliest season fills it and the later ones resume it. Arming the guard
-        here would make every multi-season backtest raise on its second fold. The property that
-        replaces the guard is the per-run identity itself -- cross-run vacuity is impossible by
-        construction, and within-run reuse is stated here, recorded in the run's tuning
+        for every holdout season after the first: the storage carries the run and not the
+        season, so the earliest season fills the study and the later ones resume it. Arming the
+        guard here would make every multi-season backtest raise on its second fold. The property
+        that replaces the guard is the per-run storage itself -- cross-run vacuity is impossible
+        by construction, and within-run reuse is stated here, recorded in the run's tuning
         provenance file, and made temporally safe by the engine's ascending-holdout hard
         failure.
 
         Args:
             run_id: The engine instance's unique run id. Must be unique per BacktestEngine
                 instance, not merely per second -- ``run_backtest(blend=True)`` constructs two
-                engines in immediate succession.
+                engines in immediate succession, and a colliding id would make them share one
+                storage directory.
         """
-        self.tuning_study_tag = f"{BACKTEST_TUNING_STUDY_TAG_PREFIX}_{run_id}"
+        self.tuning_study_tag = BACKTEST_TUNING_STUDY_TAG
         self.tuning_storage_dir = BACKTEST_TUNING_STORAGE_DIR / run_id
         self.require_fresh_search = False
 

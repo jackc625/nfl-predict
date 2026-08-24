@@ -16,12 +16,14 @@ Key design decisions:
 - Fresh trainer instances per season (no state leakage)
 - 2025 data filtered before processing
 - CLV computed via models/clv.py (single source of truth)
-- PER-RUN Optuna identity (Plan 30-16, D30-OWNER-02): each BacktestEngine instance mints
+- PER-RUN Optuna STORAGE (Plan 30-16, D30-OWNER-02): each BacktestEngine instance mints
   its own run id and opts every trainer it builds into it, so a "tuned" backtest genuinely
-  searches instead of resuming a study that was already at budget. Within one run the
-  earliest holdout season fills the study and the later ones reuse it, which is why
-  ascending holdout order is hard-enforced; every run writes tuning_provenance.json naming
-  the trials it actually added.
+  searches instead of resuming a study that was already at budget. The run id goes in the
+  storage PATH and the study NAME is constant -- HyperbandPruner brackets trials by a crc32
+  of the study name, so a per-run name would make the search unreproducible (see
+  models/trainers/base.BACKTEST_TUNING_STUDY_TAG). Within one run the earliest holdout
+  season fills the study and the later ones reuse it, which is why ascending holdout order
+  is hard-enforced; every run writes tuning_provenance.json naming the trials it added.
 """
 
 from __future__ import annotations
@@ -170,14 +172,16 @@ class BacktestEngine:
     def __init__(self, config: BacktestConfig | None = None) -> None:
         """Initialize the backtest engine.
 
-        Mints this instance's Optuna run id. It is per INSTANCE and not per second on
-        purpose: ``backtest.run.run_backtest(blend=True)`` constructs and runs the engine
-        TWICE (blended primary, then the unblended baseline), typically inside the same
-        clock second, and a colliding id would make the second run a resume-at-budget of
-        the first -- the exact vacuity Plan 30-16 exists to end (D30-DEFER-01,
-        D30-OWNER-02). The timestamp is kept because a human reading
-        ``outputs/optuna/backtest/`` needs to know WHEN, and the random suffix is what makes
-        it unique.
+        Mints this instance's Optuna run id, which names this run's study STORAGE
+        DIRECTORY (the study NAME itself is constant -- see
+        ``models.trainers.base.BACKTEST_TUNING_STUDY_TAG``). It is per INSTANCE and not per
+        second on purpose: ``backtest.run.run_backtest(blend=True)`` constructs and runs the
+        engine TWICE (blended primary, then the unblended baseline), typically inside the
+        same clock second, and a colliding id would put both runs in one storage directory,
+        making the second a resume-at-budget of the first -- the exact vacuity Plan 30-16
+        exists to end (D30-DEFER-01, D30-OWNER-02). The timestamp is kept because a human
+        reading ``outputs/optuna/backtest/`` needs to know WHEN, and the random suffix is
+        what makes it unique.
 
         Args:
             config: Backtest configuration. Defaults to BacktestConfig().
@@ -222,7 +226,7 @@ class BacktestEngine:
         Always creates a NEW instance to prevent state leakage between
         holdout seasons.
 
-        Every trainer is opted into THIS engine run's Optuna identity here rather than at
+        Every trainer is opted into THIS engine run's Optuna storage here rather than at
         the call site, so the identity cannot be forgotten for one target or one holdout
         season. Before Plan 30-16 the trainer kept the LEGACY identity and its "tuned"
         search resumed a study written 2026-03-31 that was already at budget: zero trials
@@ -233,7 +237,7 @@ class BacktestEngine:
             config: Temporal split configuration.
 
         Returns:
-            Fresh BaseTrainer subclass instance, opted into this run's tuning identity.
+            Fresh BaseTrainer subclass instance, opted into this run's tuning storage.
 
         Raises:
             ValueError: If target is not recognized.
@@ -309,8 +313,10 @@ class BacktestEngine:
             "per_target_trials_added": totals,
             "folds": self._tuning_provenance,
             "how_to_read_this": (
-                "trials_added > 0 means the search genuinely ran that many trials. Within ONE "
-                "run the study name carries the run and not the holdout season, so the "
+                "trials_added > 0 means the search genuinely ran that many trials. The run id "
+                "names this STORAGE DIRECTORY, not the study; the study name is constant "
+                "across runs so optuna's HyperbandPruner brackets trials identically and the "
+                "search reproduces. Neither carries the holdout season, so within ONE run the "
                 "EARLIEST season fills the study and every later season resumes it and adds "
                 "ZERO -- those zeros are expected and are stated within-run reuse, not the "
                 "cross-run resume Plan 30-16 exists to end. Ascending holdout order is what "
