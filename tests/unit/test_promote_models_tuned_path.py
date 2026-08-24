@@ -9,10 +9,11 @@ the gate prints a 2x2, and the number is wrong:
     study that already holds the full budget runs ZERO new trials while still reporting a
     full trial count. A Phase-30 "tuned" candidate would then be carrying v2.0 parameters.
     Closed by a per-phase ``TUNING_STUDY_TAG`` plus a hard RuntimeError on zero new trials.
-    The BACKTEST hit the same failure on the same mechanism and is closed separately, by a
-    PER-RUN identity with its own proofs in tests/unit/test_backtest_tuning_identity.py
-    (Plan 30-16, D30-OWNER-02). This module owns the Stage-2 identity and the invariant that
-    neither non-legacy identity is ever the default.
+    The BACKTEST hit the same failure on the same mechanism and is closed separately, by
+    per-RUN study STORAGE under a CONSTANT study name, with its own proofs in
+    tests/unit/test_backtest_tuning_identity.py (Plan 30-16, D30-OWNER-02). This module owns
+    the Stage-2 identity and the invariant that neither non-legacy identity is ever the
+    default.
   * A WRITE UNDER ``data/`` (T-30-14). ``OptunaTuner`` defaults ``storage_dir`` to
     ``data/optuna``; this phase's prohibition forbids writing under ``data/`` outside the one
     sanctioned fingerprinted rebuild, and the prohibition's own hash manifest reads through
@@ -698,18 +699,19 @@ def test_non_opted_in_trainer_keeps_the_legacy_identity_and_does_not_raise(
     IT USED TO SAY, and this is no longer the reason: that ``backtest.engine`` must keep the
     legacy identity, because a fresh study would make it search real trials and drift the
     frozen v2.1 AUDIT-REPORT anchors. The owner ruled the opposite -- D30-DEFER-01 Option 2 --
-    so the backtest now opts into its own PER-RUN identity via
-    ``BaseTrainer.use_backtest_tuning(run_id)``, and those anchors were re-ratified
-    deliberately with the drift recorded (Plan 30-16 Task 3,
-    tests/integration/test_diag_diagnosis.py).
+    so the backtest now opts into its own per-RUN study STORAGE via
+    ``BaseTrainer.use_backtest_tuning(run_id)`` -- the run id names the storage directory and
+    the study NAME stays constant, because optuna's HyperbandPruner brackets trials by a crc32
+    of that name -- and those anchors were re-ratified deliberately with the drift recorded
+    (Plan 30-16 Task 3, tests/integration/test_diag_diagnosis.py).
 
     WHAT THE INVARIANT STILL PROTECTS, and why it is still worth a test. There are now THREE
-    identities with three lifetimes: legacy (the default), per-phase (Stage 2), per-run (the
-    backtest). Making ANY non-legacy identity the default would change what every caller that
-    never opted in trains with, in one move -- ``scripts.retrain_models`` today, and whatever
-    is added tomorrow. Remediation if this goes red: keep the identities as explicit opt-ins
-    (``models.train.train_target`` and ``BacktestEngine._create_trainer``); do not move either
-    into ``BaseTrainer.__init__``.
+    identities with three lifetimes: legacy (the default), per-phase (Stage 2), per-run
+    storage (the backtest). Making ANY non-legacy identity the default would change what
+    every caller that never opted in trains with, in one move -- ``scripts.retrain_models``
+    today, and whatever is added tomorrow. Remediation if this goes red: keep the identities
+    as explicit opt-ins (``models.train.train_target`` and
+    ``BacktestEngine._create_trainer``); do not move either into ``BaseTrainer.__init__``.
     """
     legacy_dir = tmp_path / "legacy_optuna"
     monkeypatch.setattr(base_trainer, "LEGACY_TUNING_STORAGE_DIR", legacy_dir)
