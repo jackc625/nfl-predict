@@ -1,6 +1,8 @@
 """Proof the BACKTEST's tuned train genuinely searches, run-scoped and reproducible.
 
-Plan 30-16 (PROD-01), resolving D30-DEFER-01 by owner ruling D30-OWNER-02 (Option 2).
+Plan 30-16 (PROD-01), resolving D30-DEFER-01 by owner ruling D30-OWNER-02 (Option 2), as
+AMENDED by the owner's ruling on the Task 3 halt (2026-08-24): the run id lives in the study
+STORAGE PATH, and the study NAME is a constant.
 
 THE DEFECT THIS MODULE CLOSES. ``backtest/engine.py`` calls ``train_and_evaluate(...)`` with
 ``tune`` defaulting to True, but the trainer it built kept the LEGACY study identity
@@ -11,21 +13,31 @@ search ran ZERO trials, returned the STORED v2.0 parameters, and still reported
 ``TuningResult.n_trials == 100``. Every "tuned" backtest since March was a straight re-fit on
 v2.0 hyperparameters, and nothing failed and nothing logged a warning.
 
-WHY PER-RUN AND NOT PER-PHASE. The Stage-2 identity (``use_phase30_tuning``) is per PHASE,
-which is right for a search that happens once per phase and must hard-fail if repeated. The
-backtest runs repeatedly -- three engine runs in the canonical PIPELINE sequence alone
-(``--blend`` runs the engine twice: blended, then the unblended baseline) plus every execution
-of the anchor test. A static tag would make run 1 genuine and every later run a resume at
-budget: the same vacuity with a newer date on it. So the identity carries a per-INSTANCE run
-id, and the run-scoping test below is what stops the two halves of one ``--blend`` invocation
-from sharing a search.
+WHY THE RUN ID IS IN THE STORAGE PATH AND NOT IN THE STUDY NAME. Both placements make
+cross-run vacuity impossible -- a fresh run gets empty storage either way, so ``trials_before``
+is 0 and the search really runs. Only one of them ALSO keeps the search reproducible.
+``optuna.pruners.HyperbandPruner._get_bracket_id`` (``optuna/pruners/_hyperband.py:255-258``)
+assigns each trial to a Hyperband bracket by
+``binascii.crc32(f"{study.study_name}_{trial.number}") % total_budget``. A per-run study NAME
+therefore re-brackets every trial on every run: a different set of trials gets PRUNED, and the
+search stops reproducing. That was measured, not assumed -- Plan 30-16's first attempt put the
+run id in the NAME, and two production measurements of the v2.1 WP accuracy anchor came out
+3.51e-3 apart (70% of the 5e-3 anchor band), with five runs selecting THREE different WP
+penalties. The control measurement (constant name, separate storage) returned byte-identical
+best parameters. Hence: constant NAME, per-run STORAGE.
 
-WHY THE FRESHNESS GUARD IS DELIBERATELY DISARMED HERE. Within one engine run the study name
-carries the run, not the holdout season, so for target ``wp`` the season-2021 fold fills the
-study with the full budget and the 2022/2023/2024 folds resume it and add zero. Arming
+WHY NOT SIMPLY DROP THE PRUNER. Rejected by the owner. The backtest is a DIAGNOSTIC of the
+production models, and the Stage-2 candidate search runs under ``HyperbandPruner``; a backtest
+that searched without it would measure something production does not do. Reconfiguring the
+pruner would also perturb the Stage-2 search configuration used by the already-executed
+binding gate that promoted ``wp_20260824_113325``.
+
+WHY THE FRESHNESS GUARD IS DELIBERATELY DISARMED HERE. Within one engine run the storage is
+shared across holdout seasons, so for target ``wp`` the season-2021 fold fills the study with
+the full budget and the 2022/2023/2024 folds resume it and add zero. Arming
 ``require_fresh_search`` would make every multi-season backtest raise on its second fold. What
-replaces the guard is the per-RUN identity itself: no run can inherit ANOTHER run's stored
-parameters, which is the property the defect violated.
+replaces the guard is the per-RUN storage: no run can inherit ANOTHER run's stored parameters,
+which is the property the defect violated.
 
 WHY ASCENDING HOLDOUT ORDER IS LOAD-BEARING, AND THEREFORE GUARDED. The shared study is filled
 by the FIRST holdout season processed, so with ascending seasons every later fold trains under
@@ -43,6 +55,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import binascii
 import inspect
 from pathlib import Path
 from typing import Any
@@ -56,7 +69,7 @@ from backtest.engine import BacktestConfig, BacktestEngine
 from models.trainers import base as base_trainer
 from models.trainers.base import (
     BACKTEST_TUNING_STORAGE_DIR,
-    BACKTEST_TUNING_STUDY_TAG_PREFIX,
+    BACKTEST_TUNING_STUDY_TAG,
     LEGACY_TUNING_STUDY_TAG,
     TUNING_STUDY_TAG,
     BaseTrainer,
@@ -64,6 +77,14 @@ from models.trainers.base import (
 from models.tuning import OptunaTuner
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# The study tag literal, written out HERE as well as in models/trainers/base.py, on purpose.
+# Its exact value is load-bearing for anchor reproducibility (see the module docstring: the
+# Hyperband bracket assignment is a crc32 of the study NAME), so a rename must fail loudly in
+# this file rather than silently drift the v2.1 AUDIT-REPORT anchors on the next backtest run.
+# This repository DOES bump tuning tags -- Plan 30-11 bumped the Stage-2 tag p30 -> p30s2 -- so
+# this is a live risk, not a hypothetical one.
+EXPECTED_BACKTEST_STUDY_TAG = "p30bt"
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +202,7 @@ def test_use_backtest_tuning_switches_identity_and_storage_and_leaves_guard_disa
 
     Arming it would raise on the SECOND holdout season of every engine run, because that
     fold legitimately resumes the study this same run created. The property that replaces the
-    guard is the per-run identity: no run inherits another run's parameters.
+    guard is the per-run STORAGE: no run inherits another run's parameters.
     """
     run_id = "20260824_120000_abc123"
     trainer = _DummyTrainer()
@@ -192,15 +213,89 @@ def test_use_backtest_tuning_switches_identity_and_storage_and_leaves_guard_disa
 
     trainer.use_backtest_tuning(run_id)
 
-    assert run_id in trainer.tuning_study_tag, (
-        f"The backtest study tag {trainer.tuning_study_tag!r} does not carry the run id; "
-        "two runs would share one study and the second would resume it at budget."
+    assert trainer.tuning_study_tag == BACKTEST_TUNING_STUDY_TAG
+    assert run_id not in trainer.tuning_study_tag, (
+        f"The backtest study tag {trainer.tuning_study_tag!r} carries the run id. A per-run "
+        "study NAME re-brackets every Hyperband trial (crc32 of the study name), which is "
+        "what made the v2.1 anchors unreproducible. The run id belongs in the STORAGE path."
+    )
+    assert run_id in Path(trainer.tuning_storage_dir).parts, (
+        f"The storage dir {trainer.tuning_storage_dir} does not carry the run id; two runs "
+        "would share one storage file and the second would resume it at budget."
     )
     assert trainer.tuning_storage_dir != base_trainer.LEGACY_TUNING_STORAGE_DIR
     assert trainer.require_fresh_search is False, (
         "use_backtest_tuning armed the freshness guard; the second holdout season of every "
         "engine run would then raise."
     )
+
+
+def test_the_backtest_study_tag_is_this_exact_string() -> None:
+    """The study tag literal is pinned, because its VALUE is load-bearing, not cosmetic.
+
+    ``HyperbandPruner._get_bracket_id`` (optuna/pruners/_hyperband.py:255-258) brackets each
+    trial by ``crc32(f"{study_name}_{trial.number}")``, so changing this string changes which
+    trials get PRUNED and therefore which hyperparameters the search returns -- which moves
+    the v2.1 AUDIT-REPORT anchors this repository pins to 5e-3. This repository DOES bump
+    tuning tags (Plan 30-11 bumped the Stage-2 tag p30 -> p30s2), so a rename here is a live
+    risk. Remediation if this goes red: do not just update the literal. Re-measure the anchors
+    in tests/integration/test_diag_diagnosis.py TWICE, confirm they agree, and re-ratify them
+    with the drift recorded -- the IN-03 convention that file already uses.
+    """
+    assert BACKTEST_TUNING_STUDY_TAG == EXPECTED_BACKTEST_STUDY_TAG, (
+        f"The backtest study tag changed from {EXPECTED_BACKTEST_STUDY_TAG!r} to "
+        f"{BACKTEST_TUNING_STUDY_TAG!r}. That silently re-brackets every Hyperband trial and "
+        "moves the anchors."
+    )
+
+    for target in ("wp", "ats", "ou"):
+        trainer = _DummyTrainer(target=target)
+        trainer.use_backtest_tuning("20260824_120000_abc123")
+        resolved = f"{trainer.target}_tuning_{trainer.tuning_study_tag}"
+        assert resolved == f"{target}_tuning_{EXPECTED_BACKTEST_STUDY_TAG}", (
+            f"Resolved backtest study name for {target} is {resolved!r}, expected "
+            f"'{target}_tuning_{EXPECTED_BACKTEST_STUDY_TAG}'."
+        )
+
+
+def test_two_different_runs_resolve_the_same_study_name_and_bracket_pattern() -> None:
+    """Different runs share a study NAME (so the pruner brackets identically) and only that.
+
+    This is the amended ruling's whole point, asserted directly against the mechanism rather
+    than against a downstream number: ``crc32(f"{study_name}_{trial.number}")`` is the
+    Hyperband bracket input, so a constant name yields a constant bracket pattern and the
+    search reproduces run over run -- while per-run STORAGE still guarantees every run
+    searches from empty.
+    """
+    run_ids = (
+        "20260824T120000_aaaaaaaa",
+        "20260824T120000_bbbbbbbb",
+        "20260901T235959_c0c0c0c0",
+    )
+
+    names = set()
+    storage_dirs = set()
+    for run_id in run_ids:
+        trainer = _DummyTrainer()
+        trainer.use_backtest_tuning(run_id)
+        names.add(f"{trainer.target}_tuning_{trainer.tuning_study_tag}")
+        storage_dirs.add(str(trainer.tuning_storage_dir))
+
+    assert len(names) == 1, (
+        f"Three runs resolved {len(names)} distinct study names ({names}). The Hyperband "
+        "bracket assignment would differ per run and the search would stop reproducing."
+    )
+    assert len(storage_dirs) == 3, (
+        f"Three runs resolved {len(storage_dirs)} distinct storage dirs ({storage_dirs}). "
+        "Runs must not share storage, or a later run resumes an earlier one at budget."
+    )
+
+    # The bracket input itself, spelled out so the mechanism is tested and not merely narrated.
+    bracket_patterns = {
+        tuple(binascii.crc32(f"{name}_{i}".encode()) % 12 for i in range(12))
+        for name in names
+    }
+    assert len(bracket_patterns) == 1
 
 
 def test_backtest_identity_differs_from_both_the_legacy_and_stage2_identities() -> None:
@@ -220,7 +315,7 @@ def test_backtest_identity_differs_from_both_the_legacy_and_stage2_identities() 
     assert name != f"ats_tuning_{TUNING_STUDY_TAG}", (
         f"Resolved backtest study name {name!r} collides with the Stage-2 identity."
     )
-    assert BACKTEST_TUNING_STUDY_TAG_PREFIX not in (
+    assert BACKTEST_TUNING_STUDY_TAG not in (
         LEGACY_TUNING_STUDY_TAG,
         TUNING_STUDY_TAG,
     )
@@ -248,14 +343,15 @@ def test_two_engines_in_one_process_carry_different_run_ids() -> None:
 
     ``backtest.run.run_backtest(blend=True)`` constructs and runs the engine TWICE (blended,
     then the unblended baseline), typically within the same second. A timestamp-only run id
-    would collide and make the second engine a resume-at-budget of the first.
+    would collide, the two engines would share a storage directory, and the second would be a
+    resume-at-budget of the first.
     """
     ids = {BacktestEngine().run_id for _ in range(8)}
     assert len(ids) == 8, f"BacktestEngine run ids collided: {ids}"
 
 
 def test_create_trainer_opts_every_trainer_into_this_runs_identity() -> None:
-    """Every trainer the engine builds -- all targets, all seasons -- carries the run id.
+    """Every trainer the engine builds -- all targets, all seasons -- carries the run storage.
 
     The opt-in lives in ``_create_trainer`` rather than at the call site precisely so it
     cannot be forgotten for one target or one holdout season.
@@ -265,8 +361,12 @@ def test_create_trainer_opts_every_trainer_into_this_runs_identity() -> None:
         split = engine._create_split_config(season)
         for target in ("wp", "ats", "ou"):
             trainer = engine._create_trainer(target, split)
-            assert engine.run_id in trainer.tuning_study_tag, (
-                f"{target}/{season}: trainer tag {trainer.tuning_study_tag!r} does not "
+            assert trainer.tuning_study_tag == BACKTEST_TUNING_STUDY_TAG, (
+                f"{target}/{season}: trainer tag {trainer.tuning_study_tag!r} is not the "
+                f"constant backtest tag {BACKTEST_TUNING_STUDY_TAG!r}."
+            )
+            assert engine.run_id in Path(trainer.tuning_storage_dir).parts, (
+                f"{target}/{season}: trainer storage {trainer.tuning_storage_dir} does not "
                 f"carry the engine run id {engine.run_id!r}."
             )
             assert trainer.tuning_study_tag != LEGACY_TUNING_STUDY_TAG
@@ -311,6 +411,50 @@ def test_a_fresh_search_records_the_trials_it_added(tmp_path: Path) -> None:
     assert trainer.last_tuning_study_name == "wp_tuning_" + trainer.tuning_study_tag
 
 
+def test_every_run_starts_from_empty_storage_so_trials_before_is_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``trials_before`` is 0 on EVERY run, not merely on the first.
+
+    This is the anti-vacuity property the whole plan exists to establish, and it is the one
+    that used to be supplied by a per-run study NAME. It is pinned rather than assumed: the
+    real ``use_backtest_tuning`` derivation is exercised (only the storage ROOT is redirected
+    into tmp_path), three runs share the SAME constant study name, and each still searches
+    from empty. If this goes red the backtest has silently gone back to resuming another run's
+    study, which is D30-DEFER-01 with a newer date on it.
+    """
+    monkeypatch.setattr(
+        base_trainer, "BACKTEST_TUNING_STORAGE_DIR", tmp_path / "optuna" / "backtest"
+    )
+    X_train, y_train = _training_frame()
+
+    seen_names = set()
+    for run_id in (
+        "20260824T120000_aaaaaaaa",
+        "20260824T120000_bbbbbbbb",
+        "20260825T000000_cccccccc",
+    ):
+        trainer = _DummyTrainer()
+        trainer.use_backtest_tuning(run_id)
+        trainer.tune_hyperparameters(X_train, y_train, n_trials=3)
+
+        assert trainer.last_tuning_trials_before == 0, (
+            f"run {run_id}: the study already held {trainer.last_tuning_trials_before} "
+            "trials before the search. A run inherited another run's storage, so its "
+            "'search' would return the other run's parameters."
+        )
+        assert trainer.last_tuning_trials_added == 3, (
+            f"run {run_id}: the search added {trainer.last_tuning_trials_added} trials, "
+            "expected the full budget of 3."
+        )
+        seen_names.add(trainer.last_tuning_study_name)
+
+    assert seen_names == {f"wp_tuning_{EXPECTED_BACKTEST_STUDY_TAG}"}, (
+        f"The three runs used {seen_names}; they must all use the one constant study name, "
+        "or the Hyperband bracket assignment differs per run."
+    )
+
+
 def test_resuming_the_study_this_run_created_returns_stored_params_without_raising(
     tmp_path: Path,
 ) -> None:
@@ -350,8 +494,9 @@ def test_two_independent_fresh_searches_return_identical_best_params(
 
     This is the property the re-ratified v2.1 anchors rest on: the anchors are now produced
     by a search that runs fresh on EVERY invocation, so an unreproducible search would make
-    them unpinnable. TPE is seeded 42 with 10 startup trials; the objective here is a
-    deterministic function of the suggested parameters.
+    them unpinnable. TPE is seeded 42 with 10 startup trials, the objective here is a
+    deterministic function of the suggested parameters, and -- since the amended ruling -- the
+    two searches share a study NAME, so ``HyperbandPruner`` brackets their trials identically.
     """
     X_train, y_train = _training_frame()
 
