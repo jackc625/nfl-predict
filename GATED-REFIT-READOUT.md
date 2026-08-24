@@ -36,7 +36,10 @@ Stage-2 non-regression gate promoted **WP** and REFUSED **ATS** and **O/U**, whi
 incumbents byte-unchanged; the gate baseline was re-frozen twice; the dynamic blend was re-checked
 against a copy and production was left alone.
 
-**Suite state at close:** 2258 passed / 7 skipped / 7 xfailed / 0 failed.
+**Suite state at close:** 2282 passed / 7 skipped / 7 xfailed / **0 failed**. It reconciles exactly
+against the 2258 / 7 / 7 / 0 state this readout was written from: `+24` are this document's own
+doc-drift guard, and the `7 xfailed` is unchanged -- which is the mechanical confirmation that the
+seven quarantines in section 10c are still open.
 
 ---
 
