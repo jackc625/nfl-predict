@@ -8,9 +8,11 @@ spreads and totals), and served from a read-only DuckDB cache by a FastAPI +
 HTMX + Tailwind v4 web app.
 
 The project is both a personal decision-support tool and a portfolio piece.
-v1.0 MVP shipped on 2026-03-28 and v2.0 (accuracy, automation, and polish)
-shipped on 2026-05-26. The current milestone, v2.1 "Trust & Reproducibility"
-(documentation, audit, and diagnosis -- not new features), is in progress.
+v1.0 MVP shipped on 2026-03-28, v2.0 (accuracy, automation, and polish) shipped
+on 2026-05-26, and v2.1 "Trust & Reproducibility" (documentation, audit, and
+diagnosis -- not new features) shipped on 2026-06-01. The current milestone,
+v3.0 "Accuracy & Profitability" (gate hardening, gated re-fits, O/U
+monetization, new signals, productization), is in progress.
 
 ---
 
@@ -63,33 +65,62 @@ schedule, adopted per-target via gating), a unified Friday orchestrator
 with retry and health gates, data-quality monitoring, the model-insights
 page, the betting dashboard, and the season-tracking page.
 
-**In progress (v2.1 Trust & Reproducibility).** A trust/audit milestone
-with NO new product features: converge on one canonical, verified,
-documented pipeline; forensically audit the data and feature engineering
-for correctness and leakage; honestly diagnose real model accuracy; and
-verify, then explain, the automation. Phases 19-22 are complete (pipeline
-consolidation, correctness audit, automation audit, accuracy diagnosis);
-Phase 23 (documentation, runbook, state-of-system) is in progress. See
-`STATE-OF-SYSTEM.md` for the trustworthy/fixed/deferred summary and
-`MODEL-DIAGNOSIS.md` for the per-target accuracy verdict.
+**Shipped (v2.1 Trust & Reproducibility, 2026-06-01).** A trust/audit
+milestone with NO new product features: converge on one canonical,
+verified, documented pipeline; forensically audit the data and feature
+engineering for correctness and leakage; honestly diagnose real model
+accuracy; and verify, then explain, the automation. Phases 19-23 are
+complete. See `STATE-OF-SYSTEM.md` for the trustworthy/fixed/deferred
+summary and `MODEL-DIAGNOSIS.md` for the per-target accuracy verdict.
+
+**In progress (v3.0 Accuracy & Profitability).** Phases 24-31: a
+significance-tested per-target deploy gate as a hard block (24), the first
+gated re-fit activation (25), the O/U CLV-to-ROI divergence diagnosis (26),
+the O/U monetization chain (27), new injury / snap / situational signals
+screened into gold (28), a budget-gated line-movement signal (29), and a
+second gated re-fit on the widened gold that measured each feature group's
+contribution before deploying anything (30). Productization (31) remains.
 
 **What is explicitly *not* in scope.** Automated bet placement (legal
 complexity -- informational only), in-game / real-time predictions,
 player props, DFS optimization, multi-user access, native mobile apps.
 None of these exist in the codebase.
 
-**What serves production now (post Phase-25 gated activation).** WP and ATS
-serve re-fit models trained on the canonical Elo gold -- they passed the
-per-target non-regression deploy gate in Phase 25 (ATS via one documented
-fix-cycle), so they were promoted through the gate (D25-18). O/U RETAINED
-the v1.0 pre-Elo model: its re-fit failed the gate and was honestly refused
-(D25-14) because the v1.0 O/U carries a stronger line-CLV edge the
-non-regression floor protects. The dynamic blend (D-19) is live for all three
-targets. The v2.0 retrain that originally failed gating (D-17) is the history
-that motivated the hardened gate; the Phase-25 activation is recorded in
+**What happened in Phase 25 (the first gated activation).** WP and ATS were
+re-fit on the canonical Elo gold and passed the per-target non-regression
+deploy gate (ATS via one documented fix-cycle), so they were promoted
+through the gate (D25-18). O/U RETAINED the v1.0 pre-Elo model: its re-fit
+failed the gate and was honestly refused (D25-14) because the v1.0 O/U
+carries a stronger line-CLV edge the non-regression floor protects. The
+v2.0 retrain that originally failed gating (D-17) is the history that
+motivated the hardened gate; the Phase-25 activation is recorded in
 `ACTIVATION-READOUT.md` (per-target CLV before/after + the deployed/retained
-2x2). See also "Current Limitations" and `MODEL-DIAGNOSIS.md`, the frozen v2.1
-diagnosis that recommended this gated re-fit.
+2x2).
+
+**What serves production now (post Phase-30 gated re-fit).** Phase 30 rebuilt
+gold in four separately-attributed rungs, measured each new feature group's
+contribution against a rule frozen before any number existed, then ran the
+same per-target gate again:
+
+| Target | Serving | Phase-30 gate outcome |
+|--------|---------|-----------------------|
+| WP | `wp_20260824_113325` | PASSED -- promoted (the phase's one production change) |
+| ATS | `ats_20260605_220128` | REFUSED -- the Phase-25 re-fit is RETAINED |
+| O/U | `ou_20260326_163930` | REFUSED -- the v1.0 pre-Elo model is RETAINED |
+| blend | `blend_dynamic_20260606_020635` | not gated here -- unchanged |
+
+The dynamic blend (D-19) is live for all three targets. Two refusals out of
+three is the gate working as designed, in the same D25-14 lineage: both
+candidates measured worse than what was already serving, and the frozen gate
+said so before either could ship. A refusal is a RESULT, and the numbers
+behind both refusals are published in the same shape as the promotion's. On
+feature groups: `snap` and `situational` were KEPT and `injury` was DROPPED
+after measurably hurting a target -- these were screened in Phase 28 and only
+BINDINGLY ruled on in Phase 30, so a group reaching gold is not a group that
+was deployed. The full record, including what the phase deliberately left
+open, is `GATED-REFIT-READOUT.md`. See also "Current Limitations" and
+`MODEL-DIAGNOSIS.md`, the frozen v2.1 diagnosis that recommended the first
+gated re-fit.
 
 ---
 
@@ -140,8 +171,13 @@ ATS / O/U blended linearly in point space. Weights tuned strictly on
 **pre-2018 seasons** (`TUNING_SEASONS` in `models/blending_data.py`) —
 temporally disjoint from the 2021-2024 backtest window.
 `DynamicBlendWeights` (Phase 13) adds a per-target sigmoid schedule in
-week-of-season with per-target gating; implemented in code, ready to
-activate when the next retrain clears gating.
+week-of-season with per-target gating; it is live for all three targets
+(`blend_dynamic_20260606_020635`). Phase 30 re-ran the blend comparison
+against the newly serving models, in a throwaway copy of the artifacts
+tree, and recorded that the gating outcome would now prefer static for WP
+and ATS -- by margins of 1.3e-4 and 2.8e-5, which reads as
+indistinguishable rather than harmful. That finding was recorded and NOT
+acted on; changing the blend is a separate gated decision.
 
 ### Walk-forward backtesting
 Expanding-window walk-forward over 2021-2024, per-season retraining.
@@ -292,11 +328,15 @@ any prediction is reproducible given the same input snapshot.
 
 `models/prediction_pipeline.py` imports *only* `load_model_artifact` — no
 trainer classes on the prediction path. The manifest at `artifacts/latest.json`
-points at the production versions; after the Phase-25 gated activation those are
+points at the production versions. After the Phase-25 gated activation those were
 `wp_20260605_215552` (re-fit, activated), `ats_20260605_220128` (re-fit, activated
 via fix-cycle), `ou_20260326_163930` (v1.0, retained -- gate refused the re-fit),
-and `blend_dynamic_20260606_020635`. The per-target before/after and the pre-swap
-mapping are in `ACTIVATION-READOUT.md`.
+and `blend_dynamic_20260606_020635`; that record is `ACTIVATION-READOUT.md`.
+After the Phase-30 gated re-fit exactly one key moved: WP is now
+`wp_20260824_113325`. ATS, O/U and the blend pointer are unchanged, because the
+Phase-30 ATS and O/U candidates were REFUSED by the gate and their incumbents
+retained. The per-target before/after and both pre-swap mappings are in
+`ACTIVATION-READOUT.md` and `GATED-REFIT-READOUT.md`.
 
 ---
 
@@ -341,7 +381,7 @@ altered search behaviour enough to drift results.
 |-------|----------|-------|-----------|
 | Bronze | `data/bronze/` | Parquet | Append-only timestamped raw snapshots |
 | Silver | `data/silver/` | Parquet (Hive-partitioned) | Schema-validated, latest-wins upsert |
-| Gold | `data/gold/` | Parquet (one file per target) | Feature matrices ready for training |
+| Gold | `data/gold/` | Parquet (one file per target) | Feature matrices ready for training -- 194 / 195 / 194 columns (wp / ats / ou) over 6,499 rows spanning 2002-2025 after the Phase-30 rebuild |
 | Web cache | `data/web_cache.duckdb` | DuckDB (~6 MB) | Read-only, API-facing |
 | Analytics DB | `data/nfl_predictions.duckdb` | DuckDB (~37 MB) | Ad-hoc SQL and notebooks |
 
@@ -507,10 +547,10 @@ nfl-predict/
     build_*.py, populate_cache.py, validate_*.py
 
   tests/
-    unit/        # 45 files: trainers, builders, leakage, Elo, quality gates, ...
-    integration/ # 16 files: end-to-end pipeline, idempotency, smoke tests
-    api/         #  9 files including UIAP-01 import guard
-    ui/          # HTML snapshot tests via BeautifulSoup
+    unit/        # trainers, builders, leakage, Elo, quality gates, doc guards
+    integration/ # end-to-end pipeline, idempotency, promote/rollback, smoke tests
+    api/         # pages, fragments, exports, health, UIAP-01 import guard
+    phase30_state.py  # the tracked home for Phase-30 constants (see the readout)
 
   utils/                   # Cross-cutting
     team_data.py           #   32 teams; normalize_team_abbreviation (hard-fail)
@@ -538,17 +578,31 @@ nfl-predict/
 
 ## Testing
 
+File counts below are a point-in-time reading taken 2026-08-24, at the close
+of Phase 30; they are not pinned by a test, because a guard on a growing
+count turns red on every new test file for no correctness reason.
+
 | Suite | File count | What it covers |
 |-------|-----------:|----------------|
-| `tests/unit/` | 45 | Trainers, feature builders, leakage gate, Elo correctness + no-leakage, quality gates, temporal splits, CLV, static + dynamic blending, Optuna tuning, timezone handling, pipeline health + orchestrator + staleness + alerts + execution log, betting simulation, QB tracking, opponent adjustment, backtest engine + metrics + report |
-| `tests/integration/` | 16 | End-to-end pipeline, backtest comparison + report, data completeness, Elo convergence, idempotency, lift validation, nflreadpy + Open-Meteo smoke tests, Phase 15 integration, prediction pipeline, scheduling setup, training pipeline |
-| `tests/api/` | 9 | Pages, fragments, exports, cache headers, caching, connection management, error responses, health endpoint, **UIAP-01 import guard** |
+| `tests/unit/` | 95 | Trainers, feature builders, leakage gate, Elo correctness + no-leakage, quality gates, temporal splits, CLV, static + dynamic blending, Optuna tuning, timezone handling, pipeline health + orchestrator + staleness + alerts + execution log, betting simulation, QB tracking, opponent adjustment, backtest engine + metrics + report, the feature-group gate, and the committed content guards for every repo-root document |
+| `tests/integration/` | 37 | End-to-end pipeline, backtest comparison + report, data completeness, Elo convergence, idempotency, lift validation, nflreadpy + Open-Meteo smoke tests, prediction pipeline, scheduling setup, training pipeline, the promotion/rollback paths, and the Phase-30 rebuild controls |
+| `tests/api/` | 14 | Pages, fragments, exports, cache headers, caching, connection management, error responses, health endpoint, **UIAP-01 import guard** |
 
-Seven test files use Hypothesis for property-based testing (betting
-simulation, blending data, blend tuning, baseline capture, backtest
-comparison + report, market blending, health endpoint). Run the full
-suite with `make test` (= `uv run pytest tests/unit tests/integration
-tests/api -q`); for a faster loop, `uv run pytest tests/unit -q`.
+The full suite runs green with **0 failed**. The passing count is not quoted
+here, because it moves every time a guard is added and a stale count in the
+front door is exactly the drift these guards exist to prevent. The number that
+IS worth reading is the **7 `xfail`s**: those are deliberate quarantines --
+published anchors awaiting a re-ratification Phase 30 did not perform -- and
+that count is the mechanical proof those seven items are still open, not a
+count of broken tests. See `GATED-REFIT-READOUT.md` for what each one is
+waiting on.
+
+Property-based testing with Hypothesis is used in one file today
+(`tests/unit/test_market_blending.py`). An earlier version of this README
+claimed seven; that count did not survive the suite's growth and is
+corrected here rather than carried. Run the full suite with `make test`
+(= `uv run pytest tests/unit tests/integration tests/api -q`); for a faster
+loop, `uv run pytest tests/unit -q`.
 
 ---
 
@@ -578,28 +632,44 @@ the architecture is kept deployment-friendly so that work stays small.
 
 ## Current Limitations
 
-1. **O/U still serves the v1.0 model (gated re-fit honestly refused it).**
+1. **O/U still serves the v1.0 model, refused by the gate TWICE.**
    In Phase 25, WP and ATS were re-fit on the canonical Elo gold and
    promoted through the per-target non-regression deploy gate (ATS via one
    documented fix-cycle); O/U's re-fit FAILED the gate and was retained on
    the v1.0 pre-Elo model -- a more-accurate O/U regressor predicts totals
    closer to the market, shrinking its line-CLV below the v1.0 edge the
-   non-regression floor protects (honest refusal, D25-14). The dynamic blend
-   (D-19) is live for all three targets. The earlier v2.0 retrain that
-   failed gating on every target (D-17) is the history that motivated the
-   hardened gate. See `ACTIVATION-READOUT.md` for the per-target activation
-   record and `MODEL-DIAGNOSIS.md` (DIAG-05) / `STATE-OF-SYSTEM.md` for the
-   frozen v2.1 diagnosis that recommended this re-fit.
+   non-regression floor protects (honest refusal, D25-14). Phase 30 re-ran
+   the gate on the rebuilt, widened gold and reached the same answer in the
+   same shape: the O/U candidate's point error IMPROVED (MAE -1.23) while
+   its line-CLV got substantially WORSE (-0.487 paired, p = 9.2e-12), so it
+   was refused again. The Phase-30 ATS candidate was refused too (-0.213
+   paired, p = 0.0375), leaving the Phase-25 ATS artifact serving. Only WP
+   moved. The single pre-registered fix-cycle lever went UNSPENT for both
+   failing targets, and not by oversight -- both candidates were already
+   trained on their incumbent's exact selection window, which is precisely
+   what the lever would have done. The dynamic blend (D-19) is live for all
+   three targets. The earlier v2.0 retrain that failed gating on every
+   target (D-17) is the history that motivated the hardened gate. See
+   `GATED-REFIT-READOUT.md` for the Phase-30 record (including the numbers
+   behind both refusals), `ACTIVATION-READOUT.md` for the Phase-25
+   activation, and `MODEL-DIAGNOSIS.md` (DIAG-05) / `STATE-OF-SYSTEM.md`
+   for the frozen v2.1 diagnosis that recommended the first re-fit.
 2. **Single-worker concurrency envelope.** The shared DuckDB connection
    and module-level `TTLCache` require `--workers 1`. Running multiple
    workers would invalidate those invariants. This is documented in
    the `api/main.py` module docstring and is a deliberate envelope, not
    an accidental limit.
-3. **2025 season data is partial.** 2002-2024 seasons are fully
-   ingested and exercised. 2025 Bronze / Silver captures exist but the
-   current-season pipeline has only been run in partial exercises, not
-   in anger for a full season. Backfilling 2025 into gold is a deferred
-   item -- see `AUDIT-REPORT.md` (AUDIT-05) and `STATE-OF-SYSTEM.md`.
+3. **WP ships with a negative absolute CLV, and that is not a typo.**
+   The deploy gate runs in `non_regression` mode: it asks whether a
+   candidate is not WORSE than the incumbent, not whether it is positive in
+   absolute terms. WP's pooled probability CLV after the Phase-30 promotion
+   is -0.0380 -- an improvement of +0.0061 on the incumbent (p = 0.0142),
+   and still negative. Removing closing-line-value leakage is not the same
+   thing as having a market edge, and this project keeps those two bars
+   apart deliberately rather than quoting the flattering one. The honest
+   per-target profitability verdict is Phase 31 work; the O/U clean
+   out-of-sample verdict in particular could NOT be discharged in Phase 30,
+   because its holdout is still the partially burned 2023-2024 split.
 4. **Legacy trainer modules coexist with new ones.** `models/train_wp.py`,
    `models/train_ats.py`, and `models/train_ou.py` stay because
    `prediction_pipeline.py` still imports `ResidualDistributionConverter`
@@ -628,7 +698,7 @@ uv run uvicorn api.main:app --host 0.0.0.0 --port 8000  # FastAPI at http://loca
 
 The same steps are available as the thin Makefile targets `make train`,
 `make backtest`, `make build-cache`, and `make serve` (see `PIPELINE.md`
-for the full 7-stage sequence). Run the tests with `make test` (=
+for the full 8-stage sequence). Run the tests with `make test` (=
 `uv run pytest tests/unit tests/integration tests/api -q`) or, for a
 faster loop, `uv run pytest tests/unit -q`.
 
