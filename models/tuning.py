@@ -30,6 +30,24 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 logger = get_logger(__name__)
 
 
+def count_completed_trials(study: optuna.Study) -> int:
+    """Return how many of *study*'s trials reached the ``COMPLETE`` state.
+
+    WR-08: ``len(study.trials)`` counts every trial STARTED, including ``PRUNED`` and
+    ``FAIL``. The searches in this project run under
+    ``HyperbandPruner(min_resource=1, max_resource=3, reduction_factor=3)``, whose whole
+    purpose is to prune the majority of them -- so a "trials" figure taken from the raw
+    length is a budget, not an amount of work done, and anything labelled "completed
+    trials" from it is overstating.
+
+    Kept here beside ``OptunaTuner`` so both the tuner and ``BaseTrainer`` ask the same
+    question of a study rather than each re-deriving the state filter.
+    """
+    return sum(
+        1 for trial in study.trials if trial.state == optuna.trial.TrialState.COMPLETE
+    )
+
+
 # ---------------------------------------------------------------------------
 # TuningResult dataclass
 # ---------------------------------------------------------------------------
@@ -42,7 +60,16 @@ class TuningResult:
     Attributes:
         best_params: Best hyperparameter values found.
         best_value: Best objective function value achieved.
-        n_trials: Total number of trials completed in the study.
+        n_trials: Total number of trials STARTED in the study -- ``len(study.trials)``,
+            which includes ``PRUNED`` and ``FAIL`` states. WR-08: this is a budget
+            figure, not a work figure. The search runs under
+            ``HyperbandPruner(min_resource=1, max_resource=3, reduction_factor=3)``,
+            which prunes the majority of trials, so this materially overstates how many
+            searches ran to completion. Use ``n_completed_trials`` for that.
+        n_completed_trials: Trials in the ``COMPLETE`` state -- the ones that actually
+            produced an objective value. Reported alongside rather than instead of
+            ``n_trials``: the anti-vacuity check ("did this resumed study add anything
+            at all?") is correctly a question about STARTED trials.
         param_importances: Parameter importance rankings (fANOVA-based).
             May be empty if insufficient trials for importance computation.
         study_name: Name of the Optuna study.
@@ -51,6 +78,7 @@ class TuningResult:
     best_params: dict[str, Any]
     best_value: float
     n_trials: int
+    n_completed_trials: int = 0
     param_importances: dict[str, float] = field(default_factory=dict)
     study_name: str = ""
 
@@ -160,8 +188,7 @@ class OptunaTuner:
                 "Parameter importance rankings",
                 study_name=self.study_name,
                 importances={
-                    name: round(value, 4)
-                    for name, value in sorted_importances
+                    name: round(value, 4) for name, value in sorted_importances
                 },
             )
         except (RuntimeError, ValueError, ZeroDivisionError):
@@ -175,6 +202,7 @@ class OptunaTuner:
             best_params=study.best_params,
             best_value=study.best_value,
             n_trials=len(study.trials),
+            n_completed_trials=count_completed_trials(study),
             param_importances=importances,
             study_name=self.study_name,
         )

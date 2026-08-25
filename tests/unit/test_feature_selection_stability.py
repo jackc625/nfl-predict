@@ -338,6 +338,94 @@ class TestTheSemanticsAreStatedAtTheCallSite:
         )
 
 
+class TestConstantPlusNaNIsNotInformative:
+    """WR-13: the partial case is the one the pre-filter most needs to catch.
+
+    The filter was ``X.nunique(dropna=False) > 1``, and ``dropna=False`` counts NaN as a
+    distinct level. An ALL-NaN column scored 1 and was correctly withheld; a column that
+    is a single constant on its OBSERVED rows and NaN elsewhere scored 2 and reached the
+    fit, where it perturbs ``XGBRegressor``'s ``colsample_bytree=0.8`` sampling and
+    therefore the gain importances of every real feature. That is precisely the
+    count-dependence the pre-filter exists to remove.
+
+    Latent on the shipped gold -- no such column exists in the 2018-2019 or 2015-2019
+    window -- and MORE likely than before, not less, because
+    ``handle_missing_data_and_outliers`` now deliberately leaves NaNs in place where no
+    prior fit source exists (``_impute_game_level_features``).
+    """
+
+    def test_a_constant_column_with_nulls_is_withheld(self) -> None:
+        from models.trainers.base import informative_columns
+
+        frame = pd.DataFrame(
+            {
+                "varies": [1.0, 2.0, 3.0, 4.0],
+                "constant_with_gap": [5.0, 5.0, np.nan, 5.0],
+                "all_nan": [np.nan] * 4,
+            }
+        )
+        assert informative_columns(frame) == ["varies"], (
+            "A column that is one observed value plus NaN reached the fit. It carries "
+            "nothing a model can learn from and it changes which columns each tree "
+            "samples -- the exact defect the pre-filter closes."
+        )
+
+    def test_a_column_that_varies_across_its_observed_values_is_kept(self) -> None:
+        from models.trainers.base import informative_columns
+
+        frame = pd.DataFrame({"sparse_but_varying": [1.0, np.nan, 2.0, np.nan]})
+        assert informative_columns(frame) == ["sparse_but_varying"], (
+            "Missingness alone must not withhold a column that genuinely varies"
+        )
+
+    def test_a_single_observed_value_is_withheld(self) -> None:
+        from models.trainers.base import informative_columns
+
+        frame = pd.DataFrame({"one_observation": [np.nan, np.nan, 7.0, np.nan]})
+        assert informative_columns(frame) == []
+
+    def test_the_all_nan_case_is_unchanged(self) -> None:
+        """The behaviour the old parenthetical described stays correct."""
+        from models.trainers.base import informative_columns
+
+        assert informative_columns(pd.DataFrame({"dead": [np.nan] * 5})) == []
+
+    def test_duplicated_column_labels_raise_a_named_error(self) -> None:
+        """``distinct[column]`` returns a Series, and ``> 1`` raises 'truth value ambiguous'.
+
+        Raised from inside a comprehension that is a far worse diagnostic than saying so.
+        """
+        from models.trainers.base import informative_columns
+
+        frame = pd.DataFrame(
+            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], columns=["a", "a", "b"]
+        )
+        with pytest.raises(ValueError, match="duplicated column labels"):
+            informative_columns(frame)
+
+    def test_a_wholly_degenerate_frame_is_reported_not_absorbed(self, capsys) -> None:
+        """The fallback restores count-dependent selection; that must be said aloud.
+
+        Asserted on captured output rather than ``caplog`` because this project logs
+        through structlog, which writes to stdout and never reaches pytest's stdlib
+        logging handler.
+        """
+        frame = pd.DataFrame({"a": [1.0] * 40, "b": [2.0] * 40})
+        y = pd.Series(np.arange(40, dtype=float))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ATSTrainer().select_features(frame, y, max_features=2)
+
+        captured = capsys.readouterr()
+        printed = captured.out + captured.err
+        assert "No informative columns" in printed, (
+            "A frame in which nothing varies means the window is degenerate. Silently "
+            "falling back to the unfiltered frame restores the count-dependent "
+            "behaviour the pre-filter exists to remove."
+        )
+        assert "warning" in printed.lower()
+
+
 class TestThisPlanChangedTheRuleNotTheBudget:
     """The per-target feature budgets are incumbent values and are explicitly out of scope."""
 

@@ -339,3 +339,125 @@ class TestParamsSidecar:
 
         assert "params" in loaded
         assert loaded["params"] is None
+
+
+# ---------------------------------------------------------------------------
+# WR-08: the trial count must not report budget under a "completed" label
+# ---------------------------------------------------------------------------
+
+
+class TestCompletedTrialsAreCountedSeparately:
+    """``len(study.trials)`` is trials STARTED, including PRUNED and FAIL.
+
+    Every search in this project runs under
+    ``HyperbandPruner(min_resource=1, max_resource=3, reduction_factor=3)``, whose whole
+    purpose is to prune the majority of trials. ``tuning_provenance.json``'s
+    ``per_target_trials_added`` and its ``how_to_read_this`` prose ("trials_added > 0
+    means the search genuinely ran that many trials") were both reading the started count,
+    and ``GATED-REFIT-READOUT.md`` publishes a column headed "NEW completed trials" that
+    the code produced no completed count for anywhere.
+
+    The anti-vacuity check is CORRECTLY a question about started trials -- a study resumed
+    at budget starts none -- so both counts are recorded, each under its real name, rather
+    than one replacing the other.
+    """
+
+    def test_a_study_with_no_pruning_has_equal_counts(self, tmp_path: Path) -> None:
+        tuner = OptunaTuner(
+            study_name="wr08_all_complete", storage_dir=tmp_path, n_trials=5
+        )
+        result = tuner.optimize(_quadratic_objective)
+
+        assert result.n_trials == 5
+        assert result.n_completed_trials == 5
+
+    def test_pruned_and_failed_trials_are_started_but_not_completed(
+        self, tmp_path: Path
+    ) -> None:
+        """The distinction, forced: half the trials raise and are recorded as FAIL."""
+        import optuna
+
+        calls = {"n": 0}
+
+        def flaky(trial):
+            x = trial.suggest_float("x", -10, 10)
+            calls["n"] += 1
+            if calls["n"] % 2 == 0:
+                raise ValueError("deliberate trial failure")
+            return (x - 3) ** 2
+
+        tuner = OptunaTuner(study_name="wr08_flaky", storage_dir=tmp_path, n_trials=6)
+        study = optuna.create_study(
+            study_name=tuner.study_name,
+            storage=tuner.storage_url,
+            direction="minimize",
+            load_if_exists=True,
+        )
+        study.optimize(flaky, n_trials=6, catch=(ValueError,))
+
+        from models.tuning import count_completed_trials
+
+        assert len(study.trials) == 6
+        assert count_completed_trials(study) == 3, (
+            "count_completed_trials must exclude non-COMPLETE states; a started count "
+            "under a 'completed' label overstates the work the search did"
+        )
+
+    def test_count_completed_trials_excludes_every_non_complete_state(self) -> None:
+        """Asserted against optuna's own state enum, not a hand-written list."""
+        import optuna
+
+        from models.tuning import count_completed_trials
+
+        class _Trial:
+            def __init__(self, state):
+                self.state = state
+
+        class _Study:
+            def __init__(self, states):
+                self.trials = [_Trial(s) for s in states]
+
+        states = [
+            optuna.trial.TrialState.COMPLETE,
+            optuna.trial.TrialState.PRUNED,
+            optuna.trial.TrialState.FAIL,
+            optuna.trial.TrialState.RUNNING,
+            optuna.trial.TrialState.WAITING,
+            optuna.trial.TrialState.COMPLETE,
+        ]
+        assert count_completed_trials(_Study(states)) == 2
+
+    def test_the_dataclass_documents_n_trials_as_STARTED(self) -> None:
+        assert TuningResult.__doc__ is not None
+        assert "STARTED" in TuningResult.__doc__, (
+            "TuningResult.n_trials used to be documented as 'Total number of trials "
+            "completed in the study', which is not what len(study.trials) counts"
+        )
+        assert "n_completed_trials" in TuningResult.__doc__
+
+    def test_the_base_trainer_records_both_counts(self) -> None:
+        import inspect
+
+        from models.trainers.base import BaseTrainer
+
+        source = inspect.getsource(BaseTrainer.tune_hyperparameters)
+        assert "last_tuning_trials_added" in source
+        assert "last_tuning_completed_added" in source, (
+            "BaseTrainer records only the started count, so no consumer can report "
+            "completed trials without inventing the number"
+        )
+
+    def test_the_engine_provenance_carries_both_totals(self) -> None:
+        import inspect
+
+        from backtest.engine import BacktestEngine
+
+        source = inspect.getsource(BacktestEngine._write_tuning_provenance)
+        assert "per_target_trials_added" in source
+        assert "per_target_completed_trials_added" in source
+
+        prose = source[source.find("how_to_read_this") :]
+        assert "BUDGET figure" in prose, (
+            "how_to_read_this still claims trials_added is how many trials the search "
+            "genuinely ran; it is the number STARTED, most of which Hyperband prunes"
+        )

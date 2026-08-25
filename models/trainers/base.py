@@ -28,7 +28,7 @@ from models.temporal import (
     WalkForwardSplitter,
     make_temporal_cv_splits,
 )
-from models.tuning import OptunaTuner, TuningResult
+from models.tuning import OptunaTuner, TuningResult, count_completed_trials
 from utils import get_logger
 
 # ---------------------------------------------------------------------------
@@ -178,9 +178,29 @@ def _existing_trial_count(tuner: OptunaTuner) -> int:
     Returns:
         The stored trial count, or 0 when the study does not exist yet.
     """
+    return _stored_trial_counts(tuner)[0]
+
+
+def _existing_completed_trial_count(tuner: OptunaTuner) -> int:
+    """Return how many of the tuner's stored trials are in the ``COMPLETE`` state.
+
+    WR-08: the sibling above counts trials STARTED, which is the right question for the
+    anti-vacuity check but the wrong one for "how much searching happened". Under
+    ``HyperbandPruner`` most trials are pruned, so the two numbers differ substantially.
+    """
+    return _stored_trial_counts(tuner)[1]
+
+
+def _stored_trial_counts(tuner: OptunaTuner) -> tuple[int, int]:
+    """Return ``(started, completed)`` trial counts for the tuner's stored study.
+
+    One read of storage answers both, so the two counts can never disagree about which
+    study state they describe. A missing study file, or a storage file with no such
+    study, is ``(0, 0)`` -- the fresh case.
+    """
     db_path = tuner.storage_dir / f"{tuner.study_name}.db"
     if not db_path.exists():
-        return 0
+        return 0, 0
     try:
         study = optuna.load_study(
             study_name=tuner.study_name, storage=tuner.storage_url
@@ -188,8 +208,8 @@ def _existing_trial_count(tuner: OptunaTuner) -> int:
     except KeyError:
         # The storage file exists but holds no study by this name (the fresh-identity case,
         # e.g. right after TUNING_STUDY_TAG was bumped).
-        return 0
-    return len(study.trials)
+        return 0, 0
+    return len(study.trials), count_completed_trials(study)
 
 
 # ---------------------------------------------------------------------------
@@ -242,14 +262,48 @@ def informative_columns(X: pd.DataFrame) -> list[str]:
     constant, or entirely NaN, carries nothing a model can learn from -- but it still
     perturbs a column-sampling estimator's fit, which is the defect this exists to close.
 
+    WR-13: distinctness is counted over the OBSERVED values (``dropna=True``). The
+    original used ``dropna=False``, which counts NaN as a distinct level -- so an all-NaN
+    column scored 1 and was correctly withheld, but a column that is a single constant on
+    its observed rows and NaN elsewhere (``[5.0, 5.0, NaN, 5.0]``) scored 2 and reached
+    the fit, where it perturbs ``XGBRegressor``'s ``colsample_bytree=0.8`` sampling and
+    therefore the gain importances of every real feature. That is exactly the
+    count-dependence this pre-filter exists to remove, and the partial case is the one it
+    most needs to catch.
+
+    Measured on the shipped gold no such column exists in either the 2018-2019 or the
+    2015-2019 window, so the defect was latent and this change withholds nothing new
+    today. It becomes live the moment a late-arriving upstream source lands a
+    neutral-default column -- and ``handle_missing_data_and_outliers`` now deliberately
+    LEAVES NaNs in place where no prior fit source exists
+    (``_impute_game_level_features``), which makes partially-NaN constant columns MORE
+    likely than before, not less.
+
     Args:
         X: The frame the scoring model is about to be fitted on.
 
     Returns:
-        The subset of ``X.columns`` with more than one distinct value (NaN counted as a
-        value, so an all-NaN column is correctly treated as constant).
+        The subset of ``X.columns`` carrying more than one OBSERVED value. An all-NaN
+        column has zero observed values and is withheld; so is a column with one.
+
+    Raises:
+        ValueError: If ``X`` carries duplicated column labels. ``distinct[column]`` would
+            return a Series and the ``> 1`` comparison would raise
+            ``ValueError: truth value ambiguous`` from inside a comprehension, which is a
+            far worse diagnostic than saying so here.
     """
-    distinct = X.nunique(dropna=False)
+    if X.columns.has_duplicates:
+        duplicated = sorted({str(name) for name in X.columns[X.columns.duplicated()]})
+        msg = (
+            f"informative_columns received duplicated column labels {duplicated}; "
+            "per-column nunique is ambiguous and the zero-variance pre-filter cannot "
+            "decide what to withhold. De-duplicate the frame before selection."
+        )
+        raise ValueError(msg)
+
+    # A column that is a single OBSERVED value carries nothing a model can learn from,
+    # whether or not it is also missing somewhere.
+    distinct = X.nunique(dropna=True)
     return [column for column in X.columns if distinct[column] > 1]
 
 
@@ -312,6 +366,10 @@ class BaseTrainer(ABC):
         self.last_tuning_study_name: str | None = None
         self.last_tuning_trials_before: int | None = None
         self.last_tuning_trials_added: int | None = None
+        # WR-08: the two above count trials STARTED (len(study.trials), which includes
+        # PRUNED and FAIL). These count the ones that ran to completion.
+        self.last_tuning_completed_before: int | None = None
+        self.last_tuning_completed_added: int | None = None
 
     def use_phase30_tuning(self) -> None:
         """Opt this trainer into the PER-PHASE Stage-2 identity, storage and freshness guard.
@@ -463,6 +521,19 @@ class BaseTrainer(ABC):
         # empty frame would raise, and refusing to select at all is worse than scoring
         # the frame as it stands.
         informative = informative_columns(X)
+        if not informative:
+            # WR-13: the fallback silently restored the count-dependent behaviour it
+            # exists to remove. It is still the right disposition -- refusing to select
+            # at all is worse -- but a frame in which NOTHING varies means the window is
+            # degenerate, and that has to be said rather than absorbed.
+            self.logger.warning(
+                "No informative columns over this fit window; scoring the frame as it "
+                "stands, which restores the count-dependent selection the pre-filter "
+                "exists to remove",
+                target=self.target,
+                total_features=len(X.columns),
+                rows=len(X),
+            )
         fit_frame = X[informative] if informative else X
 
         model = self._create_model(self._get_default_params())
@@ -602,8 +673,11 @@ class BaseTrainer(ABC):
             n_trials=n_trials,
         )
 
-        # Read the stored trial count BEFORE the search so a vacuous resume is detectable.
-        trials_before = _existing_trial_count(tuner)
+        # Read the stored trial counts BEFORE the search so a vacuous resume is detectable.
+        # Both are read: STARTED answers "did this search add anything at all", which is the
+        # anti-vacuity question; COMPLETED answers "how much searching actually happened",
+        # which is what a reader assumes a "trials" figure means (WR-08).
+        trials_before, completed_before = _stored_trial_counts(tuner)
 
         objective = self._make_objective(X_train, y_train, cv_splits)
         result = tuner.optimize(objective)
@@ -613,13 +687,23 @@ class BaseTrainer(ABC):
         # candidate is indistinguishable from a tuned one in every downstream artifact.
         trials_added = result.n_trials - trials_before
 
+        # WR-08: trials_added counts trials STARTED, which is what the anti-vacuity check
+        # below needs -- a study resumed at budget starts none. It is NOT the number of
+        # searches that ran to completion: HyperbandPruner prunes the majority, and
+        # `tuning_provenance.json` and GATED-REFIT-READOUT's "NEW completed trials" column
+        # were both reading a started count under a completed label. Both are recorded now,
+        # each under its real name.
+        completed_added = result.n_completed_trials - completed_before
+
         # Keep what the search DID where a caller can read it after train_and_evaluate returns.
-        # backtest.engine reads these three per (target, holdout season) to write its tuning
+        # backtest.engine reads these per (target, holdout season) to write its tuning
         # provenance record, which is what makes "this run genuinely searched" checkable by a
         # reader rather than asserted by a plan (Plan 30-16, T-30-63).
         self.last_tuning_study_name = study_name
         self.last_tuning_trials_before = trials_before
         self.last_tuning_trials_added = trials_added
+        self.last_tuning_completed_before = completed_before
+        self.last_tuning_completed_added = completed_added
 
         if self.require_fresh_search and trials_added <= 0:
             msg = (
@@ -643,8 +727,10 @@ class BaseTrainer(ABC):
             target=self.target,
             best_value=result.best_value,
             best_params=best_params,
-            n_trials=result.n_trials,
-            trials_added=trials_added,
+            n_trials_started=result.n_trials,
+            n_trials_completed=result.n_completed_trials,
+            trials_started_added=trials_added,
+            trials_completed_added=completed_added,
             study_name=study_name,
             storage_dir=str(self.tuning_storage_dir),
             top_importances=dict(list(result.param_importances.items())[:5]),

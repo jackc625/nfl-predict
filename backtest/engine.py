@@ -299,10 +299,17 @@ class BacktestEngine:
             return None
 
         totals: dict[str, int] = {}
+        completed_totals: dict[str, int] = {}
         for row in self._tuning_provenance:
             added = row["trials_added"]
             totals[row["target"]] = totals.get(row["target"], 0) + (
                 int(added) if added is not None else 0
+            )
+            # WR-08: summed separately so the record carries both the budget figure and
+            # the work-done figure, neither standing in for the other.
+            completed = row["completed_added"]
+            completed_totals[row["target"]] = completed_totals.get(row["target"], 0) + (
+                int(completed) if completed is not None else 0
             )
 
         record = {
@@ -311,9 +318,17 @@ class BacktestEngine:
             "holdout_seasons": list(self.config.holdout_seasons),
             "targets": list(self.config.targets),
             "per_target_trials_added": totals,
+            "per_target_completed_trials_added": completed_totals,
             "folds": self._tuning_provenance,
             "how_to_read_this": (
-                "trials_added > 0 means the search genuinely ran that many trials. The run id "
+                "trials_added > 0 means the search genuinely STARTED that many trials, and "
+                "that is the anti-vacuity signal: a study resumed at budget starts none. It "
+                "is NOT how much searching ran to completion -- the search uses "
+                "HyperbandPruner(min_resource=1, max_resource=3, reduction_factor=3), whose "
+                "purpose is to prune the majority, so trials_added is a BUDGET figure. "
+                "completed_added is the number that reached optuna's COMPLETE state and "
+                "produced an objective value; it is the smaller number and the honest one to "
+                "quote as work done (WR-08). The run id "
                 "names this STORAGE DIRECTORY, not the study; the study name is constant "
                 "across runs so optuna's HyperbandPruner brackets trials identically and the "
                 "search reproduces. Neither carries the holdout season, so within ONE run the "
@@ -335,6 +350,7 @@ class BacktestEngine:
             "Tuning provenance written",
             path=str(out_path),
             per_target_trials_added=totals,
+            per_target_completed_trials_added=completed_totals,
         )
         return out_path
 
@@ -478,6 +494,12 @@ class BacktestEngine:
                         "study_name": trainer.last_tuning_study_name,
                         "trials_before": trainer.last_tuning_trials_before,
                         "trials_added": trainer.last_tuning_trials_added,
+                        # WR-08: the two above count trials STARTED. Under
+                        # HyperbandPruner most are pruned, so a started count under a
+                        # "completed trials" label overstates the work done. Both are
+                        # recorded, each under its real name.
+                        "completed_before": trainer.last_tuning_completed_before,
+                        "completed_added": trainer.last_tuning_completed_added,
                         "tuned": trainer.last_tuning_study_name is not None,
                     }
                 )
