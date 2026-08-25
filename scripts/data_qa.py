@@ -91,19 +91,36 @@ _DUCKDB_PARQUET_CONSISTENCY_TABLES: dict[str, dict[str, str]] = {
     "games": {"layer": "silver", "key": "game_id"},
 }
 
-# A table that is absent from ONE of the two stores is not a consistency FAILURE --
-# it is a check that could not run, and it is reported as not_applicable. The tuple
-# spans both what ``load_dataframe`` raises (``DataIngestionError``, wrapping
-# ``duckdb.Error``) and what a directly-connected reader raises, so an injected
-# loader and the real one degrade the same way.
-_COPY_READ_ERRORS = (
+# A table that is ABSENT from one of the two stores is not a consistency FAILURE -- it
+# is a check that could not run, and it is reported as not_applicable.
+#
+# WR-06: that degradation must be reserved for genuine ABSENCE. This tuple used to also
+# catch ``duckdb.Error``, ``OSError``, ``ValueError``, ``KeyError`` and ``TypeError``,
+# and ``generate_quality_report`` skips ``not_applicable`` when counting -- so a locked
+# or corrupt DuckDB file, the precise failure this guard exists to detect, produced a QA
+# report with the check silently ABSENT from the totals and no fail recorded.
+# ``TypeError`` and ``KeyError`` are programming errors rather than "the table is not in
+# this store" signals, so a bug INSIDE the guard was indistinguishable from a
+# legitimately inapplicable check.
+#
+# The two names below are what "this table is not in that store" actually raises:
+# ``load_dataframe`` raises ``DataIngestionError`` for a table it cannot resolve in
+# either store, and a directly-connected or injected reader raises ``FileNotFoundError``.
+# Anything else is counted as a FAILURE by ``_COPY_READ_FAILURES``: a guard that cannot
+# run is not a guard that passed.
+_TABLE_ABSENT_ERRORS = (
     DataIngestionError,
-    duckdb.Error,
-    ValueError,
-    KeyError,
-    TypeError,
     FileNotFoundError,
+)
+
+# Everything the read or the key access can raise that is NOT an absence signal. Caught
+# so one broken table cannot abort the whole quality report, but recorded as a FAIL.
+_COPY_READ_FAILURES = (
+    duckdb.Error,
     OSError,
+    KeyError,
+    ValueError,
+    TypeError,
 )
 
 # A QA report that inlines two hundred missing ids is a report nobody reads. The
@@ -720,15 +737,31 @@ class DataQualityMonitor:
                 # "duckdb" raises ValueError -- see data/storage.py load_dataframe.
                 db_df = read(table_name, layer=layer, source="db")
                 parquet_df = read(table_name, layer=layer, source="parquet")
-            except _COPY_READ_ERRORS as e:
+                # WR-06: the key access belongs INSIDE the guarded block. Outside it, a
+                # table present in BOTH stores but missing its key column raised KeyError
+                # out of the whole quality report instead of being reported as one
+                # table's failure.
+                db_keys = set(db_df[key])
+                parquet_keys = set(parquet_df[key])
+            except _TABLE_ABSENT_ERRORS as e:
                 result["checks"][table_name] = {
                     "status": "not_applicable",
                     "message": f"could not read both copies of {layer}.{table_name}: {e}",
                 }
                 continue
+            except _COPY_READ_FAILURES as e:
+                result["checks"][table_name] = {
+                    "status": "fail",
+                    "layer": layer,
+                    "key_column": key,
+                    "message": (
+                        f"could not compare the two copies of {layer}.{table_name}: "
+                        f"{type(e).__name__}: {e}. A guard that cannot run is not a "
+                        "guard that passed."
+                    ),
+                }
+                continue
 
-            db_keys = set(db_df[key])
-            parquet_keys = set(parquet_df[key])
             only_in_parquet = sorted(parquet_keys - db_keys)
             only_in_duckdb = sorted(db_keys - parquet_keys)
             consistent = not only_in_parquet and not only_in_duckdb
@@ -761,10 +794,23 @@ class DataQualityMonitor:
                 parquet_width = len(
                     read(matrix, layer="gold", source="parquet").columns
                 )
-            except _COPY_READ_ERRORS as e:
+            except _TABLE_ABSENT_ERRORS as e:
                 result["checks"][f"{matrix}_width"] = {
                     "status": "not_applicable",
                     "message": f"could not read both copies of gold.{matrix}: {e}",
+                }
+                continue
+            except _COPY_READ_FAILURES as e:
+                # WR-06: same rule as the membership arm above. A locked or corrupt
+                # store is the failure this tripwire exists to catch, and
+                # ``generate_quality_report`` does not count not_applicable.
+                result["checks"][f"{matrix}_width"] = {
+                    "status": "fail",
+                    "message": (
+                        f"could not compare the two copies of gold.{matrix}: "
+                        f"{type(e).__name__}: {e}. A guard that cannot run is not a "
+                        "guard that passed."
+                    ),
                 }
                 continue
 

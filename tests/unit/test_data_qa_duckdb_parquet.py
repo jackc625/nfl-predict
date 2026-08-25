@@ -214,6 +214,105 @@ class TestHermeticPositiveControl:
         )
 
 
+class TestAGuardThatCannotRunIsNotAGuardThatPassed:
+    """WR-06: only genuine ABSENCE may degrade to the uncounted not_applicable status.
+
+    ``generate_quality_report`` skips ``not_applicable`` when counting
+    (``if status in ("expected_gap", "not_applicable"): continue``). The read used to be
+    wrapped in a tuple spanning ``duckdb.Error``, ``OSError``, ``ValueError``,
+    ``KeyError`` and ``TypeError`` as well as the two absence signals -- so a locked or
+    corrupt DuckDB file, the precise failure this guard exists to detect, produced a QA
+    report with the check silently missing from the totals and no fail recorded.
+    ``TypeError`` and ``KeyError`` are programming errors, so a bug inside the guard was
+    indistinguishable from a legitimately inapplicable check.
+    """
+
+    @staticmethod
+    def _raising_loader(exc: Exception):
+        def loader(table_name: str, layer: str = "silver", source: str = "auto"):
+            raise exc
+
+        return loader
+
+    def test_a_genuinely_absent_table_is_still_not_applicable(self):
+        from utils.exceptions import DataIngestionError
+
+        entry = _bare_monitor().check_duckdb_parquet_consistency(
+            loader=self._raising_loader(
+                DataIngestionError("Table games not found in DB or Parquet")
+            )
+        )["checks"]["games"]
+
+        assert entry["status"] == "not_applicable"
+
+    def test_a_missing_file_is_still_not_applicable(self):
+        entry = _bare_monitor().check_duckdb_parquet_consistency(
+            loader=self._raising_loader(FileNotFoundError("games.parquet"))
+        )["checks"]["games"]
+
+        assert entry["status"] == "not_applicable"
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            duckdb.Error("database is locked"),
+            OSError("permission denied"),
+            ValueError("Invalid source: duckdb"),
+            KeyError("game_id"),
+            TypeError("unsupported operand"),
+        ],
+        ids=["duckdb_error", "oserror", "valueerror", "keyerror", "typeerror"],
+    )
+    def test_anything_that_is_not_absence_is_a_FAILURE(self, exc: Exception):
+        entry = _bare_monitor().check_duckdb_parquet_consistency(
+            loader=self._raising_loader(exc)
+        )["checks"]["games"]
+
+        assert entry["status"] == "fail", (
+            f"{type(exc).__name__} degraded to {entry['status']!r}. "
+            "generate_quality_report does not count not_applicable, so this check "
+            "would vanish from the totals with no failure recorded -- and a locked or "
+            "corrupt store is exactly what this guard exists to catch."
+        )
+        assert "guard that cannot run is not a guard that passed" in entry["message"]
+
+    def test_a_table_present_in_both_stores_but_missing_its_key_is_reported_not_raised(
+        self, tmp_path: Path
+    ):
+        """WR-06: the key access sat OUTSIDE the try, so this aborted the whole report."""
+        keyless = _rows(4).drop(columns=["game_id"])
+        parquet_path = tmp_path / "silver_games.parquet"
+        keyless.to_parquet(parquet_path, index=False)
+
+        def loader(table_name: str, layer: str = "silver", source: str = "auto"):
+            return pd.read_parquet(parquet_path)
+
+        result = _bare_monitor().check_duckdb_parquet_consistency(loader=loader)
+
+        entry = result["checks"]["games"]
+        assert entry["status"] == "fail"
+        assert "KeyError" in entry["message"]
+
+    def test_one_broken_table_does_not_abort_the_whole_report(self, tmp_path: Path):
+        """The gold-width arm must still run when the membership arm fails."""
+        parquet = _rows(4)
+        calls: list[tuple[str, str]] = []
+
+        def loader(table_name: str, layer: str = "silver", source: str = "auto"):
+            calls.append((table_name, layer))
+            if table_name == "games":
+                raise duckdb.Error("database is locked")
+            return parquet
+
+        result = _bare_monitor().check_duckdb_parquet_consistency(loader=loader)
+
+        assert result["checks"]["games"]["status"] == "fail"
+        for matrix in GOLD_FEATURE_MATRICES:
+            assert f"{matrix}_width" in result["checks"], (
+                "a failure on one table aborted the rest of the consistency report"
+            )
+
+
 class TestNoLockIsLeftHeld:
     """T-30-53: on Windows an unclosed handle blocks the next opener outright."""
 

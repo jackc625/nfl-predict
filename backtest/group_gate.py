@@ -72,6 +72,7 @@ from backtest.signal_lift import (
     run_signal_lift_screen,
     select_group_columns,
 )
+from utils.paths import reject_data_path
 
 __all__ = [
     "ALL_REGISTERED_GROUPS",
@@ -762,21 +763,19 @@ def _reject_data_path(path: Path) -> Path:
     Raises:
         ValueError: If the path lands under this repository's (or the current working
             directory's) ``data/`` tree.
+
+    Note:
+        WR-07: the implementation now lives in ``utils.paths.reject_data_path``, so the
+        two tools that operate directly on the gold tree
+        (``scripts/fingerprint_gold.py``, ``scripts/resync_games_duckdb.py``) enforce the
+        SAME rule rather than restating the prohibition in prose and not checking it.
+        This wrapper keeps the group-gate-specific wording and call signature.
     """
-    resolved = Path(path).expanduser().resolve()
-    for root in (_REPO_ROOT / "data", Path.cwd() / "data"):
-        try:
-            resolved.relative_to(root.resolve())
-        except ValueError:
-            continue
-        msg = (
-            f"Refusing to write the group-gate result to '{path}'. Nothing in Phase 30 writes "
-            "under data/ outside the ONE sanctioned, fingerprinted gold rebuild (SPEC R1, "
-            "T-30-14), and this harness only reads gold. Write the result under outputs/ "
-            f"instead, e.g. '{_DEFAULT_OUTPUT_PATH.as_posix()}'."
-        )
-        raise ValueError(msg)
-    return resolved
+    return reject_data_path(
+        path,
+        what="the group-gate result",
+        suggestion=_DEFAULT_OUTPUT_PATH.as_posix(),
+    )
 
 
 def _jsonable(result: dict[str, Any]) -> dict[str, Any]:

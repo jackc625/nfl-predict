@@ -11,8 +11,10 @@ BEFORE a rebuild, run it again AFTER, then ``--compare BEFORE AFTER`` to get the
 exact list of columns that moved and the seasons in which each moved.
 
 It is strictly read-only with respect to ``data/`` -- the JSON output must be
-written somewhere else (the quick task keeps it under the phase's gitignored
-``artifacts/`` directory).
+written somewhere else, and that is ENFORCED rather than merely asserted:
+``--out`` is checked through ``utils.paths.reject_data_path`` before any gold is
+read (WR-07). Phase 30 keeps its documents under the gitignored
+``outputs/fingerprints/`` directory.
 """
 
 import argparse
@@ -26,6 +28,7 @@ from typing import cast
 import pandas as pd
 
 from conf.settings import get_settings
+from utils.paths import reject_data_path
 
 GOLD_MATRICES = ("features_wp", "features_ats", "features_ou")
 
@@ -1130,6 +1133,19 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     """CLI entry point for gold fingerprinting."""
     args = build_parser().parse_args()
+
+    # WR-07: this module's docstring says it "is strictly read-only with respect to
+    # data/ -- the JSON output must be written somewhere else", and nothing enforced it:
+    # --out accepted any path, and main() mkdir'd the parent and wrote. The house guard
+    # runs FIRST, before any gold is read or hashed, for the reason
+    # backtest.group_gate._reject_data_path states -- a refusal that arrives after the
+    # work is a refusal nobody can afford to trust.
+    if args.out is not None:
+        args.out = reject_data_path(
+            args.out,
+            what="the fingerprint document",
+            suggestion="outputs/fingerprints/",
+        )
 
     if args.attribute_rung is not None:
         if not args.compare:

@@ -59,6 +59,7 @@ import pandas as pd
 from conf.settings import get_settings
 from data.storage import load_dataframe, save_dataframe
 from scripts.fingerprint_gold import GOLD_MATRICES, _column_bytes
+from utils.paths import reject_data_path
 
 # The holdout-bearing seasons SPEC R2's byte-identity clause is asserted over. A 2025 re-sync
 # may move 2025. Anything it moves in these four means a whole-frame statistic is still
@@ -224,6 +225,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _is_diverged(measured: dict[str, Any]) -> bool:
+    """True when the two copies disagree on row-set MEMBERSHIP.
+
+    Deliberately NOT ``measured["divergence"] != 0``. That field is
+    ``len(parquet) - len(database)``, an arithmetic difference in which a row surplus on
+    one side cancels a deficit on the other -- so a lake with a row REPLACED rather than
+    lost reads as agreeing, and a re-sync that left rows only in DuckDB reads as
+    succeeding. Membership is the question the re-sync actually answers (WR-05).
+    """
+    return bool(measured["only_in_parquet_count"] or measured["only_in_duckdb_count"])
+
+
 def _print_divergence(label: str, measured: dict[str, Any]) -> None:
     print(f"{label}:")
     print(
@@ -242,6 +255,17 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns the process exit code."""
     args = build_parser().parse_args(argv)
 
+    # WR-07: --out's help says "never under data/" and nothing enforced it. The guard
+    # runs BEFORE the measurement, not after: a refusal that arrives once the work is
+    # done is a refusal nobody can afford to trust
+    # (backtest.group_gate._reject_data_path).
+    if args.out is not None:
+        args.out = reject_data_path(
+            args.out,
+            what="the measured divergence JSON",
+            suggestion="outputs/",
+        )
+
     measured = measure_divergence()
     _print_divergence("silver games", measured)
 
@@ -255,12 +279,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Wrote {args.out}")
         return 0
 
-    if measured["divergence"] == 0:
+    # WR-05: MEMBERSHIP, not counts. ``divergence`` is ``len(parquet) - len(database)``,
+    # so a lake with equal row counts and DIFFERENT membership -- a row REPLACED rather
+    # than lost -- scores zero and used to be refused with a message asserting something
+    # false ("someone has already re-synced this lake"). That lake is diverged and is
+    # exactly what this script exists to repair.
+    #
+    # The sibling guard written in the same phase already argues the point:
+    # ``scripts/data_qa.check_duckdb_parquet_consistency`` says "MEMBERSHIP, NOT COUNTS.
+    # Equal row counts with DIFFERENT membership is the subtler failure and is reported as
+    # one." The two guards disagreed; they no longer do.
+    if not _is_diverged(measured):
         print(
-            "REFUSING to apply: the measured divergence is ZERO. That means someone has "
-            "already re-synced this lake, and SPEC R2's positive control now has nothing "
-            "to prove -- a control that can be satisfied by doing nothing is not a "
-            "control. The expected delta is pinned in tests/phase30_state.py as "
+            "REFUSING to apply: the two copies already agree on row-set MEMBERSHIP -- no "
+            "game_id is in one store and not the other. SPEC R2's positive control now "
+            "has nothing to prove, and a control that can be satisfied by doing nothing "
+            "is not a control. The expected delta is pinned in tests/phase30_state.py as "
             "N01_DIVERGENCE_BEFORE and cannot be re-measured after the fact.",
             file=sys.stderr,
         )
@@ -274,7 +308,10 @@ def main(argv: list[str] | None = None) -> int:
         args.out.write_text(json.dumps(result["after"], indent=2), encoding="utf-8")
         print(f"Wrote {args.out}")
 
-    return 0 if result["after"]["divergence"] == 0 else 1
+    # Same rule on the way out. Keying the exit code on the COUNT would report success on
+    # a re-sync that left rows only in DuckDB, since a row surplus there cancels a row
+    # deficit in the same arithmetic.
+    return 0 if not _is_diverged(result["after"]) else 1
 
 
 if __name__ == "__main__":
