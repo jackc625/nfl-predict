@@ -213,6 +213,11 @@ class WalkForwardSplitter:
         neutral 0.0 z-score), and they were never intended as model inputs --
         their presence here was a latent defect, closed by Plan 30-15 under
         owner ruling D30-OWNER-04. See ``utils.feature_columns``.
+
+        This exclusion is FORWARD-LOOKING: it governs what a fit run from here
+        can select, and has no reach over an artifact already on disk. The
+        retained O/U model ``ou_20260326_163930`` still lists three of the six.
+        ``utils.feature_columns`` records that residue in full.
         """
         exclude = set(self.id_cols) | {self.target_col} | display_only_columns()
         numeric_df = df.select_dtypes(include=["number"])

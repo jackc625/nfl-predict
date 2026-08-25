@@ -3,10 +3,21 @@
 ``scripts/build_features.py`` writes six un-normalized ``raw_*`` weather
 passthroughs purely so the API cache can surface a human-meaningful value
 (``api/cache.py:1250-1259`` reads ``raw_weather_severity`` and ``raw_wind_mph``).
-Each duplicates a normalized twin that IS a model feature, so they carry no
-independent signal: measured against Plan 30-03's frozen pre-Phase-30 fixture
-``tests/fixtures/gold/features_ats_pre_phase30.parquet`` all six are constant
-(``nunique == 1``) BOTH before and after the Phase-30 rebuild.
+Each duplicates a normalized twin that IS a model feature, and each is
+deliberately withheld from ``expanding_normalize`` -- so a display column reaches
+a model un-normalized and with un-neutralised nulls, beside a z-scored twin
+carrying the same measurement. That SCALE argument is the reason for the
+exclusion.
+
+It is not a constancy argument, and an earlier version of this module said it
+was. All six are constant (``nunique == 1``) on Plan 30-03's frozen pre-Phase-30
+fixture ``tests/fixtures/gold/features_ats_pre_phase30.parquet`` and NONE of them
+is constant on the rung-4 gold that shipped -- they are excluded from
+``expanding_normalize`` but not from ``handle_missing_data_and_outliers``, so
+WR-06's per-season imputation and winsorization moved them.
+``TestRealGold.test_display_columns_are_not_constant_on_live_gold`` measures that
+on LIVE gold rather than on the fixture, which is what would have caught the
+claim going stale.
 
 They were nevertheless model inputs. ``build_features`` excluded them from
 ``expanding_normalize`` only; ``models.temporal.WalkForwardSplitter._feature_cols``
@@ -31,6 +42,10 @@ The contract these tests pin:
   drift is exactly what this plan removes).
 * The fix is EXCLUSION, never fabrication: ``raw_humidity_pct`` stays NaN in
   gold.
+* The exclusion is FORWARD-LOOKING. It governs what a fit can select and has no
+  reach over an artifact already on disk, so the residue -- the retained O/U
+  model that consumes three of the six -- is pinned by name and count rather
+  than wished away.
 """
 
 from __future__ import annotations
@@ -51,6 +66,7 @@ from utils.feature_columns import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GOLD_DIR = _REPO_ROOT / "data" / "gold"
+_ARTIFACTS_DIR = _REPO_ROOT / "artifacts"
 
 # The six un-normalized weather passthroughs, restated ONCE here so a silent
 # edit to the shared constant has to argue with a test.
@@ -100,6 +116,37 @@ _RAW_HUMIDITY_NAN_ROWS = 6214
 # make this anchor stale without the claim itself being re-examined.
 _GOLD_ROWS = 6499
 _GOLD_2025_ROWS = 285
+
+# Measured on the accepted rung-4 gold, identically in all three matrices. Every one
+# is > 1, so the six are NOT constant after the Phase-30 rebuild -- which is what
+# falsified the old constancy rationale in ``utils/feature_columns.py``. They are
+# withheld from ``expanding_normalize`` but not from
+# ``handle_missing_data_and_outliers``, so WR-06's per-season prior-median imputation
+# and per-season winsorization moved them.
+#
+# Anchors, not tolerances. A legitimate weather backfill (D30-DEFER-09) moves these
+# deliberately and must re-read the module rationale while doing so.
+_LIVE_GOLD_DISPLAY_NUNIQUE = {
+    "raw_humidity_pct": 10,
+    "raw_precip_mm": 2,
+    "raw_precip_prob": 4,
+    "raw_temp_f": 15,
+    "raw_weather_severity": 4,
+    "raw_wind_mph": 10,
+}
+
+# The FORWARD-LOOKING exclusion's residue in production, recorded rather than implied.
+# ``ou_20260326_163930`` is the v1.0 pre-Elo O/U model: the Phase-30 gate refused its
+# replacement (paired -0.487007, p=9.24e-12) and RETAINED it, and it was fitted long
+# before Plan 30-15 excluded display columns from the feature set. Its saved
+# feature_list.json is what ``scripts/generate_current_week_predictions.py`` slices gold
+# by, so these three reach the model at raw scale today.
+#
+# Closing it is a re-fit that must pass the gate, not a cleanup. WP
+# (``wp_20260824_113325``) and ATS (``ats_20260605_220128``) are clean.
+_KNOWN_DEPLOYED_DISPLAY_RESIDUE = {
+    "ou_20260326_163930": ["raw_precip_mm", "raw_precip_prob", "raw_wind_mph"],
+}
 
 
 def _splitter(target_col: str = "target_wp") -> WalkForwardSplitter:
@@ -314,3 +361,127 @@ class TestRealGold:
         """Exclusion happens at the consumer; no column is dropped from gold."""
         frame = pd.read_parquet(_GOLD_DIR / f"{table}.parquet")
         assert set(frame.columns) >= DISPLAY_ONLY_COLUMNS
+
+    @pytest.mark.parametrize("table", ["features_wp", "features_ats", "features_ou"])
+    def test_display_columns_are_not_constant_on_live_gold(self, table: str) -> None:
+        """The exclusion's rationale is SCALE, and this is why it cannot be constancy.
+
+        ``utils.feature_columns`` once justified the exclusion by claiming all six
+        columns are constant both before and after the Phase-30 rebuild. The
+        "before" half is true on the frozen fixture; the "after" half is false on
+        every matrix that shipped. The columns are withheld from
+        ``expanding_normalize`` but NOT from ``handle_missing_data_and_outliers``,
+        so WR-06's per-season prior-median imputation and per-season winsorization
+        moved them.
+
+        Measuring the FIXTURE alone is what let the stale claim through, so this
+        reads LIVE gold. The anchors are exact, not tolerances: a legitimate
+        weather backfill (D30-DEFER-09) must move them deliberately.
+        """
+        frame = pd.read_parquet(_GOLD_DIR / f"{table}.parquet")
+
+        measured = {
+            name: int(frame[name].nunique()) for name in sorted(DISPLAY_ONLY_COLUMNS)
+        }
+        assert measured == _LIVE_GOLD_DISPLAY_NUNIQUE, (
+            f"{table}: display-column distributions moved. utils/feature_columns.py "
+            "argues the exclusion from SCALE (un-normalized, un-neutralised nulls), "
+            "not from constancy -- re-read that rationale before re-anchoring, and "
+            "do not restore the falsified 'all six are constant' claim."
+        )
+
+        for name, distinct in measured.items():
+            assert distinct > 1, (
+                f"{table}.{name} is constant on live gold. That is not a reason to "
+                "re-admit it to the feature set -- the exclusion is about scale -- "
+                "but it does mean this anchor and the module rationale are stale."
+            )
+
+    def test_only_raw_humidity_pct_carries_nulls_on_live_gold(self) -> None:
+        """The un-neutralised-null half of the scale argument, measured."""
+        frame = pd.read_parquet(_GOLD_DIR / "features_ats.parquet")
+        nulls = {
+            name: int(frame[name].isna().sum()) for name in sorted(DISPLAY_ONLY_COLUMNS)
+        }
+        assert nulls == {
+            "raw_humidity_pct": _RAW_HUMIDITY_NAN_ROWS,
+            "raw_precip_mm": 0,
+            "raw_precip_prob": 0,
+            "raw_temp_f": 0,
+            "raw_weather_severity": 0,
+            "raw_wind_mph": 0,
+        }
+
+
+@pytest.mark.skipif(
+    not (_ARTIFACTS_DIR / "latest.json").exists(),
+    reason=(
+        "artifacts/ is gitignored and absent on this checkout, so the deployed-artifact "
+        "residue control did not run -- a green suite here does NOT include it"
+    ),
+)
+class TestDeployedArtifactResidue:
+    """The exclusion is FORWARD-LOOKING, and the residue is recorded, not implied.
+
+    ``models.temporal.WalkForwardSplitter._feature_cols`` decides what a FIT can
+    select. It has no reach over an artifact already written. The Phase-30 gate
+    refused the O/U candidate and RETAINED ``ou_20260326_163930``, the v1.0
+    pre-Elo model, which was fitted long before Plan 30-15 and lists three of the
+    six display columns among its 25 features.
+    ``scripts/generate_current_week_predictions.py`` slices gold by that saved
+    list, so those three ARE model inputs in production right now, at raw
+    (un-normalized) scale, on values the rebuild moved from constant to varying.
+
+    That is a real gap and it is not closed by a re-fit here -- re-fitting O/U is
+    a GATE decision, and the refusal that retained this artifact is sound. What
+    was missing was any recorded statement of it. These tests are that record:
+    the residue is pinned EXACTLY, so a NEW offender fails and the known one
+    cannot quietly become permanent-by-forgetting.
+    """
+
+    @staticmethod
+    def _deployed_residue() -> dict[str, list[str]]:
+        import json
+
+        manifest = json.loads(
+            (_ARTIFACTS_DIR / "latest.json").read_text(encoding="utf-8")
+        )
+        residue: dict[str, list[str]] = {}
+        for target in ("wp", "ats", "ou"):
+            artifact = manifest[target]
+            feature_list_path = _ARTIFACTS_DIR / artifact / "feature_list.json"
+            if not feature_list_path.exists():
+                continue
+            names = json.loads(feature_list_path.read_text(encoding="utf-8"))
+            offending = sorted(set(names) & display_only_columns())
+            if offending:
+                residue[artifact] = offending
+        return residue
+
+    def test_the_deployed_residue_is_exactly_the_recorded_one(self) -> None:
+        assert self._deployed_residue() == _KNOWN_DEPLOYED_DISPLAY_RESIDUE, (
+            "The set of deployed artifacts consuming display-only columns changed. "
+            "A NEW entry means a fit selected a display column despite Plan 30-15, "
+            "or an artifact predating it was promoted -- investigate before "
+            "re-anchoring. An entry DISAPPEARING means the residue was closed by a "
+            "gate-passing re-fit, which is the intended resolution: update this "
+            "anchor and the utils/feature_columns.py note together."
+        )
+
+    def test_the_two_re_fit_targets_carry_no_residue(self) -> None:
+        """WP and ATS are clean; only the retained v1.0 O/U artifact is not."""
+        residue = self._deployed_residue()
+        assert set(residue) == {"ou_20260326_163930"}
+
+    def test_a_freshly_selected_feature_set_could_not_produce_the_residue(
+        self,
+    ) -> None:
+        """The forward-looking half: today's selector cannot pick these up.
+
+        Pins the two halves of the claim together -- the residue exists BECAUSE
+        the artifact predates the exclusion, not because the exclusion leaks.
+        """
+        frame = _synthetic_frame()
+        for name in _KNOWN_DEPLOYED_DISPLAY_RESIDUE["ou_20260326_163930"]:
+            assert name in frame.columns
+            assert name not in _splitter(target_col="target_wp")._feature_cols(frame)
