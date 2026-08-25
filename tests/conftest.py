@@ -1,5 +1,6 @@
 """Pytest configuration and fixtures for NFL Prediction System tests."""
 
+import re
 import shutil
 
 # Add project root to path
@@ -16,6 +17,85 @@ from fastapi.testclient import TestClient
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+
+# ---------------------------------------------------------------------------
+# WR-10: evidence-backed controls that did not run must be VISIBLE, not silent
+# ---------------------------------------------------------------------------
+
+# Several of this project's load-bearing controls read run records that are
+# deliberately gitignored -- fingerprint documents under ``outputs/``, the gold
+# matrices under ``data/``, the deployed artifacts under ``artifacts/`` -- or need
+# git history a shallow clone does not have. Each of those guards is individually
+# well-reasoned: a control that cannot run must not report a false verdict.
+#
+# The problem is the AGGREGATE. A suite that skips them still reports zero failures,
+# and a published "N passed / 7 skipped / 0 failed" reconciliation holds only on a
+# machine that has just run the phase. On any other checkout the skip count is
+# materially higher and several controls simply did not execute, with nothing in the
+# output saying so. This summary line says so.
+#
+# Matching is on the skip REASON text. These markers are the vocabulary the guards
+# already use; a new guard that skips for absent evidence should use one of them (or
+# add one here) rather than inventing a silent phrasing.
+_EVIDENCE_SKIP_MARKERS = (
+    "gitignored",
+    "fingerprint document",
+    "git history is unavailable",
+    "not present at",
+    "absent",
+    "not built on this checkout",
+    "not populated",
+)
+
+_SKIP_REASON_RE = re.compile(r"^Skipped: (.*)$", re.DOTALL)
+
+
+def _skip_reason(report) -> str:
+    """Return a skip report's reason text, however pytest chose to encode it."""
+    longrepr = getattr(report, "longrepr", None)
+    # The common shape is a (path, lineno, reason) tuple.
+    if isinstance(longrepr, tuple) and len(longrepr) == 3:
+        reason = str(longrepr[2])
+        match = _SKIP_REASON_RE.match(reason)
+        return match.group(1) if match else reason
+    return str(longrepr) if longrepr is not None else ""
+
+
+def is_evidence_backed_skip(reason: str) -> bool:
+    """True when *reason* says a control was skipped for want of absent EVIDENCE.
+
+    Separated from the hook so the discrimination itself is testable without running
+    a nested pytest session -- an ordinary conditional skip (a platform guard, an
+    optional dependency) must NOT be counted, or the note becomes noise and stops
+    being read.
+    """
+    lowered = reason.lower()
+    return any(marker in lowered for marker in _EVIDENCE_SKIP_MARKERS)
+
+
+def pytest_terminal_summary(terminalreporter) -> None:
+    """Report how many evidence-backed controls did NOT run on this checkout.
+
+    A green suite is not the same claim on a fresh clone as it is on the machine that
+    produced the evidence, and nothing previously distinguished the two.
+    """
+    skipped = terminalreporter.stats.get("skipped", [])
+    evidence_skips = [
+        report for report in skipped if is_evidence_backed_skip(_skip_reason(report))
+    ]
+    if not evidence_skips:
+        return
+
+    terminalreporter.write_sep("-", "evidence-backed controls")
+    terminalreporter.write_line(
+        f"NOTE: {len(evidence_skips)} of {len(skipped)} skipped test(s) are "
+        "evidence-backed controls that did NOT run on this checkout -- their "
+        "gitignored run records (outputs/, data/, artifacts/) or git history are "
+        "absent. A green suite HERE does not include them."
+    )
+    for report in evidence_skips:
+        terminalreporter.write_line(f"  did not run: {report.nodeid}")
 
 
 @pytest.fixture(scope="session")
