@@ -24,11 +24,21 @@ been written back as a 209-column file with the fifteen dropped columns present 
 entirely null, and ``check_gold_integrity`` would have failed on all-null columns
 for a reason that looks nothing like the actual cause.
 
-``replace_mode=True`` says the passed frame IS the table.  It also makes a
-rung-level re-run idempotent, which is what SPEC R1's byte-identical re-run
-acceptance needs.  ``tests/integration/test_storage_replace_mode.py`` is the
-committed proof of the storage-layer semantics; the guard here is the call-site
-half.
+``replace_mode`` says the passed frame IS the table.  It also makes a repeated
+full rebuild idempotent, which is what SPEC R1's byte-identical re-run acceptance
+needs.  ``tests/integration/test_storage_replace_mode.py`` is the committed proof
+of the storage-layer semantics; the guard here is the call-site half.
+
+It is NOT passed unconditionally, and this guard was originally written as though
+it should be.  ``save_feature_matrices`` is reachable with a season filter --
+``build_features.py --season 2025`` produces a 285-row, 2025-only matrix -- and
+replace mode writes that slice AS the gold table in BOTH stores, destroying
+2002-2024 (CR-01).  The write mode therefore follows the BUILD'S SCOPE: a full
+rebuild replaces, which is what lets it narrow the schema; a scoped build merges
+latest-wins on ``game_id``.  The assertion below pins BOTH halves -- replace mode
+must be present (or the removal never lands) and must be the scope flag rather
+than a literal (or a per-season build truncates gold).  The behavioural proof of
+both is ``tests/integration/test_gold_write_scope.py``.
 
 **2. No line-movement seam remains in this module (SPEC R3 / D29-07-01).**
 
@@ -118,7 +128,7 @@ def test_gold_write_call_has_no_partition_cols():
 
 
 class TestTheGoldWriteReplacesTheTable:
-    """``replace_mode=True`` is what makes a column REMOVAL land on disk."""
+    """``replace_mode`` on a FULL rebuild is what makes a column REMOVAL land on disk."""
 
     @staticmethod
     def _gold_save_dataframe_call() -> ast.Call:
@@ -140,11 +150,11 @@ class TestTheGoldWriteReplacesTheTable:
         return calls[0]
 
     def test_the_gold_write_passes_replace_mode(self) -> None:
-        """The passed frame must BE the table, so a narrower rebuild writes narrower.
+        """On a FULL rebuild the passed frame must BE the table, so narrower writes narrower.
 
-        Without this, ``save_dataframe``'s default append path concats the existing
-        209-column table onto the new 194-column frame and the concat unions the
-        columns back in as all-null.  Every previous rebuild in this project only
+        Without replace mode, ``save_dataframe``'s default append path concats the
+        existing 209-column table onto the new 194-column frame and the concat unions
+        the columns back in as all-null.  Every previous rebuild in this project only
         ADDED columns, where that union is a harmless no-op -- which is why nothing
         has ever caught it.
         """
@@ -156,9 +166,60 @@ class TestTheGoldWriteReplacesTheTable:
             "append path UNIONS columns through a concat, so a rebuild that removes "
             "a column writes the column back as all-NaN and the removal never lands."
         )
-        value = keywords["replace_mode"]
-        assert isinstance(value, ast.Constant) and value.value is True, (
-            f"replace_mode is passed as {ast.dump(value)}, not the literal True"
+
+    def test_replace_mode_is_the_scope_flag_and_NOT_an_unconditional_literal(
+        self,
+    ) -> None:
+        """CR-01: a literal True here destroys full-history gold on a per-season build.
+
+        ``save_feature_matrices`` is reachable with a season filter, and ``--season``
+        is a command ``PIPELINE.md`` and ``RUNBOOK.md`` both published.  Under an
+        unconditional ``replace_mode=True`` a 285-row 2025-only matrix became the
+        whole gold table in DuckDB AND parquet, destroying 2002-2024.  Before Plan
+        30-07 the default append path merged latest-wins on ``game_id`` and the
+        identical command was safe, so this was a regression the phase introduced.
+
+        The mode must be a NAME bound from the build's scope -- not a constant in
+        either direction.  A literal ``False`` would be just as wrong: it would make
+        the rung-3 column drop unexpressible, which is the guard above.
+        """
+        call = self._gold_save_dataframe_call()
+        value = {kw.arg: kw.value for kw in call.keywords}["replace_mode"]
+
+        assert not isinstance(value, ast.Constant), (
+            f"replace_mode is passed as the literal {ast.dump(value)}. It must be "
+            "derived from the build's scope: a scoped (--season / --week) build "
+            "carries only its slice, and writing that AS the table destroys every "
+            "season it did not carry."
+        )
+        assert isinstance(value, ast.Name), (
+            f"replace_mode is passed as {ast.dump(value)}; expected a simple name "
+            "bound from the build scope so the two modes are legible at the call site"
+        )
+
+        # The scope flag must actually be computed from BOTH scope parameters --
+        # --week alone is a scoped build too.
+        from scripts.build_features import FeatureMatrixBuilder
+
+        tree = _parsed_method(FeatureMatrixBuilder.save_feature_matrices)
+        assignments = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == value.id for t in node.targets)
+        ]
+        assert assignments, (
+            f"'{value.id}' is passed as replace_mode but is never assigned in "
+            "save_feature_matrices, so what decides the write mode is not visible here"
+        )
+        scope_names = {
+            node.id
+            for node in ast.walk(assignments[0].value)
+            if isinstance(node, ast.Name)
+        }
+        assert {"target_season", "target_week"} <= scope_names, (
+            f"'{value.id}' is computed from {sorted(scope_names)}; it must consider "
+            "BOTH target_season and target_week -- a --week-only build is scoped too"
         )
 
     def test_the_gold_write_does_not_re_enable_partitioning(self) -> None:
