@@ -72,6 +72,7 @@ from backtest.signal_lift import (
     run_signal_lift_screen,
     select_group_columns,
 )
+from models.temporal import TemporalSplitConfig
 from utils.paths import reject_data_path
 
 __all__ = [
@@ -416,6 +417,7 @@ def preregistration_commit(repo_root: Path | None = None) -> str:
 def run_group_gate(
     gold_by_target: dict[str, Any] | None = None,
     closing_odds_df: Any | None = None,
+    config: TemporalSplitConfig | None = None,
 ) -> dict[str, Any]:
     """Run the BINDING Stage-1 measurement, correction and verdict in ONE re-runnable call.
 
@@ -423,20 +425,59 @@ def run_group_gate(
     ``backtest/signal_lift.py``, the rule to ``backtest/group_gate_constants.py``, and the
     verdict to ``decide_group_verdicts`` above. This function adds no statistic of its own.
 
+    STATED LIMITATION ON THE PHASE-30 DROP (WR-03). This call previously passed no
+    ``config``, so every one of the nine grid cells was measured under
+    ``TemporalSplitConfig.default()`` -- train 2018-2019, hp_val 2020. Stage 2 then trains
+    each candidate under ``scripts.promote_models._incumbent_window``, which for ATS is
+    train **2015-2019** (the D25-05 fix-cycle artifact's own window, derived per D30-12).
+
+    The phase's ONE binding DROP rests entirely on the ``injury/ats`` cell
+    (``config/group_gate_verdict.toml``, ``rejected_negative_targets = ["ats"]``). That
+    cell was measured with a two-season selection window; the ATS candidate the verdict
+    then constrains was fitted with a five-season one. The readout's own section 5d
+    records that selection on the 534-row 2018-2019 window is unstable enough to admit
+    pure noise columns, and section 5c that changing the pre-filter moved 9 of ATS's 25
+    selected features. A verdict derived under one window and applied under another is
+    therefore not obviously transferable, and that is recorded here as a LIMITATION rather
+    than resolved: re-measuring Stage 1 per target under the Stage-2 window is a RULE
+    change, and the rule was frozen and owner-ratified before the measurement
+    (``backtest/group_gate_constants.py``, ``PRE_REGISTRATION_COMMIT``). Re-measuring now
+    would be rule-shopping after seeing the result, which is the thing the
+    pre-registration exists to prevent.
+
+    What IS closed here is the silence. ``config`` is now a real parameter, and the
+    returned structure records ``measured_under_window`` -- so the next phase's
+    measurement states the window it was taken under, and a consumer training under a
+    DIFFERENT one can detect the mismatch instead of inheriting it.
+
+    ``measured_under_window`` is deliberately NOT rendered into the ratified verdict
+    block. ``config/group_gate_verdict.toml`` is asserted byte-identical to
+    ``render_verdict_toml``'s output at ``MEASUREMENT_COMMIT``
+    (``tests/phase30_state.GROUP_VERDICT_FILE_SHA256``), and adding a key would either
+    break that assertion or require re-pasting the ratified measurement document. The
+    field rides on the RESULT structure, which is what
+    ``outputs/group_gate/stage1_result.json`` records.
+
     Args:
         gold_by_target: Optional {target -> widened gold frame}. When None, ``signal_lift``
             loads each target's gold read-only from ``data/gold/features_{target}.parquet``.
         closing_odds_df: Optional normalized closing odds. When None, loaded read-only from
             ``data/silver/odds_snapshot.parquet``.
+        config: Optional temporal split config for the SELECTION window every cell is
+            measured under. Defaults to ``TemporalSplitConfig.default()``, which is what
+            the binding Phase-30 grid used -- so the default call reproduces the ratified
+            measurement exactly.
 
     Returns:
         The ``decide_group_verdicts`` structure -- ``screen`` (the untouched screen output),
         ``verdicts``, the correction metadata and the frozen scalars -- plus
         ``preregistration_commit``, so the written JSON record names its own rule anchor.
     """
+    config = config or TemporalSplitConfig.default()
     screen = run_signal_lift_screen(
         gold_by_target=gold_by_target,
         closing_odds_df=closing_odds_df,
+        config=config,
         targets=GRID_TARGETS,
         groups=GRID_GROUPS,
         # THE PIN, passed EXPLICITLY (T-30-15). The module default is ``GROUPS``, a deny-list of
@@ -454,6 +495,14 @@ def run_group_gate(
     )
     result = decide_group_verdicts(screen)
     result["preregistration_commit"] = preregistration_commit()
+    # WR-03: say WHICH selection window these cells were measured under, so a Stage-2
+    # consumer training under a different one can detect the mismatch instead of
+    # inheriting it silently. Not rendered into the ratified block -- see the docstring.
+    result["measured_under_window"] = {
+        "train_seasons": list(config.train_seasons),
+        "hp_val_seasons": list(config.hp_val_seasons),
+        "holdout_seasons": list(config.holdout_seasons),
+    }
     return result
 
 

@@ -1264,3 +1264,120 @@ def test_the_cli_refuses_an_output_path_under_data() -> None:
 def test_the_data_path_refusal_accepts_a_path_outside_data(tmp_path) -> None:
     accepted = group_gate._reject_data_path(tmp_path / "result.json")
     assert accepted == (tmp_path / "result.json").resolve()
+
+
+# ---------------------------------------------------------------------------
+# WR-03: the selection window a verdict was measured under must be recorded
+# ---------------------------------------------------------------------------
+
+
+class TestTheMeasurementWindowIsStated:
+    """A verdict derived under one window and applied under another is not transferable.
+
+    ``run_group_gate`` called ``run_signal_lift_screen`` with no ``config``, so every one
+    of the nine grid cells was measured under ``TemporalSplitConfig.default()`` -- train
+    2018-2019, hp_val 2020. Stage 2 then trains each candidate under
+    ``scripts.promote_models._incumbent_window``, which for ATS is train 2015-2019.
+
+    The phase's ONE binding DROP rests entirely on the ``injury/ats`` cell. It was measured
+    with a two-season selection window and constrains a candidate fitted with a five-season
+    one, and nothing in the code or the readout put the two side by side.
+
+    This is a LIMITATION, not a defect to be resolved by re-measuring: the rule was frozen
+    and owner-ratified BEFORE the measurement, so re-measuring now, after seeing the
+    result, is the rule-shopping the pre-registration exists to prevent. What is closed
+    here is the silence -- the window is a real parameter and the result states it, so the
+    next phase cannot repeat this without the mismatch being visible.
+    """
+
+    def test_the_default_call_records_the_default_window(self, monkeypatch) -> None:
+        """The default is what the binding Phase-30 grid used; it must not have moved."""
+        import backtest.group_gate as gate_mod
+        from models.temporal import TemporalSplitConfig
+
+        captured: dict[str, object] = {}
+
+        def fake_screen(**kwargs):
+            captured.update(kwargs)
+            return _mixed_verdict_screen()
+
+        monkeypatch.setattr(gate_mod, "run_signal_lift_screen", fake_screen)
+        monkeypatch.setattr(gate_mod, "preregistration_commit", lambda: _FAKE_COMMIT)
+
+        result = gate_mod.run_group_gate()
+
+        default = TemporalSplitConfig.default()
+        assert result["measured_under_window"] == {
+            "train_seasons": list(default.train_seasons),
+            "hp_val_seasons": list(default.hp_val_seasons),
+            "holdout_seasons": list(default.holdout_seasons),
+        }
+        assert captured["config"].train_seasons == default.train_seasons
+
+    def test_an_explicit_window_is_threaded_into_the_screen_and_recorded(
+        self, monkeypatch
+    ) -> None:
+        """The parameter is real, not decorative: the screen must actually receive it."""
+        import backtest.group_gate as gate_mod
+        from models.temporal import TemporalSplitConfig
+
+        captured: dict[str, object] = {}
+
+        def fake_screen(**kwargs):
+            captured.update(kwargs)
+            return _mixed_verdict_screen()
+
+        monkeypatch.setattr(gate_mod, "run_signal_lift_screen", fake_screen)
+        monkeypatch.setattr(gate_mod, "preregistration_commit", lambda: _FAKE_COMMIT)
+
+        # The ATS incumbent's own window -- the one Stage 2 actually trains under.
+        ats_window = TemporalSplitConfig(
+            train_seasons=[2015, 2016, 2017, 2018, 2019],
+            hp_val_seasons=[2020],
+            holdout_seasons=[2021, 2022, 2023, 2024],
+        )
+        result = gate_mod.run_group_gate(config=ats_window)
+
+        assert captured["config"] is ats_window, (
+            "run_group_gate accepted a config and did not pass it to the screen, so "
+            "every cell would still be measured under the default window"
+        )
+        assert result["measured_under_window"]["train_seasons"] == [
+            2015,
+            2016,
+            2017,
+            2018,
+            2019,
+        ]
+
+    def test_the_recorded_window_does_not_reach_the_ratified_block(self) -> None:
+        """It must not: the committed verdict is asserted byte-identical to this output.
+
+        ``tests/phase30_state.GROUP_VERDICT_FILE_SHA256`` pins the ratified document's
+        bytes at ``MEASUREMENT_COMMIT``. Rendering a new key would either falsify that
+        assertion or require re-pasting the ratified measurement document. The field rides
+        on the RESULT structure instead, which is what
+        ``outputs/group_gate/stage1_result.json`` records.
+        """
+        result = _gate_result()
+        result["measured_under_window"] = {"train_seasons": [1999]}
+
+        assert "measured_under_window" not in render_verdict_toml(result)
+        assert "1999" not in render_verdict_toml(result)
+
+    def test_the_committed_verdict_is_still_byte_identical_to_its_anchor(self) -> None:
+        """The whole point of keeping the field off the block, asserted directly."""
+        import hashlib
+
+        from tests.phase30_state import GROUP_VERDICT_FILE_SHA256
+
+        verdict_path = (
+            Path(__file__).resolve().parents[2] / "config" / "group_gate_verdict.toml"
+        )
+        normalized = verdict_path.read_bytes().replace(b"\r\n", b"\n")
+
+        assert hashlib.sha256(normalized).hexdigest() == GROUP_VERDICT_FILE_SHA256, (
+            "config/group_gate_verdict.toml no longer matches its ratified anchor. It is "
+            "the measurement document and must not be edited; if the generator's output "
+            "changed, the change belongs off the rendered block."
+        )
