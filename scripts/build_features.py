@@ -1674,27 +1674,104 @@ class FeatureMatrixBuilder:
             logger.error("Failed to generate feature matrices", error=str(e))
             raise
 
+    @staticmethod
+    def _reject_narrowing_incremental_write(
+        table_name: str, matrix_df: pd.DataFrame
+    ) -> None:
+        """Refuse an incremental gold write that would resurrect dropped columns.
+
+        The incremental path concatenates the incoming slice onto the rows of the
+        existing table it does not replace, and ``pd.concat`` UNIONS columns. So a
+        slice built under a NARROWER schema than the one on disk would write the
+        removed columns back, all-null for every retained historical row -- the
+        exact shape ``check_gold_integrity``'s all-null check fails on, for a
+        reason that looks nothing like the cause.
+
+        A schema change is a full-rebuild operation. Refusing here is a stop
+        BEFORE the write, not a diagnosis afterwards.
+
+        An absent or unreadable gold table is not an error: there is no history to
+        protect and the append path will simply create the table.
+        """
+        try:
+            existing = load_dataframe(table_name, layer="gold")
+        except (DataIngestionError, FileNotFoundError, OSError) as e:
+            logger.info(
+                "No existing gold table to reconcile against; incremental write "
+                "will create it",
+                table_name=table_name,
+                error=str(e),
+            )
+            return
+
+        if existing.empty:
+            return
+
+        incoming_cols = set(matrix_df.columns)
+        existing_cols = set(existing.columns)
+        if incoming_cols == existing_cols:
+            return
+
+        msg = (
+            f"Refusing an incremental gold write for '{table_name}': the incoming "
+            f"frame has {len(incoming_cols)} columns against {len(existing_cols)} "
+            f"on disk (missing here: {sorted(existing_cols - incoming_cols)}; new "
+            f"here: {sorted(incoming_cols - existing_cols)}). An incremental write "
+            "concatenates, and pd.concat UNIONS columns, so this would resurrect "
+            "dropped columns as all-null across all retained history. Run a FULL "
+            "rebuild (no --season / --week) to change the gold schema."
+        )
+        raise ValueError(msg)
+
     def save_feature_matrices(
         self,
         feature_matrices: dict[str, pd.DataFrame],
         target_season: int | None = None,
+        target_week: int | None = None,
     ) -> None:
         """
         Save feature matrices to gold layer.
 
-        Each matrix is written as a single self-contained Parquet file with
-        game_id latest-wins dedup (no directory partitioning), so both the
-        full-rebuild (target_season=None) and current-week/per-season paths
-        are idempotent. target_season no longer controls partitioning; it is
-        retained for call-site compatibility and logged for observability.
+        The WRITE MODE follows the BUILD'S SCOPE, and the two modes are not
+        interchangeable (CR-01):
+
+        * FULL REBUILD (``target_season is None and target_week is None``) --
+          the build carried every season, so the frame in hand IS the table.
+          Written with ``replace_mode=True``: a single self-contained Parquet
+          file, no directory partitioning, and no append/dedup merge. This is
+          the only mode that can NARROW a schema, which is what the Phase-30
+          rung-3 column drop needed (SPEC R3, T-30-05, D-10). A repeated full
+          rebuild is idempotent.
+
+        * INCREMENTAL (a ``--season`` and/or ``--week`` build) -- the build
+          carried only that slice. Written with ``replace_mode=False``, i.e.
+          ``save_dataframe``'s append path, which drops the incoming
+          ``game_id``s from the existing table and concatenates: latest-wins
+          on ``game_id``, full history preserved.
+
+        Replace mode on an incremental build would write the slice AS the whole
+        table in BOTH stores -- ``create_table_from_df(if_exists="replace")``
+        and ``pm.save`` -- destroying every season the slice did not carry. It
+        is therefore selected from the scope rather than passed unconditionally.
+
+        Because the incremental path concatenates, and ``pd.concat`` UNIONS
+        columns, a NARROWING incremental write would silently resurrect dropped
+        columns as all-null. That case is refused rather than guessed at: it
+        needs a full rebuild.
 
         Args:
             feature_matrices: Dictionary with feature matrices
-            target_season: Season the matrices were built for (informational
-                only; does not affect the single-file write).
+            target_season: Season the matrices were built for. Not None means
+                the build is scoped, so the write merges instead of replacing.
+            target_week: Week the matrices were built for. Same effect.
         """
+        full_rebuild = target_season is None and target_week is None
         logger.info(
-            "Saving feature matrices to gold layer", target_season=target_season
+            "Saving feature matrices to gold layer",
+            target_season=target_season,
+            target_week=target_week,
+            full_rebuild=full_rebuild,
+            write_mode="replace" if full_rebuild else "merge",
         )
 
         for target, matrix_df in feature_matrices.items():
@@ -1755,7 +1832,8 @@ class FeatureMatrixBuilder:
             # silently multiplying gold cardinality and cross-contaminating the
             # three matrices.
             #
-            # replace_mode=True: the passed frame IS the table (SPEC R3, T-30-05).
+            # replace_mode on a FULL REBUILD: the passed frame IS the table
+            # (SPEC R3, T-30-05).
             #
             # Removing partition_cols alone left save_dataframe's DEFAULT
             # append_mode=True path, which reads the existing gold table, drops the
@@ -1771,16 +1849,24 @@ class FeatureMatrixBuilder:
             # check_gold_integrity's all-null check for a reason that looks nothing
             # like the actual cause.
             #
-            # Replace mode also makes a rung-level re-run idempotent for the
-            # current-week / per-season paths as well as the full rebuild, which is
-            # what SPEC R1's byte-identical re-run acceptance needs. The
-            # partitioned-append antipattern above stays excluded either way:
-            # replace_mode forces partition_cols to None. (CR-01, D-10)
+            # Replace mode makes a repeated full rebuild idempotent, which is what
+            # SPEC R1's byte-identical re-run acceptance needs. The partitioned-append
+            # antipattern above stays excluded in BOTH modes: replace_mode forces
+            # partition_cols to None, and the merge branch below passes none either.
+            # (CR-01, D-10)
+            #
+            # It is NOT applied to a scoped build. `--season 2025` produces a
+            # 285-row, 2025-only matrix, and replace mode would write that AS the
+            # gold table in both DuckDB and parquet, destroying 2002-2024. A scoped
+            # build merges instead: latest-wins on game_id, full history preserved.
+            if not full_rebuild:
+                self._reject_narrowing_incremental_write(table_name, matrix_df)
+
             save_dataframe(
                 matrix_df,
                 table_name=table_name,
                 layer="gold",
-                replace_mode=True,
+                replace_mode=full_rebuild,
             )
 
             logger.info(
@@ -1795,7 +1881,25 @@ class FeatureMatrixBuilder:
 def main():
     """Build unified feature matrices."""
     parser = argparse.ArgumentParser(description="Build unified feature matrices")
-    parser.add_argument("--season", type=int, help="Target season (e.g., 2024)")
+    # --all-seasons is the EXPLICIT name for the full historical rebuild, which is
+    # also what a bare invocation does. It exists so the destructive mode can be
+    # ASKED FOR by name rather than reached by omission: it is the mode that writes
+    # with replace_mode=True, i.e. the frame in hand becomes the gold table.
+    # RUNBOOK.md section 11's attributed-rebuild procedure publishes this flag
+    # (WR-09), and before this it did not exist -- argparse rejected the documented
+    # command with exit 2, and the obvious "correction" an operator would reach for
+    # was --season <YEAR>, which is the SCOPED build (CR-01).
+    scope_group = parser.add_mutually_exclusive_group()
+    scope_group.add_argument("--season", type=int, help="Target season (e.g., 2024)")
+    scope_group.add_argument(
+        "--all-seasons",
+        action="store_true",
+        help=(
+            "Full historical rebuild over every season (the default when no "
+            "--season is given). This is the only mode that REPLACES the gold "
+            "tables, and so the only mode that can change the gold schema."
+        ),
+    )
     parser.add_argument("--week", type=int, help="Target week (1-18)")
     parser.add_argument(
         "--as-of",
@@ -1824,6 +1928,14 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # --all-seasons names the FULL rebuild, so it cannot also carry a week scope.
+    # argparse's mutually-exclusive group already rejects --all-seasons --season.
+    if args.all_seasons and args.week is not None:
+        parser.error(
+            "--all-seasons is the full historical rebuild and cannot be combined "
+            "with --week. Use --season <YEAR> --week <N> for a scoped build."
+        )
 
     # Parse --as-of datetime if provided.
     #
@@ -1937,7 +2049,7 @@ def main():
 
         # Save feature matrices if requested
         if args.save:
-            builder.save_feature_matrices(feature_matrices, args.season)
+            builder.save_feature_matrices(feature_matrices, args.season, args.week)
             logger.info("Saved all feature matrices to gold layer")
 
         logger.info("Feature matrix building completed successfully")

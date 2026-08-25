@@ -157,7 +157,7 @@ uv run python scripts/ingest_weather.py --season <YEAR>
 Build each feature component, then assemble the per-target Gold matrices.
 
 ```powershell
-uv run python scripts/build_features.py --season <YEAR>
+uv run python scripts/build_features.py --all-seasons
 ```
 
 - **WARNING -- `build_features.py` writes gold by DEFAULT.** `--save` is defined
@@ -165,6 +165,13 @@ uv run python scripts/build_features.py --season <YEAR>
   any real `--season`/`--all-seasons` build materializes the canonical gold matrices
   (`data/gold/features_{wp,ats,ou}.parquet`). That is a GOLD REBUILD, forbidden under D-07.
   The `build_*.py --all-seasons` feeders likewise rebuild the full historical feature tables.
+- **`--all-seasons` REPLACES gold; `--season <YEAR>` MERGES into it.** The full build
+  carried every season, so its frame IS the table and is written as such -- that is the
+  only mode that can change the gold schema (it is what the Phase-30 rung-3 column drop
+  used). A scoped `--season` / `--week` build carried only that slice, so it is merged
+  latest-wins on `game_id` with every other season preserved, and a scoped build whose
+  schema differs from gold's is REFUSED before it writes. Reach for `--all-seasons`, never
+  `--season`, when what you want is a historical rebuild.
 - **The read-only build IS available now: pass `--no-save`.** An earlier version of this
   runbook recorded that the save flag was a no-op with no way to disable the gold write. That
   defect is FIXED in the code: `scripts/build_features.py` defines a real `--no-save`

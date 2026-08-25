@@ -48,7 +48,7 @@ uv run python scripts/build_team_form.py --all-seasons
 uv run python scripts/build_contextual.py --season <YEAR>
 uv run python scripts/build_weather.py --season <YEAR>
 uv run python scripts/build_market_anchors.py --season <YEAR>
-uv run python scripts/build_features.py --season <YEAR>
+uv run python scripts/build_features.py --all-seasons
 ```
 
 - **Live entry point:** `scripts/build_*.py`.
@@ -58,15 +58,29 @@ uv run python scripts/build_features.py --season <YEAR>
   `data/gold/features_ou.parquet`.
 
 > Note: `build_elo.py` and `build_team_form.py` accept `--all-seasons` (and
-> `--current` for the current season). The contextual/weather/market-anchor/features
-> builders take `--season` and `--week`. The commands above are for the
-> historical/full build; for the current-week build use the orchestrator (see below).
+> `--current` for the current season). The contextual/weather/market-anchor
+> builders take `--season` and `--week`. `build_features.py` takes `--all-seasons`
+> (the full historical build, which is also what a bare invocation does) OR
+> `--season` / `--week` (a scoped build); the two are mutually exclusive. The
+> commands above are for the historical/full build; for the current-week build use
+> the orchestrator (see below).
 
 > Note: `build_features.py` WRITES gold by default. `--no-save` is the real off
 > switch for a read-only build (the bare `--save` flag cannot turn saving off --
 > it is `store_true` with `default=True`). Gold currently stands at 194 / 195 / 194
 > columns (wp / ats / ou) over 6,499 rows spanning 2002-2025, after the four
 > attributed rebuild rungs recorded in `GATED-REFIT-READOUT.md`.
+
+> Note -- **the two write modes are not interchangeable.** `--all-seasons` (and the
+> bare invocation) REPLACES the gold tables: the frame the build produced becomes
+> the table in both DuckDB and Parquet. That is what lets a full rebuild DROP a
+> column, which is what the Phase-30 rung-3 narrowing needed. A scoped
+> `--season <YEAR>` / `--week <N>` build MERGES instead -- latest-wins on `game_id`,
+> every other season preserved -- because it only ever carried its own slice. A
+> scoped build therefore cannot change the gold schema, and one that tries is
+> refused before it writes rather than silently resurrecting the dropped columns
+> as all-null. Use `--all-seasons` for a historical rebuild; do not reach for
+> `--season` to get one.
 
 ### 3. Train
 
