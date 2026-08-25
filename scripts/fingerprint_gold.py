@@ -517,6 +517,13 @@ def _matrix_verdict() -> dict:
     """Return an empty per-matrix verdict slot."""
     return {
         "ok": True,
+        # Whether this rung's criterion actually DISCRIMINATES per column. Rung 2's
+        # cause (WR-06 refits every bound) admits any moved column, so its
+        # attribution is a blanket one and it sets this False. `ok: True` there means
+        # "nothing contradicted the rung's structural signature", NOT "every column
+        # was individually explained" -- the distinction rung 2's first attempt made
+        # expensive, attributing cleanly while having flattened 18 columns (WR-11).
+        "discriminating": True,
         "attributed": [],
         "unattributed": [],
         # The per-build clock, reported as its own category so it is neither an
@@ -817,13 +824,50 @@ def _attribute_one_matrix(
     if rung == 1:
         _attribute_rung1(diff, verdict, fail)
     else:
-        # WR-06 refits every imputation and winsorization bound on the strictly-prior
-        # seasons, so ANY column that had a value imputed or clipped may move. The
-        # rung's discipline is structural (nothing added, removed or resized) plus the
-        # empty-diff refusal above, not a per-column allow-list.
-        verdict["attributed"].extend(sorted(diff["changed"]))
+        _attribute_rung2(diff, verdict, fail)
 
     return blocking
+
+
+def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
+    """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
+
+    WR-06 refits every imputation and winsorization bound on the strictly-prior
+    seasons, so ANY column that had a value imputed or clipped may move. There is no
+    per-column allow-list to check against -- the rung's discipline is structural
+    (nothing added, removed or resized) plus the empty-diff refusal.
+
+    That makes rung 2 a blanket attribution, and a blanket attribution cannot FAIL on
+    a moved column. The phase measured what that costs: rung 2's first attempt
+    "attributed perfectly cleanly -- ok, zero unattributed -- while having silently
+    destroyed 18 columns", through a degenerate ``q01 == q99`` clip that flattened
+    each of them to a constant.
+
+    The one health claim the rung CAN make from what it already records is the one
+    that failure mode trips: refitting a bound moves a measurement, it does not turn
+    it into a constant. So a column that became indicator-valued is unattributed and
+    fails here, rather than being disclosed in prose after the fact.
+
+    The rung still does not DISCRIMINATE among the columns it attributes, and says so
+    -- see ``discriminating`` on the verdict, which ``_print_attribution`` renders as
+    ATTRIBUTED (NOT HEALTH-CHECKED) so a reader does not mistake it for the clean
+    per-column verdict rung 1 gives.
+    """
+    verdict["discriminating"] = False
+
+    details = diff["details"] or {}
+    for column in sorted(diff["changed"]):
+        meta = details.get(column, {})
+        if _became_indicator(meta):
+            verdict["unattributed"].append(column)
+            _fail_became_indicator(
+                column,
+                2,
+                "WR-06 refits bounds; it does not FLATTEN a measurement.",
+                fail,
+            )
+        else:
+            verdict["attributed"].append(column)
 
 
 def _rung3_expected_removed(diff: dict, derived: list[str] | None = None) -> list[str]:
@@ -847,6 +891,36 @@ def _rung3_expected_removed(diff: dict, derived: list[str] | None = None) -> lis
     return [_canonical(name) for name in _line_movement_columns(diff["removed"])]
 
 
+def _became_indicator(meta: dict) -> bool:
+    """True when a column was a MEASUREMENT before the rung and an indicator after.
+
+    ``FeatureMatrixBuilder._is_discrete_indicator`` returns True iff every non-null
+    value is one of ``-1.0 / 0.0 / 1.0``, so a CONSTANT column at any of those three
+    levels satisfies it. Gold's feature columns are expanding-window z-scores, which
+    means a column the rebuild FLATTENS lands at a constant 0.0 and therefore
+    acquires ``discrete_indicator_after == True``.
+
+    That is a destroyed column wearing an exemption's costume, and it is not
+    hypothetical here: rung 2's first attempt flattened columns through a degenerate
+    ``q01 == q99`` clip. Recording the transition separately is what lets a rung
+    refuse to attribute a column to a rule that only ever applied to columns which
+    ALREADY were indicators.
+    """
+    return not bool(meta.get("discrete_indicator_before")) and bool(
+        meta.get("discrete_indicator_after")
+    )
+
+
+def _fail_became_indicator(column: str, rung: int, rule: str, fail) -> None:
+    """Report a measurement that became an indicator-valued (constant) column."""
+    fail(
+        f"column '{column}' was NOT a discrete indicator before rung {rung} and IS "
+        f"one after. {rule} The likely cause is a degenerate clip FLATTENING the "
+        "column to a constant -- the rung-2 first-attempt failure mode -- and a "
+        "destroyed column must not attribute to itself"
+    )
+
+
 def _attribute_rung1(diff: dict, verdict: dict, fail) -> None:
     """CR-02 exempts DISCRETE INDICATORS from winsorization, and nothing else."""
     if diff["details"] is None:
@@ -862,13 +936,26 @@ def _attribute_rung1(diff: dict, verdict: dict, fail) -> None:
 
     for column in sorted(diff["changed"]):
         meta = diff["details"].get(column, {})
-        discrete = bool(meta.get("discrete_indicator_before")) or bool(
-            meta.get("discrete_indicator_after")
-        )
-        if discrete:
+        # Attribute on the BEFORE side ONLY. CR-02's exemption is about columns the
+        # winsorizer was always going to skip, i.e. ones that were ALREADY indicators
+        # when the rung started. A column that BECAME one is a new fact about the
+        # data, not an instance of the exemption -- and reading the two sides with
+        # `or` let a flattened column supply its own excuse, coming back
+        # `ok: True, unattributed: []`.
+        if bool(meta.get("discrete_indicator_before")):
             verdict["attributed"].append(column)
+            continue
+
+        verdict["unattributed"].append(column)
+        if _became_indicator(meta):
+            _fail_became_indicator(
+                column,
+                1,
+                "CR-02 exempts columns that are ALREADY indicators; it never turns a "
+                "measurement into one.",
+                fail,
+            )
         else:
-            verdict["unattributed"].append(column)
             fail(
                 f"column '{column}' moved at rung 1 but is not a discrete indicator, so "
                 "CR-02's winsorization exemption cannot explain it"
@@ -931,6 +1018,16 @@ def _attribute_rung4(detail: dict, diff: dict, verdict: dict, fail) -> bool:
                 "INCOMPLETE -- a whole-frame statistic is still reaching prior seasons -- "
                 "and the phase is BLOCKED (SPEC R2). Do not proceed to the gate"
             )
+        elif _became_indicator((diff["details"] or {}).get(column, {})):
+            blocking = True
+            verdict["unattributed"].append(column)
+            _fail_became_indicator(
+                column,
+                4,
+                "A re-sync ADDS ROWS to a season; it does not flatten a column "
+                "that already had values.",
+                fail,
+            )
         else:
             verdict["attributed"].append(column)
 
@@ -938,10 +1035,23 @@ def _attribute_rung4(detail: dict, diff: dict, verdict: dict, fail) -> bool:
 
 
 def _print_attribution(verdict: dict) -> None:
-    """Print an attribution verdict in the shape a human reads at checkpoint 2."""
-    status = (
-        "OK" if verdict["ok"] else ("BLOCKED" if verdict["blocking"] else "FINDING")
+    """Print an attribution verdict in the shape a human reads at checkpoint 2.
+
+    A rung whose criterion does not discriminate per column prints
+    ATTRIBUTED (NOT HEALTH-CHECKED) rather than OK. ``RUNBOOK.md`` tells the
+    operator to judge by the exit code, and the exit code is unchanged -- this
+    stops the PRINTED report from reading like a clean per-column verdict when the
+    rung is structurally incapable of giving one (WR-11).
+    """
+    blanket = any(
+        detail.get("discriminating") is False for detail in verdict["matrices"].values()
     )
+    if not verdict["ok"]:
+        status = "BLOCKED" if verdict["blocking"] else "FINDING"
+    elif blanket:
+        status = "ATTRIBUTED (NOT HEALTH-CHECKED)"
+    else:
+        status = "OK"
     print(f"rung {verdict['rung']} ({verdict['cause']}): {status}")
     for matrix, detail in verdict["matrices"].items():
         print(f"  {matrix}:")

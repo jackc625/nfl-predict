@@ -104,10 +104,18 @@ def _detail(
     removed: tuple[str, ...] = (),
     changed: dict[str, list[str]] | None = None,
     discrete: tuple[str, ...] = (),
+    became_discrete: tuple[str, ...] = (),
     rows_per_season_before: dict[str, int] | None = None,
     rows_per_season_after: dict[str, int] | None = None,
 ) -> dict:
-    """Build one matrix's entry of a compare_fingerprints report."""
+    """Build one matrix's entry of a compare_fingerprints report.
+
+    ``discrete`` names columns that are indicator-valued on BOTH sides of the rung.
+    ``became_discrete`` names columns that were a MEASUREMENT before and are
+    indicator-valued after -- the flattening signature, which
+    ``FeatureMatrixBuilder._is_discrete_indicator`` cannot distinguish from a
+    genuine indicator because a constant 0.0 z-score column satisfies it (CR-03).
+    """
     changed = dict(changed or {})
     details = {
         column: {
@@ -117,7 +125,7 @@ def _detail(
             "null_count_before": 0,
             "null_count_after": 0,
             "discrete_indicator_before": column in discrete,
-            "discrete_indicator_after": column in discrete,
+            "discrete_indicator_after": column in discrete or column in became_discrete,
             "reasons": ["values"] if seasons else [],
         }
         for column, seasons in changed.items()
@@ -285,6 +293,192 @@ class TestRung2Wr06:
     def test_failure_message_names_upstream_nflreadpy_revision_as_a_candidate(self):
         report = _pre_drop_report(changed={})
         assert "nflreadpy" in _all_failures(attribute_rung(report, 2)).lower()
+
+
+# ---------------------------------------------------------------------------
+# The flattening failure mode -- a DESTROYED column must not attribute to itself
+# ---------------------------------------------------------------------------
+
+
+class TestADestroyedColumnCannotAttributeToItself:
+    """CR-03 / WR-11: a continuous -> constant transition is a finding, not an exemption.
+
+    ``FeatureMatrixBuilder._is_discrete_indicator`` returns True iff every non-null
+    value is one of ``-1.0 / 0.0 / 1.0``, so a CONSTANT column at any of those levels
+    satisfies it -- and gold's feature columns are expanding-window z-scores, so a
+    column the rebuild FLATTENS lands at a constant 0.0.
+
+    Rung 1 used to read the two sides with ``or``:
+
+        discrete = discrete_indicator_before or discrete_indicator_after
+
+    which handed a flattened column the CR-02 winsorization exemption on the strength
+    of the damage itself, returning ``ok: True, unattributed: []``. Rung 2 attributed
+    every changed column unconditionally, so it could not fail on one at all.
+
+    This is the codebase's own recorded failure: rung 2's first attempt destroyed 18
+    columns through a degenerate ``q01 == q99`` clip while attributing perfectly
+    cleanly (``GATED-REFIT-READOUT.md`` section 1). The judge is now the thing that
+    says so, instead of the summary prose after the fact.
+
+    No test previously fed the judge a ``continuous -> constant`` transition, which is
+    why the arm shipped.
+    """
+
+    @pytest.mark.parametrize("rung", [1, 2])
+    def test_a_column_that_became_an_indicator_is_unattributed(self, rung: int):
+        report = _pre_drop_report(
+            changed={"line_movement_coverage": ["2023"], "home_epa_per_play": ["2021"]},
+            discrete=("line_movement_coverage",),
+            became_discrete=("home_epa_per_play",),
+        )
+        verdict = attribute_rung(report, rung)
+
+        assert verdict["ok"] is False, (
+            f"rung {rung} accepted a column that was a measurement before the rebuild "
+            "and is indicator-valued after. That is the flattening signature, and it "
+            "must never be forgiven by the exemption it produced."
+        )
+        for matrix in GOLD_MATRICES:
+            assert verdict["matrices"][matrix]["unattributed"] == ["home_epa_per_play"]
+            assert (
+                "home_epa_per_play" not in (verdict["matrices"][matrix]["attributed"])
+            )
+
+    @pytest.mark.parametrize("rung", [1, 2])
+    def test_the_failure_names_the_degenerate_clip_as_the_likely_cause(self, rung: int):
+        report = _pre_drop_report(
+            changed={"home_epa_per_play": ["2021"]},
+            became_discrete=("home_epa_per_play",),
+        )
+        failures = _all_failures(attribute_rung(report, rung)).lower()
+
+        assert "was not a discrete indicator" in failures
+        assert "flatten" in failures
+
+    def test_rung_1_still_attributes_a_column_that_was_ALREADY_an_indicator(self):
+        """The exemption survives for the case it was actually written for."""
+        report = _pre_drop_report(
+            changed={"line_movement_coverage": ["2023"]},
+            discrete=("line_movement_coverage",),
+        )
+        verdict = attribute_rung(report, 1)
+
+        assert verdict["ok"] is True
+        for matrix in GOLD_MATRICES:
+            assert verdict["matrices"][matrix]["attributed"] == [
+                "line_movement_coverage"
+            ]
+
+    def test_rung_1_attributes_an_indicator_that_STOPPED_being_one(self):
+        """Attribution is on the BEFORE side, so an indicator that widened still fits.
+
+        This is the real rung-1 evidence: ``venue_high_altitude`` was discrete before
+        the CR-02 rebuild and continuous after it. Reading the AFTER side would have
+        turned the accepted rung-1 verdict into a failure.
+        """
+        report = _pre_drop_report(
+            changed={"venue_high_altitude": ["2019", "2020"]},
+            discrete=("venue_high_altitude",),
+        )
+        # discrete on BOTH sides by construction above; restate the asymmetric case.
+        for matrix in GOLD_MATRICES:
+            report[matrix]["column_details"]["venue_high_altitude"][
+                "discrete_indicator_after"
+            ] = False
+
+        verdict = attribute_rung(report, 1)
+        assert verdict["ok"] is True
+        for matrix in GOLD_MATRICES:
+            assert verdict["matrices"][matrix]["attributed"] == ["venue_high_altitude"]
+
+    def test_rung_4_also_refuses_a_flattened_column(self):
+        """A re-sync adds rows; it does not turn a measurement into a constant."""
+        widths = _widths()
+        report = {
+            matrix: _detail(
+                width_before=widths[matrix],
+                width_after=widths[matrix],
+                rows_before=6263,
+                rows_after=6499,
+                changed={"home_epa_per_play": ["2025"]},
+                became_discrete=("home_epa_per_play",),
+                rows_per_season_before={"2024": 285, "2025": 49},
+                rows_per_season_after={"2024": 285, "2025": 285},
+            )
+            for matrix in GOLD_MATRICES
+        }
+        verdict = attribute_rung(report, 4)
+
+        assert verdict["ok"] is False
+        assert verdict["blocking"] is True, (
+            "rung 4 is SPEC R2's hard blocker; a flattened column there is not a "
+            "non-blocking finding"
+        )
+        assert "flatten" in _all_failures(verdict).lower()
+
+
+class TestABlanketAttributionDoesNotReadAsACleanVerdict:
+    """WR-11: rung 2 cannot discriminate per column, and the report must say so.
+
+    WR-06 refits every imputation and winsorization bound, so any imputed or clipped
+    column may legitimately move and there is no per-column allow-list to check
+    against. That is a real limit of the rung, not a defect -- but ``ok: True``,
+    ``unattributed: []`` and a printed ``rung 2 (WR-06): OK`` is the shape a reader
+    treats as a clean per-column verdict, and ``RUNBOOK.md`` tells the operator to
+    judge by the exit code.
+    """
+
+    def test_rung_2_marks_itself_as_non_discriminating(self):
+        report = _pre_drop_report(changed={"home_rest_days": ["2010"]})
+        verdict = attribute_rung(report, 2)
+
+        assert verdict["ok"] is True
+        for matrix in GOLD_MATRICES:
+            assert verdict["matrices"][matrix]["discriminating"] is False
+
+    @pytest.mark.parametrize("rung", [1, 3, 4])
+    def test_the_per_column_rungs_stay_discriminating(self, rung: int):
+        report = _pre_drop_report(
+            changed={"line_movement_coverage": ["2023"]},
+            discrete=("line_movement_coverage",),
+        )
+        verdict = attribute_rung(report, rung)
+
+        for matrix in GOLD_MATRICES:
+            assert verdict["matrices"][matrix]["discriminating"] is True
+
+    def test_a_clean_rung_2_prints_ATTRIBUTED_NOT_HEALTH_CHECKED_not_OK(self, capsys):
+        from scripts.fingerprint_gold import _print_attribution
+
+        report = _pre_drop_report(changed={"home_rest_days": ["2010"]})
+        _print_attribution(attribute_rung(report, 2))
+
+        printed = capsys.readouterr().out.splitlines()[0]
+        assert printed.endswith("ATTRIBUTED (NOT HEALTH-CHECKED)"), printed
+        assert not printed.endswith(": OK")
+
+    def test_a_clean_rung_1_still_prints_OK(self, capsys):
+        from scripts.fingerprint_gold import _print_attribution
+
+        report = _pre_drop_report(
+            changed={"line_movement_coverage": ["2023"]},
+            discrete=("line_movement_coverage",),
+        )
+        _print_attribution(attribute_rung(report, 1))
+
+        assert capsys.readouterr().out.splitlines()[0].endswith(": OK")
+
+    def test_a_failing_rung_2_still_prints_its_severity(self, capsys):
+        from scripts.fingerprint_gold import _print_attribution
+
+        report = _pre_drop_report(
+            changed={"home_epa_per_play": ["2021"]},
+            became_discrete=("home_epa_per_play",),
+        )
+        _print_attribution(attribute_rung(report, 2))
+
+        assert capsys.readouterr().out.splitlines()[0].endswith("FINDING")
 
 
 # ---------------------------------------------------------------------------
