@@ -42,6 +42,7 @@ import optuna
 import pandas as pd
 import pytest
 
+from models import deploy_gate
 from models.trainers import base as base_trainer
 from models.trainers.base import (
     TUNING_STORAGE_DIR,
@@ -504,6 +505,212 @@ def test_empty_cli_value_is_an_override_to_exclude_nothing(
     )
     assert provenance == "override", (
         f"Provenance is {provenance!r}, expected 'override'."
+    )
+
+
+# ---------------------------------------------------------------------------
+# WR-01: the ratified verdict is repo-anchored, and an ARMED run fails CLOSED
+# ---------------------------------------------------------------------------
+
+
+def test_the_verdict_path_is_anchored_to_the_repo_not_the_cwd() -> None:
+    """A CWD-relative verdict path made WHAT gets trained depend on where you stood.
+
+    ``_GROUP_GATE_VERDICT_PATH`` was ``Path("config/group_gate_verdict.toml")``. Combined
+    with a not-found branch that returns ``([], "none")`` and carries on, running the
+    promotion from any directory other than the repo root silently trained every feature
+    group -- including the group the frozen rule DROPPED.
+    """
+    path = promote._GROUP_GATE_VERDICT_PATH
+
+    assert path.is_absolute(), (
+        f"_GROUP_GATE_VERDICT_PATH is {path!r}, which is CWD-relative. Anchor it to the "
+        "repository via Path(__file__).resolve().parent.parent."
+    )
+    assert path.name == "group_gate_verdict.toml"
+    assert path.parent.name == "config"
+    assert path.exists(), (
+        f"The ratified Stage-1 verdict is not at the repo-anchored path {path}. It is a "
+        "git-tracked file; a moved or deleted verdict is a broken checkout."
+    )
+
+
+def test_an_armed_run_with_no_verdict_and_no_override_REFUSES(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WR-01: ``--promote`` must not train an un-Stage-1-selected candidate and swap it.
+
+    The old behaviour printed a ``[WARNING]``, returned an empty list, trained on EVERY
+    group and then swapped whatever passed -- silently reversing a ratified owner decision
+    with ``provenance: none`` in the banner as the only trace. The sibling
+    ``_incumbent_window`` in this same module already insists that "an unresolvable window
+    must be a stop, never a guess"; the exclusion list decides what gets trained at all and
+    now gets the same rule on the armed path.
+    """
+    monkeypatch.setattr(promote, "_GROUP_GATE_VERDICT_PATH", tmp_path / "absent.toml")
+
+    args = promote.parse_args(["--promote"])
+    with pytest.raises(FileNotFoundError, match="ARMED promotion"):
+        promote._resolve_exclude_groups(args)
+
+
+def test_an_armed_run_can_still_state_exclude_nothing_deliberately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal is about GUESSING, not about excluding nothing.
+
+    ``--exclude-groups ''`` is an explicit statement and stays available on the armed path.
+    """
+    monkeypatch.setattr(promote, "_GROUP_GATE_VERDICT_PATH", tmp_path / "absent.toml")
+
+    args = promote.parse_args(["--promote", "--exclude-groups", ""])
+    groups, provenance = promote._resolve_exclude_groups(args)
+
+    assert groups == []
+    assert provenance == "override"
+
+
+def test_an_unarmed_dry_run_with_no_verdict_still_warns_and_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A dry run swaps nothing, so it must stay runnable on an unratified checkout."""
+    monkeypatch.setattr(promote, "_GROUP_GATE_VERDICT_PATH", tmp_path / "absent.toml")
+
+    groups, provenance = promote._resolve_exclude_groups(promote.parse_args([]))
+
+    assert (groups, provenance) == ([], "none")
+    printed = capsys.readouterr().out
+    assert "[WARNING]" in printed
+    assert "--promote would REFUSE" in printed, (
+        "The dry-run warning must say what the armed path would do, or the operator "
+        "learns about the refusal only when it fires."
+    )
+
+
+def test_an_armed_run_with_a_ratified_verdict_proceeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal fires on ABSENCE only; a ratified verdict arms normally."""
+    verdict = tmp_path / "group_gate_verdict.toml"
+    verdict.write_text('excluded_groups = ["injury"]\n', encoding="utf-8")
+    monkeypatch.setattr(promote, "_GROUP_GATE_VERDICT_PATH", verdict)
+
+    groups, provenance = promote._resolve_exclude_groups(
+        promote.parse_args(["--promote"])
+    )
+
+    assert (groups, provenance) == (["injury"], "verdict")
+
+
+# ---------------------------------------------------------------------------
+# WR-02: the DERIVED holdout is reconciled against the FROZEN gate holdout
+# ---------------------------------------------------------------------------
+
+
+def test_a_narrower_incumbent_holdout_raises_before_any_train(
+    tmp_path: Path,
+) -> None:
+    """A derived holdout that is not the frozen one would train ON the scoring seasons.
+
+    ``_WINDOW_KEYS`` derives ``holdout_seasons`` from the incumbent's metadata and passes it
+    to ``models.train --config-holdout-seasons``, while ``_load_gold_holdout`` and every gate
+    call read the frozen ``deploy_gate.HOLDOUT_SEASONS``. Nothing reconciled the two.
+    ``BaseTrainer.train_and_evaluate`` keeps the model from the LAST split, so a narrower
+    derived holdout would produce a saved artifact that had SEEN seasons the gate then scores
+    it on -- an in-sample candidate against an out-of-sample baseline, printing a confident
+    2x2 with no warning.
+
+    All three live incumbents record [2021, 2022, 2023, 2024], so this is latent, not live.
+    """
+    metadata = _good_metadata([2015, 2016, 2017, 2018, 2019])
+    metadata["config"]["holdout_seasons"] = [2021, 2022]
+    root = _write_artifacts_tree(
+        tmp_path / "artifacts",
+        {"ats": "ats_20260101_000000"},
+        {"ats_20260101_000000": metadata},
+    )
+
+    with pytest.raises(ValueError, match="frozen gate holdout"):
+        promote._incumbent_window("ats", root)
+
+
+def test_a_wider_incumbent_holdout_also_raises(tmp_path: Path) -> None:
+    """The check is an EQUALITY. Widening is not a safe direction either."""
+    metadata = _good_metadata([2018, 2019])
+    metadata["config"]["holdout_seasons"] = [2020, 2021, 2022, 2023, 2024]
+    root = _write_artifacts_tree(
+        tmp_path / "artifacts",
+        {"ats": "ats_20260101_000000"},
+        {"ats_20260101_000000": metadata},
+    )
+
+    with pytest.raises(ValueError, match="frozen gate holdout"):
+        promote._incumbent_window("ats", root)
+
+
+@pytest.mark.parametrize("target", ["wp", "ats", "ou"])
+def test_every_live_incumbent_agrees_with_the_frozen_gate_holdout(target: str) -> None:
+    """The latent condition is measured, not assumed: all three currently agree."""
+    if not (LIVE_ARTIFACTS / "latest.json").exists():
+        pytest.skip(
+            f"{LIVE_ARTIFACTS / 'latest.json'} not present -- artifacts/ is gitignored, so "
+            "this evidence-backed control did not run on this checkout"
+        )
+
+    window = promote._incumbent_window(target, LIVE_ARTIFACTS)
+    frozen = ",".join(str(int(s)) for s in deploy_gate.HOLDOUT_SEASONS)
+
+    assert window["holdout"] == frozen, (
+        f"'{target}' incumbent records holdout {window['holdout']!r} against the frozen "
+        f"gate holdout {frozen!r}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# WR-04: the promoted artifact records WHAT was excluded, and on whose authority
+# ---------------------------------------------------------------------------
+
+
+def test_step1_argv_carries_the_exclusion_provenance(tmp_path: Path) -> None:
+    """``_build_train_argv`` already knew the provenance and dropped it at the boundary.
+
+    CLAUDE.md requires that "any prediction must be reproducible given the same input data
+    snapshot". Re-running ``models.train`` from a promoted artifact's own metadata
+    reproduced a DIFFERENT feature set, because the exclusion was recoverable only from the
+    git-tracked verdict file plus knowledge of which commit was current.
+    """
+    window = {"train": "2018,2019", "hp_val": "2020", "holdout": "2021,2022,2023,2024"}
+    argv = promote._build_train_argv(
+        "ats", tmp_path / "staging", window, ["injury"], "verdict"
+    )
+
+    assert "--exclude-groups-provenance" in argv
+    assert argv[argv.index("--exclude-groups-provenance") + 1] == "verdict"
+    assert argv[argv.index("--exclude-groups") + 1] == "injury"
+
+
+def test_train_target_records_the_exclusion_in_the_artifact_metadata() -> None:
+    """The recorded exclusion must reach ``trainer.metadata``, not just the run log."""
+    from models.train import train_target
+
+    source = inspect.getsource(train_target)
+    assert 'trainer.metadata["exclude_groups"]' in source
+    assert 'trainer.metadata["exclude_groups_provenance"]' in source
+
+    signature = inspect.signature(train_target)
+    assert "exclude_groups" in signature.parameters
+    assert "exclude_groups_provenance" in signature.parameters
+
+
+def test_models_train_main_passes_both_through_to_train_target() -> None:
+    """The wiring, not just the capability: main() must hand both values over."""
+    from models import train as train_mod
+
+    source = inspect.getsource(train_mod.main)
+    assert "exclude_groups=exclude_groups" in source
+    assert "exclude_groups_provenance=args.exclude_groups_provenance" in source, (
+        "models.train.main() does not thread the provenance into train_target, so the "
+        "artifact would record the exclusion without saying whether it was ratified."
     )
 
 

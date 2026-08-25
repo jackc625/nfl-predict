@@ -261,6 +261,8 @@ def train_target(
     config: TemporalSplitConfig | None = None,
     artifacts_dir: Path = Path("artifacts"),
     tune: bool = True,
+    exclude_groups: tuple[str, ...] = (),
+    exclude_groups_provenance: str = "none",
 ) -> dict[str, Any]:
     """Train a single model target and optionally compute market baseline.
 
@@ -276,9 +278,24 @@ def train_target(
         tune: When True (default), tune hyperparameters via Optuna. When False,
             perform a straight re-fit with default params and no Optuna sweep
             (D24-12), threaded down to trainer.train_and_evaluate(tune=False).
+        exclude_groups: The feature groups ALREADY removed from ``features_df`` by the
+            caller. Recorded in the artifact's metadata, not applied here.
+        exclude_groups_provenance: Where that list came from -- ``"verdict"`` (the ratified
+            Stage-1 verdict), ``"override"`` (hand-typed on the command line) or ``"none"``.
 
     Returns:
         Dict with keys: model_metrics, market_baseline, artifact_path.
+
+    Note:
+        WR-04: the exclusion is applied by ``main()`` in memory between the parquet read and
+        this call, and it used to be LOGGED and then dropped -- ``BaseTrainer.metadata``
+        recorded the target, params, season results and config and nothing else. CLAUDE.md
+        requires that "any prediction must be reproducible given the same input data
+        snapshot", and re-running from an artifact's own metadata reproduced a DIFFERENT
+        feature set, because the exclusion was recoverable only from the git-tracked verdict
+        file plus knowledge of which commit was current. The phase went to some trouble to
+        make the exclusion DERIVED rather than transcribed; recording the derived value in the
+        artifact is what makes that benefit reach a later auditor.
     """
     # Instantiate the appropriate trainer
     trainers = {
@@ -308,6 +325,12 @@ def train_target(
 
     # Train and evaluate
     model_metrics = trainer.train_and_evaluate(features_df, closing_odds_df, tune=tune)
+
+    # WR-04: record WHAT was withheld from the frame, and whether that list was ratified or
+    # hand-typed, in the artifact itself. Written after train_and_evaluate (which assigns
+    # self.metadata wholesale) and before save, so it lands in the saved metadata.json.
+    trainer.metadata["exclude_groups"] = list(exclude_groups)
+    trainer.metadata["exclude_groups_provenance"] = exclude_groups_provenance
 
     # Save artifacts
     artifact_path = trainer.save(artifacts_dir)
@@ -519,6 +542,20 @@ def build_parser() -> argparse.ArgumentParser:
             "which is an argv foot-gun under PowerShell when followed by another flag)."
         ),
     )
+    parser.add_argument(
+        "--exclude-groups-provenance",
+        type=str,
+        choices=("verdict", "override", "none"),
+        default="none",
+        help=(
+            "Where --exclude-groups came from, recorded verbatim in the artifact's "
+            "metadata (WR-04): 'verdict' (DERIVED from the ratified Stage-1 verdict), "
+            "'override' (hand-typed on the command line) or 'none'. "
+            "scripts/promote_models already resolves this and passes it through, so an "
+            "auditor reading a promoted artifact can tell a ratified exclusion from a "
+            "typed one without reconstructing which commit was current."
+        ),
+    )
     return parser
 
 
@@ -642,6 +679,8 @@ def main() -> None:
             config=config,
             artifacts_dir=args.artifacts_dir,
             tune=not args.no_tune,
+            exclude_groups=exclude_groups,
+            exclude_groups_provenance=args.exclude_groups_provenance,
         )
         all_results[target] = result
 

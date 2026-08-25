@@ -88,7 +88,15 @@ _FRESHNESS_TOL = 5e-3
 # The ratified Stage-1 group verdict (D24-07 generator-output-over-transcription: Plan 30-05
 # writes the emitter, Plan 30-10 writes this file). When it exists and no explicit
 # --exclude-groups was given, the Stage-2 exclusion list is DERIVED from it rather than typed.
-_GROUP_GATE_VERDICT_PATH = Path("config/group_gate_verdict.toml")
+#
+# Anchored to the REPOSITORY, not to the process working directory. A CWD-relative path made
+# the single most consequential input to WHAT gets trained depend on where the operator
+# happened to be standing, and its not-found branch does not stop -- it excludes nothing and
+# carries on (WR-01). The verdict is a git-tracked file at a fixed location in this repo, so
+# resolving it from __file__ is both correct and un-spoofable by a chdir.
+_GROUP_GATE_VERDICT_PATH = (
+    Path(__file__).resolve().parent.parent / "config" / "group_gate_verdict.toml"
+)
 
 # The season lists ``_incumbent_window`` derives, mapped from the metadata config key to the
 # ``models.train --config-*-seasons`` flag stem.
@@ -171,7 +179,27 @@ def _resolve_exclude_groups(args: argparse.Namespace) -> tuple[list[str], str]:
          tests ``is not None``, not truthiness, so ``--exclude-groups ""`` is an explicit
          "exclude nothing" rather than a silent fall-through.
       2. The ratified verdict file's ``excluded_groups`` key, DERIVED not transcribed (D24-07).
-      3. An empty list, with a loud warning that no Stage-1 verdict has been ratified.
+      3. An empty list, with a loud warning that no Stage-1 verdict has been ratified --
+         but ONLY on an unarmed run. On the ARMED path (``--promote``) an absent verdict is
+         a STOP.
+
+    WR-01: this used to fail OPEN unconditionally. A missing verdict file printed a
+    ``[WARNING]``, returned ``([], "none")``, and the run then trained three candidates on
+    EVERY feature group -- including the group the frozen rule DROPPED -- gated them, and
+    under ``--promote`` swapped any that passed. That silently reverses a ratified owner
+    decision, with ``provenance: none`` in the banner as the only trace and nothing
+    machine-checking it.
+
+    The sibling input in this same module already insists on the opposite discipline:
+    ``_incumbent_window``'s docstring says "an unresolvable window must be a stop, never a
+    guess ... and it would still print a confident 2x2". The exclusion list is the MORE
+    consequential of the two -- it decides what gets trained at all -- so it gets the same
+    rule on the path that can mutate production. A dry run still warns and continues, because
+    a dry run swaps nothing and its whole purpose is to be runnable on a checkout that has
+    not ratified anything.
+
+    Stating "exclude nothing" deliberately remains available at all times, on both paths:
+    ``--exclude-groups ''`` is an explicit override.
 
     Args:
         args: The parsed promote arguments.
@@ -180,6 +208,10 @@ def _resolve_exclude_groups(args: argparse.Namespace) -> tuple[list[str], str]:
         ``(groups, provenance)`` where provenance is ``"override"``, ``"verdict"`` or
         ``"none"``. The provenance rides into the banner so checkpoint 4 can see whether the
         single most consequential input to what gets trained was ratified or hand-typed.
+
+    Raises:
+        FileNotFoundError: On an ARMED run (``--promote``) with no verdict file and no
+            explicit ``--exclude-groups``.
     """
     if args.exclude_groups is not None:
         groups = [g.strip() for g in args.exclude_groups.split(",") if g.strip()]
@@ -199,10 +231,23 @@ def _resolve_exclude_groups(args: argparse.Namespace) -> tuple[list[str], str]:
         )
         return groups, "verdict"
 
+    if args.promote:
+        msg = (
+            f"No ratified Stage-1 verdict at '{_GROUP_GATE_VERDICT_PATH}' and no explicit "
+            "--exclude-groups. Refusing an ARMED promotion whose candidate feature set was "
+            "not Stage-1 selected: without the verdict every feature group is trained, "
+            "INCLUDING any the frozen rule dropped, and a passing candidate would then be "
+            "swapped into production -- silently reversing a ratified decision. Pass "
+            "--exclude-groups '' to state 'exclude nothing' deliberately, or restore the "
+            "verdict file."
+        )
+        raise FileNotFoundError(msg)
+
     print(
         f"  [WARNING] No ratified Stage-1 verdict at {_GROUP_GATE_VERDICT_PATH} and no "
         "--exclude-groups override: the candidate will be trained on EVERY feature group. "
-        "That is a legitimate configuration, but it is not a Stage-1-selected feature set."
+        "That is a legitimate configuration, but it is not a Stage-1-selected feature set. "
+        "This run is a DRY RUN and swaps nothing; --promote would REFUSE here."
     )
     return [], "none"
 
@@ -234,6 +279,8 @@ def _incumbent_window(target: str, artifacts_dir: Path) -> dict[str, str]:
             absent, naming the exact missing path.
         KeyError: If the manifest has no pointer for the target, or the metadata has no
             ``config`` block or is missing one of the season lists, naming the missing key.
+        ValueError: If the derived holdout is not the frozen ``deploy_gate.HOLDOUT_SEASONS``
+            (WR-02) -- the candidate would be trained over seasons the gate scores it on.
     """
     manifest_path = artifacts_dir / "latest.json"
     if not manifest_path.exists():
@@ -292,6 +339,33 @@ def _incumbent_window(target: str, artifacts_dir: Path) -> dict[str, str]:
             )
             raise KeyError(msg)
         window[flag_stem] = ",".join(str(int(season)) for season in seasons)
+
+    # WR-02: the derived holdout is passed straight to ``models.train
+    # --config-holdout-seasons``, while ``_load_gold_holdout`` and every gate call read the
+    # FROZEN ``deploy_gate.HOLDOUT_SEASONS``. Nothing reconciled the two.
+    #
+    # If an incumbent's metadata ever recorded a NARROWER holdout, the candidate would be
+    # trained over seasons the gate then scores it on -- ``BaseTrainer.train_and_evaluate``
+    # keeps the model from the LAST split, so the saved artifact would have SEEN them -- and
+    # an in-sample candidate would be compared against an out-of-sample baseline. A confident
+    # 2x2 would print with no warning at all.
+    #
+    # All three incumbents currently record [2021, 2022, 2023, 2024], so this is latent. It
+    # is checked HERE, before any train can start, because that is the only place it is
+    # cheap: after twelve walk-forward re-fits it would be a refusal nobody could afford to
+    # trust.
+    derived_holdout = [int(season) for season in config["holdout_seasons"]]
+    frozen_holdout = [int(season) for season in deploy_gate.HOLDOUT_SEASONS]
+    if derived_holdout != frozen_holdout:
+        msg = (
+            f"'{target}' incumbent metadata ('{metadata_path}') records holdout "
+            f"{derived_holdout}, which is not the frozen gate holdout {frozen_holdout}. The "
+            "candidate would be trained over seasons the gate scores it on, comparing an "
+            "in-sample candidate against an out-of-sample baseline. Re-freeze or restore the "
+            "metadata deliberately; never widen a window to make this pass."
+        )
+        raise ValueError(msg)
+
     return window
 
 
@@ -300,6 +374,7 @@ def _build_train_argv(
     staging_dir: Path,
     window: dict[str, str],
     exclude_groups: list[str],
+    exclusion_provenance: str = "none",
 ) -> list[str]:
     """Build the STEP 1 ``models.train`` argv for ONE target.
 
@@ -319,6 +394,10 @@ def _build_train_argv(
         staging_dir: The staging artifacts root -- never production (D24-08).
         window: The derived window from ``_incumbent_window``.
         exclude_groups: The resolved Stage-2 exclusion list (may be empty).
+        exclusion_provenance: ``"verdict"``, ``"override"`` or ``"none"`` -- passed through
+            so the trained artifact's own metadata records whether the exclusion was
+            ratified or hand-typed (WR-04). This function already knew it; it was
+            previously dropped on the floor at the argv boundary.
 
     Returns:
         The argv list for ``subprocess.run``.
@@ -339,6 +418,8 @@ def _build_train_argv(
         window["holdout"],
         "--exclude-groups",
         ",".join(exclude_groups),
+        "--exclude-groups-provenance",
+        exclusion_provenance,
     ]
 
 
@@ -1081,9 +1162,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for target in _TARGETS:
             windows[target] = _incumbent_window(target, args.artifacts_dir)
-    except (FileNotFoundError, KeyError) as exc:
+    except (FileNotFoundError, KeyError, ValueError) as exc:
         if not args.skip_train:
-            # A window that cannot be derived is a STOP, never a default (D30-12).
+            # A window that cannot be derived -- or one whose holdout contradicts the frozen
+            # gate holdout (WR-02) -- is a STOP, never a default (D30-12).
             raise
         # --skip-train trains nothing, so an underivable window is not fatal here; say so.
         windows = {}
@@ -1114,7 +1196,11 @@ def main(argv: list[str] | None = None) -> int:
         # actually runs (SPEC R5).
         for target in _TARGETS:
             argv_train = _build_train_argv(
-                target, args.staging_dir, windows[target], exclude_groups
+                target,
+                args.staging_dir,
+                windows[target],
+                exclude_groups,
+                exclusion_provenance,
             )
             print(f"  Training {target.upper()} candidate: {' '.join(argv_train[2:])}")
             subprocess.run(argv_train, check=True)
