@@ -128,7 +128,7 @@ gated re-fit.
 
 ### Prediction outputs
 - **Win Probability (WP)** — calibrated home-team win probability from a
-  `LogisticRegression` + `StandardScaler` + `IsotonicRegression` pipeline.
+  `LogisticRegression` + `StandardScaler` + `PlattCalibrator` pipeline.
   Calibration is fit on the HP-validation fold, never on training data.
 - **Against the Spread (ATS)** — predicted home margin from an `XGBRegressor`,
   converted to cover probabilities via an empirical `ResidualDistributionConverter`.
@@ -226,7 +226,7 @@ partials, CSV + JSON exports, and a `/health` endpoint.
               v
    +---------------------------------------------------------------------------------------+
    | Model training  (walk-forward; Optuna TPE + Hyperband; SQLite studies)                |
-   |   WP  : LogReg + StandardScaler + IsotonicRegression (calibrated on HP-val fold)      |
+   |   WP  : LogReg + StandardScaler + Platt scaling (calibrated on HP-val fold)           |
    |   ATS : XGBRegressor(margin) -> ResidualDistributionConverter -> cover prob.          |
    |   O/U : XGBRegressor(total)  -> TotalDistributionConverter    -> over/under prob.     |
    |   Artifacts: artifacts/{target}_{UTCtimestamp}/ + artifacts/latest.json manifest      |
@@ -351,7 +351,7 @@ retained. The per-target before/after and both pre-swap mappings are in
 | Dataframes | pandas | `>=2.2, <3` |
 | Analytics DB | DuckDB | `>=1.5, <2` |
 | Columnar IO | pyarrow | `>=18.0` |
-| WP model | scikit-learn `LogisticRegression` + `IsotonicRegression` | `>=1.8, <2` |
+| WP model | scikit-learn `LogisticRegression` + Platt-scaled calibration | `>=1.8, <2` |
 | ATS / O/U model | XGBoost `XGBRegressor` | `>=3.2, <4` |
 | Hyperparameter tuning | Optuna (TPE + Hyperband, SQLite studies) | `==4.8.0` (pinned exact) |
 | Web framework | FastAPI | `>=0.115, <1` |
@@ -527,7 +527,7 @@ nfl-predict/
   models/
     trainers/              # v2.0 Optuna-driven trainers (base, wp, ats, ou)
     temporal.py, tuning.py # WalkForwardSplitter + OptunaTuner (TPE + Hyperband)
-    calibrate.py           # IsotonicRegression primary, Platt fallback, ECE
+    calibrate.py           # Platt + isotonic calibrators, ECE (WP trainer selects Platt)
     blending.py            # BlendWeights + DynamicBlendWeights + MarketBlender
     blending_data.py       # TUNING_SEASONS (pre-2018) — strict temporal isolation
     clv.py                 # Probability CLV + line CLV (primary quality metric)
