@@ -700,6 +700,119 @@ def measure_ats_residual_bias(
 
 
 # ---------------------------------------------------------------------------
+# Task 3 -- pre-ingest integrity gates (DEFECT-2 and DEFECT-3).
+#
+# These are the gates Plan 31-11 runs BEFORE the only silver write in this phase. They live
+# here rather than in a test so the production write path can call them; the tests in
+# tests/integration/test_ingest_2025_odds.py prove they fire.
+# ---------------------------------------------------------------------------
+
+# SPEC R2's completeness floor for the one-shot 2025 population: 285 games carrying a total
+# (272 REG + 13 playoff, per nflreadpy's 2025 schedule). Fewer than this, or zero rows at all,
+# is a HARD STOP before anything touches gold.
+MIN_2025_GAMES_WITH_TOTAL = 285
+
+
+def assert_no_synthetic_game_ids(
+    odds_df: pd.DataFrame,
+    features_ou_df: pd.DataFrame,
+) -> None:
+    """Raise ``ValueError`` if any odds ``game_id`` is synthetic or has no gold counterpart.
+
+    The OUM-06 provenance guard (``backtest.ou_divergence.assert_real_odds`` plus
+    ``_ALLOWED_SPORTSBOOKS``) checks the SPORTSBOOK. That is exactly the hole DEFECT-3 names:
+    the hand-written ``2025_W01_TEST@HOME`` row sitting in production silver carries the
+    legitimate sportsbook ``draftkings`` while its ``game_id`` is not a team pair, so the
+    allowlist ADMITS it. A sportsbook allowlist cannot be the gate for a forged game id.
+
+    Two failure classes, both named in the message so the offending rows can be found:
+
+    * MALFORMED -- the id does not match ``utils.game_id_utils.GAME_ID_PATTERN``.
+    * ORPHAN -- the id is well-formed but names no game in ``features_ou``. Such a row is
+      "most likely" dropped by an inner join downstream, and "most likely" is not a guarantee;
+      relying on join semantics to discard a forged row is an accident, not a control.
+
+    Args:
+        odds_df: The odds rows about to enter the population. Must carry ``game_id``.
+        features_ou_df: The gold O/U feature matrix the ids must exist in.
+
+    Raises:
+        ValueError: naming every malformed and every orphan id.
+    """
+    from utils.game_id_utils import GAME_ID_PATTERN
+
+    if "game_id" not in odds_df.columns:
+        msg = "odds frame has no 'game_id' column; the synthetic-id gate cannot run."
+        raise ValueError(msg)
+
+    ids = odds_df["game_id"].astype(str)
+    malformed = sorted({gid for gid in ids if not GAME_ID_PATTERN.match(gid)})
+
+    known = set(features_ou_df["game_id"].astype(str))
+    orphans = sorted(
+        {gid for gid in ids if GAME_ID_PATTERN.match(gid) and gid not in known}
+    )
+
+    if malformed or orphans:
+        msg = (
+            "synthetic or unjoinable odds game_id detected before ingest "
+            f"(DEFECT-3, T-31-06). MALFORMED (fail GAME_ID_PATTERN): {malformed}. "
+            f"ORPHAN (well-formed but absent from features_ou): {orphans}. "
+            "The OUM-06 sportsbook allowlist provably does not catch these -- a forged "
+            "game_id with a legitimate sportsbook passes it. Remove these rows as a named "
+            "pre-ingest step; do NOT rely on an inner join to drop them."
+        )
+        raise ValueError(msg)
+
+
+def assert_2025_odds_completeness(
+    odds_df: pd.DataFrame,
+    season: int = 2025,
+    min_games_with_total: int = MIN_2025_GAMES_WITH_TOTAL,
+) -> int:
+    """Raise ``ValueError`` unless the *season* slice carries enough games with a total.
+
+    SPEC R2: an ingest that yields ZERO rows, or fewer than
+    :data:`MIN_2025_GAMES_WITH_TOTAL` games carrying a total, is a HARD STOP BEFORE anything
+    touches gold. An empty or thin 2025 population would otherwise flow into the one-shot run
+    and produce a verdict measured on a season that was never really there -- and the run can
+    only be spent once.
+
+    Args:
+        odds_df: The odds rows about to enter the population.
+        season: The season being gated (2025 for the one-shot run).
+        min_games_with_total: The floor on DISTINCT game_ids carrying a non-null total.
+
+    Returns:
+        The measured count of distinct game_ids carrying a total.
+
+    Raises:
+        ValueError: on an empty frame or a count below the floor.
+    """
+    if odds_df.empty:
+        msg = (
+            f"the {season} odds ingest yielded ZERO rows. SPEC R2 HARD STOPS here, before "
+            "anything touches gold: a one-shot verdict cannot be measured on an empty season."
+        )
+        raise ValueError(msg)
+
+    slice_ = odds_df[odds_df["game_id"].astype(str).str.startswith(f"{season}_")]
+    with_total = slice_[slice_["total"].notna()]
+    n_games = int(with_total["game_id"].nunique())
+
+    if n_games < min_games_with_total:
+        msg = (
+            f"the {season} odds population carries only {n_games} games with a total, below "
+            f"the SPEC R2 floor of {min_games_with_total}. HARD STOP before touching gold -- "
+            "a thin population would produce a verdict on a season that was not really there, "
+            "and the 2025 hold can only be spent once."
+        )
+        raise ValueError(msg)
+
+    return n_games
+
+
+# ---------------------------------------------------------------------------
 # Report assembly and CLI.
 # ---------------------------------------------------------------------------
 

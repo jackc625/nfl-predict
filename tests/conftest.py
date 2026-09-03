@@ -46,6 +46,11 @@ _EVIDENCE_SKIP_MARKERS = (
     "absent",
     "not built on this checkout",
     "not populated",
+    # Plan 31-02: the live nflreadpy 2025 schedule is an EXTERNAL run record, absent on an
+    # offline checkout exactly as a gitignored one is. The Wave-0 completeness gate that
+    # reads it is a control, so its non-run must be named rather than counted as an ordinary
+    # environment skip.
+    "could not be loaded on this checkout",
 )
 
 _SKIP_REASON_RE = re.compile(r"^Skipped: (.*)$", re.DOTALL)

@@ -53,6 +53,13 @@ _REAL_EVIDENCE_SKIP_REASONS = [
         "artifacts/ is gitignored and absent on this checkout, so the deployed-artifact "
         "residue control did not run"
     ),
+    # Plan 31-02's Wave-0 pre-ingest gates.
+    "live silver odds not present at data/silver/odds_snapshot.parquet",
+    "live gold absent (features_ou) -- data/ is gitignored runtime state.",
+    (
+        "the live nflreadpy 2025 schedule could not be loaded on this checkout "
+        "(offline or upstream unavailable)"
+    ),
 ]
 
 # Skips that are NOT about absent evidence. A platform guard or an optional dependency
