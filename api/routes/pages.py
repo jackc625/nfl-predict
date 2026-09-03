@@ -9,6 +9,7 @@ Routes:
     GET /backtest    -- Backtest analysis with Plotly charts
     GET /insights    -- Model insights (calibration, feature importance, vs market)
     GET /betting     -- Betting dashboard (KPI strip, equity, ROI, edge; scope toggle)
+    GET /bets        -- Weekly bet list (ranked +EV bets, units, EV band; week selector)
     GET /games/{id}  -- Game detail drill-down (feature importance, market comparison)
 """
 
@@ -250,6 +251,83 @@ def _build_season_context(
         "available_seasons": service.get_prediction_seasons(),
         "current_season": season,
         "current_path": "/season",
+        "cache_meta": service.get_cache_meta(),
+    }
+
+
+def _parse_int_param(raw: str | None) -> int | None:
+    """Parse a raw query-string integer defensively, returning None on anything else.
+
+    Mirrors the ``season_tracking_page`` convention: an unparseable value (``?week=abc``)
+    degrades to the dynamic default rather than raising a 422 (WR-02). The whitelist in
+    :func:`_normalize_week` still holds -- a non-int can never reach a SQL parameter.
+    """
+    if raw is None:
+        return None
+    candidate = raw.strip().lstrip("-")
+    return int(raw) if candidate.isdigit() else None
+
+
+def _normalize_week(
+    service: DataService, season: int | None, week: int | None
+) -> tuple[int | None, int | None]:
+    """Whitelist ``(season, week)`` against the SCHEDULE-derived bet tables (T-31-01, REVIEW-NAV).
+
+    The SINGLE chokepoint for the only untrusted input on ``/bets``. Both values are constrained
+    to what ``get_bet_seasons`` / ``get_available_bet_weeks`` returned BEFORE any cache key or SQL
+    parameter is built, so a tampered query string can only ever select a real scheduled week.
+
+    Resolution order:
+
+    * ``season`` in the available set passes through; anything else (including ``None``) falls
+      back to the latest available season -- never a hardcoded year.
+    * ``week`` in that season's available set passes through; anything else falls back to the
+      latest available week of the resolved season.
+    * When ``available_bet_weeks`` is EMPTY the pair resolves to ``(None, None)`` so the page
+      renders its no-current-week empty state. It deliberately does NOT fall back to
+      ``get_available_weeks`` / ``get_available_seasons``: those read ``predictions`` and
+      ``backtest_metrics``, which would reintroduce exactly the dependency the schedule-derived
+      tables exist to remove (REVIEW-NAV).
+    """
+    available_seasons = service.get_bet_seasons()
+    if not available_seasons:
+        return None, None
+
+    resolved_season = season if season in available_seasons else available_seasons[0]
+
+    weeks = service.get_available_bet_weeks(season=resolved_season)
+    if not weeks:
+        return resolved_season, None
+
+    valid_weeks = {row["week"] for row in weeks}
+    resolved_week = week if week in valid_weeks else weeks[0]["week"]
+    return resolved_season, resolved_week
+
+
+def _build_bets_context(
+    service: DataService,
+    season: int | None,
+    week: int | None,
+    request: Request,
+) -> dict[str, Any]:
+    """Assemble the ``/bets`` template context from cached blobs ONLY.
+
+    Every value is read straight out of the DuckDB cache: the ranked bet rows, the
+    schedule-derived navigation lists, the per-week freeze, and the cache stamp. ZERO metric
+    logic runs here -- the EV, the stake in units and the EV band were all computed by the
+    selector and written by ``api.cache.materialize_bet_list`` (UIAP-01, SPEC R5). Shared by the
+    page handler and (from Plan 31-15) the fragment handler, so the cached-read contract lives in
+    one place and cannot drift between them.
+    """
+    return {
+        "request": request,
+        "bets": service.get_bet_list(season, week),
+        "available_bet_weeks": service.get_available_bet_weeks(season=season),
+        "bet_seasons": service.get_bet_seasons(),
+        "current_season": season,
+        "current_week": week,
+        "bet_week_freeze": service.get_bet_week_freeze(season, week),
+        "current_path": "/bets",
         "cache_meta": service.get_cache_meta(),
     }
 
@@ -569,6 +647,45 @@ def betting_page(
     block_name = "betting_content" if request.headers.get("HX-Request") else None
     template_response = templates.TemplateResponse(
         request, "pages/betting.html", context, block_name=block_name
+    )
+    template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
+    return template_response
+
+
+@router.get("/bets")
+def bets_page(
+    request: Request,
+    season: str | None = Query(None),
+    week: str | None = Query(None),
+    service: DataService = Depends(get_data_service),
+):
+    """Serve the Weekly Bet List page (D31-25, SPEC R5).
+
+    ONE page carrying the not-advice banner and the ranked live bet list, reached by ONE new nav
+    item. Rows are rendered exactly as the selector produced them -- per-bet EV descending, ties
+    broken ``(season, week, game_id, target)`` -- with the stake in UNITS and the pre-registered
+    EV band. There is NO computation on the request path: this handler reads cached blobs only,
+    and ``tests/api/test_import_guard_bets.py`` makes that mechanically checkable by forbidding
+    any new ``backtest`` import under ``api/``.
+
+    ``season`` and ``week`` are the only untrusted input and are whitelisted at the single
+    ``_normalize_week`` chokepoint against the SCHEDULE-derived ``available_bet_weeks`` table
+    before any SQL parameter is built (T-31-01). They are accepted as raw strings, mirroring
+    ``season_tracking_page``, so an unparseable value degrades to the dynamic default rather than
+    raising a 422.
+
+    On an HX-Request the handler returns only the ``bets_content`` block, so a full navigation to
+    ``/bets?season=&week=`` and a fragment swap share one code path. Cache-Control is set on the
+    returned TemplateResponse (Phase 15 D-07).
+    """
+    season_resolved, week_resolved = _normalize_week(
+        service, _parse_int_param(season), _parse_int_param(week)
+    )
+    context = _build_bets_context(service, season_resolved, week_resolved, request)
+
+    block_name = "bets_content" if request.headers.get("HX-Request") else None
+    template_response = templates.TemplateResponse(
+        request, "pages/bets.html", context, block_name=block_name
     )
     template_response.headers["Cache-Control"] = PAGE_CACHE_CONTROL
     return template_response

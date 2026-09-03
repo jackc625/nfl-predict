@@ -1,0 +1,13 @@
+{# Not-advice banner. No parameters -- the copy is fixed authored prose.
+
+   PERSISTENT and NON-DISMISSABLE by construction: no close button, no `hidden` class, no JS, and
+   no conditional wrapper. It is server-rendered inside <main>, ABOVE the section _error_state.html
+   replaces, so it is present in the first byte of every response and survives every empty state,
+   the stale-cache hard-block, and every HTMX swap (UI-SPEC E1 loading/error).
+
+   Gray, not red and not amber: a red banner reads as an error and gets dismissed mentally after
+   two visits; this statement is permanent, not an alert. #}
+<aside role="note" class="bg-gray-50 border-l-4 border-gray-500 p-4 mb-6">
+  <p class="text-xs font-semibold text-gray-700 uppercase tracking-wide">Not wagering advice</p>
+  <p class="text-sm text-gray-700 max-w-2xl mt-2">This is a personal research tool. No wager is placed and no currency amount is shown -- stakes are expressed in units, where 1 unit = 1% of a notional bankroll. The deployed models have not demonstrated a positive edge against the closing market: the win-probability model's pooled closing-line value is negative, and the spread and totals models were retained after failing their most recent re-fit gate. A bet appearing on this list means it cleared a pre-registered expected-value floor, not that it is expected to win.</p>
+</aside>

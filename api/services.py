@@ -40,6 +40,7 @@ from typing import Any
 import duckdb
 from cachetools import TTLCache
 
+from api.cache import BET_LIST_COLUMNS
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -125,6 +126,12 @@ _BACKTEST_PREDICTIONS_COLUMNS = (
 _SIMULATION_RESULTS_COLUMNS = "strategy, metric_name, metric_value"
 
 _EQUITY_CURVE_COLUMNS = "strategy, bet_index, bankroll"
+
+# The bet-list SELECT list is DERIVED from ``api.cache.BET_LIST_COLUMNS`` rather than re-typed, so
+# the locked 28-column order has exactly one source and a schema change cannot drift the reader
+# away from the writer. ``api.cache`` is a sibling API module (no ``backtest`` import is involved,
+# so the UIAP-01 guards are unaffected).
+_BET_LIST_COLUMNS_SQL = ", ".join(BET_LIST_COLUMNS)
 
 
 def _parse_json_or_default(value: Any, default: Any) -> Any:
@@ -582,6 +589,144 @@ class DataService:
             "SELECT DISTINCT season FROM predictions ORDER BY season DESC"
         )
         return [row[0] for row in result.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Bet list (Phase 31 -- PROD-02, D31-20/26/28)
+    # ------------------------------------------------------------------
+
+    def get_bet_list(
+        self, season: int | None, week: int | None
+    ) -> list[dict[str, Any]]:
+        """Return the LIVE bet-list rows for *season* / *week*, ranked per D31-28.
+
+        Order is per-bet EV DESCENDING, ties broken by ``(season, week, game_id, target)`` -- the
+        SPEC R5 tie-break, so two requests render byte-identical order. ZERO computation happens
+        here or in the route: every number was precomputed by the selector and written by
+        ``api.cache.materialize_bet_list`` (UIAP-01).
+        """
+        key = ("bet_list", season, week)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_bet_list_uncached(season, week)
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_bet_list_uncached(
+        self, season: int | None, week: int | None
+    ) -> list[dict[str, Any]]:
+        query = f"SELECT {_BET_LIST_COLUMNS_SQL} FROM bet_list WHERE status = 'live'"
+        params: list[Any] = []
+        if season is not None:
+            query += " AND season = ?"
+            params.append(season)
+        if week is not None:
+            query += " AND week = ?"
+            params.append(week)
+        query += " ORDER BY per_bet_ev DESC NULLS LAST, season, week, game_id, target"
+
+        try:
+            result = self._conn.execute(query, params)
+        except duckdb.Error:
+            # The cache predates Phase 31 (no bet_list table). The route renders the
+            # cache-absent empty state rather than 500ing.
+            logger.warning("bet_list table not available in cache")
+            return []
+        columns = [desc[0] for desc in result.description]
+        return [dict(zip(columns, row)) for row in result.fetchall()]
+
+    def get_available_bet_weeks(
+        self, season: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Return SCHEDULE-derived (season, week, game_count) rows, latest first (REVIEW-NAV).
+
+        Reads ``available_bet_weeks`` ONLY. It never falls back to ``get_available_weeks``:
+        that getter reads ``predictions``, so a scheduled week carrying no prediction row would
+        vanish from navigation -- exactly the dependency this table exists to remove.
+        """
+        key = ("available_bet_weeks", season)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_available_bet_weeks_uncached(season)
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_available_bet_weeks_uncached(
+        self, season: int | None
+    ) -> list[dict[str, Any]]:
+        query = "SELECT season, week, game_count FROM available_bet_weeks"
+        params: list[Any] = []
+        if season is not None:
+            query += " WHERE season = ?"
+            params.append(season)
+        query += " ORDER BY season DESC, week DESC"
+
+        try:
+            result = self._conn.execute(query, params)
+        except duckdb.Error:
+            logger.warning("available_bet_weeks table not available in cache")
+            return []
+        columns = [desc[0] for desc in result.description]
+        return [dict(zip(columns, row)) for row in result.fetchall()]
+
+    def get_bet_seasons(self) -> list[int]:
+        """Return the distinct SCHEDULE-derived bet seasons, latest first (REVIEW-NAV).
+
+        Reads ``available_bet_weeks`` ONLY -- never ``get_available_seasons``, which reads
+        ``backtest_metrics`` and therefore cannot see a scheduled-but-unbacktested season.
+        """
+        key = ("bet_seasons",)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_bet_seasons_uncached()
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_bet_seasons_uncached(self) -> list[int]:
+        try:
+            result = self._conn.execute(
+                "SELECT DISTINCT season FROM available_bet_weeks ORDER BY season DESC"
+            )
+        except duckdb.Error:
+            logger.warning("available_bet_weeks table not available in cache")
+            return []
+        return [row[0] for row in result.fetchall()]
+
+    def get_bet_week_freeze(self, season: int | None, week: int | None) -> Any | None:
+        """Return the latest per-game freeze instant for *season* / *week*, or None.
+
+        The SCHEDULE-derived freshness source the Plan 31-18 stale-cache hard-block compares the
+        cache stamp against (REVIEW-STALE). Returns None when the table is absent or the week has
+        no row -- never a fallback to a bet-row-derived freeze, because the failure being guarded
+        is a MISSING bet-list insertion.
+        """
+        key = ("bet_week_freeze", season, week)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_bet_week_freeze_uncached(season, week)
+        if result is not None:
+            _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_bet_week_freeze_uncached(
+        self, season: int | None, week: int | None
+    ) -> Any | None:
+        if season is None or week is None:
+            return None
+        try:
+            result = self._conn.execute(
+                "SELECT latest_game_freeze_ts FROM bet_week_freeze "
+                "WHERE season = ? AND week = ?",
+                [season, week],
+            )
+        except duckdb.Error:
+            logger.warning("bet_week_freeze table not available in cache")
+            return None
+        row = result.fetchone()
+        return row[0] if row else None
 
     def get_cache_meta(self) -> dict[str, Any]:
         """Fetch all cache metadata as a dict."""

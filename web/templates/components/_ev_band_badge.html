@@ -1,0 +1,18 @@
+{# EV band badge pill. Pass: band ("high" / "medium" / "low").
+
+   MONOCHROME on purpose (UI-SPEC Deviation 1). This is NOT _confidence_badge.html and must never
+   reuse it: that partial maps high/medium/low to green/amber/red, and on this page green already
+   means "this bet won" in the tracker below. An EV band is a pre-registered arithmetic band on
+   expected value (D31-24) -- not a probability of winning and not a quality claim -- and the
+   project has not measured a positive edge to justify a green signal.
+
+   Fill WEIGHT encodes magnitude; hue encodes nothing. The pill geometry is identical to
+   _confidence_badge.html so the page still looks like the rest of the app, and the badge is
+   whitespace-nowrap inside an already whitespace-nowrap cell so it never wraps mid-label. #}
+{% if band == "high" %}
+<span class="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-200 text-gray-900 border border-gray-300" title="EV band high: expected value at or above 5.0% per unit staked">high<span class="sr-only"> -- EV band high: expected value at or above 5.0% per unit staked</span></span>
+{% elif band == "medium" %}
+<span class="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 border border-gray-200" title="EV band medium: expected value from 3.0% up to 5.0% per unit staked">medium<span class="sr-only"> -- EV band medium: expected value from 3.0% up to 5.0% per unit staked</span></span>
+{% else %}
+<span class="inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-semibold bg-white text-gray-600 border border-gray-300" title="EV band low: expected value from the pre-registered floor up to 3.0% per unit staked">low<span class="sr-only"> -- EV band low: expected value from the pre-registered floor up to 3.0% per unit staked</span></span>
+{% endif %}

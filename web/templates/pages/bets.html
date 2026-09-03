@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Weekly Bet List{% endblock %}
+{% block content %}
+
+{# ------------------------------------------------------------------------ #}
+{# Rank 0: the not-advice banner.                                            #}
+{# It is included HERE -- above every conditional branch and OUTSIDE the      #}
+{# bets_content swap target -- so it is present in the first byte of every    #}
+{# response, in every empty state, and in the stale-cache hard-block          #}
+{# (UI-SPEC E1). Do not move it inside the block.                             #}
+{# ------------------------------------------------------------------------ #}
+{% include "components/_not_advice_banner.html" %}
+
+<div class="mb-6">
+  <h1 class="text-xl font-semibold text-gray-900 mb-1">Weekly Bet List</h1>
+  <p class="text-sm text-gray-500 max-w-2xl">Every scheduled game is evaluated for all three bet types. Bets that clear the pre-registered expected-value floor are listed here; every candidate that did not is listed below with its reason.</p>
+</div>
+
+{# HTMX swap target: the fragment route returns exactly this block. #}
+<div id="bets-content">
+{% block bets_content %}
+
+{# The swap indicator. It occupies the swap target during a week change so the
+   swap causes no layout shift, mirroring the shipped _betting_scope_toggle.html
+   spinner pattern rather than inventing a second one (UI-SPEC E2 loading). #}
+<div id="bets-loading" class="htmx-indicator">
+  {% with variant="table" %}
+    {% include "components/_loading_skeleton.html" %}
+  {% endwith %}
+</div>
+
+<section class="mb-8" hx-indicator="#bets-loading">
+  <div class="mb-4">
+    <h2 class="text-base font-semibold text-gray-900">
+      Live bets{% if current_season and current_week %} -- {{ current_season }} Week {{ current_week }}{% endif %}
+    </h2>
+  </div>
+
+  {% if current_week is none %}
+    {% with heading="No current week", body="No scheduled week is available to evaluate. Use the week selector to review a completed week.", action_text=none, action_url=none %}
+      {% include "components/_empty_state.html" %}
+    {% endwith %}
+  {% elif not bets %}
+    {% with heading="No bets cleared the floor this week", body="Every scheduled game was evaluated and no candidate cleared the pre-registered expected-value floor. An empty list is a result, not a failure or an outage.", action_text=none, action_url=none %}
+      {% include "components/_empty_state.html" %}
+    {% endwith %}
+  {% else %}
+  {# Bet-type label vocabulary. The raw wp / ats / ou codes are NEVER rendered --
+     this is the exact wording betting.html already uses. #}
+  {% set BET_TYPE_LABELS = {"wp": "Winner", "ats": "Spread", "ou": "Totals"} %}
+  <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
+    {# overflow-x-auto + whitespace-nowrap numeric cells: the shipped betting.html
+       ROI-table pattern. Horizontal scroll on narrow viewports, never a squeezed
+       or clipped column (UI-SPEC E2 overflow). #}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50">
+          <tr>
+            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">#</th>
+            <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Matchup</th>
+            <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Bet type</th>
+            <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Pick</th>
+            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">Line</th>
+            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">EV %</th>
+            <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">EV band</th>
+            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap" title="1 unit = 1% of a notional bankroll">Stake (units)</th>
+            <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">Line as of</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {# Order is fixed by the cache query (per-bet EV descending, ties broken
+             season, week, game_id, target). No sort control is offered, so a reader
+             cannot re-rank away from the pre-registered order (D31-28). #}
+          {% for bet in bets %}
+          <tr class="hover:bg-gray-50 transition-colors">
+            <td class="px-4 py-3 text-right stat-num whitespace-nowrap text-gray-500">{{ loop.index }}</td>
+            <td class="px-4 py-3 text-left whitespace-nowrap">
+              <a href="/games/{{ bet.game_id }}" class="text-nfl-primary hover:underline">{{ bet.game_id.split('_')[-1].replace('@', ' @ ') }}</a>
+            </td>
+            <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</td>
+            <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">
+              {%- if bet.target == "wp" -%}
+                {{ bet.bet_side }}
+              {%- else -%}
+                {{ bet.bet_side|capitalize }} {{ "%g"|format(bet.line) if bet.line is not none else "" }}
+              {%- endif -%}
+            </td>
+            <td class="px-4 py-3 text-right stat-num whitespace-nowrap">{{ "%.1f"|format(bet.line) if bet.line is not none else "--" }}</td>
+            {# per_bet_ev is stored as a FRACTION of stake; the x100 below is a unit
+               render (fraction -> percent) under a "EV %" header, not a derivation.
+               No metric is recomputed on the request path (UIAP-01). #}
+            <td class="px-4 py-3 text-right stat-num whitespace-nowrap font-semibold">{{ "%+.2f"|format(bet.per_bet_ev * 100) }}%</td>
+            <td class="px-4 py-3 text-left whitespace-nowrap">
+              {% with band=bet.ev_tier %}
+                {% include "components/_ev_band_badge.html" %}
+              {% endwith %}
+            </td>
+            <td class="px-4 py-3 text-right stat-num whitespace-nowrap">{{ "%.2f"|format(bet.stake_units) }}</td>
+            <td class="px-4 py-3 text-right stat-num text-xs whitespace-nowrap text-gray-500">{{ bet.snapshot_ts or "--" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <p class="text-xs text-gray-500 mt-3 max-w-2xl">Stakes are quarter-Kelly, capped at 5% of bankroll per bet and 10% across all bets in a week pooled over all three bet types, then de-weighted where bets on the same game or the same side are correlated. Order is by expected value, not by stake -- a capped bet can outrank a larger one.</p>
+  {% endif %}
+</section>
+
+{% endblock %}
+</div>
+{% endblock %}

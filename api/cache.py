@@ -154,27 +154,74 @@ CREATE TABLE IF NOT EXISTS cache_meta (
     updated_at TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS ou_bet_list (
+CREATE TABLE IF NOT EXISTS bet_list (
+    -- IMMUTABLE recommendation facts (BET_LIST_IMMUTABLE_COLUMNS, 22) --------------
     game_id VARCHAR,
     season INTEGER,
     week INTEGER,
+    target VARCHAR,
     bet_side VARCHAR,
-    totals_regime VARCHAR,
-    subpop_label VARCHAR,
-    model_total DOUBLE,
-    closing_total DOUBLE,
+    model_value DOUBLE,
+    market_value DOUBLE,
+    line DOUBLE,
+    slipped_line DOUBLE,
     calibrated_p_side DOUBLE,
     per_bet_ev DOUBLE,
-    slipped_line DOUBLE,
-    kelly_stake DOUBLE,
+    stake_units DOUBLE,
+    ev_tier VARCHAR,
+    status VARCHAR,
+    rejection_reason VARCHAR,
+    eligibility_label VARCHAR,
+    snapshot_ts VARCHAR,
+    freeze_ts VARCHAR,
+    selected_odds DOUBLE,
+    flat_stake DOUBLE,
+    provenance VARCHAR,
+    validation_type VARCHAR,
+    -- MUTABLE grading facts (BET_LIST_GRADING_COLUMNS, 6) --------------------------
+    grading_status VARCHAR,
     outcome BOOLEAN,
     clv DOUBLE,
-    validation_type VARCHAR
-    -- No PRIMARY KEY (mirrors betting_bets WR-02): a flat per-bet O/U ledger so a
-    -- re-bet on a game is never silently dropped. This is the SECOND consumer of the
-    -- BetSelector decision blob (Phase 27, BET-01). Phase 31 reads this table for the
-    -- bet list. validation_type carries PROVISIONAL_CONTAMINATED so a burned-holdout
-    -- bet can never be read as a clean proof (#6, D27-01).
+    payout_flat DOUBLE,
+    realized_units DOUBLE,
+    graded_at TIMESTAMP
+    -- No PRIMARY KEY (mirrors betting_bets WR-02): a flat per-bet ledger so multiple
+    -- bets on one game_id are permitted and a re-bet is never silently dropped. A
+    -- (game_id, target) PK would let INSERT OR REPLACE drop a same-target re-bet.
+    -- This is the target-agnostic Phase-31 bet list (D31-20). It REPLACES the
+    -- 0-row, 0-reader ou_bet_list table retired in the same commit.
+);
+
+CREATE TABLE IF NOT EXISTS available_bet_weeks (
+    season INTEGER,
+    week INTEGER,
+    game_count INTEGER
+    -- SCHEDULE-derived navigation (REVIEW-NAV). get_available_weeks reads predictions
+    -- and get_available_seasons reads backtest_metrics, so a scheduled week with no
+    -- prediction row would be absent from /bets navigation rather than selectable.
+);
+
+CREATE TABLE IF NOT EXISTS bet_week_freeze (
+    season INTEGER,
+    week INTEGER,
+    latest_game_freeze_ts TIMESTAMP
+    -- SCHEDULE-derived freshness source (REVIEW-STALE). The failure the stale-cache
+    -- block guards is a MISSING bet-list insertion, in which state there may be no
+    -- bet rows to read a freeze from -- so the freeze must not come from bet rows.
+);
+
+CREATE TABLE IF NOT EXISTS bet_tracker_blocks (
+    provenance VARCHAR,
+    validation_type VARCHAR,
+    bets_graded INTEGER,
+    wins INTEGER,
+    losses INTEGER,
+    pushes INTEGER,
+    hit_rate DOUBLE,
+    flat_return_units DOUBLE
+    -- PRECOMPUTED tracker blocks. The aggregation lives in backtest/bet_tracker.py and
+    -- is called from pipeline/steps.py. api/cache.py imports no backtest module and
+    -- computes nothing here (REVIEW-IMPORT, UIAP-01).
 );
 """
 
@@ -573,128 +620,497 @@ def _load_betting_bets(
 
 
 # ---------------------------------------------------------------------------
-# O/U BetSelector bet-list materialization (Phase 27, plan 27-04; BET-01, D27-15)
+# Generic bet-list materialization (Phase 31, plan 31-01; PROD-02, D31-20/22)
 # ---------------------------------------------------------------------------
 
-# The LOCKED column order for the sibling ou_bet_list table (mirrors the CREATE TABLE block above).
-# The explicit-column INSERT spells this order out so the write is NEVER positional (#9, T-27-24):
-# a shuffled input DataFrame still lands every value in the correct column. This list is the single
-# source of the column order shared by the schema, the INSERT, and the smoke test.
-OU_BET_LIST_COLUMNS: list[str] = [
+# The LOCKED column order, spelled in TWO named DISJOINT halves whose concatenation IS
+# BET_LIST_COLUMNS. WHY the split (REVIEW-FWD-GRADE): a forward row is written at freeze, when the
+# result does not yet exist. If the WHOLE row were immutable the row could never be graded and the
+# self-grading honesty loop would be silently disabled. So the RECOMMENDATION facts below are
+# immutable -- once written they are the record of what was recommended and when -- and the GRADING
+# facts are the ONLY ones permitted to transition, and only out of ``pending``.
+BET_LIST_IMMUTABLE_COLUMNS: list[str] = [
     "game_id",
     "season",
     "week",
+    "target",
     "bet_side",
-    "totals_regime",
-    "subpop_label",
-    "model_total",
-    "closing_total",
+    "model_value",
+    "market_value",
+    "line",
+    "slipped_line",
     "calibrated_p_side",
     "per_bet_ev",
-    "slipped_line",
-    "kelly_stake",
-    "outcome",
-    "clv",
+    "stake_units",
+    "ev_tier",
+    "status",
+    "rejection_reason",
+    "eligibility_label",
+    "snapshot_ts",
+    "freeze_ts",
+    "selected_odds",
+    "flat_stake",
+    "provenance",
+    "validation_type",
 ]
 
-# The structural honesty label every materialized O/U bet-list row carries (#6, D27-01): a
-# burned-2023-2024-holdout bet can never be read as a clean proof. The binding clean verdict is
-# Phase 30; until then every persisted row is PROVISIONAL_CONTAMINATED.
-_OU_VALIDATION_TYPE_PROVISIONAL = "PROVISIONAL_CONTAMINATED"
+# WHY these six, and not ``outcome`` alone (REVIEW-SCHEMA):
+#   * ``outcome`` alone cannot carry the record. The retired ``materialize_ou_bet_list`` stored BOTH
+#     a push and an ungraded forward game as SQL NULL, which the tracker must tell apart -- so
+#     ``grading_status`` carries an explicit four-state vocabulary (pending / win / loss / push) and
+#     ``outcome`` is retained only as the boolean the existing consumers expect.
+#   * ``outcome`` also cannot yield a flat return under ASYMMETRIC American prices, which is why
+#     ``selected_odds`` / ``flat_stake`` (immutable) and ``payout_flat`` / ``realized_units``
+#     (grading) are stored per row -- exactly as the shipped ``betting_bets`` ledger already does.
+BET_LIST_GRADING_COLUMNS: list[str] = [
+    "grading_status",
+    "outcome",
+    "clv",
+    "payout_flat",
+    "realized_units",
+    "graded_at",
+]
 
-# The standalone CREATE for the sibling table, so materialize_ou_bet_list can run against any
-# connection (the web cache, or an in-memory test DB) without first building the whole CACHE_SCHEMA.
-# This is the SAME definition embedded in CACHE_SCHEMA above (the LOCKED column order + no PK).
-OU_BET_LIST_SCHEMA = """
-CREATE TABLE IF NOT EXISTS ou_bet_list (
+# The single source of the column order shared by the schema, the explicit-column INSERT and the
+# contract tests. 22 immutable + 6 grading = 28.
+BET_LIST_COLUMNS: list[str] = [
+    *BET_LIST_IMMUTABLE_COLUMNS,
+    *BET_LIST_GRADING_COLUMNS,
+]
+
+# The CLOSED four-state grading vocabulary. ``pending`` is an ungraded forward row; ``push`` is a
+# graded tie. Both carry a NULL ``outcome`` and are distinguishable ONLY by this column.
+GRADING_STATUS_PENDING = "pending"
+GRADING_STATUS_WIN = "win"
+GRADING_STATUS_LOSS = "loss"
+GRADING_STATUS_PUSH = "push"
+GRADING_STATUSES: tuple[str, ...] = (
+    GRADING_STATUS_PENDING,
+    GRADING_STATUS_WIN,
+    GRADING_STATUS_LOSS,
+    GRADING_STATUS_PUSH,
+)
+
+# The two orthogonal D31-22 honesty axes.
+PROVENANCE_BACKTEST_REPLAY = "backtest_replay"
+PROVENANCE_FORWARD = "forward"
+VALIDATION_TYPE_CONTAMINATED = "contaminated"
+VALIDATION_TYPE_CLEAN_HOLDOUT = "clean_holdout"
+VALIDATION_TYPE_FORWARD_REALIZED = "forward_realized"
+
+RUN_MODE_REPLAY = "replay"
+RUN_MODE_FORWARD = "forward"
+
+# The contaminated replay window (2021-2024 were burned across Phases 26/27) and the single
+# unburned clean-holdout season this milestone spends exactly once.
+_REPLAY_CONTAMINATED_SEASONS: frozenset[int] = frozenset({2021, 2022, 2023, 2024})
+_REPLAY_CLEAN_HOLDOUT_SEASON = 2025
+
+# The standalone CREATE, so materialize_bet_list can run against any connection (the web cache, or
+# an in-memory test DB) without first building the whole CACHE_SCHEMA. This is the SAME definition
+# embedded in CACHE_SCHEMA above (the LOCKED column order + NO PRIMARY KEY).
+BET_LIST_SCHEMA = """
+CREATE TABLE IF NOT EXISTS bet_list (
     game_id VARCHAR,
     season INTEGER,
     week INTEGER,
+    target VARCHAR,
     bet_side VARCHAR,
-    totals_regime VARCHAR,
-    subpop_label VARCHAR,
-    model_total DOUBLE,
-    closing_total DOUBLE,
+    model_value DOUBLE,
+    market_value DOUBLE,
+    line DOUBLE,
+    slipped_line DOUBLE,
     calibrated_p_side DOUBLE,
     per_bet_ev DOUBLE,
-    slipped_line DOUBLE,
-    kelly_stake DOUBLE,
+    stake_units DOUBLE,
+    ev_tier VARCHAR,
+    status VARCHAR,
+    rejection_reason VARCHAR,
+    eligibility_label VARCHAR,
+    snapshot_ts VARCHAR,
+    freeze_ts VARCHAR,
+    selected_odds DOUBLE,
+    flat_stake DOUBLE,
+    provenance VARCHAR,
+    validation_type VARCHAR,
+    grading_status VARCHAR,
     outcome BOOLEAN,
     clv DOUBLE,
-    validation_type VARCHAR
+    payout_flat DOUBLE,
+    realized_units DOUBLE,
+    graded_at TIMESTAMP
 )
 """
 
+# The two schedule-derived navigation/freshness tables and the precomputed tracker table, in their
+# own LOCKED column orders (same explicit-column INSERT discipline as bet_list).
+AVAILABLE_BET_WEEKS_COLUMNS: list[str] = ["season", "week", "game_count"]
+AVAILABLE_BET_WEEKS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS available_bet_weeks (
+    season INTEGER,
+    week INTEGER,
+    game_count INTEGER
+)
+"""
 
-def materialize_ou_bet_list(
+BET_WEEK_FREEZE_COLUMNS: list[str] = ["season", "week", "latest_game_freeze_ts"]
+BET_WEEK_FREEZE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS bet_week_freeze (
+    season INTEGER,
+    week INTEGER,
+    latest_game_freeze_ts TIMESTAMP
+)
+"""
+
+BET_TRACKER_BLOCK_COLUMNS: list[str] = [
+    "provenance",
+    "validation_type",
+    "bets_graded",
+    "wins",
+    "losses",
+    "pushes",
+    "hit_rate",
+    "flat_return_units",
+]
+BET_TRACKER_BLOCKS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS bet_tracker_blocks (
+    provenance VARCHAR,
+    validation_type VARCHAR,
+    bets_graded INTEGER,
+    wins INTEGER,
+    losses INTEGER,
+    pushes INTEGER,
+    hit_rate DOUBLE,
+    flat_return_units DOUBLE
+)
+"""
+
+# The cache_meta key stamping when the bet list was last materialized. The /bets cache stamp and
+# the Plan 31-18 stale-cache hard-block both read it.
+BET_LIST_POPULATED_AT_KEY = "bet_list_populated_at"
+
+
+def classify_row_provenance(season: int, run_mode: str) -> tuple[str, str]:
+    """Return the two orthogonal D31-22 honesty labels as ``(provenance, validation_type)``.
+
+    They are ORTHOGONAL on purpose: ``provenance`` says HOW the row was produced (a backtest
+    replay of a past week versus a genuine forward recommendation), while ``validation_type`` says
+    what the row is EVIDENCE of (a contaminated split, the single clean 2025 holdout, or a live
+    forward record). Collapsing them into one label is what would let a burned-holdout replay bet
+    be read as a clean proof.
+
+    Args:
+        season: The NFL season of the row.
+        run_mode: ``"replay"`` (a historical week re-selected) or ``"forward"`` (a live week).
+
+    Returns:
+        ``(provenance, validation_type)``.
+
+    Raises:
+        ValueError: on any combination outside the pre-registered vocabulary -- never a silent
+            default, because a defaulted label is exactly the mislabel this function exists to
+            prevent.
+    """
+    if run_mode == RUN_MODE_FORWARD:
+        return PROVENANCE_FORWARD, VALIDATION_TYPE_FORWARD_REALIZED
+
+    if run_mode == RUN_MODE_REPLAY:
+        if season in _REPLAY_CONTAMINATED_SEASONS:
+            return PROVENANCE_BACKTEST_REPLAY, VALIDATION_TYPE_CONTAMINATED
+        if season == _REPLAY_CLEAN_HOLDOUT_SEASON:
+            return PROVENANCE_BACKTEST_REPLAY, VALIDATION_TYPE_CLEAN_HOLDOUT
+        msg = (
+            f"classify_row_provenance: season {season!r} has no pre-registered validation_type in "
+            "run_mode 'replay'; the replay window is "
+            f"{sorted(_REPLAY_CONTAMINATED_SEASONS)} (contaminated) plus "
+            f"{_REPLAY_CLEAN_HOLDOUT_SEASON} (clean_holdout). No default is applied."
+        )
+        raise ValueError(msg)
+
+    msg = (
+        f"classify_row_provenance: run_mode {run_mode!r} is outside the vocabulary "
+        f"('{RUN_MODE_REPLAY}', '{RUN_MODE_FORWARD}'); refusing to guess a provenance label."
+    )
+    raise ValueError(msg)
+
+
+def assert_grading_transition(current_status: str, new_status: str) -> None:
+    """Validate a ``grading_status`` transition on an existing bet_list row (REVIEW-FWD-GRADE).
+
+    Only the GRADING half of the row may transition, and only forward out of ``pending``:
+    ``pending -> win`` / ``loss`` / ``push`` is permitted; every other transition raises. An
+    already-graded row moving back to ``pending`` is REFUSED -- ungrading a settled bet would let
+    a losing record be quietly reopened, which is the honesty failure this schema exists to
+    prevent. Re-asserting the SAME terminal status is a no-op and is permitted, so a re-run of the
+    grader is idempotent.
+
+    Raises:
+        ValueError: on an out-of-vocabulary status or a forbidden transition.
+    """
+    for label, value in (
+        ("current_status", current_status),
+        ("new_status", new_status),
+    ):
+        if value not in GRADING_STATUSES:
+            msg = (
+                f"assert_grading_transition: {label}={value!r} is outside the closed grading "
+                f"vocabulary {GRADING_STATUSES}."
+            )
+            raise ValueError(msg)
+
+    if current_status == GRADING_STATUS_PENDING:
+        return
+    if new_status == current_status:
+        return  # idempotent re-grade of an already-settled row
+    msg = (
+        f"assert_grading_transition: refusing {current_status!r} -> {new_status!r}; a graded row "
+        "may not be re-graded or returned to 'pending' (REVIEW-FWD-GRADE)."
+    )
+    raise ValueError(msg)
+
+
+def _validate_grading_status_column(bet_list_df: pd.DataFrame) -> None:
+    """Reject any ``grading_status`` value outside the closed four-state vocabulary."""
+    values = bet_list_df["grading_status"]
+    offending = sorted(
+        {str(v) for v in values.dropna().unique() if str(v) not in GRADING_STATUSES}
+    )
+    if offending:
+        msg = (
+            f"materialize_bet_list: grading_status carries out-of-vocabulary value(s) {offending}; "
+            f"the closed vocabulary is {GRADING_STATUSES}. A fifth state would make a push and an "
+            "ungraded forward row indistinguishable again (REVIEW-SCHEMA)."
+        )
+        raise ValueError(msg)
+
+
+def _require_columns(
+    df: pd.DataFrame, required: list[str], fn_name: str, arg: str
+) -> None:
+    """Raise a NAMED KeyError listing exactly which *required* columns are absent from *df*."""
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        msg = (
+            f"{fn_name}: {arg} missing required column(s) {missing}; every field must be present "
+            "so the explicit-column INSERT can never silently mis-write."
+        )
+        raise KeyError(msg)
+
+
+def _explicit_column_insert(
+    conn: duckdb.DuckDBPyConnection,
+    table: str,
+    columns: list[str],
+    frame: pd.DataFrame,
+) -> int:
+    """Insert *frame* into *table* naming every column explicitly, in the LOCKED order.
+
+    The column list is spelled out on BOTH sides of the statement and the SELECT picks columns BY
+    NAME, so a shuffled input frame still lands every value in the correct column. This is never a
+    positional ``INSERT ... SELECT *`` (SPEC R4 ordering, T-31-02).
+    """
+    subset = frame[columns].copy()
+    col_list = ", ".join(columns)
+    conn.register("_gsd_insert_subset", subset)
+    try:
+        conn.execute(
+            f"INSERT INTO {table} ({col_list}) SELECT {col_list} FROM _gsd_insert_subset"
+        )
+    finally:
+        conn.unregister("_gsd_insert_subset")
+    return len(subset)
+
+
+def materialize_bet_list(
     conn: duckdb.DuckDBPyConnection,
     bet_list_df: pd.DataFrame,
 ) -> int:
-    """Materialize the BetSelector bet-list blob into the sibling ou_bet_list table (BET-01, D27-15).
+    """Materialize the precomputed bet-list blob into the generic ``bet_list`` table (D31-20).
 
-    The THIN cache-population fn -- BET-01's SECOND consumer (the backtest is the first). It WRITES
-    the blob the BetSelector produced and performs ZERO metric math (UIAP-01: every number arrives
-    precomputed; no request-path computation, no re-derivation). Phase 31 reads this table for the
-    ``/bets`` list -- NO ``/bets`` UI and NO request-path computation are added here.
+    ZERO-MATH CONTRACT (UIAP-01): this function WRITES what the selector produced and performs
+    ZERO metric math. Every number arrives precomputed; nothing here re-derives an EV, a stake, a
+    tier or a return.
 
-    Materialization (the integrity controls):
-      - the table is created via ``CREATE TABLE IF NOT EXISTS ou_bet_list (...)`` with a LOCKED column
-        order (no PRIMARY KEY, mirroring betting_bets so a re-bet on a game is never silently
-        dropped, WR-02);
-      - an EXPLICIT-COLUMN INSERT spells out the column list in the LOCKED ``OU_BET_LIST_COLUMNS``
-        order -- NOT a positional ``INSERT ... SELECT *`` (#9, T-27-24); a shuffled input frame still
-        lands every value in the correct column;
-      - the push-NULL convention (``df["outcome"].where(notna, None)``) stores a push (or an ungraded
-        forward game) as SQL NULL -- never coerced to win/loss (the betting_bets pitfall);
-      - every row gets ``validation_type = PROVISIONAL_CONTAMINATED`` (#6).
+    Integrity controls, carried verbatim in FORM from the retired ``materialize_ou_bet_list``:
+      - an EMPTY frame returns 0 without error (SPEC R4 empty);
+      - a MISSING column raises a NAMED ``KeyError`` listing exactly which ``BET_LIST_COLUMNS``
+        fields are absent -- never a silent mis-write;
+      - ``outcome`` is pushed to SQL NULL through a ``notna`` mask and never coerced (the
+        ``betting_bets`` pitfall: ``astype(bool)`` turns NaN into True);
+      - the INSERT names every column explicitly in the LOCKED ``BET_LIST_COLUMNS`` order and
+        selects them BY NAME, never positionally;
+      - ``grading_status`` is validated against the closed four-state vocabulary, so a fifth value
+        raises rather than being stored.
+
+    CALL-SITE CONTRACT -- getting this wrong DESTROYS the write (REVIEW-CACHE). ``conn`` MUST be
+    the TEMPORARY database ``populate_cache`` builds, opened BEFORE the atomic swap.
+    ``populate_cache`` ends with ``db_path.unlink()`` followed by ``tmp_path.rename(db_path)``, so
+    anything written to the LIVE cache before a population run is DELETED by it. The durable source
+    of these rows is therefore the bet-list artifact Plan 31-17 writes, which the Plan 31-18
+    population step reads INTO the temp build. Passing a live-cache connection is a caller error.
 
     Args:
-        conn: An open DuckDB connection (the web cache, or an in-memory test DB). The
-            ``ou_bet_list`` table is created if absent.
-        bet_list_df: The BetSelector ``selected`` records as a DataFrame, carrying at least the
-            ``OU_BET_LIST_COLUMNS`` (game_id, season, week, bet_side, totals_regime, subpop_label,
-            model_total, closing_total, calibrated_p_side, per_bet_ev, slipped_line, kelly_stake,
-            outcome, clv). Column order is irrelevant (the INSERT is explicit-column).
+        conn: An open DuckDB connection -- the ``populate_cache`` TEMP database, or an in-memory
+            test DB. The ``bet_list`` table is created if absent.
+        bet_list_df: The precomputed per-bet records, carrying at least every
+            ``BET_LIST_COLUMNS`` field. Column ORDER is irrelevant (the INSERT is
+            explicit-column).
 
     Returns:
         The number of rows inserted.
 
     Raises:
-        KeyError: if ``bet_list_df`` is missing a required ``OU_BET_LIST_COLUMNS`` column (a named
-            error, never a silent mis-write).
+        KeyError: if *bet_list_df* is missing a required ``BET_LIST_COLUMNS`` column.
+        ValueError: if ``grading_status`` carries a value outside ``GRADING_STATUSES``.
     """
-    # Create the sibling table (additive; existing betting_bets consumers untouched).
-    conn.execute(OU_BET_LIST_SCHEMA)
+    conn.execute(BET_LIST_SCHEMA)
 
-    # An empty BetSelector frame writes zero rows without error (#8 edge case).
+    # An empty frame writes zero rows without error (SPEC R4 empty). A week in which no candidate
+    # cleared the floor is a first-class outcome, not a failure.
     if bet_list_df.empty:
         return 0
 
-    missing = [c for c in OU_BET_LIST_COLUMNS if c not in bet_list_df.columns]
-    if missing:
-        msg = (
-            f"materialize_ou_bet_list: bet_list_df missing required column(s) {missing}; "
-            "the BetSelector blob must carry every OU_BET_LIST_COLUMNS field (no silent mis-write)."
-        )
-        raise KeyError(msg)
+    _require_columns(
+        bet_list_df, BET_LIST_COLUMNS, "materialize_bet_list", "bet_list_df"
+    )
 
-    # Select the LOCKED column order (so the explicit-column INSERT below is order-stable) and add
-    # the structural validation_type label. The fn performs ZERO metric math -- it only re-shapes the
-    # precomputed blob and stamps the honesty label (UIAP-01).
-    subset = bet_list_df[OU_BET_LIST_COLUMNS].copy()
+    # pandas-stubs widens DataFrame __getitem__ with a list key to DataFrame | Series, so the
+    # .copy() result and the .where/.notna chain below lose their overload match at type-check
+    # time though both are a DataFrame / Series at runtime (the same stub gap the gold/last5
+    # renames elsewhere in this module carry).
+    subset: pd.DataFrame = bet_list_df[BET_LIST_COLUMNS].copy()  # pyright: ignore[reportAssignmentType]
+    _validate_grading_status_column(subset)
 
-    # Push-NULL convention (the betting_bets pitfall): a push / ungraded game (outcome None or NaN)
-    # is stored as SQL NULL, never coerced. df.where(notna, None) leaves real booleans intact.
-    subset["outcome"] = subset["outcome"].where(subset["outcome"].notna(), None)
+    # Push-NULL convention (the betting_bets pitfall): a push OR an ungraded forward game stores
+    # ``outcome`` as SQL NULL, never coerced. The two are told apart by ``grading_status``.
+    subset["outcome"] = subset["outcome"].where(subset["outcome"].notna(), None)  # pyright: ignore[reportAttributeAccessIssue]
 
-    subset["validation_type"] = _OU_VALIDATION_TYPE_PROVISIONAL
+    return _explicit_column_insert(conn, "bet_list", BET_LIST_COLUMNS, subset)
 
-    insert_cols = [*OU_BET_LIST_COLUMNS, "validation_type"]
-    col_list = ", ".join(insert_cols)
-    # EXPLICIT-COLUMN INSERT (#9, T-27-24): the column list is spelled out in the LOCKED order, so a
-    # shuffled input frame still lands every value in the correct column (NOT positional SELECT *).
-    conn.execute(f"INSERT INTO ou_bet_list ({col_list}) SELECT {col_list} FROM subset")
-    return len(subset)
+
+def materialize_available_bet_weeks(
+    conn: duckdb.DuckDBPyConnection,
+    schedule_df: pd.DataFrame,
+) -> int:
+    """Materialize the SCHEDULE-derived ``available_bet_weeks`` navigation table (REVIEW-NAV).
+
+    Every row is derived from *schedule_df* alone. This writer reads neither ``predictions`` nor
+    ``backtest_metrics``: ``get_available_weeks`` reads the former and ``get_available_seasons``
+    the latter, so a scheduled week carrying no prediction row would be ABSENT from ``/bets``
+    navigation rather than selectable. Deriving from the schedule is what makes every scheduled
+    week reachable.
+
+    Args:
+        conn: An open DuckDB connection. The table is created if absent.
+        schedule_df: A schedule frame carrying ``season``, ``week`` and ``game_id``.
+
+    Returns:
+        The number of (season, week) rows inserted.
+    """
+    conn.execute(AVAILABLE_BET_WEEKS_SCHEMA)
+    if schedule_df.empty:
+        return 0
+
+    _require_columns(
+        schedule_df,
+        ["season", "week", "game_id"],
+        "materialize_available_bet_weeks",
+        "schedule_df",
+    )
+    # pandas-stubs loses the DataFrameGroupBy overload through the ["col"].count() chain, so
+    # .rename is unresolved at type-check time though it is a DataFrame at runtime.
+    grouped = (
+        schedule_df.groupby(["season", "week"], as_index=False)["game_id"]
+        .count()
+        .rename(columns={"game_id": "game_count"})  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue]
+        .sort_values(["season", "week"])
+    )
+    return _explicit_column_insert(
+        conn, "available_bet_weeks", AVAILABLE_BET_WEEKS_COLUMNS, grouped
+    )
+
+
+def materialize_bet_week_freeze(
+    conn: duckdb.DuckDBPyConnection,
+    schedule_df: pd.DataFrame,
+) -> int:
+    """Materialize the SCHEDULE-derived ``bet_week_freeze`` freshness table (REVIEW-STALE).
+
+    The per-week freeze is the LATEST per-game freeze instant in that week -- a Thursday game
+    freezes a week earlier than that week's Sunday games (D31-18), so a single week-level freeze
+    claim would be false for every Thursday game. The per-game ``game_freeze_ts`` is computed
+    UPSTREAM (Plan 31-18) and passed in; this writer only persists the per-week maximum, so
+    ``api/cache.py`` stays a pure persistence layer.
+
+    Every row is derived from *schedule_df* alone. It reads no bet rows, because the failure the
+    stale-cache hard-block guards is precisely a MISSING bet-list insertion -- in which state
+    there may be no bet rows to read a freeze from.
+
+    Args:
+        conn: An open DuckDB connection. The table is created if absent.
+        schedule_df: A schedule frame carrying ``season``, ``week`` and ``game_freeze_ts``.
+
+    Returns:
+        The number of (season, week) rows inserted.
+    """
+    conn.execute(BET_WEEK_FREEZE_SCHEMA)
+    if schedule_df.empty:
+        return 0
+
+    _require_columns(
+        schedule_df,
+        ["season", "week", "game_freeze_ts"],
+        "materialize_bet_week_freeze",
+        "schedule_df",
+    )
+    # Same pandas-stubs groupby gap as materialize_available_bet_weeks above.
+    grouped = (
+        schedule_df.groupby(["season", "week"], as_index=False)["game_freeze_ts"]
+        .max()
+        .rename(columns={"game_freeze_ts": "latest_game_freeze_ts"})  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue]
+        .sort_values(["season", "week"])
+    )
+    return _explicit_column_insert(
+        conn, "bet_week_freeze", BET_WEEK_FREEZE_COLUMNS, grouped
+    )
+
+
+def materialize_bet_tracker_blocks(
+    conn: duckdb.DuckDBPyConnection,
+    tracker_df: pd.DataFrame,
+) -> int:
+    """Persist the PRECOMPUTED realized-vs-expected tracker blocks (REVIEW-IMPORT, UIAP-01).
+
+    A PURE persistence writer. It takes a frame that is ALREADY aggregated and performs no
+    arithmetic of its own -- no hit rate, no return, no count. The aggregation lives in
+    ``backtest/bet_tracker.py`` and is called from ``pipeline/steps.py``, which is already
+    permitted to import ``backtest``; ``api/cache.py`` imports no ``backtest`` module, so the
+    ``tests/api/test_import_guard_bets.py`` sibling guard needs no allow-list entry from this
+    phase. An earlier draft had this module import ``backtest.bet_tracker`` directly, which would
+    have made that guard and the tracker plan mutually unsatisfiable; the resolution is this
+    pure-persistence seam, not an allow-list widening.
+
+    Args:
+        conn: An open DuckDB connection. The table is created if absent.
+        tracker_df: The precomputed per-provenance blocks carrying every
+            ``BET_TRACKER_BLOCK_COLUMNS`` field.
+
+    Returns:
+        The number of rows inserted.
+    """
+    conn.execute(BET_TRACKER_BLOCKS_SCHEMA)
+    if tracker_df.empty:
+        return 0
+
+    _require_columns(
+        tracker_df,
+        BET_TRACKER_BLOCK_COLUMNS,
+        "materialize_bet_tracker_blocks",
+        "tracker_df",
+    )
+    return _explicit_column_insert(
+        conn, "bet_tracker_blocks", BET_TRACKER_BLOCK_COLUMNS, tracker_df
+    )
 
 
 def _compute_confidence(edge: pd.Series) -> pd.Series:
