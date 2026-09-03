@@ -497,6 +497,209 @@ def audit_partitioned_odds_store(
 
 
 # ---------------------------------------------------------------------------
+# Task 2 -- the ATS residual bias, re-derived from the DEPLOYED artifact (A1).
+# ---------------------------------------------------------------------------
+
+# The residual contract this measurement uses, stated as a constant so it survives into
+# source rather than living only in a docstring. It is the ATS analogue of
+# backtest.ou_ev_chain.RESIDUAL_CONTRACT, with the sign trap called out: the O/U contract
+# corrects a NEGATIVE bias (an over-predicting totals model), so an ATS guard copied from
+# the O/U one would assert the wrong direction.
+ATS_RESIDUAL_CONTRACT = (
+    "residual = actual home margin - predicted home spread; "
+    "a model that UNDER-predicts the home margin gives actual > predicted => residual > 0; "
+    "corrected = model_spread + season_bias (prior-season walk-forward mean residual) "
+    "pushes the predicted home margin UP -> higher P(home cover)."
+)
+
+# Flat -110 breakeven, restated from backtest.ou_ev_chain.OU_BREAKEVEN's arithmetic so the
+# magnitude comparison in the report is self-contained and reproducible.
+_MINUS_110_BREAKEVEN = 110.0 / 210.0
+
+# The POOLED direction the pre-registration will freeze. Asserted; never tuned.
+#
+# THE GUARD IS ON THE POOLED SIGN ONLY (REVIEW-ATS). An earlier draft required the sign to
+# be positive in all four tune seasons; re-scoring the deployed artifact over canonical gold
+# makes 2022 NEGATIVE, so a per-season sign gate would hard-stop the phase on a fact that is
+# simply true. The per-season means are REPORTED to 17 significant digits and carried into
+# the pre-registration verbatim, so a reader sees the negative season rather than a gate that
+# hid it. No numeric TOLERANCE is introduced either: choosing a magnitude threshold after
+# seeing the measured values is exactly the post-hoc selection this phase forbids everywhere
+# else, and it would be indefensible in the very script the pre-registration binds to.
+#
+# Note what the guard protects. The direction claim the ATS chain actually CONSUMES is the
+# per-season walk-forward estimate (backtest.ou_ev_chain.estimate_prior_season_bias); the
+# pooled figure supports only the pre-registration's MAGNITUDE argument, and it is that
+# argument this assertion defends. If the pooled mean is not positive the pre-registration
+# would have to state a different direction and Plan 31-07's ATS chain would have to be
+# re-derived -- so the script fails loudly rather than proceeding.
+POOLED_DIRECTION_CLAIM = (
+    "pooled mean residual is strictly positive (model under-predicts)"
+)
+
+
+def _f(value: float) -> str:
+    """Render *value* through the ONE explicit 17-significant-digit specifier."""
+    return FLOAT_FMT.format(float(value))
+
+
+def _residual_stats(residuals: pd.Series) -> dict[str, Any]:
+    """n, mean, sd (ddof=1), one-sample t and p for *residuals*, all rendered at .17g."""
+    import numpy as np
+    from scipy import stats
+
+    clean = residuals.dropna().astype(float)
+    mean = float(clean.mean())
+    sd = float(clean.std(ddof=1))
+    result = stats.ttest_1samp(clean.to_numpy(), 0.0)
+    t_stat = float(np.asarray(result.statistic).item())
+    p_value = float(np.asarray(result.pvalue).item())
+    return {
+        "n": len(clean),
+        "mean": _f(mean),
+        "sd": _f(sd),
+        "t": _f(t_stat),
+        "p": _f(p_value),
+        "mean_float": mean,
+        "sd_float": sd,
+    }
+
+
+def measure_ats_residual_bias(
+    artifacts_dir: str | Path = "artifacts",
+) -> dict[str, Any]:
+    """Re-derive the ATS residual bias from the DEPLOYED artifact (closes assumption A1).
+
+    RESEARCH measured the pooled residual from ``data/web_cache.duckdb`` and flagged it as
+    assumption A1 precisely because the cache can be stale relative to the deployed artifact.
+    This function scores the deployed artifact through
+    ``backtest.diagnose.score_deployed_artifacts`` instead, so the number the pre-registration
+    freezes provably came from a NAMED model.
+
+    ``score_deployed_artifacts`` is called with the TARGET POSITIONAL ARGUMENT ONLY. Its
+    signature is ``(target, gold_df=None, artifacts_dir="artifacts")`` -- there is no
+    ``seasons`` keyword and passing one raises ``TypeError``. The 2021-2024 restriction is
+    INTERNAL, applied by ``_load_gold_holdout`` via ``HOLDOUT_FIRST_SEASON`` /
+    ``HOLDOUT_LAST_SEASON``; both are ASSERTED here rather than assumed, so a future change to
+    them surfaces as a failure instead of silently widening the window this number is measured
+    over.
+
+    Raises:
+        AssertionError: if the holdout constants are not 2021/2024, if the resolved artifact
+            id disagrees with ``artifacts/latest.json``, or if the POOLED mean residual is not
+            strictly positive.
+    """
+    from scipy.stats import norm
+
+    from backtest.diagnose import (
+        HOLDOUT_FIRST_SEASON,
+        HOLDOUT_LAST_SEASON,
+        score_deployed_artifacts,
+    )
+    from models.artifacts import load_model_artifact
+
+    if (HOLDOUT_FIRST_SEASON, HOLDOUT_LAST_SEASON) != (2021, 2024):
+        msg = (
+            "backtest.diagnose HOLDOUT_FIRST_SEASON/HOLDOUT_LAST_SEASON are "
+            f"{HOLDOUT_FIRST_SEASON}/{HOLDOUT_LAST_SEASON}, not 2021/2024. This measurement "
+            "is fenced to the 2021-2024 tune window by those constants; a change to them "
+            "silently widens the window the pre-registered bias is measured over."
+        )
+        raise AssertionError(msg)
+
+    artifacts_path = Path(artifacts_dir)
+    manifest = json.loads((artifacts_path / "latest.json").read_text(encoding="utf-8"))
+    manifest_artifact_id = manifest["ats"]
+
+    artifact = load_model_artifact("ats", artifacts_dir=artifacts_path)
+    resolved_artifact_id = Path(artifact["artifact_dir"]).name
+    if resolved_artifact_id != manifest_artifact_id:
+        msg = (
+            f"resolved ATS artifact '{resolved_artifact_id}' disagrees with "
+            f"artifacts/latest.json '{manifest_artifact_id}'. The bias must be attributable "
+            "to the artifact the manifest names (T-31-08)."
+        )
+        raise AssertionError(msg)
+
+    # TARGET POSITIONAL ONLY. This function has no 'seasons' keyword argument; passing one
+    # raises TypeError. The 2021-2024 fence is internal and asserted above.
+    predictions = score_deployed_artifacts("ats")
+
+    residual = predictions["actual"] - predictions["model_prob"]
+    frame = pd.DataFrame(
+        {"season": predictions["season"].astype(int), "residual": residual}
+    )
+
+    by_season = {
+        int(season): _residual_stats(group["residual"])
+        for season, group in frame.groupby("season", sort=True)
+    }
+    pooled = _residual_stats(frame["residual"])
+
+    # THE DIRECTION GUARD -- pooled sign only, no per-season sign, no tolerance.
+    if not pooled["mean_float"] > 0.0:
+        msg = (
+            f"POOLED ATS residual mean is {pooled['mean']}, which is not strictly positive. "
+            f"The pre-registration's claim is: {POOLED_DIRECTION_CLAIM}. A non-positive "
+            "pooled mean means the pre-registration must state a DIFFERENT direction and "
+            "Plan 31-07's ATS chain must be re-derived. Failing loudly rather than "
+            "proceeding (T-31-08)."
+        )
+        raise AssertionError(msg)
+
+    cover_shift = float(norm.cdf(pooled["mean_float"] / pooled["sd_float"]) - 0.5)
+    breakeven_edge = _MINUS_110_BREAKEVEN - 0.5
+
+    negative_seasons = sorted(
+        season for season, stats_ in by_season.items() if stats_["mean_float"] < 0.0
+    )
+
+    block = {
+        "measured_at": datetime.now(UTC).isoformat(),
+        "source": (
+            "backtest.diagnose.score_deployed_artifacts('ats') over canonical gold -- NOT "
+            "data/web_cache.duckdb. The cache can be stale relative to the deployed "
+            "artifact, which is assumption A1."
+        ),
+        "artifact_id": resolved_artifact_id,
+        "artifact_id_from_latest_json": manifest_artifact_id,
+        "residual_contract": ATS_RESIDUAL_CONTRACT,
+        "holdout_first_season": HOLDOUT_FIRST_SEASON,
+        "holdout_last_season": HOLDOUT_LAST_SEASON,
+        "float_format": FLOAT_FMT,
+        "by_season": {
+            str(season): {
+                key: value
+                for key, value in stats_.items()
+                if not key.endswith("_float")
+            }
+            for season, stats_ in by_season.items()
+        },
+        "pooled": {
+            key: value for key, value in pooled.items() if not key.endswith("_float")
+        },
+        "pooled_direction_claim": POOLED_DIRECTION_CLAIM,
+        "pooled_direction_asserted": True,
+        "per_season_sign_asserted": False,
+        "numeric_tolerance_used": None,
+        "seasons_with_negative_mean": negative_seasons,
+        "implied_cover_probability_shift": _f(cover_shift),
+        "minus_110_breakeven_edge": _f(breakeven_edge),
+        "shift_as_fraction_of_breakeven_edge": _f(cover_shift / breakeven_edge),
+        "disagreement_with_the_cache_figures": (
+            "31-RESEARCH.md:1353 reports, from data/web_cache.duckdb, a pooled mean of "
+            "+0.714049 (sd 13.021757, n 1139) with 2022 at +0.118713 (sd 11.707725). This "
+            f"re-score of the DEPLOYED {resolved_artifact_id} over canonical gold gives a "
+            f"pooled mean of {pooled['mean']} (sd {pooled['sd']}, n {pooled['n']}) with "
+            f"seasons {negative_seasons} NEGATIVE. The figures DISAGREE. The cache figures "
+            "are STALE relative to the Phase-25 re-fit and MUST NOT be used; this is "
+            "assumption A1 closing as a disagreement, i.e. the audit working."
+        ),
+    }
+    return block
+
+
+# ---------------------------------------------------------------------------
 # Report assembly and CLI.
 # ---------------------------------------------------------------------------
 
@@ -548,6 +751,36 @@ def _print_store_audit(block: dict[str, Any]) -> None:
     print(f"reason: {block['branch_reason']}")
 
 
+def _print_ats_bias(block: dict[str, Any]) -> None:
+    print("=== ATS residual bias, re-derived from the deployed artifact (A1) ===")
+    print(f"artifact: {block['artifact_id']} (from artifacts/latest.json)")
+    print(f"contract: {block['residual_contract']}")
+    print(
+        f"window: {block['holdout_first_season']}-{block['holdout_last_season']} "
+        "(internal to _load_gold_holdout; asserted, not assumed)"
+    )
+    print(
+        "season      n            mean                    sd                t          p"
+    )
+    for season, stats_ in block["by_season"].items():
+        print(
+            f"{season}      {stats_['n']:>4}   {stats_['mean']:>22}  "
+            f"{stats_['sd']:>18}  {stats_['t']:>9}  {stats_['p']}"
+        )
+    pooled = block["pooled"]
+    print(
+        f"pooled     {pooled['n']:>4}   {pooled['mean']:>22}  "
+        f"{pooled['sd']:>18}  {pooled['t']:>9}  {pooled['p']}"
+    )
+    print(f"seasons with a NEGATIVE mean: {block['seasons_with_negative_mean']}")
+    print(
+        f"implied P(cover) shift: {block['implied_cover_probability_shift']} against a "
+        f"-110 breakeven edge of {block['minus_110_breakeven_edge']} "
+        f"({block['shift_as_fraction_of_breakeven_edge']} of it)"
+    )
+    print(f"DISAGREEMENT: {block['disagreement_with_the_cache_figures']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Read-only Phase-31 pre-ingest audit (Plan 31-02). Writes nothing to data/."
@@ -557,11 +790,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Audit the partitioned silver odds store and recommend the D31-39 branch.",
     )
+    parser.add_argument(
+        "--ats-bias",
+        action="store_true",
+        help="Re-derive the ATS residual bias from the DEPLOYED artifact (closes A1).",
+    )
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args(argv)
 
-    if not args.store_audit:
-        parser.error("nothing to do: pass --store-audit")
+    if not (args.store_audit or args.ats_bias):
+        parser.error("nothing to do: pass --store-audit and/or --ats-bias")
 
     report = _load_existing(args.out)
     report["generated_at"] = datetime.now(UTC).isoformat()
@@ -571,6 +809,12 @@ def main(argv: list[str] | None = None) -> int:
         report["store_audit"] = audit_partitioned_odds_store()
         assert_silver_unchanged(before, "audit_partitioned_odds_store")
         _print_store_audit(report["store_audit"])
+
+    if args.ats_bias:
+        before = silver_parquet_digests()
+        report["ats_bias"] = measure_ats_residual_bias()
+        assert_silver_unchanged(before, "measure_ats_residual_bias")
+        _print_ats_bias(report["ats_bias"])
 
     _write_report(args.out, report)
     print(f"wrote {args.out}")
