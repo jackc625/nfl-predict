@@ -72,6 +72,60 @@ CAP_ORDER = (
 )
 
 
+class KellyProbabilityError(ValueError):
+    """A probability handed to a Kelly entry point is not strictly inside ``(0, 1)``.
+
+    A ValueError SUBCLASS, deliberately: an existing ``except ValueError`` still catches it, so
+    this is a sharper name for a condition the vocabulary already had rather than a second
+    vocabulary for one fact.
+
+    WHY THIS RAISES INSTEAD OF RETURNING A ZERO STAKE (SPEC R10, T-31-45). Until Phase 31 a value
+    at or outside the unit interval was answered by a silent ``return 0.0``. That is a
+    plausible-looking output -- a zero stake reads as "no edge here" -- so a wrong input produced a
+    believable number instead of a failure. It is exactly how the spread-target defect survived a
+    whole milestone: ``implied + points_distance`` crossed 1.0 for every STRONG signal, Kelly
+    quietly staked nothing on those and staked only the weak ones, and the published return was
+    computed over that inverted selection. Nothing went red, because nothing could.
+    """
+
+
+def _validate_kelly_probability(value: float, *, parameter: str) -> float:
+    """Return ``value`` as a float, raising when it is not STRICTLY inside ``(0, 1)``.
+
+    STRICTLY: 0.0 and 1.0 are both hard failures, not edge cases. A Kelly fraction at either bound
+    is degenerate (certain loss, or an unbounded stake), and a calibrated probability that reaches
+    a bound has either been clipped somewhere it should not have been or is not a probability at
+    all. NaN fails the comparison and therefore raises too.
+
+    The message names the OFFENDING VALUE, because "a probability was invalid" sends the reader
+    looking and the whole difficulty of this defect was that the wrong number looked ordinary. The
+    TARGET is not available at this level -- ``KellyCalculator`` is target-agnostic by design -- so
+    the traceback's call site is what names it, and the per-target behavioural assertions live in
+    ``tests/unit/test_kelly_probability_class_guard.py``.
+
+    Args:
+        value: The probability to validate.
+        parameter: The name of the parameter it arrived under, so the message says which argument.
+
+    Returns:
+        ``value`` as a float.
+
+    Raises:
+        KellyProbabilityError: naming the parameter and the offending value.
+    """
+    probability = float(value)
+    if not 0.0 < probability < 1.0:
+        msg = (
+            f"{parameter}={value!r} is not strictly inside the open unit interval (0, 1). "
+            "A Kelly probability must be a calibrated probability for the side actually bet; "
+            "0.0, 1.0, NaN and any value outside the interval are HARD FAILURES and are never "
+            "answered with a zero stake, because a plausible-looking zero is how a points "
+            "distance reaching this argument stayed invisible for a whole milestone (SPEC R10)."
+        )
+        raise KellyProbabilityError(msg)
+    return probability
+
+
 def _validate_bankroll(bankroll: float) -> None:
     """Raise a named ValueError when the bankroll is not strictly positive.
 
@@ -486,15 +540,20 @@ class KellyCalculator:
         Calculate raw Kelly fraction for a bet.
 
         Args:
-            win_probability: Probability of winning the bet (0-1)
+            win_probability: Probability of winning the bet, STRICTLY inside (0, 1)
             odds: American odds for the bet
             mode: Kelly calculation mode
 
         Returns:
             Kelly fraction (percentage of bankroll to bet)
+
+        Raises:
+            KellyProbabilityError: when ``win_probability`` is not strictly inside (0, 1). This
+                replaced a silent ``return 0.0`` in Phase 31 (SPEC R10, T-31-45).
         """
-        if win_probability <= 0 or win_probability >= 1:
-            return 0.0
+        win_probability = _validate_kelly_probability(
+            win_probability, parameter="win_probability"
+        )
 
         # Convert American odds to decimal odds
         decimal_odds = odds / 100 + 1 if odds > 0 else 100 / abs(odds) + 1
@@ -610,7 +669,17 @@ class KellyCalculator:
 
         Returns:
             KellyResult with detailed sizing information
+
+        Raises:
+            KellyProbabilityError: when ``model_prob`` is not strictly inside (0, 1).
         """
+        # VALIDATE FIRST, then compute the edge, then early-return (REVIEW-KELLY, T-31-45b). The
+        # early return below exits WITHOUT ever calling ``calculate_kelly_fraction``, so validating
+        # only the low-level method would leave a whole class of invalid public input silently
+        # accepted: a caller passing 1.4 with a small edge would get a tidy zero-stake KellyResult
+        # reading "Edge too small or negative" and no signal at all.
+        model_prob = _validate_kelly_probability(model_prob, parameter="model_prob")
+
         if market_prob is None:
             market_prob = moneyline_to_probability(market_odds)
 
