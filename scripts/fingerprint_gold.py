@@ -1424,6 +1424,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _is_ladder_run(args) -> bool:
+    """True when this ``--attribute-rung`` invocation is a LADDER run.
+
+    The ordering refusal must fire on a ladder and stay silent on an ad-hoc
+    comparison, and the difference is whether the run CLAIMS to be a rung of one:
+
+    * ``--rung-prefix`` is a declaration. A run that name-spaces its documents is
+      running a named ladder, and Plan 31-11 always passes ``p31_``.
+    * Otherwise, the BEFORE document must literally BE rung N-1's document under
+      ``--fingerprint-dir``. Phase 30's ``--compare rung1.json rung2.json
+      --attribute-rung 2`` is a ladder by that test; ``RUNBOOK.md``'s documented
+      ``--compare before.json after.json --attribute-rung 2`` is not, and demanding a
+      rung-0 baseline of it would refuse a command that never claimed to be a rung --
+      a refusal that fires on the wrong thing is the kind operators learn to override.
+    """
+    if args.rung_prefix:
+        return True
+    expected = rung_document_path(
+        args.fingerprint_dir, args.attribute_rung - 1, args.rung_prefix
+    )
+    try:
+        return Path(args.compare[0]).resolve() == expected.resolve()
+    except OSError:
+        return False
+
+
 def main() -> None:
     """CLI entry point for gold fingerprinting."""
     parser = build_parser()
@@ -1469,7 +1495,9 @@ def main() -> None:
                 before=before,
                 after=after,
                 frame_loader=_gold_frame_loader(),
-                ladder_directory=args.fingerprint_dir,
+                ladder_directory=(
+                    args.fingerprint_dir if _is_ladder_run(args) else None
+                ),
                 rung_prefix=args.rung_prefix,
             )
         except MissingPredecessorFingerprintError as error:

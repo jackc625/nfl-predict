@@ -1215,6 +1215,61 @@ class TestTheRungLadderCannotBeRunOutOfOrder:
         assert verdict["ok"] is True
 
 
+class TestTheOrderingRefusalFiresOnALadderAndNotOnAnAdHocComparison:
+    """A refusal that fires on the wrong thing is the kind operators learn to override.
+
+    ``RUNBOOK.md`` section 11 documents ``--compare before.json after.json
+    --attribute-rung 2``, which is a one-off comparison that never claimed to be a
+    rung of anything. Demanding a rung-0 baseline of it would refuse a correct
+    command -- and on a fresh checkout, where ``outputs/`` is gitignored and empty, it
+    would refuse EVERY such command. The gate therefore asks whether the run CLAIMS to
+    be a rung of a ladder, and only then enforces the order.
+    """
+
+    def _args(self, tmp_path: Path, before_name: str, prefix: str = ""):
+        from scripts.fingerprint_gold import build_parser
+
+        return build_parser().parse_args(
+            [
+                "--compare",
+                str(tmp_path / before_name),
+                str(tmp_path / "after.json"),
+                "--attribute-rung",
+                "2",
+                "--fingerprint-dir",
+                str(tmp_path),
+                *(["--rung-prefix", prefix] if prefix else []),
+            ]
+        )
+
+    def test_an_ad_hoc_before_after_comparison_is_not_a_ladder_run(
+        self, tmp_path: Path
+    ):
+        from scripts.fingerprint_gold import _is_ladder_run
+
+        assert _is_ladder_run(self._args(tmp_path, "before.json")) is False
+
+    def test_a_before_document_that_IS_rung_n_minus_1_is_a_ladder_run(
+        self, tmp_path: Path
+    ):
+        from scripts.fingerprint_gold import _is_ladder_run
+
+        assert _is_ladder_run(self._args(tmp_path, "rung1.json")) is True
+
+    def test_a_prefixed_run_is_always_a_ladder_run(self, tmp_path: Path):
+        from scripts.fingerprint_gold import _is_ladder_run
+
+        assert (
+            _is_ladder_run(
+                self._args(tmp_path, "anything.json", prefix=PHASE31_RUNG_PREFIX)
+            )
+            is True
+        ), (
+            "--rung-prefix DECLARES that this run belongs to a named ladder, so the "
+            "ordering check must fire regardless of what the documents are called"
+        )
+
+
 class TestPhase31DocumentsCannotOverwriteThePhase30Record:
     """T-31-11: the Phase-30 rung documents are evidence that cannot be regenerated."""
 
