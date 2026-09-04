@@ -1617,3 +1617,448 @@ class TestNameCollisionTrapIsDocumented:
         assert "module path" in docstring.lower()
         assert "utils.bet_selector" in docstring
         assert "31-17" in docstring
+
+
+# ---------------------------------------------------------------------------
+# Phase 31, plan 31-10, Task 1 (D31-05): the spread and winner strategies
+#
+# Three claims, and each is pinned by a test that can only pass under ONE sign convention or ONE
+# price source -- a test that passes under both conventions would pin nothing:
+#
+#   1. The spread strategy converts at BOTH seams. ``model_spread`` is a predicted home MARGIN and
+#      ``closing_spread`` is a market LINE (negative when home is favored). The LOCKED
+#      ``_determine_bet_side_ats`` compares two LINES, so the model's IMPLIED LINE (the negated
+#      margin) is what goes in; ``_resolve_ats_outcome`` compares the actual MARGIN against a
+#      threshold on the MARGIN scale, so the negated slipped line is what goes in. The legacy
+#      simulator path does neither, which is the pre-existing defect ``backtest/ats_ev_chain.py``'s
+#      module docstring records.
+#   2. Neither new strategy has an eligibility gate (D31-05), and neither can emit ``not_subpop``.
+#   3. The winner strategy is priced and sized at its OWN moneyline, never at the flat -110 the
+#      other two targets are quoted at.
+# ---------------------------------------------------------------------------
+
+# The ATS frozen SD is on the HOME-MARGIN scale and the O/U one is on the TOTAL scale. They are
+# different quantities that happen to be numerically similar, so they are named separately here
+# and are separate arguments to ``default_strategies`` -- one shared ``frozen_sd`` would be a
+# category error waiting to be made.
+_ATS_FIXTURE_SD = 13.0
+_ATS_FIXTURE_BIAS = {2021: 0.5, 2022: 0.5}
+_WP_FIXTURE_BIAS = {2021: 0.0, 2022: 0.0}
+
+
+def _ats_row(
+    game_id: str,
+    *,
+    model_spread: float,
+    closing_spread: float,
+    actual_margin: float,
+    season: int = 2021,
+    week: int = 1,
+) -> dict:
+    """One ATS candidate: a predicted home MARGIN against a market LINE.
+
+    ``model_spread`` is POSITIVE when the model expects the home team to win by that many points.
+    ``closing_spread`` is NEGATIVE when the market has the home team favored. They are on DIFFERENT
+    scales and this fixture never pretends otherwise.
+    """
+    return {
+        "game_id": game_id,
+        "season": season,
+        "week": week,
+        "target": "ats",
+        "model_spread": model_spread,
+        "closing_spread": closing_spread,
+        "actual": actual_margin,
+        "sportsbook": "consensus",
+        "is_live": False,
+    }
+
+
+def _wp_row(
+    game_id: str,
+    *,
+    model_prob: float,
+    ml_home: float,
+    ml_away: float,
+    actual_home_win: int,
+    season: int = 2021,
+    week: int = 1,
+) -> dict:
+    """One WP candidate: the deployed isotonic P(home) against BOTH real moneylines."""
+    return {
+        "game_id": game_id,
+        "season": season,
+        "week": week,
+        "target": "wp",
+        "model_prob": model_prob,
+        "ml_home": ml_home,
+        "ml_away": ml_away,
+        "actual": actual_home_win,
+        "sportsbook": "consensus",
+        "is_live": False,
+    }
+
+
+def _three_target_strategies(**overrides):
+    """The production three-strategy registry over the fixture parameters."""
+    from backtest.selector_strategies import default_strategies
+
+    kwargs = {
+        "ou_frozen_sd": _FIXTURE_SD,
+        "ou_season_bias_by_season": _FIXTURE_BIAS,
+        "ats_frozen_sd": _ATS_FIXTURE_SD,
+        "ats_season_bias_by_season": _ATS_FIXTURE_BIAS,
+        "wp_season_bias_by_season": _WP_FIXTURE_BIAS,
+        "high_total_boundary": HIGH_TOTAL_BOUNDARY_PREHOLD,
+    }
+    kwargs.update(overrides)
+    return default_strategies(**kwargs)
+
+
+def _three_target_selector(ev_floor_t: float = 0.0, **overrides):
+    """A BetSelector registering all three production strategies."""
+    return _make_selector(
+        ev_floor_t=ev_floor_t, strategies=_three_target_strategies(**overrides)
+    )
+
+
+class TestThreeTargetRegistry:
+    """All three targets select through ONE facade in ONE call (D31-01/02)."""
+
+    def test_all_three_strategies_conform_to_the_protocol(self) -> None:
+        """Structural conformance, checked the same way the O/U strategy already is."""
+        from backtest.selector_strategies import (
+            ATSStrategy,
+            TargetStrategy,
+            WPStrategy,
+        )
+
+        strategies = _three_target_strategies()
+        assert [s.target for s in strategies] == ["wp", "ats", "ou"]
+        for strategy in strategies:
+            assert isinstance(strategy, TargetStrategy)
+        assert isinstance(strategies[0], WPStrategy)
+        assert isinstance(strategies[1], ATSStrategy)
+
+    def test_a_mixed_week_produces_records_for_all_three_targets(self) -> None:
+        """One ``select`` call over a hand-built mixed week yields all three target codes.
+
+        Asserted on the UNFILTERED cross-check, which carries every candidate regardless of the
+        decision, so the claim is about the registry rather than about which bets happened to win
+        admission on this fixture.
+        """
+        week = [
+            _as_target(
+                _ou_row(
+                    "2021_W01_A@B",
+                    model_total=38.0,
+                    closing_total=45.0,
+                    actual_total=40.0,
+                )
+            ),
+            _ats_row(
+                "2021_W01_C@D",
+                model_spread=7.0,
+                closing_spread=-3.0,
+                actual_margin=10.0,
+            ),
+            _wp_row(
+                "2021_W01_E@F",
+                model_prob=0.75,
+                ml_home=-150.0,
+                ml_away=130.0,
+                actual_home_win=1,
+            ),
+        ]
+        result = _three_target_selector().select(week)
+        assert {r["target"] for r in result.unfiltered} == {"wp", "ats", "ou"}
+        assert {r["target"] for r in result.selected} == {"wp", "ats", "ou"}
+
+
+class TestSpreadStrategySignConventions:
+    """The spread strategy converts at BOTH seams, and each conversion is pinned separately."""
+
+    def test_side_is_resolved_on_the_models_implied_line_not_its_margin(self) -> None:
+        """A case where the two conventions produce OPPOSITE sides.
+
+        ``model_spread=+7`` (home by 7) against ``closing_spread=-3`` (market: home by 3). The
+        model likes the home side. Passing the model's IMPLIED LINE (-7) against the market line
+        (-3) gives ``home_cover``; passing the raw MARGIN (+7) -- what the legacy simulator path
+        does -- gives ``away_cover``. Only one of those can be right and this pins which.
+        """
+        from backtest.selector_strategies import ATSStrategy
+
+        strategy = ATSStrategy(
+            frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
+        )
+        row = _ats_row(
+            "2021_W01_A@B", model_spread=7.0, closing_spread=-3.0, actual_margin=10.0
+        )
+        assert strategy.resolve_bet_side(row) == "home_cover"
+
+        # The negative control: the un-converted call really does give the opposite answer, so the
+        # assertion above is discriminating rather than incidentally true.
+        assert strategy._sim._determine_bet_side_ats(7.0, -3.0) == "away_cover"
+
+    def test_probability_is_measured_against_the_negated_slipped_line(self) -> None:
+        """P(home cover) is evaluated on the MARGIN scale, hand-computed here from scratch.
+
+        The slipped market line for a home-cover bet is -3.5; the cover threshold the actual home
+        margin must EXCEED is therefore +3.5. Computing the normal CDF against -3.5 instead would
+        return a probability near 0.79 rather than near 0.62, so the two are not close.
+        """
+        from scipy.stats import norm
+
+        from backtest.selector_strategies import ATSStrategy
+
+        strategy = ATSStrategy(
+            frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
+        )
+        row = _ats_row(
+            "2021_W01_A@B", model_spread=7.0, closing_spread=-3.0, actual_margin=10.0
+        )
+        p_side, slipped_line = strategy.side_probability(row, "home_cover")
+
+        # The slipped LINE is returned on the MARKET convention (the price the bettor got), which
+        # is what a bet list renders. The margin-scale conversion happens at the grading seam.
+        assert slipped_line == -3.5
+
+        corrected_margin = 7.0 + _ATS_FIXTURE_BIAS[2021]
+        expected = 1.0 - float(norm.cdf((3.5 - corrected_margin) / _ATS_FIXTURE_SD))
+        assert p_side == pytest.approx(expected, abs=1e-12)
+        # And the wrong-scale value is far enough away that the assertion above discriminates.
+        wrong_scale = 1.0 - float(norm.cdf((-3.5 - corrected_margin) / _ATS_FIXTURE_SD))
+        assert abs(expected - wrong_scale) > 0.10
+
+    def test_grading_uses_the_margin_scale_cover_threshold(self) -> None:
+        """A margin that covers under one convention and not the other.
+
+        Home wins by 1 with a slipped line of -3.5. On the MARGIN scale the cover threshold is
+        +3.5, so a 1-point win does NOT cover and the home-cover bet LOSES. Grading against the
+        raw line (-3.5) would read ``1.0 > -3.5`` and call it a WIN.
+        """
+        from backtest.selector_strategies import ATSStrategy
+
+        strategy = ATSStrategy(
+            frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
+        )
+        record = {
+            "bet_side": "home_cover",
+            "slipped_line": -3.5,
+            "_actual_total": 1.0,
+        }
+        assert strategy.grade(record) is False
+
+        # The negative control: the un-converted call really does return True.
+        assert strategy._sim._resolve_ats_outcome("home_cover", 1.0, -3.5) is True
+
+    def test_a_push_lands_exactly_on_the_negated_slipped_line(self) -> None:
+        """The push is at ``actual_margin == -slipped_line``, carried as None and never coerced."""
+        from backtest.selector_strategies import ATSStrategy
+
+        strategy = ATSStrategy(
+            frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
+        )
+        record = {"bet_side": "home_cover", "slipped_line": -3.5, "_actual_total": 3.5}
+        assert strategy.grade(record) is None
+
+
+class TestWinnerStrategyPricesAtItsOwnMoneyline:
+    """The winner target is quoted per game, so a flat -110 payout would be a made-up price."""
+
+    def test_per_bet_ev_uses_the_side_moneyline_not_flat_110(self) -> None:
+        """A home favourite at -320 is NOT a bet; at a flat -110 payout it would look like one."""
+        week = [
+            _wp_row(
+                "2021_W01_A@B",
+                model_prob=0.75,
+                ml_home=-320.0,
+                ml_away=260.0,
+                actual_home_win=1,
+            )
+        ]
+        result = _three_target_selector().select(week)
+        record = result.unfiltered[0]
+
+        assert record["bet_side"] == "home"
+        assert record["selected_odds"] == -320.0
+        # p * payout - (1 - p) with payout = 100/320.
+        assert record["per_bet_ev"] == pytest.approx(
+            0.75 * (100.0 / 320.0) - 0.25, abs=1e-12
+        )
+        # At the flat -110 payout the same bet would price at +0.4318 and be selected.
+        assert 0.75 * (100.0 / 110.0) - 0.25 > 0.0
+        assert [r["rejection_reason"] for r in result.rejected] == ["ev_below_floor"]
+        assert result.selected == []
+
+    def test_kelly_sizes_against_the_side_moneyline(self) -> None:
+        """The Kelly stake is computed at the bet's OWN price, not at the reference juice."""
+        from utils.kelly_criterion import KellyCalculator, KellyMode
+
+        week = [
+            _wp_row(
+                "2021_W01_A@B",
+                model_prob=0.75,
+                ml_home=-150.0,
+                ml_away=130.0,
+                actual_home_win=1,
+            )
+        ]
+        result = _three_target_selector().select(week)
+        assert len(result.selected) == 1
+        record = result.selected[0]
+        assert record["selected_odds"] == -150.0
+
+        def _stake(odds: int) -> float:
+            calc = KellyCalculator(
+                starting_bankroll=10_000.0,
+                max_bet_pct=0.05,
+                base_unit_size=100.0,
+                default_kelly_fraction=0.25,
+                confidence_threshold=0.0,
+            )
+            return calc.calculate_optimal_bet_size(
+                model_prob=0.75, market_odds=odds, mode=KellyMode.FRACTIONAL
+            ).recommended_bet
+
+        assert record["kelly_stake"] == pytest.approx(_stake(-150), abs=1e-9)
+        assert _stake(-150) != pytest.approx(_stake(-110), abs=1e-9)
+
+    def test_the_totals_and_spread_targets_keep_the_flat_reference_price(self) -> None:
+        """Only the winner target overrides the price; the other two are quoted at -110."""
+        week = [
+            _as_target(
+                _ou_row(
+                    "2021_W01_A@B",
+                    model_total=38.0,
+                    closing_total=45.0,
+                    actual_total=40.0,
+                )
+            ),
+            _ats_row(
+                "2021_W01_C@D",
+                model_spread=7.0,
+                closing_spread=-3.0,
+                actual_margin=10.0,
+            ),
+        ]
+        result = _three_target_selector().select(week)
+        assert {r["selected_odds"] for r in result.unfiltered} == {-110}
+
+
+class TestNoEligibilityGateOnTheTwoNewTargets:
+    """D31-05: only the totals target has a sub-population, and only it can say ``not_subpop``."""
+
+    def test_neither_new_strategy_can_emit_not_subpop(self) -> None:
+        """Behavioural AND structural: the reason never appears, and the string is not in scope.
+
+        The behavioural half drives a grid of sided and sideless rows; the structural half reads
+        the two class bodies, because a strategy that only happened not to reach the branch on
+        this fixture would pass the behavioural half alone.
+        """
+        import inspect
+
+        from backtest.selector_strategies import ATSStrategy, WPStrategy
+
+        ats = ATSStrategy(
+            frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
+        )
+        wp = WPStrategy(season_bias_by_season=_WP_FIXTURE_BIAS)
+
+        ats_rows = [
+            _ats_row("g1", model_spread=7.0, closing_spread=-3.0, actual_margin=1.0),
+            _ats_row("g2", model_spread=-7.0, closing_spread=-3.0, actual_margin=1.0),
+            _ats_row("g3", model_spread=3.0, closing_spread=-3.0, actual_margin=1.0),
+        ]
+        wp_rows = [
+            _wp_row(
+                "g4", model_prob=0.75, ml_home=-150.0, ml_away=130.0, actual_home_win=1
+            ),
+            _wp_row(
+                "g5", model_prob=0.25, ml_home=150.0, ml_away=-170.0, actual_home_win=0
+            ),
+            _wp_row(
+                "g6", model_prob=0.50, ml_home=-110.0, ml_away=-110.0, actual_home_win=1
+            ),
+        ]
+        reasons = {
+            ats.eligibility(row, ats.resolve_bet_side(row)) for row in ats_rows
+        } | {wp.eligibility(row, wp.resolve_bet_side(row)) for row in wp_rows}
+        assert "not_subpop" not in reasons
+
+        for cls in (ATSStrategy, WPStrategy):
+            assert "not_subpop" not in inspect.getsource(cls)
+
+    def test_a_sideless_candidate_is_suppressed_as_no_bet_side(self) -> None:
+        """A model that agrees with the market inside the LOCKED band has no bet to price.
+
+        It is reported with its own reason rather than as an eligibility failure (there is no
+        eligibility rule on these targets) or as an EV failure (nothing was priced, so no EV was
+        measured). ``model_prob == 0.5`` is inside ``_determine_bet_side_wp``'s no-bet band.
+        """
+        from backtest.bet_selector import REJECTION_REASONS
+
+        assert "no_bet_side" in REJECTION_REASONS
+        week = [
+            _wp_row(
+                "2021_W01_A@B",
+                model_prob=0.50,
+                ml_home=-110.0,
+                ml_away=-110.0,
+                actual_home_win=1,
+            )
+        ]
+        result = _three_target_selector().select(week)
+        assert [(r["game_id"], r["rejection_reason"]) for r in result.rejected] == [
+            ("2021_W01_A@B", "no_bet_side")
+        ]
+        assert result.selected == []
+        # Nothing was priced, so nothing is claimed about the expected value.
+        assert result.rejected[0]["per_bet_ev"] is None
+        assert result.rejected[0]["calibrated_p_side"] is None
+
+
+class TestSideResolutionDelegatesToTheLockedSimulator:
+    """Neither new strategy re-implements the side convention (D-18)."""
+
+    def test_resolve_bet_side_calls_the_locked_method_and_compares_nothing(
+        self,
+    ) -> None:
+        """An AST scan: one call to the target's LOCKED method, no comparison, no side literal.
+
+        A behavioural test cannot tell a delegation apart from a re-implementation that agrees on
+        the fixture, so the shape is pinned in the source instead.
+        """
+        import inspect
+        import textwrap
+
+        from backtest.selector_strategies import ATSStrategy, OUStrategy, WPStrategy
+
+        expected_locked = {
+            ATSStrategy: "_determine_bet_side_ats",
+            WPStrategy: "_determine_bet_side_wp",
+            OUStrategy: "_determine_bet_side_ou",
+        }
+        for cls, locked_name in expected_locked.items():
+            tree = ast.parse(textwrap.dedent(inspect.getsource(cls.resolve_bet_side)))
+            called = {
+                node.func.attr
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            }
+            assert locked_name in called or "_bet_side" in called, (
+                f"{cls.__name__}.resolve_bet_side does not delegate to {locked_name}"
+            )
+            assert not [n for n in ast.walk(tree) if isinstance(n, ast.Compare)], (
+                f"{cls.__name__}.resolve_bet_side contains its own comparison"
+            )
+            returned_literals = {
+                node.value.value
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Return)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            }
+            assert not returned_literals, (
+                f"{cls.__name__}.resolve_bet_side returns a hard-coded side string"
+            )
