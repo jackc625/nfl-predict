@@ -73,6 +73,7 @@ import numpy as np
 from backtest.ats_ev_chain import (
     ChainFit,
     ChainPricing,
+    assert_fit_window_p31,
     chain_clv_report,
     chain_order_key,
     season_bias_for,
@@ -315,9 +316,14 @@ def price_wp_candidates(
         A :class:`ChainPricing`.
 
     Raises:
+        LeakageError: when any fitted parameter on ``fit`` saw a hold season. WP fits no
+            residual SD, but its calibration-gate tune split and its registered fallback's
+            bias pool are both fitted inputs and are both fenced.
         KeyError: naming the column, when a required market field is absent.
         ValueError: when the fallback fired and a candidate season has no prior-season bias.
     """
+    fence_report = assert_fit_window_p31(fit)
+
     sim = simulator if simulator is not None else BettingSimulator(SimulationConfig())
     fallback_fired = bool(gate is not None and gate.fallback_fired)
     fallback_trigger = gate.fallback_trigger if gate is not None else None
@@ -402,5 +408,5 @@ def price_wp_candidates(
     return ChainPricing(
         records=records,
         clv_report=chain_clv_report(records, WP_CLV_METRIC),
-        fence_report={},
+        fence_report=fence_report,
     )

@@ -36,8 +36,15 @@ from typing import Any
 import numpy as np
 import pytest
 
-from backtest.ats_ev_chain import THRESHOLD_WINDOW_P31, ChainFit
+from backtest.ats_ev_chain import (
+    THRESHOLD_WINDOW_P31,
+    ChainFit,
+    price_ats_candidates,
+)
+from backtest.bet_selector import BetSelector
+from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from backtest.ou_ev_chain import EV_FLOOR_GRID, MIN_BIN_OBS, N_BINS
+from backtest.selector_strategies import OUStrategy
 from backtest.wp_ev_chain import (
     WP_PROB_CLIP,
     apply_wp_fallback_correction,
@@ -55,6 +62,12 @@ WP_CHAIN_PATH = REPO_ROOT / "backtest" / "wp_ev_chain.py"
 # the tune-side sweep.
 LOWEST_EV_FLOOR: float = EV_FLOOR_GRID[0]
 
+# The synthetic O/U control's fitted parameters. A tight SD and a mild negative bias are what
+# make a 15-point model-vs-market gap resolve to a near-certain UNDER; production values are
+# neither used nor implied here.
+_OU_FROZEN_SD: float = 5.0
+_OU_SEASON_BIAS: dict[int, float] = {2025: -1.0}
+
 
 def _wp_fit(season_bias_by_season: dict[int, float] | None = None) -> ChainFit:
     """A WP ``ChainFit``. ``frozen_sd`` is None BY DESIGN (D31-07).
@@ -70,6 +83,42 @@ def _wp_fit(season_bias_by_season: dict[int, float] | None = None) -> ChainFit:
         tune_fit_seasons=(2021, 2022, 2023, 2024),
         threshold_window=THRESHOLD_WINDOW_P31,
         bias_pool_by_season={},
+    )
+
+
+def _ats_fit(season_bias_by_season: dict[int, float] | None = None) -> ChainFit:
+    """An ATS ``ChainFit`` with a frozen residual SD, which ATS DOES fit (unlike WP)."""
+    return ChainFit(
+        target="ats",
+        frozen_sd=11.0,
+        season_bias_by_season=season_bias_by_season or {2025: 0.5},
+        tune_fit_seasons=(2021, 2022, 2023, 2024),
+        threshold_window=THRESHOLD_WINDOW_P31,
+        bias_pool_by_season={2024: (2021, 2022, 2023)},
+    )
+
+
+def _ou_selector(ev_floor_t: float = 0.0) -> BetSelector:
+    """A selector registered with the O/U strategy ALONE -- the real Phase-27 path.
+
+    Built through the public facade with an explicitly injected ``OUStrategy`` so the arm
+    exercises the single bet-decision source (LOCKED-2) rather than a parallel pricing
+    function. ``frozen_sd`` and the season bias are the synthetic control's, not production
+    values; the control asks whether the chain CAN emit, never what it should emit.
+    """
+    return BetSelector(
+        frozen_sd=_OU_FROZEN_SD,
+        season_bias_by_season=_OU_SEASON_BIAS,
+        ev_floor_t=ev_floor_t,
+        bankroll=10_000.0,
+        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
+        strategies=[
+            OUStrategy(
+                frozen_sd=_OU_FROZEN_SD,
+                season_bias_by_season=_OU_SEASON_BIAS,
+                high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
+            )
+        ],
     )
 
 
@@ -387,3 +436,155 @@ class TestWpInventsNoConverter:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
         assert not (defined & {"devig", "per_bet_ev", "calibration_gate"})
+
+
+class TestAtsPositiveControl:
+    """ATS emits on synthetic positive-edge input, so an ATS zero means no edge."""
+
+    def test_ats_positive_control_emits_at_least_one_bet(self) -> None:
+        """SPEC R1 / D31-08: a large synthetic spread edge clears the lowest frozen floor.
+
+        The market has the home team favored by 3 (stored spread -3.0) while the model
+        predicts a 20-point home margin. In the LINE convention the model's implied line is
+        -20 against a market -3, which is a large home-cover edge.
+        """
+        rows = [
+            {
+                "game_id": "2025_01_AAA",
+                "season": 2025,
+                "week": 1,
+                "model_spread": 20.0,
+                "closing_spread": -3.0,
+            },
+            {
+                "game_id": "2025_01_BBB",
+                "season": 2025,
+                "week": 1,
+                "model_spread": -20.0,
+                "closing_spread": -3.0,
+            },
+        ]
+        pricing = price_ats_candidates(rows, _ats_fit())
+
+        clearing = [
+            record
+            for record in pricing.records
+            if record["per_bet_ev"] is not None
+            and record["per_bet_ev"] >= LOWEST_EV_FLOOR
+        ]
+        assert len(clearing) >= 1, (
+            "the ATS chain priced no candidate above the lowest pre-registered EV floor on "
+            "synthetic positive-edge input, so a zero-bet 2025 ATS result could not be "
+            "distinguished from a broken chain."
+        )
+        assert {record["bet_side"] for record in pricing.records} == {
+            "home_cover",
+            "away_cover",
+        }
+        # The fence ran and is published on the result, not merely asserted and discarded.
+        assert pricing.fence_report["fence_held"] is True
+
+    def test_ats_empty_frame_returns_empty_records_and_a_null_clv_report(self) -> None:
+        """SPEC R1 empty-case: zero candidates is an empty result, never a raise."""
+        pricing = price_ats_candidates([], _ats_fit())
+
+        assert pricing.records == []
+        assert pricing.clv_report is None
+        # The fence still ran: an empty week is not an excuse to skip the leakage check.
+        assert pricing.fence_report["fence_held"] is True
+
+    def test_ats_empty_frame_does_not_disable_the_positive_control(self) -> None:
+        """The control still runs after an empty pass -- the two are independent."""
+        assert price_ats_candidates([], _ats_fit()).records == []
+        rows = [
+            {
+                "game_id": "2025_01_CCC",
+                "season": 2025,
+                "week": 1,
+                "model_spread": 20.0,
+                "closing_spread": -3.0,
+            }
+        ]
+        assert price_ats_candidates(rows, _ats_fit()).records[0]["per_bet_ev"] > 0.0
+
+
+class TestOuPositiveControl:
+    """O/U emits through the REAL BetSelector path, so an O/U zero means no edge."""
+
+    def test_ou_positive_control_emits_at_least_one_bet(self) -> None:
+        """SPEC R1 / D31-08, through the single bet-decision source (LOCKED-2).
+
+        A model total 15 points under a 45-point market line is an UNDER pick, which
+        satisfies the frozen Phase-26/27 eligibility UNION on its under arm alone -- so the
+        control does not depend on the high-total boundary and therefore cannot be quietly
+        weakened by a boundary that failed to resolve.
+        """
+        rows = [
+            {
+                "game_id": "2025_01_AAA",
+                "season": 2025,
+                "week": 1,
+                "model_total": 30.0,
+                "closing_total": 45.0,
+                "actual": 20.0,
+            }
+        ]
+        result = _ou_selector().select(rows)
+
+        assert len(result.selected) >= 1, (
+            "the O/U chain selected no bet on synthetic positive-edge input, so a zero-bet "
+            "2025 O/U result could not be distinguished from a broken chain."
+        )
+        selected = result.selected[0]
+        assert selected["bet_side"] == "under"
+        assert selected["kelly_stake"] > 0.0
+        assert selected["per_bet_ev"] >= LOWEST_EV_FLOOR
+
+    def test_ou_empty_frame_returns_empty_selection_and_a_null_clv_report(self) -> None:
+        """SPEC R1 empty-case, on the real selector: no bets, no CLV report, no raise."""
+        result = _ou_selector().select([])
+
+        assert result.selected == []
+        assert result.rejected == []
+        assert result.filtered == []
+        assert result.unfiltered == []
+        assert result.clv_report is None
+
+    def test_ou_empty_frame_does_not_disable_the_positive_control(self) -> None:
+        """The control still runs after an empty pass -- the two are independent."""
+        assert _ou_selector().select([]).selected == []
+        rows = [
+            {
+                "game_id": "2025_01_CCC",
+                "season": 2025,
+                "week": 1,
+                "model_total": 30.0,
+                "closing_total": 45.0,
+                "actual": 20.0,
+            }
+        ]
+        assert len(_ou_selector().select(rows).selected) == 1
+
+
+class TestEveryTargetHasAPositiveControl:
+    """All three targets are covered -- the claim SPEC R1 actually makes."""
+
+    def test_all_three_targets_are_covered_by_a_positive_control(self) -> None:
+        """A control on two of three targets would leave the third's zero uninterpretable.
+
+        Asserted as a property of the module rather than left to a reader counting classes,
+        because the failure this guards is a target being QUIETLY dropped from the set.
+        """
+        module_source = Path(__file__).read_text(encoding="utf-8")
+        tree = ast.parse(module_source, filename="positive_control")
+        control_tests = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name.endswith("_positive_control_emits_at_least_one_bet")
+        }
+        assert control_tests == {
+            "test_wp_positive_control_emits_at_least_one_bet",
+            "test_ats_positive_control_emits_at_least_one_bet",
+            "test_ou_positive_control_emits_at_least_one_bet",
+        }, control_tests

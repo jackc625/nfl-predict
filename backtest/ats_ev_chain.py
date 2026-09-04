@@ -70,6 +70,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -80,11 +81,17 @@ from scipy.stats import norm
 from backtest.diagnose import clv_significance
 from backtest.ev_chain_constants import (
     ATS_BIAS_CARRIED,
+    HOLD_SEASONS_P31,
+    PRIOR_RESIDUAL_SEASONS_P31,
     TUNE_SEASONS_P31,
 )
 from backtest.ev_chain_constants import (
     ATS_RESIDUAL_CONTRACT as _FROZEN_ATS_RESIDUAL_CONTRACT,
 )
+
+# The leakage-clean PRE-HOLD high-total boundary derivation, re-run by fence check (d) so a
+# drifted or hold-informed O/U eligibility boundary is caught rather than trusted (LOCKED-1).
+from backtest.ou_divergence import derive_high_total_boundary
 
 # The five numeric primitives, CONSUMED from the Phase-27 chain and re-exported so callers
 # reach exactly one implementation of each (T-31-31). Importing them does NOT import the
@@ -101,6 +108,12 @@ from backtest.ou_ev_chain import (
     fit_frozen_residual_sd,
     per_bet_ev,
 )
+
+# LeakageError already means "the fit-window fence was violated" in this repository, so the
+# Phase-31 fence RAISES IT rather than minting a second exception for one fact. Note that
+# only the EXCEPTION is taken from that module -- the Phase-27 fence helper itself reads the
+# Phase-27 window and is deliberately not imported (D31-14).
+from backtest.ou_monetization import LeakageError
 from backtest.simulation import (
     SLIPPAGE_POINTS,
     BettingSimulator,
@@ -113,10 +126,16 @@ __all__ = [
     "ATS_BIAS_CARRIED",
     "ATS_RESIDUAL_CONTRACT",
     "ATS_SIDES",
+    "FENCE_STAGE_BIAS",
+    "FENCE_STAGE_BOUNDARY",
+    "FENCE_STAGE_THRESHOLD",
+    "FENCE_STAGE_TUNE_FIT",
     "P_COVER_CLIP",
     "THRESHOLD_WINDOW_P31",
     "ChainFit",
     "ChainPricing",
+    "LeakageError",
+    "assert_fit_window_p31",
     "ats_side_probability",
     "ats_two_sided_prices",
     "calibrated_p_cover",
@@ -293,6 +312,172 @@ def season_bias_for(
         )
         raise ValueError(msg)
     return float(bias_by_season[season])
+
+
+# ---------------------------------------------------------------------------
+# The Phase-31 fit-window / leakage fence (T-31-28, SPEC R1)
+#
+# WHY THIS IS A NEW FUNCTION AND NOT A REUSE. backtest/ou_monetization's Phase-27 fence
+# helper READS the Phase-27 window constants. A Phase-31 runner that reused it would fence
+# against 2023-2024, and 2023-2024 are TUNE seasons here -- so the fence would still PASS,
+# nothing would raise at run time, and its report would name the wrong hold seasons. A
+# passing suite is exactly what that failure produces, which is why D31-14 forbids reading
+# the Phase-27 window at all and tests/unit/test_p31_constants_isolation.py enforces it by
+# AST scan. The four checks below MIRROR that helper's four; only the constants differ.
+#
+# The EXCEPTION TYPE is reused: LeakageError already means "the fit-window fence was
+# violated" in this repository, and a second exception class for the same condition would be
+# a second vocabulary for one fact.
+# ---------------------------------------------------------------------------
+
+# The stage labels every fence message names, so a raise says WHICH fit leaked rather than
+# only that something did.
+FENCE_STAGE_TUNE_FIT: str = "tune-only fit input"
+FENCE_STAGE_THRESHOLD: str = "EV-floor threshold tuning"
+FENCE_STAGE_BIAS: str = "prior-season bias estimate"
+FENCE_STAGE_BOUNDARY: str = "high-total boundary derivation"
+
+_SEASON_IN_LABEL = re.compile(r"\d{4}")
+
+
+def assert_fit_window_p31(fit: ChainFit) -> dict[str, Any]:
+    """Prove NO hold season fed any fitted parameter on ``fit`` (T-31-28, SPEC R1).
+
+    Mirrors the four checks the Phase-27 fence performs, parameterised on the FROZEN
+    Phase-31 constants (``TUNE_SEASONS_P31`` 2021-2024, ``HOLD_SEASONS_P31`` 2025,
+    ``PRIOR_RESIDUAL_SEASONS_P31`` 2018-2020):
+
+      (a) the TUNE-ONLY fit input -- the frozen-SD fit for ATS and O/U, the calibration-gate
+          tune split for WP -- must be disjoint from the hold and inside the tune window;
+      (b) the EV-floor sweep must have been tuned on the Phase-31 window label;
+      (c) every per-season bias pool must be STRICTLY PRIOR to the season it debiases, must
+          be hold-free, and must lie inside the tune window plus the 2018-2020 seed;
+      (d) when a high-total boundary is supplied (O/U only), it must equal the leakage-clean
+          PRE-HOLD derivation, so a drifted or hold-informed boundary is caught.
+
+    Check (c) asserts STRICT PRIORITY as well as hold-freeness. The Phase-27 helper checked
+    only the latter, which is sufficient when tune strictly precedes hold; here the hold is a
+    single later season, so a pool containing the target season itself would slip past a
+    hold-only check while being the most direct leak available.
+
+    Args:
+        fit: The target's fitted parameters WITH the seasons they were fit on.
+
+    Returns:
+        A structured fence report naming the seasons each fit consumed and the Phase-31 hold,
+        so the report a run publishes cannot name the wrong hold seasons.
+
+    Raises:
+        LeakageError: naming the offending season(s) and the fit stage.
+    """
+    hold = set(HOLD_SEASONS_P31)
+    tune = set(TUNE_SEASONS_P31)
+    seed = set(PRIOR_RESIDUAL_SEASONS_P31)
+    target = fit.target
+
+    # (a) The tune-only fit input.
+    tune_fit = {int(season) for season in fit.tune_fit_seasons}
+    leaked = sorted(tune_fit & hold)
+    if leaked:
+        msg = (
+            f"[{target}] {FENCE_STAGE_TUNE_FIT} consumed HOLD season(s) {leaked}; the "
+            f"Phase-31 hold is {sorted(hold)} and the tune window is {sorted(tune)}. "
+            "No fitted parameter may see 2025 (T-31-28)."
+        )
+        raise LeakageError(msg)
+    outside = sorted(tune_fit - tune)
+    if outside:
+        msg = (
+            f"[{target}] {FENCE_STAGE_TUNE_FIT} consumed season(s) {outside} outside the "
+            f"Phase-31 tune window {sorted(tune)} (T-31-28)."
+        )
+        raise LeakageError(msg)
+
+    # (b) The threshold-tuning window label.
+    if fit.threshold_window != THRESHOLD_WINDOW_P31:
+        offending = sorted(
+            {
+                int(found)
+                for found in _SEASON_IN_LABEL.findall(fit.threshold_window)
+                if int(found) in hold
+            }
+        )
+        detail = (
+            f" It names HOLD season(s) {offending}."
+            if offending
+            else " It is not the Phase-31 window label."
+        )
+        msg = (
+            f"[{target}] {FENCE_STAGE_THRESHOLD} logged window "
+            f"{fit.threshold_window!r}, which is not {THRESHOLD_WINDOW_P31!r}.{detail} "
+            "The EV floor t cannot be tuned on data the hold contains (T-31-28)."
+        )
+        raise LeakageError(msg)
+
+    # (c) Every per-season bias pool.
+    for raw_season, raw_pool in fit.bias_pool_by_season.items():
+        season = int(raw_season)
+        pool = {int(entry) for entry in raw_pool}
+
+        leaked = sorted(pool & hold)
+        if leaked:
+            msg = (
+                f"[{target}] {FENCE_STAGE_BIAS} for season {season} consumed HOLD "
+                f"season(s) {leaked}; the Phase-31 hold is {sorted(hold)} (T-31-28)."
+            )
+            raise LeakageError(msg)
+
+        not_strictly_prior = sorted(entry for entry in pool if entry >= season)
+        if not_strictly_prior:
+            msg = (
+                f"[{target}] {FENCE_STAGE_BIAS} for season {season} consumed season(s) "
+                f"{not_strictly_prior} that are NOT strictly prior to {season}. A "
+                "walk-forward estimate reads only earlier seasons; including the target "
+                "season debiases it with its own outcomes (T-31-28)."
+            )
+            raise LeakageError(msg)
+
+        outside = sorted(pool - (tune | seed))
+        if outside:
+            msg = (
+                f"[{target}] {FENCE_STAGE_BIAS} for season {season} consumed season(s) "
+                f"{outside} outside the tune window {sorted(tune)} plus the pre-registered "
+                f"bias seed {sorted(seed)} (T-31-28)."
+            )
+            raise LeakageError(msg)
+
+    # (d) The O/U high-total eligibility boundary, when one is supplied.
+    pre_hold_boundary: float | None = None
+    if fit.high_total_boundary is not None:
+        boundary = float(fit.high_total_boundary)
+        if not np.isfinite(boundary):
+            msg = (
+                f"[{target}] {FENCE_STAGE_BOUNDARY} produced a non-finite boundary; the "
+                "leakage-clean PRE-HOLD derivation is unavailable, and a NaN boundary would "
+                "silently collapse the under-OR-high UNION to under-only (T-31-28, WR-03)."
+            )
+            raise LeakageError(msg)
+        pre_hold_boundary = float(derive_high_total_boundary())
+        if abs(boundary - pre_hold_boundary) > 1e-9:
+            msg = (
+                f"[{target}] {FENCE_STAGE_BOUNDARY}: the supplied boundary {boundary} "
+                f"drifted from the leakage-clean pre-hold derivation {pre_hold_boundary} "
+                "(LOCKED-1, T-31-28)."
+            )
+            raise LeakageError(msg)
+
+    return {
+        "target": target,
+        "tune_fit_seasons": sorted(tune_fit),
+        "threshold_window": fit.threshold_window,
+        "bias_seasons": sorted(int(season) for season in fit.bias_pool_by_season),
+        "tune_seasons": list(TUNE_SEASONS_P31),
+        "hold_seasons": list(HOLD_SEASONS_P31),
+        "prior_residual_seed_seasons": list(PRIOR_RESIDUAL_SEASONS_P31),
+        "high_total_boundary": fit.high_total_boundary,
+        "pre_hold_boundary_rederived": pre_hold_boundary,
+        "fence_held": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -479,10 +664,15 @@ def price_ats_candidates(
         A :class:`ChainPricing`.
 
     Raises:
+        LeakageError: when any fitted parameter on ``fit`` saw a hold season. The fence runs
+            FIRST, before any candidate is priced, so a leaking fit cannot produce a bet list
+            that would then have to be retracted.
         ValueError: when ``fit.frozen_sd`` is absent (ATS fits one BY DESIGN), or when a
             candidate season has no prior-season bias.
         KeyError: naming the column, when a required market field is absent.
     """
+    fence_report = assert_fit_window_p31(fit)
+
     if fit.frozen_sd is None:
         msg = (
             "the ATS chain requires a frozen residual SD fit on the TUNE split only "
@@ -577,5 +767,5 @@ def price_ats_candidates(
     return ChainPricing(
         records=records,
         clv_report=chain_clv_report(records, ATS_CLV_METRIC),
-        fence_report={},
+        fence_report=fence_report,
     )
