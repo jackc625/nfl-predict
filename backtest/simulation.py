@@ -266,15 +266,29 @@ class BettingSimulator:
         self,
         config: SimulationConfig | None = None,
         ou_bet_selector: Any | None = None,
+        ats_bet_selector: Any | None = None,
     ) -> None:
         self.config = config or SimulationConfig()
         self.logger = get_logger(__name__)
         # LOCKED-2 (BET-01): when a BetSelector is injected, the O/U decision -- eligibility, side,
         # threshold, EV admission, AND sizing -- is owned END-TO-END by it (proof == production).
-        # WP/ATS are out of scope and unaffected. When None, the O/U target is skipped (no inline
-        # O/U decision logic remains -- the points-distance admission and the BET-02 `implied+edge`
-        # Kelly branch were removed; O/U decisions live ONLY in the BetSelector).
+        # When None, the O/U target is skipped (no inline O/U decision logic remains -- the
+        # points-distance admission and the BET-02 `implied+edge` Kelly branch were removed; O/U
+        # decisions live ONLY in the BetSelector).
         self.ou_bet_selector = ou_bet_selector
+        # D31-04 (Phase 31, plan 31-10): the SPREAD target gains the same injection point, and it
+        # is deliberately a SECOND argument rather than a widening of the first. The two selectors
+        # carry different per-target fit parameters -- the ATS frozen residual SD is on the
+        # home-margin scale and the O/U one is on the total scale -- so one shared selector would
+        # be a category error, and a caller wanting both passes the same three-target selector
+        # twice by choice rather than by default.
+        #
+        # WHEN NONE, THE SPREAD TARGET IS STILL GRADED and its Kelly stake is 0 BY DESIGN. It is
+        # NOT skipped the way O/U is: the /betting page reads this ledger, and dropping the spread
+        # rows would move a published bet POPULATION, which D31-04 rules out. What changes is the
+        # published spread Kelly return, which becomes zero, and that is stated in the R11 readout
+        # rather than removed quietly.
+        self.ats_bet_selector = ats_bet_selector
 
     # -- Bet side determination -----------------------------------------------
 
@@ -414,6 +428,53 @@ class BettingSimulator:
         result = self.ou_bet_selector.select(candidates[keep])
         return {rec["game_id"]: rec for rec in result.selected}
 
+    # -- ATS routing (D31-04: decisions owned by the injected BetSelector) -----
+
+    def _select_ats_decisions(self, merged: pd.DataFrame) -> dict[str, dict[str, Any]]:
+        """Build the per-game ATS decision lookup from BetSelector.select() (D31-04, SPEC R10).
+
+        The direct analogue of ``_select_ou_decisions``. Passes the merged ATS prediction frame
+        (carrying game_id, season, week, the predicted home MARGIN ``model_spread``, the closing
+        ``spread`` and the realized margin ``actual``) to the injected BetSelector, and returns a
+        ``{game_id -> selected-record}`` map. The side, the EV admission and the sizing are ALL the
+        selector's; the simulator adds no inline spread decision logic.
+
+        THE SIGN CONVERSIONS HAPPEN INSIDE ``ATSStrategy``, NOT HERE. ``model_spread`` is a
+        predicted home MARGIN and ``spread`` is a market LINE; the strategy negates the margin into
+        the model's implied line before resolving the side, and negates the slipped line into a
+        margin-scale cover threshold before grading. Doing either conversion here as well would
+        apply it twice.
+
+        Rows are TAGGED with their target code, unlike the O/U path: an injected selector may
+        register more than one strategy, and an untagged row is ambiguous the moment it does.
+
+        Args:
+            merged: The chronologically-sorted, odds-merged ATS prediction frame.
+
+        Returns:
+            A dict keyed by game_id of the selector's selected per-bet records (empty when nothing
+            was selected). Rows lacking ``model_spread`` are dropped before selection.
+        """
+        selector = self.ats_bet_selector
+        if selector is None or "model_spread" not in merged.columns:
+            return {}
+
+        candidates = merged[merged["model_spread"].notna()].copy()
+        if candidates.empty:
+            return {}
+
+        # Map from the merged frame's ``spread`` / ``actual`` columns onto the names the strategy
+        # declares, without mutating the simulator's own row schema.
+        candidates["closing_spread"] = candidates["spread"].astype(float)
+        candidates["target"] = "ats"
+        keep = ["game_id", "season", "week", "model_spread", "closing_spread", "target"]
+        if "actual" in candidates.columns:
+            candidates["actual"] = candidates["actual"].astype(float)
+            keep.append("actual")
+
+        result = selector.select(candidates[keep])
+        return {rec["game_id"]: rec for rec in result.selected}
+
     # -- Main simulation ------------------------------------------------------
 
     def simulate(
@@ -503,6 +564,13 @@ class BettingSimulator:
                 if not ou_decisions:
                     continue
 
+            # D31-04: the same routing for the SPREAD target. Unlike O/U, an empty decision set
+            # does NOT skip the target -- the legacy branch below still grades every spread bet at
+            # a flat stake, because /betting's published spread bet POPULATION must not move.
+            ats_decisions: dict[str, dict[str, Any]] = {}
+            if target == "ats" and self.ats_bet_selector is not None:
+                ats_decisions = self._select_ats_decisions(merged)
+
             for _, row in merged.iterrows():
                 game_id = row["game_id"]
                 season = int(row["season"])
@@ -515,6 +583,11 @@ class BettingSimulator:
                 slipped_line: float | None = None
                 odds: int = STANDARD_VIG_ODDS
                 outcome: bool | None = None
+                # The selector's record for this game, when one owns the decision. It is the ONE
+                # signal the sizing block below reads to tell an owned bet from a legacy one, so
+                # the two questions "was this decided by the selector?" and "which target is this?"
+                # cannot drift apart.
+                selector_decision: dict[str, Any] | None = None
 
                 if target == "wp":
                     model_prob = float(row["model_prob"])
@@ -538,7 +611,36 @@ class BettingSimulator:
                     actual = int(row["actual"])
                     outcome = self._resolve_wp_outcome(bet_side, actual)
 
+                elif target == "ats" and ats_decisions.get(game_id) is not None:
+                    # D31-04 routing: the ENTIRE spread decision is owned by the injected
+                    # BetSelector -- side, EV admission and sizing -- and the calibrated P(cover)
+                    # it supplied is what Kelly consumes. The strategy performed BOTH sign
+                    # conversions (implied line in, margin-scale cover threshold out), so nothing
+                    # is converted again here.
+                    selector_decision = ats_decisions[game_id]
+
+                    bet_side = selector_decision["bet_side"]
+                    model_value = selector_decision[
+                        "calibrated_p_side"
+                    ]  # the calibrated P(cover) for the side bet
+                    market_value = selector_decision["closing_spread"]
+                    # WR-06 (as for O/U): on the selector path `edge` carries the per-bet EV, NOT
+                    # the points/probability edge BetRecord.edge documents. Same warning applies --
+                    # if these rows ever flow into `betting_bets` / the edge-bucket UI, the EV
+                    # scale will misclassify them.
+                    edge = selector_decision["per_bet_ev"]
+                    slipped_line = selector_decision["slipped_line"]
+                    # The price the selector actually judged and sized the bet at, so the payout
+                    # below cannot diverge from the stake above it.
+                    odds = int(selector_decision["selected_odds"])
+                    outcome = selector_decision["outcome"]
+
                 elif target == "ats":
+                    # Legacy path (no BetSelector injected): grade the spread bet so /betting's
+                    # published bet POPULATION does not move (D31-04). The side and grading here
+                    # are the PRE-EXISTING convention and are deliberately left alone; see the
+                    # note in `backtest/ats_ev_chain.py`'s module docstring on the two sign
+                    # conventions, and `ATSStrategy`, which converts at both seams.
                     if "model_spread" not in row.index:
                         continue
                     model_spread = float(row["model_spread"])
@@ -573,6 +675,7 @@ class BettingSimulator:
                     decision = ou_decisions.get(game_id)
                     if decision is None:
                         continue  # not selected by the BetSelector -> no O/U bet (proof==production)
+                    selector_decision = decision
 
                     bet_side = decision["bet_side"]
                     model_value = decision[
@@ -630,32 +733,39 @@ class BettingSimulator:
                 payout_flat = _calculate_payout(flat_bet, odds, outcome)
 
                 # -- Kelly sizing --
-                if target == "ou" and self.ou_bet_selector is not None:
-                    # LOCKED-2 monetization path: O/U sizing is owned by the BetSelector (BET-02
-                    # fix). The stake already went through the LOCKED-order Kelly + cap pipeline on
-                    # the calibrated p_side. Use it directly; do NOT re-run the inline `implied +
-                    # edge` sizing for O/U.
-                    kelly_bet = decision["kelly_stake"]
-                elif target == "ou":
-                    # Legacy DIAGNOSIS path: the BET-02 points-distance Kelly sizing is REMOVED.
-                    # Without the calibrated p_side there is no honest Kelly probability for O/U, so
-                    # the legacy path does NOT size Kelly off `implied + abs(model_total -
-                    # closing_total)` (the bug). It is flat-stake-graded only (the Phase-26 harness
-                    # reads the flat-stake win-rate); the O/U Kelly stake here is 0 by design.
+                #
+                # THE ONE RULE, FOR ALL THREE TARGETS: the number handed to Kelly is a calibrated
+                # PROBABILITY or there is no stake. There is no third case, and in particular no
+                # branch derives an "equivalent model probability" from a points distance -- that
+                # expression is what SPEC R10 removes, and Task 3's class guard is what keeps it
+                # removed for any target added later.
+                if selector_decision is not None:
+                    # A selector owns this decision end to end (LOCKED-2 for O/U, D31-04 for the
+                    # spread target). The stake already went through the LOCKED-order Kelly + cap
+                    # pipeline on the calibrated P(side); use it directly.
+                    kelly_bet = selector_decision["kelly_stake"]
+                elif target in ("ou", "ats"):
+                    # Legacy paths, BOTH zeroed BY DESIGN. Without a calibrated P(side) there is no
+                    # honest Kelly probability for a line target, and the quantity these branches
+                    # used to substitute was a POINTS DISTANCE added to an implied probability. For
+                    # O/U that removal is Phase 27's (the Phase-26 divergence harness reads the
+                    # flat-stake win-rate, which is unaffected). For the spread target it is
+                    # D31-04's: measured in the live cache, `implied + abs(model_spread -
+                    # closing_spread)` crossed 1.0 for every strong signal, so Kelly staked 348
+                    # weak signals and refused 725 strong ones, and the published spread Kelly
+                    # return was computed over that inverted selection. So:
+                    # the spread Kelly stake here is 0 by design.
+                    # The bet is still placed and graded at a flat stake, so /betting's published
+                    # bet POPULATION does not move; what moves is its spread Kelly return, which
+                    # becomes zero and is stated in the R11 readout rather than removed quietly.
                     kelly_bet = 0.0
                 else:
-                    # WP/ATS (out of scope, unchanged): WP uses the model prob directly; ATS uses
-                    # the legacy implied + edge equivalent-probability path.
-                    if target == "wp":
-                        kelly_model_prob = model_value
-                    else:
-                        # For ATS at -110, implied prob is ~52.4%; use edge to derive an equivalent
-                        # model probability.
-                        implied = moneyline_to_probability(odds)
-                        kelly_model_prob = implied + edge
-
+                    # WP, unchanged and deliberately so: `model_value` is ALREADY the side-correct
+                    # probability, computed a few lines above from the deployed calibrated model,
+                    # so Kelly consumes a genuine probability for the side actually bet. This is
+                    # measured (every winner bet's model_value is in (0, 1]), not assumed.
                     kelly_result = kelly_calc.calculate_optimal_bet_size(
-                        model_prob=kelly_model_prob,
+                        model_prob=model_value,
                         market_odds=odds,
                         mode=KellyMode.FRACTIONAL,
                     )
