@@ -39,11 +39,15 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import ast
+import json
+import os
 import subprocess
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from backtest.bet_selector import REJECTION_REASONS, BetSelector
@@ -686,3 +690,291 @@ class TestLegacyPathUnchanged:
 def test_python_executable_is_available_for_subprocess_tests() -> None:
     """A guard for the timezone test below: it needs a real interpreter path."""
     assert Path(sys.executable).exists()
+
+
+# ---------------------------------------------------------------------------
+# Per-game freshness (D31-18, T-31-40/41)
+# ---------------------------------------------------------------------------
+
+# The two kickoffs the per-game rule turns on. 2023-09-14 is a THURSDAY whose own preceding Friday
+# is 2023-09-08; the Sunday games of that same week kick off 2023-09-17, whose preceding Friday is
+# 2023-09-15. A per-WEEK freeze would judge the Thursday game against 2023-09-15 and suppress a
+# perfectly correct snapshot as a pure calendar artifact -- every Thursday, every week.
+_THURSDAY_GAMEDAY = "2023-09-14"
+_LATER_SUNDAY_GAMEDAY = "2023-09-17"
+
+
+def _freeze_for(gameday: str):
+    """That game's own freeze instant, read from the SHARED helper (never re-derived here)."""
+    from scripts.ingest_historical_odds import EASTERN, get_synthetic_snapshot_ts
+
+    return get_synthetic_snapshot_ts(gameday).astimezone(EASTERN)
+
+
+def _totals_verdict(
+    snapshot: Any, gameday: str = _SUNDAY_GAMEDAY
+) -> tuple[list[str], dict[str, Any]]:
+    """Run one O/U-shaped candidate through the selector and return (reasons, record)."""
+    schedule = _schedule(1, gameday=gameday)
+    rows = [_candidate(schedule[0]["game_id"], "totals", snapshot_ts=snapshot)]
+    result = _selector([_totals_strategy()]).select(rows, scheduled_games=schedule)
+    return [r["rejection_reason"] for r in result.rejected], result.unfiltered[0]
+
+
+class TestFreshnessBoundary:
+    """SPEC R6: at-freeze is FRESH; stale is STRICTLY before, measured in Eastern."""
+
+    def test_a_snapshot_exactly_at_the_freeze_is_fresh(self) -> None:
+        """The boundary is asserted DIRECTLY, on the freeze instant itself."""
+        freeze = _freeze_for(_SUNDAY_GAMEDAY)
+        reasons, record = _totals_verdict(freeze)
+
+        assert "stale_line" not in reasons
+        assert record["snapshot_ts"] == freeze
+        assert record["freeze_ts"] == freeze
+
+    def test_a_snapshot_one_second_before_the_freeze_is_stale(self) -> None:
+        """One second earlier flips the verdict, so the assertion above sits ON the boundary."""
+        one_second_early = _freeze_for(_SUNDAY_GAMEDAY) - timedelta(seconds=1)
+        reasons, record = _totals_verdict(one_second_early)
+
+        assert reasons == ["stale_line"]
+        assert record["snapshot_ts"] == one_second_early
+
+    def test_a_snapshot_after_the_freeze_is_fresh(self) -> None:
+        """A line taken after the freeze is current, not stale."""
+        later = _freeze_for(_SUNDAY_GAMEDAY) + timedelta(hours=6)
+        reasons, _record = _totals_verdict(later)
+        assert "stale_line" not in reasons
+
+    def test_the_freeze_on_the_record_is_the_shared_helper_value(self) -> None:
+        """The published freeze is the SAME instant the ingest stamps snapshot_ts from."""
+        _reasons, record = _totals_verdict(_freeze_for(_SUNDAY_GAMEDAY))
+        assert record["freeze_ts"] == _freeze_for(_SUNDAY_GAMEDAY)
+
+
+class TestPerGameFreezeIsLoadBearing:
+    """T-31-40: the Thursday calendar artifact provably cannot fire."""
+
+    def test_a_thursday_game_at_its_own_preceding_friday_is_fresh(self) -> None:
+        """The per-game rule admits it..."""
+        thursday_freeze = _freeze_for(_THURSDAY_GAMEDAY)
+        reasons, record = _totals_verdict(thursday_freeze, gameday=_THURSDAY_GAMEDAY)
+
+        assert "stale_line" not in reasons
+        assert record["freeze_ts"] == thursday_freeze
+
+    def test_the_same_snapshot_would_be_suppressed_by_that_weeks_sunday_freeze(
+        self,
+    ) -> None:
+        """...and a per-WEEK freeze would suppress the very same correct snapshot.
+
+        Both halves are asserted so the per-game rule is shown to be LOAD-BEARING rather than
+        merely present: without it this row is stale every Thursday of every season.
+        """
+        from scripts.ingest_historical_odds import is_fresh_at_freeze
+
+        thursday_freeze = _freeze_for(_THURSDAY_GAMEDAY)
+        assert _freeze_for(_LATER_SUNDAY_GAMEDAY) > thursday_freeze
+        assert is_fresh_at_freeze(thursday_freeze, _LATER_SUNDAY_GAMEDAY) is False
+        assert is_fresh_at_freeze(thursday_freeze, _THURSDAY_GAMEDAY) is True
+
+
+class TestSnapshotValueShapes:
+    """T-31-41: every stored shape parses to the same instant, and none is string-compared."""
+
+    def test_a_legacy_string_and_a_tz_aware_datetime_agree(self) -> None:
+        """The four shapes the live column is known to hold all resolve to one verdict."""
+        from scripts.ingest_historical_odds import EASTERN
+
+        at_freeze = datetime(2023, 9, 8, 18, 0, tzinfo=EASTERN)
+        shapes: list[Any] = [
+            at_freeze,  # a tz-aware datetime, what the ingest now writes
+            pd.Timestamp(at_freeze),  # a pandas Timestamp off a DataFrame
+            "2023-09-08T18:00:00-04:00",  # the legacy per-season string
+            "2023-09-08 22:00:00+00:00",  # the non-consensus row's space-separated UTC form
+        ]
+        for shape in shapes:
+            reasons, record = _totals_verdict(shape)
+            assert "stale_line" not in reasons, f"{shape!r} was read as stale"
+            assert record["snapshot_ts"] == at_freeze, (
+                f"{shape!r} parsed to another instant"
+            )
+
+    def test_every_shape_one_second_early_is_stale(self) -> None:
+        """The mirror: the same four shapes one second earlier are all stale.
+
+        Without this, a parse that silently returned a constant would pass the test above.
+        """
+        from scripts.ingest_historical_odds import EASTERN
+
+        early = datetime(2023, 9, 8, 17, 59, 59, tzinfo=EASTERN)
+        shapes: list[Any] = [
+            early,
+            pd.Timestamp(early),
+            "2023-09-08T17:59:59-04:00",
+            "2023-09-08 21:59:59+00:00",
+        ]
+        for shape in shapes:
+            reasons, _record = _totals_verdict(shape)
+            assert reasons == ["stale_line"], f"{shape!r} was read as fresh"
+
+    def test_a_complete_row_with_no_snapshot_refuses_rather_than_assuming_fresh(
+        self,
+    ) -> None:
+        """A row with market data and a kickoff date but no timestamp is a pipeline bug.
+
+        Treating it as fresh would make the fence unable to fire on exactly the rows a broken
+        cache builder produces; treating it as stale would hide the bug behind a data label.
+        """
+        with pytest.raises(ValueError, match="snapshot_ts"):
+            _totals_verdict(None)
+
+
+class TestFreshnessIsTimezoneIndependent:
+    """T-31-41: the verdict is identical under a non-Eastern PROCESS timezone.
+
+    Run in a SUBPROCESS on purpose. ``time.tzset`` does not exist on Windows and
+    ``datetime.astimezone()`` reads the OS zone fixed at process start, so an in-process
+    monkeypatch of the timezone is a silent no-op that passes vacuously. The child therefore
+    proves its own offset actually differs from Eastern BEFORE it reports any verdict.
+    """
+
+    _CHILD = """
+import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+local = datetime.now().astimezone().utcoffset()
+eastern = datetime.now(ZoneInfo("America/New_York")).utcoffset()
+
+from backtest.bet_selector import BetSelector
+from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
+
+GAME_ID = "2023_W01_T00@H00"
+SCHEDULE = [
+    {"game_id": GAME_ID, "season": 2023, "week": 1, "gameday": "2023-09-10"},
+]
+SELECTOR = BetSelector(
+    frozen_sd=13.0,
+    season_bias_by_season={2023: -1.0},
+    high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
+)
+
+
+def verdict(snapshot):
+    rows = [
+        {
+            "game_id": GAME_ID,
+            "season": 2023,
+            "week": 1,
+            "target": "ou",
+            "model_total": 41.0,
+            "closing_total": 45.0,
+            "sportsbook": "consensus",
+            "is_live": False,
+            "snapshot_ts": snapshot,
+        }
+    ]
+    result = SELECTOR.select(rows, scheduled_games=SCHEDULE)
+    return {
+        "reasons": [r["rejection_reason"] for r in result.rejected],
+        "freeze": result.unfiltered[0]["freeze_ts"].isoformat(),
+        "snapshot": result.unfiltered[0]["snapshot_ts"].isoformat(),
+    }
+
+
+print(
+    json.dumps(
+        {
+            "tz_differs": local != eastern,
+            "local_offset": str(local),
+            "at_freeze": verdict("2023-09-08T18:00:00-04:00"),
+            "one_second_early": verdict("2023-09-08T17:59:59-04:00"),
+        }
+    )
+)
+"""
+
+    def test_verdicts_are_identical_under_a_foreign_process_timezone(self) -> None:
+        """UTC+14 is as far from Eastern as a zone gets; the verdicts do not move."""
+        env = {**os.environ, "TZ": "XXX-14"}
+        child = subprocess.run(
+            [sys.executable, "-c", self._CHILD],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert child.returncode == 0, child.stderr
+        payload = json.loads(child.stdout.strip().splitlines()[-1])
+
+        # The control, asserted rather than assumed: if the child's own zone did not move, the
+        # test proved nothing and must say so rather than pass.
+        assert payload["tz_differs"], (
+            "the child process's local timezone did not differ from Eastern "
+            f"(offset {payload['local_offset']}), so this test would pass vacuously"
+        )
+
+        assert "stale_line" not in payload["at_freeze"]["reasons"]
+        assert payload["one_second_early"]["reasons"] == ["stale_line"]
+
+        # The instants themselves match what this process computes, not merely the verdicts.
+        expected_freeze = _freeze_for(_SUNDAY_GAMEDAY)
+        assert payload["at_freeze"]["freeze"] == expected_freeze.isoformat()
+        assert payload["at_freeze"]["snapshot"] == expected_freeze.isoformat()
+
+
+class TestOneFreezeDerivation:
+    """D31-17: the selector derives a freeze in exactly ONE place, and it is the shared helper."""
+
+    def test_the_freeze_helper_is_called_exactly_once(self) -> None:
+        """An AST count, so a second derivation cannot hide behind a differently named local."""
+        tree = ast.parse(SELECTOR_PATH.read_text(encoding="utf-8"))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "get_synthetic_snapshot_ts"
+        ]
+        assert len(calls) == 1, (
+            f"the selector derives a freeze instant at {len(calls)} call sites; D31-18 requires "
+            "exactly one, and it must be the shared helper"
+        )
+
+    def test_the_comparison_is_the_shared_one(self) -> None:
+        """The at-freeze-is-fresh comparison is not restated here either."""
+        tree = ast.parse(SELECTOR_PATH.read_text(encoding="utf-8"))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "is_fresh_at_freeze"
+        ]
+        assert len(calls) == 1
+
+    def test_the_selector_contains_no_second_freeze_derivation(self) -> None:
+        """No zone literal, no weekday arithmetic, no bare local-zone read.
+
+        Each forbidden token is a way a second freeze rule has actually been written before: a
+        hard-coded zone, a hand-rolled preceding-Friday walk, or a bare ``astimezone()`` that
+        silently anchors on whatever zone the process happens to run in.
+        """
+        source = SELECTOR_PATH.read_text(encoding="utf-8")
+        for token in (
+            "ZoneInfo(",
+            "America/New_York",
+            "timedelta(",
+            "weekday()",
+            "FREEZE_HOUR",
+            "tz_localize",
+            "fromisoformat",
+            ".astimezone()",
+        ):
+            assert token not in source, (
+                f"backtest/bet_selector.py contains {token!r}, which is how a SECOND freeze "
+                "derivation gets written; the freeze comes from one shared helper (D31-18)"
+            )
