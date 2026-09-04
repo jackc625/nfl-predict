@@ -364,3 +364,237 @@ class TestTheDefect2DryRun:
             "NOTHING to production silver -- Plan 31-11 owns the only silver write in this "
             "phase -- and the whole measurement is supposed to happen inside tmp_path."
         )
+
+
+# ---------------------------------------------------------------------------
+# Plan 31-08: the rewritten ingest WRITE CONTRACT.
+#
+# Four separately-attributable facts change at once -- label, game-type scope, juice columns
+# and snapshot semantics -- so each is named in the ratified pre-registration and proved here in
+# isolation. NOTHING below writes production silver: every destination is ``tmp_path`` and the
+# module-scoped digest guard asserts the production flat store is byte-identical across the whole
+# module run.
+# ---------------------------------------------------------------------------
+
+_INGEST_MODULE = Path("scripts/ingest_historical_odds.py")
+
+# The five game types the pre-registration ratified (D31-38, playoffs EVERYWHERE). Restated here
+# as literals ON PURPOSE: a test that imported the same constant the code reads would pass even
+# if the constant itself moved, and the point of this gate is that the ADMITTED SET IS THE
+# RATIFIED SET, not merely that two modules agree with each other.
+_RATIFIED_GAME_TYPES = ("REG", "WC", "DIV", "CON", "SB")
+
+
+def _schedule_row(
+    *,
+    season: int = 2024,
+    week: int = 1,
+    gameday: str = "2024-09-08",
+    home_team: str = "KC",
+    away_team: str = "BAL",
+    game_type: str = "REG",
+    spread_line: float | None = -3.0,
+    total_line: float | None = 46.5,
+    home_moneyline: int | None = -150,
+    away_moneyline: int | None = 130,
+    home_spread_odds: int | None = -108,
+    away_spread_odds: int | None = -112,
+    over_odds: int | None = -105,
+    under_odds: int | None = -115,
+) -> dict:
+    """One nflreadpy-shaped schedule row with ASYMMETRIC juice (never the -110 default)."""
+    return {
+        "season": season,
+        "week": week,
+        "gameday": gameday,
+        "home_team": home_team,
+        "away_team": away_team,
+        "game_type": game_type,
+        "spread_line": spread_line,
+        "total_line": total_line,
+        "home_moneyline": home_moneyline,
+        "away_moneyline": away_moneyline,
+        "home_spread_odds": home_spread_odds,
+        "away_spread_odds": away_spread_odds,
+        "over_odds": over_odds,
+        "under_odds": under_odds,
+    }
+
+
+def _non_docstring_string_constants() -> set[str]:
+    """Every string LITERAL in the ingest module that is not a docstring.
+
+    Docstrings are excluded deliberately: the module must stay free to NAME the legacy mislabel
+    and the playoff codes in prose while never DECLARING either as a value it uses.
+    """
+    import ast
+
+    tree = ast.parse(_INGEST_MODULE.read_text(encoding="utf-8"))
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+        ):
+            doc = ast.get_docstring(node, clean=False)
+            if doc is not None:
+                docstrings.add(doc)
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value not in docstrings
+    }
+
+
+class TestTheRatifiedLabel:
+    """Write-contract clause 1: the label is the one the live silver rows already carry."""
+
+    def test_a_transformed_row_carries_the_frozen_label(self) -> None:
+        from backtest.ev_chain_constants import ODDS_SPORTSBOOK_LABEL
+        from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
+
+        out = transform_nfl_odds_to_standard_format(pd.DataFrame([_schedule_row()]))
+
+        assert set(out["sportsbook"]) == {ODDS_SPORTSBOOK_LABEL}
+
+    def test_the_provenance_guard_admits_a_transformed_row(self) -> None:
+        """The point of clause 1: no allowlist widening is needed for the row to pass."""
+        from backtest.bet_selector import assert_real_odds
+        from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
+
+        out = transform_nfl_odds_to_standard_format(
+            pd.DataFrame([_schedule_row(season=2025, gameday="2025-09-14")])
+        )
+
+        assert_real_odds(out)
+
+    def test_the_oum_06_allowlist_is_not_widened(self) -> None:
+        from backtest.ou_divergence import _ALLOWED_SPORTSBOOKS
+
+        assert frozenset({"consensus", "draftkings"}) == _ALLOWED_SPORTSBOOKS, (
+            "the OUM-06 allowlist moved. Clause 1 of the pre-registration (D31-12 branch 1) "
+            "settles the label question by MATCHING the live rows, explicitly so that the "
+            "allowlist stays exactly as Phase 26 left it. Widening it is the OTHER branch, and "
+            "that branch was not taken."
+        )
+
+    def test_the_label_is_not_a_literal_in_the_ingest_module(self) -> None:
+        constants = _non_docstring_string_constants()
+
+        assert "nflverse_closing" not in constants, (
+            "the documented LEGACY MISLABEL is still a value in the ingest module. It is named "
+            "in prose and nowhere else; the written label is ODDS_SPORTSBOOK_LABEL."
+        )
+        assert "consensus" not in constants, (
+            "the ratified label is declared locally instead of being READ from the frozen "
+            "backtest/ev_chain_constants.py. A second declaration is a second rule."
+        )
+
+
+class TestTheRatifiedGameTypeScope:
+    """Write-contract clause 4: REG plus all four playoff types, in BOTH windows (D31-38)."""
+
+    @pytest.mark.parametrize("game_type", _RATIFIED_GAME_TYPES)
+    def test_every_ratified_game_type_is_admitted_in_both_windows(
+        self, game_type: str
+    ) -> None:
+        from scripts.ingest_historical_odds import admitted_game_types
+
+        assert game_type in admitted_game_types(2022), (
+            f"{game_type} is not admitted in a TUNE season. D31-38 is playoffs EVERYWHERE."
+        )
+        assert game_type in admitted_game_types(2025), (
+            f"{game_type} is not admitted in the HOLD season. The 2025 hold is 285 games, "
+            "not 272, and that is the ratified scope."
+        )
+
+    def test_preseason_is_excluded_in_both_windows(self) -> None:
+        from scripts.ingest_historical_odds import admitted_game_types
+
+        assert "PRE" not in admitted_game_types(2022)
+        assert "PRE" not in admitted_game_types(2025)
+
+    def test_the_admitted_set_is_read_from_the_frozen_constants(self) -> None:
+        from backtest.ev_chain_constants import HOLD_GAME_TYPES, TUNE_GAME_TYPES
+        from scripts.ingest_historical_odds import admitted_game_types
+
+        assert admitted_game_types(2022) == frozenset(TUNE_GAME_TYPES)
+        assert admitted_game_types(2025) == frozenset(HOLD_GAME_TYPES)
+
+    def test_the_module_declares_no_local_playoff_type_collection(self) -> None:
+        constants = _non_docstring_string_constants()
+        declared = sorted(constants & set(_RATIFIED_GAME_TYPES))
+
+        assert declared == [], (
+            f"the ingest module declares the game-type literals {declared} locally. The scope "
+            "is a clause of the FROZEN pre-registration; a local declaration is a second rule "
+            "that can drift from the ratified one without any test noticing."
+        )
+
+    def test_a_fabricated_game_type_is_dropped_and_counted(self) -> None:
+        from scripts.ingest_historical_odds import transform_nfl_odds_with_counts
+
+        frame = pd.DataFrame(
+            [
+                _schedule_row(away_team="BAL"),
+                _schedule_row(away_team="BUF", game_type="XFL"),
+                _schedule_row(away_team="NYJ", game_type="PRE"),
+            ]
+        )
+        report = transform_nfl_odds_with_counts(frame)
+
+        assert report.admitted == 1
+        assert report.dropped_by_game_type == {"PRE": 1, "XFL": 1}
+        assert set(report.odds["game_id"]) == {"2024_W01_BAL@KC"}
+
+    def test_the_live_2025_schedule_admits_285_and_drops_none(self) -> None:
+        from scripts.audit_odds_preingest import MIN_2025_GAMES_WITH_TOTAL
+        from scripts.ingest_historical_odds import transform_nfl_odds_with_counts
+
+        report = transform_nfl_odds_with_counts(_load_live_schedule(2025))
+
+        assert report.admitted == MIN_2025_GAMES_WITH_TOTAL
+        assert report.dropped_by_game_type == {}
+        assert report.dropped_no_betting_data == 0
+        assert report.dropped_transform_error == 0
+        assert len(report.odds) == MIN_2025_GAMES_WITH_TOTAL
+
+    def test_the_counts_are_returned_not_only_logged(self) -> None:
+        """Plan 31-11 asserts these counts; it must not have to parse a log line."""
+        import dataclasses
+
+        from scripts.ingest_historical_odds import (
+            OddsTransformReport,
+            transform_nfl_odds_with_counts,
+        )
+
+        report = transform_nfl_odds_with_counts(pd.DataFrame([_schedule_row()]))
+
+        assert isinstance(report, OddsTransformReport)
+        fields = {f.name for f in dataclasses.fields(report)}
+        assert {
+            "odds",
+            "admitted",
+            "dropped_by_game_type",
+            "dropped_no_betting_data",
+            "dropped_transform_error",
+        } <= fields
+
+
+class TestTheSeasonArgument:
+    """2025 is ingested only when it is asked for, never by silent inclusion in a default."""
+
+    def test_the_historical_default_does_not_include_2025(self) -> None:
+        from scripts.ingest_historical_odds import (
+            DEFAULT_HISTORICAL_SEASONS,
+            build_parser,
+        )
+
+        assert 2025 not in DEFAULT_HISTORICAL_SEASONS
+        assert build_parser().parse_args([]).seasons == list(DEFAULT_HISTORICAL_SEASONS)
+
+    def test_2025_is_accepted_when_named_explicitly(self) -> None:
+        from scripts.ingest_historical_odds import build_parser
+
+        assert build_parser().parse_args(["--seasons", "2025"]).seasons == [2025]

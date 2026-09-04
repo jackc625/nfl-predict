@@ -130,15 +130,24 @@ class TestGetSyntheticSnapshotTs:
 class TestHistoricalOddsTransform:
     """Tests for historical odds transformation."""
 
-    def test_produces_nflverse_closing_sportsbook(self):
-        """Historical odds records have sportsbook='nflverse_closing'."""
+    def test_produces_the_ratified_sportsbook_label(self):
+        """Historical odds records carry the label the live silver rows already hold.
+
+        This test used to pin the literal ``nflverse_closing``, which this ingest wrote from
+        v1.0 Phase 02 (commit ``b3f158d``) until Plan 31-08. That literal was a DOCUMENTED
+        LEGACY MISLABEL: no row in live silver ever carried it, and the OUM-06 provenance
+        allowlist (``backtest.ou_divergence._ALLOWED_SPORTSBOOKS``) rejects it, so the Phase-31
+        verdict run would have hard-failed at step one. The label is now read from the FROZEN
+        pre-registration and the allowlist is deliberately NOT widened (D31-12 branch 1).
+        """
+        from backtest.ev_chain_constants import ODDS_SPORTSBOOK_LABEL
         from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
 
         df = pd.DataFrame([_make_schedule_row()])
         result = transform_nfl_odds_to_standard_format(df)
 
         assert len(result) == 1
-        assert result.iloc[0]["sportsbook"] == "nflverse_closing"
+        assert result.iloc[0]["sportsbook"] == ODDS_SPORTSBOOK_LABEL
 
     def test_creates_project_format_game_ids(self):
         """Historical odds game_ids follow project format: 2024_W01_BAL@KC."""
