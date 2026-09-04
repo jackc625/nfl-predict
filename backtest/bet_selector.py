@@ -76,7 +76,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -213,22 +213,23 @@ def _freshness_context(
     gameday = row.get("gameday")
     snapshot_value = row.get("snapshot_ts")
 
-    freeze = (
-        None
-        if _is_absent(gameday)
-        # THE ONE CALL SITE deriving a freeze instant in this module (D31-18). Every other
-        # freshness question routes through the helpers imported above.
-        else get_synthetic_snapshot_ts(gameday).astimezone(EASTERN)
-    )
     snapshot = (
         None if _is_absent(snapshot_value) else normalize_snapshot_ts(snapshot_value)
     )
-    is_fresh = (
-        None
-        if freeze is None or snapshot is None
-        else is_fresh_at_freeze(snapshot_value, gameday)
-    )
-    return snapshot, freeze, is_fresh
+    if _is_absent(gameday):
+        return snapshot, None, None
+
+    # Both helpers annotate ``gameday`` as ``str`` while their docstrings accept anything
+    # ``pd.to_datetime`` parses, which is what a schedule column actually holds. The cast WIDENS
+    # the annotation and does not convert the value: converting would be a second parse of a
+    # field this module does not own.
+    kickoff = cast("str", gameday)
+    # THE ONE CALL SITE deriving a freeze instant in this module (D31-18). Every other freshness
+    # question routes through the helpers imported above.
+    freeze = get_synthetic_snapshot_ts(kickoff).astimezone(EASTERN)
+    if snapshot is None:
+        return None, freeze, None
+    return snapshot, freeze, is_fresh_at_freeze(snapshot_value, kickoff)
 
 
 def assert_real_odds(raw_odds_df: pd.DataFrame) -> None:
@@ -791,7 +792,9 @@ class BetSelector:
         missing_prediction: list[str] = []
         for name in strategy.required_market_fields:
             value = row.get(name)
-            if _is_absent(value):
+            # ``value is None`` is stated first so the type checker narrows the else branch;
+            # ``_is_absent`` additionally catches the NaN a DataFrame puts in an empty cell.
+            if value is None or _is_absent(value):
                 values[name] = None
                 if name in prediction_names:
                     missing_prediction.append(name)
