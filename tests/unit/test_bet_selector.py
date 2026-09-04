@@ -16,6 +16,21 @@ Covers:
   equality (SPEC R1 adjacency), and ``OUStrategy``'s delegation to the LOCKED simulator convention
   is proven with a stand-in simulator.
 
+A TRAP FOR THE NEXT GUARD AUTHOR -- key on the MODULE PATH, never on the class name.
+
+  There are TWO classes named ``BetSelector`` and both are loaded in EVERY process. The live one
+  is ``backtest.bet_selector.BetSelector``; the other is a DEAD v1.0 class at
+  ``utils/bet_selector.py``, which ``utils/__init__.py`` re-exports into the ``utils`` namespace
+  and lists in ``utils.__all__``. Because ``backtest/bet_selector.py`` does ``from utils import
+  get_logger``, importing the live class EXECUTES ``utils/__init__`` and pulls in the dead one as
+  a side effect -- they are never separable at runtime. A structural guard that asks "is there a
+  second selection path?" by matching the class NAME will therefore always find the dead cluster
+  and always false-positive; it must match on ``node.module`` (``backtest.bet_selector`` vs
+  ``utils`` / ``utils.bet_selector``) instead. The converse trap is equally real: the simulator
+  receives the selector by INJECTION (``BettingSimulator(..., ou_bet_selector=...)``), so there is
+  no import edge to find and an import-graph test alone cannot prove the production path routes
+  through the real selector. Plan 31-17 owns the one-path guard that rests on both halves of this.
+
 Run the boundary group only:  pytest tests/unit/test_bet_selector.py -q -k boundary
 Run the full module:          pytest tests/unit/test_bet_selector.py -x -q
 
@@ -1356,3 +1371,234 @@ class TestPooledSizingProvenanceOnTheRecord:
         assert result.clv_report is not None
         assert result.clv_report["n"] == 3
         assert result.clv_report["mean"] == pytest.approx(-8.0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 31, plan 31-06, Task 3: the facade contract, pinned so the refactor cannot drift
+#
+# T-31-26 / T-31-27. These are STRUCTURAL assertions, not behavioural ones: they hold the shape
+# the D31-01 split promised, so a later edit that quietly adds a public name, registers a
+# half-built strategy, or lets a missing target produce an empty bet list fails here rather than
+# in a published readout.
+# ---------------------------------------------------------------------------
+
+# The entire public surface of ``backtest.bet_selector``. R4's source scan pins this module as the
+# ONE import target for a bet decision, so the surface is enumerated rather than sampled.
+_FACADE_PUBLIC_NAMES = {
+    "REJECTION_REASONS",
+    "BetSelector",
+    "SelectionResult",
+    "assert_real_odds",
+}
+
+
+class _IncompleteStrategy:
+    """A NEGATIVE CONTROL: a strategy missing ``side_probability`` and its data members.
+
+    Deliberately never registered. Its only job is to prove the conformance check below can
+    actually fail -- a runtime Protocol assertion that nothing has ever failed is indistinguishable
+    from one that always passes.
+    """
+
+    def resolve_bet_side(self, row: dict) -> str | None:
+        return None
+
+    def eligibility(self, row: dict, bet_side: str | None) -> str | None:
+        return None
+
+    def eligibility_label(self, row: dict, bet_side: str | None) -> str:
+        return "all"
+
+    def decision_extras(self, row: dict, bet_side: str | None) -> dict:
+        return {}
+
+    def grade(self, record: dict) -> bool | None:
+        return None
+
+
+class TestFacadePublicSurface:
+    """The facade's exported surface is exactly four names and does not grow by accident."""
+
+    def test_all_names_exactly_the_four_public_symbols(self) -> None:
+        """``__all__`` is the four names, no more and no fewer.
+
+        Enumerated rather than subset-checked in both directions: a subset check would let a fifth
+        export appear silently, and R4's guard rests on this module having ONE decision surface.
+        """
+        from backtest import bet_selector as module
+
+        assert set(module.__all__) == _FACADE_PUBLIC_NAMES
+        assert len(module.__all__) == len(_FACADE_PUBLIC_NAMES)
+
+    def test_every_exported_name_resolves_in_this_module(self) -> None:
+        """Each exported name resolves, and the three objects are DEFINED here, not re-exported.
+
+        Checked by ``__module__`` and not by identity against an import: an alias re-pointed at
+        another module would still satisfy an identity check made through the same alias.
+        """
+        from backtest import bet_selector as module
+
+        for name in module.__all__:
+            assert hasattr(module, name), (
+                f"__all__ names {name} but the module does not define it"
+            )
+
+        assert module.BetSelector.__module__ == "backtest.bet_selector"
+        assert module.SelectionResult.__module__ == "backtest.bet_selector"
+        assert module.assert_real_odds.__module__ == "backtest.bet_selector"
+        # REJECTION_REASONS is a tuple of strings and carries no ``__module__``; pin its contents.
+        assert module.REJECTION_REASONS == (
+            "not_subpop",
+            "ev_below_floor",
+            "real_odds_failed",
+            "zero_kelly_stake",
+        )
+
+
+class TestStrategyRegistryContract:
+    """T-31-27: the registry is keyed by target, complete, and fails loudly when it is not."""
+
+    def test_every_registered_strategy_satisfies_the_protocol(self) -> None:
+        """A registered strategy is checked structurally at TEST time, not at selection time.
+
+        ``TargetStrategy`` is ``runtime_checkable``, so ``isinstance`` verifies that every member
+        the core dispatches through is actually present. Without this, a strategy missing a member
+        would raise part-way through a selection run, after some bets had already been priced.
+        """
+        from backtest.selector_strategies import TargetStrategy
+
+        for selector in (_make_selector(), _pooled_selector()):
+            assert selector.strategies
+            for code, strategy in selector.strategies.items():
+                assert isinstance(strategy, TargetStrategy), (
+                    f"registered strategy for target {code!r} does not satisfy TargetStrategy"
+                )
+                assert strategy.target == code
+
+    def test_an_incomplete_strategy_fails_the_conformance_check(self) -> None:
+        """The negative control: a class missing members is NOT a ``TargetStrategy``.
+
+        Both failure modes are covered -- a missing method (``side_probability``) and missing data
+        members (``target`` / ``required_market_fields``) -- because a data protocol that only
+        checked methods would wave through a strategy with no registry key.
+        """
+        from backtest.selector_strategies import OUStrategy, TargetStrategy
+
+        assert not isinstance(_IncompleteStrategy(), TargetStrategy)
+        # Positive control on the same assertion, so a broken check cannot pass by always
+        # returning False.
+        assert isinstance(
+            OUStrategy(frozen_sd=_FIXTURE_SD, season_bias_by_season=_FIXTURE_BIAS),
+            TargetStrategy,
+        )
+
+    def test_registry_is_keyed_by_target_and_rejects_a_duplicate_key(self) -> None:
+        """Two strategies claiming one target is a construction error, not a last-one-wins.
+
+        Silently keeping the last registration would mean the target's rules depend on argument
+        order, which is exactly the "one source, or one convention" distinction D31-01 exists to
+        keep on the right side of.
+        """
+        from backtest.bet_selector import BetSelector
+        from backtest.selector_strategies import OUStrategy
+
+        assert set(_pooled_selector().strategies) == {"ou", "probe"}
+
+        def _ou() -> OUStrategy:
+            return OUStrategy(
+                frozen_sd=_FIXTURE_SD,
+                season_bias_by_season=_FIXTURE_BIAS,
+                high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
+            )
+
+        with pytest.raises(ValueError, match="duplicate strategy"):
+            BetSelector(
+                frozen_sd=_FIXTURE_SD,
+                season_bias_by_season=_FIXTURE_BIAS,
+                strategies=[_ou(), _ou()],
+            )
+
+    def test_an_empty_registry_is_refused(self) -> None:
+        """A selector with no strategies could only ever return an empty bet list."""
+        from backtest.bet_selector import BetSelector
+
+        with pytest.raises(ValueError, match="at least one target strategy"):
+            BetSelector(
+                frozen_sd=_FIXTURE_SD,
+                season_bias_by_season=_FIXTURE_BIAS,
+                strategies=[],
+            )
+
+    def test_unregistered_target_raises_a_named_error_not_a_keyerror(self) -> None:
+        """T-31-27: a candidate for an unregistered target fails LOUDLY, naming both sides.
+
+        An empty result for a target nobody registered is indistinguishable, after the fact, from
+        a target that genuinely had no +EV bets that week -- which is the one thing a
+        profitability readout must never be ambiguous about.
+        """
+        from backtest.selector_strategies import UnregisteredTargetError
+
+        row = _as_target(
+            _ou_row(
+                "2021_W01_A@B", model_total=38.0, closing_total=45.0, actual_total=40.0
+            ),
+            target="ats",
+        )
+        with pytest.raises(UnregisteredTargetError) as exc:
+            _make_selector().select([row])
+        message = str(exc.value)
+        assert "ats" in message  # the target that was asked for
+        assert "ou" in message  # the registered set
+
+        # It is a LookupError subclass, so an existing ``except LookupError`` still catches it,
+        # but it is NOT a bare KeyError from a dict lookup.
+        assert isinstance(exc.value, LookupError)
+        assert not isinstance(exc.value, KeyError)
+
+    def test_untagged_candidate_is_ambiguous_once_two_targets_are_registered(
+        self,
+    ) -> None:
+        """With more than one strategy there is no defensible default target, so it refuses.
+
+        Guessing would book a bet under another target's eligibility rule and price it with
+        another target's chain -- a wrong number that looks entirely ordinary on the page.
+        """
+        from backtest.selector_strategies import UnregisteredTargetError
+
+        untagged = _ou_row(
+            "2021_W01_A@B", model_total=38.0, closing_total=45.0, actual_total=40.0
+        )
+        with pytest.raises(UnregisteredTargetError, match="ambiguous"):
+            _pooled_selector().select([untagged])
+
+        # The same untagged row is UNAMBIGUOUS with a single strategy registered, which is why
+        # every pre-D31-01 caller keeps working untouched.
+        assert _make_selector().select([untagged]).selected
+
+
+class TestNameCollisionTrapIsDocumented:
+    """T-31-26: the dead v1.0 ``BetSelector`` must never satisfy a name-keyed guard."""
+
+    def test_both_bet_selector_classes_are_live_in_one_process(self) -> None:
+        """The collision is a FACT of every run, not a latent risk on disk.
+
+        ``backtest/bet_selector.py`` does ``from utils import get_logger``, which executes
+        ``utils/__init__`` and imports the DEAD v1.0 class as a side effect of importing the live
+        one. Any structural guard over this area must key on the MODULE PATH, never the class
+        name; Plan 31-17 owns the one-path guard that depends on this.
+        """
+        import utils
+        from backtest.bet_selector import BetSelector as LiveSelector
+
+        dead_selector = utils.BetSelector
+        assert dead_selector is not LiveSelector
+        assert dead_selector.__name__ == LiveSelector.__name__ == "BetSelector"
+        assert LiveSelector.__module__ == "backtest.bet_selector"
+        assert dead_selector.__module__ == "utils.bet_selector"
+
+    def test_this_module_records_the_module_path_rule(self) -> None:
+        """The rule is written where the next guard author will read it -- this file's docstring."""
+        docstring = Path(__file__).read_text(encoding="utf-8").split('"""')[1]
+        assert "module path" in docstring.lower()
+        assert "utils.bet_selector" in docstring
+        assert "31-17" in docstring
