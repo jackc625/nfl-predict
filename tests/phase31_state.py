@@ -35,6 +35,8 @@ needs a new durable value appends a new slot here rather than inventing a second
 
 * Plan 31-02 (this file's author) -- ``ATS_RESIDUAL_BY_SEASON`` and ``ATS_RESIDUAL_POOLED``,
   with their ``*_PROVENANCE`` siblings.
+* Plan 31-05 -- ``PRE_REGISTRATION_COMMIT`` and ``PRE_REGISTRATION_FILE_SHA256``, the
+  git-ancestry anchor for the frozen pre-registration.
 """
 
 from __future__ import annotations
@@ -135,3 +137,69 @@ ATS_RESIDUAL_POOLED_PROVENANCE: Final[dict[str, str]] = {
 # simplification.
 ATS_IMPLIED_COVER_PROBABILITY_SHIFT: Final[float] = 0.021164571224560169
 ATS_MINUS_110_BREAKEVEN_EDGE: Final[float] = 0.023809523809523836
+
+
+# ---------------------------------------------------------------------------
+# The git-ancestry anchor for the FROZEN Phase-31 pre-registration (Plan 31-05 Task 1).
+#
+# APPENDED on 2026-09-04, in a SEPARATE, LATER commit than the pre-registration itself. That
+# separation is the whole point.
+#
+# WHY THE ANCHOR LIVES HERE AND NOT INSIDE THE FILES IT WITNESSES (REVIEW-CIRCULAR). A document
+# that must CONTAIN and exactly REPRODUCE its own whole-file hash is self-referential: writing the
+# hash changes the bytes the hash was computed over, so no fixed point exists without a canonical
+# exclusion rule nobody has defined. A test written against such a file would have to be relaxed
+# into meaninglessness. So the witness lives OUTSIDE the witnessed files, exactly as Phase 30
+# proved with PRE_REGISTRATION_COMMIT / MEASUREMENT_COMMIT / GROUP_VERDICT_FILE_SHA256 in
+# tests/phase30_state.py. backtest/ev_chain_constants.py declares PREREGISTRATION_PATHS so the
+# resolving code names the paths from ONE place and hardcodes no hash of its own.
+#
+# WHAT PRE_REGISTRATION_COMMIT IS. The last commit to touch EITHER pre-registration path, resolved
+# by `git log -1 --format=%H -- PROFITABILITY-PREREGISTRATION.md backtest/ev_chain_constants.py`.
+# That commit contains EXACTLY those two paths and nothing else, so its message's claim to be the
+# pre-registration is checkable rather than merely asserted. The two files are ONE rule in two
+# artifacts -- a constants module the code reads and a prose document the owner ratifies -- which
+# is why the anchor is their COMBINED last-modifying commit rather than either file's alone.
+#
+# THE RELATION PLAN 31-14 ASSERTS, reproducible from any non-shallow checkout:
+# `git merge-base --is-ancestor <PRE_REGISTRATION_COMMIT> <the 2025 measurement commit>` exits 0,
+# and the two SHAs are NOT equal. The inequality is not pedantry. A rule and the results it
+# produced landing in one commit is not a pre-registration; it is only a claim of one.
+# ---------------------------------------------------------------------------
+PRE_REGISTRATION_COMMIT: Final[str] = "ee20773b58c3a59de2450d56c64992e240282820"
+
+# sha256 of each pre-registration file's NEWLINE-NORMALIZED bytes -- every CRLF folded to LF
+# before hashing.
+#
+# The normalization is load-bearing, not tidiness. This repository has core.autocrlf=true and no
+# .gitattributes, so these files are LF in the git blob and CRLF in a fresh Windows working tree.
+# A digest over raw working-tree bytes would pin a value that holds on the machine that measured
+# it and fails on every other checkout -- the exact opposite of what a tracked constant is for.
+# Normalized, each value equals the sha256 of
+# `git cat-file blob <PRE_REGISTRATION_COMMIT>:<path>` and is reproducible on any platform. Both
+# were verified equal by both routes at append time.
+#
+# Keys are repo-root-relative POSIX paths and MUST match
+# backtest.ev_chain_constants.PREREGISTRATION_PATHS exactly; the ancestry test asserts that the
+# two sets agree, so a path added to the rule without a hash appended here is a failure rather
+# than a silently unwitnessed file.
+PRE_REGISTRATION_FILE_SHA256: Final[dict[str, str]] = {
+    "PROFITABILITY-PREREGISTRATION.md": (
+        "5e788d646f6948e903b7769bbad55d9a09002ea9e1a6c7d569d5e5e5203a149c"
+    ),
+    "backtest/ev_chain_constants.py": (
+        "a80bf5c1c9ac558cb9074e40316115c773f7352ad2a5bbfa527ec43d06f78220"
+    ),
+}
+
+PRE_REGISTRATION_PROVENANCE: Final[dict[str, str]] = {
+    "plan": "31-05",
+    "task": "Task 1: The FROZEN pre-registration -- constants module plus document, one commit",
+    "date": "2026-09-04",
+    "resolved_by": (
+        "git log -1 --format=%H -- PROFITABILITY-PREREGISTRATION.md "
+        "backtest/ev_chain_constants.py"
+    ),
+    "hash_basis": "newline-normalized file bytes (CRLF folded to LF); equals the git blob sha256",
+    "commit_contents": "exactly the two pre-registration paths and nothing else",
+}
