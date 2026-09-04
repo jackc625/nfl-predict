@@ -1020,3 +1020,218 @@ class TestDeweightFormulaDocumentedInLockstep:
                 assert record["deweighted_stake"] == pytest.approx(
                     documented, abs=_TOL
                 ), name
+
+
+# ---------------------------------------------------------------------------
+# (15) D31-03 / T-31-16: de-weighting cannot change WHICH bets are selected,
+#      nor the flat-stake headline
+# ---------------------------------------------------------------------------
+
+# The target label the O/U strategy carries. Plan 31-06 registers WP and ATS
+# strategies behind the same facade and this set becomes multi-valued; the
+# assertions below compare (game_id, target) PAIRS so they survive that change
+# without being rewritten.
+_SELECTOR_TARGET = "ou"
+
+# The fixture SD and the (negative, over-biased -- D26-18) prior-season bias
+# used by the selection-path fixtures below.
+_FIXTURE_SD = 13.0
+_FIXTURE_BIAS = {2025: -1.0}
+
+
+def _make_ou_selector(ev_floor_t: float = 0.0):
+    """Build the O/U BetSelector with the fixture SD/bias (import deferred)."""
+    from backtest.bet_selector import BetSelector
+    from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
+
+    return BetSelector(
+        frozen_sd=_FIXTURE_SD,
+        season_bias_by_season=_FIXTURE_BIAS,
+        ev_floor_t=ev_floor_t,
+        bankroll=10_000.0,
+        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
+    )
+
+
+def _ou_row(
+    game_id: str,
+    *,
+    model_total: float,
+    closing_total: float,
+    actual_total: float,
+    season: int = 2025,
+    week: int = 1,
+) -> dict:
+    """One synthetic O/U candidate row."""
+    return {
+        "game_id": game_id,
+        "season": season,
+        "week": week,
+        "model_total": model_total,
+        "closing_total": closing_total,
+        "actual": actual_total,
+    }
+
+
+# A hand-built week carrying a genuine SAME-GAME pair: two candidates on
+# 2025_W01_A@B taking OPPOSITE sides (an under and a high-total over, the line
+# being above the 48.0 pre-hold boundary), plus one uncorrelated under on a
+# second game. This is the shape D31-03 exists for. The O/U strategy does not
+# itself emit two bets on one game -- Plan 31-06 produces the pair by pooling
+# three targets -- so the week is hand-built here to exercise the pooled shape
+# through the real admission and sizing code that exists today.
+_SAME_GAME_WEEK = [
+    _ou_row("2025_W01_A@B", model_total=38.0, closing_total=52.0, actual_total=40.0),
+    _ou_row("2025_W01_A@B", model_total=66.0, closing_total=52.0, actual_total=40.0),
+    _ou_row("2025_W02_C@D", model_total=36.0, closing_total=45.0, actual_total=50.0),
+]
+
+
+def _same_side_only_deweight(bets: list[dict]) -> list[dict]:
+    """TEST-ONLY comparator: the PRE-D31-03 same-side-only de-weighting variant.
+
+    Deliberately NOT a production code path -- production has exactly one
+    formula. It delegates to the real helper for grouping and validation, then
+    overrides the factor with ``1/sqrt(same_side_group_size)``, so the two
+    variants differ in exactly the one respect under test.
+
+    ``apply_same_game_and_side_deweight`` is referenced through the name bound
+    at import time, so monkeypatching the module attribute does not recurse.
+    """
+    return [
+        {
+            **record,
+            "scale_factor": 1.0 / math.sqrt(record["same_side_group_size"]),
+            "deweighted_stake": record["original_stake"]
+            / math.sqrt(record["same_side_group_size"]),
+            "same_game_group_size": 1,
+            "binding_group": "same_side",
+        }
+        for record in apply_same_game_and_side_deweight(bets)
+    ]
+
+
+def _select(candidates: list[dict]) -> list[dict]:
+    """Run the real selection path and return the selected records."""
+    return _make_ou_selector().select(candidates).selected
+
+
+def _selected_pairs(selected: list[dict]) -> set[tuple[str, str]]:
+    """The set of (game_id, target) pairs the selection path admitted and staked."""
+    return {(record["game_id"], _SELECTOR_TARGET) for record in selected}
+
+
+def _flat_stake_roi(selected: list[dict]) -> float:
+    """Flat 1-unit ROI over the GRADED selected bets -- reads NO stake field.
+
+    Flat staking risks one unit per bet, so profit per unit risked is
+    ``sum(payout_or_minus_one) / n_graded``. Pushes (outcome None) are excluded
+    exactly as ungraded bets are. Because no stake is consumed, no sizing rule
+    can move this number -- which is the point of the test that calls it.
+    """
+    from backtest.ou_ev_chain import MINUS_110_PAYOUT
+
+    graded = [record for record in selected if record["outcome"] is not None]
+    if not graded:
+        return 0.0
+    profit = sum(MINUS_110_PAYOUT if record["outcome"] else -1.0 for record in graded)
+    return profit / len(graded)
+
+
+class TestDeweightCannotChangeTheSelectedSet:
+    """T-31-16: admission structurally precedes sizing, so de-weighting is not a lever."""
+
+    def test_admitted_set_identical_across_deweight_variants(self, monkeypatch) -> None:
+        """T-31-16: the same (game_id, target) pairs are selected under BOTH variants.
+
+        The selection path is run twice over one hand-built week -- once with
+        the D31-03 same-game-and-side rule, once with the pre-D31-03
+        same-side-only variant monkeypatched in at the module seam. Admission
+        compares per-bet EV against the floor and never reads a stake, so the
+        admitted set must be identical. Compared as a SET OF PAIRS, not as
+        counts: two runs can agree on how many bets they took while disagreeing
+        about which.
+        """
+        with_same_game = _selected_pairs(_select(_SAME_GAME_WEEK))
+
+        monkeypatch.setattr(
+            kelly_module,
+            "apply_same_game_and_side_deweight",
+            _same_side_only_deweight,
+        )
+        same_side_only = _selected_pairs(_select(_SAME_GAME_WEEK))
+
+        assert with_same_game == same_side_only
+        assert with_same_game == {
+            ("2025_W01_A@B", _SELECTOR_TARGET),
+            ("2025_W02_C@D", _SELECTOR_TARGET),
+        }
+
+    def test_the_two_variants_really_do_size_differently(self, monkeypatch) -> None:
+        """T-31-16: the comparison above is NOT vacuous -- the variants stake differently.
+
+        If both variants produced identical stakes, "the selected set is
+        identical" would prove nothing. On this week the same-game pair is
+        de-weighted by the new rule and not by the old one, so the staked
+        amounts genuinely diverge while the selected set does not.
+        """
+        new_stakes = [record["kelly_stake"] for record in _select(_SAME_GAME_WEEK)]
+
+        monkeypatch.setattr(
+            kelly_module,
+            "apply_same_game_and_side_deweight",
+            _same_side_only_deweight,
+        )
+        old_stakes = [record["kelly_stake"] for record in _select(_SAME_GAME_WEEK)]
+
+        assert new_stakes != old_stakes
+        assert len(new_stakes) == len(old_stakes)
+
+    def test_flat_stake_roi_is_bit_identical_across_variants(self, monkeypatch) -> None:
+        """T-31-16: the flat-stake headline is EXACTLY equal under both variants.
+
+        Flat staking does not consume the de-weight factor at all, so the
+        headline ROI the 2025 verdict reports cannot move because the sizing
+        rule was tightened. Asserted with ``==`` -- no tolerance -- because
+        anything other than bit-identity would mean a stake leaked into a
+        flat-stake number.
+        """
+        new_roi = _flat_stake_roi(_select(_SAME_GAME_WEEK))
+
+        monkeypatch.setattr(
+            kelly_module,
+            "apply_same_game_and_side_deweight",
+            _same_side_only_deweight,
+        )
+        old_roi = _flat_stake_roi(_select(_SAME_GAME_WEEK))
+
+        assert new_roi == old_roi
+        # Non-vacuity: the week really did grade some bets (a 0.0-vs-0.0
+        # comparison over an empty graded set would assert nothing).
+        assert new_roi != 0.0
+
+    def test_ev_floor_admission_precedes_sizing_in_source(self) -> None:
+        """T-31-16: the ordering is STRUCTURAL, not incidental, in the selector source.
+
+        A behavioural test alone would keep passing if a future edit moved
+        de-weighting ahead of the EV-floor admission but happened not to change
+        the outcome on this fixture. This pins the order in the code: the
+        EV-floor comparison comes first, then the raw Kelly stake, then the
+        sizing pipeline -- and no de-weighted quantity is in scope before the
+        pipeline runs.
+        """
+        from backtest.bet_selector import BetSelector
+
+        source = inspect.getsource(BetSelector._admit_and_size_week)
+        # Drop the docstring so its prose references do not shadow the code.
+        body = source.split('"""', 2)[-1]
+
+        floor_at = body.index("self.ev_floor_t")
+        kelly_at = body.index("calculate_optimal_bet_size")
+        sizing_at = body.index("apply_sizing_pipeline")
+        assert floor_at < kelly_at < sizing_at
+
+        before_sizing = body[:sizing_at]
+        assert "deweighted_stake" not in before_sizing
+        assert "weekly_scaled_stake" not in before_sizing
+        assert "same_game_group_size" not in before_sizing
