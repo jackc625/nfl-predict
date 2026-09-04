@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pytest
@@ -100,6 +101,11 @@ def _write_gold(root: Path, frame: pd.DataFrame) -> Path:
     return root
 
 
+def _rows_where(frame: pd.DataFrame, mask) -> pd.DataFrame:
+    """Return the rows of *frame* selected by *mask*, typed as a frame."""
+    return cast("pd.DataFrame", frame[mask])
+
+
 def _digest(frame: pd.DataFrame, column: str, season: str) -> str:
     """Return *column*'s per-season digest for *season* under the module's own rule."""
     return fingerprint_matrix(frame)["columns"][column][season]
@@ -122,7 +128,7 @@ class TestTheSeasonBucketIsDefinedByTheSeasonColumn:
             "the January-2025 kickoff of a 2024-SEASON game must be counted in 2024"
         )
 
-        season_2024 = frame[frame["season"] == 2024]
+        season_2024 = _rows_where(frame, frame["season"] == 2024)
         assert matrix["columns"]["home_rest_days"]["2024"] == _digest(
             season_2024, "home_rest_days", "2024"
         ), "the 2024 bucket must hash exactly the two season-2024 rows"
@@ -134,7 +140,7 @@ class TestTheSeasonBucketIsDefinedByTheSeasonColumn:
         frame = _straddling_frame()
         fingerprint = fingerprint_gold(base_path=_write_gold(tmp_path, frame))
 
-        calendar_2024 = frame[frame["kickoff"].dt.year == 2024]
+        calendar_2024 = _rows_where(frame, frame["kickoff"].dt.year == 2024)
         assert len(calendar_2024) == 1, (
             "the fixture must actually straddle, or this assertion proves nothing"
         )
@@ -150,7 +156,7 @@ class TestTheSeasonBucketIsDefinedByTheSeasonColumn:
         frame = _straddling_frame()
         fingerprint = fingerprint_gold(base_path=_write_gold(tmp_path, frame))
 
-        season_2025 = frame[frame["season"] == 2025]
+        season_2025 = _rows_where(frame, frame["season"] == 2025)
         assert fingerprint["features_wp"]["columns"]["home_rest_days"][
             "2025"
         ] == _digest(season_2025, "home_rest_days", "2025")
