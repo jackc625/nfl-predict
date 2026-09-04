@@ -46,12 +46,17 @@ from backtest.signal_lift import group_columns
 from scripts.fingerprint_gold import (
     BUILD_CLOCK_COLUMNS,
     GOLD_MATRICES,
+    PHASE30_RUNG_DOCUMENTS,
+    PHASE31_RUNG_PREFIX,
     RUNG_CAUSES,
+    MissingPredecessorFingerprintError,
     _expected_signature,
     attribute_rung,
     compare_fingerprints,
     fingerprint_gold,
     fingerprint_matrix,
+    require_rung_ladder,
+    rung_document_path,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1117,6 +1122,236 @@ class TestFingerprintColumnMetadata:
         assert detail["columns_changed"] == {}
         assert detail["columns_added"] == []
         assert detail["columns_removed"] == []
+
+
+# ---------------------------------------------------------------------------
+# The Phase-31 rung ladder -- ordering, naming, and the move-kind report
+# ---------------------------------------------------------------------------
+
+
+class TestTheRungLadderCannotBeRunOutOfOrder:
+    """Rung 0 must exist (T-31-12).
+
+    D31-09 describes rung 1 as a full rebuild proving the build still reproduces
+    CURRENT gold. That is only checkable against a fingerprint of current gold taken
+    BEFORE rung 1 overwrites it -- and once the rebuild has run, the artifact the
+    baseline was supposed to describe is gone. There is no recovering it afterwards,
+    so the refusal has to arrive before the rebuild, not as a diagnosis after it.
+    """
+
+    def test_rung_1_refuses_when_rung_0_is_absent(self, tmp_path: Path):
+        report = _pre_drop_report(
+            changed={"line_movement_coverage": ["2023"]},
+            discrete=("line_movement_coverage",),
+        )
+
+        with pytest.raises(MissingPredecessorFingerprintError) as excinfo:
+            attribute_rung(
+                report, 1, ladder_directory=tmp_path, rung_prefix=PHASE31_RUNG_PREFIX
+            )
+
+        message = str(excinfo.value)
+        assert "rung 1" in message
+        assert f"{PHASE31_RUNG_PREFIX}rung0.json" in message
+        assert "--rung 0" in message, "the refusal must say how to fix itself"
+
+    def test_the_refusal_is_a_NAMED_error_not_a_FileNotFoundError(self):
+        """The two say different things: a wrong path, versus a wrong ORDER."""
+        assert not issubclass(MissingPredecessorFingerprintError, FileNotFoundError)
+        assert issubclass(MissingPredecessorFingerprintError, RuntimeError)
+
+    def test_the_whole_chain_is_required_not_only_the_immediate_predecessor(
+        self, tmp_path: Path
+    ):
+        """A rung-1 document that was never judged against rung 0 is a missing link."""
+        rung_document_path(tmp_path, 1, PHASE31_RUNG_PREFIX).write_text(
+            "{}", encoding="utf-8"
+        )
+
+        with pytest.raises(MissingPredecessorFingerprintError) as excinfo:
+            attribute_rung(
+                _pre_drop_report(changed={"home_rest_days": ["2010"]}),
+                2,
+                ladder_directory=tmp_path,
+                rung_prefix=PHASE31_RUNG_PREFIX,
+            )
+
+        assert f"{PHASE31_RUNG_PREFIX}rung0.json" in str(excinfo.value)
+
+    def test_a_complete_ladder_attributes_normally(self, tmp_path: Path):
+        for rung in (0, 1):
+            rung_document_path(tmp_path, rung, PHASE31_RUNG_PREFIX).write_text(
+                "{}", encoding="utf-8"
+            )
+
+        verdict = attribute_rung(
+            _pre_drop_report(changed={"home_rest_days": ["2010"]}),
+            2,
+            ladder_directory=tmp_path,
+            rung_prefix=PHASE31_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is True
+
+    def test_require_rung_ladder_returns_every_document_it_verified(
+        self, tmp_path: Path
+    ):
+        for rung in (0, 1, 2):
+            rung_document_path(tmp_path, rung, PHASE31_RUNG_PREFIX).write_text(
+                "{}", encoding="utf-8"
+            )
+
+        verified = require_rung_ladder(tmp_path, 3, PHASE31_RUNG_PREFIX)
+
+        assert [path.name for path in verified] == [
+            f"{PHASE31_RUNG_PREFIX}rung{rung}.json" for rung in (0, 1, 2)
+        ]
+
+    def test_the_check_is_opt_in_so_a_hand_built_report_still_attributes(self):
+        """Every test above this section judges reports that have no ladder on disk."""
+        verdict = attribute_rung(
+            _pre_drop_report(changed={"home_rest_days": ["2010"]}), 2
+        )
+        assert verdict["ok"] is True
+
+
+class TestPhase31DocumentsCannotOverwriteThePhase30Record:
+    """T-31-11: the Phase-30 rung documents are evidence that cannot be regenerated."""
+
+    def test_the_prefixed_path_carries_the_prefix(self):
+        path = rung_document_path(Path("outputs/fingerprints"), 0, PHASE31_RUNG_PREFIX)
+
+        assert path.name == "p31_rung0.json"
+        assert path.name.startswith(PHASE31_RUNG_PREFIX)
+
+    @pytest.mark.parametrize("rung", [0, 1, 2, 3, 4])
+    def test_no_prefixed_path_collides_with_a_phase30_document(self, rung: int):
+        directory = Path("outputs/fingerprints")
+        prefixed = rung_document_path(directory, rung, PHASE31_RUNG_PREFIX)
+
+        assert prefixed.name not in PHASE30_RUNG_DOCUMENTS
+        assert prefixed != rung_document_path(directory, rung)
+
+    def test_the_cli_exposes_the_rung_name_arguments_with_safe_defaults(self):
+        from scripts.fingerprint_gold import FINGERPRINT_DIR, build_parser
+
+        args = build_parser().parse_args([])
+
+        assert args.rung is None
+        assert args.rung_prefix == "", (
+            "the default prefix must be the Phase-30 naming, so an existing documented "
+            "command keeps writing where it always did"
+        )
+        assert args.fingerprint_dir == FINGERPRINT_DIR
+
+    def test_the_cli_prefix_composes_into_the_prefixed_document_path(self):
+        from scripts.fingerprint_gold import build_parser
+
+        args = build_parser().parse_args(
+            ["--rung", "2", "--rung-prefix", PHASE31_RUNG_PREFIX]
+        )
+        derived = rung_document_path(args.fingerprint_dir, args.rung, args.rung_prefix)
+
+        assert derived.name == "p31_rung2.json"
+        assert derived.name not in PHASE30_RUNG_DOCUMENTS
+
+    def test_the_unprefixed_path_is_exactly_the_phase30_naming(self):
+        """The Phase-30 documents are named by the same function, so the two are checked
+        against each other rather than against a transcribed list."""
+        directory = Path("outputs/fingerprints")
+        names = [rung_document_path(directory, rung).name for rung in range(5)]
+
+        assert tuple(names) == PHASE30_RUNG_DOCUMENTS
+
+
+class TestTheRungReportCarriesTheMoveKind:
+    """A rung report says WHY each column moved, not merely THAT it moved."""
+
+    def test_every_moved_column_carries_a_kind_and_its_seasons(self):
+        report = _pre_drop_report(
+            changed={"line_movement_coverage": ["2023"], "home_rest_days": ["2021"]},
+            discrete=("line_movement_coverage",),
+        )
+        verdict = attribute_rung(report, 1)
+
+        for matrix in GOLD_MATRICES:
+            kinds = verdict["matrices"][matrix]["move_kinds"]
+            assert set(kinds) == {"line_movement_coverage", "home_rest_days"}
+            assert kinds["home_rest_days"]["kind"] == "values"
+            assert kinds["home_rest_days"]["seasons"] == ["2021"]
+
+    def test_a_storage_move_reports_its_season_and_kind_rather_than_an_empty_list(self):
+        """The reporting shape Plan 31-11's hard stop needs in order to judge at all."""
+        before = {"features_wp": fingerprint_matrix(_tiny_frame())}
+        after = copy.deepcopy(before)
+        after["features_wp"]["column_meta_by_season"]["saturday_game"]["2024"][
+            "null_count"
+        ] = 1
+
+        verdict = attribute_rung(compare_fingerprints(before, after), 2)
+        kinds = verdict["matrices"]["features_wp"]["move_kinds"]
+
+        assert kinds["saturday_game"]["kind"] == "storage"
+        assert kinds["saturday_game"]["seasons"] == ["2024"]
+        assert kinds["saturday_game"]["seasons_storage"] == ["2024"]
+        assert kinds["saturday_game"]["seasons_values"] == []
+
+    def test_the_two_summary_lists_are_disjoint_and_cover_the_moved_set(self):
+        clock = BUILD_CLOCK_COLUMNS[0]
+        report = _pre_drop_report(
+            changed={clock: ["2024"], "home_rest_days": ["2021"]},
+        )
+        verdict = attribute_rung(report, 2)
+
+        assert verdict["non_clock_moves"] == ["home_rest_days"]
+        assert verdict["build_clock_moves"] == [clock]
+        assert (
+            set(verdict["non_clock_moves"]) & set(verdict["build_clock_moves"]) == set()
+        )
+
+    def test_the_clock_is_reported_in_the_summary_even_though_it_is_split_out(self):
+        """Split out of the CHANGED set, never out of the REPORT."""
+        clock = BUILD_CLOCK_COLUMNS[0]
+        verdict = attribute_rung(_pre_drop_report(changed={clock: ["2024"]}), 2)
+
+        assert verdict["build_clock_moves"] == [clock]
+        for matrix in GOLD_MATRICES:
+            assert verdict["matrices"][matrix]["move_kinds"][clock]["kind"] == (
+                "build_clock"
+            )
+
+    def test_a_zero_non_clock_move_condition_is_reachable_for_a_clock_stamping_build(
+        self,
+    ):
+        """REVIEW-CLOCK: "zero moved columns" is not reachable; this is."""
+        clock = BUILD_CLOCK_COLUMNS[0]
+        verdict = attribute_rung(_pre_drop_report(changed={clock: ["2024"]}), 2)
+
+        assert verdict["non_clock_moves"] == []
+        assert set(verdict["build_clock_moves"]) == {
+            _canonical_name(name) for name in BUILD_CLOCK_COLUMNS
+        }
+
+    def test_the_printed_report_names_the_kind_and_the_seasons(self, capsys):
+        from scripts.fingerprint_gold import _print_attribution
+
+        report = _pre_drop_report(changed={"home_rest_days": ["2021"]})
+        _print_attribution(attribute_rung(report, 2))
+
+        printed = capsys.readouterr().out
+        assert "home_rest_days [values] seasons 2021" in printed
+        assert "non-clock moves: ['home_rest_days']" in printed
+
+    def test_the_verdict_stays_json_serializable_with_the_new_keys(self):
+        verdict = attribute_rung(
+            _pre_drop_report(changed={"home_rest_days": ["2021"]}), 2
+        )
+        assert json.loads(json.dumps(verdict)) == verdict
+
+
+def _canonical_name(name: str) -> str:
+    """Lower-case, matching ``scripts.fingerprint_gold._canonical``."""
+    return name.lower()
 
 
 @pytest.mark.integration

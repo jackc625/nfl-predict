@@ -379,6 +379,76 @@ RUNG_CAUSES: dict[int, str] = {
     4: "N-01",
 }
 
+# Where every rung document lives. ``outputs/`` is gitignored, so NO fingerprint
+# document is a committed artifact: the committed record is this code plus the tests,
+# and the measured hashes are transcribed into the running plan's SUMMARY.
+FINGERPRINT_DIR = Path("outputs/fingerprints")
+
+# The document names Phase 30 already wrote into FINGERPRINT_DIR. They are the record
+# of the phase that produced the standing gold, they cannot be regenerated (the builds
+# that produced them reached nflreadpy LIVE), and a Phase-31 run that overwrote one
+# would destroy evidence rather than add any (T-31-11).
+PHASE30_RUNG_DOCUMENTS = tuple(f"rung{rung}.json" for rung in range(5))
+
+# The prefix Phase-31 rung documents carry so they cannot collide with the above.
+PHASE31_RUNG_PREFIX = "p31_"
+
+
+class MissingPredecessorFingerprintError(RuntimeError):
+    """A rung was asked to attribute before its ladder predecessor existed.
+
+    A NAMED error rather than a bare ``FileNotFoundError`` traceback, because the two
+    say different things. ``FileNotFoundError`` says a path was wrong; this says the
+    LADDER WAS RUN OUT OF ORDER, which is a different mistake with a different fix.
+    """
+
+
+def rung_document_path(directory: Path | str, rung: int, prefix: str = "") -> Path:
+    """Return the fingerprint document path for *rung* under *directory*.
+
+    The *prefix* is what keeps two phases' ladders apart in one gitignored directory:
+    Phase 30 wrote ``rung0.json`` .. ``rung4.json``, and Phase 31 writes
+    ``p31_rung0.json`` .. under ``PHASE31_RUNG_PREFIX``.
+    """
+    return Path(directory) / f"{prefix}rung{rung}.json"
+
+
+def require_rung_ladder(
+    directory: Path | str, rung: int, prefix: str = ""
+) -> list[Path]:
+    """Verify every document rung 0 .. *rung* - 1 exists, and return them.
+
+    RUNG 0 MUST EXIST. D31-09 describes rung 1 as a full rebuild proving the build
+    still reproduces CURRENT gold -- which is only checkable against a fingerprint of
+    current gold taken BEFORE rung 1 overwrote it. Run rung 1 first and that baseline
+    is gone for good: the rebuild has already replaced the artifact it was supposed to
+    be compared against, and no later step can recover it.
+
+    The whole chain is required, not merely the immediate predecessor. A ladder is an
+    ORDER, and a rung-2 attribution resting on a rung-1 document that was itself never
+    judged against rung 0 is a chain with a link missing in the middle.
+
+    Raises:
+        MissingPredecessorFingerprintError: naming the first absent document.
+    """
+    verified: list[Path] = []
+    for predecessor in range(rung):
+        path = rung_document_path(directory, predecessor, prefix)
+        if not path.exists():
+            msg = (
+                f"Refusing to attribute rung {rung}: its ladder predecessor "
+                f"'{path}' does not exist. The rungs are an ORDER -- rung 0 is the "
+                "fingerprint of CURRENT gold, taken BEFORE any rebuild overwrites "
+                "it, and once a rebuild has run that baseline cannot be recovered. "
+                f"Write it first with `--rung {predecessor}`"
+                + (f" --rung-prefix {prefix}" if prefix else "")
+                + ", then re-run this attribution."
+            )
+            raise MissingPredecessorFingerprintError(msg)
+        verified.append(path)
+    return verified
+
+
 # Rungs whose failures may legitimately be upstream drift rather than a wrong fix.
 # Rung 4 is DELIBERATELY excluded: SPEC R2 makes an unexplained 2021-2024 move a
 # hard blocker, and offering an escape there would let the phase talk itself past
@@ -786,6 +856,8 @@ def attribute_rung(
     before: dict | None = None,
     after: dict | None = None,
     frame_loader=None,
+    ladder_directory: Path | str | None = None,
+    rung_prefix: str = "",
 ) -> dict:
     """Attribute every moved column in *report* to *rung*'s one named cause.
 
@@ -818,7 +890,20 @@ def attribute_rung(
     sides before anything is compared, and the emitted attributed / unattributed
     sets are canonical and sorted. A verdict that changed with JSON key order would
     differ between two runs over identical data.
+
+    With *ladder_directory*, the rung refuses to attribute at all until every earlier
+    rung document exists under *rung_prefix* -- see ``require_rung_ladder``. It is
+    opt-in on the function because the tests judge hand-built reports that have no
+    ladder on disk; the CLI always supplies it, so an operator cannot run the ladder
+    out of order.
+
+    Raises:
+        MissingPredecessorFingerprintError: when *ladder_directory* is supplied and a
+            predecessor rung document is absent.
     """
+    if ladder_directory is not None:
+        require_rung_ladder(ladder_directory, rung, rung_prefix)
+
     signature = _expected_signature(rung, before=before)
     cause = RUNG_CAUSES[rung]
     upstream = (
@@ -1230,10 +1315,16 @@ def _print_attribution(verdict: dict) -> None:
     else:
         status = "OK"
     print(f"rung {verdict['rung']} ({verdict['cause']}): {status}")
+    print(f"  non-clock moves: {verdict.get('non_clock_moves', [])}")
+    print(f"  build-clock moves: {verdict.get('build_clock_moves', [])}")
     for matrix, detail in verdict["matrices"].items():
         print(f"  {matrix}:")
         print(f"    attributed:   {detail['attributed']}")
         print(f"    unattributed: {detail['unattributed']}")
+        for column, move in sorted(detail.get("move_kinds", {}).items()):
+            # "storage moved in 2025 only" rather than "changed, seasons: []".
+            seasons = ",".join(move["seasons"]) or "(no season attributed)"
+            print(f"    moved:        {column} [{move['kind']}] seasons {seasons}")
         if detail.get("build_clock"):
             print(f"    build clock:  {detail['build_clock']} (moves every build)")
         for preserved in detail.get("value_preserving_dtype", []):
@@ -1298,15 +1389,56 @@ def build_parser() -> argparse.ArgumentParser:
             "Attribute the --compare diff to rebuild rung N's one named cause "
             f"({', '.join(f'{k}={v}' for k, v in sorted(RUNG_CAUSES.items()))}). "
             "Exits 1 when the verdict BLOCKS the phase, 3 when it is a non-blocking "
-            "finding, 0 when every moved column is attributed."
+            "finding, 0 when every moved column is attributed. REFUSES when any "
+            "earlier rung document is missing from --fingerprint-dir, so the ladder "
+            "cannot be run out of order."
         ),
+    )
+    parser.add_argument(
+        "--rung",
+        type=int,
+        metavar="N",
+        help=(
+            "Write this run's fingerprint as rung N's document, deriving --out as "
+            "<fingerprint-dir>/<rung-prefix>rungN.json. Mutually exclusive with --out."
+        ),
+    )
+    parser.add_argument(
+        "--rung-prefix",
+        default="",
+        metavar="PREFIX",
+        help=(
+            "Name-space every rung document written or required by this run. Phase 31 "
+            f"uses '{PHASE31_RUNG_PREFIX}' so its ladder cannot overwrite the Phase-30 "
+            f"documents {', '.join(PHASE30_RUNG_DOCUMENTS)}, which record the phase "
+            "that produced the standing gold and cannot be regenerated."
+        ),
+    )
+    parser.add_argument(
+        "--fingerprint-dir",
+        type=Path,
+        default=FINGERPRINT_DIR,
+        metavar="DIR",
+        help=f"Directory holding the rung ladder (default: {FINGERPRINT_DIR})",
     )
     return parser
 
 
 def main() -> None:
     """CLI entry point for gold fingerprinting."""
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+
+    # --rung DERIVES --out; supplying both would leave which one wins unstated, and a
+    # rung document that landed somewhere other than the ladder is a rung document the
+    # next rung's predecessor check will not find.
+    if args.rung is not None:
+        if args.out is not None:
+            parser.error(
+                "--rung derives --out from --fingerprint-dir and --rung-prefix; pass "
+                "one or the other, not both."
+            )
+        args.out = rung_document_path(args.fingerprint_dir, args.rung, args.rung_prefix)
 
     # WR-07: this module's docstring says it "is strictly read-only with respect to
     # data/ -- the JSON output must be written somewhere else", and nothing enforced it:
@@ -1330,13 +1462,22 @@ def main() -> None:
             sys.exit(2)
         before = json.loads(args.compare[0].read_text(encoding="utf-8"))
         after = json.loads(args.compare[1].read_text(encoding="utf-8"))
-        verdict = attribute_rung(
-            compare_fingerprints(before, after),
-            args.attribute_rung,
-            before=before,
-            after=after,
-            frame_loader=_gold_frame_loader(),
-        )
+        try:
+            verdict = attribute_rung(
+                compare_fingerprints(before, after),
+                args.attribute_rung,
+                before=before,
+                after=after,
+                frame_loader=_gold_frame_loader(),
+                ladder_directory=args.fingerprint_dir,
+                rung_prefix=args.rung_prefix,
+            )
+        except MissingPredecessorFingerprintError as error:
+            # A named refusal, printed as a sentence rather than a traceback: the
+            # operator ran the ladder out of order, which is a different mistake from
+            # mistyping a path and has a different fix.
+            print(f"ERROR: {error}", file=sys.stderr)
+            sys.exit(2)
         _print_attribution(verdict)
         if args.out is not None:
             args.out.parent.mkdir(parents=True, exist_ok=True)
