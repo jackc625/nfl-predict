@@ -20,8 +20,8 @@ CALLS the LOCKED scorers and never re-derives a metric. Responsibilities, in ord
   4. Sizing (BET-02 fix, T-27-08): Kelly consumes the CALIBRATED P(side) -- never the points
      distance ``implied + abs(model_total - closing_total)`` -- through
      ``KellyCalculator.calculate_optimal_bet_size(model_prob=p_side, ...)``, then the Plan-02
-     LOCKED-order ``apply_sizing_pipeline`` (kelly -> 5% per-bet -> same-side de-weight -> 10%
-     weekly cap), per week. Unit = 1% of bankroll (D27-09).
+     LOCKED-order ``apply_sizing_pipeline`` (kelly -> 5% per-bet -> same-game-and-side
+     de-weight -> 10% weekly cap), per week. Unit = 1% of bankroll (D27-09).
   5. Push handling (#8, T-27-23): grading uses the LOCKED ``_resolve_ou_outcome``; a push is carried
      as ``outcome=None`` on the record, never coerced to win/loss.
   6. CLV reporting (D27-06/12, REPORT-ONLY, T-27-10): per bet ``compute_line_clv(model_total,
@@ -418,6 +418,11 @@ class BetSelector:
         EV admission: bet iff ``per_bet_ev(p_side) >= ev_floor_t`` (D27-14). Sizing: Kelly on the
         CALIBRATED P(side) (BET-02 fix) -> the Plan-02 ``apply_sizing_pipeline`` LOCKED cap order.
         Grading uses the LOCKED ``_resolve_ou_outcome`` (push-aware).
+
+        ADMISSION STRUCTURALLY PRECEDES SIZING (D31-03): the EV-floor loop below compares
+        ``per_bet_ev`` against the floor and reads no stake at all, so no change to the
+        de-weighting rule can change WHICH bets are selected. The later zero-stake guard
+        reads the RAW Kelly stake, computed before and independently of de-weighting.
         """
         admitted: list[dict[str, Any]] = []
         for record in week_records:
@@ -458,14 +463,25 @@ class BetSelector:
                 continue
             staked_admitted.append(record)
             kelly_inputs.append(
-                {"bet_side": record["bet_side"], "stake": kelly_result.recommended_bet}
+                {
+                    # game_id feeds the D31-03 same-game grouping inside the de-weight step. It
+                    # is REQUIRED by the sizing seam (no silent fallback to same-side-only
+                    # grouping, T-31-17). For this O/U selector it is a numeric no-op: a week
+                    # carries at most one O/U candidate per game, so every same-game group has
+                    # size 1 and max(same_side, same_game) == same_side. It becomes load-bearing
+                    # when Plan 31-06 pools the week across three targets.
+                    "game_id": record["game_id"],
+                    "bet_side": record["bet_side"],
+                    "stake": kelly_result.recommended_bet,
+                }
             )
 
         if not kelly_inputs:
             return
 
-        # LOCKED-order sizing pipeline (Plan-02): kelly -> 5% per-bet -> same-side de-weight ->
-        # 10% weekly cap. The BetSelector consumes this helper and does NOT re-order the steps.
+        # LOCKED-order sizing pipeline (Plan-02, extended by D31-03): kelly -> 5% per-bet ->
+        # same-game-and-side de-weight -> 10% weekly cap. The BetSelector consumes this helper
+        # and does NOT re-order the steps.
         sized = apply_sizing_pipeline(kelly_inputs, self.bankroll)
 
         for record, sized_rec in zip(staked_admitted, sized, strict=True):
