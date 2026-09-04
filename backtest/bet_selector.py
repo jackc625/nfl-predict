@@ -56,7 +56,7 @@ check that already lived here and already ran before any selection.
 The freshness fence takes its freeze instant, its parse path and its comparison from
 ``scripts.ingest_historical_odds`` -- the module that STAMPS ``snapshot_ts`` at ingest (plan 31-08,
 D31-37) -- so the value written and the value compared come from ONE rule. Those imports are
-DEFERRED into ``_snapshot_and_freeze`` because that module reaches back to this one through
+DEFERRED into ``_freshness_context`` because that module reaches back to this one through
 ``backtest.ev_chain_constants`` -> ``backtest.ou_monetization``; see that function's docstring.
 
 ``select()`` returns BOTH the FILTERED decision set (the acceptance basis) and the UNFILTERED
@@ -170,18 +170,29 @@ def _prediction_field_names(strategy: TargetStrategy) -> frozenset[str]:
     )
 
 
-def _snapshot_and_freeze(
+def _freshness_context(
     row: dict[str, Any],
-) -> tuple[datetime | None, datetime | None]:
-    """The candidate's own snapshot instant and the freeze instant it is judged against.
+) -> tuple[datetime | None, datetime | None, bool | None]:
+    """The candidate's snapshot instant, the freeze it is judged against, and the verdict.
 
-    Both are returned as tz-aware datetimes expressed in EASTERN, because the market's own zone is
-    the one the freeze is defined in and re-expressing a freeze for display is where a UTC-anchored
-    reading gets reintroduced (the WR-02 lesson).
+    Both instants are returned as tz-aware datetimes expressed in EASTERN, because the market's
+    own zone is the one the freeze is defined in and re-expressing a freeze for display is where a
+    UTC-anchored reading gets reintroduced (the WR-02 lesson).
 
-    A row with no ``gameday`` has no per-game freeze: that is a historical backtest frame, which
-    makes no forward freshness claim. The universe path refuses a schedule without kickoff dates,
-    so the forward path cannot reach this branch and quietly skip the fence.
+    The freeze is PER-GAME (D31-18), taken from that game's own kickoff date. A per-WEEK freeze
+    would suppress every Thursday night game every week: a Thursday game's preceding Friday is
+    seven days before the Friday preceding that week's Sunday games, so its snapshot is strictly
+    earlier and the rule would fire on correct data as a pure calendar artifact.
+
+    The verdict comes from ``is_fresh_at_freeze``, never from a comparison restated here. At-freeze
+    is FRESH; strictly before is stale. Both sides of that comparison are parsed -- the stored
+    column held a string until plan 31-08 re-derived it, and its single non-consensus row uses a
+    different, space-separated UTC format, so a string comparison would be wrong in two ways.
+
+    A row with no ``gameday`` has no per-game freeze and the verdict is None (not evaluated): that
+    is a historical backtest frame, which makes no forward freshness claim. The universe path
+    refuses a schedule without kickoff dates, so the forward path cannot reach this branch and
+    quietly skip the fence.
 
     The helpers are imported HERE rather than at module scope to break a REAL import cycle:
     ``scripts.ingest_historical_odds`` imports ``backtest.ev_chain_constants``, which imports
@@ -190,11 +201,12 @@ def _snapshot_and_freeze(
     break and not an attempt to soften the dependency, which the module docstring states plainly.
 
     Returns:
-        ``(snapshot_instant, freeze_instant)``, either of which may be None.
+        ``(snapshot_instant, freeze_instant, is_fresh)``; any of the three may be None.
     """
     from scripts.ingest_historical_odds import (
         EASTERN,
         get_synthetic_snapshot_ts,
+        is_fresh_at_freeze,
         normalize_snapshot_ts,
     )
 
@@ -211,7 +223,12 @@ def _snapshot_and_freeze(
     snapshot = (
         None if _is_absent(snapshot_value) else normalize_snapshot_ts(snapshot_value)
     )
-    return snapshot, freeze
+    is_fresh = (
+        None
+        if freeze is None or snapshot is None
+        else is_fresh_at_freeze(snapshot_value, gameday)
+    )
+    return snapshot, freeze, is_fresh
 
 
 def assert_real_odds(raw_odds_df: pd.DataFrame) -> None:
@@ -657,7 +674,7 @@ class BetSelector:
         market, missing_market, missing_prediction = self._read_required_fields(
             row, strategy
         )
-        snapshot_instant, freeze_instant = _snapshot_and_freeze(row)
+        snapshot_instant, freeze_instant, is_fresh = _freshness_context(row)
 
         record: dict[str, Any] = {
             "game_id": game_id,
@@ -700,6 +717,22 @@ class BetSelector:
             return record, "missing_snapshot"
         if missing_prediction:
             return record, "missing_prediction"
+
+        # A row that HAS market data and a kickoff date but no timestamp is a pipeline bug, and it
+        # is the one shape that would make this fence unable to fire. Assuming it fresh would
+        # silently admit whatever the cache builder dropped the column on; calling it stale would
+        # hide the bug behind a data label. So it raises, naming the column.
+        if freeze_instant is not None and snapshot_instant is None:
+            msg = (
+                f"candidate {game_id!r} for target {strategy.target!r} carries market data and a "
+                "gameday but no 'snapshot_ts'; the freshness fence cannot be evaluated and a "
+                "missing freeze instant is never treated as fresh (D31-17/18)."
+            )
+            raise ValueError(msg)
+        if is_fresh is False:
+            # Suppressed BEFORE pricing: a stale line is a refusal to form an opinion, and an EV
+            # computed from one would be exactly the number suppression exists to withhold.
+            return record, "stale_line"
 
         bet_side = strategy.resolve_bet_side(row)
         rejection_reason = strategy.eligibility(row, bet_side)
