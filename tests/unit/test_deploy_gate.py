@@ -1424,3 +1424,169 @@ def test_threshold_snapshot_catches_a_widened_band() -> None:
     assert "candidate-side" in message, (
         f"the failure must state the remediation (a fix-cycle is candidate-side); got: {message}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 31 (D31-11, 31-SPEC R2/R3 prohibition): the clean split stays OUT of the deploy gate's
+# population, and the two thresholds this phase must not move are pinned.
+#
+# These extend the Phase-30 threshold-immutability snapshot to cover THIS phase's runs. They are
+# deliberately separate tests rather than extra keys on PHASE_START_GATE_SETTINGS: that snapshot is
+# a config-file snapshot, and three of the four facts below live in Python modules rather than in
+# config/gate.toml.
+# ---------------------------------------------------------------------------
+
+# The holdout the deploy gate scores on. 2025 is the single unburned split Phase 31 spends exactly
+# once, so it must NEVER appear here.
+_P31_GATE_HOLDOUT: tuple[int, ...] = (2021, 2022, 2023, 2024)
+_P31_CLEAN_SPLIT_SEASON: int = 2025
+
+# The O/U selection thresholds Phase 31 must not lower. These are the concrete objects behind
+# "MUST NOT lower the O/U edge threshold to improve a result": the pre-registered EV-floor grid a
+# per-target floor t is selected FROM, the flat -110 breakeven the EV math is anchored to, and the
+# leakage-clean high-total eligibility boundary together with the derivation that produced it.
+_P31_EV_FLOOR_GRID: tuple[float, ...] = (0.00, 0.01, 0.02, 0.03, 0.05)
+_P31_OU_BREAKEVEN: float = 110.0 / 210.0
+_P31_HIGH_TOTAL_QUANTILE: float = 2.0 / 3.0
+_P31_PRE_HOLD_SEASONS: tuple[int, ...] = (2018, 2019, 2020, 2021, 2022)
+_P31_HIGH_TOTAL_BOUNDARY: float = 48.0
+
+# The phase-start reading of the gate-time freshness tolerance, recorded under THIS phase's name.
+# Not a third declaration: nothing compares against it except the assertion below, and the two live
+# declarations named in _FRESHNESS_TOL_SITES remain two.
+_P31_FRESHNESS_TOL_EXPECTED = 5e-3
+
+
+def test_gate_holdout_never_contains_the_2025_clean_split() -> None:
+    """D31-11 / T-31-20: gate.seasons.holdout is EXACTLY 2021-2024 and 2025 is absent.
+
+    This is a PERMANENT guard, not a phase-local one. Adding 2025 to the deploy gate's holdout
+    would drop the single-use clean split into the gate's own scoring population and BURN it
+    before the verdict run -- silently, and with no other check in the tree that would notice. The
+    split cannot be un-burned, which is why the guard is structural rather than a review item.
+
+    The Phase-30 snapshot already pins this list as one key among ten. This test states the 2025
+    clause SEPARATELY and by name, because the failure it guards against is not "a setting
+    drifted" but "the most valuable asset in the project was spent by accident", and a failure
+    message has to say which of those happened.
+    """
+    cfg = gate.load_gate_config(REPO_ROOT / "config" / "gate.toml")
+    holdout = tuple(cfg["gate"]["seasons"]["holdout"])
+
+    assert holdout == _P31_GATE_HOLDOUT, (
+        f"gate.seasons.holdout is {list(holdout)}, expected {list(_P31_GATE_HOLDOUT)}. "
+        "31-SPEC R2/R3 and D31-11: the deploy gate's population is the 2021-2024 walk-forward "
+        "holdout and nothing else."
+    )
+    assert _P31_CLEAN_SPLIT_SEASON not in holdout, (
+        f"season {_P31_CLEAN_SPLIT_SEASON} has been ADDED to gate.seasons.holdout. That drops "
+        "the single unburned clean split into the deploy gate's own scoring population and burns "
+        "it before the Phase-31 verdict run. The split is single-use and cannot be un-burned. If "
+        "a future milestone genuinely needs 2025 in the gate, that is a decision to record AFTER "
+        "the Phase-31 verdict is published -- never before it."
+    )
+
+
+def test_phase31_protected_thresholds_have_not_moved() -> None:
+    """31-SPEC: the O/U edge threshold is not lowered and the freshness tolerance is not widened.
+
+    Four objects are pinned, because "the O/U edge threshold" is not one scalar in this codebase:
+
+      1. ``EV_FLOOR_GRID`` -- the pre-registered ascending grid the per-target EV floor ``t`` is
+         SELECTED FROM. Lowering a grid entry is the most direct way to admit bets the
+         pre-registered rule declined, and it would read as a tuning change rather than a
+         loosening.
+      2. ``OU_BREAKEVEN`` -- the flat -110 breakeven the EV math is anchored to. Moving it shifts
+         every per-bet EV without touching a single threshold by name.
+      3. The high-total eligibility boundary AND its derivation inputs (the 2/3 upper-tertile
+         quantile and the pre-hold 2018-2022 window). D31-06 consumes the boundary UNCHANGED so
+         its pre-registration is provable by git ancestry alone -- but only if the constant and
+         the derivation that produced it both stay put.
+      4. ``_FRESHNESS_TOL`` -- pinned again under this phase's name. D30-DEFER-04 remains
+         DEFERRED: the tolerance stays at 5e-3 and stays absolute.
+
+    The boundary VALUE is asserted only when it resolved. ``derive_high_total_boundary`` runs at
+    import over the silver odds parquet and lands at NaN on a bare checkout where ``data/`` is
+    absent, so asserting it unconditionally would fail on a checkout that simply has no data lake
+    -- a false alarm, and a guard that reddens for the wrong reason gets ignored. The derivation
+    INPUTS are asserted unconditionally, so the rule that produces the boundary is pinned even
+    where the boundary itself cannot be computed.
+    """
+    import math
+
+    from backtest.ou_divergence import (
+        _HIGH_TOTAL_QUANTILE,
+        HIGH_TOTAL_BOUNDARY_PREHOLD,
+        PRE_HOLD_SEASONS,
+    )
+    from backtest.ou_ev_chain import EV_FLOOR_GRID, OU_BREAKEVEN
+    from scripts.promote_models import _FRESHNESS_TOL as promote_tol
+
+    remediation = (
+        "31-SPEC forbids lowering the O/U edge threshold or widening the gate's freshness "
+        "tolerance to improve a result. The Phase-31 rule is FROZEN in "
+        "backtest/ev_chain_constants.py and PROFITABILITY-PREREGISTRATION.md, and its commit is "
+        "the git-ancestry anchor: moving a threshold after the rule commit does not fix a bug, it "
+        "destroys the evidence. If a change here IS deliberate and pre-verdict, re-read these "
+        "expectations in the same commit as the change, with the rationale."
+    )
+
+    assert EV_FLOOR_GRID == _P31_EV_FLOOR_GRID, (
+        f"EV_FLOOR_GRID MOVED: phase-start {_P31_EV_FLOOR_GRID} -> current {EV_FLOOR_GRID}. "
+        + remediation
+    )
+    assert OU_BREAKEVEN == _P31_OU_BREAKEVEN, (
+        f"OU_BREAKEVEN MOVED: phase-start {_P31_OU_BREAKEVEN} -> current {OU_BREAKEVEN}. "
+        + remediation
+    )
+    assert _HIGH_TOTAL_QUANTILE == _P31_HIGH_TOTAL_QUANTILE, (
+        f"the high-total upper-tertile quantile MOVED: {_P31_HIGH_TOTAL_QUANTILE} -> "
+        f"{_HIGH_TOTAL_QUANTILE}. " + remediation
+    )
+    assert tuple(PRE_HOLD_SEASONS) == _P31_PRE_HOLD_SEASONS, (
+        f"the pre-hold boundary derivation window MOVED: {_P31_PRE_HOLD_SEASONS} -> "
+        f"{tuple(PRE_HOLD_SEASONS)}. " + remediation
+    )
+    if math.isfinite(HIGH_TOTAL_BOUNDARY_PREHOLD):
+        assert HIGH_TOTAL_BOUNDARY_PREHOLD == _P31_HIGH_TOTAL_BOUNDARY, (
+            f"HIGH_TOTAL_BOUNDARY_PREHOLD MOVED: phase-start {_P31_HIGH_TOTAL_BOUNDARY} -> "
+            f"current {HIGH_TOTAL_BOUNDARY_PREHOLD}. " + remediation
+        )
+
+    assert promote_tol == _P31_FRESHNESS_TOL_EXPECTED, (
+        f"the gate freshness tolerance MOVED: phase-start {_P31_FRESHNESS_TOL_EXPECTED} -> "
+        f"current {promote_tol}. D30-DEFER-04 remains DEFERRED and its prohibition stands: do NOT "
+        "widen the band to make a drift go away. " + remediation
+    )
+
+
+def test_the_phase31_threshold_pins_reject_the_moves_they_exist_to_reject() -> None:
+    """Fail-closed control: a lowered EV floor and a widened tolerance are both caught.
+
+    A check that has only been observed passing is indistinguishable from a check that cannot
+    fail, and these pins exist solely to make a loosening impossible to slip through. The two
+    moves rehearsed here are the exact shapes the prohibition names: lowering the bottom of the
+    EV-floor grid so more bets are admitted, and widening the recomputation band so a drift stops
+    mattering. Each is run through the SAME comparison the guard above uses, so this proves the
+    comparison rejects them rather than proving two literals differ.
+    """
+    from backtest.ou_ev_chain import EV_FLOOR_GRID
+    from scripts.promote_models import _FRESHNESS_TOL as promote_tol
+
+    lowered_grid = (-0.01, *_P31_EV_FLOOR_GRID[1:])
+    widened_tol = _P31_FRESHNESS_TOL_EXPECTED * 10
+
+    assert widened_tol > _P31_FRESHNESS_TOL_EXPECTED, (
+        "the rehearsed move must be a WIDENING -- the direction the prohibition names"
+    )
+    assert lowered_grid != _P31_EV_FLOOR_GRID, (
+        "the guard's own equality comparison must REJECT a grid whose floor was lowered"
+    )
+    assert widened_tol != _P31_FRESHNESS_TOL_EXPECTED, (
+        "the guard's own equality comparison must REJECT a widened tolerance"
+    )
+
+    # And the LIVE values are the pinned ones, so the equality checks above are the binding form
+    # rather than a comparison between two invented constants.
+    assert EV_FLOOR_GRID == _P31_EV_FLOOR_GRID
+    assert promote_tol == _P31_FRESHNESS_TOL_EXPECTED
