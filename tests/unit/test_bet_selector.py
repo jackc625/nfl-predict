@@ -585,6 +585,9 @@ class TestPhase27ReviewFixes:
             "bet_side": "under",
             "calibrated_p_side": 0.50,
             "per_bet_ev": -0.02,
+            # An eligible record always carries the price it was priced at (D31-04); these two
+            # bypass ``_build_decision_record`` and so state it explicitly.
+            "selected_odds": -110,
         }
         selected: list[dict] = []
         rejected: list[dict] = []
@@ -602,6 +605,7 @@ class TestPhase27ReviewFixes:
             "calibrated_p_side": 0.60,
             "per_bet_ev": 0.05,
             "slipped_line": 44.5,
+            "selected_odds": -110,
             "_actual_total": 40.0,
         }
         sel2: list[dict] = []
@@ -826,7 +830,12 @@ _GOLDEN_CLV_REPORT = {
 # display side is exactly the second derivation D31-18 exists to prevent. On this fixture week,
 # whose rows carry no kickoff date, both are None: a historical backtest frame makes no forward
 # freshness claim.
-_NEW_KEYS_ON_EVERY_RECORD = {"target", "snapshot_ts", "freeze_ts"}
+#
+# Plan 31-10 (D31-04) adds one more to EVERY record: ``selected_odds``, the American price the bet
+# was judged at. It is the selector's reference juice for the two flat-quoted targets -- so every
+# record on this O/U fixture week carries -110 -- and the game's own moneyline for WP. It travels on
+# the record so the per-bet EV, the Kelly stake and the published price are the SAME number.
+_NEW_KEYS_ON_EVERY_RECORD = {"target", "snapshot_ts", "freeze_ts", "selected_odds"}
 _NEW_KEYS_ON_STAKED_RECORDS = _NEW_KEYS_ON_EVERY_RECORD | {
     "same_side_group_size",
     "same_game_group_size",
@@ -978,9 +987,11 @@ class TestOUStrategyMovedVerbatim:
     def test_no_strategy_method_raises_notimplementederror(self) -> None:
         """An unimplemented-but-registerable strategy is worse than an absent one (D31-01).
 
-        ATS and WP are deliberately ABSENT from this module until Plan 31-10 can add them
-        complete. A stub whose methods raise would be registerable, turning a loud
-        "unregistered target" error into a failure part-way through a selection run.
+        Until Plan 31-10 the ATS and WP classes were deliberately ABSENT from this module rather
+        than present-and-stubbed, and this test asserted their absence. 31-10 added them COMPLETE,
+        so the assertion inverts: they must now be present, and the "no method raises" half is what
+        keeps the original guarantee -- a stub whose methods raise would be registerable, turning a
+        loud "unregistered target" error into a failure part-way through a selection run.
         """
         tree = ast.parse(
             Path("backtest/selector_strategies.py").read_text(encoding="utf-8")
@@ -1006,8 +1017,8 @@ class TestOUStrategyMovedVerbatim:
         class_names = {
             node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
         }
-        assert "ATSStrategy" not in class_names
-        assert "WPStrategy" not in class_names
+        assert "ATSStrategy" in class_names
+        assert "WPStrategy" in class_names
 
 
 # ---------------------------------------------------------------------------
@@ -1454,10 +1465,10 @@ class TestFacadePublicSurface:
         assert module.SelectionResult.__module__ == "backtest.bet_selector"
         assert module.assert_real_odds.__module__ == "backtest.bet_selector"
         # REJECTION_REASONS is a tuple of strings and carries no ``__module__``; pin its contents.
-        # Plan 31-09 GREW it from four members to eight (D31-17/19): the Phase-27 four keep their
-        # positions and the four suppression reasons follow them. The taxonomy is still ONE
-        # exported list -- growing it here is the designed way to add a reason, and editing this
-        # tuple is what makes an undeclared ninth reason fail.
+        # Plan 31-09 GREW it from four members to eight (D31-17/19) and plan 31-10 to nine
+        # (D31-05): earlier members keep their positions and a new reason is appended. The taxonomy
+        # is still ONE exported list -- growing it here is the designed way to add a reason, and
+        # editing this tuple is what makes an undeclared TENTH reason fail.
         assert module.REJECTION_REASONS == (
             "not_subpop",
             "ev_below_floor",
@@ -1467,6 +1478,7 @@ class TestFacadePublicSurface:
             "missing_snapshot",
             "missing_prediction",
             "ev_not_finite",
+            "no_bet_side",
         )
 
 
@@ -1895,10 +1907,13 @@ class TestWinnerStrategyPricesAtItsOwnMoneyline:
         """The Kelly stake is computed at the bet's OWN price, not at the reference juice."""
         from utils.kelly_criterion import KellyCalculator, KellyMode
 
+        # 0.62, NOT a larger probability: a bigger edge saturates the 5% per-bet cap at BOTH
+        # prices, and two capped stakes are equal no matter which odds produced them -- the test
+        # would then pass while proving nothing. At 0.62 both stakes are below the cap.
         week = [
             _wp_row(
                 "2021_W01_A@B",
-                model_prob=0.75,
+                model_prob=0.62,
                 ml_home=-150.0,
                 ml_away=130.0,
                 actual_home_win=1,
@@ -1918,11 +1933,15 @@ class TestWinnerStrategyPricesAtItsOwnMoneyline:
                 confidence_threshold=0.0,
             )
             return calc.calculate_optimal_bet_size(
-                model_prob=0.75, market_odds=odds, mode=KellyMode.FRACTIONAL
+                model_prob=0.62, market_odds=odds, mode=KellyMode.FRACTIONAL
             ).recommended_bet
 
         assert record["kelly_stake"] == pytest.approx(_stake(-150), abs=1e-9)
         assert _stake(-150) != pytest.approx(_stake(-110), abs=1e-9)
+        # Neither stake is at the 5% per-bet ceiling, so the difference is the PRICE and not the
+        # cap, whose ceiling here is five percent of a ten-thousand bankroll.
+        assert _stake(-150) < 500.0
+        assert _stake(-110) < 500.0
 
     def test_the_totals_and_spread_targets_keep_the_flat_reference_price(self) -> None:
         """Only the winner target overrides the price; the other two are quoted at -110."""

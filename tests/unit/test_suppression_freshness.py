@@ -73,9 +73,10 @@ _BANKROLL = 10_000.0
 _SUNDAY_GAMEDAY = "2023-09-10"
 _FREEZE_AT_SUNDAY = "2023-09-08T18:00:00-04:00"
 
-# The eight members the taxonomy carries after this plan. Enumerated rather than sampled: the
-# taxonomy is the ONE list the page maps to labels, and a member appearing without a label would
-# render a blank cell.
+# The members the taxonomy carries. Enumerated rather than sampled: the taxonomy is the ONE list
+# the page maps to labels, and a member appearing without a label would render a blank cell. Plan
+# 31-09 took it from four to eight; plan 31-10 appended ``no_bet_side`` (D31-05) for the two
+# targets that have no eligibility gate to fail and nothing priced to judge on expected value.
 _EXPECTED_REASONS = (
     "not_subpop",
     "ev_below_floor",
@@ -85,6 +86,7 @@ _EXPECTED_REASONS = (
     "missing_snapshot",
     "missing_prediction",
     "ev_not_finite",
+    "no_bet_side",
 )
 
 # The commit this plan started from (wave-3 HEAD). ``assert_real_odds`` is the LOCKED Phase-27
@@ -279,10 +281,10 @@ def _full_week(
 
 
 class TestRejectionTaxonomy:
-    """The taxonomy is the ONE exported list of reasons, and it has eight members."""
+    """The taxonomy is the ONE exported list of reasons, enumerated in both directions."""
 
-    def test_taxonomy_is_exactly_the_eight_members(self) -> None:
-        """Enumerated in both directions so a ninth reason cannot appear unannounced."""
+    def test_taxonomy_is_exactly_the_enumerated_members(self) -> None:
+        """Enumerated in both directions so a new reason cannot appear unannounced."""
         assert REJECTION_REASONS == _EXPECTED_REASONS
         assert len(set(REJECTION_REASONS)) == len(REJECTION_REASONS)
 

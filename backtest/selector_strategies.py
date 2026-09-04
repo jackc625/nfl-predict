@@ -20,10 +20,29 @@ Why the seam exists, and why here:
 ``features/protocol.py``: implementers declare conformance in their DOCSTRING and are checked
 structurally (pyright statically, ``isinstance`` at test time), never by inheritance.
 
-Only ``OUStrategy`` exists here. ``ATSStrategy`` and ``WPStrategy`` are deliberately ABSENT rather
-than present-and-stubbed: a strategy whose methods raise ``NotImplementedError`` can be registered,
-and a registered strategy that cannot decide is worse than a missing one -- it turns a loud
-"unregistered target" error into a runtime failure mid-selection. Plan 31-10 adds them complete.
+Plan 31-10 completes the set: ``ATSStrategy`` and ``WPStrategy`` land here fully implemented, and
+``default_strategies`` builds the three-target registry a mixed week is selected through. They were
+deliberately ABSENT rather than present-and-stubbed until then: a strategy whose methods raise
+``NotImplementedError`` can be registered, and a registered strategy that cannot decide is worse
+than a missing one -- it turns a loud "unregistered target" error into a runtime failure
+mid-selection.
+
+TWO SCALES AND TWO PRICES, STATED ONCE HERE BECAUSE BOTH ARE EASY TO GET SILENTLY WRONG
+----------------------------------------------------------------------------------------
+
+  * The ATS target carries TWO SIGN CONVENTIONS. ``model_spread`` is a predicted home MARGIN
+    (POSITIVE when the home team is expected to win); ``closing_spread`` is a market LINE (NEGATIVE
+    when the home team is favored). ``BettingSimulator._determine_bet_side_ats`` compares two
+    LINES and ``BettingSimulator._resolve_ats_outcome`` compares an actual MARGIN against a
+    threshold on the MARGIN scale, so ``ATSStrategy`` CONVERTS AT BOTH SEAMS -- the model's implied
+    line is the negated margin going in, and the cover threshold is the negated slipped line coming
+    out. It does NOT re-implement either LOCKED helper; it hands each one arguments in the
+    convention that helper was written for. ``backtest/ats_ev_chain.py``'s module docstring records
+    the same conversion and the legacy simulator path that omits it.
+  * The WP target is quoted PER GAME. Its per-bet EV and its Kelly stake are computed at the side's
+    own moneyline through the OPTIONAL ``bet_odds`` member, never at the flat -110 the spread and
+    totals markets are quoted at. Pricing a -320 favourite at -110 turns a losing bet into a
+    +0.43 EV one, which is the same class of defect as sizing Kelly off a points distance.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -31,6 +50,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
@@ -39,16 +59,50 @@ from backtest.simulation import (
     SLIPPAGE_POINTS,
     BettingSimulator,
     SimulationConfig,
+    apply_slippage_spread,
     apply_slippage_total,
 )
-from models.clv import compute_line_clv
+from models.clv import compute_line_clv, compute_probability_clv
 
 __all__ = [
+    "NO_SUBPOPULATION_LABEL",
+    "ATSStrategy",
     "OUStrategy",
     "TargetStrategy",
     "UnregisteredTargetError",
+    "WPStrategy",
+    "default_strategies",
     "require_finite_high_total_boundary",
 ]
+
+# The eligibility label the two targets WITHOUT a sub-population report (D31-05). It is a constant
+# rather than an empty string or None so the page renders a definite statement -- "this target has
+# no sub-population" -- instead of a blank cell a reader would have to interpret.
+NO_SUBPOPULATION_LABEL: str = "no_subpopulation"
+
+
+# ---------------------------------------------------------------------------
+# The two Phase-31 chains, imported LAZILY. This is a cycle break, not a soft dependency.
+#
+# ``backtest.ats_ev_chain`` -> ``backtest.ev_chain_constants`` -> ``backtest.ou_monetization`` ->
+# ``backtest.bet_selector`` -> THIS MODULE. A module-scope import here therefore fails at
+# collection with "cannot import name 'OUStrategy' from partially initialized module". The same
+# break, for the same reason, is already used by ``BetSelector._freshness_context``.
+# ---------------------------------------------------------------------------
+
+
+def _ats_chain() -> Any:
+    """The ATS EV chain module (lazy -- see the cycle note above)."""
+    from backtest import ats_ev_chain
+
+    return ats_ev_chain
+
+
+def _wp_chain() -> Any:
+    """The WP EV chain module (lazy -- see the cycle note above)."""
+    from backtest import wp_ev_chain
+
+    return wp_ev_chain
 
 
 class UnregisteredTargetError(LookupError):
@@ -101,15 +155,31 @@ class TargetStrategy(Protocol):
             NEVER re-implements the side convention.
         eligibility: ``None`` when the candidate is eligible, otherwise the rejection reason
             (a member of ``bet_selector.REJECTION_REASONS``). D31-05 gives WP and ATS no
-            eligibility gate, so their implementations will return ``None`` unconditionally.
+            eligibility GATE; they still refuse a candidate with no bet side, because there is no
+            bet to price, and they report that with ``"no_bet_side"`` rather than with the O/U
+            sub-population reason.
         eligibility_label: A human-readable label naming WHICH eligibility arm(s) the candidate
-            satisfies. Only O/U currently has a sub-population concept (D27-04/05); targets
-            without one report a constant label.
+            satisfies. Only O/U has a sub-population concept (D27-04/05); targets without one
+            report the constant :data:`NO_SUBPOPULATION_LABEL`.
         side_probability: The calibrated ``P(side)`` and the slipped line, as a pair. This is the
-            number Kelly consumes (BET-02) -- never a points distance.
+            number Kelly consumes (BET-02) -- never a points distance. The line is ``None`` for a
+            target that has no line to slip: WP is a moneyline bet, and returning 0.0 there would
+            be a made-up line rather than an absent one.
         decision_extras: Target-specific REPORTING fields merged into the decision record (for O/U:
             the totals regime and the model-edge CLV). They keep target vocabulary out of the core.
         grade: The push-aware outcome, delegating to the LOCKED ``_resolve_*_outcome`` resolver.
+
+    TWO OPTIONAL MEMBERS, DELIBERATELY OUTSIDE THIS PROTOCOL. Both are read by the core through
+    ``getattr`` with a documented default, so adding either to a strategy does not un-conform every
+    other strategy -- and so a target that does not need one carries no empty implementation:
+
+      * ``required_prediction_fields`` (plan 31-09): the subset of ``required_market_fields`` that
+        are MODEL outputs, which splits ``missing_prediction`` from ``missing_snapshot``. Undeclared,
+        the core classifies by the ``model_`` naming convention.
+      * ``bet_odds(row, bet_side) -> int`` (plan 31-10): the American odds for the side actually
+        bet. Undeclared, the core prices and sizes at its own reference juice (-110), which is what
+        the spread and totals markets are quoted at. WP declares it because a moneyline is quoted
+        per game and per side.
     """
 
     target: str
@@ -129,7 +199,7 @@ class TargetStrategy(Protocol):
 
     def side_probability(
         self, row: dict[str, Any], bet_side: str
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float | None]:
         """Return ``(calibrated_p_side, slipped_line)`` for an eligible ``row``."""
         ...
 
@@ -313,3 +383,383 @@ class OUStrategy:
         is_under = bet_side == "under"
         is_high = self._totals_regime(float(row["closing_total"])) == "high"
         return is_under, is_high
+
+
+class ATSStrategy:
+    """The spread target's selection path (Phase 31, plan 31-10; D31-04/05, SPEC R1).
+
+    Satisfies the ``TargetStrategy`` Protocol via structural subtyping (the ``FeatureBuilder``
+    precedent in ``features/protocol.py``): conformance is declared here, in the docstring, and
+    checked structurally -- there is no base class.
+
+    NO ELIGIBILITY GATE (D31-05). The calibrated chain runs on every candidate and the EV floor
+    alone decides. O/U's under-OR-high-total UNION was earned by an entire phase of pre-registered
+    sub-population sweeping with multiplicity correction; ATS (pooled CLV -0.0015, p 0.990) has had
+    no such diagnosis, and a zero-bet chain is an explicitly defined PASS. A pre-registered
+    sub-population search per target was REJECTED as an unscoped diagnosis that would discover a
+    rule on contaminated, partly-burned data and then spend the single clean 2025 split validating
+    it; declaring the target report-only by construction was REJECTED because it pre-decides the
+    verdict, and a guaranteed answer is not evidence.
+
+    THE TWO SEAMS THIS CLASS CONVERTS AT, AND WHY EACH ONE MATTERS. ``model_spread`` is a predicted
+    home MARGIN; ``closing_spread`` is a market LINE. They are numerically opposite for the same
+    opinion, so handing either helper the wrong one silently prices the wrong side of every game:
+
+      * ``resolve_bet_side`` passes the model's IMPLIED LINE (``-model_spread``) against the market
+        line, because ``BettingSimulator._determine_bet_side_ats`` compares two LINES. Its own
+        docstring's "model thinks home wins by more than market" only holds under that reading.
+      * ``grade`` passes the NEGATED slipped line as the cover threshold, because
+        ``BettingSimulator._resolve_ats_outcome`` compares the actual home MARGIN against it and
+        ``models/train.py:200-202`` grades a home cover as ``actual_margin + spread > 0``, i.e.
+        ``actual_margin > -spread``.
+
+    Neither LOCKED helper is re-implemented; each is called with arguments in the convention it was
+    written for, which is the same conversion ``backtest.ats_ev_chain.price_ats_candidates``
+    performs.
+
+    ``slipped_line`` is carried on the MARKET convention -- the price the bettor actually got, which
+    is what a bet list renders -- and the margin-scale conversion happens at the grading seam.
+    """
+
+    target = "ats"
+    # The predicted home MARGIN and the market LINE. ``model_spread`` carries the ``model_``
+    # prefix, so the core's D31-19 classifier reports its absence as ``missing_prediction`` and
+    # ``closing_spread``'s as ``missing_snapshot`` without a declared override.
+    required_market_fields: tuple[str, ...] = ("model_spread", "closing_spread")
+
+    def __init__(
+        self,
+        frozen_sd: float,
+        season_bias_by_season: Mapping[int, float],
+        slippage_points: float = SLIPPAGE_POINTS,
+        simulator: BettingSimulator | None = None,
+    ) -> None:
+        """Build the spread strategy.
+
+        Args:
+            frozen_sd: The single frozen residual SD on the HOME-MARGIN scale, fit on
+                bias-corrected TUNE residuals only. It is NOT the O/U frozen SD: that one is on the
+                total scale and the two are different quantities that happen to be similar numbers.
+            season_bias_by_season: Target season -> the prior-season walk-forward mean residual.
+            slippage_points: The half-point slippage, applied through the LOCKED
+                ``apply_slippage_spread`` in the LINE convention it was written for.
+            simulator: The injected simulator, so exactly one exists per selector.
+        """
+        self.frozen_sd = float(frozen_sd)
+        self.season_bias_by_season = dict(season_bias_by_season)
+        self.slippage_points = float(slippage_points)
+        self._sim = (
+            simulator if simulator is not None else BettingSimulator(SimulationConfig())
+        )
+
+    # -- TargetStrategy Protocol surface --------------------------------------
+
+    def resolve_bet_side(self, row: dict[str, Any]) -> str | None:
+        """The ATS side via the LOCKED convention, on the model's IMPLIED LINE.
+
+        The side is resolved on the RAW prediction, exactly as the O/U strategy resolves its side
+        on the raw model total; the bias correction enters the PROBABILITY, not the side.
+        """
+        return self._sim._determine_bet_side_ats(
+            -float(row["model_spread"]), float(row["closing_spread"])
+        )
+
+    def eligibility(self, row: dict[str, Any], bet_side: str | None) -> str | None:
+        """No eligibility gate (D31-05); a candidate with no side has no bet to price.
+
+        The sideless case is reported as ``"no_bet_side"`` and NOT as the O/U sub-population
+        reason: this target has no sub-population, so claiming a candidate fell outside one would
+        assert a gate that does not exist. It is not reported as an EV failure either -- nothing was
+        priced, so no expected value was measured.
+        """
+        return None if bet_side is not None else "no_bet_side"
+
+    def eligibility_label(self, row: dict[str, Any], bet_side: str | None) -> str:
+        """The constant label for a target with no sub-population (D31-05)."""
+        return NO_SUBPOPULATION_LABEL
+
+    def side_probability(
+        self, row: dict[str, Any], bet_side: str
+    ) -> tuple[float, float | None]:
+        """The calibrated P(side) and the half-point-slipped MARKET line (BET-02).
+
+        Slippage is applied in the LINE convention ``apply_slippage_spread`` was written for, then
+        NEGATED into the margin-scale cover threshold the converter uses. Returns the slipped LINE
+        so the record carries the price the bettor got; ``grade`` performs the same negation.
+        """
+        chain = _ats_chain()
+        model_spread = float(row["model_spread"])
+        closing_spread = float(row["closing_spread"])
+        slipped_line = apply_slippage_spread(
+            closing_spread, bet_side, self.slippage_points
+        )
+        cover_threshold = -slipped_line
+        season_bias = chain.season_bias_for(
+            int(row["season"]), self.season_bias_by_season, target=self.target
+        )
+        p_home_cover = float(
+            chain.calibrated_p_cover(
+                model_spread, cover_threshold, self.frozen_sd, season_bias
+            )
+        )
+        return chain.ats_side_probability(bet_side, p_home_cover), slipped_line
+
+    def decision_extras(
+        self, row: dict[str, Any], bet_side: str | None
+    ) -> dict[str, Any]:
+        """The REPORT-ONLY model-edge line CLV (``closing_spread - model_spread``).
+
+        Reported, never a gate (D27-06). This is the MODEL EDGE against the line, DISTINCT from the
+        freeze-vs-close forward metric, which is structurally ~0 in backtest.
+        """
+        return {
+            "clv": compute_line_clv(
+                float(row["model_spread"]),
+                float(row["closing_spread"]),
+                direction="spread",
+            )
+        }
+
+    def grade(self, record: dict[str, Any]) -> bool | None:
+        """Grade via the LOCKED ``_resolve_ats_outcome`` on the MARGIN scale (push-aware).
+
+        The realized value the core stashed under ``_actual_total`` is, for this target, the actual
+        home MARGIN (``home_score - away_score``) -- the stash is target-agnostic and named for the
+        target that introduced it. The cover threshold handed to the resolver is the NEGATED slipped
+        line, so a home cover is graded as ``actual_margin > -slipped_line``, which is exactly the
+        rule ``models/train.py`` states. The push (margin exactly on the threshold) is carried as
+        None, never coerced; a candidate with no realized value is ungraded, also None.
+        """
+        actual_margin = record.get("_actual_total")
+        if actual_margin is None or record.get("slipped_line") is None:
+            return None
+        return self._sim._resolve_ats_outcome(
+            record["bet_side"], float(actual_margin), -float(record["slipped_line"])
+        )
+
+
+class WPStrategy:
+    """The winner target's selection path (Phase 31, plan 31-10; D31-05/07, SPEC R1).
+
+    Satisfies the ``TargetStrategy`` Protocol via structural subtyping, declared here in the
+    docstring and checked structurally -- there is no base class.
+
+    NO ELIGIBILITY GATE (D31-05), on the same rule as the spread target: WP (pooled CLV -0.0380,
+    t -15.52) has had no sub-population diagnosis, and inventing one on contaminated, partly-burned
+    data would spend the single clean split validating a rule discovered on it.
+
+    THE PROBABILITY IS THE MODEL'S OWN (D31-07 default). The deployed artifact carries an isotonic
+    calibrator and the bet list is priced off THAT model, unchanged. The REGISTERED fallback -- a
+    prior-season probability-scale shift -- fires only when a ``WPGateResult`` reporting a failed
+    tune-split calibration gate is supplied, and it can never fire silently: ``fallback_fired`` and
+    ``fallback_trigger`` travel onto every decision record.
+
+    THE PRICE IS THE GAME'S OWN. A moneyline is quoted per game and per side, so this strategy
+    declares the optional ``bet_odds`` member and the core prices its EV and sizes its Kelly stake
+    at that price. The flat -110 default the spread and totals markets carry would turn a -320
+    favourite priced at a true 0.75 win probability from a losing bet into a +0.43 EV one.
+    """
+
+    target = "wp"
+    # The deployed isotonic P(home) and BOTH real moneylines. Both prices are REQUIRED: a moneyline
+    # market has a real two-sided price by construction, so a missing one is missing DATA and
+    # defaulting it would invent a market no book offered.
+    required_market_fields: tuple[str, ...] = ("model_prob", "ml_home", "ml_away")
+
+    def __init__(
+        self,
+        season_bias_by_season: Mapping[int, float] | None = None,
+        gate: Any | None = None,
+        simulator: BettingSimulator | None = None,
+    ) -> None:
+        """Build the winner strategy.
+
+        Args:
+            season_bias_by_season: Target season -> the prior-season walk-forward probability-scale
+                bias. Consulted ONLY when the registered fallback fired; an empty mapping is
+                correct on the default path and raises by name if the fallback is later switched on
+                without one.
+            gate: The TUNE-split ``WPGateResult``. None is the DEFAULT path -- the deployed
+                probability used unchanged, no fallback -- and the fallback fields are stamped onto
+                every record either way, so "no gate was run" is never mistaken for "the gate
+                passed".
+            simulator: The injected simulator, so exactly one exists per selector.
+        """
+        self.season_bias_by_season = dict(season_bias_by_season or {})
+        self.gate = gate
+        self.fallback_fired = bool(gate is not None and gate.fallback_fired)
+        self.fallback_trigger = gate.fallback_trigger if gate is not None else None
+        self._sim = (
+            simulator if simulator is not None else BettingSimulator(SimulationConfig())
+        )
+
+    # -- internals ------------------------------------------------------------
+
+    def _p_home(self, row: dict[str, Any]) -> float:
+        """P(home) for ``row``: the deployed probability, or the registered fallback's correction.
+
+        ONE implementation, consumed by the side rule, the probability and the CLV, because WP's
+        side rule reads the probability itself -- a fired fallback that moves a probability across
+        the side threshold must move the side with it.
+        """
+        model_prob = float(row["model_prob"])
+        if not self.fallback_fired:
+            return model_prob
+        chain = _wp_chain()
+        season_bias = chain.season_bias_for(
+            int(row["season"]), self.season_bias_by_season, target=self.target
+        )
+        return float(chain.apply_wp_fallback_correction(model_prob, season_bias))
+
+    # -- TargetStrategy Protocol surface --------------------------------------
+
+    def resolve_bet_side(self, row: dict[str, Any]) -> str | None:
+        """The WP side via the LOCKED ``_determine_bet_side_wp``, on the priced probability."""
+        return self._sim._determine_bet_side_wp(self._p_home(row))
+
+    def eligibility(self, row: dict[str, Any], bet_side: str | None) -> str | None:
+        """No eligibility gate (D31-05); a candidate with no side has no bet to price.
+
+        ``model_prob`` inside the LOCKED no-bet band around 0.5 yields no side, which is common on
+        this target rather than exotic. It is reported as ``"no_bet_side"`` for the same reason the
+        spread target reports it that way: this target has no sub-population to fall outside of,
+        and nothing was priced, so no expected value was measured.
+        """
+        return None if bet_side is not None else "no_bet_side"
+
+    def eligibility_label(self, row: dict[str, Any], bet_side: str | None) -> str:
+        """The constant label for a target with no sub-population (D31-05)."""
+        return NO_SUBPOPULATION_LABEL
+
+    def side_probability(
+        self, row: dict[str, Any], bet_side: str
+    ) -> tuple[float, float | None]:
+        """The side-correct probability, and NO line.
+
+        A moneyline bet has no line to slip, so the second element is None rather than 0.0: a
+        zero would be a made-up line, and ``BetRecord.slipped_line`` already documents None as the
+        WP value.
+        """
+        return (
+            float(_wp_chain().calibrated_p_home_side(self._p_home(row), bet_side)),
+            None,
+        )
+
+    def bet_odds(self, row: dict[str, Any], bet_side: str) -> int:
+        """The American odds for the side actually bet, via the LOCKED ``_get_wp_odds``.
+
+        The OPTIONAL Protocol member (see ``TargetStrategy``): declaring it is what makes the core
+        price and size this target at the game's own moneyline instead of at its reference juice.
+        """
+        return self._sim._get_wp_odds(
+            bet_side, float(row["ml_home"]), float(row["ml_away"])
+        )
+
+    def decision_extras(
+        self, row: dict[str, Any], bet_side: str | None
+    ) -> dict[str, Any]:
+        """The fallback registration and the REPORT-ONLY probability CLV.
+
+        The two fallback fields are stamped on EVERY record, sided or not, because their job is to
+        make a fired fallback impossible to infer from the numbers rather than read off the row.
+        The CLV is measured against the devigged fair closing price through the LOCKED
+        ``compute_probability_clv``; it is reported, never a gate (D27-06).
+        """
+        extras: dict[str, Any] = {
+            "fallback_fired": self.fallback_fired,
+            "fallback_trigger": self.fallback_trigger,
+        }
+        if bet_side is None:
+            return extras
+        p_side = float(_wp_chain().calibrated_p_home_side(self._p_home(row), bet_side))
+        extras["clv"] = compute_probability_clv(
+            model_prob=p_side,
+            closing_ml_home=float(row["ml_home"]),
+            closing_ml_away=float(row["ml_away"]),
+            side=bet_side,
+        )["probability_clv"]
+        return extras
+
+    def grade(self, record: dict[str, Any]) -> bool | None:
+        """Grade via the LOCKED ``_resolve_wp_outcome``.
+
+        The realized value the core stashed under ``_actual_total`` is, for this target, the 0/1
+        home-win label. A moneyline bet cannot push, so the only None here is UNGRADED -- a forward
+        game that has not been played.
+        """
+        actual_home_win = record.get("_actual_total")
+        if actual_home_win is None:
+            return None
+        return self._sim._resolve_wp_outcome(record["bet_side"], int(actual_home_win))
+
+
+# ---------------------------------------------------------------------------
+# The three-target registry
+# ---------------------------------------------------------------------------
+
+
+def default_strategies(
+    *,
+    ou_frozen_sd: float,
+    ou_season_bias_by_season: Mapping[int, float],
+    ats_frozen_sd: float,
+    ats_season_bias_by_season: Mapping[int, float],
+    wp_season_bias_by_season: Mapping[int, float] | None = None,
+    wp_gate: Any | None = None,
+    high_total_boundary: float = HIGH_TOTAL_BOUNDARY_PREHOLD,
+    slippage_points: float = SLIPPAGE_POINTS,
+    simulator: BettingSimulator | None = None,
+) -> list[Any]:
+    """Build the three production strategies, in the repository's canonical target order.
+
+    Passing the result as ``BetSelector(..., strategies=...)`` is what makes a mixed week produce
+    records for all three targets in ONE ``select`` call, with the 10% weekly exposure cap pooled
+    over their union (D31-02) and the correlated de-weight grouping by same-GAME across them
+    (D31-03).
+
+    THE PER-TARGET FIT PARAMETERS ARE SEPARATE ARGUMENTS ON PURPOSE. ``ou_frozen_sd`` is on the
+    TOTAL scale and ``ats_frozen_sd`` is on the HOME-MARGIN scale; they are different quantities
+    that happen to be similar numbers, and one shared ``frozen_sd`` would be a category error that
+    typechecks. WP fits no residual SD at all (D31-07): a calibrated classifier has no residual to
+    take a standard deviation of, and inventing a logit-space one was explicitly rejected.
+
+    ``BetSelector``'s own default registry is NOT changed by this function and still registers the
+    O/U strategy alone, so every pre-D31-01 call site -- including the simulator's O/U routing,
+    whose candidate rows carry no ``target`` column -- behaves exactly as before.
+
+    Args:
+        ou_frozen_sd: The O/U frozen residual SD (total scale).
+        ou_season_bias_by_season: The O/U prior-season walk-forward bias per season.
+        ats_frozen_sd: The ATS frozen residual SD (home-margin scale).
+        ats_season_bias_by_season: The ATS prior-season walk-forward bias per season.
+        wp_season_bias_by_season: The WP probability-scale bias per season; consulted only when
+            ``wp_gate`` reports a failed calibration gate.
+        wp_gate: The WP TUNE-split ``WPGateResult``, or None for the default path.
+        high_total_boundary: The leakage-clean PRE-HOLD O/U eligibility boundary (LOCKED-1).
+        slippage_points: The half-point slippage applied to the two line targets.
+        simulator: One injected simulator shared by all three strategies.
+
+    Returns:
+        ``[WPStrategy, ATSStrategy, OUStrategy]`` -- the ``wp / ats / ou`` order this repository
+        uses everywhere, so a registry listing reads the same as every other per-target table.
+    """
+    return [
+        WPStrategy(
+            season_bias_by_season=wp_season_bias_by_season,
+            gate=wp_gate,
+            simulator=simulator,
+        ),
+        ATSStrategy(
+            frozen_sd=ats_frozen_sd,
+            season_bias_by_season=ats_season_bias_by_season,
+            slippage_points=slippage_points,
+            simulator=simulator,
+        ),
+        OUStrategy(
+            frozen_sd=ou_frozen_sd,
+            season_bias_by_season=dict(ou_season_bias_by_season),
+            high_total_boundary=high_total_boundary,
+            slippage_points=slippage_points,
+            simulator=simulator,
+        ),
+    ]

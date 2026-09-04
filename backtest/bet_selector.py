@@ -41,9 +41,16 @@ strategy per target (``backtest/selector_strategies.py``). The facade is UNCHANG
 so: SPEC R4's source scan pins ``backtest.bet_selector`` as the ONE import target for a bet
 decision, and ``BetSelector`` / ``SelectionResult`` / ``assert_real_odds`` / ``REJECTION_REASONS``
 remain its entire public surface. Constructed without a ``strategies`` argument the selector
-registers the O/U strategy alone, so every pre-D31-01 call site behaves exactly as before. Only the
-O/U strategy exists today; ATS and WP arrive in Plan 31-10. That is a functionality gap, not an
-architectural one.
+registers the O/U strategy alone, so every pre-D31-01 call site behaves exactly as before. All three
+strategies exist as of Plan 31-10; a caller wanting the pooled three-target week passes
+``backtest.selector_strategies.default_strategies(...)``, whose per-target fit parameters this
+constructor could not supply -- the ATS frozen SD is on the home-margin scale and the O/U one is on
+the total scale, and WP fits no residual SD at all. The DEFAULT registry stays O/U-only precisely so
+that the simulator's O/U routing, whose candidate rows carry no ``target`` column, is untouched.
+
+D31-04 (Phase 31, plan 31-10) made the price PER TARGET AND PER SIDE. An eligible record carries
+``selected_odds``, which is the selector's reference juice for the two flat-quoted targets and the
+game's own moneyline for WP, and the per-bet EV and the Kelly stake are both computed from it.
 
 D31-17/18/19 (Phase 31, plan 31-09) moved SUPPRESSION inside this module. Given a schedule,
 ``select()`` builds the candidate universe as every scheduled game times every REGISTERED target
@@ -86,7 +93,7 @@ from backtest.ou_divergence import (
     HIGH_TOTAL_BOUNDARY_PREHOLD,
 )
 from backtest.ou_ev_chain import (
-    MINUS_110_PAYOUT,
+    american_to_payout,
     per_bet_ev,
 )
 from backtest.selector_strategies import (
@@ -123,7 +130,14 @@ REJECTION_REASONS: tuple[str, ...] = (
     "missing_snapshot",  # no market data for THAT target on that game (D31-19)
     "missing_prediction",  # no model output for that game -- a pipeline gap (D31-19)
     "ev_not_finite",  # a non-finite per-bet EV: suppressed, never tiered (SPEC R7, D31-24)
+    "no_bet_side",  # the model agrees with the market inside the LOCKED no-bet band (D31-05)
 )
+# ``no_bet_side`` is plan 31-10's addition, and it is a NINTH reason rather than a reuse of one of
+# the eight. D31-05 gives the WP and ATS targets NO eligibility gate, so ``not_subpop`` would assert
+# a sub-population that does not exist for them; and nothing is priced for a candidate with no side,
+# so ``ev_below_floor`` would claim an expected value that was never measured. The taxonomy is
+# designed to grow -- it is the ONE exported list the page maps to labels, and the tests that
+# enumerate it are what make an undeclared reason fail.
 
 __all__ = [
     "REJECTION_REASONS",
@@ -168,6 +182,27 @@ def _prediction_field_names(strategy: TargetStrategy) -> frozenset[str]:
         for name in strategy.required_market_fields
         if name.startswith(_PREDICTION_FIELD_PREFIX)
     )
+
+
+def _strategy_bet_odds(
+    strategy: TargetStrategy, row: dict[str, Any], bet_side: str, default: int
+) -> int:
+    """The American odds for the side actually bet, via the OPTIONAL ``bet_odds`` member (D31-04).
+
+    The spread and totals markets are quoted at one reference juice, so their strategies declare
+    nothing and are priced and sized at ``default``. A MONEYLINE is quoted per game and per side,
+    so ``WPStrategy`` declares ``bet_odds`` and the winner target is priced and sized at the price a
+    book actually offered. A flat -110 payout on a -320 favourite would turn a losing bet into a
+    +0.43 EV one -- the same class of defect as sizing Kelly off a points distance.
+
+    Read through ``getattr`` for the same reason ``required_prediction_fields`` is (plan 31-09):
+    adding a required member to ``TargetStrategy`` would un-conform every strategy that has no use
+    for it, and force an empty implementation onto the two targets that are quoted flat.
+    """
+    resolver = getattr(strategy, "bet_odds", None)
+    if resolver is None:
+        return default
+    return int(resolver(row, bet_side))
 
 
 def _freshness_context(
@@ -691,6 +726,10 @@ class BetSelector:
             "calibrated_p_side": None,
             "per_bet_ev": None,
             "slipped_line": None,
+            # The American odds the bet was priced and sized at, resolved per target and per side
+            # (D31-04). None on a candidate that was never priced -- a suppressed row got no price,
+            # and stamping the reference juice onto it would claim one it never had.
+            "selected_odds": None,
             "kelly_stake": 0.0,
             "outcome": None,
             # CLV defaults to None -- NOT REPORTED -- and a strategy that has a closing-line value
@@ -763,9 +802,13 @@ class BetSelector:
             p_side, slipped_line = strategy.side_probability(row, bet_side)
             record["calibrated_p_side"] = p_side
             record["slipped_line"] = slipped_line
-            # The flat -110 payout matching ``self.odds`` -- the price every currently registered
-            # target is quoted at. Plan 31-10 decides how WP's per-game moneyline payout enters.
-            record["per_bet_ev"] = per_bet_ev(p_side, MINUS_110_PAYOUT)
+            # The price the bet is judged at, resolved per target and per side (D31-04). It is
+            # ``self.odds`` for the two targets quoted at one reference juice and the game's own
+            # moneyline for WP, and it travels ON the record so the EV, the Kelly stake and the
+            # published price are all the SAME number rather than three that agree by convention.
+            selected_odds = _strategy_bet_odds(strategy, row, bet_side, self.odds)
+            record["selected_odds"] = selected_odds
+            record["per_bet_ev"] = per_bet_ev(p_side, american_to_payout(selected_odds))
 
         return record, rejection_reason
 
@@ -869,8 +912,11 @@ class BetSelector:
         staked_admitted: list[dict[str, Any]] = []
         for record in admitted:
             kelly_result = self._kelly.calculate_optimal_bet_size(
+                # The RECORD's price, not the selector's reference juice: an eligible record was
+                # priced at the odds its own market quoted, and sizing at a different number would
+                # be sizing a bet nobody could place (D31-04).
                 model_prob=record["calibrated_p_side"],
-                market_odds=self.odds,
+                market_odds=int(record["selected_odds"]),
                 mode=KellyMode.FRACTIONAL,
             )
             if kelly_result.recommended_bet <= 0.0:
