@@ -819,7 +819,14 @@ _GOLDEN_CLV_REPORT = {
 # The keys the D31-01 refactor ADDS, named exhaustively so a field cannot appear unannounced.
 # ``target`` is stamped on every record (a pooled week must be splittable back out); the four
 # sizing-provenance fields are added only to records that were actually staked.
-_NEW_KEYS_ON_EVERY_RECORD = {"target"}
+#
+# Plan 31-09 (D31-17) adds two more to EVERY record: the candidate's own ``snapshot_ts`` and the
+# ``freeze_ts`` it is judged against, both tz-aware and Eastern-expressed. They travel on the
+# record so the page renders them without recomputing either -- and a recomputed freeze on the
+# display side is exactly the second derivation D31-18 exists to prevent. On this fixture week,
+# whose rows carry no kickoff date, both are None: a historical backtest frame makes no forward
+# freshness claim.
+_NEW_KEYS_ON_EVERY_RECORD = {"target", "snapshot_ts", "freeze_ts"}
 _NEW_KEYS_ON_STAKED_RECORDS = _NEW_KEYS_ON_EVERY_RECORD | {
     "same_side_group_size",
     "same_game_group_size",
@@ -1447,11 +1454,19 @@ class TestFacadePublicSurface:
         assert module.SelectionResult.__module__ == "backtest.bet_selector"
         assert module.assert_real_odds.__module__ == "backtest.bet_selector"
         # REJECTION_REASONS is a tuple of strings and carries no ``__module__``; pin its contents.
+        # Plan 31-09 GREW it from four members to eight (D31-17/19): the Phase-27 four keep their
+        # positions and the four suppression reasons follow them. The taxonomy is still ONE
+        # exported list -- growing it here is the designed way to add a reason, and editing this
+        # tuple is what makes an undeclared ninth reason fail.
         assert module.REJECTION_REASONS == (
             "not_subpop",
             "ev_below_floor",
             "real_odds_failed",
             "zero_kelly_stake",
+            "stale_line",
+            "missing_snapshot",
+            "missing_prediction",
+            "ev_not_finite",
         )
 
 

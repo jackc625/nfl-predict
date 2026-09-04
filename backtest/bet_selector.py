@@ -45,9 +45,23 @@ registers the O/U strategy alone, so every pre-D31-01 call site behaves exactly 
 O/U strategy exists today; ATS and WP arrive in Plan 31-10. That is a functionality gap, not an
 architectural one.
 
+D31-17/18/19 (Phase 31, plan 31-09) moved SUPPRESSION inside this module. Given a schedule,
+``select()`` builds the candidate universe as every scheduled game times every REGISTERED target
+and returns one record per pair -- live, or suppressed with exactly one reason from the SAME
+``REJECTION_REASONS`` taxonomy the rejections already used. R6's "mirroring the rejected[]
+taxonomy" is therefore literal identity rather than two lists kept in sync, which is the failure
+mode this repo has already had once. Its precedent is ``assert_real_odds``: a pure data-provenance
+check that already lived here and already ran before any selection.
+
+The freshness fence takes its freeze instant, its parse path and its comparison from
+``scripts.ingest_historical_odds`` -- the module that STAMPS ``snapshot_ts`` at ingest (plan 31-08,
+D31-37) -- so the value written and the value compared come from ONE rule. Those imports are
+DEFERRED into ``_snapshot_and_freeze`` because that module reaches back to this one through
+``backtest.ev_chain_constants`` -> ``backtest.ou_monetization``; see that function's docstring.
+
 ``select()`` returns BOTH the FILTERED decision set (the acceptance basis) and the UNFILTERED
-whole-population cross-check (D27-04), plus the REJECTED eligible candidates with rejection reasons
-in {not_subpop, ev_below_floor, real_odds_failed}.
+whole-population cross-check (D27-04), plus the REJECTED candidates with rejection reasons drawn
+from the eight-member ``REJECTION_REASONS``.
 
 It WRAPS -- never re-implements -- the LOCKED ``BettingSimulator`` side/slippage/outcome convention
 (D-18). It makes NO change to ``models/clv.py``, ``config/gate.toml``, or any production artifact
@@ -59,7 +73,9 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -103,6 +119,10 @@ REJECTION_REASONS: tuple[str, ...] = (
     "ev_below_floor",  # eligible but per-bet EV < the EV-floor t (D27-14)
     "real_odds_failed",  # provenance hard-fail (OUM-06) -- raised before selection
     "zero_kelly_stake",  # admitted by EV but the Kelly calculator zeroed the stake (WR-07)
+    "stale_line",  # snapshot strictly before that game's OWN freeze (D31-17/18)
+    "missing_snapshot",  # no market data for THAT target on that game (D31-19)
+    "missing_prediction",  # no model output for that game -- a pipeline gap (D31-19)
+    "ev_not_finite",  # a non-finite per-bet EV: suppressed, never tiered (SPEC R7, D31-24)
 )
 
 __all__ = [
@@ -111,6 +131,87 @@ __all__ = [
     "SelectionResult",
     "assert_real_odds",
 ]
+
+# The naming convention that tells a MODEL output apart from a MARKET value inside a strategy's
+# ``required_market_fields``. The two absences have different causes and different fixes --
+# collapsing them would hide a broken prediction path behind an odds-coverage label (D31-19) --
+# and the core cannot use target vocabulary to tell them apart.
+#
+# A strategy MAY declare ``required_prediction_fields`` to name its model columns explicitly; that
+# member is deliberately NOT part of the ``TargetStrategy`` Protocol, because adding a required
+# member mid-wave would un-conform the strategies plan 31-10 is writing against the current
+# eight-member Protocol. Undeclared, the convention below classifies.
+_PREDICTION_FIELD_PREFIX = "model_"
+
+
+def _is_absent(value: Any) -> bool:
+    """True when *value* is missing for decision purposes (None, NaN or NaT).
+
+    A candidates DataFrame turns a missing cell into NaN rather than None, so a ``is None`` check
+    alone would read a NaN market value as PRESENT and price a bet off it.
+    """
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _prediction_field_names(strategy: TargetStrategy) -> frozenset[str]:
+    """The subset of ``strategy.required_market_fields`` that are MODEL outputs (D31-19)."""
+    declared = getattr(strategy, "required_prediction_fields", None)
+    if declared is not None:
+        return frozenset(declared)
+    return frozenset(
+        name
+        for name in strategy.required_market_fields
+        if name.startswith(_PREDICTION_FIELD_PREFIX)
+    )
+
+
+def _snapshot_and_freeze(
+    row: dict[str, Any],
+) -> tuple[datetime | None, datetime | None]:
+    """The candidate's own snapshot instant and the freeze instant it is judged against.
+
+    Both are returned as tz-aware datetimes expressed in EASTERN, because the market's own zone is
+    the one the freeze is defined in and re-expressing a freeze for display is where a UTC-anchored
+    reading gets reintroduced (the WR-02 lesson).
+
+    A row with no ``gameday`` has no per-game freeze: that is a historical backtest frame, which
+    makes no forward freshness claim. The universe path refuses a schedule without kickoff dates,
+    so the forward path cannot reach this branch and quietly skip the fence.
+
+    The helpers are imported HERE rather than at module scope to break a REAL import cycle:
+    ``scripts.ingest_historical_odds`` imports ``backtest.ev_chain_constants``, which imports
+    ``backtest.ou_monetization``, which imports THIS module. A module-scope import fails at
+    collection with a partially-initialized-module ImportError. The deferred import is the cycle
+    break and not an attempt to soften the dependency, which the module docstring states plainly.
+
+    Returns:
+        ``(snapshot_instant, freeze_instant)``, either of which may be None.
+    """
+    from scripts.ingest_historical_odds import (
+        EASTERN,
+        get_synthetic_snapshot_ts,
+        normalize_snapshot_ts,
+    )
+
+    gameday = row.get("gameday")
+    snapshot_value = row.get("snapshot_ts")
+
+    freeze = (
+        None
+        if _is_absent(gameday)
+        # THE ONE CALL SITE deriving a freeze instant in this module (D31-18). Every other
+        # freshness question routes through the helpers imported above.
+        else get_synthetic_snapshot_ts(gameday).astimezone(EASTERN)
+    )
+    snapshot = (
+        None if _is_absent(snapshot_value) else normalize_snapshot_ts(snapshot_value)
+    )
+    return snapshot, freeze
 
 
 def assert_real_odds(raw_odds_df: pd.DataFrame) -> None:
@@ -317,8 +418,9 @@ class BetSelector:
         self,
         candidates: pd.DataFrame | list[dict[str, Any]],
         raw_odds_df: pd.DataFrame | None = None,
+        scheduled_games: pd.DataFrame | list[dict[str, Any]] | None = None,
     ) -> SelectionResult:
-        """The single bet-decision source (BET-01/02, LOCKED-2).
+        """The single bet-decision source (BET-01/02, LOCKED-2, D31-17/19).
 
         Args:
             candidates: Per-game candidate rows (a DataFrame or list of dicts) carrying at least
@@ -326,23 +428,40 @@ class BetSelector:
                 ``required_market_fields``, and (for grading) ``actual``. A row may carry a
                 ``target`` code selecting its strategy; when absent and exactly one strategy is
                 registered, that strategy is used. Rows may also carry ``sportsbook`` / ``is_live``
-                provenance columns, which are validated when present.
+                provenance columns, which are validated when present, and ``snapshot_ts`` /
+                ``gameday``, which drive the freshness fence.
             raw_odds_df: Optional raw odds provenance frame. When supplied, it is validated FIRST
                 via ``assert_real_odds`` (OUM-06) before any selection. When None, the candidates
                 frame itself is checked for provenance columns.
+            scheduled_games: Optional schedule (``game_id``, ``season``, ``week``, ``gameday``).
+                When supplied, the candidate universe becomes every scheduled game times every
+                REGISTERED target (D31-19) and every pair yields a record, live or suppressed, so
+                a candidate is never silently dropped. When None the rows ARE the universe, which
+                is exactly what every pre-31-09 caller expects.
 
         Returns:
             A :class:`SelectionResult` with selected / rejected / filtered / unfiltered records and
             a report-only ``clv_report``.
         """
         rows = self._to_records(candidates)
+        if scheduled_games is not None:
+            rows = self._build_universe(scheduled_games, rows)
 
-        # (1) Provenance hard-fail BEFORE any selection (OUM-06, T-27-07). Validate the explicit
-        # raw odds frame if supplied; otherwise validate any provenance columns on the candidates.
+        # (1) Provenance hard-fail BEFORE any decision (OUM-06, T-27-07). Validate the explicit
+        # raw odds frame if supplied; otherwise validate the candidates' own provenance columns.
+        #
+        # THE FRAME IS NARROWED; THE CHECK IS NOT (T-31-43b). ``assert_real_odds`` raises when a
+        # row's sportsbook is outside the allowlist, and a MISSING sportsbook is outside it by
+        # construction (``~Series.isin(...)`` is True for NaN). A skeleton row -- one carrying
+        # neither a sportsbook nor any market value -- would therefore RAISE before it could be
+        # labelled ``missing_snapshot``. ``_provenance_frame`` drops exactly those rows and no
+        # others: a row carrying a sportsbook is always checked, so a disallowed book and an
+        # ``is_live`` row each still raise. ``assert_real_odds`` itself is untouched -- it is the
+        # LOCKED Phase-27 guard and the Phase-27/30 record depends on its behaviour.
         if raw_odds_df is not None:
             assert_real_odds(raw_odds_df)
         else:
-            assert_real_odds(pd.DataFrame(rows))
+            assert_real_odds(self._provenance_frame(rows))
 
         selected: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
@@ -393,6 +512,122 @@ class BetSelector:
             clv_report=clv_report,
         )
 
+    # -- the candidate universe (D31-19) --------------------------------------
+
+    def _build_universe(
+        self,
+        scheduled_games: pd.DataFrame | list[dict[str, Any]],
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Expand the schedule to every scheduled game times every REGISTERED target.
+
+        A pair with no candidate row becomes a SKELETON -- the game_id, its week and its kickoff
+        date, and nothing else -- which the decision path then suppresses as ``missing_snapshot``.
+        Building the universe first is what makes "never silently dropped" structural: a game
+        absent from the universe could not be reported as suppressed at all, and reconciling an
+        odds-joined universe afterwards would be a second computation that can disagree with the
+        first.
+
+        Args:
+            scheduled_games: The week's schedule, each row carrying ``game_id``, ``season``,
+                ``week`` and ``gameday``.
+            rows: The normalized candidate rows.
+
+        Returns:
+            One row per (scheduled game, registered target), in schedule order then registry order.
+
+        Raises:
+            ValueError: when a scheduled game is missing a required column or is listed twice, when
+                two candidates claim the same (game_id, target), or when a candidate names a game
+                that is not in the schedule.
+        """
+        if isinstance(scheduled_games, pd.DataFrame):
+            games = scheduled_games.to_dict("records")
+        else:
+            games = [dict(game) for game in scheduled_games]
+
+        by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            key = (str(row["game_id"]), self._strategy_for(row.get("target")).target)
+            if key in by_key:
+                msg = (
+                    f"two candidate rows claim game_id/target {key}; the universe is keyed by "
+                    "that pair and a duplicate would double-count the week."
+                )
+                raise ValueError(msg)
+            by_key[key] = row
+
+        universe: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for game in games:
+            missing = [
+                name
+                for name in ("game_id", "season", "week", "gameday")
+                if _is_absent(game.get(name))
+            ]
+            if missing:
+                msg = (
+                    f"scheduled game {game.get('game_id')!r} is missing {missing}. A schedule row "
+                    "must carry its own gameday: the freshness fence is measured against that "
+                    "game's OWN preceding-Friday freeze (D31-18), and without a kickoff date the "
+                    "fence would silently never fire."
+                )
+                raise ValueError(msg)
+
+            game_id = str(game["game_id"])
+            if game_id in seen:
+                msg = (
+                    f"scheduled game {game_id!r} is listed twice; a duplicated game would be "
+                    "counted twice in the universe and reported twice on the page."
+                )
+                raise ValueError(msg)
+            seen.add(game_id)
+
+            for target in self._strategies:
+                # The schedule is authoritative for identity and timing, so it is applied LAST.
+                skeleton = {
+                    "game_id": game_id,
+                    "season": int(game["season"]),
+                    "week": int(game["week"]),
+                    "gameday": game["gameday"],
+                    "target": target,
+                }
+                candidate = by_key.pop((game_id, target), None)
+                universe.append(
+                    skeleton if candidate is None else {**candidate, **skeleton}
+                )
+
+        if by_key:
+            orphans = sorted({game_id for game_id, _target in by_key})[:10]
+            msg = (
+                f"candidate rows name game_ids that are not in the schedule: {orphans}. A "
+                "candidate outside the universe could not be reported as live or as suppressed, "
+                "so it is refused rather than dropped (D31-19)."
+            )
+            raise ValueError(msg)
+
+        return universe
+
+    def _provenance_frame(self, rows: list[dict[str, Any]]) -> pd.DataFrame:
+        """The subset of ``rows`` that carries provenance for ``assert_real_odds`` to judge.
+
+        A row carrying NEITHER a sportsbook NOR any of its target's market values is a skeleton:
+        it makes no provenance claim, so there is nothing to check and it is labelled rather than
+        raised on. Every other row -- in particular every row carrying a sportsbook -- is handed
+        to the guard unchanged. ``assert_real_odds`` already treats a frame with no ``sportsbook``
+        column as carrying no provenance; this applies the SAME rule per row.
+        """
+        checked = [
+            row
+            for row in rows
+            if not _is_absent(row.get("sportsbook"))
+            or any(
+                not _is_absent(row.get(name))
+                for name in self._strategy_for(row.get("target")).required_market_fields
+            )
+        ]
+        return pd.DataFrame(checked)
+
     # -- decision-record construction -----------------------------------------
 
     def _build_decision_record(
@@ -404,6 +639,12 @@ class BetSelector:
         eligibility rule, the sub-pop label, the calibrated P(side) and the target-specific
         reporting extras. No target vocabulary appears here.
 
+        A SUPPRESSED candidate short-circuits before any strategy method that reads market or
+        model data. It is not priced at all: a stale line and an absent column are both refusals to
+        form an opinion, and publishing an EV computed from either would be the thing suppression
+        exists to prevent. Such a record therefore carries the CORE schema only -- no target
+        ``decision_extras`` -- because those extras are derived from data the row does not have.
+
         Returns:
             ``(record, rejection_reason)``. The reason is None when the candidate is eligible. It
             is returned ALONGSIDE the record rather than stored on it, so an eligible record never
@@ -413,20 +654,22 @@ class BetSelector:
         season = int(row["season"])
         week = int(row["week"])
 
-        market = self._market_fields(row, strategy)
-        bet_side = strategy.resolve_bet_side(row)
-        rejection_reason = strategy.eligibility(row, bet_side)
-        eligible = rejection_reason is None
+        market, missing_market, missing_prediction = self._read_required_fields(
+            row, strategy
+        )
+        snapshot_instant, freeze_instant = _snapshot_and_freeze(row)
 
         record: dict[str, Any] = {
             "game_id": game_id,
             "season": season,
             "week": week,
             "target": strategy.target,
-            "bet_side": bet_side,
-            "subpop_label": strategy.eligibility_label(row, bet_side),
+            "bet_side": None,
+            # None means NOT ASKED -- distinct from a strategy's own "none" label, which means
+            # asked and satisfying no eligibility arm.
+            "subpop_label": None,
             **market,
-            "eligible": eligible,
+            "eligible": False,
             "calibrated_p_side": None,
             "per_bet_ev": None,
             "slipped_line": None,
@@ -437,6 +680,10 @@ class BetSelector:
             # that measures no CLV drag a published CLV mean toward zero and read as "no edge
             # measured" rather than "not measured"; ``_clv_report`` drops the Nones.
             "clv": None,
+            # Both instants travel ON the record so the page and the export render them without
+            # recomputing either (D31-17).
+            "snapshot_ts": snapshot_instant,
+            "freeze_ts": freeze_instant,
             # Carry the private realized-total stash forward so ``_grade`` can resolve the push-aware
             # outcome (the LOCKED ``_resolve_ou_outcome``). ``_to_records`` stashes the candidate's
             # ``actual`` under ``_actual_total``; without carrying it onto the decision record every
@@ -444,10 +691,29 @@ class BetSelector:
             # graded ROI (Rule 1, Plan 27-04). It is NOT in the public schema; downstream stores a
             # missing/ungraded outcome as SQL NULL.
             "_actual_total": row.get("_actual_total"),
-            # The strategy's reporting extras (for O/U: the totals regime and the REPORT-ONLY
-            # model-edge CLV, which never gates -- D27-06).
-            **strategy.decision_extras(row, bet_side),
         }
+
+        # Market gaps and model gaps are DIFFERENT causes with different fixes (D31-19), so the
+        # market check runs first and a present-market/absent-model row is reported as the model
+        # gap it is rather than as an odds-coverage problem.
+        if missing_market:
+            return record, "missing_snapshot"
+        if missing_prediction:
+            return record, "missing_prediction"
+
+        bet_side = strategy.resolve_bet_side(row)
+        rejection_reason = strategy.eligibility(row, bet_side)
+        eligible = rejection_reason is None
+        record.update(
+            {
+                "bet_side": bet_side,
+                "subpop_label": strategy.eligibility_label(row, bet_side),
+                "eligible": eligible,
+                # The strategy's reporting extras (for O/U: the totals regime and the REPORT-ONLY
+                # model-edge CLV, which never gates -- D27-06).
+                **strategy.decision_extras(row, bet_side),
+            }
+        )
 
         if eligible:
             if bet_side is None:
@@ -470,25 +736,37 @@ class BetSelector:
         return record, rejection_reason
 
     @staticmethod
-    def _market_fields(
+    def _read_required_fields(
         row: dict[str, Any], strategy: TargetStrategy
-    ) -> dict[str, float]:
-        """Copy the strategy's ``required_market_fields`` off ``row``, failing by NAME when absent.
+    ) -> tuple[dict[str, float | None], tuple[str, ...], tuple[str, ...]]:
+        """Read the strategy's required fields off ``row``, naming which are absent and why.
 
-        A candidate frame missing a market column is a caller error that must name the column and
-        the target, never surface as a bare ``KeyError`` from deep inside the decision path.
+        Every required name lands on the record -- as a float when present, as None when not -- so
+        the record schema does not change shape with coverage. The two absence lists are what the
+        caller turns into ``missing_snapshot`` or ``missing_prediction``.
+
+        Before D31-19 an absent field raised a named ``KeyError`` here. It is now a FIRST-CLASS
+        suppression instead: an absent column is exactly the partial-coverage case R6 requires be
+        reported per target, and raising would have made the universe unbuildable.
+
+        Returns:
+            ``(values, missing_market_names, missing_prediction_names)``.
         """
-        missing = [
-            name for name in strategy.required_market_fields if row.get(name) is None
-        ]
-        if missing:
-            msg = (
-                f"candidate row for target {strategy.target!r} is missing required market "
-                f"field(s) {missing}; required fields are "
-                f"{list(strategy.required_market_fields)}"
-            )
-            raise KeyError(msg)
-        return {name: float(row[name]) for name in strategy.required_market_fields}
+        prediction_names = _prediction_field_names(strategy)
+        values: dict[str, float | None] = {}
+        missing_market: list[str] = []
+        missing_prediction: list[str] = []
+        for name in strategy.required_market_fields:
+            value = row.get(name)
+            if _is_absent(value):
+                values[name] = None
+                if name in prediction_names:
+                    missing_prediction.append(name)
+                else:
+                    missing_market.append(name)
+            else:
+                values[name] = float(value)
+        return values, tuple(missing_market), tuple(missing_prediction)
 
     # -- EV admission + sizing (per POOLED week) ------------------------------
 
@@ -520,7 +798,22 @@ class BetSelector:
         """
         admitted: list[dict[str, Any]] = []
         for record in week_records:
-            if record["per_bet_ev"] is None or record["per_bet_ev"] < self.ev_floor_t:
+            per_bet = record["per_bet_ev"]
+            # The non-finite refusal precedes the floor comparison, and must (SPEC R7, T-31-43):
+            # ``NaN < floor`` is False, so a NaN EV would otherwise fall THROUGH the floor and be
+            # booked, then reach ``assign_ev_tier`` -- which raises -- with a bet already made.
+            if per_bet is not None and not math.isfinite(per_bet):
+                logger.warning(
+                    "BetSelector suppressed a candidate whose per-bet EV is not finite; it is "
+                    "never tiered and never bet (SPEC R7).",
+                    game_id=record.get("game_id"),
+                    target=record.get("target"),
+                    calibrated_p_side=record.get("calibrated_p_side"),
+                    per_bet_ev=per_bet,
+                )
+                rejected.append({**record, "rejection_reason": "ev_not_finite"})
+                continue
+            if per_bet is None or per_bet < self.ev_floor_t:
                 rejected.append({**record, "rejection_reason": "ev_below_floor"})
                 continue
             admitted.append(record)

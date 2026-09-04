@@ -351,18 +351,23 @@ class TestCandidateUniverse:
         """The same week against the PRODUCTION registry, whatever its size when this runs.
 
         It passes whether or not plan 31-10 has landed: the count is the registry's length times
-        the schedule's, never the literal 1 the registry happens to hold today.
+        the schedule's, never the literal 1 the registry happens to hold today. Only the O/U rows
+        are supplied, because O/U is the only target whose candidate columns this fixture can name
+        today; any further registered target simply contributes suppressed skeleton records, which
+        is precisely the behaviour under test.
         """
         schedule = _schedule(16)
         selector = _selector()
-        rows = [
-            _candidate(game["game_id"], "ou", target=code)
-            for game in schedule
-            for code in selector.strategies
-        ]
+        rows = [_candidate(game["game_id"], "ou") for game in schedule]
         result = selector.select(rows, scheduled_games=schedule)
 
         assert len(result.unfiltered) == len(schedule) * len(selector.strategies)
+        assert len([r for r in result.unfiltered if r["target"] == "ou"]) == len(
+            schedule
+        )
+        assert result.selected, (
+            "no O/U bet was selected; the fixture would prove little"
+        )
 
     def test_no_scheduled_game_is_absent_from_the_universe(self) -> None:
         """Completeness stated on the games themselves, not only on a count."""
