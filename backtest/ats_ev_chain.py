@@ -1,0 +1,581 @@
+"""ATS EV chain (Phase 31, plan 31-07; SPEC R1, PROD-02) plus the shared chain scaffolding.
+
+A PURE numeric transform that converts a scored ATS model spread into a calibrated
+P(cover) and then a per-bet EV:
+
+    model_spread (a predicted HOME MARGIN)
+      -> bias-correct with the PRIOR-SEASON walk-forward mean residual   (D31-13, ATS_BIAS_CARRIED)
+      -> P(home cover) = 1 - norm.cdf(z) with a SINGLE FROZEN SD          (SPEC R1)
+      -> devig (EXPLICIT prices; flat -110 when the juice is absent)      (D27-13, consumed)
+      -> per-bet EV with an EXPLICIT payout                               (D27-14, consumed)
+
+It is a PURE numeric transform: NO file I/O, NO DuckDB, NO request path, NO model re-fit,
+NO production swap. It fits nothing itself -- every fitted nuisance parameter arrives on a
+:class:`ChainFit` that names the seasons it was fit on, which is what makes the Phase-31
+leakage fence possible at all.
+
+WHAT IS CONSUMED, NEVER REDEFINED
+---------------------------------
+``devig``, ``per_bet_ev``, ``estimate_prior_season_bias``, ``fit_frozen_residual_sd`` and
+``calibration_gate`` are IMPORTED from ``backtest.ou_ev_chain`` and re-exported here. A
+second implementation of any of them would be a second answer to a settled question
+(T-31-31). ``ATS_RESIDUAL_CONTRACT`` and ``P_COVER_CLIP`` are likewise BOUND BY IDENTITY to
+the frozen pre-registration and to the O/U clip band rather than restated: the
+pre-registration is ratified and frozen, so a restated copy could drift with no legitimate
+repair path.
+
+THE ATS RESIDUAL DIRECTION IS THE OPPOSITE OF O/U'S
+---------------------------------------------------
+The measured tune-window POOLED bias is POSITIVE (+0.58937727047262922 over n=1139): the
+model UNDER-predicts the home margin across the window, so adding the prior-season bias
+pushes the corrected margin UP and RAISES the cover probability. In the O/U chain the bias
+is NEGATIVE and adding it LOWERS P(over). A sign guard copied from the O/U guard would
+therefore assert the wrong direction, which is why ``tests/unit/test_ats_ev_chain.py``
+hand-computes its own. The full contract, including the one measured tune season (2022)
+whose mean is negative and the reason a per-season walk-forward correction does not depend
+on a constant sign, is :data:`ATS_RESIDUAL_CONTRACT`.
+
+TWO SIGN CONVENTIONS LIVE IN THIS REPOSITORY, AND THEY ARE NOT THE SAME ONE
+---------------------------------------------------------------------------
+This is load-bearing and is stated here because getting it wrong silently prices the wrong
+side of every ATS bet.
+
+  * The MARKET LINE (``spread`` in silver / gold, ``closing_spread`` on a candidate row) is
+    NEGATIVE when the home team is favored. ``models/train.py:200-202`` states it outright
+    and grades the cover as ``actual_margin + spread > 0``, i.e. the home team covers iff
+    ``actual_margin > -spread``.
+  * The MODEL PREDICTION (``model_spread``) is a predicted HOME MARGIN: POSITIVE when the
+    home team is expected to win. ``models/train_ats.py`` regresses ``actual_margin``, and
+    ``scripts/audit_odds_preingest.measure_ats_residual_bias`` -- the Plan 31-02 measurement
+    the frozen contract quotes -- computes ``residual = actual - model_prob`` directly on
+    that margin scale.
+
+So the model's IMPLIED LINE is the NEGATED predicted margin, and the cover threshold on the
+margin scale is the NEGATED market line. Both conversions are performed explicitly below,
+and the LOCKED helpers are called in the convention they were written for:
+``BettingSimulator._determine_bet_side_ats`` compares two LINES (its own docstring's
+"model thinks home wins by more than market" only holds when both arguments are lines), and
+``apply_slippage_spread`` moves a LINE against the bettor.
+
+A CONSEQUENCE FOR PLAN 31-10, RECORDED HERE RATHER THAN REDISCOVERED: the legacy simulator
+ATS path at ``backtest/simulation.py:544-565`` passes the predicted MARGIN into
+``_determine_bet_side_ats`` as if it were a line, and grades with
+``_resolve_ats_outcome(bet_side, actual_margin, slipped_line)`` where ``slipped_line`` is
+still on the LINE scale. ``ATSStrategy`` must convert at both seams -- negate the predicted
+margin before resolving the side, and negate the slipped line before grading -- rather than
+delegate with the arguments the legacy path uses.
+
+ASCII only, no emoji (CLAUDE.md hard constraint).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+from scipy.stats import norm
+
+from backtest.diagnose import clv_significance
+from backtest.ev_chain_constants import (
+    ATS_BIAS_CARRIED,
+    TUNE_SEASONS_P31,
+)
+from backtest.ev_chain_constants import (
+    ATS_RESIDUAL_CONTRACT as _FROZEN_ATS_RESIDUAL_CONTRACT,
+)
+
+# The five numeric primitives, CONSUMED from the Phase-27 chain and re-exported so callers
+# reach exactly one implementation of each (T-31-31). Importing them does NOT import the
+# Phase-27 WINDOW -- TUNE_SEASONS / HOLD_SEASONS are deliberately not read anywhere in
+# Phase-31 code (D31-14), which tests/unit/test_p31_constants_isolation.py asserts by AST
+# scan.
+from backtest.ou_ev_chain import (
+    MINUS_110_PAYOUT,
+    P_OVER_CLIP,
+    american_to_payout,
+    calibration_gate,
+    devig,
+    estimate_prior_season_bias,
+    fit_frozen_residual_sd,
+    per_bet_ev,
+)
+from backtest.simulation import (
+    SLIPPAGE_POINTS,
+    BettingSimulator,
+    SimulationConfig,
+    apply_slippage_spread,
+)
+from models.clv import compute_line_clv
+
+__all__ = [
+    "ATS_BIAS_CARRIED",
+    "ATS_RESIDUAL_CONTRACT",
+    "ATS_SIDES",
+    "P_COVER_CLIP",
+    "THRESHOLD_WINDOW_P31",
+    "ChainFit",
+    "ChainPricing",
+    "ats_side_probability",
+    "ats_two_sided_prices",
+    "calibrated_p_cover",
+    "calibration_gate",
+    "chain_clv_report",
+    "chain_order_key",
+    "devig",
+    "estimate_prior_season_bias",
+    "fit_frozen_residual_sd",
+    "per_bet_ev",
+    "price_ats_candidates",
+    "season_bias_for",
+]
+
+
+# ---------------------------------------------------------------------------
+# The contract and the clip band -- BOUND BY IDENTITY, never restated
+# ---------------------------------------------------------------------------
+
+# The frozen pre-registration's ATS residual contract, re-exported under the name the chain
+# reads. It is the SAME OBJECT, not a copy: ``backtest/ev_chain_constants.py`` is frozen and
+# ratified, so a restated copy here would be a second source of truth with no legitimate
+# repair path if the two ever disagreed.
+ATS_RESIDUAL_CONTRACT: str = _FROZEN_ATS_RESIDUAL_CONTRACT
+
+# The cover-probability clip band. BOUND BY IDENTITY to the O/U band because the ratified
+# pre-registration says ATS is "clipped to the same disclosed ``P_OVER_CLIP`` band". The
+# clip bounds the Kelly tail -- a probability at the bound CAPS the Kelly fraction rather
+# than demanding an unbounded stake -- and extreme z-scores resolve to these bounds rather
+# than to 0.0, 1.0 or NaN. Disclosed in ``calibrated_p_cover``'s docstring.
+P_COVER_CLIP: tuple[float, float] = P_OVER_CLIP
+
+# The LOCKED ATS side vocabulary, from ``BettingSimulator._determine_bet_side_ats``.
+ATS_SIDES: tuple[str, str] = ("home_cover", "away_cover")
+
+# The threshold-tuning window label the Phase-31 EV-floor sweep must carry. Derived from the
+# frozen Phase-31 window so it cannot drift away from it; never a literal.
+THRESHOLD_WINDOW_P31: str = f"tune_{TUNE_SEASONS_P31[0]}_{TUNE_SEASONS_P31[-1]}"
+
+
+# ---------------------------------------------------------------------------
+# Shared Phase-31 chain scaffolding
+#
+# WHY IT LIVES HERE AND NOT IN A FOURTH MODULE. tests/unit/test_p31_constants_isolation.py
+# enumerates the Phase-31 modules BY NAME in ``P31_MODULES`` and AST-scans the ones present.
+# A module absent from that registry is a module the scan never visits -- which is exactly
+# the T-31-19 failure the scan exists to catch, since a passing suite is what that failure
+# produces. ``ats_ev_chain`` and ``wp_ev_chain`` are both already registered, so the shared
+# pieces live in one of the two rather than in an unscanned new file.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChainFit:
+    """The fitted nuisance parameters for one target, WITH the seasons they were fit on.
+
+    Bundling the parameters with their provenance is what makes the Phase-31 leakage fence
+    possible: a bare ``frozen_sd`` float carries no evidence about which seasons produced
+    it, so a fence over one could only ever assert that a number is a number.
+
+    Attributes:
+        target: The target code (``"wp"`` / ``"ats"`` / ``"ou"``).
+        frozen_sd: The single frozen residual SD, or None for a target that fits none. WP
+            fits none BY DESIGN (D31-07): a calibrated classifier has no residual to take a
+            standard deviation of, and inventing a logit-space one was explicitly REJECTED.
+        season_bias_by_season: Target season -> the prior-season walk-forward bias applied
+            to it, produced by ``estimate_prior_season_bias``.
+        tune_fit_seasons: The seasons consumed by the TUNE-ONLY fit -- the frozen-SD fit for
+            ATS and O/U, the calibration-gate tune split for WP. Empty for a target that
+            fits nothing on the tune split.
+        threshold_window: The window label the EV-floor sweep logged. Must be
+            :data:`THRESHOLD_WINDOW_P31`.
+        bias_pool_by_season: Target season -> the seasons its bias estimate actually
+            consumed. The fence asserts each pool is STRICTLY PRIOR and hold-free.
+        high_total_boundary: O/U's eligibility boundary, or None for a target that has no
+            eligibility gate (D31-05 gives WP and ATS none).
+    """
+
+    target: str
+    frozen_sd: float | None
+    season_bias_by_season: Mapping[int, float]
+    tune_fit_seasons: tuple[int, ...]
+    threshold_window: str
+    bias_pool_by_season: Mapping[int, tuple[int, ...]]
+    high_total_boundary: float | None = None
+
+
+@dataclass(frozen=True)
+class ChainPricing:
+    """The output of a per-target chain over a candidate frame.
+
+    Attributes:
+        records: The priced per-candidate records, in the canonical publication order
+            (``game_id`` then ``target``, both ascending). EMPTY for an empty candidate
+            frame -- never a raise.
+        clv_report: The REPORT-ONLY CLV summary over the priced records, or None when there
+            is nothing to summarize. NEVER a gate (D27-06), and NEVER consulted by the
+            verdict path (``CLV_P_VALUE_IS_REPORT_ONLY``).
+        fence_report: The Phase-31 fit-window fence report, proving which seasons each fit
+            consumed. Empty until the fence runs.
+    """
+
+    records: list[dict[str, Any]]
+    clv_report: dict[str, Any] | None
+    fence_report: dict[str, Any]
+
+
+def chain_order_key(record: Mapping[str, Any]) -> tuple[str, str]:
+    """The canonical publication order for a chain record: ``game_id`` then ``target``.
+
+    ONE implementation, so the ordering the determinism test asserts is the ordering the
+    readout publishes. Both components are stringified so a mixed-type ``game_id`` column
+    cannot raise mid-sort and produce a partially ordered list.
+    """
+    return (str(record["game_id"]), str(record["target"]))
+
+
+def chain_clv_report(
+    records: Sequence[Mapping[str, Any]], metric: str
+) -> dict[str, Any] | None:
+    """REPORT-ONLY CLV summary over ``records`` via the LOCKED ``clv_significance``.
+
+    Records whose ``clv`` is None are DROPPED rather than counted as zero. A CLV that was
+    never measured entering a published mean as 0.0 would read as "no edge" rather than as
+    "not measured" -- the ``_clv_report`` defaulting bug Plan 31-06 already fixed once.
+
+    Args:
+        records: Priced chain records, each optionally carrying a ``clv`` float.
+        metric: A human-readable name for WHICH closing-line value this is, carried into the
+            report so a reader cannot mistake a model-edge line CLV for a forward one.
+
+    Returns:
+        The ``clv_significance`` dict extended with ``metric``, or None when no record
+        carries a measured CLV.
+    """
+    values = [
+        float(record["clv"]) for record in records if record.get("clv") is not None
+    ]
+    if not values:
+        return None
+    report = dict(clv_significance(values))
+    report["metric"] = metric
+    return report
+
+
+def season_bias_for(
+    season: int, bias_by_season: Mapping[int, float], *, target: str
+) -> float:
+    """The prior-season walk-forward bias for ``season``, RAISING when it is absent.
+
+    The no-silent-fallback shape the selector already uses (``OUStrategy._season_bias``):
+    falling back to the raw, uncorrected prediction would silently re-inject the very bias
+    the chain exists to remove, and would do so invisibly.
+
+    Args:
+        season: The season being priced.
+        bias_by_season: Target season -> prior-season walk-forward bias.
+        target: The target code, named in the error so a multi-target run says WHICH chain
+            is missing a bias.
+
+    Returns:
+        The bias as a float.
+
+    Raises:
+        ValueError: naming the season, the target and the estimator, when the season is
+            absent from the mapping.
+    """
+    if season not in bias_by_season:
+        msg = (
+            f"no prior-season bias provided for season {season} on target {target!r}; the "
+            "caller must supply a walk-forward bias from "
+            "backtest.ou_ev_chain.estimate_prior_season_bias for every candidate season. "
+            "There is NO silent fallback to the raw, uncorrected prediction (D27-07)."
+        )
+        raise ValueError(msg)
+    return float(bias_by_season[season])
+
+
+# ---------------------------------------------------------------------------
+# The ATS converter: bias-correct -> frozen-SD normal CDF -> clip
+# ---------------------------------------------------------------------------
+
+
+def calibrated_p_cover(
+    model_spread: float | np.ndarray,
+    line: float | np.ndarray,
+    frozen_sd: float,
+    season_bias: float,
+) -> float | np.ndarray:
+    """Bias-corrected, clipped P(home cover) -- the direct analogue of ``calibrated_p_over``.
+
+    THE DIRECTION IS PINNED BY FORMULA, not by prose::
+
+        corrected = model_spread + season_bias   # season_bias > 0 pushes the margin UP
+        z         = (line - corrected) / frozen_sd
+        p_cover   = clip(1 - norm.cdf(z), *P_COVER_CLIP)
+
+    ``1 - norm.cdf(z)`` is identically ``norm.cdf((corrected - line) / frozen_sd)``, i.e.
+    ``P(actual home margin > line)`` under a Normal(corrected, frozen_sd) margin. That is
+    exactly the event ``backtest/simulation.py:347`` grades as a home cover
+    (``home_covers = actual_margin > slipped_line``). The complementary side is exact:
+
+        P(away cover) = 1 - P(home cover)
+
+    and ``ats_side_probability`` is the one place that mapping is applied, so the two sides
+    can never be priced as two independent numbers.
+
+    BOTH ``model_spread`` AND ``line`` ARE ON THE HOME-MARGIN SCALE. ``model_spread`` is the
+    predicted home margin (POSITIVE when the home team is expected to win). ``line`` is the
+    COVER THRESHOLD the actual home margin must EXCEED -- which for a stored market spread
+    (NEGATIVE when the home team is favored) is the NEGATED spread. ``price_ats_candidates``
+    performs that conversion; a caller passing a raw stored spread here would price the
+    wrong side of every game.
+
+    The measured tune-window pooled ``season_bias`` is POSITIVE, so the correction RAISES
+    the cover probability -- the OPPOSITE direction to the O/U case, where a negative bias
+    LOWERS P(over). See :data:`ATS_RESIDUAL_CONTRACT`.
+
+    Vectorized: accepts scalars or numpy arrays. Extreme z-scores resolve to the disclosed
+    :data:`P_COVER_CLIP` bounds, never to 0.0, 1.0 or NaN; the clip also bounds the Kelly
+    tail, so a probability at a bound CAPS the Kelly fraction rather than demanding an
+    unbounded stake.
+
+    Args:
+        model_spread: The scored predicted home margin(s).
+        line: The cover threshold(s) on the home-margin scale (the slipped line, negated
+            out of the stored spread convention).
+        frozen_sd: The single frozen residual SD, fit on bias-corrected TUNE residuals only
+            via ``fit_frozen_residual_sd``.
+        season_bias: The prior-season walk-forward mean residual. Must not be None.
+
+    Returns:
+        P(home cover) -- a float for scalar inputs, an ndarray for array inputs -- clipped
+        to :data:`P_COVER_CLIP`.
+
+    Raises:
+        ValueError: when ``season_bias`` is None (no silent fallback to the raw spread).
+    """
+    if season_bias is None:
+        msg = (
+            "season_bias is required (ATS_BIAS_CARRIED is True): it must be the "
+            "prior-season walk-forward mean residual; never fall back to the raw biased "
+            "spread."
+        )
+        raise ValueError(msg)
+
+    model_spread_arr = np.asarray(model_spread, dtype=float)
+    line_arr = np.asarray(line, dtype=float)
+
+    corrected_margin = model_spread_arr + season_bias
+    z = (line_arr - corrected_margin) / frozen_sd
+    p_cover = np.clip(1.0 - norm.cdf(z), P_COVER_CLIP[0], P_COVER_CLIP[1])
+
+    # Preserve scalar-in / scalar-out for the hand-computed sign-guard test.
+    if np.ndim(model_spread) == 0 and np.ndim(line) == 0:
+        return float(p_cover)
+    return p_cover
+
+
+def ats_side_probability(bet_side: str, p_home_cover: float) -> float:
+    """Map P(home cover) to the probability of the side actually bet.
+
+    The one place the complement is taken, so ``P(home_cover) + P(away_cover)`` is exactly
+    1.0 by construction rather than by two computations agreeing.
+
+    Raises:
+        ValueError: naming the LOCKED side vocabulary, for any other side string.
+    """
+    if bet_side == "home_cover":
+        return float(p_home_cover)
+    if bet_side == "away_cover":
+        return 1.0 - float(p_home_cover)
+    msg = (
+        f"unknown ATS bet side {bet_side!r}; the LOCKED ATS side vocabulary is "
+        f"{list(ATS_SIDES)} (BettingSimulator._determine_bet_side_ats). A side outside it "
+        "is a caller error, never a default."
+    )
+    raise ValueError(msg)
+
+
+def ats_two_sided_prices(
+    home_cover_odds: float | None = None,
+    away_cover_odds: float | None = None,
+) -> dict[str, Any]:
+    """Devig the two ATS spread prices through the EXISTING pluggable ``devig`` (D27-13).
+
+    CONSUMES ``backtest.ou_ev_chain.devig`` and writes no proportional arithmetic of its
+    own. ``devig``'s parameters are named for the O/U sides because that is where it was
+    built; its two-sided method is target-agnostic and D27-13 built it EXPLICITLY so a real
+    price slots in with no rework. The first price is the home-cover price and the second
+    the away-cover price.
+
+    When either price is absent the flat -110 symmetric default applies, which is what the
+    stored silver spread rows carry today.
+
+    Returns:
+        ``{fair_home_cover, fair_away_cover, payout_home_cover, payout_away_cover,
+        breakeven, method}``.
+    """
+    priced = devig(over_odds=home_cover_odds, under_odds=away_cover_odds)
+    if priced["method"] == "real_two_sided":
+        payout_home = american_to_payout(float(home_cover_odds))  # type: ignore[arg-type]
+        payout_away = american_to_payout(float(away_cover_odds))  # type: ignore[arg-type]
+    else:
+        payout_home = MINUS_110_PAYOUT
+        payout_away = MINUS_110_PAYOUT
+    return {
+        "fair_home_cover": priced["fair_over"],
+        "fair_away_cover": priced["fair_under"],
+        "payout_home_cover": payout_home,
+        "payout_away_cover": payout_away,
+        "breakeven": priced["breakeven"],
+        "method": priced["method"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# The ATS pricing pass over a candidate frame
+# ---------------------------------------------------------------------------
+
+# The market columns an ATS candidate row must carry. The juice columns are OPTIONAL: the
+# historical rows carry them (Plan 31-02 measured 1,992 of 2,120 distinct pairs at a price
+# other than -110), and a row without them prices at the flat -110 default.
+ATS_REQUIRED_FIELDS: tuple[str, ...] = ("model_spread", "closing_spread")
+ATS_JUICE_FIELDS: tuple[str, str] = ("spread_ju_home", "spread_ju_away")
+
+ATS_CLV_METRIC: str = (
+    "model_edge_line_clv (closing_spread - model_spread); REPORT-ONLY (D27-06)"
+)
+
+
+def price_ats_candidates(
+    rows: Iterable[Mapping[str, Any]],
+    fit: ChainFit,
+    *,
+    slippage_points: float = SLIPPAGE_POINTS,
+    simulator: BettingSimulator | None = None,
+) -> ChainPricing:
+    """Price every ATS candidate end to end, in the canonical publication order.
+
+    This function DECIDES NOTHING. It prices: side, calibrated P(side), devigged payout and
+    per-bet EV. Admission against the EV floor ``t``, sizing and grading stay in the single
+    bet-decision source (``backtest.bet_selector.BetSelector``, LOCKED-2); Plan 31-10
+    registers the ``ATSStrategy`` that routes this pricing into it. Keeping admission out of
+    here is what stops a second bet-decision path existing.
+
+    An EMPTY candidate frame returns an empty record list and a NULL CLV report, and raises
+    nothing (SPEC R1 empty-case).
+
+    Args:
+        rows: Candidate rows carrying ``game_id``, ``season``, ``week``, ``model_spread``
+            (a predicted home MARGIN) and ``closing_spread`` (the stored market line,
+            NEGATIVE when the home team is favored), and optionally the two juice columns.
+        fit: The fitted nuisance parameters and the seasons they were fit on.
+        slippage_points: The half-point slippage, applied through the LOCKED
+            ``apply_slippage_spread`` in the LINE convention it was written for.
+        simulator: An injected simulator, so exactly one exists per run.
+
+    Returns:
+        A :class:`ChainPricing`.
+
+    Raises:
+        ValueError: when ``fit.frozen_sd`` is absent (ATS fits one BY DESIGN), or when a
+            candidate season has no prior-season bias.
+        KeyError: naming the column, when a required market field is absent.
+    """
+    if fit.frozen_sd is None:
+        msg = (
+            "the ATS chain requires a frozen residual SD fit on the TUNE split only "
+            "(fit_frozen_residual_sd); ChainFit.frozen_sd is None. Unlike WP, ATS is a "
+            "point-prediction target and its converter cannot run without one."
+        )
+        raise ValueError(msg)
+    frozen_sd = float(fit.frozen_sd)
+
+    sim = simulator if simulator is not None else BettingSimulator(SimulationConfig())
+
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        missing = [name for name in ATS_REQUIRED_FIELDS if row.get(name) is None]
+        if missing:
+            msg = (
+                f"ATS candidate {row.get('game_id')!r} is missing required market "
+                f"field(s) {missing}; required fields are {list(ATS_REQUIRED_FIELDS)}."
+            )
+            raise KeyError(msg)
+
+        season = int(row["season"])
+        model_spread = float(row["model_spread"])
+        closing_spread = float(row["closing_spread"])
+
+        # The side is resolved on the RAW prediction, exactly as the O/U strategy resolves
+        # its side on the raw model total; the bias correction enters the PROBABILITY. Both
+        # arguments are handed to the LOCKED helper in ITS convention -- two LINES -- so the
+        # model's implied line is the NEGATED predicted margin (see the module docstring).
+        bet_side = sim._determine_bet_side_ats(-model_spread, closing_spread)
+
+        record: dict[str, Any] = {
+            "game_id": row["game_id"],
+            "season": season,
+            "week": int(row["week"]),
+            "target": "ats",
+            "bet_side": bet_side,
+            "model_spread": model_spread,
+            "closing_spread": closing_spread,
+            "season_bias": None,
+            "corrected_margin": None,
+            "slipped_spread": None,
+            "cover_threshold": None,
+            "p_home_cover": None,
+            "calibrated_p_side": None,
+            "payout": None,
+            "devig_method": None,
+            "per_bet_ev": None,
+            # REPORT-ONLY model-edge line CLV. Never a gate (D27-06).
+            "clv": compute_line_clv(model_spread, closing_spread, direction="spread"),
+        }
+
+        if bet_side is not None:
+            season_bias = season_bias_for(
+                season, fit.season_bias_by_season, target="ats"
+            )
+            # Slippage is applied in the LINE convention the LOCKED helper was written for,
+            # then negated into the margin-scale cover threshold the converter and
+            # simulation.py:347 both use.
+            slipped_spread = apply_slippage_spread(
+                closing_spread, bet_side, slippage_points
+            )
+            cover_threshold = -slipped_spread
+            p_home_cover = float(
+                calibrated_p_cover(
+                    model_spread, cover_threshold, frozen_sd, season_bias
+                )
+            )
+            p_side = ats_side_probability(bet_side, p_home_cover)
+            prices = ats_two_sided_prices(
+                row.get(ATS_JUICE_FIELDS[0]), row.get(ATS_JUICE_FIELDS[1])
+            )
+            payout = (
+                prices["payout_home_cover"]
+                if bet_side == "home_cover"
+                else prices["payout_away_cover"]
+            )
+
+            record["season_bias"] = season_bias
+            record["corrected_margin"] = model_spread + season_bias
+            record["slipped_spread"] = slipped_spread
+            record["cover_threshold"] = cover_threshold
+            record["p_home_cover"] = p_home_cover
+            record["calibrated_p_side"] = p_side
+            record["payout"] = payout
+            record["devig_method"] = prices["method"]
+            record["per_bet_ev"] = per_bet_ev(p_side, payout)
+
+        records.append(record)
+
+    records.sort(key=chain_order_key)
+    return ChainPricing(
+        records=records,
+        clv_report=chain_clv_report(records, ATS_CLV_METRIC),
+        fence_report={},
+    )
