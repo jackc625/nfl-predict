@@ -432,6 +432,11 @@ class BetSelector:
             "slipped_line": None,
             "kelly_stake": 0.0,
             "outcome": None,
+            # CLV defaults to None -- NOT REPORTED -- and a strategy that has a closing-line value
+            # overrides it in ``decision_extras``. Defaulting to 0.0 instead would let a target
+            # that measures no CLV drag a published CLV mean toward zero and read as "no edge
+            # measured" rather than "not measured"; ``_clv_report`` drops the Nones.
+            "clv": None,
             # Carry the private realized-total stash forward so ``_grade`` can resolve the push-aware
             # outcome (the LOCKED ``_resolve_ou_outcome``). ``_to_records`` stashes the candidate's
             # ``actual`` under ``_actual_total``; without carrying it onto the decision record every

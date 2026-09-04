@@ -986,3 +986,373 @@ class TestOUStrategyMovedVerbatim:
         }
         assert "ATSStrategy" not in class_names
         assert "WPStrategy" not in class_names
+
+
+# ---------------------------------------------------------------------------
+# Phase 31, plan 31-06, Task 2 (D31-02): the POOLED weekly exposure cap
+#
+# D27-10 pre-registered the 10% cap as a per-week TOTAL exposure cap, and the bankroll does not
+# grow because targets were added. A per-target 10% cap would be a 30% total weekly ceiling -- a
+# post-hoc tripling of a pre-registered ruin guard -- and per-target sub-caps would be a second
+# threshold nobody pre-registered, chosen with knowledge of which targets bet. So the cap is
+# applied ONCE over the union of a week's bets.
+#
+# Exercising a MIXED week needs a second registered target, and Plan 31-06 deliberately ships only
+# the O/U strategy (ATS and WP arrive in Plan 31-10 complete rather than stubbed). The probe
+# strategy below supplies one for tests ONLY -- it is not a production selection path, in the same
+# spirit as ``_same_side_only_deweight`` in tests/unit/test_kelly_exposure_caps.py.
+# ---------------------------------------------------------------------------
+
+_BANKROLL = 10_000.0
+_WEEKLY_CAP = (
+    _BANKROLL * 0.10
+)  # WEEKLY_CAP_PCT; named locally so the number is visible here.
+
+
+class _ProbeStrategy:
+    """A TEST-ONLY second target, satisfying ``TargetStrategy`` by structural subtyping.
+
+    Deliberately minimal and deliberately NOT an ATS or WP stand-in: it makes no claim about how
+    either target will price a bet. Its only job is to put a second target's bets into the same
+    week so the POOLED cap, the cross-target same-game de-weighting and the per-target dispatch
+    are exercised before Plan 31-10 lands the real strategies.
+
+    It reports no CLV, which is itself part of the contract under test: a target that does not
+    report a closing-line value must yield "not reported", never a silent 0.0 that would drag a
+    published CLV mean toward zero.
+    """
+
+    target = "probe"
+    required_market_fields: tuple[str, ...] = ("probe_p_side", "probe_line")
+
+    def resolve_bet_side(self, row: dict) -> str | None:
+        return row.get("probe_side")
+
+    def eligibility(self, row: dict, bet_side: str | None) -> str | None:
+        return None if bet_side is not None else "not_subpop"
+
+    def eligibility_label(self, row: dict, bet_side: str | None) -> str:
+        return "all"
+
+    def side_probability(self, row: dict, bet_side: str) -> tuple[float, float]:
+        return float(row["probe_p_side"]), float(row["probe_line"])
+
+    def decision_extras(self, row: dict, bet_side: str | None) -> dict:
+        return {"probe_regime": "n/a"}
+
+    def grade(self, record: dict) -> bool | None:
+        return None
+
+
+def _as_target(row: dict, target: str = "ou") -> dict:
+    """Tag a candidate row with its target code.
+
+    A row's ``target`` is optional only while ONE strategy is registered -- with more than one
+    there is no defensible default, and the selector refuses to guess rather than booking a bet
+    under the wrong target's rules. The mixed-week fixtures below therefore tag every row.
+    """
+    return {**row, "target": target}
+
+
+def _probe_row(
+    game_id: str,
+    *,
+    side: str,
+    p_side: float = 0.72,
+    season: int = 2021,
+    week: int = 1,
+) -> dict:
+    """Build one probe-target candidate row for the pooled-week fixtures."""
+    return {
+        "game_id": game_id,
+        "season": season,
+        "week": week,
+        "target": "probe",
+        "probe_side": side,
+        "probe_p_side": p_side,
+        "probe_line": 0.0,
+        "sportsbook": "consensus",
+        "is_live": False,
+    }
+
+
+def _pooled_selector(ev_floor_t: float = 0.0):
+    """A BetSelector registering BOTH the real O/U strategy and the test-only probe target."""
+    from backtest.bet_selector import BetSelector
+    from backtest.selector_strategies import OUStrategy
+
+    return BetSelector(
+        frozen_sd=_FIXTURE_SD,
+        season_bias_by_season=_FIXTURE_BIAS,
+        ev_floor_t=ev_floor_t,
+        bankroll=_BANKROLL,
+        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
+        strategies=[
+            OUStrategy(
+                frozen_sd=_FIXTURE_SD,
+                season_bias_by_season=_FIXTURE_BIAS,
+                high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
+            ),
+            _ProbeStrategy(),
+        ],
+    )
+
+
+# Three O/U unders and three probe bets, ALL in season 2021 week 1, on six distinct games.
+# Each side's own group of three de-weights by 1/sqrt(3), so each target ALONE stakes
+# 3 * 500 / sqrt(3) = 866.03 -- comfortably under the 1000 cap. Their union is 1732.05, which is
+# over it. A per-target cap would therefore not bind at all and the week would stake 1732; the
+# pooled cap binds and the week stakes exactly 1000.
+_MIXED_WEEK = [
+    _as_target(
+        _ou_row("2021_W01_A@B", model_total=38.0, closing_total=45.0, actual_total=40.0)
+    ),
+    _as_target(
+        _ou_row("2021_W01_C@D", model_total=37.0, closing_total=45.0, actual_total=40.0)
+    ),
+    _as_target(
+        _ou_row("2021_W01_E@F", model_total=36.0, closing_total=45.0, actual_total=40.0)
+    ),
+    _probe_row("2021_W01_G@H", side="home"),
+    _probe_row("2021_W01_I@J", side="home"),
+    _probe_row("2021_W01_K@L", side="home"),
+]
+
+# The same six bets minus the probe target: the O/U-only control that must stake 866.03 and be
+# untouched by the weekly cap.
+_OU_ONLY_WEEK = _MIXED_WEEK[:3]
+
+
+class TestPooledWeeklyExposureCap:
+    """T-31-25 / D31-02: ONE 10% cap over the union of a week's bets, not one per target."""
+
+    def test_union_exposure_is_capped_once_not_once_per_target(self) -> None:
+        """A two-target week stakes the cap in TOTAL, not the cap per target.
+
+        The fixture is built so each target alone sits UNDER the cap and only their union exceeds
+        it. That makes the assertion discriminating: a per-target cap would leave the week at
+        1732.05 (both targets unscaled), while the pooled cap brings it to exactly 1000.
+        """
+        result = _pooled_selector().select(_MIXED_WEEK)
+
+        assert len(result.selected) == 6
+        total = sum(r["kelly_stake"] for r in result.selected)
+        assert total == pytest.approx(_WEEKLY_CAP)
+
+        # The per-target totals each sit under the cap on their own -- which is exactly why an
+        # unpooled implementation would not scale anything here.
+        per_target: dict[str, float] = {}
+        for record in result.selected:
+            per_target[record["target"]] = (
+                per_target.get(record["target"], 0.0) + record["kelly_stake"]
+            )
+        assert set(per_target) == {"ou", "probe"}
+        for target_total in per_target.values():
+            assert target_total < _WEEKLY_CAP
+
+        # Non-vacuity: the same week WITHOUT pooling (each target selected on its own) really
+        # would have staked 2x as much, so the cap did real work here.
+        ou_alone = sum(
+            r["kelly_stake"]
+            for r in _make_selector(ev_floor_t=0.0).select(_OU_ONLY_WEEK).selected
+        )
+        assert ou_alone == pytest.approx(3 * 500.0 / math.sqrt(3))
+        assert 2 * ou_alone > _WEEKLY_CAP
+
+    def test_every_bet_carries_the_same_weekly_pro_rata_factor(self) -> None:
+        """Pro-rata scaling means ONE factor for the whole week, asserted with exact equality.
+
+        Compared with ``==`` and not ``approx``: a per-bet factor that merely rounds to the same
+        value would mean the week was scaled bet-by-bet, which is a different rule (it would not
+        preserve the relative ordering of stakes) wearing the same name.
+        """
+        result = _pooled_selector().select(_MIXED_WEEK)
+
+        factors = {r["weekly_scale_factor"] for r in result.selected}
+        assert len(factors) == 1
+        factor = factors.pop()
+        assert factor < 1.0  # the cap really bound on this week
+
+        # Relative ordering by stake is preserved: scaling every bet by one factor cannot reorder
+        # them, so the ranking by de-weighted stake and by final stake agree.
+        by_final = [
+            r["game_id"]
+            for r in sorted(result.selected, key=lambda r: -r["kelly_stake"])
+        ]
+        by_pre_cap = [
+            r["game_id"]
+            for r in sorted(
+                result.selected,
+                key=lambda r: -(r["kelly_stake"] / r["weekly_scale_factor"]),
+            )
+        ]
+        assert by_final == by_pre_cap
+
+    def test_sizing_pipeline_is_called_exactly_once_per_week(self) -> None:
+        """T-31-25: one ``apply_sizing_pipeline`` call per week, over the pooled union.
+
+        Counted with a spy rather than inferred from the numbers: two calls that each happened to
+        stay under the cap would produce a correct-looking total on some weeks while being the
+        per-target rule this decision rejected.
+        """
+        from backtest import bet_selector as selector_module
+
+        calls: list[int] = []
+        real = selector_module.apply_sizing_pipeline
+
+        def _spy(bets, bankroll):
+            calls.append(len(bets))
+            return real(bets, bankroll)
+
+        selector = _pooled_selector()
+        # Two distinct (season, week) groups -> exactly two calls, one per week, each over that
+        # week's union across BOTH targets.
+        second_week = [
+            _as_target(
+                _ou_row(
+                    "2021_W02_M@N",
+                    model_total=38.0,
+                    closing_total=45.0,
+                    actual_total=40.0,
+                    week=2,
+                )
+            ),
+            _probe_row("2021_W02_O@P", side="away", week=2),
+        ]
+
+        original = selector_module.apply_sizing_pipeline
+        selector_module.apply_sizing_pipeline = _spy
+        try:
+            selector.select([*_MIXED_WEEK, *second_week])
+        finally:
+            selector_module.apply_sizing_pipeline = original
+
+        assert calls == [6, 2]
+
+    def test_single_target_week_stakes_are_bit_identical_to_the_pre_refactor_path(
+        self,
+    ) -> None:
+        """A week containing only O/U bets is untouched by pooling (the Phase-27 reproduction).
+
+        Asserted with ``==`` against the RECORDED pre-refactor stakes -- no tolerance. Pooling a
+        union of one is the identity, and if it is not, every Phase-27 O/U publication moved.
+        """
+        result = _make_selector(ev_floor_t=0.0).select(_GOLDEN_WEEK)
+        stakes = {r["game_id"]: r["kelly_stake"] for r in result.selected}
+        for game_id, stake in stakes.items():
+            assert stake == _GOLDEN_RECORDS[game_id]["kelly_stake"]
+
+        # And the same week run through a selector that ALSO has the probe target registered
+        # stakes identically, because no probe bet is present to pool with.
+        pooled = _pooled_selector().select([_as_target(row) for row in _GOLDEN_WEEK])
+        assert {r["game_id"]: r["kelly_stake"] for r in pooled.selected} == stakes
+
+    def test_pooling_cannot_change_which_bets_are_selected(self) -> None:
+        """Sizing runs AFTER admission, so adding a second target cannot unselect an O/U bet.
+
+        The EV-floor loop reads ``per_bet_ev`` and no stake at all, so the admitted set is a
+        function of the EV chain alone. Compared as a set of (game_id, target) PAIRS: two runs can
+        agree on how many bets they took while disagreeing about which.
+        """
+        alone = {
+            (r["game_id"], r["target"])
+            for r in _make_selector(ev_floor_t=0.0).select(_OU_ONLY_WEEK).selected
+        }
+        pooled = {
+            (r["game_id"], r["target"])
+            for r in _pooled_selector().select(_MIXED_WEEK).selected
+            if r["target"] == "ou"
+        }
+        assert alone == pooled
+        assert len(alone) == 3
+
+    def test_cap_order_is_unchanged_and_consumed_not_reimplemented(self) -> None:
+        """The LOCKED CAP_ORDER still reads kelly -> per-bet -> de-weight -> weekly.
+
+        The selector consumes ``apply_sizing_pipeline`` rather than re-ordering the steps itself,
+        so the order is enforced in one place. Pinned here as well because the pooled path is the
+        one that now feeds it.
+        """
+        from utils.kelly_criterion import CAP_ORDER
+
+        assert CAP_ORDER == (
+            "kelly_stake",
+            "per_bet_5pct_cap",
+            "same_game_and_side_deweight",
+            "weekly_10pct_cap",
+        )
+
+        source = Path("backtest/bet_selector.py").read_text(encoding="utf-8")
+        assert "apply_sizing_pipeline(" in source
+        # The de-weight helper is reached only THROUGH the pipeline; the selector never calls it
+        # directly, which is what keeps the order un-reorderable from here.
+        assert "apply_same_game_and_side_deweight" not in source
+
+
+class TestPooledSizingProvenanceOnTheRecord:
+    """D31-02/03: the caps are VISIBLE on the record, not inferable from the ordering."""
+
+    def test_each_record_carries_the_grouping_and_weekly_factor(self) -> None:
+        """Every selected record names both group sizes, which bound, and the weekly factor.
+
+        /bets shows a stake beside its EV; without these four fields a reader can see that a stake
+        is smaller than Kelly asked for but not why, and "why" is the difference between a cap
+        working and a bug.
+        """
+        result = _pooled_selector().select(_MIXED_WEEK)
+        for record in result.selected:
+            assert record["same_side_group_size"] == 3
+            assert record["same_game_group_size"] == 1
+            assert record["binding_group"] == "same_side"
+            assert 0.0 < record["weekly_scale_factor"] < 1.0
+
+    def test_a_cross_target_same_game_pair_is_grouped_by_game(self) -> None:
+        """D31-03 becomes load-bearing under pooling: two targets on ONE game group by game.
+
+        Before pooling, a week carried at most one O/U bet per game and the same-game group size
+        was always 1. With a second target betting the same game, the game grouping is what
+        catches a pair that is close to one leveraged wager -- the side strings never mix, so
+        same-side grouping alone would see two groups of one and de-weight nothing.
+        """
+        shared_game_week = [
+            _as_target(
+                _ou_row(
+                    "2021_W05_A@B",
+                    model_total=38.0,
+                    closing_total=45.0,
+                    actual_total=40.0,
+                    week=5,
+                )
+            ),
+            _probe_row("2021_W05_A@B", side="home", week=5),
+        ]
+        result = _pooled_selector().select(shared_game_week)
+
+        assert len(result.selected) == 2
+        for record in result.selected:
+            assert record["same_side_group_size"] == 1
+            assert record["same_game_group_size"] == 2
+            assert record["binding_group"] == "same_game"
+            # 1/sqrt(2) of the 5% per-bet cap; the weekly cap does not bind on two bets.
+            assert record["kelly_stake"] == pytest.approx(500.0 / math.sqrt(2))
+            assert record["weekly_scale_factor"] == 1.0
+
+    def test_a_target_reporting_no_clv_yields_not_reported_never_zero(self) -> None:
+        """A target with no CLV definition reports None, and the CLV summary excludes it.
+
+        Defaulting an unreported CLV to 0.0 would drag a published mean toward zero and read as
+        "no edge measured" rather than "not measured", which is the honesty-of-record failure this
+        project's threat model is actually about.
+        """
+        result = _pooled_selector().select(_MIXED_WEEK)
+
+        probe_records = [r for r in result.selected if r["target"] == "probe"]
+        assert probe_records
+        for record in probe_records:
+            assert record["clv"] is None
+
+        # The report is computed over the three O/U bets only; their model-edge CLVs are -7, -8
+        # and -9, so a probe CLV silently entering as 0.0 would move both n and the mean.
+        assert result.clv_report is not None
+        assert result.clv_report["n"] == 3
+        assert result.clv_report["mean"] == pytest.approx(-8.0)
