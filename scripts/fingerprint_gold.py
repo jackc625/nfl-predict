@@ -32,6 +32,42 @@ from utils.paths import reject_data_path
 
 GOLD_MATRICES = ("features_wp", "features_ats", "features_ou")
 
+# The per-build clock stamp, and the ONLY column exempted by name anywhere in this
+# module. It is different IN KIND from every other column in a gold matrix:
+# ``scripts/build_features.py:570`` executes
+# ``combined_features["feature_timestamp"] = datetime.now(UTC)`` on EVERY build, so the
+# column takes exactly one distinct value per build and MUST move in every season of
+# every rebuild by construction. ``tests/phase30_state.py:768-774`` records the measured
+# consequence: two full-history builds on unchanged inputs "produce gold that is
+# identical in every column EXCEPT feature_timestamp". It records WHEN the frame was
+# built; it measures nothing about the games in the frame, and no model consumes it
+# (``models/temporal.py`` excludes it).
+#
+# Three consequences follow, and they are why it gets its own CATEGORY rather than a
+# tolerance:
+#
+# 1. Filing it under the upstream-drift candidate cause would be FALSE. That note
+#    tells a reader to go find the nflreadpy revision that moved the column; for a
+#    clock there is none, and the reader burns the search anyway.
+# 2. Counting it as a moved value makes rung 3's empty-changed-set criterion
+#    structurally UNSATISFIABLE -- no correct rebuild can ever satisfy it, so the
+#    criterion stops discriminating between a right rebuild and a wrong one. The same
+#    holds for any Phase-31 rung condition phrased as "zero moved columns" (REVIEW-CLOCK).
+#    The condition that IS reachable, and that this constant is what makes expressible,
+#    is "zero NON-CLOCK moves, with the moved set exactly EQUAL to the registered clock
+#    set" -- see ``non_clock_moves`` / ``build_clock_moves`` on every comparison report.
+# 3. This is a CLASSIFICATION, not a SUPPRESSION. A clock column that moves is still
+#    REPORTED in ``columns_changed``, carrying move kind ``build_clock``; it is merely
+#    attributed to the build clock rather than to the data. And the set is REGISTERED
+#    rather than inferred from a name, so an unregistered timestamp-LOOKING column that
+#    moves is a non-clock move by definition and cannot be waved through by resembling
+#    one.
+#
+# Plan 30-06 already reported it this way at rung 1, by hand, in its SUMMARY. Owner
+# ruling D30-OWNER-08 makes the instrument do it, at EVERY rung. This exempts ONE
+# named build artifact; every other column is judged exactly as before.
+BUILD_CLOCK_COLUMNS = ("feature_timestamp",)
+
 
 def _column_bytes(series: pd.Series) -> bytes:
     """Return a deterministic byte encoding of *series* values.
@@ -101,6 +137,22 @@ def _column_meta(series: pd.Series) -> dict:
     }
 
 
+def _column_meta_for_season(series: pd.Series) -> dict:
+    """Return the STORAGE facts that are meaningful for a single season's slice.
+
+    Exactly two of ``_column_meta``'s three facts appear here, and the omission is
+    the point. Dtype and null count are properties of the bytes a season holds, so
+    each is well-defined on a slice. Discreteness is NOT: ``_column_meta``'s
+    docstring records that a column which is continuous overall but happens to be
+    constant within one season would be misclassified as an indicator for that
+    season, and nothing about slicing per season changes that reasoning.
+    """
+    return {
+        "dtype": str(series.dtype),
+        "null_count": int(series.isna().sum()),
+    }
+
+
 def fingerprint_matrix(df: pd.DataFrame) -> dict:
     """Return per-column, per-season hashes plus shape metadata for *df*.
 
@@ -111,16 +163,29 @@ def fingerprint_matrix(df: pd.DataFrame) -> dict:
     documents written before Plan 30-04 stay comparable. The growth is additive:
     a sibling ``column_meta`` map carrying each column's dtype, null count and
     CR-02 discreteness.
+
+    Plan 31-03 grows it once more, under the SAME discipline: a second sibling
+    ``column_meta_by_season`` carrying each column's dtype and null count PER
+    SEASON. Without it, ``compare_fingerprints`` could only report a storage-level
+    move as "changed, seasons: []" -- and Plan 31-11's hard stop measures a strict
+    2021-2024 slice, so a move carrying no season is exactly the case that either
+    trips that tripwire spuriously or slips past it. Discreteness is deliberately
+    NOT in the per-season map; see ``_column_meta_for_season``.
     """
     seasons = sorted(int(season) for season in df["season"].dropna().unique())
     columns: dict[str, dict[str, str]] = {}
+    meta_by_season: dict[str, dict[str, dict]] = {}
 
     ordered = df.sort_values("game_id")
     for season in seasons:
         subset = ordered[ordered["season"] == season]
         for column in subset.columns:
-            digest = hashlib.sha256(_column_bytes(subset[column])).hexdigest()[:16]
+            series = cast("pd.Series", subset[column])
+            digest = hashlib.sha256(_column_bytes(series)).hexdigest()[:16]
             columns.setdefault(column, {})[str(season)] = digest
+            meta_by_season.setdefault(str(column), {})[str(season)] = (
+                _column_meta_for_season(series)
+            )
 
     return {
         "rows": len(df),
@@ -133,6 +198,7 @@ def fingerprint_matrix(df: pd.DataFrame) -> dict:
         "column_meta": {
             str(column): _column_meta(series) for column, series in df.items()
         },
+        "column_meta_by_season": meta_by_season,
     }
 
 
@@ -153,6 +219,33 @@ def fingerprint_gold(base_path: Path | None = None) -> dict:
     return result
 
 
+def _is_build_clock(column: str) -> bool:
+    """True when *column* is a REGISTERED per-build clock (see BUILD_CLOCK_COLUMNS).
+
+    Membership is the whole test. A column that merely LOOKS like a timestamp is not
+    a clock here, because a name heuristic is exactly how a real data move gets waved
+    through wearing a clock's costume (T-31-13b).
+    """
+    return _canonical(column) in {_canonical(name) for name in BUILD_CLOCK_COLUMNS}
+
+
+def _storage_move_seasons(b_by: dict, a_by: dict, field: str) -> list[str]:
+    """Return the seasons in which *field* differs between two per-season meta maps.
+
+    Returns an empty list when EITHER side is absent, which is the pre-Plan-31
+    document case: an old document carries no ``column_meta_by_season``, so there is
+    nothing to attribute a storage move to and the report says exactly that instead
+    of inventing seasons.
+    """
+    if not b_by or not a_by:
+        return []
+    return [
+        season
+        for season in sorted(set(b_by) | set(a_by))
+        if (b_by.get(season) or {}).get(field) != (a_by.get(season) or {}).get(field)
+    ]
+
+
 def compare_fingerprints(before: dict, after: dict) -> dict:
     """Return, per matrix, the columns whose hash moved and in which seasons.
 
@@ -160,13 +253,32 @@ def compare_fingerprints(before: dict, after: dict) -> dict:
     when its null count moved. The last two matter because a column can be
     value-identical and still be a different artifact -- an ``int64`` that became
     a ``float64``, or a column that gained a NaN somewhere the season hashes
-    happen not to separate. Such a column appears in ``columns_changed`` with an
-    EMPTY season list, and ``column_details[column]["reasons"]`` says which of
-    the three moved.
+    happen not to separate.
 
-    Documents written before Plan 30-04 carry no ``column_meta``, so the dtype and
-    null-count comparisons are simply absent for them and the report is exactly
-    what it always was.
+    Every moved column carries a ``move_kind`` in ``column_details``, and its season
+    list is the UNION of the seasons its values moved in and the seasons its STORAGE
+    moved in:
+
+    * ``values``      -- at least one per-season hash moved. The strongest claim, so
+                         it wins whenever it applies: a column that moved in both ways
+                         is a value move, never softened to a storage one.
+    * ``storage``     -- only dtype or null count moved. Before Plan 31-03 this case
+                         was reported with an EMPTY season list, which is unjudgeable
+                         against the strict 2021-2024 slice Plan 31-11 measures. It is
+                         now attributed per season from ``column_meta_by_season``.
+    * ``build_clock`` -- the column is in ``BUILD_CLOCK_COLUMNS``. A CLASSIFICATION,
+                         not a suppression: it stays in ``columns_changed`` and is
+                         merely attributed to the build clock rather than to the data.
+
+    Two disjoint lists are emitted alongside, ``non_clock_moves`` and
+    ``build_clock_moves``, whose union is exactly the moved set. They are what makes a
+    zero-move condition EXPRESSIBLE against a build that stamps ``datetime.now(UTC)``
+    on every row: "zero non-clock moves, moved set equal to the registered clock set"
+    is reachable, where "zero moved columns" never is (REVIEW-CLOCK).
+
+    Documents written before Plan 30-04 carry no ``column_meta``, and documents written
+    before Plan 31-03 carry no ``column_meta_by_season``. Each comparison is simply
+    absent for them and the report is exactly what it always was.
     """
     report: dict[str, dict] = {}
     for matrix in GOLD_MATRICES:
@@ -176,33 +288,53 @@ def compare_fingerprints(before: dict, after: dict) -> dict:
         a_cols = a.get("columns", {})
         b_meta = b.get("column_meta", {})
         a_meta = a.get("column_meta", {})
+        b_by_season = b.get("column_meta_by_season", {})
+        a_by_season = a.get("column_meta_by_season", {})
 
         changed: dict[str, list[str]] = {}
         details: dict[str, dict] = {}
         for column in sorted(set(b_cols) & set(a_cols)):
-            seasons = [
+            value_seasons = [
                 season
                 for season in sorted(set(b_cols[column]) | set(a_cols[column]))
                 if b_cols[column].get(season) != a_cols[column].get(season)
             ]
             bm = b_meta.get(column, {})
             am = a_meta.get(column, {})
+            b_by = b_by_season.get(column, {})
+            a_by = a_by_season.get(column, {})
+
+            dtype_seasons = _storage_move_seasons(b_by, a_by, "dtype")
+            null_seasons = _storage_move_seasons(b_by, a_by, "null_count")
 
             reasons: list[str] = []
-            if seasons:
+            if value_seasons:
                 reasons.append("values")
-            if bm and am:
-                if bm.get("dtype") != am.get("dtype"):
-                    reasons.append("dtype")
-                if bm.get("null_count") != am.get("null_count"):
-                    reasons.append("null_count")
+            if (bm and am and bm.get("dtype") != am.get("dtype")) or dtype_seasons:
+                reasons.append("dtype")
+            if (
+                bm and am and bm.get("null_count") != am.get("null_count")
+            ) or null_seasons:
+                reasons.append("null_count")
 
             if not reasons:
                 continue
 
+            storage_seasons = sorted(set(dtype_seasons) | set(null_seasons))
+            seasons = sorted(set(value_seasons) | set(storage_seasons))
+            if _is_build_clock(column):
+                move_kind = "build_clock"
+            elif value_seasons:
+                move_kind = "values"
+            else:
+                move_kind = "storage"
+
             changed[column] = seasons
             details[column] = {
                 "seasons": seasons,
+                "seasons_values": value_seasons,
+                "seasons_storage": storage_seasons,
+                "move_kind": move_kind,
                 "reasons": reasons,
                 "dtype_before": bm.get("dtype"),
                 "dtype_after": am.get("dtype"),
@@ -223,6 +355,12 @@ def compare_fingerprints(before: dict, after: dict) -> dict:
             "columns_removed": sorted(set(b_cols) - set(a_cols)),
             "columns_changed": changed,
             "column_details": details,
+            "non_clock_moves": sorted(
+                column for column in changed if not _is_build_clock(column)
+            ),
+            "build_clock_moves": sorted(
+                column for column in changed if _is_build_clock(column)
+            ),
         }
     return report
 
@@ -240,28 +378,6 @@ RUNG_CAUSES: dict[int, str] = {
     3: "line_movement drop",
     4: "N-01",
 }
-
-# The per-build clock stamp, and the ONLY column exempted by name anywhere in this
-# module. It is different IN KIND from every other column in a gold matrix:
-# ``scripts/build_features.py`` writes ``datetime.now(UTC)`` into it once per build,
-# so it takes exactly one distinct value per build and MUST move on every rebuild by
-# construction. It records WHEN the frame was built; it measures nothing about the
-# games in the frame, and no model consumes it (``models/temporal.py`` excludes it).
-#
-# Two consequences follow, and both are why it gets its own category rather than a
-# tolerance:
-#
-# 1. Filing it under the upstream-drift candidate cause would be FALSE. That note
-#    tells a reader to go find the nflreadpy revision that moved the column; for a
-#    clock there is none, and the reader burns the search anyway.
-# 2. Counting it as a moved value makes rung 3's empty-changed-set criterion
-#    structurally UNSATISFIABLE -- no correct rebuild can ever satisfy it, so the
-#    criterion stops discriminating between a right rebuild and a wrong one.
-#
-# Plan 30-06 already reported it this way at rung 1, by hand, in its SUMMARY. Owner
-# ruling D30-OWNER-08 makes the instrument do it, at EVERY rung. This exempts ONE
-# named build artifact; every other column is judged exactly as before.
-BUILD_CLOCK_COLUMNS = ("feature_timestamp",)
 
 # Rungs whose failures may legitimately be upstream drift rather than a wrong fix.
 # Rung 4 is DELIBERATELY excluded: SPEC R2 makes an unexplained 2021-2024 move a
@@ -529,6 +645,12 @@ def _matrix_verdict() -> dict:
         "discriminating": True,
         "attributed": [],
         "unattributed": [],
+        # Per moved column: its move kind and the seasons attributed to it, so a rung
+        # report can say "this column's storage moved in 2025 only" instead of "this
+        # column changed, seasons: []". Populated for EVERY moved column, including
+        # ones later split out into build_clock or value_preserving_dtype -- the split
+        # changes how a column is judged, never whether it was reported.
+        "move_kinds": {},
         # The per-build clock, reported as its own category so it is neither an
         # explanation for anything nor evidence of anything.
         "build_clock": [],
@@ -574,6 +696,36 @@ def _normalized_diff(detail: dict) -> dict:
         # done something, and never as an unexplained value change.
         "dtype_preserved": [],
     }
+
+
+def _move_kind(column: str, meta: dict | None, seasons: list[str]) -> str:
+    """Return *column*'s move kind, trusting the registered clock set over the document.
+
+    A document may already carry ``move_kind`` (Plan 31-03 onward). It is honoured for
+    ``values`` and ``storage`` only -- a ``build_clock`` claim is NEVER taken on the
+    document's word, because a document that could name any column a clock would defeat
+    the registered set the classification exists to be driven by (T-31-13b).
+    """
+    if _is_build_clock(column):
+        return "build_clock"
+    recorded = (meta or {}).get("move_kind")
+    if recorded in ("values", "storage"):
+        return recorded
+    reasons = (meta or {}).get("reasons") or (["values"] if seasons else [])
+    return "values" if "values" in reasons else "storage"
+
+
+def _record_move_kinds(diff: dict, verdict: dict) -> None:
+    """Record every moved column's kind and attributed seasons on *verdict*."""
+    details = diff["details"] or {}
+    for column, seasons in diff["changed"].items():
+        meta = details.get(column) or {}
+        verdict["move_kinds"][column] = {
+            "kind": _move_kind(column, meta, list(seasons)),
+            "seasons": sorted(seasons),
+            "seasons_values": sorted(meta.get("seasons_values") or []),
+            "seasons_storage": sorted(meta.get("seasons_storage") or []),
+        }
 
 
 def _split_build_clock(diff: dict, verdict: dict) -> None:
@@ -704,6 +856,7 @@ def attribute_rung(
             continue
 
         diff = _normalized_diff(detail)
+        _record_move_kinds(diff, verdict)
         _split_build_clock(diff, verdict)
         if rung in _DTYPE_PROOF_RUNGS:
             _split_value_preserving_dtype(
@@ -730,6 +883,7 @@ def attribute_rung(
         )
 
     ok = all(verdict["ok"] for verdict in matrices.values())
+    non_clock_moves, build_clock_moves = _summarize_moves(matrices)
     return {
         "rung": rung,
         "cause": cause,
@@ -737,8 +891,28 @@ def attribute_rung(
         "blocking": bool(blocking),
         "signature": signature,
         "matrices": matrices,
+        # The two DISJOINT lists, unioned across matrices, whose union is the whole
+        # moved set. A rung condition can be asserted against either: "zero non-clock
+        # moves" is reachable for a full rebuild, "zero moved columns" is not.
+        "non_clock_moves": non_clock_moves,
+        "build_clock_moves": build_clock_moves,
         "failures": failures,
     }
+
+
+def _summarize_moves(matrices: dict) -> tuple[list[str], list[str]]:
+    """Return (non_clock_moves, build_clock_moves) unioned across every matrix.
+
+    Both are canonical and sorted, so a verdict cannot differ between two runs over
+    identical data whose JSON key order happens to differ.
+    """
+    moved = {
+        column for verdict in matrices.values() for column in verdict["move_kinds"]
+    }
+    return (
+        sorted(column for column in moved if not _is_build_clock(column)),
+        sorted(column for column in moved if _is_build_clock(column)),
+    )
 
 
 def _attribute_one_matrix(

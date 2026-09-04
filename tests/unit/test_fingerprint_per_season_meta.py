@@ -198,15 +198,27 @@ class TestStorageMovesAreAttributedToASeason:
         assert detail["columns_changed"]["saturday_game"] == ["2024"]
 
     def test_a_whole_column_dtype_move_between_real_frames_names_every_season(self):
+        """And it is a VALUES move, because the byte encoding genuinely moved.
+
+        ``_column_bytes`` encodes a float column as IEEE-754 and an integer column as
+        int64, so a real dtype change moves the per-season hash in every season. The
+        hash cannot tell "same number, different storage" from "different number" --
+        which is exactly why ``_prove_value_preserving_dtype`` exists and has to
+        RE-ENCODE the values to earn that distinction. Reporting this pair as a mere
+        storage move would be asserting the thing that proof is there to establish.
+        """
         before = _document(_frame(saturday_dtype="float64"))
         after = _document(_frame(saturday_dtype="int64"))
 
         detail = _detail(before, after)
+        details = detail["column_details"]["saturday_game"]
 
         assert detail["columns_changed"]["saturday_game"] == ["2024", "2025"]
-        assert detail["column_details"]["saturday_game"]["move_kind"] == "storage"
-        assert detail["column_details"]["saturday_game"]["dtype_before"] == "float64"
-        assert detail["column_details"]["saturday_game"]["dtype_after"] == "int64"
+        assert details["move_kind"] == "values"
+        assert details["reasons"] == ["values", "dtype"]
+        assert details["seasons_storage"] == ["2024", "2025"]
+        assert details["dtype_before"] == "float64"
+        assert details["dtype_after"] == "int64"
 
     def test_a_value_move_is_still_reported_as_a_values_move(self):
         before = _document(_frame())
