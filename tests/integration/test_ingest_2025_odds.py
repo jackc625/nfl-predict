@@ -28,7 +28,9 @@ terminal summary rather than disappearing into a green suite (WR-10).
 from __future__ import annotations
 
 import shutil
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -598,3 +600,431 @@ class TestTheSeasonArgument:
         from scripts.ingest_historical_odds import build_parser
 
         assert build_parser().parse_args(["--seasons", "2025"]).seasons == [2025]
+
+
+# The two string shapes the live snapshot_ts column is KNOWN to hold, quoted from the
+# pre-registration's clause-3 type trap. Neither is a datetime, and they do not share a format.
+_LEGACY_PER_SEASON_STRING = "2021-09-19T18:00:00-04:00"
+_NON_CONSENSUS_UTC_STRING = "2025-09-29 18:44:09.707942+00:00"
+
+
+def _sandbox_silver_copy(tmp_path: Path) -> Path:
+    """A writable copy of the production flat odds store, under ``tmp_path``.
+
+    Every write-path proof in this module runs against this copy. Plan 31-11 owns the only
+    production silver write in this phase, under CHECKPOINT 2.
+    """
+    sandbox_silver = tmp_path / "silver"
+    sandbox_silver.mkdir(parents=True, exist_ok=True)
+    sandbox_odds = sandbox_silver / _SILVER_ODDS.name
+    shutil.copy2(_SILVER_ODDS, sandbox_odds)
+    return sandbox_odds
+
+
+def _local_utc_offset_hours() -> float:
+    """This process's own UTC offset, used to show a timezone test is not vacuous."""
+    from datetime import datetime as _dt
+
+    offset = _dt.now().astimezone().utcoffset()
+    assert offset is not None
+    return offset.total_seconds() / 3600.0
+
+
+class TestTheAdditiveJuiceColumns:
+    """Write-contract clause 2: real two-sided prices, added, never overwriting a stored line."""
+
+    def test_every_transformed_row_carries_all_four_juice_columns(self) -> None:
+        from scripts.ingest_historical_odds import (
+            JUICE_COLUMNS,
+            transform_nfl_odds_to_standard_format,
+        )
+
+        out = transform_nfl_odds_to_standard_format(pd.DataFrame([_schedule_row()]))
+
+        for column in JUICE_COLUMNS:
+            assert column in out.columns
+            assert out[column].notna().all()
+
+    def test_the_written_juice_is_the_real_asymmetric_price(self) -> None:
+        """The -110 default is what clause 2 exists to stop; a real price is asymmetric."""
+        from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
+
+        row = transform_nfl_odds_to_standard_format(
+            pd.DataFrame([_schedule_row()])
+        ).iloc[0]
+
+        assert int(row["spread_ju_home"]) == -108
+        assert int(row["spread_ju_away"]) == -112
+        assert int(row["total_over_ju"]) == -105
+        assert int(row["total_under_ju"]) == -115
+
+    def test_the_live_2025_transform_is_285_of_285_on_all_four_columns(self) -> None:
+        from scripts.audit_odds_preingest import MIN_2025_GAMES_WITH_TOTAL
+        from scripts.ingest_historical_odds import (
+            JUICE_COLUMNS,
+            transform_nfl_odds_with_counts,
+        )
+
+        out = transform_nfl_odds_with_counts(_load_live_schedule(2025)).odds
+
+        assert len(out) == MIN_2025_GAMES_WITH_TOTAL
+        for column in JUICE_COLUMNS:
+            n_present = int(out[column].notna().sum())
+            assert n_present == MIN_2025_GAMES_WITH_TOTAL, (
+                f"{column} is present on {n_present} of {len(out)} admitted 2025 games. "
+                "Clause 2 states both spread-side and both total-side prices are complete; "
+                "a gap is a source change to investigate, not a value to default."
+            )
+
+    def test_a_missing_juice_value_is_a_hard_failure_not_a_minus_110_default(
+        self,
+    ) -> None:
+        from scripts.ingest_historical_odds import transform_nfl_odds_with_counts
+        from utils import DataIngestionError
+
+        frame = pd.DataFrame([_schedule_row(over_odds=None)])
+
+        with pytest.raises(DataIngestionError, match="total_over_ju"):
+            transform_nfl_odds_with_counts(frame)
+
+    def test_the_stored_lines_are_byte_unchanged_by_a_merge_into_a_temporary_copy(
+        self, tmp_path: Path
+    ) -> None:
+        """The clause-2 proof: juice is ADDED and the four stored line values are preserved."""
+        _require_silver_odds()
+        _require_gold_ou()
+        from scripts.ingest_historical_odds import (
+            JUICE_COLUMNS,
+            PROTECTED_LINE_COLUMNS,
+            canonical_game_id,
+            transform_nfl_odds_to_standard_format,
+            write_odds_additively,
+        )
+
+        sandbox_odds = _sandbox_silver_copy(tmp_path)
+
+        before = pd.read_parquet(sandbox_odds)
+        # Compare on CANONICAL keys: the merge re-keys the stored LAR rows to LA first, so a
+        # raw-key comparison would report every Rams row as vanished when it was only renamed.
+        before_keyed = before.assign(
+            game_id=before["game_id"].astype(str).map(canonical_game_id),
+            sportsbook=before["sportsbook"].astype(str),
+        ).set_index(["game_id", "sportsbook"])
+
+        incoming = transform_nfl_odds_to_standard_format(_load_live_schedule(2024))
+        report = write_odds_additively(
+            incoming,
+            base_path=tmp_path,
+            features_ou_df=pd.read_parquet(_GOLD_OU, columns=["game_id"]),
+        )
+
+        after = pd.read_parquet(sandbox_odds)
+        after_keyed = after.assign(
+            game_id=after["game_id"].astype(str),
+            sportsbook=after["sportsbook"].astype(str),
+        ).set_index(["game_id", "sportsbook"])
+
+        survived = before_keyed.index.intersection(after_keyed.index)
+        assert len(survived) == len(before_keyed), (
+            f"{len(before_keyed)} stored rows went in and only {len(survived)} keys came out. "
+            "The merge is additive; it never drops a stored row."
+        )
+
+        for column in PROTECTED_LINE_COLUMNS:
+            pd.testing.assert_series_equal(
+                before_keyed.loc[survived, column],
+                after_keyed.loc[survived, column],
+                check_names=False,
+                obj=f"stored {column} across the merge",
+            )
+
+        # The rows the merge actually REWROTE are the incoming keys that already existed. Those
+        # are the rows where an overwrite was possible at all, so that is the count clause 2 has
+        # to account for -- comparing against the whole store would pass on a merge that touched
+        # nothing.
+        incoming_keys = pd.MultiIndex.from_arrays(
+            [incoming["game_id"].astype(str), incoming["sportsbook"].astype(str)]
+        )
+        touched = before_keyed.index.intersection(incoming_keys)
+        assert len(touched) > 0, (
+            "the merge shared no (game_id, sportsbook) key with the stored table, so the "
+            "overwrite comparison would be vacuous. Either the label or the keying moved."
+        )
+        assert report.rows_with_lines_preserved == len(touched), (
+            f"{report.rows_with_lines_preserved} rows had their stored lines carried over but "
+            f"{len(touched)} incoming keys already existed. Clause 2 preserves the stored line "
+            "on EVERY row the merge rewrites, not on a subset."
+        )
+        for column in JUICE_COLUMNS:
+            assert (
+                after.loc[after["game_id"].isin(incoming["game_id"]), column]
+                .notna()
+                .all()
+            )
+
+
+class TestThePerGameSnapshotInstant:
+    """Write-contract clause 3: every row carries its OWN preceding-Friday freeze (D31-37)."""
+
+    def test_snapshot_ts_is_a_tz_aware_datetime_not_an_object_column(self) -> None:
+        from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
+
+        out = transform_nfl_odds_to_standard_format(
+            pd.DataFrame(
+                [
+                    _schedule_row(gameday="2024-09-08"),
+                    _schedule_row(gameday="2024-09-15", week=2, away_team="BUF"),
+                ]
+            )
+        )
+
+        assert pd.api.types.is_datetime64_any_dtype(out["snapshot_ts"]), (
+            f"snapshot_ts has dtype {out['snapshot_ts'].dtype}. D31-37 re-derives it precisely "
+            "so the column stops being an object column of strings; the freshness comparison "
+            "needs the datetime type regardless."
+        )
+        assert out["snapshot_ts"].dt.tz is not None
+
+    def test_a_thursday_and_a_sunday_in_one_week_are_seven_days_apart(self) -> None:
+        """The per-game rule, not a per-week one -- D31-18's stated failure mode."""
+        from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
+
+        out = transform_nfl_odds_to_standard_format(
+            pd.DataFrame(
+                [
+                    _schedule_row(gameday="2024-09-05", away_team="BAL"),  # Thursday
+                    _schedule_row(gameday="2024-09-08", away_team="BUF"),  # Sunday
+                ]
+            )
+        ).set_index("game_id")
+
+        thursday = out.loc["2024_W01_BAL@KC", "snapshot_ts"]
+        sunday = out.loc["2024_W01_BUF@KC", "snapshot_ts"]
+
+        assert (sunday - thursday) == pd.Timedelta(days=7), (
+            f"the Thursday game's freeze is {thursday} and the Sunday game's is {sunday}. Under "
+            "a PER-WEEK freeze the Thursday snapshot would be strictly earlier than the week's "
+            "instant and would be suppressed every week as a pure calendar artifact."
+        )
+
+    def test_a_friday_kickoff_takes_the_prior_friday(self) -> None:
+        from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
+
+        # 2024-12-20 is a Friday; the freeze is 2024-12-13 at 18:00 Eastern.
+        out = transform_nfl_odds_to_standard_format(
+            pd.DataFrame([_schedule_row(week=16, gameday="2024-12-20")])
+        )
+        freeze = out.iloc[0]["snapshot_ts"].tz_convert("America/New_York")
+
+        assert (freeze.year, freeze.month, freeze.day) == (2024, 12, 13)
+        assert (freeze.hour, freeze.minute) == (18, 0)
+
+    def test_every_replay_row_is_exactly_at_its_own_freeze_and_therefore_fresh(
+        self,
+    ) -> None:
+        """Clause 3's whole point: re-derivation makes the replay population fresh by fact."""
+        from scripts.ingest_historical_odds import (
+            is_fresh_at_freeze,
+            transform_nfl_odds_with_counts,
+        )
+
+        schedule = _load_live_schedule(2025)
+        out = transform_nfl_odds_with_counts(schedule).odds
+        gamedays = schedule.assign(
+            key=schedule["season"].astype(int).astype(str)
+            + "_W"
+            + schedule["week"].astype(int).map("{:02d}".format)
+        )[["key", "gameday"]].set_index("key")["gameday"]
+
+        checked = 0
+        for _, row in out.iterrows():
+            key = row["game_id"].rsplit("_", 1)[0]
+            gameday = gamedays.loc[key]
+            gameday = gameday.iloc[0] if hasattr(gameday, "iloc") else gameday
+            assert is_fresh_at_freeze(row["snapshot_ts"], gameday)
+            checked += 1
+
+        assert checked == len(out)
+
+
+class TestTheSharedSnapshotNormalization:
+    """The ONE parse path clause 3's type trap requires -- shared with Plan 31-09's selector."""
+
+    def test_the_legacy_per_season_string_parses(self) -> None:
+        from scripts.ingest_historical_odds import normalize_snapshot_ts
+
+        parsed = normalize_snapshot_ts(_LEGACY_PER_SEASON_STRING)
+
+        assert parsed == pd.Timestamp(_LEGACY_PER_SEASON_STRING).to_pydatetime()
+        assert parsed.utcoffset() is not None
+
+    def test_the_space_separated_utc_string_parses(self) -> None:
+        """The single non-consensus row uses a DIFFERENT format; one parse path handles both."""
+        from scripts.ingest_historical_odds import normalize_snapshot_ts
+
+        parsed = normalize_snapshot_ts(_NON_CONSENSUS_UTC_STRING)
+
+        assert parsed == pd.Timestamp(_NON_CONSENSUS_UTC_STRING).to_pydatetime()
+
+    def test_a_tz_aware_datetime_round_trips_to_the_same_instant(self) -> None:
+        from scripts.ingest_historical_odds import (
+            get_synthetic_snapshot_ts,
+            normalize_snapshot_ts,
+        )
+
+        freeze = get_synthetic_snapshot_ts("2024-09-08")
+
+        assert normalize_snapshot_ts(freeze) == freeze
+
+    def test_a_naive_value_is_anchored_in_eastern_and_not_in_utc(self) -> None:
+        """The anchor is a STATED choice: an unqualified odds wall clock is market-local."""
+        from scripts.ingest_historical_odds import EASTERN, normalize_snapshot_ts
+
+        parsed = normalize_snapshot_ts("2021-09-19 18:00:00")
+
+        assert parsed == datetime(2021, 9, 19, 18, 0, tzinfo=EASTERN)
+        assert parsed != datetime(2021, 9, 19, 18, 0, tzinfo=UTC), (
+            "a naive snapshot value was read as UTC. That moves the instant four or five hours "
+            "-- across the 6 PM freeze in either direction -- and silently flips verdicts."
+        )
+
+    def test_a_null_snapshot_is_never_silently_fresh(self) -> None:
+        from scripts.ingest_historical_odds import normalize_snapshot_ts
+
+        for value in (None, pd.NaT, "", "   "):
+            with pytest.raises(ValueError):
+                normalize_snapshot_ts(value)
+
+    def test_at_freeze_is_fresh_and_one_second_before_is_stale(self) -> None:
+        from scripts.ingest_historical_odds import (
+            get_synthetic_snapshot_ts,
+            is_fresh_at_freeze,
+        )
+
+        freeze = get_synthetic_snapshot_ts("2024-09-08")
+
+        assert is_fresh_at_freeze(freeze, "2024-09-08") is True
+        assert is_fresh_at_freeze(freeze - timedelta(seconds=1), "2024-09-08") is False
+        assert is_fresh_at_freeze(freeze + timedelta(seconds=1), "2024-09-08") is True
+
+    def test_one_instant_in_three_encodings_gives_one_verdict(self) -> None:
+        """A string comparison would call these three different; a parse calls them one."""
+        from scripts.ingest_historical_odds import (
+            get_synthetic_snapshot_ts,
+            is_fresh_at_freeze,
+        )
+
+        freeze = get_synthetic_snapshot_ts("2024-09-08")
+        string_encodings = [
+            freeze.isoformat(),  # ISO, UTC offset, T separator
+            str(freeze),  # the space-separated UTC shape the odd row uses
+            freeze.astimezone(
+                ZoneInfo("America/New_York")
+            ).isoformat(),  # Eastern offset
+        ]
+        encodings = [
+            freeze,
+            *string_encodings,
+        ]  # plus the datetime this ingest now writes
+
+        verdicts = {is_fresh_at_freeze(value, "2024-09-08") for value in encodings}
+
+        assert verdicts == {True}
+        assert len(set(string_encodings)) == len(string_encodings), (
+            "the three string encodings are not textually distinct, so this test would pass "
+            "even under a string comparison and would prove nothing."
+        )
+
+    def test_no_call_site_consults_the_process_local_timezone(self) -> None:
+        """The structural half of the T-31-37 guard: there is no local-zone call site at all."""
+        import ast
+
+        tree = ast.parse(_INGEST_MODULE.read_text(encoding="utf-8"))
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(
+                node.func, ast.Attribute
+            ):
+                continue
+            attr = node.func.attr
+            if attr == "utcnow":
+                offenders.append(f"{attr}() at line {node.lineno}")
+            elif (
+                attr in {"astimezone", "now", "today", "fromtimestamp"}
+                and not node.args
+            ):
+                offenders.append(f"{attr}() with no argument at line {node.lineno}")
+
+        assert offenders == [], (
+            f"the ingest module reaches for the PROCESS local timezone at {offenders}. A bare "
+            "astimezone() or now() anchors the freeze wherever the run happens to execute, so "
+            "the same data yields different staleness verdicts on two machines (T-31-37)."
+        )
+
+    def test_the_verdict_is_unchanged_under_a_non_eastern_process_timezone(
+        self,
+    ) -> None:
+        """The behavioural half: the SAME verdicts from a process whose local zone is Pacific.
+
+        Run in a subprocess because a process's local timezone is fixed at start-up and
+        ``time.tzset`` does not exist on Windows, where this project runs. The subprocess reports
+        both its own offset and its verdicts, so a run where TZ had no effect is visible as a
+        failure rather than passing vacuously.
+        """
+        import json
+        import os
+        import subprocess
+        import sys
+
+        script = (
+            "import json\n"
+            "from datetime import datetime, timedelta\n"
+            "from scripts.ingest_historical_odds import ("
+            "get_synthetic_snapshot_ts, is_fresh_at_freeze, normalize_snapshot_ts)\n"
+            "freeze = get_synthetic_snapshot_ts('2024-09-08')\n"
+            "print(json.dumps({\n"
+            "  'offset_hours': datetime.now().astimezone().utcoffset().total_seconds()/3600,\n"
+            "  'at_freeze': is_fresh_at_freeze(freeze, '2024-09-08'),\n"
+            "  'one_second_before': is_fresh_at_freeze("
+            "freeze - timedelta(seconds=1), '2024-09-08'),\n"
+            "  'legacy_string': normalize_snapshot_ts("
+            f"{_LEGACY_PER_SEASON_STRING!r}).isoformat(),\n"
+            "  'naive_string': normalize_snapshot_ts('2021-09-19 18:00:00').isoformat(),\n"
+            "}))\n"
+        )
+
+        env = dict(os.environ)
+        env["TZ"] = "PST8PDT"
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(Path.cwd()),
+            check=True,
+        )
+        remote = json.loads(completed.stdout.strip().splitlines()[-1])
+
+        assert remote["offset_hours"] != _local_utc_offset_hours(), (
+            f"the subprocess reports the same UTC offset ({remote['offset_hours']}) as this "
+            "process, so TZ had no effect and this control proved nothing. Fix the harness "
+            "rather than deleting the assertion."
+        )
+
+        from scripts.ingest_historical_odds import (
+            get_synthetic_snapshot_ts,
+            is_fresh_at_freeze,
+            normalize_snapshot_ts,
+        )
+
+        freeze = get_synthetic_snapshot_ts("2024-09-08")
+        assert remote["at_freeze"] is is_fresh_at_freeze(freeze, "2024-09-08")
+        assert remote["one_second_before"] is is_fresh_at_freeze(
+            freeze - timedelta(seconds=1), "2024-09-08"
+        )
+        assert pd.Timestamp(remote["legacy_string"]) == pd.Timestamp(
+            normalize_snapshot_ts(_LEGACY_PER_SEASON_STRING)
+        )
+        assert pd.Timestamp(remote["naive_string"]) == pd.Timestamp(
+            normalize_snapshot_ts("2021-09-19 18:00:00")
+        )
