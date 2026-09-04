@@ -1,27 +1,30 @@
-"""Single-source O/U bet-decision engine (Phase 27, plan 27-03; BET-01/02, OUM-04/06).
+"""Single-source bet-decision engine (Phase 27, plan 27-03; BET-01/02, OUM-04/06).
 
-``BetSelector.select()`` is the ONE place O/U bet decisions are made (BET-01, LOCKED-2). It is a
+``BetSelector.select()`` is the ONE place bet decisions are made (BET-01, LOCKED-2). It is a
 THIN HARNESS in the house style of ``backtest/diagnose.py`` and ``backtest/ou_divergence.py``: it
 CALLS the LOCKED scorers and never re-derives a metric. Responsibilities, in order:
 
   1. Provenance hard-fail (OUM-06, T-27-07): ``assert_real_odds`` rejects any odds row whose
      sportsbook is outside {consensus, draftkings} or whose ``is_live`` is True, raising a
      ValueError naming the offending game_ids. Called BEFORE any selection.
-  2. Sub-pop UNION filter (D27-04/05): a candidate is eligible iff its bet_side is "under" OR its
-     totals_regime is "high". The bet_side comes from the LOCKED
+  2. Sub-pop UNION filter (D27-04/05): for O/U, a candidate is eligible iff its bet_side is "under"
+     OR its totals_regime is "high". The bet_side comes from the LOCKED
      ``BettingSimulator._determine_bet_side_ou``; the totals_regime comes from the leakage-clean
      PRE-HOLD boundary ``ou_divergence.HIGH_TOTAL_BOUNDARY_PREHOLD`` (LOCKED-1), NOT the legacy
-     hold-informed 46.5.
+     hold-informed 46.5. The rule itself lives in ``OUStrategy`` (D31-01).
   3. EV admission (D27-14): within the eligible set, a bet is admitted iff its per-bet EV is at or
-     above the EV-floor scalar ``t``. The EV uses the calibrated P(side) from the Plan-01 EV chain
-     (``ou_ev_chain.calibrated_p_over``) evaluated against the half-point-slipped line (the line
-     moves against the bettor, via the LOCKED ``apply_slippage_total``), so the high-total OVER
-     over-bias pocket (graded below breakeven) is dropped (T-27-08 / D27-05).
+     above the EV-floor scalar ``t``. The comparison REJECTS strictly below the floor, so EV
+     EXACTLY EQUAL to the floor is ADMITTED (the SPEC R1 adjacency edge). The EV uses the
+     calibrated P(side) from the Plan-01 EV chain (``ou_ev_chain.calibrated_p_over``) evaluated
+     against the half-point-slipped line (the line moves against the bettor, via the LOCKED
+     ``apply_slippage_total``), so the high-total OVER over-bias pocket (graded below breakeven) is
+     dropped (T-27-08 / D27-05).
   4. Sizing (BET-02 fix, T-27-08): Kelly consumes the CALIBRATED P(side) -- never the points
      distance ``implied + abs(model_total - closing_total)`` -- through
      ``KellyCalculator.calculate_optimal_bet_size(model_prob=p_side, ...)``, then the Plan-02
      LOCKED-order ``apply_sizing_pipeline`` (kelly -> 5% per-bet -> same-game-and-side
-     de-weight -> 10% weekly cap), per week. Unit = 1% of bankroll (D27-09).
+     de-weight -> 10% weekly cap), ONCE per week over the POOLED union of that week's bets across
+     every registered target (D31-02). Unit = 1% of bankroll (D27-09).
   5. Push handling (#8, T-27-23): grading uses the LOCKED ``_resolve_ou_outcome``; a push is carried
      as ``outcome=None`` on the record, never coerced to win/loss.
   6. CLV reporting (D27-06/12, REPORT-ONLY, T-27-10): per bet ``compute_line_clv(model_total,
@@ -32,6 +35,15 @@ CALLS the LOCKED scorers and never re-derives a metric. Responsibilities, in ord
      CLV-vs-close is a LIVE-ONLY FORWARD metric (D27-12). CLV NEVER gates a bet -- it is computed
      and reported only. Do not imply the backtest line_clv is meaningful historical forward
      evidence.
+
+D31-01 (Phase 31, plan 31-06) split this module into a TARGET-AGNOSTIC CORE (here) plus one
+strategy per target (``backtest/selector_strategies.py``). The facade is UNCHANGED and deliberately
+so: SPEC R4's source scan pins ``backtest.bet_selector`` as the ONE import target for a bet
+decision, and ``BetSelector`` / ``SelectionResult`` / ``assert_real_odds`` / ``REJECTION_REASONS``
+remain its entire public surface. Constructed without a ``strategies`` argument the selector
+registers the O/U strategy alone, so every pre-D31-01 call site behaves exactly as before. Only the
+O/U strategy exists today; ATS and WP arrive in Plan 31-10. That is a functionality gap, not an
+architectural one.
 
 ``select()`` returns BOTH the FILTERED decision set (the acceptance basis) and the UNFILTERED
 whole-population cross-check (D27-04), plus the REJECTED eligible candidates with rejection reasons
@@ -47,7 +59,6 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -60,19 +71,27 @@ from backtest.ou_divergence import (
 )
 from backtest.ou_ev_chain import (
     MINUS_110_PAYOUT,
-    calibrated_p_over,
     per_bet_ev,
+)
+from backtest.selector_strategies import (
+    OUStrategy,
+    TargetStrategy,
+    UnregisteredTargetError,
+    require_finite_high_total_boundary,
 )
 from backtest.simulation import (
     SLIPPAGE_POINTS,
     STANDARD_VIG_ODDS,
     BettingSimulator,
     SimulationConfig,
-    apply_slippage_total,
 )
-from models.clv import compute_line_clv
 from utils import get_logger
-from utils.kelly_criterion import KellyCalculator, KellyMode, apply_sizing_pipeline
+from utils.kelly_criterion import (
+    KellyCalculator,
+    KellyMode,
+    apply_sizing_pipeline,
+    apply_weekly_exposure_cap,
+)
 
 logger = get_logger(__name__)
 
@@ -173,13 +192,19 @@ class SelectionResult:
 
 
 class BetSelector:
-    """Single-source O/U bet-decision engine (BET-01/02, OUM-04/06, LOCKED-1/2).
+    """Single-source bet-decision engine (BET-01/02, OUM-04/06, LOCKED-1/2, D31-01/02).
 
     Construct with the frozen residual SD and the per-season prior-season-walk-forward bias (both
     fit on tune-only data by the caller -- the no-leak fence is the caller's responsibility, per the
     Plan-01 EV-chain contract), the EV-floor scalar ``ev_floor_t`` (Plan 04 tunes it), the bankroll,
-    and the leakage-clean pre-hold high-total boundary. ``select()`` is the ONE source of O/U bet
+    and the leakage-clean pre-hold high-total boundary. ``select()`` is the ONE source of bet
     decisions (LOCKED-2).
+
+    ``strategies`` is the D31-01 seam. It defaults to the O/U strategy ALONE, built from the
+    frozen-SD / bias / boundary / slippage arguments above, so every pre-D31-01 call site is
+    unaffected. Supplying it registers additional targets; the weekly exposure cap is then POOLED
+    over the union of a week's bets across them (D31-02), which is the concrete reason this core
+    exists rather than three sibling selectors.
     """
 
     def __init__(
@@ -191,25 +216,53 @@ class BetSelector:
         high_total_boundary: float = HIGH_TOTAL_BOUNDARY_PREHOLD,
         slippage_points: float = SLIPPAGE_POINTS,
         odds: int = STANDARD_VIG_ODDS,
+        strategies: list[TargetStrategy] | None = None,
     ) -> None:
         self.frozen_sd = float(frozen_sd)
         self.season_bias_by_season = dict(season_bias_by_season)
         self.ev_floor_t = float(ev_floor_t)
         self.bankroll = float(bankroll)
-        self.high_total_boundary = float(high_total_boundary)
-        if not math.isfinite(self.high_total_boundary):
-            msg = (
-                "high_total_boundary must be finite; got a non-finite value (the pre-hold "
-                "boundary did not resolve -- the silver odds lake is required, LOCKED-1). A NaN "
-                "boundary would silently collapse the under-OR-high UNION to under-only (WR-03)."
-            )
-            raise ValueError(msg)
+        # The finite-boundary guard (WR-03) lives in ONE place, shared with OUStrategy.
+        self.high_total_boundary = require_finite_high_total_boundary(
+            high_total_boundary
+        )
         self.slippage_points = float(slippage_points)
         self.odds = int(odds)
 
         # Wrap -- never re-implement -- the LOCKED side/slippage/outcome convention (D-18). The
-        # simulator is used ONLY for its grading helpers; the BetSelector owns the decision.
+        # simulator is used ONLY for its grading helpers; the strategies own the target rules and
+        # the BetSelector owns the decision. One simulator per selector, injected downwards.
         self._sim = BettingSimulator(SimulationConfig())
+
+        if strategies is None:
+            strategies = [
+                OUStrategy(
+                    frozen_sd=self.frozen_sd,
+                    season_bias_by_season=self.season_bias_by_season,
+                    high_total_boundary=self.high_total_boundary,
+                    slippage_points=self.slippage_points,
+                    simulator=self._sim,
+                )
+            ]
+        if not strategies:
+            msg = (
+                "BetSelector requires at least one target strategy; an empty registry can only "
+                "produce an empty bet list, which is indistinguishable from a target that "
+                "genuinely had no +EV bets (T-31-27)."
+            )
+            raise ValueError(msg)
+
+        registry: dict[str, TargetStrategy] = {}
+        for strategy in strategies:
+            code = strategy.target
+            if code in registry:
+                msg = (
+                    f"duplicate strategy registered for target {code!r}; the registry is keyed by "
+                    "target code and each target has exactly one strategy (D31-01)."
+                )
+                raise ValueError(msg)
+            registry[code] = strategy
+        self._strategies = registry
 
         # Kelly sizing (BET-02): the calibrated P(side) is fed to the EXISTING calculator. unit = 1%
         # of bankroll (D27-09); quarter-Kelly via default_kelly_fraction=0.25; 5% per-bet cap.
@@ -222,46 +275,41 @@ class BetSelector:
             confidence_threshold=0.0,
         )
 
-    # -- side / regime / EV helpers (wrap the LOCKED scorers) -----------------
+    @property
+    def strategies(self) -> dict[str, TargetStrategy]:
+        """The registered strategies, keyed by target code (a copy -- the registry is fixed)."""
+        return dict(self._strategies)
 
-    def _bet_side(self, model_total: float, closing_total: float) -> str | None:
-        """Determine the O/U bet side via the LOCKED ``_determine_bet_side_ou`` (D-18)."""
-        return self._sim._determine_bet_side_ou(model_total, closing_total)
+    # -- strategy dispatch ----------------------------------------------------
 
-    def _totals_regime(self, closing_total: float) -> str:
-        """High iff the closing total exceeds the leakage-clean PRE-HOLD boundary (LOCKED-1)."""
-        return "high" if closing_total > self.high_total_boundary else "not_high"
+    def _strategy_for(self, target: str | None) -> TargetStrategy:
+        """Resolve the strategy for ``target``, failing LOUDLY when there is none (T-31-27).
 
-    def _season_bias(self, season: int) -> float:
-        """Prior-season walk-forward bias for ``season`` (NEGATIVE for an over-biased model)."""
-        if season not in self.season_bias_by_season:
-            msg = (
-                f"no prior-season bias provided for season {season}; the caller must supply a "
-                "walk-forward bias (ou_ev_chain.estimate_prior_season_bias) for every candidate "
-                "season (no silent fallback to the raw biased total, D27-07)."
-            )
-            raise ValueError(msg)
-        return float(self.season_bias_by_season[season])
+        A candidate row (or a decision record) may omit ``target`` entirely -- every pre-D31-01
+        caller does. That is unambiguous ONLY while a single strategy is registered, and it is
+        resolved that way. With more than one registered there is no defensible default, so it
+        raises rather than guessing: a wrong guess would book a bet under the wrong target's rules.
 
-    def _calibrated_p_side(
-        self, bet_side: str, model_total: float, closing_total: float, season: int
-    ) -> tuple[float, float]:
-        """Calibrated P(side) and the slipped line for one candidate (BET-02 input).
-
-        The P(side) is evaluated against the HALF-POINT-SLIPPED line (the line moves against the
-        bettor, the LOCKED ``apply_slippage_total``), so a high-total OVER's over-bias is not
-        rewarded: the slipped line + the bias correction pull the calibrated P(over) down. Returns
-        ``(p_side, slipped_line)``.
+        Raises:
+            UnregisteredTargetError: when the target is unknown, or is absent and ambiguous.
         """
-        slipped_line = apply_slippage_total(
-            closing_total, bet_side, self.slippage_points
-        )
-        season_bias = self._season_bias(season)
-        p_over = float(
-            calibrated_p_over(model_total, slipped_line, self.frozen_sd, season_bias)
-        )
-        p_side = p_over if bet_side == "over" else (1.0 - p_over)
-        return p_side, slipped_line
+        if target is None:
+            if len(self._strategies) == 1:
+                return next(iter(self._strategies.values()))
+            msg = (
+                "candidate carries no 'target' but this selector has multiple registered "
+                f"targets {sorted(self._strategies)}; the target is ambiguous -- tag each "
+                "candidate row with its target code."
+            )
+            raise UnregisteredTargetError(msg)
+        if target not in self._strategies:
+            msg = (
+                f"no strategy is registered for target {target!r}; the registered targets are "
+                f"{sorted(self._strategies)}. A missing strategy is a failure, not an empty "
+                "bet list (T-31-27)."
+            )
+            raise UnregisteredTargetError(msg)
+        return self._strategies[target]
 
     # -- main entry point -----------------------------------------------------
 
@@ -270,13 +318,15 @@ class BetSelector:
         candidates: pd.DataFrame | list[dict[str, Any]],
         raw_odds_df: pd.DataFrame | None = None,
     ) -> SelectionResult:
-        """The single O/U bet-decision source (BET-01/02, LOCKED-2).
+        """The single bet-decision source (BET-01/02, LOCKED-2).
 
         Args:
-            candidates: Per-game O/U candidate rows (a DataFrame or list of dicts) carrying at least
-                ``game_id``, ``season``, ``week``, ``model_total``, ``closing_total``, and
-                (for grading) ``actual``. May also carry ``sportsbook`` / ``is_live`` provenance
-                columns, which are validated when present.
+            candidates: Per-game candidate rows (a DataFrame or list of dicts) carrying at least
+                ``game_id``, ``season``, ``week``, the registered strategy's
+                ``required_market_fields``, and (for grading) ``actual``. A row may carry a
+                ``target`` code selecting its strategy; when absent and exactly one strategy is
+                registered, that strategy is used. Rows may also carry ``sportsbook`` / ``is_live``
+                provenance columns, which are validated when present.
             raw_odds_df: Optional raw odds provenance frame. When supplied, it is validated FIRST
                 via ``assert_real_odds`` (OUM-06) before any selection. When None, the candidates
                 frame itself is checked for provenance columns.
@@ -299,15 +349,19 @@ class BetSelector:
         filtered: list[dict[str, Any]] = []
         unfiltered: list[dict[str, Any]] = []
 
-        # Eligible candidates needing sizing, grouped by week so the per-week caps apply per week.
+        # Eligible candidates needing sizing, grouped by week ACROSS TARGETS. The key is
+        # (season, week) and deliberately NOT (target, season, week): D31-02 pools the 10% weekly
+        # exposure cap over the union of a week's bets, because D27-10 pre-registered it as a
+        # per-week TOTAL exposure cap and the bankroll does not grow because targets were added.
         eligible_by_week: dict[tuple[int, int], list[dict[str, Any]]] = {}
 
         for row in rows:
-            record = self._build_decision_record(row)
+            strategy = self._strategy_for(row.get("target"))
+            record, rejection_reason = self._build_decision_record(row, strategy)
             unfiltered.append(record)
 
-            if not record["eligible"]:
-                rejected.append({**record, "rejection_reason": "not_subpop"})
+            if rejection_reason is not None:
+                rejected.append({**record, "rejection_reason": rejection_reason})
                 continue
 
             # Eligible: it is part of the acceptance basis regardless of the EV decision.
@@ -315,7 +369,7 @@ class BetSelector:
             key = (int(record["season"]), int(record["week"]))
             eligible_by_week.setdefault(key, []).append(record)
 
-        # (3)/(4) EV admission + LOCKED-order sizing, per week.
+        # (3)/(4) EV admission + LOCKED-order sizing, once per POOLED week.
         for (_season, _week), week_records in eligible_by_week.items():
             self._admit_and_size_week(week_records, selected, rejected)
 
@@ -328,6 +382,7 @@ class BetSelector:
             n_selected=len(selected),
             n_rejected=len(rejected),
             ev_floor_t=self.ev_floor_t,
+            targets=sorted(self._strategies),
         )
 
         return SelectionResult(
@@ -340,32 +395,37 @@ class BetSelector:
 
     # -- decision-record construction -----------------------------------------
 
-    def _build_decision_record(self, row: dict[str, Any]) -> dict[str, Any]:
-        """Build the per-candidate decision record (side, regime, eligibility, P(side), EV, CLV)."""
+    def _build_decision_record(
+        self, row: dict[str, Any], strategy: TargetStrategy
+    ) -> tuple[dict[str, Any], str | None]:
+        """Build the per-candidate decision record, dispatching every target rule to ``strategy``.
+
+        The core owns the record SHAPE and the generic fields; the strategy owns the side, the
+        eligibility rule, the sub-pop label, the calibrated P(side) and the target-specific
+        reporting extras. No target vocabulary appears here.
+
+        Returns:
+            ``(record, rejection_reason)``. The reason is None when the candidate is eligible. It
+            is returned ALONGSIDE the record rather than stored on it, so an eligible record never
+            carries a nullable reason field it can never use.
+        """
         game_id = row["game_id"]
         season = int(row["season"])
         week = int(row["week"])
-        model_total = float(row["model_total"])
-        closing_total = float(row["closing_total"])
 
-        bet_side = self._bet_side(model_total, closing_total)
-        totals_regime = self._totals_regime(closing_total)
-
-        # Sub-pop UNION (D27-04/05): eligible iff under-pick OR high-total. A None side (the model
-        # agrees with the market within the side threshold) is not a bet of either side.
-        is_under = bet_side == "under"
-        is_high = totals_regime == "high"
-        eligible = bool(bet_side is not None and (is_under or is_high))
+        market = self._market_fields(row, strategy)
+        bet_side = strategy.resolve_bet_side(row)
+        rejection_reason = strategy.eligibility(row, bet_side)
+        eligible = rejection_reason is None
 
         record: dict[str, Any] = {
             "game_id": game_id,
             "season": season,
             "week": week,
+            "target": strategy.target,
             "bet_side": bet_side,
-            "totals_regime": totals_regime,
-            "subpop_label": self._subpop_label(is_under, is_high),
-            "model_total": model_total,
-            "closing_total": closing_total,
+            "subpop_label": strategy.eligibility_label(row, bet_side),
+            **market,
             "eligible": eligible,
             "calibrated_p_side": None,
             "per_bet_ev": None,
@@ -379,33 +439,53 @@ class BetSelector:
             # graded ROI (Rule 1, Plan 27-04). It is NOT in the public schema; downstream stores a
             # missing/ungraded outcome as SQL NULL.
             "_actual_total": row.get("_actual_total"),
-            # CLV (D27-06, REPORT-ONLY): the model-edge line_clv (model_total - closing_total),
-            # DISTINCT from the freeze-vs-close forward metric (~0); never a selection gate.
-            "clv": compute_line_clv(model_total, closing_total, direction="total"),
+            # The strategy's reporting extras (for O/U: the totals regime and the REPORT-ONLY
+            # model-edge CLV, which never gates -- D27-06).
+            **strategy.decision_extras(row, bet_side),
         }
 
         if eligible:
-            p_side, slipped_line = self._calibrated_p_side(
-                bet_side, model_total, closing_total, season
-            )
+            if bet_side is None:
+                # A core invariant, not a target rule: there is no bet without a side, so a
+                # strategy that admits a sideless candidate is a bug and must say so rather
+                # than price one half of a coin flip.
+                msg = (
+                    f"strategy {strategy.target!r} declared candidate "
+                    f"{game_id!r} eligible with no bet side; an eligible candidate must have "
+                    "a side."
+                )
+                raise ValueError(msg)
+            p_side, slipped_line = strategy.side_probability(row, bet_side)
             record["calibrated_p_side"] = p_side
             record["slipped_line"] = slipped_line
+            # The flat -110 payout matching ``self.odds`` -- the price every currently registered
+            # target is quoted at. Plan 31-10 decides how WP's per-game moneyline payout enters.
             record["per_bet_ev"] = per_bet_ev(p_side, MINUS_110_PAYOUT)
 
-        return record
+        return record, rejection_reason
 
     @staticmethod
-    def _subpop_label(is_under: bool, is_high: bool) -> str:
-        """A human-readable sub-pop label for the UNION arms a candidate satisfies."""
-        if is_under and is_high:
-            return "under+high_total"
-        if is_under:
-            return "under"
-        if is_high:
-            return "high_total"
-        return "none"
+    def _market_fields(
+        row: dict[str, Any], strategy: TargetStrategy
+    ) -> dict[str, float]:
+        """Copy the strategy's ``required_market_fields`` off ``row``, failing by NAME when absent.
 
-    # -- EV admission + sizing (per week) -------------------------------------
+        A candidate frame missing a market column is a caller error that must name the column and
+        the target, never surface as a bare ``KeyError`` from deep inside the decision path.
+        """
+        missing = [
+            name for name in strategy.required_market_fields if row.get(name) is None
+        ]
+        if missing:
+            msg = (
+                f"candidate row for target {strategy.target!r} is missing required market "
+                f"field(s) {missing}; required fields are "
+                f"{list(strategy.required_market_fields)}"
+            )
+            raise KeyError(msg)
+        return {name: float(row[name]) for name in strategy.required_market_fields}
+
+    # -- EV admission + sizing (per POOLED week) ------------------------------
 
     def _admit_and_size_week(
         self,
@@ -415,14 +495,23 @@ class BetSelector:
     ) -> None:
         """Admit eligible records by the EV floor, then size the admitted set via the LOCKED order.
 
-        EV admission: bet iff ``per_bet_ev(p_side) >= ev_floor_t`` (D27-14). Sizing: Kelly on the
-        CALIBRATED P(side) (BET-02 fix) -> the Plan-02 ``apply_sizing_pipeline`` LOCKED cap order.
-        Grading uses the LOCKED ``_resolve_ou_outcome`` (push-aware).
+        ``week_records`` is the UNION of one week's eligible candidates across every registered
+        target (D31-02). The 10% weekly exposure cap is applied ONCE over that union, pro-rata, so
+        every bet in the week carries the same weekly factor and the week's TOTAL exposure -- not
+        each target's -- is what the cap bounds. A per-target cap would be a 30% total weekly
+        ceiling, a post-hoc tripling of a pre-registered ruin guard; per-target sub-caps would be a
+        second threshold nobody pre-registered.
+
+        EV admission: bet iff ``per_bet_ev(p_side) >= ev_floor_t`` (D27-14) -- the comparison below
+        rejects STRICTLY BELOW the floor, so EV exactly equal to the floor is ADMITTED (SPEC R1
+        adjacency). Sizing: Kelly on the CALIBRATED P(side) (BET-02 fix) -> the Plan-02
+        ``apply_sizing_pipeline`` LOCKED cap order. Grading dispatches to the record's strategy.
 
         ADMISSION STRUCTURALLY PRECEDES SIZING (D31-03): the EV-floor loop below compares
         ``per_bet_ev`` against the floor and reads no stake at all, so no change to the
-        de-weighting rule can change WHICH bets are selected. The later zero-stake guard
-        reads the RAW Kelly stake, computed before and independently of de-weighting.
+        de-weighting rule -- including the pooling above -- can change WHICH bets are selected.
+        The later zero-stake guard reads the RAW Kelly stake, computed before and independently
+        of de-weighting.
         """
         admitted: list[dict[str, Any]] = []
         for record in week_records:
@@ -455,6 +544,7 @@ class BetSelector:
                     "BetSelector admitted a bet the Kelly calculator zeroed (EV/Kelly "
                     "double-gate boundary); rejecting instead of booking a zero stake.",
                     game_id=record.get("game_id"),
+                    target=record.get("target"),
                     calibrated_p_side=record.get("calibrated_p_side"),
                     per_bet_ev=record.get("per_bet_ev"),
                     ev_floor_t=self.ev_floor_t,
@@ -466,10 +556,9 @@ class BetSelector:
                 {
                     # game_id feeds the D31-03 same-game grouping inside the de-weight step. It
                     # is REQUIRED by the sizing seam (no silent fallback to same-side-only
-                    # grouping, T-31-17). For this O/U selector it is a numeric no-op: a week
-                    # carries at most one O/U candidate per game, so every same-game group has
-                    # size 1 and max(same_side, same_game) == same_side. It becomes load-bearing
-                    # when Plan 31-06 pools the week across three targets.
+                    # grouping, T-31-17). It became load-bearing here once D31-02 pooled the week
+                    # across targets: a WP "home" bet and an ATS "home_cover" bet on the SAME game
+                    # are close to one leveraged wager, and only the game key catches that.
                     "game_id": record["game_id"],
                     "bet_side": record["bet_side"],
                     "stake": kelly_result.recommended_bet,
@@ -481,28 +570,47 @@ class BetSelector:
 
         # LOCKED-order sizing pipeline (Plan-02, extended by D31-03): kelly -> 5% per-bet ->
         # same-game-and-side de-weight -> 10% weekly cap. The BetSelector consumes this helper
-        # and does NOT re-order the steps.
+        # and does NOT re-order the steps. Called EXACTLY ONCE per week over the pooled union.
         sized = apply_sizing_pipeline(kelly_inputs, self.bankroll)
 
-        for record, sized_rec in zip(staked_admitted, sized, strict=True):
+        # ``apply_sizing_pipeline`` collapses the weekly pro-rata factor into a COMBINED
+        # de-weight x weekly ``scale_factor`` that differs per bet, so the week's single pro-rata
+        # factor is not directly readable from it. Recover it by re-reading the SAME pure LOCKED
+        # helper on the SAME inputs -- a read, not a second application of the cap. Deriving it as
+        # a ratio instead would be inexact in the last bit and would break the "one factor for the
+        # whole week" guarantee this publishes.
+        weekly = apply_weekly_exposure_cap(
+            [sized_rec["deweighted_stake"] for sized_rec in sized], self.bankroll
+        )
+
+        for record, sized_rec, weekly_rec in zip(
+            staked_admitted, sized, weekly, strict=True
+        ):
+            if weekly_rec["weekly_scaled_stake"] != sized_rec["weekly_scaled_stake"]:
+                msg = (
+                    "weekly-cap re-read disagreed with the sizing pipeline "
+                    f"({weekly_rec['weekly_scaled_stake']!r} != "
+                    f"{sized_rec['weekly_scaled_stake']!r}); the published weekly factor would "
+                    "not be the factor that produced the stake."
+                )
+                raise ValueError(msg)
             record["kelly_stake"] = sized_rec["weekly_scaled_stake"]
+            # The caps made VISIBLE on the record rather than inferable from the ordering, so
+            # /bets can show a stake beside its EV and the reader can see why it is that size.
+            record["same_side_group_size"] = sized_rec["same_side_group_size"]
+            record["same_game_group_size"] = sized_rec["same_game_group_size"]
+            record["binding_group"] = sized_rec["binding_group"]
+            record["weekly_scale_factor"] = weekly_rec["scale_factor"]
             record["outcome"] = self._grade(record)
             selected.append(record)
 
     def _grade(self, record: dict[str, Any]) -> bool | None:
-        """Grade a selected bet via the LOCKED ``_resolve_ou_outcome`` (push-aware, T-27-23).
+        """Grade a selected bet via its target's LOCKED outcome resolver (push-aware, T-27-23).
 
-        Returns True (win), False (loss), or None (push). The push (actual == slipped line) is
-        carried as None, never coerced. When the candidate carries no ``actual`` (a forward,
-        not-yet-played game), the outcome is None (ungraded) -- distinct from a push but both
-        represented by None here; downstream stores both as SQL NULL (Plan 04).
+        Dispatches to the record's strategy; for O/U that is the LOCKED ``_resolve_ou_outcome``,
+        unchanged. Returns True (win), False (loss), or None (push or ungraded).
         """
-        actual = record.get("_actual_total")
-        if actual is None:
-            return None
-        return self._sim._resolve_ou_outcome(
-            record["bet_side"], float(actual), record["slipped_line"]
-        )
+        return self._strategy_for(record.get("target")).grade(record)
 
     # -- report-only CLV ------------------------------------------------------
 
