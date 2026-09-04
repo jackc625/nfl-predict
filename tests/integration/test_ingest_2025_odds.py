@@ -1028,3 +1028,337 @@ class TestTheSharedSnapshotNormalization:
         assert pd.Timestamp(remote["naive_string"]) == pd.Timestamp(
             normalize_snapshot_ts("2021-09-19 18:00:00")
         )
+
+
+# Every skip reason this module can emit. Written out rather than derived so that adding a new
+# skip without registering its phrasing is a FAILURE here, not an invisible non-run in a green
+# suite (WR-10). The trailing exception text of the nflreadpy reason is elided; the registered
+# marker is the fixed prefix.
+_SKIP_REASONS_THIS_MODULE_CAN_EMIT = (
+    "live gold absent (features_ats) -- data/ is gitignored runtime state.",
+    "production manifest not present at artifacts/latest.json",
+    (
+        "live silver odds not present at data/silver/odds_snapshot.parquet -- data/ is "
+        "gitignored runtime state."
+    ),
+    "live gold absent (features_ou) -- data/ is gitignored runtime state.",
+    (
+        "the live nflreadpy 2025 schedule could not be loaded on this checkout (offline or "
+        "upstream unavailable)"
+    ),
+)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _production_silver_is_byte_identical_across_this_module():
+    """The HARD BOUNDARY, asserted by CONTENT rather than by ``git status``.
+
+    ``.gitignore`` blankets ``data/``, so a working-tree check on it is vacuous. Every write
+    proof in this module runs against a ``tmp_path`` copy; this fixture is what turns "it should
+    not have written production silver" into a fact the suite checks.
+    """
+    if not _SILVER_ODDS.is_file():
+        yield
+        return
+
+    from scripts.audit_odds_preingest import sha256_file
+
+    before = sha256_file(_SILVER_ODDS)
+    yield
+    after = sha256_file(_SILVER_ODDS)
+    assert after == before, (
+        f"data/silver/odds_snapshot.parquet CHANGED across this test module "
+        f"({before} -> {after}). Plan 31-08 writes no production silver at all; Plan 31-11 owns "
+        "the only silver write in this phase, under CHECKPOINT 2."
+    )
+
+
+def _call_sequence(function_name: str) -> list[str]:
+    """The names called inside *function_name*, in SOURCE ORDER."""
+    import ast
+
+    tree = ast.parse(_INGEST_MODULE.read_text(encoding="utf-8"))
+    target = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+
+    calls: list[tuple[int, int, str]] = []
+    for node in ast.walk(target):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            name = func.attr
+        else:
+            continue
+        calls.append((node.lineno, node.col_offset, name))
+
+    return [name for _, _, name in sorted(calls)]
+
+
+class TestTheWritePathInvariants:
+    """Clauses 5 through 8, proven against a temporary destination. No production write."""
+
+    def test_the_synthetic_id_gate_is_called_before_the_write_not_after(self) -> None:
+        """A gate that runs after a write is a report, not a gate (clause 7)."""
+        sequence = _call_sequence("write_odds_additively")
+
+        assert "assert_no_synthetic_game_ids" in sequence, (
+            "write_odds_additively no longer calls the DEFECT-3 synthetic-id gate at all. The "
+            "OUM-06 sportsbook allowlist provably does not catch a forged game_id under a "
+            "legitimate sportsbook."
+        )
+        assert sequence.index("assert_no_synthetic_game_ids") < sequence.index(
+            "upsert_silver"
+        ), (
+            f"the synthetic-id gate runs AFTER the write. Call order was {sequence}. A row that "
+            "is already on disk when its gate fires has already contaminated the population."
+        )
+
+    def test_the_completeness_gate_is_called_before_the_write_not_after(self) -> None:
+        sequence = _call_sequence("write_odds_additively")
+
+        assert sequence.index("assert_2025_odds_completeness") < sequence.index(
+            "upsert_silver"
+        ), (
+            f"the SPEC R2 completeness hard stop runs AFTER the write. Call order was "
+            f"{sequence}. The 2025 hold can only be spent once."
+        )
+
+    def test_the_canonical_key_check_and_the_key_normalization_both_precede_the_write(
+        self,
+    ) -> None:
+        sequence = _call_sequence("write_odds_additively")
+        write_at = sequence.index("upsert_silver")
+
+        assert sequence.index("assert_canonical_game_ids") < write_at
+        assert sequence.index("normalize_stored_game_ids") < write_at, (
+            "the stored keys are normalized AFTER the merge. The pre-registered Rams resolution "
+            "is to normalize BEFORE any merge: upsert_silver keys on game_id, so a merge run "
+            "first silently duplicates every Rams game rather than replacing it."
+        )
+        assert sequence.index("assert_one_row_per_key") > write_at, (
+            "the one-row-per-key invariant is checked on the frame in memory rather than on "
+            "what actually landed on disk."
+        )
+
+    def test_the_gate_fires_before_anything_is_created_on_disk(
+        self, tmp_path: Path
+    ) -> None:
+        """The behavioural half of the ordering claim: a refused write leaves NO file."""
+        from scripts.ingest_historical_odds import write_odds_additively
+
+        forged = pd.DataFrame(
+            {
+                "game_id": [_SYNTHETIC_FIXTURE_GAME_ID],
+                "sportsbook": ["consensus"],
+                "snapshot_ts": [pd.Timestamp("2025-09-05T18:00:00-04:00")],
+                "spread": [-3.0],
+                "total": [45.5],
+            }
+        )
+
+        with pytest.raises(ValueError, match=_SYNTHETIC_FIXTURE_GAME_ID):
+            write_odds_additively(
+                forged,
+                base_path=tmp_path,
+                features_ou_df=pd.DataFrame({"game_id": ["2025_W01_BUF@MIA"]}),
+            )
+
+        assert not (tmp_path / "silver").exists(), (
+            "the refused write still created a silver directory. The gate must run before the "
+            "write path touches the filesystem at all."
+        )
+
+    def test_a_thin_2025_population_stops_the_write_and_names_the_count(
+        self, tmp_path: Path
+    ) -> None:
+        from scripts.ingest_historical_odds import write_odds_additively
+
+        thin = pd.DataFrame(
+            {
+                "game_id": [f"2025_W{i + 1:02d}_AAA@BBB" for i in range(3)],
+                "sportsbook": ["consensus"] * 3,
+                "snapshot_ts": [pd.Timestamp("2025-09-05T18:00:00-04:00")] * 3,
+                "total": [45.5] * 3,
+            }
+        )
+
+        with pytest.raises(ValueError, match="only 3 games with a total"):
+            write_odds_additively(
+                thin,
+                base_path=tmp_path,
+                features_ou_df=thin[["game_id"]],
+                completeness_seasons=(2025,),
+            )
+
+        assert not (tmp_path / "silver").exists()
+
+    def test_a_non_canonical_incoming_id_is_refused_by_name(self) -> None:
+        from scripts.ingest_historical_odds import assert_canonical_game_ids
+
+        with pytest.raises(ValueError, match="2024_W01_LAR@SF"):
+            assert_canonical_game_ids(
+                pd.DataFrame(
+                    {"game_id": ["2024_W01_LAR@SF"], "sportsbook": ["consensus"]}
+                )
+            )
+
+    def test_a_duplicated_key_raises_naming_the_offending_triple(self) -> None:
+        from scripts.ingest_historical_odds import assert_one_row_per_key
+
+        freeze = pd.Timestamp("2024-09-06T18:00:00-04:00")
+        duplicated = pd.DataFrame(
+            {
+                "game_id": ["2024_W01_BAL@KC", "2024_W01_BAL@KC", "2024_W01_BUF@MIA"],
+                "sportsbook": ["consensus"] * 3,
+                "snapshot_ts": [freeze, freeze, freeze],
+            }
+        )
+
+        with pytest.raises(ValueError, match="2024_W01_BAL@KC"):
+            assert_one_row_per_key(duplicated, stage="test")
+
+        # The clean frame passes, so the guard is discriminating rather than always-on.
+        assert_one_row_per_key(duplicated.drop_duplicates(), stage="test")
+
+    def test_two_encodings_of_one_instant_are_ONE_key_not_two(self) -> None:
+        """The invariant parses the key instant; a string key would call these two rows."""
+        from scripts.ingest_historical_odds import assert_one_row_per_key
+
+        same_instant = pd.DataFrame(
+            {
+                "game_id": ["2024_W01_BAL@KC", "2024_W01_BAL@KC"],
+                "sportsbook": ["consensus", "consensus"],
+                "snapshot_ts": [
+                    "2024-09-06T18:00:00-04:00",
+                    "2024-09-06 22:00:00+00:00",
+                ],
+            }
+        )
+
+        with pytest.raises(ValueError, match="2024_W01_BAL@KC"):
+            assert_one_row_per_key(same_instant, stage="test")
+
+    def test_a_merge_into_a_temporary_copy_holds_every_invariant(
+        self, tmp_path: Path
+    ) -> None:
+        """The end-to-end proof: canonical keys, one row per key, and the Rams resolution."""
+        _require_silver_odds()
+        _require_gold_ou()
+        from scripts.audit_odds_preingest import sha256_file
+        from scripts.ingest_historical_odds import (
+            assert_one_row_per_key,
+            canonical_game_id,
+            transform_nfl_odds_to_standard_format,
+            write_odds_additively,
+        )
+
+        production_digest_before = sha256_file(_SILVER_ODDS)
+        sandbox_odds = _sandbox_silver_copy(tmp_path)
+
+        before = pd.read_parquet(sandbox_odds)
+        before_ids = before["game_id"].astype(str)
+        n_lar_before = int(before_ids.str.contains("LAR").sum())
+        n_non_canonical_before = int(
+            (before_ids.map(canonical_game_id) != before_ids).sum()
+        )
+        assert n_lar_before > 0, (
+            "the stored table carries no LAR-keyed Rams rows, so the clause-5 resolution has "
+            "nothing to prove here. DEFECT-2 has changed shape; re-read it before relaxing this."
+        )
+
+        incoming = transform_nfl_odds_to_standard_format(_load_live_schedule(2024))
+        report = write_odds_additively(
+            incoming,
+            base_path=tmp_path,
+            features_ou_df=pd.read_parquet(_GOLD_OU, columns=["game_id"]),
+        )
+
+        after = pd.read_parquet(sandbox_odds)
+        after_ids = after["game_id"].astype(str)
+
+        # Clause 6: one row per (game_id, sportsbook, snapshot_ts), on what is on DISK.
+        assert_one_row_per_key(after, stage="post-merge sandbox")
+
+        # Clause 5: the non-canonical spelling appears ZERO times in the destination.
+        assert int(after_ids.str.contains("LAR").sum()) == 0, (
+            f"{int(after_ids.str.contains('LAR').sum())} LAR-keyed rows survive the merge. "
+            "upsert_silver keys on game_id, so a surviving LAR row is a second key for a game "
+            "that already has one."
+        )
+        assert report.stored_ids_normalized == n_non_canonical_before
+
+        # Every id the merge WROTE is canonical and well-formed. The one id in the destination
+        # that is neither is the synthetic fixture row DEFECT-3 names, which this plan does not
+        # write and Plan 31-11 removes as a NAMED pre-ingest step -- so it is asserted by name
+        # here rather than quietly excluded.
+        written = set(incoming["game_id"].astype(str))
+        assert all(canonical_game_id(gid) == gid for gid in written)
+        from utils.game_id_utils import GAME_ID_PATTERN
+
+        assert all(GAME_ID_PATTERN.match(gid) for gid in written)
+        assert sorted(gid for gid in after_ids if not GAME_ID_PATTERN.match(gid)) == [
+            _SYNTHETIC_FIXTURE_GAME_ID
+        ]
+
+        # The Rams resolution measured: with the stored keys normalized FIRST, the 2024
+        # re-ingest REPLACES the regular-season rows instead of duplicating them, and only the
+        # genuinely new playoff rows are added. Plan 31-02 measured the un-normalized behaviour
+        # as +19 added / 0 replaced.
+        n_added = report.rows_after - report.rows_before
+        assert n_added < len(incoming), (
+            f"the merge added {n_added} rows for {len(incoming)} incoming ones. If every "
+            "incoming row is an addition, nothing was replaced and the keys still disagree."
+        )
+        assert report.rows_after == report.rows_before + n_added
+
+        assert sha256_file(_SILVER_ODDS) == production_digest_before
+
+    def test_the_ingest_refuses_to_write_when_its_gate_cannot_run(
+        self, tmp_path: Path
+    ) -> None:
+        """An absent O/U matrix is a REFUSAL, never a skipped gate."""
+        from scripts.ingest_historical_odds import load_features_ou
+        from utils import DataIngestionError
+
+        with pytest.raises(DataIngestionError, match="synthetic-id gate cannot run"):
+            load_features_ou(tmp_path / "nope" / "features_ou.parquet")
+
+
+class TestEverySkipReasonThisModuleCanEmitIsRegistered:
+    """A control that did not run must be NAMED in the terminal summary (WR-10)."""
+
+    @pytest.mark.parametrize("reason", _SKIP_REASONS_THIS_MODULE_CAN_EMIT)
+    def test_the_reason_is_recognised_as_evidence_backed(self, reason: str) -> None:
+        from tests.conftest import is_evidence_backed_skip
+
+        assert is_evidence_backed_skip(reason), (
+            f"the skip reason {reason!r} is emitted by a control in this module but is not "
+            "recognised as evidence-backed, so that control would disappear silently into a "
+            "green suite. Register its phrasing in tests/conftest._EVIDENCE_SKIP_MARKERS."
+        )
+
+    def test_the_catalogue_covers_every_skip_call_site_in_this_module(self) -> None:
+        """Adding a skip without cataloguing it is a failure, not an invisible non-run."""
+        import ast
+
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        n_skip_calls = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "skip"
+        )
+
+        assert n_skip_calls == len(_SKIP_REASONS_THIS_MODULE_CAN_EMIT), (
+            f"this module has {n_skip_calls} pytest.skip call sites but catalogues "
+            f"{len(_SKIP_REASONS_THIS_MODULE_CAN_EMIT)} reasons. Every reason this module can "
+            "emit must be listed in _SKIP_REASONS_THIS_MODULE_CAN_EMIT and recognised by "
+            "tests/conftest.is_evidence_backed_skip."
+        )
