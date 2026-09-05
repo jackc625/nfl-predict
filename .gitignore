@@ -412,3 +412,17 @@ apm/
 # graphify-out/GRAPH_REPORT.md.
 graphify-out/
 .graphifyignore
+# Plan 31-11: the upstream pin's PROVENANCE RECORD. The `*.json` rule in the PROJECT
+# SPECIFIC block above (line ~254) is what keeps every generated JSON out of history, and
+# it catches this file too -- which would leave the pin's digests recorded ONLY inside the
+# gitignored data/ tree, i.e. nowhere a fresh checkout can read them.
+#
+# config/upstream_pin.json names the exact nflverse snapshot every gold column and every
+# gate baseline figure was measured against: source, nflreadpy version, UTC capture time
+# and a sha256 for each of the 76 pinned season files under data/bronze/. The parquet
+# stays ignored; the record does not. That asymmetry is the whole reproducibility claim --
+# a checkout without the bytes can still say WHICH bytes were used, and can detect that
+# what it has is not them.
+#
+# Deliberately NARROW: it re-includes this one file, and leaves every other JSON ignored.
+!config/upstream_pin.json
