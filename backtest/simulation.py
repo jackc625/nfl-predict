@@ -439,11 +439,10 @@ class BettingSimulator:
         ``{game_id -> selected-record}`` map. The side, the EV admission and the sizing are ALL the
         selector's; the simulator adds no inline spread decision logic.
 
-        THE SIGN CONVERSIONS HAPPEN INSIDE ``ATSStrategy``, NOT HERE. ``model_spread`` is a
-        predicted home MARGIN and ``spread`` is a market LINE; the strategy negates the margin into
-        the model's implied line before resolving the side, and negates the slipped line into a
-        margin-scale cover threshold before grading. Doing either conversion here as well would
-        apply it twice.
+        THE SIGN HANDLING HAPPENS INSIDE ``ATSStrategy``, NOT HERE. ``model_spread`` and ``spread``
+        are BOTH home MARGINS (DEF-31-01, ruled 2026-09-04); the strategy negates only into the two
+        LOCKED helpers written in the opposite line convention and negates back out. Converting
+        anything here as well would apply a negation twice.
 
         Rows are TAGGED with their target code, unlike the O/U path: an injected selector may
         register more than one strategy, and an untagged row is ambiguous the moment it does.
@@ -614,9 +613,9 @@ class BettingSimulator:
                 elif target == "ats" and ats_decisions.get(game_id) is not None:
                     # D31-04 routing: the ENTIRE spread decision is owned by the injected
                     # BetSelector -- side, EV admission and sizing -- and the calibrated P(cover)
-                    # it supplied is what Kelly consumes. The strategy performed BOTH sign
-                    # conversions (implied line in, margin-scale cover threshold out), so nothing
-                    # is converted again here.
+                    # it supplied is what Kelly consumes. The strategy already handed the two
+                    # line-convention helpers their arguments and converted back (DEF-31-01), so
+                    # nothing is converted again here.
                     selector_decision = ats_decisions[game_id]
 
                     bet_side = selector_decision["bet_side"]

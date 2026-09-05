@@ -35,35 +35,54 @@ hand-computes its own. The full contract, including the one measured tune season
 whose mean is negative and the reason a per-season walk-forward correction does not depend
 on a constant sign, is :data:`ATS_RESIDUAL_CONTRACT`.
 
-TWO SIGN CONVENTIONS LIVE IN THIS REPOSITORY, AND THEY ARE NOT THE SAME ONE
----------------------------------------------------------------------------
+THE MARKET SPREAD AND THE MODEL SPREAD ARE ON THE SAME SCALE (DEF-31-01, RULED 2026-09-04)
+-------------------------------------------------------------------------------------------
 This is load-bearing and is stated here because getting it wrong silently prices the wrong
-side of every ATS bet.
+side of every ATS bet -- which is what this module did until the ruling.
 
-  * The MARKET LINE (``spread`` in silver / gold, ``closing_spread`` on a candidate row) is
-    NEGATIVE when the home team is favored. ``models/train.py:200-202`` states it outright
-    and grades the cover as ``actual_margin + spread > 0``, i.e. the home team covers iff
-    ``actual_margin > -spread``.
+  * The MARKET SPREAD (``spread`` in silver / gold, ``closing_spread`` on a candidate row) is
+    nflverse ``spread_line``, written straight through by
+    ``scripts/ingest_historical_odds.py:557`` with NO negation at ingest, on load, or in the
+    feature build. It is POSITIVE when the home team is favored, and it IS the cover
+    threshold on the HOME-MARGIN scale: the home team covers iff
+    ``actual_margin > spread``.
   * The MODEL PREDICTION (``model_spread``) is a predicted HOME MARGIN: POSITIVE when the
     home team is expected to win. ``models/train_ats.py`` regresses ``actual_margin``, and
     ``scripts/audit_odds_preingest.measure_ats_residual_bias`` -- the Plan 31-02 measurement
     the frozen contract quotes -- computes ``residual = actual - model_prob`` directly on
     that margin scale.
 
-So the model's IMPLIED LINE is the NEGATED predicted margin, and the cover threshold on the
-margin scale is the NEGATED market line. Both conversions are performed explicitly below,
-and the LOCKED helpers are called in the convention they were written for:
-``BettingSimulator._determine_bet_side_ats`` compares two LINES (its own docstring's
-"model thinks home wins by more than market" only holds when both arguments are lines), and
-``apply_slippage_spread`` moves a LINE against the bettor.
+So the two are DIRECTLY COMPARABLE and neither needs converting into the other. The measured
+evidence, three independent cross-checks, is recorded in the phase's ``deferred-items.md``
+under DEF-31-01: ``corr(spread, ml_home) = -0.9525`` (n=1856); big HOME favourites
+(``ml_home <= -300``) carry a mean stored spread of ``+10.184`` against ``-9.587`` for big
+AWAY favourites; and ``actual_margin > spread`` grades a 47.2% home-cover rate where
+``actual_margin + spread > 0`` grades an implausible 56.2%.
 
-A CONSEQUENCE FOR PLAN 31-10, RECORDED HERE RATHER THAN REDISCOVERED: the legacy simulator
-ATS path at ``backtest/simulation.py:544-565`` passes the predicted MARGIN into
-``_determine_bet_side_ats`` as if it were a line, and grades with
-``_resolve_ats_outcome(bet_side, actual_margin, slipped_line)`` where ``slipped_line`` is
-still on the LINE scale. ``ATSStrategy`` must convert at both seams -- negate the predicted
-margin before resolving the side, and negate the slipped line before grading -- rather than
-delegate with the arguments the legacy path uses.
+WHERE A NEGATION IS STILL REQUIRED, AND WHY IT IS ONLY THERE. Two LOCKED helpers are written
+in the OPPOSITE "line" convention (negative = home favored) and are NOT re-implemented here:
+
+  * ``BettingSimulator._determine_bet_side_ats(a, b)`` returns ``home_cover`` when ``a < b``,
+    which is the line reading. Both of its arguments are therefore NEGATED on the way in.
+  * ``apply_slippage_spread(line, side)`` returns ``line - slippage`` for ``home_cover``,
+    which moves a LINE against the bettor. Its argument is negated on the way in and its
+    result negated back out, giving ``spread + slippage`` for a home-cover bet -- a HIGHER
+    margin to clear, which is what "against the bettor" means on this scale.
+
+``BettingSimulator._resolve_ats_outcome(side, actual_margin, slipped_line)`` needs NO
+conversion: it already grades ``home_covers = actual_margin > slipped_line``, which is the
+measured convention exactly. The slipped market spread reaches it un-negated.
+
+TWO THINGS THIS RULING DELIBERATELY DID NOT CHANGE, recorded so neither reads as an oversight
+(both are in DEF-31-01's ruling entry):
+
+  * ``models/train.py:200-202`` keeps its comment and its ``actual_margin + spread > 0``
+    baseline rule. That ``actual_cover`` feeds ONLY ``_compute_ats_baseline``, a reported
+    market-accuracy diagnostic that trains nothing, and correcting it would move a published
+    figure from 0.5618 to about 0.472. The owner declined that half.
+  * The legacy no-selector simulator ATS path keeps its pre-existing convention (DEF-31-02),
+    because D31-04 forbids moving /betting's published 1073-row spread population. The
+    phase's bet list and 2025 verdict route through the selector, not that branch.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -511,10 +530,10 @@ def calibrated_p_cover(
 
     BOTH ``model_spread`` AND ``line`` ARE ON THE HOME-MARGIN SCALE. ``model_spread`` is the
     predicted home margin (POSITIVE when the home team is expected to win). ``line`` is the
-    COVER THRESHOLD the actual home margin must EXCEED -- which for a stored market spread
-    (NEGATIVE when the home team is favored) is the NEGATED spread. ``price_ats_candidates``
-    performs that conversion; a caller passing a raw stored spread here would price the
-    wrong side of every game.
+    COVER THRESHOLD the actual home margin must EXCEED -- which, under the measured
+    convention DEF-31-01 ruled on, IS the stored market spread (POSITIVE when the home team
+    is favored), slipped but NOT negated. A caller who negated it first would price the
+    wrong side of every game; the module docstring records the measurement.
 
     The measured tune-window pooled ``season_bias`` is POSITIVE, so the correction RAISES
     the cover probability -- the OPPOSITE direction to the O/U case, where a negative bias
@@ -527,8 +546,8 @@ def calibrated_p_cover(
 
     Args:
         model_spread: The scored predicted home margin(s).
-        line: The cover threshold(s) on the home-margin scale (the slipped line, negated
-            out of the stored spread convention).
+        line: The cover threshold(s) on the home-margin scale -- the slipped stored spread,
+            un-negated.
         frozen_sd: The single frozen residual SD, fit on bias-corrected TUNE residuals only
             via ``fit_frozen_residual_sd``.
         season_bias: The prior-season walk-forward mean residual. Must not be None.
@@ -628,6 +647,13 @@ def ats_two_sided_prices(
 ATS_REQUIRED_FIELDS: tuple[str, ...] = ("model_spread", "closing_spread")
 ATS_JUICE_FIELDS: tuple[str, str] = ("spread_ju_home", "spread_ju_away")
 
+# The REPORT-ONLY model-edge CLV label. It NAMES ITS FORMULA rather than an interpretation,
+# which is what keeps it true across the DEF-31-01 ruling: with both quantities on the
+# home-margin scale, ``closing_spread - model_spread`` is POSITIVE when the market favors the
+# home team MORE than the model does -- the OPPOSITE reading to the line-convention example in
+# ``models/clv.compute_line_clv``'s docstring. The number is unchanged by the ruling and is
+# deliberately left where it is: it is never a gate (D27-06), and re-signing a published
+# report-only figure was outside the ruled scope. See DEF-31-01's ruling entry.
 ATS_CLV_METRIC: str = (
     "model_edge_line_clv (closing_spread - model_spread); REPORT-ONLY (D27-06)"
 )
@@ -653,11 +679,13 @@ def price_ats_candidates(
 
     Args:
         rows: Candidate rows carrying ``game_id``, ``season``, ``week``, ``model_spread``
-            (a predicted home MARGIN) and ``closing_spread`` (the stored market line,
-            NEGATIVE when the home team is favored), and optionally the two juice columns.
+            (a predicted home MARGIN) and ``closing_spread`` (the stored market spread,
+            POSITIVE when the home team is favored, on the SAME margin scale), and
+            optionally the two juice columns.
         fit: The fitted nuisance parameters and the seasons they were fit on.
         slippage_points: The half-point slippage, applied through the LOCKED
-            ``apply_slippage_spread`` in the LINE convention it was written for.
+            ``apply_slippage_spread`` by negating into the LINE convention it was written
+            for and negating its result back onto the margin scale.
         simulator: An injected simulator, so exactly one exists per run.
 
     Returns:
@@ -699,10 +727,10 @@ def price_ats_candidates(
         closing_spread = float(row["closing_spread"])
 
         # The side is resolved on the RAW prediction, exactly as the O/U strategy resolves
-        # its side on the raw model total; the bias correction enters the PROBABILITY. Both
-        # arguments are handed to the LOCKED helper in ITS convention -- two LINES -- so the
-        # model's implied line is the NEGATED predicted margin (see the module docstring).
-        bet_side = sim._determine_bet_side_ats(-model_spread, closing_spread)
+        # its side on the raw model total; the bias correction enters the PROBABILITY. The
+        # two margins are directly comparable (DEF-31-01), and BOTH are negated into the
+        # LOCKED helper's line convention because it returns home_cover when a < b.
+        bet_side = sim._determine_bet_side_ats(-model_spread, -closing_spread)
 
         record: dict[str, Any] = {
             "game_id": row["game_id"],
@@ -729,13 +757,18 @@ def price_ats_candidates(
             season_bias = season_bias_for(
                 season, fit.season_bias_by_season, target="ats"
             )
-            # Slippage is applied in the LINE convention the LOCKED helper was written for,
-            # then negated into the margin-scale cover threshold the converter and
-            # simulation.py:347 both use.
-            slipped_spread = apply_slippage_spread(
-                closing_spread, bet_side, slippage_points
+            # Slippage is applied by negating into the LINE convention the LOCKED helper was
+            # written for and negating its result back, which moves the stored spread AGAINST
+            # the bettor on the margin scale: a home-cover bet's threshold RISES. The result
+            # is already the cover threshold the converter and _resolve_ats_outcome both use,
+            # so ``cover_threshold`` and ``slipped_spread`` are the SAME number under this
+            # convention. Both keys are kept: one names the price the bettor got, the other
+            # names the margin the game must clear, and a reader should not have to infer
+            # that they coincide.
+            slipped_spread = -apply_slippage_spread(
+                -closing_spread, bet_side, slippage_points
             )
-            cover_threshold = -slipped_spread
+            cover_threshold = slipped_spread
             p_home_cover = float(
                 calibrated_p_cover(
                     model_spread, cover_threshold, frozen_sd, season_bias

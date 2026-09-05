@@ -30,15 +30,17 @@ mid-selection.
 TWO SCALES AND TWO PRICES, STATED ONCE HERE BECAUSE BOTH ARE EASY TO GET SILENTLY WRONG
 ----------------------------------------------------------------------------------------
 
-  * The ATS target carries TWO SIGN CONVENTIONS. ``model_spread`` is a predicted home MARGIN
-    (POSITIVE when the home team is expected to win); ``closing_spread`` is a market LINE (NEGATIVE
-    when the home team is favored). ``BettingSimulator._determine_bet_side_ats`` compares two
-    LINES and ``BettingSimulator._resolve_ats_outcome`` compares an actual MARGIN against a
-    threshold on the MARGIN scale, so ``ATSStrategy`` CONVERTS AT BOTH SEAMS -- the model's implied
-    line is the negated margin going in, and the cover threshold is the negated slipped line coming
-    out. It does NOT re-implement either LOCKED helper; it hands each one arguments in the
-    convention that helper was written for. ``backtest/ats_ev_chain.py``'s module docstring records
-    the same conversion and the legacy simulator path that omits it.
+  * The ATS target's two spread quantities are ON THE SAME SCALE (DEF-31-01, ruled 2026-09-04).
+    ``model_spread`` is a predicted home MARGIN and ``closing_spread`` is the stored nflverse
+    ``spread_line``, POSITIVE when the home team is favored and already the cover threshold on
+    that same margin scale. What DOES need converting is the pair of LOCKED helpers written in the
+    opposite line convention: ``BettingSimulator._determine_bet_side_ats`` (which returns
+    ``home_cover`` when its first argument is the smaller) and ``apply_slippage_spread`` (which
+    moves a LINE against the bettor). ``ATSStrategy`` negates INTO those two and negates BACK OUT,
+    and re-implements neither. ``BettingSimulator._resolve_ats_outcome`` already grades
+    ``actual_margin > slipped_line`` and needs no conversion at all.
+    ``backtest/ats_ev_chain.py``'s module docstring records the measurement, the two halves of the
+    ruling that were declined, and the legacy simulator path left on its older reading.
   * The WP target is quoted PER GAME. Its per-bet EV and its Kelly stake are computed at the side's
     own moneyline through the OPTIONAL ``bet_odds`` member, never at the flat -110 the spread and
     totals markets are quoted at. Pricing a -320 favourite at -110 turns a losing bet into a
@@ -401,24 +403,24 @@ class ATSStrategy:
     it; declaring the target report-only by construction was REJECTED because it pre-decides the
     verdict, and a guaranteed answer is not evidence.
 
-    THE TWO SEAMS THIS CLASS CONVERTS AT, AND WHY EACH ONE MATTERS. ``model_spread`` is a predicted
-    home MARGIN; ``closing_spread`` is a market LINE. They are numerically opposite for the same
-    opinion, so handing either helper the wrong one silently prices the wrong side of every game:
+    THE ONE SCALE, AND THE TWO HELPERS THAT ARE NOT ON IT (DEF-31-01, ruled 2026-09-04).
+    ``model_spread`` is a predicted home MARGIN and ``closing_spread`` is the stored nflverse
+    ``spread_line`` -- POSITIVE when the home team is favored, and already the margin the home team
+    must EXCEED to cover. They are directly comparable. Two LOCKED helpers are written in the
+    OPPOSITE line convention and are negated into, never re-implemented:
 
-      * ``resolve_bet_side`` passes the model's IMPLIED LINE (``-model_spread``) against the market
-        line, because ``BettingSimulator._determine_bet_side_ats`` compares two LINES. Its own
-        docstring's "model thinks home wins by more than market" only holds under that reading.
-      * ``grade`` passes the NEGATED slipped line as the cover threshold, because
-        ``BettingSimulator._resolve_ats_outcome`` compares the actual home MARGIN against it and
-        ``models/train.py:200-202`` grades a home cover as ``actual_margin + spread > 0``, i.e.
-        ``actual_margin > -spread``.
+      * ``resolve_bet_side`` negates BOTH margins into ``BettingSimulator._determine_bet_side_ats``,
+        which returns ``home_cover`` when its first argument is the smaller. The net rule is the
+        plain one: bet the home side when the model expects a bigger home margin than the market.
+      * ``side_probability`` negates the stored spread into ``apply_slippage_spread`` and negates
+        the result back, so a home-cover bet's threshold RISES by the slippage rather than falling.
 
-    Neither LOCKED helper is re-implemented; each is called with arguments in the convention it was
-    written for, which is the same conversion ``backtest.ats_ev_chain.price_ats_candidates``
-    performs.
+    ``grade`` converts NOTHING: ``BettingSimulator._resolve_ats_outcome`` already grades
+    ``home_covers = actual_margin > slipped_line``, which is the measured convention exactly. This
+    is the same arrangement ``backtest.ats_ev_chain.price_ats_candidates`` uses.
 
-    ``slipped_line`` is carried on the MARKET convention -- the price the bettor actually got, which
-    is what a bet list renders -- and the margin-scale conversion happens at the grading seam.
+    ``slipped_line`` is therefore both the price the bettor actually got (what a bet list renders)
+    and the cover threshold the game must clear -- one number, not two.
     """
 
     target = "ats"
@@ -455,13 +457,13 @@ class ATSStrategy:
     # -- TargetStrategy Protocol surface --------------------------------------
 
     def resolve_bet_side(self, row: dict[str, Any]) -> str | None:
-        """The ATS side via the LOCKED convention, on the model's IMPLIED LINE.
+        """The ATS side via the LOCKED helper, with BOTH margins negated into its convention.
 
         The side is resolved on the RAW prediction, exactly as the O/U strategy resolves its side
         on the raw model total; the bias correction enters the PROBABILITY, not the side.
         """
         return self._sim._determine_bet_side_ats(
-            -float(row["model_spread"]), float(row["closing_spread"])
+            -float(row["model_spread"]), -float(row["closing_spread"])
         )
 
     def eligibility(self, row: dict[str, Any], bet_side: str | None) -> str | None:
@@ -481,19 +483,20 @@ class ATSStrategy:
     def side_probability(
         self, row: dict[str, Any], bet_side: str
     ) -> tuple[float, float | None]:
-        """The calibrated P(side) and the half-point-slipped MARKET line (BET-02).
+        """The calibrated P(side) and the half-point-slipped stored SPREAD (BET-02).
 
-        Slippage is applied in the LINE convention ``apply_slippage_spread`` was written for, then
-        NEGATED into the margin-scale cover threshold the converter uses. Returns the slipped LINE
-        so the record carries the price the bettor got; ``grade`` performs the same negation.
+        Slippage is applied by negating into the line convention ``apply_slippage_spread`` was
+        written for and negating its result back, which moves the stored spread AGAINST the bettor
+        on the margin scale. The result IS the cover threshold, so no further conversion happens
+        here or at the grading seam -- ``grade`` hands this same number to the resolver.
         """
         chain = _ats_chain()
         model_spread = float(row["model_spread"])
         closing_spread = float(row["closing_spread"])
-        slipped_line = apply_slippage_spread(
-            closing_spread, bet_side, self.slippage_points
+        slipped_line = -apply_slippage_spread(
+            -closing_spread, bet_side, self.slippage_points
         )
-        cover_threshold = -slipped_line
+        cover_threshold = slipped_line
         season_bias = chain.season_bias_for(
             int(row["season"]), self.season_bias_by_season, target=self.target
         )
@@ -509,8 +512,14 @@ class ATSStrategy:
     ) -> dict[str, Any]:
         """The REPORT-ONLY model-edge line CLV (``closing_spread - model_spread``).
 
-        Reported, never a gate (D27-06). This is the MODEL EDGE against the line, DISTINCT from the
-        freeze-vs-close forward metric, which is structurally ~0 in backtest.
+        Reported, never a gate (D27-06). This is the MODEL EDGE against the market number, DISTINCT
+        from the freeze-vs-close forward metric, which is structurally ~0 in backtest.
+
+        READ THE SIGN OFF THE FORMULA, NOT OFF ``compute_line_clv``'s docstring example. That
+        example is written in the line convention; here both arguments are home MARGINS
+        (DEF-31-01), so a POSITIVE value means the market favors the home team MORE than the model
+        does. The DEF-31-01 ruling deliberately left this report-only number where it was rather
+        than re-signing a published figure outside the scope it ruled on.
         """
         return {
             "clv": compute_line_clv(
@@ -521,20 +530,21 @@ class ATSStrategy:
         }
 
     def grade(self, record: dict[str, Any]) -> bool | None:
-        """Grade via the LOCKED ``_resolve_ats_outcome`` on the MARGIN scale (push-aware).
+        """Grade via the LOCKED ``_resolve_ats_outcome``, converting NOTHING (push-aware).
 
         The realized value the core stashed under ``_actual_total`` is, for this target, the actual
         home MARGIN (``home_score - away_score``) -- the stash is target-agnostic and named for the
-        target that introduced it. The cover threshold handed to the resolver is the NEGATED slipped
-        line, so a home cover is graded as ``actual_margin > -slipped_line``, which is exactly the
-        rule ``models/train.py`` states. The push (margin exactly on the threshold) is carried as
-        None, never coerced; a candidate with no realized value is ungraded, also None.
+        target that introduced it. The resolver already grades
+        ``home_covers = actual_margin > slipped_line``, and under the measured convention
+        (DEF-31-01) the slipped stored spread IS that threshold, so it is handed over un-negated.
+        The push (margin exactly on the threshold) is carried as None, never coerced; a candidate
+        with no realized value is ungraded, also None.
         """
         actual_margin = record.get("_actual_total")
         if actual_margin is None or record.get("slipped_line") is None:
             return None
         return self._sim._resolve_ats_outcome(
-            record["bet_side"], float(actual_margin), -float(record["slipped_line"])
+            record["bet_side"], float(actual_margin), float(record["slipped_line"])
         )
 
 
