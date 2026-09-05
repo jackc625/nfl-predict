@@ -12,8 +12,10 @@ deliverable ``SIGNAL-LIFT-READOUT.md`` against four failure modes:
     NEVER say "deployed" / "proven" (a screen is not a deploy decision, D-01 / D-20).
 
 The deeper anti-rot guard (``TestReadoutMatchesHarness``) RUNS ``run_signal_lift_screen`` and
-asserts a load-bearing per-cell delta reproduces from the committed harness and appears in the
-doc, so the doc cannot silently drift from the numbers (the Phase-26 doc-drift convention).
+asserts the RULING the doc records as CURRENT is the ruling the committed harness returns, so the
+doc cannot silently drift from the harness (the Phase-26 doc-drift convention). As of 2026-09-05
+that current ruling is DROP, not the 2026-06-29 KEEP: see ``_CURRENT_*`` below and Section 0b of
+the readout.
 
 ASCII only, no emoji (CLAUDE.md).
 """
@@ -53,6 +55,36 @@ _REQUIRED_PHRASES = (
     "priced-in",
 )
 _FORBIDDEN_WORDS = ("deployed", "proven")
+
+# ---------------------------------------------------------------------------
+# The RECONCILED state (2026-09-05), which this guard now pins.
+#
+# The Plan 31-11 full gold rebuild corrected 68 protected-window games that had been graded
+# against a FABRICATED 0.0 market line (the LAR -> LA odds-key orphan; register DEF-31-09), which
+# moved the ATS and O/U LABELS those games carry. On that corrected gold the Phase-28 screen no
+# longer returns its recorded KEEP: situational carries a D-05 veto on OU, and so do injury (WP)
+# and snap (ATS, OU). The readout was reconciled -- Section 0b records the flip with its cause,
+# the 2026-06-29 anchor is left standing as the historical record -- and this guard moved with it.
+#
+# It was NOT weakened to do so. The invariant is unchanged in kind: the doc's CURRENT ruling must
+# be the harness's ruling. Only the ruling being pinned changed, because the ruling changed. A
+# return to KEEP now fails just as loudly as the flip to DROP did, and for the same reason -- it
+# would mean the doc and the harness disagree again.
+# ---------------------------------------------------------------------------
+
+# The 2026-06-29 Phase-28 anchor, which the doc must keep recording rather than overwrite.
+_HISTORICAL_ANCHOR = "+0.177334"
+
+# The dated 2026-09-05 measurement the doc must keep recording, and the sentence that states
+# which reading of the document is current. Asserted against the DOC, never re-asserted against
+# a re-run of the harness -- pinning a point estimate to moving gold is the mistake this guard
+# already made once (D29-06-02).
+_CURRENT_MEASURED_DELTA = "-0.3203552582994336"
+_CURRENT_RULING_MARKER = (
+    "The CURRENT ruling of this screen, on 2026-09-05 corrected gold, is **DROP for all "
+    "three groups**"
+)
+_CURRENT_CAUSE_MARKER = "FABRICATED 0.0 market line"
 
 
 def _read_readout() -> str:
@@ -129,7 +161,7 @@ class TestScreenNotDeployInvariant:
 
 @pytest.mark.integration
 class TestReadoutMatchesHarness:
-    """The doc-to-harness validation: the doc's RULING is the harness's ruling.
+    """The doc-to-harness validation: the doc's CURRENT ruling is the harness's ruling.
 
     SCOPE, and why it is not the point estimate (D29-06-02, owner decision). This guard used to
     assert that re-running the harness reproduced the committed +0.177334 situational-OU delta.
@@ -138,13 +170,23 @@ class TestReadoutMatchesHarness:
     assumption is permanently false and the assertion was guaranteed to keep going red for
     reasons that are not drift. Re-anchoring it to each new measurement was explicitly considered
     and rejected: it rewrites a published record to match a moving input, and drifts again on the
-    next rebuild.
+    next rebuild. That reasoning stands and is NOT relaxed here.
 
-    What IS permanent, and is asserted here: the recorded KEEP ruling must still reproduce. A
-    point estimate moving with gold is expected; the D-05 ruling flipping is exactly the thing a
-    tripwire should catch, and it stays caught. The measured divergence and its three-cause
-    decomposition live in Section 0a of the readout, dated, beside the original numbers rather
-    than replacing them.
+    What IS permanent, and is asserted here: the ruling the readout records as CURRENT must be
+    the ruling the harness returns. A point estimate moving with gold is expected; the D-05
+    ruling flipping is exactly the thing a tripwire should catch, and it stays caught.
+
+    WHAT CHANGED ON 2026-09-05, and why this is not a weakened assertion. The guard previously
+    pinned KEEP, because KEEP was what the readout recorded. Plan 31-11's full gold rebuild
+    corrected the LAR -> LA odds-key orphan, so 68 games inside this screen's own 2021-2024
+    holdout stopped being graded against a fabricated 0.0 market line and their ATS / O/U labels
+    changed. On those corrected labels the screen returns a D-05 veto: situational-OU
+    -0.3203552582994336, and injury and snap veto too. The guard's own failure message said the
+    right thing -- a flipped ruling is a real finding that must be reconciled in the doc rather
+    than re-anchored -- so the doc was reconciled (Section 0b, with the flip, its cause and the
+    2026-06-29 anchor left standing) and the guard follows the doc. The assertion did not get
+    looser: it pins a ruling exactly as before, and a return to KEEP now fails exactly as loudly,
+    because that too would be the doc and the harness disagreeing.
 
     THE BASELINE MUST BE PINNED, and this test is why the pin exists. It used to call
     ``run_signal_lift_screen`` with the module-default ``baseline_exclude_groups`` and justify
@@ -157,8 +199,8 @@ class TestReadoutMatchesHarness:
     a later phase is pinned out of the Phase-28 baseline automatically.
     """
 
-    def test_situational_ou_keep_ruling_reproduces_from_harness(self) -> None:
-        """The recorded KEEP ruling still reproduces, and the doc still records its anchor."""
+    def test_situational_ou_current_ruling_reproduces_from_harness(self) -> None:
+        """The ruling the doc records as CURRENT still reproduces from the committed harness."""
         if not (_GOLD_OU_PATH.exists() and _ODDS_PATH.exists()):
             pytest.skip(
                 f"Canonical gold/odds not present at {_GOLD_OU_PATH} / {_ODDS_PATH}"
@@ -186,24 +228,43 @@ class TestReadoutMatchesHarness:
         decision = result["groups"]["situational"]["decision"]
         cell = result["groups"]["situational"]["per_target"]["ou"]
 
-        # The permanent invariant: the ruling the doc records must still be the ruling the
-        # harness returns. A moved point estimate is expected; a flipped ruling is not.
-        assert decision["keep"] is True, (
-            f"situational no longer screens KEEP: {decision['reason']} "
-            f"(situational-OU delta {cell['delta_mean']}). The readout records KEEP -- a flipped "
-            "ruling is a real finding, not point-estimate drift, and must be reconciled in the "
-            "doc rather than re-anchored."
+        # The permanent invariant, unchanged in kind: the ruling the doc records as CURRENT
+        # must be the ruling the harness returns. A moved point estimate is expected; a flipped
+        # ruling is not. Since the 2026-09-05 corrected-label rebuild the current ruling is DROP.
+        assert decision["keep"] is False, (
+            f"situational screens KEEP again: {decision['reason']} "
+            f"(situational-OU delta {cell['delta_mean']}). Section 0b of the readout records the "
+            "CURRENT ruling as DROP on a D-05 OU veto. A flipped ruling is a real finding, not "
+            "point-estimate drift, and must be reconciled in the doc rather than re-anchored -- "
+            "in EITHER direction. Reconcile Section 0b; do not relax this assertion."
         )
-        assert cell["veto"] is False, "situational-OU must not carry a D-05 veto"
+        assert cell["veto"] is True, (
+            "situational-OU no longer carries the D-05 veto the readout records in Section 0b "
+            f"(delta {cell['delta_mean']}); reconcile the doc, do not relax this guard"
+        )
 
         content = _read_readout()
-        # The published Phase-28 record stays recorded, with its measurement date and the
-        # dated drift record that explains why re-running returns something else.
-        assert "+0.177334" in content, (
+        # The published 2026-06-29 Phase-28 record stays recorded rather than being overwritten.
+        assert _HISTORICAL_ANCHOR in content, (
             "the doc must keep recording the 2026-06-29 situational-OU +0.177334 anchor"
         )
         assert "DRIFT RECORD" in content, (
             "the doc must carry the dated drift record explaining the divergence (D29-06-02)"
+        )
+        # ... and the 2026-09-05 reconciliation stays recorded beside it: the measured delta,
+        # the sentence naming which reading is current, and the cause named explicitly rather
+        # than softened to "a correction was applied" (the DEF-31-09 disclosure standard).
+        assert _CURRENT_MEASURED_DELTA in content, (
+            "the doc must keep recording the 2026-09-05 measured situational-OU delta "
+            f"{_CURRENT_MEASURED_DELTA}"
+        )
+        assert _CURRENT_RULING_MARKER in content, (
+            "the doc must state which ruling is CURRENT; the harness returns "
+            f"{decision['reason']!r} and Section 0b must say so"
+        )
+        assert _CURRENT_CAUSE_MARKER in content, (
+            "the doc must name the fabricated 0.0 market line as the cause, not merely report "
+            "that a correction was applied (DEF-31-09)"
         )
 
     def test_phase28_baseline_is_pinned_against_later_widening(self) -> None:

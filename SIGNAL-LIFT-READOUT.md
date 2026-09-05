@@ -10,15 +10,17 @@ closing odds per leg).
 explicitly because an add-one-in delta is meaningless without its baseline, and the omission of
 this line is what let the drift in Section 0a go unnoticed.
 **Measured:** 2026-06-29, against that date's gold. **The grid below is a dated snapshot
-measurement, NOT a standing reproduction target** -- see Section 0a. v3.0 deliberately rebuilds
-gold, so re-running the harness today returns different point estimates. The KEEP/DROP rulings
-are unchanged under every input measured to date.
+measurement, NOT a standing reproduction target** -- see Sections 0a and 0b. v3.0 deliberately
+rebuilds gold, so re-running the harness today returns different point estimates. **On 2026-09-05
+the RULINGS moved as well, for the first time: on corrected gold all three groups screen DROP.**
+The 2026-06-29 grid stands as the Phase-28 record of what was measured on that date against that
+gold; Section 0b records what the same harness returns now, and which reading is CURRENT.
 **Reproducibility:** every load-bearing number below was reproducible from
 `backtest/signal_lift.py` via `run_signal_lift_screen()` on 2026-06-29 gold. The doc-drift guard
 `tests/unit/test_signal_lift_readout_md.py` asserts the permanent invariants -- required
-sections, ASCII, the screen-not-deploy language, and that the harness still returns the KEEP
-ruling recorded here -- and deliberately does NOT assert a frozen point estimate against moving
-gold (D-20; see Section 0a).
+sections, ASCII, the screen-not-deploy language, and that the harness's ruling is the ruling this
+document records as CURRENT (Section 0b) -- and deliberately does NOT assert a frozen point
+estimate against moving gold (D-20; see Sections 0a and 0b).
 
 **Re-run command (owner verification):**
 
@@ -66,9 +68,13 @@ rather than overwriting them.
    situational-OU from a KEEP to a D-05 veto. Fixed in code: Phase 28 now pins its baseline to
    `ALL_REGISTERED_GROUPS`, so a group registered by any later phase is excluded automatically.
 
-**The ruling is unchanged under every input measured.** `keep=True` for situational in legs A, B
-and C, and under the pinned 2026-08-17 run. All three groups still screen KEEP. Only the point
-estimates moved, so the SIG-05 ruling ratified on 2026-06-29 stands.
+**The ruling was unchanged under every input measured AS OF 2026-08-17. It is no longer.** That
+sentence originally read "the ruling is unchanged under every input measured", and asserted that
+all three groups still screen KEEP and that the SIG-05 ruling ratified on 2026-06-29 therefore
+stands. It was true for the inputs it was written against -- `keep=True` for situational in legs
+A, B and C and under the pinned 2026-08-17 run -- and it is FALSE on the 2026-09-05 corrected
+gold, where all three groups screen DROP. It is corrected here rather than deleted, so the record
+shows both what was claimed and the date it stopped holding. **See Section 0b.**
 
 **A caveat visible only in the current measurement.** Under the 2026-08-17 pinned run, injury-WP
 and situational-WP report `grp_cols_used = 0` -- the WP selector locked no column from either
@@ -82,6 +88,111 @@ the harness on today's gold reproduces a number measured months ago. That holds 
 is frozen, and v3.0 rebuilds gold by design, so the assumption is permanently false. The guard
 keeps every invariant that should never move and asserts the recorded RULING still reproduces;
 the point estimate is recorded here with its date instead.
+
+---
+
+## 0b. DRIFT RECORD -- 2026-09-05: the first input under which the RULING flips, not the estimate
+
+Section 0a records point estimates moving while the KEEP/DROP rulings held. **This entry is
+different in kind, and that is why it gets its own section: this is the FIRST input under which
+the ruling itself flips.** Re-running the same committed harness, unchanged, on the 2026-09-05
+corrected gold returns:
+
+```
+Group screened  group=situational  keep=False  measurable=True
+reason=DROP: significantly-negative on ['ou'] (D-05 veto); dropped, not silently retained
+situational-OU delta = -0.3203552582994336
+```
+
+against the recorded 2026-06-29 anchor of **+0.177334**. The 2026-06-29 numbers in Section 1 are
+left standing as the Phase-28 record, exactly as Section 0a leaves its own; this section records
+the divergence rather than overwriting it.
+
+### The full grid on 2026-09-05 gold -- all three groups, measured rather than assumed
+
+The whole 3x3 screen was re-run, not only the cell the doc-drift guard watches, because reporting
+one flipped cell and leaving the other eight unstated would repeat exactly the omission Section 0a
+exists to correct. n_paired = 1087 per cell (2021-2024 holdout; 52 of the window's 1,139 rows lack
+closing odds).
+
+| Group | Target | delta (mean) | t | p | D-05 veto |
+|---|---|---|---|---|---|
+| Injury      | WP  | -0.006596     | -12.641 | 2.9e-34 | **YES** |
+| Injury      | ATS | -0.137880     | -1.511  | 0.13116 | no |
+| Injury      | OU  | -0.007398     | -0.082  | 0.93485 | no |
+| Snap        | WP  | +0.013064     | +7.505  | 1.3e-13 | no |
+| Snap        | ATS | -0.499938     | -4.472  | 8.6e-06 | **YES** |
+| Snap        | OU  | -0.255886     | -2.558  | 0.01068 | **YES** |
+| Situational | WP  | -0.000174     | -0.608  | 0.54358 | no |
+| Situational | ATS | +0.216227     | +2.169  | 0.03027 | no |
+| Situational | OU  | **-0.320355** | -3.466  | 0.00055 | **YES** |
+
+| Group | 2026-06-29 ruling | 2026-09-05 ruling | Why it moved |
+|---|---|---|---|
+| Injury      | KEEP | **DROP** | D-05 veto: significantly-negative on WP |
+| Snap        | KEEP | **DROP** | D-05 veto: significantly-negative on ATS and OU |
+| Situational | KEEP | **DROP** | D-05 veto: significantly-negative on OU |
+
+**All three groups screen DROP on 2026-09-05 corrected gold.** The owner ruling of 2026-09-05
+named the situational flip; the injury and snap flips were found by re-running the full grid and
+are recorded here on the same principle.
+
+### The cause, attributed by measurement rather than by assumption
+
+**It is NOT a recurrence of the Section-0a baseline-composition bug.** The 2026-09-05 run logs
+`baseline_excludes=['snap', 'injury', 'situational', 'line_movement']`, so the
+`ALL_REGISTERED_GROUPS` pin from cause 3 above is live and Phase 29's fifteen `line_movement`
+columns are correctly held out of the baseline leg. The baseline is composed as intended. That
+possibility was checked first, precisely because it was the last cause.
+
+**The cause is the LABELS.** The Plan 31-11 full gold rebuild of 2026-09-05 corrected a real data
+defect. Gold keys the Rams canonically as `LA`; silver stored 116 of their odds rows as `LAR`.
+Those rows were ORPHANS against gold, so those games fell through to the neutral default and
+gold's imputation wrote a literal **0.0** market line. `scripts/build_features.py` then computed
+`target_ats = point_differential - snapshot_spread` and `target_ou = total_points -
+snapshot_total` against that fabricated zero. **68 games inside this screen's own 2021-2024
+holdout were being graded against a FABRICATED 0.0 market line and carried a correspondingly
+WRONG ATS and O/U label.** They now carry the real lines and the real labels. The correction is
+registered as DEF-31-09 and bound as a disclosure obligation on `PROFITABILITY-READOUT.md`.
+
+**The screen's own paired population corroborates that attribution, game for game.** The
+2026-06-29 grid reports n = 1019 per cell; the 2026-09-05 grid reports n = 1087. The difference is
+exactly **68**, and it is the same 68 games. The protected window holds 75 `LA`-involved rows
+(21 / 17 / 18 / 19 by season -- the counts DEF-31-09 records independently), and 68 of them now
+join closing odds where before they could not, because the key they were stored under did not
+exist in gold. Games that cannot join closing odds are dropped from the CLV computation outright;
+games that joined the fabricated zero contributed wrong labels to both legs. No `LAR`-keyed row
+remains in gold, and only 2 rows in the whole 1,139-row protected window still sit at
+`snapshot_spread == 0.0` -- neither of them a Rams game.
+
+So the flip is neither noise nor a re-baselining artifact. This screen was previously measured
+against partly fabricated labels over a paired population 68 games smaller, and it now is not.
+
+### What follows from this, and what does NOT
+
+- **The Phase-28 screen was a CARRY decision, never a gate ruling.** Section 5 said so when it was
+  written and still does. A flipped screen changes what Phase 28 would have carried forward; it
+  does not by itself un-carry anything already carried.
+- **The BINDING ruling on these groups was Phase 30's, not this document's.** Phase 30's deploy
+  gate KEPT `snap` and `situational` and DROPPED `injury`. Those verdicts were measured on gold
+  that still held the fabricated Rams lines, so they rest on superseded data. That is registered
+  as DEF-31-12, and it is REVISITABLE without a gold rebuild -- the same standing `injury`'s 12
+  columns already have, physically present in gold and excluded at train time.
+- **Nothing retrains, and no model artifact moves on account of this entry.** The production
+  models -- `wp_20260824_113325`, `ats_20260605_220128`, `ou_20260326_163930`, and the dynamic
+  blend `blend_dynamic_20260606_020635` -- are frozen and untouched by this reconciliation.
+- **The 2025 profitability verdict is unaffected.** It runs those frozen artifacts, so a Phase-28
+  screen ruling re-measured over 2021-2024 does not enter it.
+- **Re-running Phase 30's binding gate was CONSIDERED and DECLINED** by the owner as outside
+  Phase 31's scope. The declining is recorded in DEF-31-12 so it is not later mistaken for an
+  oversight.
+
+### Which reading of this document is current
+
+The CURRENT ruling of this screen, on 2026-09-05 corrected gold, is **DROP for all three groups**
+-- injury, snap and situational -- each on a D-05 veto. The 2026-06-29 grid in Section 1 and the
+KEEP summary in Section 2 are the historical Phase-28 record of what was measured on that date
+against that gold. They are NOT the current ruling and must not be quoted as one.
 
 ---
 
@@ -111,6 +222,10 @@ deltas are in line units (spread / total points), so cross-target magnitudes are
 ---
 
 ## 1. Per-target incremental-CLV lift grid (all three groups)
+
+**HISTORICAL RECORD, measured 2026-06-29.** These numbers and rulings are left standing as the
+Phase-28 record. They are NOT the current ruling -- on 2026-09-05 corrected gold all three groups
+screen DROP. See Section 0b.
 
 Each cell is the PAIRED add-one-in delta (candidate minus baseline) over n = 1019 holdout games.
 `keep` = point-estimate delta > 0; `veto` = significantly-negative (mean < 0 AND p < 0.05).
@@ -152,6 +267,9 @@ this KEEP is a permissive screening signal, NOT evidence of a standing bet angle
 ---
 
 ## 2. Keep/drop summary + multiplicity note
+
+**HISTORICAL RECORD, measured 2026-06-29.** Superseded as the current ruling by Section 0b, where
+all three groups screen DROP on 2026-09-05 corrected gold. Left standing as the Phase-28 record.
 
 | Group       | Decision | Positive targets   | Vetoed targets | Carried to Phase 30? |
 |-------------|----------|--------------------|----------------|----------------------|
