@@ -26,9 +26,11 @@ no-train/no-write-gold guard mirrors the Phase-22 HARD BOUNDARY (LOAD + predict 
 
 Provenance terminology split (Codex HIGH, D26-04): the integrity preamble carries TWO DISTINCT
 flags -- ``mock_free_odds`` (no mock/synthetic ODDS: sportsbook in {consensus, draftkings},
-is_live all False) and ``synthetic_snapshot_ts`` (fabricated single-stamp TIMESTAMP reality:
-8 distinct snapshot_ts, 1 line per game). The overloaded word "synthetic" must not conflate the
-odds-contamination concept with the timestamp-fabrication concept.
+is_live all False) and ``synthetic_snapshot_ts`` (fabricated TIMESTAMP reality: every stored
+stamp re-derived, 1 line per game). The overloaded word "synthetic" must not conflate the
+odds-contamination concept with the timestamp-fabrication concept. The "8 distinct snapshot_ts"
+this docstring used to cite was a PRE-INGEST property of the store, and the detector keyed on
+that cardinality; see DEF-31-07 near the foot of this module.
 
 Reproducibility convention: the shared fixture loads gold + normalized closing odds via the
 engine loaders (``_load_features`` / ``_load_closing_odds``) rather than re-reading parquet so the
@@ -224,15 +226,23 @@ class TestOuDivergence:
         assert preamble["mock_free_odds"] is True, (
             "real silver odds are mock-free (sportsbook consensus/draftkings, is_live False)"
         )
-        assert preamble["synthetic_snapshot_ts"] is True, (
-            "the single-stamp-per-game timestamp reality is synthetic (8 distinct stamps)"
-        )
         # The two concepts must not be conflated under a single shared key.
         assert "synthetic_odds" not in preamble, (
             "must not conflate mock-odds contamination with timestamp fabrication"
         )
-        assert preamble["snapshot_ts_distinct"] == 8
+        # The real timestamp invariant: ONE line per game, freeze == closing. Unchanged by
+        # the 2025 ingest and still the fact the O/U harness rests on.
         assert preamble["snapshots_per_game_max"] == 1
+
+        # `synthetic_snapshot_ts is True` and `snapshot_ts_distinct == 8` USED TO BE asserted
+        # here. Both were pre-ingest measurements: the store then held one fabricated stamp
+        # per season (8 of them), and the detector's `distinct <= 12` rule fired on that
+        # cardinality. The 2025 ingest re-derives a stamp PER GAME (D31-37), so the store now
+        # holds 30 distinct stamps that are every bit as fabricated, and the detector reports
+        # False. The distinct COUNT is a property of how many seasons the store covers, not a
+        # safety property, so it is no longer asserted. The safety property -- the detector's
+        # verdict -- is asserted in TestTheSyntheticStampDetectorIsInverted below, where the
+        # inversion is visible rather than silently absent (DEF-31-07, owner ruling C).
 
     # -- no_train_no_write: source-grep + runtime to_parquet spy ---------------------------
 
@@ -835,3 +845,130 @@ def test_fixture_uses_normalized_odds_loader() -> None:
     # at runtime so this assertion does not match its own literal in the file source.
     raw_odds_antipattern = "read_parquet(" + chr(34) + "data/silver/odds_snapshot"
     assert raw_odds_antipattern not in test_source
+
+
+# ---------------------------------------------------------------------------
+# DEF-31-07 -- the synthetic-stamp detector has moved in the UNSAFE direction
+# (owner ruling C, 2026-09-05)
+# ---------------------------------------------------------------------------
+#
+# ``backtest.ou_divergence.integrity_preamble`` decides ``synthetic_snapshot_ts`` with
+#
+# the conjunction of two conditions: fewer than thirteen distinct stamps, and at most one
+# snapshot per game.
+#
+# That is a CARDINALITY heuristic. It worked while the store held ONE fabricated stamp per
+# season (8 of them) and stops working the moment fabrication becomes finer-grained: D31-37
+# re-derives a stamp PER GAME from the calendar, the store now holds 30 distinct stamps, and
+# the flag reports False for stamps that are every bit as fabricated as the eight it used to
+# catch. A provenance flag that UNDER-reports fabrication has failed in the unsafe direction,
+# and ``OU-DIVERGENCE-DIAGNOSIS.md`` and the EV chain both read it as a declaration.
+#
+# THE DETECTOR IS NOT FIXED HERE, AND THE REASON IS NOT DISCRETION. ``backtest/ou_divergence.py``
+# is on this plan's FROZEN list: the owner requires it byte-unchanged, because the Phase-26
+# divergence verdict was measured through it. Ruling C anticipates exactly this and directs that
+# the item be recorded with its reason instead. It is DEF-31-07 in the phase register.
+#
+# WHAT THE CORRECT RULE IS, stated here so the fix is a transcription rather than a re-derivation.
+# Discriminate on DERIVATION, not on cardinality. Every stored stamp is a re-derived freeze
+# instant, and re-derivation leaves a signature that observed capture times do not have: the
+# Eastern wall-clock time of every row is EXACTLY 18:00:00, to the second, across all 2,140 rows
+# and both stored spellings. A genuine book capture lands on arbitrary seconds. So:
+#
+# call a store DERIVED when every snapshot_ts, parsed through normalize_snapshot_ts and
+# converted to Eastern, lands on hour eighteen with zero minutes, seconds and microseconds;
+# then report the stamps synthetic when the store is derived AND holds at most one snapshot
+# per game.
+#
+# This is strictly better than the count rule on both sides: it stays True as the store grows
+# (the failure that produced this entry), and it goes False the moment a genuinely observed
+# capture time is stored -- which is the case the flag exists to distinguish.
+#
+# The two tests below split the claim so neither can hide the other. The first proves the ground
+# truth and is GREEN. The second asserts the detector's verdict on that ground truth and is
+# XFAIL(strict=True): the inversion is therefore NAMED in every terminal summary, and the day
+# the detector is corrected the xfail becomes an unexpected PASS -- a failure -- which forces
+# DEF-31-07 to be closed rather than quietly outlived.
+
+_STAMP_FREEZE_HOUR_ET = 18
+
+
+@pytest.mark.integration
+class TestTheSyntheticStampDetectorIsInverted:
+    """DEF-31-07: the stored stamps are derived; the flag that should say so reports False."""
+
+    @staticmethod
+    def _stored_stamps() -> pd.Series:
+        """Every stored snapshot_ts, from the SAME path constant the detector reads."""
+        from backtest.ou_divergence import _RAW_SILVER_ODDS_PATH
+
+        path = Path(str(_RAW_SILVER_ODDS_PATH))
+        if not path.is_file():
+            pytest.skip(
+                "live silver odds not present at data/silver/odds_snapshot.parquet -- "
+                "data/ is gitignored runtime state."
+            )
+        return pd.read_parquet(path)["snapshot_ts"]
+
+    def test_every_stored_stamp_is_DERIVED_rather_than_OBSERVED(self) -> None:
+        """The ground truth the flag is supposed to report. GREEN, and it must stay green.
+
+        Parsed through the project's one snapshot parse path and converted to Eastern, every
+        stored stamp sits on the 18:00:00 freeze instant exactly. That is a signature of
+        re-derivation from the calendar; an observed book capture would carry arbitrary
+        seconds. Both stored spellings are covered, so the claim holds across the legacy
+        per-season rows and the 2025 per-game ones alike.
+        """
+        from scripts.ingest_historical_odds import normalize_snapshot_ts
+
+        stamps = self._stored_stamps()
+        assert len(stamps) > 0, (
+            "the stored odds table is empty, so this control would prove nothing."
+        )
+
+        eastern = stamps.astype(str).map(normalize_snapshot_ts)
+        eastern = pd.to_datetime(pd.Series(list(eastern)), utc=True).dt.tz_convert(
+            "America/New_York"
+        )
+        off_freeze = eastern[
+            (eastern.dt.hour != _STAMP_FREEZE_HOUR_ET)
+            | (eastern.dt.minute != 0)
+            | (eastern.dt.second != 0)
+            | (eastern.dt.microsecond != 0)
+        ]
+        assert off_freeze.empty, (
+            f"{len(off_freeze)} of {len(stamps)} stored stamps do NOT sit on the "
+            f"{_STAMP_FREEZE_HOUR_ET}:00:00 ET freeze instant, e.g. "
+            f"{sorted(off_freeze.astype(str).unique())[:5]}. If a genuinely OBSERVED capture "
+            "time has entered the store, the derivation-based rule DEF-31-07 proposes would "
+            "correctly report synthetic_snapshot_ts False -- and this control, which asserts "
+            "the store is wholly derived, is the thing that should change, not that rule."
+        )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEF-31-07 (owner ruling C, 2026-09-05): integrity_preamble decides "
+            "synthetic_snapshot_ts by CARDINALITY (snapshot_ts_distinct <= 12). D31-37 "
+            "re-derives a stamp per game, so the store now holds 30 distinct stamps that are "
+            "every bit as fabricated as the 8 the rule used to catch, and the flag reports "
+            "False -- UNDER-reporting fabrication, which is the unsafe direction. The fix is "
+            "not applied here because backtest/ou_divergence.py is on this plan's FROZEN "
+            "list; the correct derivation-based rule is transcribed in the block above."
+        ),
+    )
+    def test_the_detector_reports_that_derivation_as_synthetic(
+        self, gold_and_odds_2021_2024
+    ) -> None:
+        """The safety claim, asserted rather than left silently absent."""
+        from backtest.ou_divergence import integrity_preamble
+
+        preamble = integrity_preamble(odds_df=gold_and_odds_2021_2024["odds"])
+        assert preamble["synthetic_snapshot_ts"] is True, (
+            "integrity_preamble reports synthetic_snapshot_ts=False for a store whose every "
+            f"stamp is a re-derived {_STAMP_FREEZE_HOUR_ET}:00:00 ET freeze instant "
+            f"({preamble['snapshot_ts_distinct']} distinct, "
+            f"{preamble['snapshots_per_game_max']} per game). The flag is a provenance "
+            "DECLARATION that OU-DIVERGENCE-DIAGNOSIS.md and the EV chain read; reporting "
+            "False here under-reports fabrication."
+        )
