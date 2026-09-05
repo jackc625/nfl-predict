@@ -789,6 +789,14 @@ CREATE TABLE IF NOT EXISTS bet_tracker_blocks (
 # the Plan 31-18 stale-cache hard-block both read it.
 BET_LIST_POPULATED_AT_KEY = "bet_list_populated_at"
 
+# The ``status`` value that means a bet was actually PLACED. ``DataService.get_bet_list`` selects
+# rows equal to it and ``DataService.get_suppressed_bets`` selects the exact COMPLEMENT
+# (``IS DISTINCT FROM``, so a NULL status lands in the suppressed list rather than vanishing from
+# both). Deriving both readers from ONE constant is what makes "never silently dropped" (SPEC R6)
+# a partition of the table rather than two whitelists that can drift apart -- and drifting
+# whitelists are the failure mode this repo has already had once.
+BET_STATUS_LIVE = "live"
+
 
 def classify_row_provenance(season: int, run_mode: str) -> tuple[str, str]:
     """Return the two orthogonal D31-22 honesty labels as ``(provenance, validation_type)``.

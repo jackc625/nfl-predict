@@ -16,8 +16,13 @@ stub -- so the seam being proven is the production seam. The candidate rows are 
 model/closing/actual totals) so the assertion is deterministic and hermetic; nothing under
 ``data/``, ``artifacts/`` or ``outputs/`` is read.
 
+Plan 31-15 extends it past the happy path: the suppressed-candidates disclosure (the declined
+half of the SAME candidate universe), the four distinct non-happy renders, and the parameterised
+week selector shared with the This Week page.
+
 Selectors (``-k``): served_equals_selector, served_order, tie_break, not_advice_banner,
-no_currency, nav_link, ev_band_badge, empty_week.
+no_currency, nav_link, ev_band_badge, empty_week, taxonomy, reason_code, suppressed, disclosure,
+caption, moneyline.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -46,7 +51,8 @@ from api.cache import (
     materialize_available_bet_weeks,
     materialize_bet_list,
 )
-from backtest.bet_selector import BetSelector
+from api.services import clear_cache
+from backtest.bet_selector import REJECTION_REASONS, BetSelector
 from backtest.ev_chain_constants import assign_ev_tier
 from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 
@@ -409,3 +415,241 @@ def test_empty_week_renders_empty_state_not_500(bets_client: TestClient) -> None
     response = bets_client.get(f"/bets?season={_SEASON}&week={_EMPTY_WEEK}")
     assert response.status_code == 200
     assert "No bets cleared the floor this week" in response.text
+
+
+# ---------------------------------------------------------------------------
+# The suppressed-candidates disclosure (plan 31-15 Task 1, SPEC R6, UI-SPEC E3)
+# ---------------------------------------------------------------------------
+
+_UNRECOGNISED_REASON = "reason_invented_by_a_future_plan"
+
+# The nine labels the page maps REJECTION_REASONS onto, transcribed from the UI-SPEC's
+# suppression-reason table. Kept here as a LITERAL rather than imported from the template so a
+# silent edit to either side is a test failure rather than a tautology.
+_EXPECTED_LABELS: dict[str, str] = {
+    "ev_below_floor": "Expected value below the floor",
+    "not_subpop": "Outside the eligible sub-population",
+    "stale_line": "Line older than the freeze",
+    "missing_snapshot": "No market line for this bet type",
+    "missing_prediction": "No model prediction for this game",
+    "real_odds_failed": "Odds failed the real-market check",
+    "zero_kelly_stake": "Sizing returned no stake",
+    "ev_not_finite": "Expected value could not be computed",
+    "no_bet_side": "Model agrees with the market",
+}
+
+_BLANK_REASON_CELL = (
+    '<td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap"></td>'
+)
+
+
+def _suppressed_row(
+    game_id: str, target: str, reason: str | None, *, week: int = _WEEK
+) -> dict[str, Any]:
+    """One SUPPRESSED bet_list row: the core record only.
+
+    A suppressed candidate is never priced (plan 31-09), so ``per_bet_ev``, ``stake_units`` and
+    ``ev_tier`` stay NULL here exactly as the selector leaves them. If the page derived anything
+    from those columns this row would render a blank or raise; it renders the reason instead.
+    """
+    row = dict.fromkeys(BET_LIST_COLUMNS)
+    row.update(
+        {
+            "game_id": game_id,
+            "season": _SEASON,
+            "week": week,
+            "target": target,
+            "status": "suppressed",
+            "rejection_reason": reason,
+            "snapshot_ts": _SNAPSHOT_TS,
+            "freeze_ts": _FREEZE_TS,
+            "provenance": "backtest_replay",
+            "validation_type": "contaminated",
+            "grading_status": GRADING_STATUS_PENDING,
+            "outcome": None,
+        }
+    )
+    return row
+
+
+def _live_row(game_id: str, target: str, *, week: int = _WEEK) -> dict[str, Any]:
+    """One LIVE bet_list row carrying the minimum the live table renders."""
+    row = dict.fromkeys(BET_LIST_COLUMNS)
+    row.update(
+        {
+            "game_id": game_id,
+            "season": _SEASON,
+            "week": week,
+            "target": target,
+            "bet_side": "under",
+            "line": 47.5,
+            "per_bet_ev": 0.0625,
+            "stake_units": 1.5,
+            "ev_tier": "high",
+            "status": "live",
+            "snapshot_ts": _SNAPSHOT_TS,
+            "freeze_ts": _FREEZE_TS,
+            "selected_odds": _MINUS_110,
+            "flat_stake": 1.0,
+            "provenance": "backtest_replay",
+            "validation_type": "contaminated",
+            "grading_status": GRADING_STATUS_PENDING,
+            "outcome": None,
+        }
+    )
+    return row
+
+
+def _client_for(tmp_path: Path, rows: list[dict[str, Any]], name: str) -> Any:
+    """Build a one-week cache out of *rows* and return a client context manager serving it.
+
+    ``clear_cache()`` is called here, not left to the autouse conftest fixture: that fixture runs
+    once per TEST, and a test that serves TWO different cache DBs would otherwise have the first
+    DB's rows answered out of the module-level TTLCache for the second one. That is not a
+    hypothetical -- it silently emptied the suppressed section under a second client.
+    """
+    clear_cache()
+    db_path = tmp_path / f"{name}.duckdb"
+    _build_cache(
+        db_path,
+        rows,
+        week_rows=[
+            {"game_id": r["game_id"], "season": _SEASON, "week": r["week"]}
+            for r in rows
+        ],
+    )
+    return contextmanager(_client)(db_path)
+
+
+def test_every_live_taxonomy_reason_has_a_label(tmp_path: Path) -> None:
+    """Every member of the LIVE REJECTION_REASONS tuple renders a label, none renders blank.
+
+    Iterates the EXPORTED taxonomy rather than a literal count: ``no_bet_side`` was added as a
+    NINTH member in plan 31-10 after the design contract's header said eight, and a hardcoded
+    count would have passed while the newest reason rendered as an empty cell.
+    """
+    rows = [
+        _suppressed_row(f"2023_W01_A{i:02d}@B{i:02d}", "ou", reason)
+        for i, reason in enumerate(REJECTION_REASONS)
+    ]
+    with _client_for(tmp_path, rows, "taxonomy") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert set(REJECTION_REASONS) == set(_EXPECTED_LABELS), (
+        "the exported taxonomy and the page's label vocabulary have diverged: "
+        f"taxonomy-only={set(REJECTION_REASONS) - set(_EXPECTED_LABELS)}, "
+        f"labels-only={set(_EXPECTED_LABELS) - set(REJECTION_REASONS)}"
+    )
+    for reason in REJECTION_REASONS:
+        label = _EXPECTED_LABELS[reason]
+        assert label in body, f"reason {reason} rendered no label on the page"
+        # The RAW code must not leak into a rendered reason cell when a label exists.
+        assert f">{reason}</td>" not in body, (
+            f"reason {reason} rendered its raw code even though it has a label"
+        )
+    assert f"Suppressed candidates ({len(REJECTION_REASONS)})" in body
+    assert _BLANK_REASON_CELL not in body
+
+
+def test_unrecognised_reason_code_renders_the_raw_code(tmp_path: Path) -> None:
+    """A reason code with no label renders the RAW CODE, never an empty cell (T-31-76)."""
+    rows = [_suppressed_row("2023_W01_XXX@YYY", "ou", _UNRECOGNISED_REASON)]
+    with _client_for(tmp_path, rows, "unknown_reason") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert f">{_UNRECOGNISED_REASON}</td>" in body
+    assert f"{_UNRECOGNISED_REASON} (1)" in body
+    assert _BLANK_REASON_CELL not in body
+
+
+def test_null_reason_code_renders_an_explicit_marker(tmp_path: Path) -> None:
+    """A suppressed row carrying NO reason renders a visible marker, not a blank and not a 500.
+
+    Grouping a NULL alongside strings would raise a TypeError and 500 the page; showing it as a
+    blank would hide a data defect. It is shown as the defect it is.
+    """
+    rows = [_suppressed_row("2023_W01_XXX@YYY", "ou", None)]
+    with _client_for(tmp_path, rows, "null_reason") as client:
+        response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
+
+    assert response.status_code == 200
+    assert "(no reason recorded)" in response.text
+
+
+def test_zero_suppressed_rows_renders_the_line_and_no_disclosure(
+    bets_client: TestClient,
+) -> None:
+    """A week with zero suppressed rows gets the header plus one line -- never an empty details."""
+    body = bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    assert "Suppressed candidates (0)" in body
+    assert "No candidate was suppressed this week." in body
+    assert "<details" not in body
+
+
+def test_the_disclosure_is_collapsed_by_default(tmp_path: Path) -> None:
+    """The disclosure is a NATIVE details element carrying no open attribute (D31-28)."""
+    rows = [_suppressed_row("2023_W01_XXX@YYY", "ou", "ev_below_floor")]
+    with _client_for(tmp_path, rows, "collapsed") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert '<details id="suppressed-candidates">' in body
+    assert "<details open" not in body
+    assert "<summary" in body
+
+
+def test_suppressed_rows_are_in_the_document_while_collapsed(tmp_path: Path) -> None:
+    """The rows are in the RAW HTML even though the disclosure is collapsed (T-31-75).
+
+    This is the whole reason native disclosure was chosen over a scripted toggle: the record
+    survives into the document and into an HTML export for a reader who never expands it.
+    """
+    rows = [_suppressed_row("2023_W01_SEA@SFO", "ats", "stale_line")]
+    with _client_for(tmp_path, rows, "in_document") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert "<details open" not in body, "the disclosure was not collapsed"
+    assert "SEA @ SFO" in body
+    assert "Line older than the freeze" in body
+
+
+def test_the_caption_is_present_whether_or_not_the_disclosure_is_expanded(
+    tmp_path: Path, bets_client: TestClient
+) -> None:
+    """The caption sits inside <summary>, so it renders collapsed, expanded and in the zero state."""
+    caption = (
+        "Every scheduled game is evaluated for all three bet types. This section is the "
+        "complete record of what was not bet, and why."
+    )
+    assert caption in bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    rows = [_suppressed_row("2023_W01_XXX@YYY", "ou", "not_subpop")]
+    with _client_for(tmp_path, rows, "caption") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    assert caption in body
+    summary = body[body.index("<summary") : body.index("</summary>")]
+    assert caption in summary, "the caption is hidden while the disclosure is collapsed"
+
+
+def test_total_but_no_moneyline_yields_one_live_and_one_suppressed_row(
+    tmp_path: Path,
+) -> None:
+    """A game with a total but no moneyline: a LIVE Totals row AND a SUPPRESSED Winner row.
+
+    Both in the same response, on the same game identifier. That is the R6 per-target rule, not a
+    duplicated row (UI-SPEC E2 partial / E3 partial).
+    """
+    game_id = "2023_W01_DEN@LVR"
+    rows = [
+        _live_row(game_id, "ou"),
+        _suppressed_row(game_id, "wp", "missing_snapshot"),
+    ]
+    with _client_for(tmp_path, rows, "partial_market") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert body.count(f'href="/games/{game_id}"') == 2, (
+        "the same game must appear once in the live list and once in the disclosure"
+    )
+    assert ">Totals</td>" in body
+    assert ">Winner</td>" in body
+    assert "No market line for this bet type" in body
+    assert "Suppressed candidates (1)" in body

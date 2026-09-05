@@ -40,7 +40,7 @@ from typing import Any
 import duckdb
 from cachetools import TTLCache
 
-from api.cache import BET_LIST_COLUMNS, BET_TRACKER_BLOCK_COLUMNS
+from api.cache import BET_LIST_COLUMNS, BET_STATUS_LIVE, BET_TRACKER_BLOCK_COLUMNS
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -619,8 +619,8 @@ class DataService:
     def _get_bet_list_uncached(
         self, season: int | None, week: int | None
     ) -> list[dict[str, Any]]:
-        query = f"SELECT {_BET_LIST_COLUMNS_SQL} FROM bet_list WHERE status = 'live'"
-        params: list[Any] = []
+        query = f"SELECT {_BET_LIST_COLUMNS_SQL} FROM bet_list WHERE status = ?"
+        params: list[Any] = [BET_STATUS_LIVE]
         if season is not None:
             query += " AND season = ?"
             params.append(season)
@@ -628,6 +628,57 @@ class DataService:
             query += " AND week = ?"
             params.append(week)
         query += " ORDER BY per_bet_ev DESC NULLS LAST, season, week, game_id, target"
+
+        try:
+            result = self._conn.execute(query, params)
+        except duckdb.Error:
+            # The cache predates Phase 31 (no bet_list table). The route renders the
+            # cache-absent empty state rather than 500ing.
+            logger.warning("bet_list table not available in cache")
+            return []
+        columns = [desc[0] for desc in result.description]
+        return [dict(zip(columns, row)) for row in result.fetchall()]
+
+    def get_suppressed_bets(
+        self, season: int | None, week: int | None
+    ) -> list[dict[str, Any]]:
+        """Return the SUPPRESSED bet-list rows for *season* / *week* (SPEC R6, plan 31-15).
+
+        The exact COMPLEMENT of :meth:`get_bet_list`: both are derived from the one
+        ``api.cache.BET_STATUS_LIVE`` constant, and the complement is expressed as
+        ``IS DISTINCT FROM`` rather than ``<>`` so a row carrying a NULL status lands HERE instead
+        of vanishing from both lists. Every row in ``bet_list`` therefore appears in exactly one of
+        the two, which is what makes "a declined candidate is never silently dropped" a property of
+        the partition rather than a claim about two independently-written WHERE clauses.
+
+        Ordered by ``rejection_reason`` and then by the SPEC R5 four-key tie-break, so the grouped
+        render is byte-identical across requests. As with the live list, ZERO computation happens
+        here: a suppressed candidate was never priced, so there is nothing to recompute -- the page
+        renders the reason the selector recorded (UIAP-01).
+        """
+        key = ("suppressed_bets", season, week)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_suppressed_bets_uncached(season, week)
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_suppressed_bets_uncached(
+        self, season: int | None, week: int | None
+    ) -> list[dict[str, Any]]:
+        query = (
+            f"SELECT {_BET_LIST_COLUMNS_SQL} FROM bet_list "
+            "WHERE status IS DISTINCT FROM ?"
+        )
+        params: list[Any] = [BET_STATUS_LIVE]
+        if season is not None:
+            query += " AND season = ?"
+            params.append(season)
+        if week is not None:
+            query += " AND week = ?"
+            params.append(week)
+        query += " ORDER BY rejection_reason NULLS LAST, season, week, game_id, target"
 
         try:
             result = self._conn.execute(query, params)

@@ -107,6 +107,117 @@
   {% endif %}
 </section>
 
+{# ------------------------------------------------------------------------ #}
+{# Rank 3: the suppressed-candidates disclosure (SPEC R6, UI-SPEC E3).       #}
+{#                                                                          #}
+{# Every scheduled game times every registered target yields exactly one     #}
+{# record, live or suppressed -- the suppressed half is READ from the cache  #}
+{# (DataService.get_suppressed_bets), never derived from the live list.      #}
+{#                                                                          #}
+{# It is a NATIVE <details> disclosure and deliberately not a scripted       #}
+{# toggle: native disclosure is keyboard-accessible and screen-reader-       #}
+{# announced for free, needs no script, and -- the load-bearing reason --    #}
+{# keeps the suppressed rows IN THE DOCUMENT and in the HTML export even     #}
+{# while collapsed, so the "never silently dropped" guarantee holds for a    #}
+{# reader who never expands it (D31-28).                                     #}
+{# ------------------------------------------------------------------------ #}
+<section class="mb-8" hx-indicator="#bets-loading">
+  {# The FIXED label vocabulary, keyed on backtest.bet_selector.REJECTION_REASONS. The selector
+     emits the code; this map turns it into a label. No free prose is minted here, and an
+     UNRECOGNISED code renders the RAW CODE rather than a blank cell -- so a newly added taxonomy
+     member shows up as an unexplained-but-visible row instead of disappearing (UI-SPEC E3
+     long-text). tests/api/test_bets_page.py iterates the exported tuple and asserts every live
+     member has an entry here, so the map cannot silently fall behind the taxonomy. #}
+  {% set SUPPRESSION_LABELS = {
+    "ev_below_floor":     "Expected value below the floor",
+    "not_subpop":         "Outside the eligible sub-population",
+    "stale_line":         "Line older than the freeze",
+    "missing_snapshot":   "No market line for this bet type",
+    "missing_prediction": "No model prediction for this game",
+    "real_odds_failed":   "Odds failed the real-market check",
+    "zero_kelly_stake":   "Sizing returned no stake",
+    "ev_not_finite":      "Expected value could not be computed",
+    "no_bet_side":        "Model agrees with the market"
+  } %}
+  {% set SUPPRESSION_HELP = {
+    "ev_below_floor":     "Evaluated and priced; the edge was not large enough to bet.",
+    "not_subpop":         "This bet type only bets a pre-registered slice; this game is not in it.",
+    "stale_line":         "The stored line predates 6:00 PM Eastern on the Friday before this game's kickoff.",
+    "missing_snapshot":   "The game has odds for other bet types but not this one.",
+    "missing_prediction": "The model produced no output for this game -- a pipeline gap, not a market gap.",
+    "real_odds_failed":   "The stored price did not come from an accepted sportsbook source.",
+    "zero_kelly_stake":   "Admitted on expected value but sized to zero after the caps.",
+    "ev_not_finite":      "A non-finite value reached the expected-value calculation; the row is suppressed rather than tiered.",
+    "no_bet_side":        "The model's number sits inside the no-bet band around the market's, so there is no side to bet and nothing was priced."
+  } %}
+  {% set SUPPRESSION_CAPTION = "Every scheduled game is evaluated for all three bet types. This section is the complete record of what was not bet, and why." %}
+  {% set BET_TYPE_LABELS = {"wp": "Winner", "ats": "Spread", "ou": "Totals"} %}
+
+  {% if not suppressed_bets %}
+  {# Zero suppressed rows renders the HEADER plus one line -- never an empty <details>, whose
+     collapsed summary would promise a record that has no body (UI-SPEC E3 empty). #}
+  <div class="min-h-[44px] flex flex-col justify-center gap-1">
+    <h2 class="text-sm font-semibold text-gray-700">Suppressed candidates (0)</h2>
+    <p class="text-xs text-gray-500 max-w-2xl">{{ SUPPRESSION_CAPTION }}</p>
+  </div>
+  <p class="text-sm text-gray-500 mt-2">No candidate was suppressed this week.</p>
+  {% else %}
+  <details id="suppressed-candidates">
+    {# The caption lives INSIDE <summary> so it is visible while collapsed: anything after the
+       summary is hidden until the disclosure is opened, and a reader who never opens it must
+       still be told this section is the complete record. #}
+    <summary class="cursor-pointer min-h-[44px] flex flex-col justify-center gap-1">
+      <span class="text-sm font-semibold text-gray-700">Suppressed candidates ({{ suppressed_bets|length }})</span>
+      <span class="text-xs text-gray-500 max-w-2xl">{{ SUPPRESSION_CAPTION }}</span>
+    </summary>
+
+    {# Grouped by reason with a count per group. A row whose rejection_reason is SQL NULL is keyed
+       to an explicit marker FIRST: groupby's own default fires only on a MISSING attribute, not on
+       a present-but-None one, so a raw group would sort None against strings (a TypeError, a 500)
+       and would render the word None as the reason. A suppressed row with no reason is a data
+       defect and is shown as one -- never as a blank and never as a minted taxonomy member. #}
+    {% set _keyed_rows = [] %}
+    {% for _row in suppressed_bets %}
+      {% set _ = _keyed_rows.append(dict(_row, reason_key=_row.rejection_reason or "(no reason recorded)")) %}
+    {% endfor %}
+    {% for reason, rows in _keyed_rows|groupby("reason_key") %}
+    <div class="mt-4">
+      <h3 class="text-sm font-semibold text-gray-700">{{ SUPPRESSION_LABELS.get(reason, reason) }} ({{ rows|length }})</h3>
+      <p class="text-xs text-gray-500 max-w-2xl mt-1">{{ SUPPRESSION_HELP.get(reason, "This reason code is not in the displayed vocabulary; the raw code from the selector is shown above.") }}</p>
+      <div class="bg-white rounded-lg border border-gray-200 overflow-hidden mt-2">
+        {# Same overflow-x-auto + whitespace-nowrap pattern as the live list, applied inside the
+           disclosure (UI-SPEC E3 overflow). #}
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50">
+              <tr>
+                <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Matchup</th>
+                <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Bet type</th>
+                <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Reason</th>
+                <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">Line as of</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+              {% for bet in rows %}
+              <tr class="hover:bg-gray-50 transition-colors">
+                <td class="px-4 py-3 text-left whitespace-nowrap">
+                  <a href="/games/{{ bet.game_id }}" class="text-nfl-primary hover:underline">{{ bet.game_id.split('_')[-1].replace('@', ' @ ') }}</a>
+                </td>
+                <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</td>
+                <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">{{ SUPPRESSION_LABELS.get(reason, reason) }}</td>
+                <td class="px-4 py-3 text-right stat-num text-xs whitespace-nowrap text-gray-500">{{ bet.snapshot_ts or "--" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </details>
+  {% endif %}
+</section>
+
 {% endblock %}
 </div>
 {% endblock %}

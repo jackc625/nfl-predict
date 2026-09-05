@@ -322,6 +322,11 @@ def _build_bets_context(
     return {
         "request": request,
         "bets": service.get_bet_list(season, week),
+        # The declined half of the SAME candidate universe. It is READ here rather than derived
+        # from the live list, because the live list is the complement -- deriving one from the
+        # other would put the R6 "never silently dropped" guarantee in the request path instead of
+        # in the partition the two getters share (plan 31-15).
+        "suppressed_bets": service.get_suppressed_bets(season, week),
         "available_bet_weeks": service.get_available_bet_weeks(season=season),
         "bet_seasons": service.get_bet_seasons(),
         "current_season": season,
