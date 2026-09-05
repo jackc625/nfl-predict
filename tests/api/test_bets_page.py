@@ -720,7 +720,7 @@ def _stamp_populated_at(conn: duckdb.DuckDBPyConnection, value: str) -> None:
     ``base.html``'s footer reads it UNGUARDED: with a cache_meta that has rows but no
     ``last_updated`` the footer raises and every page 500s. Omitting it here would make the
     fixture describe a cache production never produces, and the 500 would be the fixture's
-    defect rather than the page's. The unguarded footer read is logged as DEF-31-15 -- it is
+    defect rather than the page's. The unguarded footer read is logged as DEF-31-16 -- it is
     out of this plan's scope and is NOT reachable from the shipped writer.
     """
     stamped_at = datetime(2023, 9, 8, 22, 30, 0)
