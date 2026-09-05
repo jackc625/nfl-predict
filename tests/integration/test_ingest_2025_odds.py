@@ -115,12 +115,42 @@ def ats_bias_block() -> dict:
     return block
 
 
+DRIFT_XFAIL_REASON = (
+    "DEF-31-06 (owner ruling B, 2026-09-05): the live re-score no longer reproduces the "
+    "RATIFIED ATS residual constants. Two separately-attributable causes -- an nflverse "
+    "upstream re-release that moved sixteen gold columns before this plan wrote anything, "
+    "and the ratified clause-5 LAR -> LA key normalization reaching the 2021-2024 slice at "
+    "the ruling-A full rebuild, which corrected 68 games that had carried a fabricated zero "
+    "market line. The owner ruled this a DISCLOSURE item, not a tampering one: the frozen "
+    "constants ARE the rule, backtest/ev_chain_constants.py reads them, and the verdict is "
+    "computed with the ratified numbers. What was lost is their RE-DERIVABILITY. The "
+    "assertions below are PRESERVED INTACT and strict=True, so the drift stays measurable "
+    "in the terminal summary and a return to the ratified values fails loudly instead of "
+    "passing unnoticed. Both value sets are recorded in "
+    "tests/phase31_state.ATS_RESIDUAL_LIVE_UPSTREAM_ONLY and "
+    "ATS_RESIDUAL_LIVE_AFTER_FULL_REBUILD."
+)
+
+
 class TestTheAppendedATSResidualConstantsStillHold:
     """The live re-score must equal the constants Plan 31-02 appended, to 17 significant digits.
 
     The pre-registration Plan 31-05 freezes binds to these numbers. If the deployed artifact,
     the gold matrix or the residual contract moves, this test is where that shows up -- as a
     failure naming both figures, not as a quietly different number in a later run.
+
+    XFAIL SINCE 2026-09-05, UNDER THE OWNER'S RULING B (register entry DEF-31-06). Four of
+    these cases are EXPECTED failures today and are marked ``xfail(strict=True)`` -- never
+    ``skip``, never a widened tolerance, and with every assertion left byte-for-byte as it
+    was. The distinction matters: a skipped case asserts nothing, and a tolerance chosen
+    after seeing the drift is exactly the post-hoc threshold selection this phase forbids
+    everywhere else. An xfail still RUNS the comparison, still reports both figures, and
+    ``strict=True`` means the day gold returns to the ratified numbers this turns into an
+    unexpected PASS -- a failure -- forcing DEF-31-06 to be closed rather than forgotten.
+
+    ``test_the_scored_artifact_is_the_one_the_constants_name`` is NOT marked: the artifact
+    identity did not drift and must keep passing, because a different artifact would mean a
+    different number for a reason the ruling does not cover.
     """
 
     def test_the_scored_artifact_is_the_one_the_constants_name(
@@ -135,6 +165,7 @@ class TestTheAppendedATSResidualConstantsStillHold:
             "new plan rather than edited in place."
         )
 
+    @pytest.mark.xfail(strict=True, reason=DRIFT_XFAIL_REASON)
     @pytest.mark.parametrize("season", sorted(ATS_RESIDUAL_BY_SEASON))
     def test_each_per_season_figure_matches(
         self, ats_bias_block: dict, season: int
@@ -151,6 +182,7 @@ class TestTheAppendedATSResidualConstantsStillHold:
                 "season, so a drift here changes what the pre-registration states."
             )
 
+    @pytest.mark.xfail(strict=True, reason=DRIFT_XFAIL_REASON)
     def test_the_pooled_figure_matches(self, ats_bias_block: dict) -> None:
         live = ats_bias_block["pooled"]
         for field, appended in zip(
@@ -171,6 +203,12 @@ class TestTheAppendedATSResidualConstantsStillHold:
         would assert the wrong direction. The pooled ATS mean is POSITIVE and that is asserted.
         The per-season signs are NOT asserted: 2022 is negative, and a per-season gate would
         hard-stop the phase on a fact that is simply true (REVIEW-ATS).
+
+        THIS CASE STILL PASSES AND IS DELIBERATELY NOT MARKED. The one assertion it carried
+        that DID drift -- the negative-season set -- was split into the case below rather
+        than dragging these three guards into an xfail with it. Marking the whole test would
+        have silently stopped asserting the pooled direction claim the entire ATS arm of the
+        pre-registration rests on, which is a loss of protection the ruling did not ask for.
         """
         assert float(ats_bias_block["pooled"]["mean"]) > 0.0
         assert ats_bias_block["pooled_direction_asserted"] is True
@@ -180,6 +218,21 @@ class TestTheAppendedATSResidualConstantsStillHold:
             "threshold after seeing the measured values is the post-hoc threshold selection "
             "this phase forbids everywhere else (T-31-08c)."
         )
+
+    @pytest.mark.xfail(strict=True, reason=DRIFT_XFAIL_REASON)
+    def test_the_negative_mean_season_set_is_still_exactly_2022(
+        self, ats_bias_block: dict
+    ) -> None:
+        """SPLIT OUT of the case above on 2026-09-05, assertion carried over verbatim.
+
+        This is the sixth drift failure, and it is the one the ruling's own table did not
+        list -- because it did not exist yet. It appeared at the ruling-A full rebuild: the
+        clause-5 correction moved the live 2022 mean from -0.03170638 to +0.04653887, so
+        ``seasons_with_negative_mean`` went from ``[2022]`` to ``[]``. The ratified 2022
+        figure is negative and the pre-registration's prose says so in as many words, so this
+        is a statement of record that the live data no longer supports -- exactly the kind of
+        thing DEF-31-06 obliges PROFITABILITY-READOUT.md to disclose.
+        """
         assert ats_bias_block["seasons_with_negative_mean"] == [2022], (
             "the set of negative-mean seasons moved. 2022 being negative is ON THE RECORD by "
             "design; if that changes, the pre-registration's per-season table changes with it."

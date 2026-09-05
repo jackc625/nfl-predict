@@ -203,3 +203,91 @@ PRE_REGISTRATION_PROVENANCE: Final[dict[str, str]] = {
     "hash_basis": "newline-normalized file bytes (CRLF folded to LF); equals the git blob sha256",
     "commit_contents": "exactly the two pre-registration paths and nothing else",
 }
+
+
+# ---------------------------------------------------------------------------
+# THE ATS RESIDUAL CONSTANT DRIFT -- a DISCLOSURE record, not a re-freeze
+# (owner ruling B, 2026-09-05; register entry DEF-31-06)
+# ---------------------------------------------------------------------------
+#
+# ``ATS_RESIDUAL_BY_SEASON`` and ``ATS_RESIDUAL_POOLED`` above are UNCHANGED and stay
+# unchanged. They are the ratified rule, carried verbatim into
+# ``PROFITABILITY-PREREGISTRATION.md``, and ``backtest/ev_chain_constants.py`` reads the
+# frozen values -- so the Phase-31 verdict is computed with the numbers the owner ratified,
+# whatever gold says today. That is what pre-registration MEANS.
+#
+# WHAT WAS LOST IS THE RE-DERIVABILITY OF THOSE NUMBERS, NOT THE NUMBERS THEMSELVES.
+# Re-scoring the same deployed artifact ``ats_20260605_220128`` over gold no longer returns
+# them. Every per-season sample size ``n`` is UNCHANGED (285/284/285/285, pooled 1139), so
+# the population is identical; only the values moved. The owner ruled on 2026-09-05 that
+# this is a DISCLOSURE item rather than a tampering one, and that it must be stated in
+# ``PROFITABILITY-READOUT.md`` (Plan 31-19) with BOTH value sets and the reason they differ.
+#
+# THE DRIFT HAS TWO SEPARATELY-ATTRIBUTABLE CAUSES, and conflating them would misreport it:
+#
+#   1. UPSTREAM. nflverse re-released play-by-play and depth-chart data between the
+#      2026-09-03 measurement and 2026-09-05. Sixteen gold columns moved -- the twelve
+#      ``{home,away}_{off,def}_rolling_opp_adj_*``, ``{home,away}_qb_adjustment`` and
+#      ``{home,away}_backup_quality_delta`` -- as the Phase-30 control
+#      ``tests/integration/test_n01_resync_control.py`` independently reports. Plan 31-11's
+#      upstream pin (``data/upstream_pin.py``) stops this recurring; it cannot undo it,
+#      because the 2026-08-22 revision the constants were measured on is gone from upstream.
+#      This cause was present BEFORE this plan wrote anything.
+#
+#   2. THE RATIFIED CLAUSE-5 KEY NORMALIZATION REACHING GOLD. ``normalize_stored_game_ids``
+#      re-keyed 116 stored ``LAR`` Rams rows to the canonical ``LA``. Those rows had been
+#      ORPHANS against gold, so 68 games in the protected 2021-2024 window carried a
+#      FABRICATED zero market line and therefore a wrong ``target_ats``. The 2026-09-05
+#      full-scope rebuild is the first build to re-derive those seasons since, so it is the
+#      build in which the correction reached gold. This cause is a data CORRECTION, and it
+#      arrived under the owner's own ruling A.
+#
+# The three columns below are recorded so a reader can see WHICH cause moved WHICH number.
+# No assertion is written against ``ATS_RESIDUAL_LIVE_*``: pinning a drifting value as a
+# green test would convert a disclosure into a moving target, and the ratified constants
+# stay asserted (as expected failures) in
+# ``tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold``
+# so the drift stays visible and measurable in the terminal summary.
+
+# Measured 2026-09-05, BEFORE the ruling-A full rebuild: upstream cause alone.
+ATS_RESIDUAL_LIVE_UPSTREAM_ONLY: Final[dict[str, float]] = {
+    "2021": 0.68443905065457022,
+    "2022": -0.03170638450119697,
+    "2023": 0.59053647537437970,
+    "2024": 1.12758861518742750,
+    "pooled": 0.59326265763681096,
+}
+
+# Measured 2026-09-05, AFTER the ruling-A full-scope rebuild: upstream PLUS the clause-5
+# correction reaching the 2021-2024 slice. This is the figure a re-score returns today.
+ATS_RESIDUAL_LIVE_AFTER_FULL_REBUILD: Final[dict[str, float]] = {
+    "2021": 0.63968358671194625,
+    "2022": 0.046538869338765949,
+    "2023": 0.62408175513867226,
+    "2024": 1.1071011105258213,
+    "pooled": 0.60484106920061009,
+}
+
+ATS_RESIDUAL_DRIFT_PROVENANCE: Final[dict[str, str]] = {
+    "register_entry": "DEF-31-06",
+    "ruled_by": "owner",
+    "ruled_on": "2026-09-05",
+    "ruling": (
+        "ACCEPTED AS A DISCLOSED FACT. Do not re-derive, do not re-freeze. The frozen "
+        "constants ARE the rule and the chain reads them from the frozen module."
+    ),
+    "artifact_id": "ats_20260605_220128",
+    "measured_by": "scripts.audit_odds_preingest.measure_ats_residual_bias",
+    "population_unchanged": "per-season n 285/284/285/285, pooled n 1139 -- identical on all three",
+    "readout_obligation": (
+        "PROFITABILITY-READOUT.md (Plan 31-19) MUST state BOTH the ratified set and the "
+        "live set, and the reason they differ."
+    ),
+    "sign_change_to_disclose": (
+        "the ratified 2022 season mean is NEGATIVE (-0.03539119799896865) and the "
+        "pre-registration's prose says so explicitly; after the full rebuild the live 2022 "
+        "mean is POSITIVE (+0.046538869338765949), so measure_ats_residual_bias now reports "
+        "seasons_with_negative_mean == [] where it reported [2022]. The pooled direction "
+        "claim (strictly positive) still HOLDS and is in fact stronger."
+    ),
+}
