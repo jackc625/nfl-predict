@@ -291,3 +291,166 @@ ATS_RESIDUAL_DRIFT_PROVENANCE: Final[dict[str, str]] = {
         "claim (strictly positive) still HOLDS and is in fact stronger."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# CHECKPOINT 2 -- the owner's ACCEPTANCE of the Plan 31-11 rebuild
+# (owner decision 2026-09-05; register entries DEF-31-09, DEF-31-10, DEF-31-11)
+# ---------------------------------------------------------------------------
+#
+# Plan 31-11 stopped at CHECKPOINT 2, the blocking owner gate on the only write to
+# ``data/`` in this phase. The automated HARD STOP had already fired: the ruling-A
+# full-scope rebuild MOVED the protected 2021-2024 slice, which the pre-registration
+# binds, so the executor refused to proceed and put the measured attribution to the owner
+# as a blocking finding rather than accepting it.
+#
+# The owner ACCEPTED. This slot records that decision where it survives a fresh checkout,
+# because ``.planning/`` is gitignored and the SUMMARY that carries the narrative does not
+# travel. The obligations this acceptance places on ``PROFITABILITY-READOUT.md`` (Plan
+# 31-19) are named in ``CHECKPOINT_2_READOUT_OBLIGATIONS`` below; a readout that discharges
+# none of them is a readout that hid what the owner accepted in the open.
+#
+# NOTHING WAS RE-FROZEN. ``config/gate.toml`` is byte-unchanged -- git blob
+# ``e56b7d08628ce86578f6d74921d584382cfdf825`` at the ``ee20773`` anchor, at HEAD and in
+# the working tree. The owner explicitly declined option 3 (accept and re-freeze). The gate
+# reads the COMMITTED baseline block rather than re-scoring, so the verdict is still judged
+# against the frozen non-regression reference; the divergence between that block and what a
+# re-score returns today is DISCLOSED (DEF-31-10), not erased.
+
+CHECKPOINT_2_DECISION: Final[dict[str, str]] = {
+    "plan": "31-11",
+    "task": "Task 3: Gate baseline byte-identity proof, then CHECKPOINT 2 (rebuild acceptance)",
+    "gate": "blocking-human",
+    "question": "Is this rebuild acceptable?",
+    "decision": "ACCEPT",
+    "decided_on": "2026-09-05",
+    "decided_by": "owner",
+    "options_offered": (
+        "1 accept; 2 reject and revert to a gold in which 68 protected-window games carry "
+        "fabricated zero market lines; 3 accept and RE-FREEZE the gate baseline against the "
+        "corrected gold. Option 1 was chosen. Option 3 was listed only so the option space "
+        "was complete and was NOT taken."
+    ),
+    "rationale": (
+        "The corrected labels are the true ones, and grading a holdout against fabricated "
+        "zero lines was never defensible."
+    ),
+    "gate_toml_re_frozen": (
+        "NO -- config/gate.toml is byte-unchanged and the baseline was not re-frozen"
+    ),
+    "accepted_scope": (
+        "(a) the ruling-A full-scope rebuild from the upstream pin, which restored 2025's "
+        "prior-season context; (b) the resulting move of the protected 2021-2024 slice, "
+        "whose cause is the ratified clause-5 LAR to LA normalization reaching gold; (c) the "
+        "consequent divergence between the frozen gate-baseline block and a re-score; and "
+        "(d) the 2022 ATS residual sign flip, accepted AS A DISCLOSURE on the same basis as "
+        "DEF-31-06."
+    ),
+    "still_pending_and_NOT_covered": (
+        "The Phase-28 situational group flipping KEEP to DROP on the rebuilt gold is a "
+        "SEPARATE ruling the owner has not made. "
+        "tests/unit/test_signal_lift_readout_md.py::TestReadoutMatchesHarness::"
+        "test_situational_ou_keep_ruling_reproduces_from_harness is left FAILING and "
+        "untouched, deliberately, pending that ruling."
+    ),
+}
+
+# The measured cause of the protected-slice move, as accepted. Every figure here was
+# measured rather than inferred; the verification line was re-measured independently
+# against live gold on 2026-09-05, after the acceptance.
+PROTECTED_SLICE_CORRECTION: Final[dict[str, str]] = {
+    "register_entry": "DEF-31-09",
+    "cause": (
+        "the ratified clause-5 normalize_stored_game_ids LAR to LA re-keying of 116 stored "
+        "odds rows reaching gold for the first time"
+    ),
+    "mechanism": (
+        "gold keys the Rams canonically as LA; silver stored 116 of their odds rows as LAR. "
+        "Those rows were ORPHANS against gold, so those games fell through to "
+        "_default_compressed_market_features and gold's imputation wrote a literal 0.0 "
+        "market line. scripts/build_features.py then computed target_ats = "
+        "point_differential - snapshot_spread and target_ou = total_points - snapshot_total "
+        "against that fabricated zero, producing WRONG labels."
+    ),
+    "games_corrected_in_protected_window": "68 -- 17 per season, 2021 through 2024",
+    "games_corrected_all_seasons": (
+        "136, every one of them a Rams game: 16/16/16 (2018-2020), 17/17/17/17 (2021-2024), "
+        "20 (2025)"
+    ),
+    "column_slots_moved": (
+        "11 -- snapshot_spread, snapshot_total and snapshot_ml_prob_home_fair in all three "
+        "matrices, plus target_ats in features_ats and target_ou in features_ou"
+    ),
+    "what_they_were_graded_against_before": (
+        "a fabricated 0.0 market line, and therefore an ATS and an O/U label derived from it"
+    ),
+    "verification_2026_09_05": (
+        "live data/gold/features_ats.parquet: 75 LA-involved rows in 2021-2024 "
+        "(21/17/18/19), ZERO of them at snapshot_spread == 0.0; ZERO LAR-keyed rows remain "
+        "in gold; only 2 rows in the entire 1,139-row protected window are still at 0.0 and "
+        "neither is a Rams game (2024_W01_JAX@MIA, 2024_W01_CAR@NO)"
+    ),
+    "corroborating_instrument": (
+        "tests/integration/test_n01_resync_control.py, a Phase-30 control this phase did not "
+        "write, independently reports 20 moved columns in 2021-2024 for features_ats where "
+        "it reported 16; the four additions are exactly snapshot_spread, snapshot_total, "
+        "snapshot_ml_prob_home_fair and target_ats"
+    ),
+    "per_season_row_counts_unchanged": (
+        "2021=285, 2022=284, 2023=285, 2024=285 across rungs 0, 1, 2 and 3"
+    ),
+}
+
+# The gate baseline diverges from a re-score, and that divergence is DISCLOSED rather than
+# re-frozen. This is the distinction the readout has to carry: the committed block is the
+# rule the gate reads, and a re-score is a measurement of today's gold, not a correction to
+# the rule.
+GATE_BASELINE_DIVERGENCE: Final[dict[str, str]] = {
+    "register_entry": "DEF-31-10",
+    "fields_differing": (
+        "47 of 68, with 21 identical; it was 44 of 68 before the ruling-A full rebuild"
+    ),
+    "population_unchanged": (
+        "all twelve per-season sample sizes are IDENTICAL -- ats/ou/wp 2021=272, 2022=271, "
+        "2023=272, 2024=272 -- so the scored population did not move, only the values"
+    ),
+    "pooled_means": (
+        "ats.pooled.mean committed -0.00149507 against regenerated +0.01362779; "
+        "ou.pooled.mean committed 1.09908061 against regenerated 1.09091962; "
+        "wp.pooled.mean committed -0.03800034 against regenerated -0.03892902"
+    ),
+    "why_this_is_not_a_re_freeze": (
+        "the gate reads the COMMITTED baseline block, never a re-score, so the frozen block "
+        "remains the non-regression reference the verdict is judged against. Re-freezing "
+        "would move the reference to match the data being judged, which is the one thing a "
+        "non-regression baseline must never do. config/gate.toml is byte-unchanged, the "
+        "holdout stays exactly 2021-2024, and 2025 is absent from it."
+    ),
+    "standing_red_controls": (
+        "tests/integration/test_gate_baseline_byte_identity.py::"
+        "TestTheRegeneratedBaselineIsByteIdenticalToTheCommittedOne::"
+        "test_the_generated_block_equals_the_committed_block_byte_for_byte and "
+        "tests/unit/test_promote_models.py::test_frozen_baseline_matches_rescore_all_fields "
+        "are EXPECTED red and are deliberately not made green"
+    ),
+}
+
+# What the acceptance obliges PROFITABILITY-READOUT.md (Plan 31-19) to state. These are
+# ADDITIVE to the six-point obligation already recorded in ATS_RESIDUAL_DRIFT_PROVENANCE
+# and DEF-31-06; none of them replaces it.
+CHECKPOINT_2_READOUT_OBLIGATIONS: Final[tuple[str, ...]] = (
+    "State that 68 games inside the protected 2021-2024 holdout were previously graded "
+    "against a FABRICATED zero market line and now carry the real one -- naming what they "
+    "were graded against before, not merely that a correction happened (DEF-31-09).",
+    "State the 2022 ATS residual SIGN FLIP against the pre-registration's own prose: the "
+    "ratified 2022 mean is negative (-0.03539119799896865) and the document says so in as "
+    "many words, while live gold returns +0.046538869338765949 and "
+    "seasons_with_negative_mean == [] where it returned [2022]. Disclose it; do not "
+    "re-derive it, and do not quietly drop the sentence (DEF-31-06, DEF-31-11).",
+    "State that the frozen gate-baseline block diverges from a re-score in 47 of 68 fields "
+    "with every per-season n unchanged, and WHY that is a disclosure rather than a "
+    "re-freeze: the gate reads the committed block, and moving the reference to match the "
+    "data it judges would destroy the non-regression property (DEF-31-10).",
+    "State that the owner ACCEPTED this at CHECKPOINT 2 on 2026-09-05, with the rationale "
+    "recorded, so a reader knows the divergence was ruled on rather than discovered later.",
+)
