@@ -834,6 +834,70 @@ def classify_row_provenance(season: int, run_mode: str) -> tuple[str, str]:
     raise ValueError(msg)
 
 
+def stamp_bet_list_provenance(
+    bet_list_df: pd.DataFrame,
+    run_mode: str,
+) -> pd.DataFrame:
+    """Stamp the two orthogonal D31-22 honesty labels onto every row of *bet_list_df*.
+
+    THE SINGLE STAMPING SITE (Phase 31, plan 31-13). ``classify_row_provenance`` is called from
+    HERE and from nowhere else in the write path, which
+    ``tests/unit/test_provenance_mapping.py`` asserts by AST scan over the production tree and
+    reports the count it found. The reason is not tidiness: a second stamping site is exactly how
+    the two labels drift apart -- one caller updated when the vocabulary moves, another left
+    writing the retired hardcoded ``PROVISIONAL_CONTAMINATED`` constant, and the clean 2025
+    holdout rows published as contaminated. That is the inverse of the prohibition this phase
+    exists to honour, and equally false.
+
+    It is a LABELLING pass, not a metric: it derives no EV, no stake, no return and no tier, so
+    the zero-math contract of this module is untouched (UIAP-01). Callers build the bet-list frame
+    upstream, stamp it here, and hand the stamped frame to :func:`materialize_bet_list`.
+
+    The classification is performed ONCE PER DISTINCT SEASON rather than once per row -- the
+    mapping is pure and keyed only on (season, run_mode), so a per-row call would multiply the
+    same lookup by the row count while proving nothing extra.
+
+    Args:
+        bet_list_df: The bet-list records, carrying at least a ``season`` column. Any existing
+            ``provenance`` / ``validation_type`` values are OVERWRITTEN: this function is the
+            authority on those two columns, not a filler for absent ones.
+        run_mode: ``"replay"`` (historical weeks re-selected) or ``"forward"`` (a live week).
+
+    Returns:
+        A NEW frame carrying ``provenance`` and ``validation_type``. The caller's frame is not
+        mutated.
+
+    Raises:
+        KeyError: if *bet_list_df* carries no ``season`` column.
+        ValueError: if ANY season in the frame is unclassifiable under *run_mode*. The refusal is
+            whole-frame: a row that cannot be labelled must never inherit its neighbours' label.
+    """
+    if "season" not in bet_list_df.columns:
+        msg = (
+            "stamp_bet_list_provenance: bet_list_df carries no 'season' column, so the D31-22 "
+            "validation_type cannot be derived. No default is applied."
+        )
+        raise KeyError(msg)
+
+    stamped = bet_list_df.copy()
+
+    if stamped.empty:
+        # Both columns still appear, so a zero-row frame has the same SHAPE as a populated one and
+        # a downstream writer's column check behaves identically on it.
+        stamped["provenance"] = pd.Series(dtype="object")
+        stamped["validation_type"] = pd.Series(dtype="object")
+        return stamped
+
+    seasons = [int(season) for season in stamped["season"]]
+    labels = {
+        season: classify_row_provenance(season, run_mode)
+        for season in sorted(set(seasons))
+    }
+    stamped["provenance"] = [labels[season][0] for season in seasons]
+    stamped["validation_type"] = [labels[season][1] for season in seasons]
+    return stamped
+
+
 def assert_grading_transition(current_status: str, new_status: str) -> None:
     """Validate a ``grading_status`` transition on an existing bet_list row (REVIEW-FWD-GRADE).
 
