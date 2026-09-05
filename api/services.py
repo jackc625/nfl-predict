@@ -40,7 +40,7 @@ from typing import Any
 import duckdb
 from cachetools import TTLCache
 
-from api.cache import BET_LIST_COLUMNS
+from api.cache import BET_LIST_COLUMNS, BET_TRACKER_BLOCK_COLUMNS
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -132,6 +132,10 @@ _EQUITY_CURVE_COLUMNS = "strategy, bet_index, bankroll"
 # away from the writer. ``api.cache`` is a sibling API module (no ``backtest`` import is involved,
 # so the UIAP-01 guards are unaffected).
 _BET_LIST_COLUMNS_SQL = ", ".join(BET_LIST_COLUMNS)
+
+# Same rule for the precomputed tracker blocks: the reader's column list is DERIVED from the
+# writer's, so a figure added to the block cannot be silently dropped on the way out.
+_BET_TRACKER_BLOCK_COLUMNS_SQL = ", ".join(BET_TRACKER_BLOCK_COLUMNS)
 
 
 def _parse_json_or_default(value: Any, default: Any) -> Any:
@@ -727,6 +731,45 @@ class DataService:
             return None
         row = result.fetchone()
         return row[0] if row else None
+
+    def get_bet_tracker_blocks(self) -> list[dict[str, Any]]:
+        """Return the PRECOMPUTED realized-vs-expected tracker blocks (SPEC R8, D31-22).
+
+        A read, not a computation. Every figure was aggregated by
+        ``backtest.bet_tracker.aggregate_by_provenance`` at population time and persisted by
+        ``api.cache.materialize_bet_tracker_blocks``; this getter selects the stored columns and
+        does no arithmetic of its own -- no count, no rate, no return, and no SQL aggregate
+        function. Aggregation is computation, and computation does not happen in the request path
+        (UIAP-01).
+
+        The rows are already partitioned one per (provenance, validation_type) class, and nothing
+        here pools them: a caller that wanted a figure spanning two classes would have to compute
+        it itself, which is exactly what the tracker refuses to provide (SPEC R8 no-mixing).
+
+        A NULL ``hit_rate`` beside ``bets_graded = 0`` means the rate was NOT COMPUTED for that
+        block -- the template renders its empty state from that pair. It does not mean a measured
+        zero.
+        """
+        key = ("bet_tracker_blocks",)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_bet_tracker_blocks_uncached()
+        _cache_set(key, result)
+        return copy.deepcopy(result)
+
+    def _get_bet_tracker_blocks_uncached(self) -> list[dict[str, Any]]:
+        try:
+            result = self._conn.execute(
+                f"SELECT {_BET_TRACKER_BLOCK_COLUMNS_SQL} FROM bet_tracker_blocks"
+            )
+        except duckdb.Error:
+            # The cache predates the tracker (no bet_tracker_blocks table). The page renders the
+            # tracker-absent empty state rather than 500ing.
+            logger.warning("bet_tracker_blocks table not available in cache")
+            return []
+        columns = [desc[0] for desc in result.description]
+        return [dict(zip(columns, row)) for row in result.fetchall()]
 
     def get_cache_meta(self) -> dict[str, Any]:
         """Fetch all cache metadata as a dict."""

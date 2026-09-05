@@ -37,21 +37,14 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pandas as pd
 import pytest
-from backtest.bet_tracker import (
-    TRACKER_BLOCK_FIGURES,
-    TRACKER_REQUIRED_COLUMNS,
-    EmptyTrackerBlock,
-    TrackerBlock,
-    aggregate_all_blocks,
-    aggregate_by_provenance,
-    to_tracker_frame,
-)
 
 from api.cache import (
     BET_TRACKER_BLOCK_COLUMNS,
@@ -64,6 +57,17 @@ from api.cache import (
     VALIDATION_TYPE_CLEAN_HOLDOUT,
     VALIDATION_TYPE_CONTAMINATED,
     VALIDATION_TYPE_FORWARD_REALIZED,
+    materialize_bet_tracker_blocks,
+)
+from api.services import DataService, clear_cache
+from backtest.bet_tracker import (
+    TRACKER_BLOCK_FIGURES,
+    TRACKER_REQUIRED_COLUMNS,
+    EmptyTrackerBlock,
+    TrackerBlock,
+    aggregate_all_blocks,
+    aggregate_by_provenance,
+    to_tracker_frame,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -487,8 +491,10 @@ class TestAZeroGradedBlockRefusesToComputeARate:
             validation_type=VALIDATION_TYPE_CONTAMINATED,
         )
         assert isinstance(block, TrackerBlock)
-        fields = {f.name for f in block.__dataclass_fields__.values()}
-        assert fields == {"provenance", "validation_type", *TRACKER_BLOCK_FIGURES}
+        # ``dataclasses.fields`` and NOT ``__dataclass_fields__``: the latter also carries the
+        # ClassVar pseudo-fields, which are markers rather than per-block data.
+        names = {f.name for f in dataclasses.fields(block)}
+        assert names == {"provenance", "validation_type", *TRACKER_BLOCK_FIGURES}
         assert TRACKER_BLOCK_FIGURES == (
             "bets_graded",
             "wins",
@@ -646,3 +652,103 @@ class TestTheTrackerLivesInTheAnalyticsTierAndPricesNothing:
         """The seam holds from the other side too, asserted here as well as in the api guard."""
         tree = ast.parse((REPO_ROOT / "api" / "cache.py").read_text(encoding="utf-8"))
         assert "backtest" not in _imported_roots(tree)
+
+
+# ---------------------------------------------------------------------------
+# 7. The DataService getter reads the stored aggregate and computes nothing
+# ---------------------------------------------------------------------------
+
+
+def _service_over_stored_blocks(blocks: list[Any]) -> Any:
+    """Persist *blocks* through the REAL writer and serve them through the REAL getter."""
+    conn = duckdb.connect(":memory:")
+    materialize_bet_tracker_blocks(conn, to_tracker_frame(blocks))
+    clear_cache()
+    return DataService(conn)
+
+
+class TestTheDataServiceGetterReadsAndDoesNotCompute:
+    """T-31-63: the page reads stored rows; no figure is derived at request time."""
+
+    def test_the_getter_returns_the_stored_blocks_unchanged(self) -> None:
+        frame = _frame(
+            [
+                _row(_REPLAY, GRADING_STATUS_WIN),
+                _row(_REPLAY, GRADING_STATUS_LOSS),
+                _row(_REPLAY, GRADING_STATUS_PUSH),
+            ]
+        )
+        blocks = aggregate_all_blocks(frame)
+        rows = _service_over_stored_blocks(blocks).get_bet_tracker_blocks()
+        assert len(rows) == 1
+        row = rows[0]
+        block = blocks[0]
+        assert isinstance(block, TrackerBlock)
+        assert row["provenance"] == block.provenance
+        assert row["validation_type"] == block.validation_type
+        assert row["bets_graded"] == block.bets_graded
+        assert row["wins"] == block.wins
+        assert row["losses"] == block.losses
+        assert row["pushes"] == block.pushes
+        assert row["hit_rate"] == pytest.approx(block.hit_rate)
+        assert row["flat_return_units"] == pytest.approx(block.flat_return_units)
+
+    def test_a_zero_graded_block_serves_a_null_rate_beside_a_zero_count(self) -> None:
+        """The template's empty-state pair. A NULL rate is NOT a measured zero."""
+        rows = _service_over_stored_blocks(
+            [EmptyTrackerBlock(PROVENANCE_FORWARD, VALIDATION_TYPE_FORWARD_REALIZED)]
+        ).get_bet_tracker_blocks()
+        assert rows[0]["bets_graded"] == 0
+        assert rows[0]["hit_rate"] is None
+        assert rows[0]["flat_return_units"] is None
+
+    def test_the_getter_pools_nothing_across_classes(self) -> None:
+        """Two stored classes come back as two rows; there is no combined row to read."""
+        frame = _frame(
+            [
+                _row(_REPLAY, GRADING_STATUS_WIN),
+                _row(_FORWARD, GRADING_STATUS_LOSS),
+            ]
+        )
+        rows = _service_over_stored_blocks(
+            aggregate_all_blocks(frame)
+        ).get_bet_tracker_blocks()
+        assert len(rows) == 2
+        assert {(r["provenance"], r["validation_type"]) for r in rows} == {
+            _REPLAY,
+            _FORWARD,
+        }
+
+    def test_an_absent_table_serves_an_empty_list_rather_than_raising(self) -> None:
+        clear_cache()
+        assert DataService(duckdb.connect(":memory:")).get_bet_tracker_blocks() == []
+
+    def test_the_getter_performs_no_arithmetic_and_no_sql_aggregate(self) -> None:
+        """Source-level: neither Python arithmetic nor a SQL aggregate function appears.
+
+        The tracker figures were computed once, at population time, in the analytics tier. A
+        ``SUM``/``COUNT``/``AVG`` here would be the same computation running again per request,
+        which is the rule UIAP-01 exists to state.
+        """
+        tree = ast.parse(
+            (REPO_ROOT / "api" / "services.py").read_text(encoding="utf-8")
+        )
+        target = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_get_bet_tracker_blocks_uncached"
+        )
+        arithmetic = [
+            node
+            for node in ast.walk(target)
+            if isinstance(node, (ast.BinOp, ast.AugAssign))
+        ]
+        assert not arithmetic, [ast.dump(n) for n in arithmetic]
+        source = ast.get_source_segment(
+            (REPO_ROOT / "api" / "services.py").read_text(encoding="utf-8"), target
+        )
+        assert source is not None
+        upper = source.upper()
+        for aggregate in ("SUM(", "COUNT(", "AVG(", "GROUP BY", "MIN(", "MAX("):
+            assert aggregate not in upper, aggregate
