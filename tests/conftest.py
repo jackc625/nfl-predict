@@ -51,6 +51,13 @@ _EVIDENCE_SKIP_MARKERS = (
     # reads it is a control, so its non-run must be named rather than counted as an ordinary
     # environment skip.
     "could not be loaded on this checkout",
+    # Plan 31-12: the pre-hold high-total eligibility boundary is DERIVED AT IMPORT from the
+    # gitignored silver odds lake and reads NaN without it, and the three-target integration
+    # run reads gold and the deployed artifacts. Both are controls on the one-shot 2025
+    # runner -- the integration run is the ONLY place its real loaders are exercised -- so a
+    # checkout that cannot run them must SAY so rather than report a green suite that
+    # silently excluded them.
+    "not derivable on this checkout",
 )
 
 _SKIP_REASON_RE = re.compile(r"^Skipped: (.*)$", re.DOTALL)
@@ -154,6 +161,48 @@ def artifacts_boundary_guard():
     assert_tree_unchanged(
         before, digest_tree(PRODUCTION_ARTIFACTS_ROOT), PRODUCTION_ARTIFACTS_ROOT
     )
+
+
+@pytest.fixture(scope="session")
+def p31_rehearsal_run(tmp_path_factory):
+    """ONE rehearsal run of the Phase-31 one-shot runner, shared across test modules.
+
+    Session-scoped and shared because the run costs a fifteen-cell tune sweep, a pooled
+    three-target hold selection and three counterfactual passes, and four modules assert
+    different properties of the SAME output. Three private copies would also be three
+    fixtures that can drift, which is the second-list failure this project keeps paying for.
+
+    It uses the DISJOINT rehearsal window (tune 2021-2023, hold 2024) over the synthetic
+    fixture in ``tests/p31_synthetic_candidates.py``. NOTHING here reads 2025: the fixture
+    refuses to generate it, and the rehearsal window does not name it.
+
+    Yields:
+        ``{"result", "verdict_toml_path", "verdict_json_path", "ledger_path"}``.
+    """
+    from backtest.ats_ev_chain import FENCE_WINDOW_REHEARSAL
+    from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
+    from backtest.profitability_2025 import run_profitability_2025
+    from tests.p31_synthetic_candidates import build_synthetic_candidates
+
+    if not np.isfinite(HIGH_TOTAL_BOUNDARY_PREHOLD):
+        pytest.skip(
+            "the leakage-clean pre-hold high-total boundary is not derivable on this "
+            "checkout (it is derived at import from the gitignored silver odds lake), so "
+            "the O/U eligibility gate cannot be constructed and the runner cannot run."
+        )
+
+    tmp_path = tmp_path_factory.mktemp("p31_rehearsal_run")
+    paths = {
+        "verdict_toml_path": tmp_path / "verdict.toml",
+        "verdict_json_path": tmp_path / "verdict.json",
+        "ledger_path": tmp_path / "ledger.toml",
+    }
+    result = run_profitability_2025(
+        FENCE_WINDOW_REHEARSAL,
+        candidates_by_target=build_synthetic_candidates(),
+        **paths,
+    )
+    return {"result": result, **paths}
 
 
 @pytest.fixture(scope="session")

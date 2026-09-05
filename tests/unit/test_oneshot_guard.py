@@ -79,23 +79,14 @@ class _Spy:
 
 
 @pytest.fixture(scope="module")
-def completed_run(
-    tmp_path_factory: pytest.TempPathFactory, synthetic_frames
-) -> dict[str, Any]:
-    """ONE successful rehearsal run, reused by every assertion that needs its output.
+def completed_run(p31_rehearsal_run) -> dict[str, Any]:
+    """ONE successful rehearsal run, shared with every other Phase-31 module that needs it.
 
-    Module-scoped because the run costs a fifteen-cell tune sweep, a pooled three-target hold
-    selection and three counterfactual passes; every test below reads the same run rather than
-    paying for its own.
+    The run lives in ``tests/conftest.py`` at session scope: it costs a fifteen-cell tune
+    sweep, a pooled three-target hold selection and three counterfactual passes, and four
+    modules assert different properties of the same output.
     """
-    tmp_path = tmp_path_factory.mktemp("p31_completed_run")
-    paths = _paths(tmp_path)
-    result = runner.run_profitability_2025(
-        FENCE_WINDOW_REHEARSAL,
-        candidates_by_target=synthetic_frames,
-        **paths,
-    )
-    return {"result": result, **paths}
+    return p31_rehearsal_run
 
 
 class TestTheRunnerRefusesToOverwriteAVerdictBeforeItDoesAnyWork:

@@ -181,12 +181,27 @@ def roi_bootstrap_p_value(
     Returns:
         The one-sided p in ``(0, 1]``, or None when there is no point estimate or no
         replicate to compare against.
+
+    Raises:
+        ValueError: when more than ``BOOTSTRAP_B`` replicates are supplied. The numerator
+            counts replicates and the denominator is the FROZEN ``BOOTSTRAP_B + 1``, so a
+            longer array would return a value ABOVE 1. That is not a p-value, and emitting one
+            silently is worse than refusing: it would read as "no evidence at all" in a column
+            a verdict is read off. The reference distribution has exactly ``BOOTSTRAP_B``
+            draws by construction, so a longer array is a caller error, never data.
     """
     if point_estimate is None:
         return None
     reps = np.asarray(replicates, dtype=float)
     if reps.size == 0:
         return None
+    if reps.size > BOOTSTRAP_B:
+        msg = (
+            f"roi_bootstrap_p_value received {reps.size} replicates against the frozen "
+            f"BOOTSTRAP_B={BOOTSTRAP_B}. The one-sided rule divides by BOOTSTRAP_B + 1, so a "
+            "longer array yields a value above 1, which is not a p-value at all."
+        )
+        raise ValueError(msg)
     observed = float(point_estimate)
     recentred = reps - observed
     at_or_beyond = int(np.count_nonzero(recentred >= observed))
