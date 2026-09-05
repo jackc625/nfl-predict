@@ -29,6 +29,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import ast
 import re
 import threading
 from collections.abc import Iterator
@@ -54,10 +55,17 @@ from api.cache import (
     materialize_bet_list,
     materialize_bet_week_freeze,
 )
-from api.services import clear_cache
+from api.services import DataService, clear_cache
 from backtest.bet_selector import REJECTION_REASONS, BetSelector
 from backtest.ev_chain_constants import assign_ev_tier
 from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
+from tests.api.week_selector_snapshot import (
+    COMPONENTS_DIR,
+    FAILURE_EVENTS,
+    SELECTOR_OPEN,
+    class_values,
+    extract_selector,
+)
 
 # ---------------------------------------------------------------------------
 # Fixture constants (kept explicit so a silent drift is caught)
@@ -978,3 +986,261 @@ def test_no_state_renders_an_empty_main_region(
         assert "Weekly Bet List" in body
         main = body[body.index("<main") : body.index("</main>")]
         assert len(main) > 500, "the main region rendered essentially empty"
+
+
+# ---------------------------------------------------------------------------
+# The parameterised shared week selector (plan 31-15 Task 3, D31-26, UI-SPEC E5)
+# ---------------------------------------------------------------------------
+#
+# TEST-BOUNDARY HONESTY. An API response test can prove the SERVER returned what it should. It
+# cannot prove what a BROWSER does on a timeout or a dropped socket, because in those cases no
+# response exists for the test client to inspect. So the three failure handlers are asserted at
+# the MARKUP level -- present, correctly named, all pointing at the same target and template --
+# and their browser behaviour is a manual backstop, not something these tests cover. Claiming
+# otherwise would be its own small dishonesty in a phase about not overstating things.
+
+
+def test_exactly_one_week_selector_partial_exists() -> None:
+    """No fork. A second selector file is the duplicated definition D31-26 forbids."""
+    found = sorted(p.name for p in COMPONENTS_DIR.glob("*week_selector*.html"))
+    assert found == ["_week_selector.html"], (
+        f"a second week selector partial appeared: {found}"
+    )
+
+
+def test_the_bets_selector_targets_bets_and_omits_the_sort_parameter(
+    bets_client: TestClient,
+) -> None:
+    """The bets selector calls /bets, swaps #bets-content, and carries no sort parameter at all."""
+    markup = extract_selector(
+        bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    )
+    assert 'hx-get="/bets"' in markup
+    assert 'hx-target="#bets-content"' in markup
+    assert 'hx-indicator="#bets-loading"' in markup
+    assert "sort" not in markup, (
+        "the bets selector carries a sort parameter for a control the page does not have"
+    )
+    assert "/fragments/games" not in markup
+
+
+def test_the_element_ids_differ_between_the_two_pages(
+    test_client: TestClient, bets_client: TestClient
+) -> None:
+    """Ids are derived from the swap target, so two pages cannot emit duplicate DOM ids."""
+    this_week = extract_selector(test_client.get("/").text)
+    bets = extract_selector(
+        bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    )
+
+    this_week_ids = set(re.findall(r'id="([^"]+)"', this_week))
+    bets_ids = set(re.findall(r'id="([^"]+)"', bets))
+
+    assert this_week_ids, "the This Week selector emitted no ids"
+    assert bets_ids, "the bets selector emitted no ids"
+    assert not (this_week_ids & bets_ids), (
+        f"the two pages share element ids: {this_week_ids & bets_ids}"
+    )
+    assert "week-select" in this_week_ids
+    assert "bets-content-week-select" in bets_ids
+    # The label association moved with the id in the same edit.
+    for markup, ids in ((this_week, this_week_ids), (bets, bets_ids)):
+        for element_id in ids:
+            if element_id.endswith("-select"):
+                assert f'for="{element_id}"' in markup
+
+
+def test_all_three_failure_events_are_wired_in_kebab_case(
+    bets_client: TestClient,
+) -> None:
+    """response-error, timeout and send-error are ALL present, all pointing at the same target.
+
+    A timeout and a dropped connection are DIFFERENT htmx events from an HTTP error response;
+    wiring only response-error -- the shipped pattern -- would leave both silent, and silence here
+    means one week's rows under another week's heading (T-31-74b).
+
+    MARKUP LEVEL ONLY. This proves the handlers are present and correctly named. It does NOT prove
+    what a browser does when htmx:timeout fires; that is a manual backstop check.
+    """
+    markup = extract_selector(
+        bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    )
+
+    for event in FAILURE_EVENTS:
+        assert event in markup, f"{event} is not wired"
+        # Lowercase kebab-case: DOM attributes are lowercased, so a camel-case name would look
+        # present and silently never bind.
+        assert event == event.lower()
+    assert "responseError" not in markup
+    assert "sendError" not in markup
+
+    handlers = re.findall(r'hx-on::[a-z-]+="([^"]*)"', markup)
+    assert len(handlers) >= len(FAILURE_EVENTS)
+    assert len(set(handlers)) == 1, "the three failure events run different handlers"
+    handler = handlers[0]
+    assert "bets-failure-template" in handler
+    assert "#bets-content" in handler
+    # The displayed week label reverts to the week actually being shown.
+    assert f"w.value='{_WEEK}'" in handler
+    assert f"s.value='{_SEASON}'" in handler
+
+
+def test_the_failure_template_carries_the_message_and_a_retry(
+    bets_client: TestClient,
+) -> None:
+    """The template the handlers copy holds the error-state geometry plus a retry affordance."""
+    body = bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    start = body.index('<template id="bets-failure-template">')
+    template = body[start : body.index("</template>", start)]
+
+    assert "bg-red-50" in template, (
+        "the failure state does not reuse the error-state geometry"
+    )
+    assert "could not be loaded" in template
+    assert "Retry this week" in template
+    # The retry navigates to the week ACTUALLY being shown, not the one that was requested.
+    assert f"/bets?season={_SEASON}&amp;week={_WEEK}" in template
+
+
+def test_the_two_pages_share_every_layout_and_type_class(
+    test_client: TestClient, bets_client: TestClient
+) -> None:
+    """Parameterisation changed NO layout class and NO type class: both renders agree.
+
+    The two snapshots pin the shipped page exactly; this pins the claim that the new call site did
+    not acquire a different look through a parameter.
+    """
+    this_week = set(class_values(extract_selector(test_client.get("/").text)))
+    bets = set(
+        class_values(
+            extract_selector(
+                bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+            )
+        )
+    )
+    assert bets <= this_week, (
+        f"the bets selector introduced new class strings: {bets - this_week}"
+    )
+
+
+def test_bets_navigation_reads_the_schedule_getters_and_not_the_predictions_ones() -> (
+    None
+):
+    """STRUCTURAL, not textual: an ast walk over the two functions collects the service calls.
+
+    A text search would be tripped by a COMMENT naming the rejected getters -- and both functions
+    carry exactly such a comment, explaining why those getters are wrong here. The walk reads the
+    code (REVIEW-NAV, T-31-74c).
+    """
+    source = (
+        Path(__file__).resolve().parents[2] / "api" / "routes" / "pages.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    called: set[str] = set()
+    seen: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if node.name not in {"_build_bets_context", "_normalize_week"}:
+            continue
+        seen.add(node.name)
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and isinstance(inner.func.value, ast.Name)
+                and inner.func.value.id == "service"
+            ):
+                called.add(inner.func.attr)
+
+    assert seen == {"_build_bets_context", "_normalize_week"}, (
+        f"functions not found: {seen}"
+    )
+    assert {"get_available_bet_weeks", "get_bet_seasons"} <= called, (
+        f"the bets navigation getters are not both called: {sorted(called)}"
+    )
+    assert "get_available_weeks" not in called, (
+        "the bets navigation fell back to the predictions-derived week getter"
+    )
+    assert "get_available_seasons" not in called, (
+        "the bets navigation fell back to the backtest_metrics-derived season getter"
+    )
+
+
+def test_a_week_with_no_prediction_row_is_still_offered_and_explains_itself(
+    tmp_path: Path,
+) -> None:
+    """A scheduled week absent from `predictions` IS selectable and resolves to an empty state.
+
+    Built with exactly that gap: the cache carries available_bet_weeks rows and an EMPTY
+    predictions table, so the predictions-derived getter returns nothing for the same weeks. A
+    reader who wants to check that week must find it in the control, not discover it missing.
+    """
+    clear_cache()
+    db_path = tmp_path / "prediction_gap.duckdb"
+    gap_week = 5
+    conn = _build_bare_cache(db_path)
+    try:
+        materialize_bet_list(conn, pd.DataFrame([_live_row("2023_W01_DET@KC", "ou")]))
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [
+                    {"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK},
+                    {
+                        "game_id": "2023_W05_AAA@BBB",
+                        "season": _SEASON,
+                        "week": gap_week,
+                    },
+                ]
+            ),
+        )
+        _stamp_populated_at(conn, _POPULATED_AT)
+        assert conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+    probe = duckdb.connect(str(db_path), read_only=True)
+    try:
+        assert DataService(probe).get_available_weeks(season=_SEASON) == [], (
+            "the fixture does not actually carry a prediction-row gap"
+        )
+    finally:
+        probe.close()
+    clear_cache()
+
+    with contextmanager(_client)(db_path) as client:
+        markup = extract_selector(
+            client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+        )
+        assert f'value="{gap_week}"' in markup, (
+            "a scheduled week with no prediction row vanished from the selector"
+        )
+
+        gap_body = client.get(f"/bets?season={_SEASON}&week={gap_week}").text
+
+    assert _ZERO_ADMITTED_HEADING in gap_body, (
+        "the gap week did not resolve to an explanatory empty state"
+    )
+
+
+def test_the_selector_still_renders_in_the_off_season_state(tmp_path: Path) -> None:
+    """UI-SPEC E5 empty: the no-current-week body points at the selector, so it must be there."""
+    clear_cache()
+    db_path = tmp_path / "off_season_selector.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        _stamp_populated_at(conn, _POPULATED_AT)
+    finally:
+        conn.close()
+
+    with contextmanager(_client)(db_path) as client:
+        body = client.get("/bets").text
+
+    assert _NO_CURRENT_WEEK_HEADING in body
+    assert SELECTOR_OPEN in body, (
+        "the selector vanished in the state whose copy points at it"
+    )
+    markup = extract_selector(body)
+    assert 'id="bets-content-week-select"' in markup

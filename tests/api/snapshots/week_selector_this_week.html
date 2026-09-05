@@ -1,0 +1,62 @@
+<div class="flex flex-wrap items-center gap-3">
+  
+  <div class="flex items-center gap-2 mr-2">
+    <label for="season-select" class="text-sm font-semibold text-gray-700">Season</label>
+    <select id="season-select" name="season"
+            hx-get="/fragments/games"
+            hx-target="#game-grid"
+            hx-swap="innerHTML"
+            hx-include="[name='sort']"
+            hx-vals='{"week": ""}'
+            class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
+      
+      <option value="2024" selected>2024</option>
+      
+      <option value="2023" >2023</option>
+      
+      <option value="2021" >2021</option>
+      
+    </select>
+  </div>
+  
+  <label for="week-select" class="text-sm font-semibold text-gray-700">Week</label>
+  <div class="flex items-center gap-1">
+    
+    
+    
+    
+      
+        
+        
+      
+    
+
+    
+    <button disabled
+            class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
+            aria-label="Previous Week">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+    </button>
+
+    
+    <select id="week-select" name="week"
+            hx-get="/fragments/games"
+            hx-target="#game-grid"
+            hx-swap="innerHTML"
+            hx-include="[name='sort'],[name='season']"
+            class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
+      
+      <option value="1" data-season="2024" selected>
+        Week 1
+      </option>
+      
+    </select>
+
+    
+    <button disabled
+            class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
+            aria-label="Next Week">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+    </button>
+  </div>
+</div>

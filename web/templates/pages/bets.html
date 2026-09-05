@@ -16,6 +16,63 @@
   <p class="text-sm text-gray-500 max-w-2xl">Every scheduled game is evaluated for all three bet types. Bets that clear the pre-registered expected-value floor are listed here; every candidate that did not is listed below with its reason.</p>
 </div>
 
+{# ------------------------------------------------------------------------ #}
+{# The week selector, OUTSIDE the swap target so it stays in place and       #}
+{# interactive while the skeleton fills the target (UI-SPEC E5 loading).     #}
+{#                                                                          #}
+{# It is the SAME partial the This Week page uses, parameterised in place    #}
+{# (D31-26) -- not a fork. Its options come from the SCHEDULE-derived        #}
+{# available_bet_weeks / bet_seasons, never from get_available_weeks (which  #}
+{# reads predictions) or get_available_seasons (which reads backtest_        #}
+{# metrics): a scheduled week with no prediction row is exactly the week a   #}
+{# reader most wants to check, and it would be ABSENT from a predictions-    #}
+{# derived control rather than selectable and resolving to an explanatory    #}
+{# empty state (REVIEW-NAV, T-31-74c).                                        #}
+{#                                                                          #}
+{# ws_extra_params={} because /bets has no sort control; the sort parameter  #}
+{# is OMITTED rather than emitted empty.                                     #}
+{# ------------------------------------------------------------------------ #}
+<div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+  {% with available_weeks=available_bet_weeks,
+          available_seasons=bet_seasons,
+          ws_endpoint="/bets",
+          ws_target="#bets-content",
+          ws_include_season="",
+          ws_include_week="[name='season']",
+          ws_extra_params={},
+          ws_indicator="#bets-loading",
+          ws_failure_template="bets-failure-template" %}
+    {% include "components/_week_selector.html" %}
+  {% endwith %}
+</div>
+
+{# ------------------------------------------------------------------------ #}
+{# The failed-fragment markup (owner decision, UI-SPEC E5 error).            #}
+{#                                                                          #}
+{# htmx's default on a failed request is to leave the target untouched and   #}
+{# hide the indicator -- which on this page means one week's rows sitting    #}
+{# under another week's heading. The selector's three failure handlers copy  #}
+{# this template into the swap target instead and revert both controls to    #}
+{# the week actually being shown.                                            #}
+{#                                                                          #}
+{# This is DISTINCT from the stale-cache hard-block above, which is a        #}
+{# server-rendered 200 that refuses a list it HAS. This one is a request     #}
+{# that never delivered a list at all.                                       #}
+{#                                                                          #}
+{# The retry affordance is a plain link, not an hx-get: markup inserted by   #}
+{# hand into innerHTML is not processed by htmx, so an htmx control here     #}
+{# would render as a dead button. A full navigation genuinely retries.       #}
+{# ------------------------------------------------------------------------ #}
+<template id="bets-failure-template">
+  {% with message="This week's list could not be loaded",
+          recovery_text="The request failed before any rows arrived. Nothing is shown rather than the previous week's rows under this week's heading. The week selector has been reset to the week actually displayed." %}
+    {% include "components/_error_state.html" %}
+  {% endwith %}
+  <div class="mt-4 text-center">
+    <a href="/bets?season={{ current_season if current_season is not none else '' }}&amp;week={{ current_week if current_week is not none else '' }}" class="inline-flex items-center px-4 py-2 bg-nfl-primary text-white text-sm font-medium rounded-md hover:bg-nfl-secondary transition-colors min-h-[44px]">Retry this week</a>
+  </div>
+</template>
+
 {# HTMX swap target: the fragment route returns exactly this block. #}
 <div id="bets-content">
 {% block bets_content %}

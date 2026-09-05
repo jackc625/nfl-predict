@@ -1,16 +1,83 @@
 {# Week selector with prev/next arrows and dropdown. HTMX-powered.
    Pass: available_weeks (list of {season, week}), current_week, current_season, current_sort,
-         available_seasons (list of ints, optional) #}
+         available_seasons (list of ints, optional)
+
+   PARAMETERISED IN PLACE for D31-26 so ONE selector serves both / and /bets. It is deliberately
+   NOT forked: a second selector file is a duplicated definition that drifts, and this repo has a
+   documented incident of exactly that failure mode (29-06). Every parameter below DEFAULTS to the
+   value this component shipped with, so the This Week page renders BYTE-IDENTICALLY -- pinned by
+   two recorded snapshots in tests/api/test_bets_page.py. No layout class and no type class was
+   touched; the diff is the attribute values, the failure handlers and the id derivation.
+
+   The hard-wiring was in SIX places across FOUR elements, not three:
+
+     ws_endpoint          the URL every control calls          default /fragments/games
+     ws_target            the swap target selector             default #game-grid
+     ws_include_season    hx-include on the SEASON select      default [name='sort']
+     ws_include_week      hx-include on the WEEK select        default [name='sort'],[name='season']
+     ws_extra_params      dict of extra query params on the
+                          TWO buttons                          default {"sort": current_sort}
+     ws_indicator         hx-indicator target                  default OMITTED (as shipped)
+     ws_failure_template  id of a <template> holding the
+                          failed-fragment markup               default OMITTED (as shipped)
+
+   ws_extra_params is a DICT, not a string, so its values stay HTML-escaped: current_sort is
+   USER INPUT (`sort` is a query parameter on /), and a raw string parameter marked |safe would
+   inject it unescaped into an attribute. A caller with no sort control passes {} -- the parameter
+   is OMITTED, not emitted empty. /bets has no sort control, and a trailing "sort=" it never reads
+   would be a parameter claiming a control that does not exist.
+
+   ws_include_season / ws_include_week ARE marked |safe, because a CSS attribute selector needs its
+   single quotes intact. They must therefore only ever be passed an AUTHORED selector string; no
+   user input may reach them, and none does -- both call sites pass literals.
+
+   ELEMENT IDS are DERIVED from ws_target rather than hardcoded, so the component rendered on two
+   pages cannot emit duplicate DOM ids. The default target maps to the shipped UNPREFIXED ids: the
+   D31-26 byte-identity requirement pins them, and this_week.html's export-URL script looks them up
+   by those exact names, so renaming them would break both. Label `for` attributes are derived from
+   the same values in the same edit.
+
+   FAILED-FRAGMENT HANDLING (owner decision, UI-SPEC E5 error). htmx's default on a failed request
+   is to leave the target UNTOUCHED and hide the indicator -- silent stale content, which on a bet
+   list means one week's rows under another week's heading. When ws_failure_template is passed, all
+   THREE failure events are wired: hx-on::response-error (an HTTP error response), hx-on::timeout
+   and hx-on::send-error (a timeout and a dropped connection are DIFFERENT htmx events -- htmx
+   fires htmx:timeout and htmx:sendError -- and response-error covers neither, which is exactly how
+   the shipped _season_tracking_selector.html pattern would have left a timeout silent). All three
+   use the kebab-case double-colon form: DOM attributes are lowercased, so a camel-case name would
+   silently not bind. All three run the SAME handler, which replaces the target with the failure
+   markup AND reverts both controls to the week actually being shown.
+
+   The handler string is marked |safe because every part of it is template-authored: the two ids
+   and the target come from this file's own parameters, and the week and season are ints coerced
+   here. No user-supplied value reaches it. #}
+{% set _ws_endpoint = ws_endpoint if ws_endpoint is defined else "/fragments/games" %}
+{% set _ws_target = ws_target if ws_target is defined else "#game-grid" %}
+{% set _ws_include_season = ws_include_season if ws_include_season is defined else "[name='sort']" %}
+{% set _ws_include_week = ws_include_week if ws_include_week is defined else "[name='sort'],[name='season']" %}
+{% set _ws_extra_params = ws_extra_params if ws_extra_params is defined else {"sort": current_sort} %}
+{% set _ws_indicator = ws_indicator if ws_indicator is defined else none %}
+{% set _ws_failure_template = ws_failure_template if ws_failure_template is defined else none %}
+{% set _ws_scope = "" if _ws_target == "#game-grid" else _ws_target[1:] ~ "-" %}
+{% set _ws_season_id = _ws_scope ~ "season-select" %}
+{% set _ws_week_id = _ws_scope ~ "week-select" %}
+{% set _ws_shown_week = current_week | int if current_week is not none else "" %}
+{% set _ws_shown_season = current_season | int if current_season is not none else "" %}
+{% set _ws_fail_js = "var t=document.getElementById('" ~ _ws_failure_template ~ "');var c=document.querySelector('" ~ _ws_target ~ "');if(t){if(c){c.innerHTML=t.innerHTML;}}var w=document.getElementById('" ~ _ws_week_id ~ "');if(w){w.value='" ~ _ws_shown_week ~ "';}var s=document.getElementById('" ~ _ws_season_id ~ "');if(s){s.value='" ~ _ws_shown_season ~ "';}" %}
 <div class="flex flex-wrap items-center gap-3">
   {% if available_seasons is defined and available_seasons and available_seasons|length > 1 %}
   <div class="flex items-center gap-2 mr-2">
-    <label for="season-select" class="text-sm font-semibold text-gray-700">Season</label>
-    <select id="season-select" name="season"
-            hx-get="/fragments/games"
-            hx-target="#game-grid"
+    <label for="{{ _ws_season_id }}" class="text-sm font-semibold text-gray-700">Season</label>
+    <select id="{{ _ws_season_id }}" name="season"
+            hx-get="{{ _ws_endpoint }}"
+            hx-target="{{ _ws_target }}"
             hx-swap="innerHTML"
-            hx-include="[name='sort']"
-            hx-vals='{"week": ""}'
+{% if _ws_include_season %}            hx-include="{{ _ws_include_season|safe }}"
+{% endif %}{% if _ws_indicator %}            hx-indicator="{{ _ws_indicator }}"
+{% endif %}{% if _ws_failure_template %}            hx-on::response-error="{{ _ws_fail_js|safe }}"
+            hx-on::timeout="{{ _ws_fail_js|safe }}"
+            hx-on::send-error="{{ _ws_fail_js|safe }}"
+{% endif %}            hx-vals='{"week": ""}'
             class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
       {% for s in available_seasons %}
       <option value="{{ s }}" {% if s == current_season %}selected{% endif %}>{{ s }}</option>
@@ -18,7 +85,7 @@
     </select>
   </div>
   {% endif %}
-  <label for="week-select" class="text-sm font-semibold text-gray-700">Week</label>
+  <label for="{{ _ws_week_id }}" class="text-sm font-semibold text-gray-700">Week</label>
   <div class="flex items-center gap-1">
     {# Determine previous and next weeks from the available_weeks list #}
     {% set prev_week = namespace(found=false, season=none, week=none) %}
@@ -39,19 +106,23 @@
     {% endfor %}
 
     {# Previous week button #}
-    <button {% if prev_week.found %}hx-get="/fragments/games?week={{ prev_week.week }}&season={{ prev_week.season }}&sort={{ current_sort }}" hx-target="#game-grid" hx-swap="innerHTML"{% else %}disabled{% endif %}
+    <button {% if prev_week.found %}hx-get="{{ _ws_endpoint }}?week={{ prev_week.week }}&season={{ prev_week.season }}{% for _k, _v in _ws_extra_params.items() %}&{{ _k }}={{ _v }}{% endfor %}" hx-target="{{ _ws_target }}" hx-swap="innerHTML"{% if _ws_indicator %} hx-indicator="{{ _ws_indicator }}"{% endif %}{% if _ws_failure_template %} hx-on::response-error="{{ _ws_fail_js|safe }}" hx-on::timeout="{{ _ws_fail_js|safe }}" hx-on::send-error="{{ _ws_fail_js|safe }}"{% endif %}{% else %}disabled{% endif %}
             class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
             aria-label="Previous Week">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
     </button>
 
     {# Week dropdown #}
-    <select id="week-select" name="week"
-            hx-get="/fragments/games"
-            hx-target="#game-grid"
+    <select id="{{ _ws_week_id }}" name="week"
+            hx-get="{{ _ws_endpoint }}"
+            hx-target="{{ _ws_target }}"
             hx-swap="innerHTML"
-            hx-include="[name='sort'],[name='season']"
-            class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
+{% if _ws_include_week %}            hx-include="{{ _ws_include_week|safe }}"
+{% endif %}{% if _ws_indicator %}            hx-indicator="{{ _ws_indicator }}"
+{% endif %}{% if _ws_failure_template %}            hx-on::response-error="{{ _ws_fail_js|safe }}"
+            hx-on::timeout="{{ _ws_fail_js|safe }}"
+            hx-on::send-error="{{ _ws_fail_js|safe }}"
+{% endif %}            class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
       {% for w in available_weeks %}
       <option value="{{ w.week }}" data-season="{{ w.season }}" {% if w.week == current_week and w.season == current_season %}selected{% endif %}>
         Week {{ w.week }}
@@ -60,7 +131,7 @@
     </select>
 
     {# Next week button #}
-    <button {% if next_week.found %}hx-get="/fragments/games?week={{ next_week.week }}&season={{ next_week.season }}&sort={{ current_sort }}" hx-target="#game-grid" hx-swap="innerHTML"{% else %}disabled{% endif %}
+    <button {% if next_week.found %}hx-get="{{ _ws_endpoint }}?week={{ next_week.week }}&season={{ next_week.season }}{% for _k, _v in _ws_extra_params.items() %}&{{ _k }}={{ _v }}{% endfor %}" hx-target="{{ _ws_target }}" hx-swap="innerHTML"{% if _ws_indicator %} hx-indicator="{{ _ws_indicator }}"{% endif %}{% if _ws_failure_template %} hx-on::response-error="{{ _ws_fail_js|safe }}" hx-on::timeout="{{ _ws_fail_js|safe }}" hx-on::send-error="{{ _ws_fail_js|safe }}"{% endif %}{% else %}disabled{% endif %}
             class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
             aria-label="Next Week">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>

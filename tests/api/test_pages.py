@@ -2,11 +2,24 @@
 
 Validates the predictions dashboard (landing page), performance page,
 backtest page, and HTMX block rendering.
+
+Plan 31-15 adds the D31-26 regression: the week selector was PARAMETERISED IN PLACE so that /
+and /bets share one partial, and this module pins the claim that the This Week page renders
+byte-identically after that edit. It lives here rather than beside the bets tests because it
+is a This Week regression -- the next person to change / needs to meet it.
 """
 
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+
+from api.dependencies import templates
+from tests.api.week_selector_snapshot import (
+    FAILURE_EVENTS,
+    PRE_PARAM_CONTEXT,
+    extract_selector,
+    read_snapshot,
+)
 
 
 def test_this_week_page(test_client: TestClient):
@@ -533,3 +546,50 @@ def test_season_error_copy_renders_via_error_component(empty_test_client: TestCl
     # as the active content): the LOCKED error copy + the red card markup exist.
     assert "Could not load season data" in html
     assert "bg-red-50" in html
+
+
+# ---------------------------------------------------------------------------
+# D31-26: the shared week selector, parameterised in place (plan 31-15)
+# ---------------------------------------------------------------------------
+
+
+def test_the_this_week_selector_renders_byte_identically(
+    test_client: TestClient,
+) -> None:
+    """The This Week page's selector markup equals a snapshot recorded BEFORE the edit (D31-26)."""
+    rendered = extract_selector(test_client.get("/").text).replace("\r\n", "\n")
+    assert rendered == read_snapshot("week_selector_this_week.html")
+
+
+def test_the_prev_next_branch_renders_byte_identically() -> None:
+    """The enabled prev/next branch -- the two baked-in sort URLs -- is byte-identical too.
+
+    The This Week fixture yields ONE week, under which both buttons render `disabled` and their
+    hx-get URLs are never emitted. Rendering the partial directly against a three-week context is
+    the only way those two of the six hard-wired attributes get compared at all.
+    """
+    rendered = templates.env.get_template("components/_week_selector.html").render(
+        **PRE_PARAM_CONTEXT
+    )
+    assert (
+        rendered.replace("\r\n", "\n").strip()
+        == read_snapshot("week_selector_prev_next.html").strip()
+    )
+
+
+def test_the_this_week_page_still_targets_the_games_grid(
+    test_client: TestClient,
+) -> None:
+    """Defaults reproduce every one of the six hard-wired attributes on the shipped page."""
+    markup = extract_selector(test_client.get("/").text)
+    assert 'hx-get="/fragments/games"' in markup
+    assert 'hx-target="#game-grid"' in markup
+    assert "hx-include=\"[name='sort']\"" in markup
+    assert "hx-include=\"[name='sort'],[name='season']\"" in markup
+    assert 'id="season-select"' in markup
+    assert 'id="week-select"' in markup
+    assert 'for="season-select"' in markup
+    assert 'for="week-select"' in markup
+    # The shipped page gains NO failure handler and NO indicator: both default to omitted.
+    for event in FAILURE_EVENTS:
+        assert event not in markup
