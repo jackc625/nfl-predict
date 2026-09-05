@@ -1823,3 +1823,245 @@ class TestTheProtectedSliceTripwireCanActuallyFire:
             "fires on the expected outcome gets overridden, and an overridden tripwire is "
             "worse than none."
         )
+
+
+# ---------------------------------------------------------------------------
+# RUNG 3 -- the FULL rebuild that re-derives 2025 WITH its prior-season context
+# (Plan 31-11 continuation, owner ruling A of 2026-09-05)
+# ---------------------------------------------------------------------------
+#
+# WHY A FOURTH RUNG EXISTS AT ALL. Rung 2 was a SCOPED ``--season 2025`` build. On a
+# 2025-only frame ``expanding_normalize``'s prior-season bootstrap finds nothing to
+# bootstrap from and falls back to a neutral 0.0, and the per-season winsorization loses
+# its strictly-prior bounds; the run's own log said ``No data for prior season
+# season=2024``. 139/140/140 of 2025's columns moved for that reason rather than for the
+# odds, and the independent project control ``tests/unit/test_temporal_display_columns.py
+# ::TestRealGold`` failed on all three matrices. 2025 is the verdict population, so it must
+# be derived the way every other season was. Rung 3 is that rebuild: full scope, replace
+# mode, every season re-derived from the pinned upstream input.
+#
+# THE RUNG CONDITION IS DIFFERENT AGAIN, AND THE DIFFERENCE IS INFORMATIVE.
+#
+# * Rung 1 (full rebuild, no new odds): zero NON-clock moves anywhere; the clock moves in
+#   every season.
+# * Rung 2 (scoped incremental): zero moves of ANY kind in 2021-2024, INCLUDING the clock,
+#   because the retained rows are carried forward rather than re-derived.
+# * Rung 3 (full rebuild, odds in place): the clock moves in EVERY season again, exactly as
+#   at rung 1, because every row is genuinely re-derived. So the protected-slice hard stop
+#   here measures NON-CLOCK moves only. Requiring a frozen clock at a full rebuild would
+#   fire on the rebuild having happened, and a tripwire that fires on the expected outcome
+#   gets overridden.
+#
+# The substantive protection is undiminished: SPEC R2 binds the 2021-2024 VALUES, and a
+# value or storage move in a protected season is caught here exactly as it is at rung 2.
+# An unregistered column cannot reach the clock exemption either, because
+# ``compare_fingerprints`` files anything outside ``BUILD_CLOCK_COLUMNS`` into
+# ``non_clock_moves`` by construction.
+
+
+def _p31_non_clock_moves_touching_protected_seasons(
+    report: dict,
+) -> list[tuple[str, str, str, list[str]]]:
+    """Return every NON-CLOCK moved column carrying a 2021-2024 season.
+
+    The rung-2 helper ``_p31_moves_touching_protected_seasons`` includes the build clock and
+    must keep doing so: at a scoped incremental build a clock move in a retained season means
+    those rows were rewritten. At a FULL rebuild every row is re-derived by design, so the
+    clock is separated out here and judged by ``test_the_clock_moved_in_every_season``
+    instead -- reported in its own category, never suppressed.
+    """
+    protected = set(_P31_PROTECTED_SEASONS)
+    clock = {_canonical_name(c) for c in BUILD_CLOCK_COLUMNS}
+    return [
+        move
+        for move in _p31_moves(report)
+        if _canonical_name(move[1]) not in clock and protected & set(move[3])
+    ]
+
+
+@pytest.mark.integration
+class TestThePhase31Rung3IsTheFullRebuildOfTheVerdictPopulation:
+    """Rung 3: a FULL rebuild may move 2025 and may re-stamp the clock, and nothing else."""
+
+    def test_the_ladder_predecessors_all_exist(self) -> None:
+        """The 31-03 ordering refusal, asserted on the rung this plan actually ran."""
+        if not _p31_rung_path(3).is_file():
+            pytest.skip(
+                "the Phase-31 rung-3 fingerprint document is not present at "
+                f"{_p31_rung_path(3)} -- outputs/ is gitignored runtime state."
+            )
+        verified = require_rung_ladder(_P31_LADDER_DIR, 3, PHASE31_RUNG_PREFIX)
+        assert [path.name for path in verified] == [
+            "p31_rung0.json",
+            "p31_rung1.json",
+            "p31_rung2.json",
+        ]
+
+    def test_no_NON_CLOCK_column_moved_in_a_protected_season(self) -> None:
+        """SPEC R2's hard stop, measured across the full rebuild.
+
+        This is the assertion the owner's ruling A asked to be PROVEN rather than assumed.
+        It is left exactly as strict as it reads: if it fails, the full rebuild moved bytes
+        the pre-registration binds, and that is a finding for the owner rather than a
+        condition to relax.
+        """
+        before, after = _p31_document(2), _p31_document(3)
+        _p31_require_protected_seasons(before, 2)
+        _p31_require_protected_seasons(after, 3)
+        report = compare_fingerprints(before, after)
+
+        offenders = _p31_non_clock_moves_touching_protected_seasons(report)
+        attribution = "; ".join(
+            f"{matrix}.{column} [{kind}] seasons {','.join(seasons)}"
+            for matrix, column, kind, seasons in offenders
+        )
+        assert offenders == [], (
+            f"the FULL rebuild moved {len(offenders)} non-clock column-slot(s) in the "
+            f"PROTECTED 2021-2024 window. Per-column attribution: {attribution}. The "
+            "2021-2024 slice is the deploy gate's holdout AND the Phase-31 tune window, and "
+            "the pre-registration binds its values. HARD STOP -- take the attribution to the "
+            "owner rather than relaxing this."
+        )
+
+    def test_the_clock_moved_in_every_season(self) -> None:
+        """A full rebuild re-derives every row, so the registered clock must move everywhere.
+
+        Set EQUALITY against the registered set, as at rung 1. A clock that moved in only
+        some seasons would mean some rows were carried forward, which a replace-mode full
+        rebuild does not do -- and a partial re-derivation is exactly the state in which a
+        protected-slice assertion could pass for the wrong reason.
+        """
+        before, after = _p31_document(2), _p31_document(3)
+        report = compare_fingerprints(before, after)
+        expected_seasons = sorted(set(_P31_PROTECTED_SEASONS) | {_P31_HOLD_SEASON})
+
+        for matrix in GOLD_MATRICES:
+            detail = report[matrix]
+            moved_clock = tuple(
+                sorted(_canonical_name(c) for c in detail["build_clock_moves"])
+            )
+            assert moved_clock == _P31_CLOCK_COLUMNS, (
+                f"{matrix}: the rung-3 build-clock moved set is {list(moved_clock)}, not "
+                f"EQUAL to the registered set {list(_P31_CLOCK_COLUMNS)}. A full rebuild "
+                "stamps every row, so a clock that did not move means the rebuild did not "
+                "run over this matrix."
+            )
+            for column in detail["build_clock_moves"]:
+                seasons = sorted((detail["columns_changed"] or {})[column])
+                missing = [s for s in expected_seasons if s not in seasons]
+                assert not missing, (
+                    f"{matrix}: the build clock '{column}' did NOT move in season(s) "
+                    f"{missing}. Those rows were carried forward rather than re-derived, so "
+                    "this was not the full rebuild it claims to be."
+                )
+
+    def test_no_column_was_added_or_removed_and_the_shape_held(self) -> None:
+        report = compare_fingerprints(_p31_document(2), _p31_document(3))
+        for matrix in GOLD_MATRICES:
+            detail = report[matrix]
+            assert detail["columns_added"] == [], (
+                f"{matrix}: rung 3 ADDED {detail['columns_added']}. A full rebuild is the "
+                "only mode that CAN move the schema, which is exactly why it is asserted "
+                "here rather than assumed."
+            )
+            assert detail["columns_removed"] == [], (
+                f"{matrix}: rung 3 REMOVED {detail['columns_removed']}"
+            )
+            assert detail["width_before"] == detail["width_after"], (
+                f"{matrix}: width moved {detail['width_before']} -> "
+                f"{detail['width_after']} at rung 3"
+            )
+            assert detail["rows_before"] == detail["rows_after"], (
+                f"{matrix}: rows moved {detail['rows_before']} -> "
+                f"{detail['rows_after']} at rung 3"
+            )
+
+    def test_the_protected_season_row_counts_are_identical_across_all_four_rungs(
+        self,
+    ) -> None:
+        documents = [_p31_document(rung) for rung in range(4)]
+        _p31_require_protected_seasons(documents[0], 0)
+        for matrix in GOLD_MATRICES:
+            counts = [_p31_rows_per_season(d, matrix) for d in documents]
+            for season in _P31_PROTECTED_SEASONS:
+                observed = [c[season] for c in counts]
+                assert len(set(observed)) == 1, (
+                    f"{matrix}: season {season} row count moved across the ladder "
+                    f"(rung0/1/2/3 = {observed}). Only 2025 may change."
+                )
+
+    def test_the_hold_season_is_still_the_playoff_inclusive_285_game_population(
+        self,
+    ) -> None:
+        after = _p31_document(3)
+        for matrix in GOLD_MATRICES:
+            rows = _p31_rows_per_season(after, matrix).get(_P31_HOLD_SEASON)
+            assert rows == _P31_HOLD_ROWS, (
+                f"{matrix}: the {_P31_HOLD_SEASON} slice holds {rows} rows after the full "
+                f"rebuild, not the {_P31_HOLD_ROWS} the frozen pre-registration binds the "
+                "hold to (REG plus all four playoff types, D31-38)."
+            )
+
+
+class TestTheRung3ProtectedSliceHelperCanActuallyFire:
+    """The rung-3 helper exempts the clock. Prove the exemption is narrow, not a hole."""
+
+    @staticmethod
+    def _report(column: str, move_kind: str, seasons: list[str]) -> dict:
+        return {
+            matrix: {
+                "columns_changed": {column: seasons},
+                "column_details": {
+                    column: {"move_kind": move_kind, "seasons": seasons}
+                },
+            }
+            for matrix in GOLD_MATRICES
+        }
+
+    @pytest.mark.parametrize("move_kind", ["values", "storage"])
+    def test_a_protected_season_data_move_is_still_caught(self, move_kind: str) -> None:
+        offenders = _p31_non_clock_moves_touching_protected_seasons(
+            self._report("elo_diff", move_kind, ["2023"])
+        )
+        assert len(offenders) == len(GOLD_MATRICES), (
+            f"a {move_kind} move in season 2023 was NOT caught by the rung-3 helper, so the "
+            "full rebuild's hard stop would wave a real protected-slice move through."
+        )
+
+    def test_the_clock_is_the_ONLY_thing_the_rung_3_helper_exempts(self) -> None:
+        exempted = _p31_non_clock_moves_touching_protected_seasons(
+            self._report("feature_timestamp", "build_clock", ["2022"])
+        )
+        assert exempted == [], (
+            "the registered build clock was flagged as a rung-3 protected-slice offender. A "
+            "full rebuild re-stamps every row by construction; flagging it would fire on the "
+            "rebuild having happened."
+        )
+
+    def test_a_column_merely_NAMED_like_a_clock_is_not_exempt(self) -> None:
+        """A name heuristic is how a real move gets waved through wearing a clock's costume."""
+        offenders = _p31_non_clock_moves_touching_protected_seasons(
+            self._report("snapshot_ts", "values", ["2024"])
+        )
+        assert len(offenders) == len(GOLD_MATRICES), (
+            "'snapshot_ts' is not in BUILD_CLOCK_COLUMNS but was exempted anyway, so the "
+            "rung-3 exemption is matching on appearance rather than on registration."
+        )
+
+    def test_a_move_spanning_2025_and_a_protected_season_is_caught(self) -> None:
+        offenders = _p31_non_clock_moves_touching_protected_seasons(
+            self._report("snapshot_spread", "values", ["2024", "2025"])
+        )
+        assert len(offenders) == len(GOLD_MATRICES), (
+            "a move that touches 2025 AND a protected season was not caught. A 2025 "
+            "component does not license the 2024 one."
+        )
+
+    def test_a_2025_only_move_is_not_caught(self) -> None:
+        offenders = _p31_non_clock_moves_touching_protected_seasons(
+            self._report("snapshot_spread", "values", ["2025"])
+        )
+        assert offenders == [], (
+            "a 2025-only move was flagged. Rung 3 exists to re-derive 2025 with its "
+            "prior-season context; moving 2025 is the point."
+        )
