@@ -18,7 +18,7 @@ Market anchors provide:
 
 import warnings
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -974,15 +974,46 @@ class MarketAnchorFeaturesCalculator:
             odds_df = load_dataframe("odds_snapshot", layer="silver")
             logger.info("Loaded odds data", odds_records=len(odds_df))
 
-            # Time-fence: only use odds before as_of_datetime
+            # Time-fence: only use odds before as_of_datetime.
+            #
+            # This parse used to be a bare ``pd.to_datetime(col, errors="coerce")``,
+            # and it SILENTLY DESTROYED a whole season. The stored ``snapshot_ts`` is a
+            # STRING column holding two known spellings -- the legacy per-season
+            # ``2018-09-19T18:00:00-04:00`` and the space-separated
+            # ``2025-08-29 22:00:00+00:00`` that a tz-aware write stringifies to.
+            # ``pd.to_datetime`` infers ONE format from the first element, so every row
+            # in the other spelling became NaT, NaT fails ``<= cutoff``, and those games
+            # fell through to ``_default_compressed_market_features`` with no log line.
+            # Measured on 2026-09-05: all 285 rows of the freshly ingested 2025 season
+            # were coerced to NaT and every 2025 market anchor in gold came out at the
+            # neutral default -- the ingest reached silver and never reached gold.
+            #
+            # ``scripts.ingest_historical_odds.normalize_snapshot_ts`` is the ONE parse
+            # path this project already declares for exactly this trap (its module
+            # docstring calls it "A TYPE TRAP TRAVELS WITH CLAUSE 3"). It is REUSED
+            # rather than re-implemented, because a second copy of a rule is free to
+            # drift away from the rule everything else applies. The import is deferred
+            # to keep a feature builder from importing a script at module load.
             if "snapshot_ts" in odds_df.columns:
-                snapshot_col = pd.to_datetime(odds_df["snapshot_ts"], errors="coerce")
+                snapshot_col = self._parse_snapshot_column(
+                    cast("pd.Series", odds_df["snapshot_ts"])
+                )
                 cutoff = pd.Timestamp(as_of_datetime)
-                if snapshot_col.dt.tz is not None and cutoff.tz is None:
-                    cutoff = cutoff.tz_localize(snapshot_col.dt.tz)
-                elif snapshot_col.dt.tz is None and cutoff.tz is not None:
-                    cutoff = cutoff.tz_localize(None)
-                odds_df = odds_df[snapshot_col <= cutoff]
+                cutoff = (
+                    cutoff.tz_localize("UTC")
+                    if cutoff.tz is None
+                    else cutoff.tz_convert("UTC")
+                )
+                keep = snapshot_col <= cutoff
+                dropped = int((~keep).sum())
+                if dropped:
+                    logger.info(
+                        "Time-fenced odds rows out of the market-anchor population",
+                        dropped=dropped,
+                        kept=int(keep.sum()),
+                        cutoff=cutoff.isoformat(),
+                    )
+                odds_df = odds_df[keep]
 
             # Filter to target if specified
             if target_season and target_week:
@@ -995,6 +1026,12 @@ class MarketAnchorFeaturesCalculator:
                 odds_df = odds_df[odds_df["game_id"].isin(game_ids)]
 
             compressed_rows: list[dict[str, object]] = []
+            # Games that fell through to the neutral default, COUNTED. A market anchor
+            # at its default is indistinguishable from a real line that happens to be
+            # zero, so the only way a reader learns that a season got no odds at all is
+            # if the builder says so. It did not, and 285 games of the 2025 verdict
+            # season went to defaults in silence on 2026-09-05.
+            defaulted: list[str] = []
 
             for _, game in games_df.iterrows():
                 game_id = game["game_id"]
@@ -1002,6 +1039,7 @@ class MarketAnchorFeaturesCalculator:
 
                 if len(game_odds) == 0:
                     # No odds data -- use defaults
+                    defaulted.append(str(game_id))
                     compressed_rows.append(
                         self._default_compressed_market_features(game_id)
                     )
@@ -1078,9 +1116,22 @@ class MarketAnchorFeaturesCalculator:
 
             features_df = pd.DataFrame(compressed_rows)
 
+            if defaulted:
+                seasons = sorted(
+                    {str(gid).split("_")[0] for gid in defaulted if "_" in str(gid)}
+                )
+                logger.warning(
+                    "Market anchors fell through to the NEUTRAL DEFAULT",
+                    games_defaulted=len(defaulted),
+                    games_total=len(features_df),
+                    seasons_affected=seasons,
+                    first_examples=defaulted[:5],
+                )
+
             logger.info(
                 "Built compressed market anchor features",
                 features_count=len(features_df),
+                games_defaulted=len(defaulted),
             )
 
             return features_df
@@ -1091,6 +1142,53 @@ class MarketAnchorFeaturesCalculator:
                 error=str(e),
             )
             raise
+
+    @staticmethod
+    def _parse_snapshot_column(column: pd.Series) -> pd.Series:
+        """Parse a stored ``snapshot_ts`` column to tz-aware UTC, REFUSING the unparseable.
+
+        Delegates every value to
+        ``scripts.ingest_historical_odds.normalize_snapshot_ts`` -- the ONE parse path
+        clause 3's type trap requires, which anchors a naive value in Eastern rather than
+        UTC and handles both spellings the live column holds.
+
+        A value that cannot be parsed RAISES, naming the offending values. It is never
+        coerced to NaT: a NaT fails the fence comparison, and a row silently dropped from
+        the fence becomes a game with no odds and a neutral-default market anchor. That
+        is precisely the failure this method exists to end, and it is a failure that
+        looks exactly like "this game had no line".
+
+        Args:
+            column: The stored ``snapshot_ts`` values, in any shape the column holds.
+
+        Returns:
+            A tz-aware UTC ``datetime64`` series, index-aligned with *column*.
+
+        Raises:
+            ValueError: naming every distinct unparseable value.
+        """
+        from scripts.ingest_historical_odds import normalize_snapshot_ts
+
+        parsed: list[Any] = []
+        unparseable: dict[str, str] = {}
+        for value in column:
+            try:
+                parsed.append(normalize_snapshot_ts(value))
+            except (ValueError, TypeError) as error:
+                unparseable.setdefault(repr(value), str(error))
+                parsed.append(pd.NaT)
+
+        if unparseable:
+            detail = "; ".join(f"{value}: {why}" for value, why in unparseable.items())
+            msg = (
+                f"{len(unparseable)} distinct snapshot_ts value(s) could not be parsed, "
+                "so the market-anchor time fence cannot be applied to them. They are NOT "
+                "coerced to NaT: a NaT fails the fence, the game loses its odds, and its "
+                f"market anchors silently become the neutral default. Offenders: {detail}"
+            )
+            raise ValueError(msg)
+
+        return pd.to_datetime(pd.Series(parsed, index=column.index), utc=True)
 
     def _default_compressed_market_features(self, game_id: str) -> dict[str, object]:
         """Default compressed market features when no odds data available."""
