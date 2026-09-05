@@ -78,6 +78,7 @@ from data.storage import (
 from scripts.audit_odds_preingest import (
     assert_2025_odds_completeness,
     assert_no_synthetic_game_ids,
+    find_synthetic_game_ids,
 )
 from utils import DataIngestionError, get_logger, log_data_operation
 from utils.game_id_utils import GAME_ID_PATTERN, create_standard_game_id
@@ -698,6 +699,113 @@ def normalize_stored_game_ids(
         rows_rekeyed=n_changed,
     )
     return n_changed
+
+
+@dataclass(frozen=True)
+class SyntheticRemovalReport:
+    """What the named pre-ingest removal step deleted from the STORED table.
+
+    Attributes:
+        path: The silver table read, and written only when something was removed.
+        rows_before: Rows in the table before the removal.
+        rows_after: Rows in the table after it.
+        removed_malformed: The ids deleted for failing ``GAME_ID_PATTERN``.
+        removed_orphans: The ids deleted for naming no game in the gold O/U matrix.
+    """
+
+    path: Path
+    rows_before: int
+    rows_after: int
+    removed_malformed: tuple[str, ...]
+    removed_orphans: tuple[str, ...]
+
+    @property
+    def rows_removed(self) -> int:
+        return self.rows_before - self.rows_after
+
+
+def remove_synthetic_stored_rows(
+    *,
+    base_path: Path,
+    features_ou_df: pd.DataFrame,
+    table_name: str = _SILVER_ODDS_TABLE,
+) -> SyntheticRemovalReport:
+    """Delete synthetic rows from the STORED odds table. The NAMED pre-ingest step.
+
+    Clause 7's gate runs on the INCOMING frame, so it cannot see -- and the merge cannot
+    remove -- a forged row already sitting in the destination. Production silver holds
+    exactly one: ``2025_W01_TEST@HOME``, a hand-written fixture carrying the legitimate
+    sportsbook ``draftkings``, which the OUM-06 allowlist therefore ADMITS. Plan 31-08
+    recorded its survival as a carry-forward and said plainly that removing it "does not
+    happen by itself".
+
+    This is that step, and it is deliberately a step rather than a side effect of the
+    merge: it DELETES production rows, so it must be invoked, counted and reported on its
+    own rather than folded into a write whose report is about something else.
+
+    The predicate is ``find_synthetic_game_ids`` -- the same function clause 7's gate
+    refuses on. A row this deletes is exactly a row that gate would reject.
+
+    Args:
+        base_path: The data root whose ``silver/`` holds the table.
+        features_ou_df: The gold O/U matrix orphan-hood is judged against.
+        table_name: The silver table to clean.
+
+    Returns:
+        The counted record. Idempotent: a table with nothing synthetic in it is NOT
+        rewritten, so a second run reports zero removals and moves no byte.
+    """
+    path = _silver_table_path(base_path, table_name)
+    if not path.is_file():
+        return SyntheticRemovalReport(
+            path=path,
+            rows_before=0,
+            rows_after=0,
+            removed_malformed=(),
+            removed_orphans=(),
+        )
+
+    stored = pd.read_parquet(path)
+    rows_before = len(stored)
+    if stored.empty:
+        return SyntheticRemovalReport(
+            path=path,
+            rows_before=rows_before,
+            rows_after=rows_before,
+            removed_malformed=(),
+            removed_orphans=(),
+        )
+
+    malformed, orphans = find_synthetic_game_ids(stored, features_ou_df)
+    doomed = set(malformed) | set(orphans)
+    if not doomed:
+        return SyntheticRemovalReport(
+            path=path,
+            rows_before=rows_before,
+            rows_after=rows_before,
+            removed_malformed=(),
+            removed_orphans=(),
+        )
+
+    kept = stored[~stored["game_id"].astype(str).isin(doomed)].copy()
+    _atomic_write_parquet(pa.Table.from_pandas(kept), path)
+
+    report = SyntheticRemovalReport(
+        path=path,
+        rows_before=rows_before,
+        rows_after=len(kept),
+        removed_malformed=tuple(malformed),
+        removed_orphans=tuple(orphans),
+    )
+    logger.info(
+        "Removed synthetic rows from stored odds BEFORE ingest",
+        table=table_name,
+        rows_before=report.rows_before,
+        rows_after=report.rows_after,
+        removed_malformed=list(report.removed_malformed),
+        removed_orphans=list(report.removed_orphans),
+    )
+    return report
 
 
 def preserve_stored_lines(

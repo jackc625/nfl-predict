@@ -713,6 +713,46 @@ def measure_ats_residual_bias(
 MIN_2025_GAMES_WITH_TOTAL = 285
 
 
+def find_synthetic_game_ids(
+    odds_df: pd.DataFrame,
+    features_ou_df: pd.DataFrame,
+) -> tuple[list[str], list[str]]:
+    """Return ``(malformed, orphan)`` ids in *odds_df*, judged against *features_ou_df*.
+
+    The ONE registry of what "synthetic" means. :func:`assert_no_synthetic_game_ids` is
+    the gate that REFUSES on it, and Plan 31-11's pre-ingest removal step is the tool that
+    ACTS on it; both read this function, so a row the gate would reject and a row the
+    removal step deletes can never come apart. A second copy of a predicate is free to
+    drift away from the predicate everything else applies -- the failure mode
+    ``utils/paths.py`` was written to end.
+
+    Args:
+        odds_df: Any odds frame carrying ``game_id`` -- incoming rows or stored ones.
+        features_ou_df: The gold O/U feature matrix ids must exist in.
+
+    Returns:
+        Sorted, de-duplicated MALFORMED ids (failing ``GAME_ID_PATTERN``) and ORPHAN ids
+        (well-formed but absent from ``features_ou``).
+
+    Raises:
+        ValueError: when *odds_df* carries no ``game_id`` column at all.
+    """
+    from utils.game_id_utils import GAME_ID_PATTERN
+
+    if "game_id" not in odds_df.columns:
+        msg = "odds frame has no 'game_id' column; the synthetic-id gate cannot run."
+        raise ValueError(msg)
+
+    ids = odds_df["game_id"].astype(str)
+    malformed = sorted({gid for gid in ids if not GAME_ID_PATTERN.match(gid)})
+
+    known = set(features_ou_df["game_id"].astype(str))
+    orphans = sorted(
+        {gid for gid in ids if GAME_ID_PATTERN.match(gid) and gid not in known}
+    )
+    return malformed, orphans
+
+
 def assert_no_synthetic_game_ids(
     odds_df: pd.DataFrame,
     features_ou_df: pd.DataFrame,
@@ -739,19 +779,7 @@ def assert_no_synthetic_game_ids(
     Raises:
         ValueError: naming every malformed and every orphan id.
     """
-    from utils.game_id_utils import GAME_ID_PATTERN
-
-    if "game_id" not in odds_df.columns:
-        msg = "odds frame has no 'game_id' column; the synthetic-id gate cannot run."
-        raise ValueError(msg)
-
-    ids = odds_df["game_id"].astype(str)
-    malformed = sorted({gid for gid in ids if not GAME_ID_PATTERN.match(gid)})
-
-    known = set(features_ou_df["game_id"].astype(str))
-    orphans = sorted(
-        {gid for gid in ids if GAME_ID_PATTERN.match(gid) and gid not in known}
-    )
+    malformed, orphans = find_synthetic_game_ids(odds_df, features_ou_df)
 
     if malformed or orphans:
         msg = (
