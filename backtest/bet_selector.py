@@ -81,6 +81,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, cast
@@ -365,7 +366,7 @@ class BetSelector:
         self,
         frozen_sd: float,
         season_bias_by_season: dict[int, float],
-        ev_floor_t: float = 0.0,
+        ev_floor_t: float | Mapping[str, float] = 0.0,
         bankroll: float = 10_000.0,
         high_total_boundary: float = HIGH_TOTAL_BOUNDARY_PREHOLD,
         slippage_points: float = SLIPPAGE_POINTS,
@@ -374,7 +375,19 @@ class BetSelector:
     ) -> None:
         self.frozen_sd = float(frozen_sd)
         self.season_bias_by_season = dict(season_bias_by_season)
-        self.ev_floor_t = float(ev_floor_t)
+        # The EV floor is a SCALAR or a PER-TARGET mapping (plan 31-12). The pre-registration
+        # selects ``t`` per target by a tune-side sweep and carries ONE scalar per target to the
+        # hold, so a single shared floor could not express the frozen rule for a pooled
+        # three-target week. A scalar still behaves exactly as it always did, which is what
+        # every pre-31-12 call site passes.
+        if isinstance(ev_floor_t, Mapping):
+            self.ev_floor_by_target: dict[str, float] | None = {
+                str(target): float(floor) for target, floor in ev_floor_t.items()
+            }
+            self.ev_floor_t: float | None = None
+        else:
+            self.ev_floor_by_target = None
+            self.ev_floor_t = float(ev_floor_t)
         self.bankroll = float(bankroll)
         # The finite-boundary guard (WR-03) lives in ONE place, shared with OUStrategy.
         self.high_total_boundary = require_finite_high_total_boundary(
@@ -433,6 +446,32 @@ class BetSelector:
     def strategies(self) -> dict[str, TargetStrategy]:
         """The registered strategies, keyed by target code (a copy -- the registry is fixed)."""
         return dict(self._strategies)
+
+    def ev_floor_for(self, target: str | None) -> float:
+        """The EV floor ``t`` this selector admits ``target`` at (plan 31-12).
+
+        A scalar floor answers for every target, which is what every pre-31-12 caller
+        configured. A per-target mapping answers only for the targets it names and RAISES for
+        one it does not: a silent fallback to 0.0 would admit a target at a floor nobody swept
+        for, which is precisely the un-pre-registered threshold the whole apparatus exists to
+        prevent.
+
+        Raises:
+            UnregisteredTargetError: when a per-target mapping has no floor for ``target``.
+        """
+        if self.ev_floor_by_target is None:
+            return float(self.ev_floor_t or 0.0)
+        if target is None and len(self.ev_floor_by_target) == 1:
+            return next(iter(self.ev_floor_by_target.values()))
+        if target not in self.ev_floor_by_target:
+            msg = (
+                f"no EV floor is registered for target {target!r}; the per-target floors are "
+                f"{sorted(self.ev_floor_by_target)}. There is NO silent fallback to 0.0: the "
+                "floor is a PRE-REGISTERED per-target scalar chosen by a tune-side sweep, and "
+                "admitting a target at an unswept floor is an un-pre-registered threshold."
+            )
+            raise UnregisteredTargetError(msg)
+        return self.ev_floor_by_target[target]
 
     # -- strategy dispatch ----------------------------------------------------
 
@@ -554,6 +593,7 @@ class BetSelector:
             n_selected=len(selected),
             n_rejected=len(rejected),
             ev_floor_t=self.ev_floor_t,
+            ev_floor_by_target=self.ev_floor_by_target,
             targets=sorted(self._strategies),
         )
 
@@ -878,6 +918,7 @@ class BetSelector:
         admitted: list[dict[str, Any]] = []
         for record in week_records:
             per_bet = record["per_bet_ev"]
+            ev_floor_t = self.ev_floor_for(record.get("target"))
             # The non-finite refusal precedes the floor comparison, and must (SPEC R7, T-31-43):
             # ``NaN < floor`` is False, so a NaN EV would otherwise fall THROUGH the floor and be
             # booked, then reach ``assign_ev_tier`` -- which raises -- with a bet already made.
@@ -892,7 +933,7 @@ class BetSelector:
                 )
                 rejected.append({**record, "rejection_reason": "ev_not_finite"})
                 continue
-            if per_bet is None or per_bet < self.ev_floor_t:
+            if per_bet is None or per_bet < ev_floor_t:
                 rejected.append({**record, "rejection_reason": "ev_below_floor"})
                 continue
             admitted.append(record)
@@ -927,7 +968,7 @@ class BetSelector:
                     target=record.get("target"),
                     calibrated_p_side=record.get("calibrated_p_side"),
                     per_bet_ev=record.get("per_bet_ev"),
-                    ev_floor_t=self.ev_floor_t,
+                    ev_floor_t=self.ev_floor_for(record.get("target")),
                 )
                 rejected.append({**record, "rejection_reason": "zero_kelly_stake"})
                 continue

@@ -1226,7 +1226,12 @@ class TestDeweightCannotChangeTheSelectedSet:
         # Drop the docstring so its prose references do not shadow the code.
         body = source.split('"""', 2)[-1]
 
-        floor_at = body.index("self.ev_floor_t")
+        # Plan 31-12 made the floor a SCALAR-OR-PER-TARGET value resolved through
+        # ``ev_floor_for`` (the pre-registration carries one ``t`` per target), so the
+        # ordering is pinned on that resolution call rather than on the old
+        # ``self.ev_floor_t`` attribute read. The claim is unchanged and is not weakened:
+        # the floor must still be resolved and compared BEFORE any stake exists.
+        floor_at = body.index("self.ev_floor_for(")
         kelly_at = body.index("calculate_optimal_bet_size")
         sizing_at = body.index("apply_sizing_pipeline")
         assert floor_at < kelly_at < sizing_at

@@ -102,6 +102,7 @@ from backtest.ev_chain_constants import (
     ATS_BIAS_CARRIED,
     HOLD_SEASONS_P31,
     PRIOR_RESIDUAL_SEASONS_P31,
+    REHEARSAL_PROXY_SPLIT,
     TUNE_SEASONS_P31,
 )
 from backtest.ev_chain_constants import (
@@ -149,10 +150,14 @@ __all__ = [
     "FENCE_STAGE_BOUNDARY",
     "FENCE_STAGE_THRESHOLD",
     "FENCE_STAGE_TUNE_FIT",
+    "FENCE_WINDOW_P31",
+    "FENCE_WINDOW_REHEARSAL",
     "P_COVER_CLIP",
+    "REGISTERED_FENCE_WINDOWS",
     "THRESHOLD_WINDOW_P31",
     "ChainFit",
     "ChainPricing",
+    "FenceWindow",
     "LeakageError",
     "assert_fit_window_p31",
     "ats_side_probability",
@@ -167,6 +172,7 @@ __all__ = [
     "per_bet_ev",
     "price_ats_candidates",
     "season_bias_for",
+    "threshold_window_label",
 ]
 
 
@@ -190,9 +196,94 @@ P_COVER_CLIP: tuple[float, float] = P_OVER_CLIP
 # The LOCKED ATS side vocabulary, from ``BettingSimulator._determine_bet_side_ats``.
 ATS_SIDES: tuple[str, str] = ("home_cover", "away_cover")
 
+
+def threshold_window_label(tune_seasons: Sequence[int]) -> str:
+    """The EV-floor sweep's window label for a tune window. ONE derivation, never a literal.
+
+    The label travels on a :class:`ChainFit` and fence check (b) compares it against the
+    label derived from the window being fenced, so a sweep logged on one window can never
+    satisfy a fence built for another.
+    """
+    return f"tune_{tune_seasons[0]}_{tune_seasons[-1]}"
+
+
 # The threshold-tuning window label the Phase-31 EV-floor sweep must carry. Derived from the
 # frozen Phase-31 window so it cannot drift away from it; never a literal.
-THRESHOLD_WINDOW_P31: str = f"tune_{TUNE_SEASONS_P31[0]}_{TUNE_SEASONS_P31[-1]}"
+THRESHOLD_WINDOW_P31: str = threshold_window_label(TUNE_SEASONS_P31)
+
+
+@dataclass(frozen=True)
+class FenceWindow:
+    """The tune/hold/seed triple a fence run is measured against (plan 31-12).
+
+    WHY THE FENCE IS PARAMETERISED AT ALL, AND WHY THAT IS NOT A WEAKENING. The Phase-31
+    rehearsal runs on the DISJOINT ``REHEARSAL_PROXY_SPLIT`` (tune 2021-2023, hold 2024) so
+    the plumbing can be proven on an already-burned season without spending 2025. A fence
+    hard-wired to the frozen window would then either pass VACUOUSLY -- 2024 is a frozen tune
+    season, so no check would bind and the report would name 2025 as the hold, which is
+    false -- or force the rehearsal to run with no fence at all. Both outcomes are worse than
+    a parameter.
+
+    What stops the parameter from becoming an escape hatch is that only REGISTERED windows
+    are accepted (:data:`REGISTERED_FENCE_WINDOWS`). An arbitrary tune/hold pair cannot be
+    handed to :func:`assert_fit_window_p31`; it raises. So there are exactly two windows a
+    fence run can be measured against, both declared in the frozen pre-registration, and the
+    armed production run uses the frozen one by construction.
+
+    Attributes:
+        tune_seasons: The seasons a tune-only fit may consume.
+        hold_seasons: The seasons no fitted parameter may see.
+        prior_residual_seasons: The strictly-prior bias seed, admissible in a bias pool.
+        threshold_window: The label the EV-floor sweep must have logged.
+        label: A short machine-readable name for the window, carried into the fence report.
+        is_the_preregistered_rule: True ONLY for the frozen Phase-31 window. The rehearsal
+            window says False about itself, so a report cannot be mistaken for a binding one.
+    """
+
+    tune_seasons: tuple[int, ...]
+    hold_seasons: tuple[int, ...]
+    prior_residual_seasons: tuple[int, ...]
+    threshold_window: str
+    label: str
+    is_the_preregistered_rule: bool
+
+
+# The FROZEN Phase-31 window: tune 2021-2024, hold 2025, seed 2018-2020.
+FENCE_WINDOW_P31: FenceWindow = FenceWindow(
+    tune_seasons=TUNE_SEASONS_P31,
+    hold_seasons=HOLD_SEASONS_P31,
+    prior_residual_seasons=PRIOR_RESIDUAL_SEASONS_P31,
+    threshold_window=THRESHOLD_WINDOW_P31,
+    label="frozen_p31",
+    is_the_preregistered_rule=True,
+)
+
+# The DISJOINT rehearsal window, built FROM the frozen REHEARSAL_PROXY_SPLIT rather than from
+# literals, so the two cannot drift apart.
+_REHEARSAL_TUNE: tuple[int, ...] = tuple(
+    int(season)
+    for season in REHEARSAL_PROXY_SPLIT["tune_seasons"]  # type: ignore[union-attr]
+)
+_REHEARSAL_HOLD: tuple[int, ...] = tuple(
+    int(season)
+    for season in REHEARSAL_PROXY_SPLIT["hold_seasons"]  # type: ignore[union-attr]
+)
+
+FENCE_WINDOW_REHEARSAL: FenceWindow = FenceWindow(
+    tune_seasons=_REHEARSAL_TUNE,
+    hold_seasons=_REHEARSAL_HOLD,
+    prior_residual_seasons=PRIOR_RESIDUAL_SEASONS_P31,
+    threshold_window=threshold_window_label(_REHEARSAL_TUNE),
+    label="rehearsal_proxy",
+    is_the_preregistered_rule=False,
+)
+
+# The CLOSED set of windows a fence run may be measured against. A window outside it is
+# refused, so "parameterised" never becomes "arbitrary".
+REGISTERED_FENCE_WINDOWS: tuple[FenceWindow, ...] = (
+    FENCE_WINDOW_P31,
+    FENCE_WINDOW_REHEARSAL,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +450,9 @@ FENCE_STAGE_BOUNDARY: str = "high-total boundary derivation"
 _SEASON_IN_LABEL = re.compile(r"\d{4}")
 
 
-def assert_fit_window_p31(fit: ChainFit) -> dict[str, Any]:
+def assert_fit_window_p31(
+    fit: ChainFit, window: FenceWindow = FENCE_WINDOW_P31
+) -> dict[str, Any]:
     """Prove NO hold season fed any fitted parameter on ``fit`` (T-31-28, SPEC R1).
 
     Mirrors the four checks the Phase-27 fence performs, parameterised on the FROZEN
@@ -381,17 +474,33 @@ def assert_fit_window_p31(fit: ChainFit) -> dict[str, Any]:
 
     Args:
         fit: The target's fitted parameters WITH the seasons they were fit on.
+        window: The REGISTERED window to fence against. Defaults to the frozen Phase-31 one,
+            so every pre-existing call site is unchanged. The only other admissible value is
+            :data:`FENCE_WINDOW_REHEARSAL`; see :class:`FenceWindow` for why the parameter
+            exists and why it is not an escape hatch.
 
     Returns:
-        A structured fence report naming the seasons each fit consumed and the Phase-31 hold,
-        so the report a run publishes cannot name the wrong hold seasons.
+        A structured fence report naming the seasons each fit consumed and the hold it was
+        measured against, so the report a run publishes cannot name the wrong hold seasons.
 
     Raises:
-        LeakageError: naming the offending season(s) and the fit stage.
+        LeakageError: naming the offending season(s) and the fit stage, or naming an
+            unregistered window.
     """
-    hold = set(HOLD_SEASONS_P31)
-    tune = set(TUNE_SEASONS_P31)
-    seed = set(PRIOR_RESIDUAL_SEASONS_P31)
+    if not any(window == registered for registered in REGISTERED_FENCE_WINDOWS):
+        msg = (
+            f"[{fit.target}] refusing to fence against the UNREGISTERED window "
+            f"{window!r}. Exactly two windows are admissible -- the frozen Phase-31 rule and "
+            "the disjoint rehearsal proxy, both declared in the frozen pre-registration. An "
+            "arbitrary tune/hold pair handed to the fence is a weakened fence, which is the "
+            "one failure a leakage guard must never permit (T-31-28)."
+        )
+        raise LeakageError(msg)
+
+    hold = set(window.hold_seasons)
+    tune = set(window.tune_seasons)
+    seed = set(window.prior_residual_seasons)
+    expected_threshold_window = window.threshold_window
     target = fit.target
 
     # (a) The tune-only fit input.
@@ -413,7 +522,7 @@ def assert_fit_window_p31(fit: ChainFit) -> dict[str, Any]:
         raise LeakageError(msg)
 
     # (b) The threshold-tuning window label.
-    if fit.threshold_window != THRESHOLD_WINDOW_P31:
+    if fit.threshold_window != expected_threshold_window:
         offending = sorted(
             {
                 int(found)
@@ -428,7 +537,7 @@ def assert_fit_window_p31(fit: ChainFit) -> dict[str, Any]:
         )
         msg = (
             f"[{target}] {FENCE_STAGE_THRESHOLD} logged window "
-            f"{fit.threshold_window!r}, which is not {THRESHOLD_WINDOW_P31!r}.{detail} "
+            f"{fit.threshold_window!r}, which is not {expected_threshold_window!r}.{detail} "
             "The EV floor t cannot be tuned on data the hold contains (T-31-28)."
         )
         raise LeakageError(msg)
@@ -490,9 +599,11 @@ def assert_fit_window_p31(fit: ChainFit) -> dict[str, Any]:
         "tune_fit_seasons": sorted(tune_fit),
         "threshold_window": fit.threshold_window,
         "bias_seasons": sorted(int(season) for season in fit.bias_pool_by_season),
-        "tune_seasons": list(TUNE_SEASONS_P31),
-        "hold_seasons": list(HOLD_SEASONS_P31),
-        "prior_residual_seed_seasons": list(PRIOR_RESIDUAL_SEASONS_P31),
+        "tune_seasons": list(window.tune_seasons),
+        "hold_seasons": list(window.hold_seasons),
+        "prior_residual_seed_seasons": list(window.prior_residual_seasons),
+        "window_label": window.label,
+        "window_is_the_preregistered_rule": window.is_the_preregistered_rule,
         "high_total_boundary": fit.high_total_boundary,
         "pre_hold_boundary_rederived": pre_hold_boundary,
         "fence_held": True,
