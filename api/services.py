@@ -690,6 +690,32 @@ class DataService:
         columns = [desc[0] for desc in result.description]
         return [dict(zip(columns, row)) for row in result.fetchall()]
 
+    def bet_list_table_exists(self) -> bool:
+        """Return whether the ``bet_list`` cache table exists at all (plan 31-15).
+
+        The page needs to tell TWO different absences apart, and an empty row list cannot:
+        a cache that predates Phase 31 has no bet-list table and needs
+        ``scripts/populate_cache.py`` run, while a populated cache whose week admitted nothing is
+        a RESULT and needs no action. Both return ``[]`` from :meth:`get_bet_list`, so the page
+        would otherwise tell a reader to rebuild a cache that is already correct -- or, worse,
+        report a missing table as "no bets cleared the floor", which is a claim about the models
+        made from the absence of a table.
+
+        A zero-row probe: it reads the catalog, not the rows.
+        """
+        key = ("bet_list_table_exists",)
+        cached = _cache_get(key)
+        if cached is not None:
+            return bool(cached)
+        try:
+            self._conn.execute("SELECT 1 FROM bet_list LIMIT 0")
+        except duckdb.Error:
+            logger.warning("bet_list table not available in cache")
+            _cache_set(key, False)
+            return False
+        _cache_set(key, True)
+        return True
+
     def get_available_bet_weeks(
         self, season: int | None = None
     ) -> list[dict[str, Any]]:

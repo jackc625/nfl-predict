@@ -33,6 +33,7 @@ import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ from fastapi.testclient import TestClient
 
 from api.cache import (
     BET_LIST_COLUMNS,
+    BET_LIST_POPULATED_AT_KEY,
     CACHE_SCHEMA,
     GRADING_STATUS_LOSS,
     GRADING_STATUS_PENDING,
@@ -50,6 +52,7 @@ from api.cache import (
     classify_row_provenance,
     materialize_available_bet_weeks,
     materialize_bet_list,
+    materialize_bet_week_freeze,
 )
 from api.services import clear_cache
 from backtest.bet_selector import REJECTION_REASONS, BetSelector
@@ -653,3 +656,325 @@ def test_total_but_no_moneyline_yields_one_live_and_one_suppressed_row(
     assert ">Winner</td>" in body
     assert "No market line for this bet type" in body
     assert "Suppressed candidates (1)" in body
+
+
+# ---------------------------------------------------------------------------
+# The four distinct non-happy renders and the cache stamp
+# (plan 31-15 Task 2, SPEC R5, UI-SPEC E2 empty / E7 / E12)
+# ---------------------------------------------------------------------------
+
+# The four headings, one per state, transcribed from the design contract. A state that rendered
+# another state's heading would pass a "not blank" check and fail this one.
+_CACHE_ABSENT_HEADING = "Bet list not built yet"
+_ZERO_ADMITTED_HEADING = "No bets cleared the floor this week"
+_NO_CURRENT_WEEK_HEADING = "No current week"
+_HARD_BLOCK_MESSAGE = "This week&#39;s list is withheld -- the cache is older than this week&#39;s line freeze"
+
+_BANNER_EYEBROW = "Not wagering advice"
+
+# The per-game freeze sentence, and the week-level claims it deliberately does NOT make. A
+# week-level "lines were frozen Friday 6 PM ET" is FALSE for every Thursday game (D31-18).
+# Authored LITERALLY in the template rather than interpolated, so its apostrophes are not
+# HTML-escaped -- unlike the two _error_state.html slots, which pass through {{ }}.
+_PER_GAME_FREEZE_SENTENCE = (
+    "Lines frozen at 6:00 PM Eastern on the Friday before each game's own kickoff "
+    "-- a Thursday game freezes a week earlier than that week's Sunday games."
+)
+_FORBIDDEN_WEEK_LEVEL_CLAIMS = (
+    "before this week",
+    "this week's lines were frozen",
+    "this week&#39;s lines were frozen",
+    "lines for this week were frozen",
+    "all lines frozen",
+    "lines frozen for the week",
+    "lines frozen friday 6 pm et",
+)
+
+_POPULATED_AT = "2023-09-08T22:30:00+00:00"
+# Strictly LATER than _POPULATED_AT, so the population run finished BEFORE the freeze moved.
+_LATER_FREEZE = datetime(2023, 9, 8, 23, 0, 0)
+
+
+def _build_bare_cache(db_path: Path) -> duckdb.DuckDBPyConnection:
+    """Create every cache table and return the OPEN connection for further writes."""
+    conn = duckdb.connect(str(db_path))
+    for statement in CACHE_SCHEMA.strip().split(";"):
+        stmt = statement.strip()
+        if stmt:
+            conn.execute(stmt)
+    return conn
+
+
+def _stamp_populated_at(conn: duckdb.DuckDBPyConnection, value: str) -> None:
+    """Stamp the bet-list populated-at key the way ``populate_cache`` stamps it.
+
+    ``last_updated`` is written alongside because ``populate_cache`` always writes it and
+    ``base.html``'s footer reads it UNGUARDED: with a cache_meta that has rows but no
+    ``last_updated`` the footer raises and every page 500s. Omitting it here would make the
+    fixture describe a cache production never produces, and the 500 would be the fixture's
+    defect rather than the page's. The unguarded footer read is logged as DEF-31-15 -- it is
+    out of this plan's scope and is NOT reachable from the shipped writer.
+    """
+    stamped_at = datetime(2023, 9, 8, 22, 30, 0)
+    conn.executemany(
+        "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+        [
+            [BET_LIST_POPULATED_AT_KEY, value, stamped_at],
+            ["last_updated", stamped_at.isoformat(), stamped_at],
+        ],
+    )
+
+
+def test_state_one_cache_table_absent(tmp_path: Path) -> None:
+    """A cache that predates Phase 31 renders the cache-absent state, and NOT the stamp.
+
+    The distinction is load-bearing: reporting a missing TABLE as "no bets cleared the floor"
+    would be a claim about the models made from the absence of a table.
+    """
+    clear_cache()
+    db_path = tmp_path / "no_table.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [{"game_id": "2023_W01_AAA@BBB", "season": _SEASON, "week": _WEEK}]
+            ),
+        )
+        conn.execute("DROP TABLE bet_list")
+    finally:
+        conn.close()
+
+    with contextmanager(_client)(db_path) as client:
+        response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
+
+    assert response.status_code == 200
+    body = response.text
+    assert _CACHE_ABSENT_HEADING in body
+    assert "scripts/populate_cache.py" in body
+    assert _ZERO_ADMITTED_HEADING not in body
+    assert "Bet list last populated" not in body, (
+        "the cache stamp rendered against a cache that has no bet list"
+    )
+    assert _BANNER_EYEBROW in body
+
+
+def test_state_two_week_with_zero_admitted_bets(bets_client: TestClient) -> None:
+    """A week that admitted nothing renders the first-class result state, with its own copy."""
+    response = bets_client.get(f"/bets?season={_SEASON}&week={_EMPTY_WEEK}")
+
+    assert response.status_code == 200
+    body = response.text
+    assert _ZERO_ADMITTED_HEADING in body
+    assert "An empty list is a result, not a failure or an outage." in body
+    assert "Every scheduled game was evaluated for all three bet types" in body
+    assert _CACHE_ABSENT_HEADING not in body
+    assert _NO_CURRENT_WEEK_HEADING not in body
+    assert _BANNER_EYEBROW in body
+
+
+def test_state_three_off_season_no_current_week(tmp_path: Path) -> None:
+    """With no scheduled week at all the page renders the no-current-week state, not a blank."""
+    clear_cache()
+    db_path = tmp_path / "off_season.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        _stamp_populated_at(conn, _POPULATED_AT)
+    finally:
+        conn.close()
+
+    with contextmanager(_client)(db_path) as client:
+        response = client.get("/bets")
+
+    assert response.status_code == 200
+    body = response.text
+    assert _NO_CURRENT_WEEK_HEADING in body
+    assert "Use the week selector to read the list for any completed week." in body
+    assert _CACHE_ABSENT_HEADING not in body
+    assert _ZERO_ADMITTED_HEADING not in body
+    assert _BANNER_EYEBROW in body
+
+
+def test_state_four_stale_cache_hard_block(tmp_path: Path) -> None:
+    """A cache older than the week's LATEST per-game freeze is REFUSED, not silently served.
+
+    D31-27: staleness is the cache timestamp preceding the latest per-game freeze among the
+    week's games. The refusal is a server-rendered 200 -- it is NOT the failed-fragment path.
+    """
+    clear_cache()
+    db_path = tmp_path / "stale.duckdb"
+    conn = _build_bare_cache(db_path)
+    rows = [_live_row("2023_W01_DET@KC", "ou")]
+    try:
+        materialize_bet_list(conn, pd.DataFrame(rows))
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}]
+            ),
+        )
+        materialize_bet_week_freeze(
+            conn,
+            pd.DataFrame(
+                [{"season": _SEASON, "week": _WEEK, "game_freeze_ts": _LATER_FREEZE}]
+            ),
+        )
+        _stamp_populated_at(conn, _POPULATED_AT)
+    finally:
+        conn.close()
+
+    with contextmanager(_client)(db_path) as client:
+        response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
+
+    assert response.status_code == 200
+    body = response.text
+    assert _HARD_BLOCK_MESSAGE in body
+    assert "bg-red-50" in body, "the refusal did not render through _error_state.html"
+    assert "Past weeks below are unaffected and remain readable." in body
+    # Both timestamps are repeated in the recovery text so the two claims can be compared.
+    assert _POPULATED_AT in body
+    assert str(_LATER_FREEZE) in body
+    # The list itself is withheld: no bet row and no suppressed disclosure.
+    assert "Stake (units)" not in body
+    assert "Suppressed candidates" not in body
+    assert _BANNER_EYEBROW in body
+    # The stamp still renders under the refusal (UI-SPEC E12 error).
+    assert "Bet list last populated" in body
+
+
+def test_the_four_states_render_four_distinct_bodies(
+    tmp_path: Path, bets_client: TestClient
+) -> None:
+    """No two of the four states render the same heading, and none returns a 500 or a blank body."""
+    headings = {
+        _CACHE_ABSENT_HEADING,
+        _ZERO_ADMITTED_HEADING,
+        _NO_CURRENT_WEEK_HEADING,
+        _HARD_BLOCK_MESSAGE,
+    }
+    assert len(headings) == 4
+
+    response = bets_client.get(f"/bets?season={_SEASON}&week={_EMPTY_WEEK}")
+    assert response.status_code == 200
+    assert len(response.text) > 0
+    present = {h for h in headings if h in response.text}
+    assert present == {_ZERO_ADMITTED_HEADING}, (
+        f"the zero-admitted state also rendered another state's heading: {present}"
+    )
+
+
+def test_a_fresh_cache_is_not_blocked(tmp_path: Path) -> None:
+    """A cache populated AFTER the week's freeze serves the list -- the block is not always-on.
+
+    Without this control the hard-block test would pass against a branch that fired for every
+    week, and the page would be refusing lists that are perfectly current.
+    """
+    clear_cache()
+    db_path = tmp_path / "fresh.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        materialize_bet_list(conn, pd.DataFrame([_live_row("2023_W01_DET@KC", "ou")]))
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}]
+            ),
+        )
+        materialize_bet_week_freeze(
+            conn,
+            pd.DataFrame(
+                [
+                    {
+                        "season": _SEASON,
+                        "week": _WEEK,
+                        "game_freeze_ts": datetime(2023, 9, 8, 22, 0, 0),
+                    }
+                ]
+            ),
+        )
+        _stamp_populated_at(conn, _POPULATED_AT)
+    finally:
+        conn.close()
+
+    with contextmanager(_client)(db_path) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert _HARD_BLOCK_MESSAGE not in body
+    assert "Stake (units)" in body
+
+
+def test_the_cache_stamp_makes_the_per_game_claim_and_no_week_level_one(
+    tmp_path: Path,
+) -> None:
+    """The stamp states the PER-GAME freeze rule and makes no week-level claim (T-31-77)."""
+    clear_cache()
+    db_path = tmp_path / "stamp.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        materialize_bet_list(conn, pd.DataFrame([_live_row("2023_W01_DET@KC", "ou")]))
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}]
+            ),
+        )
+        _stamp_populated_at(conn, _POPULATED_AT)
+    finally:
+        conn.close()
+
+    with contextmanager(_client)(db_path) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert f"Bet list last populated: {_POPULATED_AT}." in body
+    assert _PER_GAME_FREEZE_SENTENCE in body
+    lowered = body.lower()
+    for claim in _FORBIDDEN_WEEK_LEVEL_CLAIMS:
+        assert claim.lower() not in lowered, (
+            f"the page makes the week-level freeze claim {claim!r}, which is false for every "
+            "Thursday game (D31-18)"
+        )
+
+
+def test_the_stamp_names_a_missing_timestamp_rather_than_interpolating_a_blank(
+    tmp_path: Path,
+) -> None:
+    """A bet_list table with no populated-at stamp renders 'not recorded', never an empty value.
+
+    The design contract assumes the stamp key is always written beside the table; the writer that
+    guarantees that lands in Plan 31-18. Until then the page names the absence instead of
+    rendering 'Bet list last populated: .' against a null.
+    """
+    clear_cache()
+    db_path = tmp_path / "unstamped.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        materialize_bet_list(conn, pd.DataFrame([_live_row("2023_W01_DET@KC", "ou")]))
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}]
+            ),
+        )
+    finally:
+        conn.close()
+
+    with contextmanager(_client)(db_path) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert "Bet list last populated: not recorded." in body
+    assert "Bet list last populated: ." not in body
+
+
+def test_no_state_renders_an_empty_main_region(
+    tmp_path: Path, bets_client: TestClient
+) -> None:
+    """Every state carries the banner, the h1 and a body -- never a blank page (SPEC R5)."""
+    bodies = [
+        bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text,
+        bets_client.get(f"/bets?season={_SEASON}&week={_EMPTY_WEEK}").text,
+    ]
+    for body in bodies:
+        assert _BANNER_EYEBROW in body
+        assert "Weekly Bet List" in body
+        main = body[body.index("<main") : body.index("</main>")]
+        assert len(main) > 500, "the main region rendered essentially empty"

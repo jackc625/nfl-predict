@@ -15,10 +15,12 @@ Routes:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from api.cache import BET_LIST_POPULATED_AT_KEY
 from api.charts import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
 from api.dependencies import get_data_service, templates
 from api.season_metrics import _ats_outcome, _ou_outcome, _wp_outcome
@@ -304,6 +306,59 @@ def _normalize_week(
     return resolved_season, resolved_week
 
 
+def _as_utc(value: Any) -> datetime | None:
+    """Coerce a cache timestamp to an aware UTC datetime, or None if it cannot be read.
+
+    Both sides of the freshness comparison are written in UTC -- ``populate_cache`` stamps
+    ``datetime.now(tz=UTC).isoformat()`` and ``bet_week_freeze`` persists an upstream-computed
+    instant -- but they arrive in different shapes (a string from ``cache_meta``, a DuckDB
+    ``TIMESTAMP`` from the freeze table) and DuckDB hands back a NAIVE datetime. A naive value is
+    therefore READ as UTC rather than as local time; reading it as local would move the comparison
+    by the machine's offset and make the hard-block fire, or fail to fire, on the timezone the
+    server happens to be in.
+
+    Returns None on anything unparseable so the caller can decline to make a claim.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _is_bet_cache_stale(populated_at: Any, latest_game_freeze: Any) -> bool:
+    """Return whether the bet-list cache is older than this week's LATEST per-game freeze (D31-27).
+
+    That is the whole definition of staleness for ``/bets``: the Friday population run did not
+    complete after the most recent line freeze, so the week's rows -- if any exist at all -- were
+    written against lines that have since moved.
+
+    It is a TIMESTAMP COMPARISON, not a metric. No EV, stake, tier or return is derived here, so
+    the zero-computation contract of the request path is untouched (UIAP-01).
+
+    It FAILS OPEN when either timestamp is missing or unreadable. Blocking on a timestamp that
+    cannot be read would put the sentence "the cache is older than this week's line freeze" on the
+    page as a claim nothing established -- and this phase is about not overstating things. The
+    absence is surfaced separately and visibly by the cache stamp, which names a missing
+    populated-at rather than interpolating a blank.
+
+    A PAST week is not blocked by construction: its freeze instant precedes any later population
+    run, so the comparison is false without needing a separate current-week test.
+    """
+    populated = _as_utc(populated_at)
+    freeze = _as_utc(latest_game_freeze)
+    if populated is None or freeze is None:
+        return False
+    return populated < freeze
+
+
 def _build_bets_context(
     service: DataService,
     season: int | None,
@@ -319,6 +374,10 @@ def _build_bets_context(
     page handler and (from Plan 31-15) the fragment handler, so the cached-read contract lives in
     one place and cannot drift between them.
     """
+    cache_meta = service.get_cache_meta()
+    bet_week_freeze = service.get_bet_week_freeze(season, week)
+    bet_list_populated_at = cache_meta.get(BET_LIST_POPULATED_AT_KEY)
+
     return {
         "request": request,
         "bets": service.get_bet_list(season, week),
@@ -331,9 +390,18 @@ def _build_bets_context(
         "bet_seasons": service.get_bet_seasons(),
         "current_season": season,
         "current_week": week,
-        "bet_week_freeze": service.get_bet_week_freeze(season, week),
+        "bet_week_freeze": bet_week_freeze,
         "current_path": "/bets",
-        "cache_meta": service.get_cache_meta(),
+        "cache_meta": cache_meta,
+        # A cache that predates Phase 31 has no bet_list table. That is a DIFFERENT absence from a
+        # week that admitted nothing, and the page says so rather than reporting a missing table
+        # as a modelling result (plan 31-15, UI-SPEC E2 empty).
+        "bet_list_available": service.bet_list_table_exists(),
+        "bet_list_populated_at": bet_list_populated_at,
+        # The stale-cache hard-block (D31-27). The TEMPLATE branch and this page-level trigger land
+        # here; Plan 31-18 owns the rest of the wiring (the forward tracker block's scoping and the
+        # pipeline-side freeze materialization).
+        "bets_blocked": _is_bet_cache_stale(bet_list_populated_at, bet_week_freeze),
     }
 
 

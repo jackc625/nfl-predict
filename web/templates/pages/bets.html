@@ -36,12 +36,36 @@
     </h2>
   </div>
 
-  {% if current_week is none %}
-    {% with heading="No current week", body="No scheduled week is available to evaluate. Use the week selector to review a completed week.", action_text=none, action_url=none %}
+  {# The four distinct non-happy renders (SPEC R5, UI-SPEC E2 empty / E7). Order matters:
+     a missing TABLE is checked first because it is the only one of the four that names an action
+     the reader can take, and reporting it as "no bets cleared the floor" would be a claim about
+     the models made from the absence of a table. Never a blank page and never a 500. #}
+  {% if not bet_list_available %}
+    {% with heading="Bet list not built yet",
+            body='The bet-list cache table does not exist. Run "uv run python scripts/populate_cache.py" to build it, then reload this page.',
+            action_text=none, action_url=none %}
+      {% include "components/_empty_state.html" %}
+    {% endwith %}
+  {% elif bets_blocked %}
+    {# The stale-cache hard-block (D31-27). Rank 1 of the section the list would have held, so the
+       absence is STRUCTURAL rather than something the reader has to notice. The recovery text
+       repeats both timestamps so the two claims can be compared rather than taken. The suppressed
+       section is withheld with it: every suppression reason is a verdict computed from the same
+       cache this block just declared out of date (UI-SPEC E3 error, owner decision). #}
+    {% with message="This week's list is withheld -- the cache is older than this week's line freeze",
+            recovery_text='The Friday cache population did not complete after the most recent line freeze, so the current week\'s bets and the forward record\'s totals would be out of date. Past weeks below are unaffected and remain readable. Re-run "uv run python scripts/populate_cache.py" to restore this section. Cache last populated: ' ~ (bet_list_populated_at or "not recorded") ~ "; latest line freeze this week: " ~ (bet_week_freeze or "not recorded") ~ "." %}
+      {% include "components/_error_state.html" %}
+    {% endwith %}
+  {% elif current_week is none %}
+    {% with heading="No current week",
+            body="The season has not started or has finished, so there is no forward list. Use the week selector to read the list for any completed week.",
+            action_text=none, action_url=none %}
       {% include "components/_empty_state.html" %}
     {% endwith %}
   {% elif not bets %}
-    {% with heading="No bets cleared the floor this week", body="Every scheduled game was evaluated and no candidate cleared the pre-registered expected-value floor. An empty list is a result, not a failure or an outage.", action_text=none, action_url=none %}
+    {% with heading="No bets cleared the floor this week",
+            body="Every scheduled game was evaluated for all three bet types and none cleared the pre-registered expected-value floor. An empty list is a result, not a failure or an outage. The full record of what was evaluated and why each candidate was declined is in the suppressed section below.",
+            action_text=none, action_url=none %}
       {% include "components/_empty_state.html" %}
     {% endwith %}
   {% else %}
@@ -107,6 +131,14 @@
   {% endif %}
 </section>
 
+{# The suppressed section is WITHHELD in three states, each for its own reason:
+   - no bet_list table: there is no record to show, only an action to take;
+   - the stale-cache hard-block: every suppression reason is a verdict computed from the same
+     cache the block just declared out of date, so showing them would assert a current record of
+     what was declined that is exactly as stale as the list being refused (UI-SPEC E3 error);
+   - no current week: season and week are both None, so the getter carries NO week filter and
+     would dump every suppressed row in the cache under a single week's heading. #}
+{% if bet_list_available and not bets_blocked and current_week is not none %}
 {# ------------------------------------------------------------------------ #}
 {# Rank 3: the suppressed-candidates disclosure (SPEC R6, UI-SPEC E3).       #}
 {#                                                                          #}
@@ -217,7 +249,27 @@
   </details>
   {% endif %}
 </section>
+{% endif %}
 
 {% endblock %}
 </div>
+
+{# ------------------------------------------------------------------------ #}
+{# The trailing utilities row: the cache stamp (UI-SPEC E12).                #}
+{#                                                                          #}
+{# OUTSIDE the swap target, so it is server-rendered with the page frame and #}
+{# has no in-flight state. It renders in the hard-block too, deliberately:   #}
+{# the refusal's recovery text repeats both timestamps, so the two claims    #}
+{# are visible together and can be compared.                                 #}
+{#                                                                          #}
+{# The freeze sentence makes NO week-level claim. A week-level "lines were   #}
+{# frozen Friday 6 PM ET" would be FALSE for every Thursday game (D31-18).   #}
+{# The per-game rule is stated once here and each row carries its own        #}
+{# Line as of value, so the reader can check the claim rather than take it.  #}
+{# ------------------------------------------------------------------------ #}
+{% if bet_list_available %}
+<div class="mt-8 pt-4 border-t border-gray-200">
+  <p class="text-xs text-gray-500 max-w-2xl">Bet list last populated: {% if bet_list_populated_at %}{{ bet_list_populated_at }}{% else %}not recorded{% endif %}. Lines frozen at 6:00 PM Eastern on the Friday before each game's own kickoff -- a Thursday game freezes a week earlier than that week's Sunday games.</p>
+</div>
+{% endif %}
 {% endblock %}
