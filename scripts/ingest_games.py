@@ -6,10 +6,10 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-import nflreadpy as nfl
 import pandas as pd
 
 from conf.settings import get_settings
+from data import upstream_pin
 from data.quality_gates import validate_bronze_to_silver
 from data.schemas import GameSchema
 from data.storage import save_bronze_snapshot, upsert_silver
@@ -130,8 +130,9 @@ class GameDataIngester:
         try:
             logger.info("Fetching schedule data", seasons=seasons, weeks=weeks)
 
-            # Load schedule data (nflreadpy returns Polars, convert to pandas)
-            schedule_df = nfl.load_schedules(seasons).to_pandas()
+            # Read the PINNED schedule snapshot (data/upstream_pin.py) rather than
+            # fetching live, so an ingest is reproducible from a recorded input.
+            schedule_df = upstream_pin.load_schedules(seasons)
 
             if weeks:
                 schedule_df = schedule_df[schedule_df["week"].isin(weeks)]
@@ -169,8 +170,8 @@ class GameDataIngester:
                 "Fetching play-by-play data for results", seasons=seasons, weeks=weeks
             )
 
-            # Load play-by-play data (nflreadpy returns Polars, convert to pandas)
-            pbp_df = nfl.load_pbp(seasons).to_pandas()
+            # Read the PINNED play-by-play snapshot (data/upstream_pin.py).
+            pbp_df = upstream_pin.load_pbp(seasons)
 
             if weeks:
                 pbp_df = pbp_df[pbp_df["week"].isin(weeks)]

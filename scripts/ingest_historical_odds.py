@@ -58,7 +58,6 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import nflreadpy as nfl
 import pandas as pd
 import pyarrow as pa
 
@@ -68,6 +67,7 @@ from backtest.ev_chain_constants import (
     ODDS_SPORTSBOOK_LABEL,
     TUNE_GAME_TYPES,
 )
+from data import upstream_pin
 from data.quality_gates import validate_bronze_to_silver
 from data.schemas import OddsSchema
 from data.storage import (
@@ -926,7 +926,11 @@ def ingest_historical_odds_for_seasons(
         try:
             logger.info("Ingesting historical odds", season=season)
 
-            schedules = nfl.load_schedules([season]).to_pandas()
+            # PINNED schedule read (data/upstream_pin.py). The odds rows this
+            # ingest writes are derived from spread_line/total_line on the schedule
+            # frame, so a live fetch here would make the ingest -- and every gold
+            # market anchor built from it -- irreproducible.
+            schedules = upstream_pin.load_schedules([season])
             report = transform_nfl_odds_with_counts(schedules)
 
             admitted += report.admitted

@@ -32,11 +32,11 @@ Key constraints:
 import warnings
 from datetime import datetime
 
-import nflreadpy as nfl
 import numpy as np
 import pandas as pd
 
 from conf.settings import get_settings
+from data import upstream_pin
 from data.storage import load_dataframe, save_dataframe
 from utils import get_logger
 
@@ -115,8 +115,12 @@ class TeamFormCalculator:
         try:
             logger.info("Fetching play-by-play data", seasons=seasons)
 
-            # Load play-by-play data (nflreadpy returns Polars, convert to pandas)
-            pbp_df = nfl.load_pbp(seasons).to_pandas()
+            # Read the PINNED play-by-play snapshot (data/upstream_pin.py). This used
+            # to be a live ``nfl.load_pbp(seasons).to_pandas()`` with no cache, which is
+            # how an nflverse re-release moved twelve opponent-adjusted columns from
+            # season 2020 onward between two Phase-31 gold builds. The loader REFUSES
+            # rather than falling back to the network when a season is not pinned.
+            pbp_df = upstream_pin.load_pbp(seasons)
 
             # Normalize team names
             pbp_df["posteam"] = pbp_df["posteam"].apply(self._normalize_team_name)

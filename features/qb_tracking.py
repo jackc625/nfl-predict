@@ -707,9 +707,12 @@ class QBTracker:
             return self._depth_chart_cache[season]
 
         try:
-            import nflreadpy as nfl
+            from data import upstream_pin
 
-            dc = nfl.load_depth_charts(season).to_pandas()
+            # PINNED read, not a live fetch. ``upstream_pin`` raises UpstreamPinError,
+            # which is deliberately NOT a RuntimeError/ValueError/ImportError, so the
+            # except clause below cannot swallow a pin refusal into an empty frame.
+            dc = upstream_pin.load_depth_charts(season)
 
             # nflreadpy changed depth chart schema in 2025+:
             #   Old (<=2024): club_code, position, depth_team, full_name, week, gsis_id
@@ -773,9 +776,11 @@ class QBTracker:
                 continue
 
             try:
-                import nflreadpy as nfl
+                from data import upstream_pin
 
-                pbp = nfl.load_pbp(s).to_pandas()
+                # PINNED read; see the note in _load_depth_charts about why a pin
+                # refusal cannot be caught by the handler below.
+                pbp = upstream_pin.load_pbp([s])
                 # Filter to pass plays with passer info
                 pbp = pbp[pbp["passer_player_id"].notna()].copy()
                 self._pbp_cache[s] = pbp
