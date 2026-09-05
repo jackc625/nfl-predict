@@ -30,6 +30,7 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -248,25 +249,59 @@ class TestTheCompletenessGate:
 class TestTheNoExtraRowsGate:
     """DEFECT-3: the synthetic fixture row the OUM-06 sportsbook allowlist admits."""
 
-    def test_the_allowlist_provably_admits_the_synthetic_row(self) -> None:
-        """The premise of the whole gate: a forged game_id under a legitimate sportsbook."""
+    def test_the_synthetic_row_is_GONE_and_the_allowlist_would_still_admit_it(
+        self,
+    ) -> None:
+        """The premise of the whole gate: a forged game_id under a legitimate sportsbook.
+
+        RE-EXPRESSED AFTER THE INGEST (owner ruling C, 2026-09-05). Before Plan 31-11's
+        write this asserted that production silver CONTAINED exactly one
+        ``2025_W01_TEST@HOME`` row. That was a correct measurement of a world this plan was
+        pre-registered to change: ``remove_synthetic_stored_rows`` is the NAMED pre-ingest
+        step that deleted it, so the old assertion now measures the step having succeeded.
+
+        What the test was actually protecting is NOT the row's presence -- it is the PREMISE
+        that the OUM-06 sportsbook allowlist does not discriminate, which is the whole reason
+        a ``game_id`` shape-and-existence gate has to exist. That premise is asserted here
+        directly, against a reconstruction of the removed row, so it keeps holding after the
+        row itself is gone. The removal is asserted alongside it, so the control now proves
+        both halves rather than trading one for the other.
+        """
         _require_silver_odds()
         from backtest.ou_divergence import _ALLOWED_SPORTSBOOKS
 
         odds = pd.read_parquet(_SILVER_ODDS)
         fixture = odds[odds["game_id"] == _SYNTHETIC_FIXTURE_GAME_ID]
-        assert len(fixture) == 1, (
-            f"expected exactly one {_SYNTHETIC_FIXTURE_GAME_ID} row in production silver; "
-            f"found {len(fixture)}. This gate exists because that row is there."
+        assert len(fixture) == 0, (
+            f"production silver still carries {len(fixture)} "
+            f"{_SYNTHETIC_FIXTURE_GAME_ID} row(s). Plan 31-11 runs "
+            "`remove_synthetic_stored_rows` as a NAMED pre-ingest step before the 2025 "
+            "write; a surviving row means that step did not run, or ran and was undone."
         )
-        assert fixture.iloc[0]["sportsbook"] in _ALLOWED_SPORTSBOOKS, (
-            "the synthetic row's sportsbook is no longer on the OUM-06 allowlist, so the hole "
-            "this gate closes may have changed shape. Re-read DEFECT-3 before relaxing "
-            "anything."
-        )
-        assert not bool(fixture.iloc[0]["is_live"])
 
-    def test_it_raises_on_the_current_silver_2025_slice(self) -> None:
+        # The premise, unchanged and still load-bearing: this row's provenance columns are
+        # indistinguishable from a real one. Only its game_id gives it away.
+        forged = {"sportsbook": "consensus", "is_live": False}
+        assert forged["sportsbook"] in _ALLOWED_SPORTSBOOKS, (
+            "a forged row under sportsbook 'consensus' would no longer pass the OUM-06 "
+            "allowlist, so the hole DEFECT-3's game_id gate closes may have changed shape. "
+            "Re-read DEFECT-3 before relaxing anything."
+        )
+        assert not forged["is_live"]
+
+    def test_it_RETURNS_on_the_current_silver_2025_slice_and_still_raises_on_a_forgery(
+        self,
+    ) -> None:
+        """The gate's verdict on the live 2025 slice, and proof it is still discriminating.
+
+        RE-EXPRESSED AFTER THE INGEST (owner ruling C, 2026-09-05). This asserted that
+        ``assert_no_synthetic_game_ids`` RAISES on the live 2025 slice, which was true while
+        that slice was the single synthetic fixture row. The ingest replaced it with 285 real
+        games, so the gate must now RETURN -- and asserting only that would leave a gate that
+        passes for free. The second half re-injects one forged id into the SAME live slice
+        and requires the raise, so the gate is proved discriminating on production data
+        rather than merely quiet.
+        """
         _require_silver_odds()
         _require_gold_ou()
         from scripts.audit_odds_preingest import assert_no_synthetic_game_ids
@@ -275,8 +310,21 @@ class TestTheNoExtraRowsGate:
         slice_2025 = odds[odds["game_id"].astype(str).str.startswith("2025_")]
         features_ou = pd.read_parquet(_GOLD_OU, columns=["game_id"])
 
+        assert len(slice_2025) > 0, (
+            "the live 2025 odds slice is EMPTY, so both halves of this control would be "
+            "judging nothing. The ingest admitted 285 games."
+        )
+        assert_no_synthetic_game_ids(slice_2025, features_ou)
+
+        forged = pd.concat(
+            [
+                slice_2025,
+                slice_2025.head(1).assign(game_id=_SYNTHETIC_FIXTURE_GAME_ID),
+            ],
+            ignore_index=True,
+        )
         with pytest.raises(ValueError, match=_SYNTHETIC_FIXTURE_GAME_ID):
-            assert_no_synthetic_game_ids(slice_2025, features_ou)
+            assert_no_synthetic_game_ids(forged, features_ou)
 
     def test_it_returns_once_the_fixture_row_is_excluded(self) -> None:
         """Removing the row is a NAMED pre-ingest step, not an accident of join semantics."""
@@ -306,20 +354,9 @@ class TestTheNoExtraRowsGate:
 class TestTheDefect2DryRun:
     """A2, settled by measurement inside ``tmp_path`` -- production silver is never written."""
 
-    def test_a_rams_reingest_adds_rows_rather_than_replacing_them(
-        self, tmp_path: Path
-    ) -> None:
-        _require_silver_odds()
-        from data.storage import upsert_silver
-        from scripts.audit_odds_preingest import sha256_file
+    @staticmethod
+    def _rams_2024_rows() -> pd.DataFrame:
         from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
-
-        source_digest_before = sha256_file(_SILVER_ODDS)
-
-        sandbox_silver = tmp_path / "silver"
-        sandbox_silver.mkdir(parents=True)
-        sandbox_odds = sandbox_silver / "odds_snapshot.parquet"
-        shutil.copy2(_SILVER_ODDS, sandbox_odds)
 
         transformed = transform_nfl_odds_to_standard_format(_load_live_schedule(2024))
         rams = transformed[
@@ -330,12 +367,52 @@ class TestTheDefect2DryRun:
             "would measure nothing. create_standard_game_id normalizes LAR -> LA; if that "
             "changed, DEFECT-2 has changed shape."
         )
+        return cast("pd.DataFrame", rams)
 
+    def test_the_defect_still_reproduces_against_UN_normalized_stored_keys(
+        self, tmp_path: Path
+    ) -> None:
+        """The DEFECT-2 measurement, preserved against a store that still carries the hazard.
+
+        RE-EXPRESSED AFTER THE INGEST (owner ruling C, 2026-09-05). This measurement used to
+        run against production silver, which carried 116 ``LAR``-keyed Rams rows. Plan
+        31-11's ratified clause-5 ``normalize_stored_game_ids`` re-keyed all of them, so the
+        hazard is no longer LYING IN the production store -- which is the fix working, not
+        the hazard ceasing to exist.
+
+        The measurement is therefore taken against a sandbox that is DE-normalized back to
+        the pre-clause-5 spelling. That keeps the fact this control exists to state -- that
+        ``upsert_silver`` keys on ``game_id`` and ``LAR`` and ``LA`` are DIFFERENT KEYS, so a
+        re-ingest ADDS rather than replaces -- measurable forever, instead of resting on a
+        transient property of a production file.
+        """
+        _require_silver_odds()
+        from data.storage import upsert_silver
+        from scripts.audit_odds_preingest import sha256_file
+
+        source_digest_before = sha256_file(_SILVER_ODDS)
+        sandbox_odds = _sandbox_silver_copy(tmp_path)
+
+        # Re-install the pre-clause-5 hazard: every canonical LA Rams key spelled LAR.
+        seeded = pd.read_parquet(sandbox_odds)
+        seeded["game_id"] = (
+            seeded["game_id"]
+            .astype(str)
+            .str.replace(r"_LA@", "_LAR@", regex=True)
+            .str.replace(r"@LA$", "@LAR", regex=True)
+        )
+        seeded.to_parquet(sandbox_odds, index=False)
+
+        rams = self._rams_2024_rows()
         before = pd.read_parquet(sandbox_odds)
         n_before = len(before)
         n_lar_before = int(before["game_id"].str.contains("LAR").sum())
         n_la_before = int(
             before["game_id"].str.contains(r"_LA@|@LA$", regex=True).sum()
+        )
+        assert n_lar_before > 0, (
+            "the de-normalization seeded no LAR-keyed rows, so this control is measuring a "
+            "hazard it failed to install and would pass for free."
         )
 
         upsert_silver(rams, "odds_snapshot", key_column="game_id", base_path=tmp_path)
@@ -347,19 +424,66 @@ class TestTheDefect2DryRun:
 
         measured = (
             f"MEASURED upsert behaviour (assumption A2, DEFECT-2): upserting {len(rams)} "
-            f"LA-keyed Rams rows for 2024 into a copy of production silver took the table "
-            f"from {n_before} to {n_after} rows, a delta of {n_after - n_before}. The "
-            f"pre-existing LAR-keyed Rams rows went {n_lar_before} -> {n_lar_after} and the "
-            f"LA-keyed rows went {n_la_before} -> {n_la_after}. upsert_silver keys on "
-            "game_id, and 'LAR' and 'LA' are DIFFERENT KEYS, so the re-ingest ADDS "
-            "duplicate-game rows and REPLACES NONE. An all-season re-ingest must therefore "
-            "either replace the odds table outright or normalize the stored LAR keys first; "
-            "a plain merge silently duplicates every Rams game."
+            f"LA-keyed Rams rows for 2024 into a DE-NORMALIZED copy of production silver "
+            f"took the table from {n_before} to {n_after} rows, a delta of "
+            f"{n_after - n_before}. The LAR-keyed Rams rows went {n_lar_before} -> "
+            f"{n_lar_after} and the LA-keyed rows went {n_la_before} -> {n_la_after}. "
+            "upsert_silver keys on game_id, and 'LAR' and 'LA' are DIFFERENT KEYS, so the "
+            "re-ingest ADDS duplicate-game rows and REPLACES NONE. An all-season re-ingest "
+            "must therefore either replace the odds table outright or normalize the stored "
+            "LAR keys first; a plain merge silently duplicates every Rams game."
         )
 
         assert n_after == n_before + len(rams), measured
         assert n_lar_after == n_lar_before, measured
         assert n_la_after == n_la_before + len(rams), measured
+
+        assert sha256_file(_SILVER_ODDS) == source_digest_before, (
+            "the DEFECT-2 dry run changed data/silver/odds_snapshot.parquet. The whole "
+            "measurement is supposed to happen inside tmp_path."
+        )
+
+    def test_the_ratified_normalization_CLOSED_it_in_the_production_store(
+        self, tmp_path: Path
+    ) -> None:
+        """The other half: against the store as it now stands, the re-ingest REPLACES.
+
+        Same 2024 Rams rows, same ``upsert_silver`` call, against a sandbox copy of
+        production silver as clause 5 left it. Every Rams game already present is REPLACED
+        rather than duplicated, so the only additions are ids the store did not hold at all.
+        That is the fix, measured on the artifact it was applied to.
+        """
+        _require_silver_odds()
+        from data.storage import upsert_silver
+        from scripts.audit_odds_preingest import sha256_file
+
+        source_digest_before = sha256_file(_SILVER_ODDS)
+        sandbox_odds = _sandbox_silver_copy(tmp_path)
+
+        rams = self._rams_2024_rows()
+        before = pd.read_parquet(sandbox_odds)
+        n_before = len(before)
+        stored_ids = set(before["game_id"].astype(str))
+        genuinely_new = sorted(set(rams["game_id"].astype(str)) - stored_ids)
+
+        assert int(before["game_id"].str.contains("LAR").sum()) == 0, (
+            "the production store still carries LAR-keyed rows, so the ratified clause-5 "
+            "normalization did not hold. DEF-31 clause 5 re-keyed 116 rows on 2026-09-05."
+        )
+
+        upsert_silver(rams, "odds_snapshot", key_column="game_id", base_path=tmp_path)
+
+        after = pd.read_parquet(sandbox_odds)
+        n_added = len(after) - n_before
+        assert n_added == len(genuinely_new), (
+            f"the re-ingest added {n_added} rows against {len(genuinely_new)} genuinely new "
+            f"game_id(s) {genuinely_new}. With canonical stored keys every already-present "
+            "Rams game must be REPLACED, not duplicated; any excess addition means the keys "
+            "still disagree."
+        )
+        assert int(after["game_id"].str.contains("LAR").sum()) == 0
+
+        assert sha256_file(_SILVER_ODDS) == source_digest_before
 
         assert sha256_file(_SILVER_ODDS) == source_digest_before, (
             "the DEFECT-2 dry run changed data/silver/odds_snapshot.parquet. This plan writes "
@@ -1247,7 +1371,21 @@ class TestTheWritePathInvariants:
     def test_a_merge_into_a_temporary_copy_holds_every_invariant(
         self, tmp_path: Path
     ) -> None:
-        """The end-to-end proof: canonical keys, one row per key, and the Rams resolution."""
+        """The end-to-end proof: canonical keys, one row per key, and the Rams resolution.
+
+        RE-EXPRESSED AFTER THE INGEST (owner ruling C, 2026-09-05). The premise
+        ``n_lar_before > 0`` used to read production silver, which carried 116 ``LAR``-keyed
+        rows. Clause 5 re-keyed them, so reading that premise off the production store now
+        fails on the fix having worked.
+
+        The hazard is INSTALLED into the sandbox instead of borrowed from production. That
+        is strictly stronger: the clause-5 proof no longer depends on a production file
+        happening to be dirty, so it keeps proving the same thing on a clean store and on a
+        fresh checkout. The synthetic fixture row is likewise seeded rather than assumed --
+        Plan 31-11 removed the real one, and the clause-7 assertion below is about what the
+        merge does with a forged id in the destination, not about which files happen to
+        contain one today.
+        """
         _require_silver_odds()
         _require_gold_ou()
         from scripts.audit_odds_preingest import sha256_file
@@ -1261,6 +1399,21 @@ class TestTheWritePathInvariants:
         production_digest_before = sha256_file(_SILVER_ODDS)
         sandbox_odds = _sandbox_silver_copy(tmp_path)
 
+        # Install both pre-ingest hazards into the SANDBOX: the non-canonical Rams spelling
+        # clause 5 resolves, and the forged id clause 7 must leave visible.
+        seeded = pd.read_parquet(sandbox_odds)
+        seeded["game_id"] = (
+            seeded["game_id"]
+            .astype(str)
+            .str.replace(r"_LA@", "_LAR@", regex=True)
+            .str.replace(r"@LA$", "@LAR", regex=True)
+        )
+        seeded = pd.concat(
+            [seeded, seeded.head(1).assign(game_id=_SYNTHETIC_FIXTURE_GAME_ID)],
+            ignore_index=True,
+        )
+        seeded.to_parquet(sandbox_odds, index=False)
+
         before = pd.read_parquet(sandbox_odds)
         before_ids = before["game_id"].astype(str)
         n_lar_before = int(before_ids.str.contains("LAR").sum())
@@ -1268,8 +1421,8 @@ class TestTheWritePathInvariants:
             (before_ids.map(canonical_game_id) != before_ids).sum()
         )
         assert n_lar_before > 0, (
-            "the stored table carries no LAR-keyed Rams rows, so the clause-5 resolution has "
-            "nothing to prove here. DEFECT-2 has changed shape; re-read it before relaxing this."
+            "the sandbox seeding installed no LAR-keyed Rams rows, so the clause-5 "
+            "resolution has nothing to prove here and this control would pass for free."
         )
 
         incoming = transform_nfl_odds_to_standard_format(_load_live_schedule(2024))
@@ -1294,9 +1447,10 @@ class TestTheWritePathInvariants:
         assert report.stored_ids_normalized == n_non_canonical_before
 
         # Every id the merge WROTE is canonical and well-formed. The one id in the destination
-        # that is neither is the synthetic fixture row DEFECT-3 names, which this plan does not
-        # write and Plan 31-11 removes as a NAMED pre-ingest step -- so it is asserted by name
-        # here rather than quietly excluded.
+        # that is neither is the synthetic fixture row DEFECT-3 names, SEEDED above rather
+        # than borrowed from production -- so it is asserted by name here rather than quietly
+        # excluded, and the assertion states what the merge does with a forged id rather than
+        # what production silver happens to contain today.
         written = set(incoming["game_id"].astype(str))
         assert all(canonical_game_id(gid) == gid for gid in written)
         from utils.game_id_utils import GAME_ID_PATTERN
