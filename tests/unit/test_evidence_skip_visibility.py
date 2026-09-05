@@ -77,6 +77,11 @@ _REAL_EVIDENCE_SKIP_REASONS = [
         "the deployed artifact manifest is not present at artifacts/latest.json, so the "
         "gate-baseline generator has nothing to re-score."
     ),
+    # Plan 31-13: the real-schedule form of the bet-list completeness invariant.
+    (
+        "data/silver/games.parquet is not readable on this checkout; the silver schedule "
+        "is gitignored, so the real-week form of the completeness invariant did not run."
+    ),
 ]
 
 # Skips that are NOT about absent evidence. A platform guard or an optional dependency

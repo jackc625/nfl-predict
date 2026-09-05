@@ -58,6 +58,11 @@ _EVIDENCE_SKIP_MARKERS = (
     # checkout that cannot run them must SAY so rather than report a green suite that
     # silently excluded them.
     "not derivable on this checkout",
+    # Plan 31-13: the real-schedule form of the bet-list completeness invariant reads the
+    # gitignored silver schedule. The hand-built form always runs and proves the rule; this
+    # one proves the rule meets real data, so a checkout without the lake must NAME it rather
+    # than report a green suite that quietly excluded it.
+    "not readable on this checkout",
 )
 
 _SKIP_REASON_RE = re.compile(r"^Skipped: (.*)$", re.DOTALL)
