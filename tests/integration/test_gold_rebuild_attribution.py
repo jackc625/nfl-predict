@@ -1433,3 +1433,393 @@ class TestFingerprintDeterminism:
             "fingerprint_gold is not deterministic on unchanged gold -- every rung's "
             "attribution rests on the assumption that a re-run hashes identically"
         )
+
+
+# ---------------------------------------------------------------------------
+# The Phase-31 THREE-RUNG LADDER over LIVE gold (Plan 31-11, D31-09 / D31-10)
+# ---------------------------------------------------------------------------
+#
+# TEST CLASS: integration. Every live class below reads the ``p31_``-prefixed rung
+# documents Plan 31-11 wrote under ``outputs/fingerprints/``. ``outputs/`` is gitignored,
+# so on a checkout that never ran the ladder these skip with a REGISTERED reason ("not
+# present at ...", see ``tests/conftest._EVIDENCE_SKIP_MARKERS``) rather than passing
+# vacuously. ``TestTheProtectedSliceTripwireCanActuallyFire`` is a plain unit test and
+# runs everywhere.
+#
+# The ladder's three rungs and what each one is FOR:
+#
+#   rung 0 -- the fingerprint of gold as it stood BEFORE anything in Phase 31 wrote.
+#             Taken first because rung 1's claim ("today's code still reproduces today's
+#             gold") is only checkable against a baseline captured before rung 1
+#             overwrote it. Once the rebuild has run, that baseline cannot be recovered.
+#   rung 1 -- a FULL rebuild on today's code with NO new odds. Isolates code state as a
+#             cause, so any move at rung 2 is attributable to the odds and nothing else.
+#   rung 2 -- the 2025 odds ingested and a SCOPED --season 2025 incremental rebuild.
+#
+# THE RUNG CONDITIONS ARE DELIBERATELY DIFFERENT AT THE TWO RUNGS, and the difference is
+# informative rather than inconsistent:
+#
+# * At rung 1 the build stamps a fresh clock into ``feature_timestamp`` for EVERY row
+#   (``scripts/build_features.py:570``), so the clock moves in every season. The reachable
+#   condition is "zero NON-clock moves, with the moved set exactly EQUAL to the registered
+#   clock set" -- NOT "zero moved columns", which is structurally unreachable
+#   (REVIEW-CLOCK). Equality, never containment: a rung where the clock did NOT move is as
+#   wrong as one where an unregistered column did.
+# * At rung 2 the incremental latest-wins path CARRIES FORWARD the retained rows rather
+#   than re-deriving them, so their clock is untouched. A build-clock move attributed to
+#   any season in 2021-2024 there means those rows WERE rewritten -- the replace-mode
+#   catastrophe the scoped invocation exists to avoid -- so it is a HARD STOP, not an
+#   exemption.
+
+_P31_LADDER_DIR = REPO_ROOT / "outputs" / "fingerprints"
+
+# The strict slice the hard stop measures. 2021-2024 is the deploy gate's holdout AND the
+# Phase-31 tune window; 2025 is the single unburned hold the rebuild is FOR.
+_P31_PROTECTED_SEASONS = ("2021", "2022", "2023", "2024")
+_P31_HOLD_SEASON = "2025"
+
+# D31-38: playoffs are admitted in both windows, so the 2025 hold is 285 games, not 272.
+_P31_HOLD_ROWS = 285
+
+_P31_CLOCK_COLUMNS = tuple(sorted(_canonical_name(c) for c in BUILD_CLOCK_COLUMNS))
+
+
+def _p31_rung_path(rung: int) -> Path:
+    return rung_document_path(_P31_LADDER_DIR, rung, PHASE31_RUNG_PREFIX)
+
+
+def _p31_document(rung: int) -> dict:
+    """Load a Phase-31 rung document, or skip with a REGISTERED evidence reason."""
+    path = _p31_rung_path(rung)
+    if not path.is_file():
+        pytest.skip(
+            f"the Phase-31 rung-{rung} fingerprint document is not present at {path} -- "
+            "outputs/ is gitignored runtime state, written by Plan 31-11's ladder run."
+        )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _p31_require_protected_seasons(document: dict, rung: int) -> None:
+    """Fail (never pass vacuously) unless the document actually carries 2021-2024.
+
+    Every assertion below is a statement ABOUT those seasons. A document that did not
+    contain them would satisfy each one for free, which is the shape of a tripwire that
+    cannot fire.
+    """
+    for matrix in GOLD_MATRICES:
+        per_season = document.get(matrix, {}).get("rows_per_season", {})
+        missing = [s for s in _P31_PROTECTED_SEASONS if s not in per_season]
+        assert not missing, (
+            f"rung-{rung} document's {matrix} carries no rows for season(s) {missing}, "
+            "so every 2021-2024 assertion in this module would pass for free. The ladder "
+            "is judging the wrong artifact."
+        )
+
+
+def _p31_moves(report: dict) -> list[tuple[str, str, str, list[str]]]:
+    """Flatten a comparison report into (matrix, column, move_kind, seasons) rows."""
+    rows: list[tuple[str, str, str, list[str]]] = []
+    for matrix in GOLD_MATRICES:
+        detail = report.get(matrix, {})
+        for column, seasons in (detail.get("columns_changed") or {}).items():
+            kind = ((detail.get("column_details") or {}).get(column) or {}).get(
+                "move_kind", "unknown"
+            )
+            rows.append((matrix, column, kind, sorted(seasons)))
+    return rows
+
+
+def _p31_moves_touching_protected_seasons(
+    report: dict,
+) -> list[tuple[str, str, str, list[str]]]:
+    """Return every moved column -- of ANY kind -- carrying a 2021-2024 season.
+
+    ANY kind is the point (D31-10). Adding 285 real 2025 rows can flip an ``int64`` to a
+    ``float64``, which genuinely rewrites the 2021-2024 bytes on disk even when every
+    value is equal, so a storage move is judged exactly as a value move is. The build
+    clock is included too: at rung 2 a clock move in a retained season means those rows
+    were rewritten.
+    """
+    protected = set(_P31_PROTECTED_SEASONS)
+    return [move for move in _p31_moves(report) if protected & set(move[3])]
+
+
+def _p31_rows_per_season(document: dict, matrix: str) -> dict[str, int]:
+    return {
+        season: int(rows)
+        for season, rows in (
+            document.get(matrix, {}).get("rows_per_season", {}) or {}
+        ).items()
+    }
+
+
+@pytest.mark.integration
+class TestThePhase31Rung1ReproducesCurrentGold:
+    """Rung 1: a full rebuild on today's code, with NO new odds, moves only the clock.
+
+    This rung exists so that a move at rung 2 has exactly ONE candidate cause. Without it,
+    a moved column after the 2025 ingest could be the odds OR a pre-existing reproduction
+    failure in the build, and no evidence would separate them.
+    """
+
+    def test_rung_0_was_taken_before_rung_1_overwrote_gold(self) -> None:
+        """The ladder is an ORDER, and rung 0 is the link that cannot be recovered."""
+        rung0, rung1 = _p31_rung_path(0), _p31_rung_path(1)
+        if not rung1.is_file():
+            pytest.skip(
+                f"the Phase-31 rung-1 fingerprint document is not present at {rung1} -- "
+                "outputs/ is gitignored runtime state."
+            )
+        assert rung0.is_file(), (
+            f"rung 1 exists at {rung1} but its rung-0 predecessor does not exist at "
+            f"{rung0}. Rung 1 REBUILT gold, so the baseline it was supposed to be judged "
+            "against has already been overwritten and cannot be recovered."
+        )
+        assert rung0.stat().st_mtime <= rung1.stat().st_mtime, (
+            "the rung-0 document is NEWER than the rung-1 document, so it cannot be a "
+            "fingerprint of the gold that rung 1 rebuilt over."
+        )
+
+    def test_no_non_clock_column_moved(self) -> None:
+        before, after = _p31_document(0), _p31_document(1)
+        _p31_require_protected_seasons(before, 0)
+        report = compare_fingerprints(before, after)
+
+        for matrix in GOLD_MATRICES:
+            non_clock = report[matrix]["non_clock_moves"]
+            details = report[matrix].get("column_details") or {}
+            attribution = "; ".join(
+                f"{c} [{(details.get(c) or {}).get('move_kind')}] seasons "
+                f"{','.join((details.get(c) or {}).get('seasons') or [])}"
+                for c in non_clock
+            )
+            assert non_clock == [], (
+                f"{matrix}: rung 1 moved {len(non_clock)} NON-CLOCK column(s) on a "
+                f"rebuild that changed no input: {non_clock}. Per-column attribution: "
+                f"{attribution}. This is a PRE-EXISTING reproduction failure with nothing "
+                "to do with the 2025 odds, and separating that cause from the odds is "
+                "exactly what rung 1 exists for. HARD STOP -- do not proceed to the "
+                "ingest."
+            )
+
+    def test_the_moved_set_EQUALS_the_registered_clock_set(self) -> None:
+        """Set EQUALITY, not containment. A clock that did NOT move also stops the run."""
+        report = compare_fingerprints(_p31_document(0), _p31_document(1))
+
+        for matrix in GOLD_MATRICES:
+            moved_clock = tuple(
+                sorted(_canonical_name(c) for c in report[matrix]["build_clock_moves"])
+            )
+            assert moved_clock == _P31_CLOCK_COLUMNS, (
+                f"{matrix}: the rung-1 build-clock moved set is {list(moved_clock)}, "
+                f"which is not EQUAL to the registered set {list(_P31_CLOCK_COLUMNS)}. A "
+                "strict SUBSET means the per-build clock did not move, so either the "
+                "rebuild did not run or the comparison is not reading the rebuilt frame; "
+                "a superset is impossible by construction, because an unregistered column "
+                "lands in non_clock_moves. An exemption that only ever widens is an "
+                "exemption that can hide a real move."
+            )
+
+    def test_no_column_was_added_or_removed_and_the_shape_held(self) -> None:
+        report = compare_fingerprints(_p31_document(0), _p31_document(1))
+        for matrix in GOLD_MATRICES:
+            detail = report[matrix]
+            assert detail["columns_added"] == [], (
+                f"{matrix}: rung 1 ADDED {detail['columns_added']}; a reproduction "
+                "rebuild adds no column"
+            )
+            assert detail["columns_removed"] == [], (
+                f"{matrix}: rung 1 REMOVED {detail['columns_removed']}; a reproduction "
+                "rebuild removes no column"
+            )
+            assert detail["width_before"] == detail["width_after"], (
+                f"{matrix}: width moved {detail['width_before']} -> "
+                f"{detail['width_after']} on a reproduction rebuild"
+            )
+            assert detail["rows_before"] == detail["rows_after"], (
+                f"{matrix}: rows moved {detail['rows_before']} -> "
+                f"{detail['rows_after']} on a reproduction rebuild"
+            )
+
+    def test_the_protected_season_row_counts_are_identical(self) -> None:
+        before, after = _p31_document(0), _p31_document(1)
+        _p31_require_protected_seasons(before, 0)
+        for matrix in GOLD_MATRICES:
+            b = _p31_rows_per_season(before, matrix)
+            a = _p31_rows_per_season(after, matrix)
+            for season in _P31_PROTECTED_SEASONS:
+                assert b[season] == a[season], (
+                    f"{matrix}: season {season} row count moved {b[season]} -> "
+                    f"{a[season]} across rung 1. A reproduction rebuild adds and drops no "
+                    "row in a season whose inputs did not change."
+                )
+
+
+@pytest.mark.integration
+class TestThePhase31Rung2AttributesEveryMoveTo2025:
+    """Rung 2: the scoped 2025 rebuild may move 2025 and NOTHING else.
+
+    The hard stop measures a STRICT 2021-2024 slice INCLUDING storage-level moves (D31-10)
+    and INCLUDING the build clock. A 2025-only null-count or dtype change is expected and
+    is not a stop; a 2021-2024 move of any kind is.
+    """
+
+    def test_no_column_of_any_kind_moved_in_a_protected_season(self) -> None:
+        before, after = _p31_document(1), _p31_document(2)
+        _p31_require_protected_seasons(before, 1)
+        _p31_require_protected_seasons(after, 2)
+        report = compare_fingerprints(before, after)
+
+        offenders = _p31_moves_touching_protected_seasons(report)
+        attribution = "; ".join(
+            f"{matrix}.{column} [{kind}] seasons {','.join(seasons)}"
+            for matrix, column, kind, seasons in offenders
+        )
+        assert offenders == [], (
+            "rung 2 moved column(s) in the PROTECTED 2021-2024 slice, which the scoped "
+            f"incremental build must never touch. Per-column attribution: {attribution}. "
+            "A move here means the 2025 slice was written as the whole table, or that a "
+            "whole-frame statistic reached back into retained history. HARD STOP."
+        )
+
+    def test_the_build_clock_moved_in_2025_alone(self) -> None:
+        """Proof that the incremental path CARRIED the retained rows' clock forward.
+
+        The scoped build re-derives only the 2025 rows; the latest-wins merge concatenates
+        them onto the retained history untouched. So the clock -- the one column that
+        moves in EVERY season of a full rebuild -- must move in 2025 and in no other
+        season. That asymmetry against rung 1 is the single cheapest proof that the write
+        mode was the incremental one and not replace.
+        """
+        report = compare_fingerprints(_p31_document(1), _p31_document(2))
+
+        seen = False
+        for matrix in GOLD_MATRICES:
+            detail = report[matrix]
+            for column in detail["build_clock_moves"]:
+                seen = True
+                seasons = sorted((detail["columns_changed"] or {})[column])
+                assert seasons == [_P31_HOLD_SEASON], (
+                    f"{matrix}: the build clock '{column}' moved in season(s) "
+                    f"{','.join(seasons)}, not in {_P31_HOLD_SEASON} alone. Every season "
+                    "outside 2025 whose clock moved had its rows REWRITTEN by this build, "
+                    "which is the replace-mode catastrophe the scoped invocation exists "
+                    "to avoid."
+                )
+        assert seen, (
+            "rung 2 moved no build-clock column at all, so the 2025 slice was never "
+            "re-derived and the rebuild did not do what it claimed."
+        )
+
+    def test_every_moved_column_is_attributed_to_2025_with_a_kind(self) -> None:
+        report = compare_fingerprints(_p31_document(1), _p31_document(2))
+        moves = _p31_moves(report)
+
+        assert moves, (
+            "rung 2 moved NO column. Ingesting 285 real 2025 market anchors must move the "
+            "2025 slice; an empty diff means the rebuild did not do what it claimed."
+        )
+        for matrix, column, kind, seasons in moves:
+            assert seasons == [_P31_HOLD_SEASON], (
+                f"{matrix}.{column} [{kind}] moved in season(s) {','.join(seasons)}; "
+                f"every rung-2 move must be attributed to {_P31_HOLD_SEASON} alone."
+            )
+            assert kind in ("values", "storage", "build_clock"), (
+                f"{matrix}.{column} moved with no recorded move kind ({kind!r}). A move "
+                "reported without a kind cannot be judged."
+            )
+
+    def test_no_column_was_added_or_removed_and_the_width_held(self) -> None:
+        report = compare_fingerprints(_p31_document(1), _p31_document(2))
+        for matrix in GOLD_MATRICES:
+            detail = report[matrix]
+            assert detail["columns_added"] == [], (
+                f"{matrix}: rung 2 ADDED {detail['columns_added']}. The scoped build's "
+                "narrowing guard protects the width; an ADDED column means the schema "
+                "moved on an incremental path."
+            )
+            assert detail["columns_removed"] == [], (
+                f"{matrix}: rung 2 REMOVED {detail['columns_removed']}"
+            )
+            assert detail["width_before"] == detail["width_after"], (
+                f"{matrix}: width moved {detail['width_before']} -> "
+                f"{detail['width_after']} at rung 2"
+            )
+
+    def test_the_protected_season_row_counts_are_identical_across_all_three_rungs(
+        self,
+    ) -> None:
+        rung0, rung1, rung2 = _p31_document(0), _p31_document(1), _p31_document(2)
+        _p31_require_protected_seasons(rung0, 0)
+        for matrix in GOLD_MATRICES:
+            counts = [_p31_rows_per_season(d, matrix) for d in (rung0, rung1, rung2)]
+            for season in _P31_PROTECTED_SEASONS:
+                observed = [c[season] for c in counts]
+                assert len(set(observed)) == 1, (
+                    f"{matrix}: season {season} row count moved across the ladder "
+                    f"(rung0/1/2 = {observed}). Only 2025 may change."
+                )
+
+    def test_the_hold_season_is_the_playoff_inclusive_285_game_population(self) -> None:
+        """D31-38: playoffs are IN, so the 2025 hold is 285 games, not 272."""
+        after = _p31_document(2)
+        for matrix in GOLD_MATRICES:
+            rows = _p31_rows_per_season(after, matrix).get(_P31_HOLD_SEASON)
+            assert rows == _P31_HOLD_ROWS, (
+                f"{matrix}: the {_P31_HOLD_SEASON} slice holds {rows} rows, not the "
+                f"{_P31_HOLD_ROWS} the frozen pre-registration binds the hold to (REG "
+                "plus all four playoff types, D31-38)."
+            )
+
+
+class TestTheProtectedSliceTripwireCanActuallyFire:
+    """Guard self-verification: a tripwire never shown to fire carries no information.
+
+    Both live ladder classes above are expected to report an EMPTY offender list, which is
+    also exactly what a broken detector would report. These cases drive the same helper
+    over hand-built reports and require it to catch each shape the hard stop exists for --
+    a value move, a storage-only move and a build-clock move -- in a protected season.
+    """
+
+    @staticmethod
+    def _report(move_kind: str, seasons: list[str], column: str = "elo_diff") -> dict:
+        return {
+            matrix: {
+                "columns_changed": {column: seasons},
+                "column_details": {
+                    column: {"move_kind": move_kind, "seasons": seasons}
+                },
+            }
+            for matrix in GOLD_MATRICES
+        }
+
+    @pytest.mark.parametrize("move_kind", ["values", "storage", "build_clock"])
+    def test_a_protected_season_move_of_any_kind_is_caught(
+        self, move_kind: str
+    ) -> None:
+        offenders = _p31_moves_touching_protected_seasons(
+            self._report(move_kind, ["2023"])
+        )
+        assert len(offenders) == len(GOLD_MATRICES), (
+            f"a {move_kind} move in season 2023 was NOT caught by the protected-slice "
+            "helper, so the rung-2 hard stop would wave it through."
+        )
+
+    def test_a_move_spanning_2025_and_a_protected_season_is_caught(self) -> None:
+        offenders = _p31_moves_touching_protected_seasons(
+            self._report("values", ["2024", "2025"])
+        )
+        assert len(offenders) == len(GOLD_MATRICES), (
+            "a move that touches 2025 AND a protected season was not caught. A 2025 "
+            "component does not license the 2024 one."
+        )
+
+    def test_a_2025_only_move_is_not_caught(self) -> None:
+        offenders = _p31_moves_touching_protected_seasons(
+            self._report("values", ["2025"])
+        )
+        assert offenders == [], (
+            "a 2025-only move was flagged as a protected-slice offender. A tripwire that "
+            "fires on the expected outcome gets overridden, and an overridden tripwire is "
+            "worse than none."
+        )

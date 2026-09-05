@@ -60,6 +60,23 @@ _REAL_EVIDENCE_SKIP_REASONS = [
         "the live nflreadpy 2025 schedule could not be loaded on this checkout "
         "(offline or upstream unavailable)"
     ),
+    # Plan 31-11's three-rung fingerprint ladder and the gate-baseline byte-identity
+    # proof. Both read gitignored run records -- the p31_ rung documents under
+    # outputs/fingerprints/ and the live gold the generator re-scores over -- so a
+    # checkout that never ran the ladder must NAME the controls that did not run.
+    (
+        "the Phase-31 rung-1 fingerprint document is not present at "
+        "outputs/fingerprints/p31_rung1.json -- outputs/ is gitignored runtime state, "
+        "written by Plan 31-11's ladder run."
+    ),
+    (
+        "canonical gold is not present at data/gold/features_wp.parquet, so the "
+        "gate-baseline generator cannot re-score -- data/ is gitignored runtime state."
+    ),
+    (
+        "the deployed artifact manifest is not present at artifacts/latest.json, so the "
+        "gate-baseline generator has nothing to re-score."
+    ),
 ]
 
 # Skips that are NOT about absent evidence. A platform guard or an optional dependency
