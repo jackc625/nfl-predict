@@ -193,7 +193,10 @@ class TestThisModuleCannotWriteProductionSilver:
             "\nclass TestThisModuleCannotWriteProductionSilver", 1
         )[0]
 
-        redirect_at = body.find('monkeypatch.setattr(storage_mod, "_parquet_manager"')
+        # Match on the ARGUMENT, not on the call's line layout: `ruff format` wraps
+        # this call across four lines, and a scan pinned to one spelling would report a
+        # missing redirect that is right there.
+        redirect_at = body.find('"_parquet_manager"')
         assert redirect_at != -1, (
             "test_elo_pipeline_to_gold no longer redirects data.storage._parquet_manager "
             "onto a sandbox root. Without that redirect every save_dataframe call in "
