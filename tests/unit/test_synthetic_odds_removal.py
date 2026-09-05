@@ -33,7 +33,10 @@ from scripts.audit_odds_preingest import (
     assert_no_synthetic_game_ids,
     find_synthetic_game_ids,
 )
-from scripts.ingest_historical_odds import remove_synthetic_stored_rows
+from scripts.ingest_historical_odds import (
+    normalize_stored_game_ids,
+    remove_synthetic_stored_rows,
+)
 
 # The exact forged row in production silver, restated here as the fixture under test.
 SYNTHETIC_ID = "2025_W01_TEST@HOME"
@@ -225,3 +228,83 @@ class TestTheRemovalAndTheGateShareOnePredicate:
     ) -> None:
         with pytest.raises(ValueError, match="no 'game_id' column"):
             find_synthetic_game_ids(pd.DataFrame({"sportsbook": ["dk"]}), _gold_ou([]))
+
+
+class TestTheStepRefusesToRunBeforeTheKeyNormalization:
+    """The two pre-ingest steps are NOT commutative, and the wrong order is destructive.
+
+    Measured on production silver on 2026-09-05: run before the clause-5 key
+    normalization, this step classifies all 116 non-canonical ``LAR`` Rams rows as
+    ORPHANS -- gold keys the Rams as canonical ``LA``, so a well-formed
+    ``2018_W01_LAR@LV`` names no game in ``features_ou`` -- and would delete sixteen
+    seasons of real accumulated odds history. Run after it, the orphan set is empty and
+    the only row removed is the malformed fixture.
+
+    The destructive order is the one an operator reaches for first (clean up the obvious
+    forgery, then merge), so it REFUSES rather than proceeding.
+    """
+
+    NON_CANONICAL_RAMS = "2018_W01_LAR@LV"
+    CANONICAL_RAMS = "2018_W01_LA@LV"
+
+    def test_a_non_canonical_stored_key_refuses_and_names_the_fix(
+        self, tmp_path: Path
+    ) -> None:
+        path = _write_stored(
+            tmp_path,
+            [_odds_row(self.NON_CANONICAL_RAMS), _odds_row(SYNTHETIC_ID)],
+        )
+        before = path.read_bytes()
+
+        with pytest.raises(ValueError) as refusal:
+            remove_synthetic_stored_rows(
+                base_path=tmp_path, features_ou_df=_gold_ou([self.CANONICAL_RAMS])
+            )
+
+        message = str(refusal.value)
+        assert "NON-CANONICAL" in message
+        assert "normalize_stored_game_ids" in message, (
+            "the refusal does not name the step that satisfies it, so an operator has to "
+            "guess -- and the guess that looks obvious is the destructive one"
+        )
+        assert path.read_bytes() == before, (
+            "the step refused but had already rewritten the table"
+        )
+
+    def test_after_normalizing_the_same_call_removes_only_the_forgery(
+        self, tmp_path: Path
+    ) -> None:
+        """The proof that the refusal is about ORDER, not about the data being unusable."""
+        _write_stored(
+            tmp_path,
+            [_odds_row(self.NON_CANONICAL_RAMS), _odds_row(SYNTHETIC_ID)],
+        )
+        gold = _gold_ou([self.CANONICAL_RAMS])
+
+        rekeyed = normalize_stored_game_ids(tmp_path)
+        assert rekeyed == 1
+
+        report = remove_synthetic_stored_rows(base_path=tmp_path, features_ou_df=gold)
+
+        assert report.removed_malformed == (SYNTHETIC_ID,)
+        assert report.removed_orphans == (), (
+            "the Rams row was deleted as an orphan even after normalization"
+        )
+        assert list(pd.read_parquet(report.path)["game_id"]) == [self.CANONICAL_RAMS]
+
+    def test_without_the_guard_the_rams_row_would_have_been_classified_an_orphan(
+        self,
+    ) -> None:
+        """Names the hazard directly, so the guard above cannot be read as paranoia."""
+        stored = pd.DataFrame(
+            [_odds_row(self.NON_CANONICAL_RAMS), _odds_row(SYNTHETIC_ID)]
+        )
+        malformed, orphans = find_synthetic_game_ids(
+            stored, _gold_ou([self.CANONICAL_RAMS])
+        )
+        assert malformed == [SYNTHETIC_ID]
+        assert orphans == [self.NON_CANONICAL_RAMS], (
+            "a non-canonical stored key is no longer judged an orphan against canonical "
+            "gold, so the ordering guard is now protecting against nothing -- check "
+            "whether it can be removed rather than leaving a guard that guards nothing."
+        )

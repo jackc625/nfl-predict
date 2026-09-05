@@ -776,6 +776,32 @@ def remove_synthetic_stored_rows(
             removed_orphans=(),
         )
 
+    # ORDERING GUARD, and it is load-bearing rather than defensive. Measured on
+    # production silver on 2026-09-05: run BEFORE the clause-5 key normalization, this
+    # step classifies all 116 non-canonical ``LAR`` Rams rows as ORPHANS -- gold keys the
+    # Rams as canonical ``LA``, so a well-formed ``2018_W01_LAR@LV`` names no game in
+    # features_ou -- and would DELETE sixteen seasons of real accumulated odds history.
+    # Run AFTER it, the orphan set is EMPTY and the only row removed is the malformed
+    # fixture. The two steps are not commutative, and the destructive order is the one an
+    # operator reaches for first, so the wrong order REFUSES rather than proceeding.
+    non_canonical = int(
+        (
+            stored["game_id"].astype(str).map(canonical_game_id)
+            != stored["game_id"].astype(str)
+        ).sum()
+    )
+    if non_canonical:
+        msg = (
+            f"{non_canonical} stored row(s) in '{path}' still carry a NON-CANONICAL "
+            "game_id, so orphan-hood cannot be judged against gold yet: a non-canonical "
+            "key names no game in features_ou and would be deleted as an orphan. Measured "
+            "on production silver, running this step first would remove all 116 'LAR' "
+            "Rams rows -- sixteen seasons of real odds history. Call "
+            "normalize_stored_game_ids(base_path) FIRST (write-contract clause 5), then "
+            "call this."
+        )
+        raise ValueError(msg)
+
     malformed, orphans = find_synthetic_game_ids(stored, features_ou_df)
     doomed = set(malformed) | set(orphans)
     if not doomed:
