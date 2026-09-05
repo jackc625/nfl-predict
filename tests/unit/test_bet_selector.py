@@ -1637,13 +1637,16 @@ class TestNameCollisionTrapIsDocumented:
 # Three claims, and each is pinned by a test that can only pass under ONE sign convention or ONE
 # price source -- a test that passes under both conventions would pin nothing:
 #
-#   1. The spread strategy converts at BOTH seams. ``model_spread`` is a predicted home MARGIN and
-#      ``closing_spread`` is a market LINE (negative when home is favored). The LOCKED
-#      ``_determine_bet_side_ats`` compares two LINES, so the model's IMPLIED LINE (the negated
-#      margin) is what goes in; ``_resolve_ats_outcome`` compares the actual MARGIN against a
-#      threshold on the MARGIN scale, so the negated slipped line is what goes in. The legacy
-#      simulator path does neither, which is the pre-existing defect ``backtest/ats_ev_chain.py``'s
-#      module docstring records.
+#   1. The spread strategy converts at the TWO LINE-CONVENTION HELPERS and nowhere else. DEF-31-01
+#      was RULED on 2026-09-04: the stored ``spread`` is nflverse ``spread_line``, POSITIVE when
+#      the home team is favored, and it IS the cover threshold on the home-MARGIN scale -- the same
+#      scale ``model_spread`` (a predicted home margin) lives on. ``_determine_bet_side_ats`` and
+#      ``apply_slippage_spread`` are the two helpers written in the OPPOSITE "line" convention, so
+#      the strategy NEGATES INTO them and NEGATES BACK OUT. ``_resolve_ats_outcome`` already
+#      compares an actual margin against its threshold, so the slipped market spread reaches it
+#      UN-negated. The legacy simulator path keeps its pre-existing convention (DEF-31-02).
+#      Every assertion below is paired with a control proving the OLD reading gives a DIFFERENT
+#      answer on the same row -- a test that passes under both conventions would pin nothing.
 #   2. Neither new strategy has an eligibility gate (D31-05), and neither can emit ``not_subpop``.
 #   3. The winner strategy is priced and sized at its OWN moneyline, never at the flat -110 the
 #      other two targets are quoted at.
@@ -1667,11 +1670,12 @@ def _ats_row(
     season: int = 2021,
     week: int = 1,
 ) -> dict:
-    """One ATS candidate: a predicted home MARGIN against a market LINE.
+    """One ATS candidate: a predicted home MARGIN against the market's home MARGIN (DEF-31-01).
 
-    ``model_spread`` is POSITIVE when the model expects the home team to win by that many points.
-    ``closing_spread`` is NEGATIVE when the market has the home team favored. They are on DIFFERENT
-    scales and this fixture never pretends otherwise.
+    BOTH are POSITIVE when the home team is favored, and both are on the HOME-MARGIN scale.
+    ``model_spread`` is the model's predicted home margin; ``closing_spread`` is the stored
+    nflverse ``spread_line``, which is the margin the home team must EXCEED to cover. The two are
+    directly comparable, which is the whole content of the 2026-09-04 ruling.
     """
     return {
         "game_id": game_id,
@@ -1788,91 +1792,137 @@ class TestThreeTargetRegistry:
 
 
 class TestSpreadStrategySignConventions:
-    """The spread strategy converts at BOTH seams, and each conversion is pinned separately."""
+    """The spread strategy is on the MEASURED convention (DEF-31-01, ruled 2026-09-04).
 
-    def test_side_is_resolved_on_the_models_implied_line_not_its_margin(self) -> None:
-        """A case where the two conventions produce OPPOSITE sides.
+    The stored ``spread`` is nflverse ``spread_line``: POSITIVE when the home team is favored, and
+    it IS the cover threshold the actual home margin must EXCEED. ``model_spread`` is a predicted
+    home margin on the SAME scale. Every test below carries a control showing the OLD reading --
+    "the market spread is a line, negative when home is favored" -- returns a DIFFERENT answer on
+    the very same row, so none of them can pass under both conventions.
+    """
 
-        ``model_spread=+7`` (home by 7) against ``closing_spread=-3`` (market: home by 3). The
-        model likes the home side. Passing the model's IMPLIED LINE (-7) against the market line
-        (-3) gives ``home_cover``; passing the raw MARGIN (+7) -- what the legacy simulator path
-        does -- gives ``away_cover``. Only one of those can be right and this pins which.
-        """
+    def _strategy(self):
         from backtest.selector_strategies import ATSStrategy
 
-        strategy = ATSStrategy(
+        return ATSStrategy(
             frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
         )
+
+    def test_side_compares_two_margins_and_not_a_margin_against_a_line(self) -> None:
+        """A row where the two readings produce OPPOSITE sides, and its mirror.
+
+        ``model_spread=+1`` (model: home wins by 1) against ``closing_spread=-3`` (market: home
+        LOSES by 3, because a negative stored spread is a home UNDERDOG). The model is four points
+        more bullish on the home team, so the bet is ``home_cover``. The OLD reading fed the
+        negated margin against the raw stored spread and returned ``away_cover`` on this row.
+        """
+        strategy = self._strategy()
+
+        home_row = _ats_row(
+            "2021_W01_A@B", model_spread=1.0, closing_spread=-3.0, actual_margin=10.0
+        )
+        assert strategy.resolve_bet_side(home_row) == "home_cover"
+        # The control: the OLD call shape really does return the opposite side on this row.
+        assert strategy._sim._determine_bet_side_ats(-1.0, -3.0) == "away_cover"
+
+        # The mirror, so the pin is not an artifact of one sign. Market: home favored by 3; model:
+        # home loses by 1. The model is four points LESS bullish on home, so it is an away bet.
+        away_row = _ats_row(
+            "2021_W01_C@D", model_spread=-1.0, closing_spread=3.0, actual_margin=10.0
+        )
+        assert strategy.resolve_bet_side(away_row) == "away_cover"
+        assert strategy._sim._determine_bet_side_ats(1.0, 3.0) == "home_cover"
+
+    def test_slippage_moves_the_stored_spread_against_the_bettor(self) -> None:
+        """On a -3.0 stored spread the home-cover threshold RISES and the away-cover one FALLS.
+
+        Home covers when ``actual_margin > spread``, so making the bet harder for a home-cover
+        bettor means raising the threshold: -3.0 becomes -2.5. For an away-cover bettor -- who
+        needs ``actual_margin < spread`` -- it means lowering it: -3.0 becomes -3.5. The LOCKED
+        ``apply_slippage_spread`` is written in the opposite (line) convention and returns exactly
+        the SWAPPED pair, which is the control below; the strategy negates into it and back out
+        rather than re-implementing it.
+        """
+        from backtest.simulation import apply_slippage_spread
+
+        strategy = self._strategy()
         row = _ats_row(
             "2021_W01_A@B", model_spread=7.0, closing_spread=-3.0, actual_margin=10.0
         )
-        assert strategy.resolve_bet_side(row) == "home_cover"
 
-        # The negative control: the un-converted call really does give the opposite answer, so the
-        # assertion above is discriminating rather than incidentally true.
-        assert strategy._sim._determine_bet_side_ats(7.0, -3.0) == "away_cover"
+        _, home_slipped = strategy.side_probability(row, "home_cover")
+        _, away_slipped = strategy.side_probability(row, "away_cover")
+        assert home_slipped == -2.5
+        assert away_slipped == -3.5
 
-    def test_probability_is_measured_against_the_negated_slipped_line(self) -> None:
-        """P(home cover) is evaluated on the MARGIN scale, hand-computed here from scratch.
+        # Delegation, pinned numerically: each value is the LOCKED helper evaluated in ITS
+        # convention and converted back, not a locally written +/- 0.5.
+        assert home_slipped == -apply_slippage_spread(3.0, "home_cover", 0.5)
+        assert away_slipped == -apply_slippage_spread(3.0, "away_cover", 0.5)
 
-        The slipped market line for a home-cover bet is -3.5; the cover threshold the actual home
-        margin must EXCEED is therefore +3.5. Computing the normal CDF against -3.5 instead would
-        return a probability near 0.79 rather than near 0.62, so the two are not close.
+        # The control: calling the helper on the RAW stored spread -- what the old reading did --
+        # returns the two values SWAPPED, i.e. it moves both bets in the bettor's favour.
+        assert apply_slippage_spread(-3.0, "home_cover", 0.5) == -3.5
+        assert apply_slippage_spread(-3.0, "away_cover", 0.5) == -2.5
+
+    def test_probability_is_measured_against_the_slipped_stored_spread(self) -> None:
+        """P(home cover) is hand-computed from scratch against the slipped spread, un-negated.
+
+        The slipped stored spread for a home-cover bet on -3.0 is -2.5, and that IS the cover
+        threshold. The old reading measured against +3.5 and returned about 0.62 where the correct
+        value is about 0.78, so the two are nowhere near each other.
         """
         from scipy.stats import norm
 
-        from backtest.selector_strategies import ATSStrategy
-
-        strategy = ATSStrategy(
-            frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
-        )
+        strategy = self._strategy()
         row = _ats_row(
             "2021_W01_A@B", model_spread=7.0, closing_spread=-3.0, actual_margin=10.0
         )
         p_side, slipped_line = strategy.side_probability(row, "home_cover")
 
-        # The slipped LINE is returned on the MARKET convention (the price the bettor got), which
-        # is what a bet list renders. The margin-scale conversion happens at the grading seam.
-        assert slipped_line == -3.5
-
+        assert slipped_line == -2.5
         corrected_margin = 7.0 + _ATS_FIXTURE_BIAS[2021]
-        expected = 1.0 - float(norm.cdf((3.5 - corrected_margin) / _ATS_FIXTURE_SD))
+        expected = 1.0 - float(norm.cdf((-2.5 - corrected_margin) / _ATS_FIXTURE_SD))
         assert p_side == pytest.approx(expected, abs=1e-12)
-        # And the wrong-scale value is far enough away that the assertion above discriminates.
-        wrong_scale = 1.0 - float(norm.cdf((-3.5 - corrected_margin) / _ATS_FIXTURE_SD))
-        assert abs(expected - wrong_scale) > 0.10
 
-    def test_grading_uses_the_margin_scale_cover_threshold(self) -> None:
-        """A margin that covers under one convention and not the other.
-
-        Home wins by 1 with a slipped line of -3.5. On the MARGIN scale the cover threshold is
-        +3.5, so a 1-point win does NOT cover and the home-cover bet LOSES. Grading against the
-        raw line (-3.5) would read ``1.0 > -3.5`` and call it a WIN.
-        """
-        from backtest.selector_strategies import ATSStrategy
-
-        strategy = ATSStrategy(
-            frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
+        # The control: the OLD threshold (+3.5, the negated old slipped line) is far away.
+        old_convention = 1.0 - float(
+            norm.cdf((3.5 - corrected_margin) / _ATS_FIXTURE_SD)
         )
+        assert abs(expected - old_convention) > 0.10
+
+    def test_grading_uses_the_slipped_stored_spread_un_negated(self) -> None:
+        """A margin that covers under the measured convention and loses under the old one.
+
+        Home wins by 1 against a slipped stored spread of -2.5. Home covers when the margin
+        EXCEEDS the spread, and 1.0 > -2.5, so the home-cover bet WINS. Negating the threshold
+        first -- the old reading -- would compare ``1.0 > 2.5`` and call the same bet a LOSS.
+        """
+        strategy = self._strategy()
         record = {
             "bet_side": "home_cover",
-            "slipped_line": -3.5,
+            "slipped_line": -2.5,
             "_actual_total": 1.0,
         }
-        assert strategy.grade(record) is False
+        assert strategy.grade(record) is True
 
-        # The negative control: the un-converted call really does return True.
-        assert strategy._sim._resolve_ats_outcome("home_cover", 1.0, -3.5) is True
+        # The control: the old, negated call really does return the opposite outcome.
+        assert strategy._sim._resolve_ats_outcome("home_cover", 1.0, 2.5) is False
 
-    def test_a_push_lands_exactly_on_the_negated_slipped_line(self) -> None:
-        """The push is at ``actual_margin == -slipped_line``, carried as None and never coerced."""
-        from backtest.selector_strategies import ATSStrategy
-
-        strategy = ATSStrategy(
-            frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
-        )
-        record = {"bet_side": "home_cover", "slipped_line": -3.5, "_actual_total": 3.5}
+    def test_a_push_lands_exactly_on_the_slipped_stored_spread(self) -> None:
+        """The push is at ``actual_margin == slipped_line``, carried as None and never coerced."""
+        strategy = self._strategy()
+        record = {"bet_side": "home_cover", "slipped_line": -2.5, "_actual_total": -2.5}
         assert strategy.grade(record) is None
+
+        # The control: the old reading put the push at the NEGATED value, and this strategy grades
+        # that margin as an ordinary win rather than as a push.
+        assert (
+            strategy.grade(
+                {"bet_side": "home_cover", "slipped_line": -2.5, "_actual_total": 2.5}
+            )
+            is True
+        )
 
 
 class TestWinnerStrategyPricesAtItsOwnMoneyline:

@@ -444,9 +444,10 @@ class TestAtsPositiveControl:
     def test_ats_positive_control_emits_at_least_one_bet(self) -> None:
         """SPEC R1 / D31-08: a large synthetic spread edge clears the lowest frozen floor.
 
-        The market has the home team favored by 3 (stored spread -3.0) while the model
-        predicts a 20-point home margin. In the LINE convention the model's implied line is
-        -20 against a market -3, which is a large home-cover edge.
+        The stored spread of -3.0 has the home team as a 3-point UNDERDOG (DEF-31-01: the stored
+        spread is nflverse ``spread_line``, positive when home is favored) while the model
+        predicts a 20-point home MARGIN. Both are on the home-margin scale, so that is a
+        23-point home-cover edge; the mirrored row is the same edge on the away side.
         """
         rows = [
             {

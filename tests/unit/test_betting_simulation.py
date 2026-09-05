@@ -365,21 +365,22 @@ def _spread_row_for_p_cover(p_cover: float) -> dict:
 
     Inverted from the chain rather than tuned by hand: with a zero season bias the corrected margin
     IS ``model_spread``, so ``p_cover = 1 - Phi((threshold - model_spread) / sd)`` inverts to
-    ``model_spread = threshold + sd * Phi_inv(p_cover)``. The threshold is the NEGATED slipped line
-    (+3.5 for a home-cover bet on a -3.0 market line), which is the conversion the strategy makes
-    and the legacy simulator branch does not.
+    ``model_spread = threshold + sd * Phi_inv(p_cover)``. The threshold is the SLIPPED STORED
+    SPREAD, un-negated (-2.5 for a home-cover bet on a -3.0 stored spread) -- the measured
+    convention DEF-31-01 was ruled onto on 2026-09-04, in which the stored spread already IS the
+    home margin the bet must clear. The legacy simulator branch keeps its older reading (DEF-31-02).
     """
     from scipy.stats import norm
 
-    cover_threshold = 3.5
+    cover_threshold = -2.5
     model_spread = cover_threshold + _ATS_SD * float(norm.ppf(p_cover))
     return {
         "game_id": "2021_W01_A@B",
         "season": 2021,
         "week": 1,
         "model_spread": model_spread,
-        # The realized home MARGIN. 10 points clears the +3.5 cover threshold, so the home-cover
-        # bet wins under the correct convention.
+        # The realized home MARGIN. A 10-point home win clears the -2.5 cover threshold, so the
+        # home-cover bet wins.
         "actual": 10.0,
         "ml_home": -110,
         "ml_away": -110,
@@ -446,7 +447,7 @@ class TestSpreadKellySizing:
         # The number handed to Kelly is a PROBABILITY, not a points distance.
         assert 0.0 < bet.model_value < 1.0
         assert bet.model_value == pytest.approx(0.55, abs=1e-9)
-        # And the bet is graded on the margin scale: a 10-point home win clears the +3.5 threshold.
+        # And the bet is graded on the margin scale: a 10-point home win clears the -2.5 threshold.
         assert bet.bet_side == "home_cover"
         assert bet.outcome is True
 
