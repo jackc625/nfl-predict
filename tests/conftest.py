@@ -103,6 +103,59 @@ def pytest_terminal_summary(terminalreporter) -> None:
         terminalreporter.write_line(f"  did not run: {report.nodeid}")
 
 
+# ---------------------------------------------------------------------------
+# Plan 31-11: the production stores are guarded by CONTENT, never by git status
+# ---------------------------------------------------------------------------
+
+# `git status --porcelain data/` was the boundary check this project ran for two
+# phases. `.gitignore:22` blankets `data/`, so that check is structurally incapable
+# of failing -- it returns empty whether the archive is intact or destroyed. These
+# fixtures hash file contents instead, so a write a test did not intend is a failure
+# it can actually report. See tests/data_boundary.py for the two writes this would
+# have caught four waves earlier.
+#
+# OPT-IN, not autouse. Some tests legitimately write under `data/` (the API's
+# `data/web_cache.duckdb`, for one), and a guard that fires on legitimate writes is a
+# guard that gets deleted. A module that must not touch a production store requests
+# the fixture explicitly.
+
+
+@pytest.fixture
+def data_boundary_guard():
+    """Fail the test if anything under `data/` was added, removed or rewritten."""
+    from tests.data_boundary import (
+        PRODUCTION_DATA_ROOT,
+        assert_tree_unchanged,
+        digest_tree,
+    )
+
+    before = digest_tree(PRODUCTION_DATA_ROOT)
+    yield before
+    assert_tree_unchanged(
+        before, digest_tree(PRODUCTION_DATA_ROOT), PRODUCTION_DATA_ROOT
+    )
+
+
+@pytest.fixture
+def artifacts_boundary_guard():
+    """Fail the test if anything under `artifacts/` was added, removed or rewritten.
+
+    `artifacts/latest.json` is the DEPLOYED-MODEL manifest. A test that rewrites it
+    swaps production models, which is why this root is guarded alongside `data/`.
+    """
+    from tests.data_boundary import (
+        PRODUCTION_ARTIFACTS_ROOT,
+        assert_tree_unchanged,
+        digest_tree,
+    )
+
+    before = digest_tree(PRODUCTION_ARTIFACTS_ROOT)
+    yield before
+    assert_tree_unchanged(
+        before, digest_tree(PRODUCTION_ARTIFACTS_ROOT), PRODUCTION_ARTIFACTS_ROOT
+    )
+
+
 @pytest.fixture(scope="session")
 def project_root_path():
     """Return the project root path."""

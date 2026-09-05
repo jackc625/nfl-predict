@@ -172,6 +172,7 @@ extend-immutable-calls = ["fastapi.Depends"]
 "pipeline/model_validation.py" = ["BLE001"]  # Loadability check must catch any joblib.load failure and degrade gracefully
 "deployment/**/*.py" = ["BLE001"]  # Infrastructure scripts, not production code
 "tests/**/*.py" = ["S101", "PLR2004", "BLE001"]
+"tests/data_boundary.py" = ["S101", "PLR2004", "BLE001", "T201"]  # doubles as a CLI: `python -m tests.data_boundary snapshot|verify`
 
 [tool.ruff.format]
 quote-style = "double"
