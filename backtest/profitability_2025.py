@@ -73,6 +73,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.ats_ev_chain import (
+    ATS_JUICE_FIELDS,
     FENCE_WINDOW_P31,
     FENCE_WINDOW_REHEARSAL,
     REGISTERED_FENCE_WINDOWS,
@@ -115,6 +116,7 @@ from backtest.roi_significance import (
     roi_ci_and_p,
 )
 from backtest.selector_strategies import (
+    OU_JUICE_FIELDS,
     ATSStrategy,
     OUStrategy,
     WPStrategy,
@@ -246,6 +248,30 @@ _ODDS_SOURCE_COLUMN: Mapping[str, Mapping[str, str]] = {
 _UNPRICEABLE_REASONS: frozenset[str] = frozenset(
     {"missing_snapshot", "missing_prediction"}
 )
+
+# The OPTIONAL two-sided juice columns each target is priced on (DEF-31-13, ruled 2026-09-05).
+# TAKEN FROM THE STRATEGIES' OWN FIELD CONSTANTS, never restated, so the columns this loader
+# CARRIES are by construction the columns the selection path READS -- a loader that dropped one
+# would leave the chain devigging nothing while every docstring said it did. WP needs no entry: its
+# price is ``ml_home`` / ``ml_away``, which are already REQUIRED market fields for that target.
+_JUICE_COLUMNS_BY_TARGET: Mapping[str, tuple[str, ...]] = {
+    "wp": (),
+    "ats": ATS_JUICE_FIELDS,
+    "ou": OU_JUICE_FIELDS,
+}
+
+
+def _juice_columns_for(target: str, available: Iterable[str]) -> list[str]:
+    """The juice columns to carry for ``target``, restricted to those the odds table HAS.
+
+    The juice is OPTIONAL by design: the selection path falls back to the flat reference juice for
+    a row without it (D27-13), and the stored silver table carries the four columns for some
+    seasons and not others. Intersecting with what is present is therefore a coverage fact, not a
+    softened requirement -- a target whose columns are entirely absent prices at the fallback and
+    says so on every record through ``devig_method``.
+    """
+    present = set(available)
+    return [column for column in _JUICE_COLUMNS_BY_TARGET[target] if column in present]
 
 
 class RunLedgerError(RuntimeError):
@@ -1022,6 +1048,12 @@ def _load_candidate_frames(
         preds = score_deployed_artifacts(target, gold_df=gold)
         keep = ["game_id", "ml_home", "ml_away", "spread", "total"]
         keep += [col for col in ("sportsbook", "is_live") if col in odds.columns]
+        # The stored two-sided juice the chain devigs (DEF-31-13, ruled 2026-09-05). Carried under
+        # its STORED name, un-renamed, because that is the name the frozen pre-registration
+        # sections 3.2/3.3 step 4 give it and the name the strategies read. Without this the ruled
+        # devig would be inert on exactly the run it was ruled for: every hold bet would price at
+        # the flat fallback while the pre-registration said otherwise.
+        keep += _juice_columns_for(target, odds.columns)
         merged = preds.merge(odds[keep], on="game_id", how="left")
         merged = merged.rename(columns=dict(_ODDS_SOURCE_COLUMN[target]))
         merged["target"] = target
@@ -1210,10 +1242,13 @@ def _per_bet_frame(selected: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
     """The flat-stake per-bet frame the ROI, the bootstrap and the cuts all read.
 
     Generalises the Phase-27 ``_records_to_per_bet`` convention from a hardcoded -110 payout to
-    the price the bet was ACTUALLY made at (``selected_odds``, D31-04). For the two flat-quoted
-    targets ``american_to_payout(-110)`` is ``100/110``, so the Phase-27 numbers are reproduced
-    exactly; for WP the win pays the game's own moneyline, because a flat -110 payout on a -320
-    favourite would turn a losing bet into a winning one on paper.
+    the price the bet was ACTUALLY made at (``selected_odds``, D31-04, DEF-31-13). Every target's
+    win therefore pays what its own market quoted: the game's moneyline for WP, and the devigged
+    stored two-sided price for the spread and total. A bet whose row carried no two-sided price
+    pays ``american_to_payout(-110) == 100/110``, which is what the Phase-27 O/U rows all do, so
+    that reproduction is exact. A flat -110 payout on a -320 favourite would turn a losing bet into
+    a winning one on paper, and the same distortion applies in miniature to an asymmetric -125 /
+    +105 spread price.
 
     A push and an UNGRADED bet both carry a payout of 0.0 against a stake of 1.0, exactly as
     the frozen helper does. They are counted separately on the per-target record so the
@@ -1387,10 +1422,20 @@ _SD_SOURCE: Mapping[str, str] = {
     "ats": "frozen_tune_corrected_sd (home-margin scale)",
     "ou": "frozen_tune_corrected_sd (total scale)",
 }
+# The devig RULE each target is priced under. Per-bet, which rule actually applied is on the
+# decision record's own ``devig_method``; these strings name the rule, not a measured split.
 _DEVIG_METHOD: Mapping[str, str] = {
     "wp": "real_two_sided_moneyline (per game and per side, D31-04)",
-    "ats": "selector reference juice -110 (D31-04 flat-quoted target)",
-    "ou": "selector reference juice -110 (D31-04 flat-quoted target)",
+    "ats": (
+        "real_two_sided_devig(spread_ju_home, spread_ju_away); flat -110 when the stored juice "
+        "is absent (pre-registration 3.2 step 4; DEF-31-13 ruled 2026-09-05, superseding "
+        "D31-04's flat-quoted characterisation)"
+    ),
+    "ou": (
+        "real_two_sided_devig(total_over_ju, total_under_ju); flat -110 when the stored juice "
+        "is absent (pre-registration 3.3 step 4; DEF-31-13 ruled 2026-09-05, superseding "
+        "D31-04's flat-quoted characterisation)"
+    ),
 }
 _SIZING_POLICY: str = (
     "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> "

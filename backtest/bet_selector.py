@@ -49,8 +49,13 @@ the total scale, and WP fits no residual SD at all. The DEFAULT registry stays O
 that the simulator's O/U routing, whose candidate rows carry no ``target`` column, is untouched.
 
 D31-04 (Phase 31, plan 31-10) made the price PER TARGET AND PER SIDE. An eligible record carries
-``selected_odds``, which is the selector's reference juice for the two flat-quoted targets and the
-game's own moneyline for WP, and the per-bet EV and the Kelly stake are both computed from it.
+``selected_odds`` -- the game's own moneyline for WP, and, since DEF-31-13 was ruled on 2026-09-05,
+the stored two-sided spread or total price for the two LINE targets -- and the per-bet EV and the
+Kelly stake are both computed from it. A row that carries no real two-sided price falls back to
+this selector's reference juice (-110) and says so on the record through ``devig_method``, so the
+fallback is legible rather than indistinguishable from a genuine -110. See ``_strategy_bet_odds``
+for the ruling: the frozen pre-registration devigs the real prices, D31-04 called those two targets
+flat-quoted, and the owner ruled that the frozen rule governs the 2025 verdict.
 
 D31-17/18/19 (Phase 31, plan 31-09) moved SUPPRESSION inside this module. Given a schedule,
 ``select()`` builds the candidate universe as every scheduled game times every REGISTERED target
@@ -190,20 +195,42 @@ def _strategy_bet_odds(
 ) -> int:
     """The American odds for the side actually bet, via the OPTIONAL ``bet_odds`` member (D31-04).
 
-    The spread and totals markets are quoted at one reference juice, so their strategies declare
-    nothing and are priced and sized at ``default``. A MONEYLINE is quoted per game and per side,
-    so ``WPStrategy`` declares ``bet_odds`` and the winner target is priced and sized at the price a
-    book actually offered. A flat -110 payout on a -320 favourite would turn a losing bet into a
-    +0.43 EV one -- the same class of defect as sizing Kelly off a points distance.
+    EVERY production strategy declares this member, and each is priced and sized at the price a
+    book actually offered: WP at the side's own moneyline, and the two line targets at the stored
+    two-sided juice devigged through the existing chain helpers. A flat -110 payout on a -320
+    favourite would turn a losing bet into a +0.43 EV one -- the same class of defect as sizing
+    Kelly off a points distance.
+
+    THE TWO LINE TARGETS WERE PRICED FLAT UNTIL DEF-31-13 WAS RULED (2026-09-05). D31-04 named ATS
+    and O/U "the two flat-quoted targets" and gave this member to ``WPStrategy`` alone, so both
+    fell through to ``default`` and their EV, Kelly stake and flat payout were all computed at
+    -110. The frozen ``PROFITABILITY-PREREGISTRATION.md`` says otherwise in two places -- the ATS
+    chain devigs ``spread_ju_home`` / ``spread_ju_away`` (section 3.2 step 4) and the O/U chain
+    devigs ``total_over_ju`` / ``total_under_ju`` (section 3.3 step 4) -- and the juice is real:
+    1,992 of 2,120 distinct ``(game_id, sportsbook)`` pairs carry a price other than -110 (Plan
+    31-02). Two ratified documents disagreed, and choosing between them is an owner ruling rather
+    than an executor's: the owner ruled that the FROZEN PRE-REGISTRATION governs the 2025 verdict,
+    so D31-04's "flat-quoted" characterisation is SUPERSEDED for the selection path.
+
+    ``default`` REMAINS the price of an ABSENT two-sided price -- the flat -110 fallback
+    ``backtest.ats_ev_chain`` has documented since D27-13. A strategy signals that by returning
+    None rather than by asserting ``STANDARD_VIG_ODDS`` itself, so a selector configured with a
+    different reference juice is honoured instead of silently ignored. The fallback is never
+    invisible: the two line strategies stamp ``devig_method`` onto the decision record, so a real
+    -110 and an absent-juice -110 are told apart in the record rather than by inference.
 
     Read through ``getattr`` for the same reason ``required_prediction_fields`` is (plan 31-09):
     adding a required member to ``TargetStrategy`` would un-conform every strategy that has no use
-    for it, and force an empty implementation onto the two targets that are quoted flat.
+    for it. The member stays OPTIONAL and off the Protocol; the ruling changed WHICH strategies
+    declare it, not how the core reaches it.
     """
     resolver = getattr(strategy, "bet_odds", None)
     if resolver is None:
         return default
-    return int(resolver(row, bet_side))
+    resolved = resolver(row, bet_side)
+    if resolved is None:
+        return default
+    return int(resolved)
 
 
 def _freshness_context(
@@ -842,10 +869,12 @@ class BetSelector:
             p_side, slipped_line = strategy.side_probability(row, bet_side)
             record["calibrated_p_side"] = p_side
             record["slipped_line"] = slipped_line
-            # The price the bet is judged at, resolved per target and per side (D31-04). It is
-            # ``self.odds`` for the two targets quoted at one reference juice and the game's own
-            # moneyline for WP, and it travels ON the record so the EV, the Kelly stake and the
-            # published price are all the SAME number rather than three that agree by convention.
+            # The price the bet is judged at, resolved per target and per side (D31-04, DEF-31-13).
+            # It is the price the market actually quoted for THIS side -- a moneyline for WP, the
+            # devigged stored juice for the two line targets -- falling back to ``self.odds`` only
+            # when the row carries no two-sided price. It travels ON the record so the EV, the Kelly
+            # stake and the published price are all the SAME number rather than three that agree by
+            # convention.
             selected_odds = _strategy_bet_odds(strategy, row, bet_side, self.odds)
             record["selected_odds"] = selected_odds
             record["per_bet_ev"] = per_bet_ev(p_side, american_to_payout(selected_odds))

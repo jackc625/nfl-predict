@@ -832,10 +832,21 @@ _GOLDEN_CLV_REPORT = {
 # freshness claim.
 #
 # Plan 31-10 (D31-04) adds one more to EVERY record: ``selected_odds``, the American price the bet
-# was judged at. It is the selector's reference juice for the two flat-quoted targets -- so every
-# record on this O/U fixture week carries -110 -- and the game's own moneyline for WP. It travels on
-# the record so the per-bet EV, the Kelly stake and the published price are the SAME number.
-_NEW_KEYS_ON_EVERY_RECORD = {"target", "snapshot_ts", "freeze_ts", "selected_odds"}
+# was judged at. It travels on the record so the per-bet EV, the Kelly stake and the published
+# price are the SAME number.
+#
+# DEF-31-13 (ruled 2026-09-05) adds ``devig_method`` to the two LINE targets' records -- the label
+# distinguishing a price the market really quoted from the flat -110 fallback an ABSENT price gets.
+# The values on THIS fixture week are unchanged by that ruling and are asserted unchanged above:
+# these rows carry no juice columns, so every one of them still prices at -110, and the new key
+# says ``flat_-110`` rather than leaving that fact to be inferred from the number.
+_NEW_KEYS_ON_EVERY_RECORD = {
+    "target",
+    "snapshot_ts",
+    "freeze_ts",
+    "selected_odds",
+    "devig_method",
+}
 _NEW_KEYS_ON_STAKED_RECORDS = _NEW_KEYS_ON_EVERY_RECORD | {
     "same_side_group_size",
     "same_game_group_size",
@@ -1993,26 +2004,286 @@ class TestWinnerStrategyPricesAtItsOwnMoneyline:
         assert _stake(-150) < 500.0
         assert _stake(-110) < 500.0
 
-    def test_the_totals_and_spread_targets_keep_the_flat_reference_price(self) -> None:
-        """Only the winner target overrides the price; the other two are quoted at -110."""
-        week = [
-            _as_target(
-                _ou_row(
-                    "2021_W01_A@B",
-                    model_total=38.0,
-                    closing_total=45.0,
-                    actual_total=40.0,
-                )
+
+# ---------------------------------------------------------------------------
+# DEF-31-13 (owner ruling, 2026-09-05): the two LINE targets price on the stored two-sided juice.
+#
+# The fixtures below are chosen so the 5% per-bet Kelly cap is NOT binding. A bigger edge
+# saturates that cap at BOTH prices, and two capped stakes are equal no matter which odds produced
+# them -- the sizing half of these tests would then pass while proving nothing (the same trap the
+# WP moneyline test above documents).
+# ---------------------------------------------------------------------------
+
+# One ATS candidate whose home-cover stake lands well inside the cap (p_side ~ 0.575).
+_JUICE_ATS_ARGS = {
+    "model_spread": -1.0,
+    "closing_spread": -3.0,
+    "actual_margin": 10.0,
+}
+# One O/U candidate: an UNDER pick on a high total, stake ~ 145 of a 500 ceiling (p_side ~ 0.570).
+_JUICE_OU_ARGS = {
+    "model_total": 48.0,
+    "closing_total": 49.0,
+    "actual_total": 40.0,
+}
+
+
+def _with_juice(row: dict, **prices: float | None) -> dict:
+    """Attach stored juice columns to a candidate row.
+
+    The base row helpers deliberately do NOT take juice arguments: the columns are OPTIONAL on a
+    candidate frame (they are absent for most stored seasons), and every other test in this module
+    exercises the absent case by construction.
+    """
+    return {**row, **prices}
+
+
+class TestTheLineTargetsPriceOnTheStoredTwoSidedJuice:
+    """DEF-31-13, ruled 2026-09-05: the frozen pre-registration's devig step governs.
+
+    ``PROFITABILITY-PREREGISTRATION.md`` section 3.2 step 4 devigs the real two-sided spread
+    prices and section 3.3 step 4 devigs the real two-sided total prices. D31-04 called those two
+    targets "flat-quoted" and gave the optional ``bet_odds`` member to ``WPStrategy`` alone, so
+    both fell through to -110. Two ratified documents disagreed and the owner ruled that the frozen
+    pre-registration governs the 2025 verdict, so D31-04's characterisation is SUPERSEDED for the
+    selection path.
+
+    The three tests below are the three things that had to be true for that to be a PRICE change
+    and not an arithmetic one: it binds where a real asymmetric price exists, it is inert where the
+    stored price really is -110, and it degrades to the documented flat fallback -- visibly -- where
+    no price is stored at all.
+    """
+
+    def test_asymmetric_stored_juice_moves_the_price_ev_stake_and_payout(self) -> None:
+        """A stored price other than -110 moves all four published numbers, in the right direction.
+
+        The comparison is against the SAME candidate with no juice columns, so the only difference
+        between the two runs is the price. All four numbers a bet publishes are checked -- the
+        price, the per-bet EV, the Kelly stake and the flat payout -- because the price feeds each
+        of them by a different route and a partial wiring would leave one of the four still struck
+        at -110.
+        """
+        from backtest.ou_ev_chain import american_to_payout, per_bet_ev
+        from backtest.profitability_2025 import _per_bet_frame
+
+        cases = (
+            (
+                _ats_row("2021_W01_C@D", **_JUICE_ATS_ARGS),
+                {"spread_ju_home": -105.0, "spread_ju_away": -115.0},
+                -105,
             ),
-            _ats_row(
-                "2021_W01_C@D",
-                model_spread=7.0,
-                closing_spread=-3.0,
-                actual_margin=10.0,
+            (
+                _as_target(_ou_row("2021_W01_A@B", **_JUICE_OU_ARGS)),
+                {"total_over_ju": -120.0, "total_under_ju": 100.0},
+                100,
             ),
+        )
+
+        for base_row, prices, expected_odds in cases:
+            flat = _three_target_selector().select([base_row]).selected
+            juiced = (
+                _three_target_selector()
+                .select([_with_juice(base_row, **prices)])
+                .selected
+            )
+            assert len(flat) == len(juiced) == 1, base_row["game_id"]
+            flat_bet, juiced_bet = flat[0], juiced[0]
+
+            # (1) the price itself, and its provenance label
+            assert flat_bet["selected_odds"] == -110
+            assert flat_bet["devig_method"] == "flat_-110"
+            assert juiced_bet["selected_odds"] == expected_odds
+            assert juiced_bet["devig_method"] == "real_two_sided"
+
+            # The side and the calibrated probability are UNCHANGED: this is a price change, so a
+            # moved p_side would mean the arithmetic moved with it.
+            assert juiced_bet["bet_side"] == flat_bet["bet_side"]
+            assert juiced_bet["calibrated_p_side"] == flat_bet["calibrated_p_side"]
+
+            # (2) the per-bet EV, computed at the real payout
+            p_side = juiced_bet["calibrated_p_side"]
+            assert juiced_bet["per_bet_ev"] == pytest.approx(
+                per_bet_ev(p_side, american_to_payout(expected_odds)), abs=1e-12
+            )
+            assert juiced_bet["per_bet_ev"] != pytest.approx(
+                flat_bet["per_bet_ev"], abs=1e-9
+            )
+
+            # (3) the Kelly stake, sized at the real price and NOT at the per-bet ceiling
+            assert juiced_bet["kelly_stake"] != pytest.approx(
+                flat_bet["kelly_stake"], abs=1e-9
+            )
+            assert max(juiced_bet["kelly_stake"], flat_bet["kelly_stake"]) < 500.0
+
+            # (4) the flat payout the profitability runner publishes
+            flat_payout = _per_bet_frame([flat_bet])["payout_flat"].iloc[0]
+            juiced_payout = _per_bet_frame([juiced_bet])["payout_flat"].iloc[0]
+            assert flat_payout != pytest.approx(juiced_payout, abs=1e-9)
+            assert juiced_payout == pytest.approx(
+                american_to_payout(expected_odds), abs=1e-12
+            )
+
+    def test_a_stored_price_that_really_is_minus_110_reproduces_the_flat_numbers(
+        self,
+    ) -> None:
+        """The proof that the PRICE SOURCE changed and the arithmetic did not.
+
+        A row carrying a genuine symmetric -110 / -110 two-sided price produces a record equal
+        FIELD FOR FIELD, with ``==`` and no tolerance, to the same row with no juice columns at
+        all -- except for ``devig_method``, which is precisely the field that tells the two apart.
+        If the ruling had changed any step of the chain rather than only where the price is read
+        from, this is the test that would fail.
+        """
+        cases = (
+            (
+                _ats_row("2021_W01_C@D", **_JUICE_ATS_ARGS),
+                {"spread_ju_home": -110.0, "spread_ju_away": -110.0},
+            ),
+            (
+                _as_target(_ou_row("2021_W01_A@B", **_JUICE_OU_ARGS)),
+                {"total_over_ju": -110.0, "total_under_ju": -110.0},
+            ),
+        )
+
+        for base_row, prices in cases:
+            flat = _three_target_selector().select([base_row]).selected[0]
+            real = (
+                _three_target_selector()
+                .select([_with_juice(base_row, **prices)])
+                .selected[0]
+            )
+
+            assert flat["devig_method"] == "flat_-110"
+            assert real["devig_method"] == "real_two_sided"
+            assert real["selected_odds"] == flat["selected_odds"] == -110
+
+            drift = {
+                key
+                for key in set(flat) | set(real)
+                if key != "devig_method" and flat.get(key) != real.get(key)
+            }
+            assert drift == set(), (
+                f"{base_row['game_id']}: a real -110 must reproduce the flat numbers exactly; "
+                f"these fields moved: {sorted(drift)}"
+            )
+
+    def test_absent_or_null_juice_falls_back_to_the_reference_juice_and_says_so(
+        self,
+    ) -> None:
+        """The documented flat -110 fallback (D27-13), and it is legible rather than inferred.
+
+        Three shapes of "no stored price" are driven: the columns absent entirely (every
+        pre-promotion stored season), both columns null (a DataFrame's empty cell), and ONE side
+        priced (which cannot be devigged, so it is not a two-sided price either). None raises, none
+        prices at zero, and every one of them is labelled ``flat_-110`` -- which is what makes an
+        absent price distinguishable from the genuine -110 the test above pins.
+        """
+        nan = float("nan")
+        shapes = (
+            ("absent", {}, {}),
+            (
+                "null",
+                {"spread_ju_home": nan, "spread_ju_away": nan},
+                {"total_over_ju": nan, "total_under_ju": nan},
+            ),
+            (
+                "one-sided",
+                {"spread_ju_home": -105.0, "spread_ju_away": None},
+                {"total_over_ju": None, "total_under_ju": 100.0},
+            ),
+        )
+
+        for label, ats_prices, ou_prices in shapes:
+            week = [
+                _with_juice(_ats_row("2021_W01_C@D", **_JUICE_ATS_ARGS), **ats_prices),
+                _with_juice(
+                    _as_target(_ou_row("2021_W01_A@B", **_JUICE_OU_ARGS)), **ou_prices
+                ),
+            ]
+            result = _three_target_selector().select(week)
+
+            assert len(result.unfiltered) == 2, label
+            for record in result.unfiltered:
+                assert record["selected_odds"] == -110, (label, record["target"])
+                assert record["devig_method"] == "flat_-110", (label, record["target"])
+                assert record["kelly_stake"] > 0.0, (label, record["target"])
+
+    def test_a_malformed_stored_price_is_refused_rather_than_read_as_absent(
+        self,
+    ) -> None:
+        """A present-but-non-numeric price is a DATA DEFECT and must not wear the absent label.
+
+        Filing it under ``flat_-110`` would hide a broken ingest behind the same label an honestly
+        absent price carries, which is the distinction ``_juice_price`` exists to keep.
+        """
+        from backtest.selector_strategies import ATSStrategy
+
+        strategy = ATSStrategy(
+            frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
+        )
+        with pytest.raises(ValueError, match="spread_ju_home"):
+            strategy.bet_odds(
+                {"spread_ju_home": "not-a-price", "spread_ju_away": -110.0},
+                "home_cover",
+            )
+
+    def test_an_unknown_side_is_refused_rather_than_reading_the_wrong_half(
+        self,
+    ) -> None:
+        """The two-sided price has two halves, so guessing a side would price the wrong one."""
+        from backtest.selector_strategies import ATSStrategy, OUStrategy
+
+        ats = ATSStrategy(
+            frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
+        )
+        ou = OUStrategy(frozen_sd=_FIXTURE_SD, season_bias_by_season=_FIXTURE_BIAS)
+        with pytest.raises(ValueError, match="unknown ATS bet side"):
+            ats.bet_odds({"spread_ju_home": -105.0, "spread_ju_away": -115.0}, "over")
+        with pytest.raises(ValueError, match="unknown O/U bet side"):
+            ou.bet_odds(
+                {"total_over_ju": -105.0, "total_under_ju": -115.0}, "home_cover"
+            )
+
+    def test_the_reader_and_the_writer_spell_the_juice_columns_the_same_way(
+        self,
+    ) -> None:
+        """The four column names live in three modules; a typo in any one prices nothing.
+
+        The ingest script WRITES them, the ATS chain and the O/U strategy READ them, and the
+        profitability loader CARRIES them. A misspelling anywhere would fall back to -110 forever
+        with no error at all, which is exactly the silent failure the ruling was opened over.
+        """
+        from backtest.ats_ev_chain import ATS_JUICE_FIELDS
+        from backtest.profitability_2025 import _JUICE_COLUMNS_BY_TARGET
+        from backtest.selector_strategies import OU_JUICE_FIELDS
+        from scripts.ingest_historical_odds import JUICE_COLUMNS
+
+        assert (*ATS_JUICE_FIELDS, *OU_JUICE_FIELDS) == JUICE_COLUMNS
+        assert _JUICE_COLUMNS_BY_TARGET["ats"] == ATS_JUICE_FIELDS
+        assert _JUICE_COLUMNS_BY_TARGET["ou"] == OU_JUICE_FIELDS
+        # WP needs none: both moneylines are already REQUIRED market fields for that target, so it
+        # can never reach the fallback at all.
+        assert _JUICE_COLUMNS_BY_TARGET["wp"] == ()
+
+    def test_the_loader_carries_the_juice_only_when_the_odds_table_has_it(self) -> None:
+        """Coverage is a fact about the stored table, not a softened requirement.
+
+        The stored silver odds table carries the four columns for some seasons and not others, so
+        the loader intersects with what is present. A target whose columns are entirely absent
+        prices at the fallback and says so on every record -- it does not raise, and it does not
+        silently drop the target.
+        """
+        from backtest.profitability_2025 import _juice_columns_for
+        from scripts.ingest_historical_odds import JUICE_COLUMNS
+
+        full = ["game_id", "spread", "total", *JUICE_COLUMNS]
+        assert _juice_columns_for("ats", full) == ["spread_ju_home", "spread_ju_away"]
+        assert _juice_columns_for("ou", full) == ["total_over_ju", "total_under_ju"]
+        assert _juice_columns_for("wp", full) == []
+        assert _juice_columns_for("ats", ["game_id", "spread"]) == []
+        assert _juice_columns_for("ou", ["game_id", "total", "total_over_ju"]) == [
+            "total_over_ju"
         ]
-        result = _three_target_selector().select(week)
-        assert {r["selected_odds"] for r in result.unfiltered} == {-110}
 
 
 class TestNoEligibilityGateOnTheTwoNewTargets:

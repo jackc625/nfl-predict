@@ -144,6 +144,7 @@ from models.clv import compute_line_clv
 
 __all__ = [
     "ATS_BIAS_CARRIED",
+    "ATS_JUICE_FIELDS",
     "ATS_RESIDUAL_CONTRACT",
     "ATS_SIDES",
     "FENCE_STAGE_BIAS",
@@ -755,6 +756,10 @@ def ats_two_sided_prices(
 # The market columns an ATS candidate row must carry. The juice columns are OPTIONAL: the
 # historical rows carry them (Plan 31-02 measured 1,992 of 2,120 distinct pairs at a price
 # other than -110), and a row without them prices at the flat -110 default.
+#
+# ``ATS_JUICE_FIELDS`` is also read by ``backtest.selector_strategies.ATSStrategy.bet_odds``
+# (DEF-31-13, ruled 2026-09-05) so the SELECTION path prices on the same two columns this chain
+# does. It is imported there rather than re-spelled, which is what makes that identity structural.
 ATS_REQUIRED_FIELDS: tuple[str, ...] = ("model_spread", "closing_spread")
 ATS_JUICE_FIELDS: tuple[str, str] = ("spread_ju_home", "spread_ju_away")
 

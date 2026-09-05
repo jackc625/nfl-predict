@@ -41,10 +41,23 @@ TWO SCALES AND TWO PRICES, STATED ONCE HERE BECAUSE BOTH ARE EASY TO GET SILENTL
     ``actual_margin > slipped_line`` and needs no conversion at all.
     ``backtest/ats_ev_chain.py``'s module docstring records the measurement, the two halves of the
     ruling that were declined, and the legacy simulator path left on its older reading.
-  * The WP target is quoted PER GAME. Its per-bet EV and its Kelly stake are computed at the side's
-    own moneyline through the OPTIONAL ``bet_odds`` member, never at the flat -110 the spread and
-    totals markets are quoted at. Pricing a -320 favourite at -110 turns a losing bet into a
-    +0.43 EV one, which is the same class of defect as sizing Kelly off a points distance.
+  * EVERY target is priced at the price a book actually offered, through the OPTIONAL ``bet_odds``
+    member. WP reads the side's own moneyline. The two LINE targets read the stored two-sided
+    juice -- ``spread_ju_home`` / ``spread_ju_away`` for the spread and ``total_over_ju`` /
+    ``total_under_ju`` for the total -- through the EXISTING devig, and fall back to the selector's
+    reference juice (-110) only when a row carries no real two-sided price. Pricing a -320
+    favourite at -110 turns a losing bet into a +0.43 EV one, which is the same class of defect as
+    sizing Kelly off a points distance.
+
+    THE TWO LINE TARGETS DID NOT ALWAYS DO THIS, AND THE CHANGE WAS AN OWNER RULING (DEF-31-13,
+    ruled 2026-09-05). D31-04 called the spread and totals markets "the two flat-quoted targets"
+    and gave ``bet_odds`` to ``WPStrategy`` alone, so ATS and O/U priced, sized and paid out at a
+    flat -110 while the frozen ``PROFITABILITY-PREREGISTRATION.md`` said in two places (sections
+    3.2 step 4 and 3.3 step 4) that both chains devig the real two-sided prices. Two ratified
+    documents disagreed; the owner ruled that the frozen pre-registration governs the 2025 verdict,
+    so that half of D31-04's characterisation is SUPERSEDED for the selection path. The juice is
+    real and asymmetric: Plan 31-02 measured 1,992 of 2,120 distinct ``(game_id, sportsbook)``
+    pairs carrying a price other than -110.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -56,7 +69,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
-from backtest.ou_ev_chain import calibrated_p_over
+from backtest.ou_ev_chain import calibrated_p_over, devig
 from backtest.simulation import (
     SLIPPAGE_POINTS,
     BettingSimulator,
@@ -68,6 +81,9 @@ from models.clv import compute_line_clv, compute_probability_clv
 
 __all__ = [
     "NO_SUBPOPULATION_LABEL",
+    "OU_JUICE_FIELDS",
+    "OU_SIDES",
+    "REAL_TWO_SIDED_METHOD",
     "ATSStrategy",
     "OUStrategy",
     "TargetStrategy",
@@ -81,6 +97,24 @@ __all__ = [
 # rather than an empty string or None so the page renders a definite statement -- "this target has
 # no sub-population" -- instead of a blank cell a reader would have to interpret.
 NO_SUBPOPULATION_LABEL: str = "no_subpopulation"
+
+# The LOCKED O/U side vocabulary, from ``BettingSimulator._determine_bet_side_ou``. Stated in the
+# same (over, under) order as ``OU_JUICE_FIELDS`` and as ``devig``'s two arguments, so the side a
+# bet is on and the column its price is read from cannot be paired up wrongly.
+OU_SIDES: tuple[str, str] = ("over", "under")
+
+# The two stored O/U juice columns (DEF-31-13, ruled 2026-09-05). Named as literals here for the
+# same reason ``backtest.ats_ev_chain.ATS_JUICE_FIELDS`` names the spread pair as literals: the
+# four juice columns are named individually in the frozen pre-registration (section 4.3 clause 2),
+# so they are named individually in code. ``tests/unit/test_bet_selector.py`` pins these two
+# against ``scripts.ingest_historical_odds.JUICE_COLUMNS`` -- the module that WRITES them -- so the
+# reader's spelling and the writer's spelling cannot drift apart.
+OU_JUICE_FIELDS: tuple[str, str] = ("total_over_ju", "total_under_ju")
+
+# ``devig``'s label for a price it ACTUALLY devigged, as opposed to its flat -110 default. The
+# strategies below read this off the returned dict rather than re-deciding "are both prices
+# present?" locally, so there is exactly ONE definition of a real two-sided price in the codebase.
+REAL_TWO_SIDED_METHOD: str = "real_two_sided"
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +139,74 @@ def _wp_chain() -> Any:
     from backtest import wp_ev_chain
 
     return wp_ev_chain
+
+
+# ---------------------------------------------------------------------------
+# Reading a stored two-sided price (DEF-31-13, ruled 2026-09-05)
+# ---------------------------------------------------------------------------
+
+
+def _juice_price(row: dict[str, Any], column: str) -> float | None:
+    """One stored juice value as a float, or None when it is ABSENT for pricing purposes.
+
+    ABSENT means None, a DataFrame's NaN cell, or a nullable dtype's NA -- the three shapes a
+    missing price actually arrives in. It does NOT mean MALFORMED: a value that is present and is
+    not a number raises, naming the column, because a broken price is a data defect and pricing it
+    at the flat reference juice would file it under the same label an honestly absent price
+    carries. The two absences have different causes and different fixes, which is the same
+    distinction ``BetSelector`` already draws between a missing market value and a missing model
+    output.
+
+    Args:
+        row: The candidate row.
+        column: The stored juice column to read.
+
+    Returns:
+        The price as a float, or None when the row carries none.
+
+    Raises:
+        ValueError: naming the column, when the value is present but is not a number.
+    """
+    value = row.get(column)
+    if value is None:
+        return None
+    try:
+        price = float(value)
+    except TypeError:
+        # A value that refuses float conversion BY TYPE is an absent cell (pandas' NA is the
+        # case this exists for), not a malformed one.
+        return None
+    except ValueError as exc:
+        msg = (
+            f"stored juice column {column!r} holds {value!r}, which is not a number. An ABSENT "
+            "price falls back to the flat reference juice (DEF-31-13, D27-13); a MALFORMED one "
+            "is a data defect and is refused rather than quietly priced."
+        )
+        raise ValueError(msg) from exc
+    if not math.isfinite(price):
+        # A DataFrame writes a missing cell as NaN, so this is the ORDINARY absent case rather
+        # than an exotic one. An infinite value is refused by the same branch: it is not a price.
+        return None
+    return price
+
+
+def _side_odds_from_devig(method: str, side_price: float | None) -> int | None:
+    """The American odds for the side actually bet, or None when there is no two-sided price.
+
+    ``method`` comes from the EXISTING devig, never from a local "are both prices present?" test.
+
+    None is a deliberate signal rather than a value: ``BetSelector._strategy_bet_odds`` maps it to
+    the selector's own ``default`` (``STANDARD_VIG_ODDS``, the flat -110 the ATS chain has always
+    documented for an absent price, D27-13). Returning that constant from here instead would
+    silently ignore a selector configured with a different reference juice.
+
+    The ``int`` cast matches the LOCKED ``BettingSimulator._get_wp_odds``, which casts a stored
+    moneyline the same way; American odds are integral, and every stored juice value in the silver
+    odds table is.
+    """
+    if method != REAL_TWO_SIDED_METHOD or side_price is None:
+        return None
+    return int(side_price)
 
 
 class UnregisteredTargetError(LookupError):
@@ -178,10 +280,14 @@ class TargetStrategy(Protocol):
       * ``required_prediction_fields`` (plan 31-09): the subset of ``required_market_fields`` that
         are MODEL outputs, which splits ``missing_prediction`` from ``missing_snapshot``. Undeclared,
         the core classifies by the ``model_`` naming convention.
-      * ``bet_odds(row, bet_side) -> int`` (plan 31-10): the American odds for the side actually
-        bet. Undeclared, the core prices and sizes at its own reference juice (-110), which is what
-        the spread and totals markets are quoted at. WP declares it because a moneyline is quoted
-        per game and per side.
+      * ``bet_odds(row, bet_side) -> int | None`` (plan 31-10; widened by DEF-31-13, ruled
+        2026-09-05): the American odds for the side actually bet, or None when this row carries no
+        real two-sided price. Undeclared -- or declared and returning None -- the core prices and
+        sizes at its own reference juice (-110). ALL THREE production strategies declare it: WP
+        because a moneyline is quoted per game and per side, and the two line targets because the
+        frozen pre-registration devigs the stored two-sided spread and total prices (sections 3.2
+        step 4 and 3.3 step 4). The None return is what keeps the core's ``default`` meaningful:
+        a strategy says "I have no price", and the SELECTOR decides what a missing price costs.
     """
 
     target: str
@@ -233,6 +339,15 @@ class OUStrategy:
     Eligibility is the sub-pop UNION (D27-04/05): a candidate is eligible iff its side is ``under``
     OR its totals regime is ``high``. A None side (the model agrees with the market inside the side
     threshold) is not a bet of either side and is therefore not eligible.
+
+    THE PRICE IS THE STORED TWO-SIDED TOTAL PRICE (DEF-31-13, ruled 2026-09-05). ``bet_odds`` reads
+    ``total_over_ju`` / ``total_under_ju`` through the EXISTING ``devig`` and returns the side's own
+    price, so the per-bet EV, the Kelly stake and the flat payout are all struck at a price a book
+    actually offered. A row carrying no two-sided price falls back to the selector's reference
+    juice, and ``decision_extras`` stamps ``devig_method`` so that fallback is legible on the record
+    rather than indistinguishable from a genuine -110. This is a PRICE change only: the eligibility
+    rule, the side rule, the bias correction, the frozen SD and the slippage are all untouched, and
+    a row whose stored price IS -110 reproduces the pre-ruling numbers exactly.
     """
 
     target = "ou"
@@ -345,20 +460,76 @@ class OUStrategy:
             int(row["season"]),
         )
 
+    def _two_sided_juice(
+        self, row: dict[str, Any]
+    ) -> tuple[float | None, float | None, str]:
+        """The stored ``(over, under)`` prices and the METHOD the EXISTING devig reports for them.
+
+        CONSUMES ``backtest.ou_ev_chain.devig`` -- the O/U-NATIVE primitive, whose parameters are
+        literally ``over_odds`` and ``under_odds``, and which
+        ``backtest.ats_ev_chain.ats_two_sided_prices`` is itself only an adapter around. No
+        proportional arithmetic is written here (the pre-registration's "no new devig
+        implementation"), and the question "is there a real two-sided price on this row?" is
+        answered in exactly one place for both line targets.
+
+        Returns:
+            ``(over_price, under_price, method)``; either price is None when absent, and ``method``
+            is ``devig``'s own label (:data:`REAL_TWO_SIDED_METHOD` or its flat -110 default).
+        """
+        over = _juice_price(row, OU_JUICE_FIELDS[0])
+        under = _juice_price(row, OU_JUICE_FIELDS[1])
+        return over, under, str(devig(over_odds=over, under_odds=under)["method"])
+
+    def bet_odds(self, row: dict[str, Any], bet_side: str) -> int | None:
+        """The stored price for the side actually bet, or None when the row carries none.
+
+        The OPTIONAL Protocol member (see ``TargetStrategy``). The frozen pre-registration
+        section 3.3 step 4 devigs "the real two-sided total prices (``total_over_ju``,
+        ``total_under_ju``)", and DEF-31-13's 2026-09-05 ruling is that the frozen rule governs.
+        Returning None hands the flat -110 fallback back to the selector rather than asserting one
+        here.
+
+        Raises:
+            ValueError: naming the LOCKED O/U side vocabulary, for any other side string. A side
+                outside it would otherwise silently read the WRONG half of the two-sided price.
+        """
+        over, under, method = self._two_sided_juice(row)
+        over_side, under_side = OU_SIDES
+        if bet_side == over_side:
+            side_price = over
+        elif bet_side == under_side:
+            side_price = under
+        else:
+            msg = (
+                f"unknown O/U bet side {bet_side!r}; the LOCKED O/U side vocabulary is "
+                f"{list(OU_SIDES)} (BettingSimulator._determine_bet_side_ou). A side outside it "
+                "is a caller error, never a default."
+            )
+            raise ValueError(msg)
+        return _side_odds_from_devig(method, side_price)
+
     def decision_extras(
         self, row: dict[str, Any], bet_side: str | None
     ) -> dict[str, Any]:
-        """The O/U reporting fields: the totals regime and the REPORT-ONLY model-edge CLV.
+        """The O/U reporting fields: the totals regime, the model-edge CLV and the devig method.
 
         The CLV here is ``compute_line_clv(model_total, closing_total, direction="total")`` -- the
         MODEL EDGE vs the line, DISTINCT from the freeze-vs-close forward metric (structurally ~0
         in backtest). It is reported, never a gate (D27-06/12).
+
+        ``devig_method`` is what makes an ABSENT price distinguishable from a real -110 in the
+        record (DEF-31-13). Without it the two are the same number with two different meanings,
+        and a reader could not tell a bet a book actually quoted at -110 from one nobody quoted.
+        It is a statement about the STORED MARKET DATA on this row, so it is stamped whether or
+        not a side was found -- the same treatment ``totals_regime`` already gets.
         """
         model_total = float(row["model_total"])
         closing_total = float(row["closing_total"])
+        _over, _under, method = self._two_sided_juice(row)
         return {
             "totals_regime": self._totals_regime(closing_total),
             "clv": compute_line_clv(model_total, closing_total, direction="total"),
+            "devig_method": method,
         }
 
     def grade(self, record: dict[str, Any]) -> bool | None:
@@ -419,8 +590,18 @@ class ATSStrategy:
     ``home_covers = actual_margin > slipped_line``, which is the measured convention exactly. This
     is the same arrangement ``backtest.ats_ev_chain.price_ats_candidates`` uses.
 
-    ``slipped_line`` is therefore both the price the bettor actually got (what a bet list renders)
+    ``slipped_line`` is therefore both the LINE the bettor actually got (what a bet list renders)
     and the cover threshold the game must clear -- one number, not two.
+
+    THE PRICE IS THE STORED TWO-SIDED SPREAD PRICE (DEF-31-13, ruled 2026-09-05). ``bet_odds`` reads
+    ``spread_ju_home`` / ``spread_ju_away`` through ``ats_ev_chain.ats_two_sided_prices`` -- the
+    adapter that already devigs exactly this pair through the EXISTING ``devig`` and "writes no
+    proportional arithmetic of its own" -- and returns the side's own price. The per-bet EV, the
+    Kelly stake and the flat payout are therefore all struck at a price a book actually offered,
+    which is what the frozen pre-registration section 3.2 step 4 says this chain does. A row
+    carrying no two-sided price falls back to the selector's reference juice, and
+    ``decision_extras`` stamps ``devig_method`` so that fallback is legible on the record rather
+    than indistinguishable from a genuine -110.
     """
 
     target = "ats"
@@ -507,10 +688,57 @@ class ATSStrategy:
         )
         return chain.ats_side_probability(bet_side, p_home_cover), slipped_line
 
+    def _two_sided_juice(
+        self, row: dict[str, Any]
+    ) -> tuple[float | None, float | None, str]:
+        """The stored ``(home_cover, away_cover)`` prices and the devig METHOD for them.
+
+        CONSUMES ``backtest.ats_ev_chain.ats_two_sided_prices``, which devigs this exact pair
+        through the shared ``devig`` and explicitly "writes no proportional arithmetic of its own".
+        The column names come from that module's ``ATS_JUICE_FIELDS`` rather than being restated
+        here, so the chain and the selection path read the same two columns by construction.
+
+        Returns:
+            ``(home_cover_price, away_cover_price, method)``; either price is None when absent.
+        """
+        chain = _ats_chain()
+        home = _juice_price(row, chain.ATS_JUICE_FIELDS[0])
+        away = _juice_price(row, chain.ATS_JUICE_FIELDS[1])
+        return home, away, str(chain.ats_two_sided_prices(home, away)["method"])
+
+    def bet_odds(self, row: dict[str, Any], bet_side: str) -> int | None:
+        """The stored price for the side actually bet, or None when the row carries none.
+
+        The OPTIONAL Protocol member (see ``TargetStrategy``). The frozen pre-registration
+        section 3.2 step 4 devigs "the real two-sided spread prices (``spread_ju_home``,
+        ``spread_ju_away``)", and DEF-31-13's 2026-09-05 ruling is that the frozen rule governs.
+        Returning None hands the flat -110 fallback back to the selector rather than asserting one
+        here.
+
+        Raises:
+            ValueError: naming the LOCKED ATS side vocabulary, for any other side string. A side
+                outside it would otherwise silently read the WRONG half of the two-sided price.
+        """
+        home, away, method = self._two_sided_juice(row)
+        home_side, away_side = _ats_chain().ATS_SIDES
+        if bet_side == home_side:
+            side_price = home
+        elif bet_side == away_side:
+            side_price = away
+        else:
+            msg = (
+                f"unknown ATS bet side {bet_side!r}; the LOCKED ATS side vocabulary is "
+                f"{list(_ats_chain().ATS_SIDES)} "
+                "(BettingSimulator._determine_bet_side_ats). A side outside it is a caller "
+                "error, never a default."
+            )
+            raise ValueError(msg)
+        return _side_odds_from_devig(method, side_price)
+
     def decision_extras(
         self, row: dict[str, Any], bet_side: str | None
     ) -> dict[str, Any]:
-        """The REPORT-ONLY model-edge line CLV (``closing_spread - model_spread``).
+        """The REPORT-ONLY model-edge line CLV, and the devig method the price came from.
 
         Reported, never a gate (D27-06). This is the MODEL EDGE against the market number, DISTINCT
         from the freeze-vs-close forward metric, which is structurally ~0 in backtest.
@@ -520,13 +748,19 @@ class ATSStrategy:
         (DEF-31-01), so a POSITIVE value means the market favors the home team MORE than the model
         does. The DEF-31-01 ruling deliberately left this report-only number where it was rather
         than re-signing a published figure outside the scope it ruled on.
+
+        ``devig_method`` is what makes an ABSENT price distinguishable from a real -110 in the
+        record (DEF-31-13). It is a statement about the STORED MARKET DATA on this row, so it is
+        stamped whether or not a side was found.
         """
+        _home, _away, method = self._two_sided_juice(row)
         return {
             "clv": compute_line_clv(
                 float(row["model_spread"]),
                 float(row["closing_spread"]),
                 direction="spread",
-            )
+            ),
+            "devig_method": method,
         }
 
     def grade(self, record: dict[str, Any]) -> bool | None:
@@ -566,8 +800,14 @@ class WPStrategy:
 
     THE PRICE IS THE GAME'S OWN. A moneyline is quoted per game and per side, so this strategy
     declares the optional ``bet_odds`` member and the core prices its EV and sizes its Kelly stake
-    at that price. The flat -110 default the spread and totals markets carry would turn a -320
-    favourite priced at a true 0.75 win probability from a losing bet into a +0.43 EV one.
+    at that price. The selector's flat -110 reference juice would turn a -320 favourite priced at a
+    true 0.75 win probability from a losing bet into a +0.43 EV one.
+
+    THIS STRATEGY NEVER FALLS BACK, and that is why it declares no ``devig_method``. Both
+    moneylines are REQUIRED market fields, so a row without them is suppressed as
+    ``missing_snapshot`` before it is ever priced; there is no shape in which a WP bet is struck at
+    the reference juice. The two line targets stamp ``devig_method`` precisely because they CAN
+    fall back (DEF-31-13).
     """
 
     target = "wp"
