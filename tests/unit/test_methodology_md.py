@@ -256,3 +256,82 @@ class TestStaleDocsRemoved:
     def test_docs_directory_removed(self):
         """The now-empty docs/ directory is removed (D-04)."""
         assert not (REPO_ROOT / "docs").exists(), "docs/ directory still present"
+
+
+class TestPhase31MethodReconciled:
+    """Phase 31 (31-19): METHODOLOGY.md carries the one-shot profitability method.
+
+    Paired with METHODOLOGY.md in the same commit. Section 10 documents the two-stage DEPLOY
+    decision; it says nothing about whether anything makes money, and the instrument that answers
+    that is different in kind. The three things a reader has to be able to find here are the
+    three chains, why the design is one-shot, and the verdict vocabulary -- because a reader who
+    does not know the split is single-use will assume the number can simply be re-run.
+    """
+
+    def test_describes_the_three_per_target_ev_chains(self):
+        """One bet decision source, three chains, and the price each target is struck at."""
+        content = _read_methodology_md()
+        for marker in ("BetSelector.select", "quarter Kelly", "devigging"):
+            assert marker in content, (
+                f"METHODOLOGY.md does not describe {marker!r} as part of the per-target EV "
+                "chains. A method document that omits how a bet is priced and sized cannot be "
+                "used to check the verdict that rests on it."
+            )
+
+    def test_describes_the_one_shot_design_and_its_refusals(self):
+        """Irreversible and unrepeatable by construction, or it becomes another burned split."""
+        content = _read_methodology_md()
+        for marker in ("ONE-SHOT", "EXCLUSIVE file creation", "no force flag"):
+            assert marker in content, (
+                f"METHODOLOGY.md does not describe {marker!r}. The one-shot ledger is what makes "
+                "the 2025 result a clean out-of-sample measurement rather than a fourth look at "
+                "a holdout."
+            )
+
+    def test_states_the_cost_of_the_one_shot_design(self):
+        """The trade is stated rather than discovered: the result cannot be re-run to check it."""
+        content = _read_methodology_md()
+        assert "cannot be checked by re-running it" in content, (
+            "METHODOLOGY.md does not state the cost of the one-shot design. A method that cannot "
+            "be re-run has a different verification story, and hiding that is how a consistency "
+            "guard gets mistaken for a reproduction guard."
+        )
+
+    def test_describes_the_five_valued_verdict_vocabulary(self):
+        """A zero-bet chain reports a RESULT, and a positive-but-insignificant one is not profit."""
+        content = _read_methodology_md()
+        for token in (
+            "PROFITABLE_CLEAN",
+            "UNPROFITABLE_CLEAN",
+            "INCONCLUSIVE_CLEAN",
+            "UNDISCHARGEABLE_NO_BETS",
+            "UNDISCHARGEABLE_NO_CHAIN",
+        ):
+            assert token in content, (
+                f"METHODOLOGY.md does not declare the verdict token {token!r}. The vocabulary is "
+                "closed and was fixed before the numbers existed; a document that lists only the "
+                "tokens that fired cannot show that."
+            )
+        assert "NEVER called profitable" in content, (
+            "METHODOLOGY.md does not state that a positive return failing its p-value test is "
+            "never called profitable"
+        )
+
+    def test_keeps_clv_and_roi_apart_as_different_tests(self):
+        """The conflation this milestone exists to refuse, stated in the method document."""
+        content = _read_methodology_md()
+        assert "REPORT-ONLY" in content, (
+            "METHODOLOGY.md does not state that CLV is report-only in the profitability chain"
+        )
+        assert "different tests of different quantities" in content, (
+            "METHODOLOGY.md does not state that CLV and ROI are different tests of different "
+            "quantities. A method document that leaves that implicit invites the exact misreading "
+            "Phase 26 diagnosed."
+        )
+
+    def test_cross_links_the_profitability_readout(self):
+        """The method points at the record it produced."""
+        content = _read_methodology_md()
+        assert "PROFITABILITY-READOUT.md" in content, (
+            "METHODOLOGY.md should cross-link PROFITABILITY-READOUT.md"
+        )

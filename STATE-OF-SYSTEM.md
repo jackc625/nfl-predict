@@ -210,8 +210,68 @@ is a stale intermediate, not a gap in the matrices any model was fitted on. Why 
 tables were not refreshed was NOT established here, and no fix was attempted: Phase 30's data
 is frozen and this is out of scope for a documentation reconciliation.
 
+## Phase 31 (2026-09-06): the milestone close, and what it added to this list
+
+The v3.0 Phase-31 productization phase shipped the weekly +EV bet list on a new `/bets` page and
+spent the single unburned 2025 season on one pre-registered profitability measurement. **It
+deployed no model:** nothing was re-fit or promoted, the dynamic blend was unchanged, and
+`artifacts/latest.json` is byte-unchanged by the phase. The full record is
+`PROFITABILITY-READOUT.md`.
+
+**Nothing above is closed by Phase 31.** The seven quarantined reproductions and six deferred
+registers recorded in the Phase-30 sections remain OPEN and their counts are carried forward
+unchanged; the whole-suite xfailed count is HIGHER than the Phase-30 quarantine count because
+Phase 31 added its own constant controls on top of it, which is an addition rather than a
+change to that count. The verdict itself is a measurement, not a repair.
+
+**Four items this phase ADDS to the open list, pointed at rather than fixed:**
+
+- **The renamed edge band still applies ONE threshold pair to three incompatible units.**
+  `utils/edge_tier.py` is now the single collapsed source of the band, replacing two
+  byte-equivalent helpers -- a de-duplication asserted value by value against a 23-point snapshot
+  taken from both retired helpers before the change. It was RENAMED, not repaired: the same two
+  thresholds are still applied to a probability delta (`wp_edge`), a fraction of the absolute
+  spread (`ats_edge`) and a fraction of the market total (`ou_edge`), so a "high" WP edge and a
+  "high" ATS edge are not comparable quantities. Repairing it would move a published label on `/`
+  and `/betting`, and no measurement shows new bands would be better. The stored and rendered
+  column names still say `confidence` although the value is an edge band.
+- **The backtest-side `ats_edge` in `api/cache.py` carries a sign defect** of the same shape that
+  was fixed on the live current-week path this phase, knowingly left in place because it feeds a
+  band that `/` and `/betting` render and sort by. Correcting it would move the label on a large
+  share of a published population, which deserves its own scope and its own decision.
+- **A bet-list row's `clv` is the DECISION-TIME model-edge CLV, never a forward freeze-vs-close
+  CLV**, and the forward metric is NOT COMPUTABLE from the current store: the silver odds table
+  holds exactly one snapshot per game, and a freeze-vs-close comparison needs two observations of
+  the same line. The value is carried honestly under its true meaning and the gap is registered;
+  closing it needs a second odds capture per game, not a change to that module.
+- **`/betting`'s published ledger has not been regenerated since 2026-08-24**, before this phase
+  began and before its spread-Kelly fix landed. The code path was corrected, the artifact was
+  not, so the page still serves the pre-fix spread Kelly figure -- deliberately, because the
+  phase's own scope rule pins `/betting`'s published figures. Measured, not inferred; the
+  consequence is that "the artifact is unmoved" checks made during the phase were comparing a
+  file nothing in the phase regenerates.
+
+**Two items already on this list that Phase 31 touched without closing.** The cache-swap
+availability gap (D30-DEFER-22) and the gate's single-band freshness tolerance (D30-DEFER-04)
+are both still open exactly as recorded above. Neither was widened, narrowed or worked around.
+
+**One stylesheet gap, corrected from an earlier claim.** `lg:grid-cols-7` is ABSENT from
+`web/static/css/tailwind-compiled.css`, so `/betting`'s KPI grid is unstyled at the large
+breakpoint. An earlier in-phase report recorded it as present; only `max-w-3xl` is. Pre-existing,
+recorded rather than fixed.
+
+**Five tests are DELIBERATELY RED and must stay red.** They are tripwires that fired on facts the
+owner then accepted -- the gate baseline predating a label correction, and a protected-slice move
+-- and a tripwire rewritten to accept the event it fired on stops being a tripwire. Which five,
+and why each one, is in `PROFITABILITY-READOUT.md` section 8. An operator who runs the suite and
+finds five reds should read that section before concluding anything is broken.
+
 ## Cross-references
 
+- **`PROFITABILITY-READOUT.md`** -- the v3.0 Phase-31 milestone close: the per-target 2025
+  clean-split profitability verdict, what is deployed and what was retained, the absolute
+  closing-line value per target, the nine accepted disclosures, and the explanation of the
+  five deliberately-red tests.
 - **`MODEL-DIAGNOSIS.md`** -- the Phase 22 honest accuracy diagnosis (per-target verdict +
   the DIAG-05 production-vs-backtest mismatch and gated-re-fit recommendation this registry
   points to). The DOC-03 hard-required link.

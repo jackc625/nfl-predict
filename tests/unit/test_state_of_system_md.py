@@ -210,3 +210,93 @@ class TestStateOfSystemMdPhase30Reconciled:
             assert "NOT a CLV" in content, (
                 "STATE-OF-SYSTEM.md quotes +45.81 without stating it is NOT a CLV"
             )
+
+
+class TestPhase31Reconciled:
+    """Phase 31 (31-19): the consolidated open list describes the milestone-close end state.
+
+    The lockstep rule this repository adopted after a late drift failure: a document and its
+    content-drift guard move in the SAME commit. What is guarded here:
+
+    1. The registry cross-links ``PROFITABILITY-READOUT.md``, the milestone close.
+    2. It records that Phase 31 deployed NO model. A productization phase that spent the single
+       clean split is easy to misremember as a phase that changed production; it did not, and the
+       distinction is what makes the measurement a measurement of what is actually serving.
+    3. It names the four still-open items Phase 31 ADDS, rather than reporting a clean close.
+    4. The standing quarantine and deferred-register counts are CARRIED FORWARD UNCHANGED. This is
+       the assertion that stops a later phase from quietly absorbing an open item: the literal
+       ``7 xfailed`` proof is already pinned by ``test_records_the_seven_open_quarantines``, and
+       this class asserts Phase 31 did not claim to have closed any of them.
+    """
+
+    def test_cross_links_the_profitability_readout(self):
+        """The milestone close is reachable from the single consolidated open list."""
+        content = _read_state_of_system_md()
+        assert "PROFITABILITY-READOUT.md" in content, (
+            "STATE-OF-SYSTEM.md should cross-link PROFITABILITY-READOUT.md (the Phase-31 "
+            "milestone close). The registry is the entry point for 'what can I trust now'."
+        )
+
+    def test_records_that_phase_31_deployed_no_model(self):
+        """A productization phase that spent the clean split changed nothing in production."""
+        content = _read_state_of_system_md()
+        assert "deployed no model" in content.lower(), (
+            "STATE-OF-SYSTEM.md does not record that Phase 31 deployed no model. Without it a "
+            "reader cannot tell whether the 2025 verdict measured what is serving or something "
+            "the phase had just changed underneath it."
+        )
+        assert "artifacts/latest.json` is byte-unchanged" in content, (
+            "STATE-OF-SYSTEM.md does not record that the production swap surface is "
+            "byte-unchanged by Phase 31"
+        )
+
+    def test_records_the_four_items_phase_31_adds(self):
+        """Each new open item is named, not summarized away."""
+        content = _read_state_of_system_md()
+        markers = {
+            "the renamed edge band": "three incompatible units",
+            "the api/cache sign defect": "sign defect",
+            "the non-computable forward CLV": "NOT COMPUTABLE",
+            "the stale betting ledger": "has not been regenerated since",
+        }
+        missing = [name for name, marker in markers.items() if marker not in content]
+        assert not missing, (
+            f"STATE-OF-SYSTEM.md does not record these Phase-31 open items: {missing}. The "
+            "registry is the SINGLE consolidated open list; an item that is not here is an item "
+            "nobody will find."
+        )
+
+    def test_phase_31_does_not_claim_to_close_any_standing_quarantine(self):
+        """The counts are carried forward unchanged, which is the point of a standing count."""
+        content = _read_state_of_system_md()
+        assert "Nothing above is closed by Phase 31" in content, (
+            "STATE-OF-SYSTEM.md does not state that Phase 31 closes none of the standing open "
+            "items. A milestone-close section that is silent on this reads as a clean close."
+        )
+        assert "remain OPEN and their counts are carried forward" in content, (
+            "STATE-OF-SYSTEM.md does not state that the standing quarantine and "
+            "deferred-register counts are carried forward unchanged"
+        )
+
+    def test_the_higher_whole_suite_xfail_count_is_explained_not_hidden(self):
+        """The standing 7 is a Phase-30 count; the whole suite is higher, and that is stated.
+
+        Without this sentence a reader who runs the suite, counts the xfails and finds more than
+        seven has to choose between two bad conclusions: that the registry is wrong, or that
+        something was unquarantined by accident. It is neither.
+        """
+        content = _read_state_of_system_md()
+        assert "whole-suite xfailed count is HIGHER" in content, (
+            "STATE-OF-SYSTEM.md does not explain why the whole-suite xfailed count exceeds the "
+            "standing Phase-30 quarantine count of seven"
+        )
+
+    def test_the_five_deliberately_red_tests_are_pointed_at(self):
+        """An operator seeing five reds must be able to find out why before concluding anything."""
+        content = _read_state_of_system_md()
+        assert "DELIBERATELY RED" in content, (
+            "STATE-OF-SYSTEM.md does not record that five tests are deliberately red"
+        )
+        assert "PROFITABILITY-READOUT.md` section 8" in content, (
+            "STATE-OF-SYSTEM.md does not point at the section explaining the five red tests"
+        )

@@ -323,3 +323,71 @@ class TestRunbookMdPhase30Reconciled:
         assert "RETAINED" in content, (
             "RUNBOOK.md should record that the two refused targets RETAINED their incumbents"
         )
+
+
+class TestPhase31Reconciled:
+    """Phase 31 (31-19): the runbook describes the page, the weekly path and the style step.
+
+    Paired with RUNBOOK.md in the same commit, per the lockstep rule. Three operator-visible
+    things changed in Phase 31 and each would silently mislead if the runbook kept its old text:
+    the nav gained a seventh page, the Friday orchestrator now rebuilds the web cache (the
+    runbook previously said it does not), and the stylesheet compile has no build step that
+    notices when it is stale.
+    """
+
+    def test_serve_documents_seven_nav_pages_including_bets(self):
+        """The nav gained /bets; a runbook that still says six sends an operator hunting."""
+        content = _read_runbook_md()
+        assert "seven nav pages" in content, (
+            "RUNBOOK.md still describes six nav pages. /bets is the seventh."
+        )
+        assert "`/bets`" in content, "RUNBOOK.md does not name the /bets page"
+
+    def test_build_cache_documents_the_bet_list_materialization(self):
+        """/bets computes nothing on the request path, so the cache build IS the bet list."""
+        content = _read_runbook_md()
+        assert "bet-list" in content.lower(), (
+            "RUNBOOK.md's Build cache operation does not mention the bet-list blobs it "
+            "materializes. An operator debugging an empty /bets needs to land here."
+        )
+        assert "HARD-BLOCKED" in content, (
+            "RUNBOOK.md does not record that /bets hard-blocks a week whose bet-list blob is "
+            "missing or stale, rather than serving a partial cache"
+        )
+
+    def test_the_changed_weekly_path_is_recorded_as_superseding_the_old_claim(self):
+        """The orchestrator now rebuilds the cache; the previous statement is superseded."""
+        content = _read_runbook_md()
+        assert "REBUILDS the web" in content, (
+            "RUNBOOK.md does not record that the Friday orchestrator now rebuilds the web cache"
+        )
+        assert "superseded, not merely out of date" in content, (
+            "RUNBOOK.md does not mark the previous 'does not rebuild the cache' claim as "
+            "superseded. Silently replacing it would hide that the weekly path changed."
+        )
+
+    def test_the_stylesheet_compile_step_is_documented(self):
+        """No make target, no stage, and nothing notices staleness -- so the runbook must."""
+        content = _read_runbook_md()
+        assert "tools/tailwindcss.exe" in content, (
+            "RUNBOOK.md does not document the vendored Tailwind compile command"
+        )
+        assert "Recompile the stylesheet" in content, (
+            "RUNBOOK.md does not tell the operator when to recompile the stylesheet"
+        )
+
+    def test_the_open_stylesheet_gap_is_recorded_not_claimed_fixed(self):
+        """lg:grid-cols-7 is absent from the compiled sheet, and that is an OPEN item."""
+        content = _read_runbook_md()
+        assert "lg:grid-cols-7" in content, (
+            "RUNBOOK.md does not record the known missing utility class. It was measured, it is "
+            "open, and recording it is what keeps it from being rediscovered as a mystery."
+        )
+
+    def test_cross_links_the_profitability_readout(self):
+        """An operator seeing five red tests must be able to reach the explanation."""
+        content = _read_runbook_md()
+        assert "PROFITABILITY-READOUT.md" in content, (
+            "RUNBOOK.md should cross-link PROFITABILITY-READOUT.md (the Phase-31 milestone close "
+            "and the explanation of the five deliberately-red tests)"
+        )

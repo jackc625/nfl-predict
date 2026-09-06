@@ -312,6 +312,11 @@ uv run python scripts/populate_cache.py
 
 - **Succeeded when:** `data/web_cache.duckdb` (~6 MB) is refreshed -- the only data source
   the API reads.
+- **This is also what populates `/bets` (Phase 31).** The same run materializes the weekly
+  bet-list rows and the precomputed realized-vs-expected tracker blocks from
+  `outputs/bet_list/`. `/bets` computes nothing on the request path, so a week whose bet-list
+  blob is missing or stale is HARD-BLOCKED by the page rather than served from a partial
+  cache -- and the refusal message names this exact command as the recovery path.
 - **SAFE:** a downstream DATA refresh from gold + backtest outputs; NOT a re-fit. The file is
   gitignored, so the refresh mutates only a gitignored file.
 - **Verification basis:** verified live 2026-05-31 (exit 0 this session; refreshed the
@@ -326,14 +331,28 @@ cache require `--workers 1`).
 uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-- **Succeeded when:** FastAPI is reachable at http://localhost:8000 with the six nav pages
-  `/`, `/performance`, `/backtest`, `/insights`, `/betting`, `/season`, the `/games/{id}`
-  detail drill-down, and a `/health` endpoint that
+- **Succeeded when:** FastAPI is reachable at http://localhost:8000 with the seven nav pages
+  `/`, `/performance`, `/backtest`, `/insights`, `/betting`, `/season`, `/bets`, the
+  `/games/{id}` detail drill-down, and a `/health` endpoint that
   returns HTTP 200. `/health` returns 200 for BOTH a healthy and a `degraded` status; in the
   offseason it is expected to report `status: "degraded"` (a data-freshness state) while
   still returning 200 with `cache_ready: true` and `all_models_exist: true`.
 - **SAFE:** read-only DuckDB connection; per the UIAP-01 boundary the API does not import
   `models/`, `features/`, or `ratings/` and loads no model.
+- **Recompile the stylesheet after ANY template edit that introduces a new utility class.**
+  There is no `make` target for this and no stage of its own; nothing in the build notices
+  when the compiled sheet is stale, so a template can use a class that was never compiled and
+  the page renders unstyled with no error anywhere:
+
+  ```powershell
+  ./tools/tailwindcss.exe -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify
+  ```
+
+  It is idempotent and takes about a second, so run it when in doubt. `PIPELINE.md` stage 8
+  owns the full explanation. **A known instance is OPEN right now:** `lg:grid-cols-7` is
+  absent from `web/static/css/tailwind-compiled.css`, so `/betting`'s KPI grid is unstyled at
+  the large breakpoint. It is pre-existing and recorded rather than fixed
+  (`PROFITABILITY-READOUT.md` section 7e).
 - **Verification basis:** verified live 2026-05-31 -- started uvicorn this session and reached
   http://localhost:8000/health: HTTP 200, `cache_ready: true`, `all_models_exist: true`,
   `status: "degraded"` (the expected offseason data-freshness state), then stopped it.
@@ -394,8 +413,15 @@ uv run python -c "from models.artifacts import update_manifest; update_manifest(
 ### 10. Run automation (the Friday pipeline)
 
 The weekly run is the Friday orchestrator -- the current-week subset of the stages above
-(ingest -> features -> predict -> validate; it does NOT train, backtest, or rebuild the
-cache). Manual dry-run to inspect the steps without executing anything:
+(ingest -> features -> predict -> validate; it does NOT train or backtest). **The weekly path
+CHANGED in Phase 31:** the orchestrator now also selects the week's +EV bet list through
+`BetSelector`, writes the two durable `outputs/bet_list/` artifacts, and REBUILDS the web
+cache as its last registry entry, so the bet list the site serves after a Friday run is this
+run's. That last step is registered non-critical, so a cache failure degrades the run instead
+of discarding prediction work that already succeeded; running operation 7 by hand is then the
+documented recovery. Earlier revisions of this runbook said the orchestrator does not rebuild
+the cache -- that statement is superseded, not merely out of date. Manual dry-run to inspect
+the steps without executing anything:
 
 ```powershell
 uv run python scripts/friday_pipeline.py --dry-run
@@ -555,6 +581,11 @@ Keyed off each stage's success signal above:
 - **`AUDIT-REPORT.md`** -- the Phase 20 data & feature correctness audit: the adopted
   canonical gold, the FIX-01 cluster, the AUDIT-01 stage-runner evidence cited by the
   DESTRUCTIVE-command labels above, and the deferred findings.
+- **`PROFITABILITY-READOUT.md`** -- the Phase 31 milestone close: the per-target 2025
+  clean-split profitability verdict, what is deployed and what was retained, the absolute
+  closing-line value per target, and every disclosure the owner accepted. It is also where
+  the five deliberately-red tests are explained, so an operator who runs the suite and sees
+  them can tell an expected red from a regression.
 - **`STATE-OF-SYSTEM.md`** -- the consolidated state-of-the-system registry: what is
   trustworthy now, what was fixed this milestone, and the single list of deferred items.
 - **`deployment/README.md`** -- the Windows Task Scheduler setup for the Friday automation

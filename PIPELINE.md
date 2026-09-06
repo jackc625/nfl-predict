@@ -222,10 +222,10 @@ uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 > recompile; when in doubt, run it -- it is idempotent and takes about a second.
 
 - **Live entry point:** `api/main.py:app`.
-- **Produces:** FastAPI at http://localhost:8000 — the six top-nav pages `/`
-  (This Week), `/performance`, `/backtest`, `/insights`, `/betting`, and
-  `/season`, plus the `/games/{id}` game-detail drill-down and a `/health`
-  endpoint.
+- **Produces:** FastAPI at http://localhost:8000 — the seven top-nav pages `/`
+  (This Week), `/performance`, `/backtest`, `/insights`, `/betting`,
+  `/season` and `/bets`, plus the `/games/{id}` game-detail drill-down and a
+  `/health` endpoint.
 
 ---
 

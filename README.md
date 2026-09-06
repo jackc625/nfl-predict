@@ -77,9 +77,11 @@ summary and `MODEL-DIAGNOSIS.md` for the per-target accuracy verdict.
 significance-tested per-target deploy gate as a hard block (24), the first
 gated re-fit activation (25), the O/U CLV-to-ROI divergence diagnosis (26),
 the O/U monetization chain (27), new injury / snap / situational signals
-screened into gold (28), a budget-gated line-movement signal (29), and a
+screened into gold (28), a budget-gated line-movement signal (29), a
 second gated re-fit on the widened gold that measured each feature group's
-contribution before deploying anything (30). Productization (31) remains.
+contribution before deploying anything (30), and productization -- the weekly
++EV bet list and the milestone-close profitability readout (31). All eight
+phases are complete.
 
 **What is explicitly *not* in scope.** Automated bet placement (legal
 complexity -- informational only), in-game / real-time predictions,
@@ -121,6 +123,25 @@ was deployed. The full record, including what the phase deliberately left
 open, is `GATED-REFIT-READOUT.md`. See also "Current Limitations" and
 `MODEL-DIAGNOSIS.md`, the frozen v2.1 diagnosis that recommended the first
 gated re-fit.
+
+**What Phase 31 closed, and what it deliberately did not.** Phase 31 shipped
+the weekly +EV bet list on a new `/bets` page -- ranked, sized in units, with
+an EV band, served entirely from precomputed cache blobs -- and spent the
+single unburned 2025 season on one pre-registered profitability measurement.
+**It deployed no model.** No artifact was re-fit or promoted, the blend was
+not changed, and `artifacts/latest.json` is byte-unchanged by the phase: the
+production swap surface was left untouched on purpose, so the measurement
+would be a measurement of what is actually serving.
+
+**No target came out PROFITABLE_CLEAN.** The win-probability and totals targets
+returned small positive flat-stake returns whose pre-registered ROI p-values do
+not clear alpha, and the spread target returned a measured loss. The one
+strongly significant result in the whole run is a closing-line-value result on
+the win-probability target, and closing-line value is not profitability -- that
+divergence is the phase's headline finding rather than a return. The rule was
+frozen before any 2025 number existed and the split cannot be re-run. The full
+per-target record, together with every disclosure the owner accepted, is
+`PROFITABILITY-READOUT.md`.
 
 ---
 
@@ -248,7 +269,8 @@ partials, CSV + JSON exports, and a `/health` endpoint.
               v
    +---------------------------------------------------------------------------------------+
    | FastAPI  (api/main.py lifespan: shared read-only DuckDB; single-worker envelope)      |
-   |   Pages:     /, /performance, /backtest, /insights, /betting, /season, /games/{id}    |
+   |   Pages:     /, /performance, /backtest, /insights, /betting, /season, /bets,        |
+   |              /games/{id}                                                              |
    |   HTMX:      /fragments/games, /fragments/performance                                 |
    |   Exports:   /api/export/csv, /api/export/json                                        |
    |   Health:    /health                                                                  |
@@ -667,9 +689,10 @@ the architecture is kept deployment-friendly so that work stays small.
    and still negative. Removing closing-line-value leakage is not the same
    thing as having a market edge, and this project keeps those two bars
    apart deliberately rather than quoting the flattering one. The honest
-   per-target profitability verdict is Phase 31 work; the O/U clean
-   out-of-sample verdict in particular could NOT be discharged in Phase 30,
-   because its holdout is still the partially burned 2023-2024 split.
+   per-target profitability verdict was discharged in Phase 31 on the clean
+   2025 split, including the O/U verdict Phase 30 could not reach: no target
+   is `PROFITABLE_CLEAN`, and WP's positive closing-line value did not become
+   a distinguishable return. See `PROFITABILITY-READOUT.md`.
 4. **Legacy trainer modules coexist with new ones.** `models/train_wp.py`,
    `models/train_ats.py`, and `models/train_ou.py` stay because
    `prediction_pipeline.py` still imports `ResidualDistributionConverter`

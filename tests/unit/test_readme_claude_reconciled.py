@@ -34,6 +34,7 @@ own committed tests.)
 This is a permanent committed test, NOT a throwaway script.
 """
 
+import re
 from pathlib import Path
 
 # Repo root resolved from this file: tests/unit/test_readme_claude_reconciled.py -> repo root.
@@ -301,3 +302,78 @@ class TestPhase30Reconciled:
                     f"{label} attaches over-claim word(s) {hits} to a REFUSED "
                     f"Phase-30 candidate on this line: {line.strip()!r}"
                 )
+
+
+class TestPhase31Reconciled:
+    """Phase 31 (31-19): the two front-door docs describe the milestone-close end state.
+
+    Additive to the Phase-25 and Phase-30 assertions above -- the supersede-in-place rule means
+    the earlier records stay. What is guarded here:
+
+    1. Both docs cross-link ``PROFITABILITY-READOUT.md``.
+    2. Both name the new ``/bets`` page.
+    3. Both state that Phase 31 DEPLOYED NO MODEL. This is the assertion that matters most: a
+       phase that shipped a betting page and spent the clean split is the easiest phase in the
+       project to misremember as one that changed what serves. It did not, and the Phase-30
+       production pointers asserted above are still the live ones.
+    4. Neither doc reports any target as profitable. No target came out ``PROFITABLE_CLEAN``, and
+       a front-door document is exactly where that would get rounded up.
+    """
+
+    def test_both_docs_cross_link_the_profitability_readout(self):
+        """The milestone close is reachable from both front doors."""
+        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
+            assert "PROFITABILITY-READOUT.md" in _read(path), (
+                f"{label} should cross-link PROFITABILITY-READOUT.md (the Phase-31 milestone "
+                "close)"
+            )
+
+    def test_both_docs_name_the_new_bets_page(self):
+        """The nav gained a seventh page and both docs describe the web surface."""
+        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
+            assert "/bets" in _read(path), f"{label} does not name the new /bets page"
+
+    def test_both_docs_state_that_phase_31_deployed_no_model(self):
+        """The single most misrememberable fact about this phase, pinned in both front doors."""
+        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
+            content = _read(path).lower()
+            assert "deployed no model" in content, (
+                f"{label} does not state that Phase 31 deployed no model. The Phase-30 pointers "
+                "are still the live ones, and a reader must be able to see that the 2025 verdict "
+                "measured what is actually serving."
+            )
+            assert "byte-unchanged" in content, (
+                f"{label} does not state that the production swap surface is byte-unchanged by "
+                "Phase 31"
+            )
+
+    def test_neither_doc_reports_a_profitable_target(self):
+        """No target cleared its pre-registered ROI test, and a front door must not round up.
+
+        Checked over whitespace-FLATTENED text and inside a preceding window, not line by line:
+        both documents are hard-wrapped, so the negation and the token it negates routinely land
+        on different lines. A line-scoped check would fail on correct prose, and a guard that
+        reddens on correct prose is a guard that gets deleted.
+        """
+        window = 80
+        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
+            flat = re.sub(r"\s+", " ", _read(path))
+            for match in re.finditer(r"(?<!UN)PROFITABLE_CLEAN", flat):
+                before = flat[max(0, match.start() - window) : match.start()].lower()
+                assert "no target" in before or "never called profitable" in before, (
+                    f"{label} uses PROFITABLE_CLEAN without a negation in the preceding "
+                    f"{window} characters: ...{flat[max(0, match.start() - window) : match.end()]!r}. "
+                    "No target came out profitable on the clean 2025 split."
+                )
+
+    def test_both_docs_state_the_clv_to_roi_divergence_as_the_finding(self):
+        """The headline is the divergence, not the return, and both front doors say so."""
+        for path, label in ((README_MD, "README.md"), (CLAUDE_MD, "CLAUDE.md")):
+            content = _read(path).lower()
+            assert "closing-line value is not profitability" in content or (
+                "clv-to-roi divergence" in content
+            ), (
+                f"{label} does not present the CLV-to-ROI divergence as the finding. A front door "
+                "that reports the positive closing-line value without it is the misreading this "
+                "milestone exists to refuse."
+            )

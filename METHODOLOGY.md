@@ -352,8 +352,84 @@ attributes every changed column. Only re-measuring per-column health against a c
 pre-rebuild fixture found it. **Measurement beats attribution**, and every later rung was
 re-measured the same way.
 
+## 11. The one-shot clean-split profitability measurement (v3.0 Phase 31)
+
+Phase 30's machinery answers "is this candidate worse than what is serving". It never answers
+"does any of this make money", and the two questions need different instruments. Phase 31 built
+the second one and spent it once.
+
+**Three per-target EV chains, one bet decision source.** Each target converts a model output into
+a per-bet expected value against a real market price, and all three route through the SAME
+`BetSelector.select` facade -- one bet decision source, so a bet that appears in the backtest, in
+the weekly list and in the verdict was decided by one code path. The win-probability chain uses
+the deployed isotonic calibration unchanged and prices at the game's own two-sided moneyline. The
+spread chain applies a prior-season mean bias correction to the predicted home margin, converts
+through a frozen tune-window residual SD, and prices by devigging the stored two-sided spread
+juice. The totals chain does the same on the total scale, restricted to the pre-registered
+under-or-high-total sub-population. Sizing is a LOCKED order: quarter Kelly, then a per-bet cap,
+then a same-game-and-side de-weight, then a pooled weekly exposure cap.
+
+**The design is ONE-SHOT, and that is a method rather than a precaution.** Every prior
+profitability figure in this project was measured on a holdout that had already been looked at,
+and each was labelled provisional for exactly that reason. The 2025 season was the only season
+never used for anything. Spending it therefore had to be irreversible and unrepeatable, or it
+would silently become another burned split:
+
+- The rule -- windows, game-type scope, eligibility, calibration policy, devig source, sizing
+  order, robustness cuts, the multiplicity family and the ROI hypothesis test -- was frozen in
+  two files BEFORE any 2025 number existed. The claim that the rule predates the result is an
+  ANCESTRY relation between two specific commits, resolved from git by a committed test, and
+  asserted to be non-equal, exactly as in section 10.
+- A durable run ledger is created by an EXCLUSIVE file creation BEFORE the first hold-season
+  read. If it already exists the runner REFUSES, and there is no force flag. A crash between
+  reading the split and writing the verdict leaves a `failed` attempt on disk rather than a
+  silently re-spendable split; returning to `armed` requires an owner ruling recorded in the
+  ledger, which is a deliberate human edit to a tracked file and leaves a diff.
+- The runner additionally hard-refuses to overwrite an existing verdict artifact. Silently
+  re-arming a crashed attempt would spend the split twice while leaving a record saying it ran
+  once.
+
+The cost of this design is that the result cannot be checked by re-running it, so the readout's
+drift guard checks CONSISTENCY against the committed artifact instead of reproduction. That trade
+is stated rather than discovered.
+
+**The verdict vocabulary is a closed five-value set, and "no bets" is a RESULT.**
+`PROFITABLE_CLEAN` / `UNPROFITABLE_CLEAN` / `INCONCLUSIVE_CLEAN` / `UNDISCHARGEABLE_NO_BETS` /
+`UNDISCHARGEABLE_NO_CHAIN`, each bound in the frozen module to the condition that produces it, so
+a reader can check afterwards that the mapping from numbers to words was fixed before the numbers
+existed. Two distinctions carry the weight. A positive return whose p-value does not clear alpha
+is `INCONCLUSIVE_CLEAN` and is NEVER called profitable -- including when the minimum attainable
+bootstrap p exceeds alpha, which is reported with that stated reason rather than as a near miss.
+And a chain that ran and selected zero bets reports `UNDISCHARGEABLE_NO_BETS`, filling the same
+readout template slots as any other verdict, which is what stops a null result from being quietly
+reported as "ROI 0" or omitted as a gap. `UNDISCHARGEABLE_NO_CHAIN` is kept distinct from it:
+there the chain could not run at all, which is a different fact about a different failure.
+
+**The hypothesis test is on ROI, and CLV is REPORT-ONLY.** The verdict rests on a one-sided
+achieved significance level from a NULL-RECENTRED block-by-week bootstrap -- weeks are the block
+unit because bets inside a week share line movement and a game-level resample would understate
+the variance. Closing-line value is measured over the same selected bets and carried BESIDE the
+verdict: it never entered the multiplicity family and is structurally incapable of driving a
+token. **The two are different tests of different quantities and this project keeps them apart on
+purpose.** A model can beat the closing number decisively and still return nothing
+distinguishable from zero, which is precisely what the 2025 run measured for the win-probability
+target; treating the CLV p-value as evidence of profitability would produce the exact
+misreading Phase 26 diagnosed for totals.
+
+**The correction family counts hold-side inferences only, and every other read is still on the
+record.** The Benjamini-Hochberg denominator is the primary and robustness entries across all
+three targets in ONE pooled registry. A tune-side threshold-sweep cell never touched the hold and
+a counterfactual control has no p-value to correct, so neither enters the denominator -- but both
+are RECORDED in the registry, which is what lets a reader confirm the denominator arithmetically
+rather than take it on trust. A denominator that cannot be checked is a denominator that can be
+quietly reduced.
+
 ## Cross-references
 
+- **`PROFITABILITY-READOUT.md`** -- the Phase 31 milestone close: the per-target 2025
+  clean-split verdict produced by the chain described in section 11, what is deployed and
+  what was retained, the absolute closing-line value per target, and the accepted
+  disclosures. The source for every 2025 figure referenced above.
 - **`MODEL-DIAGNOSIS.md`** -- the Phase 22 honest accuracy diagnosis: per-target
   accuracy/calibration/CLV, the ceiling-vs-flaw verdict, and the production-vs-backtest
   mismatch (DIAG-05). The source for every quantified claim referenced above.
