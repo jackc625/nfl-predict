@@ -1,0 +1,51 @@
+{# Provenance badge pill. Pass: provenance, validation_type.
+
+   THE SINGLE SOURCE of the honesty-label vocabulary (SPEC R8, D31-22). Both the tracker block
+   headers and every displayed row draw their labels from HERE. A second label source is the
+   two-lists failure this repository has already paid for once, so nothing else may spell these
+   strings -- tests/api/test_bets_page.py asserts no second source exists.
+
+   KEYED ON BOTH COLUMNS, not on validation_type alone. The two D31-22 axes are orthogonal and both
+   are required on every row, so the LABEL lookup is nested: a pair the vocabulary does not contain
+   -- a forward row carrying a replay validation type, say -- resolves to no label and renders its
+   RAW CODE. That is the point of keying on the pair: an impossible combination is shown as the
+   defect it is rather than confidently mislabelled by whichever column was consulted alone.
+
+   MONOCHROME, for the reason _ev_band_badge.html is monochrome: hue on /bets carries meaning only
+   inside the tracker's realized outcomes, where green means a bet WON and red means it LOST. A
+   coloured honesty label would borrow that meaning for a statement about evidence class.
+
+   NO whitespace-nowrap: the longest label is 33 characters and the badge sits on a block header
+   where it must WRAP rather than clip (UI-SPEC E10 overflow). Inside a table cell the cell's own
+   whitespace-nowrap governs, and the row already scrolls horizontally rather than clipping.
+
+   There is NO null state to design: both columns are required on every row, so a row missing
+   either is a data defect caught upstream, not a render branch. #}
+{% set _PROVENANCE_LABELS = {
+     "backtest_replay": "Backtest replay",
+     "forward": "Forward record"
+   } %}
+{% set _VALIDATION_LABELS = {
+     "backtest_replay": {
+       "contaminated": "Contaminated split",
+       "clean_holdout": "Clean holdout -- 2025, single use"
+     },
+     "forward": {
+       "forward_realized": "Live forward record"
+     }
+   } %}
+{% set _VALIDATION_CLASSES = {
+     "contaminated": "bg-gray-100 text-gray-700 border border-gray-300",
+     "clean_holdout": "bg-gray-200 text-gray-900 border border-gray-300",
+     "forward_realized": "bg-white text-gray-700 border border-gray-300"
+   } %}
+{% set _VALIDATION_DESCRIPTIONS = {
+     "contaminated": "measured on seasons already used to build and tune the models, so the figure is optimistic by construction",
+     "clean_holdout": "measured on the 2025 season, held out and spent exactly once",
+     "forward_realized": "recommended before kickoff and graded afterwards"
+   } %}
+{% set _provenance_label = _PROVENANCE_LABELS.get(provenance, provenance) %}
+{% set _validation_label = _VALIDATION_LABELS.get(provenance, {}).get(validation_type, validation_type) %}
+{% set _validation_classes = _VALIDATION_CLASSES.get(validation_type, "bg-white text-gray-700 border border-gray-300") %}
+{% set _validation_description = _VALIDATION_DESCRIPTIONS.get(validation_type, "an evidence class with no description in the displayed vocabulary; the raw code is shown") %}
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold {{ _validation_classes }}" data-provenance="{{ provenance }}" data-validation-type="{{ validation_type }}" title="{{ _provenance_label }}: {{ _validation_description }}">{{ _validation_label }}<span class="sr-only"> -- {{ _provenance_label }}, {{ _validation_description }}</span></span>

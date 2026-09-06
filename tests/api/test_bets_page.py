@@ -264,6 +264,16 @@ def bets_client(
     yield from _client(db_path)
 
 
+def _class_attributes(markup: str) -> list[str]:
+    """Every class attribute value inside *markup*.
+
+    Hue assertions are scoped to CLASS VALUES rather than to the whole markup: the word "measured"
+    contains "red" and "expected" contains no hue at all, so a substring search over authored prose
+    is a coin flip rather than a check.
+    """
+    return re.findall(r'class="([^"]*)"', markup)
+
+
 def _rendered_ev_values(body: str) -> list[str]:
     """Every rendered signed two-decimal EV percentage, in document order."""
     return re.findall(r"([+-]\d+\.\d{2})%", body)
@@ -1660,7 +1670,13 @@ def test_an_unmeasured_return_never_renders_as_a_zero(tmp_path: Path) -> None:
     section = _tracker_sections(body)["backtest_replay:contaminated"]
     assert "not measured" in section
     assert "+0.000" not in section, "an unmeasured return rendered as a measured zero"
-    assert "nan" not in section.lower()
+    # Scoped to the rendered FIGURE VALUES: the word "provenance" contains the letters "nan", so
+    # a whole-section substring search would be a false positive rather than a check.
+    values = re.findall(r'<p class="text-2xl[^"]*">([^<]*)</p>', section)
+    assert values, "the block rendered no figures"
+    assert not any("nan" in value.lower() for value in values), (
+        f"a non-finite value reached a rendered figure: {values}"
+    )
     assert _ZERO_RESULT_LINE not in section, (
         "the honesty line claims a negative measurement where nothing was measured"
     )
@@ -1696,10 +1712,11 @@ def test_green_and_red_appear_only_inside_the_tracker_sections(tmp_path: Path) -
     )
     assert badges, "no EV band badge rendered, so the scoping assertion proves nothing"
     for badge in badges:
-        for forbidden in ("green", "red", "amber"):
-            assert forbidden not in badge, (
-                f"an EV band badge carries the {forbidden} hue: {badge}"
-            )
+        for classes in _class_attributes(badge):
+            for forbidden in ("green", "red", "amber"):
+                assert forbidden not in classes, (
+                    f"an EV band badge carries the {forbidden} hue: {classes}"
+                )
 
     # Outside the tracker region the realized-outcome colours do not appear at all. The ONE red
     # above the tracker is the REFUSAL role, not the realized-outcome role: _error_state.html
@@ -1859,3 +1876,251 @@ def test_the_tracker_shares_the_single_week_swap_indicator(tmp_path: Path) -> No
         "backtest_replay:contaminated",
         "forward:forward_realized",
     }, "the tracker sits outside the week swap target"
+
+
+# ---------------------------------------------------------------------------
+# The provenance badge (plan 31-16 Task 2, SPEC R8, D31-22, UI-SPEC E10)
+# ---------------------------------------------------------------------------
+#
+# ONE partial keyed on the two orthogonal D31-22 columns owns the honesty-label vocabulary. The
+# labels and their class sets are transcribed here as LITERALS from the design contract rather than
+# imported from the template, so a silent edit to either side is a failure and not a tautology.
+
+_VALIDATION_LABELS: dict[str, str] = {
+    "contaminated": "Contaminated split",
+    "clean_holdout": "Clean holdout -- 2025, single use",
+    "forward_realized": "Live forward record",
+}
+_VALIDATION_CLASSES: dict[str, str] = {
+    "contaminated": "bg-gray-100 text-gray-700 border border-gray-300",
+    "clean_holdout": "bg-gray-200 text-gray-900 border border-gray-300",
+    "forward_realized": "bg-white text-gray-700 border border-gray-300",
+}
+_UNKNOWN_VALIDATION_TYPE = "validation_type_invented_by_a_future_plan"
+
+
+def _badges(body: str) -> list[str]:
+    """Every rendered provenance badge, located by its two data attributes."""
+    return re.findall(
+        r"<span [^>]*data-provenance=\"[^\"]*\"[^>]*>.*?</span></span>", body
+    )
+
+
+def test_every_validation_type_renders_its_declared_label_and_classes(
+    tmp_path: Path,
+) -> None:
+    """All three validation types render the contract's label and its class set.
+
+    One assertion per type, driven off the transcribed table, so adding a fourth type to the
+    template without adding it here leaves the new type unproven rather than silently covered.
+    """
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=4,
+            wins=2,
+            losses=2,
+            pushes=0,
+            hit_rate=0.5,
+            flat_return_units=-0.02,
+        ),
+        _block(
+            _CLEAN_HOLDOUT,
+            bets_graded=4,
+            wins=3,
+            losses=1,
+            pushes=0,
+            hit_rate=0.75,
+            flat_return_units=0.03,
+        ),
+        _block(
+            _FORWARD_CLASS,
+            bets_graded=4,
+            wins=2,
+            losses=2,
+            pushes=0,
+            hit_rate=0.5,
+            flat_return_units=0.01,
+        ),
+    ]
+    with _client_with_tracker(tmp_path, blocks, "badge_all_types") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    sections = _tracker_sections(body)
+    for pair, key in (
+        (_CONTAMINATED, "backtest_replay:contaminated"),
+        (_CLEAN_HOLDOUT, "backtest_replay:clean_holdout"),
+        (_FORWARD_CLASS, "forward:forward_realized"),
+    ):
+        validation_type = pair[1]
+        section = sections[key]
+        assert _VALIDATION_LABELS[validation_type] in section, (
+            f"{validation_type} rendered no label on its block header"
+        )
+        assert _VALIDATION_CLASSES[validation_type] in section, (
+            f"{validation_type} rendered without its declared class set"
+        )
+        assert f'data-validation-type="{validation_type}"' in section
+        assert f'data-provenance="{pair[0]}"' in section
+
+
+def test_an_unknown_validation_type_renders_the_raw_code(tmp_path: Path) -> None:
+    """A type outside the fixed three renders its RAW CODE -- not a blank, not a fallback label.
+
+    Matches the suppression-label rule: a newly added member of either vocabulary must be visible
+    rather than silent.
+    """
+    row = _live_row("2023_W01_DET@KC", "ou")
+    row["validation_type"] = _UNKNOWN_VALIDATION_TYPE
+    with _client_with_tracker(tmp_path, [], "badge_unknown_type", rows=[row]) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    badges = _badges(body)
+    assert badges, "no provenance badge rendered on the live row"
+    assert any(f">{_UNKNOWN_VALIDATION_TYPE}<" in badge for badge in badges), (
+        f"the unknown validation type did not render its raw code: {badges}"
+    )
+    for label in _VALIDATION_LABELS.values():
+        assert label not in body, (
+            f"an unknown validation type fell back to the {label!r} label"
+        )
+
+
+def test_an_impossible_pair_renders_the_raw_code_rather_than_mislabelling_it(
+    tmp_path: Path,
+) -> None:
+    """The lookup is keyed on the PAIR, so a forward row carrying a replay type is not mislabelled.
+
+    Keying on validation_type alone would confidently print "Contaminated split" beside a forward
+    provenance -- a label asserting the row was reconstructed after the fact when the other column
+    says it was recommended before kickoff. The pair keying makes that contradiction visible.
+    """
+    row = _live_row("2023_W01_DET@KC", "ou")
+    row["provenance"] = "forward"
+    row["validation_type"] = "contaminated"
+    with _client_with_tracker(
+        tmp_path, [], "badge_impossible_pair", rows=[row]
+    ) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    badges = _badges(body)
+    assert badges, "no provenance badge rendered on the live row"
+    assert any(">contaminated<" in badge for badge in badges), (
+        f"the impossible pair did not render its raw code: {badges}"
+    )
+    assert "Contaminated split" not in body, (
+        "a forward row was labelled with the replay vocabulary"
+    )
+
+
+def test_the_badge_markup_carries_no_green_amber_or_red_class(tmp_path: Path) -> None:
+    """Monochrome, for the reason the EV band badge is monochrome (UI-SPEC Deviation 1)."""
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=4,
+            wins=2,
+            losses=2,
+            pushes=0,
+            hit_rate=0.5,
+            flat_return_units=-0.02,
+        ),
+        _block(
+            _FORWARD_CLASS,
+            bets_graded=4,
+            wins=2,
+            losses=2,
+            pushes=0,
+            hit_rate=0.5,
+            flat_return_units=0.01,
+        ),
+    ]
+    with _client_with_tracker(tmp_path, blocks, "badge_monochrome") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    badges = _badges(body)
+    assert badges, "no provenance badge rendered"
+    for badge in badges:
+        for classes in _class_attributes(badge):
+            for forbidden in ("green", "amber", "red"):
+                assert forbidden not in classes, (
+                    f"a provenance badge carries the {forbidden} hue: {classes}"
+                )
+
+
+def test_the_badge_appears_on_both_tracker_block_headers(tmp_path: Path) -> None:
+    """A response carrying both classes carries a badge on each block header."""
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=4,
+            wins=2,
+            losses=2,
+            pushes=0,
+            hit_rate=0.5,
+            flat_return_units=-0.02,
+        ),
+        _block(
+            _FORWARD_CLASS,
+            bets_graded=4,
+            wins=2,
+            losses=2,
+            pushes=0,
+            hit_rate=0.5,
+            flat_return_units=0.01,
+        ),
+    ]
+    with _client_with_tracker(tmp_path, blocks, "badge_both_headers") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    sections = _tracker_sections(body)
+    for key, validation_type in (
+        ("backtest_replay:contaminated", "contaminated"),
+        ("forward:forward_realized", "forward_realized"),
+    ):
+        header = sections[key][: sections[key].index("</div>")]
+        assert f'data-validation-type="{validation_type}"' in header, (
+            f"{key} carries no provenance badge on its header"
+        )
+
+
+def test_the_badge_renders_on_every_displayed_row(tmp_path: Path) -> None:
+    """R8's every-displayed-row clause: a live row AND a suppressed row both carry the labels."""
+    rows = [
+        _live_row("2023_W01_DET@KC", "ou"),
+        _suppressed_row("2023_W01_CAR@ATL", "wp", "ev_below_floor"),
+    ]
+    with _client_with_tracker(tmp_path, [], "badge_every_row", rows=rows) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert body.count("Provenance</th>") == 2, (
+        "the live table and the suppressed table do not both carry the provenance column"
+    )
+    # Two rows, two badges -- and both rows are in the document even though the disclosure is
+    # collapsed, so the suppressed row's labels survive into an HTML export too.
+    assert len(_badges(body)) == 2, (
+        f"expected one badge per displayed row: {_badges(body)}"
+    )
+    assert body.count("Contaminated split") == 2
+
+
+def test_exactly_one_partial_owns_the_validation_type_vocabulary() -> None:
+    """A search finds no SECOND source of the three labels anywhere under web/templates.
+
+    The one-registry-never-two-lists rule. A second spelling of these strings is the drift this
+    repository has already paid for once, and it is the failure a grep -- not a render -- catches.
+    """
+    templates = Path(__file__).resolve().parents[2] / "web" / "templates"
+    for label in _VALIDATION_LABELS.values():
+        sources = sorted(
+            path.relative_to(templates).as_posix()
+            for path in templates.rglob("*.html")
+            if label in path.read_text(encoding="utf-8")
+        )
+        assert sources == ["components/_provenance_badge.html"], (
+            f"the label {label!r} is spelled in more than one template: {sources}"
+        )
+    found = sorted(p.name for p in COMPONENTS_DIR.glob("*provenance*.html"))
+    assert found == ["_provenance_badge.html"], (
+        f"a second provenance partial appeared: {found}"
+    )

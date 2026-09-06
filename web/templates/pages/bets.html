@@ -146,6 +146,12 @@
             <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">EV band</th>
             <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap" title="1 unit = 1% of a notional bankroll">Stake (units)</th>
             <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">Line as of</th>
+            {# R8 requires the two honesty labels on every DISPLAYED and exported row, so the
+               table carries a tenth column the design contract's nine-column sketch does not
+               list. A tracker-level label alone would leave an individual row unattributed, and
+               a reader looking at one row is exactly who needs to know whether it was
+               recommended in advance or reconstructed afterwards. #}
+            <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Provenance</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
@@ -178,6 +184,11 @@
             </td>
             <td class="px-4 py-3 text-right stat-num whitespace-nowrap">{{ "%.2f"|format(bet.stake_units) }}</td>
             <td class="px-4 py-3 text-right stat-num text-xs whitespace-nowrap text-gray-500">{{ bet.snapshot_ts or "--" }}</td>
+            <td class="px-4 py-3 text-left whitespace-nowrap">
+              {% with provenance=bet.provenance, validation_type=bet.validation_type %}
+                {% include "components/_provenance_badge.html" %}
+              {% endwith %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>
@@ -284,6 +295,7 @@
                 <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Bet type</th>
                 <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Reason</th>
                 <th scope="col" class="px-4 py-3 text-right font-semibold text-gray-600 whitespace-nowrap">Line as of</th>
+                <th scope="col" class="px-4 py-3 text-left font-semibold text-gray-600 whitespace-nowrap">Provenance</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100">
@@ -295,6 +307,11 @@
                 <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">{{ BET_TYPE_LABELS.get(bet.target, bet.target) }}</td>
                 <td class="px-4 py-3 text-left text-gray-700 whitespace-nowrap">{{ SUPPRESSION_LABELS.get(reason, reason) }}</td>
                 <td class="px-4 py-3 text-right stat-num text-xs whitespace-nowrap text-gray-500">{{ bet.snapshot_ts or "--" }}</td>
+                <td class="px-4 py-3 text-left whitespace-nowrap">
+                  {% with provenance=bet.provenance, validation_type=bet.validation_type %}
+                    {% include "components/_provenance_badge.html" %}
+                  {% endwith %}
+                </td>
               </tr>
               {% endfor %}
             </tbody>
@@ -437,7 +454,14 @@
   <div class="mb-4">
     <div class="flex flex-wrap items-center gap-2">
       <h2 class="text-base font-semibold text-gray-900">{{ TRACKER_HEADINGS[provenance] }}</h2>
-    </div>
+      {# The honesty label for THIS class, from the single vocabulary source. It is what tells the
+         two replay sections apart: they share a heading and differ only in evidence class, so the
+         badge is load-bearing here rather than decorative. #}
+      {% if validation_type %}
+        {% with provenance=provenance, validation_type=validation_type %}
+          {% include "components/_provenance_badge.html" %}
+        {% endwith %}
+      {% endif %}
     <p class="text-sm text-gray-500 max-w-2xl mt-1">{{ TRACKER_CAPTIONS[provenance] }}</p>
   </div>
   {% if block is none or not block.bets_graded %}
@@ -470,7 +494,15 @@
 {% if bets_blocked %}
 <section class="mb-8" hx-indicator="#bets-loading" data-tracker-block="forward">
   <div class="mb-4">
-    <h2 class="text-base font-semibold text-gray-900">{{ TRACKER_HEADINGS["forward"] }}</h2>
+    <div class="flex flex-wrap items-center gap-2">
+      <h2 class="text-base font-semibold text-gray-900">{{ TRACKER_HEADINGS["forward"] }}</h2>
+      {# The evidence class is known by construction for the forward provenance, and it describes
+         the class rather than any figure -- so the label stays visible while the totals are
+         withheld. #}
+      {% with provenance="forward", validation_type="forward_realized" %}
+        {% include "components/_provenance_badge.html" %}
+      {% endwith %}
+    </div>
     <p class="text-sm text-gray-500 max-w-2xl mt-1">{{ TRACKER_CAPTIONS["forward"] }}</p>
   </div>
   {% with message="The forward record is withheld -- the cache is older than this week's line freeze",
