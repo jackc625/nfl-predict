@@ -1,0 +1,608 @@
+# =============================================================================
+# config/profitability_2025_verdict.toml -- the BINDING 2025 clean-split verdict
+# Phase 31 (ship the +EV bet list and profitability readout) -- PROD-04, SPEC R3.
+#
+# GENERATOR OUTPUT. Produced by `python -m backtest.profitability_2025`. Do NOT
+# hand-edit any value below: the 2025 split is SINGLE-USE, so a hand-edited value
+# cannot be regenerated and is indistinguishable from a tampered one.
+#
+# The rule that produced this verdict was FROZEN before any 2025 number existed:
+#   pre-registration : ["PROFITABILITY-PREREGISTRATION.md", "backtest/ev_chain_constants.py"]
+#   anchor commit    : "ee20773b58c3a59de2450d56c64992e240282820"
+# SPEC R3 requires that commit to be a STRICT git ancestor of -- and not equal to --
+# the commit recording this artifact.
+#
+# The CLV p-value below is REPORT-ONLY. It is reported BESIDE the verdict and never
+# entered the multiplicity family or drove any token; the verdict rests on the
+# pre-registered one-sided ROI bootstrap p-value alone.
+#
+# ASCII only, no emoji (CLAUDE.md hard constraint).
+# =============================================================================
+
+[run]
+requirement = "PROD-04"
+preregistration_commit = "ee20773b58c3a59de2450d56c64992e240282820"
+preregistration_paths = ["PROFITABILITY-PREREGISTRATION.md", "backtest/ev_chain_constants.py"]
+attempt_id = "3f1bcdc127434540a656f4ae554df398"
+completed_at_utc = "2026-09-06T00:50:13.792332+00:00"
+window_label = "frozen_p31"
+window_is_the_preregistered_rule = true
+tune_seasons = [2021, 2022, 2023, 2024]
+hold_seasons = [2025]
+alpha = 0.050000000000000003
+correction_method = "benjamini-hochberg"
+bh_denominator = 6
+bh_denominator_rule = "hold-side inferences only, pooled across all three targets in ONE registry"
+bh_fallbacks_fired = 0
+registry_rows = 24
+excluded_control_entries = 3
+excluded_tune_side_sweep_cells = 15
+robustness_cuts = ["regular_season_only", "playoffs_excluded"]
+robustness_cut_bh_count = 1
+roi_p_value_method = "one-sided achieved significance level from the NULL-RECENTRED block-by-week bootstrap"
+roi_min_attainable_p = 0.00049975012493753122
+clv_p_value_is_report_only = true
+bootstrap_b = 2000
+bootstrap_seed = 2704
+
+[targets.wp]
+verdict_token = "INCONCLUSIVE_CLEAN"
+verdict_reason = "[wp] 65 bets and an observed flat-stake return of 0.014408465573452605, but the pre-registered one-sided ROI p-value is 0.671664167916042 after correction, which does NOT clear alpha 0.050000000000000003 (the comparison is strictly less than, so a value exactly at alpha is not significant). A positive return that cannot be distinguished from zero is INCONCLUSIVE and is never called PROFITABLE."
+token_meaning = "at least one bet was selected and the observed flat-stake ROI is strictly positive, but the pre-registered one-sided ROI p-value does NOT clear alpha after the BH correction -- including the case where the minimum attainable p exceeds alpha, which is reported with that stated reason. A positive return that cannot be distinguished from zero is INCONCLUSIVE and is never called PROFITABLE."
+chain_resolved = true
+control_passed = true
+control_bet_count = 284
+bets_selected = 65
+has_return = true
+flat_roi = 0.014408465573452605
+raw_roi_p_value = 0.41179410294852575
+adjusted_roi_p_value = 0.671664167916042
+roi_p_value_absent_reason = ""
+n_blocks = 20
+n_push = 0
+n_ungraded = 0
+fallback_fired = false
+fallback_trigger = ""
+ci_lo = -0.23718108428651416
+ci_hi = 0.21400669330762565
+robustness_cut_roi = 0.0073879941712662201
+robustness_cuts_identical = true
+clv_report_only_mean = 0.091811498994504193
+clv_report_only_p = 6.8263173184833947e-34
+clv_report_only_n = 65
+
+[targets.ats]
+verdict_token = "UNPROFITABLE_CLEAN"
+verdict_reason = "[ats] 161 bets were selected and the observed flat-stake return is -0.052760703432021903, which is not strictly positive. This is a MEASURED result, not a failure to measure."
+token_meaning = "at least one bet was selected and the observed flat-stake ROI is NEGATIVE OR ZERO. This is a measured result, not a failure to measure."
+chain_resolved = true
+control_passed = true
+control_bet_count = 285
+bets_selected = 161
+has_return = true
+flat_roi = -0.052760703432021903
+raw_roi_p_value = 0.76061969015492259
+adjusted_roi_p_value = 0.76061969015492259
+roi_p_value_absent_reason = ""
+n_blocks = 21
+n_push = 7
+n_ungraded = 0
+fallback_fired = false
+fallback_trigger = ""
+ci_lo = -0.20312498771456264
+ci_hi = 0.0863424646731277
+robustness_cut_roi = -0.05931816131756238
+robustness_cuts_identical = true
+clv_report_only_mean = -3.4284412375657083
+clv_report_only_p = 1.3743115504257695e-26
+clv_report_only_n = 161
+
+[targets.ou]
+verdict_token = "INCONCLUSIVE_CLEAN"
+verdict_reason = "[ou] 41 bets and an observed flat-stake return of 0.032513056638189181, but the pre-registered one-sided ROI p-value is 0.671664167916042 after correction, which does NOT clear alpha 0.050000000000000003 (the comparison is strictly less than, so a value exactly at alpha is not significant). A positive return that cannot be distinguished from zero is INCONCLUSIVE and is never called PROFITABLE."
+token_meaning = "at least one bet was selected and the observed flat-stake ROI is strictly positive, but the pre-registered one-sided ROI p-value does NOT clear alpha after the BH correction -- including the case where the minimum attainable p exceeds alpha, which is reported with that stated reason. A positive return that cannot be distinguished from zero is INCONCLUSIVE and is never called PROFITABLE."
+chain_resolved = true
+control_passed = true
+control_bet_count = 285
+bets_selected = 41
+has_return = true
+flat_roi = 0.032513056638189181
+raw_roi_p_value = 0.42128935532233885
+adjusted_roi_p_value = 0.671664167916042
+roi_p_value_absent_reason = ""
+n_blocks = 16
+n_push = 2
+n_ungraded = 0
+fallback_fired = false
+fallback_trigger = ""
+ci_lo = -0.25091580596336027
+ci_hi = 0.28807994281619181
+robustness_cut_roi = 0.032513056638189181
+robustness_cuts_identical = true
+clv_report_only_mean = -0.52473998651271914
+clv_report_only_p = 0.19925181065524544
+clv_report_only_n = 41
+
+# The COMPLETE trial registry, spanning all three targets in ONE artifact. Row
+# count and BH denominator differ visibly and BY DESIGN: every read of the hold is
+# on the record, and the denominator counts only actual hold-side inferences.
+
+[[registry]]
+entry_id = "wp/sweep/t=0.0"
+target = "wp"
+threshold = 0.0
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "deployed_isotonic_used_unchanged (D31-07 default)"
+sd_source = "none (D31-07: a calibrated classifier has no residual SD)"
+devig_method = "real_two_sided_moneyline (per game and per side, D31-04)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.027051566072204363
+ci_lo = nan
+ci_hi = nan
+bet_count = 608
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "wp/sweep/t=0.01"
+target = "wp"
+threshold = 0.01
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "deployed_isotonic_used_unchanged (D31-07 default)"
+sd_source = "none (D31-07: a calibrated classifier has no residual SD)"
+devig_method = "real_two_sided_moneyline (per game and per side, D31-04)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.030207582246215239
+ci_lo = nan
+ci_hi = nan
+bet_count = 568
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "wp/sweep/t=0.02"
+target = "wp"
+threshold = 0.02
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "deployed_isotonic_used_unchanged (D31-07 default)"
+sd_source = "none (D31-07: a calibrated classifier has no residual SD)"
+devig_method = "real_two_sided_moneyline (per game and per side, D31-04)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.028879179349755778
+ci_lo = nan
+ci_hi = nan
+bet_count = 525
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "wp/sweep/t=0.029999999999999999"
+target = "wp"
+threshold = 0.029999999999999999
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "deployed_isotonic_used_unchanged (D31-07 default)"
+sd_source = "none (D31-07: a calibrated classifier has no residual SD)"
+devig_method = "real_two_sided_moneyline (per game and per side, D31-04)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.030459667240651387
+ci_lo = nan
+ci_hi = nan
+bet_count = 492
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "wp/sweep/t=0.050000000000000003"
+target = "wp"
+threshold = 0.050000000000000003
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "deployed_isotonic_used_unchanged (D31-07 default)"
+sd_source = "none (D31-07: a calibrated classifier has no residual SD)"
+devig_method = "real_two_sided_moneyline (per game and per side, D31-04)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.040745705760166423
+ci_lo = nan
+ci_hi = nan
+bet_count = 400
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ats/sweep/t=0.0"
+target = "ats"
+threshold = 0.0
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "prior_season_mean_bias_correction"
+sd_source = "frozen_tune_corrected_sd (home-margin scale)"
+devig_method = "real_two_sided_devig(spread_ju_home, spread_ju_away); flat -110 when the stored juice is absent (pre-registration 3.2 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.3713069440497731
+ci_lo = nan
+ci_hi = nan
+bet_count = 827
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ats/sweep/t=0.01"
+target = "ats"
+threshold = 0.01
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "prior_season_mean_bias_correction"
+sd_source = "frozen_tune_corrected_sd (home-margin scale)"
+devig_method = "real_two_sided_devig(spread_ju_home, spread_ju_away); flat -110 when the stored juice is absent (pre-registration 3.2 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.37584476062250388
+ci_lo = nan
+ci_hi = nan
+bet_count = 792
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ats/sweep/t=0.02"
+target = "ats"
+threshold = 0.02
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "prior_season_mean_bias_correction"
+sd_source = "frozen_tune_corrected_sd (home-margin scale)"
+devig_method = "real_two_sided_devig(spread_ju_home, spread_ju_away); flat -110 when the stored juice is absent (pre-registration 3.2 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.38688529170942854
+ci_lo = nan
+ci_hi = nan
+bet_count = 758
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ats/sweep/t=0.029999999999999999"
+target = "ats"
+threshold = 0.029999999999999999
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "prior_season_mean_bias_correction"
+sd_source = "frozen_tune_corrected_sd (home-margin scale)"
+devig_method = "real_two_sided_devig(spread_ju_home, spread_ju_away); flat -110 when the stored juice is absent (pre-registration 3.2 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.39659216439553002
+ci_lo = nan
+ci_hi = nan
+bet_count = 728
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ats/sweep/t=0.050000000000000003"
+target = "ats"
+threshold = 0.050000000000000003
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "prior_season_mean_bias_correction"
+sd_source = "frozen_tune_corrected_sd (home-margin scale)"
+devig_method = "real_two_sided_devig(spread_ju_home, spread_ju_away); flat -110 when the stored juice is absent (pre-registration 3.2 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.41551719237021295
+ci_lo = nan
+ci_hi = nan
+bet_count = 672
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ou/sweep/t=0.0"
+target = "ou"
+threshold = 0.0
+subpopulation_rule = "union(under OR high_total) (D31-06, consumed unchanged)"
+calibration_method = "prior_season_mean_bias_subtraction"
+sd_source = "frozen_tune_corrected_sd (total scale)"
+devig_method = "real_two_sided_devig(total_over_ju, total_under_ju); flat -110 when the stored juice is absent (pre-registration 3.3 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.090746836632002545
+ci_lo = nan
+ci_hi = nan
+bet_count = 123
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ou/sweep/t=0.01"
+target = "ou"
+threshold = 0.01
+subpopulation_rule = "union(under OR high_total) (D31-06, consumed unchanged)"
+calibration_method = "prior_season_mean_bias_subtraction"
+sd_source = "frozen_tune_corrected_sd (total scale)"
+devig_method = "real_two_sided_devig(total_over_ju, total_under_ju); flat -110 when the stored juice is absent (pre-registration 3.3 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.065228150092779436
+ci_lo = nan
+ci_hi = nan
+bet_count = 107
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ou/sweep/t=0.02"
+target = "ou"
+threshold = 0.02
+subpopulation_rule = "union(under OR high_total) (D31-06, consumed unchanged)"
+calibration_method = "prior_season_mean_bias_subtraction"
+sd_source = "frozen_tune_corrected_sd (total scale)"
+devig_method = "real_two_sided_devig(total_over_ju, total_under_ju); flat -110 when the stored juice is absent (pre-registration 3.3 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.069258595645895732
+ci_lo = nan
+ci_hi = nan
+bet_count = 94
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ou/sweep/t=0.029999999999999999"
+target = "ou"
+threshold = 0.029999999999999999
+subpopulation_rule = "union(under OR high_total) (D31-06, consumed unchanged)"
+calibration_method = "prior_season_mean_bias_subtraction"
+sd_source = "frozen_tune_corrected_sd (total scale)"
+devig_method = "real_two_sided_devig(total_over_ju, total_under_ju); flat -110 when the stored juice is absent (pre-registration 3.3 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.051005964344312572
+ci_lo = nan
+ci_hi = nan
+bet_count = 81
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ou/sweep/t=0.050000000000000003"
+target = "ou"
+threshold = 0.050000000000000003
+subpopulation_rule = "union(under OR high_total) (D31-06, consumed unchanged)"
+calibration_method = "prior_season_mean_bias_subtraction"
+sd_source = "frozen_tune_corrected_sd (total scale)"
+devig_method = "real_two_sided_devig(total_over_ju, total_under_ju); flat -110 when the stored juice is absent (pre-registration 3.3 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "tune_2021_2024"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = 0.048926887914648234
+ci_lo = nan
+ci_hi = nan
+bet_count = 57
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "wp/primary"
+target = "wp"
+threshold = 0.050000000000000003
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "deployed_isotonic_used_unchanged (D31-07 default)"
+sd_source = "none (D31-07: a calibrated classifier has no residual SD)"
+devig_method = "real_two_sided_moneyline (per game and per side, D31-04)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "hold_2025"
+robustness_cut = "none"
+raw_p = 0.41179410294852575
+adjusted_p = 0.671664167916042
+roi = 0.014408465573452605
+ci_lo = -0.23718108428651416
+ci_hi = 0.21400669330762565
+bet_count = 65
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "wp/robustness"
+target = "wp"
+threshold = 0.050000000000000003
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "deployed_isotonic_used_unchanged (D31-07 default)"
+sd_source = "none (D31-07: a calibrated classifier has no residual SD)"
+devig_method = "real_two_sided_moneyline (per game and per side, D31-04)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "hold_2025"
+robustness_cut = "regular_season_only + playoffs_excluded (byte-identical frames; counted once)"
+raw_p = 0.447776111944028
+adjusted_p = 0.671664167916042
+roi = 0.0073879941712662201
+ci_lo = -0.27053188841813702
+ci_hi = 0.22004118492133537
+bet_count = 62
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "wp/control/shifted_edge"
+target = "wp"
+threshold = 0.050000000000000003
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "deployed_isotonic_used_unchanged (D31-07 default)"
+sd_source = "none (D31-07: a calibrated classifier has no residual SD)"
+devig_method = "real_two_sided_moneyline (per game and per side, D31-04)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "hold_2025"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = -0.058694026156004935
+ci_lo = nan
+ci_hi = nan
+bet_count = 284
+entry_kind = "control"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ats/primary"
+target = "ats"
+threshold = 0.050000000000000003
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "prior_season_mean_bias_correction"
+sd_source = "frozen_tune_corrected_sd (home-margin scale)"
+devig_method = "real_two_sided_devig(spread_ju_home, spread_ju_away); flat -110 when the stored juice is absent (pre-registration 3.2 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "hold_2025"
+robustness_cut = "none"
+raw_p = 0.76061969015492259
+adjusted_p = 0.76061969015492259
+roi = -0.052760703432021903
+ci_lo = -0.20312498771456264
+ci_hi = 0.0863424646731277
+bet_count = 161
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ats/robustness"
+target = "ats"
+threshold = 0.050000000000000003
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "prior_season_mean_bias_correction"
+sd_source = "frozen_tune_corrected_sd (home-margin scale)"
+devig_method = "real_two_sided_devig(spread_ju_home, spread_ju_away); flat -110 when the stored juice is absent (pre-registration 3.2 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "hold_2025"
+robustness_cut = "regular_season_only + playoffs_excluded (byte-identical frames; counted once)"
+raw_p = 0.75562218890554722
+adjusted_p = 0.76061969015492259
+roi = -0.05931816131756238
+ci_lo = -0.20950976334153124
+ci_hi = 0.091742708722181571
+bet_count = 153
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ats/control/shifted_edge"
+target = "ats"
+threshold = 0.050000000000000003
+subpopulation_rule = "none (D31-05: no eligibility gate; the EV floor alone decides)"
+calibration_method = "prior_season_mean_bias_correction"
+sd_source = "frozen_tune_corrected_sd (home-margin scale)"
+devig_method = "real_two_sided_devig(spread_ju_home, spread_ju_away); flat -110 when the stored juice is absent (pre-registration 3.2 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "hold_2025"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = -0.074706791363461145
+ci_lo = nan
+ci_hi = nan
+bet_count = 285
+entry_kind = "control"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ou/primary"
+target = "ou"
+threshold = 0.0
+subpopulation_rule = "union(under OR high_total) (D31-06, consumed unchanged)"
+calibration_method = "prior_season_mean_bias_subtraction"
+sd_source = "frozen_tune_corrected_sd (total scale)"
+devig_method = "real_two_sided_devig(total_over_ju, total_under_ju); flat -110 when the stored juice is absent (pre-registration 3.3 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "hold_2025"
+robustness_cut = "none"
+raw_p = 0.42128935532233885
+adjusted_p = 0.671664167916042
+roi = 0.032513056638189181
+ci_lo = -0.25091580596336027
+ci_hi = 0.28807994281619181
+bet_count = 41
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ou/robustness"
+target = "ou"
+threshold = 0.0
+subpopulation_rule = "union(under OR high_total) (D31-06, consumed unchanged)"
+calibration_method = "prior_season_mean_bias_subtraction"
+sd_source = "frozen_tune_corrected_sd (total scale)"
+devig_method = "real_two_sided_devig(total_over_ju, total_under_ju); flat -110 when the stored juice is absent (pre-registration 3.3 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "hold_2025"
+robustness_cut = "regular_season_only + playoffs_excluded (byte-identical frames; counted once)"
+raw_p = 0.42128935532233885
+adjusted_p = 0.671664167916042
+roi = 0.032513056638189181
+ci_lo = -0.25091580596336027
+ci_hi = 0.28807994281619181
+bet_count = 41
+entry_kind = "inference"
+fallback_trigger = ""
+
+[[registry]]
+entry_id = "ou/control/shifted_edge"
+target = "ou"
+threshold = 0.0
+subpopulation_rule = "union(under OR high_total) (D31-06, consumed unchanged)"
+calibration_method = "prior_season_mean_bias_subtraction"
+sd_source = "frozen_tune_corrected_sd (total scale)"
+devig_method = "real_two_sided_devig(total_over_ju, total_under_ju); flat -110 when the stored juice is absent (pre-registration 3.3 step 4; DEF-31-13 ruled 2026-09-05, superseding D31-04's flat-quoted characterisation)"
+sizing_policy = "quarter_kelly -> 5pct per-bet cap -> same-game-and-side de-weight -> 10pct POOLED weekly cap (D31-02/D31-03, LOCKED order)"
+sample_window = "hold_2025"
+robustness_cut = "none"
+raw_p = nan
+adjusted_p = nan
+roi = -0.1095828696257007
+ci_lo = nan
+ci_hi = nan
+bet_count = 285
+entry_kind = "control"
+fallback_trigger = ""

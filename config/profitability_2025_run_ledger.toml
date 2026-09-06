@@ -1,0 +1,27 @@
+# =============================================================================
+# The DURABLE EXCLUSIVE one-shot run ledger for the 2025 clean-split verdict.
+#
+# This file is the record that the single-use 2025 split was spent. It is created by
+# an EXCLUSIVE file creation BEFORE the first hold-season read, so a crash between
+# reading the split and writing the verdict artifact leaves a 'failed' attempt on
+# disk rather than a silently re-spendable split.
+#
+# A 'started' or 'failed' attempt is NOT automatically rerunnable. There is NO force
+# flag: a new attempt requires an OWNER RULING recorded here, which is a deliberate
+# human edit to a git-tracked file and therefore leaves a diff.
+# =============================================================================
+
+state = "completed"
+attempt_id = "3f1bcdc127434540a656f4ae554df398"
+started_at_utc = "2026-09-06T00:50:03.870150+00:00"
+preregistration_commit = "ee20773b58c3a59de2450d56c64992e240282820"
+window_label = "frozen_p31"
+window_is_the_preregistered_rule = true
+hold_seasons = ["2025"]
+transition_rule = "The ledger is created by an EXCLUSIVE file creation (open 'x') BEFORE the first 2025 read; if it already exists the runner REFUSES, and there is NO force flag. armed -> started is written before the first 2025 read. started -> completed is written after the verdict artifact lands. started -> failed is written on an error path. A ledger in state 'started' or 'failed' is NOT automatically rerunnable: a new attempt requires an OWNER RULING recorded in the ledger before the state may return to 'armed'. The runner additionally hard-refuses to overwrite an existing verdict artifact. Silently re-arming a crashed attempt would spend the single clean split twice while leaving a record that says it ran once."
+armed_at_utc = "2026-09-06T00:49:55.286481+00:00"
+owner_ruling = "ARM. CHECKPOINT 3 approved by the owner on 2026-09-05. The rehearsal on the disjoint 2021-2023/2024 split passed every plumbing check with all three fences held at full strength, and ten refusal paths were demonstrated firing live. I accept the nine open disclosures DEF-31-06 through DEF-31-16 as stated, including that 68 protected-window games were previously graded against fabricated 0.0 market lines, that the frozen gate baseline diverges from a re-score in 47 of 68 fields and was deliberately not re-frozen, and that Phase 30's snap and situational KEPT verdicts rest on superseded gold with nothing retrained. I accept that the BH family denominator is not knowable before the run, and that a thin or empty O/U result reporting UNDISCHARGEABLE_NO_BETS is a first-class pass. Spend the 2025 hold."
+prior_attempt_id = "24edd3860ce14114b91c576bbf61dcbc"
+finished_at_utc = "2026-09-06T00:50:13.796064+00:00"
+verdict_artifact = "C:\\Users\\jackc\\Code\\nfl-predict\\config\\profitability_2025_verdict.toml"
+verdict_run_record = "C:\\Users\\jackc\\Code\\nfl-predict\\outputs\\p31\\profitability_2025_verdict.json"
