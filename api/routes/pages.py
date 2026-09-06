@@ -16,7 +16,7 @@ Routes:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi import APIRouter, Depends, Query, Request
 
@@ -342,20 +342,78 @@ def _is_bet_cache_stale(populated_at: Any, latest_game_freeze: Any) -> bool:
     It is a TIMESTAMP COMPARISON, not a metric. No EV, stake, tier or return is derived here, so
     the zero-computation contract of the request path is untouched (UIAP-01).
 
-    It FAILS OPEN when either timestamp is missing or unreadable. Blocking on a timestamp that
-    cannot be read would put the sentence "the cache is older than this week's line freeze" on the
-    page as a claim nothing established -- and this phase is about not overstating things. The
-    absence is surfaced separately and visibly by the cache stamp, which names a missing
-    populated-at rather than interpolating a blank.
+    THE TWO ABSENT-VALUE CASES ARE HANDLED EXPLICITLY, AND ASYMMETRICALLY (plan 31-18). Plan 31-15
+    failed open on either value, which was right while the marker had no writer: blocking on a
+    value nothing established would have put an unsupported claim on the page. Now that the
+    population stamps a per-week marker, each absence has its own meaning:
 
-    A PAST week is not blocked by construction: its freeze instant precedes any later population
+    * **No expected freeze** -> there is no threshold, so no claim is made and the week is not
+      blocked. An absent freeze means the week is not in the schedule at all; refusing it would
+      assert staleness against a line freeze nothing recorded. (The two schedule-derived tables
+      are built from ONE frame in one population, so a week reachable through the selector always
+      has a freeze -- see ``test_the_two_schedule_derived_tables_carry_the_same_weeks``.)
+    * **A freeze exists but the marker does not, or cannot be read** -> STALE. The marker is
+      written STRICTLY AFTER a successful blob insert, so its absence means the population never
+      recorded a success for this week. That IS the guarded failure, and it is the state in which
+      the week may carry no bet rows at all -- so failing open here would render a failed
+      insertion as an honest empty week, which is a claim about the models made from the absence
+      of an insertion.
+
+    A PAST week is not blocked by construction: its own freeze instant precedes its own population
     run, so the comparison is false without needing a separate current-week test.
     """
-    populated = _as_utc(populated_at)
     freeze = _as_utc(latest_game_freeze)
-    if populated is None or freeze is None:
+    if freeze is None:
         return False
+    populated = _as_utc(populated_at)
+    if populated is None:
+        return True
     return populated < freeze
+
+
+class BetFreshness(NamedTuple):
+    """The staleness verdict and the two timestamps the refusal interpolates.
+
+    Returned as one object so the verdict and the values the reader is shown to check it against
+    come from the SAME pair of reads -- a second, separate lookup for display could disagree with
+    the one the block was decided on.
+    """
+
+    blocked: bool
+    populated_at: Any
+    expected_freeze: Any
+
+
+def _bets_blocked(
+    service: DataService, season: int | None, week: int | None
+) -> BetFreshness:
+    """THE refusal branch: is this week's bet list older than this week's latest line freeze?
+
+    Both sides are keyed LOOKUPS and NEITHER depends on a bet row existing, which is what lets the
+    block fire in the zero-row case it was built for (REVIEW-STALE):
+
+    * ``get_bet_week_freeze`` reads the SCHEDULE-derived ``bet_week_freeze`` table. Reading the
+      threshold off the bet rows was rejected because the failure being guarded is a missing
+      bet-list insertion -- a guard that reads its own threshold from the data it is checking
+      cannot fire in the case it was built for.
+    * ``get_bet_list_populated_at`` reads the PER-WEEK marker. Reading it off ``get_cache_meta``'s
+      generic ``last_updated`` was rejected because that advances whenever ANY cache table is
+      repopulated, so a run that populated predictions and failed on the bet list would look fresh
+      (D31-29).
+
+    ``tests/api/test_bets_page.py`` asserts that source restriction STRUCTURALLY, by walking this
+    function's AST for the attributes called on ``service`` -- so the two rejected sources can be
+    named in this docstring without a text search reporting a false violation.
+
+    Zero computation: two reads and one timestamp comparison (UIAP-01).
+    """
+    populated_at = service.get_bet_list_populated_at(season, week)
+    expected_freeze = service.get_bet_week_freeze(season, week)
+    return BetFreshness(
+        blocked=_is_bet_cache_stale(populated_at, expected_freeze),
+        populated_at=populated_at,
+        expected_freeze=expected_freeze,
+    )
 
 
 def _build_bets_context(
@@ -374,10 +432,10 @@ def _build_bets_context(
     one place and cannot drift between them.
     """
     cache_meta = service.get_cache_meta()
-    bet_week_freeze = service.get_bet_week_freeze(season, week)
-    # The PER-WEEK marker (D31-29), never the generic cache timestamp and never a bare prefix
-    # key. See DataService.get_bet_list_populated_at for why both fallbacks are refused.
-    bet_list_populated_at = service.get_bet_list_populated_at(season, week)
+    # The staleness verdict and the two timestamps the refusal interpolates, from ONE pair of
+    # reads (D31-27/29). See _bets_blocked for why neither side may come from get_cache_meta or
+    # from the bet rows.
+    freshness = _bets_blocked(service, season, week)
 
     return {
         "request": request,
@@ -391,18 +449,21 @@ def _build_bets_context(
         "bet_seasons": service.get_bet_seasons(),
         "current_season": season,
         "current_week": week,
-        "bet_week_freeze": bet_week_freeze,
+        "bet_week_freeze": freshness.expected_freeze,
         "current_path": "/bets",
         "cache_meta": cache_meta,
         # A cache that predates Phase 31 has no bet_list table. That is a DIFFERENT absence from a
         # week that admitted nothing, and the page says so rather than reporting a missing table
         # as a modelling result (plan 31-15, UI-SPEC E2 empty).
         "bet_list_available": service.bet_list_table_exists(),
-        "bet_list_populated_at": bet_list_populated_at,
-        # The stale-cache hard-block (D31-27). The TEMPLATE branch and this page-level trigger land
-        # here; Plan 31-18 owns the rest of the wiring (the forward tracker block's scoping and the
-        # pipeline-side freeze materialization).
-        "bets_blocked": _is_bet_cache_stale(bet_list_populated_at, bet_week_freeze),
+        "bet_list_populated_at": freshness.populated_at,
+        # The stale-cache hard-block (D31-27), SCOPED. It withholds the current week's list, that
+        # week's suppressed disclosure and the forward tracker block -- all three are computed
+        # from the cache this verdict just declared out of date. Replay weeks and the replay
+        # tracker block render normally in the SAME response, because they predate the failure
+        # entirely and cannot be mistaken for current. Blocking the whole page was rejected: it
+        # denies access to content that is not stale and trains readers to ignore the guard.
+        "bets_blocked": freshness.blocked,
         # The PRECOMPUTED realized-vs-expected tracker blocks (SPEC R8, D31-22, plan 31-16). One
         # stored row per (provenance, validation_type) class, aggregated at population time by
         # ``backtest.bet_tracker`` and read here without a single arithmetic operation -- no count,

@@ -61,11 +61,28 @@
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <div class="text-center text-sm text-gray-500">
         <p>NFL Prediction System -- Precomputed predictions served from DuckDB cache</p>
+        {# DEF-31-16: the guard is on the KEY, not on the dict.
+           ``{% if cache_meta %}`` tested whether the DICT was non-empty. An EMPTY cache_meta took
+           the else branch and rendered "Unknown", which is why this never fired -- but a
+           cache_meta carrying ROWS and no ``last_updated`` took the FIRST branch,
+           ``cache_meta.last_updated`` resolved to Jinja Undefined, and
+           ``api/dependencies.py::format_datetime`` called ``.strftime`` on it. That is an
+           UndefinedError, and because this footer lives in the SHARED base template it 500s
+           EVERY page on the site, not just the one being built.
+
+           It was unreachable while ONE writer stamped cache_meta and always wrote its three keys
+           together. Plan 31-18 adds a SECOND, INDEPENDENT writer -- the per-week bet-list marker
+           -- which is exactly what makes the shape reachable: a partial rebuild, a resumed run or
+           a hand-built cache can now carry marker rows without ``last_updated``.
+
+           ``.get`` yields None for a missing key; ``format_datetime`` already renders None as
+           "Unknown", so the fallback is unchanged for BOTH absences. The ``or ''`` keeps the data
+           attribute empty rather than the string "None", so the client-side localiser skips it. #}
         <p class="mt-1">
           Data updated:
           <span id="cache-timestamp"
-                data-utc="{{ cache_meta.last_updated if cache_meta else '' }}">
-            {{ cache_meta.last_updated|format_datetime if cache_meta else 'Unknown' }}
+                data-utc="{{ (cache_meta.get('last_updated') if cache_meta else None) or '' }}">
+            {{ (cache_meta.get('last_updated') if cache_meta else None)|format_datetime }}
           </span>
           {% if cache_meta and cache_meta.prediction_count %}
             <span class="mx-1">--</span> {{ cache_meta.prediction_count }} predictions loaded

@@ -2134,3 +2134,459 @@ def test_exactly_one_partial_owns_the_validation_type_vocabulary() -> None:
     assert found == ["_provenance_badge.html"], (
         f"a second provenance partial appeared: {found}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The SCOPED stale-cache hard-block, wired to the per-week marker (plan 31-18, D31-27/29)
+# ---------------------------------------------------------------------------
+#
+# WHAT PLAN 31-15 LEFT AND WHAT THIS SECTION ADDS. Plan 31-15 wired the page-level trigger as a
+# TIMESTAMP COMPARISON that FAILED OPEN on either value being unreadable. That was right while the
+# marker had no writer: blocking on a value nothing established would have put an unsupported claim
+# on the page. Now that plan 31-18 writes the marker, the ABSENT-MARKER case has a definite meaning
+# -- the population never succeeded for that week -- and it is the guarded failure itself. So the
+# two absent-value cases are now handled EXPLICITLY and asymmetrically:
+#
+#   * expected freeze ABSENT      -> no threshold exists, so no claim is made (not blocked);
+#   * expected freeze PRESENT and marker ABSENT/unreadable -> STALE.
+#
+# THE THRESHOLD COMES FROM THE SCHEDULE, NOT FROM THE BET ROWS (REVIEW-STALE). The failure being
+# guarded is a MISSING bet-list insertion, and in that state the week may have NO rows at all. A
+# guard reading its own threshold out of the data it is checking could not fire in the one case it
+# was built for, and would render a blank list as an honest empty week. That is exactly what
+# ``test_the_zero_row_case_renders_the_refusal_and_not_the_zero_admitted_state`` pins.
+
+_REFUSAL_BRANCH_FUNCTION = "_bets_blocked"
+_REFUSAL_REQUIRED_GETTERS = frozenset(
+    {"get_bet_week_freeze", "get_bet_list_populated_at"}
+)
+# ``get_cache_meta`` is the generic-timestamp source D31-29 rejected; ``get_bet_list`` is the
+# bet-row source REVIEW-STALE rejected. Neither may appear in the freshness verdict.
+_REFUSAL_FORBIDDEN_GETTERS = frozenset({"get_cache_meta", "get_bet_list"})
+
+
+def _service_calls_in(function_name: str) -> set[str]:
+    """Every attribute called on the ``service`` object inside *function_name* in pages.py.
+
+    STRUCTURAL, not a text search. A comment or docstring naming the rejected sources -- and this
+    module's own code names all four -- cannot trip it, while an actual call to one of them does.
+    """
+    import api.routes.pages as pages_module
+
+    tree = ast.parse(Path(pages_module.__file__).read_text(encoding="utf-8"))
+    target = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        ),
+        None,
+    )
+    assert target is not None, (
+        f"api/routes/pages.py defines no function named {function_name!r}; the refusal branch "
+        "moved and this guard has gone stale rather than passing"
+    )
+    return {
+        node.func.attr
+        for node in ast.walk(target)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "service"
+    }
+
+
+def test_the_refusal_branch_reads_the_schedule_freeze_and_the_per_week_marker() -> None:
+    """The staleness verdict is computed from the two LOOKUPS, and from nothing else."""
+    called = _service_calls_in(_REFUSAL_BRANCH_FUNCTION)
+
+    missing = _REFUSAL_REQUIRED_GETTERS - called
+    assert not missing, (
+        f"{_REFUSAL_BRANCH_FUNCTION} does not call {sorted(missing)}; the staleness verdict is "
+        "not being computed from the schedule-derived freeze and the per-week marker"
+    )
+    forbidden = _REFUSAL_FORBIDDEN_GETTERS & called
+    assert not forbidden, (
+        f"{_REFUSAL_BRANCH_FUNCTION} calls {sorted(forbidden)}. get_cache_meta is the generic "
+        "timestamp D31-29 rejected (it advances when ANY table is repopulated); get_bet_list is "
+        "the bet-row source REVIEW-STALE rejected (it is empty in the very case the guard exists "
+        "for). Neither may decide freshness."
+    )
+
+
+def test_the_structural_guard_is_not_vacuous() -> None:
+    """The scan finds real calls, so an empty result cannot pass as 'no forbidden getters'."""
+    assert _service_calls_in(_REFUSAL_BRANCH_FUNCTION), (
+        "the AST scan found no service calls at all in the refusal branch; it would report any "
+        "forbidden getter as absent"
+    )
+    # And it CAN see a forbidden name: _build_bets_context legitimately calls get_cache_meta for
+    # the footer, so a scan that never reports it is a scan that is not looking.
+    assert "get_cache_meta" in _service_calls_in("_build_bets_context")
+
+
+def _blocked_cache(
+    tmp_path: Path,
+    name: str,
+    *,
+    bet_rows: list[dict[str, Any]],
+    freeze_weeks: list[dict[str, Any]],
+    week_rows: list[dict[str, Any]],
+    stamp: tuple[int, int] | None = None,
+    stamp_last_updated: bool = True,
+) -> Path:
+    """Build a cache with explicit control over the rows, the freeze table and the marker."""
+    clear_cache()
+    db_path = tmp_path / f"{name}.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        if bet_rows:
+            materialize_bet_list(conn, pd.DataFrame(bet_rows))
+        materialize_available_bet_weeks(conn, pd.DataFrame(week_rows))
+        if freeze_weeks:
+            materialize_bet_week_freeze(conn, pd.DataFrame(freeze_weeks))
+        if stamp is not None:
+            _stamp_populated_at(conn, _POPULATED_AT, season=stamp[0], week=stamp[1])
+        elif stamp_last_updated:
+            stamped_at = datetime(2023, 9, 8, 22, 30, 0)
+            conn.executemany(
+                "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+                [["last_updated", stamped_at.isoformat(), stamped_at]],
+            )
+    finally:
+        conn.close()
+    return db_path
+
+
+def test_the_zero_row_case_renders_the_refusal_and_not_the_zero_admitted_state(
+    tmp_path: Path,
+) -> None:
+    """THE failure the guard exists for: the week is scheduled, has NO bet rows, and no marker.
+
+    A version reading its threshold from the bet rows could not produce this render -- there are no
+    rows to read a freeze from -- and would show a blank list as though the week had honestly
+    admitted nothing. That is a claim about the models made from the absence of an insertion.
+    """
+    db_path = _blocked_cache(
+        tmp_path,
+        "zero_rows",
+        bet_rows=[],
+        freeze_weeks=[
+            {"season": _SEASON, "week": _WEEK, "game_freeze_ts": _LATER_FREEZE}
+        ],
+        week_rows=[{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}],
+        stamp=None,
+    )
+
+    with contextmanager(_client)(db_path) as client:
+        response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
+
+    assert response.status_code == 200
+    body = response.text
+    assert _HARD_BLOCK_MESSAGE in body, (
+        "a scheduled week with a known freeze, ZERO bet rows and no populated-at marker rendered "
+        "something other than the refusal; this is precisely the failed-insertion state D31-29 "
+        "designed the marker to catch"
+    )
+    assert _ZERO_ADMITTED_HEADING not in body, (
+        "the failed insertion was reported as 'no bets cleared the floor', which is a claim about "
+        "the models made from the absence of an insertion"
+    )
+    assert _BANNER_EYEBROW in body
+
+
+def test_a_week_with_no_freeze_row_at_all_renders_the_no_current_week_state(
+    tmp_path: Path,
+) -> None:
+    """No schedule -> no freeze threshold and no selectable week -> the empty state, not a refusal.
+
+    An absent expected freeze means the week is not in the schedule at all, and a refusal there
+    would assert that a cache is out of date relative to a line freeze nothing recorded. In
+    production the two schedule-derived tables cannot disagree -- see the test below -- so this is
+    the only shape the absence takes.
+    """
+    db_path = _blocked_cache(
+        tmp_path,
+        "no_freeze",
+        bet_rows=[],
+        freeze_weeks=[],
+        week_rows=[],
+        stamp=None,
+    )
+
+    with contextmanager(_client)(db_path) as client:
+        body = client.get("/bets").text
+
+    assert _NO_CURRENT_WEEK_HEADING in body
+    assert _HARD_BLOCK_MESSAGE not in body, (
+        "the page refused a week it has no freeze threshold for; the refusal would be asserting "
+        "staleness against a line freeze nothing recorded"
+    )
+
+
+def test_the_two_schedule_derived_tables_carry_the_same_weeks(tmp_path: Path) -> None:
+    """``available_bet_weeks`` and ``bet_week_freeze`` are built from ONE frame, so they agree.
+
+    This is the premise the routing above rests on: a week reachable through the selector always
+    has a freeze threshold, so "absent from the freeze table" can only mean "absent from the
+    schedule". Asserted through the real ``populate_cache``, not by reading the source.
+    """
+    from api.cache import populate_cache
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    db_path = tmp_path / "agree.duckdb"
+    schedule = pd.DataFrame(
+        [
+            {
+                "game_id": "2023_W01_DET@KC",
+                "season": _SEASON,
+                "week": _WEEK,
+                "game_freeze_ts": _LATER_FREEZE,
+            },
+            {
+                "game_id": "2023_W02_AAA@BBB",
+                "season": _SEASON,
+                "week": _EMPTY_WEEK,
+                "game_freeze_ts": _LATER_FREEZE,
+            },
+        ]
+    )
+    populate_cache(
+        db_path=db_path,
+        artifacts_dir=empty,
+        outputs_dir=empty,
+        gold_dir=empty,
+        silver_dir=empty,
+        bet_schedule_df=schedule,
+    )
+
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        weeks = set(
+            conn.execute("SELECT season, week FROM available_bet_weeks").fetchall()
+        )
+        freezes = set(
+            conn.execute("SELECT season, week FROM bet_week_freeze").fetchall()
+        )
+    finally:
+        conn.close()
+
+    assert weeks == freezes == {(_SEASON, _WEEK), (_SEASON, _EMPTY_WEEK)}, (
+        f"the two schedule-derived tables disagree: navigation {sorted(weeks)} vs freeze "
+        f"{sorted(freezes)}. A selectable week with no freeze threshold would resolve to the "
+        "no-current-week state while plainly being a current week."
+    )
+
+
+def test_a_past_week_renders_normally_in_the_same_response_shape_as_a_blocked_one(
+    tmp_path: Path,
+) -> None:
+    """The refusal is SCOPED: one week is refused while another is served, from ONE cache.
+
+    Week 1's population succeeded (its marker is stamped and postdates its freeze); week 2's did
+    not (no marker, freeze present). Requesting week 2 refuses; requesting week 1 in the same cache
+    serves the list. Blocking the whole page was rejected -- it punishes the reader for an
+    unrelated failure and trains people to ignore the guard.
+    """
+    early_freeze = datetime(2023, 9, 8, 22, 0, 0)  # BEFORE _POPULATED_AT
+    db_path = _blocked_cache(
+        tmp_path,
+        "scoped",
+        bet_rows=[_live_row("2023_W01_DET@KC", "ou")],
+        freeze_weeks=[
+            {"season": _SEASON, "week": _WEEK, "game_freeze_ts": early_freeze},
+            {
+                "season": _SEASON,
+                "week": _EMPTY_WEEK,
+                "game_freeze_ts": _LATER_FREEZE,
+            },
+        ],
+        week_rows=[
+            {"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK},
+            {"game_id": "2023_W02_AAA@BBB", "season": _SEASON, "week": _EMPTY_WEEK},
+        ],
+        stamp=(_SEASON, _WEEK),
+    )
+
+    with contextmanager(_client)(db_path) as client:
+        blocked = client.get(f"/bets?season={_SEASON}&week={_EMPTY_WEEK}").text
+        served = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert _HARD_BLOCK_MESSAGE in blocked, (
+        "week 2's population never recorded a success, yet its list was served"
+    )
+    assert _HARD_BLOCK_MESSAGE not in served, (
+        "week 1 was refused although its own marker postdates its own freeze; the refusal is not "
+        "scoped to the week that failed"
+    )
+    assert "Stake (units)" in served
+    # The replay tracker survives the refusal: a replay figure does not depend on the current
+    # week's line freeze.
+    assert _REPLAY_HEADING in blocked
+    assert _FORWARD_WITHHELD_MESSAGE in blocked
+    assert _BANNER_EYEBROW in blocked
+
+
+def test_the_recovery_text_names_the_command_and_both_timestamps(
+    tmp_path: Path,
+) -> None:
+    """The reader can CHECK the claim rather than take it (UI-SPEC E7 error)."""
+    db_path = _blocked_cache(
+        tmp_path,
+        "recovery",
+        bet_rows=[_live_row("2023_W01_DET@KC", "ou")],
+        freeze_weeks=[
+            {"season": _SEASON, "week": _WEEK, "game_freeze_ts": _LATER_FREEZE}
+        ],
+        week_rows=[{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}],
+        stamp=(_SEASON, _WEEK),
+    )
+
+    with contextmanager(_client)(db_path) as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    assert "scripts/populate_cache.py" in body, (
+        "the refusal does not name the command that fixes it"
+    )
+    assert _POPULATED_AT in body, (
+        "the refusal does not interpolate the populated-at timestamp"
+    )
+    assert str(_LATER_FREEZE) in body, (
+        "the refusal does not interpolate the latest game freeze"
+    )
+    # The list and the suppressed disclosure are both withheld, and nothing else is.
+    assert "Stake (units)" not in body
+    assert "Suppressed candidates" not in body
+
+
+# ---------------------------------------------------------------------------
+# DEF-31-16: base.html's footer guards the KEY, not the dict (plan 31-18 owns this)
+# ---------------------------------------------------------------------------
+#
+# ``web/templates/base.html`` renders the footer timestamp as
+# ``cache_meta.last_updated if cache_meta else 'Unknown'``. The guard tests the DICT. An EMPTY
+# cache_meta takes the else branch and renders "Unknown", which is why this never fired. A
+# NON-EMPTY cache_meta that happens not to carry ``last_updated`` takes the FIRST branch,
+# ``cache_meta.last_updated`` resolves to Jinja ``Undefined``, and ``api/dependencies.py``'s
+# ``format_datetime`` calls ``.strftime`` on it -- ``UndefinedError``, a 500 on EVERY page on the
+# site, not just the one being built.
+#
+# It was unreachable while ONE writer populated cache_meta and always wrote all three keys
+# together. Plan 31-18 adds a SECOND, INDEPENDENT writer (the per-week bet-list marker), which is
+# exactly what makes the shape reachable: a partial rebuild, a resumed run or a hand-built cache
+# can now carry marker rows without ``last_updated``. Fixed here, and proven with a render that
+# 500s before the fix.
+
+_FOOTER_UNKNOWN = "Unknown"
+
+
+def _cache_meta_without_last_updated(tmp_path: Path, name: str) -> Path:
+    """A cache whose ``cache_meta`` has ROWS but no ``last_updated`` -- the DEF-31-16 shape."""
+    clear_cache()
+    db_path = tmp_path / f"{name}.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        materialize_bet_list(conn, pd.DataFrame([_live_row("2023_W01_DET@KC", "ou")]))
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}]
+            ),
+        )
+        stamped_at = datetime(2023, 9, 8, 22, 30, 0)
+        conn.executemany(
+            "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+            [[bet_list_populated_at_key(_SEASON, _WEEK), _POPULATED_AT, stamped_at]],
+        )
+        rows = conn.execute("SELECT key FROM cache_meta").fetchall()
+    finally:
+        conn.close()
+
+    keys = {row[0] for row in rows}
+    assert keys and "last_updated" not in keys, (
+        f"the fixture does not carry the DEF-31-16 shape (rows, no last_updated): {sorted(keys)}"
+    )
+    return db_path
+
+
+def test_a_cache_meta_with_rows_but_no_last_updated_does_not_500_the_bets_page(
+    tmp_path: Path,
+) -> None:
+    """DEF-31-16: the footer guard is on the KEY, so a missing key renders 'Unknown'."""
+    db_path = _cache_meta_without_last_updated(tmp_path, "def_31_16_bets")
+
+    with contextmanager(_client)(db_path) as client:
+        response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
+
+    assert response.status_code == 200, (
+        "a cache_meta carrying rows but no last_updated 500'd the page. base.html's footer guard "
+        "tests the DICT rather than the KEY, so cache_meta.last_updated resolves to Jinja "
+        "Undefined and format_datetime calls .strftime on it (DEF-31-16)"
+    )
+    assert _FOOTER_UNKNOWN in response.text, (
+        "the footer rendered without naming the missing timestamp; a blank would hide the absence"
+    )
+    assert "Data updated:" in response.text
+
+
+def test_the_same_cache_meta_does_not_500_any_other_page_either(
+    tmp_path: Path,
+) -> None:
+    """The blast radius is the WHOLE SITE, not /bets: the footer is in the shared base template.
+
+    Asserted across every top-nav route, because the defect's severity is exactly that it is not
+    scoped to the page whose data is missing.
+    """
+    db_path = _cache_meta_without_last_updated(tmp_path, "def_31_16_site")
+
+    with contextmanager(_client)(db_path) as client:
+        for route in (
+            "/",
+            "/performance",
+            "/backtest",
+            "/insights",
+            "/betting",
+            "/season",
+        ):
+            response = client.get(route)
+            assert response.status_code == 200, (
+                f"{route} returned {response.status_code} for a cache_meta with rows but no "
+                "last_updated; the footer read is unguarded on the key (DEF-31-16)"
+            )
+            assert _FOOTER_UNKNOWN in response.text
+
+
+def test_the_footer_still_renders_the_timestamp_when_it_is_present(
+    tmp_path: Path,
+) -> None:
+    """The control: the fix must not turn every footer into 'Unknown'.
+
+    Without this, a guard that dropped the value entirely would satisfy the two tests above while
+    silently removing the cache stamp from every page on the site.
+    """
+    clear_cache()
+    db_path = tmp_path / "footer_present.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        materialize_bet_list(conn, pd.DataFrame([_live_row("2023_W01_DET@KC", "ou")]))
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [{"game_id": "2023_W01_DET@KC", "season": _SEASON, "week": _WEEK}]
+            ),
+        )
+        _stamp_populated_at(conn, _POPULATED_AT)
+    finally:
+        conn.close()
+
+    with contextmanager(_client)(db_path) as client:
+        response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
+
+    assert response.status_code == 200
+    body = response.text
+    assert 'data-utc="2023-09-08T22:30:00"' in body, (
+        "the footer no longer renders the cache timestamp it does have; the DEF-31-16 fix "
+        "swallowed the value instead of guarding the key"
+    )
+    assert "Sep 08, 2023" in body
