@@ -454,3 +454,65 @@ CHECKPOINT_2_READOUT_OBLIGATIONS: Final[tuple[str, ...]] = (
     "State that the owner ACCEPTED this at CHECKPOINT 2 on 2026-09-05, with the rationale "
     "recorded, so a reader knows the divergence was ruled on rather than discovered later.",
 )
+
+
+# ---------------------------------------------------------------------------
+# The 2025 MEASUREMENT COMMIT and the verdict artifact's digest (Plan 31-14 Task 2).
+#
+# APPENDED on 2026-09-05, in a SEPARATE, LATER commit than the verdict artifact itself. The
+# separation is not bookkeeping: a commit hash is a FUNCTION of the committed bytes, so an
+# artifact that carried its own commit hash would have no fixed point and the assertion built on
+# it could never be satisfied (REVIEW-CIRCULAR). The witness therefore lives OUTSIDE the artifact
+# it witnesses, exactly as PRE_REGISTRATION_COMMIT does above and exactly as
+# tests/phase30_state.py resolved the same problem for Phase 30.
+#
+# APPENDING AFTER THE MEASUREMENT IS NOT A POST-HOC EDIT OF THE RULE. This module records FACTS
+# ABOUT the frozen artifacts and never changes them: PROFITABILITY-PREREGISTRATION.md and
+# backtest/ev_chain_constants.py are byte-unchanged from the ee20773 anchor, and the ancestry
+# relation the assertion rests on holds either way -- the rule commit strictly precedes the
+# measurement commit, and the two are different commits. What could not exist before the run is
+# the measurement commit itself; nothing about the rule was decided here.
+#
+# THE RELATION, reproducible from any non-shallow checkout. Four claims, all verified at append
+# time: `git merge-base --is-ancestor <PRE_REGISTRATION_COMMIT> <MEASUREMENT_COMMIT>` exits 0;
+# the two SHAs are NOT equal; the measurement SHA below equals what
+# `git log -1 --format=%H -- config/profitability_2025_verdict.toml` resolves; and the digest
+# below equals the sha256 of that file's committed bytes.
+#
+# WHAT THE MEASUREMENT COMMIT CONTAINS. Exactly two paths -- the verdict artifact and the
+# COMPLETED run ledger -- so the record of what was spent travels in the same commit as what was
+# measured, and neither can be produced without the other.
+# ---------------------------------------------------------------------------
+MEASUREMENT_COMMIT: Final[str] = "01b246468f2f330c35d54e051be248f0f8994376"
+
+# sha256 of config/profitability_2025_verdict.toml's NEWLINE-NORMALIZED bytes -- every CRLF
+# folded to LF before hashing, on the same basis as PRE_REGISTRATION_FILE_SHA256 above and for
+# the same reason: core.autocrlf=true with no .gitattributes means a raw working-tree digest
+# would hold only on the machine that measured it. Normalized, this equals the sha256 of
+# `git cat-file blob <MEASUREMENT_COMMIT>:config/profitability_2025_verdict.toml`, and both
+# routes were computed and compared equal at append time.
+VERDICT_FILE_SHA256: Final[str] = (
+    "4befbcb73dd5697e75052f49d4d97091d1085dac74af794e1a4ec9916c9ead2e"
+)
+
+VERDICT_PATH: Final[str] = "config/profitability_2025_verdict.toml"
+RUN_LEDGER_COMMITTED_PATH: Final[str] = "config/profitability_2025_run_ledger.toml"
+
+MEASUREMENT_PROVENANCE: Final[dict[str, str]] = {
+    "plan": "31-14",
+    "task": "Task 2: CHECKPOINT 3 -- arm the one-shot 2025 run",
+    "date": "2026-09-05",
+    "checkpoint_3_decision": "ARM",
+    "attempt_id": "3f1bcdc127434540a656f4ae554df398",
+    "prior_armed_attempt_id": "24edd3860ce14114b91c576bbf61dcbc",
+    "hold_seasons": "2025 ONLY -- 285 games, playoffs included",
+    "tune_seasons": "2021-2024, with 2018-2020 as the strictly-prior bias seed",
+    "resolved_by": "git log -1 --format=%H -- config/profitability_2025_verdict.toml",
+    "hash_basis": "newline-normalized file bytes (CRLF folded to LF); equals the git blob sha256",
+    "commit_contents": (
+        "exactly the verdict artifact and the COMPLETED run ledger, and nothing else"
+    ),
+    "tokens": "wp INCONCLUSIVE_CLEAN, ats UNPROFITABLE_CLEAN, ou INCONCLUSIVE_CLEAN",
+    "bh_denominator_used": "6 -- 3 primary plus 3 robustness cuts; NO calibration fallback fired",
+    "clv_disposition": "REPORT-ONLY; carried beside the verdict, absent from the family",
+}
