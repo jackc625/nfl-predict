@@ -77,6 +77,9 @@ def test_prediction_phase_steps_run_unmocked(tmp_path, monkeypatch):
         "utils.date_utils.get_current_nfl_week", lambda: (_SEASON, _WEEK)
     )
 
+    bet_list_dir = tmp_path / "bet_list"
+    monkeypatch.setattr(steps, "_bet_list_output_dir", lambda: bet_list_dir)
+
     steps.step_generate_predictions()
     steps.step_export_artifacts()
     steps.step_generate_recommendations()
@@ -85,8 +88,16 @@ def test_prediction_phase_steps_run_unmocked(tmp_path, monkeypatch):
 
     assert (tmp_path / f"predictions_{_SEASON}_week{_WEEK}.csv").exists()
     assert (tmp_path / f"predictions_{_SEASON}_week{_WEEK}.json").exists()
-    assert (tmp_path / f"recommendations_{_SEASON}_week{_WEEK}.json").exists()
     assert (tmp_path / f"game_context_{_SEASON}_week{_WEEK}.csv").exists()
+
+    # RETIRED by plan 31-17 (D31-32): the legacy weekly JSON had no code consumer and its
+    # confidence-tier selection criterion is the helper renamed in the same wave. Asserting its
+    # ABSENCE is what makes the retirement a fact this suite re-checks on every run.
+    assert not (tmp_path / f"recommendations_{_SEASON}_week{_WEEK}.json").exists()
+
+    # What replaced it: the two durable bet-list artifacts, under their OWN directory.
+    assert (bet_list_dir / "bet_list.parquet").exists()
+    assert (bet_list_dir / "bet_tracker.json").exists()
 
 
 @pytest.mark.slow
@@ -134,6 +145,8 @@ def test_orchestrator_predictions_phase_e2e(tmp_path, monkeypatch):
 
     # Redirect every prediction-phase artifact into tmp_path via the one helper.
     monkeypatch.setattr(steps, "_predictions_output_dir", lambda: tmp_path)
+    bet_list_dir = tmp_path / "bet_list"
+    monkeypatch.setattr(steps, "_bet_list_output_dir", lambda: bet_list_dir)
 
     # No-op the network/rebuild-touching steps (D-02): the committed 2024 gold
     # already contains the odds/market/feature-matrix inputs, so we keep the REAL
@@ -155,10 +168,14 @@ def test_orchestrator_predictions_phase_e2e(tmp_path, monkeypatch):
     assert "game_id" in df.columns
     assert df["wp_prob"].between(0.0, 1.0).all()
 
-    # The export/recommendation/context artifacts the orchestrator loop produces.
+    # The export/bet-list/context artifacts the orchestrator loop produces.
     assert (tmp_path / f"predictions_{_SEASON}_week{_WEEK}.json").exists()
-    assert (tmp_path / f"recommendations_{_SEASON}_week{_WEEK}.json").exists()
     assert (tmp_path / f"game_context_{_SEASON}_week{_WEEK}.csv").exists()
+    assert (bet_list_dir / "bet_list.parquet").exists()
+    assert (bet_list_dir / "bet_tracker.json").exists()
+
+    # The retired weekly JSON (D31-32) is not produced by the REAL orchestrator loop either.
+    assert not (tmp_path / f"recommendations_{_SEASON}_week{_WEEK}.json").exists()
 
 
 @pytest.mark.slow

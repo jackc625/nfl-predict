@@ -102,6 +102,21 @@ def _predictions_output_dir() -> Path:
     return Path("outputs/predictions")
 
 
+def _bet_list_output_dir() -> Path:
+    """Directory where the DURABLE weekly bet-list artifacts are written.
+
+    Separate from ``_predictions_output_dir`` on purpose. These two files are CACHE SOURCE
+    artifacts -- the Plan 31-18 population step reads them INTO the temp cache build -- and they
+    are also the durable home of forward recommendation history, which the predictions CSVs are
+    not. Factored into one place so tests can redirect the write without touching the repo's
+    outputs/ tree. Taken from the module that owns the artifact names rather than restated, so the
+    writer here and the reader there cannot spell the directory differently.
+    """
+    from backtest.weekly_bet_list import DEFAULT_BET_LIST_DIR
+
+    return DEFAULT_BET_LIST_DIR
+
+
 # Single source of truth for the data artifacts the DATA-phase integrity gate
 # (step_verify_data_artifacts) requires before the PREDICTIONS phase may run.
 # Factored into one place so a drift regression test can import the same list
@@ -291,48 +306,46 @@ def step_generate_predictions() -> None:
 
 
 def step_generate_recommendations() -> None:
-    """Derive bet recommendations from the generated predictions.
+    """Select the week's +EV bet list through the single bet-decision source (PROD-02, SPEC R4).
 
-    A recommendation is any target whose edge cleared the medium/high confidence
-    threshold during prediction generation. Writes
-    ``recommendations_<season>_week<week>.json``.
+    THE ONE weekly recommendation path (D31-31). It delegates to
+    ``backtest.weekly_bet_list.generate_weekly_bet_list``, which routes every scheduled game times
+    every registered target through ``backtest.bet_selector.BetSelector`` -- pricing, EV admission,
+    Kelly sizing, suppression and grading all inside the LOCKED-2 decision engine -- and writes the
+    durable bet-list artifact the Plan 31-18 cache population step reads.
+
+    It REPLACES a legacy body that filtered on a confidence tier with no expected value, no sizing
+    and no suppression, and wrote ``recommendations_<season>_week<week>.json`` -- a file no code
+    ever read. That output is RETIRED (D31-32); nothing under the predictions output directory is
+    written here any more.
+
+    THE WRITE IS AN ARTIFACT, NEVER THE LIVE CACHE (REVIEW-CACHE). ``api.cache.populate_cache``
+    builds a fresh temporary database and ends with ``db_path.unlink()`` then
+    ``tmp_path.rename(db_path)``, so a live-cache write would be destroyed by the next population
+    run. No connection to the configured cache path is opened anywhere in this step.
+
+    THE TRACKER IS AGGREGATED HERE (REVIEW-IMPORT). ``backtest.bet_tracker`` is imported by THIS
+    module -- which is already permitted to import ``backtest`` -- and its precomputed frame is
+    handed to ``api.cache``'s pure persistence writer at population time. ``api/cache.py`` imports
+    no ``backtest`` module, so ``tests/api/test_import_guard_bets.py``'s allow-list is not widened.
+
+    Raises:
+        Whatever the delegate raises. Nothing is swallowed: a week that cannot be selected must
+        record a clean step failure rather than publish a silently empty bet list.
     """
-    import json
-
-    import pandas as pd
-
+    from backtest.bet_tracker import aggregate_all_blocks, to_tracker_frame
+    from backtest.weekly_bet_list import (
+        generate_weekly_bet_list,
+        write_bet_tracker_artifact,
+    )
     from utils.date_utils import get_current_nfl_week
 
     season, week = get_current_nfl_week()
-    output_dir = _predictions_output_dir()
-    pred_path = output_dir / f"predictions_{season}_week{week}.csv"
-    if not pred_path.exists():
-        raise RuntimeError(
-            f"Cannot generate recommendations -- predictions missing: {pred_path}"
-        )
-
-    df = pd.read_csv(pred_path)
-    target_cols = {
-        "wp": ("wp_edge", "wp_confidence"),
-        "ats": ("ats_edge", "ats_confidence"),
-        "ou": ("ou_edge", "ou_confidence"),
-    }
-    recommendations: list[dict] = []
-    for _, row in df.iterrows():
-        for target, (edge_col, conf_col) in target_cols.items():
-            if row.get(conf_col) in ("medium", "high"):
-                edge = row.get(edge_col)
-                recommendations.append(
-                    {
-                        "game_id": row.get("game_id"),
-                        "target": target,
-                        "edge": None if pd.isna(edge) else float(edge),
-                        "confidence": row.get(conf_col),
-                    }
-                )
-
-    rec_path = output_dir / f"recommendations_{season}_week{week}.json"
-    rec_path.write_text(json.dumps(recommendations, indent=2))
+    output_dir = _bet_list_output_dir()
+    bet_list = generate_weekly_bet_list(season=season, week=week, output_dir=output_dir)
+    write_bet_tracker_artifact(
+        to_tracker_frame(aggregate_all_blocks(bet_list)), output_dir=output_dir
+    )
 
 
 def step_export_artifacts() -> None:
@@ -533,7 +546,7 @@ def build_step_registry() -> list[StepDefinition]:
             PipelinePhase.PREDICTIONS,
             critical=True,
             retryable=False,
-            description="Generate bet recommendations",
+            description="Select the +EV bet list through BetSelector",
         ),
         StepDefinition(
             "export_artifacts",

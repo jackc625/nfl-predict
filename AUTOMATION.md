@@ -139,7 +139,7 @@ errors trigger retry.
 | 12 | `validate_features` | PREDICTIONS | yes | no | Validate features for data leakage / quality. |
 | 13 | `validate_models` | PREDICTIONS | yes | no | Validate WP/ATS/OU models are available + loadable (via `artifacts/latest.json`). |
 | 14 | `generate_predictions` | PREDICTIONS | yes | no | Generate current-week predictions (loads artifacts, applies market blend). |
-| 15 | `generate_recommendations` | PREDICTIONS | yes | no | Derive bet recommendations (edges that cleared medium/high confidence). |
+| 15 | `generate_recommendations` | PREDICTIONS | yes | no | Select the week's +EV bet list through `BetSelector` and write the durable bet-list artifacts. |
 | 16 | `export_artifacts` | PREDICTIONS | yes | no | Export the predictions CSV to JSON. |
 | 17 | `validate_predictions` | PREDICTIONS | yes | no | Validate the prediction file (non-empty, required columns, `wp_prob` in [0,1]). |
 | 18 | `verify_output_files` | PREDICTIONS | no | no | Verify the expected output files exist (advisory; warns on missing). |
@@ -161,7 +161,23 @@ All current-week prediction artifacts are written under `outputs/predictions/`
 - `outputs/predictions/predictions_<season>_week<week>.csv` -- the prediction matrix.
 - `outputs/predictions/predictions_<season>_week<week>.json` -- the same, JSON.
 - `outputs/predictions/game_context_<season>_week<week>.csv` -- per-game context.
-- `outputs/predictions/recommendations_<season>_week<week>.json` -- bet recommendations.
+
+The `generate_recommendations` step writes its own two artifacts under `outputs/bet_list/`,
+NOT under `outputs/predictions/`:
+
+- `outputs/bet_list/bet_list.parquet` -- the week's +EV bet list, one row per (game, target),
+  live or suppressed, selected through `backtest.bet_selector.BetSelector`.
+- `outputs/bet_list/bet_tracker.json` -- the precomputed realized-versus-expected tracker
+  blocks, one per honesty class.
+
+Both are CACHE SOURCE artifacts: the cache population step reads them into the temp build.
+They are also the durable home of forward recommendation history -- a forward row whose game
+freeze has passed is never rewritten by a later run.
+
+> RETIRED (plan 31-17). The step used to write
+> `outputs/predictions/recommendations_<season>_week<week>.json`, derived from a confidence
+> tier with no expected value, no sizing and no suppression. It had NO code consumer and is
+> gone; nothing reads or writes it.
 
 The orchestrator does NOT train, backtest, or rebuild the web cache -- those are the
 separate PIPELINE.md stages 3, 4, and 6.
