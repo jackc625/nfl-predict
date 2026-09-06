@@ -402,6 +402,13 @@ def _build_bets_context(
         # here; Plan 31-18 owns the rest of the wiring (the forward tracker block's scoping and the
         # pipeline-side freeze materialization).
         "bets_blocked": _is_bet_cache_stale(bet_list_populated_at, bet_week_freeze),
+        # The PRECOMPUTED realized-vs-expected tracker blocks (SPEC R8, D31-22, plan 31-16). One
+        # stored row per (provenance, validation_type) class, aggregated at population time by
+        # ``backtest.bet_tracker`` and read here without a single arithmetic operation -- no count,
+        # no rate, no return and no SQL aggregate (UIAP-01). The template partitions the rows into
+        # its sections by matching the two stored labels; it never pools two classes into one
+        # figure, because the pooled figure does not exist to render.
+        "tracker_blocks": service.get_bet_tracker_blocks(),
     }
 
 

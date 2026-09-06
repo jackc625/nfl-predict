@@ -20,9 +20,12 @@ Plan 31-15 extends it past the happy path: the suppressed-candidates disclosure 
 half of the SAME candidate universe), the four distinct non-happy renders, and the parameterised
 week selector shared with the This Week page.
 
+Plan 31-16 extends it again: the realized-versus-expected tracker rendered as one section per
+honesty class, the provenance badge that labels them, and the /betting cross-link.
+
 Selectors (``-k``): served_equals_selector, served_order, tie_break, not_advice_banner,
 no_currency, nav_link, ev_band_badge, empty_week, taxonomy, reason_code, suppressed, disclosure,
-caption, moneyline.
+caption, moneyline, tracker, pushes, graded, return, provenance, badge, cross_link.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -53,10 +56,12 @@ from api.cache import (
     classify_row_provenance,
     materialize_available_bet_weeks,
     materialize_bet_list,
+    materialize_bet_tracker_blocks,
     materialize_bet_week_freeze,
 )
 from api.services import DataService, clear_cache
 from backtest.bet_selector import REJECTION_REASONS, BetSelector
+from backtest.bet_tracker import EmptyTrackerBlock, TrackerBlock, to_tracker_frame
 from backtest.ev_chain_constants import assign_ev_tier
 from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from tests.api.week_selector_snapshot import (
@@ -1244,3 +1249,613 @@ def test_the_selector_still_renders_in_the_off_season_state(tmp_path: Path) -> N
     )
     markup = extract_selector(body)
     assert 'id="bets-content-week-select"' in markup
+
+
+# ---------------------------------------------------------------------------
+# The realized-versus-expected tracker (plan 31-16 Task 1, SPEC R8, D31-22, UI-SPEC E4)
+# ---------------------------------------------------------------------------
+#
+# The tracker partitions on the (provenance, validation_type) PAIR, not on provenance alone
+# (plan 31-13). A cache carrying BOTH the burned 2021-2024 replay rows and the single clean 2025
+# holdout therefore produces THREE blocks, not two -- and the page renders three sections. Pooling
+# the two replay classes would publish the phase's one unspent split inside a contaminated figure,
+# which is exactly what D31-22's second column exists to prevent.
+#
+# Every figure below is transcribed from the design contract as a LITERAL rather than imported from
+# the template, so a silent edit to either side is a failure rather than a tautology.
+
+_REPLAY_HEADING = "Backtest replay -- reconstructed after the fact"
+_FORWARD_HEADING = "Forward record -- recommended before kickoff"
+_REPLAY_CAPTION = (
+    "These bets were never recommended in advance. They were reconstructed from historical "
+    "data to show how the selection rule would have behaved. Do not read them as a track record."
+)
+_FORWARD_CAPTION = (
+    "Each of these was written to the cache on the Friday before its game, before the result "
+    "existed. This is the only block that is a track record."
+)
+_PUSH_FOOTNOTE = (
+    "A push returns the stake. Pushes are excluded from the hit-rate denominator and are never "
+    "counted as a win or a loss."
+)
+_ZERO_RESULT_LINE = "A negative return here is the measurement, not a display problem."
+_NOTHING_GRADED_HEADING = "Nothing graded yet"
+_TRACKER_FIGURE_LABELS = (
+    "Bets graded",
+    "Wins",
+    "Losses",
+    "Pushes",
+    "Hit rate",
+    "Return (flat, units)",
+)
+_FORWARD_WITHHELD_MESSAGE = "The forward record is withheld -- the cache is older than this week&#39;s line freeze"
+
+# The three honesty classes, in the declared display order (weakest evidence to strongest).
+_CONTAMINATED = ("backtest_replay", "contaminated")
+_CLEAN_HOLDOUT = ("backtest_replay", "clean_holdout")
+_FORWARD_CLASS = ("forward", "forward_realized")
+
+
+def _block(
+    pair: tuple[str, str],
+    *,
+    bets_graded: int,
+    wins: int,
+    losses: int,
+    pushes: int,
+    hit_rate: float,
+    flat_return_units: float | None,
+) -> TrackerBlock:
+    """One POPULATED tracker block, built through the production dataclass."""
+    return TrackerBlock(
+        provenance=pair[0],
+        validation_type=pair[1],
+        bets_graded=bets_graded,
+        wins=wins,
+        losses=losses,
+        pushes=pushes,
+        hit_rate=hit_rate,
+        flat_return_units=flat_return_units,
+    )
+
+
+def _client_with_tracker(
+    tmp_path: Path,
+    blocks: list[Any],
+    name: str,
+    *,
+    rows: list[dict[str, Any]] | None = None,
+    freeze: datetime | None = None,
+) -> Any:
+    """Build a cache carrying PRECOMPUTED tracker blocks and return a client serving it.
+
+    The blocks are written through ``backtest.bet_tracker.to_tracker_frame`` and
+    ``api.cache.materialize_bet_tracker_blocks`` -- the production producer and the production
+    writer -- so a NULL rate reaches DuckDB as SQL NULL rather than as a float NaN, and the
+    not-measured / measured-zero distinction the page renders is the one the pipeline stores.
+    """
+    clear_cache()
+    bet_rows = rows if rows is not None else [_live_row("2023_W01_DET@KC", "ou")]
+    db_path = tmp_path / f"{name}.duckdb"
+    conn = _build_bare_cache(db_path)
+    try:
+        if bet_rows:
+            materialize_bet_list(conn, pd.DataFrame(bet_rows))
+        materialize_available_bet_weeks(
+            conn,
+            pd.DataFrame(
+                [
+                    {"game_id": r["game_id"], "season": _SEASON, "week": r["week"]}
+                    for r in bet_rows
+                ]
+                or [{"game_id": "2023_W01_AAA@BBB", "season": _SEASON, "week": _WEEK}]
+            ),
+        )
+        materialize_bet_tracker_blocks(conn, to_tracker_frame(blocks))
+        if freeze is not None:
+            materialize_bet_week_freeze(
+                conn,
+                pd.DataFrame(
+                    [{"season": _SEASON, "week": _WEEK, "game_freeze_ts": freeze}]
+                ),
+            )
+        _stamp_populated_at(conn, _POPULATED_AT)
+    finally:
+        conn.close()
+    return contextmanager(_client)(db_path)
+
+
+def _tracker_sections(body: str) -> dict[str, str]:
+    """Split the rendered page into its tracker sections, keyed by the data attribute.
+
+    Structural, not textual: each section is located by its ``data-tracker-block`` key and cut at
+    the next section boundary, so a figure can be attributed to exactly one class.
+    """
+    starts = [
+        (m.group(1), m.start())
+        for m in re.finditer(r'<section [^>]*data-tracker-block="([^"]+)"', body)
+    ]
+    sections: dict[str, str] = {}
+    for index, (key, start) in enumerate(starts):
+        end = starts[index + 1][1] if index + 1 < len(starts) else len(body)
+        sections[key] = body[start:end]
+    return sections
+
+
+def test_the_tracker_renders_one_section_per_honesty_class_and_never_pools_them(
+    tmp_path: Path,
+) -> None:
+    """Three classes give THREE sections with separate totals; no figure spans two of them.
+
+    THIS IS THE DIVERGENCE FROM THE DESIGN CONTRACT'S TWO-BLOCK SKETCH, and it is deliberate. The
+    aggregator partitions on the PAIR, so the replay provenance holds two classes: the burned
+    2021-2024 contaminated rows and the single clean 2025 holdout. Rendering them as one section
+    would publish the one unspent split inside a contaminated figure. The contract names two
+    HEADINGS; it does not cap the section count.
+    """
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=40,
+            wins=18,
+            losses=20,
+            pushes=2,
+            hit_rate=0.4736842105263158,
+            flat_return_units=-0.0528,
+        ),
+        _block(
+            _CLEAN_HOLDOUT,
+            bets_graded=11,
+            wins=7,
+            losses=4,
+            pushes=0,
+            hit_rate=0.6363636363636364,
+            flat_return_units=0.0325,
+        ),
+        _block(
+            _FORWARD_CLASS,
+            bets_graded=3,
+            wins=2,
+            losses=1,
+            pushes=0,
+            hit_rate=0.6666666666666666,
+            flat_return_units=0.0144,
+        ),
+    ]
+    with _client_with_tracker(tmp_path, blocks, "three_classes") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    sections = _tracker_sections(body)
+    assert set(sections) == {
+        "backtest_replay:contaminated",
+        "backtest_replay:clean_holdout",
+        "forward:forward_realized",
+    }, f"the tracker did not render one section per class: {sorted(sections)}"
+
+    # Two headings, three sections. Both replay sections carry the replay heading and caption.
+    assert body.count(_REPLAY_HEADING) == 2
+    assert body.count(_FORWARD_HEADING) == 1
+    assert body.count(_REPLAY_CAPTION) == 2
+    assert body.count(_FORWARD_CAPTION) == 1
+
+    # Separate totals, and NO pooled figure anywhere. 40 + 11 + 3 = 54 graded bets pooled; the
+    # pooled hit rate over the two replay classes would be 25/49. Neither may appear.
+    assert ">40<" in sections["backtest_replay:contaminated"]
+    assert ">11<" in sections["backtest_replay:clean_holdout"]
+    assert ">3<" in sections["forward:forward_realized"]
+    assert ">54<" not in body, "a pooled bets-graded total reached the page"
+    assert ">51<" not in body, "a pooled replay bets-graded total reached the page"
+
+    # Every rendered figure card lives inside exactly one section.
+    inside = sum(
+        section.count(
+            'class="text-xs font-semibold text-gray-500 uppercase tracking-wide"'
+        )
+        for section in sections.values()
+    )
+    tracker_start = min(body.index(s) for s in sections.values())
+    tracker_region = body[tracker_start:]
+    assert inside == tracker_region.count(
+        'class="text-xs font-semibold text-gray-500 uppercase tracking-wide"'
+    ), "a tracker figure rendered outside one of the sections"
+
+
+def test_each_block_renders_exactly_the_six_named_figures(tmp_path: Path) -> None:
+    """Six figures per block, no more. An extra figure on the page is an extra claim."""
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=10,
+            wins=5,
+            losses=4,
+            pushes=1,
+            hit_rate=0.5555555555555556,
+            flat_return_units=0.012,
+        )
+    ]
+    with _client_with_tracker(tmp_path, blocks, "six_figures") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    section = _tracker_sections(body)["backtest_replay:contaminated"]
+    labels = re.findall(
+        r'<p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">([^<]+)</p>',
+        section,
+    )
+    assert labels == list(_TRACKER_FIGURE_LABELS), (
+        f"the block did not render exactly the six named figures in order: {labels}"
+    )
+
+
+def test_pushes_sits_outside_the_group_that_holds_the_hit_rate(tmp_path: Path) -> None:
+    """STRUCTURAL, not visual: the pushes figure is in its own group wrapper.
+
+    A push settled without either side winning, so it is not in the hit-rate denominator. The
+    three ``data-figure-group`` wrappers are what make that assertable rather than a claim about
+    pixel order.
+    """
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=10,
+            wins=5,
+            losses=4,
+            pushes=1,
+            hit_rate=0.5555555555555556,
+            flat_return_units=0.012,
+        )
+    ]
+    with _client_with_tracker(tmp_path, blocks, "push_group") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    section = _tracker_sections(body)["backtest_replay:contaminated"]
+    groups = dict(
+        re.findall(
+            r'<div data-figure-group="([a-z-]+)"(.*?)(?=<div data-figure-group=|</div>\s*</div>\s*</div>)',
+            section,
+            flags=re.S,
+        )
+    )
+    assert {"counts", "pushes", "rates"} <= set(groups), (
+        f"the figure groups are not all present: {sorted(groups)}"
+    )
+    assert "Pushes" in groups["pushes"]
+    assert "Hit rate" in groups["rates"]
+    assert "Pushes" not in groups["rates"], (
+        "the pushes figure sits inside the group that holds the hit rate"
+    )
+    assert "Hit rate" not in groups["pushes"]
+    assert _PUSH_FOOTNOTE in section
+
+
+def test_a_block_with_zero_graded_rows_renders_the_empty_state_and_no_hit_rate(
+    tmp_path: Path,
+) -> None:
+    """Zero graded gives the nothing-graded-yet state -- never a row of zeros, never 0 / 0."""
+    blocks = [
+        EmptyTrackerBlock(provenance=_CONTAMINATED[0], validation_type=_CONTAMINATED[1])
+    ]
+    with _client_with_tracker(tmp_path, blocks, "zero_graded") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    section = _tracker_sections(body)["backtest_replay:contaminated"]
+    assert _NOTHING_GRADED_HEADING in section
+    assert "No recommendation in this class has a final result yet." in section
+    assert "Hit rate" not in section, (
+        "an ungraded block rendered a hit rate the aggregator never computed"
+    )
+    assert "Bets graded" not in section, "an ungraded block rendered a row of zeros"
+    assert "0 / 0" not in body
+    # The replay heading and caption still render: the class is named, only its figures are absent.
+    assert _REPLAY_HEADING in section
+    assert _REPLAY_CAPTION in section
+
+
+def test_a_one_row_block_uses_the_same_noun_phrase_labels(tmp_path: Path) -> None:
+    """One graded row is a normal block: the labels are noun phrases that do not inflect."""
+    blocks = [
+        _block(
+            _FORWARD_CLASS,
+            bets_graded=1,
+            wins=1,
+            losses=0,
+            pushes=0,
+            hit_rate=1.0,
+            flat_return_units=0.909,
+        )
+    ]
+    with _client_with_tracker(tmp_path, blocks, "one_row") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    section = _tracker_sections(body)["forward:forward_realized"]
+    for label in _TRACKER_FIGURE_LABELS:
+        assert f">{label}</p>" in section
+    for singular in ("1 bet graded", "Bet graded", "Win</p>", "Loss</p>", "Push</p>"):
+        assert singular not in section, (
+            f"a singular copy variant {singular!r} was minted for a one-row block"
+        )
+    assert _NOTHING_GRADED_HEADING not in section
+
+
+def test_a_negative_return_states_the_measurement_and_a_positive_one_does_not(
+    tmp_path: Path,
+) -> None:
+    """The honesty line renders on a negative or zero return, and ONLY on one."""
+    losing = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=10,
+            wins=4,
+            losses=6,
+            pushes=0,
+            hit_rate=0.4,
+            flat_return_units=-0.0528,
+        )
+    ]
+    with _client_with_tracker(tmp_path, losing, "negative_return") as client:
+        negative_body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    negative = _tracker_sections(negative_body)["backtest_replay:contaminated"]
+    assert "-0.053" in negative
+    assert "text-red-600" in negative
+    assert _ZERO_RESULT_LINE in negative
+
+    winning = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=10,
+            wins=6,
+            losses=4,
+            pushes=0,
+            hit_rate=0.6,
+            flat_return_units=0.0325,
+        )
+    ]
+    with _client_with_tracker(tmp_path, winning, "positive_return") as client:
+        positive_body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    positive = _tracker_sections(positive_body)["backtest_replay:contaminated"]
+    assert "+0.033" in positive
+    assert _ZERO_RESULT_LINE not in positive, (
+        "the honesty line rendered against a positive return"
+    )
+
+    flat = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=4,
+            wins=0,
+            losses=0,
+            pushes=4,
+            hit_rate=0.0,
+            flat_return_units=0.0,
+        )
+    ]
+    with _client_with_tracker(tmp_path, flat, "zero_return") as client:
+        zero_body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    assert (
+        _ZERO_RESULT_LINE
+        in _tracker_sections(zero_body)["backtest_replay:contaminated"]
+    )
+
+
+def test_an_unmeasured_return_never_renders_as_a_zero(tmp_path: Path) -> None:
+    """A NULL return renders "not measured" and carries no honesty line.
+
+    The aggregator returns None (not 0.0) when the graded rows carry no stake, mirroring
+    ``BetSelector._clv_report`` defaulting ``clv`` to None. A blank and a zero must not render
+    identically: "+0.000" would read as a break-even result nobody measured.
+    """
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=6,
+            wins=3,
+            losses=3,
+            pushes=0,
+            hit_rate=0.5,
+            flat_return_units=None,
+        )
+    ]
+    with _client_with_tracker(tmp_path, blocks, "unmeasured_return") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    section = _tracker_sections(body)["backtest_replay:contaminated"]
+    assert "not measured" in section
+    assert "+0.000" not in section, "an unmeasured return rendered as a measured zero"
+    assert "nan" not in section.lower()
+    assert _ZERO_RESULT_LINE not in section, (
+        "the honesty line claims a negative measurement where nothing was measured"
+    )
+
+
+def test_green_and_red_appear_only_inside_the_tracker_sections(tmp_path: Path) -> None:
+    """Realized-outcome colour is TRACKER ONLY; the EV band badges carry none of it.
+
+    Scoped to the badge markup rather than to the whole page: a green EV band above a green
+    won-bet would read as a prediction of winning (UI-SPEC Deviation 1).
+    """
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=10,
+            wins=6,
+            losses=4,
+            pushes=0,
+            hit_rate=0.6,
+            flat_return_units=-0.01,
+        )
+    ]
+    with _client_with_tracker(tmp_path, blocks, "colour_scope") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    sections = _tracker_sections(body)
+    assert any("text-green-700" in s for s in sections.values())
+    assert any("text-red-600" in s for s in sections.values())
+
+    # Every EV band badge on the page, located by its authored title prefix.
+    badges = re.findall(
+        r'<span class="[^"]*"[^>]*title="EV band[^"]*"[^>]*>.*?</span>', body
+    )
+    assert badges, "no EV band badge rendered, so the scoping assertion proves nothing"
+    for badge in badges:
+        for forbidden in ("green", "red", "amber"):
+            assert forbidden not in badge, (
+                f"an EV band badge carries the {forbidden} hue: {badge}"
+            )
+
+    # Outside the tracker region the realized-outcome colours do not appear at all. The ONE red
+    # above the tracker is the REFUSAL role, not the realized-outcome role: _error_state.html
+    # pairs exactly one bg-red-50 container with exactly one text-red-600 recovery line, and the
+    # UI-SPEC's colour table lists those as separate roles. Counting the pair is what keeps this
+    # assertion honest without pretending the shipped refusal partial is a tracker colour.
+    tracker_start = min(body.index(s) for s in sections.values())
+    above = body[:tracker_start]
+    assert "text-green-700" not in above, (
+        "a realized-outcome green rendered above the tracker"
+    )
+    assert above.count("text-red-600") == above.count("bg-red-50"), (
+        "a red above the tracker is not accounted for by a refusal block"
+    )
+
+
+def test_the_forward_block_is_withheld_under_the_hard_block_while_replay_stays_readable(
+    tmp_path: Path,
+) -> None:
+    """The refusal is SCOPED: the forward totals are withheld, the replay figures are not.
+
+    A replay figure does not depend on the current week's line freeze, so refusing it would be a
+    refusal nothing justified (UI-SPEC E4 error).
+    """
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=40,
+            wins=18,
+            losses=20,
+            pushes=2,
+            hit_rate=0.4736842105263158,
+            flat_return_units=-0.0528,
+        ),
+        _block(
+            _FORWARD_CLASS,
+            bets_graded=3,
+            wins=2,
+            losses=1,
+            pushes=0,
+            hit_rate=0.6666666666666666,
+            flat_return_units=0.0144,
+        ),
+    ]
+    with _client_with_tracker(
+        tmp_path, blocks, "scoped_refusal", freeze=_LATER_FREEZE
+    ) as client:
+        response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
+
+    assert response.status_code == 200
+    body = response.text
+    assert _HARD_BLOCK_MESSAGE in body, "the fixture did not trigger the hard block"
+
+    sections = _tracker_sections(body)
+    assert "backtest_replay:contaminated" in sections
+    replay = sections["backtest_replay:contaminated"]
+    assert ">40<" in replay, "the replay block was withheld alongside the forward one"
+    assert "Hit rate" in replay
+
+    forward = sections["forward"]
+    assert _FORWARD_WITHHELD_MESSAGE in forward
+    assert "bg-red-50" in forward, (
+        "the withheld forward block did not use the error state"
+    )
+    assert "Hit rate" not in forward
+    assert ">3<" not in forward, "a forward figure was served under the hard block"
+    assert _FORWARD_HEADING in forward, (
+        "the forward section vanished rather than declaring itself withheld"
+    )
+
+
+def test_the_page_renders_the_stored_aggregate_and_computes_nothing(
+    tmp_path: Path,
+) -> None:
+    """The route reads the precomputed blocks; the template applies formatting only.
+
+    Two claims, both asserted. STRUCTURALLY: an ast walk over ``_build_bets_context`` finds the
+    tracker getter and no other aggregate source. NUMERICALLY: the rendered hit rate is the stored
+    fraction under a per-cent label, and the rendered return is the stored value -- a page that
+    re-derived a rate from the wins and losses would produce a different number for a block whose
+    stored rate deliberately disagrees with its counts.
+    """
+    source = (
+        Path(__file__).resolve().parents[2] / "api" / "routes" / "pages.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    called: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_build_bets_context":
+            for inner in ast.walk(node):
+                if (
+                    isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Attribute)
+                    and isinstance(inner.func.value, ast.Name)
+                    and inner.func.value.id == "service"
+                ):
+                    called.add(inner.func.attr)
+    assert "get_bet_tracker_blocks" in called, (
+        f"the bets context does not read the precomputed tracker: {sorted(called)}"
+    )
+
+    # A stored rate that a recomputation could not produce: 3 wins and 1 loss would give 75.0%.
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=4,
+            wins=3,
+            losses=1,
+            pushes=0,
+            hit_rate=0.125,
+            flat_return_units=-0.75,
+        )
+    ]
+    with _client_with_tracker(tmp_path, blocks, "stored_aggregate") as client:
+        body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    section = _tracker_sections(body)["backtest_replay:contaminated"]
+    assert ">12.5%<" in section, "the page did not render the STORED hit rate"
+    assert "75.0%" not in section, "the page recomputed the hit rate from the counts"
+    assert ">-0.750<" in section
+
+
+def test_the_tracker_shares_the_single_week_swap_indicator(tmp_path: Path) -> None:
+    """Both blocks sit inside the swap target and point at its skeleton (UI-SPEC E4 loading)."""
+    blocks = [
+        _block(
+            _CONTAMINATED,
+            bets_graded=2,
+            wins=1,
+            losses=1,
+            pushes=0,
+            hit_rate=0.5,
+            flat_return_units=-0.05,
+        ),
+        _block(
+            _FORWARD_CLASS,
+            bets_graded=2,
+            wins=1,
+            losses=1,
+            pushes=0,
+            hit_rate=0.5,
+            flat_return_units=0.05,
+        ),
+    ]
+    with _client_with_tracker(tmp_path, blocks, "swap_target") as client:
+        full = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+        fragment = client.get(
+            f"/bets?season={_SEASON}&week={_WEEK}", headers={"HX-Request": "true"}
+        ).text
+
+    for key, section in _tracker_sections(full).items():
+        assert 'hx-indicator="#bets-loading"' in section, (
+            f"tracker section {key} does not share the week swap indicator"
+        )
+    # The fragment IS the swap target, so both tracker sections must survive into it.
+    assert set(_tracker_sections(fragment)) == {
+        "backtest_replay:contaminated",
+        "forward:forward_realized",
+    }, "the tracker sits outside the week swap target"

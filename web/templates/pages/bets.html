@@ -308,6 +308,185 @@
 </section>
 {% endif %}
 
+{# ------------------------------------------------------------------------ #}
+{# Rank 3: the realized-versus-expected tracker (SPEC R8, D31-22, UI-SPEC E4)#}
+{#                                                                          #}
+{# TWO PROVENANCE CLASSES, and THREE sections when three exist. The stored   #}
+{# blocks are partitioned on the (provenance, validation_type) PAIR, not on  #}
+{# provenance alone (plan 31-13): the replay class holds BOTH the burned     #}
+{# 2021-2024 rows and the single clean 2025 holdout, and pooling those would #}
+{# publish the one unspent split inside a contaminated figure -- exactly     #}
+{# what D31-22's second column exists to prevent. So a cache carrying both   #}
+{# renders TWO replay sections under the replay heading, told apart by their #}
+{# provenance badges and carrying separate totals, plus the forward section. #}
+{# The design contract names two HEADINGS; it does not cap the section count.#}
+{#                                                                          #}
+{# NO FIGURE IS COMPUTED ACROSS TWO SECTIONS, and none is computed here at   #}
+{# all: every number below was aggregated by backtest.bet_tracker at         #}
+{# population time and is rendered as stored (UIAP-01). The only transform   #}
+{# applied is a UNIT render -- a stored fraction shown under a per-cent      #}
+{# header -- which is formatting, not derivation.                            #}
+{#                                                                          #}
+{# It sits INSIDE the swap target so both blocks share the single week       #}
+{# skeleton indicator (UI-SPEC E4 loading).                                  #}
+{# ------------------------------------------------------------------------ #}
+{% if bet_list_available %}
+{% set TRACKER_ORDER = [
+     ("backtest_replay", "contaminated"),
+     ("backtest_replay", "clean_holdout"),
+     ("forward", "forward_realized")
+   ] %}
+{% set TRACKER_HEADINGS = {
+     "backtest_replay": "Backtest replay -- reconstructed after the fact",
+     "forward": "Forward record -- recommended before kickoff"
+   } %}
+{% set TRACKER_CAPTIONS = {
+     "backtest_replay": "These bets were never recommended in advance. They were reconstructed from historical data to show how the selection rule would have behaved. Do not read them as a track record.",
+     "forward": "Each of these was written to the cache on the Friday before its game, before the result existed. This is the only block that is a track record."
+   } %}
+{% set TRACKER_PUSH_FOOTNOTE = "A push returns the stake. Pushes are excluded from the hit-rate denominator and are never counted as a win or a loss." %}
+{% set TRACKER_ZERO_RESULT_LINE = "A negative return here is the measurement, not a display problem." %}
+{% set TRACKER_EMPTY_HEADING = "Nothing graded yet" %}
+{% set TRACKER_EMPTY_BODY = "No recommendation in this class has a final result yet. Grades appear after the games are played and the cache is rebuilt." %}
+
+{# The DECLARED display order, weakest evidence to strongest, mirroring
+   backtest.bet_tracker.TRACKER_BLOCK_ORDER. The getter issues no ORDER BY, so the order is
+   fixed HERE rather than assumed from the insert order of a table nobody sorts. #}
+{% set _ordered_blocks = [] %}
+{% for _pair in TRACKER_ORDER %}
+  {% for _block in tracker_blocks %}
+    {% if _block.provenance == _pair[0] and _block.validation_type == _pair[1] %}
+      {% set _ = _ordered_blocks.append(_block) %}
+    {% endif %}
+  {% endfor %}
+{% endfor %}
+{% set replay_blocks = _ordered_blocks | selectattr("provenance", "equalto", "backtest_replay") | list %}
+{% set forward_blocks = _ordered_blocks | selectattr("provenance", "equalto", "forward") | list %}
+
+{# One figure card. The geometry is the shipped betting.html KPI card, so the tracker looks like
+   the rest of the app; the tone class is the ONLY thing that varies. #}
+{% macro tracker_figure(label, value, tone) -%}
+<div class="bg-white rounded-lg border border-gray-200 p-4 text-center flex-1">
+  <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide">{{ label }}</p>
+  <p class="text-2xl font-semibold mt-1 stat-num whitespace-nowrap {{ tone }}">{{ value }}</p>
+</div>
+{%- endmacro %}
+
+{# The six figures of ONE class, in three groups.
+
+   PUSHES SITS OUTSIDE THE GROUP CONTAINING THE HIT RATE, structurally and not merely visually: a
+   push settled without either side winning, so it is neither a win nor a loss and it is not in the
+   hit-rate denominator. The three data-figure-group wrappers are what make that assertable.
+
+   COLOUR IS TRACKER-ONLY on this page: green for a won bet, red for a lost bet, gray for a push or
+   a zero. The EV band badge above stays monochrome for exactly this reason -- a green band on the
+   same page as a green won-bet would read as a prediction of winning (UI-SPEC Deviation 1).
+
+   A NULL return renders as "not measured", never as 0.000. The aggregator returns None (not 0.0)
+   when the graded rows carry no stake, mirroring BetSelector._clv_report defaulting clv to None:
+   an unmeasured return published as zero reads as a break-even result, which is a claim nobody
+   made. A blank and a zero must not render identically. #}
+{% macro tracker_figures(block) -%}
+{% set _return = block.flat_return_units %}
+{# MEASURED versus NOT MEASURED, kept apart at the render. A stored NULL means the aggregator did
+   not compute the figure; a stored NaN means something upstream produced a non-finite value. Both
+   are "not measured" and NEITHER may render as a number -- "+0.000" and "+nan" would each put a
+   figure on the page that nothing established. The self-inequality is the NaN test: NaN is the one
+   value not equal to itself. #}
+{% set _return_measured = _return is not none and _return == _return %}
+{% set _hit_rate_measured = block.hit_rate is not none and block.hit_rate == block.hit_rate %}
+<div class="overflow-x-auto">
+  <div class="flex flex-wrap gap-4">
+    <div data-figure-group="counts" class="flex flex-wrap gap-4 flex-1">
+      {{ tracker_figure("Bets graded", block.bets_graded, "text-gray-900") }}
+      {{ tracker_figure("Wins", block.wins, "text-green-700") }}
+      {{ tracker_figure("Losses", block.losses, "text-red-600") }}
+    </div>
+    <div data-figure-group="pushes" class="flex flex-wrap gap-4 flex-1">
+      {{ tracker_figure("Pushes", block.pushes, "text-gray-500") }}
+    </div>
+    <div data-figure-group="rates" class="flex flex-wrap gap-4 flex-1">
+      {# hit_rate is stored as a FRACTION of the contested rows; the x100 is a unit render under a
+         per-cent label, the same formatting transform the EV column applies (UIAP-01). #}
+      {% if _hit_rate_measured %}
+        {{ tracker_figure("Hit rate", "%.1f"|format(block.hit_rate * 100) ~ "%", "text-gray-900") }}
+      {% else %}
+        {{ tracker_figure("Hit rate", "not measured", "text-gray-500") }}
+      {% endif %}
+      {% if not _return_measured %}
+        {{ tracker_figure("Return (flat, units)", "not measured", "text-gray-500") }}
+      {% elif _return > 0 %}
+        {{ tracker_figure("Return (flat, units)", "%+.3f"|format(_return), "text-green-700") }}
+      {% elif _return < 0 %}
+        {{ tracker_figure("Return (flat, units)", "%+.3f"|format(_return), "text-red-600") }}
+      {% else %}
+        {{ tracker_figure("Return (flat, units)", "%+.3f"|format(_return), "text-gray-500") }}
+      {% endif %}
+    </div>
+  </div>
+</div>
+<p class="text-xs text-gray-500 mt-3 max-w-2xl">{{ TRACKER_PUSH_FOOTNOTE }}</p>
+{% if _return_measured and _return <= 0 %}
+<p class="text-xs text-gray-500 mt-2 max-w-2xl">{{ TRACKER_ZERO_RESULT_LINE }}</p>
+{% endif %}
+{%- endmacro %}
+
+{# One SECTION per honesty class. Own heading, own caption, own totals, no shared row. #}
+{% macro tracker_section(provenance, validation_type, block) -%}
+<section class="mb-8" hx-indicator="#bets-loading" data-tracker-block="{{ provenance }}{% if validation_type %}:{{ validation_type }}{% endif %}">
+  <div class="mb-4">
+    <div class="flex flex-wrap items-center gap-2">
+      <h2 class="text-base font-semibold text-gray-900">{{ TRACKER_HEADINGS[provenance] }}</h2>
+    </div>
+    <p class="text-sm text-gray-500 max-w-2xl mt-1">{{ TRACKER_CAPTIONS[provenance] }}</p>
+  </div>
+  {% if block is none or not block.bets_graded %}
+    {# Zero graded rows renders the empty state instead of a row of zeros. The hit rate is not
+       computed at all in this branch -- never a 0 / 0 display and never a divide-by-zero
+       (UI-SPEC E4 empty). #}
+    {% with heading=TRACKER_EMPTY_HEADING, body=TRACKER_EMPTY_BODY, action_text=none, action_url=none %}
+      {% include "components/_empty_state.html" %}
+    {% endwith %}
+  {% else %}
+    {{ tracker_figures(block) }}
+  {% endif %}
+</section>
+{%- endmacro %}
+
+{# The replay sections. One per replay class PRESENT in the ledger; when the ledger holds none, a
+   single section still renders so the reader learns that nothing is graded rather than finding
+   the block missing. #}
+{% if replay_blocks %}
+  {% for block in replay_blocks %}
+    {{ tracker_section("backtest_replay", block.validation_type, block) }}
+  {% endfor %}
+{% else %}
+  {{ tracker_section("backtest_replay", none, none) }}
+{% endif %}
+
+{# The forward section. Under the stale-cache hard-block it is WITHHELD while the replay sections
+   above stay readable in the SAME response -- a replay figure does not depend on the current
+   week's line freeze, so refusing it would be a refusal nothing justified (UI-SPEC E4 error). #}
+{% if bets_blocked %}
+<section class="mb-8" hx-indicator="#bets-loading" data-tracker-block="forward">
+  <div class="mb-4">
+    <h2 class="text-base font-semibold text-gray-900">{{ TRACKER_HEADINGS["forward"] }}</h2>
+    <p class="text-sm text-gray-500 max-w-2xl mt-1">{{ TRACKER_CAPTIONS["forward"] }}</p>
+  </div>
+  {% with message="The forward record is withheld -- the cache is older than this week's line freeze",
+          recovery_text='The forward record\'s totals are computed from the same cache the list above was refused on, so they would be out of date. The backtest replay above is unaffected and remains readable, because a replay figure does not depend on the current week\'s line freeze. Re-run "uv run python scripts/populate_cache.py" to restore this section.' %}
+    {% include "components/_error_state.html" %}
+  {% endwith %}
+</section>
+{% elif forward_blocks %}
+  {% for block in forward_blocks %}
+    {{ tracker_section("forward", block.validation_type, block) }}
+  {% endfor %}
+{% else %}
+  {{ tracker_section("forward", none, none) }}
+{% endif %}
+{% endif %}
+
 {% endblock %}
 </div>
 
