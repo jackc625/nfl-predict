@@ -2,7 +2,20 @@
 
 Provides downloadable exports of prediction data in CSV and JSON formats.
 Supports filtering by season, week, and game_id, plus a ``type=backtest``
-option for exporting backtest predictions.
+option for exporting backtest predictions and a ``type=bets`` option for
+exporting the Phase-31 weekly bet list (D31-32).
+
+THE BETS EXPORT READS THE SAME ROWS THE PAGE READS. It calls the same two
+``DataService`` getters ``/bets`` calls, in the same order, so an exported row
+and a screenshot of the page cannot disagree -- a second query shaped "like" the
+page's is the two-lists failure that makes an export a separate claim instead of
+the same one. It returns BOTH halves of the candidate universe, live and
+suppressed, and every row carries ``status``, ``rejection_reason``,
+``provenance`` and ``validation_type``, which is what stops a suppressed
+candidate being read as a bet that was placed.
+
+It adds NO route: both branches live inside the two shipped handlers, following
+their existing ``type``-parameter dispatch idiom.
 
 Routes:
     GET /api/export/csv   -- Download predictions as CSV
@@ -24,6 +37,40 @@ from api.services import DataService
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
+# The ``type`` parameter value selecting the Phase-31 bet-list export (D31-32).
+EXPORT_TYPE_BETS = "bets"
+
+
+def _bets_rows(
+    service: DataService, season: int | None, week: int | None
+) -> list[dict]:
+    """The week's FULL record: the ranked live rows, then the suppressed ones.
+
+    Both halves come from the getters ``/bets`` itself calls -- ``get_bet_list`` (per-bet EV
+    descending, ties broken season/week/game_id/target) and ``get_suppressed_bets`` (grouped by
+    reason under the same four-key tie-break). Concatenating them in that order reproduces the
+    page's reading order exactly, so an export can be compared against a screenshot position by
+    position.
+
+    Nothing is recomputed and nothing is re-ordered here. The two getters are the exact
+    complement of each other over one ``status`` constant, so their union is every row the cache
+    holds for the week -- a declined candidate cannot be dropped from the export any more than it
+    can be dropped from the page.
+    """
+    return [
+        *service.get_bet_list(season, week),
+        *service.get_suppressed_bets(season, week),
+    ]
+
+
+def _bets_filename(season: int | None, week: int | None, suffix: str) -> str:
+    """The download filename, naming the season and the week whenever both are known."""
+    if season and week:
+        return f"bets_{season}_week{week}.{suffix}"
+    if season:
+        return f"bets_{season}_full_season.{suffix}"
+    return f"nfl_bets.{suffix}"
+
 
 @router.get("/csv")
 def export_csv(
@@ -39,13 +86,18 @@ def export_csv(
         season: Filter by NFL season year.
         week: Filter by NFL week number.
         game_id: Export a single game's detail.
-        type: Set to ``backtest`` to export backtest predictions.
+        type: Set to ``backtest`` to export backtest predictions, or to ``bets``
+            to export the week's full bet-list record (live rows followed by
+            suppressed rows, in the page's own order).
 
     Returns:
         StreamingResponse with ``text/csv`` content type and
         ``Content-Disposition: attachment`` header.
     """
-    if type == "backtest":
+    if type == EXPORT_TYPE_BETS:
+        rows = _bets_rows(service, season, week)
+        filename = _bets_filename(season, week, "csv")
+    elif type == "backtest":
         rows = service.get_backtest_predictions(season=season)
         filename = f"nfl_backtest{'_' + str(season) if season else ''}.csv"
     elif game_id:
@@ -98,7 +150,9 @@ def export_json(
         StreamingResponse with ``application/json`` content type and
         ``Content-Disposition: attachment`` header.
     """
-    if type == "backtest":
+    if type == EXPORT_TYPE_BETS:
+        rows = _bets_rows(service, season, week)
+    elif type == "backtest":
         rows = service.get_backtest_predictions(season=season)
     elif game_id:
         detail = service.get_game_detail(game_id)
@@ -109,7 +163,9 @@ def export_json(
     if not rows:
         return JSONResponse({"error": "No data found"}, status_code=404)
 
-    if type == "backtest":
+    if type == EXPORT_TYPE_BETS:
+        filename = _bets_filename(season, week, "json")
+    elif type == "backtest":
         filename = f"nfl_backtest{'_' + str(season) if season else ''}.json"
     elif game_id:
         filename = f"nfl_game_{game_id}.json"

@@ -519,6 +519,42 @@
 {% endif %}
 {% endif %}
 
+{# ------------------------------------------------------------------------ #}
+{# Rank 4: the trailing utilities -- the export pair and the cross-link      #}
+{# (D31-32, UI-SPEC E8).                                                     #}
+{#                                                                          #}
+{# INSIDE the swap target on purpose. The week selector swaps only           #}
+{# #bets-content, so an export link rendered outside it would keep pointing  #}
+{# at the week the page first loaded with -- handing the reader a file for a #}
+{# week other than the one on screen, which is the export-disagrees-with-the #}
+{# -page failure this whole task exists to prevent.                           #}
+{#                                                                          #}
+{# _export_buttons.html is reused VERBATIM: its in-flight and failure        #}
+{# behaviour is whatever it already does on /betting and is deliberately not #}
+{# re-decided here. No class inside it is edited, and a test asserts the file #}
+{# is byte-unchanged.                                                        #}
+{#                                                                          #}
+{# The export routes take type=bets and return BOTH halves of the week --    #}
+{# the live rows and the suppressed ones -- through the same two getters     #}
+{# this page reads, in this page's order. They are withheld under the        #}
+{# hard-block for the same reason the list is: a download of rows the page   #}
+{# just refused to show would be the refusal undone by a link beneath it.    #}
+{# ------------------------------------------------------------------------ #}
+{% if bet_list_available %}
+<div class="mt-8 pt-4 border-t border-gray-200 flex flex-wrap items-center justify-between gap-4">
+  {% if not bets_blocked and current_season is not none and current_week is not none %}
+    {# Raw ampersands, matching the shipped this_week.html call site: autoescape turns them into
+       &amp; in the rendered href, and pre-escaping here would emit &amp;amp; and break the URL. #}
+    {% with csv_url="/api/export/csv?type=bets&season=" ~ current_season ~ "&week=" ~ current_week,
+            json_url="/api/export/json?type=bets&season=" ~ current_season ~ "&week=" ~ current_week %}
+      {% include "components/_export_buttons.html" %}
+    {% endwith %}
+  {% endif %}
+  {# A plain navigation. It adds no request behaviour and moves none of /betting's figures. #}
+  <a href="/betting" class="text-sm text-nfl-primary hover:underline">See the backtest evidence behind these bets</a>
+</div>
+{% endif %}
+
 {% endblock %}
 </div>
 
