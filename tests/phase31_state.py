@@ -516,3 +516,113 @@ MEASUREMENT_PROVENANCE: Final[dict[str, str]] = {
     "bh_denominator_used": "6 -- 3 primary plus 3 robustness cuts; NO calibration fallback fired",
     "clv_disposition": "REPORT-ONLY; carried beside the verdict, absent from the family",
 }
+
+
+# ---------------------------------------------------------------------------
+# The READOUT ACCEPTANCE -- the owner's ruling on PROFITABILITY-READOUT.md
+# (owner decision 2026-09-06; Plan 31-19 Task 3, gate blocking-human)
+# ---------------------------------------------------------------------------
+#
+# This is NOT a fourth numbered checkpoint. D31-16 fixes the phase's blocking
+# checkpoint count at THREE -- pre-registration ratification (31-05), rebuild
+# acceptance (31-11) and arming the one-shot run (31-14) -- and this slot does
+# not add to that count. It is the plan-level human-verify gate on Plan 31-19
+# Task 3, which asks the ONE question the drift guard cannot: the guard pins
+# structure, verdict tokens, prior-document content hashes and every 2025
+# figure, all mechanical, but whether the prose is free of hype is read by a
+# person.
+#
+# It is recorded HERE, in the tracked tree, for the same reason CHECKPOINT 2's
+# acceptance was (commit b480c3a): ``.planning/`` is gitignored, so
+# ``31-19-SUMMARY.md`` does not survive a fresh checkout. An acceptance that
+# lives only in the gitignored planning tree is an acceptance a later reader
+# cannot find.
+#
+# NOTHING WAS DEPLOYED BY THE PLAN THAT TOOK THIS ACCEPTANCE. Plan 31-19
+# changed twelve tracked paths, all of them documents and their guards;
+# ``artifacts/latest.json`` is sha256
+# 7ff78a506b1cb06e206705c5900438a5388be64e963bcc8a39c7ed6a8d0f66f1, unchanged,
+# and every frozen artifact named in the plan is byte-identical to its state
+# before the plan began.
+
+READOUT_ACCEPTANCE: Final[dict[str, str]] = {
+    "plan": "31-19",
+    "task": (
+        "Task 3: Reconcile the remaining documents, run the full suite, and "
+        "take the readout acceptance"
+    ),
+    "gate": "blocking-human",
+    "document": "PROFITABILITY-READOUT.md",
+    "question": "Is this framing honest?",
+    "decision": "ACCEPT",
+    "decided_on": "2026-09-06",
+    "decided_by": "owner",
+    # VERBATIM. The owner's words, unedited and unsummarised.
+    "verbatim": (
+        "ACCEPT. The readout's framing is honest and free of hype. It states "
+        "the result before anything else, refuses to let the win-probability "
+        "closing-line finding soften the spread target's measured loss, "
+        "explains why five tests are deliberately red rather than hiding "
+        "them, and closes by stating plainly that nothing in it establishes "
+        "an edge that survives its own significance test."
+    ),
+    # What an independent read of the document confirmed BEFORE the owner
+    # ruled. Recorded as corroboration of the acceptance, not as a substitute
+    # for it -- the judgment is the owner's.
+    "independent_review_findings": (
+        'the opening states "No target is `PROFITABLE_CLEAN`" before any '
+        "other content; section 0a exists to prevent the CLV/profitability "
+        "conflation; section 2 states the divergence as a finding while "
+        "explicitly refusing to let it soften the ATS loss; section 8 "
+        "explains the five reds as tripwires that fired on accepted events; "
+        'section 10 ends with "It is not a statement that the system should '
+        'be bet." A scan for hype language found every occurrence of '
+        '"profitable" to be either a negation or a token name.'
+    ),
+    "document_unchanged_by_the_acceptance": (
+        "YES -- the owner accepted the document AS WRITTEN. "
+        "PROFITABILITY-READOUT.md was not restructured, and "
+        "tests/unit/test_profitability_readout_md.py pins it."
+    ),
+}
+
+# The ONE prohibition the requirements themselves rule JUDGMENT-TIER, carried
+# forward verbatim from 31-SPEC.md and recorded as the owner's ATTESTATION.
+#
+# It is recorded as an attestation and NOT as a verified claim, deliberately.
+# Two of the three clauses are checkable and ARE checked: the commit-order
+# assertion and the content-hash lock on the pre-registration
+# (PRE_REGISTRATION_COMMIT / PRE_REGISTRATION_FILE_SHA256 above, and
+# MEASUREMENT_COMMIT's ancestry relation). The third clause -- that no
+# threshold was tuned after seeing the 2025 results -- is about INTENT, and no
+# test can prove intent. Claiming it as tested would be exactly the kind of
+# overstatement this milestone's readout exists to refuse.
+READOUT_JUDGMENT_TIER_ATTESTATION: Final[dict[str, str]] = {
+    "source": "31-SPEC.md prohibition table, row R3",
+    "tier": "judgment (owner-ruled), NOT test",
+    # VERBATIM, from the SPEC's prohibition table.
+    "prohibition_verbatim": (
+        "MUST NOT tune any threshold after seeing 2025 results, re-run the "
+        "single-use split, or publish a 2025 verdict without its "
+        "pre-registration committed first"
+    ),
+    # VERBATIM, from the same row's verification column.
+    "why_judgment_tier_verbatim": (
+        'the "did not tune after seeing results" clause is judgment-tier, '
+        "since no test can prove intent (owner-ruled)"
+    ),
+    "attested_by": "owner",
+    "attested_on": "2026-09-06",
+    "attestation": (
+        "No threshold was tuned after seeing the 2025 results. This is the "
+        "owner's attestation, recorded as such; it is NOT claimed as tested."
+    ),
+    "what_IS_tested_alongside_it": (
+        "the other two clauses of the same prohibition: the pre-registration "
+        "commit strictly precedes the measurement commit and the two are "
+        "distinct (tests/unit/test_preregistration_ancestry.py), and "
+        "PROFITABILITY-PREREGISTRATION.md is content-hash locked to "
+        "PRE_REGISTRATION_FILE_SHA256. The single-use split was spent exactly "
+        "once, on the attempt id recorded in MEASUREMENT_PROVENANCE."
+    ),
+}
