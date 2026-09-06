@@ -315,3 +315,223 @@ def test_the_shallow_checkout_guard_actually_fires(
     with pytest.raises(pytest.skip.Exception) as excinfo:
         _resolve_or_skip()
     assert str(excinfo.value) == SHALLOW_SKIP_MESSAGE
+
+
+# ---------------------------------------------------------------------------
+# The second half, completed by Plan 31-14: the rule provably PRECEDED the numbers
+#
+# Everything above is checkable before any 2025 number exists. What follows needs the verdict
+# artifact, and it is the half SPEC R3 actually turns on: the pre-registration commit is a STRICT
+# ancestor of the measurement commit, and the two are DIFFERENT commits.
+#
+# THE COMMIT IS READ FROM THE WITNESS, NEVER FROM THE ARTIFACT (REVIEW-CIRCULAR). An earlier draft
+# had the verdict artifact carry its own measurement-commit marker. That cannot be satisfied: a
+# commit hash is a function of the committed bytes, so writing the hash into the artifact changes
+# the hash it claims to be, and the assertion built on it would have to be relaxed -- to "hash
+# everything except the marker line", or "everything above it" -- until it asserted nothing.
+# tests/phase31_state.py is a THIRD file that records facts about both frozen artifacts and is
+# committed after them, which is exactly how tests/phase30_state.py resolved the same problem.
+#
+# The recorded constants are CROSS-CHECKED against git rather than trusted: a witness nobody
+# verifies is a comment. And the artifact is asserted NOT to contain its own SHA, so the circular
+# form cannot be reintroduced later as a "belt and braces" addition.
+# ---------------------------------------------------------------------------
+
+VERDICT_PATH = phase31_state.VERDICT_PATH
+
+
+def test_the_measurement_commit_is_recorded_and_well_formed() -> None:
+    """The witness carries a 40-character SHA and a 64-character digest for the artifact.
+
+    Needs no git history, so it runs on a shallow clone: a malformed constant is a defect in the
+    witness itself and should never hide behind an environment skip.
+    """
+    assert _SHA1_RE.match(phase31_state.MEASUREMENT_COMMIT), (
+        "tests/phase31_state.MEASUREMENT_COMMIT is not a 40-character SHA: "
+        f"{phase31_state.MEASUREMENT_COMMIT!r}"
+    )
+    assert _SHA256_RE.match(phase31_state.VERDICT_FILE_SHA256), (
+        "tests/phase31_state.VERDICT_FILE_SHA256 is not a 64-character sha256: "
+        f"{phase31_state.VERDICT_FILE_SHA256!r}"
+    )
+
+
+def test_the_verdict_artifact_exists_and_is_tracked() -> None:
+    """The artifact is TRACKED, so its absence is a broken checkout and not a reason to skip.
+
+    Deliberately NOT an evidence-backed skip. The committed generator-output form travels with
+    the repository precisely so the 2025 figures survive a fresh clone; a skip here would let a
+    checkout that lost the binding verdict report a green suite.
+    """
+    assert (REPO_ROOT / VERDICT_PATH).is_file(), (
+        f"the verdict artifact {VERDICT_PATH} is missing from this checkout. It is TRACKED and "
+        "the 2025 split is single-use, so it cannot be regenerated: this is a broken checkout."
+    )
+    tracked = _git("ls-files", VERDICT_PATH).stdout.split()
+    assert VERDICT_PATH in tracked, (
+        f"{VERDICT_PATH} is on disk but NOT tracked by git. An untracked verdict has no "
+        "measurement commit, so there is no ancestry to assert."
+    )
+
+
+def test_the_verdict_artifact_still_hashes_to_its_recorded_digest() -> None:
+    """The content lock on the MEASUREMENT, mirroring the one on the rule.
+
+    A one-byte edit to the artifact fails here. That matters more for this file than for most:
+    the 2025 split is single-use, so a hand-edited value cannot be regenerated and is
+    indistinguishable from a tampered one.
+    """
+    actual = _normalized_sha256(VERDICT_PATH)
+    assert actual == phase31_state.VERDICT_FILE_SHA256, (
+        f"{VERDICT_PATH} has CHANGED since the measurement was committed.\n"
+        f"  recorded (tests/phase31_state.py): {phase31_state.VERDICT_FILE_SHA256}\n"
+        f"  recomputed from the working tree:  {actual}\n"
+        "The verdict is GENERATOR OUTPUT over a single-use split. There is no honest repair "
+        "path: it cannot be re-measured, so an edited artifact is simply a lost one."
+    )
+
+
+def test_the_digest_would_catch_a_one_byte_edit() -> None:
+    """Fail-closed control on the lock above: flip ONE byte IN MEMORY, expect a different digest.
+
+    A hash assertion that has only ever been observed passing is indistinguishable from one
+    computed over the wrong bytes. This proves the discrimination WITHOUT touching the artifact
+    on disk -- mutating a single-use measurement to test the test would be the exact carelessness
+    the lock exists to catch.
+    """
+    raw = (REPO_ROOT / VERDICT_PATH).read_bytes().replace(b"\r\n", b"\n")
+    mutated = bytearray(raw)
+    mutated[-2] ^= 0x01
+    assert (
+        hashlib.sha256(bytes(mutated)).hexdigest() != phase31_state.VERDICT_FILE_SHA256
+    ), (
+        "a one-byte mutation of the verdict artifact produced the RECORDED digest, which means "
+        "the digest is not being computed over the artifact's bytes at all."
+    )
+
+
+def test_the_verdict_artifact_does_not_contain_its_own_commit_sha() -> None:
+    """REVIEW-CIRCULAR, asserted rather than merely explained.
+
+    The full SHA is the criterion. The 12-character abbreviation is checked too because that is
+    the form a future "belt and braces" addition would most plausibly take; 12 rather than 7
+    because a 7-hex prefix that happened to be all decimal digits could collide with a rendered
+    float and turn this guard into a flake.
+    """
+    content = (REPO_ROOT / VERDICT_PATH).read_text(encoding="utf-8")
+    commit = phase31_state.MEASUREMENT_COMMIT
+    assert commit not in content, (
+        f"{VERDICT_PATH} CONTAINS its own measurement commit SHA ({commit}). A commit hash is a "
+        "function of the committed bytes, so an artifact carrying its own has no fixed point and "
+        "the ancestry assertion built on it could never be satisfied. The witness belongs in "
+        "tests/phase31_state.py, outside the artifact it witnesses."
+    )
+    assert commit[:12] not in content, (
+        f"{VERDICT_PATH} contains the abbreviated form of its own measurement commit "
+        f"({commit[:12]}). Same self-reference, same absence of a fixed point."
+    )
+
+
+def test_the_measurement_commit_matches_what_git_resolves_for_the_artifact() -> None:
+    """The recorded SHA is CROSS-CHECKED against git, never trusted on its own.
+
+    A witness nobody verifies is a comment. If these disagree, either the artifact was
+    re-committed after the witness was appended, or the witness was edited.
+    """
+    if _git_history_is_unavailable():
+        pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+    resolved = _git("log", "-1", "--format=%H", "--", VERDICT_PATH).stdout.strip()
+    assert _SHA1_RE.match(resolved), (
+        f"git could not resolve the last commit to touch {VERDICT_PATH} (got {resolved!r})."
+    )
+    assert resolved == phase31_state.MEASUREMENT_COMMIT, (
+        "the resolved measurement commit does NOT match the recorded one.\n"
+        f"  resolved from git:                 {resolved}\n"
+        f"  recorded (tests/phase31_state.py): {phase31_state.MEASUREMENT_COMMIT}\n"
+    )
+
+
+def test_the_recorded_digest_equals_the_committed_bytes() -> None:
+    """The digest is measured against the COMMITTED blob, not merely the working tree.
+
+    The working-tree check above can pass on a machine whose checkout differs from what was
+    committed. Asking git for the blob at the measurement commit closes that gap.
+    """
+    if _git_history_is_unavailable():
+        pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+    blob = subprocess.run(
+        [
+            "git",
+            "cat-file",
+            "blob",
+            f"{phase31_state.MEASUREMENT_COMMIT}:{VERDICT_PATH}",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    assert blob.returncode == 0, blob.stderr.decode("utf-8", "replace")
+    assert (
+        hashlib.sha256(blob.stdout).hexdigest() == phase31_state.VERDICT_FILE_SHA256
+    ), (
+        "the committed bytes of the verdict artifact do NOT hash to the recorded digest. The "
+        "witness describes something other than what is in the measurement commit."
+    )
+
+
+def test_the_measurement_commit_contains_only_the_verdict_and_its_ledger() -> None:
+    """The commit's claim to BE the measurement is checkable, not merely asserted.
+
+    Exactly two paths: the verdict artifact and the COMPLETED run ledger. The record of what was
+    spent has to travel in the same commit as what was measured, or the two can be separated
+    later and only one of them believed.
+    """
+    if _git_history_is_unavailable():
+        pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+    listing = _git("show", "--name-only", "--format=", phase31_state.MEASUREMENT_COMMIT)
+    assert listing.returncode == 0, listing.stderr
+    touched = sorted(path for path in listing.stdout.split() if path)
+    expected = sorted([VERDICT_PATH, phase31_state.RUN_LEDGER_COMMITTED_PATH])
+    assert touched == expected, (
+        f"the measurement commit {phase31_state.MEASUREMENT_COMMIT} touches {touched}, expected "
+        f"exactly {expected}."
+    )
+
+
+def test_the_rule_commit_is_a_strict_ancestor_of_the_measurement_commit() -> None:
+    """SPEC R3, asserted between TWO SPECIFIC COMMITS and never against the current head.
+
+    Asserting against HEAD is a weaker claim: HEAD moves, so it would pass for any rule committed
+    at any point before now, including one committed after the numbers and then built on top of.
+    Both SHAs are read from the witness and cross-checked against git by the tests above.
+
+    The DIFFERENT-COMMITS check is not pedantry. A rule and the results it produced landing in
+    one commit is not a pre-registration; it is only a claim of one.
+    """
+    if _git_history_is_unavailable():
+        pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+    rule = phase31_state.PRE_REGISTRATION_COMMIT
+    measurement = phase31_state.MEASUREMENT_COMMIT
+
+    assert rule != measurement, (
+        f"the pre-registration commit and the measurement commit are the SAME commit ({rule}). "
+        "A rule that landed together with the numbers it produced was not registered in advance."
+    )
+    ancestry = _git("merge-base", "--is-ancestor", rule, measurement)
+    assert ancestry.returncode == 0, (
+        f"the pre-registration commit {rule} is NOT a strict ancestor of the measurement commit "
+        f"{measurement} (git exit {ancestry.returncode}). Everything Phase 31 publishes about "
+        "2025 rests on that ordering: without it the rule cannot be shown to have preceded the "
+        "answer."
+    )
+    # The reverse must NOT hold. If it did, the measurement would precede the rule.
+    reverse = _git("merge-base", "--is-ancestor", measurement, rule)
+    assert reverse.returncode != 0, (
+        f"the measurement commit {measurement} is ALSO an ancestor of the rule commit {rule}. "
+        "That is only possible if they are the same commit, which the check above already "
+        "excluded, so the repository state is inconsistent."
+    )

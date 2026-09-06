@@ -57,6 +57,14 @@ _EVIDENCE_SKIP_MARKERS = (
     # runner -- the integration run is the ONLY place its real loaders are exercised -- so a
     # checkout that cannot run them must SAY so rather than report a green suite that
     # silently excluded them.
+    #
+    # Plan 31-14 registers under this SAME marker rather than adding a second spelling of one
+    # fact. tests/integration/test_profitability_2025_controls.py has exactly one skip path --
+    # the shared `p31_rehearsal_run` fixture, which skips with this reason when the boundary is
+    # not derivable -- and it is the SYNTHETIC UNIT half of the 2025 positive control. The other
+    # half reads the git-TRACKED verdict artifact and deliberately FAILS rather than skips if it
+    # is missing: that artifact travels with the repository, so its absence is a broken checkout
+    # and never an environment fact.
     "not derivable on this checkout",
     # Plan 31-13: the real-schedule form of the bet-list completeness invariant reads the
     # gitignored silver schedule. The hand-built form always runs and proves the rule; this
