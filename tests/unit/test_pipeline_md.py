@@ -216,3 +216,63 @@ class TestPipelineMdPhase30Reconciled:
             "PIPELINE.md should name --no-save as the real read-only-build switch "
             "for scripts/build_features.py"
         )
+
+
+class TestPipelineMdPhase31CacheBoundary:
+    """Plan 31-18: stage 7 (build cache) is now ALSO run by the Friday orchestrator.
+
+    PIPELINE.md's weekly-run section previously ended by saying the orchestrator does not
+    "rebuild the web cache". That statement is false since ``populate_web_cache`` was registered
+    as the last step, and a canonical run sequence that denies a boundary the code crossed is the
+    drift this repository has been bitten by more than once. Guarded in both directions.
+    """
+
+    def test_the_weekly_run_no_longer_denies_rebuilding_the_web_cache(self):
+        """The stale denial is gone from the current-week/weekly-run section."""
+        content = _read_pipeline_md()
+        assert "or rebuild the web cache" not in content, (
+            "PIPELINE.md still claims the Friday orchestrator does not rebuild the web cache "
+            "(false since plan 31-18 registered populate_web_cache)"
+        )
+
+    def test_the_weekly_run_names_the_cache_step_and_its_registration(self):
+        """The replacement names the step, its position and its non-critical registration."""
+        content = _read_pipeline_md()
+        assert "populate_web_cache" in content, (
+            "PIPELINE.md does not name the cache-population step in the weekly run"
+        )
+        assert "critical=False" in content, (
+            "PIPELINE.md does not record that the cache step is registered non-critical, so a "
+            "reader cannot tell a degraded run from a failed one"
+        )
+
+    def test_the_registry_size_matches_the_live_registry(self):
+        """The step count PIPELINE.md quotes is read from the registry, never hardcoded twice."""
+        from pipeline.steps import build_step_registry
+
+        content = _read_pipeline_md()
+        expected = (
+            f"({len(build_step_registry())}-step registry in `pipeline/steps.py`)"
+        )
+        assert expected in content, (
+            f"PIPELINE.md does not quote the live registry size; expected {expected!r}"
+        )
+
+    def test_the_style_compile_note_is_present(self):
+        """The vendored Tailwind compile has NO make target, and the doc must say so.
+
+        That omission is why compiled-style drift exists in this repo: a template introducing a
+        utility class nobody recompiled for renders unstyled, and nothing in the canonical run
+        sequence told the author to recompile. Guards the command and the no-make-target fact.
+        """
+        content = _read_pipeline_md()
+        assert "tools/tailwindcss.exe" in content, (
+            "PIPELINE.md does not name the vendored Tailwind CLI"
+        )
+        assert "web/static/css/tailwind-compiled.css" in content, (
+            "PIPELINE.md does not name the compiled stylesheet the app serves"
+        )
+        assert "no `make` target" in content, (
+            "PIPELINE.md does not record that the style compile has no make target, which is the "
+            "omission that lets compiled-style drift happen unnoticed"
+        )

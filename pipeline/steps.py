@@ -3,8 +3,9 @@
 Every step adapter uses deferred imports (inside the function body) to avoid
 argparse collisions and module-level side effects from scripts/.
 
-The step registry returns exactly 18 StepDefinition entries covering the full
-data-to-prediction pipeline.
+The step registry returns exactly 19 StepDefinition entries covering the full
+data-to-prediction pipeline, ending with the NON-CRITICAL web-cache population
+step Plan 31-18 added (SPEC R9, D31-29).
 """
 
 from collections.abc import Callable
@@ -115,6 +116,16 @@ def _bet_list_output_dir() -> Path:
     from backtest.weekly_bet_list import DEFAULT_BET_LIST_DIR
 
     return DEFAULT_BET_LIST_DIR
+
+
+def _web_cache_db_path() -> Path:
+    """The live DuckDB web cache the FastAPI app serves from.
+
+    The SAME default ``scripts/populate_cache.py`` uses, factored here so the scheduled step and
+    the manual recovery command named in the ``/bets`` refusal text cannot rebuild two different
+    files. Tests redirect it rather than writing the production cache.
+    """
+    return Path("data/web_cache.duckdb")
 
 
 # Single source of truth for the data artifacts the DATA-phase integrity gate
@@ -411,13 +422,53 @@ def step_verify_output_files() -> None:
         logger.warning("Missing output files", missing_files=missing)
 
 
+def step_populate_web_cache() -> None:
+    """Rebuild the DuckDB web cache so the served bet list is this run's (SPEC R9, D31-29).
+
+    THE BOUNDARY THIS STEP MOVED. Until Plan 31-18 the orchestrator did not rebuild the web cache
+    at all, and both operator documents said so. It does now, LAST in the registry -- strictly
+    after ``generate_recommendations`` (which writes the durable bet-list artifact), after
+    ``export_artifacts``, and after the two validation steps, so the cache is never published from
+    predictions that failed validation. ``tests/unit/test_step_registry_order.py`` pins that
+    position by INDEX so a future insertion cannot silently move it above a dependency.
+
+    REGISTERED NON-CRITICAL, deliberately. A cache failure must not fail a run whose prediction
+    work succeeded: making it critical would discard good prediction output because a downstream
+    convenience failed, which is the outcome SPEC R9 explicitly refuses. The orchestrator already
+    sets ``status="degraded"`` on a non-critical failure and already routes a degraded completion
+    to ``alert_degraded_completion``, so NO new alert code exists here or in ``pipeline/alert.py``.
+
+    BE HONEST ABOUT WHAT THAT BUYS. ``pipeline/alert.py`` documents alerts as LOG-ONLY by default,
+    and this project's record is that the email and messaging channels are inert across three
+    independent breaks -- console and log are the working channel. So the alert is NOT the
+    protection against a silently stale bet list. The protection is the ``/bets`` hard-block: the
+    page refuses to serve a week whose bet-list populated-at marker predates that week's latest
+    per-game line freeze, which a reader cannot miss. This step's contribution to that guard is
+    that a FAILED run leaves the marker unadvanced, so the block fires deterministically.
+
+    Raises:
+        Whatever ``api.cache.populate_cache`` raises. Nothing is swallowed here -- the
+        orchestrator's non-critical handling is what turns the raise into a degraded run, and
+        swallowing it here would hide the failure from the run log as well as from the alert.
+    """
+    from api.cache import populate_cache
+
+    populate_cache(
+        db_path=_web_cache_db_path(),
+        artifacts_dir=Path("artifacts"),
+        outputs_dir=Path("outputs/backtest"),
+        gold_dir=Path("data/gold"),
+        silver_dir=Path("data/silver"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Step registry builder
 # ---------------------------------------------------------------------------
 
 
 def build_step_registry() -> list[StepDefinition]:
-    """Build the complete 18-step pipeline registry.
+    """Build the complete 19-step pipeline registry.
 
     Returns:
         Ordered list of StepDefinitions covering data and prediction phases.
@@ -490,7 +541,7 @@ def build_step_registry() -> list[StepDefinition]:
             retryable=False,
             description="Verify data artifacts before predictions",
         ),
-        # PREDICTIONS PHASE (10 steps)
+        # PREDICTIONS PHASE (11 steps)
         StepDefinition(
             "ingest_odds",
             step_ingest_odds,
@@ -571,5 +622,20 @@ def build_step_registry() -> list[StepDefinition]:
             critical=False,
             retryable=False,
             description="Verify output file existence",
+        ),
+        # LAST, and NON-CRITICAL (SPEC R9, D31-29). It must follow generate_recommendations and
+        # export_artifacts so the blob it reads is the one this run wrote; placing it after the
+        # two validation steps as well means a cache is never published from predictions that
+        # failed validation. The non-critical flag routes a failure to the EXISTING
+        # alert_degraded_completion path -- no new alert code -- and alerts are log-only by
+        # default, so the real protection against a silently stale list is the /bets hard-block,
+        # not this alert. See step_populate_web_cache's docstring.
+        StepDefinition(
+            "populate_web_cache",
+            step_populate_web_cache,
+            PipelinePhase.PREDICTIONS,
+            critical=False,
+            retryable=False,
+            description="Rebuild the DuckDB web cache the site serves from",
         ),
     ]

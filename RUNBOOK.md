@@ -10,7 +10,7 @@
 > TASK layer. It BUILDS ON the canonical command reference rather than restating it:
 > `PIPELINE.md` owns the per-stage commands (this runbook mirrors them, link-don't-
 > duplicate), `AUTOMATION.md` owns the Friday automation behavior (this runbook links it,
-> does not re-explain the 18 steps), and `README.md` owns the single architecture diagram
+> does not re-explain the 19 steps), and `README.md` owns the single architecture diagram
 > (the DOC-02 section below cross-references it, no second diagram). HARD BOUNDARY
 > (D-01/D-07): this is documentation only -- no model re-fit, no canonical-gold rebuild.
 > Every command below carries a verification-basis label so the "verified" claim is honest
@@ -403,14 +403,14 @@ uv run python scripts/friday_pipeline.py --dry-run
 
 - **Do NOT re-explain the automation here.** `AUTOMATION.md` is the single source of truth
   for HOW the Friday automation runs: what fires and when, the 5-phase orchestrator flow, the
-  18 steps, where outputs and logs land, the offseason no-op, and -- most importantly -- the
+  19 steps, where outputs and logs land, the offseason no-op, and -- most importantly -- the
   canonical "did Friday succeed?" signal (the D-04 success triad: `log.status` in
   `{success, degraded}` AND the predictions CSV exists). Read `AUTOMATION.md` for all of that.
 - **For the Windows Task Scheduler setup** (registering / re-pointing the
   `NFL_Predict_Pipeline` scheduled task), see `deployment/README.md`. The runbook does not
   absorb the scheduling detail -- `deployment/README.md` owns it.
 - **Verification basis (the `--dry-run`):** verified live 2026-05-31 -- exit 0 this session;
-  listed all 18 steps and executed nothing (`--dry-run` bypasses the offseason no-op so the
+  listed all 19 steps and executed nothing (`--dry-run` bypasses the offseason no-op so the
   steps can be inspected year-round).
 - **Verification basis (a live scheduled run):** verified via AUDIT-01 / AUTO-03 -- the owner
   registered and ran the scheduled task (`Last Result = 0`); see `AUTOMATION.md` Section 9.

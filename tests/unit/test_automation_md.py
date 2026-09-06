@@ -7,7 +7,9 @@ code it explains:
 
 - the file exists at the repo root,
 - the content is ASCII-only (no emoji, per CLAUDE.md),
-- the 18-step orchestrator listing is present,
+- the 19-step orchestrator listing is present (18 through plan 31-17 plus the
+  plan-31-18 cache step),
+- the moved web-cache boundary is described rather than denied,
 - the outputs path (``outputs/predictions/``) and log path
   (``logs/friday_pipeline.json``) are documented,
 - the single-file-overwrite (no per-run history) note is present,
@@ -97,37 +99,47 @@ class TestAutomationMdAnchors:
         assert "enable_email" in content
         assert "enable_slack" in content
 
-    def test_documents_18_step_listing(self):
-        """An 18-step orchestrator listing/table is present.
+    def test_documents_the_full_step_listing(self):
+        """The orchestrator listing/table names EVERY registered step, and the live count.
 
-        Asserts the count is named and that the table contains every one of the
-        18 real step names from pipeline.steps.build_step_registry().
+        Both halves are read from ``pipeline.steps.build_step_registry()`` rather than from a
+        hand-maintained literal list. The previous version hardcoded 18 names, so a step added to
+        the registry left the document silently short and this guard silently green -- which is
+        the doc-drift shape it exists to catch. Now a new registration fails HERE until the
+        document describes it.
+        """
+        from pipeline.steps import build_step_registry
+
+        content = _read_automation_md()
+        registry = build_step_registry()
+
+        assert str(len(registry)) in content, (
+            f"AUTOMATION.md does not name the live step count ({len(registry)})"
+        )
+        missing = [step.name for step in registry if step.name not in content]
+        assert not missing, f"AUTOMATION.md missing step rows: {missing}"
+
+    def test_documents_the_moved_web_cache_boundary(self):
+        """Plan 31-18 -- the orchestrator DOES rebuild the web cache, and the doc says so.
+
+        The stale sentence ("The orchestrator does NOT train, backtest, or rebuild the web
+        cache") was TRUE until plan 31-18 registered ``populate_web_cache`` and is false now.
+        Guarded in both directions: the denial must be gone, and the replacement must name the
+        step, its non-critical registration and its position.
         """
         content = _read_automation_md()
-        assert "18" in content
-        step_names = [
-            "ingest_games",
-            "ingest_weather",
-            "data_qa",
-            "build_elo",
-            "build_team_form",
-            "build_contextual",
-            "build_weather_features",
-            "verify_data_artifacts",
-            "ingest_odds",
-            "build_market_anchors",
-            "build_features",
-            "validate_features",
-            "validate_models",
-            "generate_predictions",
-            "generate_recommendations",
-            "export_artifacts",
-            "validate_predictions",
-            "verify_output_files",
-        ]
-        assert len(step_names) == 18
-        missing = [name for name in step_names if name not in content]
-        assert not missing, f"AUTOMATION.md missing step rows: {missing}"
+        assert "or rebuild the web cache" not in content, (
+            "AUTOMATION.md still denies that the orchestrator rebuilds the web cache; plan 31-18 "
+            "registered populate_web_cache as the last step"
+        )
+        assert "populate_web_cache" in content
+        assert "critical=False" in content, (
+            "AUTOMATION.md does not record that the cache step is registered non-critical"
+        )
+        assert "hard-block" in content, (
+            "AUTOMATION.md does not record that the /bets hard-block -- not the log-only alert -- "
+            "is the real protection against a silently stale bet list"
+        )
 
     def test_documents_d04_success_signal_triad(self):
         """The D-04 triad statuses + matching alert levels are present."""

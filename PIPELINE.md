@@ -206,6 +206,21 @@ in-process cache require `--workers 1`).
 uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
+> **Recompile the stylesheet when a template introduces a new utility class.** The app serves
+> `web/static/css/tailwind-compiled.css`, which is generated from `web/static/input.css` by the
+> VENDORED Tailwind v4 CLI. There is **no `make` target for it** and no stage of its own: it is
+> not part of the 8-stage sequence, the Makefile does not wrap it, and nothing in the build
+> notices when it is stale. That omission is why compiled-style drift exists in this repository --
+> a template can introduce a utility class that was never compiled, and the page then renders
+> unstyled with no error anywhere. After editing anything under `web/templates/`, run:
+>
+> ```powershell
+> ./tools/tailwindcss.exe -i web/static/input.css -o web/static/css/tailwind-compiled.css --minify
+> ```
+>
+> A template change that reuses only classes already present in the compiled sheet needs no
+> recompile; when in doubt, run it -- it is idempotent and takes about a second.
+
 - **Live entry point:** `api/main.py:app`.
 - **Produces:** FastAPI at http://localhost:8000 — the six top-nav pages `/`
   (This Week), `/performance`, `/backtest`, `/insights`, `/betting`, and
@@ -230,11 +245,19 @@ uv run python scripts/friday_pipeline.py --log-level INFO
 ```
 
 - **Live entry point:** `scripts/friday_pipeline.py` ->
-  `pipeline.orchestrator.FridayPipeline` (18-step registry in `pipeline/steps.py`).
+  `pipeline.orchestrator.FridayPipeline` (19-step registry in `pipeline/steps.py`).
 - **Produces:** refreshed Silver/Gold for the current week, current-week predictions
-  and recommendations, exports, and a run log at `logs/friday_pipeline.json`.
+  and recommendations, exports, a rebuilt `data/web_cache.duckdb`, and a run log at
+  `logs/friday_pipeline.json`.
 - **Scope:** ingest games/weather -> data QA -> build Elo/form/contextual/weather ->
   ingest odds -> market anchors -> build features -> validate features/models ->
-  generate predictions/recommendations -> export -> validate outputs. It does **not**
-  train, promote, backtest, or rebuild the web cache — run stages 3 (train), 4
-  (promote), 5 (backtest), and 7 (build cache) above for those.
+  generate predictions/recommendations -> export -> validate outputs -> **populate the
+  web cache**. It does **not** train, promote, or backtest — run stages 3 (train), 4
+  (promote) and 5 (backtest) above for those.
+- **Stage 7 is now part of the weekly run (changed by plan 31-18).** This document
+  previously said the orchestrator does not rebuild the web cache; that is no longer
+  true. `populate_web_cache` is the LAST registry entry, runs after the recommendation
+  and export steps, and is registered `critical=False` so a cache failure degrades the
+  run instead of discarding prediction work that already succeeded. Running stage 7 by
+  hand remains the recovery path, and it is the exact command the `/bets` stale-cache
+  refusal tells the reader to re-run. See `AUTOMATION.md` section 4.

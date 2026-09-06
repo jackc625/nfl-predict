@@ -59,9 +59,9 @@ that fires once a week.
 
 | Flag | Effect |
 |------|--------|
-| (none) | Full pipeline: all 18 steps (DATA + PREDICTIONS). |
+| (none) | Full pipeline: all 19 steps (DATA + PREDICTIONS). |
 | `--data-only` | DATA phase only (the 8 DATA-phase steps). |
-| `--predictions-only` | PREDICTIONS phase only (the 10 PREDICTIONS-phase steps); logs a "ensure data artifacts are fresh" warning. |
+| `--predictions-only` | PREDICTIONS phase only (the 11 PREDICTIONS-phase steps); logs a "ensure data artifacts are fresh" warning. |
 | `--dry-run` | List the steps that would execute (filtered by mode); execute nothing; exit 0. Works year-round: `--dry-run` bypasses the offseason no-op short-circuit so steps can be inspected out of season without `--force` (WR-04). |
 | `--force` | Bypass the pre-flight staleness/season checks AND the offseason no-op short-circuit; pre-flight health becomes advisory. |
 | `--log-level {DEBUG,INFO,WARNING,ERROR}` | Logging verbosity (default INFO). |
@@ -87,7 +87,7 @@ flow:
   checks (database connectivity, model artifacts, disk space). Without `--force`,
   `unhealthy` aborts (failure alert + raise). With `--force`, `unhealthy` is advisory:
   it appends the warning `"Pre-flight health: unhealthy (forced)"` and continues.
-- **C. Step execution:** the 18-step registry (`pipeline/steps.py`), phase-filtered by
+- **C. Step execution:** the 19-step registry (`pipeline/steps.py`), phase-filtered by
   mode, run in order. The log is written atomically after each step (incremental
   snapshot). A **critical** step failure sets `status="failed"`, fires
   `alert_pipeline_failure` (CRITICAL) and raises immediately. A **non-critical** step
@@ -115,10 +115,10 @@ exits 0 as a no-op with **no CRITICAL alert**.
 
 ---
 
-## 3. The 18 orchestrator steps
+## 3. The 19 orchestrator steps
 
-The registry (`pipeline.steps.build_step_registry`) is exactly 18 `StepDefinition`
-entries: 8 in the DATA phase, 10 in the PREDICTIONS phase. Each step uses deferred
+The registry (`pipeline.steps.build_step_registry`) is exactly 19 `StepDefinition`
+entries: 8 in the DATA phase, 11 in the PREDICTIONS phase. Each step uses deferred
 imports (inside the function body) to avoid argparse collisions and module-level side
 effects. `critical=True` means a failure aborts the run; `retryable=True` means transient
 errors trigger retry.
@@ -143,6 +143,7 @@ errors trigger retry.
 | 16 | `export_artifacts` | PREDICTIONS | yes | no | Export the predictions CSV to JSON. |
 | 17 | `validate_predictions` | PREDICTIONS | yes | no | Validate the prediction file (non-empty, required columns, `wp_prob` in [0,1]). |
 | 18 | `verify_output_files` | PREDICTIONS | no | no | Verify the expected output files exist (advisory; warns on missing). |
+| 19 | `populate_web_cache` | PREDICTIONS | no | no | Rebuild `data/web_cache.duckdb` so the served bet list is this run's. |
 
 > Note: retry is handled by `tenacity` (`Retrying` with `wait_exponential` backoff) and
 > fires ONLY on `TRANSIENT_EXCEPTIONS` (`ConnectionError`, `TimeoutError`, `OSError`,
@@ -179,8 +180,37 @@ freeze has passed is never rewritten by a later run.
 > tier with no expected value, no sizing and no suppression. It had NO code consumer and is
 > gone; nothing reads or writes it.
 
-The orchestrator does NOT train, backtest, or rebuild the web cache -- those are the
-separate PIPELINE.md stages 3, 4, and 6.
+### The web cache IS rebuilt by the orchestrator (changed by plan 31-18)
+
+This boundary MOVED. Until plan 31-18 the orchestrator did not rebuild the web cache and this
+document said so; that statement is now false and has been replaced by this section.
+
+`populate_web_cache` is step **19**, the LAST entry in the registry. It rebuilds
+`data/web_cache.duckdb` from the model artifacts, the backtest outputs, the gold/silver layers
+and the two `outputs/bet_list/` artifacts, so the bet list the site serves after a Friday run is
+the one that run selected rather than whatever a previous manual `scripts/populate_cache.py`
+invocation left behind.
+
+Three properties of that registration are load-bearing and are each pinned by a committed test
+(`tests/unit/test_step_registry_order.py`, `tests/integration/test_orchestrator_degraded_cache.py`):
+
+- **It runs LAST** -- strictly after `generate_recommendations` (which writes the durable
+  bet-list artifact) and after `export_artifacts`, so the blob it reads is the one this run wrote,
+  and after both validation steps, so a cache is never published from predictions that failed
+  validation. The position is asserted by INDEX, so a future insertion cannot silently move it.
+- **It is `critical=False`.** A cache failure sets `status="degraded"` and the run continues; the
+  prediction steps' results are still recorded. Failing the run would discard good prediction
+  output because a downstream convenience failed.
+- **It needs no new alert code.** A degraded completion already routes to
+  `alert_degraded_completion`. Note honestly what that buys: alerts are log-only by default and
+  the email/Slack channels are inert (section 6), so the real protection against a silently stale
+  bet list is the `/bets` **hard-block** -- the page refuses to serve a week whose bet-list
+  populated-at marker predates that week's latest per-game line freeze. A failed run leaves that
+  marker unadvanced, which is what makes the block fire deterministically.
+
+The orchestrator still does NOT train, promote, or backtest -- those remain the separate
+PIPELINE.md stages 3, 4 and 5. Stage 7 (build cache) is now ALSO run by the orchestrator; running
+it manually remains the documented recovery path and is the command the `/bets` refusal names.
 
 ---
 

@@ -1,6 +1,6 @@
 """Friday pipeline orchestrator.
 
-Runs all 18 data-to-prediction steps in sequence with retry logic,
+Runs all 19 data-to-prediction steps in sequence with retry logic,
 phase filtering, and structured execution logging.
 
 Integrates pre-flight staleness gate, health checks, and post-run health

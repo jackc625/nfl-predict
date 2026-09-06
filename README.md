@@ -535,7 +535,7 @@ nfl-predict/
     artifacts.py, train.py
 
   pipeline/                # v2.0 Friday orchestrator (Phase 14)
-    orchestrator.py        # FridayPipeline: 18 steps with retry + logging
+    orchestrator.py        # FridayPipeline: 19 steps with retry + logging
     steps.py               # StepDefinitions with deferred imports
     staleness.py, health.py, execution_log.py, alert.py
 

@@ -155,6 +155,21 @@ def test_orchestrator_predictions_phase_e2e(tmp_path, monkeypatch):
     monkeypatch.setattr(steps, "step_build_market_anchors", lambda: None)
     monkeypatch.setattr(steps, "step_build_features", lambda: None)
 
+    # And the step plan 31-18 added, for the SAME reason plus a harder one: its real body
+    # rebuilds the PRODUCTION `data/web_cache.duckdb` in place. Leaving it live would make this
+    # test rewrite a production store as a side effect of asserting the prediction phase -- the
+    # exact class of unintended `data/` write `tests/data_boundary.py` exists to catch. Its own
+    # registration, ordering and non-critical failure behaviour are proven in
+    # `tests/unit/test_step_registry_order.py` and
+    # `tests/integration/test_orchestrator_degraded_cache.py`, so nothing is lost by no-op'ing it
+    # here. Asserted present first, so a rename cannot turn this into a silent no-op that lets the
+    # real body run again.
+    assert hasattr(steps, "step_populate_web_cache"), (
+        "pipeline.steps no longer defines step_populate_web_cache; this no-op has gone stale and "
+        "the real cache rebuild would run against the production cache"
+    )
+    monkeypatch.setattr(steps, "step_populate_web_cache", lambda: None)
+
     # Drive the REAL orchestrator loop -- no build_step_registry patch.
     pipeline = FridayPipeline(mode="predictions-only", force=True)
     log = pipeline.run()

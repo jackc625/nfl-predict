@@ -56,19 +56,24 @@ def make_mock_step(
 class TestStepRegistry:
     """Tests for build_step_registry."""
 
-    def test_build_step_registry_returns_18_steps(self):
-        """build_step_registry returns exactly 18 StepDefinition objects."""
+    def test_build_step_registry_returns_19_steps(self):
+        """build_step_registry returns exactly 19 StepDefinition objects.
+
+        18 through Plan 31-17; the nineteenth is the NON-CRITICAL ``populate_web_cache`` step
+        Plan 31-18 registered last (SPEC R9, D31-29). Its position and non-criticality are pinned
+        separately in ``tests/unit/test_step_registry_order.py``.
+        """
         registry = build_step_registry()
-        assert len(registry) == 18
+        assert len(registry) == 19
         assert all(isinstance(s, StepDefinition) for s in registry)
 
     def test_build_step_registry_phases_correct(self):
-        """First 8 steps are DATA, last 10 are PREDICTIONS."""
+        """First 8 steps are DATA, last 11 are PREDICTIONS."""
         registry = build_step_registry()
         data_steps = [s for s in registry if s.phase == PipelinePhase.DATA]
         pred_steps = [s for s in registry if s.phase == PipelinePhase.PREDICTIONS]
         assert len(data_steps) == 8
-        assert len(pred_steps) == 10
+        assert len(pred_steps) == 11
         # DATA steps come first
         for i, step in enumerate(registry[:8]):
             assert step.phase == PipelinePhase.DATA, f"Step {i} should be DATA"

@@ -2,7 +2,7 @@
 """Unified Friday Pipeline Orchestrator.
 
 Replaces both friday_data_update.py and friday_predictions_run.py with a single
-process that runs all 18 data-to-prediction steps in sequence via direct Python
+process that runs all 19 data-to-prediction steps in sequence via direct Python
 imports.
 
 Usage:
