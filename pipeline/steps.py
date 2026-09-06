@@ -452,13 +452,25 @@ def step_populate_web_cache() -> None:
         swallowing it here would hide the failure from the run log as well as from the alert.
     """
     from api.cache import populate_cache
+    from backtest.weekly_bet_list import read_bet_list_cache_sources
+
+    silver_dir = Path("data/silver")
+    # Read the DURABLE artifacts and the schedule HERE and hand over frames. ``api/cache.py`` may
+    # import no ``backtest`` module (UIAP-01), so it cannot know the artifact names or derive a
+    # per-game freeze; this module already imports ``backtest`` and is the permitted seam. The
+    # frames are loaded into the population run's TEMPORARY database before its atomic swap, which
+    # is what makes forward recommendation history survive a rebuild that replaces the whole file.
+    sources = read_bet_list_cache_sources(_bet_list_output_dir(), silver_dir)
 
     populate_cache(
         db_path=_web_cache_db_path(),
         artifacts_dir=Path("artifacts"),
         outputs_dir=Path("outputs/backtest"),
         gold_dir=Path("data/gold"),
-        silver_dir=Path("data/silver"),
+        silver_dir=silver_dir,
+        bet_list_df=sources.bet_list,
+        bet_tracker_df=sources.tracker,
+        bet_schedule_df=sources.schedule,
     )
 
 

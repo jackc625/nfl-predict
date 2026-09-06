@@ -40,7 +40,12 @@ from typing import Any
 import duckdb
 from cachetools import TTLCache
 
-from api.cache import BET_LIST_COLUMNS, BET_STATUS_LIVE, BET_TRACKER_BLOCK_COLUMNS
+from api.cache import (
+    BET_LIST_COLUMNS,
+    BET_STATUS_LIVE,
+    BET_TRACKER_BLOCK_COLUMNS,
+    bet_list_populated_at_key,
+)
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -805,6 +810,49 @@ class DataService:
             )
         except duckdb.Error:
             logger.warning("bet_week_freeze table not available in cache")
+            return None
+        row = result.fetchone()
+        return row[0] if row else None
+
+    def get_bet_list_populated_at(
+        self, season: int | None, week: int | None
+    ) -> str | None:
+        """Return when THAT week's bet list was last materialized, or None (D31-29).
+
+        One half of the ``/bets`` stale-cache comparison; :meth:`get_bet_week_freeze` is the
+        other. Both are keyed LOOKUPS and neither depends on a bet row existing, which is what
+        lets the hard-block fire in the zero-row case it was built for.
+
+        It reads the PER-WEEK ``bet_list_populated_at:<season>:<week>`` key and deliberately does
+        NOT fall back to the generic ``cache_meta['last_updated']`` timestamp, nor to the bare
+        ``bet_list_populated_at`` prefix. Both fallbacks would reintroduce the defect the per-week
+        marker exists to close: a run that populated predictions and failed on the bet list would
+        read as fresh, and the guard would be defeated by the exact failure it guards against
+        (D31-29). ``None`` here means "this week's population never recorded a success", which the
+        page resolves to the refusal when a freeze exists for the week.
+
+        Returns None when either identifier is absent (there is no week to ask about) or when the
+        cache predates Phase 31 and has no ``cache_meta`` row for the key.
+        """
+        if season is None or week is None:
+            return None
+        key = ("bet_list_populated_at", season, week)
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        result = self._get_bet_list_populated_at_uncached(season, week)
+        if result is not None:
+            _cache_set(key, result)
+        return result
+
+    def _get_bet_list_populated_at_uncached(self, season: int, week: int) -> str | None:
+        try:
+            result = self._conn.execute(
+                "SELECT value FROM cache_meta WHERE key = ?",
+                [bet_list_populated_at_key(season, week)],
+            )
+        except duckdb.Error:
+            logger.warning("cache_meta table not available in cache")
             return None
         row = result.fetchone()
         return row[0] if row else None

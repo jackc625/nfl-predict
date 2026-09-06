@@ -786,9 +786,54 @@ CREATE TABLE IF NOT EXISTS bet_tracker_blocks (
 )
 """
 
-# The cache_meta key stamping when the bet list was last materialized. The /bets cache stamp and
-# the Plan 31-18 stale-cache hard-block both read it.
+# The standalone ``cache_meta`` CREATE, so the per-week marker can be stamped against any
+# connection (a partially built cache, or an in-memory test DB) without first building the whole
+# CACHE_SCHEMA. This is the SAME definition embedded in CACHE_SCHEMA above, and
+# ``tests/unit/test_bet_list_marker.py`` compares the two column by column so the convenience
+# cannot silently drift into a second, different table.
+CACHE_META_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cache_meta (
+    key VARCHAR PRIMARY KEY,
+    value VARCHAR,
+    updated_at TIMESTAMP
+)
+"""
+
+# The PREFIX of the cache_meta keys stamping when a week's bet list was last materialized. It is
+# a prefix and not a key: see ``bet_list_populated_at_key``.
 BET_LIST_POPULATED_AT_KEY = "bet_list_populated_at"
+
+# The separator between the prefix and the (season, week) pair. Named so a reader of a raw
+# cache_meta dump can decompose a key, and so the two sides -- the writer here and
+# ``DataService.get_bet_list_populated_at`` -- cannot spell it differently.
+BET_LIST_POPULATED_AT_SEPARATOR = ":"
+
+
+def bet_list_populated_at_key(season: int, week: int) -> str:
+    """The cache_meta key stamping when THAT week's bet list was materialized (D31-29).
+
+    PER-WEEK, not global, and that is the whole design. ``/bets`` hard-blocks a week whose bet list
+    was populated BEFORE that week's latest per-game line freeze, and the value it compares is this
+    marker. Reading freshness off the generic ``last_updated`` timestamp was REJECTED because it
+    advances whenever ANY cache table is repopulated: a run that populated predictions and then
+    failed on the bet list would look fresh, and the guard would be defeated by the exact failure
+    it exists to catch. Keying by week closes the second half of the same hole -- a run that
+    populated week 2 must not vouch for a week 1 it never touched.
+
+    Args:
+        season: NFL season. Accepts a numpy integer (what a DataFrame column yields) as well as a
+            Python one; both key the same cell.
+        week: NFL week, same.
+
+    Returns:
+        ``bet_list_populated_at:<season>:<week>``.
+    """
+    return (
+        f"{BET_LIST_POPULATED_AT_KEY}"
+        f"{BET_LIST_POPULATED_AT_SEPARATOR}{int(season)}"
+        f"{BET_LIST_POPULATED_AT_SEPARATOR}{int(week)}"
+    )
+
 
 # The ``status`` value that means a bet was actually PLACED. ``DataService.get_bet_list`` selects
 # rows equal to it and ``DataService.get_suppressed_bets`` selects the exact COMPLEMENT
@@ -1059,6 +1104,77 @@ def materialize_bet_list(
     subset["outcome"] = subset["outcome"].where(subset["outcome"].notna(), None)  # pyright: ignore[reportAttributeAccessIssue]
 
     return _explicit_column_insert(conn, "bet_list", BET_LIST_COLUMNS, subset)
+
+
+def materialize_bet_list_with_marker(
+    conn: duckdb.DuckDBPyConnection,
+    bet_list_df: pd.DataFrame,
+    *,
+    populated_at: datetime,
+) -> int:
+    """Insert the bet list, then stamp one per-week marker STRICTLY AFTER a successful insert.
+
+    THE ORDERING IS THE POINT (D31-29). :func:`materialize_bet_list` validates the frame and then
+    performs ONE ``INSERT``; every way it can fail -- a missing ``BET_LIST_COLUMNS`` field, a
+    ``grading_status`` outside the closed vocabulary, a database error -- raises BEFORE this
+    function reaches the stamp. A failed population therefore leaves the previous marker value in
+    place, so the ``/bets`` hard-block fires deterministically instead of reading a failed run as
+    fresh.
+
+    ONE MARKER PER (season, week) PRESENT IN THE FRAME. A week the frame does not mention is not
+    stamped, which is what stops a run on one week vouching for another. An EMPTY frame stamps
+    NOTHING and raises nothing: zero rows is a first-class result (SPEC R4 empty), but it is also
+    exactly the state a failed insertion leaves behind, so it must not be vouched for either --
+    the page resolves that pair to the refusal by reading the schedule-derived ``bet_week_freeze``
+    rather than the rows.
+
+    CALL-SITE CONTRACT: as with :func:`materialize_bet_list`, ``conn`` MUST be the TEMPORARY
+    database ``populate_cache`` builds. The marker travels with the rows it describes, so writing
+    it to the live cache would leave it to be deleted by the next population run's rename.
+
+    Args:
+        conn: The ``populate_cache`` temp connection, or an in-memory test DB. Both the
+            ``bet_list`` and ``cache_meta`` tables are created if absent.
+        bet_list_df: The precomputed rows, carrying at least every ``BET_LIST_COLUMNS`` field.
+        populated_at: The instant to stamp. Passed in rather than read from the clock so the
+            marker and the run's ``last_updated`` describe the SAME instant, and so the ordering
+            behaviour is testable.
+
+    Returns:
+        The number of rows inserted.
+
+    Raises:
+        KeyError: if *bet_list_df* is missing a required column (nothing is stamped).
+        ValueError: if ``grading_status`` is outside ``GRADING_STATUSES`` (nothing is stamped).
+    """
+    conn.execute(CACHE_META_SCHEMA)
+    inserted = materialize_bet_list(conn, bet_list_df)
+
+    if bet_list_df.empty:
+        return inserted
+
+    weeks = (
+        bet_list_df[["season", "week"]]
+        .drop_duplicates()
+        .sort_values(["season", "week"])
+        .itertuples(index=False)
+    )
+    stamped = [
+        [
+            bet_list_populated_at_key(season, week),
+            populated_at.isoformat(),
+            populated_at,
+        ]
+        for season, week in weeks
+    ]
+    conn.executemany("INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)", stamped)
+    logger.info(
+        "Bet-list populated-at markers stamped",
+        n_rows=inserted,
+        n_weeks=len(stamped),
+        populated_at=populated_at.isoformat(),
+    )
+    return inserted
 
 
 def materialize_available_bet_weeks(
@@ -1909,6 +2025,10 @@ def populate_cache(
     outputs_dir: Path,
     gold_dir: Path,
     silver_dir: Path = Path("data/silver"),
+    *,
+    bet_list_df: pd.DataFrame | None = None,
+    bet_tracker_df: pd.DataFrame | None = None,
+    bet_schedule_df: pd.DataFrame | None = None,
 ) -> None:
     """Populate the DuckDB web cache from artifacts and backtest outputs.
 
@@ -1917,10 +2037,33 @@ def populate_cache(
     2. Loading feature importances from model artifacts
     3. Loading backtest predictions, metrics, and simulation results
     4. Loading predictions (pivoted) and game context tables
-    5. Pre-rendering chart placeholders
-    6. Setting cache metadata
+    5. Loading the bet list, its per-week marker, the schedule-derived navigation and
+       freshness tables, and the precomputed tracker blocks
+    6. Pre-rendering chart placeholders
+    7. Setting cache metadata
 
     Uses atomic rename: writes to a .tmp.duckdb file, then renames.
+
+    THE BET-LIST SOURCES ARRIVE AS FRAMES, NEVER AS PATHS (REVIEW-CACHE, REVIEW-IMPORT). Two
+    separate constraints produce that seam:
+
+    * ``api/`` may import no ``backtest`` module (UIAP-01, ``tests/api/test_import_guard_bets.py``),
+      so this module cannot know the artifact filenames, read the durable parquet, or derive a
+      per-game freeze instant. The caller -- ``pipeline/steps.py`` or ``scripts/populate_cache.py``,
+      both of which may import ``backtest`` -- reads them through
+      ``backtest.weekly_bet_list.read_bet_list_cache_sources`` and hands the frames over. This
+      module stays a pure persistence layer.
+    * The rows must land in the TEMPORARY database built here, BEFORE the atomic swap. This
+      function ends with ``db_path.unlink()`` then ``tmp_path.rename(db_path)``, so anything
+      written to the LIVE cache beforehand is destroyed by it. Loading from the durable artifact
+      into the temp build is what makes forward recommendation history survive a rebuild at all,
+      since the database is replaced wholesale every time.
+
+    Every bet-list argument is OPTIONAL and defaults to ``None``, which means "not supplied":
+    the tables are still CREATED (so the page can tell an empty week from a pre-Phase-31 cache)
+    but no rows and no marker are written. That is the honest representation of a run that did not
+    produce a bet list, and it is the state the ``/bets`` hard-block refuses on rather than
+    rendering as an empty week.
 
     Args:
         db_path: Final path for the cache database (e.g. data/web_cache.duckdb).
@@ -1928,6 +2071,14 @@ def populate_cache(
         outputs_dir: Backtest outputs directory.
         gold_dir: Gold data directory containing features_wp.parquet.
         silver_dir: Silver data directory containing games.parquet.
+        bet_list_df: The durable bet-list rows, carrying every ``BET_LIST_COLUMNS`` field.
+        bet_tracker_df: The PRECOMPUTED tracker blocks (``BET_TRACKER_BLOCK_COLUMNS``). Aggregated
+            upstream; no arithmetic happens here.
+        bet_schedule_df: The schedule frame carrying ``game_id``, ``season``, ``week`` and the
+            per-game ``game_freeze_ts``. Both schedule-derived tables are built from it, and the
+            freeze table deliberately reads NO bet row -- the failure the stale-cache block guards
+            is a MISSING bet-list insertion, in which state there may be no rows to read a freeze
+            from (REVIEW-STALE).
     """
     tmp_path = db_path.with_suffix(".tmp.duckdb")
     logger.info(
@@ -1993,12 +2144,53 @@ def populate_cache(
         gc_count = _load_game_context(conn, gold_dir, silver_dir)
         logger.info("Game context loaded", count=gc_count)
 
+        # ONE instant for this whole population run, resolved BEFORE the writes that stamp it.
+        # The per-week bet-list markers and ``last_updated`` below therefore describe the same
+        # moment, rather than two clock reads a few seconds apart.
+        now = datetime.now(tz=UTC)
+
+        # The bet-list cache sources, loaded into the TEMPORARY database before the swap
+        # (Plan 31-18, REVIEW-CACHE). See this function's docstring for why they arrive as frames.
+        if bet_list_df is None:
+            conn.execute(BET_LIST_SCHEMA)
+            logger.warning(
+                "No bet list supplied to cache population -- the cache will carry zero bet rows "
+                "and no populated-at marker, and /bets will refuse the current week rather than "
+                "render it as an empty one"
+            )
+        else:
+            bl_count = materialize_bet_list_with_marker(
+                conn, bet_list_df, populated_at=now
+            )
+            logger.info("Bet list loaded", count=bl_count)
+
+        if bet_schedule_df is None:
+            conn.execute(AVAILABLE_BET_WEEKS_SCHEMA)
+            conn.execute(BET_WEEK_FREEZE_SCHEMA)
+            logger.warning(
+                "No bet schedule supplied to cache population -- /bets navigation and the "
+                "per-week freeze the stale-cache block compares against will both be empty"
+            )
+        else:
+            weeks_count = materialize_available_bet_weeks(conn, bet_schedule_df)
+            freeze_count = materialize_bet_week_freeze(conn, bet_schedule_df)
+            logger.info(
+                "Bet navigation and freeze loaded",
+                weeks=weeks_count,
+                freeze_rows=freeze_count,
+            )
+
+        if bet_tracker_df is None:
+            conn.execute(BET_TRACKER_BLOCKS_SCHEMA)
+        else:
+            tracker_count = materialize_bet_tracker_blocks(conn, bet_tracker_df)
+            logger.info("Bet tracker blocks loaded", count=tracker_count)
+
         # Pre-render charts from populated data
         chart_count = _prerender_charts(conn)
         logger.info("Charts pre-rendered", count=chart_count)
 
         # Set cache metadata
-        now = datetime.now(tz=UTC)
         pred_count = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
 
         season_range_row = conn.execute(

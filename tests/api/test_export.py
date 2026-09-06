@@ -29,9 +29,9 @@ from fastapi.testclient import TestClient
 
 from api.cache import (
     BET_LIST_COLUMNS,
-    BET_LIST_POPULATED_AT_KEY,
     CACHE_SCHEMA,
     GRADING_STATUS_PENDING,
+    bet_list_populated_at_key,
     materialize_available_bet_weeks,
     materialize_bet_list,
 )
@@ -259,7 +259,7 @@ def bets_export_client(tmp_path: Path) -> Iterator[TestClient]:
             "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
             [
                 [
-                    BET_LIST_POPULATED_AT_KEY,
+                    bet_list_populated_at_key(_BETS_SEASON, _BETS_WEEK),
                     "2023-09-08T22:30:00+00:00",
                     stamped_at,
                 ],

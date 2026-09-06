@@ -48,11 +48,11 @@ from fastapi.testclient import TestClient
 
 from api.cache import (
     BET_LIST_COLUMNS,
-    BET_LIST_POPULATED_AT_KEY,
     CACHE_SCHEMA,
     GRADING_STATUS_LOSS,
     GRADING_STATUS_PENDING,
     GRADING_STATUS_WIN,
+    bet_list_populated_at_key,
     classify_row_provenance,
     materialize_available_bet_weeks,
     materialize_bet_list,
@@ -728,21 +728,31 @@ def _build_bare_cache(db_path: Path) -> duckdb.DuckDBPyConnection:
     return conn
 
 
-def _stamp_populated_at(conn: duckdb.DuckDBPyConnection, value: str) -> None:
-    """Stamp the bet-list populated-at key the way ``populate_cache`` stamps it.
+def _stamp_populated_at(
+    conn: duckdb.DuckDBPyConnection,
+    value: str,
+    *,
+    season: int = _SEASON,
+    week: int = _WEEK,
+) -> None:
+    """Stamp the PER-WEEK bet-list populated-at key the way ``populate_cache`` stamps it.
 
-    ``last_updated`` is written alongside because ``populate_cache`` always writes it and
-    ``base.html``'s footer reads it UNGUARDED: with a cache_meta that has rows but no
-    ``last_updated`` the footer raises and every page 500s. Omitting it here would make the
-    fixture describe a cache production never produces, and the 500 would be the fixture's
-    defect rather than the page's. The unguarded footer read is logged as DEF-31-16 -- it is
-    out of this plan's scope and is NOT reachable from the shipped writer.
+    The key is ``bet_list_populated_at:<season>:<week>`` (plan 31-18, D31-29), not the bare
+    prefix: a generic marker advances whenever ANY cache table is repopulated, so a run that
+    populated predictions and failed on the bet list would read as fresh. Fixtures stamp the same
+    key the production writer stamps, or they would be testing a cache shape production cannot
+    produce.
+
+    ``last_updated`` is written alongside because ``populate_cache`` always writes it in the same
+    run. ``base.html``'s footer read of it is now GUARDED on the key (DEF-31-16, fixed in plan
+    31-18), so a cache_meta carrying rows but no ``last_updated`` renders "Unknown" instead of
+    500ing every page -- but production still writes both, so the fixture still writes both.
     """
     stamped_at = datetime(2023, 9, 8, 22, 30, 0)
     conn.executemany(
         "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
         [
-            [BET_LIST_POPULATED_AT_KEY, value, stamped_at],
+            [bet_list_populated_at_key(season, week), value, stamped_at],
             ["last_updated", stamped_at.isoformat(), stamped_at],
         ],
     )

@@ -6,6 +6,9 @@ These tests verify:
 - Silver upsert correctly adds new rows and replaces updated rows
 - get_latest_bronze_file returns the most recent snapshot
 - SPEC R1 (Plan 30-08): a full GOLD rebuild on unchanged inputs reproduces gold
+- SPEC R9 (Plan 31-18): a second cache population on the same week reproduces the bet list's
+  recommendation facts BYTE-IDENTICALLY, the durable artifact is genuinely the source those
+  rows survive a rebuild from, and the grading half can still transition exactly once
 
 The Bronze and Silver classes use tmp_path for complete isolation -- no real data files
 required. ``TestAFullGoldRebuildIsReproducible`` is the one exception: it judges the two
@@ -275,3 +278,392 @@ class TestAFullGoldRebuildIsReproducible:
                 "means they were fingerprinted from the SAME build. A re-run comparison "
                 "against itself proves nothing -- re-run the build."
             )
+
+
+# -- SPEC R9: the bet list across repeated cache populations --------------------
+#
+# THE PROPERTY, AND WHY IT IS NOT AUTOMATIC. ``api.cache.populate_cache`` REPLACES the whole
+# database: it builds a temp DuckDB and renames it over the destination. So the bet list a Friday
+# run publishes does not persist because the cache kept it -- it persists because the population
+# RELOADS it from the durable ``outputs/bet_list/`` artifact into the temp build. That is the
+# claim ``TestTheDurableArtifactIsGenuinelyTheSource`` pins, in both directions: the rows come
+# back after a rebuild, and they STOP coming back when the artifact is removed.
+#
+# WHY THE BYTE-IDENTITY IS OVER THE IMMUTABLE HALF ONLY (REVIEW-FWD-GRADE). A forward row is the
+# record of what was recommended before kickoff, so its recommendation facts must never move. Its
+# GRADING columns must move exactly once, when the result exists -- a whole-row immutability rule
+# would leave every forward row ``pending`` forever, and a permanently zero-graded forward tracker
+# is indistinguishable to a reader from a system that recommended nothing that won. The two halves
+# are asserted TOGETHER in ``test_a_run_a_freeze_a_grading_pass_and_a_rerun_...`` because the pair
+# is the actual contract.
+
+import hashlib
+from datetime import UTC, datetime
+
+import duckdb
+
+from api.cache import (
+    BET_LIST_COLUMNS,
+    BET_LIST_GRADING_COLUMNS,
+    BET_LIST_IMMUTABLE_COLUMNS,
+    GRADING_STATUS_PENDING,
+    GRADING_STATUS_WIN,
+    bet_list_populated_at_key,
+    populate_cache,
+)
+from backtest.weekly_bet_list import (
+    grade_row,
+    read_bet_list_cache_sources,
+    upsert_bet_list_rows,
+    write_bet_list_artifact,
+)
+
+_BL_SEASON = 2023
+_BL_WEEK = 1
+_BL_GAME = "2023_W01_DET@KC"
+# The game's own Friday-6PM-ET freeze for a Sunday 2023-09-10 kickoff.
+_BL_FREEZE = datetime(2023, 9, 8, 22, 0, 0, tzinfo=UTC)
+_BEFORE_FREEZE = datetime(2023, 9, 7, 12, 0, 0, tzinfo=UTC)
+_AFTER_FREEZE = datetime(2023, 9, 11, 12, 0, 0, tzinfo=UTC)
+
+
+def _bet_row(**overrides) -> dict:
+    """One COMPLETE forward bet-list row. Every locked column present; nothing invented."""
+    row = {
+        "game_id": _BL_GAME,
+        "season": _BL_SEASON,
+        "week": _BL_WEEK,
+        "target": "ou",
+        "bet_side": "under",
+        "model_value": 41.0,
+        "market_value": 45.5,
+        "line": 45.5,
+        "slipped_line": 45.5,
+        "calibrated_p_side": 0.5612345678901234,
+        "per_bet_ev": 0.07123456789012345,
+        "stake_units": 1.25,
+        "ev_tier": "high",
+        "status": "live",
+        "rejection_reason": None,
+        "eligibility_label": "UNDER pick",
+        "snapshot_ts": "2023-09-08T18:00:00-04:00",
+        "freeze_ts": _BL_FREEZE.isoformat(),
+        "selected_odds": -110.0,
+        "flat_stake": 1.0,
+        "provenance": "forward",
+        "validation_type": "forward_realized",
+        "grading_status": GRADING_STATUS_PENDING,
+        "outcome": None,
+        "clv": 0.0234567890123,
+        "payout_flat": None,
+        "realized_units": None,
+        "graded_at": None,
+    }
+    row.update(overrides)
+    assert set(row) == set(BET_LIST_COLUMNS), (
+        f"the fixture row drifted from BET_LIST_COLUMNS: {set(row) ^ set(BET_LIST_COLUMNS)}"
+    )
+    return row
+
+
+def _silver_with_one_week(silver_dir: Path) -> Path:
+    """A one-game silver schedule, so ``build_bet_week_schedule`` runs for real and hermetically."""
+    silver_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "game_id": _BL_GAME,
+                "season": _BL_SEASON,
+                "week": _BL_WEEK,
+                "kickoff_et": pd.Timestamp("2023-09-10T17:00:00Z"),
+            }
+        ]
+    ).to_parquet(silver_dir / "games.parquet", index=False)
+    return silver_dir
+
+
+def _populate(db_path: Path, bet_dir: Path, silver_dir: Path, empty: Path) -> None:
+    """Run the FULL production chain: the shared source reader, then ``populate_cache``.
+
+    Deliberately not a hand-assembled call. The reader is the seam ``pipeline/steps.py`` and
+    ``scripts/populate_cache.py`` both use, so a change that broke the artifact round trip for the
+    real callers breaks it here too.
+    """
+    sources = read_bet_list_cache_sources(bet_dir, silver_dir)
+    populate_cache(
+        db_path=db_path,
+        artifacts_dir=empty,
+        outputs_dir=empty,
+        gold_dir=empty,
+        silver_dir=empty,
+        bet_list_df=sources.bet_list,
+        bet_tracker_df=sources.tracker,
+        bet_schedule_df=sources.schedule,
+    )
+
+
+def _served_rows(db_path: Path) -> list[dict]:
+    """Every bet_list row as served from the built cache, in the locked column order."""
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        columns = ", ".join(BET_LIST_COLUMNS)
+        result = conn.execute(
+            f"SELECT {columns} FROM bet_list ORDER BY season, week, game_id, target"
+        )
+        names = [d[0] for d in result.description]
+        return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+    finally:
+        conn.close()
+
+
+def _marker(db_path: Path, season: int, week: int) -> str | None:
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        row = conn.execute(
+            "SELECT value FROM cache_meta WHERE key = ?",
+            [bet_list_populated_at_key(season, week)],
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _immutable_digest(rows: list[dict]) -> str:
+    """A sha256 over the served IMMUTABLE half, serialised with full float precision.
+
+    ``repr`` on a float is round-trip exact in Python 3, so this digest moves on a one-ulp change.
+    A tolerance-based comparison would not, and "byte-identical" is the claim being made.
+    """
+    payload = "\n".join(
+        "|".join(f"{column}={row[column]!r}" for column in BET_LIST_IMMUTABLE_COLUMNS)
+        for row in rows
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.integration
+class TestTheDurableArtifactIsGenuinelyTheSource:
+    """REVIEW-CACHE: forward rows survive a rebuild because they are RELOADED, not preserved."""
+
+    def test_a_forward_row_survives_a_full_cache_rebuild(self, tmp_path):
+        """Written once to the artifact, present after a population that replaced the whole DB."""
+        bet_dir = tmp_path / "bet_list"
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        silver = _silver_with_one_week(tmp_path / "silver")
+        write_bet_list_artifact(pd.DataFrame([_bet_row()]), bet_dir)
+
+        db_path = tmp_path / "web_cache.duckdb"
+        _populate(db_path, bet_dir, silver, empty)
+
+        rows = _served_rows(db_path)
+        assert len(rows) == 1, f"the forward row did not survive the rebuild: {rows}"
+        assert rows[0]["game_id"] == _BL_GAME
+        assert _marker(db_path, _BL_SEASON, _BL_WEEK) is not None
+
+        # And again, over the SAME artifact: a rebuild is not a one-shot survival.
+        _populate(db_path, bet_dir, silver, empty)
+        assert len(_served_rows(db_path)) == 1
+
+    def test_removing_the_artifact_empties_the_rebuilt_cache(self, tmp_path):
+        """The other direction, which is what makes the claim above non-vacuous.
+
+        If the rows came from anywhere else -- a preserved table, a re-derivation -- deleting the
+        artifact would leave them in place. They vanish, and the marker vanishes with them, which
+        is the state the ``/bets`` hard-block refuses on rather than rendering as an empty week.
+        """
+        bet_dir = tmp_path / "bet_list"
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        silver = _silver_with_one_week(tmp_path / "silver")
+        artifact = write_bet_list_artifact(pd.DataFrame([_bet_row()]), bet_dir)
+
+        db_path = tmp_path / "web_cache.duckdb"
+        _populate(db_path, bet_dir, silver, empty)
+        assert len(_served_rows(db_path)) == 1
+
+        artifact.unlink()
+        _populate(db_path, bet_dir, silver, empty)
+
+        assert _served_rows(db_path) == [], (
+            "rows survived a rebuild with the durable artifact deleted, so they are not actually "
+            "being reloaded from it and the durability claim rests on something unproven"
+        )
+        assert _marker(db_path, _BL_SEASON, _BL_WEEK) is None, (
+            "the populated-at marker survived a population that inserted no rows; the hard-block "
+            "would read a bet-list-less cache as fresh"
+        )
+        # The schedule-derived freeze is still there, which is exactly what lets the page refuse
+        # this state rather than render it as a week in which nothing was recommended.
+        conn = duckdb.connect(str(db_path), read_only=True)
+        try:
+            assert (
+                conn.execute("SELECT COUNT(*) FROM bet_week_freeze").fetchone()[0] == 1
+            )
+        finally:
+            conn.close()
+
+
+@pytest.mark.integration
+class TestASecondPopulationReproducesTheRecommendationFacts:
+    """SPEC R9 idempotency, asserted with digests across two runs rather than by inspection."""
+
+    def test_two_populations_of_the_same_week_are_byte_identical(self, tmp_path):
+        bet_dir = tmp_path / "bet_list"
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        silver = _silver_with_one_week(tmp_path / "silver")
+        write_bet_list_artifact(pd.DataFrame([_bet_row()]), bet_dir)
+
+        first = tmp_path / "first.duckdb"
+        second = tmp_path / "second.duckdb"
+        _populate(first, bet_dir, silver, empty)
+        _populate(second, bet_dir, silver, empty)
+
+        before = _served_rows(first)
+        after = _served_rows(second)
+        assert _immutable_digest(before) == _immutable_digest(after)
+
+        # Column by column as well, so a failure names the field rather than a hash.
+        for column in BET_LIST_IMMUTABLE_COLUMNS:
+            assert [r[column] for r in before] == [r[column] for r in after], (
+                f"{column} moved between two populations of the same week"
+            )
+
+    def test_the_digest_is_not_vacuous(self, tmp_path):
+        """A changed recommendation fact MUST move the digest, or the comparison proves nothing."""
+        base = [_bet_row()]
+        moved = [_bet_row(stake_units=1.26)]
+        assert _immutable_digest(base) != _immutable_digest(moved)
+        # And a change confined to the GRADING half must NOT move it -- that is the split.
+        graded = [_bet_row(grading_status=GRADING_STATUS_WIN, outcome=True)]
+        assert _immutable_digest(base) == _immutable_digest(graded)
+
+
+@pytest.mark.integration
+class TestTheFreezeCrossingKeepsTheTwoHalvesTogether:
+    """REVIEW-FWD-GRADE: the recommendation facts freeze while the grading half stays writable."""
+
+    def test_a_run_a_freeze_a_grading_pass_and_a_rerun_hold_both_halves(self, tmp_path):
+        """One week, four states, one assertion set. The pair IS the contract.
+
+        1. selected before the freeze and populated;
+        2. re-selected AFTER the freeze with DIFFERENT numbers -- the stored row wins;
+        3. graded -- the grading half transitions exactly once out of ``pending``;
+        4. re-selected again after the freeze -- still frozen, still graded.
+
+        Every ``BET_LIST_IMMUTABLE_COLUMNS`` value is asserted identical across all four, and the
+        grading transition is asserted to happen exactly once.
+        """
+        bet_dir = tmp_path / "bet_list"
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        silver = _silver_with_one_week(tmp_path / "silver")
+        db_path = tmp_path / "web_cache.duckdb"
+
+        # 1. Selected before the freeze.
+        stored = pd.DataFrame([_bet_row()])
+        write_bet_list_artifact(stored, bet_dir)
+        _populate(db_path, bet_dir, silver, empty)
+        state_one = _served_rows(db_path)
+
+        # 2. A later run AFTER the freeze proposes different recommendation facts.
+        rewritten = pd.DataFrame(
+            [_bet_row(stake_units=9.99, per_bet_ev=0.99, line=99.5, clv=0.99)]
+        )
+        merged = upsert_bet_list_rows(stored, rewritten, now=_AFTER_FREEZE)
+        write_bet_list_artifact(merged, bet_dir)
+        _populate(db_path, bet_dir, silver, empty)
+        state_two = _served_rows(db_path)
+
+        # 3. The grading pass settles it, one way and one time.
+        graded_row = grade_row(
+            merged.to_dict("records")[0], True, graded_at=_AFTER_FREEZE
+        )
+        graded = pd.DataFrame([graded_row], columns=pd.Index(BET_LIST_COLUMNS))
+        write_bet_list_artifact(graded, bet_dir)
+        _populate(db_path, bet_dir, silver, empty)
+        state_three = _served_rows(db_path)
+
+        # 4. One more post-freeze run, over the settled row.
+        merged_again = upsert_bet_list_rows(graded, rewritten, now=_AFTER_FREEZE)
+        write_bet_list_artifact(merged_again, bet_dir)
+        _populate(db_path, bet_dir, silver, empty)
+        state_four = _served_rows(db_path)
+
+        states = [state_one, state_two, state_three, state_four]
+        for label, state in zip(("one", "two", "three", "four"), states, strict=True):
+            assert len(state) == 1, f"state {label} served {len(state)} rows"
+
+        # The immutable half NEVER moved, across all four states, column by column.
+        for column in BET_LIST_IMMUTABLE_COLUMNS:
+            values = [state[0][column] for state in states]
+            assert len(set(values)) == 1, (
+                f"the immutable column {column!r} moved across the freeze: {values}. A forward row "
+                "is the record of what was recommended before kickoff; a later run may not restate "
+                "it."
+            )
+
+        # The grading half transitioned EXACTLY once, out of pending, and stayed there.
+        statuses = [state[0]["grading_status"] for state in states]
+        assert statuses == [
+            GRADING_STATUS_PENDING,
+            GRADING_STATUS_PENDING,
+            GRADING_STATUS_WIN,
+            GRADING_STATUS_WIN,
+        ], f"the grading status did not transition exactly once: {statuses}"
+        assert state_one[0]["graded_at"] is None
+        assert state_three[0]["graded_at"] is not None
+        assert state_four[0]["graded_at"] == state_three[0]["graded_at"]
+
+        # And the grading half is the ONLY half that moved between states two and three.
+        moved = [
+            column
+            for column in BET_LIST_COLUMNS
+            if state_two[0][column] != state_three[0][column]
+        ]
+        assert set(moved) <= set(BET_LIST_GRADING_COLUMNS), (
+            "grading moved a non-grading column: "
+            f"{sorted(set(moved) - set(BET_LIST_GRADING_COLUMNS))}"
+        )
+        assert moved, "the grading pass changed nothing at all"
+
+    def test_a_run_before_the_freeze_is_replaced_and_then_stops_changing(
+        self, tmp_path
+    ):
+        """Before the freeze the latest run WINS -- late odds can still land, so replacing is right.
+
+        The control for the test above: without it, an upsert that discarded every incoming row
+        would satisfy the immutability assertions while being plainly wrong.
+        """
+        bet_dir = tmp_path / "bet_list"
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        silver = _silver_with_one_week(tmp_path / "silver")
+        db_path = tmp_path / "web_cache.duckdb"
+
+        stored = pd.DataFrame([_bet_row()])
+        write_bet_list_artifact(stored, bet_dir)
+        _populate(db_path, bet_dir, silver, empty)
+        before = _served_rows(db_path)
+
+        late = pd.DataFrame([_bet_row(line=44.5, per_bet_ev=0.09, stake_units=1.5)])
+        replaced = upsert_bet_list_rows(stored, late, now=_BEFORE_FREEZE)
+        write_bet_list_artifact(replaced, bet_dir)
+        _populate(db_path, bet_dir, silver, empty)
+        after = _served_rows(db_path)
+
+        assert after[0]["line"] == 44.5, (
+            "a PRE-freeze re-run did not replace the row; late odds are legitimate before the "
+            "freeze and refusing them would publish a stale line as the recommendation"
+        )
+        assert _immutable_digest(before) != _immutable_digest(after)
+
+        # And now the freeze passes: a further run leaves it alone.
+        later = pd.DataFrame([_bet_row(line=1.5, per_bet_ev=0.5, stake_units=5.0)])
+        frozen = upsert_bet_list_rows(replaced, later, now=_AFTER_FREEZE)
+        write_bet_list_artifact(frozen, bet_dir)
+        _populate(db_path, bet_dir, silver, empty)
+        settled = _served_rows(db_path)
+
+        assert _immutable_digest(after) == _immutable_digest(settled)

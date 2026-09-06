@@ -73,6 +73,7 @@ from api.cache import (
     BET_LIST_COLUMNS,
     BET_LIST_IMMUTABLE_COLUMNS,
     BET_STATUS_LIVE,
+    BET_TRACKER_BLOCK_COLUMNS,
     GRADING_STATUS_LOSS,
     GRADING_STATUS_PENDING,
     GRADING_STATUS_PUSH,
@@ -98,14 +99,18 @@ __all__ = [
     "BET_TRACKER_ARTIFACT_NAME",
     "DEFAULT_BET_LIST_DIR",
     "AlreadyGradedError",
+    "BetListCacheSources",
     "FrozenChainFitError",
     "WeeklyChainFit",
+    "build_bet_week_schedule",
     "build_weekly_candidates",
     "generate_weekly_bet_list",
     "grade_pending_rows",
     "grade_row",
     "load_frozen_chain_fit",
     "read_bet_list_artifact",
+    "read_bet_list_cache_sources",
+    "read_bet_tracker_artifact",
     "records_to_bet_list_frame",
     "select_weekly_bets",
     "upsert_bet_list_rows",
@@ -604,6 +609,139 @@ def read_bet_list_artifact(output_dir: Path = DEFAULT_BET_LIST_DIR) -> pd.DataFr
         )
         raise ValueError(msg)
     return stored[BET_LIST_COLUMNS]
+
+
+def read_bet_tracker_artifact(
+    output_dir: Path = DEFAULT_BET_LIST_DIR,
+) -> pd.DataFrame:
+    """The stored tracker blocks, or an EMPTY frame with the locked columns when none exists yet.
+
+    The mirror of :func:`write_bet_tracker_artifact`. JSON ``null`` is read back as ``None`` and
+    left alone: a NULL ``hit_rate`` beside ``bets_graded = 0`` means the rate was NOT COMPUTED,
+    which is a different claim from a measured zero, and coercing it to NaN here would erase the
+    distinction the tracker exists to preserve.
+    """
+    path = Path(output_dir) / BET_TRACKER_ARTIFACT_NAME
+    if not path.exists():
+        return pd.DataFrame(columns=pd.Index(BET_TRACKER_BLOCK_COLUMNS))
+
+    records = json.loads(path.read_text(encoding="utf-8"))
+    if not records:
+        return pd.DataFrame(columns=pd.Index(BET_TRACKER_BLOCK_COLUMNS))
+
+    stored = pd.DataFrame(records)
+    missing = [c for c in BET_TRACKER_BLOCK_COLUMNS if c not in stored.columns]
+    if missing:
+        msg = (
+            f"the stored bet tracker at {path.as_posix()} is missing column(s) {missing}; it was "
+            "written by a different schema and is refused rather than merged."
+        )
+        raise ValueError(msg)
+    return stored[BET_TRACKER_BLOCK_COLUMNS]
+
+
+def build_bet_week_schedule(silver_dir: Path = Path("data/silver")) -> pd.DataFrame:
+    """The full schedule with each game's OWN Friday-6PM-ET freeze instant. READ ONLY.
+
+    The source of BOTH schedule-derived cache tables: ``available_bet_weeks`` (navigation) and
+    ``bet_week_freeze`` (the threshold the stale-cache hard-block compares the populated-at marker
+    against). Deriving them from the SCHEDULE rather than from bet rows is load-bearing in two
+    separate ways:
+
+    * a scheduled week carrying no prediction row is still reachable in the week selector; and
+    * the freeze threshold exists even when the week has NO bet rows at all -- which is precisely
+      the state a failed bet-list insertion leaves behind, and the state the hard-block was built
+      for (REVIEW-STALE). A guard reading its own threshold from the data it is checking could not
+      fire in that case.
+
+    THE FREEZE IS PER-GAME, NOT PER-WEEK (D31-18), and it is not re-derived here: every value comes
+    from ``scripts.ingest_historical_odds.get_synthetic_snapshot_ts``, the ONE source of the rule.
+    A Thursday game's preceding Friday is seven days before the Friday preceding that week's Sunday
+    games, so a second implementation that rounded to a week would be wrong for every Thursday
+    game. ``api.cache.materialize_bet_week_freeze`` takes the per-week MAXIMUM of these values.
+
+    The import is deferred because ``scripts.ingest_historical_odds`` imports
+    ``backtest.ev_chain_constants``, which imports ``backtest.ou_monetization``, which imports
+    ``backtest.bet_selector`` -- which THIS module imports at module scope. A module-level import
+    would close that cycle and fail at collection. This is the same cycle break
+    ``backtest.bet_selector._freshness_context`` documents, for the same reason.
+
+    Args:
+        silver_dir: The silver layer holding ``games.parquet``.
+
+    Returns:
+        A frame of ``game_id``, ``season``, ``week``, ``game_freeze_ts`` -- one row per scheduled
+        game. An EMPTY frame with those columns when the schedule is absent, so a checkout without
+        a silver layer still builds a cache whose ``/bets`` renders its no-current-week state
+        rather than failing the population step.
+    """
+    from scripts.ingest_historical_odds import get_synthetic_snapshot_ts
+
+    games_path = Path(silver_dir) / "games.parquet"
+    columns = ["game_id", "season", "week", "game_freeze_ts"]
+    if not games_path.exists():
+        logger.warning(
+            "Schedule absent -- bet navigation and freeze tables will be empty",
+            path=games_path.as_posix(),
+        )
+        return pd.DataFrame(columns=pd.Index(columns))
+
+    games = pd.read_parquet(
+        games_path, columns=["game_id", "season", "week", "kickoff_et"]
+    )
+    if games.empty:
+        return pd.DataFrame(columns=pd.Index(columns))
+
+    kickoff = pd.to_datetime(games["kickoff_et"], utc=True)
+    gameday = kickoff.dt.tz_convert("US/Eastern").dt.strftime("%Y-%m-%d")
+
+    # One derivation per DISTINCT gameday rather than per game (about 1,300 against 6,500), then
+    # mapped back. Same values, and it keeps the single-source rule affordable over full history.
+    freeze_by_gameday = {
+        day: get_synthetic_snapshot_ts(day) for day in sorted(gameday.dropna().unique())
+    }
+
+    schedule = games[["game_id", "season", "week"]].copy()
+    schedule["game_freeze_ts"] = gameday.map(freeze_by_gameday)
+    return schedule.dropna(subset=["game_freeze_ts"]).reset_index(drop=True)[columns]
+
+
+@dataclass(frozen=True)
+class BetListCacheSources:
+    """The three frames ``api.cache.populate_cache`` loads into its TEMPORARY database.
+
+    Bundled into one object so the scheduled step (``pipeline/steps.py``) and the manual recovery
+    command (``scripts/populate_cache.py``) cannot read a DIFFERENT set of sources -- the manual
+    command is the one the ``/bets`` refusal text tells the reader to run, so a cache it builds
+    that lacks the freeze table would leave the refusal permanently unrecoverable.
+    """
+
+    bet_list: pd.DataFrame
+    tracker: pd.DataFrame
+    schedule: pd.DataFrame
+
+
+def read_bet_list_cache_sources(
+    output_dir: Path = DEFAULT_BET_LIST_DIR,
+    silver_dir: Path = Path("data/silver"),
+) -> BetListCacheSources:
+    """Read every bet-list cache source: the durable rows, the tracker blocks and the schedule.
+
+    THE SEAM (REVIEW-IMPORT). ``api/cache.py`` may import no ``backtest`` module, so it cannot know
+    these filenames or derive a per-game freeze. This function -- called from ``pipeline/steps.py``
+    and ``scripts/populate_cache.py``, both of which may -- reads them and hands over frames.
+
+    Each reader degrades to an EMPTY frame rather than raising when its source is absent, because
+    the cache population step is registered NON-CRITICAL: a raise here would degrade the whole
+    Friday run for a first-ever build that simply has nothing to load yet. An absent bet list is
+    then represented HONESTLY downstream -- zero rows and no populated-at marker -- which is what
+    makes ``/bets`` refuse the week rather than render it as one in which nothing was recommended.
+    """
+    return BetListCacheSources(
+        bet_list=read_bet_list_artifact(output_dir),
+        tracker=read_bet_tracker_artifact(output_dir),
+        schedule=build_bet_week_schedule(silver_dir),
+    )
 
 
 def write_bet_list_artifact(

@@ -20,7 +20,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from api.cache import BET_LIST_POPULATED_AT_KEY
 from api.charts import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
 from api.dependencies import get_data_service, templates
 from api.season_metrics import _ats_outcome, _ou_outcome, _wp_outcome
@@ -376,7 +375,9 @@ def _build_bets_context(
     """
     cache_meta = service.get_cache_meta()
     bet_week_freeze = service.get_bet_week_freeze(season, week)
-    bet_list_populated_at = cache_meta.get(BET_LIST_POPULATED_AT_KEY)
+    # The PER-WEEK marker (D31-29), never the generic cache timestamp and never a bare prefix
+    # key. See DataService.get_bet_list_populated_at for why both fallbacks are refused.
+    bet_list_populated_at = service.get_bet_list_populated_at(season, week)
 
     return {
         "request": request,
