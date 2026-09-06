@@ -22,6 +22,7 @@ import pandas as pd
 from scipy.special import expit, logit
 
 from utils import get_logger
+from utils.edge_tier import edge_tier_series
 from utils.probability_utils import moneyline_to_probability
 from utils.team_data import get_team_conference, get_team_division
 
@@ -1185,24 +1186,19 @@ def materialize_bet_tracker_blocks(
     )
 
 
-def _compute_confidence(edge: pd.Series) -> pd.Series:
-    """Map absolute edge values to confidence labels.
-
-    Args:
-        edge: Series of edge values (can contain NaN).
-
-    Returns:
-        Series of "high", "medium", or "low" strings.
-    """
-    abs_edge = edge.abs()
-    return pd.Series(
-        np.where(
-            abs_edge > 0.05,
-            "high",
-            np.where(abs_edge > 0.02, "medium", "low"),
-        ),
-        index=edge.index,
-    )
+# The edge band used to be computed HERE, by a ``_compute_confidence`` that was a byte-equivalent
+# twin of ``scripts.generate_current_week_predictions.compute_confidence``. Plan 31-17 collapsed the
+# two into ONE shared source and RENAMED the concept to an EDGE BAND (D31-23): see
+# ``utils/edge_tier.py`` for the thresholds, the surviving three-incompatible-units defect
+# (DEF-31-17, de-duplicated and renamed this phase, NOT repaired), which write is authoritative for
+# which artifact, and why the stored ``*_confidence`` column names are deliberately left alone.
+#
+# THE SEPARATION ``backtest/simulation.py`` ASKS FOR IS NOW IN PLACE. That module warns that on the
+# selector path the edge field carries per-bet EXPECTED VALUE rather than a points or probability
+# edge, and that such rows must not reach this band. They do not: selector rows live in the
+# ``bet_list`` table and are banded by ``assign_ev_tier``. The risk is recorded as CLOSED, and
+# ``tests/api/test_cache_betting.py`` asserts the two are different functions with different names
+# and that no call site feeds a per-bet EV into the edge band.
 
 
 def _load_predictions(
@@ -1320,10 +1316,12 @@ def _load_predictions(
         merged["ou_prediction"] - merged["market_total"]
     ) / market_total_safe
 
-    # Confidence levels from edge magnitudes
-    merged["wp_confidence"] = _compute_confidence(merged["wp_edge"])
-    merged["ats_confidence"] = _compute_confidence(merged["ats_edge"])
-    merged["ou_confidence"] = _compute_confidence(merged["ou_edge"])
+    # The EDGE BAND from the ONE shared source (D31-23). The stored column names keep their
+    # historical ``*_confidence`` spelling -- renaming them would move every export header, which
+    # is a published figure -- but the value they carry is the edge band, not a confidence.
+    merged["wp_confidence"] = edge_tier_series(merged["wp_edge"])
+    merged["ats_confidence"] = edge_tier_series(merged["ats_edge"])
+    merged["ou_confidence"] = edge_tier_series(merged["ou_edge"])
 
     # Compute blended predictions from blend artifact JSON (UIAP-01: no model imports)
     merged["blended_wp"] = None

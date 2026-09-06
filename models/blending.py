@@ -364,9 +364,18 @@ class MarketBlender:
     ) -> np.ndarray:
         """Blend ATS predictions in spread-point space (linear interpolation).
 
+        The arithmetic is SCALE-AGNOSTIC -- a weighted average of two numbers on the same scale --
+        so it is correct under either sign convention and nothing about it changes here. Only the
+        documentation was wrong (DEF-31-03, cosmetic half, corrected in plan 31-17).
+
         Args:
-            model_spread: Model's predicted spreads (negative = home favored).
-            market_spread: Market's closing spreads.
+            model_spread: Model's predicted home MARGIN (positive = home wins by that much).
+                The docstring previously said "negative = home favored", which is the OPPOSITE of
+                the convention DEF-31-01 measured and the owner ruled on: the ATS trainer's target
+                column is ``home_margin`` (``models/trainers/ats_trainer.py``).
+            market_spread: Market's closing spreads on the SAME home-margin scale -- the nflverse
+                ``spread_line``, POSITIVE when the home team is favored (corr with ml_home
+                -0.9506, corr with realized home margin +0.4517, measured over 2140 stored rows).
             week: Game week (required when dynamic_weights is configured).
             season: NFL season year (required when dynamic_weights is configured).
 

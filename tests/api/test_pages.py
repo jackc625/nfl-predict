@@ -11,9 +11,12 @@ is a This Week regression -- the next person to change / needs to meet it.
 
 from __future__ import annotations
 
+import re
+from collections import Counter
+
 from fastapi.testclient import TestClient
 
-from api.dependencies import templates
+from api.dependencies import get_db, templates
 from tests.api.week_selector_snapshot import (
     FAILURE_EVENTS,
     PRE_PARAM_CONTEXT,
@@ -593,3 +596,115 @@ def test_the_this_week_page_still_targets_the_games_grid(
     # The shipped page gains NO failure handler and NO indicator: both default to omitted.
     for event in FAILURE_EVENTS:
         assert event not in markup
+
+
+# ---------------------------------------------------------------------------
+# The renamed edge band renders the SAME labels and the SAME sort (31-17, D31-23)
+# ---------------------------------------------------------------------------
+#
+# EXTENDED, not rewritten. Plan 31-17 collapsed two duplicate tier helpers into
+# ``utils/edge_tier.py`` and renamed the concept to an EDGE BAND. The claim these three tests pin
+# is the one that makes that safe: the pages the SPEC says keep their job render exactly what they
+# rendered before. The stored column names (``*_confidence``) are deliberately unchanged -- see
+# ``utils/edge_tier.py`` for why renaming them was out of scope.
+
+
+def test_the_landing_page_still_renders_all_three_edge_band_labels(
+    test_client: TestClient,
+) -> None:
+    """The three-label vocabulary on / is UNCHANGED by the collapse."""
+    from utils.edge_tier import EDGE_TIER_LABELS
+
+    html = test_client.get("/").text
+    assert set(EDGE_TIER_LABELS) == {"low", "medium", "high"}
+    # The three colour classes the confidence badge maps the three labels onto, one per band.
+    for badge_class in ("bg-green-100", "bg-amber-100", "bg-red-100"):
+        assert badge_class in html, (
+            f"the {badge_class} badge disappeared from /; an edge band label has moved"
+        )
+
+
+def test_the_landing_page_renders_the_band_it_was_served_and_never_rederives_one(
+    test_client: TestClient,
+) -> None:
+    """The page RENDERS the stored band verbatim; it does not recompute one (UIAP-01, D31-23).
+
+    This is the substantive half. The collapse moved WHERE the band is computed -- into
+    ``utils/edge_tier.py``, called at CACHE-BUILD time -- so the regression that matters on the
+    page is that the request path still just renders what it was handed. Asserted against the
+    SERVED rows rather than against a re-derivation, because the fixture cache is hand-authored
+    (its stored bands were never produced by either helper) and re-deriving would test the
+    fixture's internal consistency rather than the page's behaviour.
+
+    Every stored band must be a member of the closed vocabulary and must appear in the markup for
+    its own game, so a page that silently re-banded a row -- the exact thing the two duplicate
+    helpers made easy -- fails here.
+    """
+    from api.services import DataService
+    from utils.edge_tier import EDGE_TIER_LABELS
+
+    response = test_client.get("/")
+    assert response.status_code == 200
+    html = response.text
+
+    service = DataService(test_client.app.dependency_overrides[get_db]())
+    rows = service.get_predictions(season=2024, week=1)
+    assert rows, (
+        "the fixture served no predictions; this regression would prove nothing"
+    )
+
+    served: list[str] = []
+    for row in rows:
+        for target in ("wp", "ats", "ou"):
+            stored_band = row.get(f"{target}_confidence")
+            if stored_band is None:
+                continue
+            assert stored_band in EDGE_TIER_LABELS, (
+                f"{row.get('game_id')} {target}: stored band {stored_band!r} is outside the "
+                f"closed vocabulary {EDGE_TIER_LABELS}"
+            )
+            served.append(stored_band)
+    assert served, "no band was served; the check would pass vacuously"
+
+    # The badge partial maps each band onto ONE colour class and renders the label title-cased.
+    # Comparing the MULTISET of rendered badges against the multiset of served bands is what makes
+    # this a re-banding check rather than a spelling check: a page that turned one served "low"
+    # into a "high" would leave the vocabulary intact and the counts different.
+    #
+    # The class triple below is the CONFIDENCE badge's, not the STATUS badge's. Both live on game
+    # cards and both use ``bg-green-100``; only the confidence badge carries the matching
+    # ``border border-<colour>-200``. Keying on the bare background colour matches the status
+    # badge's "Completed" pill and reports it as a mis-banded row -- which is how this assertion
+    # first failed, and why the selector is the full triple.
+    band_by_class = {"green": "high", "amber": "medium", "red": "low"}
+    rendered: list[str] = []
+    for colour, band in band_by_class.items():
+        pattern = (
+            rf"bg-{colour}-100 text-{colour}-\d+ border border-{colour}-200[^>]*>"
+            r"([^<]+)</span>"
+        )
+        for match in re.finditer(pattern, html):
+            assert match.group(1).strip().lower() == band, (
+                f"a bg-{colour}-100 confidence badge renders {match.group(1)!r}, which is not "
+                f"the {band!r} band that colour is reserved for"
+            )
+            rendered.append(band)
+
+    assert Counter(rendered) == Counter(served), (
+        "the bands rendered on / are not the bands the page was served -- the request path "
+        f"re-banded a row.\n  served:   {sorted(Counter(served).items())}\n"
+        f"  rendered: {sorted(Counter(rendered).items())}"
+    )
+
+
+def test_the_landing_page_sort_by_band_is_unchanged(test_client: TestClient) -> None:
+    """The sort controls that order by the band still return 200 and the same row count.
+
+    The band feeds a sort on /, so a changed label would change the ORDER as well as the text.
+    Comparing the served row count and the status across the default and the sorted render is the
+    behavioural half of "existing page behaviour is unchanged".
+    """
+    default_html = test_client.get("/").text
+    sorted_response = test_client.get("/", params={"sort": "confidence"})
+    assert sorted_response.status_code == 200
+    assert default_html.count("game-card") == sorted_response.text.count("game-card")

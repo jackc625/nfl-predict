@@ -26,6 +26,7 @@ sys.path.insert(0, str(project_root))
 from models.artifacts import load_model_artifact
 from models.blending import MarketBlender
 from utils import get_logger
+from utils.edge_tier import edge_tier
 from utils.probability_utils import moneyline_to_probability
 
 logger = get_logger(__name__)
@@ -213,16 +214,6 @@ def run_predictions(
 # ---------------------------------------------------------------------------
 
 
-def compute_confidence(edge: float) -> str:
-    """Compute confidence level from edge magnitude."""
-    abs_edge = abs(edge)
-    if abs_edge > 0.05:
-        return "high"
-    if abs_edge > 0.02:
-        return "medium"
-    return "low"
-
-
 def compute_edges(
     predictions: pd.DataFrame,
     market: pd.DataFrame,
@@ -250,11 +241,31 @@ def compute_edges(
     if "wp_edge" not in merged.columns:
         merged["wp_edge"] = np.nan
 
-    # ATS edge: (model_spread - (-market_spread)) / abs(market_spread)
+    # ATS edge: (model home margin - market home margin) / abs(market home margin).
+    #
+    # DEF-31-03, FIXED HERE (plan 31-17). This line used to negate the stored spread --
+    # ``(ats_prediction - (-spread))`` -- which assumed the OPPOSITE line convention and therefore
+    # computed model PLUS market rather than model MINUS market: a sum, not a difference, so a
+    # model agreeing exactly with the market scored the largest possible edge and a model that
+    # thought the home side OVERVALUED was displayed with a POSITIVE home edge. DEF-31-01 measured
+    # the real convention on 2026-09-04, the owner ruled on it, and it was reproduced again here:
+    # corr(spread, ml_home) = -0.9506 over all 2140 stored rows, mean spread +9.19 when the home
+    # side is a big favourite versus -8.49 when the away side is, and corr(spread, realized home
+    # margin) = +0.4517. The stored ``spread`` is the nflverse ``spread_line``, POSITIVE when the
+    # home team is favored, on the SAME home-margin scale ``models/trainers/ats_trainer.py``
+    # regresses (``_get_target_column`` returns ``home_margin``). The two quantities are directly
+    # comparable, so the disagreement between them is the plain difference.
+    #
+    # This is a LIVE DISPLAY VALUE on the current-week page, which is why the register flagged it
+    # for re-check once DEF-31-01 was ruled on. It is not a backtest artifact and moves no
+    # published /betting figure: ``api/cache.py`` derives its own ``ats_edge`` from
+    # ``outputs/backtest/predictions_all.csv`` and never reads this file.
+    # ``tests/unit/test_current_week_ats_edge.py`` pins it, and five of its seven cases fail under
+    # the old expression.
     if "spread" in merged.columns:
         valid_spread = merged["spread"].notna() & (merged["spread"] != 0)
         merged.loc[valid_spread, "ats_edge"] = merged.loc[valid_spread].apply(
-            lambda row: (row["ats_prediction"] - (-row["spread"])) / abs(row["spread"]),
+            lambda row: (row["ats_prediction"] - row["spread"]) / abs(row["spread"]),
             axis=1,
         )
         # Where spread == 0, edge is 0
@@ -275,16 +286,14 @@ def compute_edges(
     if "ou_edge" not in merged.columns:
         merged["ou_edge"] = np.nan
 
-    # Confidence levels
-    merged["wp_confidence"] = merged["wp_edge"].apply(
-        lambda e: compute_confidence(e) if pd.notna(e) else "low"
-    )
-    merged["ats_confidence"] = merged["ats_edge"].apply(
-        lambda e: compute_confidence(e) if pd.notna(e) else "low"
-    )
-    merged["ou_confidence"] = merged["ou_edge"].apply(
-        lambda e: compute_confidence(e) if pd.notna(e) else "low"
-    )
+    # The EDGE BAND from the ONE shared source (D31-23, utils/edge_tier.py). The retired local
+    # ``compute_confidence`` was a byte-equivalent twin of the one in ``api/cache.py``; the absent
+    # case is now answered inside the helper rather than by a guard at each call site, so the two
+    # call sites cannot answer it differently. The column names keep their historical
+    # ``*_confidence`` spelling: renaming them would change this CSV's header, which is published.
+    merged["wp_confidence"] = merged["wp_edge"].apply(edge_tier)
+    merged["ats_confidence"] = merged["ats_edge"].apply(edge_tier)
+    merged["ou_confidence"] = merged["ou_edge"].apply(edge_tier)
 
     return merged
 

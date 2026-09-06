@@ -263,3 +263,201 @@ def test_betting_bets_load_missing_csv_returns_zero(tmp_path: Path) -> None:
         assert count_row[0] == 0
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# The collapsed edge band (Phase 31, plan 31-17; D31-23, T-31-88/89)
+# ---------------------------------------------------------------------------
+#
+# EXTENDED, not rewritten. Plan 31-17 collapsed two byte-equivalent tier helpers --
+# ``api/cache.py::_compute_confidence`` and
+# ``scripts/generate_current_week_predictions.py::compute_confidence`` -- into ONE shared source in
+# ``utils/edge_tier.py`` and RENAMED the concept to an EDGE BAND. Existing page behaviour is
+# UNCHANGED, which is exactly what makes the snapshot below a genuine regression test rather than a
+# rewrite with a new expectation.
+
+# The 23-point grid and the labels BOTH retired helpers produced, recorded by running them side by
+# side BEFORE the collapse (2026-09-06). It spans all three targets' scales and every boundary --
+# each threshold exactly, just below and just above -- because the retired comparison was STRICT
+# (``>``), so a value exactly at a threshold belongs to the LOWER band and an accidental ``>=``
+# would move a published label. The two helpers agreed on every one of these 23 values.
+_EDGE_TIER_SNAPSHOT: tuple[tuple[float, str], ...] = (
+    (-1.0, "high"),
+    (-0.5, "high"),
+    (-0.10, "high"),
+    (-0.0500000001, "high"),
+    (-0.05, "medium"),
+    (-0.0499999, "medium"),
+    (-0.03, "medium"),
+    (-0.020000001, "medium"),
+    (-0.02, "low"),
+    (-0.0199999, "low"),
+    (-0.001, "low"),
+    (0.0, "low"),
+    (0.001, "low"),
+    (0.0199999, "low"),
+    (0.02, "low"),
+    (0.020000001, "medium"),
+    (0.03, "medium"),
+    (0.0499999, "medium"),
+    (0.05, "medium"),
+    (0.0500000001, "high"),
+    (0.10, "high"),
+    (0.5, "high"),
+    (1.0, "high"),
+)
+
+
+def test_the_collapsed_edge_band_reproduces_the_pre_collapse_labels_value_by_value() -> (
+    None
+):
+    """Every one of the 23 recorded values still bands exactly as it did (T-31-88)."""
+    from utils.edge_tier import edge_tier
+
+    for value, expected in _EDGE_TIER_SNAPSHOT:
+        assert edge_tier(value) == expected, (
+            f"edge {value!r} now bands as {edge_tier(value)!r}, was {expected!r} before the "
+            "collapse; a published label on / and /betting has moved"
+        )
+
+
+def test_the_vectorized_form_agrees_with_the_scalar_one_on_the_same_snapshot() -> None:
+    """``edge_tier_series`` DISPATCHES; it must not be a second rule that can drift."""
+    from utils.edge_tier import edge_tier_series
+
+    values = [value for value, _label in _EDGE_TIER_SNAPSHOT]
+    expected = [label for _value, label in _EDGE_TIER_SNAPSHOT]
+    assert list(edge_tier_series(pd.Series(values))) == expected
+
+
+def test_an_absent_edge_bands_low_exactly_as_both_retired_helpers_did() -> None:
+    """NaN reached ``low`` via ``np.where`` in one helper and a ``pd.notna`` guard in the other.
+
+    Answering it inside the shared helper is what stops the two call sites diverging on the case
+    neither of them stated explicitly.
+    """
+    from utils.edge_tier import edge_tier, edge_tier_series
+
+    assert edge_tier(np.nan) == "low"
+    assert edge_tier(None) == "low"
+    assert list(edge_tier_series(pd.Series([np.nan, 0.09]))) == ["low", "high"]
+
+
+def test_exactly_one_function_computes_the_edge_band() -> None:
+    """A source scan finds ONE definition, and the prediction script declares none of its own.
+
+    Structural: it walks the production tree for a function whose body performs the band's own
+    threshold comparison, rather than trusting that the retired twins were both deleted.
+    """
+    import ast
+    import pathlib
+
+    definitions: list[str] = []
+    for package in ("api", "backtest", "models", "pipeline", "scripts", "utils", "web"):
+        root = pathlib.Path(package)
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.FunctionDef):
+                    continue
+                literals = {
+                    child.value
+                    for child in ast.walk(node)
+                    if isinstance(child, ast.Constant)
+                    and isinstance(child.value, float)
+                }
+                labels = {
+                    child.value
+                    for child in ast.walk(node)
+                    if isinstance(child, ast.Constant) and isinstance(child.value, str)
+                }
+                if {0.05, 0.02} <= literals and {"high", "medium", "low"} <= labels:
+                    definitions.append(f"{path.as_posix()}:{node.lineno} {node.name}")
+
+    assert not definitions, (
+        "a function reimplements the edge band from literal thresholds again; the rule lives in "
+        "utils/edge_tier.py behind NAMED constants and every caller imports it:\n"
+        + "\n".join(definitions)
+    )
+
+    # And the shared module itself defines EXACTLY ONE banding function -- the one reading both
+    # named thresholds. Asserted separately because the scan above deliberately cannot see it (it
+    # uses no literals), so without this the whole check would pass on an EMPTY tree.
+    shared = ast.parse(pathlib.Path("utils/edge_tier.py").read_text(encoding="utf-8"))
+    banding = [
+        node.name
+        for node in ast.walk(shared)
+        if isinstance(node, ast.FunctionDef)
+        and {"EDGE_TIER_HIGH_THRESHOLD", "EDGE_TIER_MEDIUM_THRESHOLD"}
+        <= {c.id for c in ast.walk(node) if isinstance(c, ast.Name)}
+    ]
+    assert banding == ["edge_tier"], (
+        f"utils/edge_tier.py must define exactly one banding function; found {banding}"
+    )
+
+    script = pathlib.Path("scripts/generate_current_week_predictions.py").read_text(
+        encoding="utf-8"
+    )
+    assert "from utils.edge_tier import edge_tier" in script, (
+        "the prediction script must IMPORT the shared band rather than declare its own"
+    )
+    assert "def compute_confidence" not in script, (
+        "the script's duplicate band helper survives the collapse"
+    )
+
+
+def test_the_edge_band_and_the_expected_value_tier_are_different_functions() -> None:
+    """``/bets`` owns ``ev_tier``; the existing pages own the renamed ``edge_tier`` (D31-23/24).
+
+    Different names, different modules, different rules -- so the word "high" cannot mean two
+    incompatible things across the two surfaces. This is the separation
+    ``backtest/simulation.py``'s warning comment asked for, asserted rather than described.
+    """
+    from backtest.ev_chain_constants import assign_ev_tier
+    from utils.edge_tier import edge_tier
+
+    assert assign_ev_tier is not edge_tier
+    assert assign_ev_tier.__name__ != edge_tier.__name__
+    assert assign_ev_tier.__module__ == "backtest.ev_chain_constants"
+    assert edge_tier.__module__ == "utils.edge_tier"
+
+
+def test_no_call_site_feeds_a_per_bet_expected_value_into_the_edge_band() -> None:
+    """Structural: every expression naming the band also names an ``*_edge`` column.
+
+    ``backtest/simulation.py`` warns that a selector-produced row's edge field carries per-bet
+    EXPECTED VALUE, and that banding one with this helper would misclassify it. Both call forms are
+    covered -- a direct ``edge_tier_series(frame["wp_edge"])`` and an
+    ``frame["wp_edge"].apply(edge_tier)`` -- because the scan reads the whole unparsed call rather
+    than only its argument list.
+    """
+    import ast
+    import pathlib
+
+    offenders: list[str] = []
+    for package in ("api", "backtest", "models", "pipeline", "scripts", "web"):
+        root = pathlib.Path(package)
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.py"):
+            if "__pycache__" in path.parts:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                text = ast.unparse(node)
+                if "edge_tier" not in text:
+                    continue
+                if "_edge" not in text:
+                    offenders.append(f"{path.as_posix()}:{node.lineno} {text}")
+
+    assert not offenders, (
+        "a call site passes something other than an *_edge column into the edge band; a per-bet "
+        "expected value banded on this scale would be misclassified (backtest/simulation.py's "
+        "warning):\n" + "\n".join(offenders)
+    )
