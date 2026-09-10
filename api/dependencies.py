@@ -320,6 +320,19 @@ def get_db(request: Request) -> duckdb.DuckDBPyConnection:
     # has been unlinked answers ``SELECT 1`` forever. A probe-first order would
     # return the stale connection here and never reach the comparison in the one
     # situation the comparison exists for.
+    #
+    # ACCEPTED COST (T-31-107): THIS COMPARISON PUTS AN ``os.stat`` ON THE REQUEST
+    # PATH. ``cache_file_changed`` calls :func:`cache_identity`, which stats
+    # :data:`DB_PATH` on EVERY request -- there is no cached or event-driven way to
+    # learn that a file was replaced out from under an open handle, because the
+    # writer is a separate process (``scripts/populate_cache.py``) and the two share
+    # only a path. UIAP-01 is not violated: it forbids request-path COMPUTATION of
+    # metrics -- no EV, stake, tier, return or aggregate is derived here -- and a
+    # file-metadata read is not a metric. The cost was accepted against the measured
+    # ratio: one stat against a local file is microseconds, on endpoints that answer
+    # in 7-40 ms precisely because nothing IS computed in the request path. The
+    # alternative is the defect this whole path exists to remove -- a reader serving
+    # a deleted file's contents as current, silently and permanently.
     if cache_file_changed(request):
         logger.warning(
             "DuckDB cache file replaced on disk, reconnecting under lock",
