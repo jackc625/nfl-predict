@@ -307,6 +307,97 @@ class TestAMissingPinRefusesRatherThanRefetching:
             )
 
 
+class TestAPinRefusalEscapesTheIngestGamesHandler:
+    """WR-10: ``scripts/ingest_games`` caught bare ``Exception``, so the type discipline was moot.
+
+    The class above proves ``UpstreamPinError`` inherits none of the types the wired handlers
+    name. That is necessary and it is not sufficient: ``ingest_games.ingest_games`` wrapped its
+    play-by-play fetch in ``except Exception``, which catches the refusal regardless of what it
+    inherits. ``fetch_pbp_data`` catches only ``(ConnectionError, TimeoutError, ValueError)``, so
+    the pin error arrived at that handler untouched.
+
+    The consequence is the one ``upstream_pin``'s docstring names: after a season roll the
+    manifest covers pbp through 2025 and nothing beyond, ``load_pbp`` raises its explicit refusal,
+    ONE warning line is logged, and silver ``games`` is written with no ``home_score`` /
+    ``away_score`` merged -- the ingest step reporting success while every downstream label built
+    from those scores is wrong or absent.
+
+    So the docstring's claim is ENFORCED here rather than asserted.
+    """
+
+    def test_a_pin_refusal_raised_inside_fetch_pbp_propagates_out_of_ingest_games(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from scripts.ingest_games import GameDataIngester
+
+        ingester = GameDataIngester()
+        monkeypatch.setattr(
+            ingester,
+            "fetch_schedule_data",
+            lambda *a, **k: pd.DataFrame([{"game_id": "2026_W01_AAA@BBB"}]),
+        )
+        monkeypatch.setattr(
+            ingester, "transform_schedule_data", lambda df: df.assign(season=2026)
+        )
+
+        def _refuse(*_args: object, **_kwargs: object):
+            raise UpstreamPinMissing(
+                "the pin covers pbp through 2025 and does not cover 2026"
+            )
+
+        monkeypatch.setattr(ingester, "fetch_pbp_data", _refuse)
+
+        with pytest.raises(UpstreamPinError, match="does not cover 2026"):
+            ingester.ingest_games(seasons=[2026], include_results=True)
+
+    def test_an_ordinary_fetch_failure_still_degrades_rather_than_failing_the_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control. The handler exists for a reason and must keep working.
+
+        Without this the fix could have been "re-raise everything", which turns a transient
+        results fetch into a failed ingest.
+        """
+        from scripts.ingest_games import GameDataIngester
+
+        ingester = GameDataIngester()
+        captured: dict[str, object] = {}
+
+        monkeypatch.setattr(
+            ingester,
+            "fetch_schedule_data",
+            lambda *a, **k: pd.DataFrame([{"game_id": "2026_W01_AAA@BBB"}]),
+        )
+        monkeypatch.setattr(
+            ingester, "transform_schedule_data", lambda df: df.assign(season=2026)
+        )
+        monkeypatch.setattr(
+            ingester,
+            "fetch_pbp_data",
+            lambda *a, **k: (_ for _ in ()).throw(ConnectionError("upstream is down")),
+        )
+
+        # Stop the run right after the handler, so this test asserts the handler's behaviour
+        # and nothing about validation, bronze or silver.
+        def _stop(df, schema):
+            captured["reached_validation"] = True
+            raise _StopAfterHandler
+
+        monkeypatch.setattr("scripts.ingest_games.validate_bronze_to_silver", _stop)
+
+        with pytest.raises(_StopAfterHandler):
+            ingester.ingest_games(seasons=[2026], include_results=True)
+
+        assert captured.get("reached_validation") is True, (
+            "an ordinary ConnectionError from the results fetch now fails the whole ingest; "
+            "the degrade-on-results-failure handler is meant to survive"
+        )
+
+
+class _StopAfterHandler(BaseException):
+    """A sentinel that is NOT an Exception, so the handler under test cannot catch it."""
+
+
 class TestLiveRefetchIsAnExplicitLoudOptIn:
     def test_the_opt_in_env_var_is_required_and_sufficient(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

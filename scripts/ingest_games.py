@@ -13,6 +13,7 @@ from data import upstream_pin
 from data.quality_gates import validate_bronze_to_silver
 from data.schemas import GameSchema
 from data.storage import save_bronze_snapshot, upsert_silver
+from data.upstream_pin import UpstreamPinError
 from utils import (
     DataIngestionError,
     get_current_nfl_week,
@@ -303,6 +304,24 @@ class GameDataIngester:
                     # Merge results into games data
                     games_df = self._merge_game_results(games_df, results_df)
 
+                except UpstreamPinError:
+                    # A PIN REFUSAL IS NEVER DEGRADED AWAY (WR-10). ``data/upstream_pin``'s
+                    # module docstring makes a specific, checkable claim: UpstreamPinError
+                    # deliberately inherits from Exception and NOT from RuntimeError/ValueError/
+                    # ImportError, because every wired call site sits inside an ``except`` naming
+                    # those types, and "a pin error caught by one of those handlers would be
+                    # converted into an empty play-by-play frame and a silently degraded gold
+                    # matrix". Two of the three call sites honour that; this one caught bare
+                    # ``Exception``, so it caught the refusal anyway. ``fetch_pbp_data`` catches
+                    # only (ConnectionError, TimeoutError, ValueError), so the pin error arrives
+                    # here untouched.
+                    #
+                    # Concretely: after a season roll the manifest covers pbp through 2025 and
+                    # nothing beyond. ``upstream_pin.load_pbp`` raises its long explicit refusal,
+                    # this handler logged ONE warning line, and silver ``games`` was written with
+                    # no home_score/away_score merged -- the ingest step reporting success while
+                    # every downstream label built from those scores was wrong or absent.
+                    raise
                 except Exception as e:
                     logger.warning("Failed to fetch game results", error=str(e))
 
@@ -339,6 +358,16 @@ class GameDataIngester:
 
             return validated_df
 
+        except UpstreamPinError:
+            # Re-raised UNWRAPPED (WR-10). This outer handler does not degrade -- it raises -- so
+            # it was not the swallow hazard. But wrapping the refusal in DataIngestionError
+            # RELABELS it: the operator loses the pin's own long explanation of which seasons the
+            # manifest covers, and any caller that handles UpstreamPinError specifically stops
+            # seeing it. A pin refusal keeps its own type all the way out.
+            logger.error(
+                "Game data ingestion refused by the upstream pin", exc_info=True
+            )
+            raise
         except Exception as e:
             logger.error("Game data ingestion failed", error=str(e))
             raise DataIngestionError(f"Game ingestion failed: {e}")
