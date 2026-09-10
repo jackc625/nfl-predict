@@ -2593,3 +2593,62 @@ def test_the_footer_still_renders_the_timestamp_when_it_is_present(
         "swallowed the value instead of guarding the key"
     )
     assert "Sep 08, 2023" in body
+
+
+# ---------------------------------------------------------------------------
+# WR-07: a malformed query parameter degrades, it does not 500
+# ---------------------------------------------------------------------------
+
+
+_MALFORMED_PARAMS = [
+    "--5",  # lstrip("-") stripped BOTH hyphens, then int("--5") raised
+    "\u00b2",  # "2".isdigit() is True, int("2") raises
+    "\u00bd",  # a vulgar fraction: isdigit() False but isnumeric() True
+    "abc",  # the case the docstring already promised
+    "",  # an empty selector value
+    " 12 ",  # whitespace the guard used to require be absent
+    "1_2",  # int() accepts underscores in literals but not with a leading digit group here
+    "9" * 400,  # absurdly long, still an int
+]
+
+
+@pytest.mark.parametrize("raw", _MALFORMED_PARAMS)
+def test_a_malformed_week_degrades_to_the_default_rather_than_500ing(
+    bets_client: TestClient, raw: str
+) -> None:
+    """``_parse_int_param``'s own docstring promised this and the guard contradicted it.
+
+    ``candidate = raw.strip().lstrip("-")`` strips ALL leading hyphens, so ``"--5"`` passed as
+    ``"5".isdigit()`` and ``int("--5")`` then raised -- an unhandled ValueError, a 500 with a stack
+    trace on a public page, from a two-character query string.
+    """
+    response = bets_client.get(f"/bets?week={raw}")
+
+    assert response.status_code == 200, (
+        f"/bets?week={raw!r} returned {response.status_code}; an unparseable value degrades to "
+        "the dynamic default, it does not raise"
+    )
+    assert _BANNER_EYEBROW in response.text
+
+
+@pytest.mark.parametrize("raw", _MALFORMED_PARAMS)
+def test_a_malformed_season_degrades_on_both_pages(
+    bets_client: TestClient, raw: str
+) -> None:
+    """``season_tracking_page`` inlined the identical broken guard, so it 500'd identically."""
+    assert bets_client.get(f"/bets?season={raw}").status_code == 200
+    assert bets_client.get(f"/season?season={raw}").status_code == 200
+
+
+def test_a_well_formed_negative_week_is_still_parsed_and_then_whitelisted_away(
+    bets_client: TestClient,
+) -> None:
+    """The control: the fix must not turn every value into None and make the tests vacuous."""
+    from api.routes.pages import _parse_int_param
+
+    assert _parse_int_param("-5") == -5
+    assert _parse_int_param(str(_WEEK)) == _WEEK
+    assert _parse_int_param("--5") is None
+    assert _parse_int_param(None) is None
+    # A parsed-but-unavailable week still resolves to a real scheduled week (T-31-01).
+    assert bets_client.get("/bets?week=-5").status_code == 200

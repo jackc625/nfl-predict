@@ -265,11 +265,22 @@ def _parse_int_param(raw: str | None) -> int | None:
     Mirrors the ``season_tracking_page`` convention: an unparseable value (``?week=abc``)
     degrades to the dynamic default rather than raising a 422 (WR-02). The whitelist in
     :func:`_normalize_week` still holds -- a non-int can never reach a SQL parameter.
+
+    PARSE FIRST, VALIDATE SECOND (WR-07). The previous guard was
+    ``int(raw) if raw.strip().lstrip("-").isdigit() else None``, which contradicted the very
+    contract this docstring states, in two ways. ``lstrip("-")`` strips ALL leading hyphens, so
+    ``"--5"`` passed the guard as ``"5".isdigit()`` and then ``int("--5")`` raised. And
+    ``str.isdigit()`` is True for superscripts -- ``"2".isdigit()`` is True while ``int("2")``
+    raises. Either one produced an unhandled ``ValueError`` and an HTTP 500 with a stack trace on
+    a public page, from a two-character query string. Letting ``int`` decide what an int is
+    removes the whole class.
     """
     if raw is None:
         return None
-    candidate = raw.strip().lstrip("-")
-    return int(raw) if candidate.isdigit() else None
+    try:
+        return int(raw.strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize_week(
@@ -889,9 +900,10 @@ def season_tracking_page(
     a ``season_*_{season}`` cache id because ``_normalize_season`` rejects it.
     """
     available = service.get_prediction_seasons()
-    season_int = (
-        int(season) if season and season.strip().lstrip("-").isdigit() else None
-    )
+    # Through the SHARED parser (WR-07). This used to inline the same broken
+    # ``lstrip("-").isdigit()`` guard, so ``/season?season=--5`` and ``/season?season=<superscript>``
+    # both 500'd exactly as ``/bets?week=`` did. One parser means one behaviour.
+    season_int = _parse_int_param(season)
     season_resolved = _normalize_season(season_int, available)
     context = _build_season_context(service, season_resolved, request)
 
