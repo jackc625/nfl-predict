@@ -201,9 +201,15 @@ uv run python scripts/generate_bet_list.py --season <YEAR> --week <WEEK>
   Friday orchestrator's `generate_recommendations` step uses. Supply them TOGETHER or not
   at all.
 - **Produces:** `outputs/bet_list/bet_list.parquet` and `outputs/bet_list/bet_tracker.json`.
-- **This is the SOLE producer of the directory the next stage reads.** Nothing else writes
-  it: before this script existed the only producer was step 15 of the Friday orchestrator,
-  with no command an operator could run.
+- **This is the only producer an operator can run BY HAND -- it is NOT the only producer.**
+  Step 15 of the Friday orchestrator (`generate_recommendations`) writes the SAME
+  `outputs/bet_list/` through the SAME facade; before this script existed it was the only
+  writer, with no command an operator could run. Both callers are pinned, count exact in
+  both directions, by `tests/unit/test_bet_list_entry_point.py`. So a hand run and the next
+  scheduled run MERGE into one artifact under the D31-18 per-game freeze fence: forward rows
+  whose own game freeze has already passed are carried forward whole and everything else is
+  replaced. Hand-generate a corrected list on a Friday afternoon and expect the evening's
+  scheduled run to revisit every row that is not yet frozen.
 
 ### 7. Build cache
 
