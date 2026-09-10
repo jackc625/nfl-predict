@@ -56,6 +56,7 @@ from backtest.weekly_bet_list import (
     load_frozen_chain_fit,
     read_bet_list_artifact,
     upsert_bet_list_rows,
+    wp_fallback_is_active,
     write_bet_list_artifact,
     write_bet_tracker_artifact,
 )
@@ -511,3 +512,128 @@ def test_wp_still_needs_no_residual_sd() -> None:
     strategies = build_strategies(_fits(wp=None))
 
     assert len(strategies) == 3
+
+
+# ---------------------------------------------------------------------------
+# 6. The WP registered fallback can actually FIRE on the weekly path (WR-12)
+# ---------------------------------------------------------------------------
+
+
+def _fit_record(*, gate_passed: bool | None, trigger: str | None = None) -> dict:
+    """A profitability run record carrying a WP calibration-gate verdict."""
+    record: dict = {
+        "tune_fit": {
+            "wp": {
+                "ev_floor_t": 0.05,
+                "frozen_sd": None,
+                "season_bias_by_season": {"2025": 0.03},
+                "calibration_gate_passed": gate_passed,
+            },
+            "ats": {
+                "ev_floor_t": 0.05,
+                "frozen_sd": 11.5,
+                "season_bias_by_season": {"2025": 0.16},
+            },
+            "ou": {
+                "ev_floor_t": 0.0,
+                "frozen_sd": 13.0,
+                "season_bias_by_season": {"2025": 0.02},
+            },
+        }
+    }
+    if trigger is not None:
+        record["targets"] = {"wp": {"fallback_trigger": trigger}}
+    return record
+
+
+def _write_fit(tmp_path: Path, record: dict) -> Path:
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    return path
+
+
+def test_a_failed_calibration_gate_reaches_the_weekly_wp_strategy(
+    tmp_path: Path,
+) -> None:
+    """THE finding: `build_strategies` never passed `wp_gate`, so the fallback could not fire.
+
+    D31-07 guarantees the registered fallback "cannot fire silently" -- `fallback_fired` and
+    `fallback_trigger` travel onto every decision record. With no gate supplied,
+    `WPStrategy.fallback_fired` was always False and `_p_home` always returned the deployed
+    probability unchanged: every weekly bet list published after a failed gate priced WP off the
+    UNCORRECTED probability and stamped `fallback_fired = False` on every row. The guarantee
+    inverted -- it could not fire at all, silently.
+    """
+    fits = load_frozen_chain_fit(
+        _write_fit(
+            tmp_path, _fit_record(gate_passed=False, trigger="max_bin_deviation 0.12")
+        )
+    )
+
+    assert fits["wp"].calibration_gate_passed is False
+    assert wp_fallback_is_active(fits) is True
+
+    wp_strategy = next(s for s in build_strategies(fits) if s.target == "wp")
+
+    assert wp_strategy.fallback_fired is True, (
+        "the failed gate did not reach the strategy, so the registered fallback is still "
+        "structurally unreachable on the weekly path"
+    )
+    assert wp_strategy.fallback_trigger == "max_bin_deviation 0.12", (
+        "the trigger did not travel, so a fired fallback would be stamped on every row with no "
+        "reason attached"
+    )
+
+
+def test_a_passing_gate_leaves_the_deployed_probability_unchanged(
+    tmp_path: Path,
+) -> None:
+    """The control: the fallback must not become always-on."""
+    fits = load_frozen_chain_fit(_write_fit(tmp_path, _fit_record(gate_passed=True)))
+
+    assert wp_fallback_is_active(fits) is False
+    wp_strategy = next(s for s in build_strategies(fits) if s.target == "wp")
+    assert wp_strategy.fallback_fired is False
+
+
+def test_no_recorded_gate_is_the_default_path_not_a_failure(tmp_path: Path) -> None:
+    """`None` means no gate was run. It must not be read as a failed one."""
+    fits = load_frozen_chain_fit(_write_fit(tmp_path, _fit_record(gate_passed=None)))
+
+    assert fits["wp"].calibration_gate_passed is None
+    assert wp_fallback_is_active(fits) is False
+    wp_strategy = next(s for s in build_strategies(fits) if s.target == "wp")
+    assert wp_strategy.gate is None
+    assert wp_strategy.fallback_fired is False
+
+
+def test_an_active_wp_fallback_makes_an_uncovered_season_a_named_refusal(
+    tmp_path: Path,
+) -> None:
+    """`_require_season_covered` skipped WP unconditionally (WR-12).
+
+    With the fallback active, `_p_home` consults `season_bias_for` for every candidate and raises
+    by name deep inside the strategy. That is exactly the per-candidate failure this guard exists
+    to turn into one named refusal before a week is half-selected.
+    """
+    from backtest.weekly_bet_list import _require_season_covered
+
+    record = _fit_record(gate_passed=False, trigger="ece 0.09")
+    record["tune_fit"]["wp"]["season_bias_by_season"] = {"2024": 0.03}
+    fits = load_frozen_chain_fit(_write_fit(tmp_path, record))
+
+    with pytest.raises(FrozenChainFitError, match="'wp'"):
+        _require_season_covered(fits, 2025)
+
+
+def test_wp_is_still_exempt_from_the_season_check_on_the_default_path(
+    tmp_path: Path,
+) -> None:
+    """The control. WP consults no bias unless the fallback fired, so an absent one is fine."""
+    from backtest.weekly_bet_list import _require_season_covered
+
+    record = _fit_record(gate_passed=True)
+    record["tune_fit"]["wp"]["season_bias_by_season"] = {}
+    fits = load_frozen_chain_fit(_write_fit(tmp_path, record))
+
+    _require_season_covered(fits, 2025)

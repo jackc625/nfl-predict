@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -216,12 +217,29 @@ class AlreadyGradedError(ValueError):
 
 @dataclass(frozen=True)
 class WeeklyChainFit:
-    """One target's PRE-REGISTERED tune-only fit, read and never re-derived."""
+    """One target's PRE-REGISTERED tune-only fit, read and never re-derived.
+
+    Attributes:
+        target: The canonical target code.
+        ev_floor_t: The pre-registered per-target EV floor.
+        frozen_sd: The frozen residual SD, or None for WP, which fits none by design (D31-07).
+        season_bias_by_season: The prior-season walk-forward bias per season.
+        calibration_gate_passed: The TUNE-split calibration gate verdict, or None when no gate was
+            run for this target. CARRIED (WR-12) because without it ``build_strategies`` had no way
+            to know the gate had failed, so ``WPStrategy.fallback_fired`` was always False and the
+            registered fallback could not fire on the weekly path AT ALL -- inverting the D31-07
+            guarantee that it "cannot fire silently" into "cannot fire, silently".
+        fallback_trigger: The reason string the run recorded, or None. Carried alongside the
+            verdict so a reconstructed gate stamps the SAME trigger onto every weekly decision
+            record that the profitability run stamped onto its own.
+    """
 
     target: str
     ev_floor_t: float
     frozen_sd: float | None
     season_bias_by_season: dict[int, float]
+    calibration_gate_passed: bool | None = None
+    fallback_trigger: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +296,16 @@ def load_frozen_chain_fit(
             )
             raise FrozenChainFitError(msg)
         frozen_sd = block.get("frozen_sd")
+        gate_passed = block.get("calibration_gate_passed")
+        # The trigger lives on the per-target VERDICT record, not in ``tune_fit`` -- the run writes
+        # the gate verdict in one place and the reason it fired in another. Read both, so a
+        # reconstructed gate stamps the same trigger the profitability run stamped (WR-12).
+        target_record = record.get("targets")
+        trigger = None
+        if isinstance(target_record, dict) and isinstance(
+            target_record.get(target), dict
+        ):
+            trigger = target_record[target].get("fallback_trigger")
         fits[target] = WeeklyChainFit(
             target=target,
             ev_floor_t=float(block["ev_floor_t"]),
@@ -286,6 +314,10 @@ def load_frozen_chain_fit(
                 int(season): float(bias)
                 for season, bias in (block.get("season_bias_by_season") or {}).items()
             },
+            calibration_gate_passed=(
+                None if gate_passed is None else bool(gate_passed)
+            ),
+            fallback_trigger=None if trigger is None else str(trigger),
         )
     return fits
 
@@ -298,10 +330,15 @@ def _require_season_covered(fits: dict[str, WeeklyChainFit], season: int) -> Non
     for one. Refusing HERE names the whole problem once, before a week is half-selected, and says
     what to re-run -- rather than surfacing as a per-candidate ValueError deep inside a strategy.
     """
+    # WP is exempt ONLY while its registered fallback is inactive (WR-12). When the gate failed,
+    # ``WPStrategy._p_home`` consults ``season_bias_for`` for every candidate and raises by name
+    # deep inside the strategy if the season is uncovered -- which is exactly the per-candidate
+    # failure this function exists to turn into one named refusal up front.
     uncovered = [
         target
         for target, fit in fits.items()
-        if target != "wp" and season not in fit.season_bias_by_season
+        if (target != "wp" or wp_fallback_is_active(fits))
+        and season not in fit.season_bias_by_season
     ]
     if uncovered:
         covered = sorted(
@@ -473,6 +510,39 @@ def require_frozen_sd(fit: WeeklyChainFit) -> float:
     return float(value)
 
 
+def wp_fallback_is_active(fits: Mapping[str, WeeklyChainFit]) -> bool:
+    """True when the run record says WP's TUNE-split calibration gate FAILED (WR-12).
+
+    ``None`` -- no gate was run -- is NOT a failure and is the D31-07 default path. Only an
+    explicit ``False`` activates the registered fallback.
+    """
+    return fits["wp"].calibration_gate_passed is False
+
+
+def _wp_gate_from_fit(fit: WeeklyChainFit) -> Any | None:
+    """Rebuild the ``WPGateResult`` the profitability run recorded, or None on the default path.
+
+    The weekly path reads a run RECORD, not a live gate, so the report body is not available and
+    is reconstructed as an explicit marker rather than an empty dict pretending to be one. Only
+    the three fields ``WPStrategy`` actually reads -- ``passed``, ``fallback_fired`` and
+    ``fallback_trigger`` -- are load-bearing here.
+    """
+    if fit.calibration_gate_passed is None:
+        return None
+    from backtest.wp_ev_chain import WPGateResult
+
+    passed = bool(fit.calibration_gate_passed)
+    return WPGateResult(
+        passed=passed,
+        report={
+            "source": "reconstructed from the profitability run record; the bin table lives on "
+            "that artifact, not here"
+        },
+        fallback_fired=not passed,
+        fallback_trigger=fit.fallback_trigger,
+    )
+
+
 def build_strategies(fits: dict[str, WeeklyChainFit]) -> list[Any]:
     """The three registered strategies, built ONCE from the frozen fit.
 
@@ -489,6 +559,12 @@ def build_strategies(fits: dict[str, WeeklyChainFit]) -> list[Any]:
         ats_frozen_sd=require_frozen_sd(fits["ats"]),
         ats_season_bias_by_season=fits["ats"].season_bias_by_season,
         wp_season_bias_by_season=fits["wp"].season_bias_by_season,
+        # The gate verdict the run RECORDED, carried through (WR-12). Without it ``wp_gate``
+        # defaulted to None, so ``WPStrategy.fallback_fired`` was always False, ``_p_home`` always
+        # returned the deployed probability unchanged, and every weekly row was stamped
+        # ``fallback_fired = False`` -- a registered fallback that could not fire at all, silently,
+        # which is the inverse of the D31-07 guarantee.
+        wp_gate=_wp_gate_from_fit(fits["wp"]),
         high_total_boundary=float(HIGH_TOTAL_BOUNDARY_PREHOLD),
     )
 
