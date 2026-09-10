@@ -65,14 +65,35 @@ async def lifespan(app: FastAPI):
 
     if deps.DB_PATH.exists():
         try:
-            conn = duckdb.connect(str(deps.DB_PATH), read_only=True)
-            app.state.db_conn = conn
             # Record WHICH file this connection was opened against (plan 31-20,
             # G-31-123a). ``api.dependencies.get_db`` compares this per request so
             # a ``populate_cache`` swap is picked up without a restart. Computed
             # through the shared public helper -- a second definition here would
             # let the opener and the detector disagree.
-            app.state.db_identity = deps.cache_identity(deps.DB_PATH)
+            #
+            # READ BEFORE THE CONNECT, deliberately, and this is the widest-exposure
+            # instance of that ordering: the connect here is a COLD open of a ~6 MB
+            # database at process boot, which is exactly the window a Friday
+            # orchestrator population overlapping a service restart lands in. A stat
+            # taken after the connect would record the identity of the POST-swap file
+            # against a handle holding the PRE-swap one, and ``_cache_file_changed``
+            # would then compare equal forever. Reading first records a STALE identity
+            # instead, which the first request corrects with one spurious reconnect.
+            pre_connect_identity = deps.cache_identity(deps.DB_PATH)
+            conn = duckdb.connect(str(deps.DB_PATH), read_only=True)
+            app.state.db_conn = conn
+            # The fresh stat is the fallback for ONE case, the same one
+            # ``api.dependencies._reconnect_under_lock`` falls back for: the
+            # pre-connect read was ``None`` because it landed in the writer's
+            # unlink-to-rename window, and the file then appeared before the connect
+            # succeeded. There is no earlier observation to reuse there, and
+            # recording ``None`` would switch the detector off for the whole process
+            # lifetime.
+            app.state.db_identity = (
+                pre_connect_identity
+                if pre_connect_identity is not None
+                else deps.cache_identity(deps.DB_PATH)
+            )
             logger.info("DuckDB connection established", path=str(deps.DB_PATH))
         except (duckdb.Error, OSError) as exc:
             app.state.db_conn = None

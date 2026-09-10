@@ -159,9 +159,12 @@ def _reconnect_under_lock(request: Request) -> duckdb.DuckDBPyConnection:
     """
     lock = request.app.state.db_lock
     with lock:
-        # Read the on-disk identity ONCE for the whole locked section, so the
-        # double-check below and the identity recorded after the connect are
-        # reasoned about against one observation rather than two.
+        # Read the on-disk identity ONCE for the whole locked section, BEFORE the
+        # connect, so the double-check below and the identity recorded for the new
+        # connection are reasoned about against one observation rather than two.
+        # This is the observation the recording at the bottom of this function
+        # reuses; see the comment there for why it must not be re-read after the
+        # connect.
         on_disk_identity = cache_identity(DB_PATH)
 
         # Double-check inside the lock: another request may have already
@@ -230,11 +233,27 @@ def _reconnect_under_lock(request: Request) -> duckdb.DuckDBPyConnection:
             ) from exc
 
         request.app.state.db_conn = new_conn
-        # Captured AFTER the connect, deliberately. A swap landing between the two
-        # makes the RECORDED identity newer than the file actually opened, which
-        # the next request detects and corrects; capturing first could record an
-        # identity for a file that was never opened, which nothing would correct.
-        request.app.state.db_identity = cache_identity(DB_PATH)
+        # CAPTURED BEFORE THE CONNECT AND REUSED HERE, and the direction is
+        # load-bearing rather than tidy. A swap landing inside the connect window
+        # leaves this connection holding the OLD file. Re-stat'ing after the connect
+        # would then record the NEW file's identity against a handle pointed at the
+        # old one, so ``_cache_file_changed`` would compare EQUAL on every
+        # subsequent request and the detector would be permanently blind -- exactly
+        # the G-31-123a defect this module exists to remove, restored one line
+        # before the end of the fix. Reusing the pre-connect observation instead
+        # records a STALE identity, which mismatches on the very next request and
+        # self-heals through one spurious reconnect.
+        #
+        # The fresh stat is the fallback for one case only: ``on_disk_identity`` was
+        # ``None``, i.e. this locked section began inside the writer's
+        # unlink-to-rename window and the file appeared before the connect
+        # succeeded. There is no earlier observation to reuse there, and recording
+        # ``None`` would switch the detector off outright.
+        request.app.state.db_identity = (
+            on_disk_identity
+            if on_disk_identity is not None
+            else cache_identity(DB_PATH)
+        )
         # The same invalidation ``api.main.lifespan`` performs at startup, for the
         # same reason: a value memoized from the PREVIOUS file must not survive
         # the swap boundary. One invalidation point, not two.

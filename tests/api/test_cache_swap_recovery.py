@@ -18,7 +18,8 @@ deliberately installs no override and enters the ``TestClient`` as a context man
 real ``api/main.py`` lifespan opens the connection and records its identity and the real
 ``get_db`` decides, per request, whether that connection is still pointed at the file on disk.
 
-Selectors (``-k``): swap_recovery, unchanged, closed_before, absent_path, records_identity
+Selectors (``-k``): swap_recovery, unchanged, closed_before, absent_path, records_identity,
+connect_window
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -353,3 +354,164 @@ def test_the_startup_connection_records_an_identity(
         "detector is switched off"
     )
     assert app.state.db_identity == deps.cache_identity(db_path)
+
+
+# ---------------------------------------------------------------------------
+# The swap that lands INSIDE the connect window (CR-01)
+# ---------------------------------------------------------------------------
+
+
+def _connect_that_swaps_after_opening(
+    new_path: Path, db_path: Path
+) -> tuple[Any, dict[str, bool]]:
+    """A ``duckdb.connect`` stand-in that lands the writer's swap INSIDE the connect window.
+
+    It opens the real connection FIRST and only then does the ``unlink()`` + ``rename()``, which
+    is the ordering that produces the defect: the returned handle holds the file that WAS at the
+    path, while the path itself now holds a different one. A stand-in that swapped before opening
+    would hand back a handle on the NEW file and could not distinguish the two orderings at all.
+
+    Fires ONCE. Every later call -- the healing reconnect the fix is supposed to produce -- is a
+    plain delegation, so the same patch can stay installed for the rest of the test.
+    """
+    real_connect = duckdb.connect
+    fired = {"swapped": False}
+
+    def connect_then_swap(*args: Any, **kwargs: Any) -> Any:
+        conn = real_connect(*args, **kwargs)
+        if not fired["swapped"]:
+            fired["swapped"] = True
+            _swap_in(new_path, db_path)
+        return conn
+
+    return connect_then_swap, fired
+
+
+def test_a_swap_inside_the_reconnect_connect_window_is_still_detected(
+    swap_client: TestClient, tmp_path: Path
+) -> None:
+    """A swap landing between the connect and the identity record must NOT blind the detector.
+
+    THE REGRESSION THIS MODULE DID NOT COVER. All five cases above swap BETWEEN requests, so all
+    five pass under an implementation that records the identity by re-stat'ing the path AFTER
+    ``duckdb.connect``. Under that ordering a swap landing inside the connect window leaves the
+    handle on the OLD file and the RECORDED identity describing the NEW one, so
+    ``_cache_file_changed`` compares EQUAL on every subsequent request and only a process restart
+    ever clears it -- the exact G-31-123a symptom plan 31-20 exists to remove, reinstated by the
+    plan's own last statement.
+
+    The reachable path is two population runs, or a population overlapping a server start: the
+    first swap is what triggers the reconnect, and the second lands inside it. That is the
+    sequence below, with the second swap driven from a ``duckdb.connect`` stand-in so the window
+    is hit deterministically rather than by racing a real writer.
+
+    The fix records the identity read BEFORE the connect, so the recorded value is STALE rather
+    than wrong-by-one-file. Staleness mismatches on the very next request and self-heals through
+    one spurious reconnect; that failure direction is the whole point.
+    """
+    db_path = tmp_path / "web_cache.duckdb"
+
+    # 1. Establish the connection and the recorded identity of the file it opened.
+    _bets(swap_client)
+
+    # 2. The FIRST population run's swap. This is only the trigger: it makes the next request
+    #    enter the reconnect, which is where the defect lives.
+    second_path = tmp_path / "web_cache.duckdb.tmp"
+    _build_cache(second_path, populated_at=_OLD_POPULATED_AT)
+    _swap_in(second_path, db_path)
+    identity_of_the_file_the_reconnect_opens = deps.cache_identity(db_path)
+    assert identity_of_the_file_the_reconnect_opens is not None
+
+    # 3. The SECOND population run's swap, armed to land inside the connect window. This one
+    #    carries the post-freeze marker, so the page can prove which file it ended up serving.
+    third_path = tmp_path / "web_cache.duckdb.tmp2"
+    _build_cache(third_path, populated_at=_NEW_POPULATED_AT)
+    connect_then_swap, fired = _connect_that_swaps_after_opening(third_path, db_path)
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(duckdb, "connect", connect_then_swap)
+
+        # 4. The request that reconnects. Its own body is not asserted on: this request is
+        #    legitimately serving the file it just opened, which the swap has already superseded.
+        _bets(swap_client)
+        assert fired["swapped"], (
+            "the stand-in never fired, so no swap landed inside the connect window and this "
+            "test would pass under either ordering"
+        )
+
+        # THE LOAD-BEARING ASSERTION. The recorded identity must describe the file this
+        # connection actually OPENED, not whatever replaced it a moment later.
+        assert app.state.db_identity == identity_of_the_file_the_reconnect_opens, (
+            "the identity was recorded by re-stat'ing the path after the connect, so it "
+            "describes a file this connection is not pointing at: the detector will compare "
+            "equal forever and only a restart will clear the staleness (G-31-123a)"
+        )
+
+        # 5. The consequence, end to end: the next request notices and heals.
+        body = _bets(swap_client)
+
+    assert _HARD_BLOCK_MESSAGE not in body, (
+        "the swap that landed inside the connect window was never detected, so the server is "
+        "still serving a file that has been deleted from underneath it"
+    )
+    assert _NEW_POPULATED_AT in body, (
+        "the block cleared but the page did not render the marker from the file that is "
+        "actually at the path now"
+    )
+
+
+def test_a_swap_inside_the_lifespan_connect_window_is_still_detected(
+    tmp_path: Path,
+) -> None:
+    """The same ordering in the lifespan, which has the WIDEST exposure of the two openers.
+
+    ``api.main.lifespan`` opens the process-lifetime connection with a COLD ``duckdb.connect`` on
+    a ~6 MB database at process boot -- the longest connect window in the app, and precisely the
+    one a Friday orchestrator population overlapping a service restart lands in. A separate case
+    because it is a separate opener in a separate file: fixing ``api/dependencies.py`` alone would
+    leave every process start able to record an identity for a file it is not reading.
+
+    Fixture-free rather than built on ``swap_client``, because the swap has to land during the
+    lifespan's own connect -- that is, before any fixture could hand back a client.
+    """
+    db_path = tmp_path / "web_cache.duckdb"
+    _build_cache(db_path, populated_at=_OLD_POPULATED_AT)
+    identity_of_the_file_the_lifespan_opens = deps.cache_identity(db_path)
+    assert identity_of_the_file_the_lifespan_opens is not None
+
+    swapped_in_path = tmp_path / "web_cache.duckdb.tmp"
+    _build_cache(swapped_in_path, populated_at=_NEW_POPULATED_AT)
+    connect_then_swap, fired = _connect_that_swaps_after_opening(
+        swapped_in_path, db_path
+    )
+
+    app.dependency_overrides.clear()
+    app.state.db_lock = threading.RLock()
+    clear_cache()
+    try:
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(deps, "DB_PATH", db_path)
+            patched.setattr(duckdb, "connect", connect_then_swap)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                assert fired["swapped"], (
+                    "the stand-in never fired during the lifespan, so no swap landed inside "
+                    "its connect window"
+                )
+                assert (
+                    app.state.db_identity == identity_of_the_file_the_lifespan_opens
+                ), (
+                    "the lifespan recorded the identity of the file that REPLACED the one it "
+                    "opened, so this process can never detect that its connection is stale"
+                )
+                body = _bets(client)
+    finally:
+        app.dependency_overrides.clear()
+        app.state.db_conn = None
+        app.state.db_identity = None
+        clear_cache()
+
+    assert _HARD_BLOCK_MESSAGE not in body, (
+        "a swap landing inside the lifespan's connect window left the process permanently "
+        "blind: the first request served the pre-swap file and did not reconnect"
+    )
+    assert _NEW_POPULATED_AT in body
