@@ -306,3 +306,77 @@ class TestTheCorrectionUsesThePreRegisteredM:
 
     def test_an_empty_family_returns_nothing_rather_than_raising(self) -> None:
         assert benjamini_hochberg_adjusted([], 6) == []
+
+
+class TestAFiredFallbackDoesNotDuplicateItsPrimarysPValue:
+    """WR-11: the fallback row is a bookkeeping row, and a duplicate p makes the family LENIENT.
+
+    When a target's calibration fallback fires, the strategy is built WITH the gate, so there is
+    exactly ONE selection and ONE statistic. The ``<target>/calibration_fallback`` registry row
+    records that same statistic a second time -- ``raw_p`` and ``roi`` are the identical numbers
+    as that target's ``/primary`` row. It discloses that the fallback fired and what it produced;
+    it is not an independent hypothesis.
+
+    Feeding the same p into the BH input twice is not neutral. A tied p occupies two adjacent
+    ranks and the step-up takes ``min_{j>=i} m*p_(j)/j``, so the duplicate at rank ``i+1`` gives
+    ``m*p/(i+1) < m*p/i`` and pulls the PRIMARY's q DOWN. Measured on the shipped run's p-value
+    shape with the family growing 6 -> 7, that is 0.600 -> 0.560, against 0.700 when the duplicate
+    stays out of the ranking. Firing a fallback made the verdict EASIER to call significant, which
+    is the opposite of what a multiplicity correction is for.
+
+    What the FROZEN ``BH_FAMILY_SPEC`` pre-registers is preserved exactly: the membership ("0 to 3
+    entries") and the denominator ("7, 8 or 9"). ``bh_family_members`` selects on
+    ``entry_kind``/``sample_window``, never on ``raw_p``, so the row still grows m.
+
+    No fallback fired in the shipped run (bh_denominator = 6), so nothing published is affected.
+    """
+
+    # The shipped run's six family p-values, in registry order (3 primary + 3 robustness),
+    # rounded from PROFITABILITY-READOUT.md. Used only to show the DIRECTION of the effect on a
+    # realistic shape; nothing here re-derives a published figure.
+    _SHIPPED_SHAPE = [0.336, 0.761, 0.336, 0.400, 0.800, 0.400]
+
+    def test_a_duplicated_p_value_makes_its_own_primary_easier_not_harder(self) -> None:
+        """The mechanism, demonstrated on the correction function directly."""
+        with_duplicate = benjamini_hochberg_adjusted(
+            [*self._SHIPPED_SHAPE, self._SHIPPED_SHAPE[0]], 7
+        )
+        without_duplicate = benjamini_hochberg_adjusted(self._SHIPPED_SHAPE, 7)
+
+        assert with_duplicate[0] < without_duplicate[0], (
+            "duplicating a p-value no longer pulls its primary's q down, so this module is "
+            "pinning the wrong mechanism"
+        )
+        # And it is even more lenient than the SMALLER family it replaced -- growing m from 6 to
+        # 7 should never make a verdict easier.
+        at_six = benjamini_hochberg_adjusted(self._SHIPPED_SHAPE, 6)
+        assert with_duplicate[0] < at_six[0]
+        assert without_duplicate[0] > at_six[0]
+
+    def test_the_runner_does_not_feed_the_fallback_p_into_the_ranking(self) -> None:
+        """The fix, at the seam. A source check: reaching this branch needs a full scoring run.
+
+        ``tests/unit/test_sportsbook_preference.py`` uses the same shape for the same reason.
+        """
+        import inspect
+
+        from backtest.profitability_2025 import _measure_and_judge
+
+        source = inspect.getsource(_measure_and_judge)
+
+        assert "raw_by_entry[fallback_id]" not in source, (
+            "the fallback row's p-value is fed back into the BH input, so it enters the ranking "
+            "as a tie with its own primary"
+        )
+        assert "fallback_mirrors[fallback_id] = primary_id" in source, (
+            "the fallback row no longer mirrors its primary's adjusted q, so the row would be "
+            "recorded with no q at all"
+        )
+
+    def test_the_frozen_denominator_rule_is_untouched(self) -> None:
+        """The membership and the denominator are pre-registered; only the ranking changed."""
+        assert BH_FAMILY_SPEC["denominator_no_fallback"] == 6
+        assert "7, 8 or 9" in str(BH_FAMILY_SPEC["denominator_with_fallbacks"])
+        assert "ONLY IF that target's fallback" in " ".join(
+            str(item) for item in BH_FAMILY_SPEC["included"]
+        )

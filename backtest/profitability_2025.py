@@ -2042,6 +2042,11 @@ def _measure_and_judge(
     clv_report_only: dict[str, Any] = {}
     per_target_extra: dict[str, dict[str, Any]] = {}
     raw_by_entry: dict[str, float] = {}
+    # ``{fallback_entry_id: primary_entry_id}`` for every target whose calibration fallback
+    # fired (WR-11). The fallback row is a BOOKKEEPING row, not a second hypothesis -- see the
+    # comment where it is appended -- so it is mapped to its primary's adjusted q rather than
+    # entering the ranking with a duplicate of its primary's raw p.
+    fallback_mirrors: dict[str, str] = {}
 
     for target in CANONICAL_TARGETS:
         hold_frame = hold_frames.get(target, pd.DataFrame())
@@ -2164,8 +2169,35 @@ def _measure_and_judge(
                     fallback_trigger=fallback_trigger,
                 )
             )
-            if stats["p_value"] is not None:
-                raw_by_entry[fallback_id] = float(stats["p_value"])
+            # IT DOES NOT ENTER THE RANKING (WR-11), THOUGH IT DOES COUNT TOWARD m.
+            #
+            # When the fallback fires, the strategy is built WITH the gate, so there is exactly
+            # ONE selection and ONE statistic. This row records that same statistic a second time
+            # -- ``raw_p=stats["p_value"]`` and ``roi=stats["point_estimate"]`` are the identical
+            # numbers as this target's ``/primary`` row. It is a disclosure that the fallback
+            # fired and what it produced, NOT an independent hypothesis.
+            #
+            # Adding it to ``raw_by_entry`` put the SAME p-value into the BH input twice. Because
+            # a tied p occupies two adjacent ranks and the step-up takes ``min_{j>=i} m*p_(j)/j``,
+            # the duplicate at rank i+1 gives ``m*p/(i+1) < m*p/i`` and pulls the PRIMARY's
+            # adjusted q DOWN. Measured on the shipped run's p-value shape, with the family
+            # growing 6 -> 7: WP's q went 0.600 -> 0.560 WITH the duplicate, against 0.700
+            # without it. So firing a fallback made the verdict EASIER to call significant --
+            # the opposite of what a multiplicity correction is for.
+            #
+            # The FROZEN ``BH_FAMILY_SPEC`` pre-registers the MEMBERSHIP ("0 to 3 entries") and
+            # the denominator ("7, 8 or 9 -- one additional entry per target whose calibration
+            # fallback fired"). Both are preserved: ``bh_family_members`` selects on
+            # ``entry_kind``/``sample_window``, not on ``raw_p``, so this row still grows ``m``.
+            # What was never pre-registered is that it would carry the identical statistic INTO
+            # the ranking.
+            #
+            # Its ``adjusted_p`` is mirrored from the primary's after the correction, so the row
+            # is complete and visibly states the same q as the inference it duplicates.
+            #
+            # NOTE: no fallback fired in the shipped 2025 run (bh_denominator = 6), so nothing
+            # published is affected. The correction only ever becomes STRICTER here.
+            fallback_mirrors[fallback_id] = primary_id
 
         registry.append(
             _registry_entry(
@@ -2233,6 +2265,11 @@ def _measure_and_judge(
         [raw_by_entry[entry_id] for entry_id in tested_ids], denominator
     )
     adjusted_by_entry = dict(zip(tested_ids, adjusted, strict=True))
+    # The fallback rows mirror their primary's q -- they ARE that inference, recorded a second
+    # time (WR-11). Mirroring rather than re-deriving is what keeps them out of the ranking.
+    for fallback_id, primary_id in fallback_mirrors.items():
+        if primary_id in adjusted_by_entry:
+            adjusted_by_entry[fallback_id] = adjusted_by_entry[primary_id]
     for entry in registry:
         if entry["entry_id"] in adjusted_by_entry:
             entry["adjusted_p"] = adjusted_by_entry[entry["entry_id"]]
