@@ -205,10 +205,15 @@ CREATE TABLE IF NOT EXISTS available_bet_weeks (
 CREATE TABLE IF NOT EXISTS bet_week_freeze (
     season INTEGER,
     week INTEGER,
-    latest_game_freeze_ts TIMESTAMP
+    latest_game_freeze_ts TIMESTAMP WITH TIME ZONE
     -- SCHEDULE-derived freshness source (REVIEW-STALE). The failure the stale-cache
     -- block guards is a MISSING bet-list insertion, in which state there may be no
     -- bet rows to read a freeze from -- so the freeze must not come from bet rows.
+    -- The column is TIMESTAMPTZ, NOT a naive TIMESTAMP (CR-01). The upstream freeze
+    -- is tz-aware UTC, and a naive column made DuckDB cast it through the SESSION
+    -- TimeZone -- storing 18:00 for a 22:00Z instant on an America/New_York host and
+    -- moving the staleness threshold by the server's own offset. NO SEMICOLONS in
+    -- this comment: readers of CACHE_SCHEMA split it on that character.
 );
 
 CREATE TABLE IF NOT EXISTS bet_tracker_blocks (
@@ -759,7 +764,7 @@ BET_WEEK_FREEZE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS bet_week_freeze (
     season INTEGER,
     week INTEGER,
-    latest_game_freeze_ts TIMESTAMP
+    latest_game_freeze_ts TIMESTAMP WITH TIME ZONE
 )
 """
 
@@ -1219,6 +1224,18 @@ def materialize_available_bet_weeks(
     )
 
 
+def _to_utc_series(values: pd.Series) -> pd.Series:
+    """Return *values* as a tz-aware UTC datetime Series (CR-01).
+
+    Naive input is localized to UTC -- the convention ``api.routes.pages._as_utc`` documents --
+    rather than being left for DuckDB to reinterpret through the session ``TimeZone``.
+    """
+    parsed = pd.to_datetime(values, errors="coerce")
+    if getattr(parsed.dtype, "tz", None) is not None:
+        return parsed.dt.tz_convert("UTC")
+    return parsed.dt.tz_localize("UTC")
+
+
 def materialize_bet_week_freeze(
     conn: duckdb.DuckDBPyConnection,
     schedule_df: pd.DataFrame,
@@ -1234,6 +1251,16 @@ def materialize_bet_week_freeze(
     Every row is derived from *schedule_df* alone. It reads no bet rows, because the failure the
     stale-cache hard-block guards is precisely a MISSING bet-list insertion -- in which state
     there may be no bet rows to read a freeze from.
+
+    THE INSTANT IS PERSISTED TZ-AWARE, AND THE ZONE IS PINNED HERE (CR-01). ``game_freeze_ts``
+    arrives from ``build_bet_week_schedule`` as tz-aware UTC. Handing a tz-aware column to a naive
+    ``TIMESTAMP`` column made DuckDB perform a ``TIMESTAMPTZ -> TIMESTAMP`` cast through the
+    SESSION ``TimeZone`` setting, so a 22:00Z freeze was stored as 18:00 on an America/New_York
+    host and read back naive -- moving the staleness threshold by the server's own UTC offset and
+    defeating the hard-block. The column is now ``TIMESTAMP WITH TIME ZONE`` and the frame is
+    normalized to UTC before the insert, so no implicit conversion is possible. A NAIVE input is
+    localized to UTC here, which is the one place the "naive means UTC" convention can be applied
+    before DuckDB has already reinterpreted it.
 
     Args:
         conn: An open DuckDB connection. The table is created if absent.
@@ -1252,9 +1279,11 @@ def materialize_bet_week_freeze(
         "materialize_bet_week_freeze",
         "schedule_df",
     )
+    normalized = schedule_df[["season", "week", "game_freeze_ts"]].copy()
+    normalized["game_freeze_ts"] = _to_utc_series(normalized["game_freeze_ts"])
     # Same pandas-stubs groupby gap as materialize_available_bet_weeks above.
     grouped = (
-        schedule_df.groupby(["season", "week"], as_index=False)["game_freeze_ts"]
+        normalized.groupby(["season", "week"], as_index=False)["game_freeze_ts"]
         .max()
         .rename(columns={"game_freeze_ts": "latest_game_freeze_ts"})  # pyright: ignore[reportCallIssue, reportAttributeAccessIssue]
         .sort_values(["season", "week"])

@@ -24,6 +24,9 @@ from api.charts import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
 from api.dependencies import get_data_service, templates
 from api.season_metrics import _ats_outcome, _ou_outcome, _wp_outcome
 from api.services import DataService
+from utils import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["pages"])
 
@@ -311,12 +314,20 @@ def _as_utc(value: Any) -> datetime | None:
     Both sides of the freshness comparison are written in UTC -- ``populate_cache`` stamps
     ``datetime.now(tz=UTC).isoformat()`` and ``bet_week_freeze`` persists an upstream-computed
     instant -- but they arrive in different shapes (a string from ``cache_meta``, a DuckDB
-    ``TIMESTAMP`` from the freeze table) and DuckDB hands back a NAIVE datetime. A naive value is
-    therefore READ as UTC rather than as local time; reading it as local would move the comparison
-    by the machine's offset and make the hard-block fire, or fail to fire, on the timezone the
-    server happens to be in.
+    ``TIMESTAMP WITH TIME ZONE`` from the freeze table).
 
-    Returns None on anything unparseable so the caller can decline to make a claim.
+    A NAIVE VALUE IS REFUSED RATHER THAN ASSUMED TO BE UTC (CR-01). The previous
+    ``value.replace(tzinfo=UTC)`` is what made this reader agree with a freeze DuckDB had already
+    shifted: the freeze column was a naive ``TIMESTAMP``, so a tz-aware 22:00Z instant was cast
+    through the session ``TimeZone`` and came back as a naive 18:00, which this function then
+    re-labelled as 18:00Z. Both halves looked self-consistent and the threshold was silently wrong
+    by the server's own offset. The zone is now pinned at the WRITE side
+    (``api.cache.materialize_bet_week_freeze``), so every value reaching here carries one; a naive
+    one means the cache was written by a build that predates that fix and its instant cannot be
+    read without guessing a zone.
+
+    Returns None on anything unparseable -- including a naive datetime -- so the caller can
+    decline to make a claim.
     """
     if value is None:
         return None
@@ -328,7 +339,11 @@ def _as_utc(value: Any) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
+        logger.warning(
+            "A /bets freshness instant is naive; refusing to guess a zone for it",
+            value=str(value),
+        )
+        return None
     return value.astimezone(UTC)
 
 
@@ -409,10 +424,16 @@ def _bets_blocked(
     """
     populated_at = service.get_bet_list_populated_at(season, week)
     expected_freeze = service.get_bet_week_freeze(season, week)
+    # The refusal shows the instant the VERDICT was computed from, normalized to UTC (CR-01).
+    # DuckDB hands a TIMESTAMPTZ back in the SESSION's own zone, so rendering the raw value would
+    # print one instant in the server's zone next to a populated-at marker printed in UTC -- two
+    # renderings of one comparison that read as two unrelated claims. An UNREADABLE freeze falls
+    # back to the raw stored value rather than to nothing, so the reader still sees what is there.
+    freeze_utc = _as_utc(expected_freeze)
     return BetFreshness(
         blocked=_is_bet_cache_stale(populated_at, expected_freeze),
         populated_at=populated_at,
-        expected_freeze=expected_freeze,
+        expected_freeze=expected_freeze if freeze_utc is None else freeze_utc,
     )
 
 

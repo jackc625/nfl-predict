@@ -37,7 +37,7 @@ import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -715,7 +715,10 @@ _FORBIDDEN_WEEK_LEVEL_CLAIMS = (
 
 _POPULATED_AT = "2023-09-08T22:30:00+00:00"
 # Strictly LATER than _POPULATED_AT, so the population run finished BEFORE the freeze moved.
-_LATER_FREEZE = datetime(2023, 9, 8, 23, 0, 0)
+# TZ-AWARE UTC, like every instant ``build_bet_week_schedule`` produces (CR-01). A naive fixture
+# here would exercise a shape the real writer never emits, and the ``bet_week_freeze`` column is
+# now TIMESTAMPTZ so the stored value carries its zone into the rendered refusal text.
+_LATER_FREEZE = datetime(2023, 9, 8, 23, 0, 0, tzinfo=UTC)
 
 
 def _build_bare_cache(db_path: Path) -> duckdb.DuckDBPyConnection:
@@ -920,7 +923,7 @@ def test_a_fresh_cache_is_not_blocked(tmp_path: Path) -> None:
                     {
                         "season": _SEASON,
                         "week": _WEEK,
-                        "game_freeze_ts": datetime(2023, 9, 8, 22, 0, 0),
+                        "game_freeze_ts": datetime(2023, 9, 8, 22, 0, 0, tzinfo=UTC),
                     }
                 ]
             ),
@@ -2389,7 +2392,7 @@ def test_a_past_week_renders_normally_in_the_same_response_shape_as_a_blocked_on
     serves the list. Blocking the whole page was rejected -- it punishes the reader for an
     unrelated failure and trains people to ignore the guard.
     """
-    early_freeze = datetime(2023, 9, 8, 22, 0, 0)  # BEFORE _POPULATED_AT
+    early_freeze = datetime(2023, 9, 8, 22, 0, 0, tzinfo=UTC)  # BEFORE _POPULATED_AT
     db_path = _blocked_cache(
         tmp_path,
         "scoped",
