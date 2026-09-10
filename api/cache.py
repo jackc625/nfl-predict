@@ -840,6 +840,37 @@ def bet_list_populated_at_key(season: int, week: int) -> str:
     )
 
 
+def bet_list_source_is_absent(bet_list_df: pd.DataFrame | None) -> bool:
+    """True when a cache population has NO bet rows to load -- ``None`` OR an EMPTY frame.
+
+    THE WIDENING IS THE POINT (Plan 31-22, G-31-123b, T-31-118). :func:`populate_cache` has always
+    carried an honest warning saying that a run with no bet list leaves the cache with zero rows
+    and no populated-at marker, so ``/bets`` will REFUSE the current week rather than render it as
+    one in which nothing was recommended. That warning was guarded on ``bet_list_df is None``, and
+    BOTH production callers -- ``pipeline/steps.py::step_populate_web_cache`` and
+    ``scripts/populate_cache.py`` -- pass frames from
+    ``backtest.weekly_bet_list.read_bet_list_cache_sources``, which by documented design degrades
+    an ABSENT artifact to an empty frame and never returns ``None``.
+
+    So the one diagnostic that would have explained a zero-row cache was UNREACHABLE in
+    production, and the case production actually hits -- a cold start with no durable artifact --
+    logged the benign informational ``Bet list loaded count=0`` instead. The operator was not told
+    anything was wrong; they were told a count.
+
+    This predicate is a QUESTION about the source, not a policy: it changes no branch and no
+    on-disk result. ``materialize_bet_list`` creates the table it writes into and
+    ``materialize_bet_list_with_marker`` stamps nothing for an empty frame, so the ``None`` case
+    and the empty-frame case already converge on the same cache state.
+
+    Args:
+        bet_list_df: The frame a caller is about to load, or ``None`` for "not supplied".
+
+    Returns:
+        True when there is nothing to load.
+    """
+    return bet_list_df is None or bet_list_df.empty
+
+
 # The ``status`` value that means a bet was actually PLACED. ``DataService.get_bet_list`` selects
 # rows equal to it and ``DataService.get_suppressed_bets`` selects the exact COMPLEMENT
 # (``IS DISTINCT FROM``, so a NULL status lands in the suppressed list rather than vanishing from
@@ -2208,7 +2239,10 @@ def populate_cache(
     the tables are still CREATED (so the page can tell an empty week from a pre-Phase-31 cache)
     but no rows and no marker are written. That is the honest representation of a run that did not
     produce a bet list, and it is the state the ``/bets`` hard-block refuses on rather than
-    rendering as an empty week.
+    rendering as an empty week. An EMPTY FRAME reaches the same on-disk state and is now warned
+    about through the same predicate (:func:`bet_list_source_is_absent`), because that -- not
+    ``None`` -- is the case a cold start actually produces: both production callers pass frames
+    from ``read_bet_list_cache_sources``, which degrades an absent artifact to zero rows.
 
     Args:
         db_path: Final path for the cache database (e.g. data/web_cache.duckdb).
@@ -2296,6 +2330,21 @@ def populate_cache(
 
         # The bet-list cache sources, loaded into the TEMPORARY database before the swap
         # (Plan 31-18, REVIEW-CACHE). See this function's docstring for why they arrive as frames.
+        # AUDIBLE FOR THE CASE PRODUCTION ACTUALLY HITS (Plan 31-22, T-31-118). This is an ADDED
+        # STATEMENT and not a restructured branch: the ``is None`` branch below keeps its control
+        # flow exactly, because the two cases already converge on the same on-disk result -- an
+        # existing ``bet_list`` table with zero rows and no per-week marker. The defect was never
+        # that the wrong branch ran; it was that nobody was told. See
+        # ``bet_list_source_is_absent`` for why the ``is None`` guard alone was unreachable.
+        if bet_list_source_is_absent(bet_list_df):
+            logger.warning(
+                "NO BET ROWS to load into the cache -- the durable bet-list artifact is absent or "
+                "empty. The cache will carry zero bet rows and no populated-at marker, so /bets "
+                "will REFUSE the current week rather than render it as one in which nothing was "
+                "recommended. Produce the rows first with "
+                "`uv run python scripts/generate_bet_list.py`, then re-run this population."
+            )
+
         if bet_list_df is None:
             conn.execute(BET_LIST_SCHEMA)
             logger.warning(
