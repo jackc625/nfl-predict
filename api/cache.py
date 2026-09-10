@@ -1346,6 +1346,75 @@ def materialize_bet_tracker_blocks(
 # and that no call site feeds a per-bet EV into the edge band.
 
 
+def _blend_weight_array(
+    blend_data: dict[str, Any],
+    target: str,
+    season: pd.Series,
+    week: pd.Series,
+) -> np.ndarray:
+    """Per-row model weight for *target*, honouring the DEPLOYED dynamic schedule (WR-03).
+
+    The cache used to read only ``blend_data["weights"]`` and apply ONE scalar per target to every
+    game. The deployed artifact ``blend_dynamic_20260606_020635`` carries a ``dynamic`` section
+    with ``mode_by_target = {"wp": "dynamic", "ats": "dynamic", "ou": "dynamic"}``, which
+    ``MarketBlender.from_artifacts`` auto-detects and applies as a per-week sigmoid. The
+    current-week CSV went through that path and the cache did not, so ``/``, ``/games/{id}`` and
+    both export endpoints published a DIFFERENT ``blended_*`` for the same game than the CSV --
+    and the one on the website was the one the deployed blend config says is wrong. Measured on
+    the live artifact: WP 0.5917 static against 0.5241 at week 1 and 0.6686 at week 18.
+
+    The schedule is pure arithmetic and is reproduced here rather than imported, so UIAP-01's "no
+    model import in the request path" is untouched. It mirrors
+    ``models.blending.DynamicBlendWeights.get_weight`` exactly, including the pre-2021 17-week era
+    (D-05) and the playoff clamp (D-04):
+
+        max_week = 17 if season <= 2020 else 18
+        t        = min(week, max_week) / max_week
+        weight   = low + (high - low) / (1 + exp(-steepness * (t - midpoint)))
+
+    A row whose target is not in dynamic mode, or whose season/week cannot be read, falls back to
+    the STATIC weight for that target -- the same value this function returned for every row
+    before. Falling back per row rather than for the whole frame keeps one unusable week from
+    silently restaticizing the entire cache.
+
+    Args:
+        blend_data: The parsed ``blend_weights.json``.
+        target: One of ``wp`` / ``ats`` / ``ou``.
+        season: The season of each row.
+        week: The week of each row.
+
+    Returns:
+        One weight per row, aligned with *season* / *week*.
+    """
+    static = float(blend_data["weights"][target])
+    weights = np.full(len(season), static, dtype=float)
+
+    dynamic = blend_data.get("dynamic")
+    if not isinstance(dynamic, dict):
+        return weights
+    if dynamic.get("mode_by_target", {}).get(target) != "dynamic":
+        return weights
+    params = dynamic.get(target)
+    if not isinstance(params, dict):
+        return weights
+
+    season_num = pd.to_numeric(season, errors="coerce").to_numpy(dtype="float64")
+    week_num = pd.to_numeric(week, errors="coerce").to_numpy(dtype="float64")
+    usable = np.isfinite(season_num) & np.isfinite(week_num) & (week_num >= 1)
+    if not usable.any():
+        return weights
+
+    low = float(dynamic.get("low", 0.30))
+    high = float(dynamic.get("high", 0.80))
+    midpoint = float(params["midpoint"])
+    steepness = float(params["steepness"])
+
+    max_week = np.where(season_num[usable] <= 2020, 17.0, 18.0)
+    t = np.minimum(week_num[usable], max_week) / max_week
+    weights[usable] = low + (high - low) / (1.0 + np.exp(-steepness * (t - midpoint)))
+    return weights
+
+
 def _load_predictions(
     conn: duckdb.DuckDBPyConnection,
     outputs_dir: Path,
@@ -1511,7 +1580,12 @@ def _load_predictions(
         if not weights_path.exists():
             raise FileNotFoundError(f"blend_weights.json not found in {blend_dir}")
         blend_data = json.loads(weights_path.read_text())
-        weights = blend_data["weights"]  # {"wp": float, "ats": float, "ou": float}
+        # ``blend_data["weights"]`` is read PER TARGET inside _blend_weight_array, which returns
+        # the deployed DYNAMIC per-week weight when the artifact carries one and falls back to
+        # that static scalar otherwise (WR-03). Reading the scalar here and applying it to every
+        # game is what made the cache disagree with the current-week CSV.
+        if "weights" not in blend_data:
+            raise KeyError("'weights' not found in blend_weights.json")
 
         # WP blending in log-odds space
         valid_ml = merged["ml_home"].notna() & merged["ml_away"].notna()
@@ -1528,7 +1602,12 @@ def _load_predictions(
                 merged.loc[valid_ml, "wp_prob"].values.astype(float), clip_min, clip_max
             )
             market_clipped = np.clip(fair_home.values.astype(float), clip_min, clip_max)
-            w = weights["wp"]
+            w = _blend_weight_array(
+                blend_data,
+                "wp",
+                merged.loc[valid_ml, "season"],
+                merged.loc[valid_ml, "week"],
+            )
             blended_wp_vals = expit(
                 w * logit(model_clipped) + (1 - w) * logit(market_clipped)
             )
@@ -1537,7 +1616,12 @@ def _load_predictions(
         # ATS blending (linear)
         valid_spread = merged["market_spread"].notna()
         if valid_spread.any():
-            w = weights["ats"]
+            w = _blend_weight_array(
+                blend_data,
+                "ats",
+                merged.loc[valid_spread, "season"],
+                merged.loc[valid_spread, "week"],
+            )
             blended_ats_vals = w * merged.loc[
                 valid_spread, "ats_prediction"
             ].values.astype(float) + (1 - w) * merged.loc[
@@ -1548,7 +1632,12 @@ def _load_predictions(
         # O/U blending (linear)
         valid_total = merged["market_total"].notna()
         if valid_total.any():
-            w = weights["ou"]
+            w = _blend_weight_array(
+                blend_data,
+                "ou",
+                merged.loc[valid_total, "season"],
+                merged.loc[valid_total, "week"],
+            )
             blended_ou_vals = w * merged.loc[
                 valid_total, "ou_prediction"
             ].values.astype(float) + (1 - w) * merged.loc[
