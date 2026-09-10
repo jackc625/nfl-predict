@@ -20,6 +20,8 @@
      ws_indicator         hx-indicator target                  default OMITTED (as shipped)
      ws_failure_template  id of a <template> holding the
                           failed-fragment markup               default OMITTED (as shipped)
+     ws_timeout           request timeout in ms, which is
+                          what makes hx-on::timeout reachable  default OMITTED (as shipped)
 
    ws_extra_params is a DICT, not a string, so its values stay HTML-escaped: current_sort is
    USER INPUT (`sort` is a query parameter on /), and a raw string parameter marked |safe would
@@ -48,6 +50,21 @@
    silently not bind. All three run the SAME handler, which replaces the target with the failure
    markup AND reverts both controls to the week actually being shown.
 
+   ws_timeout IS WHAT MAKES hx-on::timeout REACHABLE. It is not a performance knob. htmx gives the
+   XMLHttpRequest it creates a timeout of ZERO unless one is supplied through one of its three
+   channels (an htmx.ajax option, this hx-request attribute, or the global htmx.config.timeout),
+   and per the XHR spec a timeout of zero means "no timeout" -- so the XHR timeout event never
+   fires, htmx never emits htmx:timeout, and the handler wired above it is bound but can never run.
+   A request that hangs forever therefore leaves the previous week's rows under the new week's
+   selection, which is the exact outcome the handler exists to prevent (G-31-127, diagnosed
+   against htmx 2.0.4, the version base.html loads).
+
+   The VALUE is a page decision, not a component default: how long a reader should wait before the
+   page gives up is a property of the page, so this parameter is OMITTED unless a caller supplies
+   one and the pages with no failure handler keep aborting nothing. The caller that passes a
+   timeout is the same caller that passes ws_failure_template -- a timeout without a handler
+   aborts a request with nowhere to send the event, and a handler without a timeout is the defect.
+
    The handler string is marked |safe because every part of it is template-authored: the two ids
    and the target come from this file's own parameters, and the week and season are ints coerced
    here. No user-supplied value reaches it. #}
@@ -58,6 +75,7 @@
 {% set _ws_extra_params = ws_extra_params if ws_extra_params is defined else {"sort": current_sort} %}
 {% set _ws_indicator = ws_indicator if ws_indicator is defined else none %}
 {% set _ws_failure_template = ws_failure_template if ws_failure_template is defined else none %}
+{% set _ws_timeout = ws_timeout if ws_timeout is defined else none %}
 {% set _ws_scope = "" if _ws_target == "#game-grid" else _ws_target[1:] ~ "-" %}
 {% set _ws_season_id = _ws_scope ~ "season-select" %}
 {% set _ws_week_id = _ws_scope ~ "week-select" %}
@@ -77,6 +95,7 @@
 {% endif %}{% if _ws_failure_template %}            hx-on::response-error="{{ _ws_fail_js|safe }}"
             hx-on::timeout="{{ _ws_fail_js|safe }}"
             hx-on::send-error="{{ _ws_fail_js|safe }}"
+{% endif %}{% if _ws_timeout %}            hx-request='{"timeout": {{ _ws_timeout|int }}}'
 {% endif %}            hx-vals='{"week": ""}'
             class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
       {% for s in available_seasons %}
@@ -106,7 +125,7 @@
     {% endfor %}
 
     {# Previous week button #}
-    <button {% if prev_week.found %}hx-get="{{ _ws_endpoint }}?week={{ prev_week.week }}&season={{ prev_week.season }}{% for _k, _v in _ws_extra_params.items() %}&{{ _k }}={{ _v }}{% endfor %}" hx-target="{{ _ws_target }}" hx-swap="innerHTML"{% if _ws_indicator %} hx-indicator="{{ _ws_indicator }}"{% endif %}{% if _ws_failure_template %} hx-on::response-error="{{ _ws_fail_js|safe }}" hx-on::timeout="{{ _ws_fail_js|safe }}" hx-on::send-error="{{ _ws_fail_js|safe }}"{% endif %}{% else %}disabled{% endif %}
+    <button {% if prev_week.found %}hx-get="{{ _ws_endpoint }}?week={{ prev_week.week }}&season={{ prev_week.season }}{% for _k, _v in _ws_extra_params.items() %}&{{ _k }}={{ _v }}{% endfor %}" hx-target="{{ _ws_target }}" hx-swap="innerHTML"{% if _ws_indicator %} hx-indicator="{{ _ws_indicator }}"{% endif %}{% if _ws_failure_template %} hx-on::response-error="{{ _ws_fail_js|safe }}" hx-on::timeout="{{ _ws_fail_js|safe }}" hx-on::send-error="{{ _ws_fail_js|safe }}"{% endif %}{% if _ws_timeout %} hx-request='{"timeout": {{ _ws_timeout|int }}}'{% endif %}{% else %}disabled{% endif %}
             class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
             aria-label="Previous Week">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
@@ -122,6 +141,7 @@
 {% endif %}{% if _ws_failure_template %}            hx-on::response-error="{{ _ws_fail_js|safe }}"
             hx-on::timeout="{{ _ws_fail_js|safe }}"
             hx-on::send-error="{{ _ws_fail_js|safe }}"
+{% endif %}{% if _ws_timeout %}            hx-request='{"timeout": {{ _ws_timeout|int }}}'
 {% endif %}            class="rounded-md border-gray-300 text-sm font-medium py-2 px-3 min-h-[44px]">
       {% for w in available_weeks %}
       <option value="{{ w.week }}" data-season="{{ w.season }}" {% if w.week == current_week and w.season == current_season %}selected{% endif %}>
@@ -131,7 +151,7 @@
     </select>
 
     {# Next week button #}
-    <button {% if next_week.found %}hx-get="{{ _ws_endpoint }}?week={{ next_week.week }}&season={{ next_week.season }}{% for _k, _v in _ws_extra_params.items() %}&{{ _k }}={{ _v }}{% endfor %}" hx-target="{{ _ws_target }}" hx-swap="innerHTML"{% if _ws_indicator %} hx-indicator="{{ _ws_indicator }}"{% endif %}{% if _ws_failure_template %} hx-on::response-error="{{ _ws_fail_js|safe }}" hx-on::timeout="{{ _ws_fail_js|safe }}" hx-on::send-error="{{ _ws_fail_js|safe }}"{% endif %}{% else %}disabled{% endif %}
+    <button {% if next_week.found %}hx-get="{{ _ws_endpoint }}?week={{ next_week.week }}&season={{ next_week.season }}{% for _k, _v in _ws_extra_params.items() %}&{{ _k }}={{ _v }}{% endfor %}" hx-target="{{ _ws_target }}" hx-swap="innerHTML"{% if _ws_indicator %} hx-indicator="{{ _ws_indicator }}"{% endif %}{% if _ws_failure_template %} hx-on::response-error="{{ _ws_fail_js|safe }}" hx-on::timeout="{{ _ws_fail_js|safe }}" hx-on::send-error="{{ _ws_fail_js|safe }}"{% endif %}{% if _ws_timeout %} hx-request='{"timeout": {{ _ws_timeout|int }}}'{% endif %}{% else %}disabled{% endif %}
             class="p-2 rounded-md border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px] min-w-[44px] flex items-center justify-center"
             aria-label="Next Week">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>

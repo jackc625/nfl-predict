@@ -31,6 +31,23 @@
 {#                                                                          #}
 {# ws_extra_params={} because /bets has no sort control; the sort parameter  #}
 {# is OMITTED rather than emitted empty.                                     #}
+{#                                                                          #}
+{# ws_timeout=10000 is what makes the selector's hx-on::timeout handler      #}
+{# REACHABLE (G-31-127). htmx gives its XMLHttpRequest a timeout of zero     #}
+{# unless one is supplied, and a zero timeout means "no timeout", so the     #}
+{# event the handler is bound to never fires and a wedged request leaves the #}
+{# previous week's rows under the new week's selection forever. /bets is the #}
+{# only page that passes ws_failure_template, so it is the only page that    #}
+{# passes a timeout -- see the partial's own comment for why that pairing is #}
+{# deliberate rather than a global htmx.config.timeout.                      #}
+{#                                                                          #}
+{# WHY TEN SECONDS. Every htmx endpoint this app serves answers in under     #}
+{# 40 ms, because nothing is computed in the request path (UIAP-01) -- the   #}
+{# /bets fragment itself measured 7.5-15.5 ms. Ten seconds is roughly 250x   #}
+{# the measured worst case, so it cannot plausibly abort a real request. It  #}
+{# is deliberately not tighter: the failure state REPLACES the whole target  #}
+{# and its only retry is a full navigation, so the cost of giving up early   #}
+{# on a request that would have arrived is higher than the cost of waiting.  #}
 {# ------------------------------------------------------------------------ #}
 <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
   {% with available_weeks=available_bet_weeks,
@@ -41,7 +58,8 @@
           ws_include_week="[name='season']",
           ws_extra_params={},
           ws_indicator="#bets-loading",
-          ws_failure_template="bets-failure-template" %}
+          ws_failure_template="bets-failure-template",
+          ws_timeout=10000 %}
     {% include "components/_week_selector.html" %}
   {% endwith %}
 </div>
