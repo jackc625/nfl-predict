@@ -56,7 +56,10 @@ async def lifespan(app: FastAPI):
         (c) ``app.state.db_lock`` (threading.RLock) below for reconnects.
     If ``--workers N`` with N > 1 is ever enabled, the shared connection and
     the cache must be revisited (each worker would hold its own copy and any
-    cross-worker coordination would require out-of-process state).
+    cross-worker coordination would require out-of-process state). The
+    cache-file identity check introduced in plan 31-20 is likewise per-process,
+    so under ``--workers N`` each worker detects a cache swap independently and
+    there is still no cross-worker coordination.
     """
     app.state.db_lock = threading.RLock()
 
@@ -64,9 +67,16 @@ async def lifespan(app: FastAPI):
         try:
             conn = duckdb.connect(str(deps.DB_PATH), read_only=True)
             app.state.db_conn = conn
+            # Record WHICH file this connection was opened against (plan 31-20,
+            # G-31-123a). ``api.dependencies.get_db`` compares this per request so
+            # a ``populate_cache`` swap is picked up without a restart. Computed
+            # through the shared public helper -- a second definition here would
+            # let the opener and the detector disagree.
+            app.state.db_identity = deps.cache_identity(deps.DB_PATH)
             logger.info("DuckDB connection established", path=str(deps.DB_PATH))
         except (duckdb.Error, OSError) as exc:
             app.state.db_conn = None
+            app.state.db_identity = None
             logger.error(
                 "Failed to open DuckDB cache at startup",
                 path=str(deps.DB_PATH),
@@ -74,6 +84,7 @@ async def lifespan(app: FastAPI):
             )
     else:
         app.state.db_conn = None
+        app.state.db_identity = None
         logger.warning(
             "DuckDB web cache not found -- run 'make build-cache' to populate",
             path=str(deps.DB_PATH),

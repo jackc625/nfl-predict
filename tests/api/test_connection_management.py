@@ -46,14 +46,37 @@ def _restore_db_path(original_deps: Path, original_health: Path) -> None:
     health_module.DB_PATH = original_health
 
 
+_IDENTITY_FROM_DB_PATH = object()
+
+
 def _make_request_with_state(
     db_conn: duckdb.DuckDBPyConnection | None,
     db_lock: threading.RLock | None = None,
+    *,
+    db_identity: object = _IDENTITY_FROM_DB_PATH,
 ) -> MagicMock:
-    """Build a MagicMock Request whose app.state exposes db_conn and db_lock."""
+    """Build a MagicMock Request whose app.state exposes the three connection fields.
+
+    ``db_identity`` MUST be set explicitly here rather than left to the MagicMock
+    (plan 31-20). An unset attribute on a MagicMock auto-creates a truthy child
+    mock, which ``api.dependencies._cache_file_changed`` would read as a RECORDED
+    identity that mismatches every real on-disk identity -- making every healthy
+    connection look swapped and every double-check look stale. That is a property
+    of the mock, not of the code under test.
+
+    It defaults to the identity of the file currently at ``deps.DB_PATH``, which
+    is exactly what both production openers record. Pass ``db_identity=None`` to
+    model a connection opened OUTSIDE ``api.dependencies`` (no recorded identity),
+    or a literal tuple to model a stale one.
+    """
     req = MagicMock()
     req.app.state.db_conn = db_conn
     req.app.state.db_lock = db_lock or threading.RLock()
+    req.app.state.db_identity = (
+        deps.cache_identity(deps.DB_PATH)
+        if db_identity is _IDENTITY_FROM_DB_PATH
+        else db_identity
+    )
     return req
 
 
@@ -122,7 +145,15 @@ def test_lifespan_handles_corrupt_db(tmp_path: Path) -> None:
 
 
 def test_get_db_returns_app_state_conn_when_healthy(test_db: Path) -> None:
-    """get_db returns the existing conn if SELECT 1 succeeds."""
+    """get_db returns the existing conn if the file is unchanged and SELECT 1 succeeds.
+
+    ``deps.DB_PATH`` is pointed at ``test_db`` because the healthy path now also
+    requires the RECORDED cache identity to match what is on disk (plan 31-20).
+    Leaving DB_PATH on the real cache would compare the identity of one file
+    against another and reconnect, which is the detector working correctly rather
+    than a regression.
+    """
+    original_deps, original_health = _set_db_path(test_db)
     conn = duckdb.connect(str(test_db), read_only=True)
     try:
         req = _make_request_with_state(conn)
@@ -130,6 +161,7 @@ def test_get_db_returns_app_state_conn_when_healthy(test_db: Path) -> None:
         assert result is conn
     finally:
         conn.close()
+        _restore_db_path(original_deps, original_health)
 
 
 def test_get_db_raises_model_unavailable_when_conn_none_and_file_missing(
@@ -171,7 +203,13 @@ def test_get_db_double_check_inside_lock_reuses_existing_conn(test_db: Path) -> 
     Drives the double-check pattern: we hand ``_reconnect_under_lock`` a
     request whose ``app.state.db_conn`` is already a healthy connection.
     The function must return that same connection without opening a new one.
+
+    Reuse now requires the recorded identity to match the on-disk one as well as
+    liveness (plan 31-20), so ``deps.DB_PATH`` is pointed at ``test_db``. That
+    tightening is the point of the change: a liveness-only double-check would hand
+    back the very stale connection the caller entered the lock to replace.
     """
+    original_deps, original_health = _set_db_path(test_db)
     healthy = duckdb.connect(str(test_db), read_only=True)
     try:
         req = _make_request_with_state(healthy)
@@ -183,6 +221,7 @@ def test_get_db_double_check_inside_lock_reuses_existing_conn(test_db: Path) -> 
         assert result is healthy
     finally:
         healthy.close()
+        _restore_db_path(original_deps, original_health)
 
 
 # ---------------------------------------------------------------------------
