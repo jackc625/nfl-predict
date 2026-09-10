@@ -89,10 +89,18 @@ class MarketAnchorFeaturesCalculator:
             # build_features below); this deprecated path did not, which crashed
             # build_market_anchors.py with "unsupported operand -: Timestamp and
             # str" for every season. (FIX-01, D-13)
+            #
+            # THROUGH THE ONE PARSE PATH, not a bare pd.to_datetime (WR-01). The bare
+            # call infers its format from the FIRST element and coerces every row in
+            # the other spelling to NaT: measured on live silver, 1,855 of 2,140 rows
+            # (the "2024-09-19T18:00:00-04:00" spelling) were destroyed by the version
+            # that used to be here. NaT then fails the >= min_opening_hours fence, so
+            # 87% of games silently lost their odds and fell through to neutral market
+            # defaults. build_features was fixed in Plan 31-xx; these two deprecated
+            # methods were not, and pipeline/steps.py::step_build_market_anchors calls
+            # them on every scheduled run.
             odds_df = odds_df.copy()
-            odds_df["snapshot_ts"] = pd.to_datetime(
-                odds_df["snapshot_ts"], utc=True, errors="coerce"
-            )
+            odds_df["snapshot_ts"] = self._parse_snapshot_column(odds_df["snapshot_ts"])
 
             # Merge with games to get kickoff times
             odds_with_kickoff = odds_df.merge(
@@ -179,10 +187,12 @@ class MarketAnchorFeaturesCalculator:
             # odds_snapshot stores it as an ISO string (object dtype), which
             # cannot drive .max()/.weekday() or a datetime comparison. Same
             # deprecated-path coercion gap as identify_opening_lines. (FIX-01)
+            #
+            # Through the ONE parse path for the same reason spelled out in
+            # identify_opening_lines: a bare pd.to_datetime NaT'd 1,855 of 2,140 live
+            # rows, and here a NaT also drops out of the <= cutoff comparison (WR-01).
             odds_df = odds_df.copy()
-            odds_df["snapshot_ts"] = pd.to_datetime(
-                odds_df["snapshot_ts"], utc=True, errors="coerce"
-            )
+            odds_df["snapshot_ts"] = self._parse_snapshot_column(odds_df["snapshot_ts"])
 
             # If no target date provided, find the most recent Friday 6 PM ET.
             if target_date is None:

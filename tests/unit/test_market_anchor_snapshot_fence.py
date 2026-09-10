@@ -203,3 +203,84 @@ class TestBothSpellingsReachTheBuiltFeatures:
             "an odds row dated AFTER the as-of cutoff still reached the feature, so the "
             "time fence is no longer fencing"
         )
+
+
+class TestTheDeprecatedFridayPathUsesTheSameOneParse:
+    """WR-01: ``identify_opening_lines`` / ``identify_snapshot_lines`` kept the bare parse.
+
+    ``build_features`` was fixed above, but the two DEPRECATED methods were not -- and they
+    are the ones the scheduled run reaches. ``pipeline/steps.py::step_build_market_anchors``
+    calls ``build_market_anchor_features``, which calls both of them. Measured on live silver
+    on 2026-09-09: the bare parse NaT'd 1,855 of 2,140 rows, and a NaT fails both the
+    ``>= min_opening_hours`` fence and the ``<= cutoff`` one, so 87% of games lost their odds
+    and fell through to ``_default_market_features`` with no count and no warning.
+    """
+
+    _GAMES = pd.DataFrame(
+        [
+            {
+                "game_id": "2018_W03_LAC@LA",
+                "season": 2018,
+                "week": 3,
+                "kickoff_et": pd.Timestamp("2018-09-23 17:00:00", tz="UTC"),
+            },
+            {
+                "game_id": "2025_W01_DAL@PHI",
+                "season": 2025,
+                "week": 1,
+                "kickoff_et": pd.Timestamp("2025-09-04 20:20:00", tz="UTC"),
+            },
+        ]
+    )
+
+    @classmethod
+    def _patch(cls, monkeypatch: pytest.MonkeyPatch) -> None:
+        import features.market_anchors as module
+
+        def _dispatch(table: str, *_args: object, **_kwargs: object) -> pd.DataFrame:
+            return cls._GAMES.copy() if table == "games" else _odds_frame()
+
+        monkeypatch.setattr(module, "load_dataframe", _dispatch)
+
+    def test_both_spellings_survive_identify_opening_lines(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._patch(monkeypatch)
+
+        opening = MarketAnchorFeaturesCalculator().identify_opening_lines(_odds_frame())
+
+        assert set(opening["game_id"]) == {"2018_W03_LAC@LA", "2025_W01_DAL@PHI"}, (
+            "a game vanished from the opening-line population. Under the bare parse the "
+            "space-separated spelling became NaT, NaT >= min_opening_hours is False, and "
+            "the game silently fell through to the neutral market default."
+        )
+
+    def test_both_spellings_survive_identify_snapshot_lines(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._patch(monkeypatch)
+
+        snapshots = MarketAnchorFeaturesCalculator().identify_snapshot_lines(
+            _odds_frame(), target_date=None
+        )
+
+        assert "2018_W03_LAC@LA" in set(snapshots["game_id"])
+
+    def test_an_unparseable_snapshot_is_refused_rather_than_silently_dropped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deprecated path now REFUSES what it cannot read, like the fixed one."""
+        import features.market_anchors as module
+
+        broken = _odds_frame()
+        broken.loc[1, "snapshot_ts"] = "not-a-timestamp"
+        monkeypatch.setattr(
+            module,
+            "load_dataframe",
+            lambda table, *a, **k: (
+                self._GAMES.copy() if table == "games" else broken.copy()
+            ),
+        )
+
+        with pytest.raises(ValueError, match="not-a-timestamp"):
+            MarketAnchorFeaturesCalculator().identify_opening_lines(broken)
