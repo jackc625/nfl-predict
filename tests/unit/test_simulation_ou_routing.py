@@ -27,6 +27,7 @@ from __future__ import annotations
 import inspect
 
 import pandas as pd
+import pytest
 
 from backtest.bet_selector import BetSelector
 from backtest.simulation import BettingSimulator, SimulationConfig
@@ -309,3 +310,140 @@ class TestWpAtsUnchanged:
         targets_bet = {r.target for r in results.bet_records}
         assert "wp" in targets_bet
         assert "ats" in targets_bet
+
+
+# ---------------------------------------------------------------------------
+# WR-04: the O/U selector bet is GRADED at the price it was priced and sized at
+# ---------------------------------------------------------------------------
+
+
+_ASYMMETRIC_ODDS = {"over": -105, "under": -125}
+
+
+class _RepricingSelector:
+    """A real BetSelector whose decisions carry an ASYMMETRIC ``selected_odds``.
+
+    The simulator's ``_select_ou_decisions`` keeps only
+    ``[game_id, season, week, model_total, closing_total, actual]``, so the stored
+    ``total_over_ju`` / ``total_under_ju`` never reach ``OUStrategy.bet_odds`` and
+    ``selected_odds`` degrades to the flat reference juice for every O/U bet today (asserted
+    below, by name). That makes the divergence WR-04 names latent rather than live, and it also
+    means a fixture cannot reach it by adding juice columns to the predictions frame.
+
+    So the price is injected at the seam the simulator actually reads. Everything else -- the
+    eligibility, the side, the EV admission, the Kelly stake -- is the real selector's.
+    """
+
+    def __init__(self, inner: BetSelector) -> None:
+        self._inner = inner
+        self.decisions: dict[str, dict] = {}
+
+    def select(self, candidates, raw_odds_df=None):
+        result = self._inner.select(candidates, raw_odds_df=raw_odds_df)
+        for record in result.selected:
+            record["selected_odds"] = _ASYMMETRIC_ODDS[record["bet_side"]]
+            self.decisions[record["game_id"]] = record
+        return result
+
+
+class TestTheOUBetIsGradedAtThePriceItWasSizedAt:
+    """WR-04: the selector-owned O/U branch graded every bet at a flat -110.
+
+    Under DEF-31-13 ``OUStrategy.bet_odds`` returns the devigged stored ``total_over_ju`` /
+    ``total_under_ju``, and the selector prices the per-bet EV and sizes Kelly from it. The
+    simulator then graded the resulting bet at ``config.standard_vig_odds``. An under admitted at
+    a stored -125 was priced at ``american_to_payout(-125) = 0.80`` and paid a win at
+    ``100/110 = 0.909`` -- over-credited by 13.6% of stake, in a direction that depends on which
+    side was bet, so the error does not average out.
+
+    The ATS branch six lines earlier already reads ``selected_odds`` and says why.
+    """
+
+    @staticmethod
+    def _run() -> tuple[list, dict[str, dict]]:
+        selector = _RepricingSelector(_make_selector(ev_floor_t=0.0))
+        sim = BettingSimulator(SimulationConfig(), ou_bet_selector=selector)
+        results = sim.simulate(
+            _ResultsLike({"ou": _ou_predictions_frame()}),
+            closing_odds_df=pd.DataFrame(),
+        )
+        return [r for r in results.bet_records if r.target == "ou"], selector.decisions
+
+    def test_the_graded_odds_are_the_selectors_own_selected_odds(self) -> None:
+        records, decisions = self._run()
+
+        assert records, "expected at least one O/U bet to be placed"
+        for record in records:
+            expected = int(decisions[record.game_id]["selected_odds"])
+            assert record.odds == expected, (
+                f"{record.game_id} was priced and sized at {expected} and graded at "
+                f"{record.odds}. The payout cannot diverge from the stake above it."
+            )
+
+    def test_the_fixture_is_not_vacuous(self) -> None:
+        """At least one bet must be at a price that is NOT the flat -110, or nothing is proven."""
+        records, _ = self._run()
+
+        assert any(r.odds != SimulationConfig().standard_vig_odds for r in records), (
+            "every O/U bet in the fixture was graded at the standard vig, so grading at a flat "
+            "-110 would pass this module by coincidence"
+        )
+
+    def test_a_winning_bet_pays_its_own_price(self) -> None:
+        """The consequence, in units: a win pays ``american_to_payout(selected_odds)``."""
+        from backtest.ou_ev_chain import american_to_payout
+
+        records, _ = self._run()
+        winners = [r for r in records if r.outcome is True]
+        assert winners, "the fixture produced no winning O/U bet to grade"
+
+        for record in winners:
+            expected = record.flat_stake * american_to_payout(record.odds)
+            assert record.payout_flat == pytest.approx(expected), (
+                f"{record.game_id} won at {record.odds} and was credited "
+                f"{record.payout_flat} instead of {expected}"
+            )
+
+    def test_the_simulator_does_not_yet_forward_the_stored_two_sided_price(
+        self,
+    ) -> None:
+        """AN HONEST RECORD OF WHAT IS *NOT* FIXED HERE, so the next reader does not assume it is.
+
+        ``_select_ou_decisions`` passes the selector a six-column projection that excludes
+        ``total_over_ju`` / ``total_under_ju``, so ``OUStrategy.bet_odds`` returns None and
+        ``selected_odds`` falls back to the flat reference juice for EVERY O/U bet the simulator
+        places. The grading fix above is therefore a no-op on today's wiring and becomes
+        load-bearing the moment the juice is forwarded.
+
+        Forwarding it is deliberately NOT done here: it would change the EV admission, the Kelly
+        stakes and the payouts, which moves /betting's published simulation figures. That is an
+        owner call, not a code-review fix.
+        """
+        frame = _ou_predictions_frame()
+        frame["total_over_ju"] = -105
+        frame["total_under_ju"] = -125
+
+        selector = _make_selector(ev_floor_t=0.0)
+        seen: list[dict] = []
+        original_select = selector.select
+
+        def _spy(candidates, raw_odds_df=None):
+            result = original_select(candidates, raw_odds_df=raw_odds_df)
+            seen.extend(result.selected)
+            return result
+
+        selector.select = _spy  # type: ignore[method-assign]
+        BettingSimulator(SimulationConfig(), ou_bet_selector=selector).simulate(
+            _ResultsLike({"ou": frame}), closing_odds_df=pd.DataFrame()
+        )
+
+        assert seen, "expected the selector to return at least one O/U decision"
+        assert all(
+            int(r["selected_odds"]) == SimulationConfig().standard_vig_odds
+            for r in seen
+        ), (
+            "the simulator now forwards the stored two-sided O/U price to the selector. That is "
+            "a real improvement, but it MOVES the published /betting simulation figures -- "
+            "update this test deliberately and say so in the readout rather than letting the "
+            "numbers drift."
+        )

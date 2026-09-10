@@ -693,7 +693,18 @@ class BettingSimulator:
                         "per_bet_ev"
                     ]  # per-bet EV (NOT a points distance -- see WR-06 note above)
                     slipped_line = decision["slipped_line"]
-                    odds = config.standard_vig_odds
+                    # The price the selector actually judged and sized the bet at, so the payout
+                    # below cannot diverge from the stake above it -- identical to the spread
+                    # branch above (WR-04). This used to be `config.standard_vig_odds`, a flat
+                    # -110, while under DEF-31-13 `OUStrategy.bet_odds` returns the devigged
+                    # stored `total_over_ju` / `total_under_ju` and the selector prices the
+                    # per-bet EV and sizes Kelly from it. An under admitted at a stored -125 was
+                    # priced at american_to_payout(-125) = 0.80 and then paid a win at 100/110 =
+                    # 0.909 -- every winning O/U selector bet over-credited by 13.6% of stake,
+                    # in a direction that depends on which side was bet, so it does not average
+                    # out. `backtest.profitability_2025._per_bet_frame` already settles on
+                    # `selected_odds` for all three targets.
+                    odds = int(decision["selected_odds"])
                     outcome = decision["outcome"]
 
                 elif target == "ou":
