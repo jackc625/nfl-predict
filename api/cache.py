@@ -1449,11 +1449,38 @@ def _load_predictions(
             merged.loc[wp_edge_mask, "wp_prob"] - fair_prob
         )
 
-    # ATS edge: model spread vs negative market spread, normalized
-    market_spread_safe = merged["market_spread"].abs().clip(lower=0.5)
+    # ATS edge: (model home margin - market home margin) / abs(market home margin).
+    #
+    # DEF-31-03, MIRRORED HERE (WR-02). This line used to negate the stored spread --
+    # ``(ats_prediction - (-market_spread))`` -- which assumed the OPPOSITE line convention and
+    # therefore computed model PLUS market rather than model MINUS market: a sum, not a
+    # difference. A model agreeing EXACTLY with the market scored the largest possible edge
+    # (3.0 vs 3.0 gave 6.0/3.0 = 2.0, which ``edge_tier_series`` bands "high"), and a model that
+    # thought the home side OVERVALUED was shown with a POSITIVE home edge.
+    #
+    # The identical expression was corrected in
+    # ``scripts/generate_current_week_predictions.compute_edges`` under DEF-31-03. Its comment
+    # notes that api/cache derives its own ``ats_edge`` and never reads that file -- which is
+    # exactly why the defect survived HERE, in the copy the dashboard renders. This value drives
+    # ``ats_edge``, ``ats_confidence``, the ``/`` page's ``sort=edge`` ordering and both exports.
+    #
+    # ``market_spread`` is the nflverse ``spread_line`` (POSITIVE when the home team is favored)
+    # and ``ats_prediction`` is a predicted home margin, per the DEF-31-01 ruling -- the same
+    # scale, so their disagreement is the plain difference. The zero-spread branch and the
+    # absent-spread branch are both carried over from the fixed copy: a pick-em is zero edge, and
+    # a game with no stored spread has no edge rather than an edge of zero. The old
+    # ``.clip(lower=0.5)`` denominator floor is gone with them; it silently doubled the edge on a
+    # +/-0.5 line and hid the pick-em case.
+    market_spread = merged["market_spread"]
+    market_spread_abs = market_spread.abs()
     merged["ats_edge"] = (
-        merged["ats_prediction"] - (-merged["market_spread"])
-    ) / market_spread_safe
+        (
+            (merged["ats_prediction"] - market_spread)
+            / market_spread_abs.where(market_spread_abs > 0)
+        )
+        .where(market_spread_abs > 0, 0.0)
+        .where(market_spread.notna())
+    )
 
     # O/U edge: model total vs market total, normalized
     market_total_safe = merged["market_total"].clip(lower=30)
