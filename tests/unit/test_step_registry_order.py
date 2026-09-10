@@ -216,18 +216,27 @@ def test_the_cache_step_belongs_to_the_predictions_phase() -> None:
     assert step.phase is PipelinePhase.PREDICTIONS
 
 
-def test_the_non_critical_set_is_exactly_the_declared_four() -> None:
-    """The non-critical registrations are pinned as a SET, so a fourth cannot appear unnoticed.
+def test_the_non_critical_set_is_exactly_the_declared_five() -> None:
+    """The non-critical registrations are pinned as a SET, so a sixth cannot appear unnoticed.
 
-    ``critical=False`` is a licence to fail quietly. Three steps carried it before this plan
-    (weather ingest, weather features, output verification); the cache step is the fourth. Pinning
-    the set means a future step registered non-critical has to be declared here, rather than
-    inheriting the allowance by accident.
+    ``critical=False`` is a licence to fail quietly. Three steps carried it before Plan 31-18
+    (weather ingest, weather features, output verification); the cache step is the fourth.
+
+    ``build_market_anchors`` is the FIFTH, added under WR-13 and DECLARED here rather than
+    inherited by accident, which is what this test exists to force. It was ``critical=True``, so a
+    raise inside ``build_market_anchor_features`` aborted the entire Friday run -- including the
+    prediction and bet-list work after it -- and what it writes, silver
+    ``market_anchor_features``, is read by no production code (``AUTOMATION.md``): the gold build
+    calls ``MarketAnchorFeaturesCalculator.build_features`` directly. Killing a run over a table
+    nothing consumes is the wrong direction.
+
+    If that step ever gains a consumer, its criticality has to be revisited with it.
     """
     non_critical = {step.name for step in build_step_registry() if not step.critical}
     assert non_critical == {
         "ingest_weather",
         "build_weather_features",
         "verify_output_files",
+        "build_market_anchors",
         CACHE_STEP,
     }, f"the non-critical set moved: {sorted(non_critical)}"

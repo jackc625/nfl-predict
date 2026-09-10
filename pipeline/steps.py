@@ -242,7 +242,23 @@ def step_ingest_odds() -> None:
 
 
 def step_build_market_anchors() -> None:
-    """Build market anchor features from odds snapshot."""
+    """Build market anchor features from the odds snapshot into silver. OUTPUT IS UNREAD.
+
+    REGISTERED NON-CRITICAL (WR-13). It was ``critical=True``, so a raise anywhere in
+    ``build_market_anchor_features`` aborted the ENTIRE Friday run -- including the prediction and
+    bet-list work that follows it. What it produces, silver ``market_anchor_features``, is read by
+    no production code (``AUTOMATION.md``): the gold build calls
+    ``MarketAnchorFeaturesCalculator.build_features`` directly at
+    ``scripts/build_features.py``, not this table. Killing a run that has already ingested odds
+    over a table nothing consumes is the wrong direction, so its failure now DEGRADES the run.
+
+    The method it calls is ``@deprecated`` and fires a ``DeprecationWarning`` on every scheduled
+    run. That warning is left in place deliberately: it is the honest signal that this step is on
+    the deprecated path, and silencing it would hide the thing a future author needs to see.
+
+    IF THIS STEP EVER GAINS A CONSUMER, revisit the criticality along with it -- a step whose
+    output feeds gold should fail loudly. See WR-01 for the parse this path used to use.
+    """
     from data.storage import load_dataframe, save_dataframe
     from features.market_anchors import MarketAnchorFeaturesCalculator
 
@@ -604,9 +620,12 @@ def build_step_registry() -> list[StepDefinition]:
             "build_market_anchors",
             step_build_market_anchors,
             PipelinePhase.PREDICTIONS,
-            critical=True,
+            # NON-CRITICAL (WR-13): its silver output is read by no production code, so a failure
+            # here must not abort the prediction and bet-list work that follows. See the step's
+            # own docstring for the full reasoning and for when to revisit this.
+            critical=False,
             retryable=False,
-            description="Build market anchor features",
+            description="Build market anchor features (silver output currently unread)",
         ),
         StepDefinition(
             "build_features",
