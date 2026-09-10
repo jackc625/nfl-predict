@@ -602,6 +602,14 @@ def test_the_this_week_page_still_targets_the_games_grid(
     assert "hx-request" not in markup, (
         "the shipped This Week page gained a request timeout it never asked for"
     )
+    # And NEITHER concurrency attribute (plan 31-24). Serialising the four controls on the swap
+    # target and disabling the one that is asking is a /bets decision the owner ruled on, made
+    # against a measured /bets defect; this page keeps htmx's shipped queueing behaviour, so a
+    # rapid second week change here still resolves rather than cancelling the first request.
+    for attribute in ("hx-sync", "hx-disabled-elt"):
+        assert attribute not in markup, (
+            f"the shipped This Week page gained {attribute}, which it never asked for"
+        )
 
 
 # ---------------------------------------------------------------------------

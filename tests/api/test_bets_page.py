@@ -25,7 +25,8 @@ honesty class, the provenance badge that labels them, and the /betting cross-lin
 
 Selectors (``-k``): served_equals_selector, served_order, tie_break, not_advice_banner,
 no_currency, nav_link, ev_band_badge, empty_week, taxonomy, reason_code, suppressed, disclosure,
-caption, moneyline, tracker, pushes, graded, return, provenance, badge, cross_link, timeout.
+caption, moneyline, tracker, pushes, graded, return, provenance, badge, cross_link, timeout,
+sync.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -1196,8 +1197,15 @@ def _bets_ws_timeout() -> int:
     return int(match.group(1))
 
 
-def _bets_selector_context(*, with_timeout: bool) -> dict[str, Any]:
-    """The parameters ``/bets`` passes the shared selector, for a direct render of the partial."""
+def _bets_selector_context(
+    *, with_timeout: bool, with_sync: bool = False
+) -> dict[str, Any]:
+    """The parameters ``/bets`` passes the shared selector, for a direct render of the partial.
+
+    Both opt-ins are separately switchable because each one's anti-vacuity control renders the
+    SAME context minus that one parameter: a shared "everything on" context could not distinguish
+    "the guard works" from "the render broke".
+    """
     context: dict[str, Any] = dict(PRE_PARAM_CONTEXT)
     context.update(
         {
@@ -1212,6 +1220,8 @@ def _bets_selector_context(*, with_timeout: bool) -> dict[str, Any]:
     )
     if with_timeout:
         context["ws_timeout"] = _bets_ws_timeout()
+    if with_sync:
+        context["ws_sync"] = True
     return context
 
 
@@ -1291,6 +1301,147 @@ def test_omitting_the_timeout_parameter_emits_no_request_configuration() -> None
     assert not _HX_REQUEST_RE.findall(markup)
     assert "hx-request" not in markup
     # The rest of the selector is unaffected: this is a guard on one attribute, not a kill switch.
+    for event in FAILURE_EVENTS:
+        assert event in markup
+
+
+# ---------------------------------------------------------------------------
+# The concurrency guard on the window the timeout BOUNDS (plan 31-24, owner-ruled)
+# ---------------------------------------------------------------------------
+#
+# The timeout above bounds how long a wedged request can lie. It does not stop the page lying
+# DURING that window, and the debug session measured exactly how (evidence E10, against a real
+# socket-level hung server): htmx's default for a second request from the same element is to QUEUE
+# it while leaving the element interactive, so selecting a second week issued NO request at all and
+# yet the control still moved -- the selector read "4" over Week 2's rows. Clicking Next Week, a
+# different element, wedged a SECOND request. Neither control was ever disabled and only a full
+# page reload recovered.
+#
+# Two attributes close that, and they are separate concerns: hx-disabled-elt stops the control that
+# is asking from being moved while its own request is in flight, and hx-sync makes a request from
+# any of the four REPLACE the in-flight one instead of queueing behind it, so a stale response
+# cannot land after a newer selection.
+#
+# WHY THE SYNC TARGET IS THE SWAP TARGET. The four controls sit at different nesting depths, so no
+# single ancestor selector covers all four; the swap target is the one element they are all
+# competing to replace, which is the thing that actually needs serialising; and it requires no
+# attribute on the selector's ROOT div, which ``week_selector_snapshot.SELECTOR_OPEN`` matches by
+# its exact opening tag and which would therefore break every existing selector assertion.
+#
+# MARKUP LEVEL ONLY, same boundary as the timeout cases. These prove the attributes are emitted.
+# They cannot prove htmx acted on them -- and the id-selector form of hx-sync is the one part of
+# this the debug session did not exercise live -- so the behavioural half is a named owner browser
+# check, not something these tests cover.
+
+_HX_SYNC_RE = re.compile(r'hx-sync="([^"]*)"')
+_HX_DISABLED_ELT_RE = re.compile(r'hx-disabled-elt="([^"]*)"')
+_HX_TARGET_RE = re.compile(r'hx-target="([^"]*)"')
+
+#: htmx 2.0.4's grammar is ``<selector>:<strategy>``; ``replace`` is the strategy that aborts the
+#: in-flight request and continues, rather than dropping the new one (``drop``, the default) or
+#: dropping itself (``abort``) or queueing (``queue``).
+_SYNC_STRATEGY = "replace"
+
+
+def test_the_request_sync_and_disable_reach_all_four_selector_controls() -> None:
+    """All FOUR controls serialise on the SAME element, and that element is the swap target.
+
+    Rendered DIRECTLY rather than read off the page, for the same reason the timeout case above
+    is: the ``/bets`` fixture supplies one season and puts the current week at the END of the
+    available list, so the season select is not rendered and the next button renders ``disabled``
+    -- two of the four controls emit no conditional attributes at all on that fixture, and a
+    page-level assertion would silently check two while claiming four.
+
+    The sync target is read OUT OF THE SAME RENDER rather than hardcoded, so a page that retargets
+    the selector cannot leave the serialisation pointing at an element it no longer swaps.
+    """
+    markup = _render_selector(_bets_selector_context(with_timeout=True, with_sync=True))
+
+    sync_values = _HX_SYNC_RE.findall(markup)
+    disable_values = _HX_DISABLED_ELT_RE.findall(markup)
+
+    assert len(sync_values) == 4, (
+        f"expected request synchronisation on all four controls, found "
+        f"{len(sync_values)}: {sync_values}"
+    )
+    assert len(disable_values) == 4, (
+        f"expected a disable directive on all four controls, found "
+        f"{len(disable_values)}: {disable_values}"
+    )
+
+    assert len(set(sync_values)) == 1, (
+        "the four controls serialise on DIFFERENT elements, so they do not serialise with each "
+        f"other at all: {sorted(set(sync_values))}"
+    )
+    assert set(disable_values) == {"this"}, (
+        f"a control disables something other than itself: {sorted(set(disable_values))}"
+    )
+
+    targets = set(_HX_TARGET_RE.findall(markup))
+    assert len(targets) == 1, (
+        f"the render swaps more than one target, so 'the' swap target is ambiguous: {targets}"
+    )
+    swap_target = targets.pop()
+
+    selector, _, strategy = sync_values[0].rpartition(":")
+    assert selector == swap_target, (
+        f"the controls serialise on {selector!r} but swap {swap_target!r}; a retargeted selector "
+        "would leave the serialisation pointing at a stale element"
+    )
+    assert strategy == _SYNC_STRATEGY, (
+        f"expected the {_SYNC_STRATEGY!r} strategy, which aborts the in-flight request and "
+        f"continues; found {strategy!r}"
+    )
+
+
+def test_the_live_bets_page_passes_the_selector_the_sync_opt_in(
+    bets_client: TestClient,
+) -> None:
+    """The WIRING check: the partial having the capability proves nothing if the page withholds it.
+
+    "At least one" rather than four here, deliberately -- on the ``/bets`` fixture two of the four
+    controls are absent or disabled and emit no conditional attributes at all. The four-control
+    claim is made by the direct-render case above, which controls the fixture shape.
+    """
+    markup = extract_selector(
+        bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    )
+
+    sync_values = _HX_SYNC_RE.findall(markup)
+    disable_values = _HX_DISABLED_ELT_RE.findall(markup)
+
+    assert sync_values, (
+        "the served /bets selector serialises nothing, so a second interaction during a wedged "
+        "request still queues behind it and the control still moves (E10)"
+    )
+    assert disable_values, (
+        "the served /bets selector disables nothing, so the control that issued the in-flight "
+        "request can still be moved to a week the content does not describe (E10)"
+    )
+    for value in sync_values:
+        assert value.endswith(f":{_SYNC_STRATEGY}"), (
+            f"the served selector does not use the {_SYNC_STRATEGY!r} strategy: {value}"
+        )
+    assert set(disable_values) == {"this"}
+
+
+def test_omitting_the_sync_parameter_emits_neither_concurrency_attribute() -> None:
+    """The anti-vacuity control for the default: no parameter, neither attribute.
+
+    This is the assertion that catches someone "simplifying" the ``{% if %}`` guard away. Without
+    it the six pages that pass no failure template would silently acquire request cancellation and
+    control disabling that nobody on those pages asked for, and the two recorded This Week
+    snapshots would be the only thing standing between that change and the shipped page.
+    """
+    markup = _render_selector(
+        _bets_selector_context(with_timeout=True, with_sync=False)
+    )
+    assert not _HX_SYNC_RE.findall(markup)
+    assert not _HX_DISABLED_ELT_RE.findall(markup)
+    assert "hx-sync" not in markup
+    assert "hx-disabled-elt" not in markup
+    # The rest of the selector is unaffected: this is a guard on two attributes, not a kill switch.
+    assert _HX_REQUEST_RE.findall(markup)
     for event in FAILURE_EVENTS:
         assert event in markup
 
