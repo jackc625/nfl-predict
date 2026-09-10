@@ -6,6 +6,12 @@ Provides:
 - ``DB_PATH`` constant pointing at the DuckDB web cache
 - ``cache_identity()`` -- the on-disk identity of the cache file, so a reader can
   tell that the file underneath its open handle has been REPLACED
+- ``cache_file_changed()`` -- the swap DETECTOR, comparing the identity recorded
+  when the shared connection was opened against what is at ``DB_PATH`` now.
+  PUBLIC for the same reason ``cache_identity`` is: there are TWO readers of the
+  shared connection (this module's ``get_db`` and ``api.routes.health``), and a
+  second definition would let one of them disagree with the other about whether
+  the cache had been swapped
 - ``get_db()`` FastAPI dependency that returns the shared read-only DuckDB
   connection from ``app.state.db_conn``, reconnecting under
   ``app.state.db_lock`` if the current connection is dead, missing, or pointed at
@@ -87,11 +93,24 @@ def cache_identity(path: Path) -> CacheIdentity | None:
     )
 
 
-def _cache_file_changed(request: Request) -> bool:
+def cache_file_changed(request: Request) -> bool:
     """Return whether the cache file has been REPLACED since the connection was opened.
 
     Compares the identity recorded on ``app.state.db_identity`` when the current
     connection was opened against the identity of whatever is at :data:`DB_PATH` now.
+
+    PUBLIC on purpose, for the same reason :func:`cache_identity` is. There are TWO
+    readers of ``app.state.db_conn``, not one: :func:`get_db` and
+    ``api.routes.health._read_last_updated``, which deliberately bypasses this
+    module's dependency so ``/health`` can never 503. Both must reach the same
+    verdict about whether the shared handle is still pointed at the file on disk --
+    a second, privately-defined comparison in the health route is exactly the
+    duplicated-definition drift that would let ``/health`` report freshness the
+    pages know is stale. The comparison is deliberately made against THIS module's
+    :data:`DB_PATH`, because that is the path the recorded identity was read from;
+    comparing against any other path would compare two different frames of
+    reference.
+
     ``True`` only when BOTH identities exist and differ. Both absences return
     ``False`` -- meaning "do not reconnect" -- and each has its own reason:
 
@@ -259,7 +278,7 @@ def _reconnect_under_lock(request: Request) -> duckdb.DuckDBPyConnection:
         # load-bearing rather than tidy. A swap landing inside the connect window
         # leaves this connection holding the OLD file. Re-stat'ing after the connect
         # would then record the NEW file's identity against a handle pointed at the
-        # old one, so ``_cache_file_changed`` would compare EQUAL on every
+        # old one, so ``cache_file_changed`` would compare EQUAL on every
         # subsequent request and the detector would be permanently blind -- exactly
         # the G-31-123a defect this module exists to remove, restored one line
         # before the end of the fix. Reusing the pre-connect observation instead
@@ -301,7 +320,7 @@ def get_db(request: Request) -> duckdb.DuckDBPyConnection:
     # has been unlinked answers ``SELECT 1`` forever. A probe-first order would
     # return the stale connection here and never reach the comparison in the one
     # situation the comparison exists for.
-    if _cache_file_changed(request):
+    if cache_file_changed(request):
         logger.warning(
             "DuckDB cache file replaced on disk, reconnecting under lock",
             path=str(DB_PATH),

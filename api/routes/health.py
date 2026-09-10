@@ -23,7 +23,8 @@ from pathlib import Path
 import duckdb
 from fastapi import APIRouter, Request
 
-from api.dependencies import DB_PATH
+from api.dependencies import DB_PATH, cache_file_changed, get_db
+from api.exceptions import NFLPredictionAPIException
 from api.schemas import (
     DataFreshnessResponse,
     HealthResponse,
@@ -214,13 +215,54 @@ def _read_last_updated(request: Request) -> datetime | None:
     the ``execute`` call, raising ``duckdb.Error`` and causing this endpoint
     to silently report ``last_updated=None`` even though the cache is healthy.
 
-    Falls back to opening a short-lived read-only connection only when the
-    shared lifespan handle is unavailable (e.g. tests that bypass lifespan or
-    a transient startup failure). The fallback path does not need the lock
-    because the connection is local to this call.
+    Falls back to opening a short-lived read-only connection when the shared
+    lifespan handle is unavailable (e.g. tests that bypass lifespan or a
+    transient startup failure). The fallback path does not need the lock because
+    the connection is local to this call.
+
+    THE SWAP CHECK IS WHY THIS ENDPOINT CAN BE TRUSTED AFTER A REBUILD (WR-02).
+    ``/bets`` and every other page reach the cache through
+    ``api.dependencies.get_db``, which reconnects when the file underneath the
+    shared handle has been REPLACED. This function deliberately does NOT route
+    through that dependency -- it must never 503 -- and so, until it consulted the
+    same detector, it was the ONE reader that stayed blind to the swap: a
+    ``populate_cache`` run would leave ``/health`` reporting the ``last_updated``
+    of the DELETED pre-swap file until some unrelated request happened to hit a
+    ``get_db``-backed route and trigger the reconnect. That is not a cosmetic
+    lag. RUNBOOK.md operation 7 and PIPELINE.md stage 8 both send the operator
+    HERE to confirm a rebuild took effect, so a pre-swap timestamp reads as "the
+    population did not work" and invites them to run it again.
+
+    WHY A DETECTED SWAP DELEGATES TO ``get_db`` RATHER THAN OPENING ITS OWN
+    HANDLE. Reading the post-swap file from a short-lived connection of our own
+    was tried first and DOES NOT WORK: DuckDB caches the database instance BY
+    PATH within a process, so while the stale shared handle is still open, a
+    fresh ``duckdb.connect`` on the same path hands back that same stale instance
+    and this endpoint would keep reporting the pre-swap timestamp with more
+    machinery behind it. The close-before-connect inside
+    ``_reconnect_under_lock`` is the only thing that actually clears the instance
+    (proven live in ``.planning/debug/bets-stale-cache-recovery-noop.md``,
+    E1(D)/E4 ALT-3), so the repair has to be the same repair the pages get.
+
+    That delegation is GUARDED, not unconditional, so this endpoint's contract is
+    unchanged in every state except the one it was lying in.
+    :func:`api.dependencies.cache_file_changed` can only return True when an
+    identity was RECORDED, which only the two openers do -- so a caller that
+    bypasses the lifespan never reaches ``get_db`` from here, and neither does
+    the writer's unlink-to-rename window (no on-disk identity, so the detector
+    returns False and the already-open handle keeps answering). Every failure
+    ``get_db`` can raise, ``ModelUnavailableError`` included, is caught and
+    degraded to the pre-existing behaviour: ``/health`` reports rather than
+    raises.
     """
     lock = getattr(request.app.state, "db_lock", None)
     shared_conn = getattr(request.app.state, "db_conn", None)
+
+    if shared_conn is not None and cache_file_changed(request):
+        try:
+            shared_conn = get_db(request)
+        except (NFLPredictionAPIException, duckdb.Error, OSError):
+            shared_conn = getattr(request.app.state, "db_conn", None)
 
     row: tuple | None = None
     try:

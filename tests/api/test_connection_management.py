@@ -59,7 +59,7 @@ def _make_request_with_state(
 
     ``db_identity`` MUST be set explicitly here rather than left to the MagicMock
     (plan 31-20). An unset attribute on a MagicMock auto-creates a truthy child
-    mock, which ``api.dependencies._cache_file_changed`` would read as a RECORDED
+    mock, which ``api.dependencies.cache_file_changed`` would read as a RECORDED
     identity that mismatches every real on-disk identity -- making every healthy
     connection look swapped and every double-check look stale. That is a property
     of the mock, not of the code under test.

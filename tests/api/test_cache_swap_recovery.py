@@ -19,7 +19,7 @@ real ``api/main.py`` lifespan opens the connection and records its identity and 
 ``get_db`` decides, per request, whether that connection is still pointed at the file on disk.
 
 Selectors (``-k``): swap_recovery, unchanged, closed_before, absent_path, records_identity,
-connect_window
+connect_window, health
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -38,6 +38,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api.dependencies as deps
+import api.routes.health as health_module
 from api.cache import (
     BET_LIST_COLUMNS,
     CACHE_SCHEMA,
@@ -73,6 +74,13 @@ _OLD_POPULATED_AT = "2023-09-08T22:30:00+00:00"
 # STRICTLY AFTER the freeze: the recovery ran and recorded a success. This is the value the
 # post-swap page must render.
 _NEW_POPULATED_AT = "2023-09-09T01:15:00+00:00"
+
+# ``cache_meta.last_updated``, which is the ONE cache value ``/health`` reports. Distinct per
+# build, because two builds carrying the same value could not tell the endpoint's two possible
+# answers apart. NAIVE, matching what ``api.cache.populate_cache`` writes and what the health
+# schema round-trips.
+_OLD_LAST_UPDATED = "2023-09-08T22:30:00"
+_NEW_LAST_UPDATED = "2023-09-09T01:15:00"
 
 _HARD_BLOCK_MESSAGE = "This week&#39;s list is withheld -- the cache is older than this week&#39;s line freeze"
 # The live row table's stake column header -- present only when the list is actually served.
@@ -114,8 +122,14 @@ def _live_row() -> dict[str, Any]:
     return row
 
 
-def _build_cache(db_path: Path, *, populated_at: str) -> None:
+def _build_cache(
+    db_path: Path, *, populated_at: str, last_updated: str | None = None
+) -> None:
     """Build a complete one-week cache at *db_path*, stamped with *populated_at*.
+
+    *last_updated* stamps ``cache_meta.last_updated``, the ONE value ``/health`` reports and the
+    only thing that distinguishes two builds from that endpoint's point of view. It defaults to
+    the fixed builder instant, so the cases that only care about ``/bets`` are unaffected.
 
     Written with the PUBLIC ``api.cache`` writers, so the fixture is the shape production
     writes rather than a hand-rolled approximation of it. The connection is CLOSED before
@@ -145,7 +159,13 @@ def _build_cache(db_path: Path, *, populated_at: str) -> None:
             "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
             [
                 [bet_list_populated_at_key(_SEASON, _WEEK), populated_at, stamped_at],
-                ["last_updated", stamped_at.isoformat(), stamped_at],
+                [
+                    "last_updated",
+                    last_updated
+                    if last_updated is not None
+                    else stamped_at.isoformat(),
+                    stamped_at,
+                ],
             ],
         )
     finally:
@@ -166,6 +186,8 @@ def swap_client(
       detector would never be consulted.
     * ``api.dependencies.DB_PATH`` is patched. ``api/main.py`` reads ``deps.DB_PATH`` and
       ``api/dependencies.py`` reads its own module global, so this one patch covers BOTH openers.
+      ``api.routes.health.DB_PATH`` is patched alongside it, because ``/health`` binds that name
+      at import and is the SECOND reader of the shared connection (WR-02).
     * The client is entered as a CONTEXT MANAGER, which is what runs the lifespan. The bare
       constructor does not, and without the lifespan no identity is ever recorded.
 
@@ -173,9 +195,12 @@ def swap_client(
     two connection fields are reset in teardown.
     """
     db_path = tmp_path / "web_cache.duckdb"
-    _build_cache(db_path, populated_at=_OLD_POPULATED_AT)
+    _build_cache(
+        db_path, populated_at=_OLD_POPULATED_AT, last_updated=_OLD_LAST_UPDATED
+    )
 
     monkeypatch.setattr(deps, "DB_PATH", db_path)
+    monkeypatch.setattr(health_module, "DB_PATH", db_path)
     app.dependency_overrides.clear()
     app.state.db_lock = threading.RLock()
     clear_cache()
@@ -200,6 +225,13 @@ def _bets(client: TestClient) -> str:
     response = client.get(f"/bets?season={_SEASON}&week={_WEEK}")
     assert response.status_code == 200, response.text
     return response.text
+
+
+def _health_last_updated(client: TestClient) -> str | None:
+    """``/health``'s reported ``last_updated``, which is what the RUNBOOK sends an operator to."""
+    response = client.get("/health")
+    assert response.status_code == 200, response.text
+    return response.json()["last_updated"]
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +376,7 @@ def test_the_startup_connection_records_an_identity(
     """The lifespan records the identity of the file it opened.
 
     The anti-vacuity control. A lifespan that stopped recording the identity would leave
-    ``_cache_file_changed`` with nothing to compare against -- it returns False on an absent
+    ``cache_file_changed`` with nothing to compare against -- it returns False on an absent
     recorded identity by design -- and every other case in this module would still pass while
     the detector was permanently switched off.
     """
@@ -396,7 +428,7 @@ def test_a_swap_inside_the_reconnect_connect_window_is_still_detected(
     five pass under an implementation that records the identity by re-stat'ing the path AFTER
     ``duckdb.connect``. Under that ordering a swap landing inside the connect window leaves the
     handle on the OLD file and the RECORDED identity describing the NEW one, so
-    ``_cache_file_changed`` compares EQUAL on every subsequent request and only a process restart
+    ``cache_file_changed`` compares EQUAL on every subsequent request and only a process restart
     ever clears it -- the exact G-31-123a symptom plan 31-20 exists to remove, reinstated by the
     plan's own last statement.
 
@@ -515,3 +547,82 @@ def test_a_swap_inside_the_lifespan_connect_window_is_still_detected(
         "blind: the first request served the pre-swap file and did not reconnect"
     )
     assert _NEW_POPULATED_AT in body
+
+
+# ---------------------------------------------------------------------------
+# The SECOND reader of the shared connection (WR-02)
+# ---------------------------------------------------------------------------
+
+
+def test_health_reports_post_swap_freshness_without_any_page_request(
+    swap_client: TestClient, tmp_path: Path
+) -> None:
+    """``/health`` must not keep reporting the DELETED pre-swap file's ``last_updated``.
+
+    THE SECOND READER. ``/health`` reads ``app.state.db_conn`` directly and deliberately
+    bypasses ``get_db`` so it can never 503 -- which meant plan 31-20 fixed the page reader and
+    left the OPERATIONAL reader blind. RUNBOOK.md operation 7 and PIPELINE.md stage 8 both send
+    the operator to this endpoint to confirm a rebuild took effect, so a pre-swap timestamp here
+    reads as "the population did not work" and invites them to run it again.
+
+    NO ``/bets`` REQUEST IS MADE AFTER THE SWAP, and that omission is the whole test. Any
+    ``get_db``-backed request would reconnect ``app.state`` as a side effect and repair
+    ``/health`` for free, which is exactly how the defect stayed invisible: it only shows up
+    when ``/health`` is the FIRST thing touched after the population, which is what an operator
+    following the runbook actually does.
+    """
+    db_path = tmp_path / "web_cache.duckdb"
+
+    assert _health_last_updated(swap_client) == _OLD_LAST_UPDATED, (
+        "the fixture did not reach the pre-swap state, so the swap below would prove nothing"
+    )
+
+    new_path = tmp_path / "web_cache.duckdb.tmp"
+    _build_cache(
+        new_path, populated_at=_NEW_POPULATED_AT, last_updated=_NEW_LAST_UPDATED
+    )
+    _swap_in(new_path, db_path)
+
+    assert _health_last_updated(swap_client) == _NEW_LAST_UPDATED, (
+        "/health is still reporting the last_updated of the file that was DELETED from under "
+        "it, so the endpoint the runbook points an operator at after a rebuild tells them the "
+        "rebuild did not happen"
+    )
+
+
+def test_health_does_not_tear_down_its_connection_in_the_swap_window(
+    swap_client: TestClient, tmp_path: Path
+) -> None:
+    """The anti-regression control: the writer's unlink-to-rename instant must stay non-fatal.
+
+    A freshness check that reconnected whenever it could not CONFIRM freshness would fire during
+    every population run's unlink-to-rename window and make ``/health`` own connection teardown
+    on a routine event. ``cache_file_changed`` returns False on an absent on-disk identity for
+    exactly that reason, so nothing is torn down and the endpoint still answers 200.
+
+    ``last_updated`` is deliberately NOT asserted here: ``/health`` gates the whole read on
+    ``DB_PATH.exists()``, so an absent path reports ``cache_ready: false`` and a null timestamp.
+    That is pre-existing, correct, and orthogonal -- the claim under test is that the connection
+    survives.
+    """
+    db_path = tmp_path / "web_cache.duckdb"
+    assert _health_last_updated(swap_client) == _OLD_LAST_UPDATED
+    before = app.state.db_conn
+    assert before is not None
+
+    aside = tmp_path / "web_cache.duckdb.aside"
+    db_path.rename(aside)
+    try:
+        response = swap_client.get("/health")
+        assert response.status_code == 200, response.text
+        assert response.json()["cache_ready"] is False
+        assert app.state.db_conn is before, (
+            "/health tore down a working connection during the writer's unlink-to-rename "
+            "window, turning a routine part of every population run into a teardown"
+        )
+    finally:
+        aside.rename(db_path)
+
+    assert _health_last_updated(swap_client) == _OLD_LAST_UPDATED, (
+        "the same file came back at the same path and /health no longer reads it"
+    )

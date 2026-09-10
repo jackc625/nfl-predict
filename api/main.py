@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
             # database at process boot, which is exactly the window a Friday
             # orchestrator population overlapping a service restart lands in. A stat
             # taken after the connect would record the identity of the POST-swap file
-            # against a handle holding the PRE-swap one, and ``_cache_file_changed``
+            # against a handle holding the PRE-swap one, and ``cache_file_changed``
             # would then compare equal forever. Reading first records a STALE identity
             # instead, which the first request corrects with one spurious reconnect.
             pre_connect_identity = deps.cache_identity(deps.DB_PATH)
