@@ -1369,6 +1369,24 @@ def test_the_request_sync_and_disable_reach_all_four_selector_controls() -> None
         f"{len(disable_values)}: {disable_values}"
     )
 
+    # THE COUPLING (WR-06). The two attributes are not merely both nice to have: hx-disabled-elt
+    # ALONE is a defect. htmx's shouldInclude drops a disabled element from a sibling's
+    # hx-include, and the week select on /bets includes [name='season'] -- so a disabled season
+    # select would have its value dropped and /bets would be called with a week and no season,
+    # falling back to a default season and serving a different season's week N under the
+    # displayed one. Silent wrong data. What prevents it is the SYNC half: the abort it fires
+    # runs removeRequestIndicators (which clears `disabled`) synchronously, BEFORE
+    # getInputValues gathers the new request's values. Asserted as an equality, and not only as
+    # two counts of four, so the claim being defended is stated where it can be read: whatever
+    # the number of controls becomes, neither attribute may be emitted without the other.
+    assert len(sync_values) == len(disable_values), (
+        f"{len(sync_values)} control(s) carry hx-sync but {len(disable_values)} carry "
+        "hx-disabled-elt. These MUST be emitted together: a control that disables itself "
+        "without the synchronisation that re-enables it on abort can have its value dropped "
+        "from a sibling's hx-include, and /bets would then serve a different season's week "
+        "under the displayed season. See the ws_sync header block in _week_selector.html."
+    )
+
     assert len(set(sync_values)) == 1, (
         "the four controls serialise on DIFFERENT elements, so they do not serialise with each "
         f"other at all: {sorted(set(sync_values))}"

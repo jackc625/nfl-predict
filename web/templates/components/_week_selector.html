@@ -88,6 +88,29 @@
                              proceeds, instead of queueing behind it. This is also what stops a
                              stale response landing after a newer selection.
 
+   THE TWO ATTRIBUTES MUST BE EMITTED TOGETHER. This is a real coupling, not a tidy pairing, and
+   nothing recorded it before (WR-06). The safety argument above -- getInputValues precedes
+   disableElements -- covers only the control ISSUING the request. It does NOT cover a SIBLING's
+   request: htmx's shouldInclude drops any element whose `disabled` is set, and the week select on
+   /bets carries hx-include="[name='season']", so while the season select is disabled by its own
+   in-flight request its value would be dropped from the week select's request. /bets would then
+   be called with a week and NO season, fall back to a default season, and serve a different
+   season's week N under the displayed season -- silent wrong data, strictly worse than the
+   queueing defect being fixed.
+
+   The ONLY thing preventing that is the sync half. hx-sync fires htmx:abort on the sync element,
+   the delegated body listener calls xhr.abort(), XHR abort() dispatches its abort event
+   SYNCHRONOUSLY, and xhr.onabort runs removeRequestIndicators(indicators, disableElts) -- which
+   removes the `disabled` attribute -- and all of that completes BEFORE getInputValues runs for
+   the new request. So the season select is re-enabled a few statements before its value is
+   gathered. Verified against the pinned htmx 2.0.4 dist that base.html loads.
+
+   Consequences, both of which a future author needs: (1) hx-disabled-elt alone is a DEFECT here,
+   so do not "simplify" this block by dropping the sync half; (2) a FIFTH control added under this
+   guard must carry both. tests/api/test_bets_page.py's
+   test_the_request_sync_and_disable_reach_all_four_selector_controls asserts the two counts are
+   EQUAL as well as four, so emitting one without the other fails rather than ships.
+
    THE SYNC TARGET IS THE SWAP TARGET, deliberately, and this is the one design choice here worth
    spelling out. The four controls sit at DIFFERENT nesting depths -- the season select in its own
    wrapper, the week select between the two buttons in another -- so no single ancestor selector
