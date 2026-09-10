@@ -886,7 +886,15 @@ def preserve_stored_lines(
         stored_values = pd.Series(
             lookup[column].reindex(keys).to_numpy(), index=result.index
         )
-        result.loc[matched, column] = stored_values[matched]
+        # ONLY WHERE THE STORED VALUE IS PRESENT (WR-14). Clause 2's intent is that a stored line
+        # is never OVERWRITTEN; copying the stored cell unconditionally also overwrote a real
+        # incoming line with a stored NULL. Rows carrying a null moneyline exist by construction --
+        # ``transform_nfl_odds_with_counts`` writes ``ml_home = None`` when the source is null --
+        # so a stored 2019 row with no moneyline would erase the ``-150`` a later nflverse pull
+        # supplied, and "never overwritten" would become "never improved, and sometimes
+        # destroyed".
+        take = matched & stored_values.notna()
+        result.loc[take, column] = stored_values[take]
 
     return result, n_matched
 

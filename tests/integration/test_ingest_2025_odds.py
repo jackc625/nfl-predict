@@ -940,6 +940,78 @@ class TestTheAdditiveJuiceColumns:
             )
 
 
+class TestAStoredNullNeverErasesARealIncomingLine:
+    """WR-14: clause 2 says a stored line is never OVERWRITTEN, not that a null wins.
+
+    ``preserve_stored_lines`` copied the stored value onto every MATCHED key unconditionally,
+    including when the stored value was NaN. ``PROTECTED_LINE_COLUMNS`` is
+    ``(spread, total, ml_home, ml_away)`` and rows carrying a null moneyline exist BY
+    CONSTRUCTION -- ``transform_nfl_odds_with_counts`` writes ``ml_home = None`` when the source is
+    null. So a stored 2019 row with no moneyline erased the ``-150`` a later nflverse pull
+    supplied, and "never overwritten" became "never improved, and sometimes destroyed".
+
+    These run entirely on frames built in the test. Nothing under ``data/`` is read or written.
+    """
+
+    @staticmethod
+    def _stored(**overrides: object) -> pd.DataFrame:
+        row = {
+            "game_id": "2019_W01_AAA@BBB",
+            "sportsbook": "consensus",
+            "spread": -3.0,
+            "total": 44.5,
+            "ml_home": None,
+            "ml_away": None,
+        }
+        row.update(overrides)
+        return pd.DataFrame([row])
+
+    @staticmethod
+    def _incoming(**overrides: object) -> pd.DataFrame:
+        row = {
+            "game_id": "2019_W01_AAA@BBB",
+            "sportsbook": "consensus",
+            "spread": -7.5,
+            "total": 51.0,
+            "ml_home": -150.0,
+            "ml_away": 130.0,
+        }
+        row.update(overrides)
+        return pd.DataFrame([row])
+
+    def test_a_stored_null_moneyline_does_not_erase_the_incoming_one(self) -> None:
+        from scripts.ingest_historical_odds import preserve_stored_lines
+
+        result, n_matched = preserve_stored_lines(self._incoming(), self._stored())
+
+        assert n_matched == 1, "the fixture did not match, so nothing is being asserted"
+        assert result.iloc[0]["ml_home"] == pytest.approx(-150.0), (
+            "the stored NULL moneyline overwrote the real incoming -150; the row would be "
+            "written back with its moneyline erased"
+        )
+        assert result.iloc[0]["ml_away"] == pytest.approx(130.0)
+
+    def test_a_stored_line_that_IS_present_still_wins(self) -> None:
+        """The control. Clause 2's actual guarantee must survive the fix."""
+        from scripts.ingest_historical_odds import preserve_stored_lines
+
+        result, _ = preserve_stored_lines(self._incoming(), self._stored())
+
+        assert result.iloc[0]["spread"] == pytest.approx(-3.0), (
+            "the stored spread was overwritten by the incoming one -- clause 2 broken in the "
+            "direction it was actually written to prevent"
+        )
+        assert result.iloc[0]["total"] == pytest.approx(44.5)
+
+    def test_a_stored_zero_is_a_value_and_still_wins(self) -> None:
+        """0.0 is a real pick-em line, not an absence. ``notna`` distinguishes them; falsiness does not."""
+        from scripts.ingest_historical_odds import preserve_stored_lines
+
+        result, _ = preserve_stored_lines(self._incoming(), self._stored(spread=0.0))
+
+        assert result.iloc[0]["spread"] == pytest.approx(0.0)
+
+
 class TestThePerGameSnapshotInstant:
     """Write-contract clause 3: every row carries its OWN preceding-Friday freeze (D31-37)."""
 
