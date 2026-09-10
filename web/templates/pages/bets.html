@@ -48,6 +48,27 @@
 {# is deliberately not tighter: the failure state REPLACES the whole target  #}
 {# and its only retry is a full navigation, so the cost of giving up early   #}
 {# on a request that would have arrived is higher than the cost of waiting.  #}
+{#                                                                          #}
+{# ws_sync=true closes the SECOND defect the timeout diagnosis exposed but   #}
+{# did not cause (E10): while a request is in flight htmx QUEUES a second    #}
+{# one from the same element and leaves the element interactive, so the      #}
+{# selector could be moved to a week the content does not describe -- the    #}
+{# mismatch widened with every further interaction and only a full page      #}
+{# reload recovered. The timeout above bounds how LONG that window lasts;    #}
+{# this stops the page lying DURING it. It emits hx-disabled-elt on the      #}
+{# control that is asking and hx-sync on the swap target with the replace    #}
+{# strategy, so a request from any of the four aborts the in-flight one      #}
+{# instead of queueing behind it.                                            #}
+{#                                                                          #}
+{# OWNER-RULED 2026-09-10 (plan 31-24 Task 1, option "ship"): ship both      #}
+{# halves. The debugger flagged this as a separate decision and declined to  #}
+{# bundle it, so it was ruled on rather than absorbed. The accepted cost is  #}
+{# on the happy path -- a rapid second week change now cancels the first     #}
+{# request rather than queueing it -- which is safe here only because every  #}
+{# htmx endpoint this app serves answers in under 40 ms (E11), so the        #}
+{# cancelled request had almost certainly already completed. /bets is the    #}
+{# ONLY page that opts in; the parameter defaults to omitted and the six     #}
+{# other pages keep htmx's shipped queueing behaviour.                       #}
 {# ------------------------------------------------------------------------ #}
 <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
   {% with available_weeks=available_bet_weeks,
@@ -59,7 +80,8 @@
           ws_extra_params={},
           ws_indicator="#bets-loading",
           ws_failure_template="bets-failure-template",
-          ws_timeout=10000 %}
+          ws_timeout=10000,
+          ws_sync=true %}
     {% include "components/_week_selector.html" %}
   {% endwith %}
 </div>
