@@ -184,6 +184,27 @@ uv run python scripts/generate_current_week_predictions.py --season <YEAR> --wee
 - **Produces:** `outputs/predictions/predictions_<YEAR>_week<WEEK>.csv` and `.json`,
   plus `outputs/predictions/game_context_<YEAR>_week<WEEK>.csv`.
 
+#### 6a. Sub-step: generate the weekly bet list
+
+The `/bets` page serves a ranked +EV bet list. Its rows come from a durable artifact that
+must be produced BEFORE the cache is built. This is a sub-step of Predict rather than a
+stage of its own: it consumes the same week's model output and produces a recommendation
+artifact, so it belongs to the predict boundary, and the canonical sequence stays at eight
+stages.
+
+```powershell
+uv run python scripts/generate_bet_list.py --season <YEAR> --week <WEEK>
+```
+
+- **Live entry point:** `scripts/generate_bet_list.py` -> `backtest.weekly_bet_list.generate_weekly_bet_list`.
+  Omit `--season`/`--week` and it resolves the current NFL week -- the same resolver the
+  Friday orchestrator's `generate_recommendations` step uses. Supply them TOGETHER or not
+  at all.
+- **Produces:** `outputs/bet_list/bet_list.parquet` and `outputs/bet_list/bet_tracker.json`.
+- **This is the SOLE producer of the directory the next stage reads.** Nothing else writes
+  it: before this script existed the only producer was step 15 of the Friday orchestrator,
+  with no command an operator could run.
+
 ### 7. Build cache
 
 Build the read-only DuckDB web cache the API serves from. This stage sits **between
@@ -196,6 +217,14 @@ uv run python scripts/populate_cache.py
 
 - **Live entry point:** `scripts/populate_cache.py` -> `api.cache.populate_cache`.
 - **Produces:** `data/web_cache.duckdb` (~6 MB; the only data source the API reads).
+- **PRECONDITION: run sub-step 6a first.** For the bet list this stage is a pure COPY step
+  over `outputs/bet_list/`. Skipping 6a does NOT make it fail: the population still exits 0
+  and still writes the schedule-derived navigation and per-game freeze tables, but the
+  `bet_list` table is created EMPTY with no per-week populated-at marker -- and a freeze
+  present beside an absent marker is exactly the condition `/bets` treats as stale, so the
+  page then REFUSES the current week. Following this document top to bottom without 6a
+  reaches a served site with a refused `/bets`, and nothing in the population output says
+  why.
 
 ### 8. Serve
 

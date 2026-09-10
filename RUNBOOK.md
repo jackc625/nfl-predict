@@ -314,9 +314,16 @@ uv run python scripts/populate_cache.py
   the API reads.
 - **This is also what populates `/bets` (Phase 31).** The same run materializes the weekly
   bet-list rows and the precomputed realized-vs-expected tracker blocks from
-  `outputs/bet_list/`. `/bets` computes nothing on the request path, so a week whose bet-list
-  blob is missing or stale is HARD-BLOCKED by the page rather than served from a partial
-  cache -- and the refusal message names this exact command as the recovery path.
+  `outputs/bet_list/` -- a directory that operation 12 below is the sole producer of. For the
+  bet list this operation is a pure COPY step, so run operation 12 FIRST. `/bets` computes
+  nothing on the request path, so a week whose bet-list blob is missing or stale is
+  HARD-BLOCKED by the page rather than served from a partial cache -- and the refusal message
+  names both commands, in order, as the recovery path.
+- **Skipping operation 12 does not make this operation fail.** It still exits 0 and still
+  writes the schedule-derived navigation and per-game freeze tables, but the `bet_list` table
+  is created EMPTY with no per-week populated-at marker, and a freeze present beside an absent
+  marker is exactly the condition `/bets` treats as stale -- so the page REFUSES the current
+  week. The log line to look for is the warning naming `scripts/generate_bet_list.py`.
 - **SAFE:** a downstream DATA refresh from gold + backtest outputs; NOT a re-fit. The file is
   gitignored, so the refresh mutates only a gitignored file.
 - **Verification basis:** verified live 2026-05-31 (exit 0 this session; refreshed the
@@ -476,6 +483,43 @@ uv run python scripts/fingerprint_gold.py --compare outputs/fingerprints/before.
   four rungs plus a reproduction re-run, each judged by exit code; gold moved from 209/210/209
   at 6,263 rows to 194/195/194 at 6,499 rows. The per-rung causes, timestamps, verdicts and
   the reproduction result are in `GATED-REFIT-READOUT.md`. Not re-run here.
+
+### 12. Generate the weekly bet list
+
+Produce the durable artifacts the `/bets` page ultimately serves. This is STAGE ONE OF TWO:
+operation 7 above copies these artifacts into the web cache, and from a cold start it cannot
+do anything useful until they exist. Appended as operation 12 rather than inserted next to
+operation 7 so the eleven existing heading anchors do not renumber (the Phase-30 precedent).
+
+```powershell
+uv run python scripts/generate_bet_list.py --season <YEAR> --week <WEEK>
+```
+
+Omit `--season`/`--week` and it resolves the current NFL week using the same resolver the
+Friday orchestrator step uses. Supply them TOGETHER or not at all -- one alone would pair an
+explicit value with a resolved one and select a week nobody asked for, which the command
+refuses by name.
+
+- **Succeeded when:** exit 0 and BOTH files are written --
+  `outputs/bet_list/bet_list.parquet` and `outputs/bet_list/bet_tracker.json`. The pair is
+  indivisible: the parquet feeds the ranked list and the JSON feeds the realized-vs-expected
+  tracker, and a run that produced only the parquet would leave the tracker permanently empty
+  while the page still looked correct. The closing log line names both paths.
+- **Then run operation 7.** Generation alone does not change the served page: `/bets` reads
+  the DuckDB cache, never these files. The running server picks a rebuilt cache up on the
+  next request, so no restart is needed.
+- **SAFE:** writes ONLY under `outputs/bet_list/` (or `--output-dir`). It re-fits nothing,
+  promotes nothing and touches no model artifact -- it reads the deployed artifacts through
+  `artifacts/latest.json` and the pre-registered tune-only fit, and refuses loudly if either
+  is absent rather than defaulting a threshold nobody swept for. No replay mode is exposed;
+  the command runs FORWARD only.
+- **Verification basis:** verified live 2026-09-10 -- ran
+  `--season 2025 --week 3 --output-dir <temp>` that session into a TEMPORARY directory (never
+  the default `outputs/bet_list/`, which is inside the protected tree): exit 0, 16 scheduled
+  games, 48 candidates, 16 selected, wrote `bet_list.parquet` (19,237 bytes, 48 rows) and
+  `bet_tracker.json` (237 bytes, 1 forward block), loading the deployed
+  `wp_20260824_113325` / `ats_20260605_220128` / `ou_20260326_163930`. No re-fit, no
+  promotion, and `git status --porcelain data/ config/ artifacts/ outputs/` empty afterwards.
 
 ---
 
