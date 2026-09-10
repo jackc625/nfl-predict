@@ -696,6 +696,18 @@ _ZERO_ADMITTED_HEADING = "No bets cleared the floor this week"
 _NO_CURRENT_WEEK_HEADING = "No current week"
 _HARD_BLOCK_MESSAGE = "This week&#39;s list is withheld -- the cache is older than this week&#39;s line freeze"
 
+# The TWO-COMMAND recovery sequence, in the order an operator must run it (plan 31-23,
+# G-31-123b). Both non-happy renders that name a recovery must name BOTH, generation first.
+# Naming only the population command is the shipped defect: from a cold start that command is a
+# pure COPY step over an artifact nothing has produced yet, so it builds an EMPTY bet_list table,
+# stamps no per-week marker, and -- because it DOES build the schedule-derived freeze table --
+# flips the page into the refusal, whose own recovery text named the same command again.
+_GENERATE_COMMAND = "scripts/generate_bet_list.py"
+_POPULATE_COMMAND = "scripts/populate_cache.py"
+# The clause that states the RELATIONSHIP between the two, asserted separately so a future editor
+# cannot shorten the copy back to two bare commands and leave a reader to infer why order matters.
+_COPY_ONLY_CLAUSE = "only COPIES what the first produces"
+
 _BANNER_EYEBROW = "Not wagering advice"
 
 # The per-game freeze sentence, and the week-level claims it deliberately does NOT make. A
@@ -769,6 +781,14 @@ def test_state_one_cache_table_absent(tmp_path: Path) -> None:
 
     The distinction is load-bearing: reporting a missing TABLE as "no bets cleared the floor"
     would be a claim about the models made from the absence of a table.
+
+    The recovery assertion below used to accept HALF the sequence -- it pinned only
+    ``scripts/populate_cache.py``. That is the copy step, and from the cold state this fixture
+    builds it cannot reach a served list (plan 31-23, G-31-123b), so the copy named an action the
+    reader could follow to no effect. It now requires both commands, in order, plus the clause
+    that says why the order matters. That a command is NAMED is still a weaker claim than that
+    FOLLOWING it reaches a served list; the latter is asserted end-to-end in
+    ``tests/api/test_cold_start_bet_list_recovery.py``.
     """
     clear_cache()
     db_path = tmp_path / "no_table.duckdb"
@@ -790,7 +810,22 @@ def test_state_one_cache_table_absent(tmp_path: Path) -> None:
     assert response.status_code == 200
     body = response.text
     assert _CACHE_ABSENT_HEADING in body
-    assert "scripts/populate_cache.py" in body
+    assert _GENERATE_COMMAND in body, (
+        "the cache-absent state does not name the command that PRODUCES the rows, so the only "
+        "action it offers is a copy step with nothing to copy"
+    )
+    assert _POPULATE_COMMAND in body, (
+        "the cache-absent state does not name the command that loads the rows into the cache"
+    )
+    assert body.index(_GENERATE_COMMAND) < body.index(_POPULATE_COMMAND), (
+        "the cache-absent state names the two recovery commands in the WRONG order; running the "
+        "copy step first is exactly the sequence that leaves an empty table and a refusal"
+    )
+    assert _COPY_ONLY_CLAUSE in body, (
+        "the cache-absent state does not state that the second command only copies what the "
+        "first produces, so an operator who runs only the copy step cannot explain the empty "
+        "table they get"
+    )
     assert _ZERO_ADMITTED_HEADING not in body
     assert "Bet list last populated" not in body, (
         "the cache stamp rendered against a cache that has no bet list"
@@ -2578,10 +2613,21 @@ def test_a_past_week_renders_normally_in_the_same_response_shape_as_a_blocked_on
     assert _BANNER_EYEBROW in blocked
 
 
-def test_the_recovery_text_names_the_command_and_both_timestamps(
+def test_the_recovery_text_names_the_full_sequence_and_both_timestamps(
     tmp_path: Path,
 ) -> None:
-    """The reader can CHECK the claim rather than take it (UI-SPEC E7 error)."""
+    """The reader can CHECK the claim rather than take it (UI-SPEC E7 error).
+
+    WHY THIS TEST WAS ITSELF THE COVERAGE GAP (plan 31-23, G-31-123b). Its old name and its old
+    failure message -- "the refusal does not name the command that fixes it" -- asserted that a
+    command STRING appeared in the response body. That is a strictly weaker claim than the one the
+    reader needs, which is that FOLLOWING the named command reaches a served list. The command it
+    pinned was ``scripts/populate_cache.py``, a pure copy step over an artifact that from a cold
+    start does not exist; so this assertion was green while the refusal pointed the reader back at
+    the very command that had put them in the refusal. It now requires the FULL sequence, in
+    order, with the copy-only clause. The end-to-end claim it cannot make -- that following the
+    copy actually serves a list -- lives in ``tests/api/test_cold_start_bet_list_recovery.py``.
+    """
     db_path = _blocked_cache(
         tmp_path,
         "recovery",
@@ -2596,8 +2642,24 @@ def test_the_recovery_text_names_the_command_and_both_timestamps(
     with contextmanager(_client)(db_path) as client:
         body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
 
-    assert "scripts/populate_cache.py" in body, (
-        "the refusal does not name the command that fixes it"
+    assert _GENERATE_COMMAND in body, (
+        "the refusal does not name the FULL sequence that fixes it -- the command that PRODUCES "
+        "the rows is missing, so the only action offered is the copy step the reader has already "
+        "run, which is the loop G-31-123b reported"
+    )
+    assert _POPULATE_COMMAND in body, (
+        "the refusal does not name the command that loads the produced rows into the cache"
+    )
+    assert body.index(_GENERATE_COMMAND) < body.index(_POPULATE_COMMAND), (
+        "the refusal names the two recovery commands in the WRONG order; the copy step run first "
+        "is what leaves the cache with no rows and no marker, i.e. still refused"
+    )
+    assert _COPY_ONLY_CLAUSE in body, (
+        "the refusal does not state that the second command only copies what the first produces"
+    )
+    assert "no restart is needed" in body, (
+        "the refusal does not say the running server picks the rebuilt cache up on the next "
+        "request; without it a reader has no way to know the recovery took effect (plan 31-20)"
     )
     assert _POPULATED_AT in body, (
         "the refusal does not interpolate the populated-at timestamp"
