@@ -117,7 +117,7 @@
      the models made from the absence of a table. Never a blank page and never a 500. #}
   {% if not bet_list_available %}
     {% with heading="Bet list not built yet",
-            body='The bet-list cache table does not exist. Run "uv run python scripts/populate_cache.py" to build it, then reload this page.',
+            body='The bet-list cache table does not exist. Build the list for this week with "uv run python scripts/generate_bet_list.py", then load it into the cache with "uv run python scripts/populate_cache.py", then reload this page. The second command only COPIES what the first produces, so running it on its own creates the table with no rows in it.',
             action_text=none, action_url=none %}
       {% include "components/_empty_state.html" %}
     {% endwith %}
@@ -128,7 +128,7 @@
        section is withheld with it: every suppression reason is a verdict computed from the same
        cache this block just declared out of date (UI-SPEC E3 error, owner decision). #}
     {% with message="This week's list is withheld -- the cache is older than this week's line freeze",
-            recovery_text='The Friday cache population did not complete after the most recent line freeze, so the current week\'s bets and the forward record\'s totals would be out of date. Past weeks below are unaffected and remain readable. Re-run "uv run python scripts/populate_cache.py" to restore this section. Cache last populated: ' ~ (bet_list_populated_at or "not recorded") ~ "; latest line freeze this week: " ~ (bet_week_freeze or "not recorded") ~ "." %}
+            recovery_text='The Friday cache population did not complete after the most recent line freeze, so the current week\'s bets and the forward record\'s totals would be out of date. Past weeks below are unaffected and remain readable. To restore this section, rebuild the list with "uv run python scripts/generate_bet_list.py" and then load it into the cache with "uv run python scripts/populate_cache.py". The second command only COPIES what the first produces, so running it on its own leaves this section withheld. The running server picks the rebuilt cache up on the next request, so no restart is needed. Cache last populated: ' ~ (bet_list_populated_at or "not recorded") ~ "; latest line freeze this week: " ~ (bet_week_freeze or "not recorded") ~ "." %}
       {% include "components/_error_state.html" %}
     {% endwith %}
   {% elif current_week is none %}
