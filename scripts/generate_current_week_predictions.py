@@ -23,6 +23,7 @@ import pandas as pd
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from backtest.ou_divergence import dedupe_odds_by_book_preference
 from models.artifacts import load_model_artifact
 from models.blending import MarketBlender
 from utils import get_logger
@@ -124,12 +125,14 @@ def load_market_data(game_ids: list[str]) -> pd.DataFrame:
     odds_df["game_id"] = odds_df["game_id"].apply(_normalize_game_id)
     filtered = odds_df[odds_df["game_id"].isin(game_ids)].copy()
 
-    # Keep only the columns we need, deduplicate by game_id (take first row per game)
+    # One row per game, choosing the BOOK by name rather than by parquet row order (WR-08).
+    # ``keep="first"`` picked whichever row appeared first in the file, so appending a second
+    # book's row for a game silently changed which book's price the published prediction was
+    # struck at. The dedupe runs BEFORE the column projection because it reads ``sportsbook``.
+    filtered = dedupe_odds_by_book_preference(filtered)
     cols_needed = ["game_id", "spread", "total", "ml_home", "ml_away"]
     available_cols = [c for c in cols_needed if c in filtered.columns]
-    filtered = filtered[available_cols].drop_duplicates(
-        subset=["game_id"], keep="first"
-    )
+    filtered = filtered[available_cols]
 
     logger.info(
         "Loaded market data",

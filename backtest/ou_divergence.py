@@ -79,10 +79,12 @@ __all__ = [
     "PRE_HOLD_SEASONS",
     "SD_SENSITIVITY_BAND",
     "SIGNIFICANCE_ALPHA",
+    "SPORTSBOOK_PREFERENCE",
     "HoldSeasonLeakageError",
     "bias_vs_anticipation",
     "bucket_count_parity",
     "debiased_rescore",
+    "dedupe_odds_by_book_preference",
     "derive_high_total_boundary",
     "edge_magnitude_sweep",
     "extended_bucket_sweep",
@@ -106,6 +108,61 @@ _RAW_SILVER_ODDS_PATH = Path("data/silver/odds_snapshot.parquet")
 
 # Allowed real-odds sportsbook labels (the OUM-06 provenance spirit pulled forward, D26-04(i)).
 _ALLOWED_SPORTSBOOKS = frozenset({"consensus", "draftkings"})
+
+# The order a game's price is CHOSEN in when the stored table carries more than one book for it
+# (WR-08). Stated BY NAME rather than left to parquet row order: the pricing paths used to do
+# ``drop_duplicates(subset=["game_id"], keep="first")``, which selects whichever row happens to
+# appear first in the file. That is deterministic for a fixed file but NOT stable -- appending a
+# ``draftkings`` row, or any rewrite that changes row order, silently changes which book's price a
+# published bet was struck at, with nothing on the record to attribute the change to. The selected
+# row supplies ``spread``, ``total``, ``ml_home``, ``ml_away`` and all four juice columns, i.e. the
+# price the per-bet EV, the Kelly stake and the published ``selected_odds`` are all struck at.
+SPORTSBOOK_PREFERENCE: tuple[str, ...] = ("consensus", "draftkings")
+
+# The two lists are the same set, asserted at import so a book added to the allowlist cannot
+# silently fall off the END of the preference and be picked only by file order again.
+assert set(SPORTSBOOK_PREFERENCE) == set(_ALLOWED_SPORTSBOOKS), (
+    "SPORTSBOOK_PREFERENCE and _ALLOWED_SPORTSBOOKS disagree: "
+    f"{sorted(SPORTSBOOK_PREFERENCE)} vs {sorted(_ALLOWED_SPORTSBOOKS)}"
+)
+
+
+def dedupe_odds_by_book_preference(odds: pd.DataFrame) -> pd.DataFrame:
+    """One row per ``game_id``, choosing the book BY NAME rather than by file order (WR-08).
+
+    Rows are ranked by :data:`SPORTSBOOK_PREFERENCE` and the best-ranked row per game wins. A book
+    not in the preference ranks last (rather than being dropped), so an unrecognised label still
+    prices a game that has no preferred row -- the provenance allowlist is what refuses an
+    unrecognised book, and it does so by NAME, in its own place. A frame with no ``sportsbook``
+    column falls back to the previous first-row behaviour, because there is no preference to apply.
+
+    The sort is ``kind="mergesort"`` (stable), so ties within one book keep their stored order and
+    the result is reproducible.
+
+    Args:
+        odds: The stored odds rows, possibly several per game.
+
+    Returns:
+        One row per ``game_id``, with the frame's original columns and a reset index.
+    """
+    if odds.empty or "sportsbook" not in odds.columns:
+        return odds.drop_duplicates(subset=["game_id"], keep="first").reset_index(
+            drop=True
+        )
+
+    ranks = {book: index for index, book in enumerate(SPORTSBOOK_PREFERENCE)}
+    unknown_rank = len(SPORTSBOOK_PREFERENCE)
+    ranked = odds.copy()
+    ranked["_book_rank"] = (
+        ranked["sportsbook"].astype(str).map(ranks).fillna(unknown_rank).astype(int)
+    )
+    return (
+        ranked.sort_values(["game_id", "_book_rank"], kind="mergesort")
+        .drop_duplicates(subset=["game_id"], keep="first")
+        .drop(columns="_book_rank")
+        .reset_index(drop=True)
+    )
+
 
 # ---------------------------------------------------------------------------
 # Pre-registered analysis bands (D26-08 -- LOCKED; Plan 26-03 consumes these as the sweep inputs).

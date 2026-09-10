@@ -102,7 +102,10 @@ from backtest.ev_chain_constants import (
     VERDICT_TOKEN_MEANINGS,
     VERDICT_TOKENS,
 )
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
+from backtest.ou_divergence import (
+    HIGH_TOTAL_BOUNDARY_PREHOLD,
+    dedupe_odds_by_book_preference,
+)
 from backtest.ou_ev_chain import (
     EV_FLOOR_GRID,
     american_to_payout,
@@ -1039,7 +1042,15 @@ def _load_candidate_frames(
 
     from backtest.engine import BacktestEngine
 
-    odds = BacktestEngine()._load_closing_odds()
+    # ONE row per game before the join (WR-15). ``_load_closing_odds`` returns the whole silver
+    # table with no dedupe AND normalizes ``game_id`` (LAR -> LA) on the way, which can itself
+    # create two rows sharing one key. A left join against a duplicated key FANS OUT the candidate
+    # frame: one game becomes two candidate rows, two priced bets, two entries in
+    # ``_per_bet_frame`` and double weight in both the ROI numerator and the block bootstrap.
+    # ``BetSelector._build_universe`` refuses a duplicate (game_id, target) pair by name, but this
+    # path passes no ``scheduled_games``, so nothing downstream would catch the fan-out. The
+    # sibling weekly path guards this explicitly; this one did not.
+    odds = dedupe_odds_by_book_preference(BacktestEngine()._load_closing_odds())
     for target in CANONICAL_TARGETS:
         gold = pd.read_parquet(f"data/gold/features_{target}.parquet")
         gold = gold[gold["season"].isin(wanted)].copy()
@@ -1056,6 +1067,13 @@ def _load_candidate_frames(
         # the flat fallback while the pre-registration said otherwise.
         keep += _juice_columns_for(target, odds.columns)
         merged = preds.merge(odds[keep], on="game_id", how="left")
+        if len(merged) != len(preds):
+            msg = (
+                f"the closing-odds join fanned out target {target!r}: {len(preds)} scored games "
+                f"became {len(merged)} candidate rows. A duplicated game_id in the odds table "
+                "would double-count those games in the ROI and in the block bootstrap."
+            )
+            raise ValueError(msg)
         merged = merged.rename(columns=dict(_ODDS_SOURCE_COLUMN[target]))
         merged["target"] = target
         required = _MARKET_COLUMNS[target]

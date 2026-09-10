@@ -86,7 +86,10 @@ from api.cache import (
 )
 from backtest.bet_selector import BetSelector, SelectionResult
 from backtest.ev_chain_constants import assign_ev_tier
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
+from backtest.ou_divergence import (
+    HIGH_TOTAL_BOUNDARY_PREHOLD,
+    dedupe_odds_by_book_preference,
+)
 from backtest.ou_ev_chain import american_to_payout
 from backtest.selector_strategies import default_strategies
 from utils import get_logger
@@ -375,9 +378,11 @@ def build_weekly_candidates(
         msg = f"cannot price the weekly bet list -- odds snapshot missing: {odds_path.as_posix()}"
         raise FileNotFoundError(msg)
     odds = pd.read_parquet(odds_path)
-    odds = odds[odds["game_id"].isin(game_ids)].drop_duplicates(
-        subset=["game_id"], keep="first"
-    )
+    # The book is chosen BY NAME, not by parquet row order (WR-08). ``keep="first"`` picked
+    # whichever row happened to appear first in the file, so appending a second book's row for a
+    # game -- or any rewrite that changed row order -- silently changed which book's price the
+    # published bet was struck at, with nothing on the record to attribute the change to.
+    odds = dedupe_odds_by_book_preference(odds[odds["game_id"].isin(game_ids)])
 
     frames: list[pd.DataFrame] = []
     for target in CANONICAL_TARGETS:
