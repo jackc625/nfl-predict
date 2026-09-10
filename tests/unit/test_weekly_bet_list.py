@@ -49,6 +49,8 @@ from backtest.weekly_bet_list import (
     BET_TRACKER_ARTIFACT_NAME,
     AlreadyGradedError,
     FrozenChainFitError,
+    WeeklyChainFit,
+    build_strategies,
     grade_pending_rows,
     grade_row,
     load_frozen_chain_fit,
@@ -457,3 +459,55 @@ def test_the_fit_is_read_verbatim_including_a_null_residual_sd(tmp_path: Path) -
     assert fits["ats"].frozen_sd == pytest.approx(11.5)
     assert fits["ou"].ev_floor_t == pytest.approx(0.0)
     assert fits["ats"].season_bias_by_season == {2025: pytest.approx(0.16)}
+
+
+# ---------------------------------------------------------------------------
+# 5. A missing residual SD is REFUSED, never substituted with zero (WR-05)
+# ---------------------------------------------------------------------------
+
+
+def _fit(target: str, frozen_sd: float | None) -> WeeklyChainFit:
+    return WeeklyChainFit(
+        target=target,
+        ev_floor_t=0.05,
+        frozen_sd=frozen_sd,
+        season_bias_by_season={2025: 0.0},
+    )
+
+
+def _fits(**overrides: float | None) -> dict[str, WeeklyChainFit]:
+    values: dict[str, float | None] = {"wp": None, "ats": 11.5, "ou": 13.0}
+    values.update(overrides)
+    return {target: _fit(target, sd) for target, sd in values.items()}
+
+
+@pytest.mark.parametrize("target", ["ats", "ou"])
+@pytest.mark.parametrize("bad_sd", [None, 0.0, -1.0, float("nan"), float("inf")])
+def test_an_unusable_residual_sd_raises_rather_than_becoming_zero(
+    target: str, bad_sd: float | None
+) -> None:
+    """``float(fit.frozen_sd or 0.0)`` was silent in exactly the case that matters.
+
+    A zero SD reaches ``calibrated_p_cover`` / ``calibrated_p_over``, where
+    ``z = (line - corrected) / sd`` divides by zero: ``norm.cdf`` returns 0.0 or 1.0, every
+    candidate clips to the probability bound, every 0.999 clears any EV floor, and Kelly stakes it
+    at the 5% per-bet cap. The week's list is then maximally staked on a model that produced no
+    probability at all, and nothing raises. The PRICING path already refuses this input by name
+    (``ats_ev_chain.py``), so the selection path was strictly weaker than the path it mirrors.
+    """
+    with pytest.raises(FrozenChainFitError, match=repr(target)):
+        build_strategies(_fits(**{target: bad_sd}))
+
+
+def test_a_usable_residual_sd_still_builds_all_three_strategies() -> None:
+    """The control: the refusal must not be always-on."""
+    strategies = build_strategies(_fits())
+
+    assert len(strategies) == 3
+
+
+def test_wp_still_needs_no_residual_sd() -> None:
+    """WP fits none BY DESIGN (D31-07); the guard must not demand one from it."""
+    strategies = build_strategies(_fits(wp=None))
+
+    assert len(strategies) == 3

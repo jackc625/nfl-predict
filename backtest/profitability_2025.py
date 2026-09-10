@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 import tomllib
@@ -1198,17 +1199,42 @@ def _fit_target_on_tune(
     return chain_fit, gate
 
 
+def _require_frozen_sd(target: str, fit: ChainFit) -> float:
+    """The frozen residual SD for a LINE target, refusing an unusable one (WR-05).
+
+    ``float(fit.frozen_sd or 0.0)`` was silent in exactly the case that matters. A zero SD reaches
+    ``calibrated_p_cover`` / ``calibrated_p_over``, where ``z = (line - corrected) / sd`` divides
+    by zero, so ``norm.cdf`` returns 0.0 or 1.0 and every candidate clips to the probability
+    bound; every 0.999 candidate then clears any EV floor and Kelly stakes it at the per-bet cap.
+    The PRICING path refuses this input by name (``ats_ev_chain.py``), so the selection path was
+    strictly weaker than the path it mirrors. ``or 0.0`` also swallowed a legitimately-0.0 value.
+
+    Raises:
+        ValueError: naming the target and the offending value.
+    """
+    value = fit.frozen_sd
+    if value is None or not math.isfinite(value) or value <= 0:
+        msg = (
+            f"target {target!r} has no usable frozen residual SD ({value!r}); a zero, absent or "
+            "non-finite SD divides by zero in the calibrated-probability converter and clips "
+            "every candidate to the probability bound, which Kelly then stakes at the per-bet "
+            "cap. The chain path already refuses this input by name."
+        )
+        raise ValueError(msg)
+    return float(value)
+
+
 def _strategy_for_target(target: str, fit: ChainFit, gate: WPGateResult | None) -> Any:
     """Build the registered selection strategy for one target from its fit."""
     if target == "wp":
         return WPStrategy(season_bias_by_season=fit.season_bias_by_season, gate=gate)
     if target == "ats":
         return ATSStrategy(
-            frozen_sd=float(fit.frozen_sd or 0.0),
+            frozen_sd=_require_frozen_sd(target, fit),
             season_bias_by_season=fit.season_bias_by_season,
         )
     return OUStrategy(
-        frozen_sd=float(fit.frozen_sd or 0.0),
+        frozen_sd=_require_frozen_sd(target, fit),
         season_bias_by_season=dict(fit.season_bias_by_season),
         high_total_boundary=float(fit.high_total_boundary or 0.0),
     )

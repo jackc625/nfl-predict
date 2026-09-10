@@ -428,17 +428,60 @@ def build_weekly_candidates(
     return candidates, schedule
 
 
+def require_frozen_sd(fit: WeeklyChainFit) -> float:
+    """The frozen residual SD, REFUSING an absent, non-finite or non-positive one (WR-05).
+
+    ``load_frozen_chain_fit`` permits ``frozen_sd`` to be absent -- ``block.get("frozen_sd")``
+    yields ``None`` -- and ``build_strategies`` used to write ``float(fit.frozen_sd or 0.0)``,
+    which is silent in exactly the case that matters. A zero SD reaches ``calibrated_p_cover`` /
+    ``calibrated_p_over``, where ``z = (line - corrected) / sd`` divides by zero, yielding
+    ``+/-inf`` -> ``norm.cdf`` -> 0.0 or 1.0 -> clipped to ``P_OVER_CLIP``. Every candidate then
+    prices at 0.999 or 0.001, every 0.999 clears any EV floor, and Kelly stakes it at the 5%
+    per-bet cap: a week's bet list maximally staked on a model that produced no probability at
+    all, with nothing raising.
+
+    The PRICING path already refuses this input by name (``ats_ev_chain.py``: "the ATS chain
+    requires a frozen residual SD ... ChainFit.frozen_sd is None"), so without this the SELECTION
+    path was strictly weaker than the pricing path it is supposed to mirror. ``or 0.0`` also
+    swallowed a legitimately-0.0 stored value, which is the same fatal input arriving a different
+    way.
+
+    Args:
+        fit: The per-target frozen fit.
+
+    Returns:
+        The SD as a positive, finite float.
+
+    Raises:
+        FrozenChainFitError: naming the target and the offending value.
+    """
+    value = fit.frozen_sd
+    if value is None or not math.isfinite(value) or value <= 0:
+        msg = (
+            f"target {fit.target!r} has no usable frozen residual SD ({value!r}); a zero, "
+            "absent or non-finite SD divides by zero in the calibrated-probability converter "
+            "and clips every candidate to the probability bound, which Kelly then stakes at the "
+            "per-bet cap. Re-run `python -m backtest.profitability_2025` so the tune-only fit "
+            "carries one."
+        )
+        raise FrozenChainFitError(msg)
+    return float(value)
+
+
 def build_strategies(fits: dict[str, WeeklyChainFit]) -> list[Any]:
     """The three registered strategies, built ONCE from the frozen fit.
 
     Built once and shared between selection and grading, so a bet is graded under exactly the rule
     it was selected under. Two independent constructions could drift apart on a parameter and the
     disagreement would show up as a mis-graded result rather than as an error.
+
+    The two line targets' residual SDs go through :func:`require_frozen_sd`, which REFUSES an
+    absent or non-positive value rather than substituting 0.0 (WR-05).
     """
     return default_strategies(
-        ou_frozen_sd=float(fits["ou"].frozen_sd or 0.0),
+        ou_frozen_sd=require_frozen_sd(fits["ou"]),
         ou_season_bias_by_season=fits["ou"].season_bias_by_season,
-        ats_frozen_sd=float(fits["ats"].frozen_sd or 0.0),
+        ats_frozen_sd=require_frozen_sd(fits["ats"]),
         ats_season_bias_by_season=fits["ats"].season_bias_by_season,
         wp_season_bias_by_season=fits["wp"].season_bias_by_season,
         high_total_boundary=float(HIGH_TOTAL_BOUNDARY_PREHOLD),
