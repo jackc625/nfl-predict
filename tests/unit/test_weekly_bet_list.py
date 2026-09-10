@@ -18,7 +18,8 @@ The three claims this module defends, each of which is easy to assert and hard t
 The frames are AUTHORED (fixed model/market/realized values) so the assertions are deterministic
 and hermetic: nothing under ``data/``, ``artifacts/`` or ``outputs/`` is read by any test here.
 
-Selectors (``-k``): freeze, immutable, grade, regrade, artifact, live_cache, retired, fit.
+Selectors (``-k``): freeze, immutable, grade, regrade, artifact, live_cache, retired, fit,
+atomic, tracker, half_pair.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -359,6 +360,179 @@ def test_the_tracker_artifact_keeps_a_not_measured_rate_as_null(tmp_path: Path) 
     assert records[0]["hit_rate"] is None
     assert records[0]["flat_return_units"] is None
     assert records[0]["bets_graded"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 3b. The durable ledger cannot be left truncated, and a half-pair is audible
+#     (WR-04, WR-05)
+# ---------------------------------------------------------------------------
+
+
+def test_a_failing_bet_list_write_leaves_the_previous_ledger_intact(
+    tmp_path: Path,
+) -> None:
+    """A write that dies mid-flight must NOT truncate the durable forward record.
+
+    ``bet_list.parquet`` carries the FROZEN forward rows the D31-18 fence protects and it is
+    gitignored, so there is no second copy anywhere. Before the atomic replace, a failing
+    ``to_parquet`` (Ctrl-C five seconds in, a full disk) wrote straight onto the final path and
+    left a truncated file -- and ``read_bet_list_artifact`` is on ``generate_weekly_bet_list``'s
+    own critical path, so the next run could not start and the season's frozen rows were gone.
+
+    The failure is injected INTO the staged write rather than simulated by hand-truncating the
+    file, because what is under test is which PATH the doomed bytes were aimed at.
+    """
+    import backtest.weekly_bet_list as wbl
+
+    write_bet_list_artifact(_frame([_row()]), tmp_path)
+    path = tmp_path / BET_LIST_ARTIFACT_NAME
+    before = path.read_bytes()
+
+    real_replace = wbl._replace_atomically
+
+    def fail_partway_through_the_staged_write(staged: Path) -> None:
+        staged.write_bytes(b"PAR1 and then the disk filled up")
+        raise OSError("no space left on device")
+
+    def replace_with_a_doomed_writer(_writer, target: Path) -> None:
+        # The REAL atomic replace, driven by a writer that dies after emitting some bytes.
+        real_replace(fail_partway_through_the_staged_write, target)
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(wbl, "_replace_atomically", replace_with_a_doomed_writer)
+        with pytest.raises(OSError, match="no space left"):
+            write_bet_list_artifact(
+                _frame([_row(game_id="2025_W02_BUF@NYJ")]), tmp_path
+            )
+
+    assert path.read_bytes() == before, (
+        "a failed write reached the FINAL path: the durable forward ledger is now whatever the "
+        "interrupted write left behind"
+    )
+    assert read_bet_list_artifact(tmp_path).iloc[0]["game_id"] == "2025_W01_DET@KC"
+
+
+def test_an_interrupted_atomic_write_leaves_no_temp_file_behind(tmp_path: Path) -> None:
+    """The staged temp file is cleaned up, so the NEXT run cannot publish a half-written one.
+
+    Without the cleanup a crashed run leaves ``bet_list.parquet.tmp`` on disk, and a later
+    ``_replace_atomically`` that failed after staging nothing would publish those stale bytes.
+    ``KeyboardInterrupt`` rather than an ``Exception`` on purpose: Ctrl-C during a hand-run
+    recovery is the scenario, and it is why the cleanup catches ``BaseException``.
+    """
+    import backtest.weekly_bet_list as wbl
+
+    path = tmp_path / BET_LIST_ARTIFACT_NAME
+    tmp_path.mkdir(parents=True, exist_ok=True)
+
+    def write_then_die(staged: Path) -> None:
+        staged.write_bytes(b"half a parquet file")
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        wbl._replace_atomically(write_then_die, path)
+
+    assert not path.exists(), "the doomed bytes were published onto the final path"
+    assert not path.with_name(path.name + ".tmp").exists(), (
+        "the staged temp file survived the failure, so a later replace could publish it"
+    )
+
+
+def test_the_atomic_replace_publishes_the_staged_bytes_on_success(
+    tmp_path: Path,
+) -> None:
+    """The anti-vacuity control: the happy path must still actually write the file."""
+    import backtest.weekly_bet_list as wbl
+
+    path = tmp_path / "ledger.bin"
+    wbl._replace_atomically(lambda staged: staged.write_bytes(b"published"), path)
+
+    assert path.read_bytes() == b"published"
+    assert not path.with_name(path.name + ".tmp").exists()
+
+
+def test_a_truncated_tracker_is_refused_by_name_not_raised_as_a_json_error(
+    tmp_path: Path,
+) -> None:
+    """A corrupt tracker must raise the SAME ValueError shape a schema mismatch does.
+
+    ``json.loads`` was reached unguarded, so a truncated file raised
+    ``json.JSONDecodeError``. That escaped ``read_bet_list_cache_sources`` -- whose docstring
+    promises its readers degrade rather than raise -- and aborted the whole cache population, a
+    step registered NON-CRITICAL specifically so it could not do that. Absent still degrades;
+    corrupt is refused, loudly, by name.
+    """
+    from backtest.weekly_bet_list import read_bet_tracker_artifact
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / BET_TRACKER_ARTIFACT_NAME).write_text(
+        '[{"provenance": "forward", "bets_gr', encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="not parseable JSON"):
+        read_bet_tracker_artifact(tmp_path)
+
+
+def test_an_absent_tracker_still_degrades_to_an_empty_frame(tmp_path: Path) -> None:
+    """The control for the case above: absent and corrupt must stay different verdicts.
+
+    A first-ever build legitimately has no tracker yet, and refusing THAT would break every
+    cold start.
+    """
+    from api.cache import BET_TRACKER_BLOCK_COLUMNS
+    from backtest.weekly_bet_list import read_bet_tracker_artifact
+
+    empty = read_bet_tracker_artifact(tmp_path / "nothing_here")
+    assert empty.empty
+    assert list(empty.columns) == BET_TRACKER_BLOCK_COLUMNS
+
+
+def test_bet_rows_without_tracker_blocks_is_a_distinct_audible_state() -> None:
+    """The half-pair predicate: rows present, tracker absent, and somebody is told.
+
+    ``bet_list_source_is_absent`` made a zero-row bet list audible and the tracker half had no
+    equivalent -- so the state a run interrupted between the two sequential writes leaves behind
+    was the one nobody could see. ``/bets`` renders the ranked list beside an EMPTY
+    realized-vs-expected tracker and says nothing.
+    """
+    from api.cache import bet_list_source_is_absent, bet_tracker_source_is_absent
+
+    empty_tracker = pd.DataFrame(columns=pd.Index(["provenance"]))
+
+    assert bet_list_source_is_absent(_frame([_row()])) is False
+    assert bet_tracker_source_is_absent(empty_tracker) is True
+    assert bet_tracker_source_is_absent(None) is True
+    assert (
+        bet_tracker_source_is_absent(pd.DataFrame([{"provenance": "forward"}])) is False
+    ), (
+        "the predicate is True for a POPULATED tracker, so the warning would be always-on"
+    )
+
+
+def test_the_half_pair_predicate_is_wired_into_populate_cache() -> None:
+    """A predicate nobody calls proves nothing -- the T-31-118 lesson, applied to its sibling.
+
+    Parsed rather than monkeypatched: the question is whether the CALL EXISTS inside the
+    population function, which is what makes the warning reachable at all.
+    """
+    import ast
+
+    tree = ast.parse((Path("api") / "cache.py").read_text(encoding="utf-8"))
+    populate = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "populate_cache"
+    )
+    called = {
+        node.func.id
+        for node in ast.walk(populate)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "bet_tracker_source_is_absent" in called, (
+        "populate_cache does not call bet_tracker_source_is_absent, so a populated bet list "
+        "beside an absent tracker is still a silent render"
+    )
 
 
 def test_the_step_body_opens_no_connection_to_a_cache_database() -> None:

@@ -63,7 +63,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -754,12 +754,30 @@ def read_bet_tracker_artifact(
     left alone: a NULL ``hit_rate`` beside ``bets_graded = 0`` means the rate was NOT COMPUTED,
     which is a different claim from a measured zero, and coercing it to NaN here would erase the
     distinction the tracker exists to preserve.
+
+    ABSENT AND CORRUPT ARE DIFFERENT, AND BOTH ARE HANDLED (WR-04). An absent artifact degrades
+    to an empty frame, because a first-ever build legitimately has nothing to read and
+    :func:`read_bet_list_cache_sources` promises exactly that. A TRUNCATED or otherwise
+    unparseable one is refused by NAME instead: it used to reach ``json.loads`` unguarded and
+    raise ``json.JSONDecodeError``, which escaped ``read_bet_list_cache_sources`` -- whose
+    docstring promised degradation -- and aborted the whole cache population, a step registered
+    NON-CRITICAL precisely so it could not do that. It is re-raised as the same ``ValueError``
+    shape the schema-mismatch branch below uses, so a caller has ONE exception type to catch and
+    a message that says which file and why.
     """
     path = Path(output_dir) / BET_TRACKER_ARTIFACT_NAME
     if not path.exists():
         return pd.DataFrame(columns=pd.Index(BET_TRACKER_BLOCK_COLUMNS))
 
-    records = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        records = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        msg = (
+            f"the stored bet tracker at {path.as_posix()} is not parseable JSON ({exc}); it is "
+            "truncated or corrupt and is refused rather than merged. Regenerate the artifact "
+            "pair with `uv run python scripts/generate_bet_list.py`."
+        )
+        raise ValueError(msg) from exc
     if not records:
         return pd.DataFrame(columns=pd.Index(BET_TRACKER_BLOCK_COLUMNS))
 
@@ -865,11 +883,17 @@ def read_bet_list_cache_sources(
     these filenames or derive a per-game freeze. This function -- called from ``pipeline/steps.py``
     and ``scripts/populate_cache.py``, both of which may -- reads them and hands over frames.
 
-    Each reader degrades to an EMPTY frame rather than raising when its source is absent, because
+    Each reader degrades to an EMPTY frame rather than raising when its source is ABSENT, because
     the cache population step is registered NON-CRITICAL: a raise here would degrade the whole
     Friday run for a first-ever build that simply has nothing to load yet. An absent bet list is
     then represented HONESTLY downstream -- zero rows and no populated-at marker -- which is what
     makes ``/bets`` refuse the week rather than render it as one in which nothing was recommended.
+
+    ABSENT IS NOT CORRUPT (WR-04). A source that EXISTS but cannot be read is refused loudly, as
+    a named ``ValueError``, and is not degraded: silently treating a corrupt ledger as "nothing
+    recorded yet" would publish a cache that claims no bets were recommended when the record of
+    them is merely unreadable. That is the one thing this whole path exists not to do. The
+    downstream population step catches nothing, so the refusal reaches the operator.
     """
     return BetListCacheSources(
         bet_list=read_bet_list_artifact(output_dir),
@@ -878,14 +902,59 @@ def read_bet_list_cache_sources(
     )
 
 
+def _replace_atomically(write: Callable[[Path], None], path: Path) -> None:
+    """Run *write* against a sibling temp file, then ``os.replace`` it onto *path*.
+
+    WHY EVERY WRITE IN THIS MODULE GOES THROUGH HERE (WR-05). ``bet_list.parquet`` is the
+    durable home of forward recommendation history -- it carries the FROZEN forward rows
+    :func:`upsert_bet_list_rows` protects under the D31-18 per-game freeze fence -- and it is
+    gitignored, so there is no second copy of it anywhere. Writing straight onto the final path
+    means an interrupted or failing write (Ctrl-C, a full disk, a killed process) leaves a
+    TRUNCATED file, and the next :func:`read_bet_list_artifact` raises inside ``pd.read_parquet``
+    on the critical path of :func:`generate_weekly_bet_list`. At that point the frozen forward
+    rows for every prior week of the season are simply gone and cannot be regenerated -- that is
+    what "durable record" means.
+
+    Plan 31-22 did not introduce the mechanism, it multiplied the OCCASIONS: before it, the only
+    writer was step 15 of a scheduled orchestrator run, and now there is a hand-runnable CLI
+    whose documented invocation omits ``--output-dir`` and therefore targets the production
+    ledger directly -- including the recovery runs ``/bets`` itself instructs the reader to
+    perform. ``Path.replace`` (i.e. ``os.replace``) is atomic on POSIX and on Windows, where it maps to
+    ``MoveFileEx`` with ``MOVEFILE_REPLACE_EXISTING``, so a failure now leaves the PREVIOUS
+    complete artifact in place rather than a corrupt ledger.
+
+    The temp file is a SIBLING, deliberately: the replace is only atomic within a filesystem,
+    so a temp under the system temp directory could land on another volume and silently degrade
+    to a copy. It is removed on failure so a crashed run does not leave a half-written file that
+    the next run's ``os.replace`` would publish.
+
+    THIS IS PER-FILE ATOMICITY, NOT PAIR ATOMICITY. It does not make the bet-list/tracker PAIR
+    both-old-or-both-new; see :func:`generate_weekly_bet_list` for what remains open there and
+    what makes the remaining case audible instead of silent.
+    """
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        write(tmp_path)
+        tmp_path.replace(path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def write_bet_list_artifact(
     frame: pd.DataFrame, output_dir: Path = DEFAULT_BET_LIST_DIR
 ) -> Path:
-    """Persist the bet list to its durable parquet artifact and return the path."""
+    """Persist the bet list to its durable parquet artifact and return the path.
+
+    Written through :func:`_replace_atomically`, so this call either leaves the artifact
+    completely replaced or leaves the previous one completely intact. See that function for why
+    an in-place write of this particular file is not an acceptable failure mode.
+    """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / BET_LIST_ARTIFACT_NAME
-    frame[BET_LIST_COLUMNS].to_parquet(path, index=False)
+    payload = frame[BET_LIST_COLUMNS]
+    _replace_atomically(lambda tmp: payload.to_parquet(tmp, index=False), path)
     logger.info("Wrote bet-list artifact", path=str(path), n_rows=len(frame))
     return path
 
@@ -898,14 +967,17 @@ def write_bet_tracker_artifact(
     JSON rather than parquet because the frame is a handful of aggregate rows whose ``None`` rate
     fields must survive the round trip as null -- the not-measured / measured-zero distinction the
     tracker exists to preserve. Parquet would promote them to NaN.
+
+    Written through :func:`_replace_atomically` for the same reason its sibling is, and with one
+    extra consequence: a truncated JSON file is a shape :func:`read_bet_tracker_artifact` used to
+    hit at ``json.loads`` with no guard.
     """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / BET_TRACKER_ARTIFACT_NAME
     records = tracker_frame.astype(object).where(tracker_frame.notna(), None)
-    path.write_text(
-        json.dumps(records.to_dict("records"), indent=2, default=str), encoding="utf-8"
-    )
+    text = json.dumps(records.to_dict("records"), indent=2, default=str)
+    _replace_atomically(lambda tmp: tmp.write_text(text, encoding="utf-8"), path)
     logger.info(
         "Wrote bet-tracker artifact", path=str(path), n_blocks=len(tracker_frame)
     )
@@ -1201,13 +1273,36 @@ def generate_weekly_bet_list(
     ``output_dir``, which the Plan 31-18 population step loads into the temp cache build before
     the atomic swap.
 
-    THE WRITE IS THE PAIR, AND THE PAIR IS INDIVISIBLE (Plan 31-22, T-31-114). Both
+    THE WRITE IS THE PAIR, AND NO CALLER CAN PRODUCE HALF OF IT (Plan 31-22, T-31-114). Both
     ``BET_LIST_ARTIFACT_NAME`` and ``BET_TRACKER_ARTIFACT_NAME`` are written here, from the SAME
     graded frame. ``/bets`` reads both through ONE reader,
     :func:`read_bet_list_cache_sources`, so a caller that produced only the parquet would leave
     the realized-versus-expected tracker permanently EMPTY while the page still looked correct --
     a page that has quietly stopped grading itself and does not say so. That is not a cosmetic
     gap: the tracker is the honesty half of the feature.
+
+    WHAT "INDIVISIBLE" DOES AND DOES NOT MEAN (WR-04, correcting an earlier overclaim). An
+    earlier version of this docstring said the pair was indivisible full stop. That is true of
+    CALLERS -- the structural guard in ``tests/unit/test_bet_list_entry_point.py`` makes a second
+    producer of half the pair impossible -- and it was never true of EXECUTION. The two writes
+    below are sequential statements with an aggregation between them, so a process that dies, or
+    an ``aggregate_all_blocks`` that raises, still leaves the first artifact written and the
+    second not. Two things now bound that:
+
+    * Each write is individually ATOMIC (:func:`_replace_atomically`), so neither file can be
+      left TRUNCATED. Whatever is on disk afterwards is a complete artifact.
+    * The remaining case -- a new parquet beside the PREVIOUS run's complete tracker, or beside
+      none at all -- is now AUDIBLE rather than silent: ``api.cache.populate_cache`` warns when
+      it is handed bet rows without tracker blocks
+      (``api.cache.bet_tracker_source_is_absent``), and a corrupt tracker is refused by name
+      rather than escaping as ``json.JSONDecodeError``
+      (:func:`read_bet_tracker_artifact`).
+
+    What is still OPEN, and is recorded rather than glossed: a new parquet beside a STALE but
+    complete tracker is not detectable by absence, so the population cannot warn about it. Making
+    the pair genuinely both-old-or-both-new needs a two-phase commit -- stage both temp files,
+    then publish both -- which changes the writers' interface and is a larger change than a
+    review fix should make to the path that owns the durable ledger.
 
     WHY THE AGGREGATION LIVES HERE (REVIEW-IMPORT, T-31-117). It used to live in
     ``pipeline/steps.py::step_generate_recommendations``, which meant the tracker was written by

@@ -871,6 +871,35 @@ def bet_list_source_is_absent(bet_list_df: pd.DataFrame | None) -> bool:
     return bet_list_df is None or bet_list_df.empty
 
 
+def bet_tracker_source_is_absent(bet_tracker_df: pd.DataFrame | None) -> bool:
+    """True when a cache population has NO tracker blocks to load -- ``None`` OR an EMPTY frame.
+
+    THE SYMMETRIC HALF (WR-04). :func:`bet_list_source_is_absent` made a zero-row BET list
+    audible, and the tracker half had no equivalent -- so the one state nobody could see was a
+    populated bet list beside an absent tracker: ``/bets`` renders the ranked list with a
+    realized-versus-expected tracker computed over a DIFFERENT row set, or over none at all, and
+    says nothing. That is precisely the "a page that has quietly stopped grading itself and does
+    not say so" failure ``generate_weekly_bet_list``'s docstring claims to have closed, and the
+    claim it makes -- "THE WRITE IS THE PAIR, AND THE PAIR IS INDIVISIBLE" -- is true of CALLERS
+    and not of execution: the two writes are sequential, so a failure between them leaves a new
+    parquet beside a stale or missing tracker.
+
+    Deliberately a QUESTION and not a policy, exactly like its sibling: it changes no branch and
+    no on-disk result. The mismatch it exists to surface is checked at the ONE population call
+    site, where an absent tracker beside a POPULATED bet list is warned about and an absent
+    tracker beside an absent bet list is not -- the latter being an ordinary cold start, already
+    reported by the bet-list warning, and reporting it twice would just teach an operator to
+    ignore both.
+
+    Args:
+        bet_tracker_df: The tracker blocks a caller is about to load, or ``None``.
+
+    Returns:
+        True when there is nothing to load.
+    """
+    return bet_tracker_df is None or bet_tracker_df.empty
+
+
 # The ``status`` value that means a bet was actually PLACED. ``DataService.get_bet_list`` selects
 # rows equal to it and ``DataService.get_suppressed_bets`` selects the exact COMPLEMENT
 # (``IS DISTINCT FROM``, so a NULL status lands in the suppressed list rather than vanishing from
@@ -2342,6 +2371,24 @@ def populate_cache(
                 "empty. The cache will carry zero bet rows and no populated-at marker, so /bets "
                 "will REFUSE the current week rather than render it as one in which nothing was "
                 "recommended. Produce the rows first with "
+                "`uv run python scripts/generate_bet_list.py`, then re-run this population."
+            )
+        elif bet_tracker_source_is_absent(bet_tracker_df):
+            # THE HALF-PAIR (WR-04). Bet rows WITHOUT tracker blocks is the state a run that
+            # died between the two sequential artifact writes leaves behind, and it is the one
+            # the operator is most likely to walk into: the run exits non-zero, they re-run the
+            # SECOND command (`populate_cache.py`) as the documented two-command recovery
+            # invites, and this copies both halves happily. /bets then serves the current
+            # ranked list beside a realized-versus-expected tracker computed over a different
+            # row set -- or none -- with no diagnostic anywhere. ``elif`` because an absent
+            # tracker beside an absent bet list is an ordinary cold start that the branch above
+            # already reported; saying it twice teaches an operator to ignore both.
+            logger.warning(
+                "BET ROWS WITHOUT TRACKER BLOCKS -- the durable pair is HALF PRESENT. The "
+                "bet-list artifact has rows but the tracker artifact is absent or empty, which "
+                "is what a run interrupted between the two writes leaves on disk. /bets will "
+                "serve the ranked list with an EMPTY realized-vs-expected tracker and will not "
+                "say so. Regenerate the pair with "
                 "`uv run python scripts/generate_bet_list.py`, then re-run this population."
             )
 
