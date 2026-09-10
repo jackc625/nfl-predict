@@ -1526,6 +1526,77 @@ class TestTheWritePathInvariants:
 
         assert sha256_file(_SILVER_ODDS) == production_digest_before
 
+    def test_a_stored_draftkings_row_survives_a_consensus_ingest_of_the_same_game(
+        self, tmp_path: Path
+    ) -> None:
+        """Clause 6 / CR-03: the write is ADDITIVE across sportsbooks, not a game_id clobber.
+
+        ``upsert_silver`` keys on ``game_id`` alone, so it deletes every stored row whose game
+        appears in the incoming frame -- and every incoming row carries ``consensus``. A stored
+        ``draftkings`` row for the same game was therefore erased with no warning, and
+        ``assert_one_row_per_key`` could not catch it: the clobber GUARANTEES one row per key, so
+        the invariant passed trivially on a table that had just lost rows.
+
+        The module docstring records that a ``draftkings`` row WAS in production silver as
+        recently as Plan 31-08, and the OUM-06 allowlist admits it, so this is a real shape.
+        """
+        from backtest.ev_chain_constants import ODDS_SPORTSBOOK_LABEL
+        from scripts.ingest_historical_odds import (
+            transform_nfl_odds_to_standard_format,
+            write_odds_additively,
+        )
+
+        sandbox_odds = _sandbox_silver_copy(tmp_path)
+        incoming = transform_nfl_odds_to_standard_format(_load_live_schedule(2024))
+        contested_game_id = str(incoming.iloc[0]["game_id"])
+
+        # Seed a SECOND sportsbook's row for a game this ingest is about to write.
+        stored = pd.read_parquet(sandbox_odds)
+        rival = stored.iloc[[0]].copy()
+        rival["game_id"] = contested_game_id
+        rival["sportsbook"] = "draftkings"
+        rival["spread"] = -13.5
+        rival["total"] = 99.5
+        pd.concat([stored, rival], ignore_index=True).to_parquet(sandbox_odds)
+
+        report = write_odds_additively(
+            incoming,
+            base_path=tmp_path,
+            features_ou_df=pd.read_parquet(_GOLD_OU, columns=["game_id"]),
+        )
+
+        after = pd.read_parquet(sandbox_odds)
+        survivor = after[
+            (after["game_id"].astype(str) == contested_game_id)
+            & (after["sportsbook"].astype(str) == "draftkings")
+        ]
+
+        assert len(survivor) == 1, (
+            f"the stored draftkings row for {contested_game_id} did not survive a consensus "
+            f"ingest of the same game ({len(survivor)} rows found). The write is declared "
+            "ADDITIVE on the (game_id, sportsbook, snapshot_ts) key and upsert_silver keys on "
+            "game_id alone."
+        )
+        # Its own lines are untouched -- it was carried through, not rewritten from the
+        # consensus values.
+        assert float(survivor.iloc[0]["spread"]) == -13.5
+        assert float(survivor.iloc[0]["total"]) == 99.5
+        assert report.rows_carried_forward >= 1, (
+            "the report does not count the carried-forward row, so an operator reading the "
+            "merge summary cannot tell the clobber was avoided"
+        )
+        # The consensus row for the same game is still there: carrying the rival forward must
+        # not displace the row the ingest came to write.
+        assert (
+            len(
+                after[
+                    (after["game_id"].astype(str) == contested_game_id)
+                    & (after["sportsbook"].astype(str) == ODDS_SPORTSBOOK_LABEL)
+                ]
+            )
+            == 1
+        )
+
     def test_the_ingest_refuses_to_write_when_its_gate_cannot_run(
         self, tmp_path: Path
     ) -> None:

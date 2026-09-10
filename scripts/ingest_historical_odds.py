@@ -643,6 +643,10 @@ class OddsWriteReport:
             merge (clause 5). A non-zero count here is the Rams resolution doing its job.
         rows_with_lines_preserved: Incoming rows whose ``spread``, ``total``, ``ml_home`` and
             ``ml_away`` were taken from the STORED row rather than the incoming one (clause 2).
+        rows_carried_forward: Stored rows re-supplied to the write because ``upsert_silver`` keys
+            on ``game_id`` alone and would otherwise have DELETED them (clause 6, CR-01/CR-03).
+            A non-zero count is a second sportsbook or a second snapshot for an incoming game
+            surviving the merge instead of being silently erased.
     """
 
     path: Path
@@ -651,6 +655,7 @@ class OddsWriteReport:
     rows_after: int
     stored_ids_normalized: int
     rows_with_lines_preserved: int
+    rows_carried_forward: int = 0
 
 
 def _silver_table_path(base_path: Path, table_name: str) -> Path:
@@ -886,6 +891,71 @@ def preserve_stored_lines(
     return result, n_matched
 
 
+def carry_forward_unmatched_stored_rows(
+    incoming: pd.DataFrame, stored: pd.DataFrame
+) -> tuple[pd.DataFrame, int]:
+    """Re-supply the stored rows a ``game_id``-keyed write would DELETE (clause 6, CR-03).
+
+    ``upsert_silver`` keys on ``game_id`` ALONE --
+    ``existing[~existing["game_id"].isin(new["game_id"])]`` -- so it deletes every stored row whose
+    game appears anywhere in the incoming frame, regardless of which SPORTSBOOK wrote it. Every
+    incoming row carries ``sportsbook = "consensus"``, so a re-ingest of a season erased every
+    non-consensus row for those games. The module docstring records that a ``draftkings`` row was
+    in production silver as recently as Plan 31-08, and the OUM-06 allowlist admits it.
+
+    ``assert_one_row_per_key`` cannot catch that: the clobber GUARANTEES one row per key, so the
+    invariant passes trivially and reports success on a table that just lost rows.
+
+    The resolution keeps the shared ``upsert_silver`` untouched and instead hands it the
+    survivors: stored rows for an incoming game whose ``(game_id, sportsbook)`` pair is NOT in the
+    incoming frame are appended to what is written, so the by-``game_id`` delete removes them and
+    the write puts them straight back.
+
+    WHY THE PAIR AND NOT THE FULL ``ODDS_KEY_COLUMNS`` TRIPLE. Carrying forward on the triple was
+    tried and is WRONG here, because clause 3 RE-DERIVES ``snapshot_ts`` per game on every run: a
+    stored 2025 row spelled ``2025-08-29 22:00:00+00:00`` and the row this module now writes for
+    the same game are the same fact at two different instants, so a triple-keyed carry-forward
+    treats the re-derivation as an addition. Measured on the real merge fixture: +285 rows for 285
+    incoming games, nothing replaced. The pair is also the grain
+    :func:`preserve_stored_lines` already matches and de-duplicates on, so the two halves of the
+    clause-2 / clause-6 contract now agree. Per-book TRAJECTORY lives in the separate
+    ``odds_timeline`` table (D-11), which is composite-keyed on ``(game_id, snapshot_ts)``
+    precisely because ``odds_snapshot`` is a latest-per-(game, book) table.
+
+    Args:
+        incoming: The rows about to be written (already line-preserved).
+        stored: The rows currently in the destination.
+
+    Returns:
+        The frame to write, and the number of stored rows carried forward.
+    """
+    key = ["game_id", "sportsbook"]
+    if incoming.empty or stored.empty:
+        return incoming, 0
+    if not set(key).issubset(incoming.columns) or not set(key).issubset(stored.columns):
+        return incoming, 0
+
+    def _pairs(frame: pd.DataFrame) -> pd.Series:
+        return frame["game_id"].astype(str) + "|" + frame["sportsbook"].astype(str)
+
+    clobbered = stored["game_id"].astype(str).isin(incoming["game_id"].astype(str))
+    if not clobbered.any():
+        return incoming, 0
+
+    at_risk = stored[clobbered]
+    survivors = at_risk[~_pairs(at_risk).isin(set(_pairs(incoming)))]
+    if survivors.empty:
+        return incoming, 0
+
+    logger.info(
+        "Carrying stored odds rows forward past the game_id-keyed write",
+        rows=len(survivors),
+        sportsbooks=sorted(survivors["sportsbook"].astype(str).unique()),
+    )
+    combined = pd.concat([incoming, survivors], ignore_index=True)
+    return combined, len(survivors)
+
+
 def write_odds_additively(
     incoming: pd.DataFrame,
     *,
@@ -943,8 +1013,15 @@ def write_odds_additively(
 
     rows, rows_with_lines_preserved = preserve_stored_lines(incoming, stored)
 
+    # Clause 6 / CR-03: upsert_silver keys on game_id ALONE, so it would delete every stored row
+    # for an incoming game -- other sportsbooks, other snapshots and all. Hand it the survivors so
+    # the write puts them back.
+    rows_to_write, rows_carried_forward = carry_forward_unmatched_stored_rows(
+        rows, stored
+    )
+
     written_path = upsert_silver(
-        rows, table_name, key_column="game_id", base_path=base_path
+        rows_to_write, table_name, key_column="game_id", base_path=base_path
     )
 
     merged = pd.read_parquet(written_path)
@@ -957,6 +1034,7 @@ def write_odds_additively(
         rows_after=len(merged),
         stored_ids_normalized=stored_ids_normalized,
         rows_with_lines_preserved=rows_with_lines_preserved,
+        rows_carried_forward=rows_carried_forward,
     )
     logger.info(
         "Merged odds into silver",
