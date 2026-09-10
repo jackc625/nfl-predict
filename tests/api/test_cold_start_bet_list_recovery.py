@@ -342,6 +342,26 @@ def _named_scripts(body: str) -> list[str]:
     return ordered
 
 
+def _instructional_paragraphs(body: str) -> list[str]:
+    """Every rendered paragraph that names at least one ``scripts/*.py`` command.
+
+    WHY THIS EXISTS SEPARATELY FROM ``_named_scripts``. That helper deduplicates across the whole
+    body, which is right for asking "does the page name the sequence" and BLIND to "does every
+    block that gives an instruction name a sequence that works". A third block naming only the
+    copy step collapses into the first block's mention and disappears. G-31-123c was exactly that:
+    two refusal blocks were corrected and a third kept telling the reader to re-run the command
+    that produced the state they were in, with the whole-body assertion still green.
+
+    Both ``_error_state.html`` and ``_empty_state.html`` render their instruction into a ``<p>``,
+    so paragraphs are the block boundary the page actually has.
+    """
+    return [
+        re.sub(r"<[^>]+>", "", para)
+        for para in re.findall(r"<p\b[^>]*>(.*?)</p>", body, flags=re.S)
+        if _SCRIPT_PATH_PATTERN.search(para)
+    ]
+
+
 def _module_of(script_path: str) -> ast.Module:
     """Parse a repo-relative script path."""
     return ast.parse((_REPO_ROOT / script_path).read_text(encoding="utf-8"))
@@ -546,6 +566,16 @@ def test_copy_only_refusal_names_both_commands_so_the_loop_is_broken(
 
     with _serving(db_path) as client:
         body = client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+
+    for paragraph in _instructional_paragraphs(body):
+        assert _named_scripts(paragraph) == [_GENERATE_SCRIPT, _POPULATE_SCRIPT], (
+            "a block that gives the reader a command names a sequence that cannot restore what it "
+            f"refers to; it names {_named_scripts(paragraph)}. The offending block reads:\n"
+            f"{paragraph.strip()[:400]}\n"
+            "Every instructional block must name the producer before the copy step -- naming only "
+            "the copy step is the loop, whichever block does it. The whole-body assertion below "
+            "cannot catch this: it deduplicates, so a repeat of the copy step alone is invisible."
+        )
 
     assert _named_scripts(body) == [_GENERATE_SCRIPT, _POPULATE_SCRIPT], (
         "the refusal a copy-step-only reader lands on does not name the generation script before "

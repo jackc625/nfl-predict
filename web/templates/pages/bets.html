@@ -546,7 +546,7 @@
     <p class="text-sm text-gray-500 max-w-2xl mt-1">{{ TRACKER_CAPTIONS["forward"] }}</p>
   </div>
   {% with message="The forward record is withheld -- the cache is older than this week's line freeze",
-          recovery_text='The forward record\'s totals are computed from the same cache the list above was refused on, so they would be out of date. The backtest replay above is unaffected and remains readable, because a replay figure does not depend on the current week\'s line freeze. Re-run "uv run python scripts/populate_cache.py" to restore this section.' %}
+          recovery_text='The forward record\'s totals are computed from the same cache the list above was refused on, so they would be out of date. The backtest replay above is unaffected and remains readable, because a replay figure does not depend on the current week\'s line freeze. To restore this section, rebuild the list with "uv run python scripts/generate_bet_list.py" and then load it into the cache with "uv run python scripts/populate_cache.py". The second command only COPIES what the first produces, so running it on its own leaves this section withheld.' %}
     {% include "components/_error_state.html" %}
   {% endwith %}
 </section>
