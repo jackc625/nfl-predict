@@ -4,8 +4,9 @@ WHAT THIS MODULE IS
 -------------------
 The single entry point the Friday pipeline's recommendation step delegates to. It routes a week
 through ``backtest.bet_selector.BetSelector`` -- the LOCKED-2 single bet-decision source -- maps
-the decision records onto ``api.cache.BET_LIST_COLUMNS``, and persists them to a DURABLE artifact
-under ``outputs/bet_list/`` that the Plan 31-18 cache population step reads.
+the decision records onto ``api.cache.BET_LIST_COLUMNS``, and persists them to the DURABLE
+artifact PAIR under ``outputs/bet_list/`` -- the bet list AND its companion tracker blocks, both
+written by :func:`generate_weekly_bet_list` -- that the Plan 31-18 cache population step reads.
 
 It REPLACES a legacy step body that filtered on a confidence tier with no expected value, no
 sizing and no suppression, and wrote a JSON file no code ever read.
@@ -86,6 +87,15 @@ from api.cache import (
     stamp_bet_list_provenance,
 )
 from backtest.bet_selector import BetSelector, SelectionResult
+
+# MODULE-LEVEL, not lazy, and the distinction is a claim rather than a style choice. There is no
+# cycle to break here: ``backtest.bet_tracker`` imports ``api.cache`` and ``utils`` and imports
+# NOTHING from this module, and both import orders were run live before this import was added. A
+# deferred import would imply a constraint that does not exist -- which is how the split this
+# import exists to close was justified in the first place. Contrast
+# ``build_bet_week_schedule``'s import of ``scripts.ingest_historical_odds``, which IS deferred
+# and whose docstring names the real cycle it breaks.
+from backtest.bet_tracker import aggregate_all_blocks, to_tracker_frame
 from backtest.ev_chain_constants import assign_ev_tier
 from backtest.ou_divergence import (
     HIGH_TOTAL_BOUNDARY_PREHOLD,
@@ -1184,14 +1194,33 @@ def generate_weekly_bet_list(
     bankroll: float = DEFAULT_BANKROLL,
     now: datetime | None = None,
 ) -> pd.DataFrame:
-    """Select one week, merge it into the durable artifact, grade what is settled, and persist.
+    """Select one week, merge it into the durable artifacts, grade what is settled, and persist.
 
     THE single weekly selection entry point (SPEC R4, D31-31). It writes NOTHING under ``data/``
-    and opens NO connection to the live cache: the write is the artifact under ``output_dir``,
-    which the Plan 31-18 population step loads into the temp cache build before the atomic swap.
+    and opens NO connection to the live cache: the write is the PAIR of artifacts under
+    ``output_dir``, which the Plan 31-18 population step loads into the temp cache build before
+    the atomic swap.
+
+    THE WRITE IS THE PAIR, AND THE PAIR IS INDIVISIBLE (Plan 31-22, T-31-114). Both
+    ``BET_LIST_ARTIFACT_NAME`` and ``BET_TRACKER_ARTIFACT_NAME`` are written here, from the SAME
+    graded frame. ``/bets`` reads both through ONE reader,
+    :func:`read_bet_list_cache_sources`, so a caller that produced only the parquet would leave
+    the realized-versus-expected tracker permanently EMPTY while the page still looked correct --
+    a page that has quietly stopped grading itself and does not say so. That is not a cosmetic
+    gap: the tracker is the honesty half of the feature.
+
+    WHY THE AGGREGATION LIVES HERE (REVIEW-IMPORT, T-31-117). It used to live in
+    ``pipeline/steps.py::step_generate_recommendations``, which meant the tracker was written by
+    the SCHEDULED STEP rather than by this function -- so any second caller of this function
+    produced half the pair. It is here now so the scheduled step and the manual command
+    (``scripts/generate_bet_list.py``) cannot produce different artifact SETS. It is NOT in
+    ``api/cache.py``, and could not be: that module may import no ``backtest`` module (UIAP-01,
+    ``tests/api/test_import_guard_bets.py``), whose allow-list this move does not widen. The
+    pure-persistence seam is unchanged; only the aggregation's position INSIDE ``backtest/``
+    moved.
 
     Returns:
-        The merged, graded bet list -- the same frame that was written.
+        The merged, graded bet list -- the same frame both artifacts were written from.
     """
     if run_mode not in (RUN_MODE_FORWARD, RUN_MODE_REPLAY):
         msg = (
@@ -1229,6 +1258,11 @@ def generate_weekly_bet_list(
         gold_dir=gold_dir,
     )
     write_bet_list_artifact(graded, output_dir)
+    # The tracker is aggregated from the SAME graded frame that was just written, not from a
+    # re-read of the artifact: a re-read would let the two halves describe different rows if a
+    # write partially failed.
+    blocks = aggregate_all_blocks(graded)
+    write_bet_tracker_artifact(to_tracker_frame(blocks), output_dir=output_dir)
 
     logger.info(
         "Weekly bet list generated",
@@ -1237,6 +1271,7 @@ def generate_weekly_bet_list(
         run_mode=run_mode,
         n_live=int((graded["status"] == BET_STATUS_LIVE).sum()),
         n_rows=len(graded),
+        n_tracker_blocks=len(blocks),
     )
     return graded
 

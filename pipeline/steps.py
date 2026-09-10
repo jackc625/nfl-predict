@@ -388,27 +388,31 @@ def step_generate_recommendations() -> None:
     ``tmp_path.rename(db_path)``, so a live-cache write would be destroyed by the next population
     run. No connection to the configured cache path is opened anywhere in this step.
 
-    THE TRACKER IS AGGREGATED HERE (REVIEW-IMPORT). ``backtest.bet_tracker`` is imported by THIS
-    module -- which is already permitted to import ``backtest`` -- and its precomputed frame is
-    handed to ``api.cache``'s pure persistence writer at population time. ``api/cache.py`` imports
-    no ``backtest`` module, so ``tests/api/test_import_guard_bets.py``'s allow-list is not widened.
+    THE TRACKER AGGREGATION MOVED INTO THE DELEGATE (Plan 31-22, T-31-114/117). It used to happen
+    HERE, which meant the two halves of the durable pair were written from two different places:
+    the library function wrote the bet list and this step wrote the companion tracker blocks. Any
+    OTHER caller of the delegate therefore produced half the pair, and the realized-versus-expected
+    tracker would stay permanently empty while ``/bets`` still looked correct. Both writes now
+    travel together inside ``generate_weekly_bet_list``, so this scheduled step and the manual
+    command ``scripts/generate_bet_list.py`` cannot produce different artifact SETS.
+
+    The seam itself is UNCHANGED. ``api/cache.py`` still imports no ``backtest`` module and the
+    sibling guard ``tests/api/test_import_guard_bets.py``'s allow-list is still not widened: the
+    aggregation moved from one module permitted to import ``backtest`` to another, never into
+    ``api/``. What this step is left with is exactly the thin delegate the rest of this docstring
+    already described -- resolve the week, resolve the output directory, call the one selection
+    facade.
 
     Raises:
         Whatever the delegate raises. Nothing is swallowed: a week that cannot be selected must
         record a clean step failure rather than publish a silently empty bet list.
     """
-    from backtest.bet_tracker import aggregate_all_blocks, to_tracker_frame
-    from backtest.weekly_bet_list import (
-        generate_weekly_bet_list,
-        write_bet_tracker_artifact,
-    )
+    from backtest.weekly_bet_list import generate_weekly_bet_list
     from utils.date_utils import get_current_nfl_week
 
     season, week = get_current_nfl_week()
-    output_dir = _bet_list_output_dir()
-    bet_list = generate_weekly_bet_list(season=season, week=week, output_dir=output_dir)
-    write_bet_tracker_artifact(
-        to_tracker_frame(aggregate_all_blocks(bet_list)), output_dir=output_dir
+    generate_weekly_bet_list(
+        season=season, week=week, output_dir=_bet_list_output_dir()
     )
 
 
