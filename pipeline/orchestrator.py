@@ -190,10 +190,25 @@ class FridayPipeline:
 
     # -- Finalization helpers ------------------------------------------------
 
-    def _finalize_log(self) -> None:
-        """Set end_time, total_duration_ms, and write log atomically."""
+    def _stamp_duration(self) -> None:
+        """Set ``end_time`` and ``total_duration_ms`` from the recorded steps.
+
+        SPLIT OUT OF :meth:`_finalize_log` (WR-09). Phase E's success alert reads
+        ``total_duration_ms`` and ``_finalize_log`` -- the only place that computed it -- ran
+        AFTER, so every successful Friday run alerted ``execution_time_ms=0``
+        (``ExecutionLog.total_duration_ms`` defaults to 0). Since ``pipeline/alert.py`` is
+        log-only by default, that alert line is the one place a pipeline slowing down would show,
+        and it was permanently zero. The failure and degraded branches never read the field, so
+        they were unaffected.
+
+        Idempotent: calling it again recomputes the same sum from the same steps.
+        """
         self._log.end_time = datetime.now(ET).isoformat()
         self._log.total_duration_ms = sum(s.duration_ms for s in self._log.steps)
+
+    def _finalize_log(self) -> None:
+        """Set end_time, total_duration_ms, and write log atomically."""
+        self._stamp_duration()
         write_execution_log_atomic(self._log, LOG_PATH)
 
     # -- Main run loop -------------------------------------------------------
@@ -336,6 +351,10 @@ class FridayPipeline:
         # ---------------------------------------------------------------
         # Phase E: Completion alerting (exactly ONE alert per outcome)
         # ---------------------------------------------------------------
+        # The duration is stamped BEFORE the alert reads it (WR-09). _finalize_log below still
+        # stamps it (idempotently) on its way to writing the log, so the written log and the
+        # alerted number are the same figure computed from the same steps.
+        self._stamp_duration()
         failed_steps = [
             s.name for s in self._log.steps if s.status == StepStatus.FAILED.value
         ]

@@ -1,5 +1,6 @@
 """Tests for pipeline orchestrator, step registry, and CLI."""
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -700,3 +701,78 @@ class TestAuto02CoverageGaps:
         assert mock_alert.alert_pipeline_success.call_count == 1
         mock_alert.alert_pipeline_failure.assert_not_called()
         mock_alert.alert_degraded_completion.assert_not_called()
+
+
+class TestTheSuccessAlertReportsARealDuration:
+    """WR-09: Phase E read ``total_duration_ms`` before anything computed it.
+
+    ``_finalize_log`` was the ONLY place that summed the step durations, and it ran AFTER the
+    Phase-E alert. ``ExecutionLog.total_duration_ms`` defaults to 0, so every successful Friday run
+    alerted ``execution_time_ms=0``. Since ``pipeline/alert.py`` is log-only by default, that alert
+    line is the one place a pipeline slowing down would show, and it was permanently zero.
+
+    The failure and degraded branches never read the field, so they were unaffected -- asserted
+    below so the fix is not credited with more than it did.
+    """
+
+    @staticmethod
+    def _run_success() -> tuple[object, object]:
+        from pipeline.orchestrator import FridayPipeline
+
+        mock_staleness, mock_health, mock_alert = _make_gate_mocks()
+
+        def _slow() -> None:
+            time.sleep(0.02)
+
+        steps = [
+            make_mock_step("step_a", PipelinePhase.DATA),
+            make_mock_step("step_b", PipelinePhase.PREDICTIONS),
+        ]
+        steps[0].callable.side_effect = _slow
+        steps[1].callable.side_effect = _slow
+
+        with (
+            patch("pipeline.orchestrator.StalenessGate", return_value=mock_staleness),
+            patch(
+                "pipeline.orchestrator.PipelineHealthChecker", return_value=mock_health
+            ),
+            patch(
+                "pipeline.orchestrator.PipelineAlertManager", return_value=mock_alert
+            ),
+            patch("pipeline.orchestrator.build_step_registry", return_value=steps),
+        ):
+            log = FridayPipeline().run()
+        return log, mock_alert
+
+    @pytest.mark.usefixtures("_patch_nfl_week", "_patch_log_write")
+    def test_the_alerted_execution_time_is_not_zero(self):
+        log, mock_alert = self._run_success()
+
+        alerted = mock_alert.alert_pipeline_success.call_args.kwargs[
+            "execution_time_ms"
+        ]
+
+        assert alerted > 0, (
+            "the success alert reported execution_time_ms=0 for a run whose steps actually took "
+            f"{log.total_duration_ms} ms -- Phase E read the field before anything set it"
+        )
+
+    @pytest.mark.usefixtures("_patch_nfl_week", "_patch_log_write")
+    def test_the_alerted_time_is_the_same_figure_the_written_log_carries(self):
+        """Two numbers for one run would be worse than one wrong number."""
+        log, mock_alert = self._run_success()
+
+        alerted = mock_alert.alert_pipeline_success.call_args.kwargs[
+            "execution_time_ms"
+        ]
+
+        assert alerted == pytest.approx(log.total_duration_ms)
+
+    @pytest.mark.usefixtures("_patch_nfl_week", "_patch_log_write")
+    def test_the_duration_still_equals_the_sum_of_the_step_durations(self):
+        """The stamp must not become a wall-clock reading; it is the recorded steps' sum."""
+        log, _ = self._run_success()
+
+        assert log.total_duration_ms == pytest.approx(
+            sum(s.duration_ms for s in log.steps)
+        )
