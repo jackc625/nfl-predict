@@ -202,12 +202,34 @@ def _reconnect_under_lock(request: Request) -> duckdb.DuckDBPyConnection:
             # forcing a reconnect with the old object alive still served pre-swap
             # data, and closing it first fixed it immediately.
             #
-            # ACCEPTED COST (T-31-104): a request already executing on the old
-            # handle in another thread can see a closed connection and fail. That
-            # is a loud failure, at most once per population run, and the
-            # alternative it replaces is SILENT PERMANENT staleness. The app is
-            # documented single-worker (see ``api.main.lifespan``), which bounds
-            # the exposure.
+            # ACCEPTED COST (T-31-104), STATED AT ITS TRUE SIZE. A request already
+            # executing on the old handle in another thread can see a closed
+            # connection and fail. The exposure is NOT bounded by the app being
+            # single-worker: ``--workers 1`` bounds PROCESSES, not threads, and it
+            # does not serialise requests. Every route in ``api/routes/pages.py``
+            # is a sync ``def``, so Starlette dispatches all of them into the AnyIO
+            # worker threadpool (40 threads by default), ``get_db`` is a sync
+            # dependency that runs there too, and the connection it returns is used
+            # by ``DataService`` OUTSIDE ``app.state.db_lock`` -- the lock covers
+            # only this reconnect. So the window is not one instant on one thread:
+            # it is however long the slowest concurrent request holds the old
+            # handle. The symptom is a ``duckdb.ConnectionException`` from that
+            # request's next ``execute``, which nothing in ``api/`` catches (no
+            # exception handler is registered at all, so even
+            # ``ModelUnavailableError`` surfaces as a 500 rather than its nominal
+            # 503) -- i.e. an unmapped HTTP 500 on a page, once per population run.
+            #
+            # IT IS STILL THE RIGHT TRADE, and the two alternatives were considered
+            # and rejected on mechanism rather than taste. Retiring the old handle
+            # instead of closing it, or handing each request its own
+            # ``conn.cursor()``, both keep the old DuckDB instance ALIVE -- and per
+            # the paragraph above, a connect issued against a live instance returns
+            # that same stale instance, which reinstates the SILENT PERMANENT
+            # staleness this whole path exists to remove. Trading a loud transient
+            # 500 for a silent permanent lie is the wrong direction. Making the
+            # use-after-close genuinely safe needs per-request connection
+            # generations with a deferred close once the last borrower returns,
+            # which is a redesign of the ownership model, not a comment fix.
             try:
                 current.close()
             except (duckdb.Error, OSError) as exc:

@@ -52,8 +52,21 @@ async def lifespan(app: FastAPI):
     (``uvicorn ... --workers 1``). Thread-safety of ``app.state.db_conn`` and
     the module-level TTLCache introduced in plan 15-02 is bounded by:
         (a) Python's GIL,
-        (b) the single async event loop,
-        (c) ``app.state.db_lock`` (threading.RLock) below for reconnects.
+        (b) ``app.state.db_lock`` (threading.RLock) below for reconnects.
+
+    WHAT ``--workers 1`` DOES *NOT* BOUND (corrected here; the earlier version of
+    this docstring cited "the single async event loop" as a bound, and code in
+    ``api.dependencies`` cited this docstring in turn). It bounds the number of
+    PROCESSES. It does not serialise requests, and there is no single-threaded
+    event-loop bound to lean on either: every route in ``api/routes/pages.py`` is
+    a sync ``def``, so Starlette dispatches all of them into the AnyIO worker
+    threadpool -- 40 threads by default -- rather than running them on the loop.
+    Requests therefore execute CONCURRENTLY on distinct threads, and the shared
+    connection is read outside ``app.state.db_lock`` (that lock covers only the
+    reconnect). The consequence is recorded at its true size on the
+    ``current.close()`` in ``api.dependencies._reconnect_under_lock``; do not
+    re-derive a narrower bound from the worker count.
+
     If ``--workers N`` with N > 1 is ever enabled, the shared connection and
     the cache must be revisited (each worker would hold its own copy and any
     cross-worker coordination would require out-of-process state). The
