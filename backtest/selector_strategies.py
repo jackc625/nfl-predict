@@ -68,6 +68,8 @@ import math
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
+import pandas as pd
+
 from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from backtest.ou_ev_chain import calibrated_p_over, devig
 from backtest.simulation import (
@@ -90,6 +92,7 @@ __all__ = [
     "UnregisteredTargetError",
     "WPStrategy",
     "default_strategies",
+    "is_absent",
     "require_finite_high_total_boundary",
 ]
 
@@ -144,6 +147,27 @@ def _wp_chain() -> Any:
 # ---------------------------------------------------------------------------
 # Reading a stored two-sided price (DEF-31-13, ruled 2026-09-05)
 # ---------------------------------------------------------------------------
+
+
+def is_absent(value: Any) -> bool:
+    """True when *value* is missing for decision purposes -- None, NaN or NaT (WR-06).
+
+    THE CANONICAL absence predicate for this pair of modules. It lives here, not in
+    ``backtest.bet_selector``, because ``bet_selector`` already imports this module and the
+    reverse import would close a cycle.
+
+    A candidates DataFrame turns a missing cell into NaN, never into ``None``, and
+    ``float("nan") is None`` is False. So a plain ``is None`` guard reads an absent realized result
+    as PRESENT: ``_resolve_ou_outcome`` then finds ``abs(nan - line) < 1e-9`` False (no push) and
+    ``nan > line`` False, and grades an UNDER bet on an unplayed game as a WIN. Reproduced on this
+    checkout: a candidate carrying ``actual = NaN`` came back ``outcome=True``.
+    """
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def _juice_price(row: dict[str, Any], column: str) -> float | None:
@@ -541,7 +565,10 @@ class OUStrategy:
         represented by None here; downstream stores both as SQL NULL (Plan 04).
         """
         actual = record.get("_actual_total")
-        if actual is None:
+        # ``is_absent``, not ``is None``: a DataFrame candidate carries a missing realized total
+        # as NaN, and a NaN sails past ``is None`` into the resolver, which grades an UNDER on an
+        # unplayed game as a WIN (WR-06).
+        if is_absent(actual):
             return None
         return self._sim._resolve_ou_outcome(
             record["bet_side"], float(actual), record["slipped_line"]
@@ -775,7 +802,10 @@ class ATSStrategy:
         with no realized value is ungraded, also None.
         """
         actual_margin = record.get("_actual_total")
-        if actual_margin is None or record.get("slipped_line") is None:
+        # ``is_absent`` for the same reason as OUStrategy.grade: NaN is how a DataFrame spells an
+        # absent realized margin, and ``nan > line`` is False, so the away side wins by default on
+        # a game nobody has played (WR-06).
+        if is_absent(actual_margin) or is_absent(record.get("slipped_line")):
             return None
         return self._sim._resolve_ats_outcome(
             record["bet_side"], float(actual_margin), float(record["slipped_line"])
@@ -938,7 +968,10 @@ class WPStrategy:
         game that has not been played.
         """
         actual_home_win = record.get("_actual_total")
-        if actual_home_win is None:
+        # ``is_absent`` for the same reason as the two line targets, with a louder symptom here:
+        # ``int(nan)`` raises "cannot convert float NaN to integer", which propagates out of
+        # ``BetSelector.select`` and fails the whole selection (WR-06).
+        if is_absent(actual_home_win):
             return None
         return self._sim._resolve_wp_outcome(record["bet_side"], int(actual_home_win))
 

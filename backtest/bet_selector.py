@@ -106,6 +106,7 @@ from backtest.selector_strategies import (
     OUStrategy,
     TargetStrategy,
     UnregisteredTargetError,
+    is_absent,
     require_finite_high_total_boundary,
 )
 from backtest.simulation import (
@@ -164,18 +165,11 @@ __all__ = [
 _PREDICTION_FIELD_PREFIX = "model_"
 
 
-def _is_absent(value: Any) -> bool:
-    """True when *value* is missing for decision purposes (None, NaN or NaT).
-
-    A candidates DataFrame turns a missing cell into NaN rather than None, so a ``is None`` check
-    alone would read a NaN market value as PRESENT and price a bet off it.
-    """
-    if value is None:
-        return True
-    try:
-        return bool(pd.isna(value))
-    except (TypeError, ValueError):
-        return False
+# The canonical absence predicate now lives in ``backtest.selector_strategies`` (WR-06), which
+# this module already imports -- the three ``grade()`` implementations there need the same
+# predicate, and importing this module from there would close a cycle. Re-bound under the existing
+# private name so the six call sites below read unchanged.
+_is_absent = is_absent
 
 
 def _prediction_field_names(strategy: TargetStrategy) -> frozenset[str]:
@@ -1104,6 +1098,14 @@ class BetSelector:
         for row in raw:
             rec = dict(row)
             if "actual" in rec:
-                rec["_actual_total"] = rec.get("actual")
+                # NORMALIZED TO None AT THE STASH (WR-06). A DataFrame candidate spells an absent
+                # realized value as NaN, and every downstream absence contract in this repository
+                # is written against ``None`` -- the three ``grade()`` guards (now defended in
+                # their own right) and
+                # ``profitability_2025._measure_and_judge``'s push-versus-ungraded split, which
+                # would otherwise count an UNPLAYED game as a PUSH on the verdict artifact.
+                # Normalizing here means an absent result is absent in ONE spelling everywhere.
+                value = rec.get("actual")
+                rec["_actual_total"] = None if is_absent(value) else value
             records.append(rec)
         return records

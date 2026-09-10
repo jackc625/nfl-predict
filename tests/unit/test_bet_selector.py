@@ -2402,3 +2402,136 @@ class TestSideResolutionDelegatesToTheLockedSimulator:
             assert not returned_literals, (
                 f"{cls.__name__}.resolve_bet_side returns a hard-coded side string"
             )
+
+
+# ---------------------------------------------------------------------------
+# WR-06: an UNPLAYED game is UNGRADED, in every target and in every frame shape
+# ---------------------------------------------------------------------------
+
+
+class TestAnUnplayedGameIsNeverGraded:
+    """The push / ungraded / absent contracts were written against ``None`` and arrive as NaN.
+
+    Every candidate frame on both live paths -- ``weekly_bet_list.select_weekly_bets`` and
+    ``profitability_2025._select`` -- is a DataFrame, and a DataFrame spells a missing cell as
+    NaN, never ``None``. ``float("nan") is None`` is False, so the ``is None`` guards in the three
+    ``grade()`` implementations let a NaN straight through:
+
+    * ``OUStrategy``  -> ``abs(nan - line) < 1e-9`` False (no push) and ``nan > line`` False, so an
+      UNDER on a game nobody has played is graded a WIN and an OVER a LOSS;
+    * ``ATSStrategy`` -> ``nan > line`` False, so the away side covers by default;
+    * ``WPStrategy``  -> ``int(nan)`` raises "cannot convert float NaN to integer", which
+      propagates out of ``BetSelector.select`` and fails the whole selection.
+
+    Reproduced on this checkout before the fix: an O/U candidate carrying ``actual = NaN`` came
+    back ``outcome=True``.
+
+    The module already knew the difference -- ``_is_absent`` existed precisely to catch NaN -- it
+    just was not used at the grading seam.
+    """
+
+    @staticmethod
+    def _selected(rows: list[dict]) -> dict[str, dict]:
+        selector = _three_target_selector(ev_floor_t=0.0)
+        result = selector.select(pd.DataFrame(rows))
+        return {r["game_id"]: r for r in result.selected}
+
+    def test_an_ou_bet_on_an_unplayed_game_is_ungraded_not_a_win(self) -> None:
+        rows = [
+            _ou_row(
+                "2021_W01_AAA@BBB",
+                model_total=38.0,
+                closing_total=45.0,
+                actual_total=float("nan"),
+            ),
+            _ou_row(
+                "2021_W02_CCC@DDD",
+                model_total=39.0,
+                closing_total=46.0,
+                actual_total=40.0,
+            ),
+        ]
+        for row in rows:
+            row["target"] = "ou"
+
+        selected = self._selected(rows)
+
+        assert selected["2021_W01_AAA@BBB"]["outcome"] is None, (
+            "a game with no realized total was GRADED. Under the old `is None` guard the NaN "
+            "reached _resolve_ou_outcome, which found no push and no over, and paid the under."
+        )
+        assert selected["2021_W02_CCC@DDD"]["outcome"] is not None, (
+            "the played game came back ungraded too, so this module proves nothing"
+        )
+
+    def test_an_ats_bet_on_an_unplayed_game_is_ungraded_not_an_away_cover(self) -> None:
+        rows = [
+            _ats_row(
+                "2021_W01_EEE@FFF",
+                model_spread=7.0,
+                closing_spread=1.0,
+                actual_margin=float("nan"),
+            ),
+            _ats_row(
+                "2021_W02_GGG@HHH",
+                model_spread=7.0,
+                closing_spread=1.0,
+                actual_margin=10.0,
+            ),
+        ]
+
+        selected = self._selected(rows)
+
+        assert selected["2021_W01_EEE@FFF"]["outcome"] is None
+        assert selected["2021_W02_GGG@HHH"]["outcome"] is not None
+
+    def test_a_wp_bet_on_an_unplayed_game_is_ungraded_and_does_not_crash_the_selection(
+        self,
+    ) -> None:
+        """The WP symptom is not a wrong grade but a ``ValueError`` out of the whole ``select``."""
+        rows = [
+            _wp_row(
+                "2021_W01_III@JJJ",
+                model_prob=0.75,
+                ml_home=-150,
+                ml_away=130,
+                actual_home_win=float("nan"),  # type: ignore[arg-type]
+            ),
+            _wp_row(
+                "2021_W02_KKK@LLL",
+                model_prob=0.75,
+                ml_home=-150,
+                ml_away=130,
+                actual_home_win=1,
+            ),
+        ]
+
+        selected = self._selected(rows)
+
+        assert selected["2021_W01_III@JJJ"]["outcome"] is None
+        assert selected["2021_W02_KKK@LLL"]["outcome"] is not None
+
+    def test_the_stash_normalizes_absence_to_one_spelling(self) -> None:
+        """``_actual_total`` is None, not NaN -- so the push/ungraded split downstream is right.
+
+        ``profitability_2025._measure_and_judge`` classifies a push as
+        ``outcome is None and _actual_total is not None``. A NaN there is ``not None``, so an
+        UNPLAYED game would be counted as a PUSH on the verdict artifact.
+        """
+        rows = [
+            _ou_row(
+                "2021_W01_MMM@NNN",
+                model_total=38.0,
+                closing_total=45.0,
+                actual_total=float("nan"),
+            )
+        ]
+        rows[0]["target"] = "ou"
+
+        record = self._selected(rows)["2021_W01_MMM@NNN"]
+
+        assert record["_actual_total"] is None, (
+            f"_actual_total came back as {record['_actual_total']!r}; the downstream "
+            "push-versus-ungraded split reads `is not None` and would count an unplayed game "
+            "as a push"
+        )
