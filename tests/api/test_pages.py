@@ -596,6 +596,12 @@ def test_the_this_week_page_still_targets_the_games_grid(
     # The shipped page gains NO failure handler and NO indicator: both default to omitted.
     for event in FAILURE_EVENTS:
         assert event not in markup
+    # And NO request timeout (plan 31-21). The timeout exists to make hx-on::timeout reachable on
+    # /bets; this page has no such handler, so a timeout here would abort a hung request with
+    # nowhere to send the event -- a behaviour change on a page that never asked for one.
+    assert "hx-request" not in markup, (
+        "the shipped This Week page gained a request timeout it never asked for"
+    )
 
 
 # ---------------------------------------------------------------------------

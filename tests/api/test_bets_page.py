@@ -25,7 +25,7 @@ honesty class, the provenance badge that labels them, and the /betting cross-lin
 
 Selectors (``-k``): served_equals_selector, served_order, tie_break, not_advice_banner,
 no_currency, nav_link, ev_band_badge, empty_week, taxonomy, reason_code, suppressed, disclosure,
-caption, moneyline, tracker, pushes, graded, return, provenance, badge, cross_link.
+caption, moneyline, tracker, pushes, graded, return, provenance, badge, cross_link, timeout.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -33,6 +33,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import ast
+import json
 import re
 import threading
 from collections.abc import Iterator
@@ -59,6 +60,7 @@ from api.cache import (
     materialize_bet_tracker_blocks,
     materialize_bet_week_freeze,
 )
+from api.dependencies import templates as app_templates
 from api.services import DataService, clear_cache
 from backtest.bet_selector import REJECTION_REASONS, BetSelector
 from backtest.bet_tracker import EmptyTrackerBlock, TrackerBlock, to_tracker_frame
@@ -67,6 +69,7 @@ from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from tests.api.week_selector_snapshot import (
     COMPONENTS_DIR,
     FAILURE_EVENTS,
+    PRE_PARAM_CONTEXT,
     SELECTOR_OPEN,
     class_values,
     extract_selector,
@@ -1111,6 +1114,150 @@ def test_all_three_failure_events_are_wired_in_kebab_case(
     # The displayed week label reverts to the week actually being shown.
     assert f"w.value='{_WEEK}'" in handler
     assert f"s.value='{_SEASON}'" in handler
+
+
+# ---------------------------------------------------------------------------
+# The timeout that makes the handler above REACHABLE (plan 31-21, G-31-127)
+# ---------------------------------------------------------------------------
+#
+# The three handlers asserted above were bound correctly and could never run. htmx gives the
+# XMLHttpRequest it creates a timeout of ZERO unless one is supplied through one of its three
+# channels, and per the XHR spec a timeout of zero means "no timeout" -- so the XHR timeout event
+# never fires and htmx never emits htmx:timeout. In htmx 2.0.4 (the version base.html loads)
+# htmx:timeout has exactly one emitter, a pure passthrough of that XHR event.
+#
+# These cases pin the SUPPLY of that timeout. They do not, and cannot, prove that a browser then
+# runs the handler -- that requires a request with no response, which a response test has nothing
+# to inspect. See the TEST-BOUNDARY HONESTY note above; the browser half is a named owner check.
+
+#: The selector's per-element request-configuration attribute, single-quoted so its JSON value
+#: keeps its own double quotes.
+_HX_REQUEST_RE = re.compile(r"hx-request='([^']*)'")
+
+#: A timeout must leave real headroom over the measured endpoint latency and must still be short
+#: enough that a reader is not left waiting. Every htmx endpoint this app serves answers in under
+#: 40 ms because nothing is computed in the request path (UIAP-01) -- the /bets fragment itself
+#: measured 7.5-15.5 ms -- so 5000 ms is already ~125x the worst case. This is deliberately a
+#: RANGE and not the exact value: the number is tunable, and pinning it here would turn a policy
+#: decision into a change detector.
+_MIN_TIMEOUT_MS = 5_000
+_MAX_TIMEOUT_MS = 60_000
+
+_PAGES_DIR = COMPONENTS_DIR.parent / "pages"
+
+
+def _bets_ws_timeout() -> int:
+    """The timeout ``/bets`` actually passes the selector, read from the page's own source.
+
+    Read rather than hardcoded so the direct-render case below exercises the value the PAGE
+    chose. A literal here would assert the range of a number this test itself supplied.
+    """
+    source = (_PAGES_DIR / "bets.html").read_text(encoding="utf-8")
+    match = re.search(r"ws_timeout=(\d+)", source)
+    assert match is not None, (
+        "pages/bets.html no longer passes ws_timeout to the week selector; every failure handler "
+        "on that page is bound but unreachable again (G-31-127)"
+    )
+    return int(match.group(1))
+
+
+def _bets_selector_context(*, with_timeout: bool) -> dict[str, Any]:
+    """The parameters ``/bets`` passes the shared selector, for a direct render of the partial."""
+    context: dict[str, Any] = dict(PRE_PARAM_CONTEXT)
+    context.update(
+        {
+            "ws_endpoint": "/bets",
+            "ws_target": "#bets-content",
+            "ws_include_season": "",
+            "ws_include_week": "[name='season']",
+            "ws_extra_params": {},
+            "ws_indicator": "#bets-loading",
+            "ws_failure_template": "bets-failure-template",
+        }
+    )
+    if with_timeout:
+        context["ws_timeout"] = _bets_ws_timeout()
+    return context
+
+
+def _render_selector(context: dict[str, Any]) -> str:
+    return app_templates.env.get_template("components/_week_selector.html").render(
+        **context
+    )
+
+
+def test_the_timeout_reaches_all_four_selector_controls() -> None:
+    """All FOUR controls carry the same parseable timeout -- one definition, not four.
+
+    Rendered DIRECTLY rather than read off the page, because the ``/bets`` fixture supplies ONE
+    season and puts the current week at the END of the available list: the season select is not
+    rendered at all and the next button renders ``disabled``, so two of the four controls never
+    emit their conditional attributes on that fixture. A page-level assertion would silently
+    check two controls while claiming four. The three-week, two-season context recorded in
+    ``week_selector_snapshot.PRE_PARAM_CONTEXT`` exists for exactly this reason.
+
+    All four matter: all four already carry the failure handlers, and a control with a handler
+    but no timeout is precisely the defect being fixed.
+    """
+    markup = _render_selector(_bets_selector_context(with_timeout=True))
+    values = _HX_REQUEST_RE.findall(markup)
+
+    assert len(values) == 4, (
+        f"expected a request timeout on all four controls, found {len(values)}: {values}"
+    )
+    assert len(set(values)) == 1, (
+        f"the four controls carry DIFFERENT timeouts and can drift apart: {sorted(set(values))}"
+    )
+
+    parsed = json.loads(values[0])
+    assert set(parsed) == {"timeout"}, (
+        f"the request configuration carries keys beyond the timeout: {sorted(parsed)}"
+    )
+    assert isinstance(parsed["timeout"], int)
+    assert _MIN_TIMEOUT_MS <= parsed["timeout"] <= _MAX_TIMEOUT_MS, (
+        f"{parsed['timeout']}ms is outside the sane band "
+        f"[{_MIN_TIMEOUT_MS}, {_MAX_TIMEOUT_MS}]"
+    )
+
+
+def test_the_live_bets_page_passes_the_selector_a_timeout(
+    bets_client: TestClient,
+) -> None:
+    """The WIRING check: the partial having the capability proves nothing if the page withholds it.
+
+    "At least one" rather than four here, deliberately -- on the ``/bets`` fixture two of the four
+    controls are absent or disabled and emit no conditional attributes at all. The four-control
+    claim is made by the direct-render case above, which controls the fixture shape.
+    """
+    markup = extract_selector(
+        bets_client.get(f"/bets?season={_SEASON}&week={_WEEK}").text
+    )
+    values = _HX_REQUEST_RE.findall(markup)
+
+    assert values, (
+        "the served /bets selector carries no request timeout, so its hx-on::timeout handler is "
+        "bound but can never fire (G-31-127)"
+    )
+    for value in values:
+        assert json.loads(value)["timeout"] > 0, (
+            f"a non-positive timeout is what htmx already had: {value}"
+        )
+
+
+def test_omitting_the_timeout_parameter_emits_no_request_configuration() -> None:
+    """The anti-vacuity control for the D31-26 default: no parameter, no attribute.
+
+    This is the assertion that catches someone "simplifying" the ``{% if %}`` guard away. Without
+    it the six pages that pass no failure template would silently acquire abort behaviour with
+    nowhere to send the event, and the two recorded This Week snapshots would be the only thing
+    standing between that change and the shipped page.
+    """
+    markup = _render_selector(_bets_selector_context(with_timeout=False))
+    assert not _HX_REQUEST_RE.findall(markup)
+    assert "hx-request" not in markup
+    # The rest of the selector is unaffected: this is a guard on one attribute, not a kill switch.
+    for event in FAILURE_EVENTS:
+        assert event in markup
 
 
 def test_the_failure_template_carries_the_message_and_a_retry(
