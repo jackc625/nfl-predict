@@ -261,28 +261,65 @@ def step_build_features() -> None:
     builder.generate_feature_matrices()
 
 
+_GOLD_FEATURE_TABLES = ("features_wp", "features_ats", "features_ou")
+
+
 def step_validate_features() -> None:
-    """Validate features for data leakage and quality."""
+    """Hard-fail the run if any gold matrix carries a post-game feature column (CR-02).
+
+    This is the registry's temporal-safety gate and it is registered ``critical=True``, so it
+    must be able to FAIL. Three defects made it inert:
+
+    * it read ``leakage_result["has_leakage"]``, a key ``FeatureValidator.check_data_leakage``
+      has never returned (it returns ``passed`` / ``leakage_columns``), so ``.get(..., False)``
+      was always ``False`` and the ``raise`` was unreachable;
+    * the ``break`` sat inside the ``try``, so the loop stopped after the FIRST matrix that
+      loaded -- ``features_ats`` and ``features_ou`` were never scanned at all; and
+    * loading none of the three silently passed, reporting success for a check that did not run.
+
+    All three gold matrices are now scanned, the verdict is read off ``passed``, and a run in
+    which no matrix could be loaded raises rather than reporting a gate it never applied.
+
+    The binding gate remains ``LeakageGate.validate_combined_matrix`` on the canonical gold build
+    path (``scripts/build_features.py``); this is the defense-in-depth sibling that re-checks what
+    actually landed on disk, which is why the two keyword lists are documented as kept in sync.
+    """
     from data.storage import load_dataframe
     from features.validation import FeatureValidator
+    from models.temporal import _DEFAULT_ID_COLS
+
+    # The identifier and OUTCOME columns every gold matrix carries BY CONSTRUCTION -- the labels
+    # a walk-forward fit trains against. They are excluded from the scan because a gold matrix is
+    # supposed to contain them: ``features_ats`` carries ``home_margin`` as its ATS regression
+    # label, and scanning it would hard-fail the Friday run on the target column itself. Taken
+    # from ``models.temporal``, where the splitter already states the list, rather than copied
+    # into a third place.
+    label_and_id_columns = frozenset(_DEFAULT_ID_COLS)
 
     validator = FeatureValidator()
-    # Try gold layer targets
-    features_df = None
-    for table in ["features_wp", "features_ats", "features_ou"]:
+    checked: list[str] = []
+    for table in _GOLD_FEATURE_TABLES:
         try:
             target_df = load_dataframe(table, layer="gold")
-            if features_df is None:
-                features_df = target_df
-            break
         except FileNotFoundError:
             continue
-    if features_df is not None:
-        leakage_result = validator.check_data_leakage(features_df)
-        if leakage_result.get("has_leakage", False):
+        checked.append(table)
+        scanned = target_df[
+            [c for c in target_df.columns if c not in label_and_id_columns]
+        ]
+        leakage_result = validator.check_data_leakage(scanned)
+        if not leakage_result["passed"]:
             raise RuntimeError(
-                f"Feature leakage detected: {leakage_result.get('leakage_features', [])}"
+                f"Feature leakage detected in gold {table}: "
+                f"{leakage_result['leakage_columns']}"
             )
+
+    if not checked:
+        raise RuntimeError(
+            "The feature leakage gate did not run: none of "
+            f"{list(_GOLD_FEATURE_TABLES)} could be loaded from the gold layer. A critical "
+            "temporal-safety step must not report success for a check it never applied."
+        )
 
 
 def step_validate_models() -> None:
