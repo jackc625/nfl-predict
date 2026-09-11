@@ -93,12 +93,51 @@ NO_WEEK_COLUMN_BUCKET = "__no_week_column__"
 # mean earlier revision verdicts were computed under a different rule, so the season's
 # revision history would stop being comparable end to end. The version stamp is what lets
 # a reader of a 2026 entry say which rule produced it instead of assuming.
-WEEK_DIGEST_SCHEMA_VERSION: int = 1
+#
+# VERSION 2 (WR-06/WR-01 of the 32-REVIEW, 2026-09-11). Version 1's ordering fell back to
+# sorting by EVERY COLUMN -- i.e. BY VALUE -- whenever no identity key was present, which
+# is the exact calibration failure :func:`_digest_ordering`'s own docstring forbids, and
+# which the production ``depth_charts`` capture took. Version 2 gives every dataset an
+# identity key, refuses to value-sort, and records the ordering it used on every bucket.
+#
+# THE BUMP IS SAFE TO MAKE MID-SEASON ONLY BECAUSE ``data.live_revision`` NOW READS THIS
+# STAMP: a v2 map diffed against a v1 map rules UNKNOWN rather than reporting a
+# whole-season revision. That guard (WR-06) landed first, deliberately. The already
+# committed 2026 week-1 entries stay stamped 1 and are not rewritten -- an append-only
+# record is not re-rendered under a later rule.
+WEEK_DIGEST_SCHEMA_VERSION: int = 2
 
-# The identity columns every digest is ordered by, in priority order. See
-# :func:`week_digests` for why ordering by IDENTITY (and never by value) is the whole
-# point: a corrected ``epa`` must move that column's digest and nothing else's.
-DIGEST_SORT_KEYS: tuple[str, ...] = ("game_id",)
+# THE IDENTITY COLUMNS EACH DATASET'S DIGEST IS ORDERED BY, in priority order.
+#
+# PER DATASET, and that is the WR-01 fix. Ordering by IDENTITY and never by VALUE is the
+# whole point of D32-06 -- a corrected ``epa`` must move that column's digest and nothing
+# else's -- but version 1 held ONE tuple, ``("game_id",)``, and value-sorted anything that
+# did not carry it. ``depth_charts`` carries no ``game_id``, so the single 509,781-row
+# production bucket was ordered by all twelve of its columns, by value. Measured on that
+# exact column layout: ONE corrected ``player_name`` moved SEVEN of the twelve column
+# digests, making a routine roster correction indistinguishable from a wholesale recompute.
+#
+# ``depth_charts`` has no game grain; its identity is the ROSTER SLOT on a given date.
+# These five columns are all present in the committed 2026 capture's column list. They are
+# not required to be UNIQUE: ties keep upstream's arrival order, exactly as rows within one
+# ``game_id`` already do, and that order is itself part of the captured content.
+DIGEST_SORT_KEYS: dict[str, tuple[str, ...]] = {
+    "pbp": ("game_id",),
+    "schedules": ("game_id",),
+    "depth_charts": ("dt", "team", "gsis_id", "pos_id", "pos_slot"),
+}
+
+# The ordering fallback used when a dataset is not named above, so a frame whose dataset
+# this module was not told about still gets an identity attempt rather than a value sort.
+DIGEST_SORT_KEYS_DEFAULT: tuple[str, ...] = ("game_id",)
+
+# Recorded on EVERY digest bucket, so the order a digest was taken in is a stated fact
+# rather than something a later reader has to re-derive from this module's source at the
+# version the entry was written under.
+DIGEST_ORDERING_UNORDERED = (
+    "unordered -- no identity key column present, so the rows were NOT sorted and the "
+    "per-column map is omitted"
+)
 
 # The three things a ``week_partition`` can record. Each is an explicit OBSERVATION
 # written into the capture entry, never an inference a later reader has to make.
@@ -598,14 +637,25 @@ def _weeks_present(frame: pd.DataFrame) -> list[int]:
     return sorted({int(value) for value in observed})
 
 
-def _digest_ordering(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return *frame* in the canonical row order every digest is taken over.
+def identity_keys_for(dataset: str | None) -> tuple[str, ...]:
+    """The identity columns *dataset*'s digest is ordered by (:data:`DIGEST_SORT_KEYS`)."""
+    if dataset is None:
+        return DIGEST_SORT_KEYS_DEFAULT
+    return DIGEST_SORT_KEYS.get(dataset, DIGEST_SORT_KEYS_DEFAULT)
 
-    Ordered by the capture's IDENTITY columns (:data:`DIGEST_SORT_KEYS`, i.e. ``game_id``)
-    with a STABLE sort, falling back to the frame's full column order when the dataset
-    carries no identity key at all.
 
-    Ordering by identity and never by value is load-bearing. A digest taken over rows in
+def _digest_ordering(
+    frame: pd.DataFrame, dataset: str | None = None
+) -> tuple[pd.DataFrame, str]:
+    """Return *frame* in its canonical row order, and the ORDERING that produced it.
+
+    Ordered by *dataset*'s IDENTITY columns (:data:`DIGEST_SORT_KEYS`) with a STABLE sort.
+    When the frame carries NONE of them the rows are left UNSORTED and the ordering is
+    reported as :data:`DIGEST_ORDERING_UNORDERED`; the caller then omits the per-column map,
+    because per-column digests over an arbitrary row order do not mean what this docstring
+    says they mean.
+
+    ORDERING BY IDENTITY AND NEVER BY VALUE IS LOAD-BEARING. A digest taken over rows in
     upstream's arrival order would report a revision every time nflverse happened to emit
     the same rows in a different order. A digest taken over rows sorted by their CONTENT
     would be worse: correcting one ``epa`` value would move that row's position, and every
@@ -613,25 +663,57 @@ def _digest_ordering(frame: pd.DataFrame) -> pd.DataFrame:
     correction would look identical to a wholesale recompute, which is exactly the
     calibration failure D32-06 exists to prevent.
 
-    Within one ``game_id`` the upstream row order is PRESERVED (``kind="mergesort"`` is
+    WR-01: version 1 of this function said exactly that and then did it anyway. Its
+    fallback was ``keys = list(frame.columns)`` -- a sort by every column, by value -- and
+    that was not a dead branch, it was the branch the real ``depth_charts`` production
+    capture took. Measured on the committed 2026 column layout: one corrected
+    ``player_name`` moved SEVEN of twelve column digests. The fix is to give each dataset a
+    real identity key and to REFUSE to value-sort rather than to fall back to one.
+
+    THE SECOND FAILURE ON THE SAME LINE, also fixed here: ``sort_values`` over every column
+    includes object columns, so one mixed-type object column (a str beside a non-NaN float)
+    raised ``TypeError`` from inside :func:`week_digests` -- which runs AFTER the bronze
+    bytes are written, so it failed the capture and orphaned a snapshot. A sort that cannot
+    be performed is now recorded as UNORDERED rather than raised: the ordering is a
+    property of the digest, not a reason to lose a week's capture (D32-07).
+
+    Within one identity value the upstream row order is PRESERVED (``kind="mergesort"`` is
     stable) and is itself part of the captured content: for play-by-play that order is the
     play order.
     """
-    keys = [column for column in DIGEST_SORT_KEYS if column in frame.columns]
+    keys = [column for column in identity_keys_for(dataset) if column in frame.columns]
     if not keys:
-        keys = list(frame.columns)
-    if not keys:
-        return frame
-    return frame.sort_values(by=keys, kind="mergesort")
+        return frame, DIGEST_ORDERING_UNORDERED
+    try:
+        ordered = frame.sort_values(by=keys, kind="mergesort")
+    except TypeError:
+        # An identity column holding mixed incomparable types. Recorded, never raised --
+        # see this docstring's second paragraph from the end.
+        return frame, DIGEST_ORDERING_UNORDERED
+    return ordered, "identity: " + ", ".join(keys)
 
 
-def week_digests(frame: pd.DataFrame) -> dict[str, dict]:
+def week_digests(frame: pd.DataFrame, dataset: str | None = None) -> dict[str, dict]:
     """Digest *frame* PER WEEK and PER COLUMN (D32-06). The shape is frozen.
 
     Returns a mapping from the string form of each distinct observed ``week`` value to::
 
-        {"rows": <int>, "frame_sha256": <hex>, "columns": {<column>: <hex>, ...}}
+        {"rows": <int>, "ordering": <str>, "frame_sha256": <hex>,
+         "columns": {<column>: <hex>, ...}}
 
+    * *dataset* selects the identity columns the rows are ordered by
+      (:data:`DIGEST_SORT_KEYS`). It is optional so an ad-hoc caller can digest a frame
+      without naming it, in which case :data:`DIGEST_SORT_KEYS_DEFAULT` applies.
+    * ``ordering`` is NEW IN SCHEMA VERSION 2 and rides on EVERY bucket, including the
+      ordinary one. It names the identity columns the slice was sorted by, or reports
+      :data:`DIGEST_ORDERING_UNORDERED`. A key that appeared only on the unusual branch
+      would make the bucket shape depend on which branch produced it, which is the exact
+      property this module refuses everywhere else.
+    * An UNORDERED bucket carries an EMPTY ``columns`` map. Per-column digests over an
+      arbitrary row order would be numbers that do not answer "did this column change",
+      and publishing them under a name that claims they do is worse than publishing
+      nothing. ``rows`` and ``frame_sha256`` still detect the movement; what is lost is
+      only the per-column ATTRIBUTION, and ``ordering`` says so on the bucket itself.
     * The bucket key is ``str(int(week))``, so it survives a JSON round trip as a stable
       key -- a JSON object key is a string either way, and an integer key would come back
       as one anyway without saying so.
@@ -664,13 +746,17 @@ def week_digests(frame: pd.DataFrame) -> dict[str, dict]:
         return hashlib.sha256(rendered).hexdigest()
 
     def _bucket(slice_: pd.DataFrame) -> dict:
-        ordered = _digest_ordering(slice_)
+        ordered, ordering = _digest_ordering(slice_, dataset)
+        columns = (
+            {}
+            if ordering == DIGEST_ORDERING_UNORDERED
+            else {str(column): _digest(ordered[column]) for column in ordered.columns}
+        )
         return {
             "rows": len(ordered),
+            "ordering": ordering,
             "frame_sha256": _digest(ordered),
-            "columns": {
-                str(column): _digest(ordered[column]) for column in ordered.columns
-            },
+            "columns": columns,
         }
 
     if frame.empty:
@@ -792,7 +878,11 @@ def build_capture_entry(
         # the rendering method and WEEK_DIGEST_SCHEMA_VERSION for why the stamp is here.
         "week_digest_schema_version": WEEK_DIGEST_SCHEMA_VERSION,
         "week_partition": week_partition_of(frame),
-        "week_digests": week_digests(frame),
+        # ``dataset`` is PASSED, not inferred from the frame's columns (WR-01). Which
+        # identity key a digest was ordered by has to be a property of the dataset being
+        # captured, or a frame that happened to arrive missing a column would silently
+        # switch ordering rules mid-season.
+        "week_digests": week_digests(frame, dataset),
     }
 
 

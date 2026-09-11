@@ -100,6 +100,80 @@ def _depth_charts_frame() -> pd.DataFrame:
     )
 
 
+# The EXACT column layout the single real 2026 depth_charts capture recorded, transcribed
+# from config/upstream_live/2026.json. WR-01 was reproduced on this layout and nowhere else
+# matters: it is the frame the production capture actually digests, 509,781 rows of it, in
+# one whole-frame bucket.
+_DEPTH_CHARTS_2026_COLUMNS = (
+    "dt",
+    "team",
+    "player_name",
+    "espn_id",
+    "gsis_id",
+    "pos_grp_id",
+    "pos_grp",
+    "pos_id",
+    "pos_name",
+    "pos_abb",
+    "pos_slot",
+    "pos_rank",
+)
+
+
+def _depth_charts_2026_frame() -> pd.DataFrame:
+    """Three roster slots in the committed 2026 ``depth_charts`` column layout.
+
+    The player names deliberately sort in the OPPOSITE order to the roster slots, so a
+    value-ordered digest and an identity-ordered one produce different row orders and the
+    difference between them is observable.
+    """
+    rows = [
+        {
+            "dt": "2026-09-05",
+            "team": "BUF",
+            "player_name": "Zeta Adams",
+            "espn_id": "3001",
+            "gsis_id": "00-0000001",
+            "pos_grp_id": 1,
+            "pos_grp": "OFF",
+            "pos_id": 1,
+            "pos_name": "Quarterback",
+            "pos_abb": "QB",
+            "pos_slot": 1,
+            "pos_rank": 1,
+        },
+        {
+            "dt": "2026-09-05",
+            "team": "BUF",
+            "player_name": "Mike Brown",
+            "espn_id": "3002",
+            "gsis_id": "00-0000002",
+            "pos_grp_id": 1,
+            "pos_grp": "OFF",
+            "pos_id": 2,
+            "pos_name": "Running Back",
+            "pos_abb": "RB",
+            "pos_slot": 2,
+            "pos_rank": 1,
+        },
+        {
+            "dt": "2026-09-05",
+            "team": "BUF",
+            "player_name": "Alan Cole",
+            "espn_id": "3003",
+            "gsis_id": "00-0000003",
+            "pos_grp_id": 1,
+            "pos_grp": "OFF",
+            "pos_id": 3,
+            "pos_name": "Wide Receiver",
+            "pos_abb": "WR",
+            "pos_slot": 3,
+            "pos_rank": 1,
+        },
+    ]
+    return pd.DataFrame(rows)[list(_DEPTH_CHARTS_2026_COLUMNS)]
+
+
 def _entry_for(
     tmp_path: Path,
     frame: pd.DataFrame,
@@ -187,7 +261,7 @@ class TestTheCaptureDigestsPerWeekAndPerColumn:
         self, tmp_path: Path
     ) -> None:
         frame = _depth_charts_frame()
-        digests = upstream_live.week_digests(frame)
+        digests = upstream_live.week_digests(frame, "depth_charts")
 
         assert list(digests) == [upstream_live.NO_WEEK_COLUMN_BUCKET]
         assert digests[upstream_live.NO_WEEK_COLUMN_BUCKET]["rows"] == len(frame)
@@ -195,7 +269,150 @@ class TestTheCaptureDigestsPerWeekAndPerColumn:
         entry = _entry_for(tmp_path, frame, dataset="depth_charts")
         assert entry["week_partition"] == upstream_live.WEEK_PARTITION_WHOLE_FRAME
         assert "no week column" in entry["week_partition"]
-        assert entry["week_digests"] == digests
+        assert entry["week_digests"] == digests, (
+            "build_capture_entry digested the frame under a different ordering rule from "
+            "the one week_digests applies for the same dataset, so the recorded digests "
+            "would not reproduce"
+        )
+
+    def test_depth_charts_isolates_per_column_on_its_real_production_layout(
+        self,
+    ) -> None:
+        """WR-01. The whole-frame dataset gets the SAME isolation ``pbp`` gets.
+
+        ``_digest_ordering``'s version-1 fallback was ``keys = list(frame.columns)`` -- a
+        sort by every column, BY VALUE -- which is the precise thing its own docstring
+        calls the calibration failure D32-06 exists to prevent. It was not a dead branch:
+        ``depth_charts`` carries no ``game_id``, so the single 509,781-row production
+        bucket took it. MEASURED on this exact layout before the fix: ONE corrected
+        ``player_name`` moved SEVEN of twelve column digests, making a routine roster
+        correction indistinguishable from a wholesale recompute.
+
+        The pre-fix test suite could not catch this. Per-column isolation was proven only
+        on a ``game_id``-bearing frame, and the ``depth_charts`` test checked the bucket
+        key and the row count but never the per-column map.
+        """
+        before = _depth_charts_2026_frame()
+        after = before.copy()
+        after.loc[0, "player_name"] = "Aaron Adams"
+
+        bucket = upstream_live.NO_WEEK_COLUMN_BUCKET
+        first = upstream_live.week_digests(before, "depth_charts")[bucket]
+        second = upstream_live.week_digests(after, "depth_charts")[bucket]
+
+        moved = sorted(
+            name
+            for name, digest in first["columns"].items()
+            if second["columns"][name] != digest
+        )
+        assert moved == ["player_name"], (
+            f"a ONE-CELL correction moved {len(moved)} of "
+            f"{len(_DEPTH_CHARTS_2026_COLUMNS)} column digests: {moved}. The rows are "
+            "being ordered by VALUE, so a corrected cell reorders the frame and drags "
+            "every other column's digest with it -- a routine roster correction and a "
+            "wholesale recompute become the same observable."
+        )
+        assert first["frame_sha256"] != second["frame_sha256"], (
+            "the whole-frame digest did not move, so the correction is invisible"
+        )
+
+    def test_the_depth_charts_ordering_is_recorded_as_an_identity_not_a_value_sort(
+        self,
+    ) -> None:
+        """The ordering is a STATED fact on the bucket, not something to re-derive."""
+        bucket = upstream_live.week_digests(_depth_charts_2026_frame(), "depth_charts")[
+            upstream_live.NO_WEEK_COLUMN_BUCKET
+        ]
+
+        assert bucket["ordering"].startswith("identity: "), (
+            f"depth_charts recorded ordering {bucket['ordering']!r}, which is not an "
+            "identity ordering"
+        )
+        for key in upstream_live.DIGEST_SORT_KEYS["depth_charts"]:
+            assert key in bucket["ordering"]
+
+    def test_depth_charts_digests_do_not_depend_on_upstream_row_order(self) -> None:
+        """The other half of WR-01: identity ordering must still be order-independent."""
+        frame = _depth_charts_2026_frame()
+        # REVERSED rather than sampled. A random permutation of three rows lands on the
+        # identity often enough to make the test vacuous, and a seeded `sample` that
+        # happens to be a no-op proves nothing.
+        shuffled = frame.iloc[::-1].reset_index(drop=True)
+        assert not shuffled.equals(frame), (
+            "the reordering was a no-op, so this proves nothing"
+        )
+
+        assert upstream_live.week_digests(
+            shuffled, "depth_charts"
+        ) == upstream_live.week_digests(frame, "depth_charts")
+
+    def test_a_frame_carrying_no_identity_key_is_recorded_unordered_not_value_sorted(
+        self,
+    ) -> None:
+        """The refusal, rather than the silent fallback that caused WR-01.
+
+        A frame with none of its dataset's identity columns cannot be put in a meaningful
+        row order, so the per-column map is OMITTED rather than filled with numbers that do
+        not answer "did this column change". ``rows`` and ``frame_sha256`` still detect the
+        movement; only the per-column ATTRIBUTION is lost, and the bucket says so itself.
+        """
+        frame = pd.DataFrame({"alpha": [3, 1, 2], "beta": ["x", "y", "z"]})
+        bucket = upstream_live.week_digests(frame, "depth_charts")[
+            upstream_live.NO_WEEK_COLUMN_BUCKET
+        ]
+
+        assert bucket["ordering"] == upstream_live.DIGEST_ORDERING_UNORDERED
+        assert bucket["columns"] == {}, (
+            "per-column digests were published for an arbitrary row order, which is the "
+            "value-ordering failure under a different name"
+        )
+        assert bucket["rows"] == 3
+        assert bucket["frame_sha256"]
+
+    def test_an_incomparable_identity_column_is_unordered_not_a_failed_capture(
+        self,
+    ) -> None:
+        """WR-01's secondary risk: ``sort_values`` raising AFTER the bronze bytes exist.
+
+        ``week_digests`` runs after ``save_bronze_snapshot``, so a ``TypeError`` from a
+        mixed-type sort key failed the whole capture and orphaned a snapshot in the
+        append-only archive -- a detector detail costing a week's record, which D32-07
+        forbids. The ordering is recorded as UNORDERED instead.
+
+        Exercised through a SINGLE-key dataset, because that is the shape that actually
+        raises: ``pandas`` compares a single object column directly (``'<' not supported
+        between instances of 'str' and 'float'``), while a multi-key sort factorises each
+        column first and tolerates the mixture. ``pbp`` and ``schedules`` are the
+        single-key datasets, so they are where the hazard lives.
+        """
+        frame = _pbp_frame(weeks=(1,))
+        assert upstream_live.DIGEST_SORT_KEYS["pbp"] == ("game_id",), (
+            "this test targets the SINGLE-key sort; pbp is no longer single-key"
+        )
+        frame["game_id"] = [f"{LIVE_SEASON}_01_G0", 2.5]
+
+        bucket = upstream_live.week_digests(frame, "pbp")["1"]
+        assert bucket["ordering"] == upstream_live.DIGEST_ORDERING_UNORDERED
+        assert bucket["columns"] == {}
+        assert bucket["rows"] == 2
+
+    def test_the_pbp_isolation_is_unchanged_by_the_per_dataset_keys(self) -> None:
+        """The dataset that already worked must keep working, explicitly."""
+        before = _pbp_frame()
+        after = before.copy()
+        target = after.index[(after["week"] == 3) & (after["posteam"] == "HOME")][0]
+        after.loc[target, "epa"] = 9.99
+
+        first = upstream_live.week_digests(before, "pbp")["3"]
+        second = upstream_live.week_digests(after, "pbp")["3"]
+
+        moved = sorted(
+            name
+            for name, digest in first["columns"].items()
+            if second["columns"][name] != digest
+        )
+        assert moved == ["epa"]
+        assert first["ordering"] == "identity: game_id"
 
     def test_a_zero_row_frame_yields_an_empty_map_and_records_the_empty_case(
         self, tmp_path: Path
@@ -241,7 +458,15 @@ class TestTheCaptureDigestsPerWeekAndPerColumn:
         )
         assert entry["week_partition"] == upstream_live.WEEK_PARTITION_PER_WEEK
         assert sorted(entry["week_digests"]) == ["1", "2", "3"]
-        assert set(entry["week_digests"]["1"]) == {"rows", "frame_sha256", "columns"}
+        # ``ordering`` is schema version 2's addition (WR-01) and rides on EVERY bucket,
+        # never only on the unusual branch -- a bucket shape that depended on which branch
+        # produced it is not a shape a reader can diff a season later.
+        assert set(entry["week_digests"]["1"]) == {
+            "rows",
+            "ordering",
+            "frame_sha256",
+            "columns",
+        }
         assert sorted(entry["week_digests"]["1"]["columns"]) == sorted(
             _pbp_frame().columns
         )
