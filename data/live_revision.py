@@ -241,3 +241,22 @@ def as_record(diff: WeekDiff) -> dict:
         "rows_changed": {week: list(pair) for week, pair in diff.rows_changed.items()},
         "is_revision": diff.is_revision,
     }
+
+
+# ---------------------------------------------------------------------------
+# RED-phase skeleton for Task 2. The ruling lands in the GREEN commit.
+# ---------------------------------------------------------------------------
+
+VERDICT_KEYS: tuple[str, ...] = ()
+
+
+def detect_live_revision(
+    *,
+    dataset: str,
+    season: int,
+    current_entry: dict,
+    prior_entry: dict | None = None,
+    graded: object = None,
+) -> dict:
+    """Rule on one live capture. Not yet implemented (RED phase)."""
+    return {}
