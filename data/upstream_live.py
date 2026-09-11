@@ -244,6 +244,44 @@ _AS_OF_VAR: contextvars.ContextVar[AsOfCapture | None] = contextvars.ContextVar(
 )
 
 
+def validate_capture_address(week: int, sequence: int | None = None) -> None:
+    """Refuse a ``(week, sequence)`` that could never be addressed again (WR-08).
+
+    THE ONE DEFINITION OF WHAT AN ADDRESS MAY BE, so the three ways of naming a capture --
+    ``--week`` on the capture CLI, :func:`as_of_capture`, and :func:`parse_as_of` reading
+    :data:`AS_OF_ENV` -- cannot disagree about it. They DID disagree: ``parse_as_of``
+    refuses any component below 1, while ``--week`` was a bare ``type=int`` and
+    ``as_of_capture`` validated nothing at all. So ``--week 0`` and ``--week -3`` were
+    accepted and became the capture's PERMANENT replay key ``(season, week, sequence)`` --
+    the key D32-13 rates ONE-WAY -- and that capture could then never be addressed through
+    the environment variable, which is the "set it once for a whole rebuild" affordance
+    Phase 33 is meant to use.
+
+    ``--week 0`` was worse than merely unreachable: it writes a bronze file named
+    ``<table>_raw_bronze_<season>_W00_<stamp>.parquet``, which is the SEALED tool's own
+    naming convention (``scripts/pin_upstream_snapshot`` passes ``week=0``), so a live
+    capture would have been filed under a sealed-looking name. ``--week -3`` produced the
+    malformed path segment ``W-3``.
+
+    Raises:
+        UpstreamPinError: If *week* or *sequence* is below 1.
+    """
+    for name, value in (("week", week), ("sequence", sequence)):
+        if value is None:
+            continue
+        if int(value) < 1:
+            msg = (
+                f"{name} {value} is not a {name}. The week labels the week being "
+                "PREDICTED (D32-13) and, with the sequence, becomes this capture's "
+                f"PERMANENT replay key (season, week, sequence). {AS_OF_ENV} refuses "
+                "anything below 1, so a capture recorded at this address could never be "
+                f"read back through it.\n"
+                f"\n"
+                f"Accepted forms for an as-of: {AS_OF_ACCEPTED_FORMS}."
+            )
+            raise UpstreamPinError(msg)
+
+
 @contextlib.contextmanager
 def as_of_capture(week: int, sequence: int | None = None) -> Iterator[AsOfCapture]:
     """Read the live zone as of *week* for the duration of the block.
@@ -256,7 +294,13 @@ def as_of_capture(week: int, sequence: int | None = None) -> Iterator[AsOfCaptur
     when the body raises. An as-of that outlived its block would silently re-address an
     unrelated later load, which is the same class of wrong-bytes-that-look-normal failure
     the process-level context exists to prevent.
+
+    The address is validated through :func:`validate_capture_address` (WR-08), so the
+    context manager and :data:`AS_OF_ENV` agree on what an as-of may be. They did not:
+    ``parse_as_of`` refused any component below 1 and this function refused nothing, so
+    ``as_of_capture(0)`` built an address the environment variable could not express.
     """
+    validate_capture_address(week, sequence)
     active = AsOfCapture(week, sequence)
     token = _AS_OF_VAR.set(active)
     try:

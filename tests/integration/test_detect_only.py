@@ -585,6 +585,66 @@ class TestTheExitCodeContractIsPinned:
         )
         assert code == capture_live_season.EXIT_USAGE
 
+    @pytest.mark.parametrize("week", ["0", "-3"])
+    def test_a_week_no_as_of_could_address_is_a_usage_error(
+        self, env: dict, week: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """WR-08. ``--week`` was a bare ``type=int`` with no lower bound.
+
+        The value becomes the capture's PERMANENT replay key (season, week, sequence) --
+        the key D32-13 rates ONE-WAY -- and ``data.upstream_live.parse_as_of`` refuses any
+        component below 1, so a capture recorded at week 0 could never be addressed through
+        AS_OF_ENV, which is the "set it once for a whole rebuild" affordance Phase 33 is
+        meant to use.
+
+        ``--week 0`` was worse than merely unreachable: it writes a bronze file named
+        ``<table>_raw_bronze_<season>_W00_<stamp>.parquet``, which is the SEALED tool's own
+        naming convention, so a live capture would have been filed under a sealed-looking
+        name. ``--week -3`` produced the malformed segment ``W-3``.
+        """
+        argv = _capture_argv(env, 1)
+        argv[argv.index("--week") + 1] = week
+
+        with pytest.raises(SystemExit) as exit_info:
+            capture_live_season.main(argv)
+
+        assert exit_info.value.code == capture_live_season.EXIT_USAGE, (
+            "an unaddressable week was not a usage error; nothing should have been "
+            "fetched or written"
+        )
+        message = capsys.readouterr().err
+        assert "PERMANENT replay key" in message, (
+            f"the refusal does not say why the week is unusable:\n{message}"
+        )
+        assert not env["manifest_dir"].exists(), (
+            "a refused capture wrote a manifest directory"
+        )
+
+    def test_the_context_manager_and_the_env_var_agree_on_what_an_as_of_is(
+        self,
+    ) -> None:
+        """The same rule, from the other two entry points (WR-08).
+
+        ``parse_as_of`` already refused anything below 1; ``as_of_capture`` validated
+        nothing, so the two disagreed about what an address may be and the context manager
+        could build one the environment variable could not express.
+        """
+        from data.upstream_live import as_of_capture, parse_as_of
+
+        for raw in ("0", "6:0", "-1"):
+            with pytest.raises(UpstreamPinError):
+                parse_as_of(raw)
+
+        for week, sequence in ((0, None), (6, 0), (-1, None)):
+            with pytest.raises(UpstreamPinError, match="replay key"):
+                with as_of_capture(week, sequence):
+                    pass
+
+        # The ordinary addresses still work, from both.
+        with as_of_capture(6, 2) as active:
+            assert active.render() == "6:2"
+        assert parse_as_of("6:2").render() == "6:2"
+
     def test_argparse_usage_also_exits_two(self) -> None:
         with pytest.raises(SystemExit) as exit_info:
             capture_live_season.main(["--week", "1"])

@@ -115,6 +115,7 @@ from data.upstream_live import (
     captures_for,
     empty_live_manifest,
     load_live_manifest,
+    validate_capture_address,
     write_live_manifest,
 )
 from data.upstream_pin import (
@@ -1544,6 +1545,36 @@ def run_seed_sealed_signatures(
     return EXIT_OK
 
 
+def _addressable_week(raw: str) -> int:
+    """``--week``'s type. Refuses a week no as-of could ever address again (WR-08).
+
+    ``type=int`` alone accepted ``--week 0`` and ``--week -3``, and the value became the
+    capture's PERMANENT replay key ``(season, week, sequence)`` -- the key D32-13 rates
+    ONE-WAY. ``data.upstream_live.parse_as_of`` refuses any component below 1, so such a
+    capture could never be read back through ``AS_OF_ENV``, which is the "set it once for a
+    whole rebuild" affordance Phase 33 is meant to use.
+
+    The rule is NOT re-typed here: it delegates to
+    :func:`data.upstream_live.validate_capture_address`, the one definition the context
+    manager and the environment variable also use. Two spellings of one rule is two rules,
+    and the one that disagrees is the one that records an unaddressable capture.
+
+    Raised as ``argparse.ArgumentTypeError`` so it surfaces as a USAGE error (exit 2) with
+    the parser's own formatting, rather than as a capture failure -- nothing was fetched
+    and nothing was written.
+    """
+    try:
+        week = int(raw)
+    except ValueError as exc:
+        msg = f"--week {raw!r} is not an integer."
+        raise argparse.ArgumentTypeError(msg) from exc
+    try:
+        validate_capture_address(week)
+    except UpstreamPinError as exc:
+        raise argparse.ArgumentTypeError(f"--week {week}: {exc}") from exc
+    return week
+
+
 def build_parser() -> argparse.ArgumentParser:
     summary = (__doc__ or "Capture one live-season week.").split("\n\n")[0]
     parser = argparse.ArgumentParser(description=summary)
@@ -1555,11 +1586,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--week",
-        type=int,
+        type=_addressable_week,
         default=None,
         help=(
             "The week being PREDICTED -- not the last week present in the data. "
-            "The capture records what it actually contains separately. Required for a "
+            "The capture records what it actually contains separately. Must be 1 or "
+            "greater: it becomes this capture's permanent replay key. Required for a "
             "capture; meaningless for --detect-only and --seed-sealed-signatures, which "
             "write no capture."
         ),
