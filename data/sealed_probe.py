@@ -665,7 +665,8 @@ def probe_sealed(
 
     Args:
         lock: The sealed lock document (``data.upstream_pin.load_sealed_lock``). ``None``
-            or empty yields ``expected == 0``.
+            or empty yields ``expected == 0``, which :func:`_rule_run` rules UNKNOWN
+            before it rules anything else (CR-01) -- never clean.
         assets_by_tag: ``{release tag: {asset name: signature}}`` as returned by
             :func:`fetch_release_assets`. A tag mapped to ``None`` means that tag could
             not be fetched, and every pair under it is UNRESOLVED with that reason.
@@ -905,7 +906,31 @@ def _rule_run(
 
     The coverage assertion is evaluated FIRST and unconditionally. Everything after it is
     a statement about pairs the probe genuinely looked at.
+
+    ZERO COVERAGE IS RULED BEFORE ANYTHING ELSE (CR-01). ``expected == 0`` is the LIMIT
+    CASE of the argument :func:`_rule_metadata_pair` already makes one level down -- "a
+    baseline nobody recorded cannot be matched" -- and it was the one case left un-ruled.
+    An absent lock at the configured path makes ``data.upstream_pin.load_sealed_lock``
+    return ``None`` BY DESIGN, so a mistyped ``--sealed-lock`` used to yield
+    ``checked 0 of 0`` with ``checked < expected`` False, no findings, and a CLEAN ruling
+    appended to the committed ``config/upstream_probe_log.jsonl``. A season of those lines
+    is indistinguishable from a season of real clean ones, which destroys the single
+    property D32-08's log exists to provide. It is PITFALLS F2 exactly: a detector that
+    could not look must never read the same as a healthy system.
     """
+    if expected == 0:
+        reason = (
+            "the sealed lock records ZERO (dataset, season) pairs, so the probe had no "
+            "baseline to compare anything against and checked nothing. Recorded as "
+            "UNKNOWN and NEVER clean: an absent or empty lock at the configured path is "
+            "a detector that could not look, and a dead detector must not read the same "
+            "as a healthy system. Either --sealed-lock names a path that does not exist, "
+            "or the lock carries no 'datasets'. Generate one with `python -m "
+            "scripts.pin_upstream_snapshot --refresh-sealed-lock "
+            '--sealed-rewrite-reason "<why>"`.'
+        )
+        return RevisionEventClass.UNKNOWN, reason
+
     if checked < expected:
         named = ", ".join(
             f"{item['dataset']} {item['season']}" for item in unresolved[:10]

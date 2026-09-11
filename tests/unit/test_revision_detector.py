@@ -425,6 +425,53 @@ class TestABlindProbeSaysSoRatherThanSayingClean:
         assert verdict["checked"] == 0
         assert verdict["expected"] == 1
 
+    # CR-01. THE ZERO-PAIR LOCK IS THE LIMIT CASE OF THIS WHOLE CLASS, and it was the
+    # one left un-ruled. ``data.upstream_pin.load_sealed_lock`` returns ``None`` for an
+    # ABSENT file BY DESIGN, so a mistyped or relocated ``--sealed-lock`` reached
+    # ``probe_sealed`` as ``None`` -- and ``checked < expected`` is False when both are
+    # zero, so the run ruled CLEAN and appended a clean/informational line to the
+    # committed config/upstream_probe_log.jsonl. A season of those is indistinguishable
+    # from a season of real clean lines, which is exactly the observable D32-08's log
+    # exists to make distinguishable.
+    @pytest.mark.parametrize(
+        ("lock", "shape"),
+        [
+            (None, "an ABSENT lock file, which load_sealed_lock returns None for"),
+            ({}, "a lock document with no 'datasets' key at all"),
+            ({"datasets": {}}, "a lock whose 'datasets' mapping is empty"),
+        ],
+    )
+    def test_a_lock_with_zero_pairs_is_unknown_and_never_clean(
+        self, lock: dict | None, shape: str
+    ) -> None:
+        verdict = probe_sealed(lock, assets_by_tag={})
+
+        assert verdict["event_class"] == str(RevisionEventClass.UNKNOWN), (
+            f"{shape} ruled {verdict['event_class']!r}. A probe with no baseline to "
+            "compare against did not look at anything, and 'checked 0 of 0' must never "
+            "read as clean -- a dead detector and a healthy system must not be the same "
+            "observable."
+        )
+        assert verdict["event_class"] != str(RevisionEventClass.CLEAN)
+        assert verdict["severity"] == str(RevisionSeverity.WARNING)
+        assert verdict["expected"] == 0
+        assert verdict["checked"] == 0
+
+    def test_the_zero_pair_reason_names_what_was_missed_and_how_to_fix_it(self) -> None:
+        reason = probe_sealed(None, assets_by_tag={})["reason"]
+
+        assert "ZERO" in reason, (
+            f"the reason does not name the zero-pair fact:\n{reason}"
+        )
+        assert "--refresh-sealed-lock" in reason, (
+            "the reason does not name the recovery command, so an operator who hit a "
+            f"mistyped --sealed-lock has nothing to act on:\n{reason}"
+        )
+        assert "matched its recorded baseline" not in reason, (
+            "the zero-pair run still claims every pair matched its baseline, which is "
+            f"the false sentence CR-01 reported:\n{reason}"
+        )
+
 
 class TestATransportFailureIsRecordedNotSwallowed:
     """D32-07: the probe cannot see, so it says so -- outside every broad ``except``."""
