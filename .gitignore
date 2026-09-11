@@ -426,3 +426,24 @@ graphify-out/
 #
 # Deliberately NARROW: it re-includes this one file, and leaves every other JSON ignored.
 !config/upstream_pin.json
+
+# Phase 32 (CR-01/CR-02 of the 32-REVIEW): the LIVE zone's committed capture record, one
+# file per live season. The same `*.json` rule at line ~254 that swallowed
+# config/upstream_pin.json above swallows this directory too --
+# `git check-ignore -v config/upstream_live/2027.json` reported `.gitignore:254:*.json`.
+#
+# config/upstream_live/2026.json is in `git ls-files` ONLY because it was force-added.
+# Tracking is a property of the INDEX, not of the path, so every FUTURE season's manifest
+# was still ignored: 2027.json at the season roll, and any <season>.json recreated on a
+# checkout where it had ever been removed. `git add config/upstream_live/` would silently
+# skip it and `git status` would not show it -- the committed half of the reproducibility
+# claim simply would not exist, with no error anywhere. That silent shape is the failure
+# this phase is built to prevent.
+#
+# Same asymmetry as config/upstream_pin.json -- the parquet under data/bronze/ stays
+# ignored, the record of WHICH upstream revision a verdict was measured against does not
+# -- but this is a DIRECTORY that grows a new file every season, so a force-add covers
+# only the season somebody remembered to force-add.
+#
+# Deliberately NARROW: one glob over one directory, and every other JSON stays ignored.
+!config/upstream_live/*.json

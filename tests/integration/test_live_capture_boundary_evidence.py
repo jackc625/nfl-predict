@@ -53,6 +53,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -71,12 +72,26 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _BEFORE = REPO_ROOT / "outputs" / "phase32" / "data_before.json"
 _AFTER = REPO_ROOT / "outputs" / "phase32" / "data_after.json"
 
-# The committed record of the same event. Git-TRACKED (force-added past .gitignore:254's
-# blanket ``*.json``), so its absence is a broken checkout rather than an environment fact
-# -- but it is still read through the same skip idiom, because a test that hard-failed on a
-# shallow or partial checkout would be disabled rather than fixed.
+# The committed record of the same event. Git-TRACKED, so its absence is a broken checkout
+# rather than an environment fact -- but it is still read through the same skip idiom,
+# because a test that hard-failed on a shallow or partial checkout would be disabled rather
+# than fixed.
+#
+# It was originally tracked only because it had been FORCE-ADDED past .gitignore:254's
+# blanket ``*.json``. CR-02 fixed that at the source with a narrow
+# ``!config/upstream_live/*.json`` re-include; ``TestTheCommittedRecordSurvivesACheckout``
+# below is the guard that keeps the rule in place.
 _LIVE_MANIFEST = (
     REPO_ROOT / "config" / "upstream_live" / f"{LIVE_ZONE_FIRST_SEASON}.json"
+)
+
+# The three files Phase 32 added to the COMMITTED half of the two-zone record. Each one is
+# a record whose whole value is surviving a fresh checkout of a repository whose ``data/``
+# tree does not.
+_COMMITTED_PHASE_32_RECORDS = (
+    "config/upstream_pin.sealed.lock",
+    "config/upstream_probe_log.jsonl",
+    f"config/upstream_live/{LIVE_ZONE_FIRST_SEASON}.json",
 )
 
 # The one directory a capture is allowed to add to. ``data/bronze/`` is the append-only
@@ -233,6 +248,89 @@ class TestTheRealCaptureLeftTheSealedZoneUnmoved:
             "corroborates the other.\n"
             f"  manifest records: {sorted(recorded)}\n"
             f"  evidence added:   {sorted(added)}"
+        )
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run one git command at the repository root and return the completed process."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestTheCommittedRecordSurvivesACheckout:
+    """CR-02. The committed half of the two-zone claim has to actually be committed.
+
+    ``data/upstream_live.py``'s module docstring states the premise outright: "``config/``
+    is committed and ``data/`` is gitignored, for both zones: the record of WHICH upstream
+    revision a verdict was measured against survives a fresh checkout even when the parquet
+    bytes do not." That was never CONFIGURED for the live-zone directory --
+    ``.gitignore``'s blanket ``*.json`` matched ``config/upstream_live/<season>.json``, and
+    the 2026 file was tracked only because somebody force-added it once.
+
+    Tracking is a property of the INDEX, not of the path, so the force-add covered exactly
+    one file. 2027.json at the season roll -- and any manifest recreated on a checkout where
+    it had ever been removed -- would have been ignored silently: ``git add
+    config/upstream_live/`` skipping it without a word, ``git status`` not showing it, no
+    error anywhere. A record that fails to exist with no error is the precise failure shape
+    this phase spends itself preventing, so the rule gets a test rather than a convention.
+    """
+
+    @pytest.mark.parametrize("relative", _COMMITTED_PHASE_32_RECORDS)
+    def test_the_committed_record_is_tracked_by_git(self, relative: str) -> None:
+        """Each Phase-32 record is in the index, not merely on disk."""
+        tracked = _git("ls-files", "--", relative)
+        assert tracked.returncode == 0, (
+            f"`git ls-files -- {relative}` failed: {tracked.stderr.strip()}"
+        )
+        assert tracked.stdout.strip(), (
+            f"{relative} is NOT tracked by git. .gitignore's blanket *.json (or a future "
+            "rule) swallowed it, so the committed record does not survive a fresh "
+            "checkout -- and the parquet it accounts for lives under gitignored data/, so "
+            "nothing anywhere would say which upstream revision a verdict was measured "
+            "against."
+        )
+
+    def test_a_future_seasons_live_manifest_is_not_ignored(self) -> None:
+        """The rule, not the index: the season AFTER the live one must be trackable too.
+
+        This is the assertion the force-add could never make. ``--no-index`` asks purely
+        about the ignore rules, and ``-q`` is the spelling that answers the question --
+        without it ``check-ignore`` exits 0 for a NEGATED match too, reporting "a pattern
+        matched" rather than "this path is ignored".
+        """
+        future = f"config/upstream_live/{LIVE_ZONE_FIRST_SEASON + 1}.json"
+        ignored = _git("check-ignore", "-q", "--no-index", "--", future)
+
+        assert ignored.returncode == 1, (
+            f"{future} is IGNORED by .gitignore, so next season's committed capture "
+            "record would silently fail to be tracked. Keep the narrow "
+            "`!config/upstream_live/*.json` re-include in .gitignore.\n"
+            "  matching rule: "
+            + (
+                _git("check-ignore", "-v", "--no-index", "--", future).stdout.strip()
+                or "(none reported)"
+            )
+        )
+
+    def test_the_re_include_stays_narrow_and_does_not_re_track_every_json(self) -> None:
+        """The fix re-includes ONE directory's manifests, and nothing else.
+
+        ``.gitignore:254``'s blanket ``*.json`` is load-bearing -- it is what keeps every
+        generated JSON under ``outputs/`` and ``data/`` out of history. A re-include that
+        widened past the live-zone directory would trade one silent failure for a much
+        larger one.
+        """
+        stray = "outputs/phase32/data_before.json"
+        ignored = _git("check-ignore", "-q", "--no-index", "--", stray)
+
+        assert ignored.returncode == 0, (
+            f"{stray} is no longer ignored, so the CR-02 re-include reached past "
+            "config/upstream_live/ and started tracking generated JSON."
         )
 
 
