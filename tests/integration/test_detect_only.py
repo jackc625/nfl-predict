@@ -613,7 +613,13 @@ class TestADetectorFailureIsRecordedAndNeverSwallowed:
         assert code == capture_live_season.EXIT_OK
         entry = _recorded_entry(env)
         assert entry["rows"] == 1, "the capture entry was not written"
-        recorded = read_probe_log(env["log_path"])[-1]
+        entries = read_probe_log(env["log_path"])
+        assert len(entries) == 1, (
+            "a run whose probe FAILED did not leave its one line; an UNKNOWN is as "
+            "worth appending as a clean, because the alternative is a gap that reads "
+            "like a detector that never ran"
+        )
+        recorded = entries[-1]
         assert recorded["event_class"] == str(RevisionEventClass.UNKNOWN)
         assert recorded["reason"].strip(), "an UNKNOWN was recorded with no reason"
         assert recorded["event_class"] != str(RevisionEventClass.CLEAN)
