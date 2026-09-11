@@ -195,7 +195,10 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = ["-v", "--tb=short"]
 asyncio_mode = "auto"
-markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "writes_production_store: this test legitimately writes the production store paths named in its paths= argument (COLD-05, D33-24)",
+]
 
 # Coverage configuration
 [tool.coverage.run]

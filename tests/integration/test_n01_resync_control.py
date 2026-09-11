@@ -248,6 +248,16 @@ class TestTheNarrowestPossibleWrite:
 class TestTheResyncIsIdempotent:
     """A second apply changes nothing, and the CLI refuses it outright."""
 
+    # COLD-05 / D33-24. This is the repository's ONE legitimate production writer, and
+    # the exemption is scoped to the single path it writes. The write is a positive
+    # control on a REAL lake: `resync_games()` replaces the silver `games` table in
+    # `data/nfl_predictions.duckdb`, and the test's own assertion is that the TABLE's
+    # content digest is unchanged -- a second apply must be a logical no-op. A DuckDB
+    # `replace_mode` rewrite nevertheless moves the FILE's bytes, which is what the
+    # content guard sees and what this marker declares. Neither
+    # `TestEvery2021To2024ValueIsByteIdentical` test carries it: both are deliberate
+    # tripwires and keep zero write exemption.
+    @pytest.mark.writes_production_store(paths=["data/nfl_predictions.duckdb"])
     def test_a_second_apply_leaves_the_duckdb_table_byte_identical(self):
         _require_live_silver_games()
         from scripts.resync_games_duckdb import resync_games, table_content_digest

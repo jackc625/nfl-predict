@@ -1,5 +1,6 @@
 """Pytest configuration and fixtures for NFL Prediction System tests."""
 
+import os
 import re
 import shutil
 
@@ -7,7 +8,7 @@ import shutil
 import sys
 import tempfile
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -100,6 +101,12 @@ def is_evidence_backed_skip(reason: str) -> bool:
 
 
 def pytest_terminal_summary(terminalreporter) -> None:
+    """Everything this session needs to say about itself that a count cannot."""
+    _report_evidence_backed_skips(terminalreporter)
+    _report_closing_full_sweep(terminalreporter)
+
+
+def _report_evidence_backed_skips(terminalreporter) -> None:
     """Report how many evidence-backed controls did NOT run on this checkout.
 
     A green suite is not the same claim on a fresh clone as it is on the machine that
@@ -173,6 +180,385 @@ def artifacts_boundary_guard():
     yield before
     assert_tree_unchanged(
         before, digest_tree(PRODUCTION_ARTIFACTS_ROOT), PRODUCTION_ARTIFACTS_ROOT
+    )
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-01 / COLD-05: the production stores are guarded BY DEFAULT
+# ---------------------------------------------------------------------------
+#
+# The two fixtures above are OPT-IN, and that is the defect this section closes. A
+# module that never thought about the boundary is UNGUARDED, which is how four
+# production overwrites went unreported during Phase 31 -- `test_elo_integration.py`
+# rebuilding Elo over `data/silver/elo_game_snapshots.parquet`, and
+# `test_lift_validation.py` retraining into production `artifacts/`. Neither module
+# had asked to be guarded, so neither was.
+#
+# `production_store_write_guard` below is AUTOUSE: every test in every tier is
+# judged, and a test that legitimately writes a production store says so with a
+# PATH-SCOPED marker naming exactly what it writes.
+#
+# THE INSTRUMENT IS `tests/data_boundary.py`, REUSED AND NEVER REIMPLEMENTED.
+# `digest_tree`, `diff_digests` and `format_digest_diff` do the hashing and the
+# reporting here exactly as they do for the opt-in fixtures; the only thing this
+# section adds is WHEN they run and WHO is exempt.
+#
+# D33-23 -- ONE full content digest per session, a STAT-ONLY sweep per test.
+# Content-hashing 130 MB of production stores after each of four thousand tests is
+# not a guard anybody would keep. So the per-test pass reads `(st_size,
+# st_mtime_ns)` only, and content-hashes ONLY the keys that moved. The stat map
+# decides WHERE TO LOOK; it never renders the verdict.
+#
+# D33-23, review-hardened -- and a FULL content sweep at session END. A write that
+# restores its own size and mtime, or that lands inside the filesystem's timestamp
+# resolution, is invisible to the prefilter. The closing sweep is what makes the
+# SESSION's verdict content-based rather than metadata-based, and it reports through
+# `pytest_terminal_summary` so the finding is attached to the session rather than to
+# whichever test happened to run last.
+
+GUARD_DATA_ROOT_ENV = "NFL_GUARD_DATA_ROOT"
+GUARD_ARTIFACTS_ROOT_ENV = "NFL_GUARD_ARTIFACTS_ROOT"
+
+CLOSING_SWEEP_HEADER = "SESSION-END FULL CONTENT SWEEP"
+
+# Session-lived guard state. A module global rather than a fixture because
+# `pytest_sessionfinish` and `pytest_terminal_summary` are hooks, not fixtures, and
+# the closing sweep has to reach the same rebased baseline the per-test pass left.
+_GUARD_STATE: dict = {"baselines": None, "closing_report": None}
+
+
+class _StoreBaseline:
+    """One guarded root, its content digests, and its parallel stat map."""
+
+    __slots__ = ("digests", "label", "root", "stats")
+
+    def __init__(self, label: str, root: Path, digests: dict, stats: dict) -> None:
+        self.label = label
+        self.root = root
+        self.digests = digests
+        self.stats = stats
+
+
+def _guarded_roots() -> tuple[tuple[str, Path], ...]:
+    """The roots this session guards, as (label, path).
+
+    The LABEL is the repo-relative name a marker declares against ("data" /
+    "artifacts"), and it stays stable even when the PATH is redirected. The
+    redirection exists for exactly one caller: the nested session in
+    `tests/integration/test_data_boundary_guard_arming.py`, which has to watch the
+    guard fire without any real production store being written to do it.
+    """
+    from tests.data_boundary import (
+        PRODUCTION_ARTIFACTS_ROOT,
+        PRODUCTION_DATA_ROOT,
+    )
+
+    data = os.environ.get(GUARD_DATA_ROOT_ENV)
+    artifacts = os.environ.get(GUARD_ARTIFACTS_ROOT_ENV)
+    return (
+        ("data", Path(data) if data else PRODUCTION_DATA_ROOT),
+        ("artifacts", Path(artifacts) if artifacts else PRODUCTION_ARTIFACTS_ROOT),
+    )
+
+
+def _stat_sweep(root: Path) -> dict[str, tuple[int, int]]:
+    """Map every tracked file under *root* to `(st_size, st_mtime_ns)`.
+
+    The cheap half of D33-23. Keys are POSIX-relative to *root*, identical to
+    `digest_tree`'s, so the two maps line up key for key.
+    """
+    from tests.data_boundary import TRACKED_SUFFIXES
+
+    root_path = Path(root)
+    if not root_path.exists():
+        return {}
+
+    lowered = tuple(suffix.lower() for suffix in TRACKED_SUFFIXES)
+    stats: dict[str, tuple[int, int]] = {}
+    for candidate in root_path.rglob("*"):
+        if candidate.suffix.lower() not in lowered:
+            continue
+        try:
+            info = candidate.stat()
+        except OSError:
+            continue
+        if not candidate.is_file():
+            continue
+        stats[candidate.relative_to(root_path).as_posix()] = (
+            info.st_size,
+            info.st_mtime_ns,
+        )
+    return stats
+
+
+def _suspect_paths(
+    before: dict[str, tuple[int, int]],
+    after: dict[str, tuple[int, int]],
+) -> list[str]:
+    """Keys whose stat signature appeared, vanished or moved -- where to look.
+
+    NOT a verdict. A file can be touched, copied over itself or re-saved with
+    identical bytes and land here; the caller content-hashes these keys and only
+    then decides anything.
+    """
+    appeared_or_vanished = set(before) ^ set(after)
+    moved = {key for key in set(before) & set(after) if before[key] != after[key]}
+    return sorted(appeared_or_vanished | moved)
+
+
+def _marker_paths_for_item(item) -> dict[str, frozenset[str]]:
+    """The store paths *item* DECLARES it writes, split by guarded root label.
+
+    A marker declares repo-relative paths -- "data/nfl_predictions.duckdb" -- which
+    is what a reader of the test sees on disk. The guard works in root-relative
+    keys, so the leading label is stripped here and used to route the exemption to
+    the right root. A declared path that names no guarded root is an ERROR rather
+    than an ignored line: silently dropping it would grant an exemption the author
+    believes they have and the guard does not honour.
+    """
+    from tests.phase33_state import WRITES_PRODUCTION_STORE_MARKER
+
+    labels = [label for label, _ in _guarded_roots()]
+    scoped: dict[str, set[str]] = {label: set() for label in labels}
+
+    marker = item.get_closest_marker(WRITES_PRODUCTION_STORE_MARKER)
+    if marker is None:
+        return {label: frozenset(keys) for label, keys in scoped.items()}
+
+    declared: list[str] = []
+    for value in marker.args:
+        declared.extend([value] if isinstance(value, str) else list(value))
+    paths = marker.kwargs.get("paths") or ()
+    declared.extend([paths] if isinstance(paths, str) else list(paths))
+
+    for raw in declared:
+        parts = PurePosixPath(str(raw).replace("\\", "/")).parts
+        if len(parts) < 2 or parts[0] not in scoped:
+            raise ValueError(
+                f"{item.nodeid} declares writes_production_store(paths=[{raw!r}]). A "
+                f"declared path must be repo-relative and start with one of {labels} "
+                "-- for example 'data/nfl_predictions.duckdb'. A path the guard cannot "
+                "route to a root would grant an exemption that silently does nothing."
+            )
+        scoped[parts[0]].add("/".join(parts[1:]))
+
+    return {label: frozenset(keys) for label, keys in scoped.items()}
+
+
+def _guard_verdict(
+    baseline: _StoreBaseline,
+    declared: frozenset[str],
+) -> str | None:
+    """Judge one root, REBASE it, and return a violation message or None.
+
+    The rebase happens for every suspect key, permitted or not, and that is
+    deliberate: each test is judged against the state it actually inherited. Without
+    it, one undeclared write would be re-reported by every later test in the session
+    and the second report would be about the first test's fault.
+    """
+    from tests.data_boundary import diff_digests, digest_file, format_digest_diff
+
+    after_stats = _stat_sweep(baseline.root)
+    suspects = _suspect_paths(baseline.stats, after_stats)
+    if not suspects:
+        return None
+
+    before_subset = {
+        key: baseline.digests[key] for key in suspects if key in baseline.digests
+    }
+    after_subset = {
+        key: digest_file(baseline.root / key) for key in suspects if key in after_stats
+    }
+    diff = diff_digests(before_subset, after_subset)
+
+    for key in suspects:
+        baseline.stats.pop(key, None)
+        baseline.digests.pop(key, None)
+        if key in after_stats:
+            baseline.stats[key] = after_stats[key]
+            baseline.digests[key] = after_subset[key]
+
+    undeclared = {
+        category: [key for key in keys if key not in declared]
+        for category, keys in diff.items()
+    }
+    if not any(undeclared.values()):
+        return None
+
+    return (
+        format_digest_diff(undeclared, before_subset, after_subset, baseline.root)
+        + "\n"
+        + "\n".join(
+            [
+                "",
+                "DECLARE THE WRITE, OR REDIRECT IT. If this write is legitimate, mark the "
+                "test with the paths it writes and nothing else:",
+                *[
+                    f'    @pytest.mark.writes_production_store(paths=["{baseline.label}/{key}"])'
+                    for category in ("added", "removed", "changed")
+                    for key in undeclared.get(category, [])
+                ],
+                "The marker exempts the marked test alone, for the paths it names alone; "
+                "record it in tests/phase33_state.MARKED_PRODUCTION_WRITERS.",
+            ]
+        )
+    )
+
+
+def _assert_single_worker(config) -> None:
+    """Refuse to arm under multiple workers. A named error, NEVER a skip.
+
+    The guard holds a session baseline and rebases it in test order. Under
+    `pytest-xdist` each worker holds its own baseline over a SHARED filesystem, so
+    one worker's legitimate declared write is another worker's unexplained data
+    move -- the guard would report violations that are artefacts of its own
+    concurrency, and the first fix anybody reached for would be to turn it off.
+
+    `pytest.skip` is the wrong answer and is not used: a guard that stands down
+    under a configuration it does not understand is worse than no guard, because the
+    session still reports green.
+    """
+    workerinput = getattr(config, "workerinput", None)
+    numprocesses = None
+    getoption = getattr(config, "getoption", None)
+    if callable(getoption):
+        numprocesses = getoption("numprocesses", None)
+
+    if workerinput is None and numprocesses in (None, 0):
+        return
+
+    raise RuntimeError(
+        "The production-store write guard CANNOT ARM under a multi-worker pytest "
+        "session (xdist workerinput="
+        f"{workerinput!r}, numprocesses={numprocesses!r}). It holds one session "
+        "baseline and rebases it in test order; with several workers sharing one "
+        "filesystem, one worker's declared write is another worker's unexplained "
+        "data move. This suite has a single-worker requirement, and pytest-xdist is "
+        "deliberately not installed -- its absence is asserted in "
+        "tests/unit/test_write_guard_marker_scope.py. Run the suite single-worker, "
+        "in the three tiers PIPELINE.md describes. The guard refuses rather than "
+        "skipping on purpose: a guard that stands down still reports green."
+    )
+
+
+def _take_baselines() -> tuple[_StoreBaseline, ...]:
+    """ONE full content digest of each guarded root, plus its parallel stat map."""
+    from tests.data_boundary import digest_tree
+
+    return tuple(
+        _StoreBaseline(label, root, digest_tree(root), _stat_sweep(root))
+        for label, root in _guarded_roots()
+    )
+
+
+def _closing_full_sweep(baselines) -> str | None:
+    """The D33-23 review hardening: a FULL content sweep at session end.
+
+    Compared against the baseline AS REBASED by the per-test pass, so anything this
+    reports is something no per-test stat sweep saw -- which is itself the
+    diagnostic. A write whose size and mtime came back unchanged is exactly the
+    shape the prefilter cannot see, and exactly the shape somebody covering their
+    tracks would produce.
+    """
+    from tests.data_boundary import (
+        diff_digests,
+        digest_tree,
+        format_digest_diff,
+        is_clean,
+    )
+
+    sections = []
+    for baseline in baselines:
+        after = digest_tree(baseline.root)
+        diff = diff_digests(baseline.digests, after)
+        if is_clean(diff):
+            continue
+        sections.append(
+            format_digest_diff(diff, baseline.digests, after, baseline.root)
+        )
+
+    if not sections:
+        return None
+
+    return "\n\n".join(
+        [
+            CLOSING_SWEEP_HEADER
+            + " -- a production store moved and NO per-test stat sweep saw it.",
+            "The per-test prefilter reads (st_size, st_mtime_ns) and content-hashes "
+            "only what moved. A write that RESTORES both, or that lands inside this "
+            "filesystem's timestamp resolution, passes it unseen. This sweep re-hashes "
+            "every tracked file against the session baseline as rebased by the "
+            "permitted writes, so the session's verdict is content-based even where "
+            "the prefilter's was not. That the finding appears HERE and not against a "
+            "test is the diagnostic: the metadata did not move with the bytes.",
+            *sections,
+        ]
+    )
+
+
+def _report_closing_full_sweep(terminalreporter) -> None:
+    report = _GUARD_STATE.get("closing_report")
+    if not report:
+        return
+    terminalreporter.write_sep("-", "production store boundary")
+    for line in report.splitlines():
+        terminalreporter.write_line(line)
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    """Run the closing full sweep and FAIL the session on anything it finds.
+
+    Attached to the session rather than to a test on purpose -- nothing the closing
+    sweep finds belongs to any particular test, and pinning it to whichever test ran
+    last would name an innocent one.
+    """
+    baselines = _GUARD_STATE.get("baselines")
+    if not baselines:
+        return
+    report = _closing_full_sweep(baselines)
+    _GUARD_STATE["closing_report"] = report
+    if report and session.exitstatus == 0:
+        session.exitstatus = 1
+
+
+@pytest.fixture(scope="session")
+def _production_store_baseline(request):
+    """ONE content digest of every guarded root, taken before the first test runs."""
+    _assert_single_worker(request.config)
+    baselines = _take_baselines()
+    _GUARD_STATE["baselines"] = baselines
+    _GUARD_STATE["closing_report"] = None
+    return baselines
+
+
+@pytest.fixture(autouse=True)
+def production_store_write_guard(request, _production_store_baseline):
+    """COLD-05: fail any test that writes a production store it did not declare."""
+    yield
+
+    declared = _marker_paths_for_item(request.node)
+    violations = [
+        message
+        for baseline in _production_store_baseline
+        if (
+            message := _guard_verdict(
+                baseline, declared.get(baseline.label, frozenset())
+            )
+        )
+    ]
+    if not violations:
+        return
+
+    from tests.data_boundary import DataBoundaryViolation
+
+    raise DataBoundaryViolation(
+        "\n\n".join(
+            [
+                "PRODUCTION STORE WRITE GUARD -- "
+                f"{request.node.nodeid} wrote a production store it did not declare.",
+                *violations,
+            ]
+        )
     )
 
 

@@ -65,6 +65,7 @@ _SHA256_RE = re.compile(r"\b[0-9a-f]{64}\b")
 # keeps the parser from silently returning nothing if that ever changes.
 _TEARDOWN_HEADER_RE = re.compile(r"ERROR at teardown of (test_\w+)")
 _FAILURE_HEADER_RE = re.compile(r"^_+ (test_\w+) _+$")
+_SEPARATOR_RULE_RE = re.compile(r"^-{4,}")
 
 CLOSING_SWEEP_HEADER = "SESSION-END FULL CONTENT SWEEP"
 
@@ -208,7 +209,18 @@ def _blocks(output: str) -> dict[str, str]:
             current = failure.group(1)
             blocks.setdefault(current, [])
             continue
-        if line.startswith("=") or line.startswith("short test summary"):
+        # Anything that ends the per-test report region closes the open block. The
+        # closing full sweep in particular is printed by `pytest_terminal_summary`
+        # AFTER the last error block, under a `write_sep("-", ...)` rule -- letting it
+        # leak into the block above would attribute a session-level finding to an
+        # innocent test, which is the exact mis-attribution the sweep is reported at
+        # session level to avoid.
+        if (
+            line.startswith("=")
+            or line.startswith("short test summary")
+            or CLOSING_SWEEP_HEADER in line
+            or _SEPARATOR_RULE_RE.match(line)
+        ):
             current = None
             continue
         if current:
