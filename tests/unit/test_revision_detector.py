@@ -26,6 +26,7 @@ A detector nobody can show failing is decoration. Six things are proved here:
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -34,6 +35,8 @@ import requests
 
 from data.revision_events import RevisionEventClass, RevisionSeverity
 from data.sealed_probe import (
+    MAX_CONTENT_STREAM_BYTES,
+    MAX_RELEASE_PAYLOAD_BYTES,
     PROBE_STRATEGY_CONTENT,
     PROBE_STRATEGY_METADATA,
     SEALED_PROBE_STRATEGY,
@@ -42,6 +45,7 @@ from data.sealed_probe import (
     acknowledge_divergence,
     asset_download_url,
     asset_name_for,
+    content_digest_for,
     fetch_release_assets,
     parse_release_payload,
     probe_sealed,
@@ -529,6 +533,141 @@ class TestATransportFailureIsRecordedNotSwallowed:
             fetch_release_assets("pbp")
 
         assert "ceiling" in str(excinfo.value)
+
+    def test_the_metadata_body_is_streamed_so_the_ceiling_can_bind(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """WR-03. ``stream=True`` is what makes the ceiling a ceiling.
+
+        ``getter(url, timeout=timeout)`` was a NON-STREAMING ``requests.get``, so the
+        ENTIRE body was read into memory inside that call and
+        ``len(body) > MAX_RELEASE_PAYLOAD_BYTES`` only decided whether to PARSE bytes that
+        were already resident. An 8 GB response exhausted the run before the check could
+        execute -- the constant's own comment claimed it "refuses an unbounded or hostile
+        body rather than handing it to a parser", which the code did not deliver.
+        """
+        seen: dict[str, object] = {}
+
+        class _Response:
+            status_code = 200
+            headers: dict[str, str] = {}
+
+            def iter_content(self, size: int):
+                yield (FIXTURE_DIR / "pbp.json").read_bytes()
+
+        def _get(url, **kwargs):
+            seen.update(kwargs)
+            return _Response()
+
+        monkeypatch.setattr(requests, "get", _get)
+        fetch_release_assets("pbp")
+
+        assert seen.get("stream") is True, (
+            "the metadata fetch is not streamed, so the byte ceiling can only be applied "
+            f"to a body that is already fully resident. kwargs: {seen}"
+        )
+
+    def test_an_unbounded_body_is_abandoned_mid_stream_not_after_it_lands(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The running total drops the connection rather than buffering to the end."""
+        served = {"chunks": 0}
+        chunk = b"x" * (1024 * 1024)
+
+        class _Response:
+            status_code = 200
+            headers: dict[str, str] = {}
+
+            def iter_content(self, size: int):
+                while True:  # an endless body, as a hostile server would serve
+                    served["chunks"] += 1
+                    yield chunk
+
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _Response())
+
+        with pytest.raises(SealedProbeUnavailable) as excinfo:
+            fetch_release_assets("pbp")
+
+        assert "ABANDONED" in str(excinfo.value)
+        assert "ceiling" in str(excinfo.value)
+        # The endless generator was stopped just past the ceiling instead of being drained.
+        assert served["chunks"] <= MAX_RELEASE_PAYLOAD_BYTES // len(chunk) + 2, (
+            f"the body was read {served['chunks']} MB past an "
+            f"{MAX_RELEASE_PAYLOAD_BYTES}-byte ceiling, so the ceiling did not bind"
+        )
+
+    def test_the_content_stream_has_a_ceiling_of_its_own(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """WR-03's other half: ``content_digest_for`` had NO size ceiling at all.
+
+        It streamed and digested whatever it was served. A separate, much looser constant
+        bounds it, because the two ceilings bound subjects three orders of magnitude apart
+        -- the largest real asset is the ~20 MB ``games.parquet`` -- and one number serving
+        both would have to be the looser of the two.
+        """
+        assert MAX_CONTENT_STREAM_BYTES > MAX_RELEASE_PAYLOAD_BYTES
+
+        chunk = b"y" * (1024 * 1024)
+        served = {"chunks": 0}
+
+        class _Response:
+            status_code = 200
+            headers: dict[str, str] = {}
+
+            def iter_content(self, size: int):
+                while True:
+                    served["chunks"] += 1
+                    yield chunk
+
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _Response())
+
+        with pytest.raises(SealedProbeUnavailable) as excinfo:
+            content_digest_for("schedules", 2010)
+
+        assert "ABANDONED" in str(excinfo.value)
+        assert served["chunks"] <= MAX_CONTENT_STREAM_BYTES // len(chunk) + 2
+
+    def test_an_ordinary_content_stream_still_digests(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ceiling must not change the answer for a body under it."""
+        payload = b"the bytes upstream published"
+
+        class _Response:
+            status_code = 200
+            headers: dict[str, str] = {}
+
+            def iter_content(self, size: int):
+                yield payload[:5]
+                yield payload[5:]
+
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _Response())
+
+        assert (
+            content_digest_for("schedules", 2010) == hashlib.sha256(payload).hexdigest()
+        )
+
+    def test_a_stream_failing_mid_read_is_unavailable_not_a_short_digest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A truncated stream must never produce a digest over the bytes that arrived."""
+
+        class _Response:
+            status_code = 200
+            headers: dict[str, str] = {}
+
+            def iter_content(self, size: int):
+                yield b"first"
+                raise requests.ConnectionError("connection reset mid-stream")
+
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _Response())
+
+        with pytest.raises(SealedProbeUnavailable) as excinfo:
+            content_digest_for("schedules", 2010)
+
+        assert "failed mid-read" in str(excinfo.value)
+        assert "connection reset mid-stream" in str(excinfo.value)
 
     def test_a_stored_payload_round_trips_through_the_fetch_path(
         self, monkeypatch: pytest.MonkeyPatch, stored_assets: dict[str, dict[str, dict]]

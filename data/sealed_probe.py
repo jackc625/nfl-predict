@@ -76,6 +76,7 @@ __all__ = [
     "DATASET_RELEASE_TAGS",
     "FINDING_KEYS",
     "GITHUB_RELEASES_TAG_URL",
+    "MAX_CONTENT_STREAM_BYTES",
     "MAX_RELEASE_PAYLOAD_BYTES",
     "PROBE_STRATEGY_CONTENT",
     "PROBE_STRATEGY_METADATA",
@@ -196,13 +197,41 @@ ASSET_DOWNLOAD_URL = (
 
 # Every outbound call carries this. A probe with no timeout can hang the weekly run it is
 # supposed to be a cheap side effect of (T-32-04).
+#
+# WHAT IT IS AND IS NOT, stated precisely because the original comment overclaimed (WR-03):
+# ``requests``' ``timeout`` is a CONNECT / READ-INACTIVITY timeout, NOT a total-duration
+# budget. It fires when no byte arrives for this long; it does not fire on a server that
+# drips one byte every 29 s indefinitely. The BYTE CEILING is what bounds that case --
+# :data:`MAX_RELEASE_PAYLOAD_BYTES` and :data:`MAX_CONTENT_STREAM_BYTES` are enforced on a
+# running total as the body streams, so a slow-drip response is abandoned once it has sent
+# more than the ceiling regardless of how long it took.
+#
+# A genuine wall-clock bound is deliberately NOT added. It would need a deadline recorded
+# before the first byte and checked inside the chunk loop, and it would convert an ordinary
+# slow network into a recorded UNKNOWN -- more alert volume for a failure mode the byte
+# ceiling already bounds. The honest statement of the guarantee is here instead.
 PROBE_TIMEOUT_SECONDS: float = 30.0
 
-# An explicit ceiling on the metadata response, checked BEFORE the JSON is parsed. The
-# largest real payload measured is 236 KB (the pbp tag, 164 assets), so 8 MB is ~35x
-# headroom and still refuses an unbounded or hostile body rather than handing it to a
-# parser.
+# An explicit ceiling on the metadata response, enforced WHILE THE BODY IS BEING READ and
+# therefore before the JSON is parsed. The largest real payload measured is 236 KB (the pbp
+# tag, 164 assets), so 8 MB is ~35x headroom and still abandons an unbounded or hostile body
+# rather than buffering it and handing it to a parser.
+#
+# WR-03: this constant's original comment claimed exactly that and the code did not deliver
+# it. ``getter(url, timeout=timeout)`` is a NON-STREAMING ``requests.get``, so the entire
+# body was read into memory inside that call and ``len(body) > MAX_RELEASE_PAYLOAD_BYTES``
+# only decided whether to parse bytes that were already resident. An 8 GB response exhausted
+# the run before the check could execute. The read is now streamed and the ceiling is a
+# RUNNING TOTAL, so the body is abandoned mid-stream.
 MAX_RELEASE_PAYLOAD_BYTES: int = 8 * 1024 * 1024
+
+# The ceiling on a CONTENT probe's asset stream (WR-03). ``content_digest_for`` streamed
+# whatever it was served with no bound at all. The largest real asset measured is the ~20 MB
+# ``games.parquet``, so 512 MB is ample headroom for upstream growth while still bounding a
+# hostile or runaway response. Deliberately a SEPARATE constant from the metadata ceiling:
+# they bound different things by three orders of magnitude, and one number serving both
+# would have to be the looser of the two.
+MAX_CONTENT_STREAM_BYTES: int = 512 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # The FROZEN verdict shape.
@@ -431,6 +460,73 @@ def _rate_limit_remaining(headers: Any) -> int | None:
         return None
 
 
+def _capped_stream(
+    response: Any,
+    *,
+    limit: int,
+    what: str,
+    on_chunk: Any = None,
+) -> int:
+    """Consume *response*'s body in chunks, ABANDONING it the moment it exceeds *limit*.
+
+    The running total is what makes the ceiling real (WR-03). A check performed after a
+    non-streaming ``requests.get`` has already returned can only decide whether to PARSE
+    bytes that are fully resident in memory -- by which point an unbounded body has already
+    done its damage. Checking after each chunk means the connection is dropped mid-stream
+    and the peak resident size is bounded by *limit* plus one chunk.
+
+    Args:
+        response: The streaming response. ``iter_content`` is used when available; a
+            response object without it falls back to its ``content``, which is still
+            size-checked but was already buffered by whoever produced it. The fallback
+            exists for test doubles and for any transport that cannot stream, and it is
+            NOT the production path.
+        limit: The ceiling in bytes.
+        what: A phrase naming the subject, used in the refusal.
+        on_chunk: Called with each chunk. ``None`` collects nothing (the caller only wants
+            the total), otherwise this is where the digest is updated or the body collected.
+
+    Returns:
+        The total number of bytes consumed.
+
+    Raises:
+        SealedProbeUnavailable: If the running total exceeds *limit*, or the stream fails
+            mid-read.
+    """
+    iter_content = getattr(response, "iter_content", None)
+    if iter_content is None:
+        body = getattr(response, "content", b"")
+        if not isinstance(body, bytes | bytearray):
+            msg = f"{what} carried a {type(body).__name__} body rather than bytes."
+            raise SealedProbeUnavailable(msg)
+        chunks: Any = [bytes(body)]
+    else:
+        chunks = iter_content(PIN_DIGEST_CHUNK_BYTES)
+
+    total = 0
+    try:
+        for chunk in chunks:
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > limit:
+                msg = (
+                    f"{what} exceeded the {limit}-byte ceiling and was ABANDONED "
+                    "mid-stream. The ceiling is enforced on a running total as the body "
+                    "is read, so an unbounded or hostile response cannot exhaust the "
+                    "weekly run before it is refused."
+                )
+                raise SealedProbeUnavailable(msg)
+            if on_chunk is not None:
+                on_chunk(chunk)
+    except SealedProbeUnavailable:
+        raise
+    except Exception as exc:
+        msg = f"{what} failed mid-read: {type(exc).__name__}: {exc}."
+        raise SealedProbeUnavailable(msg) from exc
+    return total
+
+
 def fetch_release_assets(
     tag: str,
     *,
@@ -454,7 +550,8 @@ def fetch_release_assets(
         tag: The release tag, e.g. ``"pbp"``. One of :data:`DATASET_RELEASE_TAGS`' values.
         session: An optional ``requests.Session``. Supplied by the caller so three tags
             share one connection; ``None`` uses the module-level ``requests.get``.
-        timeout: Seconds, applied to the whole request.
+        timeout: Seconds of connect / read INACTIVITY, not a total-duration budget; see
+            :data:`PROBE_TIMEOUT_SECONDS`.
         rate_limits: An optional mutable mapping. When given, ``rate_limits[tag]`` is set
             to the observed ``x-ratelimit-remaining`` (or ``None`` when unreadable). This
             is how the rate limit reaches :func:`probe_sealed`'s verdict without this
@@ -475,7 +572,9 @@ def fetch_release_assets(
     url = GITHUB_RELEASES_TAG_URL.format(tag=tag)
     getter = session.get if session is not None else requests.get
     try:
-        response = getter(url, timeout=timeout)
+        # ``stream=True`` is what makes MAX_RELEASE_PAYLOAD_BYTES an actual ceiling rather
+        # than a post-hoc opinion about bytes already in memory (WR-03).
+        response = getter(url, timeout=timeout, stream=True)
     except Exception as exc:
         msg = (
             f"could not reach the GitHub releases API for tag {tag!r} at {url}: "
@@ -507,20 +606,14 @@ def fetch_release_assets(
         )
         raise SealedProbeUnavailable(msg)
 
-    body = getattr(response, "content", b"")
-    if not isinstance(body, bytes | bytearray):
-        msg = (
-            f"the GitHub releases API response for tag {tag!r} carried a "
-            f"{type(body).__name__} body rather than bytes."
-        )
-        raise SealedProbeUnavailable(msg)
-    if len(body) > MAX_RELEASE_PAYLOAD_BYTES:
-        msg = (
-            f"the GitHub releases API response for tag {tag!r} is {len(body)} bytes, "
-            f"above the {MAX_RELEASE_PAYLOAD_BYTES}-byte ceiling. The ceiling is checked "
-            "BEFORE parsing so an unbounded response cannot exhaust the weekly run."
-        )
-        raise SealedProbeUnavailable(msg)
+    collected = bytearray()
+    _capped_stream(
+        response,
+        limit=MAX_RELEASE_PAYLOAD_BYTES,
+        what=f"the GitHub releases API response for tag {tag!r}",
+        on_chunk=collected.extend,
+    )
+    body = bytes(collected)
 
     try:
         payload = json.loads(body.decode("utf-8"))
@@ -583,17 +676,16 @@ def content_digest_for(
         )
         raise SealedProbeUnavailable(msg)
 
+    # WR-03: this stream had NO ceiling at all and digested whatever it was served.
+    # :data:`MAX_CONTENT_STREAM_BYTES` bounds it on a running total, so a runaway or
+    # hostile response is abandoned mid-stream rather than read to completion.
     digest = hashlib.sha256()
-    try:
-        for chunk in response.iter_content(PIN_DIGEST_CHUNK_BYTES):
-            if chunk:
-                digest.update(chunk)
-    except Exception as exc:
-        msg = (
-            f"the {dataset} asset stream for season {season} at {url} failed mid-read: "
-            f"{type(exc).__name__}: {exc}."
-        )
-        raise SealedProbeUnavailable(msg) from exc
+    _capped_stream(
+        response,
+        limit=MAX_CONTENT_STREAM_BYTES,
+        what=f"the {dataset} asset stream for season {season} at {url}",
+        on_chunk=digest.update,
+    )
     return digest.hexdigest()
 
 
