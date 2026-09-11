@@ -172,6 +172,22 @@ _COLLISION_POLL_ATTEMPTS = 15
 PROBE_LOG_MODE_CAPTURE = "capture"
 PROBE_LOG_MODE_DETECT_ONLY = "detect-only"
 
+
+def probe_log_mode_partial_capture(completed: int, total: int) -> str:
+    """The mode a run records when the capture FAILED partway through (WR-07).
+
+    D32-08's whole reading of the committed log is that "a season of lines is itself the
+    proof the detector was alive, and a GAP in them is the evidence that it was not". A gap
+    that actually meant "the capture of one dataset raised" would make that reading wrong,
+    so a failed run still appends its line -- and the line says so, rather than being
+    indistinguishable from a clean weekly run.
+
+    ``mode`` is the natural home for the fact: it is already the field that distinguishes
+    one rhythm from another, so a reader who has learned to read it learns nothing new.
+    """
+    return f"{PROBE_LOG_MODE_CAPTURE} (partial -- the run failed after {completed} of {total} dataset(s))"
+
+
 # How old the newest probe-log line may be before this run says the detector appears to
 # have stopped. The capture runs weekly (Friday), so 7 days is the cadence and the extra 3
 # are slack: a run moved from Friday to Monday is an ordinary schedule slip, and a warning
@@ -1273,26 +1289,64 @@ def run_capture(
 
     ONE sealed probe and ONE probe-log line per run, held by the single
     :class:`SealedProbeRun` threaded through every dataset.
+
+    THE LINE IS APPENDED EVEN WHEN THE CAPTURE FAILS (WR-07). The dataset loop sits inside
+    a ``try``/``finally``, because a dataset raising -- a season-window refusal, a bronze
+    collision, ``_assert_one_season`` -- used to let the exception escape to ``main``'s
+    handler with the probe-log line never written, even though :class:`SealedProbeRun` had
+    already probed upstream and was holding a complete verdict, possibly a CRITICAL finding
+    about a sealed re-release. That discarded a real finding AND forged the one signal
+    D32-08's log exists to provide: "a season of lines is itself the proof the detector was
+    alive, and a GAP in them is the evidence that it was not". A gap that actually meant
+    "one dataset's capture raised" makes that reading wrong for the whole season.
+
+    The partial run's line is MARKED as partial through
+    :func:`probe_log_mode_partial_capture`, so it is not silently indistinguishable from a
+    complete weekly run either.
     """
     sealed = SealedProbeRun(lock_path=sealed_lock)
     verdicts: dict[str, dict] = {}
-    for dataset in datasets:
-        entry = capture_live_dataset(
-            dataset,
-            season,
-            week,
-            data_root=data_root,
-            manifest_dir=manifest_dir,
-            sealed=sealed,
-            graded_output_dir=graded_output_dir,
-        )
-        verdicts[f"live:{dataset}"] = entry[CAPTURE_VERDICT_KEY]
-        print(
-            f"{dataset}: season {season} week {week} sequence {entry['sequence']} -- "
-            f"{entry['rows']} row(s), {len(entry['columns'])} column(s), content "
-            f"through week {entry['content_through_week']}, {entry['path']} "
-            f"[{entry[CAPTURE_VERDICT_KEY]['event_class']}]"
-        )
+    captured: list[str] = []
+    try:
+        for dataset in datasets:
+            entry = capture_live_dataset(
+                dataset,
+                season,
+                week,
+                data_root=data_root,
+                manifest_dir=manifest_dir,
+                sealed=sealed,
+                graded_output_dir=graded_output_dir,
+            )
+            captured.append(dataset)
+            verdicts[f"live:{dataset}"] = entry[CAPTURE_VERDICT_KEY]
+            print(
+                f"{dataset}: season {season} week {week} sequence {entry['sequence']} -- "
+                f"{entry['rows']} row(s), {len(entry['columns'])} column(s), content "
+                f"through week {entry['content_through_week']}, {entry['path']} "
+                f"[{entry[CAPTURE_VERDICT_KEY]['event_class']}]"
+            )
+    finally:
+        # The run's ONE line, appended whether the loop completed or raised. Guarded so a
+        # failure in the logging can never REPLACE the capture's own exception -- a
+        # traceback naming the log writer instead of the bronze collision that actually
+        # happened would be strictly less useful than the one being unwound.
+        partial_verdict = sealed.completed
+        if partial_verdict is not None and len(captured) != len(datasets):
+            try:
+                record_probe_run(
+                    partial_verdict,
+                    mode=probe_log_mode_partial_capture(len(captured), len(datasets)),
+                    season=season,
+                    datasets=datasets,
+                    sealed_log=sealed_log,
+                )
+            except Exception as log_failure:  # noqa: BLE001 - never mask the real error
+                logger.warning(
+                    "Could not append the probe-log line for a failed capture",
+                    season=season,
+                    error=str(log_failure),
+                )
 
     sealed_verdict = sealed.completed
     if sealed_verdict is not None:

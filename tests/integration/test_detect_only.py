@@ -821,6 +821,85 @@ class TestADetectorFailureIsRecordedAndNeverSwallowed:
                 sealed=capture_live_season.SealedProbeRun(lock_path=env["lock_path"]),
             )
 
+    def test_a_capture_that_fails_partway_still_appends_its_probe_log_line(
+        self, env: dict
+    ) -> None:
+        """WR-07. A gap in the log must mean "the detector did not run", nothing else.
+
+        ``record_probe_run`` sat AFTER the dataset loop, so any dataset raising -- a
+        season-window refusal, a bronze collision, ``_assert_one_season`` -- let the
+        exception escape with the line never appended, even though ``SealedProbeRun`` had
+        already probed upstream and was holding a COMPLETE verdict, possibly a CRITICAL
+        finding about a sealed re-release. That discarded a real finding and forged the one
+        signal D32-08's log exists to provide.
+
+        ``depth_charts`` has no stubbed frame in this fixture world, so the second dataset
+        raises after the first has captured cleanly and memoised the run's probe.
+        """
+        with pytest.raises(Exception, match="depth_charts"):
+            capture_live_season.run_capture(
+                ["pbp", "depth_charts"],
+                LIVE_SEASON,
+                1,
+                data_root=env["data_root"],
+                manifest_dir=env["manifest_dir"],
+                sealed_lock=env["lock_path"],
+                sealed_log=env["log_path"],
+            )
+
+        entries = read_probe_log(env["log_path"])
+        assert len(entries) == 1, (
+            "a run whose capture failed partway left NO probe-log line, so the season's "
+            "record now has a gap that reads as 'the detector never ran' -- and the "
+            "sealed verdict it was already holding was thrown away with it"
+        )
+
+    def test_the_partial_runs_line_says_it_was_partial(self, env: dict) -> None:
+        """The line is appended, and it is not disguised as a complete weekly run."""
+        with pytest.raises(Exception, match="depth_charts"):
+            capture_live_season.run_capture(
+                ["pbp", "depth_charts"],
+                LIVE_SEASON,
+                1,
+                data_root=env["data_root"],
+                manifest_dir=env["manifest_dir"],
+                sealed_lock=env["lock_path"],
+                sealed_log=env["log_path"],
+            )
+
+        recorded = read_probe_log(env["log_path"])[-1]
+        assert recorded["mode"] != capture_live_season.PROBE_LOG_MODE_CAPTURE, (
+            "the partial run's line is indistinguishable from a complete one"
+        )
+        assert "partial" in recorded["mode"]
+        assert "1 of 2" in recorded["mode"], (
+            f"the mode does not say how far the run got: {recorded['mode']!r}"
+        )
+        assert recorded["event_class"], "the verdict was not carried onto the line"
+
+    def test_a_complete_capture_still_appends_exactly_one_line(self, env: dict) -> None:
+        """The WR-07 guard must not double-log the ordinary case.
+
+        D32-08 makes the line per RUN. A ``finally`` that appended unconditionally would
+        write two lines for every successful weekly capture, and a log with two lines per
+        run is a log whose gaps stop meaning anything -- the same property the fix exists
+        to protect, broken from the other side.
+        """
+        code = capture_live_season.run_capture(
+            ["pbp"],
+            LIVE_SEASON,
+            1,
+            data_root=env["data_root"],
+            manifest_dir=env["manifest_dir"],
+            sealed_lock=env["lock_path"],
+            sealed_log=env["log_path"],
+        )
+
+        assert code == capture_live_season.EXIT_OK
+        entries = read_probe_log(env["log_path"])
+        assert len(entries) == 1, f"a successful run wrote {len(entries)} lines, not 1"
+        assert entries[-1]["mode"] == capture_live_season.PROBE_LOG_MODE_CAPTURE
+
     def test_the_pin_refusal_clause_precedes_every_broad_handler(self) -> None:
         import inspect
 
