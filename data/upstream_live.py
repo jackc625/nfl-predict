@@ -106,6 +106,22 @@ NO_WEEK_COLUMN_BUCKET = "__no_week_column__"
 # whole-season revision. That guard (WR-06) landed first, deliberately. The already
 # committed 2026 week-1 entries stay stamped 1 and are not rewritten -- an append-only
 # record is not re-rendered under a later rule.
+#
+# G-32-90 CORRECTED THE ``depth_charts`` IDENTITY KEY AND THIS CONSTANT STAYED 2. That is a
+# RULING, not an oversight, and it is recorded here because a constant that sat still through
+# a rule change looks like one to anyone who only sees the diff. When the correction landed
+# (2026-09-11) NO ``week_digest_schema_version: 2`` entry had been written anywhere -- all
+# three committed 2026 capture entries are stamped 1 -- so version 2 has only ever meant the
+# CORRECTED rule, and no capture exists that a reader could mistake for one written under the
+# uncorrected five-column key. A bump to 3 would record a distinction no data can express: it
+# would create a version number labelling an EMPTY set of entries while implying some record
+# had been written under the five-column rule.
+#
+# WHAT MAKES THAT ARGUMENT EXPIRE, stated because it is the load-bearing condition: it holds
+# only because the correction landed BEFORE the next live capture. Once a version-2 entry
+# exists, changing the digest shape or an identity key needs a THIRD version and leaves the
+# season reading under two rules -- which is exactly the end-to-end incomparability this
+# constant exists to prevent.
 WEEK_DIGEST_SCHEMA_VERSION: int = 2
 
 # THE IDENTITY COLUMNS EACH DATASET'S DIGEST IS ORDERED BY, in priority order.
@@ -118,14 +134,42 @@ WEEK_DIGEST_SCHEMA_VERSION: int = 2
 # exact column layout: ONE corrected ``player_name`` moved SEVEN of the twelve column
 # digests, making a routine roster correction indistinguishable from a wholesale recompute.
 #
-# ``depth_charts`` has no game grain; its identity is the ROSTER SLOT on a given date.
-# These five columns are all present in the committed 2026 capture's column list. They are
-# not required to be UNIQUE: ties keep upstream's arrival order, exactly as rows within one
-# ``game_id`` already do, and that order is itself part of the captured content.
+# ``depth_charts`` has no game grain; its identity is the ROSTER SLOT on a given date --
+# ``dt``, ``team``, ``gsis_id``, ``pos_id``, ``pos_slot`` -- with ``espn_id`` behind it as a
+# TIE-BREAKER rather than as part of that identity. That is why ``espn_id`` goes LAST: the
+# ordering stays readable as "date, team, player, position, slot" with a disambiguator behind
+# it. All six columns are present in the committed 2026 capture's column list.
+#
+# THE KEY MUST BE UNIQUE ON REAL DATA, and the version of this block that shipped with WR-01
+# argued the opposite: it said the identity columns "are not required to be UNIQUE: ties keep
+# upstream's arrival order, exactly as rows within one ``game_id`` already do". THAT
+# EQUIVALENCE IS THE ERROR, and it is corrected here rather than merely worked around, because
+# the comment is where the defect was argued for and leaving it standing would re-invite it.
+# Within one ``game_id`` the tie order is the PLAY order: captured content, carrying meaning,
+# and a digest that preserves it is preserving something real. Within a roster slot on a date
+# the tie order is nothing but the order nflverse happened to emit two rows the key cannot
+# tell apart, so preserving it publishes a digest that MOVES ON A RE-ORDER with no underlying
+# change.
+#
+# MEASURED (G-32-90, 2026-09-11) on the committed 2026 capture, 509,781 rows: the five-column
+# key left 2,163 duplicate rows in 2,023 tie groups, EVERY one of them a group where
+# ``gsis_id`` is NULL -- 27,837 rows carry no ``gsis_id`` at all -- and inside those groups
+# ``espn_id``, ``pos_rank`` and ``player_name`` differ. So an upstream re-order moved THREE
+# column digests with no underlying change: the same false-positive class WR-01 was fixing,
+# reduced from 100% of rows to 0.42% rather than eliminated. The arithmetic that closes it:
+# with ``espn_id`` in the key there are 0 duplicate rows, and ``espn_id`` has 0 nulls across
+# all 509,781 rows, so the key is TOTAL on this dataset rather than merely better.
+#
+# THE STANDING REQUIREMENT THIS KEY NOW CARRIES: a ``depth_charts`` key must be UNIQUE on the
+# real capture, not merely plausible on a fixture. Three hand-built rows with distinct
+# ``gsis_id`` values are unique under any prefix of this key, so only real bytes can measure
+# it -- ``tests/unit/test_live_zone_capture_boundary.py``'s
+# ``TestTheDepthChartsIdentityKeyIsUniqueOnTheRealCapture`` does, against the committed
+# capture, so a later edit cannot quietly reintroduce ties.
 DIGEST_SORT_KEYS: dict[str, tuple[str, ...]] = {
     "pbp": ("game_id",),
     "schedules": ("game_id",),
-    "depth_charts": ("dt", "team", "gsis_id", "pos_id", "pos_slot"),
+    "depth_charts": ("dt", "team", "gsis_id", "pos_id", "pos_slot", "espn_id"),
 }
 
 # The ordering fallback used when a dataset is not named above, so a frame whose dataset

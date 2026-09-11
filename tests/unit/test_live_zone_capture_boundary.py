@@ -45,11 +45,17 @@ from data.upstream_pin import (
     SEALED_THROUGH_SEASON,
     UpstreamPinError,
     UpstreamSeasonWindowRefused,
+    default_data_root,
 )
 from scripts import capture_live_season, pin_upstream_snapshot
 from scripts.pin_upstream_snapshot import PinCaptureError
 
 LIVE_SEASON = LIVE_ZONE_FIRST_SEASON
+
+# So the one class below that reads the COMMITTED manifest does not depend on the process's
+# working directory. Every other test in this module builds its own frames under ``tmp_path``
+# and needs no repository anchor at all.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Plan 32-08 wired both detectors INTO the capture, so every call below now runs them.
 # ``sealed_probe_offline`` (tests/conftest.py) keeps that offline and off the committed
@@ -652,6 +658,251 @@ class TestTheCaptureDigestsPerWeekAndPerColumn:
         """The bucket key is ``str(int(week))`` precisely so this is a no-op."""
         entry = _entry_for(tmp_path, _pbp_frame())
         assert json.loads(json.dumps(entry))["week_digests"] == entry["week_digests"]
+
+
+# MEASURED at UAT (G-32-90) on 2026-09-11, against the committed 2026 week-1 sequence-1
+# ``depth_charts`` capture. These are the numbers that make the uniqueness property below a
+# MEASUREMENT rather than a restatement of the key's definition. If one of them does not
+# reproduce, the bytes being read are not the capture that was measured -- that is a
+# HALT-and-report, never an expectation to adjust downward until it passes.
+_G_32_90_ROWS = 509_781
+_G_32_90_PREFIX_DUPLICATE_ROWS = 2_163
+_G_32_90_PREFIX_TIE_GROUPS = 2_023
+
+# Every skip reason ``TestTheDepthChartsIdentityKeyIsUniqueOnTheRealCapture`` can emit, as
+# format TEMPLATES: the phrasings stay auditable in one place while each emitted reason still
+# names the exact path or root it looked under. Each carries a marker ALREADY registered in
+# ``tests/conftest._EVIDENCE_SKIP_MARKERS`` -- "not present at" and "absent" -- rather than
+# inventing a second spelling for a fact that vocabulary already covers.
+_DEPTH_CHARTS_CAPTURE_SKIP_REASONS = (
+    (
+        "the committed live-zone manifest is not present at {path} -- no live capture has "
+        "been recorded on this checkout, so there is no real depth_charts frame to measure "
+        "the identity key against."
+    ),
+    (
+        "the committed depth_charts capture bytes are absent under the configured data root "
+        "{root} -- data/ is gitignored, so a capture's parquet travels with the machine that "
+        "took it rather than with the repository."
+    ),
+)
+
+
+@pytest.fixture(scope="module")
+def committed_live_manifest() -> dict:
+    """The COMMITTED live-zone manifest, read from the repository rather than tmp_path."""
+    manifest_dir = REPO_ROOT / upstream_live.LIVE_MANIFEST_DIR
+    manifest = upstream_live.load_live_manifest(LIVE_SEASON, manifest_dir=manifest_dir)
+    if manifest is None:
+        pytest.skip(
+            _DEPTH_CHARTS_CAPTURE_SKIP_REASONS[0].format(
+                path=upstream_live.live_manifest_path(
+                    LIVE_SEASON, manifest_dir=manifest_dir
+                )
+            )
+        )
+    return manifest
+
+
+@pytest.fixture(scope="module")
+def committed_depth_charts_frames(
+    committed_live_manifest: dict,
+) -> list[tuple[dict, pd.DataFrame]]:
+    """Every committed ``depth_charts`` capture whose bytes are on disk, read ONCE.
+
+    MODULE-SCOPED because the real 2026 capture is roughly 2.3 MB of parquet: the cost is
+    one read for the whole class rather than one per test.
+
+    The data root is resolved through ``upstream_pin.default_data_root()`` and never as
+    ``REPO_ROOT / "data"`` (the WR-11 rule): ``DATA_ROOT_PATH`` redirects it, and a hardcoded
+    root makes this control skip with a reason that reads like missing evidence when it is
+    really a mis-scoped test.
+
+    The frame comes from ``read_live_frame`` and NOT from a bare ``read_parquet``, so the
+    recorded ``sha256`` is verified before anything is asserted. The consequence is
+    deliberate: a digest mismatch raises ``UpstreamLiveCorrupt`` and that must FAIL rather
+    than skip. The bytes exist -- they are simply not the capture the committed record
+    describes, which is a broken checkout rather than an environment fact.
+    """
+    data_root = default_data_root()
+    present = [
+        entry
+        for entry in upstream_live.captures_for(committed_live_manifest, "depth_charts")
+        if (data_root / entry["path"]).is_file()
+    ]
+    if not present:
+        pytest.skip(_DEPTH_CHARTS_CAPTURE_SKIP_REASONS[1].format(root=data_root))
+    return [
+        (entry, upstream_live.read_live_frame(entry, data_root)) for entry in present
+    ]
+
+
+class TestTheDepthChartsIdentityKeyIsUniqueOnTheRealCapture:
+    """G-32-90. WR-01 gave ``depth_charts`` an identity key and ASSUMED it identified a row.
+
+    The comment WR-01 shipped said the identity columns "are not required to be UNIQUE: ties
+    keep upstream's arrival order". Nothing measured that, and on the real capture it was
+    false: the five-column key left 2,163 duplicate rows in 2,023 tie groups, every one of
+    them a group where ``gsis_id`` is NULL, with ``espn_id``, ``pos_rank`` and ``player_name``
+    differing inside them. Rows the key cannot tell apart keep upstream's arrival order, so a
+    re-published frame that merely reorders them moves three column digests with no underlying
+    change and ``data.live_revision`` rules a revision that did not happen -- the same
+    false-positive class WR-01 was fixing, reduced from 100% of rows to 0.42% rather than
+    eliminated.
+
+    THIS MODULE'S OWN FIXTURES COULD NOT HAVE CAUGHT IT. ``_depth_charts_2026_frame`` is three
+    hand-built rows with distinct ``gsis_id`` values, and three such rows are unique under any
+    PREFIX of the key. Only the real capture carries the 27,837 rows with no ``gsis_id`` at
+    all, and only there does the key fail to identify a row.
+
+    So this class deliberately breaks the module docstring's "every frame is constructed IN
+    the test" rule, for exactly one property and for a stated reason: A PROPERTY THAT IS ONLY
+    FALSE ON REAL DATA CAN ONLY BE MEASURED ON REAL DATA. It still fetches nothing and writes
+    nothing -- it READS bytes a previous plan's owner-run capture already committed a record
+    of, through a module-scoped fixture that reads roughly 2.3 MB of parquet once.
+
+    Absent bytes SKIP AUDIBLY under a registered marker and never pass quietly; the third test
+    is the guard on that guard.
+    """
+
+    def test_the_identity_key_is_unique_on_every_committed_capture(
+        self, committed_depth_charts_frames: list[tuple[dict, pd.DataFrame]]
+    ) -> None:
+        """THE PROPERTY. Zero duplicate rows under the whole identity key.
+
+        Iterates the manifest's captures rather than hardcoding one, so a capture Phase 33
+        appends is covered the moment its bytes exist. Asserted against the LIVE value of
+        ``DIGEST_SORT_KEYS["depth_charts"]`` rather than against a frozen tuple, so a later
+        edit that reintroduces ties is measured on real data at suite time.
+        """
+        key = list(upstream_live.DIGEST_SORT_KEYS["depth_charts"])
+        offenders: list[str] = []
+        for entry, frame in committed_depth_charts_frames:
+            duplicates = int(frame.duplicated(subset=key).sum())
+            if not duplicates:
+                continue
+            groups = frame[frame.duplicated(subset=key, keep=False)].groupby(
+                key, dropna=False
+            )
+            offenders.append(
+                f"(week {entry.get('week')}, sequence {entry.get('sequence')}): "
+                f"{duplicates} duplicate row(s) in {groups.ngroups} tie group(s) of "
+                f"{len(frame)} rows"
+            )
+
+        assert not offenders, (
+            "the depth_charts identity key does NOT identify a row on the real capture:\n  "
+            + "\n  ".join(offenders)
+            + f"\n\nkey: {tuple(key)}\n\n"
+            "Rows the key cannot tell apart keep upstream's ARRIVAL ORDER, which for a "
+            "roster slot on a date carries no meaning at all -- it is only the order "
+            "nflverse happened to emit two rows in. So a re-published frame that merely "
+            "reorders them moves those columns' digests with no underlying change, and "
+            "data.live_revision rules a revision that did not happen against a week that "
+            "may already be graded."
+        )
+
+    def test_the_five_column_prefix_is_not_unique_which_is_what_makes_that_non_vacuous(
+        self,
+        committed_live_manifest: dict,
+        committed_depth_charts_frames: list[tuple[dict, pd.DataFrame]],
+    ) -> None:
+        """THE MEASUREMENT, pinned to the exact capture G-32-90 measured on 2026-09-11.
+
+        Addressed by ``(week, sequence)`` and never as "the newest capture", so a later
+        append cannot silently change which frame these numbers describe.
+
+        Without this the first test would be satisfied by a key that was already total, and
+        would say nothing about whether ``espn_id`` is doing any work. Here it is: strip
+        ``espn_id`` and the remaining five columns leave 2,163 duplicate rows in 2,023 tie
+        groups, ALL of them groups where ``gsis_id`` is NULL. ``espn_id`` has 0 nulls over
+        all 509,781 rows, so it is a total tie-breaker rather than a partial one.
+        """
+        entry = upstream_live.resolve_capture(
+            committed_live_manifest, "depth_charts", week=1, sequence=1
+        )
+        address = (entry.get("week"), entry.get("sequence"))
+        frame = next(
+            (
+                read
+                for recorded, read in committed_depth_charts_frames
+                if (recorded.get("week"), recorded.get("sequence")) == address
+            ),
+            None,
+        )
+        if frame is None:
+            pytest.skip(
+                _DEPTH_CHARTS_CAPTURE_SKIP_REASONS[1].format(root=default_data_root())
+            )
+
+        key = list(upstream_live.DIGEST_SORT_KEYS["depth_charts"])
+        prefix = [column for column in key if column != "espn_id"]
+        tied = frame[frame.duplicated(subset=prefix, keep=False)]
+
+        assert len(frame) == _G_32_90_ROWS, (
+            f"the week-1 sequence-1 capture holds {len(frame)} rows, not the "
+            f"{_G_32_90_ROWS} G-32-90 measured on 2026-09-11. These bytes are not the "
+            "capture those numbers describe -- report the divergence rather than adjusting "
+            "the expectation."
+        )
+        assert int(frame.duplicated(subset=prefix).sum()) == (
+            _G_32_90_PREFIX_DUPLICATE_ROWS
+        ), (
+            "the five-column prefix's duplicate-row count is not the measured "
+            f"{_G_32_90_PREFIX_DUPLICATE_ROWS}"
+        )
+        assert (
+            tied.groupby(prefix, dropna=False).ngroups == _G_32_90_PREFIX_TIE_GROUPS
+        ), (
+            f"the five-column prefix's tie-group count is not the measured "
+            f"{_G_32_90_PREFIX_TIE_GROUPS}"
+        )
+        assert int(tied["gsis_id"].notna().sum()) == 0, (
+            "a tie group under the five-column prefix carries a NON-NULL gsis_id, so the "
+            "ties are not confined to the rows upstream supplies no player id for. The "
+            "cause of the collision is different from the one G-32-90 measured and the fix "
+            "needs re-deriving, not extending."
+        )
+        assert int(frame["espn_id"].isna().sum()) == 0, (
+            "espn_id carries nulls on the real capture, so it cannot be a TOTAL "
+            "tie-breaker: the rows it is null on fall back to arrival order exactly as "
+            "before."
+        )
+        assert int(frame.duplicated(subset=key).sum()) == 0, (
+            f"the full key {tuple(key)} still leaves duplicate rows on the capture "
+            "G-32-90 measured as having none"
+        )
+
+    def test_every_skip_reason_this_class_can_emit_is_registered(self) -> None:
+        """THE GUARD ON THE GUARD. An unregistered phrasing makes a non-run invisible.
+
+        ``tests/conftest.py``'s evidence-backed-controls footer matches on the skip REASON
+        text. A reason outside that vocabulary would leave a green suite that had quietly
+        excluded the ONLY test measuring this property -- which is indistinguishable, in the
+        output, from a suite that measured it and found it true.
+
+        Both the raw template and a rendered form are checked, because the emitted reason is
+        the rendered one and substituting a path must not be able to displace the marker.
+        """
+        from tests.conftest import is_evidence_backed_skip
+
+        candidates = [
+            text
+            for template in _DEPTH_CHARTS_CAPTURE_SKIP_REASONS
+            for text in (
+                template,
+                template.format(path="<some/path.json>", root="<some/root>"),
+            )
+        ]
+        unregistered = [
+            text for text in candidates if not is_evidence_backed_skip(text)
+        ]
+        assert not unregistered, (
+            "these skip reason(s) carry no marker from "
+            f"tests/conftest._EVIDENCE_SKIP_MARKERS: {unregistered}. Register the phrasing "
+            "there or reword the reason; an unregistered skip is a control that did not run "
+            "and did not say so."
+        )
 
 
 class TestNarrowIsTheSealedZonesOwnAllowlist:
