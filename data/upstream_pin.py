@@ -485,29 +485,82 @@ def live_upstream_allowed() -> bool:
     return bool(os.environ.get(LIVE_OPT_IN_ENV, "").strip())
 
 
-def _recovery_options(dataset: str, missing: list[int]) -> list[str]:
+PIN_CLI_TEXT = ".venv/Scripts/python.exe -m scripts.pin_upstream_snapshot"
+LIVE_CLI_TEXT = ".venv/Scripts/python.exe -m scripts.capture_live_season"
+
+
+def sealed_rewrite_command(dataset: str, season: int, reason: str) -> str:
+    """The command that re-captures an ALREADY-PINNED sealed season, with attribution.
+
+    The plain capture command is the wrong advice for this case and has been since
+    ``scripts/pin_upstream_snapshot.py::assert_write_allowed`` existed: the manifest
+    entry already exists, and replacing an existing sealed entry is precisely what the
+    sealed zone was built to refuse. Printing a command the tool would reject is worse
+    than printing no advice at all -- an operator follows it, gets a second refusal, and
+    learns that the refusals in this module are not to be taken literally.
+    """
+    return (
+        f"{PIN_CLI_TEXT} --dataset {dataset} --seasons {season} {season} "
+        f'--allow-sealed-rewrite --sealed-rewrite-reason "{reason}"'
+    )
+
+
+def _recovery_options(
+    dataset: str, missing: list[int], manifest: dict | None = None
+) -> list[str]:
     """The ordered recovery options for *missing*, one per zone actually present.
 
     A refusal that names the wrong tool is a refusal operators route around. The sealed
     and live zones have different capture commands, so the options are built from the
-    zone of each uncovered season rather than from a single hard-coded line.
+    zone of each uncovered season rather than from a single hard-coded line -- and,
+    within the sealed zone, from whether the season is ALREADY PINNED, because those two
+    cases now take different commands.
     """
     sealed = [season for season in missing if zone_for_season(season) == ZONE_SEALED]
     live = [season for season in missing if zone_for_season(season) == ZONE_LIVE]
     unknown = [season for season in missing if zone_for_season(season) == ZONE_UNKNOWN]
 
+    covered = set(pinned_seasons(dataset, manifest))
+    unpinned = sorted(season for season in sealed if season not in covered)
+    already_pinned = sorted(season for season in sealed if season in covered)
+
     options: list[str] = []
-    if sealed:
+    if unpinned:
+        # Print the SPAN form only when every season in that span is being captured.
+        # A span that stepped over an already-pinned season would be refused by the
+        # write gate, which is the exact failure this reconciliation exists to remove.
+        span_is_solid = max(unpinned) - min(unpinned) + 1 == len(unpinned)
+        if span_is_solid:
+            commands = (
+                f"       {PIN_CLI_TEXT} --dataset {dataset} "
+                f"--seasons {min(unpinned)} {max(unpinned)}"
+            )
+        else:
+            commands = "\n".join(
+                f"       {PIN_CLI_TEXT} --dataset {dataset} --seasons {season} {season}"
+                for season in unpinned
+            )
         options.append(
             f"Capture the missing SEALED season(s) into the pin (writes {MANIFEST_PATH} "
-            "and timestamped snapshots under data/bronze/):\n"
-            "       .venv/Scripts/python.exe -m scripts.pin_upstream_snapshot "
-            f"--dataset {dataset} --seasons {min(sealed)} {max(sealed)}"
+            "and timestamped snapshots under data/bronze/):\n" + commands
+        )
+    if already_pinned:
+        commands = "\n".join(
+            "       "
+            + sealed_rewrite_command(
+                dataset,
+                season,
+                "re-capturing a sealed season the pin records but cannot serve",
+            )
+            for season in already_pinned
+        )
+        options.append(
+            "Re-capture the SEALED season(s) the manifest already records. This "
+            "REPLACES a sealed entry, so it needs the attributed override:\n" + commands
         )
     if live:
         commands = "\n".join(
-            "       .venv/Scripts/python.exe -m scripts.capture_live_season "
-            f"--season {season} --week <W> --dataset {dataset}"
+            f"       {LIVE_CLI_TEXT} --season {season} --week <W> --dataset {dataset}"
             for season in live
         )
         options.append(
@@ -544,7 +597,9 @@ def _refusal_message(dataset: str, missing: list[int], manifest: dict | None) ->
     )
     options = "\n".join(
         f"  {number}. {option}"
-        for number, option in enumerate(_recovery_options(dataset, missing), start=1)
+        for number, option in enumerate(
+            _recovery_options(dataset, missing, manifest), start=1
+        )
     )
     return (
         f"The upstream pin does not cover {dataset} season(s) "
@@ -567,6 +622,39 @@ def _pin_entry(dataset: str, season: int, manifest: dict) -> dict:
     return manifest["datasets"][dataset]["seasons"][str(season)]
 
 
+# The two situations ``_read_pinned_frame`` refuses in, phrased as the ``--sealed-rewrite
+# -reason`` an operator recovering from them would actually give. A worked example beats
+# a ``<why>`` placeholder: the placeholder invites an empty-sounding reason, and a reason
+# nobody can act on six months later is the thing the attribution requirement exists to
+# stop.
+_FRESH_CHECKOUT_REASON = (
+    "fresh checkout: the committed record is present but the gitignored bytes are not"
+)
+_DIGEST_MOVED_REASON = (
+    "the pinned bytes no longer match the digest recorded for them in the manifest"
+)
+
+
+def _recapture_advice(dataset: str, season: int, reason: str) -> str:
+    """The literal re-capture command for *season*, and why it takes the form it does.
+
+    Both of ``_read_pinned_frame``'s refusals fire for a season that IS in the manifest.
+    For a sealed season that means the plain capture command they used to print is now
+    REFUSED by ``scripts/pin_upstream_snapshot.py::assert_write_allowed`` -- the entry
+    exists, and replacing an existing sealed entry is exactly what the zone prevents. So
+    the advice is the override form, with a concrete reason for THIS situation rather
+    than a ``<why>`` placeholder.
+    """
+    if zone_for_season(season) != ZONE_SEALED:
+        return f"       {PIN_CLI_TEXT} --dataset {dataset} --seasons {season} {season}"
+    return (
+        f"       {sealed_rewrite_command(dataset, season, reason)}\n"
+        "The override flags are required because the manifest entry ALREADY EXISTS, and "
+        "rewriting an existing sealed entry is the thing the sealed zone exists to "
+        "prevent; without them this command is refused."
+    )
+
+
 def _read_pinned_frame(
     dataset: str,
     season: int,
@@ -586,9 +674,8 @@ def _read_pinned_frame(
         msg = (
             f"The {dataset} pin for season {season} names '{path}', which does not "
             f"exist. {MANIFEST_PATH} is committed but data/ is gitignored, so a fresh "
-            "checkout has the record without the bytes. Re-capture with "
-            f"`.venv/Scripts/python.exe -m scripts.pin_upstream_snapshot --dataset "
-            f"{dataset} --seasons {season} {season}`."
+            "checkout has the record without the bytes. Re-capture with:\n"
+            + _recapture_advice(dataset, season, _FRESH_CHECKOUT_REASON)
         )
         raise UpstreamPinCorrupt(msg)
 
@@ -601,7 +688,8 @@ def _read_pinned_frame(
             f"  actual   sha256 {actual}\n"
             "A pinned snapshot is immutable by definition. Either the file was "
             "rewritten, or the manifest belongs to a different capture. Re-capture the "
-            "pin rather than trusting bytes no record accounts for."
+            "pin rather than trusting bytes no record accounts for:\n"
+            + _recapture_advice(dataset, season, _DIGEST_MOVED_REASON)
         )
         raise UpstreamPinCorrupt(msg)
 

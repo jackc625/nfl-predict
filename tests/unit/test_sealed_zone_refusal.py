@@ -26,18 +26,22 @@ either half alone leaves the hazard live:
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from data import upstream_pin
 from data.upstream_pin import (
     LIVE_ZONE_FIRST_SEASON,
     MANIFEST_PATH,
     MANIFEST_SCHEMA_VERSION,
     PBP_PINNED_COLUMNS,
     SEALED_LOCK_PATH,
+    UpstreamPinCorrupt,
+    UpstreamPinMissing,
     ZoneWriteRefused,
     load_manifest,
     load_sealed_lock,
@@ -506,3 +510,275 @@ class TestTheSealedZoneRefusesARewrite:
         assert issubclass(pin.PinCaptureError, RuntimeError), (
             "this test is vacuous unless PinCaptureError really is the swallowed kind"
         )
+
+
+# The literal marker a printed module invocation carries. The repository's own convention
+# is the interpreter's full path -- ".venv/Scripts/python.exe -m scripts.<module>" -- so
+# this, and not "python -m scripts.", is the substring that actually appears in a message
+# and distinguishes a runnable command from prose about one.
+_MODULE_INVOCATION = "-m scripts."
+_PIN_INVOCATION = "-m scripts.pin_upstream_snapshot"
+
+
+def _pin_commands(message: str) -> list[list[str]]:
+    """Every CONCRETE pin invocation in *message*, shlex-split into argv tokens.
+
+    TEMPLATE lines are skipped. A message may legitimately print the FORM of a command
+    (``--seasons <S> <S>``) when it is teaching the shape rather than answering a
+    specific situation; those cannot be parsed and are not what this check is about.
+    A line is a template when any token outside a quoted ``--sealed-rewrite-reason``
+    value is an angle-bracket placeholder.
+    """
+    commands: list[list[str]] = []
+    for line in message.splitlines():
+        if _PIN_INVOCATION not in line:
+            continue
+        _, _, tail = line.partition(_PIN_INVOCATION)
+        tokens = shlex.split(tail)
+        placeholders = [
+            token
+            for index, token in enumerate(tokens)
+            if token.startswith("<")
+            and (index == 0 or tokens[index - 1] != "--sealed-rewrite-reason")
+        ]
+        if placeholders:
+            continue
+        commands.append(tokens)
+    return commands
+
+
+def _refusal_text(raises: type[Exception], call) -> str:
+    with pytest.raises(raises) as error:
+        call()
+    return str(error.value)
+
+
+class TestEveryRefusalCarriesARunnableRecoveryCommand:
+    """A refusal that prints a command the write gate rejects is worse than silence.
+
+    Task 2 turned two of the commands this package PRINTS as recovery advice into
+    commands that would now be refused. This class is the "refusals carry the recovery
+    command" pattern applied to itself: every scenario provokes a REAL refusal inside
+    ``tmp_path`` and then feeds the command it names back through ``build_parser`` and
+    ``assert_write_allowed``.
+    """
+
+    # Each row is an id, the builder method's name, whether the refusal is about an
+    # UNCOVERED season, and whether it names a runnable command at all.
+    #
+    # ``uncovered_season_beyond_the_live_zone`` is the ONE scenario that names no
+    # command, and that is the honest answer rather than an omission: NO tool captures a
+    # season no zone owns, and the recovery is a human edit to SEALED_THROUGH_SEASON
+    # made once the live season has actually ended. Printing a command there would be
+    # precisely the defect this class exists to catch -- advice the tooling rejects.
+    SCENARIOS = (
+        ("uncovered_sealed_season", "_uncovered_sealed", True, True),
+        ("uncovered_live_season", "_uncovered_live", True, True),
+        ("uncovered_season_beyond_the_live_zone", "_uncovered_beyond", True, False),
+        ("pinned_season_whose_bytes_are_absent", "_missing_bytes", False, True),
+        ("pinned_season_whose_digest_moved", "_digest_moved", False, True),
+        ("sealed_rewrite_without_the_override", "_sealed_rewrite", False, True),
+        ("live_zone_write_aimed_at_the_sealed_pin", "_live_zone_write", False, True),
+    )
+
+    @staticmethod
+    def _uncovered_sealed(tmp_path: Path) -> tuple[str, dict | None]:
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        message = _refusal_text(
+            UpstreamPinMissing,
+            lambda: upstream_pin.load_pbp(
+                [2001],
+                manifest_path=manifest_path,
+                data_root=tmp_path / "data",
+                live_manifest_dir=tmp_path / "upstream_live",
+            ),
+        )
+        return message, load_manifest(manifest_path)
+
+    @staticmethod
+    def _uncovered_live(tmp_path: Path) -> tuple[str, dict | None]:
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        message = _refusal_text(
+            UpstreamPinMissing,
+            lambda: upstream_pin.load_pbp(
+                [LIVE_ZONE_FIRST_SEASON],
+                manifest_path=manifest_path,
+                data_root=tmp_path / "data",
+                live_manifest_dir=tmp_path / "upstream_live",
+            ),
+        )
+        return message, load_manifest(manifest_path)
+
+    @staticmethod
+    def _uncovered_beyond(tmp_path: Path) -> tuple[str, dict | None]:
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        message = _refusal_text(
+            UpstreamPinMissing,
+            lambda: upstream_pin.load_pbp(
+                [LIVE_ZONE_FIRST_SEASON + 1],
+                manifest_path=manifest_path,
+                data_root=tmp_path / "data",
+                live_manifest_dir=tmp_path / "upstream_live",
+            ),
+        )
+        return message, load_manifest(manifest_path)
+
+    @staticmethod
+    def _missing_bytes(tmp_path: Path) -> tuple[str, dict | None]:
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        manifest = load_manifest(manifest_path)
+        assert manifest is not None
+        message = _refusal_text(
+            UpstreamPinCorrupt,
+            lambda: upstream_pin._read_pinned_frame(
+                "pbp", 2024, manifest, tmp_path / "data"
+            ),
+        )
+        return message, manifest
+
+    @staticmethod
+    def _digest_moved(tmp_path: Path) -> tuple[str, dict | None]:
+        data_root = tmp_path / "data"
+        (data_root / "bronze").mkdir(parents=True)
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        manifest = load_manifest(manifest_path)
+        assert manifest is not None
+        entry = manifest["datasets"]["pbp"]["seasons"]["2024"]
+        _pbp_frame(2024).to_parquet(data_root / entry["path"], index=False)
+        message = _refusal_text(
+            UpstreamPinCorrupt,
+            lambda: upstream_pin._read_pinned_frame("pbp", 2024, manifest, data_root),
+        )
+        return message, manifest
+
+    @staticmethod
+    def _sealed_rewrite(tmp_path: Path) -> tuple[str, dict | None]:
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        message = _refusal_text(
+            ZoneWriteRefused,
+            lambda: pin.capture(
+                {"pbp": [2024]},
+                manifest_path=manifest_path,
+                data_root=tmp_path / "data",
+            ),
+        )
+        return message, load_manifest(manifest_path)
+
+    @staticmethod
+    def _live_zone_write(tmp_path: Path) -> tuple[str, dict | None]:
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        message = _refusal_text(
+            ZoneWriteRefused,
+            lambda: pin.capture(
+                {"pbp": [LIVE_ZONE_FIRST_SEASON]},
+                manifest_path=manifest_path,
+                data_root=tmp_path / "data",
+            ),
+        )
+        return message, load_manifest(manifest_path)
+
+    @pytest.mark.parametrize(
+        ("builder", "is_uncovered_refusal", "names_a_command"),
+        [
+            (builder, uncovered, commanded)
+            for _, builder, uncovered, commanded in SCENARIOS
+        ],
+        ids=[name for name, _, _, _ in SCENARIOS],
+    )
+    def test_the_refusal_names_a_command_the_write_gate_would_accept(
+        self,
+        tmp_path: Path,
+        builder: str,
+        is_uncovered_refusal: bool,
+        names_a_command: bool,
+    ) -> None:
+        message, manifest = getattr(self, builder)(tmp_path)
+
+        if names_a_command:
+            assert _MODULE_INVOCATION in message, (
+                "the refusal names no runnable module invocation, only prose:\n"
+                + message
+            )
+        else:
+            assert _MODULE_INVOCATION not in message, (
+                "this refusal has no runnable recovery and must not imply one:\n"
+                + message
+            )
+            assert "SEALED_THROUGH_SEASON" in message and "one-way" in message, (
+                "a refusal with no command must at least name the human act that IS "
+                "the recovery:\n" + message
+            )
+        if is_uncovered_refusal:
+            assert "zone" in message.lower(), (
+                "an uncovered-season refusal that does not name the ZONE cannot point "
+                "at the right capture tool:\n" + message
+            )
+
+        for tokens in _pin_commands(message):
+            args = pin.build_parser().parse_args(tokens)
+            if not args.dataset or not args.seasons:
+                continue
+            first, last = args.seasons
+            requested = {
+                name: list(range(first, last + 1)) for name in sorted(set(args.dataset))
+            }
+            pin.assert_write_allowed(
+                requested,
+                manifest,
+                allow_sealed_rewrite=args.allow_sealed_rewrite,
+                sealed_rewrite_reason=args.sealed_rewrite_reason,
+            )
+
+    def test_at_least_one_scenario_names_a_concrete_checkable_command(
+        self, tmp_path: Path
+    ) -> None:
+        """Otherwise the loop above passes by finding nothing to check."""
+        checked = 0
+        for index, (_, builder, _, _) in enumerate(self.SCENARIOS):
+            scenario_dir = tmp_path / str(index)
+            scenario_dir.mkdir()
+            message, _ = getattr(self, builder)(scenario_dir)
+            checked += len(_pin_commands(message))
+        assert checked >= 3, (
+            f"only {checked} concrete pin command(s) across all scenarios -- the gate "
+            "check is close to vacuous"
+        )
+
+    def test_the_historical_incident_paragraph_is_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        """It is why anyone reads the refusal at all, so it stays verbatim."""
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        message = _refusal_text(
+            UpstreamPinMissing,
+            lambda: upstream_pin.load_pbp(
+                [2001],
+                manifest_path=manifest_path,
+                data_root=tmp_path / "data",
+                live_manifest_dir=tmp_path / "upstream_live",
+            ),
+        )
+        assert "2026-08-22" in message
+        assert "sixteen opponent-adjusted and QB columns" in message
+        assert "NFL_PREDICT_ALLOW_LIVE_UPSTREAM=1 <your command>" in message
+        assert "UpstreamPinBypassedWarning" in message
+
+    def test_a_pinned_seasons_recovery_command_is_the_override_form(
+        self, tmp_path: Path
+    ) -> None:
+        """The specific reconciliation Task 3 exists for, asserted directly."""
+        message, _ = self._missing_bytes(tmp_path)
+        assert "--allow-sealed-rewrite" in message
+        assert "--sealed-rewrite-reason" in message
+
+        message, _ = self._digest_moved(tmp_path / "digest")
+        assert "--allow-sealed-rewrite" in message
+        assert "--sealed-rewrite-reason" in message
+
+    def test_an_unpinned_sealed_season_is_still_told_the_plain_command(
+        self, tmp_path: Path
+    ) -> None:
+        """Extending the pin never needed an override and must not be told it does."""
+        message, _ = self._uncovered_sealed(tmp_path)
+        assert "--dataset pbp --seasons 2001 2001" in message
+        assert "--allow-sealed-rewrite" not in message
