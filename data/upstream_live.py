@@ -84,6 +84,13 @@ WEEK_LABEL_MEANS = (
     "the week being PREDICTED, not the last week present in the data (D32-13)"
 )
 
+# The version of the week-label CONVENTION itself, recorded beside the convention string
+# in every capture entry. D32-13 is rated ONE-WAY: from Phase 34 the ledger's reproduction
+# key is ``(season, week, sequence)``, so a later change of meaning would silently
+# reinterpret every prior capture. Stamping the version is what would let a reader of a
+# 2026 entry say which convention it was written under instead of having to assume.
+WEEK_LABEL_SEMANTICS_VERSION: int = 1
+
 LIVE_SOURCE = "nflverse (github.com/nflverse) via nflreadpy"
 
 
@@ -180,16 +187,44 @@ def live_covered_seasons(*, manifest_dir: Path | str | None = None) -> set[int]:
     return covered
 
 
+def next_sequence(manifest: dict | None, dataset: str, week: int) -> int:
+    """Return the sequence a NEW capture of ``(dataset, week)`` should carry.
+
+    ``max(existing sequences for that (dataset, week)) + 1``, or ``1`` when that week has
+    never been captured.
+
+    SEQUENCES ARE PER ``(dataset, week)``, NOT GLOBAL. "Give me week 6 sequence 2" is
+    therefore unambiguous without also knowing how many times every OTHER week of that
+    dataset was captured -- which is what a global counter would require, and what would
+    make a Phase-34 ledger row's reproduction key unreadable on its own. A dataset
+    captured for the first time in week 9 starts that week at sequence 1, exactly like
+    every other week.
+    """
+    existing = [
+        capture.get("sequence") or 0
+        for capture in captures_for(manifest, dataset, week=week)
+    ]
+    return max(existing) + 1 if existing else 1
+
+
 def append_capture(manifest: dict, dataset: str, entry: dict) -> dict:
     """APPEND *entry* to *dataset*'s capture list in *manifest*, and return *manifest*.
 
-    Append-only holds literally, not by convention: no existing list element is read,
-    rewritten or reordered here. That is the contrast with the sealed tool, which
-    REPLACES a season's manifest entry and orphans the parquet it superseded.
+    THIS IS WHERE D32-14's APPEND-ONLY PROPERTY LIVES. Append-only holds literally, not
+    by convention: the only mutation of the capture list is a single ``list.append``.
+    Nothing here reads, rewrites, reorders or index-assigns an existing element, so an
+    earlier capture's ``path``, ``sha256`` and recorded digests are untouched by
+    definition rather than by care.
 
-    The sequence is unconditionally ``1`` in this plan -- the real per-week sequence rule
-    (D32-14: a second capture of the same week appends a new sequence) is Plan 32-04's,
-    and lands here.
+    That is the deliberate contrast with ``scripts/pin_upstream_snapshot.py``, whose
+    docstring (36-39) records the sealed tool's behaviour: capturing an already-pinned
+    season REPLACES that season's manifest entry and orphans the parquet it superseded.
+    The sealed zone can afford that because a sealed season is captured once; a live
+    season is captured every week, and a Saturday re-run after a failed Friday must be a
+    recorded fact rather than an erasure.
+
+    The sequence comes from :func:`next_sequence` -- per ``(dataset, week)``, never
+    global.
     """
     record = manifest.setdefault("datasets", {}).setdefault(
         dataset,
@@ -197,7 +232,7 @@ def append_capture(manifest: dict, dataset: str, entry: dict) -> dict:
     )
     record["loader"] = DATASET_LOADERS[dataset]
     appended = dict(entry)
-    appended["sequence"] = 1
+    appended["sequence"] = next_sequence(manifest, dataset, int(entry["week"]))
     record["captures"].append(appended)
     return manifest
 
@@ -221,15 +256,24 @@ def captures_for(
 
 
 def _capture_inventory(manifest: dict | None, dataset: str) -> str:
-    """The ``(week, sequence, captured_at_utc)`` triples that DO exist, as text."""
+    """The ``(week, sequence, captured_at_utc)`` triples that DO exist, as text.
+
+    The compact ``(week, sequence)`` pair list is rendered too, and deliberately: an
+    operator who addressed a sequence that does not exist needs the set of addresses that
+    DO, in the exact form they would retype, not only a prose triple per line.
+    """
     captures = captures_for(manifest, dataset)
     if not captures:
         return "  (none -- this dataset has no capture in the live zone at all)"
-    return "\n".join(
+    triples = "\n".join(
         f"  (week {capture.get('week')}, sequence {capture.get('sequence')}, "
         f"{capture.get('captured_at_utc')})"
         for capture in captures
     )
+    pairs = ", ".join(
+        f"({capture.get('week')}, {capture.get('sequence')})" for capture in captures
+    )
+    return f"{triples}\n  addressable (week, sequence) pairs: {pairs}"
 
 
 def resolve_capture(
@@ -241,10 +285,18 @@ def resolve_capture(
 ) -> dict:
     """Return the one capture a read should serve, or refuse by name.
 
-    With no *week*, the NEWEST capture wins: the highest ``(week, sequence)``. With a
-    *week*, only that week's captures are eligible, and an absent one REFUSES rather than
-    falling back to the newest -- a replay that silently served a different week would
-    reproduce the wrong number while reporting success.
+    Three addressing modes, and each one is a different question (D32-14):
+
+    * *week* and *sequence* both given -- THAT exact capture, or a refusal listing the
+      ``(week, sequence)`` pairs that do exist. This is Phase 34's replay address.
+    * *week* given, *sequence* omitted -- the HIGHEST sequence for that week. "Default
+      reads take the newest capture for that week": a Saturday re-run supersedes the
+      Friday one for ordinary reads while the Friday one stays addressable forever.
+    * both omitted -- the highest ``(week, sequence)`` overall, i.e. the newest capture.
+
+    An absent week REFUSES rather than falling back to the newest -- a replay that
+    silently served a different week would reproduce the wrong number while reporting
+    success. The same holds for an absent sequence within a week that does exist.
     """
     season = (manifest or {}).get("season", "<season>")
     candidates = captures_for(manifest, dataset, week=week)
@@ -332,6 +384,20 @@ def _content_through_week(frame: pd.DataFrame) -> int | None:
     return int(observed.max())
 
 
+def _weeks_present(frame: pd.DataFrame) -> list[int]:
+    """Every distinct week OBSERVED in *frame*, sorted ascending.
+
+    An observation, exactly like :func:`_content_through_week`, and for the same reason:
+    a live capture is not a contiguous window. A frame can hold a week's Thursday game
+    with the rest of that week still unplayed, and nflverse can append a postseason week
+    into a frame whose regular-season weeks are already complete.
+    """
+    if WEEK_COLUMN not in frame.columns or frame.empty:
+        return []
+    observed = pd.to_numeric(frame[WEEK_COLUMN], errors="coerce").dropna()
+    return sorted({int(value) for value in observed})
+
+
 def build_capture_entry(
     dataset: str,
     season: int,
@@ -359,6 +425,18 @@ def build_capture_entry(
         "rows": len(frame),
         "columns": list(frame.columns),
         "upstream_width": int(raw.shape[1]),
+        # THE LABEL AND THE CONTENT ARE TWO SEPARATE RECORDED FACTS, AND NEITHER IS
+        # COMPUTED FROM THE OTHER.
+        #
+        # ``week`` and ``week_label_means`` state the CONVENTION (fixed, D32-13).
+        # ``content_through_week`` and ``weeks_present`` state what was OBSERVED in the
+        # bytes. 32-RESEARCH.md measured, on 2026-09-10, that live ``load_pbp([2026])``
+        # already held 166 week-1 rows on the THURSDAY of week 1 -- before any Friday
+        # 6 PM ET freeze. So ``content_max_week == week - 1`` is FALSE in the ordinary
+        # case, not merely in an edge case, and NO test in this phase may assert any
+        # arithmetic relationship between the label and the content.
         "week_label_means": WEEK_LABEL_MEANS,
+        "week_label_semantics_version": WEEK_LABEL_SEMANTICS_VERSION,
         "content_through_week": _content_through_week(frame),
+        "weeks_present": _weeks_present(frame),
     }

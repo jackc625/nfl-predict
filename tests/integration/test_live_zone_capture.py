@@ -15,11 +15,13 @@ compares ``tests.data_boundary.digest_tree`` snapshots taken either side of the 
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from data import storage as data_storage
 from data import upstream_live, upstream_pin
 from data.upstream_pin import (
     LIVE_OPT_IN_ENV,
@@ -375,3 +377,274 @@ class TestTheZonePartitionDecidesWhatIsFetched:
             "the refusal named a season that IS covered among the uncovered ones"
         )
         assert attempts == []
+
+
+def _capture_argv(
+    live_root: dict[str, Path], week: int, dataset: str = "pbp"
+) -> list[str]:
+    """The CLI arguments for one capture against the fixture roots."""
+    return [
+        "--season",
+        str(LIVE_SEASON),
+        "--week",
+        str(week),
+        "--dataset",
+        dataset,
+        "--data-root",
+        str(live_root["data_root"]),
+        "--manifest-dir",
+        str(live_root["manifest_dir"]),
+    ]
+
+
+def _live_manifest(live_root: dict[str, Path]) -> dict:
+    manifest = upstream_live.load_live_manifest(
+        LIVE_SEASON, manifest_dir=live_root["manifest_dir"]
+    )
+    assert manifest is not None, "the capture wrote no live manifest at all"
+    return manifest
+
+
+@pytest.fixture
+def sequenced_live_frames(monkeypatch: pytest.MonkeyPatch) -> list[pd.DataFrame]:
+    """Hand out a DIFFERENT frame on each fetch, so two captures are distinguishable.
+
+    Identical frames would make the append test pass for the wrong reason: two entries
+    pointing at byte-identical parquet cannot show that the FIRST one's bytes survived.
+    """
+    frames = [
+        _pbp_frame(LIVE_SEASON, weeks=CAPTURED_WEEKS, epa=0.5),
+        _pbp_frame(LIVE_SEASON, weeks=CAPTURED_WEEKS, epa=0.75),
+    ]
+    handed: list[int] = []
+
+    def _fake_fetch(dataset: str, season: int) -> pd.DataFrame:
+        assert dataset == "pbp", f"unexpected dataset fetched: {dataset}"
+        assert season == LIVE_SEASON, f"unexpected season fetched: {season}"
+        index = min(len(handed), len(frames) - 1)
+        handed.append(index)
+        return frames[index].copy()
+
+    monkeypatch.setattr(pin_upstream_snapshot, "fetch_live", _fake_fetch)
+    return frames
+
+
+class TestASecondCaptureAppendsRatherThanRewrites:
+    """D32-14: a re-capture of the same week is a recorded fact, never an erasure."""
+
+    def test_two_captures_for_the_same_week_both_resolve_and_the_first_is_unchanged(
+        self,
+        live_root: dict[str, Path],
+        sequenced_live_frames: list[pd.DataFrame],
+        data_boundary_guard: dict[str, str],
+    ) -> None:
+        data_root = live_root["data_root"]
+
+        assert capture_live_season.main(_capture_argv(live_root, PREDICTED_WEEK)) == (
+            capture_live_season.EXIT_OK
+        )
+        first = _live_manifest(live_root)["datasets"]["pbp"]["captures"][0]
+        first_path = first["path"]
+        first_sha = first["sha256"]
+        before_second = digest_tree(data_root)
+        _assert_content_hashes(before_second, "before the second capture")
+
+        assert capture_live_season.main(_capture_argv(live_root, PREDICTED_WEEK)) == (
+            capture_live_season.EXIT_OK
+        )
+
+        captures = _live_manifest(live_root)["datasets"]["pbp"]["captures"]
+        assert len(captures) == 2, (
+            f"the second capture did not APPEND -- captures list is {captures}"
+        )
+        assert [capture["sequence"] for capture in captures] == [1, 2]
+
+        assert captures[0]["path"] == first_path, (
+            "the second capture rewrote the FIRST entry's recorded path"
+        )
+        assert captures[0]["sha256"] == first_sha, (
+            "the second capture rewrote the FIRST entry's recorded digest"
+        )
+        assert captures[1]["path"] != first_path, (
+            "both captures point at the same bronze file, so one overwrote the other"
+        )
+
+        after_second = digest_tree(data_root)
+        _assert_content_hashes(after_second, "after the second capture")
+        diff = diff_digests(before_second, after_second)
+        assert diff["changed"] == [], (
+            "the second capture REWROTE bytes the first capture owns:\n  "
+            + "\n  ".join(diff["changed"])
+        )
+        assert diff["removed"] == [], (
+            "the second capture REMOVED a file:\n  " + "\n  ".join(diff["removed"])
+        )
+        assert len(diff["added"]) == 1, (
+            f"expected exactly one new bronze snapshot, got {diff['added']}"
+        )
+
+        manifest = _live_manifest(live_root)
+        newest = upstream_live.resolve_capture(manifest, "pbp", week=PREDICTED_WEEK)
+        assert newest["sequence"] == 2, (
+            "a default read of a week did not take its NEWEST capture"
+        )
+        oldest = upstream_live.resolve_capture(
+            manifest, "pbp", week=PREDICTED_WEEK, sequence=1
+        )
+        assert oldest["sequence"] == 1
+
+        pd.testing.assert_frame_equal(
+            upstream_live.read_live_frame(oldest, data_root),
+            sequenced_live_frames[0].reset_index(drop=True),
+        )
+        pd.testing.assert_frame_equal(
+            upstream_live.read_live_frame(newest, data_root),
+            sequenced_live_frames[1].reset_index(drop=True),
+        )
+
+    def test_addressing_a_sequence_that_does_not_exist_lists_the_ones_that_do(
+        self,
+        live_root: dict[str, Path],
+        sequenced_live_frames: list[pd.DataFrame],
+        data_boundary_guard: dict[str, str],
+    ) -> None:
+        capture_live_season.main(_capture_argv(live_root, PREDICTED_WEEK))
+        capture_live_season.main(_capture_argv(live_root, PREDICTED_WEEK))
+
+        manifest = _live_manifest(live_root)
+        with pytest.raises(upstream_pin.UpstreamLiveCaptureMissing) as error:
+            upstream_live.resolve_capture(
+                manifest, "pbp", week=PREDICTED_WEEK, sequence=9
+            )
+
+        message = str(error.value)
+        assert f"({PREDICTED_WEEK}, 1)" in message, (
+            "the refusal does not list the (week, sequence) pairs that DO exist, so an "
+            f"operator cannot retype a valid address:\n{message}"
+        )
+        assert f"({PREDICTED_WEEK}, 2)" in message
+
+    def test_a_same_second_second_capture_never_overwrites_the_first(
+        self,
+        live_root: dict[str, Path],
+        sequenced_live_frames: list[pd.DataFrame],
+        data_boundary_guard: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The known second-resolution filename defect, made non-silent (T-32-09).
+
+        BOTH clocks are pinned, deliberately. ``capture_live_season._utc_stamp_now`` is
+        the reservation's seam and ``data.storage.datetime`` is the writer's; in
+        production they are the same wall clock, so pinning only one would simulate a
+        disagreement that cannot happen and would leave the real collision unexercised.
+        """
+        frozen = datetime(2026, 9, 11, 12, 0, 0, tzinfo=UTC)
+
+        class _FrozenClock:
+            @staticmethod
+            def now(tz=None):
+                return frozen
+
+        monkeypatch.setattr(
+            capture_live_season, "_utc_stamp_now", lambda: "20260911T120000"
+        )
+        monkeypatch.setattr(data_storage, "datetime", _FrozenClock)
+        monkeypatch.setattr(capture_live_season.time, "sleep", lambda _seconds: None)
+
+        first = capture_live_season.capture_live_dataset(
+            "pbp",
+            LIVE_SEASON,
+            PREDICTED_WEEK,
+            data_root=live_root["data_root"],
+            manifest_dir=live_root["manifest_dir"],
+        )
+        first_file = live_root["data_root"] / first["path"]
+        first_sha = digest_file(first_file)
+
+        with pytest.raises(pin_upstream_snapshot.PinCaptureError) as error:
+            capture_live_season.capture_live_dataset(
+                "pbp",
+                LIVE_SEASON,
+                PREDICTED_WEEK,
+                data_root=live_root["data_root"],
+                manifest_dir=live_root["manifest_dir"],
+            )
+
+        message = str(error.value)
+        assert first_file.name in message, (
+            f"the refusal does not name the colliding file:\n{message}"
+        )
+        assert digest_file(first_file) == first_sha, (
+            "the same-second re-capture OVERWROTE the first snapshot's bytes"
+        )
+        captures = _live_manifest(live_root)["datasets"]["pbp"]["captures"]
+        assert len(captures) == 1, (
+            f"a refused capture still acquired a manifest entry: {captures}"
+        )
+
+
+class TestTheWeekLabelMeansThePredictedWeek:
+    """D32-13: the label is a CONVENTION, the content is an OBSERVATION."""
+
+    def test_the_entry_states_the_convention_and_the_observed_content(
+        self,
+        live_root: dict[str, Path],
+        data_boundary_guard: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Weeks ``[5, 5, 6]`` under the label ``6`` -- the ORDINARY case, measured.
+
+        32-RESEARCH.md measured live 2026 play-by-play already holding week-1 rows on the
+        Thursday of week 1. So a week-6 capture normally carries week-6 rows, and the
+        observed content depth is NOT one less than the label. Nothing here derives one
+        field from the other; both are read straight off the recorded entry, and no test
+        in this phase asserts any arithmetic between them.
+        """
+        label_week = 6
+        frame = pd.DataFrame(
+            [
+                {
+                    "game_id": "2026_05_HOME_AWAY",
+                    "season": LIVE_SEASON,
+                    "week": 5,
+                    "posteam": "HOME",
+                    "defteam": "AWAY",
+                    "epa": 0.11,
+                },
+                {
+                    "game_id": "2026_05_HOME_AWAY",
+                    "season": LIVE_SEASON,
+                    "week": 5,
+                    "posteam": "AWAY",
+                    "defteam": "HOME",
+                    "epa": -0.11,
+                },
+                {
+                    "game_id": "2026_06_THU_NIGHT",
+                    "season": LIVE_SEASON,
+                    "week": 6,
+                    "posteam": "HOME",
+                    "defteam": "AWAY",
+                    "epa": 0.42,
+                },
+            ]
+        )
+        monkeypatch.setattr(
+            pin_upstream_snapshot, "fetch_live", lambda dataset, season: frame.copy()
+        )
+
+        entry = capture_live_season.capture_live_dataset(
+            "pbp",
+            LIVE_SEASON,
+            label_week,
+            data_root=live_root["data_root"],
+            manifest_dir=live_root["manifest_dir"],
+        )
+
+        assert entry["week"] == label_week
+        assert entry["content_through_week"] == label_week
+        assert entry["weeks_present"] == [5, 6]
+        assert "PREDICTED" in entry["week_label_means"]
+        assert entry["week_label_semantics_version"] == (
+            upstream_live.WEEK_LABEL_SEMANTICS_VERSION
+        )

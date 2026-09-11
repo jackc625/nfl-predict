@@ -42,6 +42,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from data.storage import save_bronze_snapshot
@@ -65,6 +67,7 @@ from data.upstream_pin import (
     zone_for_season,
 )
 from scripts import pin_upstream_snapshot
+from scripts.pin_upstream_snapshot import PinCaptureError
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -81,6 +84,100 @@ EXIT_USAGE = 2
 EXIT_CRITICAL = 3
 EXIT_UNKNOWN = 4
 
+# How long to wait for the clock second to advance past a colliding snapshot name, and
+# how many times. 15 x 0.2 s = 3 s, which comfortably outlasts the one-second window the
+# collision can occupy while still failing fast if something else is wrong.
+_COLLISION_POLL_SECONDS = 0.2
+_COLLISION_POLL_ATTEMPTS = 15
+
+
+def _utc_stamp_now() -> str:
+    """The UTC stamp ``data.storage.save_bronze_snapshot`` will put in the filename.
+
+    The format string is duplicated from ``data/storage.py:1009`` DELIBERATELY and is the
+    only copy in this module, so a test can pin the clock here and get the same second
+    the writer is about to use. Making this the single seam is what lets the same-second
+    collision be exercised deterministically instead of raced.
+    """
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+
+
+def _bronze_snapshot_glob(table_name: str, season: int, week: int) -> str:
+    """The filename pattern ``save_bronze_snapshot`` writes for this (season, week)."""
+    return f"{table_name}_raw_bronze_{season}_W{week:02d}_*.parquet"
+
+
+def _stamp_of(path: Path) -> str:
+    """The UTC stamp segment of a bronze snapshot filename."""
+    return path.stem.rsplit("_", 1)[-1]
+
+
+def _reserve_distinct_bronze_second(
+    bronze_dir: Path,
+    table_name: str,
+    season: int,
+    week: int,
+) -> None:
+    """Wait until the current clock second yields a filename nothing already owns.
+
+    ``data/storage.py::save_bronze_snapshot`` builds its filename from a SECOND-resolution
+    UTC stamp, and its own comment names the resulting collision as a known defect that
+    was out of scope there. The live zone is the first caller for which it is not
+    academic: it passes a real ``week``, and two captures of the same ``(season, week)``
+    inside one second would produce the SAME path and the second would silently overwrite
+    the first -- breaking ``data/bronze/``'s append-only contract literally, and
+    destroying the bytes a published week-N prediction was made from.
+
+    So this polls: while any existing snapshot for this ``(table_name, season, week)``
+    carries the stamp :func:`_utc_stamp_now` would produce, sleep and re-check. If the
+    second never advances within the budget, REFUSE.
+
+    :class:`scripts.pin_upstream_snapshot.PinCaptureError` is the right family here and
+    NOT :class:`data.upstream_pin.UpstreamPinError`. This is a capture-tool failure at top
+    level -- it cannot reach a builder, because builders read the manifest and never call
+    the capture CLI -- and ``PinCaptureError`` is already what the sealed capture tool
+    raises for "the snapshot could not be captured faithfully, so nothing was recorded
+    for it". Using the read-refusal family for a write-tool failure would put a
+    capture-tool bug in the same bucket as a missing pin.
+    """
+    pattern = _bronze_snapshot_glob(table_name, season, week)
+    for _attempt in range(_COLLISION_POLL_ATTEMPTS):
+        stamp = _utc_stamp_now()
+        colliding = [
+            candidate
+            for candidate in sorted(bronze_dir.glob(pattern))
+            if _stamp_of(candidate) == stamp
+        ]
+        if not colliding:
+            return
+        time.sleep(_COLLISION_POLL_SECONDS)
+
+    stamp = _utc_stamp_now()
+    colliding = [
+        candidate
+        for candidate in sorted(bronze_dir.glob(pattern))
+        if _stamp_of(candidate) == stamp
+    ]
+    msg = (
+        f"Refusing to capture {table_name} season {season} week {week}: the bronze "
+        f"snapshot name for this clock second is already taken by "
+        f"{', '.join(str(path) for path in colliding)}.\n"
+        "\n"
+        "CAUSE: data/storage.py::save_bronze_snapshot builds its filename from a "
+        "SECOND-resolution UTC stamp "
+        "(<table>_raw_bronze_<season>_W<week>_<YYYYmmddTHHMMSS>.parquet), so two captures "
+        "of the same (season, week) inside one second collide and the second would "
+        "OVERWRITE the first. data/bronze/ is append-only by contract: a recorded "
+        "snapshot is the evidence a superseded verdict was measured against, so it is "
+        "never rewritten.\n"
+        "\n"
+        f"Nothing was fetched into a file and the live manifest is byte-unchanged. "
+        f"RECOVERY: re-run the capture; the next second yields a distinct name:\n"
+        f"       .venv/Scripts/python.exe -m scripts.capture_live_season "
+        f"--season {season} --week {week}"
+    )
+    raise PinCaptureError(msg)
+
 
 def capture_live_dataset(
     dataset: str,
@@ -90,7 +187,23 @@ def capture_live_dataset(
     data_root: Path,
     manifest_dir: Path,
 ) -> dict:
-    """Fetch, narrow, write, verify and RECORD one live-zone dataset for one week."""
+    """Fetch, narrow, write, verify and RECORD one live-zone dataset for one week.
+
+    THE ORDER OF THE LAST FOUR STEPS IS THE CONTRACT, not an implementation detail. The
+    bronze bytes are written, :func:`scripts.pin_upstream_snapshot.assert_round_trip_faithful`
+    proves they are the frame that was fetched, the entry (with its digests) is built from
+    them, and ONLY THEN is the capture appended to the manifest and the manifest written.
+
+    The reason is the one ``data.upstream_pin._read_pinned_frame`` gives for its own
+    digest-before-parse ordering: a check that arrives after the work is a check nobody
+    can afford to trust. An interruption anywhere between the bronze write and the
+    manifest write leaves an UNREFERENCED bronze file and a byte-unchanged
+    ``config/upstream_live/<season>.json`` -- a recoverable state, because the next run
+    simply writes a new snapshot and nothing ever pointed at the orphan. The reverse
+    order would leave a manifest entry pointing at bytes nobody verified, which is
+    indistinguishable from a faithful capture at read time and is exactly what the digest
+    exists to make impossible.
+    """
     zone = zone_for_season(season)
     if zone != ZONE_LIVE:
         owner = (
@@ -113,13 +226,36 @@ def capture_live_dataset(
     raw = pin_upstream_snapshot.fetch_live(dataset, season)
     frame = pin_upstream_snapshot.narrow(dataset, raw)
 
+    table_name = DATASET_TABLE_NAMES[dataset]
+    bronze_dir = Path(data_root) / "bronze"
+    bronze_dir.mkdir(parents=True, exist_ok=True)
+    _reserve_distinct_bronze_second(bronze_dir, table_name, season, week)
+    existing_paths = set(
+        bronze_dir.glob(_bronze_snapshot_glob(table_name, season, week))
+    )
+
     path = save_bronze_snapshot(
         frame,
-        table_name=DATASET_TABLE_NAMES[dataset],
+        table_name=table_name,
         season=season,
         week=week,
         base_path=data_root,
     )
+    if path in existing_paths:
+        msg = (
+            f"The live capture for {dataset} season {season} week {week} wrote OVER an "
+            f"existing bronze snapshot at '{path}'. data/bronze/ is append-only by "
+            "contract, so those bytes were the evidence some earlier verdict was "
+            "measured against and they are now gone.\n"
+            "\n"
+            "This is the second-resolution filename collision data/storage.py names as a "
+            "known defect, reached despite the pre-write reservation. NOTHING was "
+            "recorded: the live manifest is byte-unchanged, so no entry claims these "
+            "bytes were verified. Investigate before re-running -- a reservation that "
+            "passed and a write that collided anyway means the two clocks disagree."
+        )
+        raise PinCaptureError(msg)
+
     pin_upstream_snapshot.assert_round_trip_faithful(frame, path)
 
     entry = build_capture_entry(dataset, season, week, raw, frame, path, data_root)
