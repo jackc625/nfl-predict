@@ -46,6 +46,8 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pandas as pd
+
 from data.storage import save_bronze_snapshot
 from data.upstream_live import (
     LIVE_MANIFEST_DIR,
@@ -62,6 +64,8 @@ from data.upstream_pin import (
     SEALED_THROUGH_SEASON,
     ZONE_LIVE,
     ZONE_SEALED,
+    UpstreamPinError,
+    UpstreamSeasonWindowRefused,
     ZoneWriteRefused,
     default_data_root,
     zone_for_season,
@@ -89,6 +93,125 @@ EXIT_UNKNOWN = 4
 # collision can occupy while still failing fast if something else is wrong.
 _COLLISION_POLL_SECONDS = 0.2
 _COLLISION_POLL_ATTEMPTS = 15
+
+
+# WHEN EACH DATASET'S SEASON BECOMES REQUESTABLE FROM nflreadpy, per dataset. Measured
+# against nflreadpy 0.1.5's own gates (``nflreadpy/utils_date.py``) on 2026-09-10.
+#
+# An operator who hits a season-window refusal needs the DATE, not just the failure: the
+# difference between "wait until Thursday" and "this will never work" is the difference
+# between a five-minute pause and an afternoon of debugging.
+SEASON_WINDOW_HINTS: dict[str, str] = {
+    "pbp": (
+        "nflreadpy gates load_pbp on get_current_season(), which flips to the new season "
+        "on the THURSDAY FOLLOWING LABOR DAY. Until then the season does not exist "
+        "upstream at all. (Measured: on 2026-09-09 load_pbp([2026]) raised; on 2026-09-10 "
+        "it returned 166 week-1 rows.)"
+    ),
+    "depth_charts": (
+        "nflreadpy gates load_depth_charts on get_current_season(roster=True), which "
+        "flips on MARCH 15. A season requested before March 15 of its own year does not "
+        "exist upstream."
+    ),
+    "schedules": (
+        "nflreadpy does NOT gate load_schedules on a season window at all -- it downloads "
+        "one monolithic games.parquet and filters in memory, returning ZERO ROWS rather "
+        "than raising for a season it has no rows for. A season-window refusal from this "
+        "dataset therefore means nflreadpy's behaviour changed; investigate rather than "
+        "waiting for a date."
+    ),
+}
+
+# The substring nflreadpy's season-window ValueError carries, for both gated datasets:
+# ``ValueError("Season must be between 1999 and 2026")`` from load_pbp and
+# ``ValueError("Season must be between 2001 and 2026")`` from load_depth_charts.
+_SEASON_WINDOW_MARKER = "Season must be between"
+
+
+def fetch_live_guarded(dataset: str, season: int) -> pd.DataFrame:
+    """Fetch one season from nflverse, translating EVERY failure into the pin's family.
+
+    THIS IS THE FETCH BOUNDARY, and it exists because of one measured hazard.
+    ``data/upstream_pin.py``'s module docstring states that ``UpstreamPinError`` inherits
+    ``Exception`` and deliberately NOT ``RuntimeError`` / ``ValueError`` / ``ImportError``,
+    because every wired call site (``features/qb_tracking.py``, ``features/team_form.py``,
+    ``scripts/ingest_games.py``) catches those types and returns an EMPTY frame. And
+    ``nflreadpy`` raises exactly those types: ``ValueError`` for a season outside its
+    window or an unparseable download, ``ConnectionError`` for a transport failure. A raw
+    ``nflreadpy`` exception escaping into a call site is therefore INDISTINGUISHABLE from
+    "upstream had no data" -- which is the precise failure the pin's hierarchy exists to
+    prevent, and which matters doubly here because D32-03 makes "genuinely zero rows" a
+    recordable fact.
+
+    Two outcomes, and they are different facts:
+
+    * A ``ValueError`` whose text matches the season-window shape becomes
+      :class:`data.upstream_pin.UpstreamSeasonWindowRefused`, carrying that dataset's
+      :data:`SEASON_WINDOW_HINTS` so the operator learns the DATE the season becomes
+      requestable.
+    * Any other ``ValueError``, and any ``ConnectionError`` or ``OSError``, becomes the
+      base :class:`data.upstream_pin.UpstreamPinError` with the dataset, the season and
+      the original message in its text.
+
+    Both are chained ``from exc``, so the original traceback survives. Nothing is
+    swallowed and nothing is converted into an empty frame: an empty capture is something
+    upstream SAYS, never something an exception handler decides on its behalf.
+    """
+    try:
+        return pin_upstream_snapshot.fetch_live(dataset, season)
+    except ValueError as exc:
+        hint = SEASON_WINDOW_HINTS.get(
+            dataset, "No season-window hint for this dataset."
+        )
+        if _SEASON_WINDOW_MARKER in str(exc):
+            msg = (
+                f"Refusing the live {dataset} capture for season {season}: nflreadpy "
+                f"reports that season is OUTSIDE its own window.\n"
+                f"  upstream said: {exc}\n"
+                "\n"
+                "WHY THIS IS A REFUSAL AND NOT AN EMPTY CAPTURE: an empty capture records "
+                "that upstream HAD nothing for this moment, which is a fact about the "
+                "season. This is upstream saying the season is not addressable yet, which "
+                "is a fact about the request. Recording it as an empty capture would pin a "
+                "claim nobody made.\n"
+                "\n"
+                f"WHEN IT BECOMES REQUESTABLE: {hint}\n"
+                "\n"
+                "Do ONE of these, deliberately:\n"
+                "  1. Wait until the date above, then re-run:\n"
+                "       .venv/Scripts/python.exe -m scripts.capture_live_season "
+                f"--season {season} --week <W> --dataset {dataset}\n"
+                "  2. Capture a dataset whose window is already open -- the three do NOT "
+                "open together:\n"
+                "       .venv/Scripts/python.exe -m scripts.capture_live_season "
+                f"--season {season} --week <W> --dataset schedules"
+            )
+            raise UpstreamSeasonWindowRefused(msg) from exc
+
+        msg = (
+            f"The live {dataset} fetch for season {season} failed inside nflreadpy with a "
+            f"ValueError: {exc}\n"
+            "\n"
+            "Re-raised in the UpstreamPinError family on purpose. Every wired call site "
+            "catches ValueError and returns an EMPTY frame, so letting this one through "
+            "unchanged would turn a fetch failure into a silently degraded gold matrix "
+            "that no manifest could account for. Nothing was written."
+        )
+        raise UpstreamPinError(msg) from exc
+    except OSError as exc:
+        # ConnectionError is a subclass of OSError, so this covers nflreadpy's documented
+        # transport failure as well as any local filesystem failure inside its cache.
+        msg = (
+            f"The live {dataset} fetch for season {season} failed in transport: "
+            f"{type(exc).__name__}: {exc}\n"
+            "\n"
+            "A TRANSPORT FAILURE IS NOT AN EMPTY SEASON. Re-raised in the UpstreamPinError "
+            "family so it cannot be caught by a call site's (ImportError, ValueError, "
+            "RuntimeError, ConnectionError) handler and converted into an empty frame -- a "
+            "dead network and a season with no data would otherwise be the same "
+            "observable. Nothing was written; re-run the capture."
+        )
+        raise UpstreamPinError(msg) from exc
 
 
 def _utc_stamp_now() -> str:
@@ -189,6 +312,24 @@ def capture_live_dataset(
 ) -> dict:
     """Fetch, narrow, write, verify and RECORD one live-zone dataset for one week.
 
+    THE LIVE PATH NARROWS WITH THE SEALED ZONE'S OWN ALLOWLIST (discretion item 7,
+    decided here and recorded). Play-by-play is narrowed by
+    ``scripts.pin_upstream_snapshot.narrow`` against
+    ``data.upstream_pin.PBP_PINNED_COLUMNS`` -- IMPORTED, never re-implemented. A live
+    capture carrying a different column set from the sealed zone's would make a mixed
+    ``[2025, 2026]`` frame RAGGED at the season boundary, and that mixed request is
+    exactly the shape ``features/team_form.py`` issues (it prepends ``all_seasons[0] - 1``
+    to every request). One allowlist means one column set on both sides of the join.
+
+    ``narrow`` PRESERVES ABSENCE: an allowlisted column upstream did not supply is left
+    absent rather than materialised as all-null, because ``features/team_form.py`` branches
+    on ``"cpoe" in group.columns`` and inventing the column would change what gets
+    computed. Research measured all 23 pinned columns present in live 2026 today, so that
+    branch is NOT exercised by current evidence -- which is why it is held by an explicit
+    test instead of an assumption. The risk is not hypothetical: ``depth_charts`` went from
+    a 15-column schema (<=2024) to a 12-column one (>=2025) with ZERO name overlap, inside
+    the sealed pin's own coverage.
+
     THE ORDER OF THE LAST FOUR STEPS IS THE CONTRACT, not an implementation detail. The
     bronze bytes are written, :func:`scripts.pin_upstream_snapshot.assert_round_trip_faithful`
     proves they are the frame that was fetched, the entry (with its digests) is built from
@@ -223,8 +364,24 @@ def capture_live_dataset(
         )
         raise ZoneWriteRefused(msg)
 
-    raw = pin_upstream_snapshot.fetch_live(dataset, season)
+    raw = fetch_live_guarded(dataset, season)
     frame = pin_upstream_snapshot.narrow(dataset, raw)
+
+    # D32-03: AN EMPTY LIVE CAPTURE IS RECORDED, NOT REFUSED.
+    #
+    # There is deliberately no zero-row guard here, in contrast with
+    # ``scripts.pin_upstream_snapshot.capture_season``, which refuses one outright. 2026
+    # play-by-play is LEGITIMATELY empty before the season's first game, and
+    # ``features/team_form.py`` asks for ``[2025, 2026]`` together -- so an empty 2026
+    # half is exactly what a live fetch would have returned, and recording it is what
+    # makes the live zone able to answer for that moment at all. "Upstream had nothing
+    # for this dataset at this moment" is a fact worth pinning: it is digested,
+    # attributable and addressable like any other capture, with ``rows: 0`` and an empty
+    # ``week_digests`` map whose ``week_partition`` says which case produced it.
+    #
+    # The SEALED zone keeps its refusal unchanged. A sealed season that came back empty
+    # is not a fact about the world, it is a failed capture, and pinning it would starve
+    # every builder that reads it for as long as the pin stands.
 
     table_name = DATASET_TABLE_NAMES[dataset]
     bronze_dir = Path(data_root) / "bronze"

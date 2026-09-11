@@ -38,7 +38,14 @@ import pandas as pd
 import pytest
 
 from data import upstream_live
-from data.upstream_pin import LIVE_ZONE_FIRST_SEASON, PBP_PINNED_COLUMNS
+from data.upstream_pin import (
+    LIVE_ZONE_FIRST_SEASON,
+    PBP_PINNED_COLUMNS,
+    SEALED_THROUGH_SEASON,
+    UpstreamPinError,
+    UpstreamSeasonWindowRefused,
+)
+from scripts import capture_live_season, pin_upstream_snapshot
 from scripts.pin_upstream_snapshot import PinCaptureError
 
 LIVE_SEASON = LIVE_ZONE_FIRST_SEASON
@@ -264,3 +271,239 @@ class TestNarrowIsTheSealedZonesOwnAllowlist:
         from data.upstream_pin import DATASET_COLUMNS
 
         assert DATASET_COLUMNS["pbp"] is PBP_PINNED_COLUMNS
+
+
+# The pinned play-by-play columns whose upstream values are text rather than numbers.
+# Named so a fixture frame carries plausible dtypes through the parquet round trip that
+# ``assert_round_trip_faithful`` checks.
+_TEXT_COLUMNS = frozenset(
+    {
+        "game_id",
+        "posteam",
+        "defteam",
+        "home_team",
+        "away_team",
+        "play_type",
+        "passer_player_id",
+    }
+)
+
+
+def _full_pbp_frame(
+    *, omit: tuple[str, ...] = (), extra: tuple[str, ...] = ()
+) -> pd.DataFrame:
+    """A two-row frame carrying EVERY ``PBP_PINNED_COLUMNS`` name, minus *omit*.
+
+    *omit* simulates an upstream frame that does not supply an allowlisted column --
+    ``narrow``'s preserve-absence branch. *extra* simulates an upstream column outside the
+    allowlist, which must be dropped.
+    """
+    data: dict[str, list] = {}
+    for index, column in enumerate(PBP_PINNED_COLUMNS):
+        if column in omit:
+            continue
+        if column == "season":
+            data[column] = [LIVE_SEASON, LIVE_SEASON]
+        elif column == "week":
+            data[column] = [1, 2]
+        elif column in _TEXT_COLUMNS:
+            data[column] = [f"{column}_a", f"{column}_b"]
+        else:
+            data[column] = [float(index), float(index) + 0.5]
+    for column in extra:
+        data[column] = ["upstream_a", "upstream_b"]
+    return pd.DataFrame(data)
+
+
+@pytest.fixture
+def live_roots(tmp_path: Path) -> dict[str, Path]:
+    """A data root and a live manifest directory, both inside ``tmp_path``."""
+    data_root = tmp_path / "data"
+    (data_root / "bronze").mkdir(parents=True, exist_ok=True)
+    return {"data_root": data_root, "manifest_dir": tmp_path / "upstream_live"}
+
+
+def _seed_manifest(live_roots: dict[str, Path]) -> tuple[Path, bytes]:
+    """Write a capture-less live manifest and return its path and its bytes.
+
+    A refusal has to be shown to leave the COMMITTED record byte-unchanged, and "the file
+    does not exist" is a weaker claim than "the file is exactly what it was".
+    """
+    path = upstream_live.write_live_manifest(
+        upstream_live.empty_live_manifest(LIVE_SEASON),
+        manifest_dir=live_roots["manifest_dir"],
+    )
+    return path, path.read_bytes()
+
+
+def _capture(live_roots: dict[str, Path], dataset: str = "pbp", week: int = 3) -> dict:
+    return capture_live_season.capture_live_dataset(
+        dataset,
+        LIVE_SEASON,
+        week,
+        data_root=live_roots["data_root"],
+        manifest_dir=live_roots["manifest_dir"],
+    )
+
+
+class TestTheLiveZoneRecordsAnEmptyCapture:
+    """D32-03: the two zones take OPPOSITE positions on zero rows, on purpose."""
+
+    def test_an_empty_live_capture_is_recorded_with_rows_zero(
+        self, live_roots: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """2026 play-by-play is legitimately empty before the season's first game."""
+        empty = _full_pbp_frame().iloc[0:0]
+        monkeypatch.setattr(
+            pin_upstream_snapshot, "fetch_live", lambda dataset, season: empty.copy()
+        )
+
+        code = capture_live_season.main(
+            [
+                "--season",
+                str(LIVE_SEASON),
+                "--week",
+                "3",
+                "--dataset",
+                "pbp",
+                "--data-root",
+                str(live_roots["data_root"]),
+                "--manifest-dir",
+                str(live_roots["manifest_dir"]),
+            ]
+        )
+        assert code == capture_live_season.EXIT_OK, (
+            "the live zone REFUSED an empty capture; D32-03 scopes that refusal to the "
+            "sealed zone only"
+        )
+
+        manifest = upstream_live.load_live_manifest(
+            LIVE_SEASON, manifest_dir=live_roots["manifest_dir"]
+        )
+        assert manifest is not None
+        entry = upstream_live.resolve_capture(manifest, "pbp", week=3)
+
+        assert entry["rows"] == 0
+        assert len(entry["sha256"]) == 64, "an empty capture must still be digested"
+        assert entry["week_digests"] == {}
+        assert entry["week_partition"] == upstream_live.WEEK_PARTITION_EMPTY
+        assert "empty" in entry["week_partition"]
+        assert (live_roots["data_root"] / entry["path"]).is_file(), (
+            "the entry names bytes that are not on disk"
+        )
+
+    def test_the_sealed_zone_still_refuses_a_zero_row_capture(
+        self, live_roots: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The allowance is scoped to the LIVE zone; the sealed refusal is untouched."""
+        empty = _full_pbp_frame().iloc[0:0]
+        monkeypatch.setattr(
+            pin_upstream_snapshot, "fetch_live", lambda dataset, season: empty.copy()
+        )
+
+        with pytest.raises(PinCaptureError) as error:
+            pin_upstream_snapshot.capture_season(
+                "pbp", SEALED_THROUGH_SEASON, live_roots["data_root"]
+            )
+        assert "ZERO rows" in str(error.value)
+
+
+class TestASeasonOutsideTheUpstreamWindowRefuses:
+    """The fetch boundary: a refusal must never arrive as a bare ``ValueError``."""
+
+    @pytest.mark.parametrize("dataset", ["pbp", "schedules", "depth_charts"])
+    def test_a_season_window_value_error_becomes_a_pin_family_refusal(
+        self,
+        dataset: str,
+        live_roots: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        manifest_path, before = _seed_manifest(live_roots)
+
+        def _outside_window(requested: str, season: int) -> pd.DataFrame:
+            raise ValueError("Season must be between 1999 and 2026")
+
+        monkeypatch.setattr(pin_upstream_snapshot, "fetch_live", _outside_window)
+
+        with pytest.raises(UpstreamSeasonWindowRefused) as error:
+            _capture(live_roots, dataset=dataset)
+
+        raised = error.value
+        assert isinstance(raised, UpstreamPinError)
+        assert not isinstance(raised, ValueError), (
+            "the refusal is a ValueError, which is exactly what every wired call site "
+            "catches and converts into an EMPTY frame -- so it would be indistinguishable "
+            "from 'upstream had no data'"
+        )
+        assert capture_live_season.SEASON_WINDOW_HINTS[dataset] in str(raised), (
+            "the refusal does not tell the operator WHEN the season becomes requestable"
+        )
+        assert isinstance(raised.__cause__, ValueError)
+        assert manifest_path.read_bytes() == before, (
+            "a refused capture moved the committed live manifest"
+        )
+
+    def test_a_transport_failure_becomes_an_upstream_pin_error_not_a_connection_error(
+        self, live_roots: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dead network and a season with no data must not be the same observable."""
+        manifest_path, before = _seed_manifest(live_roots)
+        original = ConnectionError("nflverse release assets unreachable")
+
+        def _no_transport(dataset: str, season: int) -> pd.DataFrame:
+            raise original
+
+        monkeypatch.setattr(pin_upstream_snapshot, "fetch_live", _no_transport)
+
+        with pytest.raises(UpstreamPinError) as error:
+            _capture(live_roots)
+
+        raised = error.value
+        assert not isinstance(raised, ConnectionError)
+        assert raised.__cause__ is original
+        assert manifest_path.read_bytes() == before
+
+
+class TestNarrowPreservesAbsenceOnTheLivePath:
+    """The branch today's live 2026 frame does NOT exercise, held by test instead."""
+
+    def test_an_allowlisted_column_absent_upstream_stays_absent(
+        self, live_roots: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``features/team_form.py`` branches on ``"cpoe" in group.columns``."""
+        upstream = _full_pbp_frame(omit=("cpoe",))
+        assert "cpoe" not in upstream.columns, "the fixture did not omit the column"
+        monkeypatch.setattr(
+            pin_upstream_snapshot, "fetch_live", lambda dataset, season: upstream.copy()
+        )
+
+        entry = _capture(live_roots)
+
+        written = pd.read_parquet(live_roots["data_root"] / entry["path"])
+        assert "cpoe" not in written.columns, (
+            "the live capture MATERIALISED an allowlisted column upstream never supplied, "
+            "so the builders would compute something the live path did not give them"
+        )
+        assert "cpoe" not in entry["columns"]
+        assert set(entry["columns"]) == set(PBP_PINNED_COLUMNS) - {"cpoe"}, (
+            "preserve-absence dropped more than the absent column"
+        )
+
+    def test_an_upstream_column_outside_the_allowlist_is_dropped(
+        self, live_roots: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        upstream = _full_pbp_frame(extra=("some_new_nflverse_column",))
+        monkeypatch.setattr(
+            pin_upstream_snapshot, "fetch_live", lambda dataset, season: upstream.copy()
+        )
+
+        entry = _capture(live_roots)
+
+        written = pd.read_parquet(live_roots["data_root"] / entry["path"])
+        assert "some_new_nflverse_column" not in written.columns
+        assert "some_new_nflverse_column" not in entry["columns"]
+        assert entry["columns"] == list(PBP_PINNED_COLUMNS)
+        assert entry["upstream_width"] == len(PBP_PINNED_COLUMNS) + 1, (
+            "upstream_width must record the FULL width nflverse returned, or the record "
+            "cannot say what was dropped"
+        )
