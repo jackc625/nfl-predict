@@ -10,192 +10,192 @@
         "sha256": "49e05615be80beccebfc2c91778d402a2aaf147c2e08593f74177a81d1f7f130",
         "rows": 34594,
         "bytes": 333553,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:21:29Z",
+        "upstream_size": 346809,
         "acknowledgement": null
       },
       "2003": {
         "sha256": "f3cca02466aeb62e54b622747d483a570b730487e5b331518d3988fea41b0205",
         "rows": 34298,
         "bytes": 322210,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:22:43Z",
+        "upstream_size": 339053,
         "acknowledgement": null
       },
       "2004": {
         "sha256": "74ef2170e351e47fe67f8314b2443e669b003d314e2a456f9b5510516a2a9899",
         "rows": 28898,
         "bytes": 264161,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:23:49Z",
+        "upstream_size": 265408,
         "acknowledgement": null
       },
       "2005": {
         "sha256": "d4ec3cd4503fbc4bbaf7b43b1458c0db3df219e3d60bccd7d8343917b0b98fc5",
         "rows": 32803,
         "bytes": 438425,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:25:00Z",
+        "upstream_size": 438200,
         "acknowledgement": null
       },
       "2006": {
         "sha256": "7aab8b9b1be545bc6ac3dbdcecb7a1f2882f661d75689b7d992d9034992ce1d4",
         "rows": 33721,
         "bytes": 392044,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:26:13Z",
+        "upstream_size": 394170,
         "acknowledgement": null
       },
       "2007": {
         "sha256": "a4c448ee5f72814040f6edf8e5b9854e10aab56a83780aa616709ad8e3b20a40",
         "rows": 38547,
         "bytes": 494848,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:27:39Z",
+        "upstream_size": 497988,
         "acknowledgement": null
       },
       "2008": {
         "sha256": "025e8aa703d03c42ea0dc0e9cadb108a7fcdb99e2b430981078b695136a808c7",
         "rows": 38651,
         "bytes": 495232,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:28:57Z",
+        "upstream_size": 495601,
         "acknowledgement": null
       },
       "2009": {
         "sha256": "e7452ee2c6ef8b8ff02dcbdf38415c810e16533cbbcce2e1927373aaa9dec839",
         "rows": 38423,
         "bytes": 488855,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:30:14Z",
+        "upstream_size": 490839,
         "acknowledgement": null
       },
       "2010": {
         "sha256": "fdbaf2c85881f13e2da722838bb6869ea43b24c4cc7eec48ebf575f32420311b",
         "rows": 38421,
         "bytes": 490709,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:31:32Z",
+        "upstream_size": 492543,
         "acknowledgement": null
       },
       "2011": {
         "sha256": "3dbfd82aae32e1f8b1e6f5b82614635432b07b48846c98048a2c4ffd387fa1fc",
         "rows": 37941,
         "bytes": 486946,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:32:51Z",
+        "upstream_size": 491211,
         "acknowledgement": null
       },
       "2012": {
         "sha256": "cf6b92e8fbf9a2f06365f6240056594ef5e11dc1048bbf8aa16f299235251493",
         "rows": 37312,
         "bytes": 480521,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:34:07Z",
+        "upstream_size": 484727,
         "acknowledgement": null
       },
       "2013": {
         "sha256": "88f7ec3fe1e93ad2fadad3560a0c61b9644fa3dd53b425f79f5cf70f80ea12a3",
         "rows": 37066,
         "bytes": 475491,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:35:23Z",
+        "upstream_size": 481235,
         "acknowledgement": null
       },
       "2014": {
         "sha256": "d0c7adf1c03ce4d020bb54b35fcadcb4b255c450eab7ed6f1191830ddf7e2402",
         "rows": 32542,
         "bytes": 432514,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:36:33Z",
+        "upstream_size": 435044,
         "acknowledgement": null
       },
       "2015": {
         "sha256": "04754634195f0e25c4c2f1f1c2dac9ee76c6bb0df467ed114e354a5406012ce1",
         "rows": 37058,
         "bytes": 485604,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:37:50Z",
+        "upstream_size": 484443,
         "acknowledgement": null
       },
       "2016": {
         "sha256": "f012b00ace4b0613aba482fdd64da5bdc701288b3213cdbc5c4b339c6a008ea0",
         "rows": 36612,
         "bytes": 467936,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:39:10Z",
+        "upstream_size": 472374,
         "acknowledgement": null
       },
       "2017": {
         "sha256": "2c8a2991bbbd6d500249acda154e164a481f54b200615b22f766a19ba9a42096",
         "rows": 36620,
         "bytes": 487841,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:40:26Z",
+        "upstream_size": 495128,
         "acknowledgement": null
       },
       "2018": {
         "sha256": "835bca6f0eec15d4e3e0864898b7a261ed3feb689c17b96568a62d167f69c6c2",
         "rows": 36560,
         "bytes": 487410,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:41:41Z",
+        "upstream_size": 494788,
         "acknowledgement": null
       },
       "2019": {
         "sha256": "ed12812cfbdb6c1c0e333f720c837924189993f4da3e38659f46f2bcb2fcfb75",
         "rows": 36308,
         "bytes": 470684,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:42:56Z",
+        "upstream_size": 479015,
         "acknowledgement": null
       },
       "2020": {
         "sha256": "10e4c7a1c6d4e85b0f0a227b10c9b111f1ee7d7842f755c47abfb00cb071a793",
         "rows": 36168,
         "bytes": 471946,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:44:12Z",
+        "upstream_size": 462550,
         "acknowledgement": null
       },
       "2021": {
         "sha256": "b6f688beb9e68e309201b1db1e0b03fed2a5f5748f02982ff668a6bb2c3ab5dd",
         "rows": 37487,
         "bytes": 490773,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:45:30Z",
+        "upstream_size": 485823,
         "acknowledgement": null
       },
       "2022": {
         "sha256": "44c3678c5681e9115de0b940348fbd8211d3e3e0f4f836ffaf868ec3851375e3",
         "rows": 37780,
         "bytes": 494178,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:46:50Z",
+        "upstream_size": 493072,
         "acknowledgement": null
       },
       "2023": {
         "sha256": "e8d0cc5f584b7556e49e0af3f703b6670a86902e0b5aa4c379d7b84d468326b2",
         "rows": 37327,
         "bytes": 486312,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-04T21:48:08Z",
+        "upstream_size": 485941,
         "acknowledgement": null
       },
       "2024": {
         "sha256": "16cc22ca5ac3800df77772e74d03deaf14cf44c0907e7e075c671f7ce7d39750",
         "rows": 37312,
         "bytes": 487255,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-02-13T07:32:56Z",
+        "upstream_size": 482923,
         "acknowledgement": null
       },
       "2025": {
         "sha256": "34dda79177d391ba222a16cad72070bdb2d996356604d4b643d4a0d87a35f577",
         "rows": 554215,
         "bytes": 2586061,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2026-03-14T07:32:28Z",
+        "upstream_size": 2584724,
         "acknowledgement": null
       }
     },
@@ -204,200 +204,200 @@
         "sha256": "53f9362fadf83fde7c45e0f1210a9a5a210f7671bac403213291af60ad7dd9b2",
         "rows": 44969,
         "bytes": 1087146,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2026-08-13T12:38:45Z",
+        "upstream_size": 14007738,
         "acknowledgement": null
       },
       "2002": {
         "sha256": "64c61c84d88b632371be5f0bfe9c080c04b804cd8c47ddbbf684d8d923f5133e",
         "rows": 47355,
         "bytes": 1139148,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2026-08-13T12:39:26Z",
+        "upstream_size": 14742308,
         "acknowledgement": null
       },
       "2003": {
         "sha256": "f381057320178272a1334f40f3a1b82cecbe4078bda9a0d9d7892cbaf536a2cf",
         "rows": 46811,
         "bytes": 1126554,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:35:51Z",
+        "upstream_size": 14620361,
         "acknowledgement": null
       },
       "2004": {
         "sha256": "6209519031f773cf9867997395986c7b015d65a81e82afb9f1c7b1a637c06562",
         "rows": 46705,
         "bytes": 1123436,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:37:54Z",
+        "upstream_size": 14568240,
         "acknowledgement": null
       },
       "2005": {
         "sha256": "d70b21fe16eeef7e55d44d0ac1ec793c52d9ba0ee3098dfaf847b7a9e9e16f75",
         "rows": 46823,
         "bytes": 1126122,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:38:09Z",
+        "upstream_size": 14612857,
         "acknowledgement": null
       },
       "2006": {
         "sha256": "07f258419224114542b86cf2ed337107266736c2372984a7057e2cabe36046a6",
         "rows": 46299,
         "bytes": 1228221,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:33:16Z",
+        "upstream_size": 18555685,
         "acknowledgement": null
       },
       "2007": {
         "sha256": "e62bd1f3f04a89e6853b9b5811bf6bd30b78a35320d1d577594b253aad1bd4e8",
         "rows": 46266,
         "bytes": 1235454,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:41:08Z",
+        "upstream_size": 18716524,
         "acknowledgement": null
       },
       "2008": {
         "sha256": "41b724b22ea1479ce422fa6b5493c10bc8eeb898ed31f58617ca25fdb6635449",
         "rows": 45917,
         "bytes": 1223721,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:34:15Z",
+        "upstream_size": 18565820,
         "acknowledgement": null
       },
       "2009": {
         "sha256": "12eb6b4e689b72ca221be85c9d0e7cae5128bc471cbc389dda7b9cf83a584194",
         "rows": 46519,
         "bytes": 1246363,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:36:09Z",
+        "upstream_size": 18905386,
         "acknowledgement": null
       },
       "2010": {
         "sha256": "567ce40efb787ff800f3636d1eb5cb472833e5d18a4bfdd133b2375b4c4a815a",
         "rows": 46892,
         "bytes": 1252559,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:34:41Z",
+        "upstream_size": 19059048,
         "acknowledgement": null
       },
       "2011": {
         "sha256": "9ad722a5ac90b520b8b0385db9550b0f524fad6872f81757fc2d7abc95743b52",
         "rows": 47448,
         "bytes": 1257074,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:38:47Z",
+        "upstream_size": 19117830,
         "acknowledgement": null
       },
       "2012": {
         "sha256": "14ed7d17d6a177aea44a12a451926ae8670d4b29e53d405c0f86660c6e50cadf",
         "rows": 47834,
         "bytes": 1267130,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:33:24Z",
+        "upstream_size": 19322039,
         "acknowledgement": null
       },
       "2013": {
         "sha256": "d7648ecdf6fa20982025788f26915229e950643ad85c3311b8ee9a8524c4c74d",
         "rows": 48158,
         "bytes": 1275102,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-25T12:30:13Z",
+        "upstream_size": 19521610,
         "acknowledgement": null
       },
       "2014": {
         "sha256": "53fa81f59086938fe50e957df8455b2d50ac4dfc55e49da78d21d03cf9174342",
         "rows": 47629,
         "bytes": 1263792,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2024-08-25T12:30:16Z",
+        "upstream_size": 19360792,
         "acknowledgement": null
       },
       "2015": {
         "sha256": "34577e8b53ce3355c2af800b77f8b867b3e4d88ced1d953d0dcb30b5cd77b3df",
         "rows": 48122,
         "bytes": 1271023,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:33:27Z",
+        "upstream_size": 19545842,
         "acknowledgement": null
       },
       "2016": {
         "sha256": "1fc397b5a6fb3c80d4644fe6e6ac2456062ae0c4b2115ed59c5ca2cf18763d57",
         "rows": 47651,
         "bytes": 1261143,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:34:29Z",
+        "upstream_size": 19344382,
         "acknowledgement": null
       },
       "2017": {
         "sha256": "f06dd77c8fda477539949bcc6601c4ebb4585da9c231d1d53c443c231c60acb4",
         "rows": 47245,
         "bytes": 1248137,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:41:25Z",
+        "upstream_size": 19050401,
         "acknowledgement": null
       },
       "2018": {
         "sha256": "3f1911453d42abfbf3c4aba4fc582bd52297712b62c68dab92550a8ba0eab67c",
         "rows": 47109,
         "bytes": 1241587,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-04-30T06:39:20Z",
+        "upstream_size": 19072097,
         "acknowledgement": null
       },
       "2019": {
         "sha256": "d1b49b2251920b160f8d651c00b4ee4f38a6ce41237ae20c8b5c8f1881773742",
         "rows": 47260,
         "bytes": 1245323,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2025-07-31T18:17:19Z",
+        "upstream_size": 19119729,
         "acknowledgement": null
       },
       "2020": {
         "sha256": "4d958443091a7ea9f6f819898b410a9ab80ddae1faa258270f77601c0076d14f",
         "rows": 47705,
         "bytes": 1253576,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2026-08-26T07:33:10Z",
+        "upstream_size": 19286459,
         "acknowledgement": null
       },
       "2021": {
         "sha256": "8b9a2ad3258eb69e914b78f9712a330855a83a184f7ed51b7e19914295b65f47",
         "rows": 49922,
         "bytes": 1314358,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2026-01-08T13:13:13Z",
+        "upstream_size": 20249925,
         "acknowledgement": null
       },
       "2022": {
         "sha256": "5c23f0fdcf9d6832dfab83b69cd94126a83ffed887d4d09e572ccf952cad7117",
         "rows": 49434,
         "bytes": 1297269,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2026-02-12T10:25:24Z",
+        "upstream_size": 20426548,
         "acknowledgement": null
       },
       "2023": {
         "sha256": "2f5b8326a440b09fd2dcfced2b0b6e477f6c6ee8fbb8c68cf9265302453eef12",
         "rows": 49665,
         "bytes": 1300310,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2026-02-12T10:24:52Z",
+        "upstream_size": 20534088,
         "acknowledgement": null
       },
       "2024": {
         "sha256": "c4875686c1baf25db35711c5e4f214ad209618cdcfb238054d83681da4e3dded",
         "rows": 49492,
         "bytes": 1311748,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2026-08-13T12:26:27Z",
+        "upstream_size": 20597560,
         "acknowledgement": null
       },
       "2025": {
         "sha256": "586d7cee6f3e526349a2c4145c7c6e304332793f6e800f669894079a6384715f",
         "rows": 48771,
         "bytes": 1297724,
-        "upstream_updated_at": null,
-        "upstream_size": null,
+        "upstream_updated_at": "2026-08-13T12:26:09Z",
+        "upstream_size": 20337029,
         "acknowledgement": null
       }
     },
@@ -619,5 +619,7 @@
         "acknowledgement": null
       }
     }
-  }
+  },
+  "signatures_seeded_at_utc": "2026-09-11T09:32:52.330872+00:00",
+  "signatures_seeded_by": "Jack Cutrara"
 }
