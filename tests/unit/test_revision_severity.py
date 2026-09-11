@@ -36,6 +36,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from data import live_revision
 from data.graded_weeks import GRADED_WEEKS_SOURCE, GradedWeeksUnavailable
 from data.live_revision import (
@@ -45,6 +47,7 @@ from data.live_revision import (
     as_record,
     compare_week_digests,
     detect_live_revision,
+    verdict_severity_rank,
 )
 from data.revision_events import (
     CORRECTION_OWED,
@@ -765,3 +768,49 @@ class TestTheSeverityComesOnlyFromTheCommittedTable:
         assert not any(name.startswith("backtest") for name in imported)
         assert not any(name.startswith("api") for name in imported)
         assert not any(name.startswith("data.graded_weeks") for name in imported)
+
+
+class TestTheOnlySanctionedSeverityComparison:
+    """Why a helper exists at all: alphabetical order is not loudness order."""
+
+    def test_a_naive_string_comparison_would_get_the_order_exactly_backwards(
+        self,
+    ) -> None:
+        # RevisionSeverity is a StrEnum, so comparing two MEMBERS with < is legal and
+        # silently alphabetical: the loudest severity sorts below the quietest one.
+        assert RevisionSeverity.CRITICAL < RevisionSeverity.INFORMATIONAL
+        assert severity_rank(RevisionSeverity.CRITICAL) > severity_rank(
+            RevisionSeverity.INFORMATIONAL
+        )
+
+    def test_the_helper_ranks_the_graded_case_above_the_ungraded_one(self) -> None:
+        graded_verdict = rule(
+            current=moved_week("2"), prior=three_weeks(), graded_record=graded([2])
+        )
+        ungraded_verdict = rule(
+            current=moved_week("2"), prior=three_weeks(), graded_record=graded([1])
+        )
+
+        assert verdict_severity_rank(graded_verdict) > verdict_severity_rank(
+            ungraded_verdict
+        )
+
+    def test_the_helper_ranks_unknown_above_the_ordinary_case(self) -> None:
+        unknown_verdict = rule(
+            current=three_weeks(),
+            prior=three_weeks(),
+            graded_record=GradedWeeksUnavailable("unreadable"),
+        )
+        ordinary_verdict = rule(
+            current=moved_week("3"), prior=three_weeks(), graded_record=graded([1])
+        )
+
+        assert verdict_severity_rank(unknown_verdict) > verdict_severity_rank(
+            ordinary_verdict
+        )
+
+    def test_a_severity_outside_the_frozen_vocabulary_raises_rather_than_sorts(
+        self,
+    ) -> None:
+        with pytest.raises(ValueError):
+            verdict_severity_rank({"severity": "loud"})

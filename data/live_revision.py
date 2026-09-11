@@ -44,11 +44,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from data.revision_events import (
+    CORRECTION_OWED,
+    CORRECTION_OWED_SCOPE,
+    DEFAULT_SEVERITY,
+    VERDICT_SCHEMA_VERSION,
+    RevisionEventClass,
+    RevisionSeverity,
+    severity_rank,
+)
+
 __all__ = [
+    "CORRECTION_DISCHARGED_BY",
+    "GRADED_SOURCE_UNRESOLVED",
+    "GRADED_SOURCE_UNSTATED",
     "LIVE_REVISION_SCHEMA_VERSION",
+    "VERDICT_KEYS",
     "WeekDiff",
     "as_record",
     "compare_week_digests",
+    "detect_live_revision",
+    "verdict_severity_rank",
 ]
 
 
@@ -244,10 +260,173 @@ def as_record(diff: WeekDiff) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# RED-phase skeleton for Task 2. The ruling lands in the GREEN commit.
+# THE RULING: what the difference MEANS, how loud it is, and what it OWES.
 # ---------------------------------------------------------------------------
 
-VERDICT_KEYS: tuple[str, ...] = ()
+# The FOURTEEN keys every verdict carries, on EVERY branch. Frozen here the way
+# ``data/sealed_probe.py`` freezes ``VERDICT_KEYS`` and for the same reason: a verdict rides
+# inside its own capture entry in ``config/upstream_live/<season>.json`` (D32-08), which
+# accumulates all season, so a line whose key set depends on which branch produced it is not
+# a line a reader can diff a season later. Four of the names -- ``verdict_schema_version``,
+# ``event_class``, ``severity``, ``reason`` -- are deliberately the SAME names the sealed
+# probe uses for the same meanings, so the two verdict classes read as one vocabulary in the
+# committed record rather than as two dialects.
+#
+# Adding a key means bumping ``data.revision_events.VERDICT_SCHEMA_VERSION``; renaming one
+# makes the already-written entries stop meaning what they said.
+VERDICT_KEYS: tuple[str, ...] = (
+    "verdict_schema_version",
+    "live_revision_schema_version",
+    "dataset",
+    "season",
+    "week",
+    "sequence",
+    "event_class",
+    "severity",
+    "diff",
+    CORRECTION_OWED,
+    CORRECTION_OWED_SCOPE,
+    "graded_weeks",
+    "graded_weeks_source",
+    "reason",
+)
+
+
+# Who discharges the obligation this module only RAISES. Recorded as a value inside the
+# scope rather than described in a sentence, so "which corrections are still owed, and by
+# whom" stays a query.
+CORRECTION_DISCHARGED_BY: str = "phase-34 ledger correction block"
+
+
+# The provenance string recorded when the graded set could NOT be resolved. It is a
+# deliberate non-answer: a verdict must never be able to report a source that implies it
+# read something when it did not.
+GRADED_SOURCE_UNRESOLVED: str = "unresolved -- the graded-week record could not be resolved; see this verdict's reason"
+
+# The provenance string recorded when a caller supplied weeks but no source of its own.
+GRADED_SOURCE_UNSTATED: str = (
+    "unstated -- the caller supplied a graded-week set without naming where it looked"
+)
+
+
+def _resolve_graded(graded: object) -> tuple[list[int] | None, str, str | None]:
+    """Interpret the *graded* argument. Returns ``(weeks, source, failure)``.
+
+    ``failure`` is ``None`` only when the graded set was genuinely resolved. Everything else
+    -- an absent argument, a raised :class:`data.graded_weeks.GradedWeeksUnavailable`, a
+    record that reports itself unresolved, a shape this function does not recognise --
+    returns a failure sentence and ``weeks`` of ``None``.
+
+    A MISSING ARGUMENT IS A FAILURE, NOT AN EMPTY SET. That is the single most important
+    line in this function. ``graded=None`` is the default only so the parameter can be named
+    at the call site; a caller that forgot to resolve the graded record has told this module
+    NOTHING, and reading "nothing" as "nothing is graded" is exactly the silent downgrade
+    D32-11 exists to prevent -- a CRITICAL becomes an informational and the log looks calm.
+    An EXPLICITLY RECORDED empty set (``{"weeks": [], "resolved": True, ...}``, which is what
+    ``data.graded_weeks.graded_weeks_record`` returns for an absent store) is a different
+    input and is honoured as the genuine empty answer it is.
+    """
+    if graded is None:
+        return (
+            None,
+            GRADED_SOURCE_UNRESOLVED,
+            "no graded-week record was supplied to the detector, so which weeks have "
+            "already been graded is unknown. An absent argument is NOT an empty set: "
+            "reading it as one would silently downgrade a revision of a settled week.",
+        )
+
+    if isinstance(graded, BaseException):
+        return (None, GRADED_SOURCE_UNRESOLVED, str(graded) or repr(graded))
+
+    if not isinstance(graded, dict):
+        return (
+            None,
+            GRADED_SOURCE_UNRESOLVED,
+            f"the graded-week record has an unrecognised type "
+            f"({type(graded).__name__}); the detector expects the mapping "
+            "data.graded_weeks.graded_weeks_record returns, or the "
+            "GradedWeeksUnavailable it raised.",
+        )
+
+    weeks = graded.get("weeks")
+    if not graded.get("resolved") or weeks is None:
+        stated = graded.get("reason")
+        return (
+            None,
+            GRADED_SOURCE_UNRESOLVED,
+            str(stated)
+            if stated
+            else "the graded-week record reports itself unresolved and named no reason.",
+        )
+
+    return (
+        sorted(int(week) for week in weeks),
+        str(graded.get("source") or GRADED_SOURCE_UNSTATED),
+        None,
+    )
+
+
+def _week_number(bucket_key: str) -> int | None:
+    """The integer week a digest bucket key names, or ``None`` when it names no week.
+
+    ``data.upstream_live.week_digests`` keys its buckets with ``str(int(week))`` for a
+    dataset that has a ``week`` column, and with the single ``__no_week_column__`` sentinel
+    for one that does not. The sentinel is the case this function exists to mark: it cannot
+    be intersected with a graded week set, and pretending it can -- in either direction --
+    is a wrong answer. The sentinel is recognised by FAILING to parse rather than by being
+    compared against an imported constant, so this module keeps no import of
+    ``data.upstream_live`` and stays free of pandas.
+    """
+    try:
+        return int(bucket_key)
+    except (TypeError, ValueError):
+        return None
+
+
+def _verdict(
+    *,
+    dataset: str,
+    season: int,
+    current_entry: dict,
+    event_class: RevisionEventClass,
+    diff: dict | None,
+    correction_owed: bool | None,
+    correction_owed_scope: dict | None,
+    graded_weeks: list[int] | None,
+    graded_weeks_source: str,
+    reason: str,
+) -> dict:
+    """Assemble one verdict. THE ONLY PLACE A SEVERITY IS EVER SET.
+
+    ``severity`` is ``DEFAULT_SEVERITY[event_class]`` and nothing else, on every branch. No
+    caller and no branch above may pass one in, so a severity cannot drift out of the frozen
+    vocabulary ``data/revision_events.py`` committed (T-32-34). The severity table is a
+    CALIBRATION and may be retuned within a schema version; the event class is a FACT and may
+    not. Keeping the two bound here is what lets Phase 35 retune the volume of the whole
+    detector in one edit without rewriting any history of what was observed.
+
+    ``graded_weeks`` and ``graded_weeks_source`` ride on EVERY verdict, including ``clean``
+    and ``no_prior_capture``. A record can therefore never claim that no weeks were graded
+    without also saying where it looked -- the same discipline the sealed probe's
+    ``checked`` / ``expected`` pair enforces, and the thing that makes an empty answer
+    auditable instead of merely plausible.
+    """
+    return {
+        "verdict_schema_version": VERDICT_SCHEMA_VERSION,
+        "live_revision_schema_version": LIVE_REVISION_SCHEMA_VERSION,
+        "dataset": dataset,
+        "season": int(season),
+        "week": current_entry.get("week"),
+        "sequence": current_entry.get("sequence"),
+        "event_class": str(event_class),
+        "severity": str(DEFAULT_SEVERITY[event_class]),
+        "diff": diff,
+        CORRECTION_OWED: correction_owed,
+        CORRECTION_OWED_SCOPE: correction_owed_scope,
+        "graded_weeks": graded_weeks,
+        "graded_weeks_source": graded_weeks_source,
+        "reason": reason,
+    }
 
 
 def detect_live_revision(
@@ -258,5 +437,248 @@ def detect_live_revision(
     prior_entry: dict | None = None,
     graded: object = None,
 ) -> dict:
-    """Rule on one live capture. Not yet implemented (RED phase)."""
-    return {}
+    """Rule on one live capture against the one before it. Pure; mutates neither entry.
+
+    Args:
+        dataset: The upstream dataset this capture is of, recorded on the verdict.
+        season: The live season, recorded on the verdict and on any owed-correction scope.
+        current_entry: The capture entry just built, in the shape
+            ``data.upstream_live.build_capture_entry`` produces.
+        prior_entry: The most recent EARLIER capture entry of the same dataset, or ``None``
+            when this is the first one.
+        graded: The record ``data.graded_weeks.graded_weeks_record`` returned, or the
+            :class:`data.graded_weeks.GradedWeeksUnavailable` it raised.
+
+            IT IS A PARAMETER AND NOT AN IMPORT, for two reasons. It keeps this module pure
+            and testable offline against synthetic graded sets, which is what D32-11 asks of
+            the escalation branch. And it keeps the ONE seam Phase 34 repoints inside
+            ``data/graded_weeks.py`` where D32-11 put it -- a second reader here would be a
+            second place to forget when LDGR-01 relocates the store, and it would be forgotten
+            inside a detector, where a silent failure looks exactly like "nothing to report".
+            ``32-08`` is the caller that resolves it and passes it in.
+
+    Returns:
+        A mapping whose keys are exactly :data:`VERDICT_KEYS`.
+
+    THE RULING, IN ORDER. The order is the substance, not a formatting choice:
+
+    1. NO PRIOR CAPTURE -> ``no_prior_capture``. This is the planner's ruling on CONTEXT's
+       open discretion item ("the detector's behaviour on the very FIRST 2026 capture, when
+       there is no previous capture to diff against. Expected: an explicit
+       ``no_prior_capture`` verdict, not a clean one"). A first capture and a capture that was
+       COMPARED AND FOUND IDENTICAL are different facts. Calling the first one ``clean`` would
+       put PITFALLS F2's ambiguity -- a dead detector and a healthy system as the same
+       observable -- back for the whole opening week of the season, which is the week with
+       the least other evidence available to contradict it.
+
+    2. THE GRADED SET IS UNRESOLVED -> ``unknown``, with ``correction_owed`` exactly ``None``
+       and the underlying failure text carried in ``reason``. Evaluated BEFORE the diff is
+       ruled on, deliberately: a ruling made without knowing what was graded has exactly one
+       possible error, and it is the quiet one. ``None`` and not ``False`` -- ``False`` is a
+       claim that nothing is owed, which is a claim this branch is by definition unable to
+       make.
+
+    3. NOT A REVISION -> ``clean``, nothing owed. In-season growth lands here; see
+       :attr:`WeekDiff.is_revision`.
+
+    4. A MOVED OR REMOVED WEEK IS IN THE GRADED SET -> ``live_revision_graded``,
+       ``correction_owed`` ``True``, and a ``correction_owed_scope`` naming the season and
+       the intersecting weeks as sorted ints. The scope is QUERYABLE DATA and not prose: a
+       later phase must be able to select every capture entry whose ``correction_owed`` is
+       true, and the weeks it owes on, without parsing a sentence.
+
+       WHAT THIS PHASE DELIBERATELY DOES NOT DO. It does not build, write or schedule the
+       correction block, and it never re-grades anything. ``.planning/research/
+       ARCHITECTURE.md`` section 5.4 rules that a corrected score arriving after a bet was
+       graded can NEVER re-grade it; the only honest handling is an appended correction
+       block, and that block is Phase 34's to write. Phase 32 raises the obligation; Phase 34
+       discharges it.
+
+    5. A MOVED BUCKET CANNOT BE ATTRIBUTED TO A WEEK, AND SOMETHING IS GRADED -> ``unknown``,
+       ``correction_owed`` ``None``. A dataset with no ``week`` column digests as one
+       whole-frame bucket, so when that bucket moves the detector genuinely CANNOT say which
+       weeks it touched. Ruling it ``live_revision`` would assert that no graded week moved,
+       which is not something this branch knows; ruling it ``live_revision_graded`` would
+       assert one did, which it also does not know, and would fire a CRITICAL every week a
+       whole-frame dataset churns -- PITFALLS B3's alert-fatigue failure. ``unknown`` is the
+       claim that is actually true, it is louder than the ordinary case (F2) and quieter than
+       a confirmed one, and ``correction_owed`` of ``None`` says the obligation is undecided
+       rather than absent. With NOTHING graded there is no uncertainty to record and the
+       ordinary case applies. Step 4 is checked first throughout: a definite finding always
+       outranks an uncertain one.
+
+    6. OTHERWISE -> ``live_revision``, nothing owed. The ordinary in-season restatement,
+       kept quiet on purpose so that the four loud branches above stay worth reading.
+    """
+    graded_weeks, graded_source, graded_failure = _resolve_graded(graded)
+
+    if prior_entry is None:
+        return _verdict(
+            dataset=dataset,
+            season=season,
+            current_entry=current_entry,
+            event_class=RevisionEventClass.NO_PRIOR_CAPTURE,
+            diff=None,
+            correction_owed=False,
+            correction_owed_scope=None,
+            graded_weeks=graded_weeks,
+            graded_weeks_source=graded_source,
+            reason=(
+                f"there was no previous capture of {dataset} for season {season} to diff "
+                "against, so nothing can be said about movement. This is NOT a clean "
+                "verdict: 'nothing to compare' and 'compared and found no change' are "
+                "different claims, and a season of entries has to be able to tell them "
+                "apart after the fact."
+            ),
+        )
+
+    diff = compare_week_digests(
+        prior_entry.get("week_digests") or {},
+        current_entry.get("week_digests") or {},
+    )
+    diff_record = as_record(diff)
+
+    if graded_failure is not None:
+        return _verdict(
+            dataset=dataset,
+            season=season,
+            current_entry=current_entry,
+            event_class=RevisionEventClass.UNKNOWN,
+            # The diff is RECORDED but deliberately NOT RULED ON. It cost nothing to compute
+            # and a later reader may well want it; what this branch refuses to do is draw a
+            # severity from it without knowing what was graded.
+            diff=diff_record,
+            correction_owed=None,
+            correction_owed_scope=None,
+            graded_weeks=None,
+            graded_weeks_source=graded_source,
+            reason=(
+                f"the graded-week state for season {season} could not be resolved, so "
+                f"whether this {dataset} capture moved an already-graded week is unknown "
+                f"and no severity can honestly be drawn from the diff. Underlying failure: "
+                f"{graded_failure}"
+            ),
+        )
+
+    if not diff.is_revision:
+        return _verdict(
+            dataset=dataset,
+            season=season,
+            current_entry=current_entry,
+            event_class=RevisionEventClass.CLEAN,
+            diff=diff_record,
+            correction_owed=False,
+            correction_owed_scope=None,
+            graded_weeks=graded_weeks,
+            graded_weeks_source=graded_source,
+            reason=(
+                f"the {dataset} capture was compared week by week against the previous one "
+                "and no week present in both moved or disappeared."
+                + (
+                    f" {len(diff.weeks_added)} new week bucket(s) appeared "
+                    f"({', '.join(diff.weeks_added)}), which is ordinary in-season growth "
+                    "and is not a revision."
+                    if diff.weeks_added
+                    else ""
+                )
+            ),
+        )
+
+    moved = sorted(set(diff.weeks_changed) | set(diff.weeks_removed))
+    graded_set = set(graded_weeks or [])
+    intersecting = sorted(
+        {
+            week
+            for week in (_week_number(key) for key in moved)
+            if week is not None and week in graded_set
+        }
+    )
+
+    if intersecting:
+        return _verdict(
+            dataset=dataset,
+            season=season,
+            current_entry=current_entry,
+            event_class=RevisionEventClass.LIVE_REVISION_GRADED,
+            diff=diff_record,
+            correction_owed=True,
+            correction_owed_scope={
+                "season": int(season),
+                "weeks": intersecting,
+                "dataset": dataset,
+                "reason": (
+                    f"upstream restated or withdrew {dataset} data for season {season} "
+                    f"week(s) {', '.join(str(week) for week in intersecting)}, whose bets "
+                    "were already graded, so the settled record was computed from bytes "
+                    "that upstream no longer publishes."
+                ),
+                "discharged_by": CORRECTION_DISCHARGED_BY,
+            },
+            graded_weeks=graded_weeks,
+            graded_weeks_source=graded_source,
+            reason=(
+                f"the {dataset} capture moved or dropped week(s) "
+                f"{', '.join(str(week) for week in intersecting)} of season {season}, "
+                "which are ALREADY GRADED. A corrected score arriving after a bet was "
+                "graded can never re-grade it, so a ledger correction block is OWED and is "
+                f"recorded here as data for the {CORRECTION_DISCHARGED_BY} to discharge."
+            ),
+        )
+
+    unattributable = [key for key in moved if _week_number(key) is None]
+    if unattributable and graded_set:
+        return _verdict(
+            dataset=dataset,
+            season=season,
+            current_entry=current_entry,
+            event_class=RevisionEventClass.UNKNOWN,
+            diff=diff_record,
+            correction_owed=None,
+            correction_owed_scope=None,
+            graded_weeks=graded_weeks,
+            graded_weeks_source=graded_source,
+            reason=(
+                f"the {dataset} capture moved bucket(s) {', '.join(unattributable)}, which "
+                "belong to no week, so the detector cannot say whether an already-graded "
+                f"week of season {season} was touched. "
+                f"{len(graded_set)} week(s) are graded, so the question is live. Recorded "
+                "as undecided rather than answered either way: claiming no graded week "
+                "moved would be the silent downgrade, and claiming one did would fire a "
+                "confirmed finding this branch has no basis for."
+            ),
+        )
+
+    return _verdict(
+        dataset=dataset,
+        season=season,
+        current_entry=current_entry,
+        event_class=RevisionEventClass.LIVE_REVISION,
+        diff=diff_record,
+        correction_owed=False,
+        correction_owed_scope=None,
+        graded_weeks=graded_weeks,
+        graded_weeks_source=graded_source,
+        reason=(
+            f"the {dataset} capture restated week(s) {', '.join(moved)} of season "
+            f"{season}, none of which has been graded. nflverse restates the running "
+            "week's data routinely, so this is the ordinary in-season case and is recorded "
+            "at the quiet volume on purpose."
+        ),
+    )
+
+
+def verdict_severity_rank(verdict: dict) -> int:
+    """Rank *verdict*'s severity on the frozen ladder -- the ONLY sanctioned comparison.
+
+    A caller that needs to know which of several verdicts is loudest (``32-08`` picks one
+    exit code for a run that ruled on several datasets; Phase 35 routes by volume) must not
+    compare the ``severity`` strings directly. :class:`data.revision_events.RevisionSeverity`
+    is a ``StrEnum``, so ``"critical" < "informational"`` is a perfectly legal string
+    comparison that silently returns the WRONG order -- alphabetical, not loudness. Routing
+    a CRITICAL as though it were the quietest is precisely the failure this module spends
+    every branch above avoiding, and it would be a one-character mistake at a call site.
+
+    ``severity_rank`` refuses anything outside the vocabulary, so a verdict carrying a
+    severity that drifted raises here rather than sorting silently into the wrong position.
+    """
+    return severity_rank(RevisionSeverity(verdict["severity"]))
