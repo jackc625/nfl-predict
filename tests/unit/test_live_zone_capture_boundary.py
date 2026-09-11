@@ -50,6 +50,12 @@ from scripts.pin_upstream_snapshot import PinCaptureError
 
 LIVE_SEASON = LIVE_ZONE_FIRST_SEASON
 
+# Plan 32-08 wired both detectors INTO the capture, so every call below now runs them.
+# ``sealed_probe_offline`` (tests/conftest.py) keeps that offline and off the committed
+# probe log; the detector records the stubbed failure as an explicit UNKNOWN, which is the
+# guard working rather than being bypassed.
+pytestmark = pytest.mark.usefixtures("sealed_probe_offline")
+
 
 def _pbp_frame(weeks: tuple[int, ...] = (1, 2, 3)) -> pd.DataFrame:
     """A play-by-play-shaped frame with a UNIQUE ``game_id`` per row.

@@ -176,6 +176,55 @@ def artifacts_boundary_guard():
     )
 
 
+@pytest.fixture
+def sealed_probe_offline(monkeypatch, tmp_path):
+    """Keep Plan 32-08's in-capture detectors OFFLINE and off every committed file.
+
+    Wave 4 wired both detectors into `scripts.capture_live_season`, so a capture now
+    reaches `api.github.com` and appends one line to the COMMITTED
+    `config/upstream_probe_log.jsonl`. Neither belongs in a test run: the GitHub ceiling
+    is 60 requests per hour per IP, and a suite that appends to the committed liveness
+    record would forge exactly the evidence that record exists to provide.
+
+    Three seams are redirected, and the choice of stub matters. The release fetch and the
+    pin-basis content digest are stubbed to raise `SealedProbeUnavailable`, which the
+    detector RECORDS as an explicit UNKNOWN -- so these tests exercise the guard instead
+    of bypassing it. The probe log is pointed at `tmp_path`. The graded-week record is
+    stubbed to an explicitly-recorded empty set rather than left to read the real
+    `outputs/` store, so a machine that happens to have a bet list and one that does not
+    run the same test.
+
+    Requested per module with `pytestmark = pytest.mark.usefixtures(...)`, not autouse:
+    a module that means to exercise the probe (`tests/integration/test_detect_only.py`)
+    must set its own seams up deliberately.
+    """
+    from scripts import capture_live_season
+
+    def _offline(*_args, **_kwargs):
+        msg = "offline test: the sealed probe makes no network call in this suite"
+        raise capture_live_season.SealedProbeUnavailable(msg)
+
+    def _no_graded_weeks(season, *, output_dir=None):
+        return {
+            "season": int(season),
+            "weeks": [],
+            "source": "tests.conftest.sealed_probe_offline stub",
+            "resolved": True,
+            "reason": "stubbed in the test suite; the real store is not read here",
+        }
+
+    monkeypatch.setattr(capture_live_season, "fetch_release_assets", _offline)
+    monkeypatch.setattr(capture_live_season, "_pinned_basis_digest", _offline)
+    monkeypatch.setattr(
+        capture_live_season,
+        "SEALED_PROBE_LOG_PATH",
+        tmp_path / "upstream_probe_log.jsonl",
+    )
+    monkeypatch.setattr(
+        "data.graded_weeks.graded_weeks_record", _no_graded_weeks, raising=True
+    )
+
+
 @pytest.fixture(scope="session")
 def p31_rehearsal_run(tmp_path_factory):
     """ONE rehearsal run of the Phase-31 one-shot runner, shared across test modules.

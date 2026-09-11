@@ -31,6 +31,29 @@ Capture one dataset only::
     .venv/Scripts/python.exe -m scripts.capture_live_season --season 2026 --week 3 \
         --dataset pbp
 
+THE TWO DETECTORS RIDE ALONG (D32-07, D32-08, D32-09)
+------------------------------------------------------
+Every capture runs both: the LIVE ruling, which diffs this capture against the previous
+one over the weeks already consumed, and the SEALED probe, which asks whether nflverse
+re-released a season the pin froze. The live verdict is written INTO the capture entry it
+was computed from, so a finding and the bytes behind it can never drift apart. The sealed
+verdict leaves exactly ONE line per run in the committed
+``config/upstream_probe_log.jsonl`` -- clean and UNKNOWN alike, because a season of lines
+is the proof the detector was alive and a gap in them is the evidence it was not.
+
+NEITHER CAN FAIL A CAPTURE AND NEITHER CAN GO QUIET. A probe error, a malformed payload
+or an unreadable bet list is recorded as an explicit UNKNOWN carrying its reason -- never
+a silent skip and never a clean. See :func:`run_detectors`.
+
+Re-run both over the captures already recorded, fetching and writing nothing::
+
+    .venv/Scripts/python.exe -m scripts.capture_live_season --season 2026 --detect-only
+
+THE EXIT CODES ARE A PINNED CONTRACT: ``0`` clean, ``1`` the capture itself failed, ``2``
+usage, ``3`` a CRITICAL verdict was recorded, ``4`` an UNKNOWN one. A capture ALWAYS
+returns ``0`` when it captured, whatever the verdict; only ``--detect-only`` returns the
+distinguishable code, because it is the mode an external check calls.
+
 NOT WIRED INTO THE PIPELINE, DELIBERATELY (D32-04). Phase 32 ships this as a standalone,
 fully-tested CLI. Phase 33 wires it as the new FIRST step of the DATA phase, ahead of
 ``ingest_games``, when it stands up the live run it can actually observe firing. An
@@ -41,18 +64,55 @@ explicitly rather than assumed.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 
+from data.live_revision import (
+    GRADED_SOURCE_UNRESOLVED,
+    LIVE_REVISION_SCHEMA_VERSION,
+    detect_live_revision,
+    verdict_severity_rank,
+)
+from data.live_revision import VERDICT_KEYS as LIVE_VERDICT_KEYS
+from data.revision_events import (
+    CORRECTION_OWED,
+    CORRECTION_OWED_SCOPE,
+    DEFAULT_SEVERITY,
+    VERDICT_SCHEMA_VERSION,
+    RevisionEventClass,
+    RevisionSeverity,
+    severity_rank,
+)
+from data.sealed_probe import (
+    DATASET_RELEASE_TAGS,
+    PROBE_STRATEGY_CONTENT,
+    SEALED_PROBE_STRATEGY,
+    SealedProbeUnavailable,
+    fetch_release_assets,
+    probe_sealed,
+    seed_signatures,
+)
+from data.sealed_probe import VERDICT_KEYS as SEALED_VERDICT_KEYS
+from data.sealed_probe_log import (
+    SEALED_PROBE_LOG_PATH,
+    SealedProbeLogCorrupt,
+    append_probe_entry,
+    probe_log_staleness,
+)
 from data.storage import save_bronze_snapshot
 from data.upstream_live import (
+    CAPTURE_VERDICT_KEY,
     LIVE_MANIFEST_DIR,
     append_capture,
+    attach_verdict,
     build_capture_entry,
+    captures_for,
     empty_live_manifest,
     load_live_manifest,
     write_live_manifest,
@@ -61,6 +121,7 @@ from data.upstream_pin import (
     DATASET_COLUMNS,
     DATASET_TABLE_NAMES,
     LIVE_ZONE_FIRST_SEASON,
+    SEALED_LOCK_PATH,
     SEALED_THROUGH_SEASON,
     ZONE_LIVE,
     ZONE_SEALED,
@@ -68,6 +129,8 @@ from data.upstream_pin import (
     UpstreamSeasonWindowRefused,
     ZoneWriteRefused,
     default_data_root,
+    digest_file,
+    load_sealed_lock,
     zone_for_season,
 )
 from scripts import pin_upstream_snapshot
@@ -80,11 +143,16 @@ logger = get_logger(__name__)
 # "3 means CRITICAL" from one release must not be silently retrained by the next.
 # ``0`` clean, ``1`` a real finding and ``2`` a usage error continue
 # ``scripts/pin_upstream_snapshot.py``'s existing codes.
+#
+# THE FIVE INTEGERS ARE A PINNED CONTRACT, asserted literally by
+# ``tests/integration/test_detect_only.py::TestTheExitCodeContractIsPinned``. D32-09 makes
+# the code the machine-readable half of "an external check can act on this", and a code
+# that is only described in prose is one refactor away from silently becoming 0 -- which
+# reads to every caller as "nothing to report". See :func:`exit_code_for` for the mapping
+# and for why a CRITICAL outranks an UNKNOWN.
 EXIT_OK = 0
 EXIT_CAPTURE_FAILED = 1
 EXIT_USAGE = 2
-# Reached by Plan 32-07's revision detector, not by anything in this plan. Declared now
-# so the numbering is fixed before two plans can pick the same value for two meanings.
 EXIT_CRITICAL = 3
 EXIT_UNKNOWN = 4
 
@@ -93,6 +161,51 @@ EXIT_UNKNOWN = 4
 # collision can occupy while still failing fast if something else is wrong.
 _COLLISION_POLL_SECONDS = 0.2
 _COLLISION_POLL_ATTEMPTS = 15
+
+# ---------------------------------------------------------------------------
+# THE DETECTORS' OWN CONSTANTS (D32-07, D32-08, D32-09)
+# ---------------------------------------------------------------------------
+
+# The two rhythms a probe-log line can have been written by, recorded ON the line so the
+# committed record can tell an ad-hoc check from the scheduled weekly run.
+PROBE_LOG_MODE_CAPTURE = "capture"
+PROBE_LOG_MODE_DETECT_ONLY = "detect-only"
+
+# How old the newest probe-log line may be before this run says the detector appears to
+# have stopped. The capture runs weekly (Friday), so 7 days is the cadence and the extra 3
+# are slack: a run moved from Friday to Monday is an ordinary schedule slip, and a warning
+# that fires on one is a warning nobody reads by week three (PITFALLS B3). A gap larger
+# than that is the evidence PITFALLS F2 asks for -- a dead detector and a healthy system
+# are otherwise the same observable -- and pointing at it costs one file read.
+SEALED_PROBE_CADENCE_DAYS: float = 10.0
+
+# THE PROBE-LOG LINE'S FROZEN KEY SET, built from an EXPLICIT list and never from the raw
+# HTTP response (T-32-06). Every value written is either computed here or lifted by name
+# out of the sealed verdict, so no upstream-supplied field can ride into a committed file
+# unnoticed.
+#
+# The first eleven are the sealed verdict's own :data:`data.sealed_probe.VERDICT_KEYS`;
+# the last three are this run's context. Plan 32-08 named THIRTEEN and did not name
+# ``verdict_schema_version``; it is carried anyway, because every other committed record in
+# this phase stamps the rule that produced it and a line that cannot say which rule wrote
+# it is exactly the line a reader a season later cannot use. The count is published here
+# rather than described, so it is measurable rather than asserted.
+PROBE_LOG_ENTRY_KEYS: tuple[str, ...] = (
+    "verdict_schema_version",
+    "probed_at_utc",
+    "event_class",
+    "severity",
+    "checked",
+    "expected",
+    "unresolved",
+    "strategy",
+    "findings",
+    "reason",
+    "rate_limit_remaining",
+    "mode",
+    "season",
+    "datasets",
+)
 
 
 # WHEN EACH DATASET'S SEASON BECOMES REQUESTABLE FROM nflreadpy, per dataset. Measured
@@ -302,6 +415,619 @@ def _reserve_distinct_bronze_second(
     raise PinCaptureError(msg)
 
 
+def _pinned_basis_digest(dataset: str, season: int) -> str:
+    """Digest TODAY's upstream ``(dataset, season)`` ON THE SEALED LOCK'S OWN BASIS.
+
+    THE BASIS IS THE WHOLE POINT, and getting it wrong is the one mistake that turns this
+    probe into wallpaper. ``data.sealed_probe.probe_sealed`` rules a content pair by
+    comparing the digest it is handed against the lock's ``sha256`` -- and that ``sha256``
+    is :func:`data.upstream_pin.digest_file` over the parquet THIS PROJECT wrote, after
+    ``narrow`` and after nflreadpy filtered the monolithic asset to one season. It is NOT
+    the digest of the raw upstream asset stream. The two are different bytes BY
+    CONSTRUCTION, so handing ``probe_sealed`` a raw-stream digest would report a move on
+    every content pair, forever -- a detector that cries wolf on all of them is exactly as
+    useless as one that stays silent. ``probe_sealed`` is pure and cannot check which
+    basis it was given, which is why its docstring states the contract and why this
+    function is the place that honours it.
+
+    SO THE BASIS IS REPRODUCED BY THE PIN'S OWN CAPTURE PATH, not by a re-implementation:
+    ``fetch_live`` -> ``narrow`` -> ``save_bronze_snapshot`` -> ``digest_file``, which is
+    ``scripts.pin_upstream_snapshot.capture_season`` line for line, minus the manifest
+    write. Agreement is therefore by construction rather than by care.
+
+    MEASURED 2026-09-11, and the reason this approach is usable at all: re-writing the
+    already-pinned ``schedules`` 2010 frame through ``save_bronze_snapshot`` into a
+    scratch directory reproduced the lock's recorded
+    ``720167aa...cd9bb9`` EXACTLY. The parquet writer is deterministic for a fixed frame
+    and a fixed pyarrow, so an unchanged upstream digests to an unchanged value. (A
+    pyarrow upgrade that changed the encoding WOULD move every content pair at once. That
+    shows up as a whole-dataset finding rather than a per-season one, which is a
+    distinguishable shape -- and it is recorded, not acted on, exactly like every other
+    sealed finding.)
+
+    ``data.sealed_probe.content_digest_for`` is deliberately NOT used, and it is named here
+    so nobody reaches for it later: it digests the raw published stream, which is the wrong
+    basis above, and there is no second baseline in the lock to compare a raw digest
+    against. For the same reason a metadata hit is NOT escalated to it -- ``probe_sealed``'s
+    metadata branch rules on the recorded ``upstream_updated_at`` / ``upstream_size`` pair
+    and never looks at ``content_digests``, so an escalation could not change any verdict
+    and would only spend a 20 MB download to produce a number nothing reads.
+
+    THE SCRATCH WRITE NEVER TOUCHES THE DATA LAKE. The parquet goes into a
+    :class:`tempfile.TemporaryDirectory` that is deleted before this function returns, so
+    the probe cannot add a file to ``data/bronze/`` -- a detector that wrote into the
+    append-only archive it watches would be corrupting its own evidence.
+
+    Raises:
+        SealedProbeUnavailable: On any fetch, narrow or write failure. The probe's own
+            family and NOT :class:`data.upstream_pin.UpstreamPinError`, deliberately: a
+            transport failure while PROBING must never reach the capture as a pin refusal
+            and stop the weekly run, because the run reads pinned bytes and is provably
+            unaffected by whether GitHub answered.
+    """
+    try:
+        raw = pin_upstream_snapshot.fetch_live(dataset, season)
+        frame = pin_upstream_snapshot.narrow(dataset, raw)
+    except (OSError, ValueError, RuntimeError, ImportError, PinCaptureError) as exc:
+        msg = (
+            f"could not fetch the current upstream {dataset} frame for season {season} to "
+            f"digest it on the pin's basis: {type(exc).__name__}: {exc}. The probe could "
+            "not see upstream for this pair, so it is UNRESOLVED rather than clean."
+        )
+        raise SealedProbeUnavailable(msg) from exc
+
+    with tempfile.TemporaryDirectory(prefix="sealed-probe-") as scratch:
+        try:
+            path = save_bronze_snapshot(
+                frame,
+                table_name=DATASET_TABLE_NAMES[dataset],
+                season=season,
+                week=0,
+                base_path=Path(scratch),
+            )
+            return digest_file(path)
+        except (OSError, ValueError, KeyError) as exc:
+            msg = (
+                f"could not render the current upstream {dataset} frame for season "
+                f"{season} on the pin's basis: {type(exc).__name__}: {exc}."
+            )
+            raise SealedProbeUnavailable(msg) from exc
+
+
+def _content_strategy_pairs(lock: dict | None) -> list[tuple[str, int]]:
+    """Every ``(dataset, season)`` in *lock* whose strategy rules on CONTENT."""
+    pairs: list[tuple[str, int]] = []
+    for dataset, seasons in sorted((lock or {}).get("datasets", {}).items()):
+        if SEALED_PROBE_STRATEGY.get(dataset) != PROBE_STRATEGY_CONTENT:
+            continue
+        pairs.extend(
+            (dataset, season) for season in sorted(int(value) for value in seasons)
+        )
+    return pairs
+
+
+class SealedProbeRun:
+    """The sealed half's per-RUN state: one lock, one probe, one memoised verdict.
+
+    ONE PROBE PER RUN, NOT ONE PER DATASET. A three-dataset capture rules on the same 76
+    pinned pairs three times over, and re-fetching for each would spend three times the
+    rate limit to answer the same question three times -- then write one log line about it
+    anyway (D32-08 makes the line per RUN). So the verdict is computed once and
+    :meth:`remember`ed, and every later caller in the same run gets that exact mapping
+    back. The memo holds an UNKNOWN as readily as a clean one: a run whose probe failed
+    must not retry the failure once per dataset and record whichever attempt happened to
+    land last.
+
+    The lock is loaded ONCE for the same reason, and a lock that will not load is not an
+    exception this class raises -- it is recorded on the verdict by the guard in
+    :func:`run_detectors`, because the sealed lock is the detector's input and a detector
+    that cannot read its own input is UNKNOWN, never clean.
+    """
+
+    def __init__(
+        self,
+        *,
+        lock_path: Path | str | None = None,
+        session: object | None = None,
+    ) -> None:
+        self.lock_path = lock_path
+        self.session = session
+        self._lock: dict | None = None
+        self._lock_loaded = False
+        self._verdict: dict | None = None
+
+    @property
+    def completed(self) -> dict | None:
+        """The verdict this run already produced, or ``None`` if it has not probed yet."""
+        return self._verdict
+
+    @property
+    def cached_lock(self) -> dict | None:
+        """The lock IF it already loaded, without attempting to load it.
+
+        The accessor a failure handler uses: reading the lock inside the handler that
+        catches a lock failure would raise from inside the guard.
+        """
+        return self._lock
+
+    def remember(self, verdict: dict) -> None:
+        """Record *verdict* as this run's answer, including a guarded UNKNOWN."""
+        self._verdict = verdict
+
+    def lock(self) -> dict | None:
+        """The sealed lock, loaded at most once per run."""
+        if not self._lock_loaded:
+            path = self.lock_path if self.lock_path is not None else SEALED_LOCK_PATH
+            self._lock = load_sealed_lock(path)
+            self._lock_loaded = True
+        return self._lock
+
+    def probe(self, *, now: datetime | None = None) -> dict:
+        """Fetch what the ruling needs and return one frozen sealed verdict.
+
+        Per-tag and per-pair failures are resolved INTO the verdict rather than raised:
+        an unfetchable tag becomes ``None`` in ``assets_by_tag`` and an unobtainable
+        content digest is simply absent, and ``probe_sealed`` reports both as UNRESOLVED
+        pairs naming what it missed. That is strictly more informative than one exception
+        for the whole run -- ``checked < expected`` still forces UNKNOWN, so nothing can
+        read as clean, but the line says WHICH pairs went unseen.
+        """
+        lock = self.lock()
+        rate_limits: dict[str, int | None] = {}
+
+        assets_by_tag: dict[str, dict[str, dict] | None] = {}
+        for tag in sorted(set(DATASET_RELEASE_TAGS.values())):
+            try:
+                assets_by_tag[tag] = fetch_release_assets(
+                    tag, session=self.session, rate_limits=rate_limits
+                )
+            except SealedProbeUnavailable as exc:
+                logger.warning(
+                    "Sealed probe could not read a release tag",
+                    tag=tag,
+                    error=str(exc),
+                )
+                assets_by_tag[tag] = None
+
+        content_digests: dict[tuple[str, int], str] = {}
+        for dataset, season in _content_strategy_pairs(lock):
+            try:
+                content_digests[(dataset, season)] = _pinned_basis_digest(
+                    dataset, season
+                )
+            except SealedProbeUnavailable as exc:
+                logger.warning(
+                    "Sealed probe could not digest a content pair on the pin's basis",
+                    dataset=dataset,
+                    season=season,
+                    error=str(exc),
+                )
+
+        observed = [value for value in rate_limits.values() if value is not None]
+        return probe_sealed(
+            lock,
+            assets_by_tag=assets_by_tag,
+            content_digests=content_digests,
+            now=now,
+            # The LOWEST figure observed across the tags, because the calls run in
+            # sequence and the lowest is the most recent reading of the headroom left.
+            rate_limit_remaining=min(observed) if observed else None,
+        )
+
+
+def _unknown_sealed_verdict(
+    exc: BaseException,
+    *,
+    lock: dict | None,
+    now: datetime | None = None,
+) -> dict:
+    """The sealed verdict a FAILED probe records: UNKNOWN, carrying its reason.
+
+    Built from :data:`data.sealed_probe.VERDICT_KEYS` so a guarded line and a ruled line
+    are the same shape in the committed log, and so ``checked`` and ``expected`` are
+    present on both -- a verdict recorded without its coverage is a claim nobody can audit.
+    ``checked`` is 0 and ``expected`` is every pair the lock records, which is the honest
+    statement of what a failed probe looked at.
+    """
+    pairs = sum(len(seasons) for seasons in (lock or {}).get("datasets", {}).values())
+    verdict = dict.fromkeys(SEALED_VERDICT_KEYS)
+    verdict.update(
+        {
+            "verdict_schema_version": VERDICT_SCHEMA_VERSION,
+            "probed_at_utc": (now or datetime.now(UTC)).isoformat(),
+            "event_class": str(RevisionEventClass.UNKNOWN),
+            "severity": str(DEFAULT_SEVERITY[RevisionEventClass.UNKNOWN]),
+            "expected": pairs,
+            "checked": 0,
+            "unresolved": [],
+            "strategy": {},
+            "findings": [],
+            "reason": (
+                f"the sealed probe FAILED before it could rule on any of the {pairs} "
+                f"pinned pair(s): {type(exc).__name__}: {exc}. Recorded as UNKNOWN rather "
+                "than skipped, because a detector that went quiet and a detector that "
+                "found nothing are otherwise the same observable."
+            ),
+            "rate_limit_remaining": None,
+        }
+    )
+    return verdict
+
+
+def _unknown_live_verdict(
+    exc: BaseException,
+    *,
+    dataset: str,
+    season: int,
+    current_entry: dict,
+) -> dict:
+    """The live verdict a FAILED ruling records: UNKNOWN, ``correction_owed`` ``None``.
+
+    ``None`` and never ``False``: ``False`` asserts that no correction is owed, and a
+    ruling that failed is by definition unable to make that assertion. The key set is
+    :data:`data.live_revision.VERDICT_KEYS`, so a guarded verdict and a ruled one stay
+    diffable inside the same season's manifest.
+    """
+    verdict = dict.fromkeys(LIVE_VERDICT_KEYS)
+    verdict.update(
+        {
+            "verdict_schema_version": VERDICT_SCHEMA_VERSION,
+            "live_revision_schema_version": LIVE_REVISION_SCHEMA_VERSION,
+            "dataset": dataset,
+            "season": int(season),
+            "week": current_entry.get("week"),
+            "sequence": current_entry.get("sequence"),
+            "event_class": str(RevisionEventClass.UNKNOWN),
+            "severity": str(DEFAULT_SEVERITY[RevisionEventClass.UNKNOWN]),
+            "diff": None,
+            CORRECTION_OWED: None,
+            CORRECTION_OWED_SCOPE: None,
+            "graded_weeks": None,
+            "graded_weeks_source": GRADED_SOURCE_UNRESOLVED,
+            "reason": (
+                f"the live-revision ruling for {dataset} season {season} FAILED: "
+                f"{type(exc).__name__}: {exc}. Nothing can honestly be said about whether "
+                "this capture moved an already-graded week, so the obligation is recorded "
+                "as undecided rather than absent."
+            ),
+        }
+    )
+    return verdict
+
+
+def run_detectors(
+    *,
+    dataset: str,
+    season: int,
+    current_entry: dict,
+    prior_entry: dict | None = None,
+    sealed: SealedProbeRun | None = None,
+    graded_output_dir: Path | str | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Run BOTH detectors and return ``{"live": verdict, "sealed": verdict}``.
+
+    THE ONE PLACE EITHER DETECTOR RUNS. The scheduled capture, an ad-hoc ``--detect-only``
+    check and the test suite all arrive here, so "the ad-hoc check agrees with the capture"
+    is true by construction rather than by two implementations happening to match.
+
+    IT CANNOT RAISE FOR A DETECTOR REASON, and that is D32-07's hardest constraint. The
+    detector runs INSIDE the thing it is watching: a probe network error, a malformed
+    upstream payload or an unresolvable graded set must not fail a capture that reads and
+    writes PINNED bytes and is provably unaffected by anything upstream did. A detector
+    that can stop the weekly run is a liability rather than an instrument, and it earns an
+    override flag within a month.
+
+    AND IT CANNOT GO QUIET, which pulls the other way. A bare ``except: pass`` would
+    satisfy the paragraph above and destroy the detector: a swallowed failure and a clean
+    week are the same observable (PITFALLS F2). The only thing that reconciles the two is
+    recording an explicit UNKNOWN carrying the failure's own text -- which is what each
+    guard below does, on a verdict whose key set is identical to a ruled one's.
+
+    THE TWO HALVES ARE GUARDED INDEPENDENTLY so one going blind does not blind the other.
+    A GitHub outage must still leave a live verdict; an unreadable bet list must still
+    leave a sealed one.
+
+    ``except UpstreamPinError: raise`` SITS BEFORE EVERY BROAD HANDLER (WR-10). A pin
+    refusal is the one failure that must never be degraded: ``data/upstream_pin.py``'s
+    hierarchy exists because every wired call site converts the ordinary exception types
+    into an empty frame, and ``scripts/ingest_games.py:308-320`` records that exact defect
+    reaching production -- a bare ``except Exception`` there caught the pin's refusal, the
+    ingest logged one warning line and wrote silver ``games`` with no scores merged. A
+    broad handler around a detector would do the same thing in the one place nobody is
+    watching.
+
+    THE CADENCE AND COVERAGE RULING (32-CONTEXT.md leaves both to the planner; recorded
+    here because a discretion nobody wrote down is a discretion the next reader must
+    re-litigate):
+
+    * THE SEALED PROBE RUNS ON EVERY CAPTURE AND COVERS ALL THREE SEALED DATASETS.
+      Measured: the full three-dataset hybrid costs about 931 KB and 0.8 s per run against
+      an unauthenticated 60-request/hour ceiling, and covering play-by-play alone would
+      save about 695 KB and 0.2 s. Neither the bytes, the seconds nor the rate limit
+      distinguishes the options at any plausible cadence, so the tie is broken on what the
+      committed log MEANS: one rhythm gives every line one meaning and makes a gap in the
+      record unambiguous, where two cadences would leave "no entry this week" ambiguous
+      between "did not run" and "was not due" -- and that ambiguity is the entire thing
+      D32-08's log exists to remove.
+    * ALL THREE DATASETS ARE CAPTURED EVERY WEEK (the same discretion, one layer out).
+      A replay of any week is then TOTAL: every dataset a gold rebuild reads is addressable
+      at that week, with no dataset carrying gaps a later reader would have to interpolate
+      across. Capturing only what changed would make the manifest a record of the
+      capturer's judgement rather than of the season.
+
+    Args:
+        dataset: The dataset being ruled on.
+        season: The live season.
+        current_entry: The capture entry just appended, or the newest existing one under
+            ``--detect-only``. ``{}`` when the dataset has never been captured.
+        prior_entry: The capture entry immediately before it, or ``None``.
+        sealed: The run's :class:`SealedProbeRun`. ``None`` builds a fresh one, which
+            probes upstream for real.
+        graded_output_dir: The bet-list directory the graded-week record is read from.
+            ``None`` uses the configured default.
+        now: An injected timezone-aware instant for the sealed verdict's stamp.
+
+    Returns:
+        ``{"live": <live verdict>, "sealed": <sealed verdict>}``.
+    """
+    try:
+        # Imported HERE and not at module scope: ``data.graded_weeks`` binds
+        # ``api.cache``'s grading vocabulary at import time, and ``api`` is the highest
+        # layer in this repository while a capture CLI sits near the bottom. The deferral
+        # is also what lets a test monkeypatch ``data.graded_weeks.graded_weeks_record``
+        # and have this call site see it.
+        from data.graded_weeks import GradedWeeksUnavailable, graded_weeks_record
+
+        try:
+            graded: object = graded_weeks_record(season, output_dir=graded_output_dir)
+        except GradedWeeksUnavailable as unavailable:
+            # Caught AT THE CALL SITE and passed INTO the ruling, so the unresolved
+            # branch is explicit. ``detect_live_revision`` reads an exception as "the
+            # graded set could not be resolved" and rules UNKNOWN with the obligation
+            # undecided; letting the default ``graded=None`` stand instead would say the
+            # same thing by omission, which is how an omission becomes an empty set.
+            graded = unavailable
+
+        live_verdict = detect_live_revision(
+            dataset=dataset,
+            season=season,
+            current_entry=current_entry,
+            prior_entry=prior_entry,
+            graded=graded,
+        )
+    except UpstreamPinError:
+        # WR-10. See this function's docstring: a pin refusal is re-raised, never
+        # degraded, and this clause is placed BEFORE the broad handler on purpose.
+        raise
+    except Exception as exc:  # noqa: BLE001 - a detector failure is RECORDED, not raised
+        live_verdict = _unknown_live_verdict(
+            exc, dataset=dataset, season=season, current_entry=current_entry
+        )
+        logger.warning(
+            "Live-revision detector failed; recorded as UNKNOWN",
+            dataset=dataset,
+            season=season,
+            error=str(exc),
+        )
+
+    sealed_run = sealed if sealed is not None else SealedProbeRun()
+    sealed_verdict = sealed_run.completed
+    if sealed_verdict is None:
+        try:
+            sealed_verdict = sealed_run.probe(now=now)
+        except UpstreamPinError:
+            # WR-10 again, and for the same reason. The order is asserted at source level
+            # by this plan's own verification, not merely intended.
+            raise
+        except Exception as exc:  # noqa: BLE001 - a detector failure is RECORDED
+            # ``_cached_lock`` and not ``lock()``: the lock may be the very thing that
+            # failed, and re-reading it here would raise INSIDE the handler that exists to
+            # stop this failure from escaping.
+            sealed_verdict = _unknown_sealed_verdict(exc, lock=sealed_run.cached_lock)
+            logger.warning(
+                "Sealed probe failed; recorded as UNKNOWN",
+                season=season,
+                error=str(exc),
+            )
+        sealed_run.remember(sealed_verdict)
+
+    return {"live": live_verdict, "sealed": sealed_verdict}
+
+
+def probe_log_entry(
+    sealed_verdict: dict,
+    *,
+    mode: str,
+    season: int,
+    datasets: list[str],
+) -> dict:
+    """Render one committed probe-log line from *sealed_verdict*.
+
+    Built key by key from :data:`PROBE_LOG_ENTRY_KEYS` and never from the raw HTTP
+    response (T-32-06), so an upstream-supplied field cannot ride into a committed file
+    unnoticed. A key the verdict does not carry is written as ``None`` rather than
+    omitted: a line whose key set depends on which branch produced it is not a line a
+    reader can diff a season later.
+    """
+    context = {
+        "mode": mode,
+        "season": int(season),
+        "datasets": sorted(datasets),
+    }
+    return {
+        key: context[key] if key in context else sealed_verdict.get(key)
+        for key in PROBE_LOG_ENTRY_KEYS
+    }
+
+
+def record_probe_run(
+    sealed_verdict: dict,
+    *,
+    mode: str,
+    season: int,
+    datasets: list[str],
+    sealed_log: Path | str | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Append EXACTLY ONE line for this run, clean and UNKNOWN alike (D32-08).
+
+    Called once per RUN and never once per dataset. A season of lines is itself the proof
+    the detector was alive, so a clean verdict is as worth appending as a finding -- and a
+    GAP is the evidence that it was not.
+
+    The staleness check runs FIRST, and warns when the previous line is older than
+    :data:`SEALED_PROBE_CADENCE_DAYS`. A gap is already in the record; pointing at it
+    costs one file read and turns a fact nobody would look for into a line in this run's
+    output.
+
+    NOTHING HERE CAN FAIL THE RUN. An unreadable log BLOCKS a READER
+    (``data.sealed_probe_log``'s contract, and rightly: a truncated write must not look
+    like a clean slate to an auditor) -- but blocking the CAPTURE on its own detector's
+    bookkeeping is the D32-07 prohibition, so the failure is warned about loudly and the
+    append is still attempted.
+    """
+    path = sealed_log if sealed_log is not None else SEALED_PROBE_LOG_PATH
+
+    try:
+        staleness = probe_log_staleness(
+            path=path, max_age_days=SEALED_PROBE_CADENCE_DAYS, now=now
+        )
+        if staleness["entries"] == 0:
+            logger.info(
+                "Sealed probe log is empty; this run writes its first line",
+                path=str(path),
+            )
+        elif staleness["stale"]:
+            logger.warning(
+                "Sealed probe appears NOT to have run since its last recorded line",
+                path=str(path),
+                latest_probed_at_utc=staleness["latest_probed_at_utc"],
+                age_days=round(float(staleness["age_days"]), 2),
+                cadence_days=SEALED_PROBE_CADENCE_DAYS,
+                entries=staleness["entries"],
+            )
+    except (SealedProbeLogCorrupt, ValueError, OSError) as exc:
+        logger.warning(
+            "Sealed probe log could not be read for a staleness check",
+            path=str(path),
+            error=str(exc),
+        )
+
+    try:
+        append_probe_entry(
+            probe_log_entry(
+                sealed_verdict, mode=mode, season=season, datasets=datasets
+            ),
+            path=path,
+        )
+    except (SealedProbeLogCorrupt, OSError) as exc:
+        logger.warning(
+            "Sealed probe line could NOT be appended; this run leaves a gap in the record",
+            path=str(path),
+            error=str(exc),
+        )
+
+
+def announce_verdicts(verdicts: dict[str, dict], *, season: int) -> None:
+    """Emit a WARNING for every CRITICAL verdict. LOUD, and BLOCKING NOTHING (D32-09).
+
+    The keyword fields are keyword fields and never an f-string payload, so the structured
+    record stays queryable -- the ordering and the discipline are
+    ``data/upstream_pin.py``'s: warn where a human reads it first, then log where the run
+    record keeps it.
+
+    NOTHING HERE RAISES AND NOTHING CHANGES AN EXIT CODE. The capture is a WRITE whose
+    correctness does not depend on the verdict: it recorded the bytes upstream served and
+    digested them. Failing it on a sealed finding would make a scheduler treat a correct
+    step as a broken one, and blocking a run that is demonstrably correct is how a detector
+    earns an override flag and then gets ignored. ``config/upstream_pin.json`` is not
+    touched here either: re-freezing would erase the evidence the probe exists to produce.
+    """
+    for name, verdict in sorted(verdicts.items()):
+        if verdict_severity_rank(verdict) < severity_rank(RevisionSeverity.CRITICAL):
+            continue
+
+        findings = verdict.get("findings") or []
+        seasons_by_dataset: dict[str, list[int]] = {}
+        for finding in findings:
+            seasons_by_dataset.setdefault(str(finding.get("dataset")), []).append(
+                finding.get("season")
+            )
+        scope = verdict.get(CORRECTION_OWED_SCOPE) or {}
+        if not seasons_by_dataset and scope:
+            seasons_by_dataset[str(scope.get("dataset"))] = [scope.get("season")]
+
+        datasets = sorted(seasons_by_dataset)
+        seasons = sorted(
+            {value for values in seasons_by_dataset.values() for value in values},
+            key=lambda value: (value is None, value),
+        )
+        print(
+            f"UPSTREAM REVISION ({name}, {verdict.get('event_class')}): "
+            f"dataset(s) {', '.join(datasets) or '(none named)'} season(s) "
+            f"{', '.join(str(value) for value in seasons) or '(none named)'}\n"
+            f"  {verdict.get('reason')}\n"
+            "  The run is UNAFFECTED: it reads pinned bytes, so this is recorded and not "
+            "blocking.",
+            file=sys.stderr,
+        )
+        logger.warning(
+            "Upstream revision detected",
+            verdict=name,
+            event_class=verdict.get("event_class"),
+            severity=verdict.get("severity"),
+            live_season=int(season),
+            datasets=datasets,
+            seasons=seasons,
+            moved=[
+                f"{finding.get('dataset')} {finding.get('season')} "
+                f"{finding.get('strategy')}"
+                for finding in findings
+            ],
+            reason=verdict.get("reason"),
+            blocking=False,
+        )
+
+
+# The exit code each SEVERITY rank maps to, DERIVED through
+# ``data.revision_events.severity_rank`` rather than written out by hand. Building the
+# table this way is what makes the precedence in :func:`exit_code_for` a property of the
+# frozen ladder instead of a second, silently divergent copy of it.
+_EXIT_BY_SEVERITY_RANK: dict[int, int] = {
+    severity_rank(RevisionSeverity.INFORMATIONAL): EXIT_OK,
+    severity_rank(RevisionSeverity.WARNING): EXIT_UNKNOWN,
+    severity_rank(RevisionSeverity.CRITICAL): EXIT_CRITICAL,
+}
+
+
+def exit_code_for(verdicts: dict[str, dict]) -> int:
+    """The ONE place a set of verdicts becomes a process exit code (D32-09).
+
+    ``0`` when the loudest verdict is informational, ``3`` when any is CRITICAL, ``4``
+    when none is critical and any is UNKNOWN. ``1`` is never returned from here: it means
+    the CAPTURE ITSELF failed, and a detector verdict is not a capture failure. ``2`` is
+    argparse's.
+
+    PRECEDENCE, FOR THE ADJACENCY THE RULE IS LEAST OBVIOUS ABOUT: when one run carries
+    BOTH a CRITICAL and an UNKNOWN, the CRITICAL wins. A confirmed move in bytes this
+    project's numbers depend on is strictly more actionable than a probe that could not
+    see, and nothing is lost by the choice -- BOTH verdicts are recorded in full, in the
+    committed probe log and in the capture entry, whichever integer the process returns.
+    The integer is a routing hint for an external check, never the record.
+
+    The comparison goes through ``data.revision_events.severity_rank`` (via
+    :func:`data.live_revision.verdict_severity_rank`, which applies it to a verdict) and
+    never through a hand-written one. :class:`data.revision_events.RevisionSeverity` is a
+    ``StrEnum``, so ``"critical" < "informational"`` is a legal string comparison that
+    silently returns the WRONG order -- alphabetical, not loudness -- and routing a
+    CRITICAL as the quietest thing in the run would be a one-character mistake.
+    """
+    ranks = [verdict_severity_rank(verdict) for verdict in verdicts.values()]
+    loudest = max(ranks, default=severity_rank(RevisionSeverity.INFORMATIONAL))
+    return _EXIT_BY_SEVERITY_RANK[loudest]
+
+
 def capture_live_dataset(
     dataset: str,
     season: int,
@@ -309,6 +1035,8 @@ def capture_live_dataset(
     *,
     data_root: Path,
     manifest_dir: Path,
+    sealed: SealedProbeRun | None = None,
+    graded_output_dir: Path | str | None = None,
 ) -> dict:
     """Fetch, narrow, write, verify and RECORD one live-zone dataset for one week.
 
@@ -344,6 +1072,11 @@ def capture_live_dataset(
     order would leave a manifest entry pointing at bytes nobody verified, which is
     indistinguishable from a faithful capture at read time and is exactly what the digest
     exists to make impossible.
+
+    THE DETECTORS SIT BETWEEN THE APPEND AND THE WRITE, and cannot fail any of the above:
+    :func:`run_detectors` records an explicit UNKNOWN for any failure of its own rather
+    than raising, so a GitHub outage or an unreadable bet list costs a verdict and never a
+    capture. See :func:`run_detectors` for why that guard is not a swallow.
     """
     zone = zone_for_season(season)
     if zone != ZONE_LIVE:
@@ -420,9 +1153,32 @@ def capture_live_dataset(
         empty_live_manifest(season)
     )
     manifest = append_capture(manifest, dataset, entry)
+
+    # THE DETECTOR RUNS BEFORE THE MANIFEST IS WRITTEN, AND THE MANIFEST IS WRITTEN ONCE
+    # (D32-08). The verdict is attached to the entry the digests were just computed from,
+    # so the finding and the bytes it was ruled on land in the SAME committed write and
+    # can never drift apart. Running the detector after the write would need a second
+    # write, and two writes can half-fail.
+    #
+    # The prior entry is the newest capture of this dataset BEFORE the one just appended.
+    # ``captures_for`` returns APPEND order, which is the order the runs happened -- the
+    # same positional reading ``data.sealed_probe_log.latest_entry`` uses, and for the same
+    # reason: re-sorting by a recorded timestamp would let a wrong clock reorder history.
+    captures = captures_for(manifest, dataset)
+    recorded = captures[-1]
+    prior_entry = captures[-2] if len(captures) >= 2 else None
+    verdicts = run_detectors(
+        dataset=dataset,
+        season=season,
+        current_entry=recorded,
+        prior_entry=prior_entry,
+        sealed=sealed,
+        graded_output_dir=graded_output_dir,
+    )
+    attach_verdict(recorded, verdicts["live"])
+
     write_live_manifest(manifest, manifest_dir=manifest_dir)
 
-    recorded = manifest["datasets"][dataset]["captures"][-1]
     logger.info(
         "Captured live upstream week",
         dataset=dataset,
@@ -432,6 +1188,8 @@ def capture_live_dataset(
         rows=recorded["rows"],
         content_through_week=recorded["content_through_week"],
         path=recorded["path"],
+        revision_event_class=verdicts["live"]["event_class"],
+        sealed_event_class=verdicts["sealed"]["event_class"],
     )
     return recorded
 
@@ -443,8 +1201,25 @@ def run_capture(
     *,
     data_root: Path,
     manifest_dir: Path,
+    sealed_lock: Path | str | None = None,
+    sealed_log: Path | str | None = None,
+    graded_output_dir: Path | str | None = None,
 ) -> int:
-    """Capture every requested dataset for one week. Returns an exit code."""
+    """Capture every requested dataset for one week. Returns an exit code.
+
+    ALWAYS ``EXIT_OK`` WHEN THE CAPTURE ITSELF SUCCEEDED, whatever the detectors found
+    (D32-09). A capture is a WRITE whose correctness does not depend on any verdict: it
+    fetched what upstream served, proved the bytes round-trip, and recorded them. A
+    non-zero exit here would make a scheduler treat a correct step as a failed one, and a
+    weekly job that reports failure every week it is working is a job whose exit code
+    stops being read. ``--detect-only`` is the mode an external check calls, and it is the
+    mode whose exit code carries meaning -- see :func:`run_detect_only`.
+
+    ONE sealed probe and ONE probe-log line per run, held by the single
+    :class:`SealedProbeRun` threaded through every dataset.
+    """
+    sealed = SealedProbeRun(lock_path=sealed_lock)
+    verdicts: dict[str, dict] = {}
     for dataset in datasets:
         entry = capture_live_dataset(
             dataset,
@@ -452,13 +1227,210 @@ def run_capture(
             week,
             data_root=data_root,
             manifest_dir=manifest_dir,
+            sealed=sealed,
+            graded_output_dir=graded_output_dir,
         )
+        verdicts[f"live:{dataset}"] = entry[CAPTURE_VERDICT_KEY]
         print(
             f"{dataset}: season {season} week {week} sequence {entry['sequence']} -- "
             f"{entry['rows']} row(s), {len(entry['columns'])} column(s), content "
-            f"through week {entry['content_through_week']}, {entry['path']}"
+            f"through week {entry['content_through_week']}, {entry['path']} "
+            f"[{entry[CAPTURE_VERDICT_KEY]['event_class']}]"
         )
+
+    sealed_verdict = sealed.completed
+    if sealed_verdict is not None:
+        verdicts["sealed"] = sealed_verdict
+        record_probe_run(
+            sealed_verdict,
+            mode=PROBE_LOG_MODE_CAPTURE,
+            season=season,
+            datasets=datasets,
+            sealed_log=sealed_log,
+        )
+        print(
+            f"sealed probe: {sealed_verdict['event_class']} -- checked "
+            f"{sealed_verdict['checked']} of {sealed_verdict['expected']} pinned pair(s)"
+        )
+
+    announce_verdicts(verdicts, season=season)
     print(f"Wrote {manifest_dir}/{season}.json")
+    return EXIT_OK
+
+
+def run_detect_only(
+    datasets: list[str],
+    season: int,
+    *,
+    manifest_dir: Path,
+    sealed_lock: Path | str | None = None,
+    sealed_log: Path | str | None = None,
+    graded_output_dir: Path | str | None = None,
+    as_json: bool = False,
+) -> int:
+    """Re-run the WHOLE detector over captures already in hand. Returns an exit code.
+
+    ONE CODE PATH, NOT TWO. This calls the same :func:`run_detectors` the capture calls,
+    over the same entries, so the answer it gives is the answer the capture gave -- proved
+    directly by ``tests/integration/test_detect_only.py::
+    TestDetectOnlyIsTheSameCodePath::test_it_reproduces_the_verdict_the_capture_recorded``
+    rather than assumed. A second implementation for the ad-hoc question would be a second
+    place for the ruling to drift, inside a detector, where drift looks like calm.
+
+    IT DIFFERS ONLY IN WHAT IT DOES NOT DO: no dataset content is fetched, no snapshot is
+    written, no capture is appended and no live manifest is written. The live half
+    compares the two newest EXISTING captures of each dataset -- which are exactly the two
+    the in-capture ruling compared when the newer of them was taken. Fewer than two
+    captures gives ``no_prior_capture``, exactly as a first real capture does.
+
+    IT DOES STILL PROBE, AND IT DOES STILL APPEND ITS ONE LINE. A probe that ran and left
+    no trace reintroduces the dead-detector ambiguity D32-08's log closes; the line records
+    ``mode: "detect-only"`` so the ad-hoc rhythm and the weekly one stay distinguishable in
+    the committed record.
+    """
+    manifest = load_live_manifest(season, manifest_dir=manifest_dir)
+    sealed = SealedProbeRun(lock_path=sealed_lock)
+    verdicts: dict[str, dict] = {}
+
+    for dataset in datasets:
+        existing = captures_for(manifest, dataset)
+        current = existing[-1] if existing else {}
+        prior = existing[-2] if len(existing) >= 2 else None
+        verdicts[f"live:{dataset}"] = run_detectors(
+            dataset=dataset,
+            season=season,
+            current_entry=current,
+            prior_entry=prior,
+            sealed=sealed,
+            graded_output_dir=graded_output_dir,
+        )["live"]
+
+    sealed_verdict = sealed.completed
+    if sealed_verdict is not None:
+        verdicts["sealed"] = sealed_verdict
+        record_probe_run(
+            sealed_verdict,
+            mode=PROBE_LOG_MODE_DETECT_ONLY,
+            season=season,
+            datasets=datasets,
+            sealed_log=sealed_log,
+        )
+
+    if as_json:
+        print(json.dumps(verdicts, indent=2, sort_keys=True, default=str))
+    else:
+        for name, verdict in sorted(verdicts.items()):
+            print(
+                f"{name}: {verdict['event_class']} ({verdict['severity']})\n"
+                f"  {verdict['reason']}"
+            )
+
+    announce_verdicts(verdicts, season=season)
+    return exit_code_for(verdicts)
+
+
+def run_seed_sealed_signatures(
+    *,
+    sealed_lock: Path | str | None = None,
+    ruled_by: str | None,
+    allow_reseed: bool = False,
+    session: object | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Write the one-time upstream metadata baseline onto the sealed lock (Plan 32-09).
+
+    A BASELINE WRITE, NOT A RUN. It captures nothing, rules on nothing and appends no
+    probe-log line: a line in that log means "the detector ran and this is what it saw",
+    and a seeding pass saw a baseline it was in the act of creating.
+
+    IT REFUSES WITHOUT AN ATTRIBUTED ``--ruled-by``, and it refuses to overwrite an
+    already-seeded baseline without ``--allow-reseed``. Both are ``EXIT_USAGE``: the
+    command as invoked cannot be carried out, and the fix is a flag rather than an
+    investigation. Re-seeding silently would compare today's upstream against today's
+    upstream and report clean forever -- erasing the very divergence a probe exists to
+    find.
+
+    The content-strategy digests are computed on the pin's own basis and passed in, so
+    ``seed_signatures`` can use them as an agreement CHECK. Stamping a baseline as agreed
+    over an unruled content divergence would date-stamp a lie; a pair whose digest could
+    not be obtained is simply not checked, and says so.
+    """
+    attributed = (ruled_by or "").strip()
+    if not attributed:
+        print(
+            "ERROR: --seed-sealed-signatures requires --ruled-by NAME. An unattributed "
+            "baseline write is indistinguishable from suppression six months later: the "
+            "lock would record that upstream agreed, with nobody having said they looked.",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
+    path = Path(sealed_lock) if sealed_lock is not None else SEALED_LOCK_PATH
+    lock = load_sealed_lock(path)
+    if lock is None:
+        print(
+            f"ERROR: there is no sealed-zone lock at '{path}' to seed. Generate it first "
+            "with `python -m scripts.pin_upstream_snapshot --refresh-sealed-lock "
+            '--sealed-rewrite-reason "<why>"`.',
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
+    rate_limits: dict[str, int | None] = {}
+    assets_by_tag: dict[str, dict[str, dict] | None] = {}
+    for tag in sorted(set(DATASET_RELEASE_TAGS.values())):
+        try:
+            assets_by_tag[tag] = fetch_release_assets(
+                tag, session=session, rate_limits=rate_limits
+            )
+        except SealedProbeUnavailable as exc:
+            print(
+                f"SEED REFUSED: could not read release tag {tag!r}: {exc}",
+                file=sys.stderr,
+            )
+            return EXIT_CAPTURE_FAILED
+
+    content_digests: dict[tuple[str, int], str] = {}
+    for dataset, season in _content_strategy_pairs(lock):
+        try:
+            content_digests[(dataset, season)] = _pinned_basis_digest(dataset, season)
+        except SealedProbeUnavailable as exc:
+            logger.warning(
+                "Seeding could not check a content pair against the pin's basis",
+                dataset=dataset,
+                season=season,
+                error=str(exc),
+            )
+
+    try:
+        updated = seed_signatures(
+            lock,
+            assets_by_tag=assets_by_tag,
+            content_digests=content_digests,
+            seeded_at_utc=(now or datetime.now(UTC)).isoformat(),
+            seeded_by=attributed,
+            overwrite=allow_reseed,
+        )
+    except ValueError as refusal:
+        print(f"SEED REFUSED:\n{refusal}", file=sys.stderr)
+        return EXIT_USAGE
+    except SealedProbeUnavailable as refusal:
+        print(f"SEED REFUSED:\n{refusal}", file=sys.stderr)
+        return EXIT_CAPTURE_FAILED
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+    seeded = sum(
+        1
+        for seasons in updated.get("datasets", {}).values()
+        for entry in seasons.values()
+        if entry.get("upstream_updated_at") is not None
+    )
+    unseeded = len(updated.get("signatures_unseeded") or [])
+    print(
+        f"Seeded {seeded} upstream signature(s) into {path} "
+        f"({unseeded} pair(s) left unseeded)\n  ruled by: {attributed}"
+    )
     return EXIT_OK
 
 
@@ -474,10 +1446,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--week",
         type=int,
-        required=True,
+        default=None,
         help=(
             "The week being PREDICTED -- not the last week present in the data. "
-            "The capture records what it actually contains separately."
+            "The capture records what it actually contains separately. Required for a "
+            "capture; meaningless for --detect-only and --seed-sealed-signatures, which "
+            "write no capture."
         ),
     )
     parser.add_argument(
@@ -499,6 +1473,56 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Data lake root (default: the configured data root)",
     )
+    parser.add_argument(
+        "--detect-only",
+        action="store_true",
+        help=(
+            "Re-run BOTH detectors over the captures already recorded and exit. Fetches "
+            "no dataset content, writes no capture and writes no manifest. Returns "
+            f"{EXIT_CRITICAL} on a CRITICAL and {EXIT_UNKNOWN} on an UNKNOWN, so an "
+            "external check can act on the code."
+        ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the --detect-only verdicts as JSON instead of a human summary.",
+    )
+    parser.add_argument(
+        "--sealed-lock",
+        type=Path,
+        default=None,
+        help=f"Sealed-zone lock path (default: {SEALED_LOCK_PATH})",
+    )
+    parser.add_argument(
+        "--sealed-log",
+        type=Path,
+        default=None,
+        help=f"Committed sealed-probe log path (default: {SEALED_PROBE_LOG_PATH})",
+    )
+    parser.add_argument(
+        "--seed-sealed-signatures",
+        action="store_true",
+        help=(
+            "Write the one-time upstream metadata baseline onto the sealed lock and exit. "
+            "Requires --ruled-by; refuses an already-seeded baseline without "
+            "--allow-reseed. Captures nothing and appends no probe-log line."
+        ),
+    )
+    parser.add_argument(
+        "--ruled-by",
+        type=str,
+        default=None,
+        help="WHO is writing the baseline. Required by --seed-sealed-signatures.",
+    )
+    parser.add_argument(
+        "--allow-reseed",
+        action="store_true",
+        help=(
+            "Permit REPLACING an already-recorded upstream baseline. Without it a "
+            "re-seed is refused, because seeding over a divergence erases it."
+        ),
+    )
     return parser
 
 
@@ -509,12 +1533,40 @@ def main(argv: list[str] | None = None) -> int:
     datasets = sorted(set(args.dataset)) if args.dataset else sorted(DATASET_COLUMNS)
 
     try:
+        if args.seed_sealed_signatures:
+            return run_seed_sealed_signatures(
+                sealed_lock=args.sealed_lock,
+                ruled_by=args.ruled_by,
+                allow_reseed=args.allow_reseed,
+            )
+
+        if args.detect_only:
+            return run_detect_only(
+                datasets,
+                args.season,
+                manifest_dir=Path(args.manifest_dir),
+                sealed_lock=args.sealed_lock,
+                sealed_log=args.sealed_log,
+                as_json=args.json,
+            )
+
+        if args.week is None:
+            print(
+                "ERROR: --week is required for a capture. It is the week being "
+                "PREDICTED, not the last week present in the data. Pass --detect-only to "
+                "re-run the detectors over the captures already recorded instead.",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+
         return run_capture(
             datasets,
             args.season,
             args.week,
             data_root=Path(data_root),
             manifest_dir=Path(args.manifest_dir),
+            sealed_lock=args.sealed_lock,
+            sealed_log=args.sealed_log,
         )
     except ZoneWriteRefused as error:
         # A season this tool does not own is an operator mistake, not a capture failure:

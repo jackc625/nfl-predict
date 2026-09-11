@@ -121,6 +121,10 @@ WEEK_LABEL_SEMANTICS_VERSION: int = 1
 
 LIVE_SOURCE = "nflverse (github.com/nflverse) via nflreadpy"
 
+# The key a live-revision verdict rides under, INSIDE the capture entry it was computed
+# from (D32-08). See :func:`attach_verdict` for why it is not a separate file.
+CAPTURE_VERDICT_KEY = "revision"
+
 
 # ---------------------------------------------------------------------------
 # THE AS-OF: WHICH CAPTURE A READ SERVES (D32-15)
@@ -790,3 +794,53 @@ def build_capture_entry(
         "week_partition": week_partition_of(frame),
         "week_digests": week_digests(frame),
     }
+
+
+def attach_verdict(entry: dict, verdict: dict) -> dict:
+    """Write *verdict* onto *entry* under :data:`CAPTURE_VERDICT_KEY`, and return *entry*.
+
+    D32-08, and the whole reason the verdict is not its own file: A FINDING AND THE BYTES
+    IT WAS COMPUTED FROM CAN NEVER DRIFT APART. The verdict is written into the SAME
+    entry, and therefore in the SAME :func:`write_live_manifest` call, as the digest it
+    was ruled from. Two files would be two writes, and two writes can half-fail -- leaving
+    a verdict about bytes no entry records, or an entry whose verdict is about a different
+    capture. Neither is distinguishable after the fact from an honest pair.
+
+    *entry* is MUTATED in place rather than copied, deliberately. The caller holds the
+    entry that is already inside the manifest (``append_capture`` appended it), so a copy
+    would be attached to an object the manifest write never sees -- the verdict would
+    simply not appear in the committed record, silently and with no error.
+
+    A SECOND ATTACH IS REFUSED. Re-ruling an entry that already carries a verdict would
+    restate an old finding under whatever rule is current now, and the committed record
+    would then claim the later ruling was the one drawn at capture time. That is the same
+    hazard :func:`data.live_revision.as_record` avoids by storing ``is_revision`` rather
+    than leaving it to be recomputed: what a detector CONCLUDED when it looked is a fact,
+    and facts are appended, never edited.
+
+    Raises:
+        UpstreamLiveCorrupt: If *entry* is not a mapping, or already carries a verdict.
+    """
+    if not isinstance(entry, dict):
+        msg = (
+            f"a capture entry must be a mapping to carry a verdict, got "
+            f"{type(entry).__name__}. Nothing was attached."
+        )
+        raise UpstreamLiveCorrupt(msg)
+
+    if CAPTURE_VERDICT_KEY in entry:
+        msg = (
+            f"the capture entry for week {entry.get('week')} sequence "
+            f"{entry.get('sequence')} already carries a {CAPTURE_VERDICT_KEY!r} block, so "
+            "a second verdict is REFUSED.\n"
+            "\n"
+            "A re-ruled entry would silently restate an earlier finding under a later "
+            "rule, and the committed record would then report the new ruling as the one "
+            "drawn when the capture was taken. The live zone appends captures; it never "
+            "re-rules one. Capture the week again if a fresh ruling is wanted -- that is "
+            "a new entry, with its own sequence, and both stay addressable."
+        )
+        raise UpstreamLiveCorrupt(msg)
+
+    entry[CAPTURE_VERDICT_KEY] = verdict
+    return entry

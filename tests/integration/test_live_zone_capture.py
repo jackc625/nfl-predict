@@ -36,6 +36,12 @@ from tests.data_boundary import diff_digests, digest_tree, is_stat_signature
 SEALED_SEASON = upstream_pin.SEALED_THROUGH_SEASON
 LIVE_SEASON = upstream_pin.LIVE_ZONE_FIRST_SEASON
 
+# Plan 32-08 wired both detectors INTO the capture, so every call below now runs them.
+# ``sealed_probe_offline`` (tests/conftest.py) keeps that offline and off the committed
+# probe log; the detector records the stubbed failure as an explicit UNKNOWN, which is the
+# guard working rather than being bypassed.
+pytestmark = pytest.mark.usefixtures("sealed_probe_offline")
+
 # The week being PREDICTED (D32-13, ratified 2026-09-11). Deliberately NOT related by
 # arithmetic to the weeks the captured frame carries -- see CAPTURED_WEEKS below.
 PREDICTED_WEEK = 3
