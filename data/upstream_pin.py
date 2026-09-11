@@ -102,11 +102,30 @@ logger = get_logger(__name__)
 # WHICH upstream revision a verdict was measured against even when the bytes are absent.
 MANIFEST_PATH = Path("config/upstream_pin.json")
 
+# The committed LOCK on the sealed half of that manifest. Same "committed record,
+# gitignored bytes" asymmetry, one turn tighter: the manifest records WHAT was pinned, the
+# lock records that the sealed half has not MOVED since it was locked. A hand edit to
+# ``config/upstream_pin.json`` that never runs the capture tool shows only as a git diff,
+# and a git diff is something a reader has to notice. Divergence from this file FAILS
+# ``tests/unit/test_sealed_zone_refusal.py`` instead, which is something nobody can miss.
+#
+# SERIALISATION: JSON, not TOML, and the reason is recorded in the file's own
+# ``format_note`` too. ``json.dumps(indent=2)`` is a standard-library writer that already
+# produces this repository's committed-record style -- it is exactly how
+# ``scripts/pin_upstream_snapshot.py`` writes ``config/upstream_pin.json``. The
+# ``config/*.toml`` verdict records exist only because the standard library has NO TOML
+# writer and the hand-pasted block IS the discipline there
+# (``backtest/group_gate.py::render_verdict_toml``). The ``.lock`` extension is kept
+# because it is the path ``32-CONTEXT.md`` and ``32-RESEARCH.md`` both name literally; the
+# extension names the CONTRACT, not the serialisation.
+SEALED_LOCK_PATH: Path = Path("config/upstream_pin.sealed.lock")
+
 # Set this to any non-empty value to permit a live nflverse fetch. Nothing sets it
 # implicitly; the pipeline, the tests and the rebuild all run with it unset.
 LIVE_OPT_IN_ENV = "NFL_PREDICT_ALLOW_LIVE_UPSTREAM"
 
 MANIFEST_SCHEMA_VERSION = 1
+SEALED_LOCK_SCHEMA_VERSION: int = 1
 
 # The zone boundary, with the consumer of each half named.
 #
@@ -332,6 +351,133 @@ def pinned_seasons(dataset: str, manifest: dict | None) -> list[int]:
     if not entry:
         return []
     return sorted(int(season) for season in entry.get("seasons", {}))
+
+
+def load_sealed_lock(lock_path: Path | str | None = None) -> dict | None:
+    """Return the sealed-zone lock, or ``None`` when none has been generated.
+
+    A missing lock is not an error here, for the same reason a missing manifest is not:
+    it is the state of a checkout that has never generated one. The refusal that matters
+    belongs at the point of comparison, where the message can name the pairs that moved.
+
+    An unrecognised ``schema_version`` is a HARD REFUSAL and never a migration, exactly
+    as in :func:`load_manifest`. A lock read under the wrong meaning would compare two
+    documents that agree on their keys and disagree on what those keys assert, which is
+    worse than having no lock at all.
+    """
+    path = Path(lock_path) if lock_path is not None else SEALED_LOCK_PATH
+    if not path.is_file():
+        return None
+    lock = json.loads(path.read_text(encoding="utf-8"))
+    version = lock.get("schema_version")
+    if version != SEALED_LOCK_SCHEMA_VERSION:
+        msg = (
+            f"Sealed-zone lock at '{path}' declares schema_version {version!r}, but this "
+            f"build understands version {SEALED_LOCK_SCHEMA_VERSION}. Regenerate it with "
+            "`python -m scripts.pin_upstream_snapshot --refresh-sealed-lock "
+            '--sealed-rewrite-reason "<why>"` rather than reading a lock whose meaning '
+            "is not the meaning this code assigns it."
+        )
+        raise UpstreamPinCorrupt(msg)
+    return lock
+
+
+def _sealed_pairs_from_manifest(manifest: dict) -> dict[tuple[str, int], dict]:
+    """Every ``(dataset, season)`` in *manifest* whose season is in the SEALED zone."""
+    pairs: dict[tuple[str, int], dict] = {}
+    for dataset, record in manifest.get("datasets", {}).items():
+        for season, entry in record.get("seasons", {}).items():
+            if zone_for_season(int(season)) == ZONE_SEALED:
+                pairs[(dataset, int(season))] = entry
+    return pairs
+
+
+def _sealed_pairs_from_lock(lock: dict) -> dict[tuple[str, int], dict]:
+    """Every ``(dataset, season)`` the lock records, sealed-zone or not.
+
+    Non-sealed entries are returned rather than filtered out: a live-zone season sitting
+    in the SEALED lock is itself a problem to report, not noise to discard.
+    """
+    pairs: dict[tuple[str, int], dict] = {}
+    for dataset, seasons in lock.get("datasets", {}).items():
+        for season, entry in seasons.items():
+            pairs[(dataset, int(season))] = entry
+    return pairs
+
+
+def sealed_lock_problems(lock: dict | None, manifest: dict | None) -> list[str]:
+    """Return the divergences between the sealed lock and the pin manifest.
+
+    EMPTY means intact -- the same contract, and the same reported shape, as
+    ``scripts/pin_upstream_snapshot.py::verify``. A list is returned rather than a bool
+    so the assertion that consumes it prints the offenders instead of printing ``False``.
+
+    Only the SEALED span is compared. Live-zone seasons legitimately move week by week
+    and are governed by ``config/upstream_live/<season>.json``; comparing them here would
+    make the lock fail every week by design. A live-zone season PRESENT in the sealed
+    lock is the opposite case and is reported, because the two records must never merge.
+    """
+    problems: list[str] = []
+    if lock is None:
+        problems.append(
+            f"no sealed-zone lock at '{SEALED_LOCK_PATH}'. Generate it with "
+            "`python -m scripts.pin_upstream_snapshot --refresh-sealed-lock "
+            '--sealed-rewrite-reason "<why>"`.'
+        )
+    if manifest is None:
+        problems.append(f"no upstream pin manifest at '{MANIFEST_PATH}'")
+    if lock is None or manifest is None:
+        return problems
+
+    locked = _sealed_pairs_from_lock(lock)
+    pinned = _sealed_pairs_from_manifest(manifest)
+
+    for (dataset, season), entry in sorted(locked.items()):
+        zone = zone_for_season(season)
+        if zone != ZONE_SEALED:
+            problems.append(
+                f"{dataset} {season}: LIVE-ZONE SEASON IN SEALED LOCK (zone {zone}). The "
+                "sealed lock and the live manifest have opposite mutability contracts; a "
+                f"season above {SEALED_THROUGH_SEASON} belongs in "
+                f"{LIVE_MANIFEST_DIR_TEXT}/{season}.json, never here."
+            )
+            continue
+        if (dataset, season) not in pinned:
+            problems.append(
+                f"{dataset} {season}: MISSING FROM MANIFEST. The lock records this "
+                f"sealed season but {MANIFEST_PATH} no longer pins it, so a sealed entry "
+                "was deleted."
+            )
+            continue
+        recorded = pinned[(dataset, season)]
+        if entry.get("sha256") != recorded.get("sha256"):
+            problems.append(
+                f"{dataset} {season}: SHA256 MOVED\n"
+                f"    locked   {entry.get('sha256')}\n"
+                f"    manifest {recorded.get('sha256')}"
+            )
+        if entry.get("rows") != recorded.get("rows"):
+            problems.append(
+                f"{dataset} {season}: ROWS MOVED\n"
+                f"    locked   {entry.get('rows')}\n"
+                f"    manifest {recorded.get('rows')}"
+            )
+        if entry.get("bytes") != recorded.get("bytes"):
+            problems.append(
+                f"{dataset} {season}: BYTES MOVED\n"
+                f"    locked   {entry.get('bytes')}\n"
+                f"    manifest {recorded.get('bytes')}"
+            )
+
+    for dataset, season in sorted(pinned):
+        if (dataset, season) not in locked:
+            problems.append(
+                f"{dataset} {season}: MISSING FROM LOCK. {MANIFEST_PATH} pins this "
+                "sealed season but the lock does not record it, so either a sealed "
+                "season was added without an attributed regeneration or the lock is "
+                "stale."
+            )
+    return problems
 
 
 def live_upstream_allowed() -> bool:

@@ -1,0 +1,623 @@
+{
+  "schema_version": 1,
+  "format_note": "JSON, not TOML, and deliberately so. json.dumps(indent=2) is a standard-library writer that already produces this repository's committed-record style -- it is exactly how scripts/pin_upstream_snapshot.py writes config/upstream_pin.json. The config/*.toml verdict records exist only because the standard library has NO TOML writer, so the hand-pasted block IS the discipline there (backtest/group_gate.py::render_verdict_toml). The .lock extension names the CONTRACT -- this file locks the sealed zone -- not the serialisation.",
+  "sealed_through_season": 2025,
+  "generated_from": "config/upstream_pin.json",
+  "generated_at_utc": "2026-09-11T04:03:11.283848+00:00",
+  "datasets": {
+    "depth_charts": {
+      "2002": {
+        "sha256": "49e05615be80beccebfc2c91778d402a2aaf147c2e08593f74177a81d1f7f130",
+        "rows": 34594,
+        "bytes": 333553,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2003": {
+        "sha256": "f3cca02466aeb62e54b622747d483a570b730487e5b331518d3988fea41b0205",
+        "rows": 34298,
+        "bytes": 322210,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2004": {
+        "sha256": "74ef2170e351e47fe67f8314b2443e669b003d314e2a456f9b5510516a2a9899",
+        "rows": 28898,
+        "bytes": 264161,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2005": {
+        "sha256": "d4ec3cd4503fbc4bbaf7b43b1458c0db3df219e3d60bccd7d8343917b0b98fc5",
+        "rows": 32803,
+        "bytes": 438425,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2006": {
+        "sha256": "7aab8b9b1be545bc6ac3dbdcecb7a1f2882f661d75689b7d992d9034992ce1d4",
+        "rows": 33721,
+        "bytes": 392044,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2007": {
+        "sha256": "a4c448ee5f72814040f6edf8e5b9854e10aab56a83780aa616709ad8e3b20a40",
+        "rows": 38547,
+        "bytes": 494848,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2008": {
+        "sha256": "025e8aa703d03c42ea0dc0e9cadb108a7fcdb99e2b430981078b695136a808c7",
+        "rows": 38651,
+        "bytes": 495232,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2009": {
+        "sha256": "e7452ee2c6ef8b8ff02dcbdf38415c810e16533cbbcce2e1927373aaa9dec839",
+        "rows": 38423,
+        "bytes": 488855,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2010": {
+        "sha256": "fdbaf2c85881f13e2da722838bb6869ea43b24c4cc7eec48ebf575f32420311b",
+        "rows": 38421,
+        "bytes": 490709,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2011": {
+        "sha256": "3dbfd82aae32e1f8b1e6f5b82614635432b07b48846c98048a2c4ffd387fa1fc",
+        "rows": 37941,
+        "bytes": 486946,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2012": {
+        "sha256": "cf6b92e8fbf9a2f06365f6240056594ef5e11dc1048bbf8aa16f299235251493",
+        "rows": 37312,
+        "bytes": 480521,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2013": {
+        "sha256": "88f7ec3fe1e93ad2fadad3560a0c61b9644fa3dd53b425f79f5cf70f80ea12a3",
+        "rows": 37066,
+        "bytes": 475491,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2014": {
+        "sha256": "d0c7adf1c03ce4d020bb54b35fcadcb4b255c450eab7ed6f1191830ddf7e2402",
+        "rows": 32542,
+        "bytes": 432514,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2015": {
+        "sha256": "04754634195f0e25c4c2f1f1c2dac9ee76c6bb0df467ed114e354a5406012ce1",
+        "rows": 37058,
+        "bytes": 485604,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2016": {
+        "sha256": "f012b00ace4b0613aba482fdd64da5bdc701288b3213cdbc5c4b339c6a008ea0",
+        "rows": 36612,
+        "bytes": 467936,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2017": {
+        "sha256": "2c8a2991bbbd6d500249acda154e164a481f54b200615b22f766a19ba9a42096",
+        "rows": 36620,
+        "bytes": 487841,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2018": {
+        "sha256": "835bca6f0eec15d4e3e0864898b7a261ed3feb689c17b96568a62d167f69c6c2",
+        "rows": 36560,
+        "bytes": 487410,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2019": {
+        "sha256": "ed12812cfbdb6c1c0e333f720c837924189993f4da3e38659f46f2bcb2fcfb75",
+        "rows": 36308,
+        "bytes": 470684,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2020": {
+        "sha256": "10e4c7a1c6d4e85b0f0a227b10c9b111f1ee7d7842f755c47abfb00cb071a793",
+        "rows": 36168,
+        "bytes": 471946,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2021": {
+        "sha256": "b6f688beb9e68e309201b1db1e0b03fed2a5f5748f02982ff668a6bb2c3ab5dd",
+        "rows": 37487,
+        "bytes": 490773,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2022": {
+        "sha256": "44c3678c5681e9115de0b940348fbd8211d3e3e0f4f836ffaf868ec3851375e3",
+        "rows": 37780,
+        "bytes": 494178,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2023": {
+        "sha256": "e8d0cc5f584b7556e49e0af3f703b6670a86902e0b5aa4c379d7b84d468326b2",
+        "rows": 37327,
+        "bytes": 486312,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2024": {
+        "sha256": "16cc22ca5ac3800df77772e74d03deaf14cf44c0907e7e075c671f7ce7d39750",
+        "rows": 37312,
+        "bytes": 487255,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2025": {
+        "sha256": "34dda79177d391ba222a16cad72070bdb2d996356604d4b643d4a0d87a35f577",
+        "rows": 554215,
+        "bytes": 2586061,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      }
+    },
+    "pbp": {
+      "2001": {
+        "sha256": "53f9362fadf83fde7c45e0f1210a9a5a210f7671bac403213291af60ad7dd9b2",
+        "rows": 44969,
+        "bytes": 1087146,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2002": {
+        "sha256": "64c61c84d88b632371be5f0bfe9c080c04b804cd8c47ddbbf684d8d923f5133e",
+        "rows": 47355,
+        "bytes": 1139148,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2003": {
+        "sha256": "f381057320178272a1334f40f3a1b82cecbe4078bda9a0d9d7892cbaf536a2cf",
+        "rows": 46811,
+        "bytes": 1126554,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2004": {
+        "sha256": "6209519031f773cf9867997395986c7b015d65a81e82afb9f1c7b1a637c06562",
+        "rows": 46705,
+        "bytes": 1123436,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2005": {
+        "sha256": "d70b21fe16eeef7e55d44d0ac1ec793c52d9ba0ee3098dfaf847b7a9e9e16f75",
+        "rows": 46823,
+        "bytes": 1126122,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2006": {
+        "sha256": "07f258419224114542b86cf2ed337107266736c2372984a7057e2cabe36046a6",
+        "rows": 46299,
+        "bytes": 1228221,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2007": {
+        "sha256": "e62bd1f3f04a89e6853b9b5811bf6bd30b78a35320d1d577594b253aad1bd4e8",
+        "rows": 46266,
+        "bytes": 1235454,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2008": {
+        "sha256": "41b724b22ea1479ce422fa6b5493c10bc8eeb898ed31f58617ca25fdb6635449",
+        "rows": 45917,
+        "bytes": 1223721,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2009": {
+        "sha256": "12eb6b4e689b72ca221be85c9d0e7cae5128bc471cbc389dda7b9cf83a584194",
+        "rows": 46519,
+        "bytes": 1246363,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2010": {
+        "sha256": "567ce40efb787ff800f3636d1eb5cb472833e5d18a4bfdd133b2375b4c4a815a",
+        "rows": 46892,
+        "bytes": 1252559,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2011": {
+        "sha256": "9ad722a5ac90b520b8b0385db9550b0f524fad6872f81757fc2d7abc95743b52",
+        "rows": 47448,
+        "bytes": 1257074,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2012": {
+        "sha256": "14ed7d17d6a177aea44a12a451926ae8670d4b29e53d405c0f86660c6e50cadf",
+        "rows": 47834,
+        "bytes": 1267130,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2013": {
+        "sha256": "d7648ecdf6fa20982025788f26915229e950643ad85c3311b8ee9a8524c4c74d",
+        "rows": 48158,
+        "bytes": 1275102,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2014": {
+        "sha256": "53fa81f59086938fe50e957df8455b2d50ac4dfc55e49da78d21d03cf9174342",
+        "rows": 47629,
+        "bytes": 1263792,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2015": {
+        "sha256": "34577e8b53ce3355c2af800b77f8b867b3e4d88ced1d953d0dcb30b5cd77b3df",
+        "rows": 48122,
+        "bytes": 1271023,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2016": {
+        "sha256": "1fc397b5a6fb3c80d4644fe6e6ac2456062ae0c4b2115ed59c5ca2cf18763d57",
+        "rows": 47651,
+        "bytes": 1261143,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2017": {
+        "sha256": "f06dd77c8fda477539949bcc6601c4ebb4585da9c231d1d53c443c231c60acb4",
+        "rows": 47245,
+        "bytes": 1248137,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2018": {
+        "sha256": "3f1911453d42abfbf3c4aba4fc582bd52297712b62c68dab92550a8ba0eab67c",
+        "rows": 47109,
+        "bytes": 1241587,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2019": {
+        "sha256": "d1b49b2251920b160f8d651c00b4ee4f38a6ce41237ae20c8b5c8f1881773742",
+        "rows": 47260,
+        "bytes": 1245323,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2020": {
+        "sha256": "4d958443091a7ea9f6f819898b410a9ab80ddae1faa258270f77601c0076d14f",
+        "rows": 47705,
+        "bytes": 1253576,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2021": {
+        "sha256": "8b9a2ad3258eb69e914b78f9712a330855a83a184f7ed51b7e19914295b65f47",
+        "rows": 49922,
+        "bytes": 1314358,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2022": {
+        "sha256": "5c23f0fdcf9d6832dfab83b69cd94126a83ffed887d4d09e572ccf952cad7117",
+        "rows": 49434,
+        "bytes": 1297269,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2023": {
+        "sha256": "2f5b8326a440b09fd2dcfced2b0b6e477f6c6ee8fbb8c68cf9265302453eef12",
+        "rows": 49665,
+        "bytes": 1300310,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2024": {
+        "sha256": "c4875686c1baf25db35711c5e4f214ad209618cdcfb238054d83681da4e3dded",
+        "rows": 49492,
+        "bytes": 1311748,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2025": {
+        "sha256": "586d7cee6f3e526349a2c4145c7c6e304332793f6e800f669894079a6384715f",
+        "rows": 48771,
+        "bytes": 1297724,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      }
+    },
+    "schedules": {
+      "1999": {
+        "sha256": "68f7b6dba1351020f7e6eb605b10150f101831d361e481cef6866e5f3a227e0c",
+        "rows": 259,
+        "bytes": 44509,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2000": {
+        "sha256": "dd39d766beafdcfa75ade2e82395388de2811677537232344a9156ce01476d49",
+        "rows": 259,
+        "bytes": 44739,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2001": {
+        "sha256": "63fd5e195be3781b3ca94f1b4c8b210ab8867cce69c4bec831c686d8cb02223c",
+        "rows": 259,
+        "bytes": 44525,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2002": {
+        "sha256": "be1bfdbdad8cf4057def76fd1208ba3b63eec0dc062ed0320a8f18118961685a",
+        "rows": 267,
+        "bytes": 44987,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2003": {
+        "sha256": "d8076921a22b75f39403f96cbbd34b479a55bfcd879f95944b1508b450d83679",
+        "rows": 267,
+        "bytes": 45160,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2004": {
+        "sha256": "9e87caaabe65223a1982a939c4b598d25abe582ad1b535805f00d7e03e8c6b08",
+        "rows": 267,
+        "bytes": 45354,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2005": {
+        "sha256": "da69bed5b788e96739d006ee1162365a87d0051df9b16a97618b9a1aeaaa735f",
+        "rows": 267,
+        "bytes": 45605,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2006": {
+        "sha256": "a1445d57a19da2b685ebf36b532722173efb6e29f859321d8ca4ce1bca27044c",
+        "rows": 267,
+        "bytes": 50307,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2007": {
+        "sha256": "2b5f81d44a644da36ee970b2b1a893e3eaea91642eda2c48e370ede4754f9210",
+        "rows": 267,
+        "bytes": 51407,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2008": {
+        "sha256": "f57d677eeff318cf592bcfd9da6d056972a3233540ffd6e84af1decc267ac08f",
+        "rows": 267,
+        "bytes": 50606,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2009": {
+        "sha256": "2c4e705d1a772ea453e55d528b268cf638daf3b9e7382fdb206a0b5410f6b59b",
+        "rows": 267,
+        "bytes": 50943,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2010": {
+        "sha256": "720167aaa2f83cd188595c0252e99475165e2767b4cd22cd4b42cb0cf4cd9bb9",
+        "rows": 267,
+        "bytes": 50628,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2011": {
+        "sha256": "f8d52da91e095655476b897f24c38cef4986c232d5b10aa6c75236f7c1f73cfc",
+        "rows": 267,
+        "bytes": 50585,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2012": {
+        "sha256": "396b38cd3cfc6be7183d3e896d9cf3af2be74c21e85349ba6dc1127b7689bf75",
+        "rows": 267,
+        "bytes": 50262,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2013": {
+        "sha256": "6ec41e9586018832bbb1a476a1fc234d24d42743c0e1d3b806b8d5ce6b435f4b",
+        "rows": 267,
+        "bytes": 50211,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2014": {
+        "sha256": "0a5a7bcf957befff41841e9fb850730284dc4f5b946f8cc3780bacdbcefcd532",
+        "rows": 267,
+        "bytes": 50236,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2015": {
+        "sha256": "cc232bd93359b5f20bdb8c50b7c9b09988c8c7722082a1060b8633742df961cf",
+        "rows": 267,
+        "bytes": 50055,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2016": {
+        "sha256": "c746580582985630edf789feccf0834c0ff986df00101e6051d918a4cb77e5c4",
+        "rows": 267,
+        "bytes": 50346,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2017": {
+        "sha256": "99ef5bf88c7f11cc8207bdf12f108696b27c25e09147c65e89acc0919fc14327",
+        "rows": 267,
+        "bytes": 50913,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2018": {
+        "sha256": "0717edd443347b5f8db9aa16d80f54dbb4ec7bcb979e1c7f741c2b0dae1ee237",
+        "rows": 267,
+        "bytes": 50743,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2019": {
+        "sha256": "b34d29acc4d4a1b9f780a421e3abb385566c5c61554921f185bd338530beb850",
+        "rows": 267,
+        "bytes": 52320,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2020": {
+        "sha256": "a5e0706516944849199f5ec9bb95cccf961fa124d3b0106c94b66e4a9b6e196d",
+        "rows": 269,
+        "bytes": 52320,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2021": {
+        "sha256": "4fb7e9e10cb10741cacb16f92f3401cfa74ab62c75884771fc7c3e1e6b5ee83d",
+        "rows": 285,
+        "bytes": 60734,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2022": {
+        "sha256": "b7728a683ce4c62a344ebfa1395072d627fbfaeced792d659a3dff699a56e3b4",
+        "rows": 284,
+        "bytes": 51995,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2023": {
+        "sha256": "c7a19c9bc92f60d8ca5c940536616389b204ed4a6c53b99803aa58fc17d59d18",
+        "rows": 285,
+        "bytes": 49005,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2024": {
+        "sha256": "9c5279ba4c762b37f423597c8eb4eb0ca77791dc49fcaaebc213eadf2e9704e6",
+        "rows": 285,
+        "bytes": 50172,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      },
+      "2025": {
+        "sha256": "b15e2ecffcd34a161d5337b549eaea2d91bad989890a981e7ed3dac9de0b5f00",
+        "rows": 285,
+        "bytes": 51624,
+        "upstream_updated_at": null,
+        "upstream_size": null,
+        "acknowledgement": null
+      }
+    }
+  }
+}

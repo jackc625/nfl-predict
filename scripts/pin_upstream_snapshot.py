@@ -57,8 +57,13 @@ from data.upstream_pin import (
     DATASET_TABLE_NAMES,
     MANIFEST_PATH,
     MANIFEST_SCHEMA_VERSION,
+    SEALED_LOCK_SCHEMA_VERSION,
+    SEALED_THROUGH_SEASON,
+    ZONE_SEALED,
     digest_file,
     load_manifest,
+    load_sealed_lock,
+    zone_for_season,
 )
 from utils import get_logger
 
@@ -311,6 +316,114 @@ def verify(manifest_path: Path, data_root: Path) -> list[str]:
                     f"    actual   {actual}"
                 )
     return problems
+
+
+_SEALED_LOCK_FORMAT_NOTE = (
+    "JSON, not TOML, and deliberately so. json.dumps(indent=2) is a standard-library "
+    "writer that already produces this repository's committed-record style -- it is "
+    "exactly how scripts/pin_upstream_snapshot.py writes config/upstream_pin.json. The "
+    "config/*.toml verdict records exist only because the standard library has NO TOML "
+    "writer, so the hand-pasted block IS the discipline there "
+    "(backtest/group_gate.py::render_verdict_toml). The .lock extension names the "
+    "CONTRACT -- this file locks the sealed zone -- not the serialisation."
+)
+
+
+def build_sealed_lock(manifest: dict) -> dict:
+    """Build the sealed-zone lock document from *manifest*. Pure; writes nothing.
+
+    Only SEALED-zone seasons are locked. A live-zone season grows week by week under
+    ``config/upstream_live/<season>.json``; locking it here would make the lock fail
+    every week by design and would merge two records whose diffs mean opposite things.
+
+    THE THREE NULL-SEEDED FIELDS ARE DECLARED NOW ON PURPOSE. ``upstream_updated_at``,
+    ``upstream_size`` and ``acknowledgement`` are the D32-05 / D32-10 signature slots:
+    plan 32-05's sealed revision probe COMPARES against the first two, and plan 32-08's
+    owner-attributed run FILLS all three when a divergence is ruled on. ``null`` means
+    "not yet observed", which is a different and honest claim from "absent". Declaring
+    them here means no later plan has to reshape a file that is already committed and
+    already bound by a suite test.
+    """
+    datasets: dict[str, dict[str, dict]] = {}
+    for dataset, record in sorted(manifest.get("datasets", {}).items()):
+        seasons: dict[str, dict] = {}
+        for season, entry in sorted(
+            record.get("seasons", {}).items(), key=lambda item: int(item[0])
+        ):
+            if zone_for_season(int(season)) != ZONE_SEALED:
+                continue
+            seasons[str(season)] = {
+                "sha256": entry["sha256"],
+                "rows": entry["rows"],
+                "bytes": entry["bytes"],
+                "upstream_updated_at": None,
+                "upstream_size": None,
+                "acknowledgement": None,
+            }
+        if seasons:
+            datasets[dataset] = seasons
+
+    return {
+        "schema_version": SEALED_LOCK_SCHEMA_VERSION,
+        "format_note": _SEALED_LOCK_FORMAT_NOTE,
+        "sealed_through_season": SEALED_THROUGH_SEASON,
+        "generated_from": MANIFEST_PATH.as_posix(),
+        "generated_at_utc": datetime.now(UTC).isoformat(),
+        "datasets": datasets,
+    }
+
+
+# The three fields a regeneration must CARRY FORWARD rather than re-derive. They are not
+# functions of the manifest: they record what was OBSERVED upstream and what a human
+# RULED about it.
+_CARRIED_FORWARD_FIELDS = ("upstream_updated_at", "upstream_size", "acknowledgement")
+
+
+def refresh_sealed_lock(manifest_path: Path, lock_path: Path) -> dict:
+    """Regenerate the lock at *lock_path* from the manifest at *manifest_path*.
+
+    REGENERATION NEVER ERASES AN ACKNOWLEDGEMENT. The ``sha256``/``rows``/``bytes`` half
+    is re-derived from the manifest, but ``upstream_updated_at``, ``upstream_size`` and
+    ``acknowledgement`` are carried forward verbatim for every ``(dataset, season)`` that
+    survives. An acknowledgement is a committed, attributed ruling (D32-10); silently
+    dropping it would re-arm a CRITICAL the owner has already ruled on, and the owner
+    would have no way to tell that their ruling had evaporated.
+
+    This function is reachable ONLY through ``--refresh-sealed-lock``, which itself
+    requires ``--sealed-rewrite-reason``. A lock that re-derived itself from the manifest
+    it is supposed to police -- as a side effect of an ordinary capture, say -- would
+    prove nothing at all, because it could never disagree with what it polices.
+    """
+    manifest = load_manifest(manifest_path)
+    if manifest is None:
+        msg = (
+            f"Cannot regenerate the sealed-zone lock: no pin manifest at "
+            f"'{manifest_path}'. The lock is derived from the manifest, so there is "
+            "nothing to lock."
+        )
+        raise PinCaptureError(msg)
+
+    existing = load_sealed_lock(lock_path) or {}
+    previous = existing.get("datasets", {})
+
+    lock = build_sealed_lock(manifest)
+    for dataset, seasons in lock["datasets"].items():
+        for season, entry in seasons.items():
+            carried = previous.get(dataset, {}).get(season, {})
+            for field in _CARRIED_FORWARD_FIELDS:
+                if field in carried:
+                    entry[field] = carried[field]
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+    logger.info(
+        "Regenerated the sealed-zone lock",
+        lock=str(lock_path),
+        manifest=str(manifest_path),
+        datasets=sorted(lock["datasets"]),
+        sealed_pairs=sum(len(seasons) for seasons in lock["datasets"].values()),
+    )
+    return lock
 
 
 def build_parser() -> argparse.ArgumentParser:
