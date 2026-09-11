@@ -478,10 +478,19 @@ def detect_live_revision(
        claim that nothing is owed, which is a claim this branch is by definition unable to
        make.
 
-    3. NOT A REVISION -> ``clean``, nothing owed. In-season growth lands here; see
+    3. THE TWO ENTRIES WERE DIGESTED UNDER DIFFERENT ``week_digest_schema_version``
+       STAMPS -> ``unknown``, ``correction_owed`` exactly ``None`` (WR-06). Two maps
+       produced by different rules are not comparable, and reading their difference as
+       movement would report a whole-season revision -- escalating to a CRITICAL with a
+       FABRICATED obligation on every graded week -- on the run after any digest-shape
+       bump. The diff is recorded and deliberately not ruled on, the same way branch 2
+       records it. Evaluated before the diff is interpreted, and after branch 2 because
+       "what was graded" is the more fundamental unknown of the two.
+
+    4. NOT A REVISION -> ``clean``, nothing owed. In-season growth lands here; see
        :attr:`WeekDiff.is_revision`.
 
-    4. A MOVED OR REMOVED WEEK IS IN THE GRADED SET -> ``live_revision_graded``,
+    5. A MOVED OR REMOVED WEEK IS IN THE GRADED SET -> ``live_revision_graded``,
        ``correction_owed`` ``True``, and a ``correction_owed_scope`` naming the season and
        the intersecting weeks as sorted ints. The scope is QUERYABLE DATA and not prose: a
        later phase must be able to select every capture entry whose ``correction_owed`` is
@@ -494,7 +503,7 @@ def detect_live_revision(
        block, and that block is Phase 34's to write. Phase 32 raises the obligation; Phase 34
        discharges it.
 
-    5. A MOVED BUCKET CANNOT BE ATTRIBUTED TO A WEEK, AND SOMETHING IS GRADED -> ``unknown``,
+    6. A MOVED BUCKET CANNOT BE ATTRIBUTED TO A WEEK, AND SOMETHING IS GRADED -> ``unknown``,
        ``correction_owed`` ``None``. A dataset with no ``week`` column digests as one
        whole-frame bucket, so when that bucket moves the detector genuinely CANNOT say which
        weeks it touched. Ruling it ``live_revision`` would assert that no graded week moved,
@@ -504,11 +513,11 @@ def detect_live_revision(
        claim that is actually true, it is louder than the ordinary case (F2) and quieter than
        a confirmed one, and ``correction_owed`` of ``None`` says the obligation is undecided
        rather than absent. With NOTHING graded there is no uncertainty to record and the
-       ordinary case applies. Step 4 is checked first throughout: a definite finding always
+       ordinary case applies. Step 5 is checked first throughout: a definite finding always
        outranks an uncertain one.
 
-    6. OTHERWISE -> ``live_revision``, nothing owed. The ordinary in-season restatement,
-       kept quiet on purpose so that the four loud branches above stay worth reading.
+    7. OTHERWISE -> ``live_revision``, nothing owed. The ordinary in-season restatement,
+       kept quiet on purpose so that the five loud branches above stay worth reading.
     """
     graded_weeks, graded_source, graded_failure = _resolve_graded(graded)
 
@@ -557,6 +566,47 @@ def detect_live_revision(
                 f"whether this {dataset} capture moved an already-graded week is unknown "
                 f"and no severity can honestly be drawn from the diff. Underlying failure: "
                 f"{graded_failure}"
+            ),
+        )
+
+    # WR-06. THE TWO ENTRIES MUST HAVE BEEN DIGESTED UNDER THE SAME RULE, and until now
+    # nothing checked. ``data.upstream_live.WEEK_DIGEST_SCHEMA_VERSION`` exists precisely
+    # because "changing it mid-season would mean earlier revision verdicts were computed
+    # under a different rule, so the season's revision history would stop being comparable
+    # end to end" -- but the stamp was written for readers and never read by the one
+    # component that depends on it. A bump (Phase 32's CR/WR fix cycle performed exactly
+    # one) would make the first capture after it diff a v2 map against a v1 map: every
+    # shared week's digest differs, the detector reports a WHOLE-SEASON revision, and it
+    # escalates to a CRITICAL with ``correction_owed`` True for every graded week -- a
+    # fabricated obligation, and PITFALLS B3's alert-fatigue failure delivered in one run.
+    #
+    # Checked AFTER the graded branch and BEFORE the diff is interpreted: the diff is
+    # RECORDED (it cost nothing and a later reader may want it) but no severity is drawn
+    # from it, which is the same shape the graded-failure branch above uses for the same
+    # reason. ``correction_owed`` is None and never False -- False asserts nothing is
+    # owed, which is a claim this branch cannot make.
+    prior_version = prior_entry.get("week_digest_schema_version")
+    current_version = current_entry.get("week_digest_schema_version")
+    if prior_version != current_version:
+        return _verdict(
+            dataset=dataset,
+            season=season,
+            current_entry=current_entry,
+            event_class=RevisionEventClass.UNKNOWN,
+            diff=diff_record,
+            correction_owed=None,
+            correction_owed_scope=None,
+            graded_weeks=graded_weeks,
+            graded_weeks_source=graded_source,
+            reason=(
+                f"the previous {dataset} capture was digested under week-digest schema "
+                f"{prior_version!r} and this one under {current_version!r}, so the two "
+                "maps were produced by different rules and are not comparable. No "
+                "movement can honestly be read from their difference: every shared week "
+                "would appear to have moved because the DIGEST changed, not because the "
+                "bytes did. The diff is recorded but deliberately NOT ruled on. A "
+                "like-for-like comparison resumes at the next capture, once both sides "
+                "were digested under the current rule."
             ),
         )
 

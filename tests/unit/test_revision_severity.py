@@ -621,6 +621,114 @@ class TestAnEmptyGradedSetAndAnUnresolvableOneAreDifferentObservables:
         assert verdict["correction_owed"] is None
 
 
+class TestTwoEntriesDigestedUnderDifferentRulesAreNotComparable:
+    """WR-06. ``week_digest_schema_version`` was written for readers and never read.
+
+    The stamp exists precisely because "changing it mid-season would mean earlier revision
+    verdicts were computed under a different rule, so the season's revision history would
+    stop being comparable end to end" -- yet ``detect_live_revision`` read both entries'
+    ``week_digests`` and compared them without ever looking at either version.
+
+    The consequence of the omission is not a missed finding, it is a FABRICATED one: on the
+    first capture after any digest-shape bump, every shared week's digest differs because
+    the RULE changed rather than because the bytes did. The detector would report a
+    whole-season revision and escalate to a CRITICAL carrying ``correction_owed`` True for
+    every graded week -- an obligation Phase 34 would then be asked to discharge against
+    data that never moved.
+    """
+
+    @staticmethod
+    def _ruled(prior_version: object, current_version: object) -> dict:
+        """Rule an OTHERWISE-IDENTICAL pair whose two digest-schema stamps differ."""
+        prior = capture_entry(digests=three_weeks())
+        current = capture_entry(digests=three_weeks())
+        prior["week_digest_schema_version"] = prior_version
+        current["week_digest_schema_version"] = current_version
+        return detect_live_revision(
+            dataset="pbp",
+            season=2026,
+            current_entry=current,
+            prior_entry=prior,
+            graded=graded([1, 2, 3]),
+        )
+
+    def test_a_version_mismatch_is_unknown_and_owes_exactly_none(self) -> None:
+        verdict = self._ruled(1, 2)
+
+        assert verdict["event_class"] == RevisionEventClass.UNKNOWN
+        assert verdict["correction_owed"] is None, (
+            "a ruling that cannot compare its two inputs asserted something about the "
+            "obligation. None is the claim 'undecided'; False would assert nothing is "
+            "owed, which this branch cannot know."
+        )
+        assert verdict["correction_owed_scope"] is None
+
+    def test_the_reason_names_both_versions_so_a_reader_can_see_the_bump(self) -> None:
+        reason = self._ruled(1, 2)["reason"]
+
+        assert "week-digest schema" in reason, (
+            f"the reason does not name the cause:\n{reason}"
+        )
+        assert "1" in reason and "2" in reason, (
+            f"the reason does not name BOTH versions:\n{reason}"
+        )
+
+    def test_the_diff_is_recorded_but_not_ruled_on(self) -> None:
+        """Recording it costs nothing and a later reader may want it.
+
+        What the branch refuses to do is draw a severity from it -- the same shape the
+        unresolved-graded branch above uses, for the same reason.
+        """
+        verdict = self._ruled(1, 2)
+
+        assert verdict["diff"] is not None, (
+            "the diff was discarded; it cost nothing to compute and is the only evidence "
+            "a later reader has of what the incomparable maps actually contained"
+        )
+        assert verdict["diff"]["live_revision_schema_version"] is not None
+
+    def test_a_moved_graded_week_does_NOT_escalate_across_a_version_bump(self) -> None:
+        """The whole point: the bump must not manufacture a CRITICAL.
+
+        Under the pre-fix code this identical input reported ``live_revision_graded`` with
+        ``correction_owed`` True, because the two maps disagree on every week.
+        """
+        prior = capture_entry(digests=three_weeks())
+        current = capture_entry(digests=moved_week("2"))
+        prior["week_digest_schema_version"] = 1
+        current["week_digest_schema_version"] = 2
+
+        verdict = detect_live_revision(
+            dataset="pbp",
+            season=2026,
+            current_entry=current,
+            prior_entry=prior,
+            graded=graded([1, 2, 3]),
+        )
+
+        assert verdict["event_class"] != RevisionEventClass.LIVE_REVISION_GRADED, (
+            "a digest-shape bump manufactured a graded revision and an obligation on a "
+            "week whose bytes may not have moved at all"
+        )
+        assert verdict["event_class"] == RevisionEventClass.UNKNOWN
+        assert verdict["correction_owed"] is None
+
+    def test_matching_versions_still_rule_normally(self) -> None:
+        """The guard must not swallow the ordinary case it sits in front of."""
+        assert self._ruled(1, 1)["event_class"] == RevisionEventClass.CLEAN
+
+    def test_two_entries_that_both_predate_the_stamp_still_compare(self) -> None:
+        """Two absent stamps are EQUAL, so a pre-stamp pair is not made incomparable."""
+        assert self._ruled(None, None)["event_class"] == RevisionEventClass.CLEAN
+
+    def test_an_entry_gaining_the_stamp_is_a_mismatch(self) -> None:
+        """Absent on one side and present on the other is exactly the bump shape."""
+        assert self._ruled(None, 1)["event_class"] == RevisionEventClass.UNKNOWN
+
+    def test_the_verdict_keeps_the_frozen_key_set(self) -> None:
+        assert set(self._ruled(1, 2)) == EXPECTED_VERDICT_KEYS
+
+
 class TestAnUnattributableBucketIsNeverTheQuietAnswer:
     """A whole-frame dataset cannot say WHICH week moved, so it must not claim none did."""
 
