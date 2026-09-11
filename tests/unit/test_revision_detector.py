@@ -39,11 +39,13 @@ from data.sealed_probe import (
     SEALED_PROBE_STRATEGY,
     VERDICT_KEYS,
     SealedProbeUnavailable,
+    acknowledge_divergence,
     asset_download_url,
     asset_name_for,
     fetch_release_assets,
     parse_release_payload,
     probe_sealed,
+    seed_signatures,
 )
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "github_releases"
@@ -568,3 +570,414 @@ class TestTheSchedulesStrategyIsContentNotMetadata:
         assert verdict["event_class"] == RevisionEventClass.SEALED_REVISION
         assert verdict["findings"][0]["strategy"] == PROBE_STRATEGY_CONTENT
         assert verdict["findings"][0]["observed_sha256"] == "a" * 64
+
+
+class TestAKnownDivergenceIsAcknowledgedNotReFrozen:
+    """D32-10: rule on a divergence once, with a name and a date, and never re-freeze."""
+
+    RULED_BY = "jack (owner)"
+    RULED_AT = "2026-09-11T07:00:00+00:00"
+    REASON = (
+        "nflverse re-released pbp 2021 on 2026-01-08; the content re-fetch showed the "
+        "pinned narrowed columns unchanged, so the pin stands and the move is recorded."
+    )
+    MOVED_AT = "2027-01-08T05:57:29+00:00"
+    MOVED_AGAIN_AT = "2027-06-30T11:11:11+00:00"
+
+    def _moved(
+        self, stored_assets: dict[str, dict[str, dict]], updated_at: str
+    ) -> dict[str, dict[str, dict]]:
+        moved = copy.deepcopy(stored_assets)
+        moved["pbp"]["play_by_play_2021.parquet"]["updated_at"] = updated_at
+        return moved
+
+    def _acknowledged_lock(
+        self, stored_assets: dict[str, dict[str, dict]], updated_at: str
+    ) -> dict:
+        lock = build_lock(stored_assets, schedules_seasons=())
+        observed = self._moved(stored_assets, updated_at)["pbp"][
+            "play_by_play_2021.parquet"
+        ]
+        return acknowledge_divergence(
+            lock,
+            dataset="pbp",
+            season=2021,
+            observed_updated_at=observed["updated_at"],
+            observed_size=observed["size"],
+            observed_sha256=None,
+            ruled_by=self.RULED_BY,
+            ruled_at_utc=self.RULED_AT,
+            reason=self.REASON,
+        )
+
+    def test_a_probe_matching_the_acknowledged_signature_is_informational(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        lock = self._acknowledged_lock(stored_assets, self.MOVED_AT)
+
+        verdict = probe_sealed(
+            lock, assets_by_tag=self._moved(stored_assets, self.MOVED_AT)
+        )
+
+        assert verdict["event_class"] == RevisionEventClass.KNOWN_DIVERGENCE_STABLE
+        assert verdict["severity"] == RevisionSeverity.INFORMATIONAL
+        assert verdict["checked"] == verdict["expected"]
+        finding = verdict["findings"][0]
+        assert finding["acknowledged"] is True
+        assert finding["ruled_by"] == self.RULED_BY
+        assert finding["ruled_at_utc"] == self.RULED_AT
+        assert finding["superseded_acknowledgement"] is False
+
+    def test_a_new_move_on_top_of_an_acknowledgement_re_fires_critical(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        lock = self._acknowledged_lock(stored_assets, self.MOVED_AT)
+
+        verdict = probe_sealed(
+            lock, assets_by_tag=self._moved(stored_assets, self.MOVED_AGAIN_AT)
+        )
+
+        assert verdict["event_class"] == RevisionEventClass.SEALED_REVISION
+        assert verdict["severity"] == RevisionSeverity.CRITICAL
+        finding = verdict["findings"][0]
+        assert finding["acknowledged"] is False
+        assert finding["superseded_acknowledgement"] is True
+        assert finding["observed_updated_at"] == self.MOVED_AGAIN_AT
+
+    def test_a_signature_back_at_the_baseline_is_not_a_finding_at_all(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        # Precedence: BASELINE first, acknowledgement second. An acknowledgement does not
+        # make the baseline stop being the baseline.
+        lock = self._acknowledged_lock(stored_assets, self.MOVED_AT)
+
+        verdict = probe_sealed(lock, assets_by_tag=stored_assets)
+
+        assert verdict["event_class"] == RevisionEventClass.CLEAN
+        assert verdict["findings"] == []
+
+    def test_the_committed_pin_is_byte_identical_across_both(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        pin_path = Path("config/upstream_pin.json")
+        if not pin_path.is_file():
+            pytest.skip(f"the committed pin is not present at {pin_path}")
+        before = pin_path.read_bytes()
+
+        lock = build_lock(stored_assets, schedules_seasons=())
+        probe_sealed(lock, assets_by_tag=self._moved(stored_assets, self.MOVED_AT))
+        acknowledged = self._acknowledged_lock(stored_assets, self.MOVED_AT)
+        probe_sealed(
+            acknowledged, assets_by_tag=self._moved(stored_assets, self.MOVED_AT)
+        )
+
+        assert pin_path.read_bytes() == before, (
+            "an acknowledgement that moved config/upstream_pin.json is a RE-FREEZE, "
+            "which D32-10 refuses: it would erase the evidence that upstream moved."
+        )
+
+    def test_the_acknowledgement_never_touches_the_input_lock(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        lock = build_lock(stored_assets, schedules_seasons=())
+        snapshot = copy.deepcopy(lock)
+        acknowledge_divergence(
+            lock,
+            dataset="pbp",
+            season=2021,
+            observed_updated_at=self.MOVED_AT,
+            observed_size=1,
+            observed_sha256=None,
+            ruled_by=self.RULED_BY,
+            ruled_at_utc=self.RULED_AT,
+            reason=self.REASON,
+        )
+        assert lock == snapshot
+
+    @pytest.mark.parametrize(
+        ("ruled_by", "reason", "blank_field"),
+        [
+            pytest.param("   ", "a real reason", "ruled_by", id="blank_ruled_by"),
+            pytest.param("jack (owner)", "\t\n ", "reason", id="blank_reason"),
+            pytest.param("", "", "ruled_by", id="both_blank"),
+        ],
+    )
+    def test_an_acknowledgement_without_an_attributed_ruler_or_reason_is_refused(
+        self,
+        stored_assets: dict[str, dict[str, dict]],
+        ruled_by: str,
+        reason: str,
+        blank_field: str,
+    ) -> None:
+        lock = build_lock(stored_assets, schedules_seasons=())
+        with pytest.raises(ValueError) as excinfo:
+            acknowledge_divergence(
+                lock,
+                dataset="pbp",
+                season=2021,
+                observed_updated_at=self.MOVED_AT,
+                observed_size=1,
+                observed_sha256=None,
+                ruled_by=ruled_by,
+                ruled_at_utc=self.RULED_AT,
+                reason=reason,
+            )
+        message = str(excinfo.value)
+        assert blank_field in message
+        assert "suppression" in message
+
+    def test_a_second_acknowledgement_moves_the_first_into_supersedes(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        first = self._acknowledged_lock(stored_assets, self.MOVED_AT)
+        second = acknowledge_divergence(
+            first,
+            dataset="pbp",
+            season=2021,
+            observed_updated_at=self.MOVED_AGAIN_AT,
+            observed_size=2,
+            observed_sha256=None,
+            ruled_by="jack (owner), second ruling",
+            ruled_at_utc="2027-07-01T00:00:00+00:00",
+            reason="a second re-release, re-checked and again content-equivalent",
+        )
+
+        block = second["datasets"]["pbp"]["2021"]["acknowledgement"]
+        assert block["observed_updated_at"] == self.MOVED_AGAIN_AT
+        assert block["supersedes"]["observed_updated_at"] == self.MOVED_AT
+        assert block["supersedes"]["ruled_by"] == self.RULED_BY
+        # The first document is untouched -- the history is append-shaped.
+        assert first["datasets"]["pbp"]["2021"]["acknowledgement"]["supersedes"] is None
+
+    def test_the_run_severity_is_the_highest_contribution(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        lock = self._acknowledged_lock(stored_assets, self.MOVED_AT)
+        assets = self._moved(stored_assets, self.MOVED_AT)
+        # ... and a SECOND pair that moved and was never ruled on.
+        assets["pbp"]["play_by_play_2022.parquet"]["updated_at"] = self.MOVED_AGAIN_AT
+
+        verdict = probe_sealed(lock, assets_by_tag=assets)
+
+        classes = {finding["event_class"] for finding in verdict["findings"]}
+        assert classes == {
+            RevisionEventClass.KNOWN_DIVERGENCE_STABLE,
+            RevisionEventClass.SEALED_REVISION,
+        }
+        assert verdict["event_class"] == RevisionEventClass.SEALED_REVISION
+        assert verdict["severity"] == RevisionSeverity.CRITICAL
+
+    def test_acknowledging_a_pair_the_lock_does_not_track_is_refused(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        lock = build_lock(stored_assets, schedules_seasons=())
+        with pytest.raises(ValueError) as excinfo:
+            acknowledge_divergence(
+                lock,
+                dataset="pbp",
+                season=1999,
+                observed_updated_at=self.MOVED_AT,
+                observed_size=1,
+                observed_sha256=None,
+                ruled_by=self.RULED_BY,
+                ruled_at_utc=self.RULED_AT,
+                reason=self.REASON,
+            )
+        assert "pbp 1999" in str(excinfo.value)
+
+
+class TestSeedingABaselineIsDeliberateAndAttributed:
+    """The one-time baseline writer 32-09 calls. It never touches the pin either."""
+
+    SEEDED_AT = "2026-09-11T07:00:00+00:00"
+    SEEDED_BY = "jack (owner), Plan 32-09 attributed seeding run"
+
+    def _unseeded(self, stored_assets: dict[str, dict[str, dict]]) -> dict:
+        lock = build_lock(stored_assets)
+        for dataset in ("pbp", "depth_charts"):
+            for entry in lock["datasets"][dataset].values():
+                entry["upstream_updated_at"] = None
+                entry["upstream_size"] = None
+        return lock
+
+    def test_it_fills_every_metadata_baseline_and_stamps_its_attribution(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        lock = self._unseeded(stored_assets)
+
+        seeded = seed_signatures(
+            lock,
+            assets_by_tag=stored_assets,
+            content_digests=matching_content_digests(lock),
+            seeded_at_utc=self.SEEDED_AT,
+            seeded_by=self.SEEDED_BY,
+        )
+
+        assert seeded["signatures_seeded_at_utc"] == self.SEEDED_AT
+        assert seeded["signatures_seeded_by"] == self.SEEDED_BY
+        assert "signatures_unseeded" not in seeded
+        for dataset in ("pbp", "depth_charts"):
+            for season, entry in seeded["datasets"][dataset].items():
+                observed = stored_assets[dataset][asset_name_for(dataset, int(season))]
+                assert entry["upstream_updated_at"] == observed["updated_at"]
+                assert entry["upstream_size"] == observed["size"]
+
+    def test_a_seeded_lock_then_probes_clean(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        lock = self._unseeded(stored_assets)
+        seeded = seed_signatures(
+            lock,
+            assets_by_tag=stored_assets,
+            seeded_at_utc=self.SEEDED_AT,
+            seeded_by=self.SEEDED_BY,
+        )
+        verdict = probe_sealed(
+            seeded,
+            assets_by_tag=stored_assets,
+            content_digests=matching_content_digests(seeded),
+        )
+        assert verdict["event_class"] == RevisionEventClass.CLEAN
+        assert verdict["checked"] == verdict["expected"]
+
+    def test_it_leaves_the_content_strategy_sha256_untouched(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        lock = self._unseeded(stored_assets)
+        before = copy.deepcopy(lock["datasets"]["schedules"])
+        seeded = seed_signatures(
+            lock,
+            assets_by_tag=stored_assets,
+            content_digests=matching_content_digests(lock),
+            seeded_at_utc=self.SEEDED_AT,
+            seeded_by=self.SEEDED_BY,
+        )
+        assert seeded["datasets"]["schedules"] == before
+
+    def test_it_refuses_to_re_seed_a_recorded_baseline_without_permission(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        already_seeded = build_lock(stored_assets)
+        with pytest.raises(ValueError) as excinfo:
+            seed_signatures(
+                already_seeded,
+                assets_by_tag=stored_assets,
+                seeded_at_utc=self.SEEDED_AT,
+                seeded_by=self.SEEDED_BY,
+            )
+        assert "refusing to re-seed" in str(excinfo.value)
+        assert "overwrite=True" in str(excinfo.value)
+
+    def test_overwrite_true_with_an_attributed_seeder_is_permitted(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        already_seeded = build_lock(stored_assets)
+        already_seeded["datasets"]["pbp"]["2021"]["upstream_updated_at"] = (
+            "1999-01-01T00:00:00+00:00"
+        )
+
+        reseeded = seed_signatures(
+            already_seeded,
+            assets_by_tag=stored_assets,
+            seeded_at_utc=self.SEEDED_AT,
+            seeded_by=self.SEEDED_BY,
+            overwrite=True,
+        )
+
+        observed = stored_assets["pbp"]["play_by_play_2021.parquet"]
+        assert (
+            reseeded["datasets"]["pbp"]["2021"]["upstream_updated_at"]
+            == observed["updated_at"]
+        )
+
+    @pytest.mark.parametrize(
+        ("seeded_by", "seeded_at"),
+        [
+            pytest.param("  ", "2026-09-11T07:00:00+00:00", id="blank_seeded_by"),
+            pytest.param("jack (owner)", "", id="blank_seeded_at"),
+        ],
+    )
+    def test_an_unattributed_seeding_run_is_refused(
+        self,
+        stored_assets: dict[str, dict[str, dict]],
+        seeded_by: str,
+        seeded_at: str,
+    ) -> None:
+        lock = self._unseeded(stored_assets)
+        with pytest.raises(ValueError) as excinfo:
+            seed_signatures(
+                lock,
+                assets_by_tag=stored_assets,
+                seeded_at_utc=seeded_at,
+                seeded_by=seeded_by,
+            )
+        assert "suppression" in str(excinfo.value)
+
+    def test_it_leaves_an_existing_acknowledgement_untouched(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        lock = self._unseeded(stored_assets)
+        lock = acknowledge_divergence(
+            lock,
+            dataset="pbp",
+            season=2021,
+            observed_updated_at="2027-01-08T05:57:29+00:00",
+            observed_size=7,
+            observed_sha256=None,
+            ruled_by="jack (owner)",
+            ruled_at_utc="2026-09-11T07:00:00+00:00",
+            reason="recorded before the baseline was ever seeded",
+        )
+        block = copy.deepcopy(lock["datasets"]["pbp"]["2021"]["acknowledgement"])
+
+        seeded = seed_signatures(
+            lock,
+            assets_by_tag=stored_assets,
+            seeded_at_utc=self.SEEDED_AT,
+            seeded_by=self.SEEDED_BY,
+        )
+
+        assert seeded["datasets"]["pbp"]["2021"]["acknowledgement"] == block
+
+    def test_an_unresolvable_asset_is_named_rather_than_seeded_silently(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        lock = self._unseeded(stored_assets)
+        blinded = copy.deepcopy(stored_assets)
+        del blinded["pbp"]["play_by_play_2021.parquet"]
+
+        seeded = seed_signatures(
+            lock,
+            assets_by_tag=blinded,
+            seeded_at_utc=self.SEEDED_AT,
+            seeded_by=self.SEEDED_BY,
+        )
+
+        assert seeded["datasets"]["pbp"]["2021"]["upstream_updated_at"] is None
+        assert [
+            (item["dataset"], item["season"]) for item in seeded["signatures_unseeded"]
+        ] == [("pbp", 2021)]
+        # And the next probe reports it UNRESOLVED rather than clean.
+        verdict = probe_sealed(
+            seeded,
+            assets_by_tag=stored_assets,
+            content_digests=matching_content_digests(seeded),
+        )
+        assert verdict["event_class"] == RevisionEventClass.UNKNOWN
+
+    def test_seeding_over_an_unruled_content_divergence_is_refused(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        lock = self._unseeded(stored_assets)
+        digests = matching_content_digests(lock)
+        digests[("schedules", 2021)] = "b" * 64
+
+        with pytest.raises(SealedProbeUnavailable) as excinfo:
+            seed_signatures(
+                lock,
+                assets_by_tag=stored_assets,
+                content_digests=digests,
+                seeded_at_utc=self.SEEDED_AT,
+                seeded_by=self.SEEDED_BY,
+            )
+        assert "refusing to seed" in str(excinfo.value)

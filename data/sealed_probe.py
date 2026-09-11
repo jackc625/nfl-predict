@@ -51,6 +51,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from datetime import datetime
@@ -82,12 +83,14 @@ __all__ = [
     "SEALED_PROBE_STRATEGY",
     "VERDICT_KEYS",
     "SealedProbeUnavailable",
+    "acknowledge_divergence",
     "asset_download_url",
     "asset_name_for",
     "content_digest_for",
     "fetch_release_assets",
     "parse_release_payload",
     "probe_sealed",
+    "seed_signatures",
 ]
 
 
@@ -946,3 +949,229 @@ def _rule_run(
         f"({acknowledged} already acknowledged). Affected: {named}{more}."
     )
     return event_class, reason
+
+
+# ---------------------------------------------------------------------------
+# Writing onto the lock. NEITHER of these ever touches config/upstream_pin.json.
+# ---------------------------------------------------------------------------
+
+
+def _require_attributed(**fields: str) -> None:
+    """Refuse any blank field, naming every field in the group and which one is blank."""
+    blank = [name for name, value in fields.items() if not str(value or "").strip()]
+    if not blank:
+        return
+    msg = (
+        f"blank {', '.join(blank)}. This call requires all of "
+        f"{', '.join(sorted(fields))} to be non-empty after .strip(): an unattributed, "
+        "unexplained write onto the sealed lock is indistinguishable from suppression, "
+        "and six months later nobody can tell which it was."
+    )
+    raise ValueError(msg)
+
+
+def _lock_entry(lock: dict, dataset: str, season: int) -> dict:
+    seasons = lock.get("datasets", {}).get(dataset)
+    if not seasons or str(season) not in seasons:
+        msg = (
+            f"the sealed lock has no entry for {dataset} {season}. An acknowledgement "
+            "records a ruling about a pair the lock already tracks; it never creates one."
+        )
+        raise ValueError(msg)
+    return seasons[str(season)]
+
+
+def acknowledge_divergence(
+    lock: dict,
+    *,
+    dataset: str,
+    season: int,
+    observed_updated_at: str | None,
+    observed_size: int | None,
+    observed_sha256: str | None,
+    ruled_by: str,
+    ruled_at_utc: str,
+    reason: str,
+) -> dict:
+    """Record an owner ruling on an observed upstream divergence (D32-10).
+
+    THIS IS EXPLICITLY NOT A RE-FREEZE. ``config/upstream_pin.json`` is never touched, and
+    the pin is never re-captured to make a probe pass. Re-freezing would erase the very
+    evidence the probe exists to produce -- the record that upstream MOVED and this
+    project chose not to follow. It is the same shape this project already used for the
+    gate-baseline divergence in Phase 31: record the finding, refuse to re-freeze, keep the
+    tripwires RED. A reviewer should recognise the shape rather than meet a new invention.
+
+    THE ACKNOWLEDGEMENT CARRIES NO EXPIRY. It stands until a new move supersedes it.
+    This is the planner's ruling on CONTEXT's open discretion item, which asked
+    whether an acknowledgement carries an expiry
+    or stands until a new move supersedes it (CONTEXT's own expectation: stands until
+    superseded). The reason is mechanical: an expiry would re-fire a CRITICAL on a
+    CALENDAR DATE rather than on an OBSERVATION. Alert-fatigue-by-schedule is precisely
+    the failure this mechanism exists to avoid -- 32-RESEARCH.md Finding 6 measured four
+    distinct re-release events touching completed seasons in the last nine months,
+    including the binding 2021-2023 window, so a detector that also fired on a timer would
+    be wallpaper by week three.
+
+    A SECOND ACKNOWLEDGEMENT ON THE SAME PAIR MOVES THE FIRST INTO ``supersedes``, so the
+    history is append-shaped rather than overwritten. The ruling that was in force when an
+    old verdict was written stays readable.
+
+    Args:
+        lock: The sealed lock document. It is NOT mutated; a deep copy is returned.
+        dataset: The dataset name. Must already be in the lock.
+        season: The season. Must already be in the lock.
+        observed_updated_at: The upstream ``updated_at`` observed at the moment of the
+            ruling (metadata strategy), or ``None``.
+        observed_size: The upstream ``size`` observed at the moment of the ruling, or
+            ``None``.
+        observed_sha256: The content digest observed at the moment of the ruling (content
+            strategy), or ``None``.
+        ruled_by: WHO ruled. Must be non-empty after ``.strip()``.
+        ruled_at_utc: WHEN they ruled, as an ISO-8601 instant.
+        reason: WHY. Must be non-empty after ``.strip()``.
+
+    Returns:
+        A NEW lock document carrying the acknowledgement on that one entry.
+
+    Raises:
+        ValueError: If ``ruled_by`` or ``reason`` is blank, or the pair is not in the lock.
+    """
+    _require_attributed(ruled_by=ruled_by, reason=reason)
+
+    updated = copy.deepcopy(lock)
+    entry = _lock_entry(updated, dataset, season)
+    entry["acknowledgement"] = {
+        "observed_updated_at": observed_updated_at,
+        "observed_size": observed_size,
+        "observed_sha256": observed_sha256,
+        "ruled_by": ruled_by,
+        "ruled_at_utc": ruled_at_utc,
+        "reason": reason,
+        "supersedes": entry.get("acknowledgement") or None,
+    }
+    return updated
+
+
+def seed_signatures(
+    lock: dict,
+    *,
+    assets_by_tag: dict[str, dict[str, dict] | None],
+    content_digests: dict[tuple[str, int], str] | None = None,
+    seeded_at_utc: str,
+    seeded_by: str,
+    overwrite: bool = False,
+) -> dict:
+    """Write the one-time upstream metadata baseline onto the sealed lock.
+
+    PURE in the same sense :func:`probe_sealed` is: it takes already-fetched inputs, so
+    every test runs offline. It lives beside :func:`acknowledge_divergence` because both
+    write onto the LOCK and neither ever touches ``config/upstream_pin.json``.
+
+    It fills ``upstream_updated_at`` and ``upstream_size`` for every METADATA-strategy
+    pair. It leaves ``sha256`` untouched for every CONTENT-strategy pair: that field is
+    already the pinned per-season digest and is the content strategy's baseline as it
+    stands. When ``content_digests`` supplies a digest for a content-strategy pair it is
+    used as a CHECK -- a mismatch refuses the whole seed, because stamping "seeded" on a
+    document that already contains an unruled divergence would date-stamp a lie.
+
+    It REFUSES to overwrite a pair whose ``upstream_updated_at`` is already non-null unless
+    ``overwrite=True`` is passed explicitly. Re-seeding a baseline silently would erase the
+    very divergence a probe exists to find: the next run would compare today's upstream
+    against today's upstream and report clean forever.
+
+    It leaves every existing ``acknowledgement`` block untouched. An acknowledgement is a
+    ruling about a divergence FROM a baseline, so a seeding pass has no business editing
+    one.
+
+    Args:
+        lock: The sealed lock document. It is NOT mutated; a deep copy is returned.
+        assets_by_tag: ``{release tag: {asset name: signature}}``.
+        content_digests: Optional ``{(dataset, season): sha256}`` on the same basis as the
+            lock's ``sha256`` (see :func:`probe_sealed`). Pairs absent from the mapping are
+            simply not checked.
+        seeded_at_utc: The ISO-8601 instant of this seeding run.
+        seeded_by: WHO ran it. Must be non-empty after ``.strip()``.
+        overwrite: Explicit permission to replace an already-recorded baseline.
+
+    Returns:
+        A NEW lock document with ``signatures_seeded_at_utc`` and ``signatures_seeded_by``
+        stamped at the top level, plus ``signatures_unseeded`` naming any pair whose asset
+        did not resolve -- present only when that list is non-empty, so a clean run carries
+        exactly the two keys and a messy one cannot hide behind them.
+
+    Raises:
+        ValueError: If ``seeded_by`` or ``seeded_at_utc`` is blank, or a non-null baseline
+            would be replaced without ``overwrite=True``.
+        SealedProbeUnavailable: If a supplied content digest disagrees with the lock's
+            recorded ``sha256`` for that pair.
+    """
+    _require_attributed(seeded_by=seeded_by, seeded_at_utc=seeded_at_utc)
+    content_digests = content_digests or {}
+
+    updated = copy.deepcopy(lock)
+    unseeded: list[dict[str, Any]] = []
+
+    for dataset, season, entry in _lock_pairs(updated):
+        dataset_strategy = SEALED_PROBE_STRATEGY.get(dataset)
+        if dataset_strategy is None:
+            unseeded.append(
+                {
+                    "dataset": dataset,
+                    "season": season,
+                    "why": _known_datasets_message(dataset),
+                }
+            )
+            continue
+
+        if dataset_strategy == PROBE_STRATEGY_CONTENT:
+            supplied = content_digests.get((dataset, season))
+            if supplied is not None and supplied != entry.get("sha256"):
+                msg = (
+                    f"refusing to seed: the content digest supplied for {dataset} "
+                    f"{season} ({supplied}) does not match the sealed lock's recorded "
+                    f"sha256 ({entry.get('sha256')}). Seeding stamps a baseline as "
+                    "agreed; doing that over an unruled divergence would date-stamp a "
+                    "lie. Rule on the divergence with acknowledge_divergence first."
+                )
+                raise SealedProbeUnavailable(msg)
+            continue
+
+        if entry.get("upstream_updated_at") is not None and not overwrite:
+            msg = (
+                f"refusing to re-seed {dataset} {season}: its upstream baseline is "
+                f"already recorded as {entry.get('upstream_updated_at')!r}. Re-seeding "
+                "silently would compare today's upstream against today's upstream and "
+                "report clean forever, erasing the divergence the probe exists to find. "
+                "Pass overwrite=True with an attributed seeded_by if that is genuinely "
+                "what you mean."
+            )
+            raise ValueError(msg)
+
+        tag = DATASET_RELEASE_TAGS[dataset]
+        assets = assets_by_tag.get(tag)
+        observed = (
+            None if assets is None else assets.get(asset_name_for(dataset, season))
+        )
+        if observed is None:
+            unseeded.append(
+                {
+                    "dataset": dataset,
+                    "season": season,
+                    "why": (
+                        f"asset {asset_name_for(dataset, season)!r} did not resolve in "
+                        f"the {tag!r} payload, so no baseline was recorded for it. It "
+                        "stays null, which probe_sealed reports as UNRESOLVED."
+                    ),
+                }
+            )
+            continue
+
+        entry["upstream_updated_at"] = observed.get("updated_at")
+        entry["upstream_size"] = observed.get("size")
+
+    updated["signatures_seeded_at_utc"] = seeded_at_utc
+    updated["signatures_seeded_by"] = seeded_by
+    if unseeded:
+        updated["signatures_unseeded"] = unseeded
+    return updated
