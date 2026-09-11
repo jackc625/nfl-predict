@@ -143,3 +143,82 @@ POST_PHASE_FAILURE_FORM: str = "6 failed / <N> passed / 8 skipped / 14 xfailed"
 # "UNMEASURED at plan time" Test Infrastructure row in 32-VALIDATION.md with a number
 # somebody actually ran.
 FULL_SUITE_RUNTIME_SECONDS: int = 774
+
+
+# ---------------------------------------------------------------------------
+# What this phase ACTUALLY ended on.
+#
+# APPENDED by Plan 32-09 Task 3 on 2026-09-11. Nothing above this line was edited:
+# a state manifest whose earlier slots move is a manifest that cannot be used to
+# reconstruct what was believed when.
+#
+# MEASURED IN THREE TIERS, NOT ONE PROCESS, and the split is recorded because the
+# instrument is part of the measurement. A single whole-suite `pytest -q` is killed
+# for memory on this machine, so the run was:
+#     uv run python -m pytest tests/unit -q
+#     uv run python -m pytest tests/integration -q
+#     uv run python -m pytest tests/api tests/test_*.py -q
+# and the line below is their SUM. The same three-tier split produced the
+# post-wave-4 baseline it is reconciled against, so the two numbers are comparable.
+# ---------------------------------------------------------------------------
+
+# MEASURED 2026-09-11, after Plan 32-09 Task 2's single real 2026 week-1 capture.
+POST_PHASE_FAILURE_SET: str = "5 failed, 3935 passed, 9 skipped, 14 xfailed"
+
+# THE STATED FORM WAS `6 failed / <N> passed / 8 skipped / 14 xfailed`, AND THE
+# MEASURED LINE DIVERGES FROM IT IN TWO PLACES. Both divergences are direct,
+# traceable consequences of the ONE authorised capture, and neither was retro-fitted
+# into the stated form -- recording the line as it actually reads is the whole point
+# of enumerating a failure set instead of asserting a number.
+#
+# 1. `failed` is 5, not 6. SIXTH_RED_NODE_ID turned GREEN. It failed because
+#    `data/upstream_pin.py` refused a 2026 play-by-play read that the pin did not
+#    cover; the capture recorded in `config/upstream_live/2026.json` (season 2026,
+#    week 1, sequence 1, 323 pbp rows) now covers it ON THIS MACHINE, so the
+#    current-week team-form builder runs end to end. This is the OVER-DELIVERY
+#    Plan 32-09 pre-authorised, not a plan violation. It is also MACHINE-LOCAL:
+#    POST_PHASE_FAILURE_FORM's own note says the live capture's parquet bytes live
+#    under gitignored `data/bronze/`, so on any checkout without them the refusal is
+#    still the correct answer and this node is still correctly red. Clearing it
+#    durably remains Phase 33's (COLD-01..09).
+#
+# 2. `skipped` is 9, not 8. `tests/unit/test_sealed_probe_log.py::
+#    TestThisPlanDoesNotCreateTheCommittedLog::test_plan_32_05_did_not_create_it`
+#    moved passed -> skipped, with its OWN authored reason: "config\
+#    upstream_probe_log.jsonl is present ... -- Plan 32-08 has run the first probe".
+#    That test asserts the absence of a file this phase was always going to create;
+#    it was written to step aside self-describingly at exactly this moment, and it
+#    did. The skip is NOT evidence-backed (nothing is missing), so it is correctly
+#    absent from tests/conftest._EVIDENCE_SKIP_MARKERS' aggregate.
+POST_PHASE_DIVERGENCE_FROM_STATED_FORM: tuple[str, ...] = (
+    "failed 6 -> 5: SIXTH_RED_NODE_ID turned green on this machine because the "
+    "real 2026 week-1 capture now covers the season its refusal named. Over-delivery, "
+    "machine-local, and still correctly red on a checkout without data/bronze/.",
+    "skipped 8 -> 9: tests/unit/test_sealed_probe_log.py::"
+    "TestThisPlanDoesNotCreateTheCommittedLog::test_plan_32_05_did_not_create_it "
+    "steps aside now that config/upstream_probe_log.jsonl exists, by its own design.",
+)
+
+# The failing node ids after the phase, transcribed from the run above. This set is
+# EXACTLY DELIBERATE_TRIPWIRE_NODE_IDS: every remaining red encodes an owner-accepted
+# fact from Phase 30 or Phase 31 and MUST STAY RED. Not one was turned green, and the
+# one that did turn green was never a tripwire.
+POST_PHASE_FAILING_NODE_IDS: tuple[str, ...] = (
+    "tests/integration/test_gate_baseline_byte_identity.py::TestTheRegeneratedBaselineIsByteIdenticalToTheCommittedOne::test_the_generated_block_equals_the_committed_block_byte_for_byte",
+    "tests/integration/test_gold_rebuild_attribution.py::TestThePhase31Rung3IsTheFullRebuildOfTheVerdictPopulation::test_no_NON_CLOCK_column_moved_in_a_protected_season",
+    "tests/integration/test_n01_resync_control.py::TestEvery2021To2024ValueIsByteIdentical::test_every_data_column_reproduces_its_pre_resync_digest_exactly",
+    "tests/integration/test_n01_resync_control.py::TestEvery2021To2024ValueIsByteIdentical::test_the_moved_set_is_exactly_the_build_clock",
+    "tests/integration/test_promote_models.py::test_frozen_baseline_matches_rescore_all_fields",
+)
+
+# COLLECTED-COUNT ARITHMETIC, not a count of files touched. The pre-phase line
+# collected 6 + 3602 + 8 + 14 = 3630 tests; the post-phase line collects
+# 5 + 3935 + 9 + 14 = 3963. The difference is what Phase 32 added, and it closes
+# exactly -- which is the check that no test was quietly deleted to make a number
+# look better.
+TESTS_ADDED_BY_PHASE_32: int = 333
+
+# MEASURED wall clock, SUMMED over the three tiers of the run above: 185 s (unit)
+# + 500 s (integration) + 164 s (api + root) = 849 s. Comparable in kind to
+# FULL_SUITE_RUNTIME_SECONDS but NOT in instrument -- that figure was one process.
+POST_PHASE_SUITE_RUNTIME_SECONDS: int = 849
