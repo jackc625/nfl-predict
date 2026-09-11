@@ -90,10 +90,17 @@ import json
 import os
 import warnings
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from utils import get_logger
+
+if TYPE_CHECKING:
+    # Type-checking only. ``data.upstream_live`` imports THIS module at module scope, so
+    # importing it back here at module scope would be a cycle; the runtime link runs one
+    # way only, through the function-local deferred imports below.
+    from data.upstream_live import AsOfCapture
 
 logger = get_logger(__name__)
 
@@ -745,6 +752,36 @@ def _partition_seasons(
     return partition
 
 
+def _read_live_frame(
+    dataset: str,
+    season: int,
+    root: Path,
+    live_manifest_dir: Path | str | None,
+    as_of: AsOfCapture | None,
+) -> pd.DataFrame:
+    """Read the live capture *as_of* addresses for *season*, or refuse by name.
+
+    THE ONE PLACE the as-of meets the live zone. Both of ``_load``'s zone-serving
+    branches route through here rather than resolving a capture themselves, because two
+    resolutions are two chances for one of them to keep reading the newest capture after
+    the other learned about the as-of.
+
+    ``as_of`` of ``None`` means the newest capture (D32-14's default read).
+    """
+    from data import upstream_live
+
+    live_manifest = upstream_live.load_live_manifest(
+        season, manifest_dir=live_manifest_dir
+    )
+    entry = upstream_live.resolve_capture(
+        live_manifest,
+        dataset,
+        week=None if as_of is None else as_of.week,
+        sequence=None if as_of is None else as_of.sequence,
+    )
+    return upstream_live.read_live_frame(entry, root)
+
+
 def _load(
     dataset: str,
     seasons: list[int],
@@ -752,8 +789,26 @@ def _load(
     manifest_path: Path | str | None = None,
     data_root: Path | str | None = None,
     live_manifest_dir: Path | str | None = None,
+    as_of: AsOfCapture | None = None,
 ) -> pd.DataFrame:
-    """Return *dataset* for *seasons*, from whichever zone covers each one."""
+    """Return *dataset* for *seasons*, from whichever zone covers each one.
+
+    ``as_of`` is the PER-CALL override of the process-level capture selection D32-15
+    defines. It is resolved through ``data.upstream_live.current_as_of`` -- the single
+    definition of the precedence order -- and applies to LIVE-zone seasons only; sealed
+    seasons route through :func:`_read_pinned_frame` untouched, because a sealed season
+    has exactly one pinned file and no second capture to choose between.
+
+    The resolution happens ONCE, at the top, before any zone work. A malformed
+    environment as-of therefore refuses immediately on any load rather than surviving
+    until the run first touches the live zone -- which, in a full rebuild, could be an
+    hour of sealed-season work later.
+    """
+    from data import upstream_live
+
+    active_as_of = upstream_live.current_as_of(explicit=as_of)
+    as_of_text = None if active_as_of is None else active_as_of.render()
+
     manifest = load_manifest(manifest_path)
     partition = _partition_seasons(
         dataset, seasons, manifest, manifest_dir=live_manifest_dir
@@ -762,19 +817,15 @@ def _load(
     sealed = set(partition["sealed"])
 
     if seasons and not missing:
-        from data import upstream_live
-
         root = Path(data_root) if data_root is not None else default_data_root()
         frames = []
         for season in seasons:
             if season in sealed:
                 frames.append(_read_pinned_frame(dataset, season, manifest, root))
                 continue
-            live_manifest = upstream_live.load_live_manifest(
-                season, manifest_dir=live_manifest_dir
+            frames.append(
+                _read_live_frame(dataset, season, root, live_manifest_dir, active_as_of)
             )
-            entry = upstream_live.resolve_capture(live_manifest, dataset)
-            frames.append(upstream_live.read_live_frame(entry, root))
         combined = (
             pd.concat(frames, ignore_index=True)
             if len(frames) > 1
@@ -788,6 +839,10 @@ def _load(
             live_seasons=partition["live"],
             rows=len(combined),
             captured_at_utc=(manifest or {}).get("captured_at_utc"),
+            # WHICH capture this run read, in the form AS_OF_ENV accepts, so the run
+            # record answers "as of what?" rather than leaving it to be reconstructed
+            # from the operator's shell history. ``None`` means the newest capture.
+            as_of=as_of_text,
         )
         return combined
 
@@ -809,6 +864,9 @@ def _load(
         sealed_seasons=partition["sealed"],
         live_seasons=partition["live"],
         opt_in_env=LIVE_OPT_IN_ENV,
+        # Stamped on the bypass path too: a run that fetched half its seasons live still
+        # read the other half AS OF something, and the record has to say which.
+        as_of=as_of_text,
     )
 
     # PIN-02. This line passed ``seasons`` -- the WHOLE request -- so one uncovered
@@ -821,19 +879,15 @@ def _load(
     # A MIXED request. Each uncovered season is fetched on its own so the frames can be
     # concatenated in the ORIGINALLY REQUESTED season order beside the zone-served ones,
     # with no need to guess how to split one multi-season live frame back apart.
-    from data import upstream_live
-
     root = Path(data_root) if data_root is not None else default_data_root()
     frames = []
     for season in seasons:
         if season in sealed:
             frames.append(_read_pinned_frame(dataset, season, manifest, root))
         elif season in set(partition["live"]):
-            live_manifest = upstream_live.load_live_manifest(
-                season, manifest_dir=live_manifest_dir
+            frames.append(
+                _read_live_frame(dataset, season, root, live_manifest_dir, active_as_of)
             )
-            entry = upstream_live.resolve_capture(live_manifest, dataset)
-            frames.append(upstream_live.read_live_frame(entry, root))
         else:
             frames.append(_fetch_live(dataset, [season]))
     return pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0].copy()
@@ -860,6 +914,7 @@ def load_pbp(
     manifest_path: Path | str | None = None,
     data_root: Path | str | None = None,
     live_manifest_dir: Path | str | None = None,
+    as_of: AsOfCapture | None = None,
 ) -> pd.DataFrame:
     """Pinned replacement for ``nflreadpy.load_pbp(seasons).to_pandas()``.
 
@@ -869,6 +924,15 @@ def load_pbp(
     ``live_manifest_dir`` redirects the LIVE zone's manifest lookup the same way
     ``manifest_path`` redirects the sealed one, so a test can exercise both zones inside
     ``tmp_path`` without touching the committed records.
+
+    ``as_of`` overrides capture selection FOR THIS CALL ONLY. The ordinary way to select a
+    capture is the process-level context (``data.upstream_live.as_of_capture``, or the
+    environment variable named by ``data.upstream_live.AS_OF_ENV``), which every builder
+    call chain reaches with its call shape unchanged; this keyword exists for the one
+    caller that needs a different capture from the one the surrounding process is reading.
+    The wired builders deliberately pass NOTHING here -- a threaded as-of keyword is the
+    design D32-15 rejected, and ``tests/unit/test_upstream_pin.py`` asserts on the AST
+    that none of them grew one.
     """
     return _load(
         "pbp",
@@ -876,6 +940,7 @@ def load_pbp(
         manifest_path=manifest_path,
         data_root=data_root,
         live_manifest_dir=live_manifest_dir,
+        as_of=as_of,
     )
 
 
@@ -885,14 +950,19 @@ def load_schedules(
     manifest_path: Path | str | None = None,
     data_root: Path | str | None = None,
     live_manifest_dir: Path | str | None = None,
+    as_of: AsOfCapture | None = None,
 ) -> pd.DataFrame:
-    """Pinned replacement for ``nflreadpy.load_schedules(seasons).to_pandas()``."""
+    """Pinned replacement for ``nflreadpy.load_schedules(seasons).to_pandas()``.
+
+    See :func:`load_pbp` for ``live_manifest_dir`` and ``as_of``.
+    """
     return _load(
         "schedules",
         list(seasons),
         manifest_path=manifest_path,
         data_root=data_root,
         live_manifest_dir=live_manifest_dir,
+        as_of=as_of,
     )
 
 
@@ -902,12 +972,17 @@ def load_depth_charts(
     manifest_path: Path | str | None = None,
     data_root: Path | str | None = None,
     live_manifest_dir: Path | str | None = None,
+    as_of: AsOfCapture | None = None,
 ) -> pd.DataFrame:
-    """Pinned replacement for ``nflreadpy.load_depth_charts(season).to_pandas()``."""
+    """Pinned replacement for ``nflreadpy.load_depth_charts(season).to_pandas()``.
+
+    See :func:`load_pbp` for ``live_manifest_dir`` and ``as_of``.
+    """
     return _load(
         "depth_charts",
         [season],
         manifest_path=manifest_path,
         data_root=data_root,
         live_manifest_dir=live_manifest_dir,
+        as_of=as_of,
     )

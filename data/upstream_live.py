@@ -47,10 +47,16 @@ Thursday of week 1.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
+import os
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NoReturn
 
 import pandas as pd
 
@@ -58,6 +64,7 @@ from data.upstream_pin import (
     DATASET_LOADERS,
     UpstreamLiveCaptureMissing,
     UpstreamLiveCorrupt,
+    UpstreamPinError,
     digest_file,
 )
 from utils import get_logger
@@ -113,6 +120,174 @@ WEEK_LABEL_MEANS = (
 WEEK_LABEL_SEMANTICS_VERSION: int = 1
 
 LIVE_SOURCE = "nflverse (github.com/nflverse) via nflreadpy"
+
+
+# ---------------------------------------------------------------------------
+# THE AS-OF: WHICH CAPTURE A READ SERVES (D32-15)
+# ---------------------------------------------------------------------------
+#
+# ``features/team_form.py``, ``features/qb_tracking.py`` and ``scripts/ingest_games.py``
+# each call the pin INDEPENDENTLY, at different depths inside their own call chains. A
+# capture-selection keyword threaded through those three builders -- and through
+# everything that calls them -- has one path that gets missed, and that path silently
+# reads today's newest bytes and returns a number that looks entirely normal. There is no
+# traceback and no empty frame to notice.
+#
+# So capture selection is a PROCESS-LEVEL fact with a per-call override, never a threaded
+# keyword: the three call shapes stay exactly as they are and still reach the same as-of.
+#
+# WHAT PHASE 32 SHIPS, AND WHAT IT DELIBERATELY DOES NOT. D32-15 describes the
+# process-level form as "an explicit context manager, or a CLI flag that sets it once for a
+# rebuild". Phase 32 ships the context manager (:func:`as_of_capture`), the per-call
+# ``as_of=`` keyword on ``data.upstream_pin``'s loaders, and the environment form below. It
+# deliberately does NOT add an ``--as-of`` flag to ``scripts/build_features.py`` or
+# ``scripts/ingest_games.py``: those belong to the live run Phase 33 stands up, and
+# :data:`AS_OF_ENV` already supplies the "set it once for a whole rebuild" affordance
+# without this phase reaching into two CLIs it is not otherwise touching.
+# ``data.upstream_pin.LIVE_OPT_IN_ENV`` is the established precedent for a process-level
+# pin setting carried by the environment.
+AS_OF_ENV = "NFL_PREDICT_UPSTREAM_AS_OF"
+
+# The two accepted spellings, quoted into every refusal so the message teaches the form.
+AS_OF_ACCEPTED_FORMS = (
+    "'<week>' (for example '6') or '<week>:<sequence>' (for example '6:2')"
+)
+
+
+@dataclass(frozen=True)
+class AsOfCapture:
+    """WHICH live capture a read serves: a week, and optionally one exact sequence.
+
+    ``week`` is the week being PREDICTED, never the last week present in the data
+    (D32-13, ratified 2026-09-11). That is what makes a replay addressable with no
+    arithmetic: reproducing a Week-6 ledger row is literally ``AsOfCapture(week=6)``.
+    Under the rejected convention the address would have been "the capture whose content
+    ends at week 5, unless the Thursday game had already landed", which is a computation
+    with a wrong answer available.
+
+    ``sequence`` is ``None`` for the ordinary read -- the NEWEST capture of that week,
+    which is D32-14's default: a Saturday re-capture supersedes the Friday one for
+    ordinary reads while the Friday one stays addressable forever. A set ``sequence``
+    addresses one exact capture and is Phase 34's replay address.
+
+    AN AS-OF APPLIES ONLY TO LIVE-ZONE SEASONS. A sealed season has exactly one pinned
+    file per dataset, and an as-of never changes which bytes it reads -- there is no
+    second candidate for it to choose between. Setting an as-of around a sealed load is
+    therefore a no-op on the values, by construction rather than by care, and
+    ``tests/unit/test_upstream_pin.py`` holds that as a test over two different as-ofs.
+    """
+
+    week: int
+    sequence: int | None = None
+
+    def render(self) -> str:
+        """The as-of in the exact form :data:`AS_OF_ENV` accepts.
+
+        The round trip is the point: an as-of stamped into a run log can be pasted
+        straight back into the environment variable to re-read the same capture.
+        """
+        if self.sequence is None:
+            return str(self.week)
+        return f"{self.week}:{self.sequence}"
+
+
+# The process-level as-of. A ``ContextVar`` and NOT a module-level mutable global: a value
+# set inside a thread or an asyncio task must not leak sideways into an unrelated one, and
+# this repository runs pytest with ``asyncio_mode = "auto"``, which makes that a live
+# concern rather than a hypothetical.
+_AS_OF_VAR: contextvars.ContextVar[AsOfCapture | None] = contextvars.ContextVar(
+    "nfl_predict_upstream_as_of",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def as_of_capture(week: int, sequence: int | None = None) -> Iterator[AsOfCapture]:
+    """Read the live zone as of *week* for the duration of the block.
+
+    Every pinned load inside the block -- through any of the three builder call chains,
+    at any depth, with their call shapes unmodified -- resolves the live zone to that
+    capture.
+
+    The token is RESET in a ``finally``, so the as-of never survives the block, including
+    when the body raises. An as-of that outlived its block would silently re-address an
+    unrelated later load, which is the same class of wrong-bytes-that-look-normal failure
+    the process-level context exists to prevent.
+    """
+    active = AsOfCapture(week, sequence)
+    token = _AS_OF_VAR.set(active)
+    try:
+        yield active
+    finally:
+        _AS_OF_VAR.reset(token)
+
+
+def parse_as_of(raw: str) -> AsOfCapture:
+    """Parse :data:`AS_OF_ENV`'s value, or REFUSE it.
+
+    Accepts ``"6"`` (the newest capture of week 6) and ``"6:2"`` (week 6, sequence 2).
+    Anything else -- a non-integer, a non-positive number, an empty string, more than one
+    colon -- raises :class:`data.upstream_pin.UpstreamPinError`.
+
+    IT NEVER FALLS BACK TO THE NEWEST CAPTURE. A typo'd as-of that silently read today's
+    bytes is exactly the D32-15 hazard: the run would finish, report success, and produce
+    a number computed from a capture nobody asked for -- and the number would look
+    entirely normal.
+    """
+
+    def _refuse() -> NoReturn:
+        msg = (
+            f"{AS_OF_ENV}={raw!r} is not a capture address.\n"
+            "\n"
+            f"Accepted forms: {AS_OF_ACCEPTED_FORMS}.\n"
+            "  <week>      the week being PREDICTED (D32-13), not the last week present "
+            "in the data\n"
+            "  <sequence>  one exact re-capture of that week; omit it to read the newest "
+            "capture for the week\n"
+            "\n"
+            "Refusing rather than falling back to the newest capture. A mistyped as-of "
+            "that silently read today's bytes would finish the run, report success, and "
+            "return a number that looks entirely normal -- computed from a capture "
+            "nobody asked for."
+        )
+        raise UpstreamPinError(msg)
+
+    text = raw.strip()
+    parts = text.split(":")
+    if not text or len(parts) > 2:
+        _refuse()
+    try:
+        values = [int(part) for part in parts]
+    except ValueError:
+        _refuse()
+    if any(value < 1 for value in values):
+        _refuse()
+    return AsOfCapture(values[0], values[1] if len(values) == 2 else None)
+
+
+def current_as_of(*, explicit: AsOfCapture | None = None) -> AsOfCapture | None:
+    """The as-of in force, by ONE precedence order defined in ONE place.
+
+    1. *explicit* -- the per-call ``as_of=`` keyword, when given.
+    2. :func:`as_of_capture`'s context variable, when set. An explicit ``with`` block is
+       more specific than a process-wide setting, so it wins over the environment.
+    3. :data:`AS_OF_ENV`, when set and non-blank, through :func:`parse_as_of`. A blank
+       value is NOT an as-of, mirroring ``data.upstream_pin.live_upstream_allowed``.
+    4. ``None`` -- read the newest capture, which is D32-14's default read.
+
+    Every consumer calls this function. No consumer re-implements the order: two
+    implementations of a precedence rule are two rules, and the one that disagrees is the
+    one that silently reads the wrong capture.
+    """
+    if explicit is not None:
+        return explicit
+    scoped = _AS_OF_VAR.get()
+    if scoped is not None:
+        return scoped
+    raw = os.environ.get(AS_OF_ENV, "")
+    if raw.strip():
+        return parse_as_of(raw)
+    return None
 
 
 def live_manifest_path(season: int, *, manifest_dir: Path | str | None = None) -> Path:
