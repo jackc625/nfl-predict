@@ -17,6 +17,15 @@ each is proved in BOTH directions:
 4. A missing pin REFUSES rather than silently refetching, and the live loader is proved
    uncalled. Live refetching happens only under the explicit environment opt-in, and it
    warns when it does.
+
+Phase 32 adds a fifth, and it is proved in both directions too: WHICH live capture a read
+serves is a process-level as-of (D32-15), so one setting reaches all three independent
+builder call chains without any of them being modified. The positive direction is three
+tests that set the as-of and read back the marker value of the addressed capture through
+the exact call shapes ``features/team_form.py``, ``features/qb_tracking.py`` and
+``scripts/ingest_games.py`` use today. The negative direction is an ``ast`` assertion that
+none of those three modules passes an ``as_of`` keyword -- the threaded-keyword design
+D32-15 rejected, and the one a later change would drift back toward.
 """
 
 from __future__ import annotations
@@ -25,11 +34,19 @@ import ast
 import json
 import warnings
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 import pytest
 
 from data import upstream_pin
+from data.upstream_live import (
+    AS_OF_ENV,
+    LIVE_MANIFEST_SCHEMA_VERSION,
+    AsOfCapture,
+    as_of_capture,
+    current_as_of,
+)
 from data.upstream_pin import (
     LIVE_OPT_IN_ENV,
     LIVE_ZONE_FIRST_SEASON,
@@ -105,6 +122,132 @@ def _write_pin(
     manifest_path = tmp_path / "upstream_pin.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest_path, data_root
+
+
+# The marker EPA each LIVE capture carries, keyed by the ``(week, sequence)`` address that
+# holds it. The digits are the address itself, so a failing assertion says WHICH capture
+# was read rather than only that the value was wrong -- and reading "the newest" when an
+# as-of asked for week 6 sequence 1 shows up as 7.1 instead of 6.1.
+CAPTURE_MARKERS: dict[tuple[int, int], float] = {
+    (6, 1): 6.1,
+    (6, 2): 6.2,
+    (7, 1): 7.1,
+}
+
+# The live capture addresses the two-zone fixture below writes, in append order.
+CAPTURE_ADDRESSES: tuple[tuple[int, int], ...] = ((6, 1), (6, 2), (7, 1))
+
+# The datasets the fixture captures. All three, because the three wired call chains
+# between them read all three: team_form and qb_tracking read pbp, qb_tracking reads
+# depth_charts, ingest_games reads schedules and pbp.
+LIVE_DATASETS: tuple[str, ...] = ("pbp", "schedules", "depth_charts")
+
+
+def _capture_frame(week: int, sequence: int) -> pd.DataFrame:
+    """The frame stored at one live capture address.
+
+    The same play-by-play shape stands in for all three datasets on purpose: what these
+    tests are about is which CAPTURE a read resolves to, not what each dataset's columns
+    look like. Giving each dataset its own schema here would add nothing an assertion
+    could read and would hide the marker behind three different column names.
+    """
+    return _pbp_frame(LIVE_ZONE_FIRST_SEASON, epa=CAPTURE_MARKERS[(week, sequence)])
+
+
+class _TwoZones(NamedTuple):
+    """A sealed pin and a live manifest, both inside ``tmp_path``."""
+
+    manifest_path: Path
+    data_root: Path
+    live_dir: Path
+
+    def loader_kwargs(self) -> dict[str, Path]:
+        """The three REDIRECT keywords, so a test never touches the committed records.
+
+        Deliberately only the redirects: the SEASON argument stays written out at every
+        call site below, because matching the call shapes the wired modules actually use
+        is the whole point of those tests.
+        """
+        return {
+            "manifest_path": self.manifest_path,
+            "data_root": self.data_root,
+            "live_manifest_dir": self.live_dir,
+        }
+
+
+def _write_live_manifest(
+    tmp_path: Path,
+    data_root: Path,
+    *,
+    season: int = LIVE_ZONE_FIRST_SEASON,
+) -> Path:
+    """Write a live-zone manifest holding :data:`CAPTURE_ADDRESSES`; return its directory.
+
+    The sibling of :func:`_write_pin` for the LIVE half. Two captures exist for week 6
+    (sequences 1 and 2) and one for week 7, each holding a distinguishable frame, so every
+    test below can say exactly which capture was read by looking at the value it got back.
+    """
+    (data_root / "bronze").mkdir(parents=True, exist_ok=True)
+    datasets: dict[str, dict] = {}
+    for dataset in LIVE_DATASETS:
+        captures: list[dict] = []
+        for week, sequence in CAPTURE_ADDRESSES:
+            frame = _capture_frame(week, sequence)
+            relative = (
+                f"bronze/{dataset}_raw_bronze_{season}_W{week:02d}_S{sequence}"
+                "_20260911T000000.parquet"
+            )
+            path = data_root / relative
+            frame.to_parquet(path, index=False)
+            captures.append(
+                {
+                    "week": week,
+                    "sequence": sequence,
+                    "captured_at_utc": f"2026-09-{10 + sequence:02d}T00:00:00+00:00",
+                    "path": relative,
+                    "sha256": digest_file(path),
+                    "bytes": path.stat().st_size,
+                    "rows": len(frame),
+                    "columns": list(frame.columns),
+                }
+            )
+        datasets[dataset] = {
+            "loader": f"nflreadpy.load_{dataset}",
+            "captures": captures,
+        }
+
+    manifest = {
+        "schema_version": LIVE_MANIFEST_SCHEMA_VERSION,
+        "season": season,
+        "zone": "live",
+        "source": "test fixture",
+        "datasets": datasets,
+    }
+    live_dir = tmp_path / "upstream_live"
+    live_dir.mkdir(parents=True, exist_ok=True)
+    (live_dir / f"{season}.json").write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+    return live_dir
+
+
+@pytest.fixture
+def two_zones(tmp_path: Path) -> _TwoZones:
+    """Both zones, hermetically: a sealed 2024/2025 pbp pin and a live 2026 manifest.
+
+    Nothing here reads ``config/``, ``data/`` or the network, so these tests pass on a
+    fresh checkout exactly as the rest of the module does.
+    """
+    manifest_path, data_root = _write_pin(
+        tmp_path,
+        "pbp",
+        {
+            SEALED_THROUGH_SEASON - 1: _pbp_frame(SEALED_THROUGH_SEASON - 1),
+            SEALED_THROUGH_SEASON: _pbp_frame(SEALED_THROUGH_SEASON),
+        },
+    )
+    live_dir = _write_live_manifest(tmp_path, data_root)
+    return _TwoZones(manifest_path, data_root, live_dir)
 
 
 @pytest.fixture
@@ -754,3 +897,373 @@ class TestThePinnedFilesOnDiskMatchTheCommittedManifest:
             "the pinned snapshots on disk no longer match the committed manifest:\n  "
             + "\n  ".join(mismatches)
         )
+
+
+class TestTheAsOfContextReachesEveryWiredCallSite:
+    """D32-15, in both directions: the setting reaches all three chains, unthreaded.
+
+    ``features/team_form.py``, ``features/qb_tracking.py`` and ``scripts/ingest_games.py``
+    each call the pin independently, at different depths inside their own call chains. A
+    capture-selection keyword threaded through those three builders -- and through
+    everything that calls them -- has one path that gets missed, and that path silently
+    reads today's newest bytes and returns a number that looks entirely normal: no
+    traceback, no empty frame, nothing to notice. That is why D32-15 is a process-level
+    context and why 32-CONTEXT.md rates it costly.
+
+    Each test below sets the as-of once and reads back through the exact call shape its
+    module uses TODAY. A shape that stopped reaching the context would return the week-7
+    marker (7.1) instead of the week-6-sequence-1 marker (6.1), which is precisely the
+    "normal-looking wrong number" this class exists to make impossible to miss.
+    """
+
+    WIRED_MODULES = (
+        "features/team_form.py",
+        "features/qb_tracking.py",
+        "scripts/ingest_games.py",
+    )
+
+    PINNED_LOADERS = {"load_pbp", "load_schedules", "load_depth_charts"}
+
+    @staticmethod
+    def _live_epa(frame: pd.DataFrame) -> list[float]:
+        """The EPA markers of the LIVE-zone rows in *frame*, in frame order."""
+        return list(frame.loc[frame["season"] == LIVE_ZONE_FIRST_SEASON, "epa"])
+
+    def test_team_form_reads_the_active_as_of(
+        self, two_zones: _TwoZones, network_is_a_failure: list[str]
+    ) -> None:
+        """``features/team_form.py:123``, with the ``[season - 1, season]`` request.
+
+        That request shape is built at ``features/team_form.py:654`` and ``:712`` and is
+        the one PIN-02 protects: it spans both zones at once, so a call site that reached
+        the as-of for neither half and a call site that reached it for the sealed half
+        would both be wrong here, and differently.
+        """
+        with as_of_capture(week=6, sequence=1):
+            frame = upstream_pin.load_pbp(
+                [SEALED_THROUGH_SEASON, LIVE_ZONE_FIRST_SEASON],
+                **two_zones.loader_kwargs(),
+            )
+
+        assert self._live_epa(frame) == [6.1, -6.1], (
+            "features/team_form.py's [season - 1, season] play-by-play request did NOT "
+            "reach the process-level as-of: it read a capture other than week 6 sequence "
+            "1. A missed path here returns a normal-looking number computed from bytes "
+            "nobody asked for."
+        )
+        assert network_is_a_failure == []
+
+    def test_qb_tracking_reads_the_active_as_of(
+        self, two_zones: _TwoZones, network_is_a_failure: list[str]
+    ) -> None:
+        """``features/qb_tracking.py:779-783`` (pbp) and ``:715`` (depth charts).
+
+        Two shapes, both unmodified. The per-season ``load_pbp([s])`` loop dodges PIN-02's
+        bug by call shape rather than by design, so it is exactly the kind of site a
+        threaded keyword would have been added to last, or not at all.
+        """
+        with as_of_capture(week=6, sequence=1):
+            pbp = upstream_pin.load_pbp(
+                [LIVE_ZONE_FIRST_SEASON], **two_zones.loader_kwargs()
+            )
+            depth_charts = upstream_pin.load_depth_charts(
+                LIVE_ZONE_FIRST_SEASON, **two_zones.loader_kwargs()
+            )
+
+        assert self._live_epa(pbp) == [6.1, -6.1], (
+            "features/qb_tracking.py's per-season load_pbp([s]) shape did not reach the "
+            "as-of"
+        )
+        assert self._live_epa(depth_charts) == [6.1, -6.1], (
+            "features/qb_tracking.py's load_depth_charts(season) shape did not reach the "
+            "as-of -- the depth-chart read is a separate call chain from the pbp one and "
+            "has to be proved separately"
+        )
+        assert network_is_a_failure == []
+
+    def test_ingest_games_reads_the_active_as_of(
+        self, two_zones: _TwoZones, network_is_a_failure: list[str]
+    ) -> None:
+        """``scripts/ingest_games.py:134`` (schedules) and ``:175`` (play-by-play)."""
+        with as_of_capture(week=6, sequence=1):
+            schedules = upstream_pin.load_schedules(
+                [LIVE_ZONE_FIRST_SEASON], **two_zones.loader_kwargs()
+            )
+            pbp = upstream_pin.load_pbp(
+                [LIVE_ZONE_FIRST_SEASON], **two_zones.loader_kwargs()
+            )
+
+        assert self._live_epa(schedules) == [6.1, -6.1], (
+            "scripts/ingest_games.py's load_schedules shape did not reach the as-of"
+        )
+        assert self._live_epa(pbp) == [6.1, -6.1], (
+            "scripts/ingest_games.py's load_pbp shape did not reach the as-of"
+        )
+        assert network_is_a_failure == []
+
+    def test_the_same_shapes_read_the_newest_capture_when_no_as_of_is_set(
+        self, two_zones: _TwoZones, network_is_a_failure: list[str]
+    ) -> None:
+        """The control, without which the three tests above could pass vacuously.
+
+        If every read returned the week-6-sequence-1 frame regardless -- because the
+        fixture only really held one capture, say -- the positive tests would pass while
+        proving nothing. Unset, the same three shapes must return the week-7 marker.
+        """
+        kwargs = two_zones.loader_kwargs()
+        assert current_as_of() is None, "an as-of leaked in from an earlier test"
+
+        team_form = upstream_pin.load_pbp(
+            [SEALED_THROUGH_SEASON, LIVE_ZONE_FIRST_SEASON], **kwargs
+        )
+        depth_charts = upstream_pin.load_depth_charts(LIVE_ZONE_FIRST_SEASON, **kwargs)
+        schedules = upstream_pin.load_schedules([LIVE_ZONE_FIRST_SEASON], **kwargs)
+
+        for name, frame in (
+            ("team_form pbp", team_form),
+            ("qb_tracking depth_charts", depth_charts),
+            ("ingest_games schedules", schedules),
+        ):
+            assert self._live_epa(frame) == [7.1, -7.1], (
+                f"{name} did not read the NEWEST capture with no as-of set, so the "
+                "fixture cannot distinguish 'reached the as-of' from 'always returns the "
+                "same frame' and the positive proofs above are vacuous"
+            )
+        assert network_is_a_failure == []
+
+    @pytest.mark.parametrize("relative", WIRED_MODULES)
+    def test_the_wired_modules_pass_no_as_of_argument(self, relative: str) -> None:
+        """The STRUCTURAL proof, on the AST rather than on the source text.
+
+        The three tests above prove the context reaches each call chain. This one proves
+        it is the CONTEXT doing that work and not a keyword somebody quietly threaded
+        through a builder -- the design D32-15 rejected, and the one a later change would
+        drift back toward, because threading a keyword always looks like the smaller diff
+        at the moment it is written.
+        """
+        tree = ast.parse((REPO_ROOT / relative).read_text(encoding="utf-8"))
+
+        threaded = [
+            f"line {node.lineno}: {ast.unparse(node.func)}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in self.PINNED_LOADERS
+            and any(keyword.arg == "as_of" for keyword in node.keywords)
+        ]
+
+        assert threaded == [], (
+            f"{relative} threads an as_of keyword into a pinned loader at {threaded}. "
+            "Capture selection is a PROCESS-LEVEL context precisely so these three "
+            "modules do not have to carry it: a keyword threaded through three builders "
+            "and everything that calls them has one path that gets missed, and that path "
+            "silently reads today's newest bytes (D32-15)."
+        )
+
+
+class TestTheAsOfPrecedenceAndItsFailureModes:
+    """One precedence order, and every way of getting it wrong is loud."""
+
+    def test_the_per_call_as_of_keyword_beats_the_context(
+        self, two_zones: _TwoZones, network_is_a_failure: list[str]
+    ) -> None:
+        with as_of_capture(week=7):
+            frame = upstream_pin.load_pbp(
+                [LIVE_ZONE_FIRST_SEASON],
+                as_of=AsOfCapture(6, 1),
+                **two_zones.loader_kwargs(),
+            )
+
+        assert list(frame["epa"]) == [6.1, -6.1], (
+            "the per-call as_of keyword did not override the enclosing context, so the "
+            "one caller that needs a different capture from the surrounding process "
+            "cannot ask for one"
+        )
+        assert network_is_a_failure == []
+
+    def test_the_context_beats_the_environment(
+        self,
+        two_zones: _TwoZones,
+        network_is_a_failure: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An explicit ``with`` block is more specific than a process-wide setting."""
+        monkeypatch.setenv(AS_OF_ENV, "7")
+
+        with as_of_capture(week=6, sequence=1):
+            frame = upstream_pin.load_pbp(
+                [LIVE_ZONE_FIRST_SEASON], **two_zones.loader_kwargs()
+            )
+
+        assert list(frame["epa"]) == [6.1, -6.1], (
+            f"{AS_OF_ENV} overrode an enclosing as_of_capture block. A rebuild that set "
+            "the variable once would then silently ignore every deliberate replay inside "
+            "it."
+        )
+        assert network_is_a_failure == []
+
+    def test_no_as_of_reads_the_newest_capture(
+        self, two_zones: _TwoZones, network_is_a_failure: list[str]
+    ) -> None:
+        """D32-14's default read, unchanged by the existence of an as-of mechanism."""
+        frame = upstream_pin.load_pbp(
+            [LIVE_ZONE_FIRST_SEASON], **two_zones.loader_kwargs()
+        )
+
+        assert list(frame["epa"]) == [7.1, -7.1], (
+            "with nothing set, the read did not serve the newest capture"
+        )
+        assert network_is_a_failure == []
+
+    def test_a_sequence_addresses_one_exact_capture(
+        self, two_zones: _TwoZones, network_is_a_failure: list[str]
+    ) -> None:
+        """Week 6 was captured twice; both remain addressable forever (D32-14)."""
+        kwargs = two_zones.loader_kwargs()
+
+        first = upstream_pin.load_pbp(
+            [LIVE_ZONE_FIRST_SEASON], as_of=AsOfCapture(6, 1), **kwargs
+        )
+        second = upstream_pin.load_pbp(
+            [LIVE_ZONE_FIRST_SEASON], as_of=AsOfCapture(6, 2), **kwargs
+        )
+        newest_of_the_week = upstream_pin.load_pbp(
+            [LIVE_ZONE_FIRST_SEASON], as_of=AsOfCapture(6), **kwargs
+        )
+
+        assert list(first["epa"]) == [6.1, -6.1]
+        assert list(second["epa"]) == [6.2, -6.2], (
+            "sequence 2 returned the same frame as sequence 1, so a re-capture is not "
+            "separately addressable and a Phase-34 replay address means nothing"
+        )
+        assert list(newest_of_the_week["epa"]) == [6.2, -6.2], (
+            "a week with no sequence did not resolve to the NEWEST capture of that week; "
+            "an ordinary read must see the Saturday re-run, not the superseded Friday one"
+        )
+        assert network_is_a_failure == []
+
+    def test_a_replay_of_a_week_with_no_capture_lists_the_captures_that_exist(
+        self, two_zones: _TwoZones, network_is_a_failure: list[str]
+    ) -> None:
+        """D32-16. A missing week is NEVER served from a different one."""
+        with (
+            pytest.raises(UpstreamLiveCaptureMissing) as error,
+            as_of_capture(week=12),
+        ):
+            upstream_pin.load_pbp([LIVE_ZONE_FIRST_SEASON], **two_zones.loader_kwargs())
+
+        message = str(error.value)
+        assert "week 6" in message and "week 7" in message, (
+            "the refusal does not list the weeks that DO have captures, so an operator "
+            f"cannot tell what IS replayable:\n{message}"
+        )
+        assert "(6, 1), (6, 2), (7, 1)" in message, (
+            "the refusal does not print the addressable (week, sequence) pairs in the "
+            "form the operator would retype"
+        )
+        assert isinstance(error.value, UpstreamPinError), (
+            "the replay refusal is outside the pin's exception family"
+        )
+        for swallowed in (ValueError, RuntimeError, ImportError):
+            assert not isinstance(error.value, swallowed), (
+                f"the replay refusal is a {swallowed.__name__}, which the wired call "
+                "sites catch and convert into an empty frame"
+            )
+        assert network_is_a_failure == []
+
+    @pytest.mark.parametrize("raw", ("six", "x", "-1", "6:2:3", "6:x"))
+    def test_a_malformed_environment_as_of_raises_rather_than_reading_the_newest(
+        self,
+        raw: str,
+        two_zones: _TwoZones,
+        network_is_a_failure: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """T-32-29. This silent fallback would be invisible, which is what makes it bad.
+
+        A malformed as-of that fell back to the newest capture would finish the run,
+        report success, and return a number that looks entirely normal -- computed from a
+        capture nobody asked for. There is no traceback to read and no empty frame to
+        notice, so the refusal is the only thing standing between a typo and a wrong
+        number in a published prediction.
+        """
+        monkeypatch.setenv(AS_OF_ENV, raw)
+
+        with pytest.raises(UpstreamPinError) as error:
+            upstream_pin.load_pbp([LIVE_ZONE_FIRST_SEASON], **two_zones.loader_kwargs())
+
+        message = str(error.value)
+        assert AS_OF_ENV in message, (
+            "the refusal does not name the variable that caused it"
+        )
+        assert repr(raw) in message, "the refusal does not quote the value it rejected"
+        assert network_is_a_failure == []
+
+    def test_the_context_does_not_survive_an_exception_in_its_body(
+        self, network_is_a_failure: list[str]
+    ) -> None:
+        """T-32-31. An as-of that outlived its block would re-address an unrelated load."""
+        assert current_as_of() is None
+
+        with pytest.raises(_BoomInsideTheBlock):
+            with as_of_capture(week=6, sequence=1):
+                assert current_as_of() == AsOfCapture(6, 1)
+                raise _BoomInsideTheBlock
+
+        assert current_as_of() is None, (
+            "the as-of survived an exception raised inside its block, so every later "
+            "load in this process would silently read week 6 sequence 1"
+        )
+
+    @pytest.mark.parametrize("week", (6, 7))
+    def test_an_as_of_never_changes_which_bytes_a_sealed_season_reads(
+        self, week: int, two_zones: _TwoZones, network_is_a_failure: list[str]
+    ) -> None:
+        """T-32-32. A sealed season has exactly one pinned file per dataset.
+
+        Parametrized over two DIFFERENT as-ofs on purpose: one would prove only that the
+        sealed read survived an as-of, not that it is indifferent to which one.
+        """
+        kwargs = two_zones.loader_kwargs()
+        baseline = upstream_pin.load_pbp([SEALED_THROUGH_SEASON - 1], **kwargs)
+
+        with as_of_capture(week=week):
+            under_as_of = upstream_pin.load_pbp([SEALED_THROUGH_SEASON - 1], **kwargs)
+
+        pd.testing.assert_frame_equal(
+            under_as_of,
+            baseline,
+            obj=(
+                f"the sealed {SEALED_THROUGH_SEASON - 1} frame read under "
+                f"as_of_capture(week={week}) differs from the frame read with no as-of. "
+                "An as-of selects among LIVE captures; a sealed season has exactly one "
+                "pinned file and nothing for an as-of to choose between."
+            ),
+        )
+        assert network_is_a_failure == []
+
+    def test_a_mixed_request_applies_the_as_of_only_to_the_live_half(
+        self, two_zones: _TwoZones, network_is_a_failure: list[str]
+    ) -> None:
+        """The two zones in one request, in the ORIGINALLY REQUESTED season order."""
+        with as_of_capture(week=6, sequence=1):
+            frame = upstream_pin.load_pbp(
+                [SEALED_THROUGH_SEASON, LIVE_ZONE_FIRST_SEASON],
+                **two_zones.loader_kwargs(),
+            )
+
+        assert list(frame["season"]) == [
+            SEALED_THROUGH_SEASON,
+            SEALED_THROUGH_SEASON,
+            LIVE_ZONE_FIRST_SEASON,
+            LIVE_ZONE_FIRST_SEASON,
+        ], "the mixed request did not preserve the requested season order"
+        assert list(frame["epa"]) == [0.25, -0.25, 6.1, -6.1], (
+            "the as-of did not land on the live half alone: the sealed rows must carry "
+            "their pinned values and the live rows the addressed capture's marker"
+        )
+        assert network_is_a_failure == []
+
+
+class _BoomInsideTheBlock(RuntimeError):
+    """Raised inside an ``as_of_capture`` block to prove the token is reset anyway."""
