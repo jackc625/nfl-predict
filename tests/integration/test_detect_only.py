@@ -722,6 +722,105 @@ class TestADetectorFailureIsRecordedAndNeverSwallowed:
                 sealed=capture_live_season.SealedProbeRun(lock_path=env["lock_path"]),
             )
 
+    def test_a_schema_mismatched_sealed_lock_does_not_fail_the_capture(
+        self, env: dict
+    ) -> None:
+        """WR-02. The DETECTOR'S input failing must cost a verdict, never a week.
+
+        ``SealedProbeRun.lock()`` calls ``load_sealed_lock``, which raises
+        ``UpstreamPinCorrupt`` -- an ``UpstreamPinError`` subclass -- on an unrecognised
+        ``schema_version``. The deliberate WR-10 ``except UpstreamPinError: raise`` clause
+        caught it AHEAD of the broad guard and re-raised, so the exception unwound through
+        ``capture_live_dataset`` AFTER the bronze snapshot was written and BEFORE
+        ``write_live_manifest``: the run exited EXIT_CAPTURE_FAILED, the week was not
+        recorded at all, and an orphan parquet was left in the append-only archive -- for a
+        reason with nothing to do with the bytes just fetched. A hand-edited or
+        future-versioned lock took the whole live zone offline, which is exactly what
+        D32-07 forbids.
+        """
+        broken = env["tmp_path"] / "future.sealed.lock"
+        broken.write_text(
+            json.dumps({"schema_version": 9999, "datasets": {}}), encoding="utf-8"
+        )
+        argv = _capture_argv(env, 1)
+        argv[argv.index("--sealed-lock") + 1] = str(broken)
+
+        code = capture_live_season.main(argv)
+
+        assert code == capture_live_season.EXIT_OK, (
+            "a lock this run never reads bytes through failed the capture. The capture "
+            "reads and writes PINNED bytes and is provably unaffected by whether the "
+            "sealed lock parses."
+        )
+        entry = _recorded_entry(env)
+        assert entry["rows"] == 1, (
+            "the week was not recorded, so the bronze snapshot the capture wrote is an "
+            "orphan no manifest entry accounts for"
+        )
+
+        entries = read_probe_log(env["log_path"])
+        assert len(entries) == 1, "the run left no probe-log line"
+        assert entries[-1]["event_class"] == str(RevisionEventClass.UNKNOWN), (
+            "a detector that could not read its own input reported something other than "
+            "UNKNOWN"
+        )
+        assert entries[-1]["event_class"] != str(RevisionEventClass.CLEAN)
+        assert "schema_version" in entries[-1]["reason"], (
+            f"the recorded reason does not name the cause:\n{entries[-1]['reason']}"
+        )
+
+    def test_the_broken_lock_verdict_reports_zero_coverage_rather_than_none(
+        self, env: dict
+    ) -> None:
+        """The guarded verdict still carries ``checked``/``expected``.
+
+        A verdict recorded without its coverage is a claim nobody can audit, and the
+        CR-01 rule then makes ``expected == 0`` UNKNOWN in its own right.
+        """
+        broken = env["tmp_path"] / "future2.sealed.lock"
+        broken.write_text(
+            json.dumps({"schema_version": 9999, "datasets": {}}), encoding="utf-8"
+        )
+
+        run = capture_live_season.SealedProbeRun(lock_path=broken)
+        verdict = run.probe()
+
+        assert verdict["event_class"] == str(RevisionEventClass.UNKNOWN)
+        assert verdict["checked"] == 0
+        assert verdict["expected"] == 0
+        assert set(verdict) == set(sealed_probe.VERDICT_KEYS)
+        assert run.lock_error is not None, (
+            "the refusal was swallowed rather than recorded; a detector that goes quiet "
+            "is worse than one that over-reports"
+        )
+
+    def test_a_pin_refusal_from_the_capture_path_still_propagates(
+        self, env: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The WR-02 carve-out is NARROW: only the sealed lock read is converted.
+
+        Every other ``UpstreamPinError`` reaching ``run_detectors`` came from the capture
+        or read path, where a pin refusal genuinely means the bytes are compromised, and
+        WR-10's re-raise must still carry it out untouched. Without this assertion the
+        WR-02 fix could have been made by widening that clause, which cannot tell the two
+        origins apart.
+        """
+        from data.upstream_pin import UpstreamPinCorrupt
+
+        def _refuse(**_kwargs):
+            msg = "a pin refusal from the READ path, not the detector's own input"
+            raise UpstreamPinCorrupt(msg)
+
+        monkeypatch.setattr(capture_live_season, "detect_live_revision", _refuse)
+
+        with pytest.raises(UpstreamPinCorrupt, match="from the READ path"):
+            capture_live_season.run_detectors(
+                dataset="pbp",
+                season=LIVE_SEASON,
+                current_entry={"week": 1, "sequence": 1, "week_digests": {}},
+                sealed=capture_live_season.SealedProbeRun(lock_path=env["lock_path"]),
+            )
+
     def test_the_pin_refusal_clause_precedes_every_broad_handler(self) -> None:
         import inspect
 

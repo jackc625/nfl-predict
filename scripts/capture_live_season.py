@@ -125,6 +125,7 @@ from data.upstream_pin import (
     SEALED_THROUGH_SEASON,
     ZONE_LIVE,
     ZONE_SEALED,
+    UpstreamPinCorrupt,
     UpstreamPinError,
     UpstreamSeasonWindowRefused,
     ZoneWriteRefused,
@@ -534,6 +535,7 @@ class SealedProbeRun:
         self.session = session
         self._lock: dict | None = None
         self._lock_loaded = False
+        self._lock_error: BaseException | None = None
         self._verdict: dict | None = None
 
     @property
@@ -554,11 +556,45 @@ class SealedProbeRun:
         """Record *verdict* as this run's answer, including a guarded UNKNOWN."""
         self._verdict = verdict
 
+    @property
+    def lock_error(self) -> BaseException | None:
+        """The refusal :meth:`lock` met, or ``None``. Recorded, never raised (WR-02)."""
+        return self._lock_error
+
     def lock(self) -> dict | None:
-        """The sealed lock, loaded at most once per run."""
+        """The sealed lock, loaded at most once per run. NEVER raises for a bad lock.
+
+        WR-02. This class's own docstring already promised it -- "a lock that will not load
+        is not an exception this class raises" -- and it was false for the single most
+        likely lock failure. ``load_sealed_lock`` raises :class:`UpstreamPinCorrupt` (an
+        ``UpstreamPinError`` subclass) on an unrecognised ``schema_version``, and
+        :func:`run_detectors`'s deliberate ``except UpstreamPinError: raise`` clause sits
+        AHEAD of the broad guard that would have recorded it -- so it escaped, unwound
+        through :func:`capture_live_dataset` AFTER the bronze snapshot had been written and
+        BEFORE ``write_live_manifest``, and the weekly run exited ``EXIT_CAPTURE_FAILED``.
+        The week was not recorded at all and an orphan parquet was left in the append-only
+        archive, for a reason that had nothing to do with the bytes just fetched. A
+        hand-edited or future-versioned lock took the whole live zone offline -- which is
+        precisely what D32-07 forbids: "IT CANNOT RAISE FOR A DETECTOR REASON".
+
+        ONLY :class:`UpstreamPinCorrupt` IS CONVERTED, and the narrowness is the point. It
+        is the one ``UpstreamPinError`` that can originate in the DETECTOR'S OWN INPUT. Any
+        other member of that family reaching :func:`run_detectors` came from the CAPTURE or
+        READ path, where a pin refusal genuinely means the bytes are compromised, and the
+        WR-10 re-raise must still carry it out untouched.
+
+        The refusal is RECORDED on :attr:`lock_error`, not swallowed: :meth:`probe`
+        short-circuits to an UNKNOWN verdict carrying its text, so the committed probe log
+        says the detector could not read its own input. A detector that cannot read its
+        input is UNKNOWN, never clean.
+        """
         if not self._lock_loaded:
             path = self.lock_path if self.lock_path is not None else SEALED_LOCK_PATH
-            self._lock = load_sealed_lock(path)
+            try:
+                self._lock = load_sealed_lock(path)
+            except UpstreamPinCorrupt as exc:
+                self._lock_error = exc
+                self._lock = None
             self._lock_loaded = True
         return self._lock
 
@@ -573,6 +609,14 @@ class SealedProbeRun:
         read as clean, but the line says WHICH pairs went unseen.
         """
         lock = self.lock()
+
+        # WR-02. The lock is the ruling's ONLY baseline, so a lock that would not load
+        # means there is nothing to rule against and no point spending three GitHub
+        # requests to discover that. Recorded as UNKNOWN carrying the refusal's own text
+        # -- never raised, and never clean.
+        if self._lock_error is not None:
+            return _unknown_sealed_verdict(self._lock_error, lock=None, now=now)
+
         rate_limits: dict[str, int | None] = {}
 
         assets_by_tag: dict[str, dict[str, dict] | None] = {}
@@ -728,14 +772,26 @@ def run_detectors(
     A GitHub outage must still leave a live verdict; an unreadable bet list must still
     leave a sealed one.
 
-    ``except UpstreamPinError: raise`` SITS BEFORE EVERY BROAD HANDLER (WR-10). A pin
-    refusal is the one failure that must never be degraded: ``data/upstream_pin.py``'s
+    ``except UpstreamPinError: raise`` SITS BEFORE EVERY BROAD HANDLER (WR-10), WITH ONE
+    NAMED CARVE-OUT (WR-02). A pin refusal is the one failure that must never be degraded:
+    ``data/upstream_pin.py``'s
     hierarchy exists because every wired call site converts the ordinary exception types
     into an empty frame, and ``scripts/ingest_games.py:308-320`` records that exact defect
     reaching production -- a bare ``except Exception`` there caught the pin's refusal, the
     ingest logged one warning line and wrote silver ``games`` with no scores merged. A
     broad handler around a detector would do the same thing in the one place nobody is
     watching.
+
+    THE CARVE-OUT, AND WHY IT IS NOT A HOLE IN THAT RULE. The clause above is about pin
+    refusals raised by the CAPTURE and READ paths -- the bytes this run is actually
+    handling. It was ALSO catching :class:`data.upstream_pin.UpstreamPinCorrupt` raised by
+    ``SealedProbeRun.lock()``, which is not the same thing at all: that is the DETECTOR
+    failing to read ITS OWN INPUT, and letting it out failed a capture that had already
+    written its bronze bytes, leaving an orphan parquet and no manifest entry. So the
+    sealed lock read is converted to a verdict INSIDE
+    :meth:`SealedProbeRun.lock`, at the point where the origin is still known, rather than
+    by widening this clause -- which could not tell the two origins apart. Every other
+    ``UpstreamPinError`` still leaves here untouched.
 
     THE CADENCE AND COVERAGE RULING (32-CONTEXT.md leaves both to the planner; recorded
     here because a discretion nobody wrote down is a discretion the next reader must
