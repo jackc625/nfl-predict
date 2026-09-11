@@ -47,6 +47,7 @@ Thursday of week 1.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -74,9 +75,29 @@ LIVE_MANIFEST_DIR: Path = Path("config/upstream_live")
 # The frame column ``content_through_week`` is OBSERVED from.
 WEEK_COLUMN = "week"
 
-# The bucket a frame with no ``week`` column falls into, for the per-week digests Plan
-# 32-04 adds. Named here so the sentinel is one constant rather than a repeated literal.
+# The bucket a frame with no ``week`` column falls into. Named here so the sentinel is
+# one constant rather than a repeated literal.
 NO_WEEK_COLUMN_BUCKET = "__no_week_column__"
+
+# The version of the PER-WEEK DIGEST SHAPE (D32-06), recorded in every capture entry.
+#
+# D32-06 is rated COSTLY and the shape is frozen here on purpose: it is written into
+# every committed capture entry for the whole season, and changing it mid-season would
+# mean earlier revision verdicts were computed under a different rule, so the season's
+# revision history would stop being comparable end to end. The version stamp is what lets
+# a reader of a 2026 entry say which rule produced it instead of assuming.
+WEEK_DIGEST_SCHEMA_VERSION: int = 1
+
+# The identity columns every digest is ordered by, in priority order. See
+# :func:`week_digests` for why ordering by IDENTITY (and never by value) is the whole
+# point: a corrected ``epa`` must move that column's digest and nothing else's.
+DIGEST_SORT_KEYS: tuple[str, ...] = ("game_id",)
+
+# The three things a ``week_partition`` can record. Each is an explicit OBSERVATION
+# written into the capture entry, never an inference a later reader has to make.
+WEEK_PARTITION_PER_WEEK = "per-week (one bucket per observed week value)"
+WEEK_PARTITION_WHOLE_FRAME = "whole-frame (dataset has no week column)"
+WEEK_PARTITION_EMPTY = "empty (zero rows captured)"
 
 # Recorded verbatim into every capture entry, so the convention travels with the bytes
 # rather than living only in this docstring. D32-13, ratified 2026-09-11.
@@ -398,6 +419,154 @@ def _weeks_present(frame: pd.DataFrame) -> list[int]:
     return sorted({int(value) for value in observed})
 
 
+def _digest_ordering(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return *frame* in the canonical row order every digest is taken over.
+
+    Ordered by the capture's IDENTITY columns (:data:`DIGEST_SORT_KEYS`, i.e. ``game_id``)
+    with a STABLE sort, falling back to the frame's full column order when the dataset
+    carries no identity key at all.
+
+    Ordering by identity and never by value is load-bearing. A digest taken over rows in
+    upstream's arrival order would report a revision every time nflverse happened to emit
+    the same rows in a different order. A digest taken over rows sorted by their CONTENT
+    would be worse: correcting one ``epa`` value would move that row's position, and every
+    other column's digest inside that week would move with it -- so a routine stat
+    correction would look identical to a wholesale recompute, which is exactly the
+    calibration failure D32-06 exists to prevent.
+
+    Within one ``game_id`` the upstream row order is PRESERVED (``kind="mergesort"`` is
+    stable) and is itself part of the captured content: for play-by-play that order is the
+    play order.
+    """
+    keys = [column for column in DIGEST_SORT_KEYS if column in frame.columns]
+    if not keys:
+        keys = list(frame.columns)
+    if not keys:
+        return frame
+    return frame.sort_values(by=keys, kind="mergesort")
+
+
+def week_digests(frame: pd.DataFrame) -> dict[str, dict]:
+    """Digest *frame* PER WEEK and PER COLUMN (D32-06). The shape is frozen.
+
+    Returns a mapping from the string form of each distinct observed ``week`` value to::
+
+        {"rows": <int>, "frame_sha256": <hex>, "columns": {<column>: <hex>, ...}}
+
+    * The bucket key is ``str(int(week))``, so it survives a JSON round trip as a stable
+      key -- a JSON object key is a string either way, and an integer key would come back
+      as one anyway without saying so.
+    * A frame with NO ``week`` column -- ``depth_charts`` can be one -- yields the single
+      bucket :data:`NO_WEEK_COLUMN_BUCKET` over the whole frame. That is a recorded
+      observation, never an inference.
+    * A frame with zero rows yields ``{}``. The entry's ``week_partition`` says which of
+      those two cases produced an unusual map.
+
+    THE DIGEST RENDERING METHOD, NAMED EXPLICITLY because D32-06 is costly and every
+    committed 2026 capture entry is written under it: each slice is first put into the
+    canonical row order (:func:`_digest_ordering`), then rendered through
+    ``pandas.util.hash_pandas_object(..., index=False)`` -- which produces one uint64 per
+    row (or per element, for a single column) and is independent of the DataFrame's index
+    -- and that array's ``.tobytes()`` is fed to the standard library's sha256 constructor
+    (the ONE call in this module, in the nested ``_digest`` below). ``frame_sha256``
+    digests the whole ordered slice; each ``columns`` entry digests that one column WITHIN
+    the same ordered slice, so a per-column digest and the frame digest always describe the
+    same rows in the same order.
+
+    The one hasher in this phase is ``data.upstream_pin.digest_file``, which hashes FILE
+    BYTES. This hashes a frame's VALUES, which is a different subject: two faithful
+    parquet writes of the same frame can differ in bytes (compression, metadata, row-group
+    layout) while carrying identical data, so a byte digest cannot answer "did week 3
+    change". No second file hasher is introduced.
+    """
+
+    def _digest(subject: pd.DataFrame | pd.Series) -> str:
+        rendered = pd.util.hash_pandas_object(subject, index=False).to_numpy().tobytes()
+        return hashlib.sha256(rendered).hexdigest()
+
+    def _bucket(slice_: pd.DataFrame) -> dict:
+        ordered = _digest_ordering(slice_)
+        return {
+            "rows": len(ordered),
+            "frame_sha256": _digest(ordered),
+            "columns": {
+                str(column): _digest(ordered[column]) for column in ordered.columns
+            },
+        }
+
+    if frame.empty:
+        return {}
+    if WEEK_COLUMN not in frame.columns:
+        return {NO_WEEK_COLUMN_BUCKET: _bucket(frame)}
+
+    weeks = pd.to_numeric(frame[WEEK_COLUMN], errors="coerce")
+    unreadable = int(weeks.isna().sum())
+    if unreadable:
+        from scripts.pin_upstream_snapshot import PinCaptureError
+
+        msg = (
+            f"{unreadable} of {len(frame)} captured row(s) carry a '{WEEK_COLUMN}' value "
+            "that is not a number, so they belong to no week bucket. Recording the "
+            "capture anyway would digest FEWER rows than were written, and the missing "
+            "rows would never appear in any revision verdict. Refusing rather than "
+            "silently narrowing what the digest covers."
+        )
+        raise PinCaptureError(msg)
+
+    return {
+        str(int(week)): _bucket(frame.loc[weeks == week])
+        for week in sorted(weeks.unique())
+    }
+
+
+def week_partition_of(frame: pd.DataFrame) -> str:
+    """Which of the three :data:`WEEK_PARTITION_PER_WEEK` shapes *frame* produced."""
+    if frame.empty:
+        return WEEK_PARTITION_EMPTY
+    if WEEK_COLUMN not in frame.columns:
+        return WEEK_PARTITION_WHOLE_FRAME
+    return WEEK_PARTITION_PER_WEEK
+
+
+def _assert_one_season(dataset: str, season: int, frame: pd.DataFrame) -> None:
+    """Refuse a capture whose frame carries rows for a season it does not claim.
+
+    ``nflreadpy.load_schedules`` downloads ONE monolithic ``games.parquet`` covering
+    1999-2026 and filters it in memory, so a schedules frame that reached here unfiltered
+    would put twenty-seven SEALED seasons' rows inside the LIVE season's digest. Every
+    postseason append would then look like a revision of everything, and the sealed zone's
+    bytes would be riding in a record whose whole premise is that it changes weekly.
+
+    :class:`scripts.pin_upstream_snapshot.PinCaptureError` and not
+    :class:`data.upstream_pin.UpstreamPinError`: this is a capture-tool failure, reachable
+    only from the capture CLI, never from a builder's read path. The import is deferred to
+    the failure branch so the ``data`` package keeps no module-scope dependency on
+    ``scripts``.
+    """
+    if "season" not in frame.columns or frame.empty:
+        return
+    observed = pd.to_numeric(frame["season"], errors="coerce").dropna()
+    leaked = sorted({int(value) for value in observed} - {int(season)})
+    if not leaked:
+        return
+
+    from scripts.pin_upstream_snapshot import PinCaptureError
+
+    msg = (
+        f"Refusing to record a live {dataset} capture for season {season}: the frame also "
+        f"carries rows for season(s) {', '.join(str(value) for value in leaked)}.\n"
+        "\n"
+        "nflreadpy.load_schedules downloads one monolithic games.parquet covering every "
+        "season and filters in memory, so an unfiltered frame reaching here is the "
+        "ORDINARY failure, not an edge case. Digesting it would put those seasons' bytes "
+        "inside the live zone's per-week digest, and every postseason append would then "
+        "report a revision of all of them.\n"
+        "\n"
+        f"Filter the frame to season {season} before capturing it. Nothing was recorded."
+    )
+    raise PinCaptureError(msg)
+
+
 def build_capture_entry(
     dataset: str,
     season: int,
@@ -412,9 +581,10 @@ def build_capture_entry(
     This is ``scripts.pin_upstream_snapshot.capture_season``'s entry EXTENDED -- the
     shared keys keep the same names and meanings -- with the live zone's four additions:
     the ``week`` being predicted, the ``sequence`` that distinguishes a re-capture of it
-    (assigned by :func:`append_capture`), the convention string, and the observed
-    content depth.
+    (assigned by :func:`append_capture`), the convention string, the observed content
+    depth, and the per-week/per-column digests D32-06 freezes.
     """
+    _assert_one_season(dataset, season, frame)
     return {
         "week": week,
         "sequence": None,
@@ -439,4 +609,9 @@ def build_capture_entry(
         "week_label_semantics_version": WEEK_LABEL_SEMANTICS_VERSION,
         "content_through_week": _content_through_week(frame),
         "weeks_present": _weeks_present(frame),
+        # D32-06. The shape is frozen for the season; see week_digests's docstring for
+        # the rendering method and WEEK_DIGEST_SCHEMA_VERSION for why the stamp is here.
+        "week_digest_schema_version": WEEK_DIGEST_SCHEMA_VERSION,
+        "week_partition": week_partition_of(frame),
+        "week_digests": week_digests(frame),
     }
