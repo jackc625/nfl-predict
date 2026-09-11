@@ -688,6 +688,104 @@ class TestATransportFailureIsRecordedNotSwallowed:
         assert rate_limits == {"pbp": 57}
 
 
+class TestTheProbeDoesNotDocumentAnEscalationItDoesNotHave:
+    """WR-10. The one component whose whole value is trustworthiness said two things.
+
+    ``probe_sealed``'s docstring claimed ``size`` "is NOT ruled on separately ... The ruling
+    comes from the escalated content re-fetch". There is NO escalation anywhere in this
+    phase. ``scripts.capture_live_season._pinned_basis_digest`` states the opposite and
+    gives the reason, and ``SealedProbeRun.probe`` computes digests only for content-strategy
+    pairs.
+
+    So the metadata finding IS the ruling, and because GitHub deletes and re-uploads release
+    assets rather than updating them in place -- documented in this very module -- a
+    byte-identical re-upload of any metadata pair fires a CRITICAL on bytes that did not
+    move. That is the B3 alert-fatigue mode the phase spends its calibration budget
+    avoiding, and the stale sentence hid it from a reader.
+
+    Leaving the two docstrings contradicting each other was the worst of the options
+    available; the behaviour is pinned below and the prose is now corrected to match it.
+    """
+
+    def test_a_moved_updated_at_rules_without_any_content_digest(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        """The BEHAVIOUR the prose now describes: the metadata finding is the ruling."""
+        lock = build_lock(stored_assets, depth_seasons=(), schedules_seasons=())
+        moved = copy.deepcopy(stored_assets)
+        moved["pbp"]["play_by_play_2021.parquet"]["updated_at"] = (
+            "2027-03-01T00:00:00+00:00"
+        )
+
+        # NO content_digests supplied, and the run still rules CRITICAL.
+        verdict = probe_sealed(lock, assets_by_tag=moved)
+
+        assert verdict["event_class"] == str(RevisionEventClass.SEALED_REVISION)
+        assert verdict["severity"] == str(RevisionSeverity.CRITICAL)
+        assert verdict["checked"] == verdict["expected"], (
+            "the pair was counted as unresolved, which would mean the metadata branch "
+            "was waiting for a digest after all"
+        )
+        finding = verdict["findings"][0]
+        assert finding["strategy"] == PROBE_STRATEGY_METADATA
+        assert finding["observed_sha256"] is None, (
+            "a metadata finding carries a content digest, so an escalation DOES exist "
+            "and this test is now the stale one"
+        )
+
+    def test_an_unchanged_size_does_not_soften_the_metadata_ruling(
+        self, stored_assets: dict[str, dict[str, dict]]
+    ) -> None:
+        """A byte-identical GitHub re-upload: same size, new updated_at, CRITICAL.
+
+        This is the false-positive mode the corrected docstring now names. Pinned as
+        BEHAVIOUR so that if anyone later implements the escalation, this test fails and
+        forces the prose to be updated with it.
+        """
+        lock = build_lock(stored_assets, depth_seasons=(), schedules_seasons=())
+        asset = copy.deepcopy(stored_assets)
+        original_size = asset["pbp"]["play_by_play_2021.parquet"]["size"]
+        asset["pbp"]["play_by_play_2021.parquet"]["updated_at"] = (
+            "2027-03-01T00:00:00+00:00"
+        )
+
+        verdict = probe_sealed(lock, assets_by_tag=asset)
+        finding = verdict["findings"][0]
+
+        assert finding["observed_size"] == finding["baseline_size"] == original_size
+        assert verdict["event_class"] == str(RevisionEventClass.SEALED_REVISION)
+
+    def test_neither_docstring_still_promises_an_escalated_re_fetch(self) -> None:
+        """The doc-drift guard: the claim cannot come back without this failing."""
+        import data.sealed_probe as module
+
+        for subject in (module.probe_sealed, module.content_digest_for):
+            text = subject.__doc__ or ""
+            assert "escalated content re-fetch" not in text, (
+                f"{subject.__name__} documents an escalation this phase does not have"
+            )
+
+        assert "acknowledge_divergence" in (module.probe_sealed.__doc__ or ""), (
+            "probe_sealed no longer names the route by which a metadata finding IS "
+            "content-confirmed, which is the half of WR-10 that tells a reader what to do"
+        )
+
+    def test_the_only_content_digests_computed_are_for_content_strategy_pairs(
+        self,
+    ) -> None:
+        """The source-level half: no escalation path is wired in the caller either."""
+        import inspect
+
+        from scripts import capture_live_season
+
+        source = inspect.getsource(capture_live_season.SealedProbeRun.probe)
+        assert "_content_strategy_pairs" in source
+        assert "content_digest_for" not in source, (
+            "the run computes a raw-stream digest, which is the WRONG BASIS for the "
+            "lock's sha256 and would report a move on every content pair forever"
+        )
+
+
 class TestTheSchedulesStrategyIsContentNotMetadata:
     """The 27-of-27 false-positive measurement, pinned as a regression (D32-05)."""
 

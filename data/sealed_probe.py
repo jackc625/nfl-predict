@@ -636,8 +636,15 @@ def content_digest_for(
 ) -> str:
     """Stream one upstream asset and return the sha256 of its bytes AS PUBLISHED.
 
-    This is the CONTENT half. It is what the metadata strategy escalates to on a hit, and
-    it is what the ``schedules`` strategy uses instead of metadata.
+    This is the CONTENT half, and it is what the ``schedules`` strategy uses instead of
+    metadata.
+
+    IT IS NOT AN ESCALATION TARGET, and the earlier claim that it was is corrected here
+    (WR-10). Nothing in this phase escalates a metadata hit to a content re-fetch; see
+    :func:`probe_sealed` and ``scripts.capture_live_season._pinned_basis_digest``, which
+    both record why. Note also that this function digests the RAW PUBLISHED STREAM, which is
+    the WRONG BASIS for a ruling against the lock's ``sha256`` -- so it could not serve as
+    an escalation target without a second baseline that does not exist.
 
     WHAT IT DIGESTS, STATED PRECISELY BECAUSE IT MATTERS: the raw upstream asset stream,
     exactly as nflverse published it. That is NOT the same artifact the sealed lock's
@@ -752,8 +759,28 @@ def probe_sealed(
 
     ``size`` is recorded beside ``updated_at`` in every finding but is NOT ruled on
     separately: a moved ``updated_at`` with an unchanged ``size`` is weak evidence of a
-    cosmetic rebuild, useful for calibration, not a verdict. The ruling comes from the
-    escalated content re-fetch.
+    cosmetic rebuild, useful for calibration, not a verdict.
+
+    A METADATA FINDING IS A SIGNATURE FINDING AND IS NOT CONTENT-CONFIRMED. This paragraph
+    used to end by attributing the ruling to an escalated re-fetch of the content, and
+    THERE IS NO SUCH ESCALATION ANYWHERE IN THIS PHASE (WR-10).
+    ``scripts/capture_live_season.py``'s
+    ``_pinned_basis_digest`` states the opposite and gives the reason -- "a metadata hit is
+    NOT escalated to it ... an escalation could not change any verdict and would only spend
+    a 20 MB download to produce a number nothing reads" -- and ``SealedProbeRun.probe``
+    computes digests only for ``_content_strategy_pairs``. So the metadata finding IS the
+    ruling: a moved ``updated_at`` alone yields ``SEALED_REVISION`` -> CRITICAL.
+
+    THE CONSEQUENCE, STATED PLAINLY BECAUSE A READER OF THIS MODULE HAS TO KNOW IT: GitHub
+    DELETES AND RE-UPLOADS release assets rather than updating them in place -- a fact this
+    module documents at :func:`parse_release_payload` -- so a BYTE-IDENTICAL re-upload of
+    any metadata pair fires a CRITICAL on bytes that did not move. That is a live
+    false-positive mode, not a hypothetical one, and the stale sentence hid it.
+
+    THE CONFIRMATION ROUTE is therefore an OWNER-RUN :func:`acknowledge_divergence` after a
+    manual content check, not an automatic re-fetch. The finding records what was observed;
+    a human rules on what it means. That is the same shape D32-10 already uses everywhere
+    else in this phase: record the finding, refuse to re-freeze, keep the evidence.
 
     Args:
         lock: The sealed lock document (``data.upstream_pin.load_sealed_lock``). ``None``
