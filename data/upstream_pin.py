@@ -48,6 +48,20 @@ handlers would be converted into an empty play-by-play frame and a silently degr
 matrix -- a worse outcome than the drift. ``test_upstream_pin.py`` holds that inheritance
 as a test.
 
+TWO ZONES: SEALED AND LIVE
+--------------------------
+Phase 32 splits the pin in two along a season boundary. Seasons at or before
+:data:`SEALED_THROUGH_SEASON` are SEALED: they are captured once into
+``config/upstream_pin.json`` and their bytes never move again, so a diff on that file is
+always a red flag. Season :data:`LIVE_ZONE_FIRST_SEASON` is LIVE: it is captured week by
+week into ``config/upstream_live/<season>.json`` (see :mod:`data.upstream_live`), it grows
+by design, and a diff on THAT file is always expected. The two records must never be one
+file, because their diffs mean opposite things.
+
+Seasons beyond the live zone belong to NO zone and are refused rather than silently
+admitted. Promoting the boundary forward is a deliberate, one-way act that cannot be
+rehearsed before the live season actually ends.
+
 WHAT IS PINNED, AND WHAT IS NOT
 -------------------------------
 Pinned: ``load_pbp`` (column-narrowed, see :data:`PBP_PINNED_COLUMNS`), ``load_schedules``
@@ -93,6 +107,34 @@ MANIFEST_PATH = Path("config/upstream_pin.json")
 LIVE_OPT_IN_ENV = "NFL_PREDICT_ALLOW_LIVE_UPSTREAM"
 
 MANIFEST_SCHEMA_VERSION = 1
+
+# The zone boundary, with the consumer of each half named.
+#
+# SEALED_THROUGH_SEASON -- the last season the sealed pin owns. Read by
+#   ``zone_for_season``, by ``scripts/capture_live_season.py`` (which refuses to write
+#   anything at or below it) and, from Plan 32-02, by ``scripts/pin_upstream_snapshot.py``
+#   (which refuses to REWRITE anything at or below it without an explicit override).
+# LIVE_ZONE_FIRST_SEASON -- the one season the live, append-only, per-week zone owns. Read
+#   by ``data/upstream_live.py`` and by the live capture CLI.
+#
+# WHY A LITERAL AND NOT ``nflreadpy.get_current_season()``: that helper flips to the new
+# season on the Thursday following Labor Day. A computed boundary would therefore move the
+# sealed zone SILENTLY and MID-WEEK -- a season that was immutable on Wednesday would
+# become writable on Thursday, with nothing on record to attribute the change to. The
+# boundary moves only when a human edits this line, which is the whole point: promoting a
+# season from live to sealed is one-way and cannot be undone by re-running anything.
+SEALED_THROUGH_SEASON: int = 2025
+LIVE_ZONE_FIRST_SEASON: int = SEALED_THROUGH_SEASON + 1
+
+ZONE_SEALED = "sealed"
+ZONE_LIVE = "live"
+ZONE_UNKNOWN = "unknown"
+
+# The committed live-zone manifest directory, as TEXT. ``data/upstream_live.py`` owns the
+# real ``Path`` constant; naming it here as a string keeps this module free of an
+# import-time dependency on its own consumer (the only link runs the other way, through a
+# function-local deferred import).
+LIVE_MANIFEST_DIR_TEXT = "config/upstream_live"
 
 # Every play-by-play column any gold-rebuild consumer reads, with the consumer named.
 # Adding a consumer that needs a column outside this tuple requires re-capturing the pin;
@@ -174,8 +216,73 @@ class UpstreamPinCorrupt(UpstreamPinError):
     """A pinned file is absent, or its bytes no longer match the recorded digest."""
 
 
+class UpstreamLiveCaptureMissing(UpstreamPinError):
+    """The live zone has no capture matching the requested (season, week, sequence).
+
+    Refuses a READ against the live manifest. The live zone is append-only and per-week,
+    so "season 2026 is covered" is not the same claim as "week 6 of season 2026 was
+    captured". Asking for a week nobody captured must name the weeks that DO exist and
+    the command that would create the missing one, never fall back to the newest capture
+    -- a replay that silently served a different week would reproduce the wrong number
+    while reporting success.
+    """
+
+
+class UpstreamSeasonWindowRefused(UpstreamPinError):
+    """A requested season window cannot be served as asked, and will not be approximated.
+
+    Refuses a request whose SHAPE is unsatisfiable rather than whose bytes are missing --
+    an as-of context that excludes every capture of a requested week, or a season span
+    the two zones cannot jointly cover in the order it was asked for. Narrowing the window
+    silently would hand a builder fewer seasons than it asked for and let it compute a
+    rolling feature off a shorter history than its caller believes.
+    """
+
+
+class ZoneWriteRefused(UpstreamPinError):
+    """A write was aimed at the wrong zone, and was refused before anything was written.
+
+    Refuses a WRITE. The sealed zone and the live zone have opposite mutability
+    contracts, so each capture tool refuses the other's seasons outright: the live
+    capture will not touch a season at or below :data:`SEALED_THROUGH_SEASON`, and the
+    sealed capture will not rewrite one without an explicit, recorded override. The
+    refusal happens before any fetch, so a mis-aimed run costs nothing and changes
+    nothing.
+    """
+
+
+class UpstreamLiveCorrupt(UpstreamPinCorrupt):
+    """A live-zone manifest or capture is unreadable, absent, or no longer its own bytes.
+
+    The live-zone sibling of :class:`UpstreamPinCorrupt`, and a SUBCLASS of it so every
+    existing handler that already treats a corrupt pin as fatal treats a corrupt capture
+    the same way. Raised for a manifest whose ``schema_version`` this build does not
+    understand (a version refusal, never a migration) and for a capture file whose bytes
+    no longer match the digest recorded for them.
+    """
+
+
 class UpstreamPinBypassedWarning(UserWarning):
     """A live nflverse fetch happened because the operator explicitly allowed it."""
+
+
+def zone_for_season(season: int) -> str:
+    """Return which pin zone *season* belongs to.
+
+    Exactly three answers, and the third is not an error case to be tidied away later:
+
+    * :data:`ZONE_SEALED` -- at or before :data:`SEALED_THROUGH_SEASON`. Immutable.
+    * :data:`ZONE_LIVE` -- exactly :data:`LIVE_ZONE_FIRST_SEASON`. Append-only, per week.
+    * :data:`ZONE_UNKNOWN` -- anything later. Deliberately owned by NEITHER zone: the
+      one-way promotion that would move the boundary forward cannot be exercised until
+      the live season actually ends, so a later season must REFUSE rather than be
+      silently admitted to the live zone and captured under semantics nobody ratified.
+    """
+    if season <= SEALED_THROUGH_SEASON:
+        return ZONE_SEALED
+    if season == LIVE_ZONE_FIRST_SEASON:
+        return ZONE_LIVE
+    return ZONE_UNKNOWN
 
 
 def digest_file(path: Path) -> str:
@@ -232,14 +339,73 @@ def live_upstream_allowed() -> bool:
     return bool(os.environ.get(LIVE_OPT_IN_ENV, "").strip())
 
 
+def _recovery_options(dataset: str, missing: list[int]) -> list[str]:
+    """The ordered recovery options for *missing*, one per zone actually present.
+
+    A refusal that names the wrong tool is a refusal operators route around. The sealed
+    and live zones have different capture commands, so the options are built from the
+    zone of each uncovered season rather than from a single hard-coded line.
+    """
+    sealed = [season for season in missing if zone_for_season(season) == ZONE_SEALED]
+    live = [season for season in missing if zone_for_season(season) == ZONE_LIVE]
+    unknown = [season for season in missing if zone_for_season(season) == ZONE_UNKNOWN]
+
+    options: list[str] = []
+    if sealed:
+        options.append(
+            f"Capture the missing SEALED season(s) into the pin (writes {MANIFEST_PATH} "
+            "and timestamped snapshots under data/bronze/):\n"
+            "       .venv/Scripts/python.exe -m scripts.pin_upstream_snapshot "
+            f"--dataset {dataset} --seasons {min(sealed)} {max(sealed)}"
+        )
+    if live:
+        commands = "\n".join(
+            "       .venv/Scripts/python.exe -m scripts.capture_live_season "
+            f"--season {season} --week <W> --dataset {dataset}"
+            for season in live
+        )
+        options.append(
+            "Capture the missing LIVE-zone season(s) one week at a time (writes "
+            f"{LIVE_MANIFEST_DIR_TEXT}/<season>.json and timestamped snapshots under "
+            "data/bronze/). <W> is the week being PREDICTED, not the last week present "
+            "in the data:\n" + commands
+        )
+    if unknown:
+        options.append(
+            "Season(s) "
+            + ", ".join(str(season) for season in unknown)
+            + " lie BEYOND the live zone, which ends at "
+            f"{LIVE_ZONE_FIRST_SEASON}. NO tool captures them, deliberately: moving the "
+            "boundary forward promotes a season from live to sealed and is one-way. It "
+            "is a human edit to data.upstream_pin.SEALED_THROUGH_SEASON, made once the "
+            "season has actually ended -- never a side effect of a load."
+        )
+    options.append(
+        "Allow a live fetch for this run only, accepting that its output is NOT "
+        f"reproducible:\n       {LIVE_OPT_IN_ENV}=1 <your command>\n"
+        "     Every live fetch emits an UpstreamPinBypassedWarning and a logged warning."
+    )
+    return options
+
+
 def _refusal_message(dataset: str, missing: list[int], manifest: dict | None) -> str:
     covered = pinned_seasons(dataset, manifest)
     covered_text = (
         f"{covered[0]}-{covered[-1]}" if covered else "nothing (no pin captured)"
     )
+    zone_lines = "\n".join(
+        f"  {season}  zone {zone_for_season(season)}" for season in missing
+    )
+    options = "\n".join(
+        f"  {number}. {option}"
+        for number, option in enumerate(_recovery_options(dataset, missing), start=1)
+    )
     return (
         f"The upstream pin does not cover {dataset} season(s) "
         f"{', '.join(str(season) for season in missing)}. It covers {covered_text}.\n"
+        "\n"
+        "Each uncovered season, and the zone it would belong to:\n"
+        f"{zone_lines}\n"
         "\n"
         "This build REFUSES to reach nflverse silently. A live fetch is what moved "
         "sixteen opponent-adjusted and QB columns from season 2020 onward between the "
@@ -247,14 +413,7 @@ def _refusal_message(dataset: str, missing: list[int], manifest: dict | None) ->
         "and it did so with nothing on record to attribute it to.\n"
         "\n"
         "Do ONE of these, deliberately:\n"
-        f"  1. Capture the missing seasons into the pin (writes {MANIFEST_PATH} and "
-        "timestamped snapshots under data/bronze/):\n"
-        "       .venv/Scripts/python.exe -m scripts.pin_upstream_snapshot "
-        f"--dataset {dataset} --seasons {min(missing)} {max(missing)}\n"
-        f"  2. Allow a live fetch for this run only, accepting that its output is NOT "
-        "reproducible:\n"
-        f"       {LIVE_OPT_IN_ENV}=1 <your command>\n"
-        "     Every live fetch emits an UpstreamPinBypassedWarning and a logged warning."
+        f"{options}"
     )
 
 
@@ -303,23 +462,85 @@ def _read_pinned_frame(
     return pd.read_parquet(path)
 
 
+def _partition_seasons(
+    dataset: str,
+    seasons: list[int],
+    manifest: dict | None,
+    *,
+    manifest_dir: Path | str | None = None,
+) -> dict[str, list[int]]:
+    """Split *seasons* into the zone each one can actually be SERVED from.
+
+    Zone membership alone is not coverage. A sealed-zone season is ``sealed`` only when
+    the sealed manifest pins it; a live-zone season is ``live`` only when its manifest
+    exists AND a capture resolves for this dataset. Everything else -- including a
+    live-zone season whose manifest records other datasets but not this one -- is
+    ``unknown``, which is the set the all-or-nothing refusal and the live fetch both work
+    from.
+    """
+    partition: dict[str, list[int]] = {"sealed": [], "live": [], "unknown": []}
+    covered = set(pinned_seasons(dataset, manifest))
+
+    # Only touch the live manifest directory when the request actually reaches into the
+    # live zone: a pure sealed load must cost exactly what it cost before.
+    live_covered: set[int] = set()
+    if any(zone_for_season(season) == ZONE_LIVE for season in seasons):
+        from data import upstream_live
+
+        live_covered = upstream_live.live_covered_seasons(manifest_dir=manifest_dir)
+
+    for season in seasons:
+        zone = zone_for_season(season)
+        if zone == ZONE_SEALED and manifest is not None and season in covered:
+            partition["sealed"].append(season)
+            continue
+        if zone == ZONE_LIVE and season in live_covered:
+            from data import upstream_live
+
+            live_manifest = upstream_live.load_live_manifest(
+                season, manifest_dir=manifest_dir
+            )
+            try:
+                upstream_live.resolve_capture(live_manifest, dataset)
+            except UpstreamLiveCaptureMissing:
+                partition["unknown"].append(season)
+                continue
+            partition["live"].append(season)
+            continue
+        partition["unknown"].append(season)
+    return partition
+
+
 def _load(
     dataset: str,
     seasons: list[int],
     *,
     manifest_path: Path | str | None = None,
     data_root: Path | str | None = None,
+    live_manifest_dir: Path | str | None = None,
 ) -> pd.DataFrame:
-    """Return *dataset* for *seasons*, from the pin when it covers them."""
+    """Return *dataset* for *seasons*, from whichever zone covers each one."""
     manifest = load_manifest(manifest_path)
-    covered = set(pinned_seasons(dataset, manifest))
-    missing = sorted(season for season in seasons if season not in covered)
+    partition = _partition_seasons(
+        dataset, seasons, manifest, manifest_dir=live_manifest_dir
+    )
+    missing = partition["unknown"]
+    sealed = set(partition["sealed"])
 
-    if not missing and manifest is not None:
+    if seasons and not missing:
+        from data import upstream_live
+
         root = Path(data_root) if data_root is not None else default_data_root()
-        frames = [
-            _read_pinned_frame(dataset, season, manifest, root) for season in seasons
-        ]
+        frames = []
+        for season in seasons:
+            if season in sealed:
+                frames.append(_read_pinned_frame(dataset, season, manifest, root))
+                continue
+            live_manifest = upstream_live.load_live_manifest(
+                season, manifest_dir=live_manifest_dir
+            )
+            entry = upstream_live.resolve_capture(live_manifest, dataset)
+            frames.append(upstream_live.read_live_frame(entry, root))
         combined = (
             pd.concat(frames, ignore_index=True)
             if len(frames) > 1
@@ -329,8 +550,10 @@ def _load(
             "Loaded pinned upstream snapshot",
             dataset=dataset,
             seasons=seasons,
+            sealed_seasons=partition["sealed"],
+            live_seasons=partition["live"],
             rows=len(combined),
-            captured_at_utc=manifest.get("captured_at_utc"),
+            captured_at_utc=(manifest or {}).get("captured_at_utc"),
         )
         return combined
 
@@ -349,9 +572,37 @@ def _load(
         dataset=dataset,
         seasons=seasons,
         missing_seasons=missing,
+        sealed_seasons=partition["sealed"],
+        live_seasons=partition["live"],
         opt_in_env=LIVE_OPT_IN_ENV,
     )
-    return _fetch_live(dataset, seasons)
+
+    # PIN-02. This line passed ``seasons`` -- the WHOLE request -- so one uncovered
+    # season sent every covered one back to nflverse too, silently replacing pinned
+    # bytes with live ones in the same frame. It fetches the GENUINELY UNCOVERED half
+    # only. Nothing else covered stops coming from its zone.
+    if not sealed and not partition["live"]:
+        return _fetch_live(dataset, missing)
+
+    # A MIXED request. Each uncovered season is fetched on its own so the frames can be
+    # concatenated in the ORIGINALLY REQUESTED season order beside the zone-served ones,
+    # with no need to guess how to split one multi-season live frame back apart.
+    from data import upstream_live
+
+    root = Path(data_root) if data_root is not None else default_data_root()
+    frames = []
+    for season in seasons:
+        if season in sealed:
+            frames.append(_read_pinned_frame(dataset, season, manifest, root))
+        elif season in set(partition["live"]):
+            live_manifest = upstream_live.load_live_manifest(
+                season, manifest_dir=live_manifest_dir
+            )
+            entry = upstream_live.resolve_capture(live_manifest, dataset)
+            frames.append(upstream_live.read_live_frame(entry, root))
+        else:
+            frames.append(_fetch_live(dataset, [season]))
+    return pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0].copy()
 
 
 def _fetch_live(dataset: str, seasons: list[int]) -> pd.DataFrame:
@@ -374,17 +625,23 @@ def load_pbp(
     *,
     manifest_path: Path | str | None = None,
     data_root: Path | str | None = None,
+    live_manifest_dir: Path | str | None = None,
 ) -> pd.DataFrame:
     """Pinned replacement for ``nflreadpy.load_pbp(seasons).to_pandas()``.
 
     Returns a pandas frame directly -- callers must NOT call ``.to_pandas()`` on it.
     Carries :data:`PBP_PINNED_COLUMNS` and every row of every requested season.
+
+    ``live_manifest_dir`` redirects the LIVE zone's manifest lookup the same way
+    ``manifest_path`` redirects the sealed one, so a test can exercise both zones inside
+    ``tmp_path`` without touching the committed records.
     """
     return _load(
         "pbp",
         list(seasons),
         manifest_path=manifest_path,
         data_root=data_root,
+        live_manifest_dir=live_manifest_dir,
     )
 
 
@@ -393,6 +650,7 @@ def load_schedules(
     *,
     manifest_path: Path | str | None = None,
     data_root: Path | str | None = None,
+    live_manifest_dir: Path | str | None = None,
 ) -> pd.DataFrame:
     """Pinned replacement for ``nflreadpy.load_schedules(seasons).to_pandas()``."""
     return _load(
@@ -400,6 +658,7 @@ def load_schedules(
         list(seasons),
         manifest_path=manifest_path,
         data_root=data_root,
+        live_manifest_dir=live_manifest_dir,
     )
 
 
@@ -408,6 +667,7 @@ def load_depth_charts(
     *,
     manifest_path: Path | str | None = None,
     data_root: Path | str | None = None,
+    live_manifest_dir: Path | str | None = None,
 ) -> pd.DataFrame:
     """Pinned replacement for ``nflreadpy.load_depth_charts(season).to_pandas()``."""
     return _load(
@@ -415,4 +675,5 @@ def load_depth_charts(
         [season],
         manifest_path=manifest_path,
         data_root=data_root,
+        live_manifest_dir=live_manifest_dir,
     )

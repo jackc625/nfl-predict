@@ -32,14 +32,24 @@ import pytest
 from data import upstream_pin
 from data.upstream_pin import (
     LIVE_OPT_IN_ENV,
+    LIVE_ZONE_FIRST_SEASON,
     MANIFEST_PATH,
     MANIFEST_SCHEMA_VERSION,
     PBP_PINNED_COLUMNS,
+    SEALED_THROUGH_SEASON,
+    ZONE_LIVE,
+    ZONE_SEALED,
+    ZONE_UNKNOWN,
+    UpstreamLiveCaptureMissing,
+    UpstreamLiveCorrupt,
     UpstreamPinBypassedWarning,
     UpstreamPinCorrupt,
     UpstreamPinError,
     UpstreamPinMissing,
+    UpstreamSeasonWindowRefused,
+    ZoneWriteRefused,
     digest_file,
+    zone_for_season,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -564,6 +574,150 @@ class TestTheCommittedManifestIsTheProvenanceRecord:
             assert excluded.get("reason"), (
                 f"{excluded.get('loader')} has no reason given"
             )
+
+
+class TestTheZoneBoundaryIsAFixedLiteral:
+    """Phase 32 (PIN-01): three zones, and the third is not a tidy-up case."""
+
+    def test_every_season_at_or_before_the_boundary_is_sealed(self) -> None:
+        for season in (1999, 2002, 2020, SEALED_THROUGH_SEASON):
+            assert zone_for_season(season) == ZONE_SEALED
+
+    def test_exactly_one_season_is_live(self) -> None:
+        assert zone_for_season(LIVE_ZONE_FIRST_SEASON) == ZONE_LIVE
+        assert LIVE_ZONE_FIRST_SEASON == SEALED_THROUGH_SEASON + 1
+
+    def test_beyond_the_live_zone_belongs_to_no_zone(self) -> None:
+        """2027 must REFUSE rather than be silently admitted to the live zone.
+
+        The one-way promotion that moves the boundary forward cannot be exercised until
+        the live season actually ends. A season that quietly became "live" would be
+        captured under semantics nobody ratified.
+        """
+        for season in (LIVE_ZONE_FIRST_SEASON + 1, LIVE_ZONE_FIRST_SEASON + 5):
+            assert zone_for_season(season) == ZONE_UNKNOWN
+
+    def test_the_boundary_is_a_literal_and_not_a_computed_current_season(self) -> None:
+        """``get_current_season()`` flips on the Thursday after Labor Day.
+
+        A computed boundary would move the sealed zone silently and mid-week. This test
+        is the reason the constant is an ``int`` and not a call.
+        """
+        tree = ast.parse(
+            (REPO_ROOT / "data" / "upstream_pin.py").read_text(encoding="utf-8")
+        )
+        assignments = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "SEALED_THROUGH_SEASON"
+        ]
+        assert len(assignments) == 1, (
+            "SEALED_THROUGH_SEASON is not assigned exactly once"
+        )
+        value = assignments[0].value
+        assert isinstance(value, ast.Constant) and value.value == 2025, (
+            "SEALED_THROUGH_SEASON is not a plain integer literal. A computed boundary "
+            "moves the sealed zone silently and mid-week; only a human edit may move it."
+        )
+
+
+class TestEveryNewRefusalEscapesTheWiredHandlers:
+    """The swallow hazard applies to the zone exceptions exactly as it does to the pin."""
+
+    NEW_REFUSALS = (
+        UpstreamLiveCaptureMissing,
+        UpstreamSeasonWindowRefused,
+        ZoneWriteRefused,
+        UpstreamLiveCorrupt,
+    )
+
+    @pytest.mark.parametrize("refusal", NEW_REFUSALS)
+    def test_it_is_an_upstream_pin_error(self, refusal: type[Exception]) -> None:
+        assert issubclass(refusal, UpstreamPinError)
+
+    def test_the_corrupt_capture_is_a_corrupt_pin(self) -> None:
+        """So every handler that already treats a corrupt pin as fatal covers it."""
+        assert issubclass(UpstreamLiveCorrupt, UpstreamPinCorrupt)
+
+    @pytest.mark.parametrize("refusal", NEW_REFUSALS)
+    def test_it_is_outside_every_call_sites_except_clause(
+        self, refusal: type[Exception]
+    ) -> None:
+        for swallowed in (
+            RuntimeError,
+            ValueError,
+            ImportError,
+            KeyError,
+            TypeError,
+            ConnectionError,
+            TimeoutError,
+            OSError,
+        ):
+            assert not issubclass(refusal, swallowed), (
+                f"{refusal.__name__} inherits {swallowed.__name__}, which the wired "
+                "call sites catch and convert into an empty frame."
+            )
+
+
+class TestTheRefusalNamesTheZoneAndItsTool:
+    """A refusal that names the wrong capture tool is a refusal operators route around."""
+
+    def test_a_live_zone_season_is_pointed_at_the_live_capture(
+        self, tmp_path: Path, network_is_a_failure: list[str]
+    ) -> None:
+        manifest_path, data_root = _write_pin(
+            tmp_path, "pbp", {SEALED_THROUGH_SEASON: _pbp_frame(SEALED_THROUGH_SEASON)}
+        )
+
+        with pytest.raises(UpstreamPinMissing) as error:
+            upstream_pin.load_pbp(
+                [SEALED_THROUGH_SEASON, LIVE_ZONE_FIRST_SEASON],
+                manifest_path=manifest_path,
+                data_root=data_root,
+                live_manifest_dir=tmp_path / "upstream_live",
+            )
+
+        message = str(error.value)
+        assert f"{LIVE_ZONE_FIRST_SEASON}  zone live" in message
+        assert "scripts.capture_live_season" in message
+        assert network_is_a_failure == []
+
+    def test_a_sealed_zone_season_still_names_the_sealed_tool(
+        self, tmp_path: Path, network_is_a_failure: list[str]
+    ) -> None:
+        """The pre-existing message contract, unchanged for the sealed zone."""
+        with pytest.raises(UpstreamPinMissing) as error:
+            upstream_pin.load_pbp(
+                [2024],
+                manifest_path=tmp_path / "absent.json",
+                data_root=tmp_path / "data",
+                live_manifest_dir=tmp_path / "upstream_live",
+            )
+
+        message = str(error.value)
+        assert "2024  zone sealed" in message
+        assert "scripts.pin_upstream_snapshot" in message
+        assert "capture_live_season" not in message
+        assert network_is_a_failure == []
+
+    def test_a_season_beyond_the_live_zone_is_told_no_tool_captures_it(
+        self, tmp_path: Path, network_is_a_failure: list[str]
+    ) -> None:
+        with pytest.raises(UpstreamPinMissing) as error:
+            upstream_pin.load_pbp(
+                [LIVE_ZONE_FIRST_SEASON + 1],
+                manifest_path=tmp_path / "absent.json",
+                data_root=tmp_path / "data",
+                live_manifest_dir=tmp_path / "upstream_live",
+            )
+
+        message = str(error.value)
+        assert f"{LIVE_ZONE_FIRST_SEASON + 1}  zone unknown" in message
+        assert "one-way" in message
+        assert "SEALED_THROUGH_SEASON" in message
+        assert network_is_a_failure == []
 
 
 class TestThePinnedFilesOnDiskMatchTheCommittedManifest:
