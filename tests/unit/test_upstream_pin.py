@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import ast
 import json
+import sys
+import types
 import warnings
 from pathlib import Path
 from typing import NamedTuple
@@ -601,6 +603,146 @@ class TestLiveRefetchIsAnExplicitLoudOptIn:
             )
 
         assert [w for w in caught if issubclass(w.category, UpstreamPinBypassedWarning)]
+
+
+class TestTheBypassFetchCarriesTheSameColumnSetAsBothZones:
+    """WR-05. The mixed-request branch must not concatenate ragged halves.
+
+    ``_read_pinned_frame`` returns bytes narrowed at PIN time and ``_read_live_frame``
+    bytes narrowed at CAPTURE time -- 23 columns each for ``pbp``. ``_fetch_live`` returned
+    ``nfl.load_pbp(...)`` RAW, at roughly 372. ``_load``'s mixed branch ``pd.concat``s all
+    three, so the result was a ragged union: the zone-served halves gained ~349 all-NaN
+    columns and every extra column materialised for the live half alone.
+
+    ``scripts/capture_live_season.py`` treats this as load-bearing rather than cosmetic:
+    the mixed ``[2025, 2026]`` request "is exactly the shape ``features/team_form.py``
+    issues", and that builder "branches on ``"cpoe" in group.columns``". So the one code
+    path already declared non-reproducible was ALSO silently changing which branches the
+    feature builders take -- a difference that produces plausible numbers and no error.
+    """
+
+    @staticmethod
+    def _stub_nflreadpy(monkeypatch: pytest.MonkeyPatch, frame: pd.DataFrame) -> None:
+        """Stand in for ``nflreadpy`` so the REAL ``_fetch_live`` body runs offline."""
+
+        class _Polars:
+            def __init__(self, payload: pd.DataFrame) -> None:
+                self._payload = payload
+
+            def to_pandas(self) -> pd.DataFrame:
+                return self._payload.copy()
+
+        module = types.SimpleNamespace(
+            load_pbp=lambda seasons: _Polars(frame),
+            load_schedules=lambda seasons: _Polars(frame),
+            load_depth_charts=lambda season: _Polars(frame),
+        )
+        monkeypatch.setitem(sys.modules, "nflreadpy", module)
+
+    def test_the_live_pbp_fetch_is_narrowed_to_the_pinned_allowlist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wide = pd.DataFrame(
+            {
+                **{column: [1, 2] for column in PBP_PINNED_COLUMNS},
+                # The columns the raw upstream frame carries and the pin does not.
+                "xpass": [0.4, 0.6],
+                "vegas_wp": [0.5, 0.5],
+                "desc": ["a", "b"],
+            }
+        )
+        self._stub_nflreadpy(monkeypatch, wide)
+
+        fetched = upstream_pin._fetch_live("pbp", [2026])
+
+        assert list(fetched.columns) == list(PBP_PINNED_COLUMNS), (
+            "the bypass fetch returned a column set neither zone produces, so a mixed "
+            f"request concatenates ragged halves. Extra: "
+            f"{sorted(set(fetched.columns) - set(PBP_PINNED_COLUMNS))}"
+        )
+
+    def test_narrowing_preserves_absence_rather_than_inventing_a_column(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``narrow`` is IMPORTED, so its preserve-absence contract comes with it.
+
+        Materialising an allowlisted-but-absent column as all-null would hand the builders
+        a column the live path never gave them, and ``features/team_form.py`` branches on
+        ``"cpoe" in group.columns``.
+        """
+        without_cpoe = pd.DataFrame(
+            {column: [1, 2] for column in PBP_PINNED_COLUMNS if column != "cpoe"}
+        )
+        self._stub_nflreadpy(monkeypatch, without_cpoe)
+
+        fetched = upstream_pin._fetch_live("pbp", [2026])
+
+        assert "cpoe" not in fetched.columns, (
+            "an absent allowlisted column was materialised, which changes which branch "
+            "the feature builder takes"
+        )
+
+    def test_a_whole_pinned_dataset_is_returned_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``schedules`` and ``depth_charts`` are pinned WHOLE, so narrow is a no-op.
+
+        Pinned here as behaviour: a fix that narrowed them to some invented allowlist
+        would be a second column judgement inside the reproducibility claim, which
+        ``DATASET_COLUMNS`` deliberately refuses.
+        """
+        frame = pd.DataFrame({"game_id": ["g1"], "anything": [1], "else_": [2]})
+        self._stub_nflreadpy(monkeypatch, frame)
+
+        for dataset in ("schedules", "depth_charts"):
+            assert upstream_pin.DATASET_COLUMNS[dataset] is None
+            fetched = upstream_pin._fetch_live(dataset, [2026])
+            assert list(fetched.columns) == list(frame.columns), dataset
+
+    def test_a_mixed_zone_request_produces_one_column_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The end-to-end shape: no NaN-padded union at the season boundary."""
+        narrowed = pd.DataFrame({column: [1, 2] for column in PBP_PINNED_COLUMNS})
+        wide = pd.DataFrame(
+            {
+                **{column: [3, 4] for column in PBP_PINNED_COLUMNS},
+                "xpass": [0.4, 0.6],
+                "desc": ["a", "b"],
+            }
+        )
+        self._stub_nflreadpy(monkeypatch, wide)
+        monkeypatch.setenv(LIVE_OPT_IN_ENV, "1")
+        monkeypatch.setattr(
+            upstream_pin,
+            "_read_pinned_frame",
+            lambda dataset, season, manifest, root: narrowed.copy(),
+        )
+        monkeypatch.setattr(
+            upstream_pin,
+            "_partition_seasons",
+            lambda dataset, seasons, manifest, manifest_dir=None: {
+                "sealed": [2025],
+                "live": [],
+                "unknown": [2026],
+            },
+        )
+
+        with pytest.warns(UpstreamPinBypassedWarning):
+            combined = upstream_pin.load_pbp(
+                [2025, 2026],
+                manifest_path=tmp_path / "absent.json",
+                data_root=tmp_path / "data",
+            )
+
+        assert list(combined.columns) == list(PBP_PINNED_COLUMNS), (
+            "the mixed frame is a ragged union of two different column sets: "
+            f"{sorted(set(combined.columns) - set(PBP_PINNED_COLUMNS))}"
+        )
+        assert len(combined) == 4
+        assert not combined.isna().any().any(), (
+            "the concat NaN-padded one half against the other's extra columns"
+        )
 
 
 class TestTheGoldRebuildCallSitesReadThePin:

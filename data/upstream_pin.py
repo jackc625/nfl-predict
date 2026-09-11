@@ -894,16 +894,44 @@ def _load(
 
 
 def _fetch_live(dataset: str, seasons: list[int]) -> pd.DataFrame:
-    """Fetch *dataset* from nflverse. Reached ONLY through the explicit opt-in above."""
+    """Fetch *dataset* from nflverse, NARROWED. Reached ONLY through the explicit opt-in.
+
+    THE NARROWING IS WHAT KEEPS A MIXED FRAME FROM GOING RAGGED (WR-05). Both zones
+    produce narrowed frames -- ``_read_pinned_frame`` reads bytes that were narrowed at pin
+    time and ``_read_live_frame`` reads bytes narrowed at capture time, 23 columns each for
+    ``pbp`` -- but this function returned ``nfl.load_pbp(...)`` raw, at roughly 372 columns.
+    ``_load``'s mixed-request branch then ``pd.concat``s the three sources together, and
+    the result was a ragged union: the zone-served halves got ~349 all-NaN columns and
+    every extra column materialised for the live half alone.
+
+    ``scripts/capture_live_season.py`` states why that matters and treats it as
+    load-bearing: "A live capture carrying a different column set from the sealed zone's
+    would make a mixed ``[2025, 2026]`` frame RAGGED at the season boundary, and that mixed
+    request is exactly the shape ``features/team_form.py`` issues", which "branches on
+    ``"cpoe" in group.columns``". The capture path honours that by importing ``narrow``;
+    this path did not, so the ONE code path already declared non-reproducible was also
+    silently changing which branches the feature builders take.
+
+    ``narrow`` is IMPORTED and never re-implemented, for the reason the capture tool gives:
+    one allowlist means one column set on both sides of the join, and it PRESERVES ABSENCE
+    rather than materialising an absent allowlisted column as all-null. The import is
+    function-local, in the same shape as this module's other deferred imports, so the
+    ``data`` package keeps no module-scope dependency on ``scripts``.
+    """
     import nflreadpy as nfl
 
+    from scripts.pin_upstream_snapshot import narrow
+
     if dataset == "pbp":
-        return nfl.load_pbp(seasons).to_pandas()
+        return narrow(dataset, nfl.load_pbp(seasons).to_pandas())
     if dataset == "schedules":
-        return nfl.load_schedules(seasons).to_pandas()
+        return narrow(dataset, nfl.load_schedules(seasons).to_pandas())
     if dataset == "depth_charts":
         frames = [nfl.load_depth_charts(season).to_pandas() for season in seasons]
-        return pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        combined = (
+            pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        )
+        return narrow(dataset, combined)
     msg = f"Unknown upstream dataset {dataset!r}. Known: {sorted(DATASET_COLUMNS)}."
     raise UpstreamPinError(msg)
 
