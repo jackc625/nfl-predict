@@ -1197,25 +1197,58 @@ def capture_live_dataset(
         bronze_dir.glob(_bronze_snapshot_glob(table_name, season, week))
     )
 
-    path = save_bronze_snapshot(
-        frame,
-        table_name=table_name,
-        season=season,
-        week=week,
-        base_path=data_root,
-    )
+    try:
+        path = save_bronze_snapshot(
+            frame,
+            table_name=table_name,
+            season=season,
+            week=week,
+            base_path=data_root,
+            # WR-04. The live zone is the caller whose append-only contract is
+            # LOAD-BEARING: these bronze bytes are the evidence a published week-N
+            # prediction was measured against, and the manifest entry written below
+            # records a digest OF THEM. An overwrite would destroy a previous week's
+            # evidence while leaving that entry claiming it was verified.
+            exclusive=True,
+        )
+    except FileExistsError as collision:
+        # WR-04. ``save_bronze_snapshot`` now creates the file EXCLUSIVELY, so a
+        # second-resolution collision is refused BEFORE any byte of the previous snapshot
+        # is touched -- including across two processes, where the pre-write reservation
+        # cannot help because each process's check happens before either writes. The
+        # previous snapshot is INTACT here; the message below says so.
+        msg = (
+            f"The live capture for {dataset} season {season} week {week} COLLIDED with an "
+            f"existing bronze snapshot: {collision}.\n"
+            "\n"
+            "This is the second-resolution filename collision data/storage.py names, "
+            "reached despite the pre-write reservation -- which means the reservation and "
+            "the write disagreed, or a second process is capturing the same (season, "
+            "week) concurrently.\n"
+            "\n"
+            "NOTHING WAS LOST AND NOTHING WAS RECORDED. The file is created exclusively, "
+            "so the earlier snapshot's bytes are intact and the live manifest is "
+            "byte-unchanged: no entry claims these bytes were verified. RECOVERY: re-run "
+            "the capture; the next second yields a distinct name:\n"
+            f"       .venv/Scripts/python.exe -m scripts.capture_live_season "
+            f"--season {season} --week {week}"
+        )
+        raise PinCaptureError(msg) from collision
+
     if path in existing_paths:
+        # UNREACHABLE while save_bronze_snapshot creates exclusively, and kept as
+        # defence in depth: if that exclusivity is ever weakened, this notices that the
+        # append-only archive was overwritten rather than letting it pass silently.
         msg = (
             f"The live capture for {dataset} season {season} week {week} wrote OVER an "
             f"existing bronze snapshot at '{path}'. data/bronze/ is append-only by "
             "contract, so those bytes were the evidence some earlier verdict was "
             "measured against and they are now gone.\n"
             "\n"
-            "This is the second-resolution filename collision data/storage.py names as a "
-            "known defect, reached despite the pre-write reservation. NOTHING was "
-            "recorded: the live manifest is byte-unchanged, so no entry claims these "
-            "bytes were verified. Investigate before re-running -- a reservation that "
-            "passed and a write that collided anyway means the two clocks disagree."
+            "The exclusive create in data/storage.py::save_bronze_snapshot should have "
+            "made this impossible, so reaching it means that guard was removed or "
+            "bypassed. NOTHING was recorded: the live manifest is byte-unchanged, so no "
+            "entry claims these bytes were verified."
         )
         raise PinCaptureError(msg)
 

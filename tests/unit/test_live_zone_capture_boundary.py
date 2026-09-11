@@ -32,6 +32,7 @@ quietly wrong:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -197,6 +198,180 @@ def _entry_for(
         path,
         data_root,
     )
+
+
+class TestTheCommittedManifestSurvivesAnInterruptedWrite:
+    """WR-04. Append-only held in memory and NOT on disk.
+
+    ``append_capture``'s docstring argues that append-only "holds literally, not by
+    convention: the only mutation of the capture list is a single ``list.append``". True in
+    memory; false on disk. ``write_live_manifest`` used ``path.write_text`` -- a TRUNCATING,
+    non-atomic rewrite of the file that holds EVERY capture of the season. An interruption
+    or a disk-full part way through left a truncated JSON document, and
+    ``load_live_manifest`` would then raise for every subsequent read: the whole season's
+    committed record gone, including the verdicts ``attach_verdict`` exists to keep welded
+    to their bytes.
+
+    ``data/sealed_probe_log.py`` makes exactly this argument when it chooses JSONL append
+    over a re-rendered array -- "A record whose integrity rests on a serialiser
+    round-tripping identically for a whole season is not a record" -- and this file was the
+    counterexample.
+    """
+
+    def test_a_failed_write_leaves_the_previous_manifest_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The decisive one: an interrupted write must not truncate the record."""
+        manifest_dir = tmp_path / "upstream_live"
+        good = upstream_live.empty_live_manifest(LIVE_SEASON)
+        good["datasets"]["pbp"] = {"loader": "test", "captures": [{"week": 1}]}
+        path = upstream_live.write_live_manifest(good, manifest_dir=manifest_dir)
+        before = path.read_bytes()
+
+        def _explode(*args: object, **kwargs: object) -> None:
+            msg = "disk full part way through the write"
+            raise OSError(msg)
+
+        monkeypatch.setattr(upstream_live.os, "replace", _explode)
+
+        with pytest.raises(OSError, match="disk full"):
+            upstream_live.write_live_manifest(good, manifest_dir=manifest_dir)
+
+        assert path.read_bytes() == before, (
+            "the failed write damaged the committed record. A truncated manifest makes "
+            "load_live_manifest raise for the REST OF THE SEASON, taking every earlier "
+            "capture and its verdict with it."
+        )
+        assert (
+            upstream_live.load_live_manifest(LIVE_SEASON, manifest_dir=manifest_dir)
+            == good
+        )
+
+    def test_no_temp_file_is_left_behind_by_a_failed_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A litter of ``.tmp`` files in a COMMITTED directory is its own problem."""
+        manifest_dir = tmp_path / "upstream_live"
+        manifest = upstream_live.empty_live_manifest(LIVE_SEASON)
+        upstream_live.write_live_manifest(manifest, manifest_dir=manifest_dir)
+
+        def _explode(*args: object, **kwargs: object) -> None:
+            msg = "interrupted"
+            raise OSError(msg)
+
+        monkeypatch.setattr(upstream_live.os, "replace", _explode)
+        with pytest.raises(OSError, match="interrupted"):
+            upstream_live.write_live_manifest(manifest, manifest_dir=manifest_dir)
+
+        strays = [
+            entry.name for entry in manifest_dir.iterdir() if ".tmp" in entry.name
+        ]
+        assert strays == [], f"a failed write left temp file(s) behind: {strays}"
+
+    def test_an_ordinary_write_still_round_trips(self, tmp_path: Path) -> None:
+        """The atomic path must not change what lands on disk."""
+        manifest_dir = tmp_path / "upstream_live"
+        manifest = upstream_live.empty_live_manifest(LIVE_SEASON)
+        manifest["datasets"]["pbp"] = {
+            "loader": "test",
+            "captures": [{"week": 6, "sequence": 1}],
+        }
+
+        path = upstream_live.write_live_manifest(manifest, manifest_dir=manifest_dir)
+
+        assert json.loads(path.read_text(encoding="utf-8")) == manifest
+        assert path.read_text(encoding="utf-8").endswith("\n")
+
+    def test_the_bronze_archive_refuses_a_collision_rather_than_overwriting(
+        self, tmp_path: Path
+    ) -> None:
+        """WR-04(b). A second-resolution collision destroyed the earlier snapshot.
+
+        ``save_bronze_snapshot`` builds its filename from a SECOND-resolution UTC stamp, so
+        two captures of the same ``(season, week)`` inside one second produced the SAME
+        path and the second silently overwrote the first -- breaking ``data/bronze/``'s
+        append-only contract literally, and destroying the bytes a published week-N
+        prediction was made from. The capture path now creates EXCLUSIVELY, which decides
+        the race at the only place it can be decided (the create), and holds across two
+        processes where a check-then-write cannot.
+        """
+        from data import storage
+
+        first = storage.save_bronze_snapshot(
+            _pbp_frame(weeks=(1,)),
+            table_name="pbp",
+            season=LIVE_SEASON,
+            week=1,
+            base_path=tmp_path,
+            exclusive=True,
+        )
+        original = first.read_bytes()
+
+        # FREEZE THE CLOCK so the second call lands on the same second-resolution stamp.
+        # Waiting for a real collision would make the test a coin flip about scheduling --
+        # the exact non-determinism the guard exists because of.
+        frozen = datetime.strptime(
+            first.stem.rsplit("_", 1)[-1], "%Y%m%dT%H%M%S"
+        ).replace(tzinfo=UTC)
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen
+
+        monkeypatch_target = storage.datetime
+        storage.datetime = _FrozenDatetime  # type: ignore[misc]
+        try:
+            with pytest.raises(FileExistsError):
+                storage.save_bronze_snapshot(
+                    _pbp_frame(weeks=(2,)),
+                    table_name="pbp",
+                    season=LIVE_SEASON,
+                    week=1,
+                    base_path=tmp_path,
+                    exclusive=True,
+                )
+        finally:
+            storage.datetime = monkeypatch_target  # type: ignore[misc]
+
+        assert first.read_bytes() == original, (
+            "the colliding write destroyed the earlier snapshot's bytes, which are the "
+            "evidence an earlier verdict was measured against"
+        )
+
+    def test_the_default_write_is_unchanged_for_every_other_caller(
+        self, tmp_path: Path
+    ) -> None:
+        """The exclusive guard is OPT-IN, and deliberately so.
+
+        ``scripts/ingest_odds_timeline`` writes one bronze snapshot per trajectory
+        timestamp for a single ``(season, week)``, so a fast backfill legitimately produces
+        several calls inside one second and RELIES on the overwrite today. That reliance is
+        a latent data-loss bug in THAT ingester, but it is pre-existing, it belongs to the
+        line-movement work rather than to the upstream pin, and turning it into a hard
+        failure for every caller at once would convert a quiet defect into a broken
+        production path. Pinned here so the scoping is a recorded decision rather than an
+        oversight a later reader has to guess at.
+        """
+        from data.storage import save_bronze_snapshot
+
+        path = save_bronze_snapshot(
+            _pbp_frame(weeks=(1,)),
+            table_name="pbp",
+            season=LIVE_SEASON,
+            week=1,
+            base_path=tmp_path,
+        )
+        assert path.is_file()
+
+        # The same path, written again WITHOUT the guard: still permitted.
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        pq.write_table(
+            pa.Table.from_pandas(_pbp_frame(weeks=(2,))), path, compression="snappy"
+        )
+        assert len(pd.read_parquet(path)) == 2
 
 
 class TestTheCaptureDigestsPerWeekAndPerColumn:

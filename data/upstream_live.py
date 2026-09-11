@@ -52,6 +52,7 @@ import contextvars
 import hashlib
 import json
 import os
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -431,10 +432,60 @@ def write_live_manifest(
     *,
     manifest_dir: Path | str | None = None,
 ) -> Path:
-    """Write *manifest* to its season's committed path and return that path."""
+    """Write *manifest* ATOMICALLY to its season's committed path; return that path.
+
+    WHY ATOMIC (WR-04). :func:`append_capture`'s docstring argues that append-only "holds
+    literally, not by convention: the only mutation of the capture list is a single
+    ``list.append``". That was true IN MEMORY and false ON DISK: this function used
+    ``path.write_text``, a TRUNCATING, non-atomic rewrite of the file that holds EVERY
+    capture of the season. An interruption or a disk-full part way through left a truncated
+    JSON document, and :func:`load_live_manifest` would then raise ``JSONDecodeError`` for
+    every subsequent read -- the whole season's committed record gone, including the
+    verdicts :func:`attach_verdict` exists to keep welded to their bytes.
+
+    ``data/sealed_probe_log.py`` makes exactly this argument when it chooses JSONL append
+    over a re-rendered array: "A record whose integrity rests on a serialiser
+    round-tripping identically for a whole season is not a record". This file was the
+    counterexample. It cannot become append-only -- a verdict is attached to an entry that
+    was appended earlier in the same run, so the document genuinely is re-rendered -- but
+    the WRITE can be made all-or-nothing, which removes the truncation outcome entirely.
+
+    The pattern is the repository's existing one,
+    ``pipeline/execution_log.py::write_execution_log_atomic``: serialise fully, write to a
+    temp file in the SAME directory (so ``os.replace`` is a rename within one filesystem
+    and therefore atomic), then replace. A crash leaves either the old complete document or
+    the new one, never a torn one.
+
+    WHAT THIS DOES NOT FIX, recorded rather than implied: two CONCURRENT captures (the
+    Friday scheduler plus an ad-hoc run) still each load the manifest, append, and write,
+    with no lock -- so the second write discards the first's entry. The atomic write makes
+    that a LOST ENTRY rather than a CORRUPT FILE, which is recoverable by re-capturing the
+    week; a truncated document is not recoverable at all. A real fix needs an advisory lock
+    around the load-append-write span, which is a larger change than this one and is not
+    attempted here.
+    """
     path = live_manifest_path(int(manifest["season"]), manifest_dir=manifest_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    # Serialise BEFORE opening anything: a serialiser that raises must not be able to
+    # leave even a temp file behind, and it certainly must not have truncated the target.
+    payload = json.dumps(manifest, indent=2) + "\n"
+
+    handle, temporary = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # os.replace and not Path.replace: the same deliberate choice
+        # pipeline/execution_log.py records, for the same cross-platform reason.
+        os.replace(temporary, path)  # noqa: PTH105
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
     logger.info(
         "Wrote live-zone manifest",
         season=manifest.get("season"),

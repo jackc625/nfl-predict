@@ -987,10 +987,35 @@ def save_bronze_snapshot(
     season: int,
     week: int,
     base_path: Path | None = None,
+    *,
+    exclusive: bool = False,
 ) -> Path:
     """Save DataFrame as timestamped Bronze Parquet file (append-only).
 
     Each call creates a NEW file. Old files are never modified.
+
+    THE KNOWN DEFECT IN THAT SENTENCE, and what ``exclusive`` does about it (WR-04 of the
+    32-REVIEW). The filename carries a SECOND-resolution UTC stamp, so two calls for the
+    same ``(table_name, season, week)`` inside one second produce the SAME path and the
+    second SILENTLY OVERWRITES the first. The contract above is therefore aspirational by
+    default, not enforced.
+
+    ``exclusive=True`` creates the file with ``"xb"``, making the CREATE itself the
+    exclusive step -- the only place the race can actually be decided -- so a collision
+    raises ``FileExistsError`` BEFORE any byte of the previous snapshot is touched. That
+    holds ACROSS PROCESSES, which a check-then-write cannot: two processes each complete
+    their check before either writes.
+
+    IT IS OPT-IN, AND THAT IS DELIBERATE RATHER THAN TIMID. ``scripts/ingest_odds_timeline``
+    writes one bronze snapshot per trajectory timestamp for a single ``(season, week)``, so
+    a fast backfill legitimately produces several calls inside one second and RELIES on the
+    overwrite today. That reliance is itself a latent data-loss bug in that ingester -- it
+    destroys the earlier snapshots' bytes -- but it is PRE-EXISTING, it belongs to the
+    line-movement work rather than to the upstream pin, and flipping it to a hard failure
+    for every caller at once would convert a quiet defect in one ingester into a broken
+    production path. So the guarantee is given to the callers whose append-only contract is
+    load-bearing -- the live zone, whose bronze bytes ARE the evidence a published verdict
+    was measured against -- and the defect is named here rather than left implicit.
 
     Args:
         df: Raw data to snapshot
@@ -998,9 +1023,13 @@ def save_bronze_snapshot(
         season: NFL season year
         week: NFL week number
         base_path: Base data directory (default from settings)
+        exclusive: Refuse rather than overwrite when the timestamped path already exists.
 
     Returns:
         Path to the created Bronze file
+
+    Raises:
+        FileExistsError: If ``exclusive`` is set and the path is already taken.
     """
     if base_path is None:
         settings = get_settings()
@@ -1013,10 +1042,20 @@ def save_bronze_snapshot(
 
     # Deliberately NOT _atomic_write_parquet: every call writes a NEW timestamped
     # file and never overwrites an existing one, so there is no complete previous
-    # file for a partial write to destroy. Its real defect is the second-resolution
-    # filename collision, which is a documented known defect and out of scope here.
+    # file for a partial write to destroy.
+    #
+    # The "xb" branch is the WR-04 collision guard; see this function's docstring for why
+    # it is OPT-IN rather than the default. The live zone's pre-write reservation poll
+    # (scripts/capture_live_season._reserve_distinct_bronze_second) narrows the window but
+    # cannot close it -- it checks and then writes non-atomically, and across two processes
+    # each one's check completes before either writes. Making the CREATE exclusive is the
+    # only place the race can actually be decided.
     table = pa.Table.from_pandas(df)
-    pq.write_table(table, filepath, compression="snappy")
+    if exclusive:
+        with open(filepath, "xb") as handle:
+            pq.write_table(table, handle, compression="snappy")
+    else:
+        pq.write_table(table, filepath, compression="snappy")
 
     logger.info("Saved Bronze snapshot", path=str(filepath), rows=len(df))
     return filepath
