@@ -1094,14 +1094,22 @@ class TestThePinnedFilesOnDiskMatchTheCommittedManifest:
                 "has been captured on this checkout."
             )
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        data_root = REPO_ROOT / "data"
+        # WR-11. RESOLVED THE WAY PRODUCTION RESOLVES IT, not hardcoded to REPO_ROOT/"data".
+        # ``default_data_root`` reads ``settings.config.data.root_path``, which
+        # ``DATA_ROOT_PATH`` redirects -- ``data.upstream_pin``'s own docstring says so at
+        # its definition. On any checkout or CI job with a redirected root, the hardcoded
+        # path made this control -- the ONLY one that checks the committed manifest against
+        # the bytes actually IN USE -- skip with a reason that reads like a
+        # gitignored-evidence skip rather than the mis-scoped test it was. A control going
+        # quiet is the exact property this phase asserts everywhere else.
+        data_root = upstream_pin.default_data_root()
         first_entry = next(
             iter(next(iter(manifest["datasets"].values()))["seasons"].values())
         )
         if not (data_root / first_entry["path"]).is_file():
             pytest.skip(
                 "the pinned bronze snapshots are gitignored and are absent on this "
-                "checkout."
+                f"checkout (looked under the configured data root {data_root})."
             )
 
         mismatches: list[str] = []
