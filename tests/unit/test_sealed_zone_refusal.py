@@ -29,16 +29,21 @@ import json
 import shutil
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from data.upstream_pin import (
     LIVE_ZONE_FIRST_SEASON,
     MANIFEST_PATH,
+    MANIFEST_SCHEMA_VERSION,
+    PBP_PINNED_COLUMNS,
     SEALED_LOCK_PATH,
+    ZoneWriteRefused,
     load_manifest,
     load_sealed_lock,
     sealed_lock_problems,
 )
+from scripts import pin_upstream_snapshot as pin
 from scripts.pin_upstream_snapshot import refresh_sealed_lock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -249,3 +254,255 @@ class TestTheSealedLockBindsTheCommittedManifest:
                 ):
                     assert field in entry, f"{dataset} {season} has no {field!r} slot"
                 assert entry["acknowledgement"] is None
+
+
+def _tmp_pin(tmp_path: Path, dataset: str, seasons: list[int]) -> Path:
+    """Write a manifest under *tmp_path* pinning *seasons*; return its path.
+
+    The recorded bytes are fictional on purpose. Every test that uses this manifest
+    asserts a refusal that happens BEFORE anything is fetched, read or written, so a
+    real parquet would only prove that the refusal came too late to matter.
+    """
+    entries = {
+        str(season): {
+            "path": f"bronze/{dataset}_raw_bronze_{season}_W00_20260905T000000.parquet",
+            "sha256": "a" * 64,
+            "bytes": 1024,
+            "rows": 128,
+            "columns": list(PBP_PINNED_COLUMNS),
+            "upstream_width": 372,
+            "captured_at_utc": "2026-09-05T00:00:00+00:00",
+        }
+        for season in seasons
+    }
+    manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "source": "test fixture",
+        "captured_at_utc": "2026-09-05T00:00:00+00:00",
+        "datasets": {dataset: {"loader": "test", "seasons": entries}},
+    }
+    manifest_path = tmp_path / "upstream_pin.json"
+    _write(manifest_path, manifest)
+    return manifest_path
+
+
+def _pbp_frame(season: int) -> pd.DataFrame:
+    """A minimal frame carrying enough of the pinned play-by-play column set."""
+    return pd.DataFrame(
+        {
+            "game_id": [f"{season}_01_HOME_AWAY", f"{season}_01_HOME_AWAY"],
+            "season": [season, season],
+            "week": [1, 1],
+            "posteam": ["HOME", "AWAY"],
+            "defteam": ["AWAY", "HOME"],
+            "epa": [0.25, -0.25],
+        }
+    )
+
+
+@pytest.fixture
+def fetching_is_a_failure(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Make any nflverse fetch an outright failure, and record the attempts.
+
+    ``scripts.pin_upstream_snapshot.fetch_live`` is the ONE place the capture tool can
+    reach the network. Replacing it with a raising stub means a test that passes
+    provably refused BEFORE fetching, rather than merely refusing eventually.
+    """
+    attempts: list[str] = []
+
+    def _explode(dataset: str, season: int) -> pd.DataFrame:
+        attempts.append(f"{dataset}:{season}")
+        msg = "the network was reached, but this test asserts the write was refused"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(pin, "fetch_live", _explode)
+    return attempts
+
+
+class TestTheSealedZoneRefusesARewrite:
+    """D32-02 prevention: the one tool that can rewrite the sealed zone refuses to."""
+
+    def test_capturing_an_already_pinned_sealed_season_refuses_and_writes_nothing(
+        self, tmp_path: Path, fetching_is_a_failure: list[str]
+    ) -> None:
+        """Refused BEFORE the loop and before any fetch, so nothing moves at all."""
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        before = manifest_path.read_bytes()
+
+        with pytest.raises(ZoneWriteRefused):
+            pin.capture(
+                {"pbp": [2024]},
+                manifest_path=manifest_path,
+                data_root=tmp_path / "data",
+            )
+
+        assert manifest_path.read_bytes() == before, (
+            "the manifest was rewritten by a refused run"
+        )
+        assert fetching_is_a_failure == [], (
+            "the refusal arrived AFTER a fetch. A check that runs after the work is a "
+            "check nobody can afford to trust."
+        )
+        assert not (tmp_path / "data").exists(), "a refused run created a data root"
+
+    def test_the_refusal_names_the_override_flag_and_requires_a_reason(
+        self, tmp_path: Path, fetching_is_a_failure: list[str]
+    ) -> None:
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+
+        with pytest.raises(ZoneWriteRefused) as error:
+            pin.capture(
+                {"pbp": [2024]},
+                manifest_path=manifest_path,
+                data_root=tmp_path / "data",
+            )
+
+        message = str(error.value)
+        assert "--allow-sealed-rewrite" in message
+        assert "--sealed-rewrite-reason" in message
+        assert "2026-08-22" in message, (
+            "the refusal cites no concrete incident, so it reads as bureaucracy"
+        )
+
+    def test_the_override_without_a_reason_still_refuses(
+        self, tmp_path: Path, fetching_is_a_failure: list[str]
+    ) -> None:
+        """An unattributed override is the same silent rewrite with an extra flag."""
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        before = manifest_path.read_bytes()
+
+        for blank in (None, "", "   "):
+            with pytest.raises(ZoneWriteRefused) as error:
+                pin.capture(
+                    {"pbp": [2024]},
+                    manifest_path=manifest_path,
+                    data_root=tmp_path / "data",
+                    allow_sealed_rewrite=True,
+                    sealed_rewrite_reason=blank,
+                )
+            assert "--sealed-rewrite-reason" in str(error.value)
+
+        assert manifest_path.read_bytes() == before
+        assert fetching_is_a_failure == []
+
+    def test_the_override_with_a_reason_proceeds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        monkeypatch.setattr(
+            pin, "fetch_live", lambda dataset, season: _pbp_frame(season)
+        )
+
+        manifest = pin.capture(
+            {"pbp": [2024]},
+            manifest_path=manifest_path,
+            data_root=tmp_path / "data",
+            allow_sealed_rewrite=True,
+            sealed_rewrite_reason="re-captured after the 2026-09-11 audit",
+        )
+
+        entry = manifest["datasets"]["pbp"]["seasons"]["2024"]
+        assert entry["sha256"] != "a" * 64, "the pinned entry was not replaced"
+        assert entry["rows"] == 2
+        assert _read(manifest_path)["datasets"]["pbp"]["seasons"]["2024"] == entry
+        assert "re-captured after the 2026-09-11 audit" in capsys.readouterr().err, (
+            "an accepted override left no attribution where an operator would see it"
+        )
+
+    def test_a_sealed_season_not_already_pinned_captures_with_no_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Extending the pin is the ordinary use of this tool and stays unguarded."""
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        monkeypatch.setattr(
+            pin, "fetch_live", lambda dataset, season: _pbp_frame(season)
+        )
+
+        manifest = pin.capture(
+            {"pbp": [2023]},
+            manifest_path=manifest_path,
+            data_root=tmp_path / "data",
+        )
+
+        assert sorted(manifest["datasets"]["pbp"]["seasons"]) == ["2023", "2024"]
+
+    def test_capturing_a_live_zone_season_refuses_and_names_the_live_cli(
+        self, tmp_path: Path, fetching_is_a_failure: list[str]
+    ) -> None:
+        """The exact mirror of the refusal capture_live_season raises for a sealed one."""
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        before = manifest_path.read_bytes()
+
+        with pytest.raises(ZoneWriteRefused) as error:
+            pin.capture(
+                {"pbp": [LIVE_ZONE_FIRST_SEASON]},
+                manifest_path=manifest_path,
+                data_root=tmp_path / "data",
+            )
+
+        message = str(error.value)
+        assert "scripts.capture_live_season" in message
+        assert "LIVE zone" in message
+        assert "--allow-sealed-rewrite" not in message, (
+            "a live-zone write has NO override; naming one would invite the attempt"
+        )
+        assert manifest_path.read_bytes() == before
+        assert fetching_is_a_failure == []
+
+    def test_capturing_a_2027_season_refuses_and_names_the_deferred_seal_tool(
+        self, tmp_path: Path, fetching_is_a_failure: list[str]
+    ) -> None:
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+
+        with pytest.raises(ZoneWriteRefused) as error:
+            pin.capture(
+                {"pbp": [LIVE_ZONE_FIRST_SEASON + 1]},
+                manifest_path=manifest_path,
+                data_root=tmp_path / "data",
+            )
+
+        message = str(error.value)
+        assert "NO zone owns it" in message
+        assert "seal_season.py" in message
+        assert "SEALED_THROUGH_SEASON" in message
+        assert "one-way" in message.lower()
+        assert fetching_is_a_failure == []
+
+    def test_the_gate_runs_before_the_loop_so_a_mixed_request_writes_nothing(
+        self, tmp_path: Path, fetching_is_a_failure: list[str]
+    ) -> None:
+        """One refusable season in the request refuses the WHOLE request.
+
+        Capturing the allowed half first and refusing the rest would leave the manifest
+        half-written by a run the operator was told had failed.
+        """
+        manifest_path = _tmp_pin(tmp_path, "pbp", [2024])
+        before = manifest_path.read_bytes()
+
+        with pytest.raises(ZoneWriteRefused):
+            pin.capture(
+                {"pbp": [2023, LIVE_ZONE_FIRST_SEASON]},
+                manifest_path=manifest_path,
+                data_root=tmp_path / "data",
+            )
+
+        assert manifest_path.read_bytes() == before
+        assert fetching_is_a_failure == []
+
+    @pytest.mark.parametrize("swallowed", [ImportError, ValueError, RuntimeError])
+    def test_every_refusal_is_outside_the_wired_call_sites_except_clause(
+        self, swallowed: type[Exception]
+    ) -> None:
+        """PinCaptureError is a RuntimeError; a refusal must not be.
+
+        ``features/qb_tracking.py`` catches ``(ImportError, ValueError, RuntimeError)``
+        around its loaders and returns an EMPTY frame. A write refusal caught there
+        would become a silently degraded gold matrix -- worse than the drift.
+        """
+        assert not issubclass(ZoneWriteRefused, swallowed)
+        assert issubclass(pin.PinCaptureError, RuntimeError), (
+            "this test is vacuous unless PinCaptureError really is the swallowed kind"
+        )

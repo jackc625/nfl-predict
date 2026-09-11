@@ -25,18 +25,39 @@ charts 2002-2025)::
 
     .venv/Scripts/python.exe -m scripts.pin_upstream_snapshot --all
 
-Capture or extend one dataset::
+Capture or extend one dataset with seasons it does not already cover::
 
-    .venv/Scripts/python.exe -m scripts.pin_upstream_snapshot --dataset pbp --seasons 2026 2026
+    .venv/Scripts/python.exe -m scripts.pin_upstream_snapshot --dataset pbp --seasons 2001 2001
 
 Re-verify an existing pin's bytes against the manifest without fetching anything::
 
     .venv/Scripts/python.exe -m scripts.pin_upstream_snapshot --verify
 
+Rewrite an ALREADY-PINNED sealed season, on the record::
+
+    .venv/Scripts/python.exe -m scripts.pin_upstream_snapshot --dataset pbp \
+        --seasons 2024 2024 --allow-sealed-rewrite --sealed-rewrite-reason "<why>"
+
+Regenerate the committed sealed-zone lock after a deliberate sealed change::
+
+    .venv/Scripts/python.exe -m scripts.pin_upstream_snapshot --refresh-sealed-lock \
+        --sealed-rewrite-reason "<why>"
+
+WHICH SEASONS THIS TOOL OWNS. It owns the SEALED zone only -- seasons at or before
+``data.upstream_pin.SEALED_THROUGH_SEASON``. A live-zone season is refused outright and
+pointed at ``scripts/capture_live_season.py``, which captures week by week into
+``config/upstream_live/<season>.json``; a season beyond the live zone is refused because
+no zone owns it yet. Both refusals are raised BEFORE any fetch, so a mis-aimed run makes
+no network call and leaves the manifest byte-identical.
+
 Capturing a season that is already pinned REPLACES that season's manifest entry and
-writes a NEW timestamped bronze file. The previous file is left on disk, because
-``data/bronze/`` is append-only by contract and deleting a recorded snapshot would
-destroy the evidence a superseded verdict was measured against.
+writes a NEW timestamped bronze file. For a SEALED season that is exactly the silent
+rewrite the zone exists to prevent, so it is now REFUSED unless the run carries both
+``--allow-sealed-rewrite`` and a non-blank ``--sealed-rewrite-reason``; the reason is
+emitted to stderr and to the structured log. When a rewrite does go ahead, the previous
+bronze file is left on disk, because ``data/bronze/`` is append-only by contract and
+deleting a recorded snapshot would destroy the evidence a superseded verdict was
+measured against.
 """
 
 from __future__ import annotations
@@ -55,14 +76,21 @@ from data.upstream_pin import (
     DATASET_COLUMNS,
     DATASET_LOADERS,
     DATASET_TABLE_NAMES,
+    LIVE_MANIFEST_DIR_TEXT,
+    LIVE_ZONE_FIRST_SEASON,
     MANIFEST_PATH,
     MANIFEST_SCHEMA_VERSION,
+    SEALED_LOCK_PATH,
     SEALED_LOCK_SCHEMA_VERSION,
     SEALED_THROUGH_SEASON,
+    ZONE_LIVE,
     ZONE_SEALED,
+    ZONE_UNKNOWN,
+    ZoneWriteRefused,
     digest_file,
     load_manifest,
     load_sealed_lock,
+    pinned_seasons,
     zone_for_season,
 )
 from utils import get_logger
@@ -253,14 +281,223 @@ def _empty_manifest() -> dict:
     }
 
 
+# The concrete incident every sealed-zone refusal cites. A refusal that only says "this
+# is not allowed" teaches nobody why, and a rule nobody understands is a rule that gets
+# routed around the first time it is inconvenient.
+_WHY_THE_SEALED_ZONE_EXISTS = (
+    "A live nflverse fetch is what moved sixteen opponent-adjusted and QB columns from "
+    "season 2020 onward between the 2026-08-22 and 2026-09-04 gold builds, INSIDE the "
+    "protected 2021-2024 holdout the deploy gate's frozen baseline was measured "
+    "against. The 2026-08-22 gold is unrecoverable. Sealed bytes are what make that "
+    "class of loss impossible to repeat, so replacing one is never incidental."
+)
+
+_PIN_CLI = ".venv/Scripts/python.exe -m scripts.pin_upstream_snapshot"
+_LIVE_CLI = ".venv/Scripts/python.exe -m scripts.capture_live_season"
+
+
+def _covered_text(dataset: str, manifest: dict | None) -> str:
+    covered = pinned_seasons(dataset, manifest)
+    return f"{covered[0]}-{covered[-1]}" if covered else "nothing (no pin captured)"
+
+
+def assert_write_allowed(
+    datasets: dict[str, list[int]],
+    manifest: dict | None,
+    *,
+    allow_sealed_rewrite: bool,
+    sealed_rewrite_reason: str | None,
+) -> None:
+    """Refuse a write aimed at the wrong zone, BEFORE anything is fetched or written.
+
+    Called from :func:`capture` ahead of the season loop and ahead of every
+    ``fetch_live``, for the reason ``data.upstream_pin._read_pinned_frame`` states about
+    its own digest ordering: a check that arrives after the work is a check nobody can
+    afford to trust. A refused run therefore makes NO network call and leaves
+    ``config/upstream_pin.json`` byte-identical.
+
+    The rule, per requested ``(dataset, season)``:
+
+    * LIVE zone -- ALWAYS refused, with no override. The sealed manifest is simply not
+      where a live season goes: the two records have opposite mutability contracts, so a
+      diff on one is a red flag and a diff on the other is expected. This is the exact
+      mirror of the refusal ``scripts/capture_live_season.py`` raises for a sealed
+      season, and the pair of them is what makes the boundary un-crossable from BOTH
+      sides.
+    * Beyond the live zone -- refused. No zone owns those seasons yet.
+    * SEALED and already pinned -- refused unless ``allow_sealed_rewrite`` is set AND
+      ``sealed_rewrite_reason`` is non-blank. An unattributed override is not an
+      override; it is the same silent rewrite with an extra flag on it.
+    * SEALED and NOT already pinned -- allowed with no flag. Extending the pin is the
+      ordinary use of this tool.
+
+    Every refusal raises :class:`data.upstream_pin.ZoneWriteRefused` and NOT
+    :class:`PinCaptureError`. ``PinCaptureError`` is a ``RuntimeError``, which every
+    wired call site catches and converts into an empty frame; a refusal that landed in
+    one of those handlers would become a silently degraded gold matrix.
+
+    WHERE THE ATTRIBUTION GOES. An accepted override is recorded in the structured log
+    line and in the commit message -- deliberately NOT as a new field on the manifest's
+    season entry. ``tests/unit/test_upstream_pin.py::
+    TestTheCommittedManifestIsTheProvenanceRecord`` asserts that per-entry shape, and
+    widening it here would break the sealed zone's own provenance test for a reason that
+    has nothing to do with provenance.
+    """
+    reason = (sealed_rewrite_reason or "").strip()
+    if allow_sealed_rewrite and not reason:
+        msg = (
+            "Refusing --allow-sealed-rewrite with no --sealed-rewrite-reason.\n"
+            "\n"
+            "An unattributed override is not an override. It is the same silent rewrite "
+            "the sealed zone exists to prevent, with one extra flag on it, and six "
+            "months later nobody can say why a sealed season moved.\n"
+            "\n"
+            f"{_WHY_THE_SEALED_ZONE_EXISTS}\n"
+            "\n"
+            "Do ONE of these, deliberately:\n"
+            "  1. Say why, on the record, and the rewrite proceeds:\n"
+            f"       {_PIN_CLI} --dataset <D> --seasons <S> <S> "
+            '--allow-sealed-rewrite --sealed-rewrite-reason "<why>"\n'
+            "  2. Drop the override and extend the pin with seasons it does not "
+            "already cover instead."
+        )
+        raise ZoneWriteRefused(msg)
+
+    rewrites: dict[str, list[int]] = {}
+    for dataset, seasons in sorted(datasets.items()):
+        covered = set(pinned_seasons(dataset, manifest))
+        for season in sorted(seasons):
+            zone = zone_for_season(season)
+            if zone == ZONE_LIVE:
+                raise ZoneWriteRefused(_live_zone_refusal(dataset, season, manifest))
+            if zone == ZONE_UNKNOWN:
+                raise ZoneWriteRefused(_no_zone_refusal(dataset, season, manifest))
+            if season in covered and not allow_sealed_rewrite:
+                raise ZoneWriteRefused(
+                    _sealed_rewrite_refusal(dataset, season, manifest)
+                )
+            if season in covered:
+                rewrites.setdefault(dataset, []).append(season)
+
+    for dataset, seasons in sorted(rewrites.items()):
+        # Warn where a human will see it first, then log where the run record keeps it --
+        # the same order data.upstream_pin uses for the live-fetch bypass.
+        print(
+            f"SEALED REWRITE ALLOWED: {dataset} season(s) "
+            f"{', '.join(str(season) for season in seasons)} will REPLACE their pinned "
+            f"manifest entries.\n  reason: {reason}",
+            file=sys.stderr,
+        )
+        logger.warning(
+            "Sealed pin rewrite allowed by explicit override",
+            dataset=dataset,
+            seasons=seasons,
+            reason=reason,
+            operator=None,
+        )
+
+
+def _live_zone_refusal(dataset: str, season: int, manifest: dict | None) -> str:
+    return (
+        f"Refusing to capture {dataset} season {season} into the SEALED pin. "
+        f"{MANIFEST_PATH} covers {_covered_text(dataset, manifest)} and owns seasons at "
+        f"or before {SEALED_THROUGH_SEASON} only; {season} is in the LIVE zone.\n"
+        "\n"
+        "There is NO override for this direction. The sealed manifest and the live "
+        f"manifest ({LIVE_MANIFEST_DIR_TEXT}/{season}.json) have opposite mutability "
+        "contracts -- a diff on the sealed record is always a red flag, a diff on the "
+        "live record is always expected -- so a single file holding both would have "
+        "diffs that mean opposite things and could never be read as evidence of "
+        "anything.\n"
+        "\n"
+        f"{_WHY_THE_SEALED_ZONE_EXISTS}\n"
+        "\n"
+        "Do ONE of these, deliberately:\n"
+        f"  1. Capture the LIVE season one week at a time (writes "
+        f"{LIVE_MANIFEST_DIR_TEXT}/{season}.json and a timestamped snapshot under "
+        "data/bronze/). <W> is the week being PREDICTED, not the last week present in "
+        "the data:\n"
+        f"       {_LIVE_CLI} --season {season} --week <W> --dataset {dataset}\n"
+        f"  2. If season {season} has genuinely ENDED and you mean to SEAL it, that is a "
+        "one-way promotion, not a capture: it is a human edit to "
+        "data.upstream_pin.SEALED_THROUGH_SEASON, made once the season is over. "
+        "scripts/seal_season.py is deliberately NOT built (D32-02) -- it cannot be "
+        "exercised against a real live zone until the live season actually ends."
+    )
+
+
+def _no_zone_refusal(dataset: str, season: int, manifest: dict | None) -> str:
+    return (
+        f"Refusing to capture {dataset} season {season}: NO zone owns it. The sealed "
+        f"zone ends at {SEALED_THROUGH_SEASON} (this pin covers "
+        f"{_covered_text(dataset, manifest)}) and the live zone is exactly "
+        f"{LIVE_ZONE_FIRST_SEASON}.\n"
+        "\n"
+        "A season beyond the live zone is refused rather than silently admitted to it, "
+        "because admitting it would capture it under semantics nobody ratified and "
+        "would quietly move a boundary whose whole value is that it only moves when a "
+        "human moves it.\n"
+        "\n"
+        f"{_WHY_THE_SEALED_ZONE_EXISTS}\n"
+        "\n"
+        "Do ONE of these, deliberately:\n"
+        f"  1. Wait. Moving the boundary forward promotes {LIVE_ZONE_FIRST_SEASON} from "
+        "live to sealed and is ONE-WAY: it is a human edit to "
+        "data.upstream_pin.SEALED_THROUGH_SEASON, made once that season has actually "
+        "ended. scripts/seal_season.py is deliberately NOT built in this phase "
+        "(D32-02), because it cannot be exercised against a real live zone until then.\n"
+        f"  2. Capture the season the live zone DOES own:\n"
+        f"       {_LIVE_CLI} --season {LIVE_ZONE_FIRST_SEASON} --week <W> "
+        f"--dataset {dataset}"
+    )
+
+
+def _sealed_rewrite_refusal(dataset: str, season: int, manifest: dict | None) -> str:
+    return (
+        f"Refusing to REWRITE the sealed pin for {dataset} season {season}. It is "
+        f"already pinned in {MANIFEST_PATH}, which covers "
+        f"{_covered_text(dataset, manifest)}.\n"
+        "\n"
+        "Capturing an already-pinned season REPLACES its manifest entry and writes a "
+        "NEW timestamped bronze file, orphaning the recorded one. That is the right "
+        "behaviour for EXTENDING a pin and the wrong behaviour for a SEALED season, "
+        "whose bytes are immutable by definition.\n"
+        "\n"
+        f"{_WHY_THE_SEALED_ZONE_EXISTS}\n"
+        "\n"
+        "Do ONE of these, deliberately:\n"
+        "  1. Rewrite it on the record, saying why. The reason is emitted to the log "
+        "and to stderr, and belongs in the commit message too:\n"
+        f"       {_PIN_CLI} --dataset {dataset} --seasons {season} {season} "
+        '--allow-sealed-rewrite --sealed-rewrite-reason "<why this sealed season must '
+        'be re-captured>"\n'
+        "  2. Check the pin you already have instead of replacing it. This fetches "
+        "nothing:\n"
+        f"       {_PIN_CLI} --verify"
+    )
+
+
 def capture(
     datasets: dict[str, list[int]],
     *,
     manifest_path: Path,
     data_root: Path,
+    allow_sealed_rewrite: bool = False,
+    sealed_rewrite_reason: str | None = None,
 ) -> dict:
-    """Capture every requested season and return the updated manifest."""
-    manifest = load_manifest(manifest_path) or _empty_manifest()
+    """Capture every requested season and return the updated manifest.
+
+    The zone write gate runs FIRST -- before the season loop and before any fetch -- so
+    a refused run costs nothing and changes nothing. See :func:`assert_write_allowed`.
+    """
+    recorded = load_manifest(manifest_path)
+    assert_write_allowed(
+        datasets,
+        recorded,
+        allow_sealed_rewrite=allow_sealed_rewrite,
+        sealed_rewrite_reason=sealed_rewrite_reason,
+    )
+    manifest = recorded or _empty_manifest()
     manifest["schema_version"] = MANIFEST_SCHEMA_VERSION
     manifest["source"] = "nflverse (github.com/nflverse) via nflreadpy"
     manifest["not_pinned"] = NOT_PINNED
@@ -471,11 +708,61 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Data lake root (default: the configured data root)",
     )
+    parser.add_argument(
+        "--allow-sealed-rewrite",
+        action="store_true",
+        help=(
+            "Permit REPLACING an already-pinned sealed season's manifest entry. "
+            "Requires --sealed-rewrite-reason; an unattributed override is refused."
+        ),
+    )
+    parser.add_argument(
+        "--sealed-rewrite-reason",
+        type=str,
+        default=None,
+        help=(
+            "Why a sealed record is being rewritten. Emitted to stderr and to the "
+            "structured log, and it belongs in the commit message too."
+        ),
+    )
+    parser.add_argument(
+        "--sealed-lock",
+        type=Path,
+        default=SEALED_LOCK_PATH,
+        help=f"Sealed-zone lock path (default: {SEALED_LOCK_PATH})",
+    )
+    parser.add_argument(
+        "--refresh-sealed-lock",
+        action="store_true",
+        help=(
+            "Regenerate the sealed-zone lock from the manifest and exit. Fetches "
+            "nothing. Requires --sealed-rewrite-reason: a lock that re-derived itself "
+            "from the record it polices -- as a side effect of an ordinary capture, "
+            "say -- could never disagree with it, and would prove nothing."
+        ),
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.refresh_sealed_lock:
+        if not (args.sealed_rewrite_reason or "").strip():
+            print(
+                "ERROR: --refresh-sealed-lock requires --sealed-rewrite-reason. "
+                "Regenerating the lock is a deliberate, attributed act: a lock that "
+                "re-derives itself from the record it polices proves nothing.",
+                file=sys.stderr,
+            )
+            return 2
+        lock = refresh_sealed_lock(args.manifest, args.sealed_lock)
+        pairs = sum(len(seasons) for seasons in lock["datasets"].values())
+        print(
+            f"Wrote {args.sealed_lock}: {pairs} sealed (dataset, season) pair(s) locked "
+            f"from {args.manifest}\n  reason: {args.sealed_rewrite_reason.strip()}"
+        )
+        return 0
 
     if args.data_root is not None:
         data_root = args.data_root
@@ -515,11 +802,21 @@ def main(argv: list[str] | None = None) -> int:
         first, last = args.seasons if args.seasons else DEFAULT_SPANS[name]
         requested[name] = list(range(first, last + 1))
 
-    manifest = capture(
-        requested,
-        manifest_path=args.manifest,
-        data_root=data_root,
-    )
+    try:
+        manifest = capture(
+            requested,
+            manifest_path=args.manifest,
+            data_root=data_root,
+            allow_sealed_rewrite=args.allow_sealed_rewrite,
+            sealed_rewrite_reason=args.sealed_rewrite_reason,
+        )
+    except ZoneWriteRefused as refusal:
+        # A finding, not a usage error: the flags parsed fine and the request was
+        # understood exactly -- it is the WRITE that is refused. Exit 1, matching
+        # --verify's "the pin has a problem" code, so an external check can act on it.
+        print("SEALED ZONE WRITE REFUSED:", file=sys.stderr)
+        print(str(refusal), file=sys.stderr)
+        return 1
     for dataset, record in sorted(manifest["datasets"].items()):
         seasons = sorted(int(season) for season in record["seasons"])
         print(
