@@ -605,6 +605,84 @@ class TestLiveRefetchIsAnExplicitLoudOptIn:
         assert [w for w in caught if issubclass(w.category, UpstreamPinBypassedWarning)]
 
 
+class TestAnEmptySeasonRequestIsRefusedByName:
+    """WR-09. An empty request is a CALLER BUG, and the old answers said otherwise.
+
+    ``if seasons and not missing`` deliberately excluded the empty list, which then fell
+    through to the bypass block and produced one of two dishonest answers:
+
+    * With the opt-in UNSET, ``UpstreamPinMissing`` reading "The upstream pin does not
+      cover pbp season(s) ." -- a refusal naming no season, with an empty zone table and a
+      recovery option list built from nothing.
+    * With it SET, ``_fetch_live(dataset, [])`` reached ``frames[0]`` for ``depth_charts``
+      and raised ``IndexError``.
+
+    Returning an EMPTY FRAME would be worse than either: its emptiness reads as "upstream
+    had nothing for these seasons", which is the silent-wrong-number failure this module
+    exists to prevent.
+    """
+
+    @pytest.mark.parametrize("loader", ["load_pbp", "load_schedules"])
+    def test_it_refuses_rather_than_naming_no_season(
+        self, tmp_path: Path, loader: str
+    ) -> None:
+        with pytest.raises(UpstreamPinError) as error:
+            getattr(upstream_pin, loader)(
+                [],
+                manifest_path=tmp_path / "absent.json",
+                data_root=tmp_path / "data",
+            )
+
+        message = str(error.value)
+        assert "NO seasons" in message, (
+            f"the refusal does not name the empty request:\n{message}"
+        )
+        assert "season(s) ." not in message, (
+            "the refusal still renders an empty season list as though a season had been "
+            f"asked for:\n{message}"
+        )
+
+    def test_it_refuses_before_the_opt_in_can_reach_the_network(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Even WITH the live opt-in set, an empty request never reaches nflverse.
+
+        Under the opt-in the empty list used to fall into ``_fetch_live``, which is the
+        only place this module can touch the network -- to answer a question nobody asked.
+        """
+
+        def _explode(dataset: str, seasons: list[int]):
+            msg = "the empty request reached the live fetch"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(upstream_pin, "_fetch_live", _explode)
+        monkeypatch.setenv(LIVE_OPT_IN_ENV, "1")
+
+        with pytest.raises(UpstreamPinError, match="NO seasons"):
+            upstream_pin.load_pbp(
+                [],
+                manifest_path=tmp_path / "absent.json",
+                data_root=tmp_path / "data",
+            )
+
+    def test_it_is_not_an_upstream_pin_missing_coverage_question(
+        self, tmp_path: Path
+    ) -> None:
+        """The TYPE carries the meaning: a caller bug is not a coverage gap.
+
+        ``UpstreamPinMissing`` means "capture this season"; there is no season here to
+        capture, and a recovery instruction that cannot be followed is worse than none.
+        """
+        with pytest.raises(UpstreamPinError) as error:
+            upstream_pin.load_pbp(
+                [],
+                manifest_path=tmp_path / "absent.json",
+                data_root=tmp_path / "data",
+            )
+
+        assert not isinstance(error.value, UpstreamPinMissing)
+
+
 class TestTheBypassFetchCarriesTheSameColumnSetAsBothZones:
     """WR-05. The mixed-request branch must not concatenate ragged halves.
 

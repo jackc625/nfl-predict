@@ -803,7 +803,27 @@ def _load(
     environment as-of therefore refuses immediately on any load rather than surviving
     until the run first touches the live zone -- which, in a full rebuild, could be an
     hour of sealed-season work later.
+
+    AN EMPTY REQUEST IS REFUSED BY NAME (WR-09). ``if seasons and not missing`` deliberately
+    excludes the empty list, which then fell through to the bypass block and produced one of
+    two dishonest answers: with the opt-in unset, an ``UpstreamPinMissing`` reading "The
+    upstream pin does not cover pbp season(s) ." -- a refusal naming no season, with an empty
+    zone table and a recovery option list built from nothing -- and with it set, an
+    ``IndexError`` on ``frames[0]`` inside :func:`_fetch_live` for ``depth_charts``. Neither
+    is the honest answer. An empty request is a CALLER BUG rather than a coverage question,
+    and returning an empty frame would be worse than either: its emptiness would be read as
+    "upstream had nothing", which is the silent-wrong-number failure this whole module
+    exists to prevent.
     """
+    if not seasons:
+        msg = (
+            f"load of {dataset} was asked for NO seasons. An empty request is a caller "
+            "bug, not a coverage question: refusing rather than returning a frame whose "
+            "emptiness would be read as 'upstream had nothing for these seasons'. Pass "
+            "the season(s) the caller actually needs, or do not call the loader at all."
+        )
+        raise UpstreamPinError(msg)
+
     from data import upstream_live
 
     active_as_of = upstream_live.current_as_of(explicit=as_of)
@@ -816,7 +836,10 @@ def _load(
     missing = partition["unknown"]
     sealed = set(partition["sealed"])
 
-    if seasons and not missing:
+    # ``seasons`` is non-empty by the refusal at the top of this function (WR-09), so the
+    # old ``if seasons and not missing`` guard's first half is gone rather than left
+    # implying the empty case is still handled somewhere below.
+    if not missing:
         root = Path(data_root) if data_root is not None else default_data_root()
         frames = []
         for season in seasons:
