@@ -1306,3 +1306,58 @@ ARTIFACT_PHASE_BOUNDARY_MAP: tuple[tuple[str, str], ...] = (
 REGISTRY_STEP_COUNT_BEFORE: int = 19
 REGISTRY_STEP_COUNT_AFTER: int = 22
 DATA_PHASE_STEP_COUNT_AFTER: int = 9
+
+
+# ---------------------------------------------------------------------------
+# THIS PLAN'S COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-07 at plan close on 2026-09-12, AFTER the three-tier
+# measurement that produced it. Nothing above this line was edited.
+#
+# APPENDED AT CLOSE, NOT IN TASK 2, for the reason Plans 33-02 through 33-06 each
+# recorded when they did the same: three tasks add tests, so a Task-2 value would have
+# been wrong at plan close and could only have been made right by EDITING it -- the
+# append-once violation the protocol exists to prevent.
+#
+# MEASURED over all THREE tiers with the guard armed and NFL_GUARD_OBSERVATIONS=1:
+#     uv run pytest tests/unit -q
+#         3305 passed, 3 skipped, 5 xfailed          3313 collected   318.26 s
+#     uv run pytest tests/integration -q
+#         5 failed, 767 passed, 8 skipped, 9 xfailed  789 collected   593.86 s
+#     uv run pytest tests/api tests/test_*.py -q
+#         370 passed                                  370 collected   130.54 s
+#     SUM: 5 failed, 4442 passed, 11 skipped, 14 xfailed       4472 collected
+#
+# 4472 - 4429 (Plan 33-06's three-tier collected total) = 43.
+#
+# It closes exactly against the modules, which is the check that no test was quietly
+# deleted to make a number look better:
+#     17  tests/unit/test_required_artifacts_currency.py     (new)
+#      8  tests/unit/test_capture_step_season_week.py        (new)
+#      6  tests/unit/test_weekly_decision_frame.py           (new)
+#      4  tests/unit/test_empty_week_refusals.py             (new)
+#      6  tests/unit/test_step_registry_order.py             (10 -> 16)
+#      1  tests/unit/test_pipeline_model_validation.py       (13 -> 14)
+#      1  tests/integration/test_friday_prediction_step.py   (4 -> 5)
+#     --
+#     43
+#
+# ONE FURTHER MODULE WAS EDITED AND ADDED ZERO NODES, which is why it does not appear
+# above and why the arithmetic still closes:
+# tests/unit/test_pipeline_orchestrator.py stayed at 28. Its step-count test was
+# RENAMED (test_build_step_registry_returns_19_steps -> ..._22_steps) with its
+# expectation moved deliberately, and two sibling expectations were updated in place.
+# A rename plus a changed expectation is one node before and one node after.
+#
+# A PLAN-TEXT CORRECTION, recorded rather than quietly absorbed: Plan 33-07's Task 3
+# read_first states that tests/unit/test_step_registry_order.py "EXISTS with 11 tests".
+# Measured at the plan's base commit 360c1c8 it carries TEN. Six were added, not five,
+# and the arithmetic above uses the measured number.
+#
+# The five failures are EXACTLY DELIBERATE_TRIPWIRE_NODE_IDS, unchanged. The SKIPPED
+# count did not move (11 -> 11) and neither did XFAILED (14 -> 14). No tier reported a
+# production-store boundary crossing (STAT_SIGNATURE_OBSERVATIONS 3 + 5 + 0,
+# WAL_SIBLING_OBSERVATIONS 0 in every tier).
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_07: int = 43
