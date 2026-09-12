@@ -523,3 +523,55 @@ INTERNATIONAL_STADIUM_IDS: tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_02: int = 67
+
+
+# ---------------------------------------------------------------------------
+# THE ELO WRITE PATH: the split rule, and the TRUE blast radius of both verbs.
+#
+# APPENDED by Plan 33-03 Task 1 on 2026-09-11. Nothing above this line was edited.
+#
+# The split rule has ONE committed home the tests import rather than re-listing:
+# a ROW table accumulates history (one row per game, keyed on game_id) and is
+# UPSERTED by the weekly path; a STATE artifact is current-state by definition and
+# is REPLACED. Getting the split wrong in either direction is a real failure --
+# upserting a state artifact strands dead teams forever, and replacing a row table
+# destroys 24 seasons of burn-in that three deployed models read through.
+# ---------------------------------------------------------------------------
+
+ELO_ROW_TABLE_NAMES: tuple[str, ...] = (
+    "elo_game_snapshots",
+    "games_with_elo",
+    "elo_rating_history",
+)
+
+ELO_STATE_ARTIFACT_NAMES: tuple[str, ...] = (
+    "elo_ratings_current",
+    "elo_ratings",
+)
+
+# Every path the two Elo write verbs touch, INCLUDING THE SHARED DUCKDB.
+#
+# WHY THE DUCKDB IS NAMED, MEASURED AGAINST data/storage.py RATHER THAN ASSUMED.
+# `save_dataframe` defaults to `save_to_db=True` AND `save_to_parquet=True`
+# (data/storage.py:826-836), so every artifact it writes lands in BOTH stores. The
+# full rebuild routes all four tables through it. The live append routes the three
+# ROW tables through `upsert_silver`, which is PARQUET-ONLY -- and that asymmetry is
+# precisely why `EloBuilder._upsert_row_table` re-reads the combined parquet and
+# replaces the DuckDB copy from it: `load_dataframe(source="auto")` resolves DuckDB
+# FIRST (data/storage.py:959-963), so a parquet-only upsert would leave the database
+# serving the pre-append rows while the parquet said otherwise.
+#
+# The staged generation tree and the pointer are named too. They are not incidental
+# temp files: the pointer is the ONE atomic publish surface, and a phase that
+# declared only the live artifacts would be under-declaring what a crash can leave
+# behind.
+ELO_WRITE_SET_INCLUDING_DUCKDB: tuple[str, ...] = (
+    "data/silver/elo_game_snapshots.parquet",
+    "data/silver/games_with_elo.parquet",
+    "data/silver/elo_rating_history.parquet",
+    "data/silver/elo_ratings_current.parquet",
+    "data/silver/elo_ratings.json",
+    "data/silver/elo_generation.json",
+    "data/silver/elo_generations/",
+    "data/nfl_predictions.duckdb",
+)

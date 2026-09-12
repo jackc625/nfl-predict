@@ -43,7 +43,7 @@ Build each feature component, then assemble the per-target Gold matrices. Use
 `--all-seasons` for a full historical build, or `--season <YEAR>` for a single season.
 
 ```powershell
-uv run python scripts/build_elo.py --all-seasons
+uv run python scripts/build_elo.py --all-seasons --full-rebuild
 uv run python scripts/build_team_form.py --all-seasons
 uv run python scripts/build_contextual.py --season <YEAR>
 uv run python scripts/build_weather.py --season <YEAR>
@@ -58,7 +58,13 @@ uv run python scripts/build_features.py --all-seasons
   `data/gold/features_ou.parquet`.
 
 > Note: `build_elo.py` and `build_team_form.py` accept `--all-seasons` (and
-> `--current` for the current season). The contextual/weather/market-anchor
+> `--current` for the current season). **`build_elo.py` requires `--full-rebuild`
+> alongside any historical build (`--all-seasons` / `--seasons` / `--season`) before
+> it will write.** A historical build REPLACES the Elo tables, and replace-all
+> against 24 seasons of burn-in is a destructive operation that has to be asked for
+> rather than reached by default (Plan 33-03, T-33-12). `--current` takes the live
+> append path instead, which upserts the named season and leaves prior seasons
+> alone, so it needs no such flag. The contextual/weather/market-anchor
 > builders take `--season` and `--week`. `build_features.py` takes `--all-seasons`
 > (the full historical build, which is also what a bare invocation does) OR
 > `--season` / `--week` (a scoped build); the two are mutually exclusive. The

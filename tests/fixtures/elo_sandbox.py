@@ -29,6 +29,7 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -50,6 +51,11 @@ SANDBOX_TEAMS: tuple[str, ...] = (
 
 # The four fixed matchups played every week of a sandbox season. Two are divisional
 # (BUF/MIA, KC/DEN) and two are not, so the divisional HFA reduction is exercised.
+# Kickoffs are tz-aware Eastern, matching the real silver ``games`` table. A naive
+# datetime is rejected outright by ``DuckDBConnection._normalize_datetime_columns``,
+# so a naive fixture would not even reach the code under test.
+_ET = ZoneInfo("America/New_York")
+
 _WEEKLY_MATCHUPS: tuple[tuple[str, str], ...] = (
     ("BUF", "MIA"),
     ("KC", "DEN"),
@@ -96,7 +102,9 @@ def make_season_games(
                     "away_team": away,
                     "home_score": float(home_points) if is_graded else None,
                     "away_score": float(away_points) if is_graded else None,
-                    "kickoff_et": datetime(season, 9, 6 + (week * 7), 13 + index, 0),
+                    "kickoff_et": datetime(
+                        season, 9, 6 + (week * 7), 13 + index, 0, tzinfo=_ET
+                    ),
                 }
             )
 

@@ -48,7 +48,7 @@ def _live_digests(sandbox) -> dict[str, dict[str, str]]:
 def _seed_first_generation(sandbox, season: int = 2025, weeks: int = 2):
     """Publish generation ONE through the real live-append verb."""
     builder = sandbox_builder(sandbox, make_season_games(season, weeks=weeks))
-    update = builder.update_current_season(season=season)
+    update = builder.build_season_frames(season)
     builder.save_live_append(
         season,
         snapshots=update.snapshots,
@@ -111,7 +111,7 @@ class TestAnInterruptedPublishLeavesThePreviousGenerationIntact:
         before_pointer = read_elo_generation_pointer(silver)
 
         # A SECOND generation's worth of content, materially different from the first.
-        wider = builder.update_current_season(season=2025)
+        wider = builder.build_season_frames(2025)
         staged = {
             "elo_game_snapshots": wider.snapshots,
             "games_with_elo": wider.games_with_elo,
@@ -168,7 +168,8 @@ class TestACompletingPublishMovesThePointer:
         from tests.fixtures.elo_sandbox import seed_sandbox_games
 
         seed_sandbox_games(make_season_games(2025, weeks=3))
-        update = builder.update_current_season(season=2025)
+        builder.elo_system = builder.elo_system.__class__()
+        update = builder.build_season_frames(2025)
         builder.save_live_append(
             2025,
             snapshots=update.snapshots,
@@ -214,7 +215,7 @@ class TestAnIncompleteGenerationIsNeverPublished:
         silver = sandbox / "silver"
         before_pointer = read_elo_generation_pointer(silver)
 
-        update = builder.update_current_season(season=2025)
+        update = builder.build_season_frames(2025)
         staged = {
             "elo_game_snapshots": update.snapshots,
             "games_with_elo": update.games_with_elo,

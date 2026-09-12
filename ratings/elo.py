@@ -591,15 +591,23 @@ class EloRatingSystem:
             return df.sort_values("rating", ascending=False)
         return df
 
-    def save_ratings(self, filepath: str | None = None) -> None:
-        """Save current ratings to JSON file."""
-        if filepath is None:
-            filepath = self.settings.get_data_path("silver") / "elo_ratings.json"
+    def ratings_state(self) -> dict[str, Any]:
+        """Return the serializable Elo state ``save_ratings`` writes.
 
+        Factored OUT of :meth:`save_ratings` so the state can be STAGED as a value
+        before it is published (Plan 33-03). ``elo_ratings.json`` is one of the five
+        artifacts ``publish_elo_generation`` stages under a generation id, and staging
+        needs the payload, not a side effect on a path. ``save_ratings`` now serializes
+        exactly this dict, so the staged copy and the live file cannot diverge.
+
+        Returns:
+            Dict with ``ratings``, ``hfa_by_season`` and ``parameters``, already
+            converted from numpy scalars to native Python types.
+        """
         # Convert numpy types to native Python types for JSON serialization
         hfa_by_season_clean = {str(k): float(v) for k, v in self.hfa_by_season.items()}
 
-        data = {
+        return {
             "ratings": {
                 team: rating.to_dict() for team, rating in self.ratings.items()
             },
@@ -611,6 +619,13 @@ class EloRatingSystem:
                 "season_carryover": float(self.season_carryover),
             },
         }
+
+    def save_ratings(self, filepath: str | None = None) -> None:
+        """Save current ratings to JSON file."""
+        if filepath is None:
+            filepath = self.settings.get_data_path("silver") / "elo_ratings.json"
+
+        data = self.ratings_state()
 
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2, default=str)

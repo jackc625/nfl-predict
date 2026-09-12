@@ -55,8 +55,13 @@ _PRODUCTION_MODULES: tuple[str, ...] = (
 
 
 def _live_frames(builder, season: int):
-    """Run the live update and return its three frames, without persisting."""
-    update = builder.update_current_season(season=season)
+    """Build one season's three ROW frames, at the three grains they really have.
+
+    Deliberately ``build_season_frames`` and NOT ``update_current_season``: this module
+    is about the WRITE verbs, and coupling it to the live update path would make it
+    fail for reasons that belong to Tasks 2 and 3 of this plan.
+    """
+    update = builder.build_season_frames(season)
     return update.snapshots, update.games_with_elo, update.rating_history
 
 
@@ -172,23 +177,57 @@ class TestSaveFullRebuild:
         assert (silver / "elo_ratings.json").exists()
 
     def test_a_full_rebuild_logs_an_attributed_line(
-        self, tmp_path, monkeypatch, caplog
+        self, tmp_path, monkeypatch
     ) -> None:
-        """A full rebuild must never be mistakable for a weekly run in a log."""
+        """A full rebuild must never be mistakable for a weekly run in a log.
+
+        The logger is captured directly rather than through ``caplog``: this project
+        logs through structlog, so a stdlib-handler assertion would pass or fail on the
+        logging CONFIGURATION rather than on what the verb actually recorded.
+        """
+        import scripts.build_elo as build_elo_mod
+
         sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
         games = make_season_games(2024, weeks=2)
         builder = sandbox_builder(sandbox, games)
         processed = builder.build_all_ratings(start_season=2024)
 
-        with caplog.at_level("INFO"):
-            builder.save_full_rebuild(processed, start_season=2024)
+        recorded: list[tuple[str, dict]] = []
+        real_logger = build_elo_mod.logger
 
-        text = caplog.text
-        assert "FULL REBUILD" in text, (
+        class _Recorder:
+            def info(self, event, **kwargs):
+                recorded.append((event, kwargs))
+                return real_logger.info(event, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(real_logger, name)
+
+        monkeypatch.setattr(build_elo_mod, "logger", _Recorder())
+        builder.save_full_rebuild(processed, start_season=2024)
+
+        attributed = [
+            (event, kwargs) for event, kwargs in recorded if "FULL REBUILD" in event
+        ]
+        assert attributed, (
             "the full-rebuild write must announce itself by name; a silent "
-            "replace-everything is indistinguishable from a weekly append in a log."
+            "replace-everything is indistinguishable from a weekly append in a log. "
+            f"Events seen: {[event for event, _ in recorded]}"
         )
-        assert "2024" in text, "the attributed line must name the start season"
+        _, fields = attributed[0]
+        assert fields.get("start_season") == 2024, (
+            f"the attributed line must name the start season, got {fields}"
+        )
+        for name in (
+            "elo_game_snapshots_rows",
+            "games_with_elo_rows",
+            "elo_rating_history_rows",
+            "elo_ratings_current_rows",
+        ):
+            assert name in fields, (
+                f"the attributed line must name {name}; a rebuild that reports no row "
+                f"counts cannot be reconciled afterwards. Got {sorted(fields)}"
+            )
 
 
 class TestSaveLiveAppend:
