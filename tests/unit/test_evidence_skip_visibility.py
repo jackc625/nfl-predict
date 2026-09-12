@@ -26,9 +26,9 @@ import pytest
 
 from tests.conftest import (
     _EVIDENCE_SKIP_MARKERS,
+    _report_evidence_backed_skips,
     _skip_reason,
     is_evidence_backed_skip,
-    pytest_terminal_summary,
 )
 
 # The real skip reasons this project's controls emit, quoted from their call sites.
@@ -170,7 +170,7 @@ class TestTheSummaryHookReports:
                 ]
             }
         )
-        pytest_terminal_summary(reporter)
+        _report_evidence_backed_skips(reporter)
 
         printed = "\n".join(reporter.lines)
         assert "1 of 2 skipped test(s)" in printed
@@ -178,11 +178,19 @@ class TestTheSummaryHookReports:
         assert "tests/b.py::test_two" not in printed
         assert "does not include them" in printed
 
+    # These three drive `_report_evidence_backed_skips` rather than the
+    # `pytest_terminal_summary` hook that calls it. The hook now aggregates three
+    # unrelated reporters -- evidence-backed skips, the session-end boundary sweep
+    # and the write guard's observation counters -- and a "stays silent" assertion
+    # against the aggregate is really an assertion that NOTHING ELSE in the session
+    # has anything to say, which is not what this module is about. Plan 33-01
+    # narrowed the target so these tests keep measuring their own subject.
+
     def test_it_stays_silent_when_every_control_ran(self) -> None:
         reporter = self._Reporter(
             {"skipped": [self._report("tests/b.py::test_two", "requires Windows")]}
         )
-        pytest_terminal_summary(reporter)
+        _report_evidence_backed_skips(reporter)
 
         assert reporter.lines == [], (
             "The note fired on a run where no evidence-backed control was skipped. "
@@ -191,7 +199,7 @@ class TestTheSummaryHookReports:
 
     def test_it_stays_silent_on_a_run_with_no_skips_at_all(self) -> None:
         reporter = self._Reporter({})
-        pytest_terminal_summary(reporter)
+        _report_evidence_backed_skips(reporter)
         assert reporter.lines == []
 
 
