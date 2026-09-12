@@ -1644,3 +1644,137 @@ WEATHER_BACKFILL_DIGEST_BEFORE: str = (
 WEATHER_BACKFILL_DIGEST_AFTER: str = (
     "3034b00b86ab95332cf1d385b736379b1b6796be2fa812acf3a4d1dcb9114d4d"
 )
+
+
+# ---------------------------------------------------------------------------
+# THE GOLD WEATHER CONSTANCY, RE-DERIVED. MEASUREMENT ONLY.
+#
+# APPENDED by Plan 33-09 Task 3 on 2026-09-12. Nothing above this line was edited.
+#
+# WHY IT WAS RE-DERIVED RATHER THAN INHERITED. The claims "99.78% imputed" and
+# "32 of 33 columns exactly constant, only venue_cold_climate varying" are the
+# ENTIRE rationale for holding the gold weather family at its historical default
+# for 2026 (D33-25). They were carried forward from an earlier phase without
+# reproduction. A decision resting on an unreproduced number is a decision resting
+# on the last thing somebody wrote down.
+#
+# READ-ONLY, AND PROVEN SO. The re-derivation was bracketed with
+# `tests.data_boundary.digest_tree` on BOTH production roots. 424 files under
+# `data/` and 159 under `artifacts/` were digested before and after; both
+# comparisons came back clean. "It only reads" is a property here, not an
+# intention.
+#
+# WHAT REPRODUCED, EXACTLY
+# ------------------------
+# The IMPUTED SHARE reproduces to the digit: 6,485 of 6,499 gold rows carry
+# `raw_temp_f == 65.0`, the imputed default. That is 99.7846%, and the recorded
+# claim was 99.78%.
+#
+# The SHAPE of the constancy claim reproduces exactly: in every one of the three
+# populations, in all three gold matrices, there is exactly ONE varying weather
+# column and it is `venue_cold_climate` -- precisely the column the recorded claim
+# named.
+#
+# WHAT DIVERGED, RECORDED AS BOTH NUMBERS RATHER THAN REPLACED
+# --------------------------------------------------------------
+# The COUNT is 45 of 46, not 32 of 33. The re-derivation counts the whole weather
+# family as it reaches gold -- all 45 columns `data/silver/weather_features.parquet`
+# contributes, plus `venue_cold_climate` -- where the earlier claim counted a
+# narrower set nobody wrote down. The two are the same finding at two widths, and
+# the divergence is in the DENOMINATOR, not in the verdict. Both are recorded; the
+# earlier figure is not overwritten.
+#
+# WHAT THE RE-DERIVATION FOUND THAT NOBODY HAD RECORDED
+# ------------------------------------------------------
+# TWO facts, and the second changes the size of the decision:
+#
+# 1. Inside all three populations the imputation is TOTAL, not merely dominant:
+#    1335/1335, 534/534 and 1139/1139 rows sit at the 65.0 default. There is no
+#    real weather anywhere in the ATS train window, the WP/OU train window, or the
+#    2021-2024 gate holdout -- not 99.78% of it, all of it. The fourteen real rows
+#    are 2024 Week 6, which falls in none of the three.
+#
+# 2. THE DEPLOYED WP AND ATS ARTIFACTS CONSUME NO WEATHER FEATURE AT ALL. Read from
+#    each artifact's own `feature_list.json`: wp_20260824_113325 has 20 features and
+#    0 are weather; ats_20260605_220128 has 25 and 0 are weather; only
+#    ou_20260326_163930 has any, 17 of its 25. So the exposure this switch protects
+#    against is SEVENTEEN columns entering ONE model, not thirty-three entering
+#    three. All 17 are exactly constant in O/U's own 2018-2019 train window AND in
+#    the 2021-2024 holdout, so the protection is real -- but it is narrower than the
+#    decision was framed, and the owner was told so before ruling.
+# ---------------------------------------------------------------------------
+
+GOLD_WEATHER_CONSTANCY_MEASUREMENT: dict[str, object] = {
+    "measured_on": "2026-09-12",
+    "measured_by": "Plan 33-09 Task 3",
+    "read_only_bracket": {
+        "data_files_digested": 424,
+        "artifacts_files_digested": 159,
+        "data_unchanged": True,
+        "artifacts_unchanged": True,
+    },
+    # 45 weather-family columns reach gold (all of weather_features.parquet except
+    # `weather_condition`, which is dropped at build time), plus `venue_cold_climate`.
+    "weather_columns_counted": 46,
+    "populations": {
+        # (rows, constant_columns, varying_columns) -- identical in all three gold
+        # matrices, so one entry per population rather than three that agree.
+        "ats_train_2015_2019": {
+            "rows": 1335,
+            "constant": 45,
+            "varying": 1,
+            "varying_columns": ("venue_cold_climate",),
+        },
+        "wp_ou_train_2018_2019": {
+            "rows": 534,
+            "constant": 45,
+            "varying": 1,
+            "varying_columns": ("venue_cold_climate",),
+        },
+        "gate_holdout_2021_2024": {
+            "rows": 1139,
+            "constant": 45,
+            "varying": 1,
+            "varying_columns": ("venue_cold_climate",),
+        },
+    },
+    "raw_temp_f_imputed": {
+        "default_value": 65.0,
+        "rows_total": 6499,
+        "rows_at_default": 6485,
+        "share": 0.997846,
+        # Within each population the imputation is TOTAL.
+        "per_population_at_default": {
+            "ats_train_2015_2019": (1335, 1335),
+            "wp_ou_train_2018_2019": (534, 534),
+            "gate_holdout_2021_2024": (1139, 1139),
+        },
+    },
+    # What each DEPLOYED artifact actually consumes, from its own feature_list.json.
+    "deployed_weather_feature_exposure": {
+        "wp_20260824_113325": {"total_features": 20, "weather_features": 0},
+        "ats_20260605_220128": {"total_features": 25, "weather_features": 0},
+        "ou_20260326_163930": {"total_features": 25, "weather_features": 17},
+    },
+    "ou_weather_features_constant": {
+        "ou_train_2018_2019": (17, 17),
+        "gate_holdout_2021_2024": (17, 17),
+        # Across the full 2002-2025 span 11 of the 17 DO vary, because the fourteen
+        # real 2024 Week 6 rows and the 2025 partial rows are in that span. That is
+        # the contrast that makes the windows' constancy a fact about the windows
+        # rather than about the columns.
+        "all_2002_2025": (6, 17),
+    },
+    "divergence_from_recorded_claims": {
+        "imputed_share": "REPRODUCED. Recorded 99.78%; re-derived 99.7846% "
+        "(6,485 of 6,499).",
+        "constant_columns": "SHAPE REPRODUCED, COUNT DIVERGED. Recorded 32 of 33 "
+        "with only venue_cold_climate varying; re-derived 45 of 46 with only "
+        "venue_cold_climate varying. Same verdict, wider denominator. Both figures "
+        "are recorded and the earlier one is not overwritten.",
+        "blast_radius": "NOT PREVIOUSLY RECORDED, and it narrows the decision. The "
+        "premise said 33 out-of-distribution columns would enter THREE deployed "
+        "models. Measured: WP and ATS consume ZERO weather features, so it is 17 "
+        "columns entering ONE model (the v1.0 pre-Elo O/U artifact).",
+    },
+}
