@@ -310,3 +310,138 @@ def test_orchestrator_data_phase_reaches_verify_gate(tmp_path, monkeypatch):
     assert "verify_data_artifacts" in step_names
     gate = next(s for s in log.steps if s.name == "verify_data_artifacts")
     assert gate.status == "success"  # StepStatus.SUCCESS.value as stored in the log
+
+
+# ---------------------------------------------------------------------------
+# Which refusal a run meets FIRST (Phase 33, Plan 33-07, R9)
+# ---------------------------------------------------------------------------
+
+_ORDERING_SEASON = 2026
+_ORDERING_WEEK = 2
+_ORDERING_GAMEDAY = "2026-09-20"
+
+
+def _write_ordering_tree(root: Path) -> None:
+    """A tree where BOTH the pre-flight and the selection tier would refuse the week.
+
+    The week IS scheduled -- so this is not the "no scheduled games" case -- and every gold
+    matrix carries a DIFFERENT week, which is the exact input both refusals are about.
+    """
+    silver = root / "data" / "silver"
+    gold = root / "data" / "gold"
+    silver.mkdir(parents=True, exist_ok=True)
+    gold.mkdir(parents=True, exist_ok=True)
+
+    schedule = pd.DataFrame(
+        {
+            "game_id": [f"{_ORDERING_SEASON}_{_ORDERING_WEEK:02d}_AAA@BBB"],
+            "season": [_ORDERING_SEASON],
+            "week": [_ORDERING_WEEK],
+            "kickoff_et": [f"{_ORDERING_GAMEDAY}T17:00:00+00:00"],
+        }
+    )
+    schedule.to_parquet(silver / "games.parquet", index=False)
+
+    # The odds snapshot has to be present, because ``build_weekly_candidates`` reads it
+    # BEFORE it reaches the gold check. Without it the selection tier would refuse the week
+    # for a missing snapshot, and this test would be comparing the pre-flight against the
+    # wrong error.
+    pd.DataFrame(
+        {
+            "game_id": [f"{_ORDERING_SEASON}_{_ORDERING_WEEK:02d}_AAA@BBB"],
+            "snapshot_ts": ["2026-09-18T18:00:00-04:00"],
+            "ml_home": [-130.0],
+            "ml_away": [110.0],
+            "spread": [-2.5],
+            "total": [45.0],
+            "sportsbook": ["consensus"],
+            "is_live": [False],
+        }
+    ).to_parquet(silver / "odds_snapshot.parquet", index=False)
+
+    other_week = pd.DataFrame(
+        {
+            "game_id": [f"{_ORDERING_SEASON}_01_AAA@BBB"],
+            "season": [_ORDERING_SEASON],
+            "week": [1],
+        }
+    )
+    for target in ("wp", "ats", "ou"):
+        other_week.to_parquet(gold / f"features_{target}.parquet", index=False)
+
+
+def test_the_gold_currency_preflight_raises_before_the_selection_tier_can(
+    tmp_path, monkeypatch
+):
+    """R9 ordering: when both refusals would fire, the run meets the PRE-FLIGHT.
+
+    Both errors say the same thing about the same tree -- gold carries no rows for a week
+    that HAS scheduled games -- and they sit four steps apart in the registry. The
+    selection-tier one (``build_weekly_candidates``) is the backstop and stays exactly where
+    it is; the point of the pre-flight is that a run stops BEFORE it has scored artifacts,
+    written a predictions file and exported it, rather than after.
+
+    Written as an assertion on WHICH ERROR TYPE surfaces and at which registry index, not as
+    a log-text check: the two are different classes, so "which one fired" is observable
+    rather than inferred from wording that a later edit could align.
+
+    The loop walks the REAL registry order and executes only the two steps that can raise on
+    this tree. The steps between them need model artifacts and a live odds pull and can
+    raise NEITHER of the two errors under comparison, so skipping them changes which errors
+    are reachable not at all -- and they are skipped BY NAME so a rename cannot silently
+    turn this into a loop over nothing.
+    """
+    from backtest.weekly_bet_list import build_weekly_candidates
+    from pipeline.steps import StaleDataArtifactError, build_step_registry
+
+    _write_ordering_tree(tmp_path)
+    monkeypatch.setattr(
+        "utils.date_utils.get_current_nfl_week",
+        lambda: (_ORDERING_SEASON, _ORDERING_WEEK),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    registry = build_step_registry()
+    positions = {step.name: index for index, step in enumerate(registry)}
+    preflight = "verify_gold_currency"
+    selection = "generate_recommendations"
+    assert preflight in positions and selection in positions, sorted(positions)
+    assert positions[preflight] < positions[selection], (
+        f"{preflight!r} is at index {positions[preflight]} and must run strictly BEFORE "
+        f"{selection!r} at index {positions[selection]}"
+    )
+
+    # The selection tier WOULD refuse this tree. Asserted directly, so the ordering claim
+    # below is about which of two live refusals fires and not about one of them existing.
+    with pytest.raises(ValueError) as selection_tier:
+        build_weekly_candidates(
+            _ORDERING_SEASON,
+            _ORDERING_WEEK,
+            artifacts_dir=tmp_path / "artifacts",
+            gold_dir=tmp_path / "data" / "gold",
+            silver_dir=tmp_path / "data" / "silver",
+        )
+    assert "has no rows for" in str(selection_tier.value)
+
+    # Now walk the registry in order and record the FIRST refusal a run actually meets.
+    first_step: str | None = None
+    first_error: BaseException | None = None
+    for step in registry[positions[preflight] : positions[selection] + 1]:
+        if step.name not in (preflight, selection):
+            continue
+        try:
+            step.callable()
+        except BaseException as raised:
+            first_step = step.name
+            first_error = raised
+            break
+
+    assert first_step == preflight, (
+        f"the first refusal came from {first_step!r}; the pre-flight exists so that a run "
+        "stops at the GOLD/PREDICTION boundary rather than at selection, four steps later"
+    )
+    assert isinstance(first_error, StaleDataArtifactError), first_error
+    assert not isinstance(first_error, ValueError), (
+        "the pre-flight raised a ValueError, which is the selection tier's own class; the "
+        "two refusals would then be indistinguishable to any handler that catches one"
+    )

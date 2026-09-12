@@ -126,6 +126,7 @@ __all__ = [
     "build_bet_week_schedule",
     "build_freeze_instant_candidates",
     "build_weekly_candidates",
+    "build_weekly_decision_frame",
     "generate_weekly_bet_list",
     "grade_pending_rows",
     "grade_row",
@@ -1056,6 +1057,105 @@ def records_to_bet_list_frame(
     return stamped[BET_LIST_COLUMNS]
 
 
+def _require_run_mode(run_mode: str) -> None:
+    """Refuse a run mode outside the two-value vocabulary, before anything is loaded."""
+    if run_mode not in (RUN_MODE_FORWARD, RUN_MODE_REPLAY):
+        msg = (
+            f"run_mode {run_mode!r} is outside the vocabulary "
+            f"('{RUN_MODE_FORWARD}', '{RUN_MODE_REPLAY}')."
+        )
+        raise ValueError(msg)
+
+
+def build_weekly_decision_frame(
+    season: int,
+    week: int,
+    *,
+    artifacts_dir: Path = Path("artifacts"),
+    gold_dir: Path = Path("data/gold"),
+    silver_dir: Path = Path("data/silver"),
+    chain_fit_path: Path | str = DEFAULT_CHAIN_FIT_PATH,
+    run_mode: str = RUN_MODE_FORWARD,
+    bankroll: float = DEFAULT_BANKROLL,
+    now: datetime | None = None,
+    fits: dict[str, WeeklyChainFit] | None = None,
+    strategies: list[Any] | None = None,
+) -> pd.DataFrame:
+    """One week's decisions -- every ``status`` and ``rejection_reason`` -- and NO write.
+
+    THE PURE SEAM. It selects the week and stamps the result through the EXISTING
+    :func:`records_to_bet_list_frame`, then RETURNS the frame. It persists nothing: no
+    durable artifact, no tracker, no ``outputs/`` path touched, no cache connection opened.
+
+    WHY IT HAS TO EXIST (Codex HIGH, raised on both Plan 33-07 and Plan 33-18).
+    :func:`build_weekly_candidates` returns feature/odds candidates carrying neither
+    decision column; ``status`` and ``rejection_reason`` are created by
+    :func:`records_to_bet_list_frame`, and until this function the only caller that reached
+    it also WROTE the result. So "what did this week decide?" could not be asked without
+    also recording that the week had been decided. R9's no-edge-week criterion needs the
+    first without the second, and so does Plan 33-18's acceptance run.
+
+    IT IS THE SAME DECISION PATH THE PERSISTING ONE USES, NOT A SECOND ONE. The weekly
+    entry point delegates HERE and then persists what comes back, so there is one decision
+    path with a persistence step bolted on rather than two that agree today and drift
+    tomorrow. This repository has been bitten by duplicated logic three times, which is why
+    the delegation is a call rather than a copy.
+
+    Args:
+        season: The season to select.
+        week: The week to select.
+        artifacts_dir: Where the deployed model artifacts live.
+        gold_dir: Where the per-target gold matrices live.
+        silver_dir: Where the schedule and the odds snapshot live.
+        chain_fit_path: The pre-registered tune-only fit, read when *fits* is omitted.
+        run_mode: ``"forward"`` or ``"replay"``.
+        bankroll: The notional bankroll the unit conversion is expressed against.
+        now: This run's instant. Injected rather than read from the clock so the stamp is
+            testable; a FORWARD run with none takes the current instant.
+        fits: Pre-resolved per-target frozen fits. Passed in by a caller that has already
+            read them, so the record is read ONCE per run rather than twice.
+        strategies: A pre-built strategy registry, for the same reason: selection and
+            grading must share one registry or a bet can be graded under a rule it was not
+            selected under.
+
+    Returns:
+        The stamped ``BET_LIST_COLUMNS`` frame -- one row per (game, target), live or
+        suppressed, with every suppression carrying its own reason.
+
+    Raises:
+        ValueError: for a run mode outside the vocabulary, a week with no scheduled games,
+            or a gold matrix carrying no rows for the week.
+        FrozenChainFitError: when the pre-registered fit cannot be resolved.
+    """
+    _require_run_mode(run_mode)
+
+    resolved_fits = load_frozen_chain_fit(chain_fit_path) if fits is None else fits
+    _require_season_covered(resolved_fits, season)
+    registry = build_strategies(resolved_fits) if strategies is None else strategies
+
+    candidates, schedule = build_weekly_candidates(
+        season,
+        week,
+        artifacts_dir=artifacts_dir,
+        gold_dir=gold_dir,
+        silver_dir=silver_dir,
+    )
+    result = select_weekly_bets(
+        candidates, schedule, resolved_fits, strategies=registry, bankroll=bankroll
+    )
+
+    # ONE run instant, so the caller's fence and this stamp cannot disagree by whatever the
+    # selection took on a slow week.
+    run_instant = now if now is not None else datetime.now(tz=UTC)
+    return records_to_bet_list_frame(
+        result,
+        resolved_fits,
+        run_mode=run_mode,
+        bankroll=bankroll,
+        decided_at=run_instant if run_mode == RUN_MODE_FORWARD else None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # The durable artifact: read, upsert, write
 # ---------------------------------------------------------------------------
@@ -1836,39 +1936,34 @@ def generate_weekly_bet_list(
     Returns:
         The merged, graded bet list -- the same frame both artifacts were written from.
     """
-    if run_mode not in (RUN_MODE_FORWARD, RUN_MODE_REPLAY):
-        msg = (
-            f"run_mode {run_mode!r} is outside the vocabulary "
-            f"('{RUN_MODE_FORWARD}', '{RUN_MODE_REPLAY}')."
-        )
-        raise ValueError(msg)
+    _require_run_mode(run_mode)
 
     fits = load_frozen_chain_fit(chain_fit_path)
     _require_season_covered(fits, season)
+    # ONE registry, shared by selection and grading, so a bet is graded under exactly the rule it
+    # was selected under. Built HERE and handed to the decision seam rather than built inside it,
+    # because the grading pass below needs the same objects.
+    strategies = build_strategies(fits)
+    # ONE run instant, used for BOTH the stamp and the fence. Two clock reads would let a row
+    # claim an observation time the freeze was not judged at, which is a gap of milliseconds
+    # today and a gap of whatever the selection takes on a slow week.
+    run_instant = now if now is not None else datetime.now(tz=UTC)
 
-    candidates, schedule = build_weekly_candidates(
+    # THE DECISION IS DELEGATED, NOT DUPLICATED (Plan 33-07 Task 1). Everything from the
+    # candidate build through the status stamp lives in :func:`build_weekly_decision_frame`,
+    # which writes nothing; this function is that call plus persistence. Two copies of the
+    # decision would agree until the first change to either.
+    incoming = build_weekly_decision_frame(
         season,
         week,
         artifacts_dir=artifacts_dir,
         gold_dir=gold_dir,
         silver_dir=silver_dir,
-    )
-    # ONE registry, shared by selection and grading, so a bet is graded under exactly the rule it
-    # was selected under.
-    strategies = build_strategies(fits)
-    result = select_weekly_bets(
-        candidates, schedule, fits, strategies=strategies, bankroll=bankroll
-    )
-    # ONE run instant, used for BOTH the stamp and the fence. Two clock reads would let a row
-    # claim an observation time the freeze was not judged at, which is a gap of milliseconds
-    # today and a gap of whatever the selection takes on a slow week.
-    run_instant = now if now is not None else datetime.now(tz=UTC)
-    incoming = records_to_bet_list_frame(
-        result,
-        fits,
         run_mode=run_mode,
         bankroll=bankroll,
-        decided_at=run_instant if run_mode == RUN_MODE_FORWARD else None,
+        now=run_instant,
+        fits=fits,
+        strategies=strategies,
     )
 
     stored = read_bet_list_artifact(output_dir)
