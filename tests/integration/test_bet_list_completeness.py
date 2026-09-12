@@ -206,10 +206,14 @@ def _candidates(
 
 
 def _to_bet_list_row(record: dict[str, Any], *, live: bool) -> dict[str, Any]:
-    """Map ONE selector record onto the locked 28-column ``bet_list`` schema.
+    """Map ONE selector record onto the locked 29-column ``bet_list`` schema.
 
     Nothing is re-derived. The recommendation facts are carried through as the selector produced
     them and the grading half stays ``pending``: this plan writes the record, it does not grade it.
+
+    ``decided_at_utc`` is left at its ``dict.fromkeys`` NULL (Phase 33, Plan 33-05 Task 3): every
+    row this fixture writes is stamped ``backtest_replay`` below, and a replay row is derived and
+    fully regenerable, so it carries no observation time and needs none.
     """
     row: dict[str, Any] = dict.fromkeys(BET_LIST_COLUMNS)
     row.update(
@@ -536,3 +540,85 @@ class TestTheFreezeRefusalDoesNotFireInNormalWeeklyOperation:
 
         missing = set(thursdays["game_id"].astype(str)) - carried
         assert missing == set(), sorted(missing)
+
+
+# ---------------------------------------------------------------------------
+# THE 234 STORED REPLAY ROWS TAKE NULL, AND NULL IS WHAT THEY KEEP
+# ---------------------------------------------------------------------------
+#
+# Phase 33, Plan 33-05 Task 3 (COLD-03, R7, D33-27, T-33-22). The OWNER RULING of 2026-09-12
+# added `decided_at_utc` and ruled that the rows already on disk are NEVER backfilled. Every
+# one of them is a `backtest_replay` row already past its freeze, so filling it from
+# `snapshot_ts` -- or from the file's mtime, or from anything -- would stamp an observation time
+# at which nobody observed anything. That is the prohibition this plan named, and it is the same
+# failure class COLD-03 exists to prevent, pointed at history instead of at the future.
+#
+# THIS BLOCK IS READ-ONLY AND CARRIES NO `writes_production_store` MARKER, deliberately. It reads
+# the production artifact and asserts a property of it; it writes nothing anywhere. The
+# "a re-run does not fill them" claim is proven by reading TWICE through the shim and asserting
+# the file's bytes are unchanged -- which is the actual claim (the shim must not write back), and
+# is stronger than re-running a generator whose own write would need the marker.
+
+
+class TestTheStoredReplayRowsAreNeverBackfilled:
+    """T-33-22: the schema bump must not become a licence to stamp history."""
+
+    _ARTIFACT = REPO_ROOT / "outputs" / "bet_list" / "bet_list.parquet"
+
+    def _artifact(self) -> Path:
+        if not self._ARTIFACT.exists():
+            pytest.skip(
+                f"{self._ARTIFACT.as_posix()} is absent (outputs/ is gitignored); "
+                "regenerate with `uv run python scripts/generate_bet_list.py`"
+            )
+        return self._ARTIFACT
+
+    def test_the_stored_artifact_is_all_replay_and_carries_no_observation_time(
+        self,
+    ) -> None:
+        """Measured, not assumed: 234 rows, every one ``backtest_replay``, every stamp NULL."""
+        from backtest.weekly_bet_list import (
+            DECIDED_AT_COLUMN,
+            read_bet_list_with_schema_shim,
+        )
+        from tests.phase33_state import BET_LIST_REPLAY_ROW_COUNT
+
+        frame = read_bet_list_with_schema_shim(self._artifact())
+
+        assert len(frame) == BET_LIST_REPLAY_ROW_COUNT
+        assert list(frame.columns) == list(BET_LIST_COLUMNS)
+        assert set(frame["provenance"]) == {"backtest_replay"}
+        assert frame[DECIDED_AT_COLUMN].isna().all(), (
+            "a stored replay row carries an observation time; the 234 rows predate this column "
+            "and were ruled un-backfillable on 2026-09-12"
+        )
+
+    def test_reading_through_the_shim_does_not_write_the_column_back(self) -> None:
+        """The shim is a READ. Two reads, and the file on disk is byte-identical afterwards.
+
+        This is the operative form of "a re-run does not fill them": the risk is not that some
+        generator would deliberately backfill, it is that the convenience shim would persist its
+        own NULL fill and quietly re-width the artifact.
+        """
+        from backtest.weekly_bet_list import (
+            DECIDED_AT_COLUMN,
+            read_bet_list_with_schema_shim,
+        )
+        from tests.phase33_state import BET_LIST_COLUMN_COUNT_BEFORE
+
+        path = self._artifact()
+        before = path.read_bytes()
+
+        first = read_bet_list_with_schema_shim(path)
+        second = read_bet_list_with_schema_shim(path)
+
+        assert path.read_bytes() == before, (
+            "the schema shim wrote to the stored artifact"
+        )
+        assert first[DECIDED_AT_COLUMN].isna().all()
+        assert second[DECIDED_AT_COLUMN].isna().all()
+
+        # The file itself is still the pre-bump width; only the in-memory frame is 29 wide.
+        raw = pd.read_parquet(path)
+        assert raw.shape[1] == BET_LIST_COLUMN_COUNT_BEFORE
+        assert DECIDED_AT_COLUMN not in raw.columns

@@ -778,3 +778,41 @@ TESTS_ADDED_33_04: int = 41
 
 WEEK_2_THURSDAY_FREEZE_UTC: str = "2026-09-11T22:00:00+00:00"
 PLAN_TIME_UTC_INSTANT: str = "2026-09-11T20:19:33+00:00"
+
+
+# ---------------------------------------------------------------------------
+# THE BET-LIST SCHEMA BUMP, AND THE STORED ROWS IT DELIBERATELY DOES NOT TOUCH.
+#
+# APPENDED by Plan 33-05 Task 3 on 2026-09-12. Nothing above this line was edited.
+#
+# THE OWNER RULED ON 2026-09-12, selecting `decided-at-utc-only` (D33-06's own
+# recommendation) at the Task-2 blocking-human decision checkpoint: ONE new column
+# `decided_at_utc`, typed VARCHAR, holding an ISO-8601 string with an explicit UTC
+# offset, placed in the IMMUTABLE half at INDEX 22 -- immediately after
+# `validation_type` and immediately before `grading_status`, the last position of
+# the immutable half. 22 + 6 = 28 becomes 23 + 6 = 29 in ONE locked order.
+#
+# WHY VARCHAR AND NOT TIMESTAMP: it matches the `snapshot_ts` / `freeze_ts` siblings
+# it is COMPARED AGAINST, so the single strict parse helper landed in Task 1 serves
+# ONE representation. `graded_at`'s TIMESTAMP type is not the sibling convention
+# here; a second representation would need a second code path, which is the shape
+# D33-27 refused.
+#
+# THE STORED ROWS ARE MEASURED, NOT ASSUMED. Read from
+# `outputs/bet_list/bet_list.parquet` on 2026-09-12:
+#     234 rows x 28 columns
+#     provenance:      234 backtest_replay, 0 forward
+#     grading_status:  144 pending, 51 win, 37 loss, 2 push
+# Every one of the 234 is already PAST its freeze, so all 234 take NULL and are
+# NEVER backfilled -- filling them from `snapshot_ts` would stamp an observation
+# time nobody observed, which is this plan's own named prohibition.
+#
+# `freeze_ts` is stored as a tz-AWARE Eastern string on every one of those rows,
+# which is exactly why `_is_frozen`'s naive branch is unreachable from real data and
+# therefore safe to convert to a raise now (T-33-23).
+# ---------------------------------------------------------------------------
+
+BET_LIST_COLUMN_COUNT_BEFORE: int = 28
+BET_LIST_COLUMN_COUNT_AFTER: int = 29
+DECIDED_AT_COLUMN: str = "decided_at_utc"
+BET_LIST_REPLAY_ROW_COUNT: int = 234

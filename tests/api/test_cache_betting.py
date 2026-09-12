@@ -461,3 +461,112 @@ def test_no_call_site_feeds_a_per_bet_expected_value_into_the_edge_band() -> Non
         "expected value banded on this scale would be misclassified (backtest/simulation.py's "
         "warning):\n" + "\n".join(offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# THE THREE bet_list DDL SITES MUST AGREE, COLUMN FOR COLUMN AND IN ORDER
+# ---------------------------------------------------------------------------
+#
+# Phase 33, Plan 33-05 Task 3 (T-33-24). `bet_list` is created from THREE places, not two:
+#
+#   1. `conn.execute(BET_LIST_SCHEMA)` inside `materialize_bet_list`,
+#   2. `conn.execute(BET_LIST_SCHEMA)` inside the cache build,
+#   3. the copy EMBEDDED in `CACHE_SCHEMA`, which the comment above `BET_LIST_SCHEMA` names as
+#      "the SAME definition embedded in CACHE_SCHEMA above".
+#
+# Sites 1 and 2 share one constant, so the constant is what is under test for both. Site 3 is a
+# separate literal and is the one that can silently drift: a column added to `BET_LIST_COLUMNS`
+# and to `BET_LIST_SCHEMA` but not to `CACHE_SCHEMA` produces a real cache whose table is one
+# column narrower than the explicit-column INSERT names, and the INSERT then fails in
+# production rather than in this suite.
+#
+# Both are BUILT and read back through `PRAGMA table_info` rather than compared as text, so a
+# formatting difference is not a failure and a width difference is.
+
+
+def _bet_list_ddl_columns(statement: str) -> list[str]:
+    """Create ``bet_list`` from one DDL *statement* and return its column names, in order."""
+    conn = duckdb.connect(":memory:")
+    conn.execute(statement)
+    return [row[0] for row in conn.execute("PRAGMA table_info('bet_list')").fetchall()]
+
+
+def _embedded_bet_list_statement() -> str:
+    """The single ``bet_list`` CREATE embedded in ``CACHE_SCHEMA``, isolated by name."""
+    statements = [s.strip() for s in CACHE_SCHEMA.strip().split(";") if s.strip()]
+    matches = [s for s in statements if "CREATE TABLE IF NOT EXISTS bet_list" in s]
+    assert len(matches) == 1, (
+        f"expected exactly one embedded bet_list CREATE in CACHE_SCHEMA, found {len(matches)}"
+    )
+    return matches[0]
+
+
+def test_all_three_bet_list_ddl_sites_produce_the_locked_column_order() -> None:
+    """Each site builds the table, and every built table equals ``BET_LIST_COLUMNS`` exactly."""
+    from api.cache import BET_LIST_COLUMNS, BET_LIST_SCHEMA
+
+    standalone = _bet_list_ddl_columns(BET_LIST_SCHEMA)
+    embedded = _bet_list_ddl_columns(_embedded_bet_list_statement())
+
+    assert standalone == list(BET_LIST_COLUMNS)
+    assert embedded == list(BET_LIST_COLUMNS)
+    assert standalone == embedded
+
+
+def test_the_full_cache_build_yields_the_same_bet_list_table() -> None:
+    """The WHOLE ``CACHE_SCHEMA`` executed statement by statement, as the real build does.
+
+    Isolating the embedded CREATE proves the literal is right; running the whole schema proves
+    nothing LATER in it alters the table -- an ALTER or a second CREATE would be invisible to the
+    isolated check.
+    """
+    from api.cache import BET_LIST_COLUMNS
+
+    conn = duckdb.connect(":memory:")
+    for statement in CACHE_SCHEMA.strip().split(";"):
+        stmt = statement.strip()
+        if stmt:
+            conn.execute(stmt)
+    columns = [
+        row[0] for row in conn.execute("PRAGMA table_info('bet_list')").fetchall()
+    ]
+    assert columns == list(BET_LIST_COLUMNS)
+
+
+def test_the_explicit_column_insert_names_every_ddl_column() -> None:
+    """The INSERT and the DDL are the two halves of one contract; a width gap breaks the write.
+
+    Driven rather than inspected: a fully-populated row is written through
+    ``materialize_bet_list`` and read back by NAME, so a column present in the DDL but absent from
+    the INSERT's name list would surface as a NULL that the assertion catches.
+    """
+    from api.cache import BET_LIST_COLUMNS, materialize_bet_list
+
+    row = dict.fromkeys(BET_LIST_COLUMNS, None)
+    row.update(
+        {
+            "game_id": "2026_03_DAL_NYG",
+            "season": 2026,
+            "week": 3,
+            "target": "ou",
+            "bet_side": "under",
+            "status": "live",
+            "provenance": "forward",
+            "validation_type": "forward_realized",
+            "snapshot_ts": "2026-09-18T18:00:00-04:00",
+            "freeze_ts": "2026-09-18T18:00:00-04:00",
+            "decided_at_utc": "2026-09-18T17:59:00-04:00",
+            "grading_status": "pending",
+        }
+    )
+
+    conn = duckdb.connect(":memory:")
+    assert materialize_bet_list(conn, pd.DataFrame([row])) == 1
+    stored = conn.execute(
+        "SELECT decided_at_utc, freeze_ts, provenance FROM bet_list"
+    ).fetchone()
+    assert stored == (
+        "2026-09-18T17:59:00-04:00",
+        "2026-09-18T18:00:00-04:00",
+        "forward",
+    )

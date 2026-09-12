@@ -124,6 +124,11 @@ def _row(**overrides: Any) -> dict[str, Any]:
         "flat_stake": 1.0,
         "provenance": "backtest_replay",
         "validation_type": "contaminated",
+        # Populated here even though a REPLAY row carries NULL in production: this module tests
+        # the WRITER's column contract, and the forward/replay NULL rule is enforced upstream in
+        # ``backtest.weekly_bet_list`` (tests/unit/test_decided_at_utc.py). A NULL here would make
+        # the "every immutable fact populated" assertion below untestable for the new column.
+        "decided_at_utc": "2023-09-08T17:59:00-04:00",
         "grading_status": "win",
         "outcome": True,
         "clv": -2.8,
@@ -315,9 +320,55 @@ def test_immutable_and_grading_halves_are_disjoint_and_ordered() -> None:
     """
     assert set(BET_LIST_IMMUTABLE_COLUMNS).isdisjoint(set(BET_LIST_GRADING_COLUMNS))
     assert BET_LIST_IMMUTABLE_COLUMNS + BET_LIST_GRADING_COLUMNS == BET_LIST_COLUMNS
-    assert len(BET_LIST_IMMUTABLE_COLUMNS) == 22
+    assert len(BET_LIST_IMMUTABLE_COLUMNS) == 23
     assert len(BET_LIST_GRADING_COLUMNS) == 6
-    assert len(BET_LIST_COLUMNS) == 28
+    assert len(BET_LIST_COLUMNS) == 29
+
+
+def test_the_locked_order_is_pinned_position_by_position() -> None:
+    """The ORDER, not merely the membership (Phase 33, Plan 33-05 Task 3).
+
+    Three DDL sites, an explicit-column INSERT and a parquet on disk are all expressed against
+    this sequence, so a column inserted in the middle is a different schema wearing the same
+    length. The whole tuple is pinned here rather than a count, because a count cannot tell a
+    reordering from a no-op.
+
+    ``decided_at_utc`` is at INDEX 22 by the OWNER RULING of 2026-09-12 -- the last position of
+    the immutable half, so Phase 34's own bump (D33-06) appends against a written-down base.
+    """
+    assert BET_LIST_COLUMNS == [
+        "game_id",
+        "season",
+        "week",
+        "target",
+        "bet_side",
+        "model_value",
+        "market_value",
+        "line",
+        "slipped_line",
+        "calibrated_p_side",
+        "per_bet_ev",
+        "stake_units",
+        "ev_tier",
+        "status",
+        "rejection_reason",
+        "eligibility_label",
+        "snapshot_ts",
+        "freeze_ts",
+        "selected_odds",
+        "flat_stake",
+        "provenance",
+        "validation_type",
+        "decided_at_utc",
+        "grading_status",
+        "outcome",
+        "clv",
+        "payout_flat",
+        "realized_units",
+        "graded_at",
+    ]
+    assert BET_LIST_COLUMNS.index("decided_at_utc") == 22
+    assert BET_LIST_IMMUTABLE_COLUMNS[-1] == "decided_at_utc"
 
 
 def test_pending_row_carries_null_grading_facts_and_populated_recommendation_facts() -> (
