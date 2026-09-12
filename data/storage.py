@@ -684,6 +684,25 @@ def get_db_connection(db_path: str | None = None) -> DuckDBConnection:
     return _db_connection
 
 
+def close_db_connection() -> None:
+    """Close the global DuckDB connection, releasing its file handle.
+
+    A NARROW, NAMED seam added for D33-32. On Windows DuckDB holds an exclusive
+    lock on an open database, so ``data/nfl_predictions.duckdb`` is unreadable for
+    the whole of any process that has called ``load_dataframe``. The test suite's
+    content-digest boundary guard has to be able to read those bytes to render a
+    verdict, and the alternative to this seam was for the guard to reach into
+    ``_db_connection`` -- a private module global -- from outside the module.
+
+    The connection object itself is KEPT, so ``db_path`` survives; only the
+    underlying handle is dropped. ``DuckDBConnection.connect`` reopens lazily on
+    the next call, so this is safe to invoke at any point: callers that need the
+    database simply get a fresh connection.
+    """
+    if _db_connection is not None:
+        _db_connection.close()
+
+
 def get_parquet_manager(base_path: str | None = None) -> ParquetManager:
     """Get global Parquet manager instance."""
     global _parquet_manager

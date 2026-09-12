@@ -104,6 +104,7 @@ def pytest_terminal_summary(terminalreporter) -> None:
     """Everything this session needs to say about itself that a count cannot."""
     _report_evidence_backed_skips(terminalreporter)
     _report_closing_full_sweep(terminalreporter)
+    _report_guard_observations(terminalreporter)
 
 
 def _report_evidence_backed_skips(terminalreporter) -> None:
@@ -216,15 +217,38 @@ def artifacts_boundary_guard():
 # `pytest_terminal_summary` so the finding is attached to the session rather than to
 # whichever test happened to run last.
 
+# D33-32 -- and no verdict here rests on metadata. Every digest the guard compares
+# is taken with `require_content_digest`, which closes handles, retries, and then
+# RAISES BY NAME rather than accepting the weaker stat signature. A legitimately
+# locked production store therefore fails a normal run, naming the file and the
+# likely holder. That is the intended behaviour: the guard's whole claim is
+# content-based evidence, and an unprovable comparison is a refusal, not a pass.
+
 GUARD_DATA_ROOT_ENV = "NFL_GUARD_DATA_ROOT"
 GUARD_ARTIFACTS_ROOT_ENV = "NFL_GUARD_ARTIFACTS_ROOT"
+
+# Set to any non-empty value to have the session print what the guard OBSERVED --
+# how often the locked-file read path fired, and the largest number of `.duckdb.wal`
+# siblings seen beside a tracked store. Off by default so an ordinary run's output
+# is unchanged; Plan 33-01 Task 3(d) turns it on for one measured tier.
+GUARD_OBSERVATIONS_ENV = "NFL_GUARD_OBSERVATIONS"
 
 CLOSING_SWEEP_HEADER = "SESSION-END FULL CONTENT SWEEP"
 
 # Session-lived guard state. A module global rather than a fixture because
 # `pytest_sessionfinish` and `pytest_terminal_summary` are hooks, not fixtures, and
 # the closing sweep has to reach the same rebased baseline the per-test pass left.
-_GUARD_STATE: dict = {"baselines": None, "closing_report": None}
+_GUARD_STATE: dict = {
+    "baselines": None,
+    "closing_report": None,
+    # The MAXIMUM number of `.duckdb.wal` siblings seen at any single sweep. A
+    # write-ahead log is transient -- it exists only while a transaction is open --
+    # so a count taken once at session start would almost certainly read zero and
+    # prove nothing. `.wal` is deliberately NOT in TRACKED_SUFFIXES; widening the
+    # tracked set would change what every digest document taken under the narrower
+    # set means, so the hypothesis is MEASURED here first.
+    "wal_siblings": 0,
+}
 
 
 class _StoreBaseline:
@@ -275,7 +299,10 @@ def _stat_sweep(root: Path) -> dict[str, tuple[int, int]]:
 
     lowered = tuple(suffix.lower() for suffix in TRACKED_SUFFIXES)
     stats: dict[str, tuple[int, int]] = {}
+    wal_siblings = 0
     for candidate in root_path.rglob("*"):
+        if candidate.name.endswith(".duckdb.wal"):
+            wal_siblings += 1
         if candidate.suffix.lower() not in lowered:
             continue
         try:
@@ -288,6 +315,7 @@ def _stat_sweep(root: Path) -> dict[str, tuple[int, int]]:
             info.st_size,
             info.st_mtime_ns,
         )
+    _GUARD_STATE["wal_siblings"] = max(_GUARD_STATE["wal_siblings"], wal_siblings)
     return stats
 
 
@@ -356,7 +384,11 @@ def _guard_verdict(
     it, one undeclared write would be re-reported by every later test in the session
     and the second report would be about the first test's fault.
     """
-    from tests.data_boundary import diff_digests, digest_file, format_digest_diff
+    from tests.data_boundary import (
+        diff_digests,
+        format_digest_diff,
+        require_content_digest,
+    )
 
     after_stats = _stat_sweep(baseline.root)
     suspects = _suspect_paths(baseline.stats, after_stats)
@@ -366,8 +398,13 @@ def _guard_verdict(
     before_subset = {
         key: baseline.digests[key] for key in suspects if key in baseline.digests
     }
+    # `require_content_digest`, never `digest_file` (D33-32): a stat signature is an
+    # inability to prove content integrity and must not settle a verdict. If the
+    # bytes cannot be read even after handles are closed, this RAISES by name.
     after_subset = {
-        key: digest_file(baseline.root / key) for key in suspects if key in after_stats
+        key: require_content_digest(baseline.root / key)
+        for key in suspects
+        if key in after_stats
     }
     diff = diff_digests(before_subset, after_subset)
 
@@ -382,6 +419,7 @@ def _guard_verdict(
         category: [key for key in keys if key not in declared]
         for category, keys in diff.items()
     }
+    undeclared.setdefault("mixed", [])
     if not any(undeclared.values()):
         return None
 
@@ -395,7 +433,7 @@ def _guard_verdict(
                 "test with the paths it writes and nothing else:",
                 *[
                     f'    @pytest.mark.writes_production_store(paths=["{baseline.label}/{key}"])'
-                    for category in ("added", "removed", "changed")
+                    for category in ("added", "removed", "changed", "mixed")
                     for key in undeclared.get(category, [])
                 ],
                 "The marker exempts the marked test alone, for the paths it names alone; "
@@ -442,11 +480,16 @@ def _assert_single_worker(config) -> None:
 
 
 def _take_baselines() -> tuple[_StoreBaseline, ...]:
-    """ONE full content digest of each guarded root, plus its parallel stat map."""
-    from tests.data_boundary import digest_tree
+    """ONE full content digest of each guarded root, plus its parallel stat map.
+
+    `content_digest_tree`, not `digest_tree`: the baseline is one half of every
+    comparison this session will make, so a stat signature here would poison the
+    other side into a permanently UNDECIDED verdict (D33-32).
+    """
+    from tests.data_boundary import content_digest_tree
 
     return tuple(
-        _StoreBaseline(label, root, digest_tree(root), _stat_sweep(root))
+        _StoreBaseline(label, root, content_digest_tree(root), _stat_sweep(root))
         for label, root in _guarded_roots()
     )
 
@@ -461,15 +504,15 @@ def _closing_full_sweep(baselines) -> str | None:
     tracks would produce.
     """
     from tests.data_boundary import (
+        content_digest_tree,
         diff_digests,
-        digest_tree,
         format_digest_diff,
         is_clean,
     )
 
     sections = []
     for baseline in baselines:
-        after = digest_tree(baseline.root)
+        after = content_digest_tree(baseline.root)
         diff = diff_digests(baseline.digests, after)
         if is_clean(diff):
             continue
@@ -503,6 +546,36 @@ def _report_closing_full_sweep(terminalreporter) -> None:
     terminalreporter.write_sep("-", "production store boundary")
     for line in report.splitlines():
         terminalreporter.write_line(line)
+
+
+def _report_guard_observations(terminalreporter) -> None:
+    """Print what the guard OBSERVED about its own instrument, when asked to.
+
+    Two numbers Plan 33-01 Task 3(d) records rather than assumes. Neither changes
+    the session's verdict; both decide what a LATER phase is allowed to conclude.
+
+    STAT_SIGNATURE_OBSERVATIONS -- how often the locked-file read path fired at
+    all. "The fallback silently degrades the guard" and "the fallback never fires
+    on this machine" are different worlds, and nobody had counted.
+
+    WAL_SIBLING_OBSERVATIONS -- the largest number of `.duckdb.wal` siblings seen
+    beside a tracked store at any single sweep. `.wal` is NOT tracked, and widening
+    the tracked set on an unmeasured hypothesis would change what every digest
+    document taken under the narrower set means. A non-zero count here is the
+    evidence a later phase would need before widening it.
+    """
+    if not os.environ.get(GUARD_OBSERVATIONS_ENV):
+        return
+    if _GUARD_STATE.get("baselines") is None:
+        return
+
+    from tests.data_boundary import locked_read_observations
+
+    terminalreporter.write_sep("-", "production store guard observations")
+    terminalreporter.write_line(
+        f"STAT_SIGNATURE_OBSERVATIONS={locked_read_observations()}  "
+        f"WAL_SIBLING_OBSERVATIONS={_GUARD_STATE['wal_siblings']}"
+    )
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:
