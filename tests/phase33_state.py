@@ -1467,3 +1467,53 @@ JUDGE_VERSION_PHASE33: str = "phase33-live-secondary-rescore-1"
 
 FIX_CYCLE_ALLOWANCE: int = 0
 GATE_VERDICT_STATES: tuple[str, ...] = ("PASS", "FAIL", "UNTESTABLE_REFUSAL")
+
+
+# ---------------------------------------------------------------------------
+# THIS PLAN'S COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-08 at plan close on 2026-09-12, AFTER the three-tier
+# measurement that produced it. Nothing above this line was edited.
+#
+# APPENDED AT CLOSE, NOT IN TASK 2, for the reason Plans 33-02 through 33-07 each
+# recorded when they did the same: two tasks add tests, so a Task-2 value would have
+# been wrong at plan close and could only have been made right by EDITING it -- the
+# append-once violation the protocol exists to prevent.
+#
+# MEASURED over all THREE tiers with the guard armed and NFL_GUARD_OBSERVATIONS=1:
+#     uv run pytest tests/unit -q
+#         3425 passed, 3 skipped, 5 xfailed          3433 collected   334.29 s
+#     uv run pytest tests/integration -q
+#         5 failed, 767 passed, 8 skipped, 9 xfailed  789 collected   620.39 s
+#     uv run pytest tests/api tests/test_*.py -q
+#         370 passed                                  370 collected   125.49 s
+#     SUM: 5 failed, 4562 passed, 11 skipped, 14 xfailed       4592 collected
+#
+# 4592 - 4472 (Plan 33-07's three-tier collected total) = 120.
+#
+# It closes exactly against the modules, which is the check that no test was quietly
+# deleted to make a number look better. All SEVEN are new; no existing module was
+# edited by this plan, so there is no zero-node edit to reconcile:
+#     38  tests/unit/test_deploy_gate_secondaries_live.py    (new, Task 2)
+#      9  tests/unit/test_phase33_gate_toml_untouched.py     (new, Task 2)
+#      8  tests/unit/test_deploy_gate_alpha_boundary.py      (new, Task 3)
+#     18  tests/unit/test_deploy_gate_empty_pairs.py         (new, Task 3)
+#      4  tests/unit/test_deploy_gate_order_invariance.py    (new, Task 3)
+#     11  tests/unit/test_phase33_preregistration.py         (new, Task 3)
+#     32  tests/unit/test_phase33_gate_runner.py             (new, Task 3(d))
+#     --
+#    120
+#
+# tests/phase33_gate_fixtures.py was also added and contributes ZERO nodes: it carries
+# no `test_` prefix, so pytest never collects it. That is deliberate -- it is the shared
+# FAIL-CLOSED sandbox builder three of the modules above depend on.
+#
+# The five failures are EXACTLY DELIBERATE_TRIPWIRE_NODE_IDS, unchanged. BOTH
+# gate-baseline tripwires are still RED, which is the whole point of D33-11's refusal to
+# re-freeze. The SKIPPED count did not move (11 -> 11) and neither did XFAILED
+# (14 -> 14). No tier reported a production-store boundary crossing
+# (STAT_SIGNATURE_OBSERVATIONS 3 + 5 + 0, WAL_SIBLING_OBSERVATIONS 0 in every tier) --
+# identical to Plan 33-07's observation, so this plan added no new crossing.
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_08: int = 120
