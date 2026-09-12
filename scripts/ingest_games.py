@@ -5,6 +5,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -32,6 +33,108 @@ _NFLVERSE_ROOF_MAP = {
     "outdoors": "outdoor",
     "open": "retractable",
 }
+
+
+class IdentityColumnError(ValueError):
+    """A row's identity fact cannot be derived from the columns the feed supplies.
+
+    Raised rather than defaulted, and that distinction is the whole point of this
+    plan. ``season_type`` and ``neutral_site`` were previously read as
+    ``row.get(key, default)`` against a schedule frame that carries NEITHER key, so
+    the default fired on all 6,499 silver rows and every WC/DIV/CON/SB game in
+    project history read Regular while all eight of 2026's international games read
+    False. A default that never loses is not a default; it is a constant nobody
+    chose. Defaulting again on an absent column would rebuild that defect one layer
+    up.
+    """
+
+
+# The feed's five game_type values, and the two-value partition D33-17 coarsens them
+# to. TOTAL over the five: an unknown sixth RAISES by name rather than falling into
+# either bucket.
+#
+# THIS IS A COARSENING, NOT A DUPLICATE OF game_type. Two values against five is
+# deliberate -- the season-close readout partitions regular-versus-post, and
+# utils/similar_games.py:444 already reads season_type with a game_type fallback and
+# today receives a constant.
+_GAME_TYPE_TO_SEASON_TYPE = {
+    "REG": "Regular",
+    "WC": "Postseason",
+    "DIV": "Postseason",
+    "CON": "Postseason",
+    "SB": "Postseason",
+}
+
+# The feed's location value marking a neutral-site game. Compared EXACTLY: the feed
+# writes Neutral and Home, and treating a lowercased spelling as a match would be a
+# normalization nobody asked for on a column that decides which stadium a game is
+# played at.
+_NEUTRAL_LOCATION = "Neutral"
+
+
+def _raise_identity(column: str, message: str) -> str:
+    """Raise an IdentityColumnError naming the column it could not derive from."""
+    raise IdentityColumnError(f"[{column}] {message}")
+
+
+def _derive_season_type(row: Any) -> str:
+    """Derive season_type from the feed's game_type (D33-17).
+
+    Args:
+        row: A mapping-like schedule row carrying game_type.
+
+    Returns:
+        Regular for REG; Postseason for WC, DIV, CON and SB.
+
+    Raises:
+        IdentityColumnError: game_type is absent, null, or an unknown sixth value.
+            The two columns can never disagree because this is a FUNCTION of
+            game_type -- there is no second source for the answer to drift from.
+    """
+    game_type = row.get("game_type")
+    if game_type is None or (isinstance(game_type, float) and pd.isna(game_type)):
+        return _raise_identity(
+            "game_type",
+            "season_type cannot be derived: the row carries no game_type. It is NOT "
+            "defaulted -- that default is exactly how every postseason game in this "
+            "project came to be labelled a regular-season one.",
+        )
+
+    game_type = str(game_type)
+    season_type = _GAME_TYPE_TO_SEASON_TYPE.get(game_type)
+    if season_type is None:
+        return _raise_identity(
+            "game_type",
+            f"season_type cannot be derived from game_type {game_type!r}: it is not "
+            f"one of the five known values {sorted(_GAME_TYPE_TO_SEASON_TYPE)}. Add "
+            "it to _GAME_TYPE_TO_SEASON_TYPE in scripts/ingest_games.py with a "
+            "deliberate Regular/Postseason assignment; do not let it default.",
+        )
+    return season_type
+
+
+def _derive_neutral_site(row: Any) -> bool:
+    """Derive neutral_site from the feed's location column.
+
+    Args:
+        row: A mapping-like schedule row carrying location.
+
+    Returns:
+        True iff location is exactly the string Neutral.
+
+    Raises:
+        IdentityColumnError: location is absent or null.
+    """
+    location = row.get("location")
+    if location is None or (isinstance(location, float) and pd.isna(location)):
+        return _raise_identity(
+            "location",
+            "neutral_site cannot be derived: the row carries no location. It is NOT "
+            "defaulted to False -- an ABSENT COLUMN is precisely how all 6,499 "
+            "silver rows came to read False, including the 91 historical "
+            "neutral-site games and all eight of 2026's international ones.",
+        )
+    return str(location) == _NEUTRAL_LOCATION
 
 
 def _load_venue_lookup() -> dict[str, str]:
@@ -295,12 +398,27 @@ class GameDataIngester:
                     else None,
                     "result": self._determine_result(row),
                     "game_type": row.get("game_type", "REG"),
-                    "season_type": row.get("season_type", "Regular"),
-                    "neutral_site": row.get("neutral_site", False),
+                    # DERIVED from columns the feed ACTUALLY HAS (COLD-09/D33-17).
+                    # Both of these used to be row.get(<absent key>, <default>), so
+                    # the default fired on every row ever ingested.
+                    "season_type": _derive_season_type(row),
+                    "neutral_site": _derive_neutral_site(row),
+                    # Carried through UNCHANGED: no normalization and no casefolding,
+                    # because R11's stadium_id matching is exact and case-sensitive.
+                    "stadium_id": row.get("stadium_id"),
                 }
 
                 transformed_data.append(game_record)
 
+            except IdentityColumnError:
+                # AN IDENTITY REFUSAL IS NEVER DEGRADED AWAY, on the same reasoning
+                # the UpstreamPinError arm below records. The broad handler under
+                # this one SKIPS the row and logs a warning -- which would turn "this
+                # row's season_type cannot be derived" into "this game silently does
+                # not exist in silver". Losing a game is strictly worse than failing
+                # an ingest, and the whole point of raising instead of defaulting is
+                # that somebody sees it.
+                raise
             except Exception as e:
                 logger.warning(
                     "Failed to transform game record",

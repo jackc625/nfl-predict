@@ -58,6 +58,16 @@ class GameSchema(BaseModel):
     neutral_site: bool | None = Field(
         False, description="Whether game is at neutral site"
     )
+    stadium_id: str | None = Field(
+        None,
+        description=(
+            "nflverse stadium code such as BUF00 or RIO00. DECLARED HERE BECAUSE "
+            "validate_bronze_to_silver calls model_dump(): an undeclared column is "
+            "silently dropped between the transform and the silver write, so it "
+            "would gate-pass while never arriving. Matched exactly and "
+            "case-sensitively downstream -- never normalized."
+        ),
+    )
 
     # Data lineage metadata
     created_at: datetime = Field(
