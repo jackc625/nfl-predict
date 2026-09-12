@@ -325,6 +325,11 @@ _BL_GAME = "2023_W01_DET@KC"
 _BL_FREEZE = datetime(2023, 9, 8, 22, 0, 0, tzinfo=UTC)
 _BEFORE_FREEZE = datetime(2023, 9, 7, 12, 0, 0, tzinfo=UTC)
 _AFTER_FREEZE = datetime(2023, 9, 11, 12, 0, 0, tzinfo=UTC)
+# The row's OWN observation time (Phase 33, Plan 33-05 Task 3). It is ``_BEFORE_FREEZE``, the same
+# instant the pre-freeze merge below is judged at, because a forward row's observation time and
+# the fence it is judged against are one clock read in production. A forward row carrying no
+# stamp is now refused by name at the upsert, so the fixture has to carry one.
+_BL_DECIDED_AT = _BEFORE_FREEZE.isoformat()
 
 
 def _bet_row(**overrides) -> dict:
@@ -352,6 +357,7 @@ def _bet_row(**overrides) -> dict:
         "flat_stake": 1.0,
         "provenance": "forward",
         "validation_type": "forward_realized",
+        "decided_at_utc": _BL_DECIDED_AT,
         "grading_status": GRADING_STATUS_PENDING,
         "outcome": None,
         "clv": 0.0234567890123,

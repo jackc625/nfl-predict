@@ -18,6 +18,7 @@ Marked ``slow`` because they load real model artifacts and gold matrices.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -26,6 +27,33 @@ import pytest
 # A season/week guaranteed to exist in the committed gold feature matrices.
 _SEASON = 2024
 _WEEK = 1
+
+
+def _pin_bet_list_run_instant(monkeypatch) -> None:
+    """Pin the bet-list run clock to a PRE-FREEZE instant for the pinned week.
+
+    Phase 33, Plan 33-05 Task 3. These tests pin the WEEK to a historical one so they can run in
+    the offseason against committed gold, but they left the CLOCK real -- and a forward run whose
+    observation time falls after its own game freeze is now refused by name (R7), correctly. The
+    combination "week 1 of 2024, decided in 2026" is exactly the post-hoc pick the fence exists to
+    stop, so the fix is to pin the clock alongside the week rather than to weaken the fence.
+
+    In PRODUCTION nothing here applies: ``get_current_nfl_week`` returns the current week, so the
+    run clock is naturally before that week's freeze.
+
+    The instant is one second before the EARLIEST 2024 week-1 freeze (Thursday 2024-09-05's
+    kickoff freezes on Friday 2024-08-30 at 18:00 ET = 22:00 UTC), so every game in the week
+    satisfies ``decided_at <= freeze``. The real function is called -- only its ``now`` is bound.
+    """
+    import backtest.weekly_bet_list as wbl
+
+    run_instant = datetime(2024, 8, 30, 21, 59, 59, tzinfo=UTC)
+    real = wbl.generate_weekly_bet_list
+    monkeypatch.setattr(
+        wbl,
+        "generate_weekly_bet_list",
+        lambda **kwargs: real(now=run_instant, **kwargs),
+    )
 
 
 def _gold_has_season_week(season: int, week: int) -> bool:
@@ -79,6 +107,7 @@ def test_prediction_phase_steps_run_unmocked(tmp_path, monkeypatch):
 
     bet_list_dir = tmp_path / "bet_list"
     monkeypatch.setattr(steps, "_bet_list_output_dir", lambda: bet_list_dir)
+    _pin_bet_list_run_instant(monkeypatch)
 
     steps.step_generate_predictions()
     steps.step_export_artifacts()
@@ -147,6 +176,7 @@ def test_orchestrator_predictions_phase_e2e(tmp_path, monkeypatch):
     monkeypatch.setattr(steps, "_predictions_output_dir", lambda: tmp_path)
     bet_list_dir = tmp_path / "bet_list"
     monkeypatch.setattr(steps, "_bet_list_output_dir", lambda: bet_list_dir)
+    _pin_bet_list_run_instant(monkeypatch)
 
     # No-op the network/rebuild-touching steps (D-02): the committed 2024 gold
     # already contains the odds/market/feature-matrix inputs, so we keep the REAL

@@ -40,6 +40,7 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -111,6 +112,12 @@ _GAME_TWO = "2025_01_BAL_BUF"
 # against, and the snapshot below is AT that freeze, which is FRESH (at-freeze is fresh, SPEC R6).
 _GAMEDAY = "2025-09-07"
 _SNAPSHOT_TS = "2025-09-05T18:00:00-04:00"
+# The RUN INSTANT, injected rather than read from the wall clock (Phase 33, Plan 33-05 Task 3).
+# A forward run is now refused by name if its own observation time falls at or after the game's
+# freeze, and this authored week froze on 2025-09-05 -- so an entry-point test driven by the real
+# clock would be refused, correctly, for asserting a pick made a year after the market closed.
+# One minute before the freeze is the last instant a real Friday run legitimately has.
+_RUN_INSTANT = datetime(2025, 9, 5, 17, 59, tzinfo=timezone(timedelta(hours=-4)))
 
 _FITS: dict[str, WeeklyChainFit] = {
     "wp": WeeklyChainFit("wp", 0.0, None, {_SEASON: 0.0}),
@@ -242,6 +249,7 @@ def generated_week(
         gold_dir=tmp_path / "gold",
         silver_dir=silver_dir,
         chain_fit_path=tmp_path / "fit.json",
+        now=_RUN_INSTANT,
     )
     return _GeneratedWeek(output_dir, silver_dir, graded, default_dir_before)
 

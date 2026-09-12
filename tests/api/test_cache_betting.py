@@ -485,10 +485,15 @@ def test_no_call_site_feeds_a_per_bet_expected_value_into_the_edge_band() -> Non
 
 
 def _bet_list_ddl_columns(statement: str) -> list[str]:
-    """Create ``bet_list`` from one DDL *statement* and return its column names, in order."""
+    """Create ``bet_list`` from one DDL *statement* and return its column names, in order.
+
+    ``PRAGMA table_info`` returns ``(cid, name, type, ...)`` -- the NAME is index 1, and index 0
+    is the ordinal. Reading index 0 gives ``[0, 1, 2, ...]``, which fails every order comparison
+    for a reason unrelated to the schema.
+    """
     conn = duckdb.connect(":memory:")
     conn.execute(statement)
-    return [row[0] for row in conn.execute("PRAGMA table_info('bet_list')").fetchall()]
+    return [row[1] for row in conn.execute("PRAGMA table_info('bet_list')").fetchall()]
 
 
 def _embedded_bet_list_statement() -> str:
@@ -528,7 +533,7 @@ def test_the_full_cache_build_yields_the_same_bet_list_table() -> None:
         if stmt:
             conn.execute(stmt)
     columns = [
-        row[0] for row in conn.execute("PRAGMA table_info('bet_list')").fetchall()
+        row[1] for row in conn.execute("PRAGMA table_info('bet_list')").fetchall()
     ]
     assert columns == list(BET_LIST_COLUMNS)
 

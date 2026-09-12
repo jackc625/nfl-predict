@@ -120,6 +120,13 @@ _GAMEDAY = "2025-09-07"
 _KICKOFF_UTC = "2025-09-07T17:00:00Z"
 # AT the freeze, which is fresh (SPEC R6) -- the selector's own freshness fence.
 _SNAPSHOT_TS = "2025-09-05T18:00:00-04:00"
+# The RUN INSTANT, injected rather than read from the wall clock (Phase 33, Plan 33-05 Task 3). A
+# forward row decided at or after its own game freeze is now refused by name (R7), and this week
+# froze in September 2025 -- so a recovery run driven by the real clock would be refused, which is
+# the fence working rather than a regression. One minute before the freeze is the last instant at
+# which a real Friday run is legitimate. Deliberately DIFFERENT from the populated-at instant
+# below, which is intentionally long after the freeze so the staleness case stays real.
+_RUN_INSTANT = datetime(2025, 9, 5, 21, 59, tzinfo=UTC)
 
 _FITS: dict[str, WeeklyChainFit] = {
     "wp": WeeklyChainFit("wp", 0.0, None, {_SEASON: 0.0}),
@@ -284,6 +291,7 @@ def _stage_one_generate(
         gold_dir=tmp_path / "gold",
         silver_dir=tmp_path / "gold",
         chain_fit_path=tmp_path / "fit.json",
+        now=_RUN_INSTANT,
     )
 
 

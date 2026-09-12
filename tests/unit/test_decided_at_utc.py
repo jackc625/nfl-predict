@@ -158,10 +158,16 @@ def _frame(*rows: dict[str, Any]) -> pd.DataFrame:
 
 
 def _ddl_columns(statement: str) -> list[str]:
-    """Build ``bet_list`` from one DDL *statement* and read its column names back, in order."""
+    """Build ``bet_list`` from one DDL *statement* and read its column names back, in order.
+
+    ``PRAGMA table_info`` returns ``(cid, name, type, ...)``, so the NAME is at index 1 and index
+    0 is the ordinal. Reading index 0 yields ``[0, 1, 2, ...]``, which compares unequal to any
+    column list and would make an order assertion fail for a reason that has nothing to do with
+    the schema. Named here because the plan's own verification command carries that mistake.
+    """
     conn = duckdb.connect(":memory:")
     conn.execute(statement)
-    return [row[0] for row in conn.execute("PRAGMA table_info('bet_list')").fetchall()]
+    return [row[1] for row in conn.execute("PRAGMA table_info('bet_list')").fetchall()]
 
 
 def _cache_schema_bet_list_statement() -> str:
@@ -258,10 +264,13 @@ def test_a_forward_row_decided_after_its_freeze_is_refused_by_name() -> None:
     with pytest.raises(DecidedAfterFreezeError) as excinfo:
         assert_decided_at_before_freeze(row)
 
+    # BOTH instants appear, and both appear NORMALIZED TO UTC. The message renders what the one
+    # strict parse helper returned, not the Eastern strings it was handed, so a reader comparing
+    # two instants in a failure is never comparing across offsets.
     message = str(excinfo.value)
     assert "2026_03_DAL_NYG" in message
-    assert "2026-09-18T18:00:01" in message
-    assert "2026-09-18T18:00:00" in message
+    assert "2026-09-18T22:00:01+00:00" in message
+    assert "2026-09-18T22:00:00+00:00" in message
 
 
 def test_a_forward_row_decided_exactly_on_its_freeze_is_accepted() -> None:
@@ -403,13 +412,13 @@ def test_a_zero_row_week_performs_the_write_and_raises_nothing() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _selection_result(target: str = "ou") -> Any:
+def _selection_result(target: str = "ou", season: int = 2026) -> Any:
     """A minimal ``SelectionResult`` with one selected and one rejected record."""
     from backtest.bet_selector import SelectionResult
 
     base = {
-        "game_id": "2026_03_DAL_NYG",
-        "season": 2026,
+        "game_id": f"{season}_03_DAL_NYG",
+        "season": season,
         "week": 3,
         "target": target,
         "bet_side": "under",
@@ -426,7 +435,7 @@ def _selection_result(target: str = "ou") -> Any:
         "clv": None,
     }
     rejected = dict(base)
-    rejected["game_id"] = "2026_03_KC_LAC"
+    rejected["game_id"] = f"{season}_03_KC_LAC"
     rejected["rejection_reason"] = "ev_below_floor"
     return SelectionResult(selected=[base], rejected=[rejected])
 
@@ -437,7 +446,7 @@ def _fits(target: str = "ou") -> dict[str, wbl.WeeklyChainFit]:
             target=target,
             ev_floor_t=0.01,
             frozen_sd=13.0,
-            season_bias_by_season={2026: -1.0},
+            season_bias_by_season={2023: -1.0, 2026: -1.0},
         )
     }
 
@@ -466,9 +475,15 @@ def test_a_forward_emission_stamps_the_run_instant_on_every_row() -> None:
 
 
 def test_a_replay_emission_leaves_the_column_null() -> None:
-    """A replay run re-derives history, so it observes nothing and stamps nothing."""
+    """A replay run re-derives history, so it observes nothing and stamps nothing.
+
+    Season 2023 rather than 2026: the replay window is pre-registered as 2021-2024 (contaminated)
+    plus 2025 (clean holdout), and ``classify_row_provenance`` REFUSES a season outside it rather
+    than defaulting -- so a 2026 replay is not a thing that can exist, and asking for one would
+    test the provenance refusal instead of the stamp.
+    """
     frame = wbl.records_to_bet_list_frame(
-        _selection_result(),
+        _selection_result(season=2023),
         _fits(),
         run_mode=cache_module.RUN_MODE_REPLAY,
     )
@@ -484,10 +499,10 @@ def test_a_replay_emission_refuses_a_caller_supplied_observation_time() -> None:
     """
     with pytest.raises(ValueError, match="replay"):
         wbl.records_to_bet_list_frame(
-            _selection_result(),
+            _selection_result(season=2023),
             _fits(),
             run_mode=cache_module.RUN_MODE_REPLAY,
-            decided_at=datetime(2026, 9, 18, 21, 59, tzinfo=UTC),
+            decided_at=datetime(2023, 9, 8, 21, 59, tzinfo=UTC),
         )
 
 

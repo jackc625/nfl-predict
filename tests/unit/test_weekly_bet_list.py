@@ -63,6 +63,11 @@ from backtest.weekly_bet_list import (
 )
 
 _FREEZE_TS = "2025-09-05T18:00:00-04:00"
+# The row's OWN observation time (Phase 33, Plan 33-05 Task 3). A forward row that makes no claim
+# about when it was decided is now refused by name at the upsert, so every FORWARD fixture below
+# has to carry one -- that is the change working, not a regression. It is strictly before
+# ``_FREEZE_TS`` because that is the only relationship a real forward row can have to its freeze.
+_DECIDED_AT = "2025-09-05T17:45:00-04:00"
 _BEFORE_FREEZE = datetime(2025, 9, 1, tzinfo=UTC)
 _AFTER_FREEZE = datetime(2025, 9, 10, tzinfo=UTC)
 _GRADED_AT = datetime(2025, 9, 12, tzinfo=UTC)
@@ -108,6 +113,11 @@ def _row(
                 "forward_realized"
                 if provenance == PROVENANCE_FORWARD
                 else "clean_holdout"
+            ),
+            # A REPLAY row keeps NULL: it is derived and fully regenerable, so it observed
+            # nothing and the write-time assertion exempts it by provenance.
+            "decided_at_utc": (
+                _DECIDED_AT if provenance == PROVENANCE_FORWARD else None
             ),
             "grading_status": grading_status,
             "outcome": None,

@@ -904,8 +904,9 @@ def _row_from_record(
     rejection_reason: str | None,
     ev_floor_t: float,
     unit: float,
+    decided_at: str | None,
 ) -> dict[str, Any]:
-    """Map ONE selector decision record onto the locked 28-column bet_list schema.
+    """Map ONE selector decision record onto the locked 29-column bet_list schema.
 
     The only transforms are a UNIT conversion (dollars -> units) and the two honesty labels, which
     are stamped separately by ``stamp_bet_list_provenance``. NO metric is re-derived: the EV, the
@@ -914,6 +915,13 @@ def _row_from_record(
     A SUPPRESSED row was never priced, so its ``ev_tier`` is None -- ``assign_ev_tier`` raises on a
     non-finite or below-floor EV by design, and tiering a bet nobody made would claim a band it was
     never in.
+
+    *decided_at* is THIS RUN's observation time, already rendered and already validated by
+    :func:`records_to_bet_list_frame` -- it is None for a replay run, which observes nothing. It
+    arrives as a DICT KEY here rather than as a later column assignment on purpose: the
+    retroactive-stamp scan in ``tests/unit/test_decided_at_utc.py`` flags every
+    ``frame[decided_at_utc] = value`` outside the emission path, and a row built with the value in
+    place has no such assignment to flag or to have to except.
     """
     target = str(record["target"])
     line_column = _LINE_COLUMN[target]
@@ -947,6 +955,11 @@ def _row_from_record(
         "flat_stake": FLAT_STAKE if status == BET_STATUS_LIVE else None,
         "provenance": None,  # stamped by stamp_bet_list_provenance
         "validation_type": None,  # stamped by stamp_bet_list_provenance
+        # THE ROW'S OWN OBSERVATION TIME. Both LIVE and SUPPRESSED rows carry it: a suppressed
+        # row is part of the record (D31-21) and was decided at the same instant the live rows
+        # were, so a stamp on only the live half would give the completeness query's two classes
+        # different evidentiary weight.
+        DECIDED_AT_COLUMN: decided_at,
         "grading_status": GRADING_STATUS_PENDING,
         # The decision-time CLV the selector measured, carried onto the row unchanged. It is the
         # REPORT-ONLY model-edge CLV (D27-06) and it is NOT the forward freeze-vs-close metric --
@@ -966,13 +979,54 @@ def records_to_bet_list_frame(
     *,
     run_mode: str,
     bankroll: float = DEFAULT_BANKROLL,
+    decided_at: datetime | None = None,
 ) -> pd.DataFrame:
     """Turn a whole ``SelectionResult`` into the stamped ``BET_LIST_COLUMNS`` frame.
 
     Selected records become ``status='live'``; every rejected record becomes a SUPPRESSED row
     carrying its own ``rejection_reason`` from the selector's own taxonomy. The two sets are the
     EXACT partition of the universe, so a candidate is never silently dropped (SPEC R6).
+
+    THE OBSERVATION TIME IS STAMPED HERE, AND ONLY HERE (D33-27, R7). Every row a FORWARD run
+    emits carries *decided_at* -- this run's own wall clock -- rendered through
+    :func:`scripts.ingest_historical_odds.require_aware_snapshot_ts`, so a NAIVE clock raises
+    rather than being assumed UTC or Eastern (T-33-23). A FORWARD run with no *decided_at* takes
+    the current instant, because a forward row that makes no claim about when it was decided is
+    refused downstream anyway and defaulting to "now" is the only honest value available.
+
+    A REPLAY RUN STAMPS NOTHING, and a caller who passes *decided_at* anyway is REFUSED rather
+    than silently ignored. A replay row is derived and fully regenerable, so it observed nothing;
+    dropping the argument quietly would leave the caller believing a time had been recorded.
+
+    Args:
+        result: The selector's whole output -- both partitions.
+        fits: The per-target frozen fits, read for their EV floors only.
+        run_mode: ``"forward"`` or ``"replay"``.
+        bankroll: The notional bankroll the unit conversion is expressed against.
+        decided_at: This run's instant. Injected rather than read from the clock so the stamp is
+            testable; required to be timezone-aware; forbidden under ``run_mode='replay'``.
+
+    Raises:
+        ValueError: when *decided_at* is supplied under ``run_mode='replay'``.
+        NaiveTimestampError: when *decided_at* carries no timezone.
     """
+    from scripts.ingest_historical_odds import require_aware_snapshot_ts
+
+    if run_mode == RUN_MODE_REPLAY:
+        if decided_at is not None:
+            msg = (
+                "records_to_bet_list_frame: decided_at was supplied under run_mode='replay'. A "
+                "replay row is derived and fully regenerable, so it observed nothing and carries "
+                "no observation time; the argument is refused rather than dropped, because "
+                "dropping it would leave the caller believing a time had been recorded."
+            )
+            raise ValueError(msg)
+        stamp: str | None = None
+    else:
+        stamp = require_aware_snapshot_ts(
+            decided_at if decided_at is not None else datetime.now(tz=UTC)
+        ).isoformat()
+
     unit = bankroll * UNIT_FRACTION_OF_BANKROLL
     rows: list[dict[str, Any]] = [
         _row_from_record(
@@ -981,6 +1035,7 @@ def records_to_bet_list_frame(
             rejection_reason=None,
             ev_floor_t=fits[str(record["target"])].ev_floor_t,
             unit=unit,
+            decided_at=stamp,
         )
         for record in result.selected
     ]
@@ -991,6 +1046,7 @@ def records_to_bet_list_frame(
             rejection_reason=str(record["rejection_reason"]),
             ev_floor_t=fits[str(record["target"])].ev_floor_t,
             unit=unit,
+            decided_at=stamp,
         )
         for record in result.rejected
     ]
@@ -1337,7 +1393,7 @@ def _is_frozen(row: pd.Series, now: datetime) -> bool:
     return now >= freeze_dt
 
 
-def assert_decided_at_before_freeze(row: Mapping[str, Any]) -> None:
+def assert_decided_at_before_freeze(row: Mapping[str, Any] | pd.Series) -> None:
     """A FORWARD row's own observation time must be AT OR BEFORE its own game freeze (R7).
 
     THE ASSERTION IS ``<=``, NOT ``<``, and the equality case is a BOUNDARY-ONLY one. The
@@ -1357,7 +1413,10 @@ def assert_decided_at_before_freeze(row: Mapping[str, Any]) -> None:
     rather than being assumed UTC or Eastern.
 
     Args:
-        row: A bet-list row as a mapping (a dict or a ``pandas.Series``).
+        row: A bet-list row as a mapping (a dict) or as a ``pandas.Series``. Both are accepted
+            because both are what the callers actually hold -- the upsert iterates rows as
+            Series, and the tests construct dicts -- and a ``Series`` is not a ``Mapping`` to a
+            type checker even though ``.get`` behaves identically on it.
 
     Raises:
         MissingDecidedAtError: a forward row with no ``decided_at_utc`` or no ``freeze_ts``.
@@ -1402,6 +1461,55 @@ def _is_null(value: Any) -> bool:
         return False
 
 
+def _assert_stored_stamps_untouched(
+    stored: pd.DataFrame, carried: pd.DataFrame
+) -> None:
+    """The stored half's observation times must come out of a merge BYTE-IDENTICAL (T-33-22).
+
+    THE PROHIBITION IS RUNTIME, NOT ONLY STRUCTURAL. ``tests/unit/test_decided_at_utc.py`` scans
+    the production tree by AST and proves nobody WROTE a retroactive stamp; this proves nobody
+    DOES. The two catch different mistakes: the scan cannot see a stamp introduced by a merge, a
+    reindex or a ``fillna`` that never names the column, and those are exactly the ways a value
+    appears on a row nobody meant to touch.
+
+    A stored row is a record of a decision already made. Writing an observation time onto it now
+    -- from ``snapshot_ts``, from the run clock, from a neighbouring row -- records a time at
+    which nobody observed anything, which is the one thing this phase exists to make impossible.
+    NULL is a legitimate stored value (all 234 ``backtest_replay`` rows carry it) and must survive
+    as NULL; the comparison below therefore treats two NULLs as equal rather than as unequal
+    floats.
+
+    Args:
+        stored: The stored frame as it was READ, before the merge.
+        carried: The subset of it the merge is about to carry forward.
+
+    Raises:
+        RuntimeError: when any carried row's ``decided_at_utc`` differs from the stored one.
+    """
+    if (
+        DECIDED_AT_COLUMN not in stored.columns
+        or DECIDED_AT_COLUMN not in carried.columns
+    ):
+        return
+    original = stored.loc[carried.index, DECIDED_AT_COLUMN]
+    now_values = carried[DECIDED_AT_COLUMN]
+    changed = [
+        str(stored.loc[index, "game_id"])
+        for index, before, after in zip(
+            carried.index, original, now_values, strict=True
+        )
+        if not (_is_null(before) and _is_null(after)) and before != after
+    ]
+    if changed:
+        msg = (
+            f"refusing the merge: it altered {DECIDED_AT_COLUMN} on {len(changed)} row(s) it did "
+            f"not create ({', '.join(changed[:5])}). A stored row is a record of a decision "
+            "already made; stamping an observation time onto it now would record a time at which "
+            "nobody observed anything. The 234 stored replay rows keep their NULL."
+        )
+        raise RuntimeError(msg)
+
+
 def upsert_bet_list_rows(
     stored: pd.DataFrame,
     incoming: pd.DataFrame,
@@ -1419,6 +1527,19 @@ def upsert_bet_list_rows(
     * A stored key the incoming selection does not mention is KEPT. A week the run did not touch
       is history, not an absence.
 
+    TWO THINGS ARE ASSERTED HERE THAT ARE NOT ABOUT THE MERGE ITSELF (Phase 33, R7, D33-27):
+
+    * EVERY INCOMING FORWARD ROW is checked by :func:`assert_decided_at_before_freeze` BEFORE any
+      merging happens, so a row decided after its own game freeze -- or one that makes no claim
+      at all -- is refused by name rather than written. The check is here because this is the one
+      merge every writer goes through; an assertion function nobody calls is a comment. It is
+      applied to the INCOMING half only: the stored half was checked when it was written, and
+      re-checking it would make a legitimately NULL-stamped replay row unwritable forever.
+    * THE UPSERT NEVER SETS ``decided_at_utc`` ON A ROW IT DID NOT CREATE. Stored rows are carried
+      through by column selection alone and :func:`_assert_stored_stamps_untouched` proves it at
+      runtime. That is this plan's named prohibition, and it is why the 234 stored
+      ``backtest_replay`` rows keep their NULL through every future run.
+
     Args:
         stored: The bet list already on disk (possibly empty).
         incoming: This run's freshly selected rows.
@@ -1427,7 +1548,15 @@ def upsert_bet_list_rows(
 
     Returns:
         The merged frame in ``BET_LIST_COLUMNS`` order.
+
+    Raises:
+        MissingDecidedAtError: an incoming forward row carries no observation time.
+        DecidedAfterFreezeError: an incoming forward row was decided after its own game freeze.
+        RuntimeError: the merge altered a stored row's observation time.
     """
+    for _index, row in incoming.iterrows():
+        assert_decided_at_before_freeze(row)
+
     if stored.empty:
         return incoming[BET_LIST_COLUMNS].reset_index(drop=True)
     if incoming.empty:
@@ -1447,6 +1576,7 @@ def upsert_bet_list_rows(
     superseded = set(incoming_keys) - frozen_keys
     kept_stored = stored[~stored_keys.isin(superseded)]
     accepted_incoming = incoming[~incoming_keys.isin(frozen_keys)]
+    _assert_stored_stamps_untouched(stored, cast("pd.DataFrame", kept_stored))
 
     merged = pd.concat(
         [kept_stored[BET_LIST_COLUMNS], accepted_incoming[BET_LIST_COLUMNS]],
@@ -1729,12 +1859,20 @@ def generate_weekly_bet_list(
     result = select_weekly_bets(
         candidates, schedule, fits, strategies=strategies, bankroll=bankroll
     )
+    # ONE run instant, used for BOTH the stamp and the fence. Two clock reads would let a row
+    # claim an observation time the freeze was not judged at, which is a gap of milliseconds
+    # today and a gap of whatever the selection takes on a slow week.
+    run_instant = now if now is not None else datetime.now(tz=UTC)
     incoming = records_to_bet_list_frame(
-        result, fits, run_mode=run_mode, bankroll=bankroll
+        result,
+        fits,
+        run_mode=run_mode,
+        bankroll=bankroll,
+        decided_at=run_instant if run_mode == RUN_MODE_FORWARD else None,
     )
 
     stored = read_bet_list_artifact(output_dir)
-    merged = upsert_bet_list_rows(stored, incoming, now=now or datetime.now(tz=UTC))
+    merged = upsert_bet_list_rows(stored, incoming, now=run_instant)
 
     graded = grade_pending_rows(
         merged,

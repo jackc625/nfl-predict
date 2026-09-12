@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS cache_meta (
 );
 
 CREATE TABLE IF NOT EXISTS bet_list (
-    -- IMMUTABLE recommendation facts (BET_LIST_IMMUTABLE_COLUMNS, 22) --------------
+    -- IMMUTABLE recommendation facts (BET_LIST_IMMUTABLE_COLUMNS, 23) --------------
     game_id VARCHAR,
     season INTEGER,
     week INTEGER,
@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS bet_list (
     flat_stake DOUBLE,
     provenance VARCHAR,
     validation_type VARCHAR,
+    decided_at_utc VARCHAR,
     -- MUTABLE grading facts (BET_LIST_GRADING_COLUMNS, 6) --------------------------
     grading_status VARCHAR,
     outcome BOOLEAN,
@@ -658,6 +659,26 @@ BET_LIST_IMMUTABLE_COLUMNS: list[str] = [
     "flat_stake",
     "provenance",
     "validation_type",
+    # THE ROW'S OWN OBSERVATION TIME (Phase 33, D33-27; OWNER RULING 2026-09-12). An ISO-8601
+    # string with an explicit UTC offset saying when THIS run decided THIS bet. It is an
+    # IMMUTABLE recommendation fact, not a grading one: a claim about when a pick was made must
+    # never transition, or the forward ledger's central guarantee -- that no pick was made after
+    # its own game froze -- becomes unfalsifiable.
+    #
+    # VARCHAR, NOT ``graded_at``'s TIMESTAMP, and that is the ruling rather than a preference. It
+    # is compared against ``snapshot_ts`` and ``freeze_ts``, which are offset-carrying strings, so
+    # one representation is what lets a single strict parse helper serve every comparison
+    # (``scripts.ingest_historical_odds.require_aware_snapshot_ts``). A second representation
+    # would need a second code path.
+    #
+    # LAST IN THE IMMUTABLE HALF, at index 22 of the locked order, so Phase 34's own bump for
+    # ``arm``, the artifact/recipe/fill-convention stamps, the real-fill columns and the
+    # reproduction key (D33-06) appends against a base that was written down.
+    #
+    # The 234 stored ``backtest_replay`` rows take NULL and are NEVER backfilled: every one is
+    # already past its freeze, and filling them from ``snapshot_ts`` would stamp an observation
+    # time nobody observed.
+    "decided_at_utc",
 ]
 
 # WHY these six, and not ``outcome`` alone (REVIEW-SCHEMA):
@@ -678,7 +699,9 @@ BET_LIST_GRADING_COLUMNS: list[str] = [
 ]
 
 # The single source of the column order shared by the schema, the explicit-column INSERT and the
-# contract tests. 22 immutable + 6 grading = 28.
+# contract tests. 23 immutable + 6 grading = 29 (Phase 33 added ``decided_at_utc``; the width was
+# 22 + 6 = 28 before it, which is the width every stored parquet still carries and the reason
+# ``backtest.weekly_bet_list.read_bet_list_with_schema_shim`` exists).
 BET_LIST_COLUMNS: list[str] = [
     *BET_LIST_IMMUTABLE_COLUMNS,
     *BET_LIST_GRADING_COLUMNS,
@@ -715,6 +738,14 @@ _REPLAY_CLEAN_HOLDOUT_SEASON = 2025
 # The standalone CREATE, so materialize_bet_list can run against any connection (the web cache, or
 # an in-memory test DB) without first building the whole CACHE_SCHEMA. This is the SAME definition
 # embedded in CACHE_SCHEMA above (the LOCKED column order + NO PRIMARY KEY).
+#
+# THERE ARE THREE SITES, NOT TWO, AND THIS COMMENT IS WHAT MAKES THE THIRD DISCOVERABLE: the two
+# ``conn.execute(BET_LIST_SCHEMA)`` calls share this constant, and CACHE_SCHEMA carries its own
+# literal copy. A column added here and not there produces a real cache whose table is narrower
+# than the explicit-column INSERT names, and the INSERT then fails in production rather than in
+# the suite. The 29th column is ``decided_at_utc VARCHAR`` (Phase 33), and
+# ``tests/api/test_cache_betting.py`` now BUILDS each site and compares the resulting column
+# lists so the agreement is measured rather than asserted in prose.
 BET_LIST_SCHEMA = """
 CREATE TABLE IF NOT EXISTS bet_list (
     game_id VARCHAR,
@@ -739,6 +770,7 @@ CREATE TABLE IF NOT EXISTS bet_list (
     flat_stake DOUBLE,
     provenance VARCHAR,
     validation_type VARCHAR,
+    decided_at_utc VARCHAR,
     grading_status VARCHAR,
     outcome BOOLEAN,
     clv DOUBLE,

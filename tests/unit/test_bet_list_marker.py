@@ -84,6 +84,9 @@ def _row(
         "flat_stake": 1.0,
         "provenance": "forward",
         "validation_type": "forward_realized",
+        # The 29th locked column (Phase 33, Plan 33-05 Task 3). A forward row carries its own
+        # observation time, strictly before its own freeze.
+        "decided_at_utc": "2023-09-08T17:45:00-04:00",
         "grading_status": GRADING_STATUS_PENDING,
         "outcome": None,
         "clv": 0.02,
