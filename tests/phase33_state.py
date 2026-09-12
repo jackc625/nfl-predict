@@ -199,3 +199,60 @@ WAL_SIBLING_OBSERVATIONS: int = 1
 # the protocol; Plan 33-18 sums the per-plan counters into TESTS_ADDED_BY_PHASE_33
 # exactly once, at closure. No running aggregate is kept here.
 TESTS_ADDED_33_01: int = 44
+
+
+# ---------------------------------------------------------------------------
+# THE PER-PLAN TEST-COUNT PROTOCOL.
+#
+# APPENDED by Plan 33-02 Task 1 on 2026-09-11. Nothing above this line was edited.
+#
+# WHY EIGHTEEN SLOTS AND NOT ONE RUNNING TOTAL. The obvious design is a single
+# TESTS_ADDED_BY_PHASE_33, seeded at zero and incremented by each plan. That
+# design EDITS ONE SLOT EIGHTEEN TIMES, which is exactly what the APPEND PROTOCOL
+# at the head of this file forbids -- and it would be forbidden in the phase whose
+# own audit record that protocol IS. The protocol cannot be the first thing the
+# phase breaks.
+#
+# So there is one IMMUTABLE slot per plan, named for its plan. Plan 33-07 appends
+# TESTS_ADDED_33_07 and touches nothing else. A reader can tell at a glance which
+# plans have reported, and a hole in the sequence names the plan that finished
+# without recording its count.
+#
+# THE UNIT IS COLLECTED NODES, NOT TEST FUNCTIONS (T-33-08c). pytest collects one
+# node per `@pytest.mark.parametrize` case, so a parameterised test contributes as
+# many to the arithmetic as it generates. A plan that counted FUNCTIONS would
+# under-report by the parametrize multiplier and the closing equation would fail to
+# close for a reason that has nothing to do with a deleted test. Each plan measures
+# its slot by SUBTRACTING the previous three-tier collected total from its own --
+# never by counting the functions it wrote.
+#
+# THE AGGREGATE IS PLAN 33-18'S, APPENDED ONCE, AT CLOSURE. It is deliberately
+# ABSENT from this file until then. tests/unit/test_phase33_state_arithmetic.py
+# asserts its absence while the parts are incomplete, asserts
+# PRE_PHASE_COLLECTED + sum(parts) == POST_PHASE_COLLECTED once they are all
+# present, and asserts TESTS_ADDED_BY_PHASE_33 == sum(parts) -- so the aggregate is
+# a derived number with a check on it rather than a nineteenth claim nobody
+# reconciles. tests/unit/test_phase33_state_append_once.py makes the whole protocol
+# mechanical: an AST scan reports any name this file assigns twice.
+# ---------------------------------------------------------------------------
+
+PER_PLAN_TEST_COUNT_SLOTS: tuple[str, ...] = (
+    "TESTS_ADDED_33_01",
+    "TESTS_ADDED_33_02",
+    "TESTS_ADDED_33_03",
+    "TESTS_ADDED_33_04",
+    "TESTS_ADDED_33_05",
+    "TESTS_ADDED_33_06",
+    "TESTS_ADDED_33_07",
+    "TESTS_ADDED_33_08",
+    "TESTS_ADDED_33_09",
+    "TESTS_ADDED_33_10",
+    "TESTS_ADDED_33_11",
+    "TESTS_ADDED_33_12",
+    "TESTS_ADDED_33_13",
+    "TESTS_ADDED_33_14",
+    "TESTS_ADDED_33_15",
+    "TESTS_ADDED_33_16",
+    "TESTS_ADDED_33_17",
+    "TESTS_ADDED_33_18",
+)
