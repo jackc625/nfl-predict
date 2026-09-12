@@ -385,3 +385,242 @@ class TestTheCommandLineInstrument:
     def test_a_bad_invocation_returns_the_usage_code(self) -> None:
         assert _main([]) == 2
         assert _main(["frobnicate", "data", "out.json"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# NF-02 / D33-32 (Plan 33-01 Task 3): an UNDECIDED comparison is neither a data
+# move nor a pass, and an UNPROVABLE one is a named refusal.
+# ---------------------------------------------------------------------------
+#
+# The module docstring above has forbidden mixing a content hash on one side with
+# a stat signature on the other since Plan 31-11 wrote it, and `is_stat_signature`
+# was added to make the mixing detectable -- but nothing ever called it. A key that
+# was content-hashed before a DuckDB connection opened and stat-signed after it did
+# would compare UNEQUAL as raw strings and be reported as a REWRITTEN production
+# store. That is a false alarm of exactly the kind that gets a guard switched off.
+#
+# The reachability is not hypothetical. The session-scoped baseline is held across
+# a whole tier, which is precisely the window in which a DuckDB lock is acquired.
+#
+# D33-32 goes further, and the owner ruled on it against the reviewer who called the
+# fallback a strength: a `stat-size-mtime:` value is an INABILITY TO PROVE content
+# integrity, never a verdict. The guard closes handles, retries, and if it still
+# cannot read the bytes it RAISES BY NAME. A legitimately-locked production file now
+# fails a normal test run -- and that is the point, because the alternative is a
+# green suite resting on metadata.
+
+
+class TestTheMixedInstrumentRule:
+    """A content hash on one side and a stat signature on the other is UNDECIDED."""
+
+    def test_a_content_to_signature_pair_is_classified_mixed_and_not_changed(
+        self,
+    ) -> None:
+        from tests.data_boundary import diff_digests, mixed_instrument_keys
+
+        before = {"a.parquet": "0" * 64, "b.duckdb": "stat-size-mtime:10:20"}
+        after = {
+            "a.parquet": "stat-size-mtime:5:6",
+            "b.duckdb": "stat-size-mtime:11:20",
+        }
+
+        assert mixed_instrument_keys(before, after) == ["a.parquet"]
+        diff = diff_digests(before, after)
+        assert diff["mixed"] == ["a.parquet"]
+        assert "a.parquet" not in diff["changed"], (
+            "the instrument changed between the two observations. Reporting that as a "
+            "data move is a false alarm, and a false alarm is how a guard gets deleted."
+        )
+
+    def test_a_mixed_key_is_neither_clean_nor_silent(self) -> None:
+        from tests.data_boundary import diff_digests, format_digest_diff, is_clean
+
+        before = {"a.parquet": "0" * 64}
+        after = {"a.parquet": "stat-size-mtime:5:6"}
+        diff = diff_digests(before, after)
+
+        assert not is_clean(diff), (
+            "an undecided comparison passed. 'We could not tell' must never read as "
+            "'nothing happened'."
+        )
+        rendered = format_digest_diff(diff, before, after, "data")
+        assert "UNDECIDED" in rendered, rendered
+        assert "0" * 64 in rendered and "stat-size-mtime:5:6" in rendered, rendered
+
+    def test_two_stat_signatures_that_differ_are_still_a_rewrite(self) -> None:
+        from tests.data_boundary import diff_digests
+
+        before = {"b.duckdb": "stat-size-mtime:10:20"}
+        after = {"b.duckdb": "stat-size-mtime:11:20"}
+        assert diff_digests(before, after)["changed"] == ["b.duckdb"], (
+            "both sides came from the SAME instrument, so the comparison is decided "
+            "and the file grew by a byte. That is a rewrite."
+        )
+
+    def test_two_content_hashes_that_differ_are_still_a_rewrite(self) -> None:
+        """No-false-positive control on the mixed detector itself."""
+        from tests.data_boundary import diff_digests, mixed_instrument_keys
+
+        before = {"a.parquet": "0" * 64}
+        after = {"a.parquet": "1" * 64}
+        assert mixed_instrument_keys(before, after) == []
+        diff = diff_digests(before, after)
+        assert diff["changed"] == ["a.parquet"]
+        assert not diff.get("mixed")
+
+    def test_the_mixed_detector_fires_on_a_planted_pair(self) -> None:
+        """Fail-closed control: a detector only ever seen returning [] proves nothing."""
+        from tests.data_boundary import mixed_instrument_keys
+
+        assert mixed_instrument_keys(
+            {"planted.parquet": "0" * 64},
+            {"planted.parquet": "stat-size-mtime:1:2"},
+        ) == ["planted.parquet"]
+
+    def test_assert_tree_unchanged_treats_a_mixed_key_as_a_hard_failure(
+        self, sandbox_store: Path
+    ) -> None:
+        from tests.data_boundary import DataBoundaryViolation, digest_tree
+
+        before = dict(digest_tree(sandbox_store))
+        before["nfl_predictions.duckdb"] = "stat-size-mtime:9:9"
+
+        with pytest.raises(DataBoundaryViolation) as excinfo:
+            assert_tree_unchanged(before, digest_tree(sandbox_store), sandbox_store)
+        assert "UNDECIDED" in str(excinfo.value), str(excinfo.value)
+
+
+class TestRequireContentDigestRefusesToDegrade:
+    """D33-32: retry after closing handles, then raise BY NAME. Never a signature."""
+
+    def test_a_readable_file_digests_exactly_as_digest_file_does(
+        self, sandbox_store: Path
+    ) -> None:
+        from tests.data_boundary import require_content_digest
+
+        target = sandbox_store / "gold" / "features_wp.parquet"
+        value = require_content_digest(target)
+        assert len(value) == 64
+        assert value == digest_file(target)
+
+    def test_the_retry_budget_is_at_least_one(self) -> None:
+        from tests.data_boundary import DIGEST_RETRY_ATTEMPTS
+
+        assert DIGEST_RETRY_ATTEMPTS >= 1, (
+            "a zero-retry budget makes the whole D33-32 ruling a rename: the point of "
+            "closing handles is to get a second chance at the bytes."
+        )
+
+    def test_a_first_call_permission_error_recovers_on_the_retry(
+        self, sandbox_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import builtins
+
+        from tests.data_boundary import require_content_digest
+
+        target = sandbox_store / "nfl_predictions.duckdb"
+        real_open = builtins.open
+        state = {"calls": 0}
+
+        def flaky_open(file, *args, **kwargs):
+            if Path(file) == target:
+                state["calls"] += 1
+                if state["calls"] == 1:
+                    raise PermissionError(13, "Permission denied")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", flaky_open)
+
+        value = require_content_digest(target)
+        assert len(value) == 64, (
+            "the retry produced something other than a content hash -- the whole "
+            "point of closing the holder is to get the BYTES."
+        )
+        assert state["calls"] >= 2, "the retry never happened"
+
+    def test_a_file_that_never_reads_raises_by_name(
+        self, sandbox_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import builtins
+
+        from tests.data_boundary import (
+            DIGEST_RETRY_ATTEMPTS,
+            LockedStoreDigestError,
+            require_content_digest,
+        )
+
+        target = sandbox_store / "nfl_predictions.duckdb"
+        real_open = builtins.open
+
+        def locked_open(file, *args, **kwargs):
+            if Path(file) == target:
+                raise PermissionError(13, "Permission denied")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", locked_open)
+
+        with pytest.raises(LockedStoreDigestError) as excinfo:
+            require_content_digest(target)
+
+        message = str(excinfo.value)
+        assert "nfl_predictions.duckdb" in message, message
+        assert "PermissionError" in message, message
+        assert str(DIGEST_RETRY_ATTEMPTS) in message, message
+        assert "HELD HANDLE" in message, (
+            "the diagnostic must name the likely holder. This repository already has "
+            "that wording in scripts/promote_models.py; a second phrasing of it would "
+            "be a second answer to the same question.\n\n" + message
+        )
+
+    def test_a_locked_store_failure_is_a_boundary_violation(self) -> None:
+        """So every existing `pytest.raises(DataBoundaryViolation)` still catches it."""
+        from tests.data_boundary import DataBoundaryViolation, LockedStoreDigestError
+
+        assert issubclass(LockedStoreDigestError, DataBoundaryViolation)
+
+    def test_digest_file_still_declares_a_stat_signature_on_a_locked_file(
+        self, sandbox_store: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """D33-32 changes what the GUARD does with a signature, not how one is made.
+
+        The CLI snapshot/verify path and every existing caller depend on the
+        self-declaring fallback, and the self-declaration is what makes the mixed
+        comparison detectable at all.
+        """
+        import builtins
+
+        target = sandbox_store / "nfl_predictions.duckdb"
+        real_open = builtins.open
+
+        def locked_open(file, *args, **kwargs):
+            if Path(file) == target:
+                raise PermissionError(13, "Permission denied")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", locked_open)
+        assert is_stat_signature(digest_file(target))
+
+
+class TestNoStatSignatureCanReachAVerdict:
+    """Asserted by source scan, because the routing IS the D33-32 mitigation."""
+
+    def test_the_autouse_guard_routes_through_require_content_digest(self) -> None:
+        import inspect
+
+        from tests import conftest
+
+        source = inspect.getsource(conftest)
+        assert "require_content_digest" in source, (
+            "the write guard can still render a verdict from a stat signature."
+        )
+
+    def test_assert_tree_unchanged_routes_through_require_content_digest(self) -> None:
+        import inspect
+
+        from tests import data_boundary
+
+        source = inspect.getsource(data_boundary.assert_tree_unchanged)
+        assert "require_content_digest" in source or "_content_resolved" in source, (
+            "assert_tree_unchanged still compares whatever it was handed, so a stat "
+            "signature can reach a verdict through the opt-in fixtures."
+        )
