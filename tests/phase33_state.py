@@ -1117,3 +1117,52 @@ HISTORICAL_NEUTRAL_MISRESOLUTION: dict[str, object] = {
     "rederived_on": "2026-09-12",
     "diverged_from_context": False,
 }
+
+
+# ---------------------------------------------------------------------------
+# THE THREE IDENTITY COLUMNS, AND THE SILVER WIDTH THEY MOVE.
+#
+# APPENDED by Plan 33-06 Task 3 on 2026-09-12. Nothing above this line was edited.
+#
+# THE MEASURED PRE-PHASE SILVER FRAME, read from data/silver/games.parquet on
+# 2026-09-12: 6,499 rows over 2002-2025 with ZERO 2026 rows, 15 columns, and
+#
+#     every neutral_site cell reads False
+#     every season_type cell reads the string Regular
+#
+# across every one of them -- including all 91 historical neutral-site games and
+# every WC/DIV/CON/SB game ever played.
+#
+# THE CAUSE IS A DEFAULT THAT FIRES 100% OF THE TIME. The 46-column bronze schedule
+# contains `location` and `stadium_id` and contains NEITHER `neutral_site` NOR
+# `season_type`, so `row.get("season_type", "Regular")` and
+# `row.get("neutral_site", False)` never read a feed value at all. A default that
+# never loses is not a default; it is a constant nobody chose.
+#
+# THIS PLAN CHANGES THE CODE, NOT THE STORE. The silver re-ingest that backfills
+# these three across all seasons is Plan 33-12's, deliberately separated so the gold
+# rebuild's blast radius stays attributable to one cause. So 15 -> 18 is what the
+# NEXT ingest will produce, not what data/silver/games.parquet holds today.
+# ---------------------------------------------------------------------------
+
+PLAN_33_06_IDENTITY_COLUMNS: tuple[str, ...] = (
+    "stadium_id",
+    "neutral_site",
+    "season_type",
+)
+
+SILVER_GAMES_COLUMNS_BEFORE: int = 15
+SILVER_GAMES_COLUMNS_AFTER: int = 18
+
+# The five `game_type` values the feed uses and the two-value partition D33-17
+# coarsens them to. Recorded so the COARSENING is visible as a deliberate choice
+# rather than looking like a lossy duplicate of `game_type`: the season-close readout
+# partitions regular-versus-post, and `utils/similar_games.py:444` already reads
+# `season_type` with a `game_type` fallback and today receives a constant.
+SEASON_TYPE_PARTITION: tuple[tuple[str, str], ...] = (
+    ("REG", "Regular"),
+    ("WC", "Postseason"),
+    ("DIV", "Postseason"),
+    ("CON", "Postseason"),
+    ("SB", "Postseason"),
+)

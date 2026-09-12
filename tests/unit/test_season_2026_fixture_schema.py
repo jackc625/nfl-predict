@@ -280,36 +280,46 @@ def test_the_transformed_fixture_has_the_dtypes_downstream_code_expects() -> Non
     )
 
 
-def test_the_production_transform_drops_the_neutral_site_fact() -> None:
-    """PINNED PRE-EXISTING DEFECT, owned by COLD-09 and deliberately NOT fixed here.
+def test_the_production_transform_carries_the_neutral_site_fact() -> None:
+    """INVERTED BY PLAN 33-06 (COLD-09) ON 2026-09-12, AND THAT IS THE POINT.
 
-    ``transform_schedule_data`` reads ``row.get("neutral_site", False)``. The nflverse
-    schedule feed has no ``neutral_site`` column at all -- it carries ``location`` -- so
-    every transformed row reads False, including the eight 2026 international games the
-    feed marks ``location == "Neutral"``.
+    This test used to be called ``test_the_production_transform_DROPS_the_neutral_site
+    _fact`` and it asserted the WRONG behaviour ON PURPOSE. Plan 33-02 pinned the
+    pre-existing defect -- ``transform_schedule_data`` read
+    ``row.get("neutral_site", False)`` against a feed that has no ``neutral_site``
+    column, so all 272 rows read False including the eight the feed marks
+    ``location == "Neutral"`` -- and its docstring said, in as many words: "When
+    COLD-09 lands, this test goes red and that plan must say what it changed."
 
-    This test asserts the CURRENT WRONG BEHAVIOUR on purpose. Fixing ingestion is out of
-    this plan's scope (it is a later plan's requirement, and a silent fix here would land
-    a schema change inside a fixtures plan), but leaving the defect undocumented would let
-    a later plan read `neutral_site` and quietly get a wrong answer for all eight games.
-    When COLD-09 lands, this test goes red and that plan must say what it changed.
+    COLD-09 landed. It is INVERTED rather than deleted, because a deleted test proves
+    nothing about what changed while an inverted one proves exactly what changed: the
+    same feed, the same eight rows, the opposite answer. The plan says so in its
+    SUMMARY.
+
+    The feed STILL has no ``neutral_site`` column -- that half of the pin is unchanged
+    and still asserted. What changed is that the transform now DERIVES the fact from
+    ``location`` instead of defaulting it away.
     """
     _require_capture()
     raw = season_2026.load_captured_schedule()
     transformed = season_2026.transform_captured_schedule()
 
     assert "neutral_site" not in raw.columns, (
-        "the feed now carries a neutral_site column, so the transform's "
-        '`row.get("neutral_site", False)` default no longer fires and this pinned '
-        "observation is stale."
+        "the feed now carries a neutral_site column of its own. The COLD-09 "
+        "derivation reads `location`; if the feed started supplying the fact "
+        "directly, decide deliberately which source wins and record it."
     )
     assert (raw["location"] == "Neutral").sum() == (
         phase33_state.NEUTRAL_SITE_GAME_COUNT_2026
     )
-    assert not transformed["neutral_site"].any(), (
-        "the transform now reports at least one neutral-site game. That is the COLD-09 "
-        "FIX, not a regression -- update this pinned observation and say so in the plan "
-        "that made the change."
+    assert int(transformed["neutral_site"].sum()) == (
+        phase33_state.NEUTRAL_SITE_GAME_COUNT_2026
+    ), (
+        "the transform reports "
+        f"{int(transformed['neutral_site'].sum())} neutral-site games, not "
+        f"{phase33_state.NEUTRAL_SITE_GAME_COUNT_2026}. Zero here is the ORIGINAL "
+        'defect returning: `row.get("neutral_site", False)` against a feed that '
+        "has no such column."
     )
 
 
