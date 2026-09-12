@@ -256,3 +256,167 @@ PER_PLAN_TEST_COUNT_SLOTS: tuple[str, ...] = (
     "TESTS_ADDED_33_17",
     "TESTS_ADDED_33_18",
 )
+
+
+# ---------------------------------------------------------------------------
+# TWO PHASE-WIDE PROHIBITIONS, recorded as the constants their scans read.
+#
+# APPENDED by Plan 33-02 Task 2 on 2026-09-11. Nothing above this line was edited.
+# ---------------------------------------------------------------------------
+
+# The commit this phase is measured FROM. Plan 33-01 began here; its SUMMARY records
+# `git rev-list --count 6f6af82..HEAD` = 8. The scans that need the phase's own file
+# list take `git diff --name-only PHASE_33_BASE_COMMIT..HEAD` rather than keeping a
+# second, drift-prone list of file names: a base commit is one fact, and it either
+# resolves or it does not.
+PHASE_33_BASE_COMMIT: str = "6f6af82760bd3750aff4a0f2044f403a7113aa19"
+
+# The phrasings no file in this phase may use about the test suite.
+#
+# THE HEALTHY FORM OF THIS SUITE'S SUMMARY LINE IS
+#     5 failed, <N> passed, 9 skipped, 14 xfailed
+# with the five named individually in DELIBERATE_TRIPWIRE_NODE_IDS above. Every one of
+# them encodes a fact the owner accepted; a suite that reported a clean line would have
+# erased five disclosures rather than fixed five defects. An assertion, comment,
+# docstring or readout anywhere in this phase that says the suite reaches a failure
+# count of zero is therefore itself a DEFECT, and it is the shape in which a record
+# quietly stops being defended: the claim is written first, and the suite is made to
+# agree with it afterwards.
+#
+# Matching is case-insensitive. THIS FILE and the scanning module are the only two
+# files excluded, because RECORDING a phrase is not MAKING the claim -- and
+# tests/unit/test_phase33_no_zero_failures_claim.py asserts that it never spells one
+# of these literally, so its own exclusion is unnecessary as well as bounded.
+FORBIDDEN_SUITE_CLAIM_PHRASES: tuple[str, ...] = (
+    "zero failures",
+    "0 failures",
+    "no failures",
+)
+
+# The SELECTION / SIZING / REFUSAL surface over which closing-line value must never be
+# read into a decision (D27-06, D27-12; T-33-09).
+#
+# PATHS RESOLVED AGAINST LIVE `git ls-files` on 2026-09-11, not from memory. An earlier
+# draft of this plan named `backtest/kelly_criterion.py`, which does not exist in this
+# repository; the real sizing module is `utils/kelly_criterion.py`. A path recorded here
+# and absent from the tree is a RECORDING ERROR and the scan fails on it rather than
+# visiting a shorter list and reporting green.
+#
+# `models/deploy_gate.py` is deliberately ABSENT -- see CLV_OUT_OF_SCOPE_MODULES.
+CLV_REPORT_ONLY_MODULES: tuple[str, ...] = (
+    "backtest/weekly_bet_list.py",
+    "backtest/bet_selector.py",
+    "utils/bet_selector.py",
+    "utils/kelly_criterion.py",
+    "scripts/generate_current_week_predictions.py",
+)
+
+# The CLV identifiers the scan treats as a read.
+CLV_SYMBOLS: tuple[str, ...] = (
+    "clv_delta_values",
+    "clv_significance",
+    "clv_non_regression_passes",
+    "per_season_clv",
+    "closing_line_value",
+)
+
+# Any identifier starting with this prefix is a CLV read as well, so a new
+# `clv_whatever` needs no edit here to be seen.
+CLV_SYMBOL_PREFIX: str = "clv_"
+
+# The per-bet RECORD KEYS that hold a CLV value. These do NOT match CLV_SYMBOL_PREFIX
+# and they are the dominant shape in this codebase: `bet_selector` writes `"clv"` onto
+# each decision record and `weekly_bet_list` copies it onto the output row. The
+# decision-position scan treats a subscript or `.get()` on one of these as a CLV value,
+# so `if record["clv"] > 0: select(...)` is caught even though the key is not prefixed.
+CLV_VALUE_KEYS: tuple[str, ...] = (
+    "clv",
+    "line_clv",
+)
+
+# EVERY CLV reference that exists in CLV_REPORT_ONLY_MODULES today, as
+# (module, innermost_scope, kind, symbol). MEASURED 2026-09-11 by Plan 33-02 Task 2.
+#
+# WHY AN INVENTORY AND NOT "NONE AT ALL". The plan's first draft required that no
+# scanned module reference a CLV symbol at all. Measured against live source that
+# cannot pass, and must never be made to pass: `backtest/bet_selector.py` imports
+# `clv_significance` and builds `SelectionResult.clv_report` -- AFTER the selection and
+# sizing loops have run, over the bets already chosen, into a field nothing reads back.
+# Deleting it would delete the REPORT and none of the risk. So the reference set is
+# PINNED instead, and asserted in BOTH directions: an unpinned read fails by name (the
+# default is REJECT), and a pinned site that no longer matches anything fails too,
+# because an exemption that covers nothing is cover nobody is entitled to.
+#
+# The inventory is necessary and not sufficient. A pinned read must ALSO pass the
+# decision-position scan, which forbids any CLV-tainted value from being branched on,
+# compared, ranked by, or assigned into a sizing target -- including inside these five
+# sites, which is where a future author would most naturally add the branch.
+#
+# The scope is a qualified name rather than a line number on purpose: a line number
+# makes this tuple brittle against any edit above it, and the question it answers is
+# WHERE IN THE DESIGN the read happens.
+CLV_REPORT_ONLY_SITES: tuple[tuple[str, str, str, str], ...] = (
+    # The report helper's import. `clv_significance` is the LOCKED mean/t/p/CI summary
+    # from backtest.diagnose; importing it is how the report is rendered, not how a bet
+    # is chosen.
+    ("backtest/bet_selector.py", "<module>", "importfrom", "clv_significance"),
+    # The report renderer itself: gathers the per-bet values from the ALREADY-SELECTED
+    # bets and summarises them. Branches only on whether any values exist.
+    ("backtest/bet_selector.py", "BetSelector._clv_report", "name", "clv_significance"),
+    ("backtest/bet_selector.py", "BetSelector._clv_report", "name", "clv_values"),
+    # `select()` calls the renderer AFTER `_admit_and_size_week` has run and passes the
+    # result straight into the output dataclass. Nothing reads it back.
+    ("backtest/bet_selector.py", "BetSelector.select", "name", "clv_report"),
+    # The output field. REPORT-ONLY is stated in its own docstring.
+    ("backtest/bet_selector.py", "SelectionResult", "name", "clv_report"),
+)
+
+# Modules where CLV is legitimately read and which are therefore OUTSIDE the scanned
+# set, each with the reason recorded. An unexplained exclusion is indistinguishable
+# from an oversight, which is why the reason travels with the path rather than living
+# in a reviewer's memory.
+CLV_OUT_OF_SCOPE_MODULES: tuple[tuple[str, str], ...] = (
+    (
+        "models/deploy_gate.py",
+        "In the deploy gate CLV is the SUBJECT, not an input: clv_non_regression_passes, "
+        "_pooled_floor_reasons and evaluate_target exist to judge a candidate model's "
+        "closing-line value against the deployed incumbent's, which is the gate's whole "
+        "definition as ruled in Phase 25 (D25-11), re-run in Phase 30 (PROD-01) and "
+        "restated in Phase 31. Scanning it would flag the gate for doing the one thing "
+        "it is for, and the only way to make that scan pass would be to weaken it. The "
+        "gate decides which MODEL is deployed; it never decides which BET is taken, and "
+        "that is the boundary this exclusion is drawn on.",
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# The two PRE-EXISTING places a forbidden phrase legitimately appears.
+#
+# APPENDED by Plan 33-02 Task 2 on 2026-09-11, after MEASURING the scan against the
+# phase's real diff rather than against what the plan assumed it would contain.
+#
+# Both lines are PROSE THAT NAMES THE FAILURE MODE IN ORDER TO CRITICISE IT, and both
+# predate Phase 33 -- they are in the diff only because Plan 33-01 modified the files
+# for unrelated reasons. `tests/conftest.py:33` explains why an aggregate skip note
+# exists at all; `tests/unit/test_evidence_skip_visibility.py:13` is that note's own
+# test module saying the same thing. Rewording somebody else's correct explanation to
+# satisfy a new scan would be the scan editing the record, which is the inversion this
+# whole phase exists to prevent.
+#
+# So they are PINNED, not excluded, and asserted in BOTH directions: a new line
+# carrying a forbidden phrase fails by name (the default is REJECT), and a pinned line
+# that no longer matches fails too, so the exemption cannot outlive the text it covers.
+# The pin is the WHOLE STRIPPED LINE rather than a count, so an edit that turned the
+# criticism into a claim would not inherit the cover.
+FORBIDDEN_CLAIM_PHRASE_PINNED_MENTIONS: tuple[tuple[str, str], ...] = (
+    (
+        "tests/conftest.py",
+        "# The problem is the AGGREGATE. A suite that skips them still reports zero "
+        "failures,",
+    ),
+    (
+        "tests/unit/test_evidence_skip_visibility.py",
+        "central controls do not execute -- while the suite still reports zero failures.",
+    ),
+)

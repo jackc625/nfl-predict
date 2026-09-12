@@ -95,13 +95,31 @@ def scan_file_for_claim_phrases(path: Path) -> list[str]:
     Returns:
         Human-readable hits, each naming the line number and the phrase.
     """
-    hits: list[str] = []
+    return [
+        f"{path.as_posix()}:{number}: claims {phrase!r}"
+        for number, line, phrase in claim_lines(path)
+    ]
+
+
+def claim_lines(path: Path) -> list[tuple[int, str, str]]:
+    """Every ``(line_number, line_text, matched_phrase)`` hit in *path*.
+
+    The structured form the pinned-mention inventory is compared against;
+    ``scan_file_for_claim_phrases`` renders it.
+
+    Args:
+        path: A text file to scan.
+
+    Returns:
+        One entry per (line, phrase) match, in file order.
+    """
+    hits: list[tuple[int, str, str]] = []
     text = path.read_text(encoding="utf-8", errors="replace")
     for number, line in enumerate(text.splitlines(), start=1):
         lowered = line.lower()
         for phrase in phase33_state.FORBIDDEN_SUITE_CLAIM_PHRASES:
             if phrase.lower() in lowered:
-                hits.append(f"{path.as_posix()}:{number}: claims {phrase!r}")
+                hits.append((number, line, phrase))
     return hits
 
 
@@ -210,18 +228,51 @@ def test_no_file_this_phase_touches_claims_the_suite_reaches_a_clean_line() -> N
     A claim that the suite reaches a failure count of zero is a false statement about an
     owner-accepted record, and it is how the record stops being defended: the claim is
     written first and the suite is made to agree with it later.
-    """
-    hits: list[str] = []
-    for path in phase_touched_files():
-        hits.extend(scan_file_for_claim_phrases(path))
 
-    assert not hits, (
+    TWO PRE-EXISTING LINES NAME A FORBIDDEN PHRASE IN ORDER TO CRITICISE IT, and both
+    predate this phase. They are PINNED in
+    ``tests/phase33_state.FORBIDDEN_CLAIM_PHRASE_PINNED_MENTIONS``, not excluded, and the
+    comparison is made in BOTH directions: a new line fails by name, and a pin that no
+    longer matches its text fails too, so the cover cannot outlive the sentence it was
+    granted for. Rewording somebody else's correct explanation to satisfy a new scan
+    would be the scan editing the record -- the inversion this phase exists to prevent.
+    """
+    measured: set[tuple[str, str]] = set()
+    rendered: dict[tuple[str, str], str] = {}
+    for path in phase_touched_files():
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        for number, line, phrase in claim_lines(path):
+            key = (relative, line.strip())
+            measured.add(key)
+            rendered[key] = f"{relative}:{number}: claims {phrase!r}"
+
+    expected = {
+        (relative, text)
+        for relative, text in phase33_state.FORBIDDEN_CLAIM_PHRASE_PINNED_MENTIONS
+    }
+
+    extra = measured - expected
+    assert not extra, (
         "forbidden claim(s) about the test suite found in files this phase touches:\n"
-        + "\n".join(f"  - {line}" for line in hits)
+        + "\n".join(f"  - {rendered[key]}" for key in sorted(extra))
         + "\n\nThe healthy form of this suite's summary line names FIVE deliberate "
         "failures (tests/phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS). Report the line "
-        "as measured, with the five named."
+        "as measured, with the five named. If the line genuinely NAMES the failure mode "
+        "in order to criticise it, record it in "
+        "tests/phase33_state.FORBIDDEN_CLAIM_PHRASE_PINNED_MENTIONS under the append "
+        "protocol, with its reason."
     )
+
+    missing = expected - measured
+    assert not missing, (
+        "pinned mention(s) no longer match the text they cover:\n"
+        + "\n".join(f"  - {key}" for key in sorted(missing))
+        + "\n\nEither the line was edited -- in which case the pin must be re-recorded "
+        "against the new text, so the exemption is re-granted deliberately -- or the "
+        "file left the phase's diff, in which case the pin is stale and should go."
+    )
+
+    assert measured == expected
 
 
 def test_this_module_never_spells_a_forbidden_phrase_of_its_own() -> None:

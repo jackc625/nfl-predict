@@ -199,20 +199,54 @@ def scan_module_for_clv(path: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _tainted_expression(node: ast.AST, tainted: set[str]) -> bool:
-    """True when *node* reads a CLV symbol, a CLV record key, or a tainted local."""
+def _is_clv_key_constant(node: ast.AST) -> bool:
+    """True when *node* is a string literal naming a CLV symbol or a CLV record key."""
+    return isinstance(node, ast.Constant) and (
+        _is_clv_symbol(node.value) or _is_clv_value_key(node.value)
+    )
+
+
+def _clv_read_nodes(tree: ast.AST) -> set[int]:
+    """The ids of every expression node that READS a CLV value out of something.
+
+    THE DISTINCTION THIS DRAWS IS LOAD-BEARING, and getting it wrong the first time is
+    what produced seventeen false positives across ``backtest/bet_selector.py``. A
+    RECORD that CARRIES a CLV field is not a CLV VALUE. ``{"target": t, "clv": None,
+    "ev": e}`` is a dict literal with a CLV key in it -- writing a field, not reading
+    one -- and treating it as a CLV expression tainted the whole decision record, then
+    every local built from it, until the scan was reporting the selector's ordinary EV
+    arithmetic as CLV-driven. A scan that cries wolf on the honest code is a scan
+    somebody deletes.
+
+    So only a genuine READ counts: a CLV identifier, an attribute of that name, a
+    subscript whose key is a CLV key, or ``.get("clv")``. The key position matters, not
+    the presence of the string.
+    """
+    reads: set[int] = set()
+    for node in ast.walk(tree):
+        if (
+            (isinstance(node, ast.Name) and _is_clv_symbol(node.id))
+            or (isinstance(node, ast.Attribute) and _is_clv_symbol(node.attr))
+            or (isinstance(node, ast.Subscript) and _is_clv_key_constant(node.slice))
+            or (
+                isinstance(node, ast.Call)
+                and _call_name(node) == "get"
+                and node.args
+                and _is_clv_key_constant(node.args[0])
+            )
+        ):
+            reads.add(id(node))
+    return reads
+
+
+def _tainted_expression(node: ast.AST, tainted: set[str], reads: set[int]) -> bool:
+    """True when *node* reads a CLV value, or reads a local that already holds one."""
     for inner in ast.walk(node):
-        if isinstance(inner, ast.Name) and (
-            _is_clv_symbol(inner.id) or inner.id in tainted
-        ):
+        if id(inner) in reads:
             return True
-        if isinstance(inner, ast.Attribute) and (
-            _is_clv_symbol(inner.attr) or inner.attr in tainted
-        ):
+        if isinstance(inner, ast.Name) and inner.id in tainted:
             return True
-        if isinstance(inner, ast.Constant) and (
-            _is_clv_symbol(inner.value) or _is_clv_value_key(inner.value)
-        ):
+        if isinstance(inner, ast.Attribute) and inner.attr in tainted:
             return True
     return False
 
@@ -238,7 +272,7 @@ def _assigned_names(node: ast.AST) -> list[str]:
     return names
 
 
-def _taint_closure(tree: ast.AST) -> set[str]:
+def _taint_closure(tree: ast.AST, reads: set[int]) -> set[str]:
     """Names that hold a CLV-derived value, propagated to fixpoint.
 
     Laundering a CLV value through two intermediate locals must not escape the scan, and a
@@ -256,7 +290,7 @@ def _taint_closure(tree: ast.AST) -> set[str]:
             ):
                 continue
             value = node.iter if isinstance(node, ast.comprehension) else node.value
-            if value is None or not _tainted_expression(value, tainted):
+            if value is None or not _tainted_expression(value, tainted, reads):
                 continue
             for name in _assigned_names(node):
                 if name not in tainted:
@@ -308,7 +342,8 @@ def scan_module_for_clv_decisions(path: Path) -> list[str]:
         Human-readable hits, each naming the line and the decision shape.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    tainted = _taint_closure(tree)
+    reads = _clv_read_nodes(tree)
+    tainted = _taint_closure(tree, reads)
     label = path.as_posix()
     hits: list[str] = []
 
@@ -323,32 +358,34 @@ def scan_module_for_clv_decisions(path: Path) -> list[str]:
         elif isinstance(node, ast.comprehension):
             tests = list(node.ifs)
         for test in tests:
-            if _tainted_expression(test, tainted) and not _is_presence_test(
+            if _tainted_expression(test, tainted, reads) and not _is_presence_test(
                 test, tainted
             ):
                 flag(node, "branches on a CLV value")
 
         # Comparison or arithmetic: the value itself is being used.
-        if isinstance(node, ast.Compare) and _tainted_expression(node, tainted):
+        if isinstance(node, ast.Compare) and _tainted_expression(node, tainted, reads):
             against_none = any(
                 isinstance(operand, ast.Constant) and operand.value is None
                 for operand in [node.left, *node.comparators]
             )
             if not against_none:
                 flag(node, "compares a CLV value")
-        if isinstance(node, ast.BinOp) and _tainted_expression(node, tainted):
+        if isinstance(node, ast.BinOp) and _tainted_expression(node, tainted, reads):
             flag(node, "does arithmetic on a CLV value")
 
         # Ranking, filtering or choosing.
         if isinstance(node, ast.Call) and _call_name(node) in RANKING_CALLS:
             arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
-            if any(_tainted_expression(argument, tainted) for argument in arguments):
+            if any(
+                _tainted_expression(argument, tainted, reads) for argument in arguments
+            ):
                 flag(node, f"passes a CLV value to {_call_name(node)}()")
 
         # An assignment whose TARGET is a decision outcome.
         if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
             value = node.value
-            if value is not None and _tainted_expression(value, tainted):
+            if value is not None and _tainted_expression(value, tainted, reads):
                 for name in _assigned_names(node):
                     lowered = name.lower()
                     if any(
