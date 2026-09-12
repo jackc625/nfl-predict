@@ -9,7 +9,8 @@ Missing weather for an outdoor game raises a hard error.
 import argparse
 import asyncio
 import sys
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -42,60 +43,395 @@ logger = get_logger(__name__)
 OPEN_METEO_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 # ---------------------------------------------------------------------------
-# Plan 33-09 Task 1 -- THE FORECAST PATH (RED interface stub).
+# THE FORECAST PATH (R8 / COLD-06, Plan 33-09 Task 1).
 #
-# Every public name below is declared so the Task-1 test modules can IMPORT this
-# module. Without them pytest fails at COLLECTION, which this phase's own gate
-# classifies as INVALID_RED: a load failure proves nothing about behaviour. The
-# GREEN commit replaces every body.
+# The endpoint above is a REANALYSIS product: it describes weather that has
+# already happened. It cannot answer for a 2026 kickoff, and the fourteen rows in
+# data/silver/weather.parquet -- all 2024 Week 6 -- are the evidence this path
+# never ran forward. Everything below is the path that can.
 # ---------------------------------------------------------------------------
 
-# The live forecast endpoint. DISTINCT from OPEN_METEO_URL above, which is the
-# ARCHIVE endpoint and cannot answer for a game that has not happened.
+# The LIVE forecast endpoint. Distinct from the archive endpoint above; CONFIRMED
+# against the provider's documentation and PROBED from this checkout on
+# 2026-09-12, which returned 200 with the same twelve hourly variable names the
+# archive call already uses and accepted the same start_date/end_date pair.
 FORECAST_ENDPOINT_URL = "https://api.open-meteo.com/v1/forecast"
 
-# RED-phase sentinel. The declared horizon lands in the GREEN commit; a negative
-# value cannot be satisfied by accident.
-FORECAST_HORIZON_DAYS: int = -1
+FORECAST_HORIZON_DAYS: int = 14
+"""How many days ahead THIS PROJECT will ask the forecast endpoint for (D33-26).
+
+OURS, NOT THE PROVIDER'S, AND THAT IS THE POINT. Open-Meteo's own window was
+measured on 2026-09-12 by asking for a date past it, which it reports in an error
+body rather than in prose::
+
+    400 {"error":true,"reason":"Parameter 'start_date' is out of allowed range
+         from 2026-06-11 to 2026-09-27"}
+
+That upper bound was today+15 on the day it was measured, and today+14 returned
+24 non-null hours. The documented parameter is ``forecast_days`` (0-16, counting
+today as day one), which reaches the same place. So 14 sits INSIDE the provider's
+window by a day, deliberately:
+
+* A horizon WIDER than the provider's is a promise we cannot keep -- the request
+  simply fails, or worse comes back partial.
+* A horizon EQUAL to the provider's turns any future narrowing on their side into
+  a silent empty response instead of a named refusal on ours.
+* A horizon that is OURS makes the refusal testable OFFLINE. No test in this
+  module's suite needs the network to prove a beyond-horizon kickoff is refused.
+
+BOUNDARY CONVENTION, chosen and stated rather than left to whichever comparison
+was typed first: a kickoff EXACTLY ``FORECAST_HORIZON_DAYS`` after ``as_of_utc``
+is INSIDE the horizon. The comparison is a strict ``>`` between two
+TIMEZONE-AWARE INSTANTS, never between two calendar dates -- a date comparison
+would put a Monday 00:15 kickoff and a Monday 23:59 kickoff on the same footing.
+It is asserted in tests/unit/test_weather_forecast_horizon.py.
+"""
 
 
 class BeyondForecastHorizonError(WeatherDataError):
-    """RED stub -- replaced in the GREEN commit."""
+    """A kickoff lies beyond the horizon this project declares it can forecast.
+
+    A FOURTH member of the existing ``WeatherDataError`` family, raised BEFORE the
+    request rather than after it. The two tempting repairs -- read the archive
+    endpoint instead, or fill the gap with a seasonal average -- are both the
+    fabricated-data class this project has already disclosed once, so the refusal
+    is terminal and names the game.
+    """
 
 
 class IncompleteForecastPayloadError(WeatherDataError):
-    """RED stub -- replaced in the GREEN commit."""
+    """The provider answered, but not for every game that was asked about.
+
+    A partially-populated week is indistinguishable from a complete one once it is
+    on disk, which makes it the quieter form of the same fabrication. Raised
+    BEFORE any write, with the absent ``game_id`` values named.
+    """
+
+    def __init__(self, message: str, absent_game_ids: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.absent_game_ids = absent_game_ids
 
 
+@dataclass(frozen=True)
 class ForecastHour:
-    """RED stub -- replaced in the GREEN commit."""
+    """WHICH hour of WHICH local day a game's forecast must be read at.
+
+    A forecast is an array of hours. Reading the wrong index returns a real,
+    plausible, internally-consistent value for the wrong moment, and when the venue
+    is on another continent it is also the wrong DAY -- there is nothing in the
+    number itself to say so. This carries the decision explicitly so it can be
+    asserted rather than inferred from a request URL.
+    """
+
+    game_id: str
+    timezone: str
+    local_date: str
+    hour: int
+    kickoff_utc: datetime
+    local_instant: datetime
 
 
-def assert_within_forecast_horizon(game_id, kickoff_utc, *, as_of_utc):
-    """RED stub -- replaced in the GREEN commit."""
-    raise NotImplementedError("assert_within_forecast_horizon is not implemented yet")
+def _require_aware(value: datetime, name: str) -> datetime:
+    """Return *value* unchanged, or raise naming the argument that was naive.
+
+    A naive instant has no meaning to compare against another instant. Guessing a
+    zone for it is how a four- or five-hour error enters a fence that reads as
+    though it passed.
+    """
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(
+            f"{name} must be a TIMEZONE-AWARE datetime; got {value!r}. A naive "
+            "value would be compared against an instant under an assumed zone, "
+            "which is how a multi-hour error enters a check that still reads as "
+            "passing."
+        )
+    return value
 
 
-def select_forecast_hour_for_kickoff(game, venue, *, as_of_utc):
-    """RED stub -- replaced in the GREEN commit."""
-    raise NotImplementedError("select_forecast_hour_for_kickoff is not implemented yet")
+def assert_within_forecast_horizon(
+    game_id: str,
+    kickoff_utc: datetime,
+    *,
+    as_of_utc: datetime,
+) -> datetime:
+    """Refuse a kickoff beyond ``FORECAST_HORIZON_DAYS``, by name, before any request.
+
+    ``as_of_utc`` is INJECTED and never read from a process clock. That is what
+    makes this reproducible: the caller states the instant, so the same input gives
+    the same verdict in September and in December, and the refusal can be proven
+    with no network at all.
+
+    Args:
+        game_id: The game being asked about, named in the refusal.
+        kickoff_utc: The kickoff INSTANT. Must be timezone-aware.
+        as_of_utc: The instant the horizon is measured FROM. Must be aware.
+
+    Returns:
+        The cutoff instant, so a caller can report it without recomputing it.
+
+    Raises:
+        ValueError: either instant is naive.
+        BeyondForecastHorizonError: the kickoff is strictly past the cutoff.
+    """
+    _require_aware(kickoff_utc, "kickoff_utc")
+    _require_aware(as_of_utc, "as_of_utc")
+
+    cutoff = as_of_utc + timedelta(days=FORECAST_HORIZON_DAYS)
+    if kickoff_utc > cutoff:
+        raise BeyondForecastHorizonError(
+            f"{game_id} kicks off at {kickoff_utc.isoformat()}, which is beyond the "
+            f"{FORECAST_HORIZON_DAYS}-day forecast horizon measured from "
+            f"{as_of_utc.isoformat()} (cutoff {cutoff.isoformat()}). NO row is "
+            "written for it and NO value is invented: the archive endpoint cannot "
+            "answer for a game that has not happened, and a seasonal average is an "
+            "imputed constant wearing a statistic's clothes. Re-run the ingest "
+            "closer to kickoff."
+        )
+    return cutoff
 
 
-async def fetch_game_forecast(*args, **kwargs):
-    """RED stub -- replaced in the GREEN commit."""
-    raise NotImplementedError("fetch_game_forecast is not implemented yet")
+def select_forecast_hour_for_kickoff(
+    game: Any,
+    venue: Any,
+    *,
+    as_of_utc: datetime,
+) -> ForecastHour:
+    """Resolve the local day and hour a game's forecast must be read at.
 
+    THE VENUE'S OWN IANA ZONE, taken from the ``timezone`` field Plan 33-06 put on
+    all 38 records in ``data/venues.json``. Never a fixed zone and never the home
+    team's: eight of 2026's games are international, the Maracana game is nominally
+    a Dallas home game, and the Melbourne game read in Eastern time is the wrong
+    hour on the wrong DATE. This is COLD-09's defect expressed in time rather than
+    in space, and it has the same fix -- resolve the venue, then use what the venue
+    says.
 
-def assert_complete_forecast_coverage(requested_game_ids, week_frame):
-    """RED stub -- replaced in the GREEN commit."""
-    raise NotImplementedError(
-        "assert_complete_forecast_coverage is not implemented yet"
+    The horizon check runs HERE, so a caller that reaches for the hour directly
+    cannot skip it.
+
+    Args:
+        game: A game row (mapping or Series) carrying ``game_id`` and ``kickoff_et``.
+        venue: A venue record (mapping or Series) carrying an IANA ``timezone``.
+        as_of_utc: The instant the horizon is measured from. Injected, never read
+            from a process clock.
+
+    Returns:
+        The resolved :class:`ForecastHour`.
+
+    Raises:
+        WeatherDataError: the venue record carries no usable zone.
+        BeyondForecastHorizonError: the kickoff is beyond the declared horizon.
+    """
+    game_id = str(game["game_id"])
+    kickoff = kickoff_wall_clock_et(game["kickoff_et"]).astimezone(UTC)
+    assert_within_forecast_horizon(game_id, kickoff, as_of_utc=as_of_utc)
+
+    # `.get` rather than `[...]`: a venue record with no zone at all must reach the
+    # named refusal below, not a KeyError that says nothing about why it matters.
+    zone_name = venue.get("timezone")
+    if not zone_name or (isinstance(zone_name, float) and pd.isna(zone_name)):
+        raise WeatherDataError(
+            f"the venue record for {game_id} carries no IANA timezone, and this "
+            "function will NOT default to one. A default is exactly how the "
+            "Maracana game would be read in the wrong zone -- silently, with a "
+            "plausible value. Add the timezone to data/venues.json."
+        )
+
+    try:
+        local = kickoff.astimezone(ZoneInfo(str(zone_name)))
+    except Exception as exc:  # ZoneInfoNotFoundError and friends
+        raise WeatherDataError(
+            f"the venue record for {game_id} names timezone {zone_name!r}, which "
+            f"is not a resolvable IANA zone: {exc}"
+        ) from exc
+
+    return ForecastHour(
+        game_id=game_id,
+        timezone=str(zone_name),
+        local_date=local.strftime("%Y-%m-%d"),
+        hour=local.hour,
+        kickoff_utc=kickoff,
+        local_instant=local,
     )
 
 
-def write_week_weather_atomically(week_frame, table="weather", **kwargs):
-    """RED stub -- replaced in the GREEN commit."""
-    raise NotImplementedError("write_week_weather_atomically is not implemented yet")
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    reraise=True,
+)
+async def fetch_game_forecast(
+    client: httpx.AsyncClient,
+    latitude: float,
+    longitude: float,
+    game_date: str,
+    game_hour: int,
+    venue_timezone: str,
+) -> dict[str, Any]:
+    """Fetch a FORECAST for a venue from Open-Meteo, in the venue's own local day.
+
+    A SIBLING of :func:`fetch_game_weather`, reusing its retry policy and its three
+    error branches verbatim. The two differences are the endpoint and the zone: the
+    request is made in *venue_timezone*, so the 24 hours that come back are that
+    venue's local day and ``game_hour`` indexes them directly.
+
+    Args:
+        client: httpx async client.
+        latitude: Venue latitude.
+        longitude: Venue longitude.
+        game_date: The venue-LOCAL date, ``YYYY-MM-DD``.
+        game_hour: The venue-LOCAL hour, 0-23.
+        venue_timezone: The venue's IANA zone.
+
+    Returns:
+        Dict with weather data matching the system schema.
+
+    Raises:
+        WeatherDataError: the call failed or the response is malformed.
+    """
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "start_date": game_date,
+        "end_date": game_date,
+        "hourly": HOURLY_VARIABLES,
+        "temperature_unit": "fahrenheit",
+        "wind_speed_unit": "mph",
+        "timezone": venue_timezone,
+    }
+
+    try:
+        response = await client.get(FORECAST_ENDPOINT_URL, params=params)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise WeatherDataError(
+            f"Open-Meteo forecast API returned {e.response.status_code} "
+            f"for ({latitude}, {longitude}) on {game_date}"
+        )
+    except httpx.TimeoutException as e:
+        raise WeatherDataError(
+            f"Open-Meteo forecast API timeout for ({latitude}, {longitude}) "
+            f"on {game_date}: {e}"
+        )
+    except httpx.RequestError as e:
+        raise WeatherDataError(
+            f"Open-Meteo forecast API request failed for ({latitude}, {longitude}) "
+            f"on {game_date}: {e}"
+        )
+
+    data = response.json()
+
+    if "hourly" not in data:
+        raise WeatherDataError(
+            f"Open-Meteo forecast response missing 'hourly' key for "
+            f"({latitude}, {longitude}) on {game_date}"
+        )
+
+    hourly = data["hourly"]
+    temperatures = hourly.get("temperature_2m", [])
+    if not temperatures:
+        raise WeatherDataError(
+            f"Open-Meteo forecast returned NO hourly data for "
+            f"({latitude}, {longitude}) on {game_date}. Nothing is imputed for it."
+        )
+    if game_hour >= len(temperatures):
+        raise WeatherDataError(
+            f"Open-Meteo forecast returned {len(temperatures)} hours for "
+            f"({latitude}, {longitude}) on {game_date}, which does not reach hour "
+            f"{game_hour}. The hour is NOT clamped to the last available one: a "
+            "clamped hour is a real reading for the wrong moment."
+        )
+
+    idx = game_hour
+    temp_f = temperatures[idx]
+
+    return {
+        "temp_f": temp_f,
+        "temp_c": round((temp_f - 32) * 5 / 9, 1) if temp_f is not None else None,
+        "wind_mph": hourly["wind_speed_10m"][idx],
+        "wind_direction": hourly["wind_direction_10m"][idx],
+        "humidity_pct": hourly["relative_humidity_2m"][idx],
+        "precip_mm": hourly["precipitation"][idx],
+        # The FORECAST endpoint does offer `precipitation_probability`, which the
+        # archive endpoint does not. It is deliberately NOT wired here: the
+        # provider reports it as a PERCENTAGE (0-100) and WeatherSchema.precip_prob
+        # is a FRACTION with `le=1`, so adopting it is a unit conversion and a
+        # schema decision rather than a parameter addition. Out of scope for R8.
+        "precip_prob": None,
+        "condition": None,  # Derive from weather_code if needed downstream
+        "condition_code": hourly["weather_code"][idx],
+        "visibility_km": None,
+        "dew_point_f": hourly["dew_point_2m"][idx],
+        "apparent_temp_f": hourly["apparent_temperature"][idx],
+        "snowfall_cm": hourly["snowfall"][idx],
+        "wind_gusts_mph": hourly["wind_gusts_10m"][idx],
+        "cloud_cover_pct": hourly["cloud_cover"][idx],
+        "weather_code": hourly["weather_code"][idx],
+    }
+
+
+def assert_complete_forecast_coverage(
+    requested_game_ids: Any,
+    week_frame: pd.DataFrame,
+) -> None:
+    """Refuse a week whose payload does not cover every game that was asked about.
+
+    Called BEFORE anything is written. A shortfall names the absent ids and the
+    count, because "2 of 3 missing" is what tells a reader the payload was PARTIAL
+    rather than empty -- an empty payload announces itself, a partial one does not.
+
+    Raises:
+        IncompleteForecastPayloadError: any requested id is absent from the frame.
+    """
+    requested = tuple(str(value) for value in requested_game_ids)
+    covered = (
+        set()
+        if week_frame is None or len(week_frame) == 0
+        else {str(value) for value in week_frame["game_id"]}
+    )
+    absent = tuple(gid for gid in requested if gid not in covered)
+    if not absent:
+        return
+
+    raise IncompleteForecastPayloadError(
+        f"the forecast payload is MISSING {len(absent)} of {len(requested)} "
+        f"requested games: {', '.join(absent)}. NOTHING is written for this week. "
+        "A partially-populated week is indistinguishable from a complete one once "
+        "it is on disk, which makes it the quieter form of the fabricated-data "
+        "class this project has already disclosed once.",
+        absent_game_ids=absent,
+    )
+
+
+def write_week_weather_atomically(
+    week_frame: pd.DataFrame,
+    table: str = "weather",
+    *,
+    requested_game_ids: Any = None,
+    base_path=None,
+):
+    """Write one week's weather all-at-once, through the STORAGE layer.
+
+    Delegates to :func:`data.storage.upsert_silver`, which already reaches an
+    atomic parquet replacement. It does NOT import the bet-list module's private
+    replacement helper and does not write a second temp-file dance of its own: a
+    filesystem primitive for the silver store belongs in the storage layer, and
+    reaching into an unrelated module's private for it would make the weather
+    ingest depend on the betting module.
+
+    Args:
+        week_frame: The validated week, complete.
+        table: Silver table name.
+        requested_game_ids: When given, coverage is asserted before the write, so
+            an incomplete week raises instead of landing half-populated.
+        base_path: Data root. Threaded so a test can redirect the write.
+
+    Returns:
+        The path written.
+    """
+    if requested_game_ids is not None:
+        assert_complete_forecast_coverage(requested_game_ids, week_frame)
+    return upsert_silver(week_frame, table, base_path=base_path)
 
 
 # Full set of hourly weather variables to fetch from Open-Meteo
@@ -306,10 +642,13 @@ class WeatherDataIngester:
             )
             raise DataIngestionError(f"Games data load failed: {e}")
 
-    def _get_venue_coordinates(
-        self, home_team: str, venues_df: pd.DataFrame
-    ) -> tuple[float, float, str]:
-        """Get venue coordinates and roof type for a team.
+    def _get_venue_record(self, home_team: str, venues_df: pd.DataFrame) -> Any:
+        """The WHOLE venue row for a team, not just its coordinates.
+
+        The row is what the forecast path needs: R8 reads the venue's IANA
+        ``timezone`` as well as its latitude and longitude, and returning a triple
+        would mean two lookups against the same table with two chances to disagree
+        about which row won.
 
         Uses normalize_team_abbreviation to handle variant abbreviations
         (e.g. 'LAR' -> 'LA') before venue lookup.
@@ -329,13 +668,12 @@ class WeatherDataIngester:
                 f"Check data/venues.json home_teams arrays."
             )
 
-        venue = venue_info.iloc[0]
-        return venue["latitude"], venue["longitude"], venue["roof_type"]
+        return venue_info.iloc[0]
 
-    def _get_venue_coordinates_by_stadium_id(
+    def _get_venue_record_by_stadium_id(
         self, stadium_id: object, venues_df: pd.DataFrame
-    ) -> tuple[float, float, str]:
-        """Get venue coordinates and roof type by nflverse ``stadium_id``.
+    ) -> Any:
+        """The WHOLE venue row for an nflverse ``stadium_id``.
 
         EXACT and CASE-SENSITIVE, with no normalization and no fuzzy match (R11).
         A miss RAISES rather than falling back to the home team: for a neutral-site
@@ -348,8 +686,7 @@ class WeatherDataIngester:
         if "stadium_id" in venues_df.columns:
             match = venues_df[venues_df["stadium_id"] == stadium_id]
             if not match.empty:
-                venue = match.iloc[0]
-                return venue["latitude"], venue["longitude"], venue["roof_type"]
+                return match.iloc[0]
 
         raise WeatherDataError(
             f"No venue found for stadium_id {stadium_id!r}. It is NOT resolved to "
@@ -359,10 +696,12 @@ class WeatherDataIngester:
             "roof_type entered explicitly. Matching is exact and case-sensitive."
         )
 
-    def _resolve_venue_for_game_row(
-        self, game: Any, venues_df: pd.DataFrame
-    ) -> tuple[float, float, str]:
-        """Coordinates and roof for one game, under the D33-15 routing rule.
+    def _resolve_venue_record_for_game(self, game: Any, venues_df: pd.DataFrame) -> Any:
+        """The venue ROW for one game, under the D33-15 routing rule.
+
+        ONE routing rule, in one place. The coordinate accessors below delegate to
+        it rather than repeating the season/neutral-site test, so the forecast path
+        and the archive path can never diverge about which stadium a game is at.
 
         Seasons before ``STADIUM_ID_ROUTING_FIRST_SEASON`` keep the home-team
         resolution unchanged, including their neutral-site games -- those 91 rows
@@ -374,11 +713,32 @@ class WeatherDataIngester:
             season = 0
 
         if season >= STADIUM_ID_ROUTING_FIRST_SEASON and game_is_neutral_site(game):
-            return self._get_venue_coordinates_by_stadium_id(
+            return self._get_venue_record_by_stadium_id(
                 game.get("stadium_id"), venues_df
             )
 
-        return self._get_venue_coordinates(game["home_team"], venues_df)
+        return self._get_venue_record(game["home_team"], venues_df)
+
+    def _get_venue_coordinates(
+        self, home_team: str, venues_df: pd.DataFrame
+    ) -> tuple[float, float, str]:
+        """Get venue coordinates and roof type for a team."""
+        venue = self._get_venue_record(home_team, venues_df)
+        return venue["latitude"], venue["longitude"], venue["roof_type"]
+
+    def _get_venue_coordinates_by_stadium_id(
+        self, stadium_id: object, venues_df: pd.DataFrame
+    ) -> tuple[float, float, str]:
+        """Get venue coordinates and roof type by nflverse ``stadium_id``."""
+        venue = self._get_venue_record_by_stadium_id(stadium_id, venues_df)
+        return venue["latitude"], venue["longitude"], venue["roof_type"]
+
+    def _resolve_venue_for_game_row(
+        self, game: Any, venues_df: pd.DataFrame
+    ) -> tuple[float, float, str]:
+        """Coordinates and roof for one game, under the D33-15 routing rule."""
+        venue = self._resolve_venue_record_for_game(game, venues_df)
+        return venue["latitude"], venue["longitude"], venue["roof_type"]
 
     def _is_outdoor_game(self, roof_type: str) -> bool:
         """Determine if weather affects the game."""
@@ -594,13 +954,200 @@ class WeatherDataIngester:
 
         return weather_df
 
-    def fetch_forecast_for_games(self, games_df, venues_df, forecast_time=None, **kw):
-        """RED stub -- replaced in the GREEN commit."""
-        raise NotImplementedError("fetch_forecast_for_games is not implemented yet")
+    async def _fetch_openmeteo_forecast(
+        self,
+        latitude: float,
+        longitude: float,
+        game_date: str,
+        game_hour: int,
+        venue_timezone: str,
+    ) -> dict[str, Any]:
+        """Open a client and fetch one game's FORECAST. The seam tests replace."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            return await fetch_game_forecast(
+                client, latitude, longitude, game_date, game_hour, venue_timezone
+            )
 
-    def ingest_week_forecast(self, games_df, venues_df, **kw):
-        """RED stub -- replaced in the GREEN commit."""
-        raise NotImplementedError("ingest_week_forecast is not implemented yet")
+    def fetch_forecast_for_games(
+        self,
+        games_df: pd.DataFrame,
+        venues_df: pd.DataFrame,
+        forecast_time: datetime | None = None,
+        *,
+        as_of_utc: datetime,
+    ) -> pd.DataFrame:
+        """Fetch FORECASTS for a week of games, or raise without producing a row.
+
+        THE FORWARD SIBLING of :meth:`fetch_weather_for_games`. Three differences,
+        each of them the point:
+
+        1. The horizon is checked for EVERY game, BEFORE any client is opened. An
+           indoor game needs no forecast, but the horizon is still asserted for it:
+           this method's contract is a WEEK, and a week that cannot be forecast in
+           full is refused in full rather than written half-true.
+        2. The forecast hour comes from the VENUE's own IANA zone.
+        3. Nothing is imputed. A failure anywhere raises and the caller writes
+           nothing.
+
+        Args:
+            games_df: The week's games.
+            venues_df: The venue table, carrying ``timezone`` per record.
+            forecast_time: When this forecast was taken. Defaults to now, in UTC.
+            as_of_utc: The instant the horizon is measured from. Injected.
+
+        Returns:
+            One record per game, in the order the games arrived.
+
+        Raises:
+            BeyondForecastHorizonError: any kickoff is past the horizon.
+            WeatherDataError: any venue or any fetch failed.
+        """
+        _require_aware(as_of_utc, "as_of_utc")
+        if forecast_time is None:
+            forecast_time = datetime.now(UTC)
+
+        logger.info(
+            "Fetching FORECAST weather for games",
+            games=len(games_df),
+            as_of=as_of_utc.isoformat(),
+        )
+
+        weather_records: list[dict[str, Any]] = []
+
+        for _, game in games_df.iterrows():
+            game_id = str(game["game_id"])
+            if not is_valid_game_id(game_id):
+                raise WeatherDataError(
+                    f"invalid game_id {game_id!r} in the forecast week. It "
+                    "is NOT skipped: a skipped game is a game the coverage check "
+                    "can never notice is missing."
+                )
+
+            venue = self._resolve_venue_record_for_game(game, venues_df)
+
+            # The horizon refusal lives inside hour selection, so it is raised
+            # BEFORE any client is constructed for any game in the week.
+            selected = select_forecast_hour_for_kickoff(
+                game, venue, as_of_utc=as_of_utc
+            )
+
+            roof_type = venue["roof_type"]
+            if not self._is_outdoor_game(roof_type):
+                weather_records.append(
+                    self._create_indoor_weather_record(
+                        game_id, selected.kickoff_utc, forecast_time
+                    )
+                )
+                continue
+
+            weather_data = asyncio.run(
+                self._fetch_openmeteo_forecast(
+                    venue["latitude"],
+                    venue["longitude"],
+                    selected.local_date,
+                    selected.hour,
+                    selected.timezone,
+                )
+            )
+            weather_records.append(
+                self._create_weather_record(
+                    game_id,
+                    selected.kickoff_utc,
+                    forecast_time,
+                    weather_data,
+                    roof_type,
+                )
+            )
+
+        return pd.DataFrame(weather_records)
+
+    def ingest_week_forecast(
+        self,
+        games_df: pd.DataFrame,
+        venues_df: pd.DataFrame,
+        *,
+        as_of_utc: datetime,
+        forecast_time: datetime | None = None,
+        base_path=None,
+        table: str = "weather",
+    ) -> pd.DataFrame:
+        """Fetch and write ONE week's forecast, all-or-nothing.
+
+        The order is the guarantee: fetch every game, assert COMPLETE coverage,
+        THEN write once. A failure at any point before the write leaves the silver
+        table byte-identical, which is asserted by content digest in
+        ``tests/unit/test_weather_atomic_week_write.py`` rather than assumed.
+
+        Args:
+            games_df: The week's games. Must be a single (season, week).
+            venues_df: The venue table.
+            as_of_utc: The instant the horizon is measured from. Injected.
+            forecast_time: When this forecast was taken. Defaults to now, in UTC.
+            base_path: Data root. Threaded so a test can redirect the write.
+            table: Silver table name.
+
+        Returns:
+            The validated frame that was written.
+        """
+        if forecast_time is None:
+            forecast_time = datetime.now(UTC)
+
+        season, week = self._single_season_week(games_df)
+        requested_game_ids = [str(value) for value in games_df["game_id"]]
+
+        weather_df = self.fetch_forecast_for_games(
+            games_df, venues_df, forecast_time=forecast_time, as_of_utc=as_of_utc
+        )
+
+        # BEFORE the bronze snapshot as well as before the silver write: an
+        # incomplete week should leave no trace at all, not an orphan bronze file
+        # a later reader could mistake for a captured week.
+        assert_complete_forecast_coverage(requested_game_ids, weather_df)
+
+        save_bronze_snapshot(
+            weather_df, table, season=season, week=week, base_path=base_path
+        )
+
+        validated_df = validate_bronze_to_silver(weather_df, WeatherSchema)
+        validated_df = validated_df.drop_duplicates(subset=["game_id"], keep="first")
+        validated_df["created_at"] = datetime.now(UTC)
+
+        assert_complete_forecast_coverage(requested_game_ids, validated_df)
+
+        write_week_weather_atomically(
+            validated_df,
+            table,
+            requested_game_ids=requested_game_ids,
+            base_path=base_path,
+        )
+
+        log_data_operation(
+            operation="ingest_forecast",
+            table=table,
+            rows=len(validated_df),
+            season=season,
+            week=week,
+        )
+        return validated_df
+
+    @staticmethod
+    def _single_season_week(games_df: pd.DataFrame) -> tuple[int, int]:
+        """The one (season, week) this frame covers, or a refusal naming what it saw.
+
+        The all-or-nothing write is a WEEK-level promise. A frame spanning two weeks
+        would make "the week is unchanged" meaningless, so the constraint is
+        enforced here rather than assumed by the caller.
+        """
+        pairs = {
+            (int(row["season"]), int(row["week"])) for _, row in games_df.iterrows()
+        }
+        if len(pairs) != 1:
+            raise WeatherDataError(
+                "ingest_week_forecast writes ONE week atomically and was handed "
+                f"{len(pairs)} (season, week) pairs: {sorted(pairs)}. Split the "
+                "call; an all-or-nothing promise over a mixed frame is not one."
+            )
+        return next(iter(pairs))
 
     def ingest_weather(
         self,

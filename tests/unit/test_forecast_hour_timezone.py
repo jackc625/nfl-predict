@@ -45,9 +45,14 @@ import pytest
 from tests import phase33_state
 from tests.fixtures import season_2026
 
-# Far enough before the earliest 2026 international kickoff that every case below is
-# inside the horizon, and INJECTED so no test depends on the day it runs.
-AS_OF = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+# Every `as_of_utc` below is derived from the game's OWN pinned kickoff, two days
+# before it, rather than from one shared constant. The eight international games span
+# September to November, so a single `as_of` could not be inside the horizon for all of
+# them -- and widening the horizon to make one constant work would be tuning the
+# production rule to suit a test. The kickoff is a literal from the pinned capture, so
+# this is still fully injected: nothing here reads a process clock or depends on the day
+# the suite runs.
+AS_OF_LEAD = timedelta(days=2)
 
 # stadium_id -> (expected local date, expected local hour, expected IANA zone).
 #
@@ -95,6 +100,13 @@ def _require_capture() -> None:
         season_2026.load_captured_schedule()
     except season_2026.CapturedScheduleUnavailableError as exc:
         pytest.skip(str(exc))
+
+
+def _as_of_for(game: dict[str, Any]) -> datetime:
+    """Two days before THIS game's pinned kickoff, in UTC."""
+    from utils.date_utils import kickoff_wall_clock_et
+
+    return kickoff_wall_clock_et(game["kickoff_et"]).astimezone(UTC) - AS_OF_LEAD
 
 
 def _venue_records() -> dict[str, dict[str, Any]]:
@@ -145,7 +157,9 @@ class TestTheEightInternationalVenuesResolveToTheirOwnLocalHour:
         venue = _venue_records()[stadium_id]
         expected_date, expected_hour, expected_zone = EXPECTED_FORECAST_HOUR[stadium_id]
 
-        selected = ingest.select_forecast_hour_for_kickoff(game, venue, as_of_utc=AS_OF)
+        selected = ingest.select_forecast_hour_for_kickoff(
+            game, venue, as_of_utc=_as_of_for(game)
+        )
 
         assert selected.timezone == expected_zone
         assert selected.local_date == expected_date
@@ -162,7 +176,9 @@ class TestTheEightInternationalVenuesResolveToTheirOwnLocalHour:
 
         game = _neutral_games_by_stadium()[stadium_id]
         venue = _venue_records()[stadium_id]
-        selected = ingest.select_forecast_hour_for_kickoff(game, venue, as_of_utc=AS_OF)
+        selected = ingest.select_forecast_hour_for_kickoff(
+            game, venue, as_of_utc=_as_of_for(game)
+        )
 
         et_date, et_hour = ET_FORECAST_HOUR[stadium_id]
         assert (selected.local_date, selected.hour) != (et_date, et_hour), (
@@ -190,13 +206,17 @@ class TestTheNegativeControl:
         venue = dict(_venue_records()["RIO00"])
         assert game["home_team"] == "DAL"
 
-        correct = ingest.select_forecast_hour_for_kickoff(game, venue, as_of_utc=AS_OF)
+        correct = ingest.select_forecast_hour_for_kickoff(
+            game, venue, as_of_utc=_as_of_for(game)
+        )
 
         # The SAME game, resolved through the home team's stadium record.
         dallas = dict(venue)
         dallas["timezone"] = "America/Chicago"
         dallas["stadium_id"] = "DAL00"
-        wrong = ingest.select_forecast_hour_for_kickoff(game, dallas, as_of_utc=AS_OF)
+        wrong = ingest.select_forecast_hour_for_kickoff(
+            game, dallas, as_of_utc=_as_of_for(game)
+        )
 
         assert correct.timezone == "America/Sao_Paulo"
         assert correct.hour == 17
@@ -213,8 +233,12 @@ class TestTheNegativeControl:
         venue = dict(_venue_records()["MEL00"])
         eastern = dict(venue, timezone="America/New_York")
 
-        correct = ingest.select_forecast_hour_for_kickoff(game, venue, as_of_utc=AS_OF)
-        wrong = ingest.select_forecast_hour_for_kickoff(game, eastern, as_of_utc=AS_OF)
+        correct = ingest.select_forecast_hour_for_kickoff(
+            game, venue, as_of_utc=_as_of_for(game)
+        )
+        wrong = ingest.select_forecast_hour_for_kickoff(
+            game, eastern, as_of_utc=_as_of_for(game)
+        )
 
         assert correct.local_date == "2026-09-11"
         assert wrong.local_date == "2026-09-10"
