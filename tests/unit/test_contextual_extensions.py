@@ -212,9 +212,7 @@ class TestSurfaceMismatch:
 
         MIA (Bermuda Grass home) plays at NYJ (FieldTurf).
         """
-        df = _make_games_df(
-            home_team="NYJ", away_team="MIA", venue_name="Turf Stadium"
-        )
+        df = _make_games_df(home_team="NYJ", away_team="MIA", venue_name="Turf Stadium")
         result = calc.build_features(df, datetime(2024, 9, 5, 12, 0))
         assert result.iloc[0]["surface_mismatch"] == 1.0
 
@@ -251,9 +249,7 @@ class TestSurfaceMismatch:
         # KC home (Bermuda Grass), venue is KC Stadium (Bermuda Grass)
         # Away team NYJ (FieldTurf) -- this IS a mismatch for away,
         # so surface_mismatch should reflect the away team's mismatch = 1.0
-        df = _make_games_df(
-            home_team="KC", away_team="NYJ", venue_name="KC Stadium"
-        )
+        df = _make_games_df(home_team="KC", away_team="NYJ", venue_name="KC Stadium")
         result = calc.build_features(df, datetime(2024, 9, 5, 12, 0))
         # The feature captures away team mismatch
         assert result.iloc[0]["surface_mismatch"] == 1.0
@@ -261,9 +257,7 @@ class TestSurfaceMismatch:
     def test_no_mismatch_home_on_own_surface(self, calc):
         """When away team surface matches game venue, mismatch = 0.0."""
         # KC home (Bermuda Grass), away MIA (Bermuda Grass) at KC Stadium
-        df = _make_games_df(
-            home_team="KC", away_team="MIA", venue_name="KC Stadium"
-        )
+        df = _make_games_df(home_team="KC", away_team="MIA", venue_name="KC Stadium")
         result = calc.build_features(df, datetime(2024, 9, 5, 12, 0))
         assert result.iloc[0]["surface_mismatch"] == 0.0
 
@@ -299,17 +293,13 @@ class TestDivisionalIndicator:
 
     def test_divisional_game(self, calc):
         """KC vs LAC (both AFC West) should be is_divisional = 1.0."""
-        df = _make_games_df(
-            home_team="KC", away_team="LAC", venue_name="KC Stadium"
-        )
+        df = _make_games_df(home_team="KC", away_team="LAC", venue_name="KC Stadium")
         result = calc.build_features(df, datetime(2024, 9, 5, 12, 0))
         assert result.iloc[0]["is_divisional"] == 1.0
 
     def test_non_divisional_game(self, calc):
         """KC vs MIA (different divisions) should be is_divisional = 0.0."""
-        df = _make_games_df(
-            home_team="KC", away_team="MIA", venue_name="KC Stadium"
-        )
+        df = _make_games_df(home_team="KC", away_team="MIA", venue_name="KC Stadium")
         result = calc.build_features(df, datetime(2024, 9, 5, 12, 0))
         assert result.iloc[0]["is_divisional"] == 0.0
 
@@ -332,7 +322,12 @@ class TestBuildFeaturesOutput:
         """build_features output must include all 4 new feature columns."""
         df = _make_games_df()
         result = calc.build_features(df, datetime(2024, 9, 5, 12, 0))
-        for col in ["season_progress", "late_season", "surface_mismatch", "is_divisional"]:
+        for col in [
+            "season_progress",
+            "late_season",
+            "surface_mismatch",
+            "is_divisional",
+        ]:
             assert col in result.columns, f"Missing column: {col}"
 
     def test_existing_features_preserved(self, calc):
@@ -340,8 +335,13 @@ class TestBuildFeaturesOutput:
         df = _make_games_df()
         result = calc.build_features(df, datetime(2024, 9, 5, 12, 0))
         existing_cols = [
-            "game_id", "season", "week", "home_team", "away_team",
-            "is_home_game", "is_away_game",
+            "game_id",
+            "season",
+            "week",
+            "home_team",
+            "away_team",
+            "is_home_game",
+            "is_away_game",
         ]
         for col in existing_cols:
             assert col in result.columns, f"Existing column missing: {col}"
@@ -350,7 +350,12 @@ class TestBuildFeaturesOutput:
         """All 4 new features must be float type."""
         df = _make_games_df(week=15)
         result = calc.build_features(df, datetime(2024, 12, 10, 12, 0))
-        for col in ["season_progress", "late_season", "surface_mismatch", "is_divisional"]:
+        for col in [
+            "season_progress",
+            "late_season",
+            "surface_mismatch",
+            "is_divisional",
+        ]:
             val = result.iloc[0][col]
             assert isinstance(val, float), f"{col} is {type(val)}, expected float"
 
@@ -366,3 +371,75 @@ class TestProtocolConformance:
     def test_is_feature_builder(self, calc):
         """Calculator must be an instance of FeatureBuilder Protocol."""
         assert isinstance(calc, FeatureBuilder)
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-06 Task 2(i): the local kickoff derives from the VENUE's zone.
+#
+# R11 edge (timezone). Before this plan the Maracana game resolved to AT&T Stadium,
+# so its local clock was America/Chicago -- a Dallas wall clock for a game in Rio de
+# Janeiro. These use the REAL data/venues.json rather than MOCK_VENUES above,
+# because the fact under test is that the eight ratified records are reachable
+# through the routing path at all.
+# ---------------------------------------------------------------------------
+
+
+class TestVenueTimezoneRouting:
+    """Local kickoff comes from the venue's IANA zone, not the home team's."""
+
+    def test_the_maracana_game_derives_its_clock_from_sao_paulo(self):
+        import features.contextual as contextual_mod
+
+        venue = contextual_mod.resolve_venue_for_game(
+            {
+                "game_id": "2026_W03_BAL@DAL",
+                "season": 2026,
+                "week": 3,
+                "home_team": "DAL",
+                "away_team": "BAL",
+                "location": "Neutral",
+                "stadium_id": "RIO00",
+                "venue": "Maracana Stadium",
+            }
+        )
+        assert venue is not None
+        assert venue["timezone"] == "America/Sao_Paulo", (
+            f"the Maracana game's local clock is {venue['timezone']!r}. Resolving it "
+            "to the home team's zone gives a Dallas wall clock for a game in Brazil, "
+            "which is what every kickoff-hour-dependent feature then reads."
+        )
+
+    def test_the_venue_zone_differs_from_the_home_teams_zone(self):
+        """The negative half: the two zones must not coincidentally agree."""
+        import features.contextual as contextual_mod
+
+        calculator = contextual_mod.ContextualFeaturesCalculator()
+        home_venue_id = calculator.team_venues["DAL"]
+        assert calculator.timezone_map[home_venue_id] == "America/Chicago"
+
+        venue = contextual_mod.resolve_venue_for_game(
+            {
+                "game_id": "2026_W03_BAL@DAL",
+                "season": 2026,
+                "week": 3,
+                "home_team": "DAL",
+                "away_team": "BAL",
+                "location": "Neutral",
+                "stadium_id": "RIO00",
+                "venue": "Maracana Stadium",
+            }
+        )
+        assert venue is not None
+        assert venue["timezone"] != calculator.timezone_map[home_venue_id]
+
+    def test_every_international_venue_carries_a_loadable_iana_zone(self):
+        """A zone string that ZoneInfo cannot load fails at feature-build time."""
+        from zoneinfo import ZoneInfo
+
+        import features.contextual as contextual_mod
+        from tests import phase33_state
+
+        for code in phase33_state.INTERNATIONAL_STADIUM_IDS:
+            venue = contextual_mod._get_venue_by_stadium_id(code)
+            assert venue is not None, f"{code} is not in data/venues.json"
+            ZoneInfo(venue["timezone"])
