@@ -134,3 +134,68 @@ MARKED_PRODUCTION_WRITERS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("data/nfl_predictions.duckdb",),
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# What the armed guard OBSERVED about its own instrument.
+#
+# APPENDED by Plan 33-01 Task 3 on 2026-09-11. Nothing above this line was
+# edited: a state manifest whose earlier slots move cannot be used to reconstruct
+# what was believed when.
+#
+# MEASURED over all THREE tiers with the guard armed and NFL_GUARD_OBSERVATIONS=1:
+#     uv run python -m pytest tests/unit -q          325.26 s
+#     uv run python -m pytest tests/integration -q   527.91 s
+#     uv run python -m pytest tests/api tests/test_*.py -q   129.31 s
+# ---------------------------------------------------------------------------
+
+# How many times a content read hit the LOCKED-FILE path and had to close handles
+# before it could hash the bytes. Per tier: 3 (unit) + 5 (integration) + 0 (api).
+#
+# Q-07 ANSWERED. The question was whether `digest_file`'s stat-signature fallback
+# is a live degradation of the guard or a path that never fires. It fires -- eight
+# times in one full pass, every one of them on `data/nfl_predictions.duckdb`. So
+# the reviewer who called the fallback a HIGH weakness was describing a real
+# exposure and not a hypothetical one, and D33-32's ruling (retry, then raise by
+# name) is load-bearing rather than decorative. Under the shipped guard all eight
+# RECOVERED: the retry read the bytes, and no verdict in any tier rested on a stat
+# signature.
+STAT_SIGNATURE_OBSERVATIONS: int = 8
+
+# The largest number of `.duckdb.wal` siblings seen beside a tracked `.duckdb`
+# store at any single sweep.
+#
+# THE RECORDED VALUE IS THE PRE-FIX MEASUREMENT, AND THAT IS DELIBERATE. The
+# armed integration tier of 2026-09-11 20:20 observed ONE write-ahead-log sibling
+# and, at session end, a full content sweep reporting `nfl_predictions.duckdb`
+# moved with no per-test sweep having seen it. Those two facts are the same fact:
+# a DuckDB write lands in the `.wal` sibling, the main file is not touched until
+# the connection checkpoints, and `.wal` is not a tracked suffix -- so the
+# declared write was invisible for the whole of the declaring test's window and
+# surfaced later, attributed to nobody.
+#
+# The shipped guard now checkpoints a declared write inside the window of the test
+# that declared it, so a re-measurement reads 0. Recording that 0 would erase the
+# evidence this slot exists to preserve: the WAL was never absent, it is merely no
+# longer allowed to outlive the test that created it.
+#
+# THIS IS THE EVIDENCE a later phase needs before widening TRACKED_SUFFIXES, which
+# Plan 33-01 deliberately did NOT do -- widening the tracked set changes what every
+# digest document taken under the narrower set means, including the
+# `outputs/*_before.json` snapshots Plans 33-12, 33-13, 33-14 and 33-18 will take.
+WAL_SIBLING_OBSERVATIONS: int = 1
+
+# The COLLECTED count this plan adds, measured as the three-tier collected total
+# after the plan (2980 + 726 + 367 = 4073) minus PRE_PHASE_COLLECTED (4029). Each
+# parametrize case counts as the separate collected node it is.
+#
+# It closes exactly against the modules: 8 in
+# tests/integration/test_data_boundary_guard_arming.py, 18 in
+# tests/unit/test_write_guard_marker_scope.py, and 18 added to
+# tests/unit/test_data_boundary_digest.py. That the arithmetic closes is the check
+# that no test was quietly deleted to make a number look better.
+#
+# An IMMUTABLE per-plan counter, appended once and never edited. Plan 33-02 defines
+# the protocol; Plan 33-18 sums the per-plan counters into TESTS_ADDED_BY_PHASE_33
+# exactly once, at closure. No running aggregate is kept here.
+TESTS_ADDED_33_01: int = 44
