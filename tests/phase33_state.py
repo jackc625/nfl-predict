@@ -420,3 +420,60 @@ FORBIDDEN_CLAIM_PHRASE_PINNED_MENTIONS: tuple[tuple[str, str], ...] = (
         "central controls do not execute -- while the suite still reports zero failures.",
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# THE MEASURED 2026 SCHEDULE FACTS the shared fixtures assert against.
+#
+# APPENDED by Plan 33-02 Task 3 on 2026-09-11. Nothing above this line was edited.
+#
+# MEASURED from the single live capture Plan 32-09 Task 2 took on 2026-09-11 at
+# 11:02:52 UTC:
+#     data/bronze/schedules_raw_bronze_2026_W01_20260911T110252.parquet
+# That file lives under the gitignored production store and is READ, never written
+# (T-33-11). tests/fixtures/season_2026.py derives every 2026 set from it exactly
+# once, and these constants are what the derivations are checked against -- a
+# derivation checked only against itself agrees with itself.
+# ---------------------------------------------------------------------------
+
+CAPTURED_SCHEDULE_ROWS: int = 272
+CAPTURED_SCHEDULE_COLUMNS: int = 46
+
+# How many of those 272 games already carry a score.
+#
+# THE CAPTURE IS MID-WEEK-1, NOT PRE-SEASON, and that is the cold start this phase is
+# actually about. Exactly TWO games are graded in it:
+#     2026_W01_NE@SEA  SEA 13 - NE 10
+#     2026_W01_SF@LA   LA   7 - SF 27   (the Melbourne neutral-site game)
+# The other 270 rows carry NA scores and an NA result.
+#
+# Recorded because "the 2026 season is unplayed" is the obvious assumption and it is
+# WRONG BY TWO ROWS. A plan that asserts every score is NA would redden against real
+# data; a plan that assumes any score is present would redden against 270 of them.
+# Both mistakes are cheap to make and invisible until the assertion runs.
+CAPTURED_SCHEDULE_GRADED_GAMES: int = 2
+
+# Rows the feed marks `location == "Neutral"`. There is NO `neutral_site` column in
+# the nflverse schedule feed at all, which is why scripts/ingest_games.py's
+# `row.get("neutral_site", False)` reads False for all eight of these -- a
+# PRE-EXISTING ingestion defect, owned by COLD-09, pinned as an asserted observation
+# in tests/unit/test_season_2026_fixture_schema.py rather than silently fixed inside
+# a fixtures plan.
+NEUTRAL_SITE_GAME_COUNT_2026: int = 8
+
+# The eight international venues, IN WEEK ORDER: weeks 1, 3, 4, 6, 7, 9, 10, 11.
+#
+# MUN01 IS NOT GER00 AND RIO00 IS NOT SAO00. The 2026 international venues are not
+# the ones history used, and reaching for a prior season's stadium mapping is exactly
+# how a cold start produces eight confidently wrong venue rows. Recorded so the
+# mapping is a measured fact rather than an inference from 2024.
+INTERNATIONAL_STADIUM_IDS: tuple[str, ...] = (
+    "MEL00",  # week 1  -- Melbourne Cricket Ground, SF @ LA
+    "RIO00",  # week 3  -- Maracana Stadium, BAL @ DAL
+    "LON02",  # week 4  -- Tottenham Hotspur Stadium, IND @ WAS
+    "LON00",  # week 6  -- Wembley Stadium, HOU @ JAX
+    "PAR00",  # week 7  -- Stade de France, PIT @ NO
+    "MAD01",  # week 9  -- Bernabeu, CIN @ ATL
+    "MUN01",  # week 10 -- FC Bayern Munich Stadium, NE @ DET
+    "MEX00",  # week 11 -- Estadio Banorte, MIN @ SF
+)

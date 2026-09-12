@@ -678,6 +678,71 @@ def production_store_write_guard(request, _production_store_baseline):
     )
 
 
+# ---------------------------------------------------------------------------
+# Plan 33-02 / COLD-01, COLD-09: the shared, READ-ONLY 2026 fixtures
+# ---------------------------------------------------------------------------
+#
+# Three thin delegates to `tests/fixtures/season_2026.py`, session-scoped because
+# sixteen plans in this phase read them and a per-test re-derivation would re-read
+# the same parquet several thousand times.
+#
+# NONE of these carries `writes_production_store`, and that is deliberate rather
+# than an oversight. They write nothing -- an AST scan in
+# `tests/unit/test_season_2026_fixture_schema.py` proves the fixture module makes
+# no write-shaped call -- so a marker here would be an exemption nothing needs,
+# and an exemption nothing needs is the first one somebody widens.
+
+
+@pytest.fixture(scope="session")
+def captured_2026_schedule():
+    """The captured 2026 schedule, 272 rows x 46 columns, as a DEFENSIVE COPY.
+
+    The copy is what makes session scope safe: without it, one consumer's in-place
+    edit would silently become every later consumer's input, and the failure would
+    surface in whichever test happened to run last.
+
+    The capture lives under the gitignored production store, so a checkout without
+    it gets an EVIDENCE-BACKED skip -- the reason carries "not present at", which
+    `_EVIDENCE_SKIP_MARKERS` above recognises, so the session says out loud that a
+    control did not run here rather than counting it as an ordinary skip.
+    """
+    from tests.fixtures.season_2026 import (
+        CapturedScheduleUnavailableError,
+        load_captured_schedule,
+    )
+
+    try:
+        frame = load_captured_schedule()
+    except CapturedScheduleUnavailableError as exc:
+        pytest.skip(str(exc))
+    return frame.copy()
+
+
+@pytest.fixture(scope="session")
+def week_19_postseason_fixture():
+    """The CONSTRUCTED week-19 wild-card frame, as a defensive copy.
+
+    2026 weeks 19-22 are unseeded in the capture and all 272 rows are REG weeks
+    1-18, so this case is held out by the SPEC's own edge table rather than
+    captured. It needs no lake and therefore never skips.
+    """
+    from tests.fixtures.season_2026 import WEEK_19_POSTSEASON_FIXTURE
+
+    return WEEK_19_POSTSEASON_FIXTURE.copy()
+
+
+@pytest.fixture(scope="session")
+def half_point_ats_rows():
+    """The CONSTRUCTED ATS edge cases, as a defensive copy.
+
+    0 of 1,139 real ATS rows carry `abs(spread) <= 0.5`, so the half-point and
+    pick-em cases D33-31 turns on cannot be found and must be built.
+    """
+    from tests.fixtures.season_2026 import build_half_point_ats_frame
+
+    return build_half_point_ats_frame()
+
+
 @pytest.fixture
 def sealed_probe_offline(monkeypatch, tmp_path):
     """Keep Plan 32-08's in-capture detectors OFFLINE and off every committed file.
