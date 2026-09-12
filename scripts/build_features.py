@@ -68,6 +68,24 @@ logger = get_logger(__name__)
 # degradation contract this module asserts in prose for the line-movement builder.
 #
 # One constant is what stops the twelve sites drifting apart again.
+#
+# ONE TYPE IS DELIBERATELY ABSENT, AND ITS ABSENCE IS LOAD-BEARING (Plan 33-04,
+# T-33-18b). ``features.elo_features.ProvisionalSnapshotAsTrainingInputError`` -- the
+# refusal of a PROVISIONAL Elo row as a training input -- derives from ``RuntimeError``,
+# which is not in this tuple and not a superclass of anything in it, so it PROPAGATES to
+# the caller instead of being converted into an empty Elo frame. That conversion is
+# exactly the failure the refusal exists to prevent: a gold build with no Elo columns and
+# a green exit is indistinguishable from one that worked.
+#
+# The exclusion is by TYPE and deliberately NOT by an ``except
+# ProvisionalSnapshotAsTrainingInputError: raise`` handler. A handler would have to be
+# kept in step with the exception hierarchy forever, and adding one here would make this
+# module import the refusal it is supposed to know nothing about.
+# ``tests/unit/test_provisional_training_refusal.py`` asserts the exclusion member by
+# member, asserts by AST that no handler in this file names the refusal or catches bare
+# ``Exception``, and drives a build whose Elo source raises it to prove the error reaches
+# the caller rather than producing zero rows -- with a control showing that an ordinary
+# ``ValueError`` still degrades to an empty frame, which is the behaviour that stays.
 _SOURCE_LOAD_ERRORS = (
     DataIngestionError,
     ValueError,

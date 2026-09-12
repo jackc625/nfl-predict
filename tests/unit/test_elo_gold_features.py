@@ -272,7 +272,15 @@ class TestSameWeekProvisionalRowsMoveRanksAndNotMomentum:
 
     @classmethod
     def _provisional_week_three(cls) -> pd.DataFrame:
-        """Week-3 provisional rows introducing two teams the ranking has not seen."""
+        """Week-3 provisional rows introducing two teams the ranking has not seen.
+
+        BOTH new teams rank ABOVE the away team under test, and that is arithmetic rather
+        than decoration. ``percentile = (n - rank + 1) / n``, so inserting one team above
+        and one below a mid-table team moves its rank and its count by the same amount and
+        leaves the percentile UNCHANGED -- the first draft of this fixture did exactly that
+        and produced 0.5 on both sides of the comparison, which would have quietly reduced
+        a four-column claim to a three-column one.
+        """
         from scripts.build_elo import build_snapshot_frame
 
         return build_snapshot_frame(
@@ -284,10 +292,10 @@ class TestSameWeekProvisionalRowsMoveRanksAndNotMomentum:
                     "home_team": "GB",
                     "away_team": "CHI",
                     "home_elo_pre": 1700.0,
-                    "away_elo_pre": 1400.0,
+                    "away_elo_pre": 1580.0,
                     "home_elo_uncertainty": 210.0,
                     "away_elo_uncertainty": 210.0,
-                    "elo_prob_home": 0.85,
+                    "elo_prob_home": 0.72,
                     "hfa_used": 48.0,
                     "is_provisional": True,
                 }

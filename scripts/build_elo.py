@@ -95,6 +95,7 @@ __all__ = [
     "ELO_ROW_TABLES",
     "ELO_ROW_TABLE_KEY_COLUMN",
     "ELO_SNAPSHOT_COLUMNS",
+    "ELO_SNAPSHOT_TABLE",
     "ELO_STATE_ARTIFACTS",
     "PROVISIONAL_COLUMN",
     "SNAPSHOT_COLUMNS",
@@ -102,6 +103,7 @@ __all__ = [
     "EloForeignSeasonRowsError",
     "EloGenerationIncompleteError",
     "EloGenerationPublisher",
+    "EloProvisionalPrecedenceError",
     "EloSeasonReapplicationError",
     "EloSnapshotNotPersistedError",
     "LiveSeasonUpdate",
@@ -110,6 +112,7 @@ __all__ = [
     "canonicalize_datetime_columns",
     "default_stage_writer",
     "elo_generation_pointer_path",
+    "ensure_provisional_flag",
     "new_generation_id",
     "publish_elo_generation",
     "read_elo_generation_pointer",
@@ -151,6 +154,10 @@ PROVISIONAL_COLUMN: str = "is_provisional"
 # APPENDED; reordering the eleven above would move every column in a table three
 # deployed models read through.
 SNAPSHOT_COLUMNS: tuple[str, ...] = (*ELO_SNAPSHOT_COLUMNS, PROVISIONAL_COLUMN)
+
+# The silver table the snapshots live in, named once so the writer, the schema
+# alignment and the read seam cannot disagree about which table they mean.
+ELO_SNAPSHOT_TABLE: str = "elo_game_snapshots"
 
 # The per-game rating-update columns merged into ``games_with_elo``.
 ELO_RATING_UPDATE_COLUMNS: tuple[str, ...] = (
@@ -199,6 +206,22 @@ class EloSnapshotNotPersistedError(RuntimeError):
             f"into the deployed WP model. Persist them with: "
             f"python -m scripts.build_elo --current"
         )
+
+
+class EloProvisionalPrecedenceError(RuntimeError):
+    """A PROVISIONAL snapshot row was offered for a game that already has a REAL one.
+
+    PRECEDENCE IS A TWO-SIDED RULE and only one side is free. "The real result replaces
+    the provisional row" comes for nothing, because the live write verb upserts the
+    snapshot table on ``game_id``. The other side does not: the same upsert would just as
+    happily let a STALE schedule fetch, replayed after the results landed, overwrite a
+    real snapshot with a provisional one -- and the table would silently un-learn a game
+    that had been played, in a column three deployed models read through.
+
+    So real beats provisional, a provisional row may replace only another provisional
+    row, and the reverse is refused BY NAME rather than filtered. Filtering would hide
+    the caller that replayed the stale frame, and the stale frame is the whole failure.
+    """
 
 
 class EloSeasonReapplicationError(RuntimeError):
@@ -745,8 +768,12 @@ class EloBuilder:
 
         rows: list[dict] = []
         for _, game in upcoming.iterrows():
-            home = game["home_team"]
-            away = game["away_team"]
+            # Explicit ``str``: an ``iterrows`` cell is untyped, and the Elo verbs below
+            # take team ABBREVIATIONS. Coercing at the boundary keeps the types honest
+            # instead of letting a cell of unknown type reach ``is_divisional_game``,
+            # which would compare it against the division table and quietly return False.
+            home = str(game["home_team"])
+            away = str(game["away_team"])
             divisional = is_divisional_game(home, away)
             prediction = view.predict_game(home, away, season, is_divisional=divisional)
             rows.append(
@@ -939,19 +966,30 @@ class EloBuilder:
 
         Raises:
             EloForeignSeasonRowsError: If any frame carries a row from another season.
+            EloProvisionalPrecedenceError: If a provisional row is offered for a
+                ``game_id`` that already has a REAL stored row.
         """
         supplied = {
-            "elo_game_snapshots": snapshots,
+            ELO_SNAPSHOT_TABLE: snapshots,
             "games_with_elo": games_with_elo,
             "elo_rating_history": rating_history,
         }
         for name, frame in supplied.items():
             _refuse_foreign_season_rows(name, frame, season)
 
+        # BEFORE anything is staged or written. A refusal that half-applied would be
+        # worse than no refusal: the caller would have a named error AND a table that
+        # had already moved.
+        self._refuse_provisional_over_real(snapshots)
+
         scoped = {
             name: canonicalize_datetime_columns(_rows_for_season(frame, season))
             for name, frame in supplied.items()
         }
+        # The snapshot frame is flag-aligned on the way in, so a caller handing an
+        # eleven-column frame cannot reintroduce the null third state through the back
+        # door of the write path.
+        scoped[ELO_SNAPSHOT_TABLE] = ensure_provisional_flag(scoped[ELO_SNAPSHOT_TABLE])
         current_ratings = self.elo_system.get_current_ratings()
 
         staged = {
@@ -1012,6 +1050,9 @@ class EloBuilder:
             logger.info("Live append wrote zero rows", table=table_name)
             return 0
 
+        if table_name == ELO_SNAPSHOT_TABLE:
+            self._align_stored_snapshot_flag()
+
         path = upsert_silver(
             frame,
             table_name,
@@ -1023,6 +1064,99 @@ class EloBuilder:
             combined, table_name, if_exists="replace"
         )
         return len(frame)
+
+    # -- the provisional-flag rules the write path enforces --------------------
+
+    def _stored_snapshots(self) -> pd.DataFrame:
+        """The snapshot PARQUET as it stands, flag-aligned.
+
+        Deliberately the parquet and not ``load_dataframe``: the parquet is the artifact
+        the write verbs are judged on, and ``load_dataframe`` resolves DuckDB first, so
+        it could answer a precedence question from a copy the upsert has not reached.
+        """
+        path = self.silver_root / f"{ELO_SNAPSHOT_TABLE}.parquet"
+        if not path.exists():
+            return build_snapshot_frame([])
+        return ensure_provisional_flag(pd.read_parquet(path, engine="pyarrow"))
+
+    def _align_stored_snapshot_flag(self) -> None:
+        """Backfill ``is_provisional = False`` onto a PRE-FLAG stored snapshot table.
+
+        WHY THE WRITER AND NOT ONLY THE READER. The read seam already fills a missing
+        flag, so nothing would read a null -- but ``upsert_silver`` concatenates the
+        surviving rows with the new ones, so a twelve-column append onto the live
+        eleven-column table would WRITE 2,227 nulls into a two-valued column and leave
+        them there. The reader's fill would then be hiding a stored ambiguity rather
+        than absorbing a historical one.
+
+        Runs at most once in practice: after the first live append the stored table
+        carries the column and the early return fires. The rewrite goes through
+        ``upsert_silver`` so it is atomic, rather than through a bare ``to_parquet``
+        that could leave a torn file where the whole Elo history used to be.
+        """
+        stored = self._stored_snapshots()
+        if len(stored) == 0:
+            return
+
+        path = self.silver_root / f"{ELO_SNAPSHOT_TABLE}.parquet"
+        on_disk = pd.read_parquet(path, engine="pyarrow")
+        needs_backfill = PROVISIONAL_COLUMN not in on_disk.columns or bool(
+            on_disk[PROVISIONAL_COLUMN].isna().any()
+        )
+        if not needs_backfill:
+            return
+
+        upsert_silver(
+            stored,
+            ELO_SNAPSHOT_TABLE,
+            key_column=ELO_ROW_TABLE_KEY_COLUMN,
+            base_path=self.data_root,
+        )
+        logger.info(
+            "Backfilled is_provisional onto a pre-flag snapshot table",
+            rows=len(stored),
+            table=ELO_SNAPSHOT_TABLE,
+        )
+
+    def _refuse_provisional_over_real(self, snapshots: pd.DataFrame) -> None:
+        """Refuse, by name, a provisional row offered for an already-REAL game.
+
+        Raises:
+            EloProvisionalPrecedenceError: Naming every colliding ``game_id``.
+        """
+        if snapshots is None or len(snapshots) == 0:
+            return
+
+        offered = ensure_provisional_flag(snapshots)
+        provisional = offered.loc[offered[PROVISIONAL_COLUMN]]
+        if len(provisional) == 0 or "game_id" not in provisional.columns:
+            return
+
+        stored = self._stored_snapshots()
+        if len(stored) == 0 or "game_id" not in stored.columns:
+            return
+
+        real = stored.loc[~stored[PROVISIONAL_COLUMN]]
+        collisions = sorted(set(provisional["game_id"]) & set(real["game_id"]))
+        if not collisions:
+            return
+
+        shown = collisions[:12]
+        more = (
+            f" (+{len(collisions) - len(shown)} more)"
+            if len(collisions) > len(shown)
+            else ""
+        )
+        raise EloProvisionalPrecedenceError(
+            f"{len(collisions)} PROVISIONAL snapshot row(s) were offered for game(s) "
+            f"that already have a REAL stored snapshot: {shown}{more}. A real result "
+            "always beats a provisional placeholder; a provisional row may replace only "
+            "another provisional row. Applying these would un-learn games that have "
+            "been played, in a column three deployed models read through -- the shape a "
+            "STALE schedule fetch replayed after the results landed takes. Re-derive "
+            "the season from the results (python -m scripts.build_elo --current) "
+            "instead of replaying the pre-game frame."
+        )
 
     def validate_ratings(self) -> bool:
         """
@@ -1086,6 +1220,36 @@ def build_snapshot_frame(rows: list[dict]) -> pd.DataFrame:
     return frame
 
 
+def ensure_provisional_flag(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return *frame* with ``is_provisional`` present, BOOL, and never null.
+
+    THE BACK-COMPAT SEAM, IN ONE PLACE. Every snapshot parquet written before Plan 33-04
+    -- including the live table of 2,227 rows covering seasons 2018-2025 -- has eleven
+    columns and no flag. ``upsert_silver`` concatenates the surviving rows with the new
+    ones, so a twelve-column append onto an eleven-column table produces NaN for every
+    pre-existing row: a two-valued flag with a third, null state, which is exactly the
+    ambiguity the flag was introduced to remove.
+
+    Filling here rather than at each call site is the point. A per-call-site default is a
+    default each site can get wrong differently, and the sites that matter most are the
+    ones a future author adds.
+
+    ``False`` is the correct fill and not merely the convenient one: a row that predates
+    the flag describes a game that had already been played when its snapshot was taken --
+    the canonical chain cannot produce a row for anything else.
+    """
+    if frame is None:
+        return build_snapshot_frame([])
+
+    aligned = frame.copy()
+    if PROVISIONAL_COLUMN not in aligned.columns:
+        aligned[PROVISIONAL_COLUMN] = False
+        return aligned
+
+    aligned[PROVISIONAL_COLUMN] = aligned[PROVISIONAL_COLUMN].fillna(False).astype(bool)
+    return aligned
+
+
 def _scheduled_unplayed_games(
     schedule: pd.DataFrame, season: int, week: int
 ) -> pd.DataFrame:
@@ -1109,11 +1273,17 @@ def _scheduled_unplayed_games(
             "games as unplayed."
         )
 
-    scoped = schedule[(schedule["season"] == season) & (schedule["week"] == week)]
-    unplayed = scoped[scoped["home_score"].isna() | scoped["away_score"].isna()]
+    scoped = cast(
+        "pd.DataFrame",
+        schedule.loc[(schedule["season"] == season) & (schedule["week"] == week)],
+    )
+    unplayed = cast(
+        "pd.DataFrame",
+        scoped.loc[scoped["home_score"].isna() | scoped["away_score"].isna()],
+    )
     if "kickoff_et" in unplayed.columns:
-        unplayed = unplayed.sort_values("kickoff_et")
-    return cast("pd.DataFrame", unplayed)
+        return cast("pd.DataFrame", unplayed.sort_values("kickoff_et"))
+    return unplayed
 
 
 def _detached_elo_view(elo_system: EloRatingSystem) -> EloRatingSystem:

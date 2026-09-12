@@ -1143,6 +1143,18 @@ def main():
     try:
         features_df = load_dataframe("features_wp", layer="gold")
 
+        # COLD-02 / T-33-18: refuse a PROVISIONAL Elo row as a TRAINING input, HERE at
+        # the gold-loading boundary and BEFORE any filtering. This trainer reads gold
+        # DIRECTLY and never passes through features/elo_features.build_features, so a
+        # guard placed only in the feature builder protects none of this path. Filtering
+        # first would let a provisional row drop out of sight and still be trained on in
+        # a different slice. The refusal is a RuntimeError subclass and is therefore NOT
+        # caught by the surrounding handler tuple -- a refusal converted into a logged
+        # `return` would be a silent no-train.
+        from features.elo_features import assert_no_provisional_training_rows
+
+        assert_no_provisional_training_rows(features_df, "train:wp")
+
         # Filter for target season/week
         if season:
             features_df = features_df[features_df["season"] == season]

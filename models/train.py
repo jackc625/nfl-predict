@@ -630,6 +630,14 @@ def main() -> None:
             continue
 
         features_df = pd.read_parquet(features_path)
+
+        # COLD-02 / T-33-18: the FOURTH gold-loading boundary, and the one that bypasses
+        # `load_dataframe` entirely. Refuse a PROVISIONAL Elo row as a TRAINING input
+        # here, immediately after the read and BEFORE the feature-group exclusion below --
+        # a provisional row excluded from the column set is still in the rows being fitted.
+        from features.elo_features import assert_no_provisional_training_rows
+
+        assert_no_provisional_training_rows(features_df, f"train:{target}")
         logger.info(
             "Loaded features",
             target=target,

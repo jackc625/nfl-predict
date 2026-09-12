@@ -587,9 +587,18 @@ class TestAPreFlagParquetReadsBackAsFalse:
     ) -> None:
         """The production case: the live 2,227-row table has eleven columns TODAY.
 
-        ``upsert_silver`` concatenates the surviving rows with the new ones, so a
-        twelve-column append onto an eleven-column table would leave 2,227 NaNs in a
-        two-valued column. The writer aligns the stored schema first.
+        ``upsert_silver`` concatenates the SURVIVING rows with the new ones, so a
+        twelve-column append onto an eleven-column table leaves a NaN on every surviving
+        row -- an object-dtype two-valued flag with a third, null state. Measured on this
+        repository's own write path: two surviving rows produced ``dtype object`` and two
+        nulls. The writer aligns the stored schema before the upsert.
+
+        THE SEEDED IDS MUST NOT COLLIDE WITH THE APPENDED ONES, and that is the whole
+        difficulty of writing this test. The first draft seeded ``2026_W01_MIA@BUF`` and
+        ``2026_W01_DEN@KC`` -- which are exactly two of the ids the sandbox season
+        generates -- so the upsert REMOVED both as matching keys, nothing pre-flag
+        survived, and the assertion passed against a table that had never held a null.
+        The survival of the seeded rows is therefore asserted first.
         """
         from data.storage import save_dataframe
         from scripts.build_elo import ELO_SNAPSHOT_COLUMNS, PROVISIONAL_COLUMN
@@ -598,8 +607,15 @@ class TestAPreFlagParquetReadsBackAsFalse:
         games = make_season_games(LIVE_SEASON, weeks=2, graded_weeks=(1,))
         builder = sandbox_builder(sandbox, games)
 
-        # A pre-flag stored table, exactly as production carries it today.
+        # A pre-flag stored table, exactly as production carries it today, keyed on games
+        # the sandbox season does not contain so the rows SURVIVE the upsert.
         seeded = _snapshots_with_one_provisional().head(2)[list(ELO_SNAPSHOT_COLUMNS)]
+        seeded = seeded.assign(
+            game_id=[f"{LIVE_SEASON}_W09_ARI@ATL", f"{LIVE_SEASON}_W09_CAR@CHI"],
+            week=9,
+        )
+        surviving = set(seeded["game_id"])
+        assert not surviving & set(games["game_id"]), "the fixture must not collide"
         save_dataframe(seeded, "elo_game_snapshots", layer="silver", replace_mode=True)
 
         update = builder.update_current_season(season=LIVE_SEASON)
@@ -611,11 +627,18 @@ class TestAPreFlagParquetReadsBackAsFalse:
         )
 
         stored = read_sandbox_table(sandbox, "elo_game_snapshots")
+        assert surviving.issubset(set(stored["game_id"])), (
+            "the pre-flag rows must still be in the table after the append -- otherwise "
+            "there is nothing that could have carried a null and this test proves nothing"
+        )
         assert PROVISIONAL_COLUMN in stored.columns
         assert not stored[PROVISIONAL_COLUMN].isna().any(), (
             "the pre-flag rows must be backfilled to False, not left as NaN in a "
             f"two-valued column. Stored dtype: {stored[PROVISIONAL_COLUMN].dtype}"
         )
+        assert not stored.loc[
+            stored["game_id"].isin(surviving), PROVISIONAL_COLUMN
+        ].any(), "a pre-flag row describes a game that had already been played"
 
 
 class TestProvisionalExposureIsObservableNotOnlyRefusable:
