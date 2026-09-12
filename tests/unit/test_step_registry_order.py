@@ -62,6 +62,16 @@ CACHE_STEP_DEPENDENCIES: tuple[str, ...] = (
     "export_artifacts",
 )
 
+# The step Phase 33 Plan 33-07 registers, and the step it must precede. Same
+# constant-not-literal discipline as the pair above, for the same reason.
+CAPTURE_STEP = "capture_live_season"
+
+# ``ingest_games`` reads the season nflverse is currently serving. The capture records what
+# nflverse served AT THIS INSTANT, so it has to happen BEFORE the ingest consumes it --
+# a capture taken afterwards is a record of a slightly different upstream than the one the
+# run actually used, which is the one thing a capture exists to make impossible.
+CAPTURE_STEP_SUCCESSORS: tuple[str, ...] = ("ingest_games",)
+
 
 def _index_by_name(registry: list[StepDefinition]) -> dict[str, int]:
     """Position of every step in the built registry, keyed by name."""
@@ -93,6 +103,44 @@ def order_violations(registry: list[StepDefinition]) -> list[str]:
         for name in CACHE_STEP_DEPENDENCIES
         if positions[CACHE_STEP] <= positions[name]
     ]
+
+
+def capture_order_violations(registry: list[StepDefinition]) -> list[str]:
+    """Every adjacency rule *registry* breaks around the live-season capture step.
+
+    The same INDEX-comparison shape ``order_violations`` uses, and exposed for the same
+    reason: the two fail-closed controls below feed it a deliberately broken copy of the
+    REAL registry and assert it reports the break. A guard nobody has watched fail is a
+    guard whose shape nobody knows.
+    """
+    positions = _index_by_name(registry)
+
+    if CAPTURE_STEP not in positions:
+        return [f"{CAPTURE_STEP!r} is absent from the registry entirely"]
+
+    absent = [name for name in CAPTURE_STEP_SUCCESSORS if name not in positions]
+    if absent:
+        return [f"successor {name!r} is absent from the registry" for name in absent]
+
+    return [
+        (
+            f"{CAPTURE_STEP!r} is at index {positions[CAPTURE_STEP]} but must run strictly "
+            f"BEFORE {name!r} at index {positions[name]}; a capture taken after the ingest "
+            "records a different upstream than the one the run consumed"
+        )
+        for name in CAPTURE_STEP_SUCCESSORS
+        if positions[CAPTURE_STEP] >= positions[name]
+    ]
+
+
+def _capture_step(registry: list[StepDefinition]) -> StepDefinition:
+    """The registered capture step, or an assertion failure naming what was found instead."""
+    matches = [step for step in registry if step.name == CAPTURE_STEP]
+    assert len(matches) == 1, (
+        f"expected exactly one {CAPTURE_STEP!r} entry in the registry, found "
+        f"{len(matches)}. Registered names: {[step.name for step in registry]}"
+    )
+    return matches[0]
 
 
 def _cache_step(registry: list[StepDefinition]) -> StepDefinition:
@@ -216,6 +264,76 @@ def test_the_cache_step_belongs_to_the_predictions_phase() -> None:
     assert step.phase is PipelinePhase.PREDICTIONS
 
 
+# ---------------------------------------------------------------------------
+# The live-season capture step (Phase 33, Plan 33-07; discharges D32-04)
+# ---------------------------------------------------------------------------
+
+
+def test_the_capture_step_is_registered_first() -> None:
+    """It is step 0 of the whole registry, not merely somewhere in the DATA phase.
+
+    Asserted on index 0 rather than on "before ingest_games" alone, because the capture is
+    the record of what upstream served THIS RUN and anything that reads upstream before it
+    has been captured is unattributable.
+    """
+    registry = build_step_registry()
+    assert registry[0].name == CAPTURE_STEP, [step.name for step in registry[:3]]
+
+
+def test_the_capture_step_runs_strictly_before_the_ingest_it_records() -> None:
+    violations = capture_order_violations(build_step_registry())
+    assert not violations, "\n".join(violations)
+
+
+def test_the_capture_order_check_reports_a_violation_when_it_is_moved_after_the_ingest() -> (
+    None
+):
+    """The guard is shown to be able to FAIL, on a reordered copy of the REAL registry."""
+    registry = build_step_registry()
+    step = _capture_step(registry)
+    without = [entry for entry in registry if entry.name != CAPTURE_STEP]
+    reordered = [*without, step]
+
+    violations = capture_order_violations(reordered)
+    assert len(violations) == len(CAPTURE_STEP_SUCCESSORS), violations
+    for name in CAPTURE_STEP_SUCCESSORS:
+        assert any(repr(name) in message for message in violations), violations
+
+
+def test_the_capture_order_check_reports_the_capture_step_going_missing() -> None:
+    """Deleting the step is reported as an absence rather than passing as 'no violations'."""
+    registry = [step for step in build_step_registry() if step.name != CAPTURE_STEP]
+    violations = capture_order_violations(registry)
+    assert violations == [f"{CAPTURE_STEP!r} is absent from the registry entirely"], (
+        violations
+    )
+
+
+def test_the_capture_step_belongs_to_the_data_phase() -> None:
+    """A PREDICTIONS registration would capture after the data it is meant to attest to."""
+    step = _capture_step(build_step_registry())
+    assert step.phase is PipelinePhase.DATA
+
+
+def test_the_capture_step_is_critical_and_retryable() -> None:
+    """T-33-36: a capture failure must STOP the run, and a network blip must not cause one.
+
+    CRITICAL because a failed capture means the live zone has no row for this week, and
+    every downstream DATA step would then run against last week's zone with nothing saying
+    so -- availability traded for a silent unattributable run, which is the trade this
+    phase exists to refuse.
+
+    RETRYABLE for the same reason the three ingest steps are: it fetches over the network,
+    and ``TRANSIENT_EXCEPTIONS`` is exactly the class a dropped connection raises. The
+    append-only manifest makes a retry safe -- a second capture of the same week is a new
+    sequence entry, not a rewrite.
+    """
+    step = _capture_step(build_step_registry())
+    assert step.critical is True
+    assert step.retryable is True
+    assert step.max_retries == 3
+
+
 def test_the_non_critical_set_is_exactly_the_declared_five() -> None:
     """The non-critical registrations are pinned as a SET, so a sixth cannot appear unnoticed.
 
@@ -231,6 +349,13 @@ def test_the_non_critical_set_is_exactly_the_declared_five() -> None:
     nothing consumes is the wrong direction.
 
     If that step ever gains a consumer, its criticality has to be revisited with it.
+
+    STILL FIVE AFTER PHASE 33 PLAN 33-07, and the three steps that plan added are declared
+    here as absences rather than left to be inferred: ``capture_live_season``,
+    ``verify_gold_currency`` and ``verify_prediction_currency`` are all ``critical=True``.
+    Each one exists to STOP a run -- an unattributable upstream, a stale gold matrix, a
+    prediction file whose rows are last week's -- and a gate registered non-critical is a
+    gate that logs a warning while the run publishes anyway.
     """
     non_critical = {step.name for step in build_step_registry() if not step.critical}
     assert non_critical == {
