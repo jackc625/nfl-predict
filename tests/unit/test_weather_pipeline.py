@@ -36,6 +36,22 @@ def ingester():
 
 
 @pytest.fixture
+def backfiller():
+    """The QUARANTINED archive path (Plan 33-09 Task 2).
+
+    `WeatherDataIngester` is the live FORECAST path and no longer reaches the archive
+    endpoint at all; the archive fetch lives in `scripts/backfill_historical_weather.py`,
+    which subclasses it. Every test below that exercises archive behaviour asks for this
+    fixture, so which endpoint a test is about is visible in its signature.
+    """
+    with patch("scripts.ingest_weather.get_settings") as mock_settings:
+        mock_settings.return_value = MagicMock()
+        from scripts.backfill_historical_weather import HistoricalWeatherBackfiller
+
+        return HistoricalWeatherBackfiller()
+
+
+@pytest.fixture
 def venues_df() -> pd.DataFrame:
     """Create a minimal venues DataFrame for testing."""
     import json
@@ -444,3 +460,236 @@ class TestNanToNoneValidator:
         assert dumped["snowfall_cm"] == 0.0
         assert dumped["wind_gusts_mph"] == 22.0
         assert dumped["cloud_cover_pct"] == 50.0
+
+
+# ---------------------------------------------------------------------------
+# `weather_source` PROVENANCE (D33-26, Plan 33-09 Task 2).
+#
+# Every weather row says where it came from. Three sources, one closed
+# vocabulary, and a value outside it is rejected BY NAME at write time rather
+# than stored and puzzled over later.
+#
+# WHY PROVENANCE AND NOT A GUESS FROM THE DATA. An archive row and a forecast row
+# for the same game are the same 23 columns of plausible numbers. Nothing in the
+# values distinguishes "measured after the fact" from "predicted three days out",
+# and the difference is exactly what a Phase-37 weather-aware re-fit needs to
+# know. Deriving it later from a forecast_time-before-game_time comparison would
+# be an inference about our own pipeline, recorded nowhere, that stops being true
+# the first time a backfill runs.
+# ---------------------------------------------------------------------------
+
+
+class TestWeatherSourceVocabulary:
+    """The vocabulary is CLOSED, single-sourced, and rejects by name."""
+
+    def test_the_vocabulary_is_the_three_declared_values(self):
+        import scripts.ingest_weather as ingest
+
+        assert tuple(ingest.WEATHER_SOURCE_VOCABULARY) == (
+            "archive",
+            "forecast",
+            "historical_forecast",
+        )
+
+    def test_the_vocabulary_matches_the_recorded_state(self):
+        """One value, one home -- the single-source discipline BET_LIST_COLUMNS uses."""
+        import scripts.ingest_weather as ingest
+        from tests import phase33_state
+
+        assert tuple(ingest.WEATHER_SOURCE_VOCABULARY) == tuple(
+            phase33_state.WEATHER_SOURCE_VOCABULARY
+        )
+
+    @pytest.mark.parametrize("value", ["archive", "forecast", "historical_forecast"])
+    def test_each_permitted_value_is_returned_unchanged(self, value):
+        import scripts.ingest_weather as ingest
+
+        assert ingest.validate_weather_source(value) == value
+
+    def test_an_out_of_vocabulary_value_is_rejected_naming_the_value(self):
+        import scripts.ingest_weather as ingest
+
+        with pytest.raises(ValueError) as caught:
+            ingest.validate_weather_source("made_up")
+
+        message = str(caught.value)
+        assert "made_up" in message
+        for permitted in ingest.WEATHER_SOURCE_VOCABULARY:
+            assert permitted in message, (
+                "the refusal must name the ALLOWED vocabulary as well as the "
+                "rejected value; a reader who only learns their value was wrong "
+                "still does not know what to write instead."
+            )
+
+    def test_none_is_rejected_rather_than_treated_as_unknown(self):
+        """An unstamped row is the state this column exists to make impossible."""
+        import scripts.ingest_weather as ingest
+
+        with pytest.raises(ValueError, match="weather_source"):
+            ingest.validate_weather_source(None)
+
+
+class TestWeatherSourceOnTheSilverTable:
+    """The stored table, read-only. Nothing in this class writes."""
+
+    def test_the_silver_weather_table_is_the_widened_shape(self):
+        from tests import phase33_state
+
+        frame = pd.read_parquet("data/silver/weather.parquet")
+        assert len(frame.columns) == phase33_state.WEATHER_COLUMNS_AFTER
+        assert "weather_source" in frame.columns
+
+    def test_the_pre_existing_rows_are_stamped_archive(self):
+        """The fourteen rows already on disk came from the ARCHIVE endpoint, and the
+        backfill says so rather than leaving them null."""
+        from tests import phase33_state
+
+        frame = pd.read_parquet("data/silver/weather.parquet")
+        pre_existing = frame[frame["game_id"].str.startswith("2024_")]
+        assert len(pre_existing) == phase33_state.WEATHER_ROWS_BEFORE
+        assert set(pre_existing["weather_source"]) == {"archive"}
+
+    def test_no_stored_row_carries_a_value_outside_the_vocabulary(self):
+        import scripts.ingest_weather as ingest
+
+        frame = pd.read_parquet("data/silver/weather.parquet")
+        stored = set(frame["weather_source"].dropna())
+        assert stored <= set(ingest.WEATHER_SOURCE_VOCABULARY), (
+            "stored weather_source values outside the vocabulary: "
+            f"{sorted(stored - set(ingest.WEATHER_SOURCE_VOCABULARY))}"
+        )
+
+
+class TestTheLivePathStampsForecast:
+    """A row produced by the forecast path reads `forecast`, never `archive`."""
+
+    def test_a_forecast_row_is_stamped_forecast(self, ingester):
+        from datetime import timedelta
+
+        as_of = datetime(2026, 9, 11, 20, 0, tzinfo=UTC)
+        games = pd.DataFrame(
+            [
+                {
+                    "game_id": "2026_W02_KC@BUF",
+                    "season": 2026,
+                    "week": 2,
+                    "home_team": "BUF",
+                    "away_team": "KC",
+                    "kickoff_et": as_of + timedelta(days=3),
+                    "stadium_id": "BUF00",
+                    "neutral_site": False,
+                }
+            ]
+        )
+        venues = pd.DataFrame(
+            [
+                {
+                    "stadium_id": "BUF00",
+                    "venue_id": "highmark_stadium",
+                    "latitude": 42.7738,
+                    "longitude": -78.787,
+                    "roof_type": "outdoor",
+                    "timezone": "America/New_York",
+                    "home_teams": ["BUF"],
+                }
+            ]
+        )
+        record = {
+            "temp_f": 45.0,
+            "temp_c": 7.2,
+            "wind_mph": 15.0,
+            "wind_direction": 270.0,
+            "humidity_pct": 65.0,
+            "precip_prob": None,
+            "precip_mm": 0.0,
+            "condition": None,
+            "condition_code": 3,
+            "visibility_km": None,
+            "dew_point_f": 32.0,
+            "apparent_temp_f": 38.0,
+            "snowfall_cm": 0.0,
+            "wind_gusts_mph": 22.0,
+            "cloud_cover_pct": 50.0,
+            "weather_code": 3,
+        }
+
+        with patch.object(
+            ingester, "_fetch_openmeteo_forecast", AsyncMock(return_value=record)
+        ):
+            frame = ingester.fetch_forecast_for_games(games, venues, as_of_utc=as_of)
+
+        assert set(frame["weather_source"]) == {"forecast"}
+
+    def test_an_indoor_forecast_row_is_also_stamped_forecast(self, ingester):
+        """An indoor row is never fetched, but it IS produced by the forecast run.
+
+        Leaving it unstamped would put a null in the one column whose whole purpose is
+        that every row says where it came from.
+        """
+        from datetime import timedelta
+
+        as_of = datetime(2026, 9, 11, 20, 0, tzinfo=UTC)
+        games = pd.DataFrame(
+            [
+                {
+                    "game_id": "2026_W02_KC@LV",
+                    "season": 2026,
+                    "week": 2,
+                    "home_team": "LV",
+                    "away_team": "KC",
+                    "kickoff_et": as_of + timedelta(days=3),
+                    "stadium_id": "LVS00",
+                    "neutral_site": False,
+                }
+            ]
+        )
+        venues = pd.DataFrame(
+            [
+                {
+                    "stadium_id": "LVS00",
+                    "venue_id": "allegiant_stadium",
+                    "latitude": 36.0909,
+                    "longitude": -115.1833,
+                    "roof_type": "indoor",
+                    "timezone": "America/Los_Angeles",
+                    "home_teams": ["LV"],
+                }
+            ]
+        )
+
+        frame = ingester.fetch_forecast_for_games(games, venues, as_of_utc=as_of)
+        assert set(frame["weather_source"]) == {"forecast"}
+        assert bool(frame.iloc[0]["is_outdoor"]) is False
+
+
+class TestTheBackfillPathStampsArchive:
+    """The quarantined archive path stamps `archive`, never `forecast`."""
+
+    def test_an_archive_row_is_stamped_archive(self, backfiller, venues_df):
+        games_df = _make_games_df(home_team="BUF", game_id="2024_W06_KC@BUF")
+        record = {
+            "temp_f": 45.0,
+            "temp_c": 7.2,
+            "wind_mph": 15.0,
+            "wind_direction": 270.0,
+            "humidity_pct": 65.0,
+            "precip_prob": None,
+            "precip_mm": 0.0,
+            "condition": None,
+            "condition_code": 3,
+            "visibility_km": None,
+            "dew_point_f": 32.0,
+            "apparent_temp_f": 38.0,
+            "snowfall_cm": 0.0,
+            "wind_gusts_mph": 22.0,
+            "cloud_cover_pct": 50.0,
+            "weather_code": 3,
+        }
+        with patch.object(
+            backfiller, "_fetch_openmeteo_weather", AsyncMock(return_value=record)
+        ):
+            frame = backfiller.fetch_weather_for_games(
+                games_df, venues_df, forecast_time=datetime(2024, 10, 11, 22, 0)
+            )
+
+        assert set(frame["weather_source"]) == {"archive"}

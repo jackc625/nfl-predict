@@ -1558,3 +1558,53 @@ FORECAST_PROVIDER_HORIZON_DAYS: int = 15
 # path has never run forward.
 WEATHER_COLUMNS_BEFORE: int = 23
 WEATHER_ROWS_BEFORE: int = 14
+
+
+# ---------------------------------------------------------------------------
+# `weather_source` PROVENANCE, AND THE 14-ROW PRODUCTION BACKFILL THAT ADDS IT.
+#
+# APPENDED by Plan 33-09 Task 2 on 2026-09-12, and the CHANGED-FILE DECLARATION
+# below was appended BEFORE the backfill ran. Nothing above this line was edited.
+#
+# THE ORDER MATTERS AND IS THE POINT. A blast radius declared after the fact is
+# not a declaration, it is a transcription of whatever happened. This slot was
+# committed first, then `python -m tests.data_boundary snapshot data ...` was
+# taken, then the backfill ran, then `verify` was run against the declaration. A
+# file outside the set is a FINDING to report, never a reason to widen the set.
+# ---------------------------------------------------------------------------
+
+# 23 -> 24. The new column is `weather_source`.
+WEATHER_COLUMNS_AFTER: int = 24
+
+# The CLOSED vocabulary. Three members, and each one is a different provenance
+# rather than a different degree of confidence:
+#
+#   archive             the Open-Meteo ARCHIVE (ERA5 reanalysis) endpoint --
+#                       measured after the fact, the only source for 2002-2020.
+#   forecast            the Open-Meteo FORECAST endpoint -- predicted before
+#                       kickoff, which is the only thing that can answer for an
+#                       unplayed game. Every live 2026 row is this.
+#   historical_forecast the Historical Forecast API -- what the forecast SAID at
+#                       the time, for a game that has since been played. Reaches
+#                       back only to about 2021, which is why the archive endpoint
+#                       cannot simply be replaced by it.
+#
+# Mirrors api/cache.BET_LIST_COLUMNS's single-source discipline: the tuple lives
+# in scripts/ingest_weather.py and this slot pins it, so a silent edit to either
+# is a test failure rather than a divergence nobody notices.
+WEATHER_SOURCE_VOCABULARY: tuple[str, ...] = (
+    "archive",
+    "forecast",
+    "historical_forecast",
+)
+
+# THE DECLARED BLAST RADIUS OF THE 14-ROW BACKFILL, appended BEFORE the run.
+#
+# ONE FILE, and the DuckDB half is deliberately NOT in it. The backfill writes
+# through `data.storage.upsert_silver`, which ends at `_atomic_write_parquet` and
+# never opens the database -- it is `save_dataframe` that defaults
+# `save_to_db=True` and writes both halves, and this path does not call it. So
+# `data/nfl_predictions.duckdb` is EXCLUDED as a positive statement about the
+# write path, not as an oversight: if it moves, the write did not go where this
+# declaration says it went, and that is a finding.
+WEATHER_BACKFILL_EXPECTED_CHANGED_FILES: tuple[str, ...] = ("silver/weather.parquet",)

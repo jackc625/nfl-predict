@@ -88,6 +88,15 @@ It is asserted in tests/unit/test_weather_forecast_horizon.py.
 """
 
 
+# RED-phase stubs for Plan 33-09 Task 2. Replaced in that task's GREEN commit.
+WEATHER_SOURCE_VOCABULARY: tuple[str, ...] = ()
+
+
+def validate_weather_source(value):
+    """RED stub -- replaced in the Task 2 GREEN commit."""
+    raise NotImplementedError("validate_weather_source is not implemented yet")
+
+
 class BeyondForecastHorizonError(WeatherDataError):
     """A kickoff lies beyond the horizon this project declares it can forecast.
 
