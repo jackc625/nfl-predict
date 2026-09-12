@@ -1,9 +1,18 @@
-"""Weather data ingestion using Open-Meteo Historical Weather API.
+"""LIVE weather ingestion using the Open-Meteo FORECAST API.
+
+THIS MODULE CANNOT REACH THE ARCHIVE ENDPOINT, BY DESIGN (D33-26). The archive
+endpoint is an ERA5 reanalysis product: it describes weather that has already
+occurred, so it cannot answer for a game that has not been played. It lives in
+`scripts/backfill_historical_weather.py` and nowhere else, and
+`tests/unit/test_weather_archive_quarantined.py` scans this file structurally to
+keep that true.
 
 Produces timestamped Bronze snapshots and upserts to Silver weather table.
-Indoor games get zeroed weather fields (no API call).
-Outdoor and retractable-roof games use real Open-Meteo data.
-Missing weather for an outdoor game raises a hard error.
+Indoor games get zeroed weather fields (no API call) and are still stamped with
+the run's provenance. Outdoor and retractable-roof games get a real forecast,
+read at the hour the kickoff falls on IN THE VENUE'S OWN TIMEZONE. A kickoff
+beyond the declared horizon, or a payload missing any requested game, raises by
+name and writes nothing -- never an archive fallback and never an imputed value.
 """
 
 import argparse
@@ -38,9 +47,6 @@ from utils.game_id_utils import is_valid_game_id
 from utils.team_data import normalize_team_abbreviation
 
 logger = get_logger(__name__)
-
-# Open-Meteo Historical Weather API endpoint
-OPEN_METEO_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 # ---------------------------------------------------------------------------
 # THE FORECAST PATH (R8 / COLD-06, Plan 33-09 Task 1).
@@ -88,13 +94,74 @@ It is asserted in tests/unit/test_weather_forecast_horizon.py.
 """
 
 
-# RED-phase stubs for Plan 33-09 Task 2. Replaced in that task's GREEN commit.
-WEATHER_SOURCE_VOCABULARY: tuple[str, ...] = ()
+# ---------------------------------------------------------------------------
+# `weather_source` PROVENANCE (D33-26, Plan 33-09 Task 2).
+#
+# An archive row and a forecast row for the same game are the same columns of
+# equally plausible numbers. Nothing in the VALUES distinguishes "measured after
+# the fact" from "predicted three days out" -- and that difference is exactly
+# what a Phase-37 weather-aware re-fit has to know. So every row says which it is.
+#
+# THE VOCABULARY IS CLOSED and a value outside it is rejected BY NAME at write
+# time. One tuple, one home, mirroring api/cache.BET_LIST_COLUMNS's single-source
+# discipline; tests/phase33_state.WEATHER_SOURCE_VOCABULARY pins it so a silent
+# edit to either is a test failure rather than a divergence nobody notices.
+# ---------------------------------------------------------------------------
+
+WEATHER_SOURCE_FORECAST = "forecast"
+"""The Open-Meteo FORECAST endpoint -- predicted before kickoff.
+
+The only thing that can answer for an unplayed game, and therefore what every
+live 2026 row carries. It is the ONLY member this module names as a constant.
+"""
+
+WEATHER_SOURCE_VOCABULARY: tuple[str, ...] = (
+    # The ERA5 reanalysis -- measured after the fact, the only source for
+    # 2002-2020. Named as a CONSTANT in scripts/backfill_historical_weather.py
+    # rather than here, deliberately: the quarantine's mechanical form is that
+    # this module exposes no name containing "ARCHIVE" at all, and a constant
+    # called WEATHER_SOURCE_ARCHIVE would satisfy the letter of the source scan
+    # while making the runtime check false.
+    "archive",
+    WEATHER_SOURCE_FORECAST,
+    # The Historical Forecast API -- what the forecast SAID at the time, for a
+    # game that has since been played. Distinct from "archive" even for the same
+    # game: one is what happened, the other is what was predicted. It reaches
+    # back only to about 2021, which is why the archive endpoint cannot simply be
+    # replaced by it. Also named in the backfill module, which is what produces it.
+    "historical_forecast",
+)
+"""The CLOSED vocabulary. Pinned by tests/phase33_state.WEATHER_SOURCE_VOCABULARY,
+and the two historical members are pinned against the backfill module's own
+constants by tests/unit/test_weather_archive_quarantined.py, so splitting the
+names across two modules cannot let the values drift apart."""
 
 
-def validate_weather_source(value):
-    """RED stub -- replaced in the Task 2 GREEN commit."""
-    raise NotImplementedError("validate_weather_source is not implemented yet")
+def validate_weather_source(value: object) -> str:
+    """Return *value* if it is in the closed vocabulary, else raise naming both.
+
+    The refusal names the REJECTED value AND the ALLOWED set, because a reader
+    who only learns their value was wrong still does not know what to write
+    instead.
+
+    ``None`` is rejected rather than treated as "unknown". An unstamped row is
+    precisely the state this column exists to make impossible: a row that does
+    not say where it came from is a row a later reader has to guess about, and
+    guessing is how the archive/forecast distinction gets lost.
+
+    Raises:
+        ValueError: *value* is not one of ``WEATHER_SOURCE_VOCABULARY``.
+    """
+    if value not in WEATHER_SOURCE_VOCABULARY:
+        raise ValueError(
+            f"weather_source {value!r} is outside the closed vocabulary "
+            f"{WEATHER_SOURCE_VOCABULARY}. Every weather row must say where it "
+            "came from: 'archive' is the ERA5 reanalysis (measured after the "
+            "fact), 'forecast' is the live prediction made before kickoff, and "
+            "'historical_forecast' is what the forecast said at the time for a "
+            "game that has since been played."
+        )
+    return str(value)
 
 
 class BeyondForecastHorizonError(WeatherDataError):
@@ -472,103 +539,6 @@ NFLVERSE_ROOF_MAP = {
 }
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
-    reraise=True,
-)
-async def fetch_game_weather(
-    client: httpx.AsyncClient,
-    latitude: float,
-    longitude: float,
-    game_date: str,
-    game_hour: int = 13,
-) -> dict[str, Any]:
-    """
-    Fetch historical weather from Open-Meteo for a game venue.
-
-    Args:
-        client: httpx async client
-        latitude: Venue latitude
-        longitude: Venue longitude
-        game_date: Game date as ISO string (YYYY-MM-DD)
-        game_hour: Hour of game in local timezone (default 1 PM ET)
-
-    Returns:
-        Dict with weather data matching the system schema
-
-    Raises:
-        WeatherDataError: If API call fails or response is malformed
-    """
-    params = {
-        "latitude": latitude,
-        "longitude": longitude,
-        "start_date": game_date,
-        "end_date": game_date,
-        "hourly": HOURLY_VARIABLES,
-        "temperature_unit": "fahrenheit",
-        "wind_speed_unit": "mph",
-        "timezone": "America/New_York",
-    }
-
-    try:
-        response = await client.get(OPEN_METEO_URL, params=params)
-        response.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        raise WeatherDataError(
-            f"Open-Meteo API returned {e.response.status_code} "
-            f"for ({latitude}, {longitude}) on {game_date}"
-        )
-    except httpx.TimeoutException as e:
-        raise WeatherDataError(
-            f"Open-Meteo API timeout for ({latitude}, {longitude}) on {game_date}: {e}"
-        )
-    except httpx.RequestError as e:
-        raise WeatherDataError(
-            f"Open-Meteo API request failed for ({latitude}, {longitude}) "
-            f"on {game_date}: {e}"
-        )
-
-    data = response.json()
-
-    if "hourly" not in data:
-        raise WeatherDataError(
-            f"Open-Meteo response missing 'hourly' key for "
-            f"({latitude}, {longitude}) on {game_date}"
-        )
-
-    hourly = data["hourly"]
-
-    # Select the game_hour index from the hourly arrays (0-23 for single-day)
-    idx = min(game_hour, len(hourly.get("temperature_2m", [])) - 1)
-    if idx < 0:
-        raise WeatherDataError(
-            f"No hourly data returned for ({latitude}, {longitude}) on {game_date}"
-        )
-
-    temp_f = hourly["temperature_2m"][idx]
-
-    return {
-        "temp_f": temp_f,
-        "temp_c": round((temp_f - 32) * 5 / 9, 1) if temp_f is not None else None,
-        "wind_mph": hourly["wind_speed_10m"][idx],
-        "wind_direction": hourly["wind_direction_10m"][idx],
-        "humidity_pct": hourly["relative_humidity_2m"][idx],
-        "precip_mm": hourly["precipitation"][idx],
-        "precip_prob": None,  # Not available in historical reanalysis data
-        "condition": None,  # Derive from weather_code if needed downstream
-        "condition_code": hourly["weather_code"][idx],
-        "visibility_km": None,  # Not available in ERA5
-        # New fields available from Open-Meteo
-        "dew_point_f": hourly["dew_point_2m"][idx],
-        "apparent_temp_f": hourly["apparent_temperature"][idx],
-        "snowfall_cm": hourly["snowfall"][idx],
-        "wind_gusts_mph": hourly["wind_gusts_10m"][idx],
-        "cloud_cover_pct": hourly["cloud_cover"][idx],
-        "weather_code": hourly["weather_code"][idx],
-    }
-
-
 class WeatherDataIngester:
     """NFL weather data ingestion using Open-Meteo Historical Weather API."""
 
@@ -782,14 +752,22 @@ class WeatherDataIngester:
         game_id: str,
         game_time: datetime,
         forecast_time: datetime,
+        *,
+        weather_source: str,
     ) -> dict[str, Any]:
         """Create zeroed weather record for indoor/dome games.
 
         Indoor games have no meaningful weather impact, so all weather
         fields are set to zero or None with is_outdoor=False.
+
+        ``weather_source`` is REQUIRED and keyword-only, with no default. An
+        indoor row is never fetched, but it is still produced BY a particular
+        run, and a default here would let a caller ship an unstamped row -- the
+        one state the provenance column exists to make impossible.
         """
         return {
             "game_id": game_id,
+            "weather_source": validate_weather_source(weather_source),
             "forecast_time": forecast_time,
             "game_time": game_time,
             "temp_f": None,
@@ -815,8 +793,14 @@ class WeatherDataIngester:
         forecast_time: datetime,
         weather_data: dict[str, Any],
         roof_type: str,
+        *,
+        weather_source: str,
     ) -> dict[str, Any]:
-        """Create weather record for an outdoor/retractable game."""
+        """Create weather record for an outdoor/retractable game.
+
+        ``weather_source`` is REQUIRED and keyword-only: an archive row and a
+        forecast row are otherwise indistinguishable, so the caller has to say.
+        """
         is_outdoor = self._is_outdoor_game(roof_type)
 
         # Derived weather flags - handle None values safely
@@ -834,6 +818,7 @@ class WeatherDataIngester:
 
         return {
             "game_id": game_id,
+            "weather_source": validate_weather_source(weather_source),
             "forecast_time": forecast_time,
             "game_time": game_time,
             "is_outdoor": is_outdoor,
@@ -842,126 +827,6 @@ class WeatherDataIngester:
             "is_precipitation": is_precipitation,
             **weather_data,
         }
-
-    async def _fetch_openmeteo_weather(
-        self,
-        latitude: float,
-        longitude: float,
-        game_date: str,
-        game_hour: int = 13,
-    ) -> dict[str, Any]:
-        """
-        Fetch weather data from Open-Meteo Historical API.
-
-        Args:
-            latitude: Venue latitude
-            longitude: Venue longitude
-            game_date: Game date as YYYY-MM-DD string
-            game_hour: Hour of game in ET (default 1 PM)
-
-        Returns:
-            Dict with weather data matching system schema
-
-        Raises:
-            WeatherDataError: If API call fails
-        """
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            return await fetch_game_weather(
-                client, latitude, longitude, game_date, game_hour
-            )
-
-    def fetch_weather_for_games(
-        self,
-        games_df: pd.DataFrame,
-        venues_df: pd.DataFrame,
-        forecast_time: datetime | None = None,
-    ) -> pd.DataFrame:
-        """Fetch weather data for all games.
-
-        Indoor games get zeroed weather records (no API call).
-        Outdoor/retractable games get real Open-Meteo data.
-        If an outdoor game's weather fetch fails, raises WeatherDataError
-        (hard-fail -- no silent skipping).
-        """
-        if forecast_time is None:
-            # tz-aware UTC -- Phase 15-04 requires storage writers to provide
-            # timezone-aware datetimes. Storage will reject naive datetimes
-            # at write time via _normalize_parquet_datetime_columns.
-            forecast_time = datetime.now(UTC)
-
-        logger.info("Fetching weather for games", games=len(games_df))
-
-        weather_records = []
-
-        for _, game in games_df.iterrows():
-            # Validate game ID format before processing
-            if not is_valid_game_id(game["game_id"]):
-                logger.warning(
-                    "Invalid game ID format, skipping game", game_id=game["game_id"]
-                )
-                continue
-
-            # Get venue coordinates and roof type. D33-15: a 2026-and-later
-            # neutral-site game resolves by the feed's stadium_id, so the eight
-            # international games get their OWN coordinates and their own roof
-            # rather than the nominal home team's.
-            lat, lon, roof_type = self._resolve_venue_for_game_row(game, venues_df)
-
-            # Convert game time to UTC through the ONE kickoff accessor (WR-06).
-            #
-            # Recorded honestly: this is uniformity, NOT a behaviour fix.
-            # _convert_timezone attaches the named zone only to a NAIVE value and
-            # otherwise calls astimezone(UTC) on the aware one, so it already behaved
-            # as the true-instant contract for every aware kickoff -- which is what
-            # the column carries. The delta here is zero on both an aware-UTC and a
-            # naive input (pinned in tests/unit/test_date_utils_contract.py). The
-            # point is that there is now exactly one place that decides what
-            # kickoff_et means.
-            game_time_utc = kickoff_wall_clock_et(game["kickoff_et"]).astimezone(UTC)
-
-            if not self._is_outdoor_game(roof_type):
-                # Indoor game: use zeroed weather record (no API call)
-                weather_record = self._create_indoor_weather_record(
-                    game["game_id"],
-                    game_time_utc,
-                    forecast_time,
-                )
-            else:
-                # Outdoor/retractable game: fetch real weather data
-                game_date_str = game_time_utc.strftime("%Y-%m-%d")
-                game_hour = game_time_utc.hour
-
-                # Use asyncio.run for the async fetch.
-                # If this fails, WeatherDataError propagates (hard-fail).
-                weather_data = asyncio.run(
-                    self._fetch_openmeteo_weather(lat, lon, game_date_str, game_hour)
-                )
-
-                weather_record = self._create_weather_record(
-                    game["game_id"],
-                    game_time_utc,
-                    forecast_time,
-                    weather_data,
-                    roof_type,
-                )
-
-            weather_records.append(weather_record)
-
-            logger.debug(
-                "Weather fetched for game",
-                game_id=game["game_id"],
-                outdoor=weather_record["is_outdoor"],
-            )
-
-        weather_df = pd.DataFrame(weather_records)
-
-        logger.info(
-            "Weather data fetched",
-            games=len(games_df),
-            weather_records=len(weather_df),
-        )
-
-        return weather_df
 
     async def _fetch_openmeteo_forecast(
         self,
@@ -1044,7 +909,10 @@ class WeatherDataIngester:
             if not self._is_outdoor_game(roof_type):
                 weather_records.append(
                     self._create_indoor_weather_record(
-                        game_id, selected.kickoff_utc, forecast_time
+                        game_id,
+                        selected.kickoff_utc,
+                        forecast_time,
+                        weather_source=WEATHER_SOURCE_FORECAST,
                     )
                 )
                 continue
@@ -1065,6 +933,7 @@ class WeatherDataIngester:
                     forecast_time,
                     weather_data,
                     roof_type,
+                    weather_source=WEATHER_SOURCE_FORECAST,
                 )
             )
 
@@ -1163,193 +1032,146 @@ class WeatherDataIngester:
         season: int | None = None,
         week: int | None = None,
         forecast_time: datetime | None = None,
+        *,
+        as_of_utc: datetime | None = None,
+        base_path=None,
     ) -> pd.DataFrame:
-        """
-        Full weather data ingestion pipeline.
+        """THE LIVE WEEKLY WEATHER INGEST. Loads a week and forecasts it.
 
-        Uses Bronze/Silver separation:
-        - Bronze: timestamped append-only snapshots via save_bronze_snapshot
-        - Silver: validated, upserted via validate_bronze_to_silver + upsert_silver
+        R8: this entry point used to read the ARCHIVE endpoint, which cannot answer
+        for a game that has not been played, and the fourteen 2024 rows in
+        `data/silver/weather.parquet` are the evidence it never ran forward. It now
+        reads the FORECAST endpoint through :meth:`ingest_week_forecast`.
+
+        THE SCOPE IS ONE WEEK, and that is a consequence rather than a restriction.
+        A whole season cannot be forecast: most of it lies beyond the declared
+        horizon, so a season-wide call would correctly refuse. History is the
+        historical backfill command's job.
+
+        ``as_of_utc`` defaults to NOW here, and only here. This is the entry point
+        of a live run, so "now" is the honest answer to "when is this being asked";
+        the helpers underneath take it as an argument so that the RULES stay
+        testable while the RUN stays live.
 
         Args:
-            season: Season to ingest (default: current)
-            week: Week to ingest (default: current), None for entire season
-            forecast_time: Time when forecast was made
+            season: Season to ingest (default: current).
+            week: Week to ingest (default: current).
+            forecast_time: When this forecast was taken (default: now, in UTC).
+            as_of_utc: The instant the horizon is measured from (default: now).
+            base_path: Data root, threaded through to the read and the write.
 
         Returns:
-            Ingested and validated weather data
+            The validated frame that was written, or an empty frame when the week
+            has no games in silver.
         """
-        # Handle default season
         if season is None:
-            current_season, current_week = get_current_nfl_week()
-            season = current_season
-            # If no week specified, default to current week for current season
+            season, current_week = get_current_nfl_week()
             if week is None:
                 week = current_week
+        if week is None:
+            raise WeatherDataError(
+                "the live weather ingest runs ONE week at a time and no week was "
+                f"given for season {season}. A whole season cannot be forecast: "
+                f"most of it lies beyond the {FORECAST_HORIZON_DAYS}-day horizon "
+                "and the run would correctly refuse. Use "
+                "scripts/backfill_historical_weather.py for history."
+            )
 
+        if as_of_utc is None:
+            as_of_utc = datetime.now(UTC)
         if forecast_time is None:
-            # tz-aware UTC -- Phase 15-04 requires storage writers to provide
-            # timezone-aware datetimes. Storage will reject naive datetimes
-            # at write time via _normalize_parquet_datetime_columns.
             forecast_time = datetime.now(UTC)
 
-        scope = f"Week {week}" if week is not None else "Entire Season"
         logger.info(
-            "Starting weather data ingestion",
+            "Starting live weather FORECAST ingestion",
             season=season,
             week=week,
-            scope=scope,
-            forecast_time=forecast_time.isoformat(),
+            as_of=as_of_utc.isoformat(),
         )
 
-        try:
-            # Load required data
-            venues_df = self._load_venue_data()
-            games_df = self._load_games_data(season, week)
+        venues_df = self._load_venue_data()
+        games_df = self._load_games_data(season, week)
+        if games_df.empty:
+            logger.warning("No games found", season=season, week=week)
+            return pd.DataFrame()
 
-            if games_df.empty:
-                logger.warning("No games found", season=season, week=week)
-                return pd.DataFrame()
-
-            # Fetch weather data (hard-fails on missing outdoor weather)
-            weather_df = self.fetch_weather_for_games(
-                games_df, venues_df, forecast_time
-            )
-
-            if weather_df.empty:
-                logger.warning("No weather data fetched")
-                return weather_df
-
-            # Save Bronze snapshot (append-only, timestamped)
-            if week is not None:
-                save_bronze_snapshot(weather_df, "weather", season=season, week=week)
-            else:
-                # For full-season ingestion, use week=0 as a sentinel
-                save_bronze_snapshot(weather_df, "weather", season=season, week=0)
-
-            # Validate through quality gate (hard-fail on bad rows)
-            validated_df = validate_bronze_to_silver(weather_df, WeatherSchema)
-
-            # Ensure no duplicate weather records per game
-            initial_count = len(validated_df)
-            validated_df = validated_df.drop_duplicates(
-                subset=["game_id"], keep="first"
-            )
-            final_count = len(validated_df)
-
-            if initial_count != final_count:
-                logger.info(
-                    "Deduplicated weather records",
-                    initial_records=initial_count,
-                    final_records=final_count,
-                    duplicates_removed=initial_count - final_count,
-                )
-
-            # Add metadata timestamp
-            validated_df["created_at"] = datetime.now(UTC)
-
-            # Upsert to Silver (latest wins by game_id)
-            upsert_silver(validated_df, "weather")
-
-            log_data_operation(
-                operation="ingest",
-                table="weather",
-                rows=len(validated_df),
-                season=season,
-                week=week,
-            )
-
-            logger.info(
-                "Weather data ingestion completed successfully",
-                total_records=len(validated_df),
-                unique_games=len(validated_df),
-                outdoor_games=int(validated_df["is_outdoor"].sum()),
-                season=season,
-                week=week,
-            )
-
-            return validated_df
-
-        except DataIngestionError:
-            raise
-        except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
-            logger.error("Weather data ingestion failed", error=str(e))
-            raise DataIngestionError(f"Weather ingestion failed: {e}")
+        return self.ingest_week_forecast(
+            games_df,
+            venues_df,
+            as_of_utc=as_of_utc,
+            forecast_time=forecast_time,
+            base_path=base_path,
+        )
 
 
 def main():
-    """CLI entry point for weather data ingestion."""
-    parser = argparse.ArgumentParser(description="Ingest NFL weather data")
+    """CLI entry point for the LIVE weather ingest (the FORECAST endpoint).
 
-    # Add standardized ingestion arguments
-    from utils.ingestion_args import (
-        add_standard_ingestion_args,
-        parse_season_week_args,
+    ONE WEEK AT A TIME, and a season-wide request is refused rather than truncated.
+    A forecast cannot reach most of a season, so a `--season 2018` style call has no
+    honest answer here; `scripts/backfill_historical_weather.py` is the command for
+    history. Refusing by name beats returning whichever weeks happened to fit.
+    """
+    parser = argparse.ArgumentParser(
+        description=(
+            "Ingest LIVE NFL weather from the Open-Meteo FORECAST endpoint, one week "
+            "at a time. For seasons already played use "
+            "scripts/backfill_historical_weather.py, which holds the archive endpoint."
+        )
     )
+
+    from utils.ingestion_args import add_standard_ingestion_args, parse_season_week_args
 
     parser = add_standard_ingestion_args(parser)
-
-    # Add weather-specific arguments
     parser.add_argument(
         "--forecast-time", type=str, help="Forecast time (ISO format, default: now)"
-    )
-    parser.add_argument(
-        "--outdoor-only",
-        action="store_true",
-        help="Only fetch weather for outdoor games",
     )
 
     args = parser.parse_args()
 
     try:
-        # Setup logging
         from utils import setup_logging
 
         setup_logging()
 
-        # Parse standardized season/week arguments
         seasons, weeks = parse_season_week_args(args)
-
-        # Weather ingestion currently supports single season only
-        if len(seasons) > 1:
+        season = seasons[0] if seasons else None
+        if seasons and len(seasons) > 1:
             print(
-                "Warning: Weather ingestion only supports single season. "
-                "Using first season."
-            )
-        season = seasons[0]
-
-        # Weather can handle multiple weeks or single week
-        if weeks and len(weeks) == 1:
-            week = weeks[0]
-            logger.info(
-                f"Starting weather data ingestion for season {season}, week {week}"
-            )
-        elif weeks and len(weeks) > 1:
-            week = None  # Will ingest multiple weeks
-            logger.info(
-                f"Starting weather data ingestion for season {season}, weeks {weeks}"
-            )
-        else:
-            week = None  # Will ingest entire season
-            logger.info(
-                f"Starting weather data ingestion for season {season}, all weeks"
+                "The live weather ingest runs one season at a time. "
+                f"Using the first: {season}."
             )
 
-        # Parse forecast time
+        if not weeks:
+            print(
+                "A --week is required. The live path reads the FORECAST endpoint, "
+                f"which reaches {FORECAST_HORIZON_DAYS} days ahead at most, so a "
+                "whole season cannot be forecast. Use "
+                "scripts/backfill_historical_weather.py for seasons already played.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if len(weeks) > 1:
+            print(
+                "The live weather ingest writes ONE week atomically and was given "
+                f"{len(weeks)} weeks: {weeks}. Run it once per week; an "
+                "all-or-nothing promise over several weeks is not one.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        week = weeks[0]
+
         forecast_time = None
         if args.forecast_time:
             try:
                 forecast_time = datetime.fromisoformat(args.forecast_time)
                 if forecast_time.tzinfo is None:
-                    forecast_time = forecast_time.replace(tzinfo=ZoneInfo("UTC"))
+                    forecast_time = forecast_time.replace(tzinfo=ZoneInfo("Etc/UTC"))
             except ValueError:
                 print(f"Invalid forecast time format: {args.forecast_time}")
                 sys.exit(1)
 
-        # Initialize ingester
         ingester = WeatherDataIngester()
-
-        # Run ingestion
         weather_df = ingester.ingest_weather(
             season=season, week=week, forecast_time=forecast_time
         )
@@ -1358,27 +1180,21 @@ def main():
             print("No weather data ingested")
             return
 
-        scope = f"Week {week}" if week is not None else "Entire Season"
-        print(f"Successfully ingested {len(weather_df)} weather records")
-        print(f"Season: {season}, Scope: {scope}")
-        print(f"Unique games: {len(weather_df)}")
+        print(f"Successfully ingested {len(weather_df)} weather forecast records")
+        print(f"Season: {season}, Week: {week}")
         print(f"Outdoor games: {weather_df['is_outdoor'].sum()}")
         print(f"Indoor games: {(~weather_df['is_outdoor']).sum()}")
 
-        # Show weather summary for outdoor games
         outdoor_weather = weather_df[weather_df["is_outdoor"]]
         if not outdoor_weather.empty:
-            print("\nOutdoor weather summary:")
-            if "temp_f" in outdoor_weather.columns:
-                print(f"  Temperature: {outdoor_weather['temp_f'].mean():.1f}F avg")
-            if "wind_mph" in outdoor_weather.columns:
-                print(f"  Wind: {outdoor_weather['wind_mph'].mean():.1f} mph avg")
-            if "is_cold" in outdoor_weather.columns:
-                print(f"  Cold games: {outdoor_weather['is_cold'].sum()}")
-            if "is_windy" in outdoor_weather.columns:
-                print(f"  Windy games: {outdoor_weather['is_windy'].sum()}")
+            print("")
+            print("Outdoor forecast summary:")
+            print(f"  Temperature: {outdoor_weather['temp_f'].mean():.1f}F avg")
+            print(f"  Wind: {outdoor_weather['wind_mph'].mean():.1f} mph avg")
+            print(f"  Cold games: {outdoor_weather['is_cold'].sum()}")
+            print(f"  Windy games: {outdoor_weather['is_windy'].sum()}")
 
-    except Exception as e:
+    except (DataIngestionError, WeatherDataError, OSError, ValueError) as e:
         logger.error("Weather ingestion CLI failed", error=str(e))
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

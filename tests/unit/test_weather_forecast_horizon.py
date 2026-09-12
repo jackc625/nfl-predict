@@ -305,7 +305,15 @@ class TestTheRefusalHappensBeforeTheRequest:
     def test_a_beyond_horizon_week_does_not_fall_back_to_the_archive(
         self, ingester, venues_df
     ) -> None:
-        """No archive fetch, and no imputed record: the week raises and yields nothing."""
+        """No archive fetch, and no imputed record: the week raises and yields nothing.
+
+        The archive fetch is patched IN THE QUARANTINE MODULE, which is the only place
+        it exists. Patching it on the live ingester would be impossible now -- that
+        method is not on `WeatherDataIngester` any more -- and asserting a call count
+        on a function that cannot be reached would be a test that cannot fail. So the
+        call counter is placed where a fallback would actually have to land.
+        """
+        import scripts.backfill_historical_weather as backfill
         import scripts.ingest_weather as ingest
 
         archive_calls: list[object] = []
@@ -317,7 +325,7 @@ class TestTheRefusalHappensBeforeTheRequest:
         games = _game(AS_OF + timedelta(days=ingest.FORECAST_HORIZON_DAYS + 2))
 
         with patch.object(
-            ingester, "_fetch_openmeteo_weather", AsyncMock(side_effect=_record_archive)
+            backfill, "fetch_game_weather", AsyncMock(side_effect=_record_archive)
         ):
             with pytest.raises(ingest.BeyondForecastHorizonError):
                 ingester.fetch_forecast_for_games(games, venues_df, as_of_utc=AS_OF)
@@ -327,6 +335,17 @@ class TestTheRefusalHappensBeforeTheRequest:
             "forecast from the archive is the fabricated-data class this plan's own "
             "prohibition names."
         )
+
+    def test_the_live_ingester_has_no_archive_fetch_to_fall_back_to(self) -> None:
+        """Structural, and stronger than the call count above.
+
+        The live ingester does not merely decline to call the archive fetch -- it does
+        not have one. A fallback would have to be WRITTEN, not merely permitted.
+        """
+        from scripts.ingest_weather import WeatherDataIngester
+
+        assert not hasattr(WeatherDataIngester, "_fetch_openmeteo_weather")
+        assert not hasattr(WeatherDataIngester, "fetch_weather_for_games")
 
 
 class TestAWeekInsideTheHorizonIsPopulated:

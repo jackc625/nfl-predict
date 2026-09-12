@@ -1608,3 +1608,39 @@ WEATHER_SOURCE_VOCABULARY: tuple[str, ...] = (
 # write path, not as an oversight: if it moves, the write did not go where this
 # declaration says it went, and that is a finding.
 WEATHER_BACKFILL_EXPECTED_CHANGED_FILES: tuple[str, ...] = ("silver/weather.parquet",)
+
+
+# ---------------------------------------------------------------------------
+# WHAT THE 14-ROW BACKFILL ACTUALLY MOVED.
+#
+# APPENDED by Plan 33-09 Task 2 on 2026-09-12, AFTER the run. Nothing above this
+# line was edited -- the declaration slot above stays exactly as it was written
+# before the run, which is the only thing that makes it a declaration.
+#
+# THE BRACKET, in the order it was executed:
+#
+#   1. WEATHER_BACKFILL_EXPECTED_CHANGED_FILES appended and committed.
+#   2. python -m tests.data_boundary snapshot data \
+#          outputs/phase33_weather_backfill_before.json      (424 files digested)
+#   3. python -m scripts.backfill_historical_weather --stamp-weather-source
+#   4. python -m tests.data_boundary verify data \
+#          outputs/phase33_weather_backfill_before.json
+#
+# THE VERIFY REPORTED EXACTLY ONE CHANGED FILE AND IT IS THE DECLARED ONE.
+# Nothing was added and nothing was removed; the single rewritten path was
+# silver/weather.parquet; and no comparison was left undecided (no MIXED key).
+#
+# `data/nfl_predictions.duckdb` did NOT move, which is the positive confirmation
+# the declaration was making: the stamp writes through `upsert_silver` (parquet
+# only) and never through `save_dataframe`, whose `save_to_db=True` default would
+# have moved the database half as well.
+#
+# Fourteen rows in, fourteen rows out, 23 -> 24 columns, and all fourteen read
+# `archive`. No weather VALUE changed -- only the column that says where each one
+# came from.
+WEATHER_BACKFILL_DIGEST_BEFORE: str = (
+    "f592b7409cab8cfc0f98bf3d0c9a71b83efb3dcf3621238a504ecbb2422e1f7e"
+)
+WEATHER_BACKFILL_DIGEST_AFTER: str = (
+    "3034b00b86ab95332cf1d385b736379b1b6796be2fa812acf3a4d1dcb9114d4d"
+)

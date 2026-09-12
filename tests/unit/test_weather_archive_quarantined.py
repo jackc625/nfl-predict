@@ -256,3 +256,32 @@ class TestTheLiveIngestPathCannotReachTheArchiveEndpoint:
         assert hasattr(backfill, "ARCHIVE_ENDPOINT_URL")
         assert ARCHIVE_URL_FRAGMENT in backfill.ARCHIVE_ENDPOINT_URL
         assert backfill.ARCHIVE_ENDPOINT_URL.startswith("https://")
+
+    def test_the_split_provenance_names_cannot_drift_from_the_shared_vocabulary(
+        self,
+    ) -> None:
+        """The cost of the quarantine, paid for and then checked.
+
+        The two HISTORICAL provenance values are named as constants in the backfill
+        module rather than beside the live one, because a `WEATHER_SOURCE_ARCHIVE`
+        constant in the live module would pass the source scan while making the
+        runtime "no ARCHIVE name" check false. That split buys the quarantine and
+        costs one thing: two homes for values that must agree. This is the check
+        that they do.
+        """
+        import scripts.backfill_historical_weather as backfill
+        import scripts.ingest_weather as ingest
+
+        assert backfill.WEATHER_SOURCE_ARCHIVE in ingest.WEATHER_SOURCE_VOCABULARY
+        assert (
+            backfill.WEATHER_SOURCE_HISTORICAL_FORECAST
+            in ingest.WEATHER_SOURCE_VOCABULARY
+        )
+        assert ingest.WEATHER_SOURCE_FORECAST in ingest.WEATHER_SOURCE_VOCABULARY
+        # Totality: the three named constants ARE the vocabulary, so a fourth value
+        # cannot be added to the tuple without a name to go with it.
+        assert {
+            backfill.WEATHER_SOURCE_ARCHIVE,
+            ingest.WEATHER_SOURCE_FORECAST,
+            backfill.WEATHER_SOURCE_HISTORICAL_FORECAST,
+        } == set(ingest.WEATHER_SOURCE_VOCABULARY)

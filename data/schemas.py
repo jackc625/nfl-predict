@@ -389,6 +389,34 @@ class WeatherSchema(BaseModel):
         description="Timestamp when record was created/ingested",
     )
 
+    # WHERE THIS ROW CAME FROM (D33-26). Declared with NO default, so a row that
+    # does not say is rejected at validation rather than stored as null: an
+    # archive row and a forecast row are otherwise the same columns of equally
+    # plausible numbers, and the difference is what a weather-aware re-fit needs.
+    # The closed vocabulary lives in scripts/ingest_weather.WEATHER_SOURCE_VOCABULARY
+    # and is enforced there by validate_weather_source; this field carries it.
+    weather_source: str = Field(
+        ...,
+        description=(
+            "Provenance: 'archive' (ERA5 reanalysis, measured after the fact), "
+            "'forecast' (predicted before kickoff), or 'historical_forecast' "
+            "(what the forecast said at the time)"
+        ),
+    )
+
+    @field_validator("weather_source")
+    @classmethod
+    def validate_weather_source_value(cls, v):
+        """Reject a provenance value outside the closed vocabulary, by name.
+
+        Imported inside the validator rather than at module scope: `data.schemas`
+        is imported BY `scripts.ingest_weather`, so a top-level import here would
+        be circular.
+        """
+        from scripts.ingest_weather import validate_weather_source
+
+        return validate_weather_source(v)
+
     @field_validator("temp_f")
     @classmethod
     def validate_temperature_f(cls, v):

@@ -378,16 +378,38 @@ class TestArea3OpenMeteoRealRow:
 
 
 def test_provider_is_open_meteo_not_meteostat():
-    """Resolve the stale-docs provider drift: the ingest endpoint is the
-    Open-Meteo archive; there is no Meteostat code in the repo."""
+    """Resolve the stale-docs provider drift: the provider is Open-Meteo, not Meteostat.
+
+    UPDATED BY PLAN 33-09. This test used to assert that
+    `scripts/ingest_weather.py` contains the ARCHIVE host, which was true when the
+    live path pointed there. D33-26 QUARANTINED that endpoint -- it cannot answer
+    for a game that has not been played -- so the live module now holds the
+    FORECAST endpoint and the archive endpoint lives in
+    `scripts/backfill_historical_weather.py`.
+
+    The question this test was written to settle is unchanged and is still
+    answered: the provider is Open-Meteo on BOTH paths, and no Meteostat code
+    exists anywhere. Only the file each endpoint lives in has moved.
+    """
     import inspect
 
+    import scripts.backfill_historical_weather as backfill
     import scripts.ingest_weather as ingest
 
-    src = inspect.getsource(ingest)
-    assert "archive-api.open-meteo.com" in src, (
-        "ingest_weather should hit the Open-Meteo archive endpoint"
+    live_src = inspect.getsource(ingest)
+    backfill_src = inspect.getsource(backfill)
+
+    assert "api.open-meteo.com" in live_src, (
+        "the LIVE ingest should hit the Open-Meteo forecast endpoint"
     )
-    assert "meteostat" not in src.lower(), (
-        "no Meteostat code should exist (the stale maps are wrong)"
+    assert "archive-api.open-meteo.com" in backfill_src, (
+        "the HISTORICAL backfill should hit the Open-Meteo archive endpoint"
     )
+    assert "archive-api.open-meteo.com" not in live_src, (
+        "the live ingest must NOT reach the archive endpoint (D33-26): a "
+        "reanalysis product cannot answer for a game that has not been played"
+    )
+    for src in (live_src, backfill_src):
+        assert "meteostat" not in src.lower(), (
+            "no Meteostat code should exist (the stale maps are wrong)"
+        )

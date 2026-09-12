@@ -33,12 +33,29 @@ def openmeteo_payload() -> dict:
 
 @pytest.fixture
 def ingester():
-    """WeatherDataIngester with mocked settings (mirrors unit-test fixture)."""
+    """The LIVE forecast ingester, with settings mocked."""
     with patch("scripts.ingest_weather.get_settings") as mock_settings:
         mock_settings.return_value = MagicMock()
         from scripts.ingest_weather import WeatherDataIngester
 
         return WeatherDataIngester()
+
+
+@pytest.fixture
+def backfiller():
+    """The QUARANTINED archive path (Plan 33-09 Task 2).
+
+    The three roundtrip tests below predate R8 and are about the ARCHIVE fetch, so
+    they take this fixture. They are kept, not rewritten: what they assert -- that a
+    recorded Open-Meteo payload survives the schema roundtrip, and that the indoor
+    None -> NaN -> None path still holds -- is true of both endpoints and was the
+    Phase 15 UAT failure.
+    """
+    with patch("scripts.ingest_weather.get_settings") as mock_settings:
+        mock_settings.return_value = MagicMock()
+        from scripts.backfill_historical_weather import HistoricalWeatherBackfiller
+
+        return HistoricalWeatherBackfiller()
 
 
 @pytest.fixture
@@ -95,7 +112,7 @@ class TestWeatherIngestE2E:
     """Integration: ingest -> validate_bronze_to_silver -> WeatherSchema, end to end."""
 
     def test_outdoor_roundtrip_passes_schema(
-        self, ingester, venues_df, openmeteo_payload
+        self, backfiller, venues_df, openmeteo_payload
     ):
         """BUF outdoor game: fixture -> _fetch_openmeteo_weather (mocked)
         -> fetch_weather_for_games -> WeatherSchema validation passes with
@@ -105,11 +122,11 @@ class TestWeatherIngestE2E:
 
         record = _record_from_fixture(openmeteo_payload, idx=13)
         with patch.object(
-            ingester,
+            backfiller,
             "_fetch_openmeteo_weather",
             AsyncMock(return_value=record),
         ):
-            df = ingester.fetch_weather_for_games(
+            df = backfiller.fetch_weather_for_games(
                 _game_row("BUF", "2024_W06_KC@BUF"),
                 venues_df,
                 forecast_time=datetime(2024, 10, 11, 22, 0, tzinfo=UTC),
@@ -123,14 +140,14 @@ class TestWeatherIngestE2E:
         assert wd is not None and not pd.isna(wd)
         assert 0 <= float(wd) < 360, f"wind_direction out of range: {wd!r}"
 
-    def test_indoor_roundtrip_passes_schema(self, ingester, venues_df):
+    def test_indoor_roundtrip_passes_schema(self, backfiller, venues_df):
         """LV indoor game: NO Open-Meteo call (indoor path short-circuits).
         Tests the None -> NaN -> None round-trip through pandas DataFrame that
         was the Phase 15 UAT failure."""
         from data.quality_gates import validate_bronze_to_silver
         from data.schemas import WeatherSchema
 
-        df = ingester.fetch_weather_for_games(
+        df = backfiller.fetch_weather_for_games(
             _game_row("LV", "2024_W06_KC@LV"),
             venues_df,
             forecast_time=datetime(2024, 10, 11, 22, 0, tzinfo=UTC),
@@ -151,7 +168,7 @@ class TestWeatherIngestE2E:
         assert row["precip_mm"] == 0.0
 
     def test_new_openmeteo_fields_preserved_through_silver(
-        self, ingester, venues_df, openmeteo_payload
+        self, backfiller, venues_df, openmeteo_payload
     ):
         """The 5 Open-Meteo fields added to WeatherSchema persist through
         validate_bronze_to_silver (previously silently dropped by extra='ignore')."""
@@ -160,11 +177,11 @@ class TestWeatherIngestE2E:
 
         record = _record_from_fixture(openmeteo_payload, idx=13)
         with patch.object(
-            ingester,
+            backfiller,
             "_fetch_openmeteo_weather",
             AsyncMock(return_value=record),
         ):
-            df = ingester.fetch_weather_for_games(
+            df = backfiller.fetch_weather_for_games(
                 _game_row("BUF", "2024_W06_KC@BUF"),
                 venues_df,
                 forecast_time=datetime(2024, 10, 11, 22, 0, tzinfo=UTC),

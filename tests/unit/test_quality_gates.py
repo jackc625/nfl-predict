@@ -123,6 +123,11 @@ class TestWeatherSchemaValidation:
             "temp_f": 55.0,
             "wind_mph": 8.0,
             "humidity_pct": 65.0,
+            # REQUIRED since Plan 33-09 (D33-26). Declared with no default in the
+            # schema on purpose: an archive row and a forecast row are otherwise
+            # identical in shape, so a row that does not say which it is cannot be
+            # stored at all.
+            "weather_source": "forecast",
         }
         defaults.update(overrides)
         return defaults
@@ -131,12 +136,28 @@ class TestWeatherSchemaValidation:
         weather = WeatherSchema(**self._make_weather())
         assert weather.is_outdoor is True
         assert weather.temp_f == 55.0
+        assert weather.weather_source == "forecast"
 
     def test_indoor_weather(self):
         weather = WeatherSchema(
             **self._make_weather(is_outdoor=False, temp_f=None, wind_mph=None)
         )
         assert weather.is_outdoor is False
+
+    def test_a_row_without_provenance_is_rejected(self):
+        """D33-26: `weather_source` has no default, so an unstamped row cannot exist."""
+        from pydantic import ValidationError
+
+        fields = self._make_weather()
+        del fields["weather_source"]
+        with pytest.raises(ValidationError):
+            WeatherSchema(**fields)
+
+    def test_a_row_with_an_invented_provenance_is_rejected(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            WeatherSchema(**self._make_weather(weather_source="made_up"))
 
 
 # --- Bronze-to-Silver quality gate tests ---

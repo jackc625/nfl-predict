@@ -426,7 +426,18 @@ def step_ingest_games() -> None:
 
 
 def step_ingest_weather() -> None:
-    """Ingest weather forecasts via Open-Meteo API (async)."""
+    """Ingest the current week's weather via the Open-Meteo FORECAST API (async).
+
+    R8 / Plan 33-09: this step used to reach the Open-Meteo ARCHIVE endpoint, which
+    is a reanalysis product and cannot answer for a game that has not been played.
+    `WeatherDataIngester.ingest_weather` now reads the FORECAST endpoint, so the
+    call site is unchanged and its MEANING is not: a live Friday run now gets real
+    forward values instead of nulls.
+
+    ONE WEEK, the current one. A kickoff beyond the declared forecast horizon, or a
+    payload missing any game in the week, raises by name and writes nothing --
+    never an archive fallback and never an imputed value.
+    """
     from scripts.ingest_weather import WeatherDataIngester
 
     ingester = WeatherDataIngester()

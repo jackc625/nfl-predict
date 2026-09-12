@@ -114,12 +114,12 @@ def _make_games_df(
 class TestIndoorWeather:
     """Indoor game (roof_type='indoor') produces zeroed weather fields."""
 
-    def test_indoor_game_zeroed_fields(self, ingester, venues_df):
+    def test_indoor_game_zeroed_fields(self, backfiller, venues_df):
         """Indoor game gets is_outdoor=False, temp=None, wind=0, precip=0."""
         # LV plays at Allegiant Stadium (indoor)
         games_df = _make_games_df(home_team="LV", game_id="2024_W06_KC@LV")
 
-        weather_df = ingester.fetch_weather_for_games(
+        weather_df = backfiller.fetch_weather_for_games(
             games_df, venues_df, forecast_time=datetime(2024, 10, 11, 22, 0)
         )
 
@@ -144,7 +144,7 @@ class TestIndoorWeather:
 class TestRetractableRoof:
     """Retractable roof game is treated as outdoor (is_outdoor=True)."""
 
-    def test_retractable_roof_is_outdoor(self, ingester, venues_df):
+    def test_retractable_roof_is_outdoor(self, backfiller, venues_df):
         """HOU plays at NRG Stadium (retractable) -- should be treated as outdoor."""
         games_df = _make_games_df(home_team="HOU", game_id="2024_W06_KC@HOU")
 
@@ -169,11 +169,11 @@ class TestRetractableRoof:
             },
         )
         with patch.object(
-            ingester,
+            backfiller,
             "_fetch_openmeteo_weather",
             mock_weather,
         ):
-            weather_df = ingester.fetch_weather_for_games(
+            weather_df = backfiller.fetch_weather_for_games(
                 games_df,
                 venues_df,
                 forecast_time=datetime(2024, 10, 11, 22, 0),
@@ -193,7 +193,7 @@ class TestRetractableRoof:
 class TestOutdoorWeatherFetch:
     """Outdoor game with successful weather fetch has populated fields."""
 
-    def test_outdoor_game_populated_fields(self, ingester, venues_df):
+    def test_outdoor_game_populated_fields(self, backfiller, venues_df):
         """BUF plays at Highmark Stadium (outdoor) -- real weather data returned."""
         games_df = _make_games_df(home_team="BUF", game_id="2024_W06_KC@BUF")
 
@@ -218,11 +218,11 @@ class TestOutdoorWeatherFetch:
             },
         )
         with patch.object(
-            ingester,
+            backfiller,
             "_fetch_openmeteo_weather",
             mock_weather,
         ):
-            weather_df = ingester.fetch_weather_for_games(
+            weather_df = backfiller.fetch_weather_for_games(
                 games_df,
                 venues_df,
                 forecast_time=datetime(2024, 10, 11, 22, 0),
@@ -243,18 +243,18 @@ class TestOutdoorWeatherFetch:
 class TestOutdoorWeatherFetchFailure:
     """Outdoor game where weather fetch fails raises WeatherDataError."""
 
-    def test_outdoor_fetch_failure_raises(self, ingester, venues_df):
+    def test_outdoor_fetch_failure_raises(self, backfiller, venues_df):
         """If Open-Meteo fails for an outdoor game, WeatherDataError propagates."""
         games_df = _make_games_df(home_team="BUF", game_id="2024_W06_KC@BUF")
 
         mock_weather = AsyncMock(side_effect=WeatherDataError("API timeout"))
         with patch.object(
-            ingester,
+            backfiller,
             "_fetch_openmeteo_weather",
             mock_weather,
         ):
             with pytest.raises(WeatherDataError, match="API timeout"):
-                ingester.fetch_weather_for_games(
+                backfiller.fetch_weather_for_games(
                     games_df,
                     venues_df,
                     forecast_time=datetime(2024, 10, 11, 22, 0),
@@ -302,9 +302,11 @@ class TestCreateIndoorWeatherRecord:
             game_id="2024_W06_KC@LV",
             game_time=game_time,
             forecast_time=forecast_time,
+            weather_source="forecast",
         )
 
         assert record["game_id"] == "2024_W06_KC@LV"
+        assert record["weather_source"] == "forecast"
         assert record["is_outdoor"] is False
         assert record["temp_f"] is None
         assert record["temp_c"] is None
@@ -341,6 +343,7 @@ class TestBronzeToSilverValidation:
             game_id="2024_W06_KC@LV",
             game_time=game_time,
             forecast_time=forecast_time,
+            weather_source="forecast",
         )
         df = pd.DataFrame([record])
 
@@ -390,6 +393,7 @@ class TestNanToNoneValidator:
             "forecast_time": datetime(2024, 10, 11, 22, 0, tzinfo=UTC),
             "game_time": datetime(2024, 10, 13, 17, 0, tzinfo=UTC),
             "is_outdoor": True,
+            "weather_source": "forecast",
         }
 
     def test_nan_wind_direction_coerces_to_none(self):
