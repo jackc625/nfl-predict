@@ -45,6 +45,7 @@ instead of the singletons).
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from tests.fixtures.elo_sandbox import (
     make_season_games,
@@ -306,6 +307,57 @@ class TestTheRealResultReplacesTheProvisionalRowInPlace:
             "flag flipping to False for every affected game_id is the half of the "
             "claim that proves the replacement actually happened."
         )
+
+
+class TestTheProvisionalFrameIsRefusedAsATrainingInput:
+    """The row serves a live week; handing it to training is refused BY NAME.
+
+    Scoped here to the frame this module produces. The proof that the refusal is wired
+    at every trainer's gold-loading boundary -- four separate entry points, none of which
+    passes through the feature builder -- lives in
+    ``tests/unit/test_provisional_training_refusal.py``.
+    """
+
+    def test_the_refusal_names_every_offending_game_id(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from features.elo_features import (
+            ProvisionalSnapshotAsTrainingInputError,
+            assert_no_provisional_training_rows,
+        )
+
+        _sandbox, games, builder = _live_sandbox(
+            monkeypatch, tmp_path, graded_weeks=(1,)
+        )
+        builder.update_current_season(season=LIVE_SEASON)
+        provisional = builder.snapshot_upcoming_week(LIVE_SEASON, 2)
+
+        with pytest.raises(ProvisionalSnapshotAsTrainingInputError) as excinfo:
+            assert_no_provisional_training_rows(provisional, "train:wp")
+
+        message = str(excinfo.value)
+        for game_id in sorted(games[games["week"] == 2]["game_id"]):
+            assert game_id in message, (
+                f"{game_id} is provisional and the refusal did not name it. An operator "
+                "reading this message has to know WHICH games to wait on. Message: "
+                f"{message}"
+            )
+        assert "train:wp" in message, "the refusal must name the context it fired in"
+
+    def test_a_frame_of_real_rows_passes_through_untouched(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The negative control. Without it the guard could simply always raise."""
+        from features.elo_features import assert_no_provisional_training_rows
+
+        _sandbox, _games, builder = _live_sandbox(
+            monkeypatch, tmp_path, graded_weeks=(1,)
+        )
+        update = builder.update_current_season(season=LIVE_SEASON)
+
+        assert len(update.snapshots) == GAMES_PER_WEEK
+        # Must not raise: every row came from a completed game.
+        assert_no_provisional_training_rows(update.snapshots, "train:wp")
 
 
 class TestSnapshotUpcomingWeekMutatesNoRatingState:

@@ -199,6 +199,193 @@ class TestNewColumnsVsBaseline:
             )
 
 
+class TestSameWeekProvisionalRowsMoveRanksAndNotMomentum:
+    """NF-08's ROW claim, asserted in both halves and in ONE test.
+
+    THE COLUMN CLAIM DOES NOT COVER THIS. ``is_provisional`` reaches no gold matrix,
+    because ``build_features`` takes an explicit seven-column subset before the merge.
+    But the FULL snapshots frame -- every column, every row -- is then handed to
+    ``_add_momentum_features`` and ``_add_rank_features``, and ``_add_rank_features``
+    selects ``week <= W``. So SAME-WEEK PROVISIONAL ROWS DO FEED ``home_elo_rank`` /
+    ``away_elo_rank`` / ``home_elo_percentile`` / ``away_elo_percentile``.
+
+    THAT IS DELIBERATE LIVE-SERVING BEHAVIOUR, NOT A LEAK. Pre-game Elo is captured
+    BEFORE the game, so week N's snapshot is a valid input for ranking at week N -- the
+    property the existing comment in ``_add_rank_features`` already states. Ranking the
+    live week against a table that stopped at week N-1 would rank this week's teams on
+    last week's standings.
+
+    It IS a reproducibility hazard, and that is stated rather than discovered: a gold row
+    built on Friday can differ from the same row rebuilt after the results land, because
+    the provisional row is replaced in place. Handed to Phase 34's replay work; COLD-01's
+    value-by-value comparison is scoped to the seven JOINED columns and does not catch it.
+
+    The momentum half is the POSITIVE answer to the reviewer's concern that a provisional
+    row could enter a rolling window as a zero-delta game. It is asserted as a
+    value-by-value equality over the whole column, NOT as an appeal to
+    ``_add_momentum_features``'s ``week < W`` selector -- an appeal to the selector's
+    shape is exactly what the concern was about.
+    """
+
+    SEASON = 2026
+    RANK_COLUMNS = (
+        "home_elo_rank",
+        "away_elo_rank",
+        "home_elo_percentile",
+        "away_elo_percentile",
+    )
+    MOMENTUM_COLUMNS = ("home_elo_momentum", "away_elo_momentum")
+
+    @classmethod
+    def _real_snapshots(cls) -> pd.DataFrame:
+        """Weeks 1 and 2 played, four teams, moving Elo so momentum is NON-zero.
+
+        A flat Elo path would make every momentum value 0.0, and an equality between two
+        columns of zeros is satisfied by a function that returns zeros.
+        """
+        from scripts.build_elo import build_snapshot_frame
+
+        def row(week, home, away, home_elo, away_elo, provisional):
+            return {
+                "game_id": f"{cls.SEASON}_W{week:02d}_{away}@{home}",
+                "season": cls.SEASON,
+                "week": week,
+                "home_team": home,
+                "away_team": away,
+                "home_elo_pre": home_elo,
+                "away_elo_pre": away_elo,
+                "home_elo_uncertainty": 200.0,
+                "away_elo_uncertainty": 200.0,
+                "elo_prob_home": 0.6,
+                "hfa_used": 48.0,
+                "is_provisional": provisional,
+            }
+
+        return build_snapshot_frame(
+            [
+                row(1, "KC", "BUF", 1600.0, 1500.0, False),
+                row(1, "SF", "SEA", 1550.0, 1450.0, False),
+                row(2, "KC", "SEA", 1620.0, 1440.0, False),
+                row(2, "SF", "BUF", 1560.0, 1490.0, False),
+            ]
+        )
+
+    @classmethod
+    def _provisional_week_three(cls) -> pd.DataFrame:
+        """Week-3 provisional rows introducing two teams the ranking has not seen."""
+        from scripts.build_elo import build_snapshot_frame
+
+        return build_snapshot_frame(
+            [
+                {
+                    "game_id": f"{cls.SEASON}_W03_CHI@GB",
+                    "season": cls.SEASON,
+                    "week": 3,
+                    "home_team": "GB",
+                    "away_team": "CHI",
+                    "home_elo_pre": 1700.0,
+                    "away_elo_pre": 1400.0,
+                    "home_elo_uncertainty": 210.0,
+                    "away_elo_uncertainty": 210.0,
+                    "elo_prob_home": 0.85,
+                    "hfa_used": 48.0,
+                    "is_provisional": True,
+                }
+            ]
+        )
+
+    @classmethod
+    def _games_under_test(cls) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "game_id": f"{cls.SEASON}_W03_BUF@KC",
+                    "season": cls.SEASON,
+                    "week": 3,
+                    "home_team": "KC",
+                    "away_team": "BUF",
+                }
+            ]
+        )
+
+    @classmethod
+    def _build(cls, snapshots: pd.DataFrame) -> pd.DataFrame:
+        """Run the REAL ``build_features`` path against a cached snapshots frame.
+
+        The cache attribute is the module's own read seam, so no silver table is touched
+        and nothing under ``data/`` is read or written.
+        """
+        from datetime import UTC, datetime
+
+        from features.elo_features import EloFeatureBuilder
+
+        builder = EloFeatureBuilder()
+        builder._snapshots_df = snapshots
+        return builder.build_features(
+            cls._games_under_test(), datetime(2026, 9, 25, 18, 0, tzinfo=UTC)
+        )
+
+    def test_ranks_move_and_momentum_does_not(self) -> None:
+        without = self._build(self._real_snapshots())
+        with_provisional = self._build(
+            pd.concat(
+                [self._real_snapshots(), self._provisional_week_three()],
+                ignore_index=True,
+            )
+        )
+
+        moved = [
+            col
+            for col in self.RANK_COLUMNS
+            if without[col].iloc[0] != with_provisional[col].iloc[0]
+        ]
+        assert sorted(moved) == sorted(self.RANK_COLUMNS), (
+            "every rank and percentile column must move when same-week provisional rows "
+            "are present -- that is the live-serving behaviour this test exists to "
+            f"record, not a leak. Unmoved: "
+            f"{sorted(set(self.RANK_COLUMNS) - set(moved))}. "
+            f"without={[without[c].iloc[0] for c in self.RANK_COLUMNS]} "
+            f"with={[with_provisional[c].iloc[0] for c in self.RANK_COLUMNS]}"
+        )
+
+        for col in self.MOMENTUM_COLUMNS:
+            assert without[col].iloc[0] != 0.0, (
+                f"{col} is 0.0 in the control, so an equality assertion on it would be "
+                "vacuous -- the fixture's Elo path must actually move"
+            )
+            assert without[col].iloc[0] == with_provisional[col].iloc[0], (
+                f"{col} changed when same-week provisional rows were added. A "
+                "provisional row entering a rolling momentum window as a zero-delta "
+                f"game would distort momentum silently. "
+                f"{without[col].iloc[0]} != {with_provisional[col].iloc[0]}"
+            )
+
+    def test_no_gold_column_named_is_provisional_survives_the_join(self) -> None:
+        """The COLUMN claim at its mechanism: the explicit seven-column join subset."""
+        from tests.phase33_state import ELO_GOLD_JOIN_SUBSET
+
+        built = self._build(
+            pd.concat(
+                [self._real_snapshots(), self._provisional_week_three()],
+                ignore_index=True,
+            )
+        )
+
+        assert "is_provisional" not in built.columns, (
+            "the flag must not reach a feature matrix. The join subset is EXPLICIT "
+            "rather than a drop-list, so a new snapshot column is excluded by default -- "
+            f"this asserts that property held. Columns: {sorted(built.columns)}"
+        )
+        # Positive half, so the test cannot pass because the join produced nothing.
+        renamed = {"home_elo_pre": "home_elo", "away_elo_pre": "away_elo"}
+        for column in ELO_GOLD_JOIN_SUBSET:
+            expected = renamed.get(column, column)
+            assert expected in built.columns, (
+                f"the joined Elo column {expected} is missing -- the absence of "
+                "is_provisional would then prove only that the merge did nothing"
+            )
+
+
 class TestRankFeaturesEmptyWeekGuard:
     """Regression: ``_add_rank_features`` must not divide by zero when a
     ``(season, week)`` has no Elo snapshots.

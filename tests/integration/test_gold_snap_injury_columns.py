@@ -150,3 +150,58 @@ def test_injury_signal_column_nonnull_in_coverage_season(
         f"{IN_COVERAGE_SEASON} -- the merge wired the column name but no injury "
         f"signal data reached gold."
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-04 / COLD-02 / NF-08: is_provisional reaches NO gold matrix.
+#
+# This module is already the one that proves which SILVER columns do and do not
+# survive the merge into gold, so the twelfth snapshot column's claim belongs
+# here beside the snap and injury ones rather than in a module of its own.
+#
+# THE CLAIM IS ASSERTED IN BOTH HALVES. The absence of `is_provisional` alone is
+# satisfied by a matrix that carries no Elo at all, which is precisely the failure
+# state Phase 33 exists to remove -- a gold LEFT JOIN that found nothing and
+# imputed. So the seven joined Elo columns are asserted PRESENT in the same test.
+#
+# Two of the seven are RENAMED by the merge (`home_elo_pre` -> `home_elo`,
+# `away_elo_pre` -> `away_elo`); the subset in `tests/phase33_state` is the
+# snapshot-side spelling, so the mapping is applied here rather than a second
+# hand-typed list being kept in step with it.
+# ---------------------------------------------------------------------------
+
+PROVISIONAL_COLUMN = "is_provisional"
+
+# The gold-side spelling of ELO_GOLD_JOIN_SUBSET.
+_JOIN_SUBSET_RENAMES = {"home_elo_pre": "home_elo", "away_elo_pre": "away_elo"}
+
+
+@pytest.mark.parametrize("matrix", MATRICES)
+def test_is_provisional_does_not_reach_gold(
+    gold_frames: dict[str, pd.DataFrame], matrix: str
+) -> None:
+    """No gold matrix carries the provisional flag (NF-08 column claim)."""
+    cols = set(gold_frames[matrix].columns)
+    assert PROVISIONAL_COLUMN not in cols, (
+        f"{matrix} carries {PROVISIONAL_COLUMN}. The Elo join takes an EXPLICIT "
+        "seven-column subset, so a new snapshot column is excluded from gold by "
+        "default; this matrix picking it up means something widened that subset and "
+        "moved the matrix width with it."
+    )
+
+
+@pytest.mark.parametrize("matrix", MATRICES)
+def test_the_seven_joined_elo_columns_are_present(
+    gold_frames: dict[str, pd.DataFrame], matrix: str
+) -> None:
+    """The positive half: the absence above is not the absence of Elo entirely."""
+    from tests.phase33_state import ELO_GOLD_JOIN_SUBSET
+
+    cols = set(gold_frames[matrix].columns)
+    expected = [_JOIN_SUBSET_RENAMES.get(c, c) for c in ELO_GOLD_JOIN_SUBSET]
+    missing = [c for c in expected if c not in cols]
+    assert not missing, (
+        f"{matrix} is missing joined Elo columns {missing}. Without this half, "
+        f"asserting the absence of {PROVISIONAL_COLUMN} would pass on a matrix whose "
+        "Elo join produced nothing at all."
+    )

@@ -644,3 +644,71 @@ TESTS_ADDED_33_03: int = 56
 
 SNAPSHOT_COLUMN_COUNT_BEFORE: int = 11
 SNAPSHOT_COLUMN_COUNT_AFTER: int = 12
+
+
+# ---------------------------------------------------------------------------
+# THE GOLD JOIN SUBSET, and the FOUR trainer gold-loading boundaries.
+#
+# APPENDED by Plan 33-04 Task 2 on 2026-09-12. Nothing above this line was edited.
+# ---------------------------------------------------------------------------
+
+# The columns `features/elo_features.build_features` takes from the snapshot frame
+# before merging it onto games. READ OFF THE LIVE SOURCE (the explicit subset in
+# `build_features`, immediately above the merge), not inferred from what gold
+# happens to contain.
+#
+# `game_id` IS THE JOIN KEY, so the subset carries SIX direct numeric fields plus
+# the key. Plan 33-18's value-by-value comparison depends on that count being
+# right: comparing seven fields would compare the key against itself and report a
+# match it never earned, and comparing five would silently skip one.
+#
+# THIS IS ALSO WHY `is_provisional` REACHES NO GOLD MATRIX -- it is not in this
+# list, and the subset is explicit rather than a `drop`-based exclusion, so a NEW
+# snapshot column is excluded from gold by DEFAULT. That is the NF-08 COLUMN claim.
+# It does NOT cover the ROW claim: the FULL snapshots frame (all twelve columns,
+# every row) is handed to `_add_momentum_features` and `_add_rank_features`
+# afterwards, and `_add_rank_features` selects `week <= W`, so same-week
+# provisional ROWS do reach the four rank/percentile columns. Deliberate for live
+# serving, asserted in tests/unit/test_elo_gold_features.py.
+#
+# Two of these names are RENAMED by the merge: `home_elo_pre` -> `home_elo` and
+# `away_elo_pre` -> `away_elo`. The list is the SNAPSHOT-side spelling, which is
+# the side the join subset is written in.
+ELO_GOLD_JOIN_SUBSET: tuple[str, ...] = (
+    "game_id",
+    "home_elo_pre",
+    "away_elo_pre",
+    "home_elo_uncertainty",
+    "away_elo_uncertainty",
+    "elo_prob_home",
+    "hfa_used",
+)
+
+# Every place a model training entry point loads a GOLD feature matrix, as
+# (module, function, line).
+#
+# WHY FOUR AND NOT ONE (Codex HIGH, verified against live source in the 33-04
+# replan). A guard placed inside `features/elo_features.py` protects NONE of these:
+# every one of them reads gold DIRECTLY. Three call
+# `load_dataframe("features_*", layer="gold")` inside a `try:`; the fourth calls
+# `pd.read_parquet(features_path)` and bypasses `load_dataframe` entirely. So the
+# refusal is wired at each boundary, immediately after the load and BEFORE any
+# filtering -- a provisional row filtered out of sight would still be trained on in
+# a different slice.
+#
+# THE LINE NUMBER IS PROVENANCE, NOT AN ASSERTION, and that is the same ruling
+# CLV_REPORT_ONLY_SITES records above: a line number makes a pinned tuple brittle
+# against any edit above it, and the question this tuple answers is WHICH ENTRY
+# POINTS load gold. The drift test therefore resolves `(module, function)` and
+# asserts the guard call is present in that function's source. A FIFTH trainer
+# appearing without the guard is a drift failure; a trainer whose guard call moved
+# down the file is not.
+#
+# MEASURED 2026-09-12 against the four files as Plan 33-04 Task 2 leaves them. The
+# guard call is inserted BELOW each load, so these are also the pre-edit positions.
+TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
+    ("models.train_wp", "main", 1144),
+    ("models.train_ats", "main", 1163),
+    ("models.train_ou", "main", 1423),
+    ("models.train", "main", 632),
+)
