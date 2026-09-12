@@ -575,3 +575,46 @@ ELO_WRITE_SET_INCLUDING_DUCKDB: tuple[str, ...] = (
     "data/silver/elo_generations/",
     "data/nfl_predictions.duckdb",
 )
+
+
+# ---------------------------------------------------------------------------
+# PLAN 33-03'S OWN COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-03 at plan close on 2026-09-11, AFTER the three-tier
+# measurement that produced it. Nothing above this line was edited.
+#
+# APPENDED AT CLOSE, NOT IN TASK 1, for the reason Plan 33-02 recorded when it did the
+# same: all three tasks add tests, so a Task-1 value would have been wrong at plan close
+# and could only have been made right by EDITING it -- the append-once violation the
+# protocol exists to prevent.
+#
+# MEASURED over all THREE tiers with the guard armed and NFL_GUARD_OBSERVATIONS=1:
+#     uv run python -m pytest tests/unit -q
+#         3061 passed, 4 skipped, 5 xfailed           3070 collected   311.13 s
+#     uv run python -m pytest tests/integration -q
+#         5 failed, 737 passed, 8 skipped, 9 xfailed   759 collected   519.76 s
+#     uv run python -m pytest tests/api tests/test_*.py -q
+#         367 passed                                   367 collected   117.86 s
+#     SUM: 5 failed, 4165 passed, 12 skipped, 14 xfailed       4196 collected
+#
+# 4196 - 4140 (Plan 33-02's three-tier collected total) = 56.
+#
+# It closes exactly against the modules, which is the check that no test was quietly
+# deleted to make a number look better:
+#     19  tests/unit/test_elo_write_entry_points.py            (new)
+#     10  tests/unit/test_elo_live_append.py                   (new)
+#      3  tests/unit/test_elo_correctness.py                   (23 -> 26)
+#      8  tests/integration/test_elo_generation_atomicity.py   (new)
+#      5  tests/integration/test_build_elo_persist_refusal.py  (new)
+#      6  tests/integration/test_elo_live_append_isolation.py  (new)
+#      5  tests/integration/test_elo_convergence.py            (2 -> 7)
+#     --
+#     56
+#
+# The five failures are EXACTLY DELIBERATE_TRIPWIRE_NODE_IDS, unchanged. The SKIPPED
+# count did not move (12 -> 12): this plan added no pending guard and stepped aside from
+# nothing. No tier reported a production-store boundary crossing
+# (STAT_SIGNATURE_OBSERVATIONS 3 + 5 + 0, WAL_SIBLING_OBSERVATIONS 0 in every tier).
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_03: int = 56
