@@ -1517,3 +1517,44 @@ GATE_VERDICT_STATES: tuple[str, ...] = ("PASS", "FAIL", "UNTESTABLE_REFUSAL")
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_08: int = 120
+
+
+# ---------------------------------------------------------------------------
+# THE DECLARED FORECAST HORIZON, AND THE SILVER WEATHER WIDTH IT ARRIVES AT.
+#
+# APPENDED by Plan 33-09 Task 1 on 2026-09-12. Nothing above this line was edited.
+#
+# THE HORIZON IS OURS, NOT THE PROVIDER'S (D33-26). Open-Meteo's forecast endpoint
+# was PROBED on 2026-09-12 from this checkout and reported its own window in an
+# error body rather than in prose:
+#
+#     GET https://api.open-meteo.com/v1/forecast?start_date=2026-09-28...
+#     400 {"error":true,"reason":"Parameter 'start_date' is out of allowed range
+#          from 2026-06-11 to 2026-09-27"}
+#
+# Measured on 2026-09-12 that is today+15, and +14 returned 24 non-null hours. The
+# documented parameter is `forecast_days` (0-16, default 7), which counts today as
+# day one and therefore reaches today+15 -- the two agree.
+#
+# So 14 sits INSIDE the provider's window by a day, deliberately. A horizon wider
+# than the provider's is a promise we cannot keep; a horizon equal to it turns any
+# provider narrowing into a silent empty response instead of a named refusal. And
+# because the constant is OURS, the refusal is testable OFFLINE: no test in this
+# plan needs the network to prove that a kickoff beyond the horizon is refused by
+# name.
+#
+# BOUNDARY CONVENTION, stated once and asserted: a kickoff EXACTLY
+# FORECAST_HORIZON_DAYS after `as_of_utc` is INSIDE. The comparison is a strict
+# `>` between two timezone-aware INSTANTS, never between two calendar dates.
+FORECAST_HORIZON_DAYS: int = 14
+
+# The provider's own advertised window, recorded BESIDE ours rather than instead of
+# it, so a future narrowing surfaces as a disagreement between two recorded numbers.
+FORECAST_PROVIDER_HORIZON_DAYS: int = 15
+
+# data/silver/weather.parquet as this plan found it, MEASURED 2026-09-12:
+# 14 rows x 23 columns, all of them 2024 Week 6. Those 14 rows are the whole of
+# the weather store -- the evidence in the plan's own objective that the ingest
+# path has never run forward.
+WEATHER_COLUMNS_BEFORE: int = 23
+WEATHER_ROWS_BEFORE: int = 14

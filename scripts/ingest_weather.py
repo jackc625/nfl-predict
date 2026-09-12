@@ -41,6 +41,63 @@ logger = get_logger(__name__)
 # Open-Meteo Historical Weather API endpoint
 OPEN_METEO_URL = "https://archive-api.open-meteo.com/v1/archive"
 
+# ---------------------------------------------------------------------------
+# Plan 33-09 Task 1 -- THE FORECAST PATH (RED interface stub).
+#
+# Every public name below is declared so the Task-1 test modules can IMPORT this
+# module. Without them pytest fails at COLLECTION, which this phase's own gate
+# classifies as INVALID_RED: a load failure proves nothing about behaviour. The
+# GREEN commit replaces every body.
+# ---------------------------------------------------------------------------
+
+# The live forecast endpoint. DISTINCT from OPEN_METEO_URL above, which is the
+# ARCHIVE endpoint and cannot answer for a game that has not happened.
+FORECAST_ENDPOINT_URL = "https://api.open-meteo.com/v1/forecast"
+
+# RED-phase sentinel. The declared horizon lands in the GREEN commit; a negative
+# value cannot be satisfied by accident.
+FORECAST_HORIZON_DAYS: int = -1
+
+
+class BeyondForecastHorizonError(WeatherDataError):
+    """RED stub -- replaced in the GREEN commit."""
+
+
+class IncompleteForecastPayloadError(WeatherDataError):
+    """RED stub -- replaced in the GREEN commit."""
+
+
+class ForecastHour:
+    """RED stub -- replaced in the GREEN commit."""
+
+
+def assert_within_forecast_horizon(game_id, kickoff_utc, *, as_of_utc):
+    """RED stub -- replaced in the GREEN commit."""
+    raise NotImplementedError("assert_within_forecast_horizon is not implemented yet")
+
+
+def select_forecast_hour_for_kickoff(game, venue, *, as_of_utc):
+    """RED stub -- replaced in the GREEN commit."""
+    raise NotImplementedError("select_forecast_hour_for_kickoff is not implemented yet")
+
+
+async def fetch_game_forecast(*args, **kwargs):
+    """RED stub -- replaced in the GREEN commit."""
+    raise NotImplementedError("fetch_game_forecast is not implemented yet")
+
+
+def assert_complete_forecast_coverage(requested_game_ids, week_frame):
+    """RED stub -- replaced in the GREEN commit."""
+    raise NotImplementedError(
+        "assert_complete_forecast_coverage is not implemented yet"
+    )
+
+
+def write_week_weather_atomically(week_frame, table="weather", **kwargs):
+    """RED stub -- replaced in the GREEN commit."""
+    raise NotImplementedError("write_week_weather_atomically is not implemented yet")
+
+
 # Full set of hourly weather variables to fetch from Open-Meteo
 HOURLY_VARIABLES = ",".join(
     [
@@ -536,6 +593,14 @@ class WeatherDataIngester:
         )
 
         return weather_df
+
+    def fetch_forecast_for_games(self, games_df, venues_df, forecast_time=None, **kw):
+        """RED stub -- replaced in the GREEN commit."""
+        raise NotImplementedError("fetch_forecast_for_games is not implemented yet")
+
+    def ingest_week_forecast(self, games_df, venues_df, **kw):
+        """RED stub -- replaced in the GREEN commit."""
+        raise NotImplementedError("ingest_week_forecast is not implemented yet")
 
     def ingest_weather(
         self,

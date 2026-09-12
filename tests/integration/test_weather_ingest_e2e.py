@@ -187,3 +187,111 @@ class TestWeatherIngestE2E:
             # was populated from real Open-Meteo data).
             assert val is not None and not pd.isna(val), f"{col} is None/NaN"
             assert isinstance(float(val), float)
+
+
+# ---------------------------------------------------------------------------
+# R8 (Plan 33-09 Task 1): a scheduled UNPLAYED 2026 week yields populated,
+# non-null forecast values in silver for every OUTDOOR game.
+#
+# THE THREE VENUES THIS EXISTS FOR. The 2026 feed calls Melbourne, Stade de
+# France and the Munich stadium `dome`. `_NFLVERSE_ROOF_MAP` sends `dome` to
+# `indoor` and `_is_outdoor_game` sends `indoor` to a SKIP, so an inherited feed
+# roof would zero the weather on three genuinely open-air games with no error
+# raised -- and the assertion "every outdoor game has values" would pass
+# VACUOUSLY, because those three would not be outdoor. Plan 33-06's ratified
+# roofs are what make this test able to fail.
+#
+# EVERY WRITE GOES TO `tmp_path`. NO NETWORK: the forecast seam is replaced.
+# ---------------------------------------------------------------------------
+
+
+def _forecast_payload_record() -> dict:
+    """The dict shape `fetch_game_forecast` returns, with real non-null values."""
+    return {
+        "temp_f": 48.6,
+        "temp_c": 9.2,
+        "wind_mph": 9.7,
+        "wind_direction": 205.0,
+        "humidity_pct": 74.0,
+        "precip_mm": 0.3,
+        "precip_prob": None,
+        "condition": None,
+        "condition_code": 61,
+        "visibility_km": None,
+        "dew_point_f": 40.9,
+        "apparent_temp_f": 45.1,
+        "snowfall_cm": 0.0,
+        "wind_gusts_mph": 16.8,
+        "cloud_cover_pct": 81.0,
+        "weather_code": 61,
+    }
+
+
+# (week, the international stadium that week's assertion is chosen for). All three
+# are venues the FEED calls `dome` and the owner ratified as OUTDOOR.
+_R8_WEEKS: tuple[tuple[int, str], ...] = ((1, "MEL00"), (7, "PAR00"), (10, "MUN01"))
+
+
+class TestAScheduledUnplayed2026WeekIsPopulated:
+    """COLD-06 / R8, end to end through the real schema validation."""
+
+    @pytest.mark.parametrize(("week", "stadium_id"), _R8_WEEKS)
+    def test_every_outdoor_game_in_the_week_gets_non_null_forecast_values(
+        self, ingester, venues_df, tmp_path, week, stadium_id
+    ):
+        from datetime import timedelta
+
+        from tests.fixtures import season_2026
+        from utils.date_utils import kickoff_wall_clock_et
+
+        try:
+            schedule = season_2026.transform_captured_schedule()
+        except season_2026.CapturedScheduleUnavailableError as exc:
+            pytest.skip(str(exc))
+
+        games = schedule[schedule["week"] == week].copy()
+        assert not games.empty
+
+        # An INJECTED `as_of_utc`, two days before the week's earliest kickoff, so this
+        # test states its own instant and does not depend on the day it runs.
+        earliest = min(
+            kickoff_wall_clock_et(value).astimezone(UTC)
+            for value in games["kickoff_et"]
+        )
+        as_of = earliest - timedelta(days=2)
+
+        async def _forecast(latitude, longitude, game_date, game_hour, venue_timezone):
+            return _forecast_payload_record()
+
+        root = tmp_path / "lake"
+        (root / "silver").mkdir(parents=True)
+
+        with patch.object(ingester, "_fetch_openmeteo_forecast", _forecast):
+            written = ingester.ingest_week_forecast(
+                games, venues_df, as_of_utc=as_of, base_path=root
+            )
+
+        assert len(written) == len(games)
+
+        # The international game this week is OUTDOOR, not skipped as a dome.
+        target_game = games[games["stadium_id"] == stadium_id]
+        assert len(target_game) == 1, (
+            f"{stadium_id} is not in week {week} of the captured 2026 schedule"
+        )
+        target_id = target_game.iloc[0]["game_id"]
+        target_row = written[written["game_id"] == target_id].iloc[0]
+        assert bool(target_row["is_outdoor"]) is True, (
+            f"{stadium_id} was treated as INDOOR. The feed calls it a dome; the owner "
+            "ratified it as outdoor in Plan 33-06. Skipping it would zero the weather "
+            "on a genuinely open-air game and make this whole assertion vacuous."
+        )
+
+        outdoor = written[written["is_outdoor"].astype(bool)]
+        assert len(outdoor) > 0
+        for column in ("temp_f", "wind_mph", "precip_mm"):
+            missing = outdoor[outdoor[column].isna()]["game_id"].tolist()
+            assert not missing, f"{column} is null for outdoor games: {missing}"
+
+        # And it is what landed in the sandbox silver table, not merely what was returned.
+        stored = pd.read_parquet(root / "silver" / "weather.parquet")
+        assert set(stored["game_id"]) == set(games["game_id"])
