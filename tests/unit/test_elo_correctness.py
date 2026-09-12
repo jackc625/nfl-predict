@@ -410,3 +410,134 @@ class TestNFLDivisions:
 
         # LAC is Chargers (AFC West) -- canonical
         assert "LAC" in all_teams, "LAC (Chargers) should be in divisions"
+
+
+# ---------------------------------------------------------------------------
+# ONE HOME-FIELD-ADVANTAGE CALL SHAPE (Plan 33-03 Task 3, COLD-04, T-33-15)
+#
+# `learn_home_field_advantage` filters its input to `season - 1`
+# (ratings/elo.py:395-400). Handed a SINGLE-SEASON frame that filter is empty, the
+# function silently returns `hfa_init` (48) and records it as the season's learned
+# value. That is not an error anywhere; it is a systematic ~14-to-22-point
+# home-field-advantage error, applied to every game of the live season, arrived at by
+# passing the wrong frame.
+#
+# The canonical builder passes `all_games` and gets a learned value. The live weekly
+# path passed one season and got 48. Both write into the ratings three deployed models
+# consume, so the two paths must learn the SAME way. The assertion below is parity to
+# full float equality, with an anti-vacuity companion: a parity test that would also
+# pass while both paths returned `hfa_init` is not a test.
+# ---------------------------------------------------------------------------
+
+
+def _with_home_win_rate(frame: pd.DataFrame, home_win_rate: float) -> pd.DataFrame:
+    """Flip scores so that *home_win_rate* of the GRADED games are home wins.
+
+    The shared fixture grades every game as a home win, which learns a clamped HFA of
+    80. A realistic rate produces a value inside the band the repository's own history
+    reports, so the parity assertion is made against a plausible number rather than
+    against a clamp boundary.
+    """
+    graded = frame["home_score"].notna()
+    indices = list(frame.index[graded])
+    away_wins = indices[int(len(indices) * home_win_rate) :]
+    flipped = frame.copy()
+    for index in away_wins:
+        home, away = flipped.loc[index, "home_score"], flipped.loc[index, "away_score"]
+        flipped.loc[index, "home_score"] = away
+        flipped.loc[index, "away_score"] = home
+    return flipped
+
+
+class TestTheLiveAndCanonicalPathsLearnHFATheSameWay:
+    """Parity to full float equality, plus the assertion that makes it non-vacuous."""
+
+    @staticmethod
+    def _two_season_games() -> pd.DataFrame:
+        from tests.fixtures.elo_sandbox import make_season_games
+
+        # 9 of the 16 graded games are home wins -> a learned HFA of 49.4, INSIDE
+        # the 20-80 clamp rather than at a boundary. A clamped value would agree
+        # with itself for the wrong reason: the clamp, not the learning.
+        prior = _with_home_win_rate(make_season_games(2025, weeks=4), 0.5625)
+        live = make_season_games(2026, weeks=2)
+        return pd.concat([prior, live], ignore_index=True)
+
+    def test_live_hfa_equals_canonical_hfa_for_the_same_season(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from scripts.build_elo import EloBuilder
+        from tests.fixtures.elo_sandbox import (
+            redirect_storage_to_sandbox,
+            sandbox_builder,
+        )
+
+        sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
+        games = self._two_season_games()
+
+        canonical = sandbox_builder(sandbox, games)
+        canonical.build_elo_with_snapshots(start_season=2025)
+        canonical_hfa = canonical.elo_system.hfa_by_season[2026]
+
+        live = EloBuilder(data_root=sandbox)
+        live.update_current_season(season=2026)
+        live_hfa = live.elo_system.hfa_by_season[2026]
+
+        assert live_hfa == canonical_hfa, (
+            "the live weekly path and the canonical builder learned DIFFERENT "
+            f"home-field advantages for 2026 ({live_hfa} vs {canonical_hfa}). Both "
+            "write the ratings the deployed WP, ATS and O/U models read; two answers "
+            "means one of them is a systematic error applied to every live game."
+        )
+
+    def test_the_live_hfa_is_not_the_hfa_init_default(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Anti-vacuity. Equal-and-both-wrong is the failure mode being removed.
+
+        Handed a single-season frame, `learn_home_field_advantage`'s `season - 1`
+        filter selects nothing and the function returns `hfa_init` unchanged. A parity
+        test alone would pass if BOTH paths did that.
+        """
+        from scripts.build_elo import EloBuilder
+        from tests.fixtures.elo_sandbox import (
+            redirect_storage_to_sandbox,
+            sandbox_builder,
+        )
+
+        sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
+        sandbox_builder(sandbox, self._two_season_games())
+
+        live = EloBuilder(data_root=sandbox)
+        live.update_current_season(season=2026)
+        live_hfa = live.elo_system.hfa_by_season[2026]
+
+        assert live_hfa != EloRatingSystem().hfa_init, (
+            f"the live path learned exactly hfa_init ({live_hfa}), which is what "
+            "learn_home_field_advantage returns when its prior-season filter finds "
+            "nothing -- i.e. when the live path is still passing a single-season frame."
+        )
+        assert 20.0 < live_hfa < 80.0, (
+            f"the learned HFA sits ON a clamp boundary ({live_hfa}), where it would"
+            " agree with the canonical value because of the clamp rather than"
+            " because of the learning."
+        )
+
+    def test_no_hfa_value_is_hardcoded_for_the_live_season(self) -> None:
+        """Pinning a 2026 constant would return the defect every following season."""
+        import ast
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        for relative in ("ratings/elo.py", "scripts/build_elo.py"):
+            tree = ast.parse((repo_root / relative).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assign):
+                    continue
+                names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                for name in names:
+                    assert "2026" not in name, (
+                        f"{relative} declares {name}: a season-pinned HFA constant "
+                        "fixes one season and returns the defect for every following "
+                        "one."
+                    )

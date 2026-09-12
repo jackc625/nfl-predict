@@ -26,7 +26,7 @@ NOTHING HERE WRITES ``data/`` OR ``artifacts/``.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -55,6 +55,12 @@ SANDBOX_TEAMS: tuple[str, ...] = (
 # datetime is rejected outright by ``DuckDBConnection._normalize_datetime_columns``,
 # so a naive fixture would not even reach the code under test.
 _ET = ZoneInfo("America/New_York")
+
+# A fixed opener, advanced by timedelta rather than by arithmetic on the day field:
+# `datetime(season, 9, 6 + week * 7, ...)` raises "day is out of range for month" for
+# any season longer than three weeks, which is exactly the length the rerun-identity
+# suite needs.
+_SEASON_OPENER = datetime(2000, 9, 7, 13, 0, tzinfo=_ET)
 
 _WEEKLY_MATCHUPS: tuple[tuple[str, str], ...] = (
     ("BUF", "MIA"),
@@ -102,9 +108,8 @@ def make_season_games(
                     "away_team": away,
                     "home_score": float(home_points) if is_graded else None,
                     "away_score": float(away_points) if is_graded else None,
-                    "kickoff_et": datetime(
-                        season, 9, 6 + (week * 7), 13 + index, 0, tzinfo=_ET
-                    ),
+                    "kickoff_et": _SEASON_OPENER.replace(year=season)
+                    + timedelta(days=7 * (week - 1), hours=index),
                 }
             )
 
