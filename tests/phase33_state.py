@@ -1230,3 +1230,49 @@ SEASON_TYPE_PARTITION: tuple[tuple[str, str], ...] = (
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_06: int = 114
+
+
+# ---------------------------------------------------------------------------
+# THE REQUIRED-ARTIFACT SET AND THE BOUNDARY EACH ONE IS CHECKED AT.
+#
+# APPENDED by Plan 33-07 Task 2 on 2026-09-12. Nothing above this line was edited.
+#
+# WHY THE PATHS ARE RECORDED HERE. `pipeline.steps._REQUIRED_ARTIFACTS` became
+# `(path, phase_boundary, coverage_check)` TRIPLES in this task. A test that wants
+# to assert the conversion neither dropped an artifact nor added one has to compare
+# the path components against something, and re-typing six strings inside the test
+# would be the second-list failure this repository has already paid for twice. The
+# six below are the SAME six the gate required before the conversion, in the same
+# order.
+#
+# WHY THE BOUNDARY MAP IS RECORDED HERE TOO. An artifact checked at the WRONG
+# boundary does not fail loudly -- it produces a FALSE stale-artifact refusal (gold
+# checked before the step that builds it) or a check that never runs (silver checked
+# after everything that reads it). Neither shape announces itself, so the mapping
+# needs a committed home where a later move is a drift failure rather than a quiet
+# behaviour change.
+#
+# MEASURED 2026-09-12 from the built constant, not transcribed from the plan.
+# ---------------------------------------------------------------------------
+
+REQUIRED_ARTIFACT_PATHS: tuple[str, ...] = (
+    "data/silver/games.parquet",
+    "data/silver/elo_game_snapshots.parquet",
+    "data/silver/team_form_features.parquet",
+    "data/gold/features_wp.parquet",
+    "data/gold/features_ats.parquet",
+    "data/gold/features_ou.parquet",
+)
+
+# `predictions` is the THIRD member of the closed boundary vocabulary and appears in
+# NO row below. That is not an omission: the prediction artifact's filename embeds
+# the season and the week, so it has no static path to declare and
+# `step_verify_prediction_currency` resolves it per run.
+ARTIFACT_PHASE_BOUNDARY_MAP: tuple[tuple[str, str], ...] = (
+    ("data/silver/games.parquet", "data"),
+    ("data/silver/elo_game_snapshots.parquet", "data"),
+    ("data/silver/team_form_features.parquet", "data"),
+    ("data/gold/features_wp.parquet", "gold"),
+    ("data/gold/features_ats.parquet", "gold"),
+    ("data/gold/features_ou.parquet", "gold"),
+)

@@ -3,7 +3,7 @@
 Every step adapter uses deferred imports (inside the function body) to avoid
 argparse collisions and module-level side effects from scripts/.
 
-The step registry returns exactly 19 StepDefinition entries covering the full
+The step registry returns exactly 21 StepDefinition entries covering the full
 data-to-prediction pipeline, ending with the NON-CRITICAL web-cache population
 step Plan 31-18 added (SPEC R9, D31-29).
 """
@@ -128,19 +128,176 @@ def _web_cache_db_path() -> Path:
     return Path("data/web_cache.duckdb")
 
 
-# Single source of truth for the data artifacts the DATA-phase integrity gate
-# (step_verify_data_artifacts) requires before the PREDICTIONS phase may run.
+def _resolve_current_week() -> tuple[int, int]:
+    """The ONE ``(season, week)`` resolution a step in this module may use.
+
+    Factored into one place so the capture step and the ingest step cannot resolve
+    the week TWICE (COLD-08, Plan 33-07 Task 3). Two resolutions can disagree across
+    a midnight boundary, and a capture recorded against a different week than the one
+    ingested is worse than no capture at all: it looks like evidence and is not.
+    """
+    from utils.date_utils import get_current_nfl_week
+
+    return get_current_nfl_week()
+
+
+class StaleDataArtifactError(RuntimeError):
+    """An artifact EXISTS but carries no row for the current ``(season, week)``.
+
+    A SEPARATE CLASS FROM THE MISSING-ARTIFACT REFUSAL, deliberately (T-33-33). The two
+    failures call for different actions -- run the ingest, versus find out why the ingest
+    ran and produced nothing for this week -- and an operator who cannot tell them apart
+    from the message is being sent to the wrong place. Bare ``Path.exists()`` could not
+    tell them apart at all, which is the defect this class exists to close.
+    """
+
+
+# The closed vocabulary of PHASE BOUNDARIES an artifact's currency is checkable AT.
+#
+# WHY THE BOUNDARY IS PART OF THE DECLARATION (D33-30, Codex MEDIUM). Checking gold or
+# prediction currency inside ``step_verify_data_artifacts`` -- which runs BEFORE the steps
+# that produce them -- turns an ORDERING FACT into a stale-artifact refusal, and a gate
+# that cries wolf on a correct run is worse than no gate. Each artifact therefore names
+# the point in the run at which it can honestly be asked whether it is current.
+ARTIFACT_BOUNDARY_DATA = "data"
+ARTIFACT_BOUNDARY_GOLD = "gold"
+ARTIFACT_BOUNDARY_PREDICTIONS = "predictions"
+
+ARTIFACT_PHASE_BOUNDARIES: tuple[str, ...] = (
+    ARTIFACT_BOUNDARY_DATA,
+    ARTIFACT_BOUNDARY_GOLD,
+    ARTIFACT_BOUNDARY_PREDICTIONS,
+)
+
+# The recovery command each boundary's refusal names. One per boundary rather than one
+# generic line, because "rebuild something" is not an instruction.
+_BOUNDARY_RECOVERY_COMMAND: dict[str, str] = {
+    ARTIFACT_BOUNDARY_DATA: "uv run python scripts/friday_pipeline.py --data-only",
+    ARTIFACT_BOUNDARY_GOLD: "uv run python -m scripts.build_features --all-seasons --save",
+    ARTIFACT_BOUNDARY_PREDICTIONS: (
+        "uv run python scripts/friday_pipeline.py --predictions-only"
+    ),
+}
+
+
+def _parquet_rows_cover(
+    path: str, season: int, week: int, *, season_column: str, week_column: str
+) -> bool:
+    """True when the parquet at *path* carries at least one row for ``(season, week)``.
+
+    Only the two key columns are read, so the check costs a column projection rather than
+    a full matrix load -- it runs on every artifact at every boundary of every run.
+
+    AN UNREADABLE FILE ANSWERS FALSE, and that is the honest answer to the question being
+    asked: a zero-byte stub or a corrupt parquet carries no row for this week, or for any
+    other. It is reported through the STALE class, whose message says the artifact does
+    not cover the week -- which is true of an unreadable file too.
+    """
+    import pandas as pd
+
+    try:
+        frame = pd.read_parquet(path, columns=[season_column, week_column])
+    except Exception:  # noqa: BLE001 - any read failure means coverage is unprovable
+        return False
+    if frame.empty:
+        return False
+    return bool(((frame[season_column] == season) & (frame[week_column] == week)).any())
+
+
+def _covers_season_week(path: str, season: int, week: int) -> bool:
+    """The default coverage check: does this artifact carry a row for THIS week?
+
+    IT ASKS NOTHING ELSE. No completeness requirement of any kind -- not a full regular
+    season, not a minimum row count, not a contiguous week range. A week-2 run against a
+    two-week-old season is the normal case the live cold start produces every September,
+    and a completeness check would refuse it on its second Friday while reporting a stale
+    artifact. The question is coverage OF THE CURRENT ``(season, week)``, full stop.
+    """
+    return _parquet_rows_cover(
+        path, season, week, season_column="season", week_column="week"
+    )
+
+
+def _covers_target_season_week(path: str, season: int, week: int) -> bool:
+    """The coverage check for ``team_form_features``, which has no ``week`` column.
+
+    Its week is ``target_week`` -- the week the form is computed FOR -- and its season is
+    ``target_season``. This is why the check is a PER-ARTIFACT callable rather than one
+    hardcoded pair of column names: a single spelling would answer False for this artifact
+    on every week of every season, and a gate that always refuses is as useless as one
+    that never does.
+    """
+    return _parquet_rows_cover(
+        path, season, week, season_column="target_season", week_column="target_week"
+    )
+
+
+# Single source of truth for the data artifacts the phase-boundary integrity gates
+# require before the run may proceed past each boundary.
 # Factored into one place so a drift regression test can import the same list
-# the gate checks (rather than re-hardcoding a second copy that could silently
+# the gates check (rather than re-hardcoding a second copy that could silently
 # diverge from the real build-script output names).
+#
+# EACH ENTRY IS A ``(path, phase_boundary, coverage_check)`` TRIPLE (D33-30). The triple
+# shape exists so the drift test can still import ONE object: a parallel list of coverage
+# callables, or a second mapping of boundaries, would break exactly the single-source
+# property this constant was created for -- two places to edit is how the original
+# BLOCKER (a gate requiring two filenames no build script writes) shipped.
+#
+# The PREDICTIONS boundary carries no entry here and that is not an omission. The
+# prediction artifact's name embeds the season and the week, so it has no static path to
+# list; ``step_verify_prediction_currency`` resolves it per run and checks it there.
 _REQUIRED_ARTIFACTS = [
-    "data/silver/games.parquet",
-    "data/silver/elo_game_snapshots.parquet",
-    "data/silver/team_form_features.parquet",
-    "data/gold/features_wp.parquet",
-    "data/gold/features_ats.parquet",
-    "data/gold/features_ou.parquet",
+    ("data/silver/games.parquet", ARTIFACT_BOUNDARY_DATA, _covers_season_week),
+    (
+        "data/silver/elo_game_snapshots.parquet",
+        ARTIFACT_BOUNDARY_DATA,
+        _covers_season_week,
+    ),
+    (
+        "data/silver/team_form_features.parquet",
+        ARTIFACT_BOUNDARY_DATA,
+        _covers_target_season_week,
+    ),
+    ("data/gold/features_wp.parquet", ARTIFACT_BOUNDARY_GOLD, _covers_season_week),
+    ("data/gold/features_ats.parquet", ARTIFACT_BOUNDARY_GOLD, _covers_season_week),
+    ("data/gold/features_ou.parquet", ARTIFACT_BOUNDARY_GOLD, _covers_season_week),
 ]
+
+
+def _verify_artifacts_at_boundary(boundary: str, season: int, week: int) -> None:
+    """Check every artifact declared at *boundary*, reporting MISSING and STALE apart.
+
+    Args:
+        boundary: One of ``ARTIFACT_PHASE_BOUNDARIES``.
+        season: The season the artifacts must cover.
+        week: The week the artifacts must cover.
+
+    Raises:
+        RuntimeError: when an artifact is absent -- the original message, unchanged.
+        StaleDataArtifactError: when an artifact exists and carries no row for the week.
+    """
+    scoped = [
+        (path, check)
+        for path, artifact_boundary, check in _REQUIRED_ARTIFACTS
+        if artifact_boundary == boundary
+    ]
+
+    missing = [path for path, _check in scoped if not Path(path).exists()]
+    if missing:
+        raise RuntimeError(f"Missing data artifacts: {', '.join(missing)}")
+
+    stale = [path for path, check in scoped if not check(path, season, week)]
+    if stale:
+        raise StaleDataArtifactError(
+            f"Stale {boundary} artifact(s) for {season} week {week}: "
+            f"{', '.join(stale)}. Each of these files EXISTS and carries no row for "
+            f"{season} week {week}, so a run that proceeded would score the current "
+            "week against inputs that do not contain it -- which is indistinguishable "
+            "from a correct run right up until the prediction is published. This is a "
+            "CURRENCY refusal, not a missing-file one: the artifact is there. Rebuild "
+            f"it with `{_BOUNDARY_RECOVERY_COMMAND[boundary]}` and re-run."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -255,15 +412,27 @@ def step_build_weather_features() -> None:
 
 
 def step_verify_data_artifacts() -> None:
-    """Verify all data artifacts exist before predictions phase."""
-    from pathlib import Path
+    """Verify the DATA-boundary artifacts exist AND cover the current week.
 
-    missing = [p for p in _REQUIRED_ARTIFACTS if not Path(p).exists()]
-    if missing:
-        raise RuntimeError(f"Missing data artifacts: {', '.join(missing)}")
+    IT CHECKS ONLY THE ``data`` BOUNDARY, and the restriction is the point (D33-30). Gold
+    and the prediction artifacts are produced by PREDICTIONS-phase steps that run AFTER
+    this gate, so at this instant the current week's gold cannot exist and asking whether
+    it is current would report an ordering fact as a stale artifact -- refusing every
+    correct full-mode run at the last DATA step. Their currency is checked by
+    ``step_verify_gold_currency`` and ``step_verify_prediction_currency``, each registered
+    immediately after its own producer.
+
+    EXISTENCE WAS NEVER THE QUESTION THIS GATE MEANT TO ASK. Six bare ``Path.exists()``
+    calls pass identically on last season's silver and on this week's, which is why the
+    live cold start could reach the prediction phase with a silver layer that stops in
+    2025. The two failure classes are reported apart: MISSING keeps its original message,
+    STALE raises ``StaleDataArtifactError``.
+    """
+    season, week = _resolve_current_week()
+    _verify_artifacts_at_boundary(ARTIFACT_BOUNDARY_DATA, season, week)
 
 
-# PREDICTIONS PHASE (10 steps) ------------------------------------------
+# PREDICTIONS PHASE (13 steps) ------------------------------------------
 
 
 def step_ingest_odds() -> None:
@@ -368,6 +537,72 @@ def step_validate_features() -> None:
             "The feature leakage gate did not run: none of "
             f"{list(_GOLD_FEATURE_TABLES)} could be loaded from the gold layer. A critical "
             "temporal-safety step must not report success for a check it never applied."
+        )
+
+
+def step_verify_gold_currency() -> None:
+    """The gold matrices exist AND carry rows for the current week (R9, D33-30).
+
+    WHERE R9'S SECOND REFUSAL NATURALLY LIVES. ``build_weekly_candidates`` already raises
+    "gold matrix ... has no rows for {season} week {week}" at SELECTION time, and that
+    error stays exactly where it is, as the backstop. But selection is four steps and one
+    whole prediction later: by then the run has scored artifacts, written a predictions
+    CSV and exported it, and the operator learns that the week could not be selected only
+    at the end. A currency check at the GOLD/PREDICTION boundary is the SAME assertion at
+    the first point in the run where gold actually exists -- one step earlier, and louder,
+    because it stops the run instead of emptying its output.
+
+    THE DISTINCTION IT PRESERVES IS THE WHOLE POINT. An empty bet list is either an honest
+    no-edge week or a gold build that never produced the current week. Only a refusal can
+    tell them apart, and a refusal that arrives before publication is the one that can
+    still prevent the confusion.
+
+    Registered AFTER ``build_features`` (which writes the matrices) and BEFORE the
+    prediction steps that read them.
+    """
+    season, week = _resolve_current_week()
+    _verify_artifacts_at_boundary(ARTIFACT_BOUNDARY_GOLD, season, week)
+
+
+def step_verify_prediction_currency() -> None:
+    """The current-week prediction file exists AND its ROWS are the current week.
+
+    THE FILENAME IS NOT THE EVIDENCE. ``predictions_2026_week2.csv`` is a name a writer
+    chose; the ``season`` / ``week`` columns inside it are what the models actually scored.
+    A file whose name says week 2 and whose rows say week 1 passes every existence check
+    in the registry and publishes last week's picks under this week's heading.
+
+    Registered AFTER ``generate_predictions`` and BEFORE ``generate_recommendations``, so
+    a stale prediction cannot become a bet row, an export or a served cache.
+
+    ``_REQUIRED_ARTIFACTS`` carries no PREDICTIONS-boundary entry because the artifact's
+    name embeds the season and the week and therefore has no static path to declare. The
+    boundary subset is still checked first, so a future static prediction artifact is
+    covered by declaring it and nothing else.
+    """
+    season, week = _resolve_current_week()
+    _verify_artifacts_at_boundary(ARTIFACT_BOUNDARY_PREDICTIONS, season, week)
+
+    import pandas as pd
+
+    pred_path = _predictions_output_dir() / f"predictions_{season}_week{week}.csv"
+    if not pred_path.exists():
+        raise RuntimeError(f"Missing data artifacts: {pred_path.as_posix()}")
+
+    frame = pd.read_csv(pred_path)
+    covered = (
+        not frame.empty
+        and {"season", "week"} <= set(frame.columns)
+        and bool(((frame["season"] == season) & (frame["week"] == week)).any())
+    )
+    if not covered:
+        raise StaleDataArtifactError(
+            f"Stale {ARTIFACT_BOUNDARY_PREDICTIONS} artifact for {season} week {week}: "
+            f"{pred_path.as_posix()}. The file EXISTS and carries no row for "
+            f"{season} week {week}, so its name and its contents disagree about which "
+            "week was scored. Publishing it would put a previous week's picks under "
+            "this week's heading. Regenerate it with "
+            f"`{_BOUNDARY_RECOVERY_COMMAND[ARTIFACT_BOUNDARY_PREDICTIONS]}`."
         )
 
 
@@ -570,7 +805,7 @@ def step_populate_web_cache() -> None:
 
 
 def build_step_registry() -> list[StepDefinition]:
-    """Build the complete 19-step pipeline registry.
+    """Build the complete 21-step pipeline registry.
 
     Returns:
         Ordered list of StepDefinitions covering data and prediction phases.
@@ -643,7 +878,7 @@ def build_step_registry() -> list[StepDefinition]:
             retryable=False,
             description="Verify data artifacts before predictions",
         ),
-        # PREDICTIONS PHASE (11 steps)
+        # PREDICTIONS PHASE (13 steps)
         StepDefinition(
             "ingest_odds",
             step_ingest_odds,
@@ -680,6 +915,19 @@ def build_step_registry() -> list[StepDefinition]:
             retryable=False,
             description="Validate features for leakage",
         ),
+        # The GOLD boundary (Plan 33-07, D33-30). Registered here and not one step
+        # earlier: gold does not exist until ``build_features`` has run, so this is the
+        # first instant at which "does gold carry the current week?" is a question with
+        # an honest answer. See step_verify_gold_currency's docstring for why R9's second
+        # refusal belongs here rather than only at selection time.
+        StepDefinition(
+            "verify_gold_currency",
+            step_verify_gold_currency,
+            PipelinePhase.PREDICTIONS,
+            critical=True,
+            retryable=False,
+            description="Verify the gold matrices carry the current week",
+        ),
         StepDefinition(
             "validate_models",
             step_validate_models,
@@ -695,6 +943,17 @@ def build_step_registry() -> list[StepDefinition]:
             critical=True,
             retryable=False,
             description="Generate predictions",
+        ),
+        # The PREDICTIONS boundary (Plan 33-07, D33-30). After the file is written and
+        # BEFORE anything consumes it: the bet list, the export and the served cache all
+        # read this week's predictions, so a stale one caught here reaches none of them.
+        StepDefinition(
+            "verify_prediction_currency",
+            step_verify_prediction_currency,
+            PipelinePhase.PREDICTIONS,
+            critical=True,
+            retryable=False,
+            description="Verify the prediction file's rows are the current week",
         ),
         StepDefinition(
             "generate_recommendations",

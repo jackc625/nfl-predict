@@ -59,9 +59,9 @@ that fires once a week.
 
 | Flag | Effect |
 |------|--------|
-| (none) | Full pipeline: all 19 steps (DATA + PREDICTIONS). |
+| (none) | Full pipeline: all 21 steps (DATA + PREDICTIONS). |
 | `--data-only` | DATA phase only (the 8 DATA-phase steps). |
-| `--predictions-only` | PREDICTIONS phase only (the 11 PREDICTIONS-phase steps); logs a "ensure data artifacts are fresh" warning. |
+| `--predictions-only` | PREDICTIONS phase only (the 13 PREDICTIONS-phase steps); logs a "ensure data artifacts are fresh" warning. |
 | `--dry-run` | List the steps that would execute (filtered by mode); execute nothing; exit 0. Works year-round: `--dry-run` bypasses the offseason no-op short-circuit so steps can be inspected out of season without `--force` (WR-04). |
 | `--force` | Bypass the pre-flight staleness/season checks AND the offseason no-op short-circuit; pre-flight health becomes advisory. |
 | `--log-level {DEBUG,INFO,WARNING,ERROR}` | Logging verbosity (default INFO). |
@@ -87,7 +87,7 @@ flow:
   checks (database connectivity, model artifacts, disk space). Without `--force`,
   `unhealthy` aborts (failure alert + raise). With `--force`, `unhealthy` is advisory:
   it appends the warning `"Pre-flight health: unhealthy (forced)"` and continues.
-- **C. Step execution:** the 19-step registry (`pipeline/steps.py`), phase-filtered by
+- **C. Step execution:** the 21-step registry (`pipeline/steps.py`), phase-filtered by
   mode, run in order. The log is written atomically after each step (incremental
   snapshot). A **critical** step failure sets `status="failed"`, fires
   `alert_pipeline_failure` (CRITICAL) and raises immediately. A **non-critical** step
@@ -115,10 +115,10 @@ exits 0 as a no-op with **no CRITICAL alert**.
 
 ---
 
-## 3. The 19 orchestrator steps
+## 3. The 21 orchestrator steps
 
-The registry (`pipeline.steps.build_step_registry`) is exactly 19 `StepDefinition`
-entries: 8 in the DATA phase, 11 in the PREDICTIONS phase. Each step uses deferred
+The registry (`pipeline.steps.build_step_registry`) is exactly 21 `StepDefinition`
+entries: 8 in the DATA phase, 13 in the PREDICTIONS phase. Each step uses deferred
 imports (inside the function body) to avoid argparse collisions and module-level side
 effects. `critical=True` means a failure aborts the run; `retryable=True` means transient
 errors trigger retry.
@@ -132,18 +132,20 @@ errors trigger retry.
 | 5 | `build_team_form` | DATA | yes | no | Build team-form metrics for the current week. |
 | 6 | `build_contextual` | DATA | yes | no | Build contextual features (travel, rest, venue). |
 | 7 | `build_weather_features` | DATA | no | no | Build weather-based features for outdoor games. |
-| 8 | `verify_data_artifacts` | DATA | yes | no | Verify required silver + gold artifacts exist before predictions. |
+| 8 | `verify_data_artifacts` | DATA | yes | no | Verify the DATA-boundary silver artifacts exist AND carry a row for the current (season, week). Gold is NOT checked here -- it is built in the PREDICTIONS phase, so a currency check here would report an ordering fact as a stale artifact. |
 | 9 | `ingest_odds` | PREDICTIONS | yes | yes (3) | Capture the odds snapshot from The Odds API. |
 | 10 | `build_market_anchors` | PREDICTIONS | yes | no | Build market-anchor features from the odds snapshot. |
 | 11 | `build_features` | PREDICTIONS | yes | no | Assemble the unified per-target gold feature matrices. |
 | 12 | `validate_features` | PREDICTIONS | yes | no | Validate features for data leakage / quality. |
-| 13 | `validate_models` | PREDICTIONS | yes | no | Validate WP/ATS/OU models are available + loadable (via `artifacts/latest.json`). |
-| 14 | `generate_predictions` | PREDICTIONS | yes | no | Generate current-week predictions (loads artifacts, applies market blend). |
-| 15 | `generate_recommendations` | PREDICTIONS | yes | no | Select the week's +EV bet list through `BetSelector` and write the durable bet-list artifacts. |
-| 16 | `export_artifacts` | PREDICTIONS | yes | no | Export the predictions CSV to JSON. |
-| 17 | `validate_predictions` | PREDICTIONS | yes | no | Validate the prediction file (non-empty, required columns, `wp_prob` in [0,1]). |
-| 18 | `verify_output_files` | PREDICTIONS | no | no | Verify the expected output files exist (advisory; warns on missing). |
-| 19 | `populate_web_cache` | PREDICTIONS | no | no | Rebuild `data/web_cache.duckdb` so the served bet list is this run's. |
+| 13 | `verify_gold_currency` | PREDICTIONS | yes | no | Verify the three gold matrices carry a row for the current (season, week). R9's "gold has no rows for this week" refusal, at the first point in the run where gold exists. |
+| 14 | `validate_models` | PREDICTIONS | yes | no | Validate WP/ATS/OU models are available + loadable (via `artifacts/latest.json`). |
+| 15 | `generate_predictions` | PREDICTIONS | yes | no | Generate current-week predictions (loads artifacts, applies market blend). |
+| 16 | `verify_prediction_currency` | PREDICTIONS | yes | no | Verify the prediction file's ROWS are the current week, not only its filename. Runs before anything consumes it. |
+| 17 | `generate_recommendations` | PREDICTIONS | yes | no | Select the week's +EV bet list through `BetSelector` and write the durable bet-list artifacts. |
+| 18 | `export_artifacts` | PREDICTIONS | yes | no | Export the predictions CSV to JSON. |
+| 19 | `validate_predictions` | PREDICTIONS | yes | no | Validate the prediction file (non-empty, required columns, `wp_prob` in [0,1]). |
+| 20 | `verify_output_files` | PREDICTIONS | no | no | Verify the expected output files exist (advisory; warns on missing). |
+| 21 | `populate_web_cache` | PREDICTIONS | no | no | Rebuild `data/web_cache.duckdb` so the served bet list is this run's. |
 
 > Note: retry is handled by `tenacity` (`Retrying` with `wait_exponential` backoff) and
 > fires ONLY on `TRANSIENT_EXCEPTIONS` (`ConnectionError`, `TimeoutError`, `OSError`,
@@ -185,7 +187,7 @@ freeze has passed is never rewritten by a later run.
 This boundary MOVED. Until plan 31-18 the orchestrator did not rebuild the web cache and this
 document said so; that statement is now false and has been replaced by this section.
 
-`populate_web_cache` is step **19**, the LAST entry in the registry. It rebuilds
+`populate_web_cache` is step **21**, the LAST entry in the registry. It rebuilds
 `data/web_cache.duckdb` from the model artifacts, the backtest outputs, the gold/silver layers
 and the two `outputs/bet_list/` artifacts, so the bet list the site serves after a Friday run is
 the one that run selected rather than whatever a previous manual `scripts/populate_cache.py`
