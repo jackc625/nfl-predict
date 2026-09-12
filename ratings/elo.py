@@ -83,23 +83,47 @@ class EloRating:
     season: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for serialization."""
+        """Convert to dictionary for serialization.
+
+        EVERY NUMERIC FIELD IS CAST TO A NATIVE PYTHON TYPE HERE, and that is load
+        bearing rather than tidy. ``save_ratings`` serialises with
+        ``json.dump(..., default=str)``, so a numpy scalar that reaches the encoder is
+        silently STRINGIFIED. That is how the live ``data/silver/elo_ratings.json``
+        came to carry ``"season": "2025"``, and a string season makes
+        ``apply_season_carryover``'s ``rating.season < season`` raise ``TypeError: '<'
+        not supported between instances of 'str' and 'int'`` the moment the current
+        season is carried forward (Plan 33-03).
+        """
         return {
-            "team": self.team,
-            "rating": self.rating,
-            "games_played": self.games_played,
+            "team": str(self.team),
+            "rating": float(self.rating),
+            "games_played": int(self.games_played),
             "last_updated": self.last_updated.isoformat()
             if self.last_updated
             else None,
-            "uncertainty": self.uncertainty,
-            "season": self.season,
+            "uncertainty": float(self.uncertainty),
+            "season": int(self.season) if self.season is not None else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EloRating":
-        """Create from dictionary."""
+        """Create from dictionary.
+
+        Coerces on the way IN as well as on the way out, so a rating file written by an
+        older build -- every one on disk today -- loads with an integer season rather
+        than the string that file actually holds. The input mapping is copied because
+        mutating a caller's dict while parsing it is a surprise nobody asked for.
+        """
+        data = dict(data)
         if data.get("last_updated"):
             data["last_updated"] = datetime.fromisoformat(data["last_updated"])
+        if data.get("season") is not None:
+            data["season"] = int(data["season"])
+        if data.get("games_played") is not None:
+            data["games_played"] = int(data["games_played"])
+        for numeric in ("rating", "uncertainty"):
+            if data.get(numeric) is not None:
+                data[numeric] = float(data[numeric])
         return cls(**data)
 
 

@@ -182,11 +182,44 @@ def step_data_qa() -> None:
 
 
 def step_build_elo() -> None:
-    """Update Elo ratings for the current season."""
-    from scripts.build_elo import EloBuilder
+    """Update Elo ratings for the current season AND PERSIST THEM (COLD-02, T-33-13).
+
+    THE DEFECT THIS BODY REPLACES. Until Plan 33-03 this step called
+    ``builder.update_current_season()``, discarded the return value, and wrote nothing.
+    It reported success every Friday while ``data/silver/elo_game_snapshots.parquet``
+    never gained a current-season row -- so the gold LEFT JOIN produced NaN Elo for
+    every current-season game and the imputer filled those NaNs before the deployed WP
+    model ever saw them. Nothing said so, because a step that persisted nothing is
+    indistinguishable from one that worked.
+
+    Wiring the OLD ``save_results`` in would have been worse, not better: it wrote the
+    snapshot table with ``append_mode=False`` and would have replaced all 24 seasons of
+    burn-in with one. That is why the write path was split first
+    (``save_full_rebuild`` / ``save_live_append``) and only then wired in here.
+
+    THE ASSERTION DISTINGUISHES TWO CASES THAT LOOK ALIKE FROM A DISTANCE. A season with
+    ZERO completed games legitimately computes nothing and persists nothing -- the live
+    2026 cold start is exactly that -- and must pass. A NON-ZERO computed count with
+    nothing written is the refusal.
+
+    Raises:
+        EloSnapshotNotPersistedError: When snapshots were computed and not written.
+    """
+    from scripts.build_elo import EloBuilder, EloSnapshotNotPersistedError
 
     builder = EloBuilder()
-    builder.update_current_season()
+    update = builder.update_current_season()
+    builder.save_live_append(
+        update.season,
+        snapshots=update.snapshots,
+        games_with_elo=update.games_with_elo,
+        rating_history=update.rating_history,
+    )
+
+    if builder.pending_snapshot_rows:
+        raise EloSnapshotNotPersistedError(
+            rows=builder.pending_snapshot_rows, season=update.season
+        )
 
 
 def step_build_team_form() -> None:

@@ -480,8 +480,12 @@ class EloBuilder:
 
         logger.info(f"Updating Elo ratings for current season {current_season}")
 
-        # Load existing ratings if available
-        self.elo_system.load_ratings()
+        # Load existing ratings if available, FROM THIS BUILDER'S OWN ROOT. The default
+        # resolves the production silver path regardless of data_root, so a redirected
+        # builder would silently seed itself from the live elo_ratings.json -- a READ,
+        # which the boundary guard cannot see, and which would make every sandboxed
+        # result depend on production state.
+        self.elo_system.load_ratings(str(self.silver_root / "elo_ratings.json"))
 
         update = self.build_season_frames(current_season)
         self._snapshots_df = update.snapshots
