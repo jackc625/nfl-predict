@@ -31,7 +31,9 @@ Usage:
 import argparse
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -90,6 +92,8 @@ __all__ = [
     "EloSeasonReapplicationError",
     "EloSnapshotNotPersistedError",
     "LiveSeasonUpdate",
+    "assert_starting_state_excludes_season",
+    "canonicalize_datetime_columns",
     "default_stage_writer",
     "elo_generation_pointer_path",
     "new_generation_id",
@@ -317,12 +321,18 @@ class EloBuilder:
         *,
         games: pd.DataFrame,
         learn_from: pd.DataFrame,
+        system: EloRatingSystem | None = None,
     ) -> tuple[list[dict], list[dict]]:
-        """Process *seasons* in order against the CURRENT Elo state.
+        """Process *seasons* in order against an Elo state.
 
         For each game, in chronological order: capture the PRE-game ratings, record
         the snapshot, and only THEN process the result. That ordering is what keeps a
         snapshot free of its own game's outcome (no batch leakage).
+
+        THIS IS THE ONE CHRONOLOGICAL CHAIN. ``build_elo_with_snapshots``,
+        ``build_season_frames`` and ``build_prior_terminal_state`` all run it, which is
+        what makes the live weekly path and the canonical builder learn home-field
+        advantage the SAME way rather than two ways that happen to be spelled alike.
 
         Args:
             seasons: Seasons to process, in order.
@@ -331,16 +341,20 @@ class EloBuilder:
                 *games* because ``learn_home_field_advantage`` filters to
                 ``season - 1``: handed a single-season frame the filter is empty and
                 the function silently returns ``hfa_init``.
+            system: The Elo state to advance (default: this builder own state). Passed
+                explicitly by ``build_prior_terminal_state``, which has to advance a
+                SEPARATE state without disturbing the builder current one.
 
         Returns:
             ``(snapshot_rows, rating_update_rows)``.
         """
+        elo = self.elo_system if system is None else system
         snapshot_rows: list[dict] = []
         update_rows: list[dict] = []
 
         for season in sorted(seasons):
-            self.elo_system.apply_season_carryover(season)
-            self.elo_system.learn_home_field_advantage(learn_from, season)
+            elo.apply_season_carryover(season)
+            elo.learn_home_field_advantage(learn_from, season)
 
             season_games = games[games["season"] == season].sort_values("kickoff_et")
 
@@ -354,15 +368,15 @@ class EloBuilder:
                 away = game["away_team"]
 
                 # Step 1: Capture PRE-GAME ratings
-                home_rating = self.elo_system.get_or_create_rating(home, season)
-                away_rating = self.elo_system.get_or_create_rating(away, season)
+                home_rating = elo.get_or_create_rating(home, season)
+                away_rating = elo.get_or_create_rating(away, season)
                 home_pre = home_rating.rating
                 away_pre = away_rating.rating
 
                 divisional = is_divisional_game(home, away)
 
                 # Get prediction using current (pre-game) state
-                prediction = self.elo_system.predict_game(
+                prediction = elo.predict_game(
                     home, away, season, is_divisional=divisional
                 )
 
@@ -384,7 +398,7 @@ class EloBuilder:
                 )
 
                 # Step 3: THEN process game result (updates ratings)
-                home_change, away_change = self.elo_system.update_ratings(
+                home_change, away_change = elo.update_ratings(
                     home_team=home,
                     away_team=away,
                     home_score=int(game["home_score"]),
@@ -400,8 +414,8 @@ class EloBuilder:
                         "game_id": game["game_id"],
                         "home_rating_pre": home_pre,
                         "away_rating_pre": away_pre,
-                        "home_rating_post": self.elo_system.ratings[home].rating,
-                        "away_rating_post": self.elo_system.ratings[away].rating,
+                        "home_rating_post": elo.ratings[home].rating,
+                        "away_rating_post": elo.ratings[away].rating,
                         "home_change": home_change,
                         "away_change": away_change,
                     }
@@ -444,7 +458,7 @@ class EloBuilder:
             [season], games=all_games, learn_from=learning_frame
         )
 
-        snapshots = pd.DataFrame(snapshot_rows, columns=list(ELO_SNAPSHOT_COLUMNS))
+        snapshots = pd.DataFrame(snapshot_rows, columns=pd.Index(ELO_SNAPSHOT_COLUMNS))
 
         season_games = all_games[all_games["season"] == season].sort_values(
             "kickoff_et"
@@ -469,25 +483,111 @@ class EloBuilder:
             rating_history=rating_history,
         )
 
-    def update_current_season(self, season: int | None = None) -> LiveSeasonUpdate:
-        """
-        Update Elo ratings for the current season only.
+    def build_prior_terminal_state(
+        self,
+        all_games: pd.DataFrame,
+        current_season: int,
+        *,
+        start_season: int = ELO_BURN_IN_START_SEASON,
+    ) -> EloRatingSystem:
+        """Re-derive the PRIOR season TERMINAL Elo state from the canonical chain.
+
+        This is the seed the current season is rebuilt from, and it is DERIVED rather
+        than read back. The alternative -- a persisted terminal snapshot -- is a second
+        piece of state that can drift from the ratings it claims to describe, and
+        ``load_ratings`` already repopulates ``hfa_by_season`` from JSON
+        (``ratings/elo.py``), so adding a second JSON-backed guard beside a fragile one
+        is not an improvement.
+
+        Measured: the full 2002-2025 chain over 6,499 games takes about one second, so
+        re-deriving rather than reading back costs the weekly run essentially nothing.
+
+        Args:
+            all_games: The full games frame.
+            current_season: The season being updated. Everything strictly BEFORE it is
+                processed here.
+            start_season: First season of the burn-in chain.
 
         Returns:
-            The season's three ROW frames (see :class:`LiveSeasonUpdate`).
+            A fresh :class:`EloRatingSystem` advanced through ``current_season - 1``.
+        """
+        system = EloRatingSystem()
+        prior_seasons = sorted(
+            int(value)
+            for value in all_games["season"].dropna().unique()
+            if start_season <= int(value) < current_season
+        )
+        if not prior_seasons:
+            logger.warning(
+                "No prior seasons available to seed the current season",
+                current_season=current_season,
+                start_season=start_season,
+            )
+            return system
+
+        self._process_chain(
+            prior_seasons, games=all_games, learn_from=all_games, system=system
+        )
+        logger.info(
+            "Re-derived the prior season terminal Elo state",
+            current_season=current_season,
+            prior_seasons=prior_seasons,
+            teams=len(system.ratings),
+        )
+        return system
+
+    def update_current_season(
+        self,
+        season: int | None = None,
+        *,
+        start_season: int = ELO_BURN_IN_START_SEASON,
+    ) -> LiveSeasonUpdate:
+        """Re-derive the current season from the prior season terminal state.
+
+        WHY THIS IS A REBUILD AND NOT AN UPDATE (T-33-16b). This method used to call
+        ``self.elo_system.load_ratings()`` -- FINAL ratings that already contain this
+        season completed games from any previous run -- and then reprocess every
+        completed game in the season. There is no processed-game watermark anywhere, so
+        a weekly RERUN applied every completed game a SECOND time, silently inflating
+        the ratings the deployed WP, ATS and O/U models consume. Measured on a sandbox
+        season, a second run moved every rated team.
+
+        The current season is now a pure function of ``(prior terminal state, this
+        season completed games)``, so a rerun is idempotent BY CONSTRUCTION rather than
+        by bookkeeping. ``EloSeasonReapplicationError`` is the defence-in-depth guard on
+        that property, not the mechanism behind it.
+
+        The learning frame is the WIDE games table, which is the same call shape
+        ``build_elo_with_snapshots`` uses, so live home-field advantage EQUALS canonical
+        home-field advantage for the same season. Handed a single-season frame,
+        ``learn_home_field_advantage``'s ``season - 1`` filter finds nothing and returns
+        ``hfa_init``; on a sandbox season that was 48.0 against a canonical 80.0.
+
+        Args:
+            season: Season to update (default: the current NFL season).
+            start_season: First season of the burn-in chain the prior state is derived
+                from.
+
+        Returns:
+            The season three ROW frames (see :class:`LiveSeasonUpdate`).
+
+        Raises:
+            EloSeasonReapplicationError: If the seed state already contains results
+                from *season*.
         """
         current_season = season if season is not None else get_current_nfl_week()[0]
 
         logger.info(f"Updating Elo ratings for current season {current_season}")
 
-        # Load existing ratings if available, FROM THIS BUILDER'S OWN ROOT. The default
-        # resolves the production silver path regardless of data_root, so a redirected
-        # builder would silently seed itself from the live elo_ratings.json -- a READ,
-        # which the boundary guard cannot see, and which would make every sandboxed
-        # result depend on production state.
-        self.elo_system.load_ratings(str(self.silver_root / "elo_ratings.json"))
+        all_games = self.load_games_data()
+        self.elo_system = self.build_prior_terminal_state(
+            all_games, current_season, start_season=start_season
+        )
+        assert_starting_state_excludes_season(self.elo_system, current_season)
 
-        update = self.build_season_frames(current_season)
+        update = self.build_season_frames(
+            current_season, games=all_games, learn_from=all_games
+        )
         self._snapshots_df = update.snapshots
         self._pending_snapshot_rows = len(update.snapshots)
         return update
@@ -541,7 +641,9 @@ class EloBuilder:
             seasons_to_process, games=all_games, learn_from=all_games
         )
 
-        snapshots_df = pd.DataFrame(snapshot_rows, columns=list(ELO_SNAPSHOT_COLUMNS))
+        snapshots_df = pd.DataFrame(
+            snapshot_rows, columns=pd.Index(ELO_SNAPSHOT_COLUMNS)
+        )
         logger.info(
             "Built all Elo snapshots",
             total_snapshots=len(snapshots_df),
@@ -724,7 +826,8 @@ class EloBuilder:
             _refuse_foreign_season_rows(name, frame, season)
 
         scoped = {
-            name: _rows_for_season(frame, season) for name, frame in supplied.items()
+            name: canonicalize_datetime_columns(_rows_for_season(frame, season))
+            for name, frame in supplied.items()
         }
         current_ratings = self.elo_system.get_current_ratings()
 
@@ -844,11 +947,107 @@ class EloBuilder:
         return True
 
 
+def canonicalize_datetime_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return *frame* with every timestamp column as tz-aware UTC ``datetime64``.
+
+    WHY A WRITER NEEDS THIS TO BE IDEMPOTENT AT ALL (measured, not argued). Running the
+    same weekly append twice produced IDENTICAL in-memory frames and two DIFFERENT
+    on-disk representations:
+
+    * ``games_with_elo.kickoff_et`` came back ``datetime64[us, UTC]`` after the first
+      write and ``datetime64[us, America/New_York]`` after the second -- the same
+      INSTANTS, a different stored offset;
+    * ``elo_rating_history.game_date`` came back ``datetime64[ns, UTC]`` after the first
+      write and ``object``-dtype STRINGS (``2026-09-07 18:00:00.000000Z``) after the
+      second.
+
+    The cause is that ``upsert_silver`` concatenates the surviving rows with the new
+    ones, and ``ParquetManager._normalize_parquet_datetime_columns`` takes a DIFFERENT
+    branch depending on the dtype that concatenation happens to produce -- tz_convert
+    for ``datetime64``, string-formatting for ``object`` (data/storage.py:298-330). So
+    the first write and every subsequent write of the SAME rows disagree.
+
+    That is not cosmetic. Phase 33 judges this writer by PER-SEASON ROW DIGESTS, and a
+    representation that depends on how many times the table has been written makes every
+    such digest -- including the Elo anchors a later plan pins -- unreproducible. The
+    frames are therefore canonicalised BEFORE they are staged or written, so the staged
+    copy and the live copy also cannot disagree.
+
+    Naive ``datetime64`` columns are left exactly as they are: the stores reject them by
+    name, and silently stamping them UTC is the "assume naive == UTC" corruption this
+    repository removed in Phase 15-04 (D-15).
+    """
+    if frame is None or len(frame) == 0:
+        return frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+
+    canonical = frame.copy()
+    for column in canonical.columns:
+        series = canonical[column]
+
+        if pd.api.types.is_datetime64_any_dtype(series):
+            if getattr(series.dt, "tz", None) is not None:
+                canonical[column] = series.dt.tz_convert("UTC")
+            continue
+
+        if series.dtype != "object":
+            continue
+
+        present = series.dropna()
+        if len(present) == 0:
+            continue
+        # Only columns whose every present value is genuinely a timestamp. A column of
+        # team abbreviations must never be coerced into dates.
+        if not all(isinstance(value, (pd.Timestamp, datetime)) for value in present):
+            continue
+        canonical[column] = pd.to_datetime(series, utc=True)
+
+    return canonical
+
+
 def _rows_for_season(frame: pd.DataFrame, season: int) -> pd.DataFrame:
     """Return the rows of *frame* belonging to *season*."""
     if frame is None or len(frame) == 0 or "season" not in frame.columns:
         return frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
-    return frame[frame["season"] == season]
+    scoped = frame.loc[frame["season"] == season]
+    return cast("pd.DataFrame", scoped)
+
+
+def assert_starting_state_excludes_season(
+    elo_system: EloRatingSystem, season: int
+) -> None:
+    """Refuse a seed state that already contains *season* results (T-33-16b).
+
+    DEFENCE IN DEPTH, and deliberately so. The re-derivation in
+    ``EloBuilder.update_current_season`` is idempotent by construction, so this should
+    never fire -- which is exactly why it exists. A property that is merely intended is
+    not enforced, and the next author to change how the prior state is obtained (reading
+    it back from ``elo_ratings.json``, say, which is what this plan removed) needs
+    something that objects rather than a comment they may not read.
+
+    Raises:
+        EloSeasonReapplicationError: Naming the teams and the game count that made the
+            seed state unusable.
+    """
+    rated_in_season = sorted(
+        team
+        for team, rating in elo_system.ratings.items()
+        if rating.season is not None and int(rating.season) >= season
+    )
+    games_in_season = [
+        row
+        for row in elo_system.game_history
+        if row.get("season") is not None and int(row["season"]) >= season
+    ]
+
+    if rated_in_season or games_in_season:
+        raise EloSeasonReapplicationError(
+            f"the starting state handed to the {season} re-derivation ALREADY contains "
+            f"{season} results: {len(games_in_season)} processed game(s) and "
+            f"{len(rated_in_season)} team(s) already stamped with season >= {season} "
+            f"({rated_in_season[:8]}). Processing the season from here would apply "
+            "every completed game a SECOND time and inflate the ratings three deployed "
+            "models read. The seed must be the PRIOR season terminal state."
+        )
 
 
 def _refuse_foreign_season_rows(
