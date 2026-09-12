@@ -1276,3 +1276,33 @@ ARTIFACT_PHASE_BOUNDARY_MAP: tuple[tuple[str, str], ...] = (
     ("data/gold/features_ats.parquet", "gold"),
     ("data/gold/features_ou.parquet", "gold"),
 )
+
+
+# ---------------------------------------------------------------------------
+# THE REGISTRY THE LIVE-SEASON CAPTURE JOINS.
+#
+# APPENDED by Plan 33-07 Task 3 on 2026-09-12. Nothing above this line was edited.
+#
+# WHY THREE COUNTS AND NOT ONE. The registry grew by THREE steps in this one plan --
+# Task 2 added `verify_gold_currency` and `verify_prediction_currency` at their own
+# phase boundaries, and Task 3 added `capture_live_season` at the head of the DATA
+# phase -- so a single after-count could be reached by two different insertions and
+# would not distinguish them. The DATA-phase count is recorded separately because
+# `--data-only` filters on the phase, so a step landing in the wrong phase changes
+# what that mode runs without changing the total.
+#
+# EACH COUNT WAS MEASURED FROM THE BUILT REGISTRY, not copied from the docstring.
+# The docstring is a string a human maintains; the registry is the object the
+# orchestrator iterates, and this phase has already seen a step-count comment go
+# stale. `REGISTRY_STEP_COUNT_BEFORE` is the pre-plan value recorded by the
+# docstring AND by tests/unit/test_pipeline_orchestrator.py at commit 360c1c8.
+#
+#     uv run python -c "from pipeline.steps import build_step_registry, PipelinePhase;
+#     r = build_step_registry(); print(len(r),
+#     len([s for s in r if s.phase == PipelinePhase.DATA]))"
+#     -> 22 9
+# ---------------------------------------------------------------------------
+
+REGISTRY_STEP_COUNT_BEFORE: int = 19
+REGISTRY_STEP_COUNT_AFTER: int = 22
+DATA_PHASE_STEP_COUNT_AFTER: int = 9

@@ -286,7 +286,7 @@ uv run python scripts/friday_pipeline.py --log-level INFO
 ```
 
 - **Live entry point:** `scripts/friday_pipeline.py` ->
-  `pipeline.orchestrator.FridayPipeline` (21-step registry in `pipeline/steps.py`).
+  `pipeline.orchestrator.FridayPipeline` (22-step registry in `pipeline/steps.py`).
 - **Produces:** refreshed Silver/Gold for the current week, current-week predictions
   and recommendations, exports, a rebuilt `data/web_cache.duckdb`, and a run log at
   `logs/friday_pipeline.json`.

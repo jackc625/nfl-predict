@@ -3,7 +3,7 @@
 Every step adapter uses deferred imports (inside the function body) to avoid
 argparse collisions and module-level side effects from scripts/.
 
-The step registry returns exactly 21 StepDefinition entries covering the full
+The step registry returns exactly 22 StepDefinition entries covering the full
 data-to-prediction pipeline, ending with the NON-CRITICAL web-cache population
 step Plan 31-18 added (SPEC R9, D31-29).
 """
@@ -304,15 +304,125 @@ def _verify_artifacts_at_boundary(boundary: str, season: int, week: int) -> None
 # Step adapter functions -- deferred imports, no module-level script imports
 # ---------------------------------------------------------------------------
 
-# DATA PHASE (8 steps) --------------------------------------------------
+# DATA PHASE (9 steps) --------------------------------------------------
+
+
+class LiveCaptureFailedError(RuntimeError):
+    """``run_capture`` reported a non-zero exit code: the week has no live-zone record.
+
+    RAISED RATHER THAN LOGGED (T-33-36). A capture that failed and said nothing leaves the
+    run to proceed against LAST week's zone, and every downstream artifact then carries an
+    upstream attribution that is quietly wrong. There is no honest degraded mode here: the
+    thing the capture produces is the evidence of what upstream served, and a run without
+    it is a run nobody can reconstruct.
+    """
+
+
+class LiveCaptureUsageError(RuntimeError):
+    """The capture was ASKED for something it does not own -- an operator-shaped failure.
+
+    A SEPARATE CLASS FROM :class:`LiveCaptureFailedError`, because the fixes differ. A
+    usage error means nothing was fetched and nothing was written: the run pointed the live
+    tool at a season the SEALED pin owns, or at a call it cannot serve. A capture failure
+    means the attempt was legitimate and broke. Reporting both as one class would send an
+    operator to the network logs for a zone-ownership mistake.
+    """
+
+
+def step_capture_live_season() -> None:
+    """Capture what nflverse is serving RIGHT NOW, before anything consumes it (D32-04).
+
+    THE FIRST STEP OF THE WHOLE REGISTRY, and the position is the point. This records the
+    upstream bytes this run is about to build on; a capture taken after ``ingest_games``
+    would attest to a slightly different upstream than the one the run actually used, which
+    is precisely the confusion a capture exists to remove.
+
+    IT DISCHARGES A NAMED PHASE-32 OBLIGATION. ``scripts/capture_live_season.py`` shipped
+    as a standalone CLI whose own docstring says it is "NOT WIRED INTO THE PIPELINE,
+    DELIBERATELY (D32-04)" and names Phase 33 as the phase that wires it. An unwired
+    capture is a capture nobody runs.
+
+    IT CALLS ``run_capture`` AND NEVER THE CLI ENTRY POINT (Codex HIGH, verified against
+    live source). That entry point parses argv and, with no ``--week``, prints a usage error
+    and returns ``EXIT_USAGE`` -- so a zero-argument step routed through it would return a
+    usage error every Friday while looking like it ran. ``run_capture`` takes the season and
+    the week as arguments, which is exactly what a step can supply. ``datasets`` and
+    ``data_root`` are computed the way the CLI computes them, read off its own construction
+    rather than invented, so the scheduled path and the hand-run path capture the same
+    datasets into the same root.
+
+    THE WEEK COMES FROM THE SHARED RESOLVER, not from a second resolution inside this step.
+    Two resolutions can disagree across a midnight boundary, and a capture filed under a
+    week nobody ingested is worse than no capture.
+
+    Raises:
+        LiveCaptureUsageError: the live tool was asked for a season it does not own, or for
+            a call it cannot serve. Nothing was fetched and nothing was written.
+        LiveCaptureFailedError: the capture was attempted and reported a non-zero code.
+    """
+    from data.upstream_pin import DATASET_COLUMNS, ZoneWriteRefused, default_data_root
+    from scripts.capture_live_season import (
+        EXIT_OK,
+        EXIT_USAGE,
+        LIVE_MANIFEST_DIR,
+        run_capture,
+    )
+
+    season, week = _resolve_current_week()
+    datasets = sorted(DATASET_COLUMNS)
+
+    try:
+        code = run_capture(
+            datasets,
+            season,
+            week,
+            data_root=Path(default_data_root()),
+            manifest_dir=Path(LIVE_MANIFEST_DIR),
+        )
+    except ZoneWriteRefused as refusal:
+        # The CLI turns this into EXIT_USAGE in its own boundary handler; a direct caller
+        # has to do the same or the operator gets a bare traceback naming a zone rule.
+        raise LiveCaptureUsageError(
+            f"the live capture refused {season} week {week}: {refusal}. Nothing was "
+            "fetched and nothing was written. This season is not the LIVE one -- the "
+            "SEALED pin owns it, and `scripts/pin_upstream_snapshot.py` is the tool for "
+            "that zone. Point the run at the season the live zone owns."
+        ) from refusal
+
+    if code == EXIT_OK:
+        return
+
+    if code == EXIT_USAGE:
+        raise LiveCaptureUsageError(
+            f"the live capture for {season} week {week} returned the USAGE code {code}: "
+            "it was asked for something it cannot serve, so nothing was captured. This is "
+            "an argument-shaped failure, not a fetch that broke -- check the season and "
+            "week the run resolved before looking at the network."
+        )
+
+    raise LiveCaptureFailedError(
+        f"the live capture for {season} week {week} FAILED with exit code {code}. The "
+        "live zone therefore carries no record of what upstream served this run, and "
+        "every DATA step after this one would build on an unattributable snapshot. Re-run "
+        f"`uv run python -m scripts.capture_live_season --season {season} --week {week}` "
+        "and read its output before restarting the pipeline."
+    )
 
 
 def step_ingest_games() -> None:
-    """Ingest current week games data via nflreadpy."""
+    """Ingest current week games data via nflreadpy, for the RESOLVED season.
+
+    The season is resolved HERE, through the shared ``_resolve_current_week``, and passed
+    in explicitly. Behaviour is unchanged -- ``ingest_games(seasons=None)`` resolved the
+    same value internally -- but the pair this step operates on is now observable at the
+    step boundary, which is what lets a test assert that the capture step recorded the SAME
+    week this one ingested rather than merely that both call the same helper.
+    """
     from scripts.ingest_games import GameDataIngester
 
+    season, _week = _resolve_current_week()
     ingester = GameDataIngester()
-    ingester.ingest_games()
+    ingester.ingest_games(seasons=[season])
 
 
 def step_ingest_weather() -> None:
@@ -805,13 +915,34 @@ def step_populate_web_cache() -> None:
 
 
 def build_step_registry() -> list[StepDefinition]:
-    """Build the complete 21-step pipeline registry.
+    """Build the complete 22-step pipeline registry.
 
     Returns:
         Ordered list of StepDefinitions covering data and prediction phases.
     """
     return [
-        # DATA PHASE (8 steps)
+        # DATA PHASE (9 steps)
+        #
+        # FIRST, and the position is load-bearing (Plan 33-07, D32-04). The capture records
+        # what nflverse served THIS RUN; anything that reads upstream before it has been
+        # captured is unattributable. Its index is pinned by
+        # tests/unit/test_step_registry_order.py so a future insertion cannot slide it below
+        # the ingest it exists to attest to.
+        StepDefinition(
+            "capture_live_season",
+            step_capture_live_season,
+            PipelinePhase.DATA,
+            # CRITICAL: a failed capture means the live zone has no row for this week, and
+            # every downstream DATA step would then run against last week's zone with
+            # nothing saying so (T-33-36).
+            critical=True,
+            # RETRYABLE on the same terms as the three ingest steps: it fetches over the
+            # network. A retry is safe because the manifest is APPEND-ONLY -- a second
+            # capture of the same week is a new sequence entry, never a rewrite.
+            retryable=True,
+            max_retries=3,
+            description="Capture the live nflverse season into the append-only live zone",
+        ),
         StepDefinition(
             "ingest_games",
             step_ingest_games,

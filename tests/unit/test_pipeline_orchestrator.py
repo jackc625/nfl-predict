@@ -57,8 +57,8 @@ def make_mock_step(
 class TestStepRegistry:
     """Tests for build_step_registry."""
 
-    def test_build_step_registry_returns_21_steps(self):
-        """build_step_registry returns exactly 21 StepDefinition objects.
+    def test_build_step_registry_returns_22_steps(self):
+        """build_step_registry returns exactly 22 StepDefinition objects.
 
         18 through Plan 31-17; the nineteenth is the NON-CRITICAL ``populate_web_cache`` step
         Plan 31-18 registered last (SPEC R9, D31-29). Its position and non-criticality are pinned
@@ -72,30 +72,42 @@ class TestStepRegistry:
         an ordering fact as a stale artifact on every correct run.
         """
         registry = build_step_registry()
-        assert len(registry) == 21
+        assert len(registry) == 22
         assert all(isinstance(s, StepDefinition) for s in registry)
 
     def test_build_step_registry_phases_correct(self):
-        """First 8 steps are DATA, last 13 are PREDICTIONS."""
+        """First 9 steps are DATA, last 13 are PREDICTIONS."""
         registry = build_step_registry()
         data_steps = [s for s in registry if s.phase == PipelinePhase.DATA]
         pred_steps = [s for s in registry if s.phase == PipelinePhase.PREDICTIONS]
-        assert len(data_steps) == 8
+        assert len(data_steps) == 9
         assert len(pred_steps) == 13
         # DATA steps come first
-        for i, step in enumerate(registry[:8]):
+        for i, step in enumerate(registry[:9]):
             assert step.phase == PipelinePhase.DATA, f"Step {i} should be DATA"
-        for i, step in enumerate(registry[8:], start=8):
+        for i, step in enumerate(registry[9:], start=9):
             assert step.phase == PipelinePhase.PREDICTIONS, (
                 f"Step {i} should be PREDICTIONS"
             )
 
     def test_build_step_registry_retryable_flags(self):
-        """Only ingestion steps have retryable=True."""
+        """Only ingestion steps have retryable=True.
+
+        ``capture_live_season`` (Phase 33, Plan 33-07) is the fourth and is DECLARED here
+        rather than inherited: it fetches three nflverse datasets over the network, which is
+        the same transient-failure surface the other three carry. A retry is safe because the
+        live manifest is APPEND-ONLY -- a second capture of the same week is a new sequence
+        entry, never a rewrite of the first.
+        """
         registry = build_step_registry()
         retryable_steps = [s for s in registry if s.retryable]
         retryable_names = {s.name for s in retryable_steps}
-        assert retryable_names == {"ingest_games", "ingest_weather", "ingest_odds"}
+        assert retryable_names == {
+            "capture_live_season",
+            "ingest_games",
+            "ingest_weather",
+            "ingest_odds",
+        }
 
     def test_duplicate_step_names_not_allowed(self):
         """All step names in registry are unique."""

@@ -282,11 +282,25 @@ def test_orchestrator_data_phase_reaches_verify_gate(tmp_path, monkeypatch):
         "utils.date_utils.get_current_nfl_week", lambda: (_SEASON, _WEEK)
     )
 
-    # No-op ONLY the seven non-gate DATA-phase step bodies (D-01: no rebuild). This
+    # No-op ONLY the eight non-gate DATA-phase step bodies (D-01: no rebuild). This
     # is the no-op-the-rebuild idiom the predictions-phase E2E uses, swapped to the
     # DATA-phase steps. step_verify_data_artifacts is DELIBERATELY NOT patched -- it
     # must run for real against the on-disk layout (that is the whole point).
+    #
+    # ``step_capture_live_season`` is the EIGHTH and it is the one that matters most here
+    # (Phase 33, Plan 33-07). Its real body fetches three nflverse datasets over the
+    # network, writes timestamped snapshots into the gitignored ``data/bronze/`` store and
+    # APPENDS a capture record to the COMMITTED ``config/upstream_live/<season>.json``.
+    # Leaving it live would make this test mutate the production live zone as a side effect
+    # of asserting the DATA gate -- and against the pinned 2024 week it would refuse the
+    # season outright, since the SEALED pin owns it. Asserted present first, so a rename
+    # cannot turn this no-op into a silent pass-through that lets the real body run.
+    assert hasattr(steps, "step_capture_live_season"), (
+        "pipeline.steps no longer defines step_capture_live_season; this no-op has gone "
+        "stale and the real capture would run against the live zone"
+    )
     for name in (
+        "step_capture_live_season",
         "step_ingest_games",
         "step_ingest_weather",
         "step_data_qa",
