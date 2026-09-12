@@ -1166,3 +1166,67 @@ SEASON_TYPE_PARTITION: tuple[tuple[str, str], ...] = (
     ("CON", "Postseason"),
     ("SB", "Postseason"),
 )
+
+
+# ---------------------------------------------------------------------------
+# THIS PLAN'S COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-06 at plan close on 2026-09-12, AFTER the three-tier
+# measurement that produced it. Nothing above this line was edited.
+#
+# APPENDED AT CLOSE, NOT IN TASK 1, for the reason Plans 33-02 through 33-05 each
+# recorded when they did the same: two tasks add tests, so a Task-1 value would have
+# been wrong at plan close and could only have been made right by EDITING it -- the
+# append-once violation the protocol exists to prevent.
+#
+# MEASURED over all THREE tiers with the guard armed and NFL_GUARD_OBSERVATIONS=1:
+#     uv run python -m pytest tests/unit -q
+#         3263 passed, 3 skipped, 5 xfailed          3271 collected   323.97 s
+#     uv run python -m pytest tests/integration -q
+#         5 failed, 766 passed, 8 skipped, 9 xfailed  788 collected   590.38 s
+#     uv run python -m pytest tests/api tests/test_*.py -q
+#         370 passed                                  370 collected   120.26 s
+#     SUM: 5 failed, 4399 passed, 11 skipped, 14 xfailed       4429 collected
+#
+# 4429 - 4315 (Plan 33-05's three-tier collected total) = 114.
+#
+# It closes exactly against the modules, which is the check that no test was quietly
+# deleted to make a number look better:
+#     36  tests/unit/test_venues_json_international.py       (new)
+#     27  tests/unit/test_stadium_id_routing.py              (new)
+#     26  tests/unit/test_games_identity_columns.py          (new)
+#     14  tests/integration/test_neutral_site_venues_2026.py (new)
+#      3  tests/unit/test_nflverse_roof_map_parity.py        (new)
+#      5  tests/integration/test_gold_write_scope.py         (10 -> 15)
+#      3  tests/unit/test_contextual_extensions.py           (24 -> 27)
+#     --
+#    114
+#
+# ONE FURTHER MODULE WAS EDITED AND ADDED ZERO NODES, which is why it does not
+# appear above and why the arithmetic still closes:
+# tests/unit/test_season_2026_fixture_schema.py stayed at 19. Plan 33-02's pinned
+# defect observation was INVERTED IN PLACE -- renamed from
+# test_the_production_transform_DROPS_the_neutral_site_fact to
+# ..._CARRIES_..., with its final assertion flipped from "no row is neutral" to
+# "exactly 8 rows are" -- rather than deleted. A rename plus an inverted assertion
+# is one node before and one node after.
+#
+# The five failures are EXACTLY DELIBERATE_TRIPWIRE_NODE_IDS, unchanged, and that
+# set matters more than usual for this plan: two of the five digest GOLD, and gold
+# was rebuilt during this plan's execution after a test of this plan's own
+# destroyed it (SUMMARY deviation 1). The failing NODE IDS are the same five and no
+# previously-passing gold-reading test moved, which is the strongest available
+# evidence that the rebuild reproduced what was lost -- it is not proof of byte
+# identity, because the original was gone before it could be digested.
+#
+# The SKIPPED count moved 12 -> 11 and the single un-skip is deliberate: Plan
+# 33-02's PENDING guard
+# test_the_three_plan_33_06_identity_columns_reach_the_transformed_frame steps
+# aside only while PLAN_33_06_IDENTITY_COLUMNS is absent from this file. Task 3
+# appended it, so the guard now RUNS and passes. The XFAILED count did not move
+# (14 -> 14). No tier reported a production-store boundary crossing in the final
+# run (STAT_SIGNATURE_OBSERVATIONS 3 + 5 + 0, WAL_SIBLING_OBSERVATIONS 0 in every
+# tier).
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_06: int = 114
