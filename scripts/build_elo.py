@@ -20,6 +20,16 @@ verbs that say which one they are:
 Both publish through :func:`publish_elo_generation`, so the FIVE artifacts are atomic
 together rather than five separately-atomic files that can crash into a mixed state.
 
+AN UNPLAYED GAME GETS A ROW THAT SAYS SO (Plan 33-04, D33-07)
+-------------------------------------------------------------
+:meth:`EloBuilder.snapshot_upcoming_week` emits one snapshot per SCHEDULED-BUT-UNPLAYED
+game from the current ratings, carrying ``is_provisional = True`` -- the twelfth column
+of the snapshot table. Without it the live week has no left side for the gold join at
+all, because the canonical chain skips every game with a null score by construction; the
+missing Elo is then imputed into three deployed models. The flag is what keeps that
+serving-time convenience out of TRAINING: ``features.elo_features`` refuses a provisional
+row by name at every trainer's gold-loading boundary.
+
 Usage:
     python scripts/build_elo.py --season 2024              # Process single season
     python scripts/build_elo.py --seasons 2020 2021 2022  # Process multiple seasons
@@ -29,6 +39,7 @@ Usage:
 """
 
 import argparse
+import copy
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -85,6 +96,8 @@ __all__ = [
     "ELO_ROW_TABLE_KEY_COLUMN",
     "ELO_SNAPSHOT_COLUMNS",
     "ELO_STATE_ARTIFACTS",
+    "PROVISIONAL_COLUMN",
+    "SNAPSHOT_COLUMNS",
     "EloBuilder",
     "EloForeignSeasonRowsError",
     "EloGenerationIncompleteError",
@@ -93,6 +106,7 @@ __all__ = [
     "EloSnapshotNotPersistedError",
     "LiveSeasonUpdate",
     "assert_starting_state_excludes_season",
+    "build_snapshot_frame",
     "canonicalize_datetime_columns",
     "default_stage_writer",
     "elo_generation_pointer_path",
@@ -103,8 +117,12 @@ __all__ = [
 ]
 
 
-# The snapshot schema ``EloFeatureBuilder`` reads. Stated once so the live path and the
-# canonical builder cannot emit two different shapes.
+# The ELEVEN columns the snapshot table carried before ``is_provisional`` existed.
+#
+# Retained under its own name rather than folded into ``SNAPSHOT_COLUMNS`` because the
+# back-compat read seam has to be able to NAME the pre-flag shape: every snapshot parquet
+# written before Plan 33-04 -- including the live 2,227-row table covering seasons
+# 2018-2025 -- has exactly these columns and no flag.
 ELO_SNAPSHOT_COLUMNS: tuple[str, ...] = (
     "game_id",
     "season",
@@ -118,6 +136,21 @@ ELO_SNAPSHOT_COLUMNS: tuple[str, ...] = (
     "elo_prob_home",
     "hfa_used",
 )
+
+# The flag that separates a real observation from a serving-time placeholder (D33-07).
+#
+# ``True`` on a row :meth:`EloBuilder.snapshot_upcoming_week` emitted for a
+# SCHEDULED-BUT-UNPLAYED game; ``False`` on every row either canonical writer produced
+# from a completed game. There is no third state: a two-valued flag with an "unknown" is
+# precisely the ambiguity the flag exists to remove, so BOTH writers set it explicitly
+# and the read seam fills a pre-flag parquet with ``False`` rather than leaving a NaN.
+PROVISIONAL_COLUMN: str = "is_provisional"
+
+# THE snapshot schema ``EloFeatureBuilder`` reads -- twelve columns, stated once so the
+# live path and the canonical builder cannot emit two different shapes. The flag is
+# APPENDED; reordering the eleven above would move every column in a table three
+# deployed models read through.
+SNAPSHOT_COLUMNS: tuple[str, ...] = (*ELO_SNAPSHOT_COLUMNS, PROVISIONAL_COLUMN)
 
 # The per-game rating-update columns merged into ``games_with_elo``.
 ELO_RATING_UPDATE_COLUMNS: tuple[str, ...] = (
@@ -394,6 +427,10 @@ class EloBuilder:
                         "away_elo_uncertainty": away_rating.uncertainty,
                         "elo_prob_home": prediction["home_win_prob"],
                         "hfa_used": prediction["hfa_used"],
+                        # EXPLICITLY False, never left to a default. This row came
+                        # from a game with a result; it is a real observation, and
+                        # saying so is what makes a provisional row distinguishable.
+                        PROVISIONAL_COLUMN: False,
                     }
                 )
 
@@ -458,7 +495,7 @@ class EloBuilder:
             [season], games=all_games, learn_from=learning_frame
         )
 
-        snapshots = pd.DataFrame(snapshot_rows, columns=pd.Index(ELO_SNAPSHOT_COLUMNS))
+        snapshots = build_snapshot_frame(snapshot_rows)
 
         season_games = all_games[all_games["season"] == season].sort_values(
             "kickoff_et"
@@ -641,9 +678,7 @@ class EloBuilder:
             seasons_to_process, games=all_games, learn_from=all_games
         )
 
-        snapshots_df = pd.DataFrame(
-            snapshot_rows, columns=pd.Index(ELO_SNAPSHOT_COLUMNS)
-        )
+        snapshots_df = build_snapshot_frame(snapshot_rows)
         logger.info(
             "Built all Elo snapshots",
             total_snapshots=len(snapshots_df),
@@ -651,6 +686,94 @@ class EloBuilder:
         )
 
         return snapshots_df
+
+    def snapshot_upcoming_week(
+        self,
+        season: int,
+        week: int,
+        *,
+        games: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        """Emit one FLAGGED provisional snapshot per scheduled-but-unplayed game.
+
+        WHY AN UNPLAYED GAME HAS NO SNAPSHOT WITHOUT THIS (COLD-02, D33-07).
+        :meth:`_process_chain` ``continue``s past any game whose ``home_score`` or
+        ``away_score`` is null, so the canonical builder cannot produce a row for a game
+        that has not been played -- by construction, not by oversight. For a rebuild that
+        is exactly right. For the LIVE week it means the gold LEFT JOIN finds nothing on
+        the left for every game the system is being asked to predict, and the missing Elo
+        is then imputed into three deployed models. COLD-01's value-by-value comparison
+        against ``elo_game_snapshots`` is unsatisfiable in that state: there is no left
+        side to compare.
+
+        So the row exists AND IT SAYS SO. ``is_provisional`` is True on every row this
+        method emits. The real result REPLACES it in place when it lands, for free,
+        because :meth:`save_live_append` already upserts the snapshot table on
+        ``game_id`` -- the table does not grow.
+
+        A METHOD RATHER THAN A MODULE. ``scripts/build_elo.py`` is one file about
+        building ratings and the method needs the builder's rating state; a separate
+        module would have to reach into it, which is a worse seam than a method.
+
+        READ-ONLY ON RATING STATE, STRUCTURALLY. The obvious implementation calls
+        ``self.elo_system.predict_game``, and that MUTATES: ``predict_game`` calls
+        ``get_or_create_rating``, which inserts a fresh 1500/350 rating for any team it
+        has not seen (``ratings/elo.py``). On the live cold start -- the case this method
+        exists for -- that is the likeliest path, and the invented rating would then be
+        the seed the next canonical re-derivation disagrees with. The prediction is
+        therefore taken against a DETACHED copy of the Elo state
+        (:func:`_detached_elo_view`), so no mutation of this builder's ratings is
+        reachable rather than merely unintended.
+
+        Args:
+            season: Season the week belongs to.
+            week: The week to snapshot.
+            games: Schedule frame (default: this builder's silver ``games`` table,
+                filtered to *season*).
+
+        Returns:
+            A twelve-column frame in :data:`SNAPSHOT_COLUMNS` order -- one row per
+            scheduled game in ``(season, week)`` whose scores are null, every row
+            carrying ``is_provisional`` True. A week with nothing unplayed returns an
+            EMPTY frame that still carries all twelve columns, because a bare empty
+            frame would turn every downstream ``frame["is_provisional"]`` into a
+            KeyError on precisely the week that has nothing left to predict.
+        """
+        schedule = self.load_games_data([season]) if games is None else games
+        upcoming = _scheduled_unplayed_games(schedule, season, week)
+        view = _detached_elo_view(self.elo_system)
+
+        rows: list[dict] = []
+        for _, game in upcoming.iterrows():
+            home = game["home_team"]
+            away = game["away_team"]
+            divisional = is_divisional_game(home, away)
+            prediction = view.predict_game(home, away, season, is_divisional=divisional)
+            rows.append(
+                {
+                    "game_id": game["game_id"],
+                    "season": int(season),
+                    "week": int(game["week"]),
+                    "home_team": home,
+                    "away_team": away,
+                    "home_elo_pre": prediction["home_rating"],
+                    "away_elo_pre": prediction["away_rating"],
+                    "home_elo_uncertainty": prediction["home_uncertainty"],
+                    "away_elo_uncertainty": prediction["away_uncertainty"],
+                    "elo_prob_home": prediction["home_win_prob"],
+                    "hfa_used": prediction["hfa_used"],
+                    PROVISIONAL_COLUMN: True,
+                }
+            )
+
+        frame = build_snapshot_frame(rows)
+        logger.info(
+            "Emitted provisional Elo snapshots for an unplayed week",
+            season=int(season),
+            week=int(week),
+            rows=len(frame),
+        )
+        return frame
 
     def build_all_ratings(self, start_season: int = 2002) -> pd.DataFrame:
         """Build Elo ratings from scratch with per-game snapshots.
@@ -945,6 +1068,68 @@ class EloBuilder:
         )
 
         return True
+
+
+def build_snapshot_frame(rows: list[dict]) -> pd.DataFrame:
+    """Build a snapshot frame in :data:`SNAPSHOT_COLUMNS` order with a BOOL flag.
+
+    THE ONE CONSTRUCTOR both writers use, so the canonical builder and the live
+    provisional path cannot emit two different shapes -- the single-source discipline
+    ``_REQUIRED_ARTIFACTS`` and ``BET_LIST_COLUMNS`` already follow in this repository.
+
+    The flag is coerced to ``bool`` rather than left to inference. An EMPTY row list
+    produces an ``object``-dtype column, and an object-dtype two-valued flag is how a
+    null third state gets into a table that is supposed not to have one.
+    """
+    frame = pd.DataFrame(rows, columns=pd.Index(SNAPSHOT_COLUMNS))
+    frame[PROVISIONAL_COLUMN] = frame[PROVISIONAL_COLUMN].fillna(False).astype(bool)
+    return frame
+
+
+def _scheduled_unplayed_games(
+    schedule: pd.DataFrame, season: int, week: int
+) -> pd.DataFrame:
+    """The rows of *schedule* in ``(season, week)`` whose scores are null.
+
+    "Unplayed" is read off the SCORES and never off the calendar. The 2026 capture this
+    phase is built on is mid-week-1 with two games already graded and 270 not, so a
+    week-number rule would have produced two confidently wrong provisional rows in the
+    very week the cold start happens (``tests/phase33_state.CAPTURED_SCHEDULE_GRADED_GAMES``).
+    """
+    if schedule is None or len(schedule) == 0:
+        return pd.DataFrame(columns=pd.Index(ELO_SNAPSHOT_COLUMNS))
+
+    required = {"season", "week", "home_score", "away_score"}
+    missing = sorted(required - set(schedule.columns))
+    if missing:
+        raise KeyError(
+            f"the schedule frame handed to snapshot_upcoming_week is missing {missing}. "
+            "Whether a game is unplayed is read off its SCORES; without them the only "
+            "available rule would be the calendar, which grades two live 2026 week-1 "
+            "games as unplayed."
+        )
+
+    scoped = schedule[(schedule["season"] == season) & (schedule["week"] == week)]
+    unplayed = scoped[scoped["home_score"].isna() | scoped["away_score"].isna()]
+    if "kickoff_et" in unplayed.columns:
+        unplayed = unplayed.sort_values("kickoff_et")
+    return cast("pd.DataFrame", unplayed)
+
+
+def _detached_elo_view(elo_system: EloRatingSystem) -> EloRatingSystem:
+    """Return a DEEP COPY of *elo_system*, safe to predict against.
+
+    The copy is what makes :meth:`EloBuilder.snapshot_upcoming_week` read-only BY
+    CONSTRUCTION rather than by discipline. ``EloRatingSystem.predict_game`` routes
+    through ``get_or_create_rating``, which INSERTS a default 1500/350 rating for any
+    unseen team; on a cold start every team is unseen. Predicting against a detached
+    copy means those insertions land where nothing reads them and the builder's own
+    state is untouched -- which is the property the test asserts from outside.
+
+    Measured: deep-copying the full 2002-2025 state (32 ratings, ~6,500 history rows)
+    costs a few milliseconds, so structural safety here is free.
+    """
+    return copy.deepcopy(elo_system)
 
 
 def canonicalize_datetime_columns(frame: pd.DataFrame) -> pd.DataFrame:
