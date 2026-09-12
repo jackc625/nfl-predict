@@ -477,3 +477,49 @@ INTERNATIONAL_STADIUM_IDS: tuple[str, ...] = (
     "MUN01",  # week 10 -- FC Bayern Munich Stadium, NE @ DET
     "MEX00",  # week 11 -- Estadio Banorte, MIN @ SF
 )
+
+
+# ---------------------------------------------------------------------------
+# THIS PLAN'S OWN COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-02 at plan close on 2026-09-11, AFTER the three-tier
+# measurement that produced it. Nothing above this line was edited.
+#
+# APPENDED LAST, NOT IN TASK 1, AND THAT ORDERING IS FORCED BY THE PROTOCOL ITSELF.
+# The plan's text places this slot in Task 1, but Tasks 2 and 3 each add tests, so a
+# Task-1 value would have been wrong at plan close and could only have been made
+# right by EDITING it -- the append-once violation this very plan exists to make
+# mechanical. The slot is written once, from the measurement, at the end. This is the
+# same shape Plan 33-01 used for its own measured slots (commit edb3e06).
+#
+# MEASURED over all THREE tiers with the guard armed and NFL_GUARD_OBSERVATIONS=1:
+#     uv run python -m pytest tests/unit -q
+#         3029 passed, 4 skipped, 5 xfailed            3038 collected   318.94 s
+#     uv run python -m pytest tests/integration -q
+#         5 failed, 713 passed, 8 skipped, 9 xfailed    735 collected   625.62 s
+#     uv run python -m pytest tests/api tests/test_*.py -q
+#         367 passed                                    367 collected   117.46 s
+#     SUM: 5 failed, 4109 passed, 12 skipped, 14 xfailed        4140 collected
+#
+# 4140 - 4073 (the post-33-01 three-tier collected total) = 67.
+#
+# It closes exactly against the modules, which is the check that no test was quietly
+# deleted to make a number look better:
+#      6  tests/unit/test_phase33_state_shape.py
+#      5  tests/unit/test_phase33_state_append_once.py
+#      8  tests/unit/test_phase33_state_arithmetic.py
+#      8  tests/unit/test_phase33_no_zero_failures_claim.py
+#     12  tests/unit/test_phase33_clv_report_only.py
+#     19  tests/unit/test_season_2026_fixture_schema.py
+#      9  tests/integration/test_phase33_expected_failure_set.py
+#     --
+#     67
+#
+# The five failures are EXACTLY DELIBERATE_TRIPWIRE_NODE_IDS. No tier reported a
+# production-store boundary crossing. The skipped count moved 9 -> 12 and all three
+# of the new skips are this plan's own PENDING guards, each stepping aside by name:
+# the post-phase arithmetic (waiting on Plans 33-03 .. 33-18), the Plan-33-06 identity
+# columns, and the opt-in whole-tier verdict.
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_02: int = 67
