@@ -752,3 +752,29 @@ TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_04: int = 41
+
+
+# ---------------------------------------------------------------------------
+# THE TWO INSTANTS THE DET @ BUF CONCESSION IS DATED AGAINST.
+#
+# APPENDED by Plan 33-05 Task 1 on 2026-09-12. Nothing above this line was edited.
+#
+# THE FIRST IS MEASURED FROM THE ONE FREEZE RULE, NOT TYPED FROM A CALENDAR:
+#     get_synthetic_snapshot_ts("2026-09-17") -> 2026-09-11T22:00:00+00:00
+# which is 2026-09-11 18:00 America/New_York -- the Friday 6 PM Eastern freeze
+# preceding the week-2 Thursday game `2026_02_DET_BUF` (gameday 2026-09-17). That
+# instant belongs to WEEK 1's Friday run, seven days before the week-2 Sunday
+# slate's own freeze (2026-09-18T22:00:00+00:00), which is precisely why a
+# WEEK-scoped fence would lose it and why D33-28 scopes selection by INSTANT.
+#
+# THE SECOND IS THE INSTANT THIS PHASE WAS PLANNED AT. It is recorded so the
+# committed readout's concession is DATED rather than asserted: at plan time the
+# week-2 Thursday freeze was roughly 100 minutes in the FUTURE, and Phase 33 could
+# not be planned, executed and verified inside that window. So week 2's Thursday
+# game is lost to the forward ledger regardless of what this plan does -- exactly
+# as week 1 was conceded by D40-04 -- and the honest outcome is a MISSING row with
+# a dated reason rather than a present one carrying a fabricated observation time.
+# ---------------------------------------------------------------------------
+
+WEEK_2_THURSDAY_FREEZE_UTC: str = "2026-09-11T22:00:00+00:00"
+PLAN_TIME_UTC_INSTANT: str = "2026-09-11T20:19:33+00:00"

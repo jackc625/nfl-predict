@@ -215,6 +215,51 @@ class FrozenChainFitError(RuntimeError):
     """
 
 
+DECIDED_AT_COLUMN: str = "decided_at_utc"
+
+
+class FreezePassedError(RuntimeError):
+    """A game whose own freeze is already past was offered for selection. RED skeleton."""
+
+
+class MissingDecidedAtError(ValueError):
+    """A forward row carries no observation time to check. RED skeleton."""
+
+
+class DecidedAfterFreezeError(ValueError):
+    """A forward row claims it was decided AFTER its own game freeze. RED skeleton."""
+
+
+def select_games_for_freeze_instant(
+    schedule: pd.DataFrame, instant: datetime, *, now: datetime
+) -> pd.DataFrame:
+    """RED skeleton -- implemented in this plan's GREEN commit."""
+    raise NotImplementedError
+
+
+def build_freeze_instant_candidates(
+    instant: datetime,
+    *,
+    now: datetime,
+    schedule: pd.DataFrame | None = None,
+    artifacts_dir: Path = Path("artifacts"),
+    gold_dir: Path = Path("data/gold"),
+    silver_dir: Path = Path("data/silver"),
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """RED skeleton -- implemented in this plan's GREEN commit."""
+    raise NotImplementedError
+
+
+def assert_decided_at_before_freeze(row: Mapping[str, Any]) -> None:
+    """RED skeleton -- implemented in this plan's GREEN commit."""
+    raise NotImplementedError
+
+
+def read_bet_list_with_schema_shim(path: Path | str) -> pd.DataFrame:
+    """RED skeleton -- implemented in this plan's GREEN commit."""
+    raise NotImplementedError
+
+
 class AlreadyGradedError(ValueError):
     """A row whose ``grading_status`` is already terminal was handed to the grader again.
 

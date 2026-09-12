@@ -267,6 +267,15 @@ def normalize_snapshot_ts(value: Any) -> datetime:
     return parsed.tz_convert(EASTERN).to_pydatetime()
 
 
+class NaiveTimestampError(ValueError):
+    """A timestamp with no timezone reached a FREEZE comparison. RED skeleton."""
+
+
+def require_aware_snapshot_ts(value: Any) -> datetime:
+    """The STRICT wrapper. RED skeleton -- implemented in this plan's GREEN commit."""
+    raise NotImplementedError
+
+
 def is_fresh_at_freeze(snapshot_value: Any, gameday: str) -> bool:
     """True when *snapshot_value* is AT or AFTER that game's own preceding-Friday freeze.
 

@@ -439,3 +439,100 @@ class TestTheInvariantOnTheRealSchedule:
         assert row["rows_with_bad_status"] == 0
         assert row["suppressed_without_reason"] == 0
         assert set(row["reasons_used"]) <= set(REJECTION_REASONS)
+
+
+# ---------------------------------------------------------------------------
+# The R6 refusal is a TRIPWIRE, not a weekly guillotine
+# ---------------------------------------------------------------------------
+#
+# Phase 33, Plan 33-05 Task 1 (COLD-03, R6, D33-28, T-33-25). A binding refusal that fires in
+# normal operation is not a guard, it is an outage. So the whole real 2026 regular season is
+# driven forward through the freeze-instant selection and the refusal is asserted to fire not
+# once.
+#
+# THE CLOCK IS ONE SECOND BEFORE EACH INSTANT, AND THAT IS THE POINT RATHER THAN A DODGE.
+# The fence is ``>=`` (R6), so a run AT its own freeze instant is REFUSED by design -- at that
+# instant the market has frozen and any pick made now is made with the frozen line in hand.
+# The last instant at which a Friday run is legitimate is therefore strictly before its own
+# freeze, and that is the clock a real Friday run has. Driving the clock AT the instant would
+# assert the refusal fires for every game, which is the equality edge
+# ``tests/unit/test_freeze_fence_binding.py`` already covers on a constructed input.
+
+
+class TestTheFreezeRefusalDoesNotFireInNormalWeeklyOperation:
+    """T-33-25: eighteen Thursday games a season must survive the fence, not be refused by it."""
+
+    def _schedule_2026(self) -> pd.DataFrame:
+        from tests.fixtures.season_2026 import (
+            CapturedScheduleUnavailableError,
+            load_captured_schedule,
+        )
+
+        try:
+            feed = load_captured_schedule()
+        except CapturedScheduleUnavailableError as exc:
+            pytest.skip(str(exc))
+        return feed[["game_id", "season", "week", "gameday", "weekday"]].copy()
+
+    def test_driven_across_the_whole_2026_season_the_refusal_never_fires(self) -> None:
+        from datetime import timedelta
+
+        from backtest.weekly_bet_list import (
+            FreezePassedError,
+            select_games_for_freeze_instant,
+        )
+        from scripts.ingest_historical_odds import get_synthetic_snapshot_ts
+
+        schedule = self._schedule_2026()
+        instants = sorted(
+            {
+                get_synthetic_snapshot_ts(str(gameday))
+                for gameday in schedule["gameday"].dropna().unique()
+            }
+        )
+        assert len(instants) >= 18, (
+            f"only {len(instants)} freeze instants resolved from the 2026 capture; a short "
+            "list would make the tripwire assertion below cheap"
+        )
+
+        refusals: list[str] = []
+        covered: set[str] = set()
+        for instant in instants:
+            try:
+                selected = select_games_for_freeze_instant(
+                    schedule, instant, now=instant - timedelta(seconds=1)
+                )
+            except FreezePassedError as exc:
+                refusals.append(f"{instant.isoformat()}: {exc}")
+                continue
+            covered.update(str(game_id) for game_id in selected["game_id"])
+
+        assert refusals == [], (
+            "the R6 refusal fired during ordinary forward operation, which means it is a "
+            "guillotine rather than a tripwire:\n" + "\n".join(refusals)
+        )
+        # And the drive was not vacuous: every scheduled game belongs to exactly one instant,
+        # so the union of the selections IS the season.
+        assert covered == set(schedule["game_id"].astype(str))
+
+    def test_every_thursday_game_is_carried_by_some_instant(self) -> None:
+        """The games a WEEK-scoped fence would have lost, counted rather than described."""
+        from datetime import timedelta
+
+        from backtest.weekly_bet_list import select_games_for_freeze_instant
+        from scripts.ingest_historical_odds import get_synthetic_snapshot_ts
+
+        schedule = self._schedule_2026()
+        thursdays = schedule[schedule["weekday"] == "Thursday"]
+        assert len(thursdays) >= 15, len(thursdays)
+
+        carried: set[str] = set()
+        for gameday in sorted(schedule["gameday"].dropna().unique()):
+            instant = get_synthetic_snapshot_ts(str(gameday))
+            selected = select_games_for_freeze_instant(
+                schedule, instant, now=instant - timedelta(seconds=1)
+            )
+            carried.update(str(game_id) for game_id in selected["game_id"])
+
+        missing = set(thursdays["game_id"].astype(str)) - carried
+        assert missing == set(), sorted(missing)
