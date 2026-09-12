@@ -76,8 +76,16 @@ def _passing_scoring(target: str, ids: list[str]) -> runner.TargetScoring:
 def _run_stage_one(tmp_path: Path, roots: fx.SandboxRoots, targets=("wp", "ats", "ou")):
     ids = fx.game_ids(120)
     scorings = {t: _passing_scoring(t, ids) for t in targets}
+
+    def _scorer(target: str, _staging: Path, _artifacts: Path) -> runner.TargetScoring:
+        # The candidate dir is created HERE and not before the call, because that is
+        # where the real flow creates it: the pre-flight requires a CLEAR staging root,
+        # so a fixture that pre-stages would be testing a state the gate refuses.
+        fx.stage_candidate_dirs(roots, (target,))
+        return scorings[target]
+
     return runner.stage_one_judge(
-        scorer=lambda target, _s, _a: scorings[target],
+        scorer=_scorer,
         cfg=fx.gate_cfg(),
         targets=targets,
         artifacts_dir=roots.artifacts,
@@ -227,7 +235,6 @@ class TestStageOneLeavesProductionByteUnchanged:
         self, tmp_path: Path
     ) -> None:
         roots = fx.sandbox_roots(tmp_path)
-        fx.stage_candidate_dirs(roots, ("wp", "ats", "ou"))
         before = digest_tree(roots.artifacts)
         assert before, "the bracket must have something to compare, or it is vacuous"
         _run_stage_one(tmp_path, roots)
@@ -383,7 +390,6 @@ class TestStageTwoCopiesBeforeItSwaps:
 
     def _staged_pass(self, tmp_path: Path) -> tuple[fx.SandboxRoots, Path]:
         roots = fx.sandbox_roots(tmp_path)
-        fx.stage_candidate_dirs(roots, ("wp", "ats", "ou"))
         _run_stage_one(tmp_path, roots)
         return roots, tmp_path / "outputs" / "verdict.json"
 
@@ -416,7 +422,6 @@ class TestStageTwoCopiesBeforeItSwaps:
         self, tmp_path: Path
     ) -> None:
         roots = fx.sandbox_roots(tmp_path)
-        fx.stage_candidate_dirs(roots, ("wp",))
         _run_stage_one(tmp_path, roots, targets=("wp",))
         runner.stage_two_promote(
             verdict_record_path=tmp_path / "outputs" / "verdict.json",
