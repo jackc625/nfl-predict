@@ -87,7 +87,10 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -115,14 +118,25 @@ logger = get_logger(__name__)
 # diagnose.py (identity, not copies): ``gate.CLV_COLUMN_FOR is diagnose.CLV_COLUMN_FOR``.
 __all__ = [
     "CLV_COLUMN_FOR",
+    "JUDGE_DIGEST_FUNCTIONS",
+    "JUDGE_VERSION",
+    "LIVE_RESCORE_PROVENANCE",
+    "SECONDARY_METRICS_FOR",
+    "SECONDARY_SCALAR_NAMES",
     "SIGNIFICANCE_ALPHA",
+    "DuplicateGameIdError",
+    "EligibilityIndex",
     "build_candidate_bundle",
+    "build_eligibility_index",
     "clv_floor_passes",
     "clv_non_regression_passes",
     # Re-exported from backtest.diagnose as part of the D24-13 parity surface; tests and
     # callers reference it as gate.clv_significance (IN-01).
     "clv_significance",
+    "comparator_provenance",
     "evaluate_target",
+    "judge_code_digest",
+    "live_secondary_metrics",
     "load_gate_config",
     "per_season_clv",
     "validate_gate_config",
@@ -146,6 +160,357 @@ _CLV_ODDS_COLS = (
     "spread",
     "total",
 )
+
+# ---------------------------------------------------------------------------
+# (0) D33-11 -- THE SECONDARY COMPARATOR IS A LIVE PAIRED RE-SCORE
+#
+# Owner ruling, 2026-09-12, option `live-rescore`:
+#
+#     Extend the live paired re-score to the five secondary comparator scalars,
+#     making the whole deploy gate gold-invariant by construction rather than by
+#     re-freezing after every rebuild. config/gate.toml's [baseline.*] block stays
+#     byte-untouched as a historical record; what changes permanently is where the
+#     comparator comes from. Both gate-baseline tripwires stay RED.
+#
+# WHY THIS IS A CONVERSION AND NOT AN INVENTION. The PRIMARY significance-tested CLV
+# gate was ALREADY gold-invariant: `_pooled_floor_reasons` consumes
+# `candidate["clv_delta_values"]` -- a live paired re-score of the deployed incumbent
+# on the same gold -- and touches the frozen block NOWHERE. Only the five secondary
+# scalars read it. Making those two functions look like `_pooled_floor_reasons` is
+# the whole change.
+#
+# WHAT THIS DOES NOT DO. It does not explain WHY the frozen baseline diverges from a
+# fresh re-score in 47 of 68 fields. That disclosure is PRESERVED, not discharged,
+# and remains owed. A live sample measured at ruling time: `baseline.wp.pooled.t` is
+# committed as -15.52461299 while a fresh re-score returns -17.93777193561613, a
+# difference of 2.4131589456161304 against a _FRESHNESS_TOL of 0.005.
+# ---------------------------------------------------------------------------
+
+# The FIVE secondary scalars, flat and in target order. FIVE, not four: an earlier
+# draft of Plan 33-08 said four, and a completeness check written against four would
+# have PASSED while one scalar went unchecked. Every count assertion in this phase
+# reads this constant rather than a literal.
+SECONDARY_SCALAR_NAMES: tuple[str, ...] = (
+    "wp.accuracy",
+    "wp.ece",
+    "wp.brier_score",
+    "ats.mae",
+    "ou.mae",
+)
+
+# The same five, keyed by target -- the form the scorers and the reason builders
+# consume. `SECONDARY_SCALAR_NAMES` is the flattening of this map and a test asserts
+# the two close against each other, so they are one declaration in two shapes rather
+# than two declarations that can drift.
+SECONDARY_METRICS_FOR: dict[str, tuple[str, ...]] = {
+    "wp": ("accuracy", "ece", "brier_score"),
+    "ats": ("mae",),
+    "ou": ("mae",),
+}
+
+# The judge that renders a verdict. A permanent semantic change to deployment policy
+# needs a name: a verdict that cannot say which judge produced it cannot be compared
+# against a later one.
+JUDGE_VERSION: str = "phase33-live-secondary-rescore-1"
+
+# The functions whose source the judge digest covers. A judging function OUTSIDE this
+# tuple is a change no verdict record can see.
+JUDGE_DIGEST_FUNCTIONS: tuple[str, ...] = (
+    "_secondary_reasons",
+    "_calibration_reasons",
+    "_pooled_floor_reasons",
+    "clv_non_regression_passes",
+    "live_secondary_metrics",
+    "build_eligibility_index",
+)
+
+# The marker `live_secondary_metrics` stamps onto every comparator it produces, and
+# the key it lives under. A comparator WITHOUT the marker is not rejected -- the
+# legacy Phase-24/25/30 `scripts/promote_models.py` path still hands the gate a
+# frozen-toml bundle and must keep working -- but it reads as `unattributed`, so a
+# verdict record can never imply a live re-score it did not have.
+COMPARATOR_PROVENANCE_KEY: str = "comparator_provenance"
+LIVE_RESCORE_PROVENANCE: str = "live_paired_rescore"
+UNATTRIBUTED_PROVENANCE: str = "unattributed"
+
+# Which column carries the prediction whose presence makes a game ELIGIBLE. For
+# ATS/OU this is the EXPLICIT line column, never the overloaded `model_prob` -- the
+# same CR-01 discipline `build_candidate_bundle` applies to the MAE.
+_PREDICTION_COLUMN_FOR: dict[str, str] = {
+    "wp": "model_prob",
+    "ats": "model_spread",
+    "ou": "model_total",
+}
+
+
+class DuplicateGameIdError(ValueError):
+    """A scored frame carries the same ``game_id`` twice, on a named side.
+
+    Raised BEFORE any scoring. A duplicate is a many-to-many join waiting to happen:
+    it would silently inflate one side of a paired comparison and the resulting
+    delta would look like a real number.
+    """
+
+
+@dataclass(frozen=True)
+class EligibilityIndex:
+    """The ONE materialized set of ``game_id``s both scorers are handed for a target.
+
+    "The same nominal gold file" is not the same eligible rows (T-33-41c). Two
+    scorers reading one file can still drop different rows for different reasons -- a
+    null in a feature one model uses and the other does not, a missing prediction on
+    one side -- and produce a comparison that is plausible, paired-looking and wrong.
+    This object is the answer: it is built once per target and passed to BOTH sides,
+    neither of which re-derives its own eligible set.
+
+    ``game_ids`` is SORTED, which is what makes the comparison order-invariant by
+    construction rather than by both callers happening to be careful.
+
+    The three exclusion counts are carried so an asymmetric drop is VISIBLE in the
+    verdict record rather than absorbed into a smaller n nobody notices.
+    """
+
+    target: str
+    game_ids: tuple[str, ...]
+    excluded_incumbent_only: int
+    excluded_candidate_only: int
+    excluded_not_in_gold: int
+
+    @property
+    def n(self) -> int:
+        """How many games survived into the paired comparison."""
+        return len(self.game_ids)
+
+    def as_record(self) -> dict[str, Any]:
+        """The verdict-record view of this index (counts, not the id list)."""
+        return {
+            "target": self.target,
+            "n_eligible": self.n,
+            "excluded_incumbent_only": self.excluded_incumbent_only,
+            "excluded_candidate_only": self.excluded_candidate_only,
+            "excluded_not_in_gold": self.excluded_not_in_gold,
+        }
+
+
+def _predicted_game_ids(frame: Any, target: str, side: str) -> set[str]:
+    """The set of ``game_id``s for which *frame* actually produced a prediction.
+
+    "Produced a prediction" means a NON-NULL value in the target's prediction column,
+    not merely a present column: a NaN row is a row the model did not score, and
+    counting it as eligible is how one side ends up compared on rows the other never
+    saw.
+
+    Args:
+        frame: A scored frame carrying ``game_id`` and the target's prediction column.
+        target: One of "wp", "ats", "ou".
+        side: "incumbent" or "candidate" -- used only to name a duplicate in the error.
+
+    Returns:
+        The set of game_ids with a non-null prediction.
+
+    Raises:
+        DuplicateGameIdError: If ``game_id`` repeats anywhere in *frame*.
+    """
+    ids = frame["game_id"].astype(str)
+    duplicated = sorted(set(ids[ids.duplicated()]))
+    if duplicated:
+        msg = (
+            f"The {side} frame for target '{target}' carries duplicate game_id values "
+            f"{duplicated}. A duplicate is a many-to-many join waiting to happen, so the "
+            "eligibility index refuses it before any scoring rather than producing a "
+            "plausible but inflated paired comparison."
+        )
+        raise DuplicateGameIdError(msg)
+
+    column = _PREDICTION_COLUMN_FOR[target]
+    if column not in frame.columns:
+        return set()
+    predicted = frame.loc[frame[column].notna(), "game_id"].astype(str)
+    return set(predicted)
+
+
+def build_eligibility_index(
+    target: str,
+    gold: Any,
+    incumbent: Any,
+    candidate: Any,
+) -> EligibilityIndex:
+    """Materialize the ONE per-target eligible ``game_id`` set both scorers share.
+
+    The index is the INTERSECTION of the games for which BOTH sides produced a
+    prediction, further restricted to the games gold carries truth for. Rows dropped
+    at each of those three boundaries are COUNTED by side, so an asymmetric exclusion
+    shows up in the verdict record instead of quietly shrinking n.
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        gold: The truth frame carrying ``game_id``. ``None`` means "impose no truth
+            restriction" -- used by synthetic fixtures that carry ``actual`` on the
+            scored frames themselves.
+        incumbent: The DEPLOYED incumbent's scored frame.
+        candidate: The candidate's scored frame.
+
+    Returns:
+        An :class:`EligibilityIndex` with SORTED ``game_ids``.
+
+    Raises:
+        ValueError: If *target* is not a known target.
+        DuplicateGameIdError: If either side repeats a ``game_id``.
+    """
+    if target not in _PREDICTION_COLUMN_FOR:
+        msg = f"Unknown target: '{target}'. Must be one of {sorted(_PREDICTION_COLUMN_FOR)}."
+        raise ValueError(msg)
+
+    incumbent_ids = _predicted_game_ids(incumbent, target, "incumbent")
+    candidate_ids = _predicted_game_ids(candidate, target, "candidate")
+
+    paired = incumbent_ids & candidate_ids
+    if gold is not None:
+        gold_ids = set(gold["game_id"].astype(str))
+        eligible = paired & gold_ids
+        excluded_not_in_gold = len(paired - gold_ids)
+    else:
+        eligible = paired
+        excluded_not_in_gold = 0
+
+    return EligibilityIndex(
+        target=target,
+        game_ids=tuple(sorted(eligible)),
+        # "incumbent_only" = the incumbent predicted it and the candidate did not, so
+        # the CANDIDATE is why it is out. Named by which side HAS the row, which is
+        # the side a reader would go looking at.
+        excluded_incumbent_only=len(incumbent_ids - candidate_ids),
+        excluded_candidate_only=len(candidate_ids - incumbent_ids),
+        excluded_not_in_gold=excluded_not_in_gold,
+    )
+
+
+def _index_game_ids(eligibility_index: Any) -> tuple[str, ...]:
+    """Normalize an :class:`EligibilityIndex` OR a bare sequence of ids to a tuple.
+
+    Plan 33-15 may hand a scorer the ids alone; that must not be a second code path.
+    """
+    if isinstance(eligibility_index, EligibilityIndex):
+        return eligibility_index.game_ids
+    return tuple(str(g) for g in eligibility_index)
+
+
+def live_secondary_metrics(
+    target: str,
+    incumbent: Any,
+    gold: Any,
+    eligibility_index: Any,
+) -> dict[str, Any]:
+    """Re-score the DEPLOYED INCUMBENT's secondary scalars on the shared index (D33-11).
+
+    This is the comparator ``_secondary_reasons`` and ``_calibration_reasons`` now
+    read. It is the same live-re-score idea ``build_candidate_bundle`` already applies
+    to ``baseline_clv_values``, extended to the FIVE secondary scalars so the whole
+    judge is gold-invariant BY CONSTRUCTION rather than by re-freezing
+    ``config/gate.toml`` after every rebuild.
+
+    BOTH sides are REINDEXED onto ``eligibility_index`` before anything is computed.
+    That is what makes the comparison order-invariant and genuinely paired: a scorer
+    that derived its own eligible set from the gold file could silently score the two
+    models on different rows.
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        incumbent: The deployed incumbent's scored frame (``game_id`` plus the
+            target's prediction column, and ``actual`` when *gold* is not supplied).
+        gold: The truth frame (``game_id`` + ``actual``). It is the AUTHORITATIVE
+            source of ``actual`` when present, so both sides are graded against one
+            truth; ``None`` falls back to the scored frame's own ``actual`` column.
+        eligibility_index: An :class:`EligibilityIndex` or a bare sequence of
+            ``game_id``s. The index is a RESTRICTION, not a suggestion.
+
+    Returns:
+        ``{metric: value, ..., "n": int, COMPARATOR_PROVENANCE_KEY: ...,
+        "judge_version": ..., "target": ...}``. Over an EMPTY index every scalar is
+        ``None`` rather than 0.0 -- a metric over no rows is UNKNOWN, and a 0.0 MAE
+        would read as a perfect model.
+    """
+    if target not in SECONDARY_METRICS_FOR:
+        msg = f"Unknown target: '{target}'. Must be one of {sorted(SECONDARY_METRICS_FOR)}."
+        raise ValueError(msg)
+
+    game_ids = _index_game_ids(eligibility_index)
+    metrics: dict[str, Any] = {
+        "target": target,
+        "n": len(game_ids),
+        "judge_version": JUDGE_VERSION,
+        COMPARATOR_PROVENANCE_KEY: LIVE_RESCORE_PROVENANCE,
+    }
+    if isinstance(eligibility_index, EligibilityIndex):
+        metrics["eligibility"] = eligibility_index.as_record()
+
+    if not game_ids:
+        # No rows -> no measurement. Null, never a fabricated zero.
+        for metric in SECONDARY_METRICS_FOR[target]:
+            metrics[metric] = None
+        return metrics
+
+    scored = incumbent.set_index(incumbent["game_id"].astype(str)).reindex(game_ids)
+    if gold is not None and "actual" in getattr(gold, "columns", ()):
+        actual = (
+            gold.set_index(gold["game_id"].astype(str))
+            .reindex(game_ids)["actual"]
+            .to_numpy(dtype=float)
+        )
+    else:
+        actual = scored["actual"].to_numpy(dtype=float)
+
+    if target == "wp":
+        wp_metrics = compute_wp_metrics(actual, scored["model_prob"].to_numpy(float))
+        for metric in SECONDARY_METRICS_FOR["wp"]:
+            metrics[metric] = float(wp_metrics[metric])
+    else:
+        line_col = _PREDICTION_COLUMN_FOR[target]
+        metrics["mae"] = float(
+            np.mean(np.abs(actual - scored[line_col].to_numpy(dtype=float)))
+        )
+
+    return metrics
+
+
+def comparator_provenance(comparator: dict[str, Any] | None) -> str:
+    """Where a comparator bundle came from -- ``live_paired_rescore`` or ``unattributed``.
+
+    A hand-built dict (the legacy ``scripts/promote_models.py`` frozen-toml path) is
+    NOT rejected, but it must never read as a live re-score: a verdict record that
+    claimed a live comparator it did not have would be worse than one that admits it.
+    """
+    if not comparator:
+        return UNATTRIBUTED_PROVENANCE
+    value = comparator.get(COMPARATOR_PROVENANCE_KEY)
+    return value if isinstance(value, str) and value else UNATTRIBUTED_PROVENANCE
+
+
+def judge_code_digest(sources: list[str] | None = None) -> str:
+    """A newline-normalized sha256 over the source of every judging function.
+
+    Every verdict record carries this alongside :data:`JUDGE_VERSION`. The version
+    names the policy; the digest catches a change to the policy that forgot to move
+    the version. Computed from source at call time, never a transcribed constant.
+
+    Normalization follows the idiom stated at
+    ``tests/unit/test_preregistration_ancestry.py:32-39``: this repository has
+    ``core.autocrlf=true`` and no ``.gitattributes``, so a digest over raw bytes would
+    pin a value that holds only on the machine that measured it.
+
+    Args:
+        sources: Override the source list (the mutation control uses this). Defaults
+            to the live source of every name in :data:`JUDGE_DIGEST_FUNCTIONS`.
+
+    Returns:
+        A 64-character lowercase hex digest.
+    """
+    if sources is None:
+        sources = [
+            inspect.getsource(globals()[name]) for name in JUDGE_DIGEST_FUNCTIONS
+        ]
+    normalized = "\n".join(s.replace("\r\n", "\n").replace("\r", "\n") for s in sources)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -506,22 +871,32 @@ def validate_gate_config(cfg: dict[str, Any]) -> None:
 def _secondary_reasons(
     target: str,
     candidate: dict[str, Any],
-    baseline: dict[str, Any],
+    comparator: dict[str, Any],
     secondary: dict[str, Any],
 ) -> tuple[bool, list[str]]:
     """Apply the POOLED secondary non-regression gates; return (passed, reasons).
 
     WP gates on accuracy (must not drop more than ``wp_accuracy_max_drop``); ATS/OU gate on
-    MAE (must not increase more than ``regression_mae_max_increase``). A secondary check whose
-    baseline value is absent is recorded as skipped and does NOT fail the target (the baseline
-    is filled by Plan 24-03; Wave-1 synthetic baselines may omit a metric).
+    MAE (must not increase more than ``regression_mae_max_increase``).
+
+    D33-11 (owner ruling 2026-09-12): ``comparator`` is a LIVE PAIRED RE-SCORE of the
+    deployed incumbent on the SAME gold the candidate was scored on -- the output of
+    :func:`live_secondary_metrics`, computed over one shared
+    :class:`EligibilityIndex`. It is NOT ``config/gate.toml``'s ``[baseline.*]`` block,
+    which stays byte-untouched as a historical record. This is the shape
+    ``_pooled_floor_reasons`` has always had; the two secondary readers were converted
+    to match it rather than a third pattern being invented.
+
+    A secondary check whose comparator value is absent is recorded as skipped and does
+    NOT fail the target (an empty eligibility index yields null scalars, and a
+    synthetic bundle may omit a metric).
     """
     reasons: list[str] = []
     passed = True
 
     if target == "wp":
         cand_acc = candidate.get("accuracy")
-        base_acc = baseline.get("accuracy")
+        base_acc = comparator.get("accuracy")
         if cand_acc is None or base_acc is None:
             reasons.append("Accuracy comparison skipped (metric not available)")
         else:
@@ -538,7 +913,7 @@ def _secondary_reasons(
                 )
     else:
         cand_mae = candidate.get("mae")
-        base_mae = baseline.get("mae")
+        base_mae = comparator.get("mae")
         if cand_mae is None or base_mae is None:
             reasons.append("MAE comparison skipped (metric not available)")
         else:
@@ -557,13 +932,18 @@ def _secondary_reasons(
 
 def _calibration_reasons(
     candidate: dict[str, Any],
-    baseline: dict[str, Any],
+    comparator: dict[str, Any],
     secondary: dict[str, Any],
 ) -> tuple[bool, list[str]]:
     """Apply the WP calibration non-regression gates (D24-05); return (passed, reasons).
 
-    WP-only: ECE and Brier must not exceed the baseline by more than their tolerances. A
-    missing baseline calibration metric is recorded as skipped (does not fail).
+    WP-only: ECE and Brier must not exceed the comparator by more than their
+    tolerances. A missing comparator calibration metric is recorded as skipped (does
+    not fail).
+
+    D33-11: like :func:`_secondary_reasons`, ``comparator`` is the LIVE PAIRED
+    RE-SCORE from :func:`live_secondary_metrics`, never ``config/gate.toml``'s frozen
+    ``[baseline.*]`` block.
     """
     reasons: list[str] = []
     passed = True
@@ -573,7 +953,7 @@ def _calibration_reasons(
         ("brier_score", "wp_brier_max_increase"),
     ):
         cand_val = candidate.get(metric)
-        base_val = baseline.get(metric)
+        base_val = comparator.get(metric)
         if cand_val is None or base_val is None:
             reasons.append(f"{metric} comparison skipped (metric not available)")
             continue
@@ -737,7 +1117,7 @@ def _absolute_verdict(
 def evaluate_target(
     target: str,
     candidate: dict[str, Any],
-    baseline: dict[str, Any],
+    comparator: dict[str, Any],
     cfg: dict[str, Any],
 ) -> dict[str, Any]:
     """Decide whether a candidate model may ship for one target (the per-target deploy gate).
@@ -758,12 +1138,30 @@ def evaluate_target(
     bettable-bar readout (Phases 26-27, Pitfall 3) -- it is NEVER the deploy decision under
     non_regression.
 
+    WHERE THE COMPARATOR COMES FROM (D33-11, owner ruling 2026-09-12). It is a LIVE
+    PAIRED RE-SCORE of the deployed incumbent on the SAME gold the candidate was
+    scored on, produced by :func:`live_secondary_metrics` over one shared
+    :class:`EligibilityIndex`. It is NOT ``config/gate.toml``'s ``[baseline.*]``
+    block. That block stays byte-untouched as a HISTORICAL RECORD: two of Phase 33's
+    five deliberate tripwires assert it reproduces, so re-freezing it after a gold
+    rebuild would clear a disclosure by making it pass. Re-scoring live makes the
+    whole judge gold-invariant by construction instead.
+
+    The frozen block's divergence from a fresh re-score in 47 of 68 fields is
+    PRESERVED, not discharged, by that ruling, and remains an open disclosure.
+
+    Callers that hand this a bundle without :data:`LIVE_RESCORE_PROVENANCE` are not
+    rejected -- the legacy ``scripts/promote_models.py`` path still supplies a
+    frozen-toml bundle -- but :func:`comparator_provenance` reports them as
+    ``unattributed`` so a verdict record cannot imply a live re-score it did not have.
+
     Args:
         target: One of "wp", "ats", "ou".
         candidate: The candidate bundle from ``build_candidate_bundle``.
-        baseline: The frozen baseline bundle for this target (from ``config/gate.toml``;
-            same key shape as the candidate -- ``clv_values``/``mean``/``per_season`` plus
-            ``accuracy``/``ece``/``brier_score`` for WP or ``mae`` for ATS/OU).
+        comparator: The live re-scored incumbent bundle for this target (same key
+            shape as the candidate -- ``accuracy``/``ece``/``brier_score`` for WP or
+            ``mae`` for ATS/OU). Returned unchanged under the ``baseline`` /
+            ``v1_metrics`` result keys, which downstream readers still use.
         cfg: The loaded gate config (reads ``gate.alpha``, ``gate.floor_mode``,
             ``gate.per_season_must_pass``, ``gate.calibration_in_gate``, ``gate.secondary``).
 
@@ -807,14 +1205,16 @@ def evaluate_target(
         passed = passed and ps_pass
         reasons.extend(ps_reasons)
 
-    # (3) Pooled secondary non-regression.
-    sec_passed, sec_reasons = _secondary_reasons(target, candidate, baseline, secondary)
+    # (3) Pooled secondary non-regression, against the LIVE re-scored comparator (D33-11).
+    sec_passed, sec_reasons = _secondary_reasons(
+        target, candidate, comparator, secondary
+    )
     passed = passed and sec_passed
     reasons.extend(sec_reasons)
 
-    # (4) WP calibration-in-gate (D24-05).
+    # (4) WP calibration-in-gate (D24-05), same comparator source.
     if target == "wp" and gate.get("calibration_in_gate"):
-        cal_passed, cal_reasons = _calibration_reasons(candidate, baseline, secondary)
+        cal_passed, cal_reasons = _calibration_reasons(candidate, comparator, secondary)
         passed = passed and cal_passed
         reasons.extend(cal_reasons)
 
@@ -822,12 +1222,16 @@ def evaluate_target(
         "passed": passed,
         "reasons": reasons,
         "candidate": candidate,
-        "baseline": baseline,
+        # Key name UNCHANGED so downstream readers do not move (print_gating_summary,
+        # the 2x2 readout, the phase readouts). What it CONTAINS changed: under D33-11
+        # this is the live re-scored comparator, not the frozen gate.toml block.
+        "baseline": comparator,
+        "comparator_provenance": comparator_provenance(comparator),
         "per_season": candidate.get("per_season", {}),
         # Always-on absolute-vs-zero verdict on the raw candidate CLV (D25-01 bettable bar).
         "absolute_verdict": absolute_verdict,
         "absolute_per_season": absolute_per_season,
         # Aliases kept for print_gating_summary compatibility (Plan 24-04 rewire).
-        "v1_metrics": baseline,
+        "v1_metrics": comparator,
         "v2_metrics": candidate,
     }

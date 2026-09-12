@@ -126,6 +126,18 @@ def _floor_passing_candidate(**metrics: float) -> dict[str, Any]:
     return bundle
 
 
+def _actuals(game_ids: list[str], target: str) -> list[float]:
+    """Outcomes for *game_ids*.
+
+    WP alternates 1/0 rather than being constant: ``compute_wp_metrics`` runs
+    ``log_loss``, which refuses a single-class ``y_true``, so a constant-outcome
+    fixture would fail inside sklearn and say nothing about the gate.
+    """
+    if target == "wp":
+        return [float(i % 2) for i in range(len(game_ids))]
+    return [4.0] * len(game_ids)
+
+
 def _scored_frame(
     target: str,
     game_ids: list[str],
@@ -138,7 +150,7 @@ def _scored_frame(
         {
             "game_id": game_ids,
             "season": [_SEASONS[i % len(_SEASONS)] for i in range(len(game_ids))],
-            "actual": [1.0 if target == "wp" else 4.0] * len(game_ids),
+            "actual": _actuals(game_ids, target),
             "model_prob": [prob if target == "wp" else line] * len(game_ids),
         }
     )
@@ -151,12 +163,7 @@ def _scored_frame(
 
 def _gold_frame(game_ids: list[str], target: str) -> pd.DataFrame:
     """The truth frame both sides are scored against."""
-    return pd.DataFrame(
-        {
-            "game_id": game_ids,
-            "actual": [1.0 if target == "wp" else 4.0] * len(game_ids),
-        }
-    )
+    return pd.DataFrame({"game_id": game_ids, "actual": _actuals(game_ids, target)})
 
 
 def _ids(n: int, prefix: str = "g") -> list[str]:
@@ -523,9 +530,17 @@ class TestLiveSecondaryMetricsScoreOnlyTheSharedIndex:
         gold = _gold_frame(game_ids, "ats")
         frame = _scored_frame("ats", game_ids, line=6.0)
         index = gate.build_eligibility_index("ats", gold, frame, frame)
-        assert gate.live_secondary_metrics(
-            "ats", frame, gold, index
-        ) == gate.live_secondary_metrics("ats", frame, gold, tuple(index.game_ids))
+        from_index = gate.live_secondary_metrics("ats", frame, gold, index)
+        from_ids = gate.live_secondary_metrics(
+            "ats", frame, gold, tuple(index.game_ids)
+        )
+        # The SCALARS must agree exactly. The index form additionally carries the
+        # exclusion counts, which a bare id sequence cannot know -- that difference is
+        # the point of passing the index, not a discrepancy.
+        assert from_index["mae"] == from_ids["mae"]
+        assert from_index["n"] == from_ids["n"]
+        assert "eligibility" in from_index
+        assert "eligibility" not in from_ids
 
     def test_an_empty_index_yields_null_scalars_rather_than_a_fabricated_zero(
         self,
