@@ -868,3 +868,252 @@ BET_LIST_REPLAY_ROW_COUNT: int = 234
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_05: int = 78
+
+
+# ---------------------------------------------------------------------------
+# THE EIGHT INTERNATIONAL VENUES, AS THE OWNER RATIFIED THEM.
+#
+# APPENDED by Plan 33-06 Task 1 on 2026-09-12. Nothing above this line was edited.
+#
+# THE OWNER RULED ON 2026-09-12 at the Task-1 blocking-human checkpoint, selecting
+# "approve all forty as tabled", including both flagged minors:
+#
+#     Approved all forty values as tabled, including MEX00's elevation written as
+#     the MEASURED 7365 (not CONTEXT's round 7350), `subtropical_highland` as a new
+#     `climate_zone` token for Mexico City, and MEL00's `outdoor` roof_type on
+#     structural-absence-plus-corroboration sourcing.
+#
+# The forty are the five cells the R11 acceptance is stated over -- latitude,
+# longitude, elevation_ft, timezone, roof_type -- across the eight venues. The
+# remaining descriptive cells (city, country, capacity, surface, climate_zone) were
+# tabled and ratified alongside them and are recorded here too, so `data/venues.json`
+# has ONE committed source rather than two half-sources that can disagree.
+#
+# NONE OF THESE IS INHERITED FROM THE FEED. `roof_type` in particular is entered
+# EXPLICITLY for all eight: see FEED_ROOF_DISAGREEMENTS below, where the feed is
+# WRONG on three of them.
+#
+# Field order, stated once and asserted by tests/unit/test_venues_json_international.py:
+#     (stadium_id, venue_id, venue_name, city, country, latitude, longitude,
+#      elevation_ft, roof_type, surface, capacity, climate_zone, timezone)
+#
+# `venue_name` MUST equal the feed's `stadium` string EXACTLY. Every one of the
+# eight feed strings is PLAIN ASCII with NO diacritic -- "Maracana Stadium" not
+# Maracana with a tilde, "Bernabeu" not Bernabeu with an acute -- because
+# scripts/ingest_games._load_venue_lookup keys on the LOWERCASED NAME. A "corrected"
+# spelling here would silently miss that third resolver and fall through to the
+# nflverse roof map, re-introducing the three false domes on one surface while the
+# other two resolvers are right. Partially repaired, silently, is the worst state.
+#
+# `home_teams` is empty for all eight: no NFL team calls any of them home, and an
+# empty list is what makes the home-team resolvers decline them rather than claim
+# them.
+# ---------------------------------------------------------------------------
+
+INTERNATIONAL_VENUE_FACTS: tuple[tuple[object, ...], ...] = (
+    (
+        "MEL00",
+        "melbourne_cricket_ground",
+        "Melbourne Cricket Ground",
+        "Melbourne",
+        "Australia",
+        -37.8199,
+        144.9834,
+        43,
+        "outdoor",
+        "Matrix Turf",
+        100024,
+        "oceanic",
+        "Australia/Melbourne",
+    ),
+    (
+        "RIO00",
+        "maracana_stadium",
+        "Maracana Stadium",
+        "Rio de Janeiro",
+        "Brazil",
+        -22.9122,
+        -43.2303,
+        49,
+        "outdoor",
+        "Matrix Turf",
+        73139,
+        "tropical",
+        "America/Sao_Paulo",
+    ),
+    (
+        "LON02",
+        "tottenham_hotspur_stadium",
+        "Tottenham Hotspur Stadium",
+        "London",
+        "United Kingdom",
+        51.6044,
+        -0.0664,
+        43,
+        "outdoor",
+        "Grass",
+        62850,
+        "oceanic",
+        "Europe/London",
+    ),
+    (
+        "LON00",
+        "wembley_stadium",
+        "Wembley Stadium",
+        "London",
+        "United Kingdom",
+        51.5556,
+        -0.2794,
+        154,
+        "outdoor",
+        "Grass",
+        90000,
+        "oceanic",
+        "Europe/London",
+    ),
+    (
+        "PAR00",
+        "stade_de_france",
+        "Stade de France",
+        "Saint-Denis",
+        "France",
+        48.9244,
+        2.3600,
+        108,
+        "outdoor",
+        "Sport Turf",
+        81338,
+        "oceanic",
+        "Europe/Paris",
+    ),
+    (
+        "MAD01",
+        "bernabeu",
+        "Bernabeu",
+        "Madrid",
+        "Spain",
+        40.4531,
+        -3.6883,
+        2349,
+        "retractable",
+        "FieldTurf",
+        83186,
+        "mediterranean",
+        "Europe/Madrid",
+    ),
+    (
+        "MUN01",
+        "fc_bayern_munich_stadium",
+        "FC Bayern Munich Stadium",
+        "Munich",
+        "Germany",
+        48.2188,
+        11.6248,
+        1611,
+        "outdoor",
+        "FieldTurf",
+        75024,
+        "oceanic",
+        "Europe/Berlin",
+    ),
+    (
+        "MEX00",
+        "estadio_banorte",
+        "Estadio Banorte",
+        "Mexico City",
+        "Mexico",
+        19.3031,
+        -99.1506,
+        7365,
+        "outdoor",
+        "Grass",
+        87523,
+        "subtropical_highland",
+        "America/Mexico_City",
+    ),
+)
+
+# THE FEED IS WRONG ON THREE ROOFS, AND THIS IS THE RECORD OF IT (D33-16).
+#
+# MEASURED from the eight neutral-site rows of
+# data/bronze/schedules_raw_bronze_2026_W01_20260911T110252.parquet on 2026-09-12:
+#
+#     MEL00  Melbourne Cricket Ground   roof=dome      -> RATIFIED outdoor
+#     RIO00  Maracana Stadium           roof=None      -> RATIFIED outdoor
+#     LON02  Tottenham Hotspur Stadium  roof=outdoors  -> RATIFIED outdoor      (agrees)
+#     LON00  Wembley Stadium            roof=outdoors  -> RATIFIED outdoor      (agrees)
+#     PAR00  Stade de France            roof=dome      -> RATIFIED outdoor
+#     MAD01  Bernabeu                   roof=None      -> RATIFIED retractable
+#     MUN01  FC Bayern Munich Stadium   roof=dome      -> RATIFIED outdoor
+#     MEX00  Estadio Banorte            roof=outdoors  -> RATIFIED outdoor      (agrees)
+#
+# A DISAGREEMENT is a venue where the feed carries a roof value that MAPS TO A
+# DIFFERENT project roof than the ratified one. RIO00 and MAD01 carry NO value, so
+# they are ABSENCES, not disagreements -- an absent value cannot contradict anything,
+# and folding the two categories together would leave the recorder unable to tell a
+# feed correction from a feed backfill. The three below are genuine contradictions:
+# the feed says dome, _NFLVERSE_ROOF_MAP sends dome to indoor, and _is_outdoor_game
+# sends indoor to a SKIP -- so an inherited value would zero the weather on three
+# genuinely open-air games with no error raised.
+#
+# tests/unit/test_venues_json_international.py recomputes this set from the capture
+# and asserts equality, so a future feed correction shows up as a DIFF against this
+# tuple rather than as a silent flip.
+FEED_ROOF_DISAGREEMENTS: tuple[str, ...] = ("MEL00", "PAR00", "MUN01")
+
+# The feed's measured roof cell for each of the eight, recorded verbatim so the
+# recorder above has something to be checked against rather than only itself. None
+# means the cell is absent in the capture.
+FEED_ROOF_VALUES_2026: tuple[tuple[str, str | None], ...] = (
+    ("MEL00", "dome"),
+    ("RIO00", None),
+    ("LON02", "outdoors"),
+    ("LON00", "outdoors"),
+    ("PAR00", "dome"),
+    ("MAD01", None),
+    ("MUN01", "dome"),
+    ("MEX00", "outdoors"),
+)
+
+# THE 91 HISTORICAL NEUTRAL-SITE GAMES THAT RESOLVED TO THE HOME TEAM'S OWN STADIUM
+# FOR THE LIFE OF THIS PROJECT (D33-15), RE-DERIVED HERE RATHER THAN COPIED.
+#
+# The phase CONTEXT recorded these as measured but the researcher did not reproduce
+# them, and a readout that publishes a wrong measured finding is the class this
+# project treats as serious. All five were RE-DERIVED on 2026-09-12 from the pinned
+# schedules (data.upstream_pin.load_schedules over 2002-2025, 6,499 rows) and every
+# one reproduced EXACTLY -- there is no divergence to record.
+#
+#     91  rows carrying location == Neutral across 2002-2025
+#     27  distinct stadium_id values among them
+#      1  in 2002, rising to 8 in 2025
+#
+# Per-model TRAINING-row share, taken over each deployed artifact's own
+# config.train_seasons (artifacts/latest.json -> wp_20260824_113325 [2018-2019],
+# ats_20260605_220128 [2015-2019], ou_20260326_163930 [2018-2019]):
+#
+#     wp    10 /   534  = 1.87%
+#     ats   25 / 1,335  = 1.87%
+#     ou    10 /   534  = 1.87%
+#
+# against 2026's 8 / 272 = 2.94%. The forward season carries the defect at roughly
+# 1.6x the rate the deployed models were trained under, which is the reason this is
+# a disclosure and not a footnote. NOTHING IS REPAIRED HERE: history keeps its
+# home_team resolution (D33-15 gates the new routing on season >= 2026), and the 91
+# rows stay exactly as they have always been.
+HISTORICAL_NEUTRAL_MISRESOLUTION: dict[str, object] = {
+    "games": 91,
+    "distinct_stadium_ids": 27,
+    "first_season": 2002,
+    "first_season_count": 1,
+    "last_season": 2025,
+    "last_season_count": 8,
+    "train_share": {
+        "wp": (10, 534),
+        "ats": (25, 1335),
+        "ou": (10, 534),
+    },
+    "forward_share_2026": (8, 272),
+    "rederived_on": "2026-09-12",
+    "diverged_from_context": False,
+}
