@@ -268,12 +268,86 @@ def normalize_snapshot_ts(value: Any) -> datetime:
 
 
 class NaiveTimestampError(ValueError):
-    """A timestamp with no timezone reached a FREEZE comparison. RED skeleton."""
+    """A timestamp carrying no timezone reached a FREEZE comparison.
+
+    Raised rather than anchored, because a freeze comparison has NO defensible default
+    timezone: assuming UTC moves the instant four or five hours later than the market meant
+    and assuming Eastern moves it earlier than a stored UTC value meant. Either assumption
+    silently admits or refuses the wrong rows, which is the repudiation class T-33-23 names.
+
+    A subclass of ``ValueError`` so an existing caller that catches the parse failure still
+    catches this one; the distinct type is what lets the freeze path assert WHICH failure it
+    got.
+    """
 
 
 def require_aware_snapshot_ts(value: Any) -> datetime:
-    """The STRICT wrapper. RED skeleton -- implemented in this plan's GREEN commit."""
-    raise NotImplementedError
+    """Parse *value* into a UTC-aware instant, REFUSING a naive one (D33-27).
+
+    THIS IS A STRICT WRAPPER, NOT AN EXTENSION OF :func:`normalize_snapshot_ts`, and the
+    distinction is a ruling rather than a style choice. ``normalize_snapshot_ts`` deliberately
+    anchors a NAIVE value in EASTERN and argues that at length in its own docstring: an
+    unqualified wall-clock time in this project's ODDS data is a market-local time, and reading
+    it as UTC moves it across the 6 PM freeze. D33-27 requires the FREEZE path to do the
+    opposite and RAISE. One function cannot hold both behaviours without becoming a second
+    answer wearing one name, so the strict behaviour lives here and the single-source property
+    is preserved BY COMPOSITION -- every aware shape is still parsed by exactly one function.
+
+    The naiveness check is performed on the PARSED value, not on ``type(value)``, so every
+    shape ``normalize_snapshot_ts`` documents is covered by one rule: a naive ``datetime``, a
+    naive ``pandas.Timestamp``, a naive ISO string and a bare ``numpy.datetime64`` all reach
+    the same refusal. A null, empty or unparseable value is NOT relabelled as naive -- it falls
+    through to ``normalize_snapshot_ts``'s own ``ValueError``, because a MISSING instant and an
+    UNQUALIFIED one are different failures with different fixes.
+
+    Args:
+        value: A snapshot or freeze value in any shape ``normalize_snapshot_ts`` accepts.
+
+    Returns:
+        The same instant as a tz-aware datetime expressed in UTC.
+
+    Raises:
+        NaiveTimestampError: when *value* parses to an instant carrying no timezone.
+        ValueError: when *value* is null, empty or unparseable (the parser's own refusal).
+    """
+    naive = _naive_parse_or_none(value)
+    if naive is not None:
+        msg = (
+            f"refusing to use {value!r} (type {type(value).__name__}) in a freeze "
+            f"comparison: it parses to {naive}, which carries NO timezone. A "
+            "freeze comparison has no defensible default timezone -- assuming UTC moves the "
+            "instant hours later than the market meant and assuming Eastern moves a stored "
+            "UTC value earlier, and either assumption silently admits or refuses the wrong "
+            "rows. Store the instant with an explicit offset."
+        )
+        raise NaiveTimestampError(msg)
+    return normalize_snapshot_ts(value).astimezone(UTC)
+
+
+def _naive_parse_or_none(value: Any) -> pd.Timestamp | None:
+    """*value* parsed, but ONLY when the result is naive; otherwise None.
+
+    None therefore means "not this function's problem": aware, null, or unparseable. Each of
+    those is answered by :func:`normalize_snapshot_ts`, which is the point -- this helper adds
+    a rule and takes nothing away.
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        candidate: Any = text
+    else:
+        if value is None or _is_null_scalar(value):
+            return None
+        candidate = value
+
+    try:
+        parsed = pd.Timestamp(candidate)
+    except (TypeError, ValueError):
+        return None
+    if parsed is pd.NaT or pd.isna(parsed):
+        return None
+    return parsed if parsed.tzinfo is None else None
 
 
 def is_fresh_at_freeze(snapshot_value: Any, gameday: str) -> bool:

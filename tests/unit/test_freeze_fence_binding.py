@@ -43,6 +43,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -301,3 +302,113 @@ class TestSelectionRefusesAGameWhoseFreezeHasPassed:
         )
         assert set(selected["game_id"]) == expected
         assert expected, "the fixture shares no freeze instant -- the check is vacuous"
+
+
+# ---------------------------------------------------------------------------
+# The back-compat READ shim.
+# ---------------------------------------------------------------------------
+#
+# WHY THESE LIVE HERE. Plan 33-05 Task 1 creates ``read_bet_list_with_schema_shim`` but names no
+# test module for it -- its three named modules are all about the fence. It is filed under this
+# module, the task's primary home, rather than under ``tests/unit/test_bet_list_schema.py``,
+# which Task 3 owns and which cannot be extended before the owner checkpoint that locks the
+# column count has been ruled on.
+
+
+class TestTheBackCompatReadShim:
+    """A 28-column parquet still reads after the schema goes to 29 -- and is never rewritten."""
+
+    def _pre_bump_columns(self) -> list[str]:
+        """The 28 columns a stored file carries, derived rather than copied.
+
+        Taken as ``BET_LIST_READ_COLUMNS`` minus the one column this phase adds, so this list is
+        the pre-bump order BOTH before and after ``api.cache`` carries it. Deriving it from
+        ``BET_LIST_COLUMNS`` instead would silently become the 29-column order after the bump,
+        and the shim would then be handed a frame that needs no shimming -- a test that passes by
+        no longer exercising the thing it names.
+        """
+        from backtest.weekly_bet_list import BET_LIST_READ_COLUMNS, DECIDED_AT_COLUMN
+
+        return [c for c in BET_LIST_READ_COLUMNS if c != DECIDED_AT_COLUMN]
+
+    def _stored_28_column_parquet(self, tmp_path: Path) -> Path:
+        from backtest.weekly_bet_list import BET_LIST_ARTIFACT_NAME
+
+        columns = self._pre_bump_columns()
+        assert len(columns) == 28, len(columns)
+        frame = pd.DataFrame(
+            [dict.fromkeys(columns)],
+            columns=pd.Index(columns),
+        )
+        frame["game_id"] = "2025_W01_DET@KC"
+        frame["provenance"] = "backtest_replay"
+        path = tmp_path / BET_LIST_ARTIFACT_NAME
+        frame.to_parquet(path, index=False)
+        return path
+
+    def test_a_28_column_file_reads_back_as_29_with_a_null_observation_time(
+        self, tmp_path: Path
+    ) -> None:
+        from backtest.weekly_bet_list import (
+            BET_LIST_READ_COLUMNS,
+            DECIDED_AT_COLUMN,
+            read_bet_list_with_schema_shim,
+        )
+
+        path = self._stored_28_column_parquet(tmp_path)
+        shimmed = read_bet_list_with_schema_shim(path)
+
+        assert list(shimmed.columns) == list(BET_LIST_READ_COLUMNS)
+        assert len(shimmed.columns) == 29
+        assert shimmed[DECIDED_AT_COLUMN].isna().all(), (
+            "the shim invented an observation time for a row that was never observed"
+        )
+
+    def test_the_shim_writes_nothing(self, tmp_path: Path) -> None:
+        """The plan's own named prohibition, asserted on the file's BYTES.
+
+        Every stored row is already past its freeze, so stamping an observation time onto one
+        now would record a time at which nobody observed anything.
+        """
+        import hashlib
+
+        from backtest.weekly_bet_list import read_bet_list_with_schema_shim
+
+        path = self._stored_28_column_parquet(tmp_path)
+        before = hashlib.sha256(path.read_bytes()).hexdigest()
+        read_bet_list_with_schema_shim(path)
+        read_bet_list_with_schema_shim(path)
+        after = hashlib.sha256(path.read_bytes()).hexdigest()
+
+        assert after == before, "the READ shim rewrote the stored ledger"
+        assert sorted(p.name for p in tmp_path.iterdir()) == [path.name]
+
+    def test_a_column_other_than_the_new_one_is_still_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Only ``decided_at_utc`` is filled. A file written by a different schema is refused."""
+        from backtest.weekly_bet_list import (
+            BET_LIST_ARTIFACT_NAME,
+            read_bet_list_with_schema_shim,
+        )
+
+        columns = [c for c in self._pre_bump_columns() if c != "ev_tier"]
+        path = tmp_path / BET_LIST_ARTIFACT_NAME
+        pd.DataFrame([dict.fromkeys(columns)], columns=pd.Index(columns)).to_parquet(
+            path, index=False
+        )
+
+        with pytest.raises(ValueError, match="missing column"):
+            read_bet_list_with_schema_shim(path)
+
+    def test_the_one_stored_artifact_reader_is_routed_through_the_shim(self) -> None:
+        """``data.graded_weeks`` and the cache-source reader both come through this one seam."""
+        import inspect
+
+        from backtest import weekly_bet_list
+
+        source = inspect.getsource(weekly_bet_list.read_bet_list_artifact)
+        assert "read_bet_list_with_schema_shim" in source
+        assert "pd.read_parquet" not in source, (
+            "read_bet_list_artifact reads the parquet itself again, so the shim is bypassed"
+        )

@@ -67,12 +67,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
 from api.cache import (
     BET_LIST_COLUMNS,
+    BET_LIST_GRADING_COLUMNS,
     BET_LIST_IMMUTABLE_COLUMNS,
     BET_STATUS_LIVE,
     BET_TRACKER_BLOCK_COLUMNS,
@@ -109,14 +110,21 @@ logger = get_logger(__name__)
 
 __all__ = [
     "BET_LIST_ARTIFACT_NAME",
+    "BET_LIST_READ_COLUMNS",
     "BET_LIST_ROW_KEY",
     "BET_TRACKER_ARTIFACT_NAME",
+    "DECIDED_AT_COLUMN",
     "DEFAULT_BET_LIST_DIR",
     "AlreadyGradedError",
     "BetListCacheSources",
+    "DecidedAfterFreezeError",
+    "FreezePassedError",
     "FrozenChainFitError",
+    "MissingDecidedAtError",
     "WeeklyChainFit",
+    "assert_decided_at_before_freeze",
     "build_bet_week_schedule",
+    "build_freeze_instant_candidates",
     "build_weekly_candidates",
     "generate_weekly_bet_list",
     "grade_pending_rows",
@@ -124,8 +132,10 @@ __all__ = [
     "load_frozen_chain_fit",
     "read_bet_list_artifact",
     "read_bet_list_cache_sources",
+    "read_bet_list_with_schema_shim",
     "read_bet_tracker_artifact",
     "records_to_bet_list_frame",
+    "select_games_for_freeze_instant",
     "select_weekly_bets",
     "upsert_bet_list_rows",
     "write_bet_list_artifact",
@@ -148,6 +158,27 @@ BET_TRACKER_ARTIFACT_NAME: str = "bet_tracker.json"
 # row uniquely; the season and week are carried in the key rather than derived from the game_id so
 # a malformed identifier cannot silently merge two weeks.
 BET_LIST_ROW_KEY: tuple[str, ...] = ("game_id", "season", "week", "target")
+
+# The row's OWN observation time: the instant this run decided this bet (D33-27). An ISO-8601
+# string with an explicit UTC offset, matching its ``snapshot_ts`` / ``freeze_ts`` siblings
+# rather than ``graded_at``'s TIMESTAMP type -- the three instants are read and compared by the
+# same parse path, so one representation is what keeps that path single.
+DECIDED_AT_COLUMN: str = "decided_at_utc"
+
+# The column order the schema SHIM returns: ``BET_LIST_COLUMNS`` with ``decided_at_utc``
+# present at the END of the immutable half.
+#
+# ONE EXPRESSION RATHER THAN A BRANCH, and that is what makes it safe across the schema bump.
+# ``dict.fromkeys`` preserves order and DEDUPES, so before ``api.cache`` carries the column
+# this tuple inserts it (22 + 1 + 6 = 29) and afterwards the explicit insertion collapses
+# against the entry already in ``BET_LIST_IMMUTABLE_COLUMNS`` and this tuple IS
+# ``BET_LIST_COLUMNS``. The import-time check at the foot of this module asserts that equality
+# once the bump has landed, so the two cannot drift into two different 29-column orders.
+BET_LIST_READ_COLUMNS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        [*BET_LIST_IMMUTABLE_COLUMNS, DECIDED_AT_COLUMN, *BET_LIST_GRADING_COLUMNS]
+    )
+)
 
 # The pre-registered run record carrying the tune-only fit. Gitignored (it is generator output),
 # which is why its absence RAISES a named error instead of defaulting.
@@ -215,49 +246,33 @@ class FrozenChainFitError(RuntimeError):
     """
 
 
-DECIDED_AT_COLUMN: str = "decided_at_utc"
-
-
 class FreezePassedError(RuntimeError):
-    """A game whose own freeze is already past was offered for selection. RED skeleton."""
+    """A game whose OWN freeze is already past was offered for selection (R6, T-33-21).
+
+    Raised by name rather than skipped or dropped. Emitting a row for a game whose freeze has
+    passed would publish a post-hoc pick wearing a pre-game timestamp -- the repudiation
+    failure COLD-03 exists to prevent -- and dropping it silently would hide the same fact
+    behind a shorter list nobody could audit.
+
+    A ``RuntimeError`` subclass, deliberately OUTSIDE ``ValueError``: the selection path's
+    callers catch ``ValueError`` for absent inputs (a missing schedule, an empty week), and a
+    temporal-integrity refusal must not be convertible into one of those by an existing
+    handler. Same ruling ``ProvisionalSnapshotAsTrainingInputError`` records (Plan 33-04).
+    """
 
 
 class MissingDecidedAtError(ValueError):
-    """A forward row carries no observation time to check. RED skeleton."""
+    """A FORWARD row carries no instant for the write-time assertion to compare (D33-27).
+
+    Covers either missing side: a NULL ``decided_at_utc`` (the row makes no claim about when
+    it was decided) and a NULL ``freeze_ts`` (there is nothing to compare that claim against).
+    Both are named refusals rather than skips, because a forward row that cannot be checked is
+    exactly the row the check exists for.
+    """
 
 
 class DecidedAfterFreezeError(ValueError):
-    """A forward row claims it was decided AFTER its own game freeze. RED skeleton."""
-
-
-def select_games_for_freeze_instant(
-    schedule: pd.DataFrame, instant: datetime, *, now: datetime
-) -> pd.DataFrame:
-    """RED skeleton -- implemented in this plan's GREEN commit."""
-    raise NotImplementedError
-
-
-def build_freeze_instant_candidates(
-    instant: datetime,
-    *,
-    now: datetime,
-    schedule: pd.DataFrame | None = None,
-    artifacts_dir: Path = Path("artifacts"),
-    gold_dir: Path = Path("data/gold"),
-    silver_dir: Path = Path("data/silver"),
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """RED skeleton -- implemented in this plan's GREEN commit."""
-    raise NotImplementedError
-
-
-def assert_decided_at_before_freeze(row: Mapping[str, Any]) -> None:
-    """RED skeleton -- implemented in this plan's GREEN commit."""
-    raise NotImplementedError
-
-
-def read_bet_list_with_schema_shim(path: Path | str) -> pd.DataFrame:
-    """RED skeleton -- implemented in this plan's GREEN commit."""
-    raise NotImplementedError
+    """A FORWARD row claims an observation time AFTER its own game freeze (R7, T-33-21)."""
 
 
 class AlreadyGradedError(ValueError):
@@ -414,20 +429,44 @@ def _require_season_covered(fits: dict[str, WeeklyChainFit], season: int) -> Non
 # ---------------------------------------------------------------------------
 
 
+SCHEDULE_COLUMNS: tuple[str, ...] = ("game_id", "season", "week", "gameday")
+
+
+def _with_gameday(games: pd.DataFrame) -> pd.DataFrame:
+    """Add the EASTERN calendar ``gameday`` the per-game freeze is measured from.
+
+    One derivation shared by the week-scoped and full-season loaders. The date is taken in
+    EASTERN, never in UTC: a 8:15 PM Eastern Monday kickoff is 00:15 UTC on TUESDAY, so a
+    UTC-dated gameday would hand ``get_synthetic_snapshot_ts`` the wrong weekday and move that
+    game's freeze by a whole week.
+    """
+    kickoff = pd.to_datetime(games["kickoff_et"], utc=True)
+    dated = games.copy()
+    dated["gameday"] = kickoff.dt.tz_convert("US/Eastern").dt.strftime("%Y-%m-%d")
+    subset = cast("pd.DataFrame", dated[list(SCHEDULE_COLUMNS)])
+    return subset.reset_index(drop=True)
+
+
+def _read_silver_games(silver_dir: Path) -> pd.DataFrame:
+    games_path = Path(silver_dir) / "games.parquet"
+    if not games_path.exists():
+        msg = f"cannot build the weekly universe -- schedule missing: {games_path.as_posix()}"
+        raise FileNotFoundError(msg)
+    return pd.read_parquet(games_path)
+
+
 def _load_week_schedule(season: int, week: int, silver_dir: Path) -> pd.DataFrame:
     """The week's schedule, carrying the ``gameday`` the per-game freeze fence is measured from.
 
     READ ONLY. The schedule -- not the odds join -- is the universe's spine (D31-19): a game
     absent from it could not be reported as suppressed at all.
     """
-    games_path = silver_dir / "games.parquet"
-    if not games_path.exists():
-        msg = f"cannot build the weekly universe -- schedule missing: {games_path.as_posix()}"
-        raise FileNotFoundError(msg)
-
-    games = pd.read_parquet(games_path)
-    week_games = games[(games["season"] == season) & (games["week"] == week)].copy()
+    games = _read_silver_games(silver_dir)
+    week_games = cast(
+        "pd.DataFrame", games[(games["season"] == season) & (games["week"] == week)]
+    ).copy()
     if week_games.empty:
+        games_path = Path(silver_dir) / "games.parquet"
         msg = (
             f"no scheduled games for {season} week {week} in "
             f"{games_path.as_posix()}; an empty universe is refused rather than published as a "
@@ -435,9 +474,16 @@ def _load_week_schedule(season: int, week: int, silver_dir: Path) -> pd.DataFram
         )
         raise ValueError(msg)
 
-    kickoff = pd.to_datetime(week_games["kickoff_et"], utc=True)
-    week_games["gameday"] = kickoff.dt.tz_convert("US/Eastern").dt.strftime("%Y-%m-%d")
-    return week_games[["game_id", "season", "week", "gameday"]].reset_index(drop=True)
+    return _with_gameday(week_games)
+
+
+def _load_full_schedule(silver_dir: Path) -> pd.DataFrame:
+    """Every scheduled game with its ``gameday``. READ ONLY.
+
+    The full season rather than one week, because a freeze instant spans TWO weeks by design
+    (D33-28) and a week-scoped read cannot see the second one.
+    """
+    return _with_gameday(_read_silver_games(silver_dir))
 
 
 def build_weekly_candidates(
@@ -523,6 +569,191 @@ def build_weekly_candidates(
         n_candidates=len(candidates),
     )
     return candidates, schedule
+
+
+def select_games_for_freeze_instant(
+    schedule: pd.DataFrame, instant: datetime, *, now: datetime
+) -> pd.DataFrame:
+    """The games belonging to ONE freeze instant, refusing any whose freeze has passed.
+
+    THE SELECTION UNIT IS THE INSTANT, NOT THE WEEK (D33-28). A game's freeze is the Friday
+    6 PM Eastern instant preceding ITS OWN kickoff, so one instant covers week N's Sunday and
+    Monday games TOGETHER WITH week N+1's Thursday game. A week-scoped run would meet that
+    Thursday game already past its freeze and refuse it -- roughly EIGHTEEN games a season
+    removed from a forward measurement D40-08 defines as weeks 2-22 (T-33-25).
+
+    THE FENCE IS ``>=`` AND IT MATCHES ``_is_frozen``'s (R6). A game whose freeze equals *now*
+    TO THE SECOND is REFUSED: at that instant the market has frozen and any pick made now is
+    made with the frozen line in hand. Both sides of every comparison go through
+    :func:`scripts.ingest_historical_odds.require_aware_snapshot_ts`, so a NAIVE run clock or a
+    naive freeze raises rather than being assumed UTC.
+
+    THE PER-GAME FREEZE IS NEVER RE-DERIVED HERE. Every value comes from
+    ``scripts.ingest_historical_odds.get_synthetic_snapshot_ts``, the ONE source of the rule
+    (D31-18); a second "the prior Friday" implementation would be wrong for every Thursday game.
+
+    SCOPING IS NOT REFUSING. A game whose freeze is a DIFFERENT instant is simply absent from
+    the result and nothing raises -- it belongs to another run. Only a game IN SCOPE whose
+    freeze has already passed raises, which is what keeps :class:`FreezePassedError` a tripwire
+    rather than ordinary control flow.
+
+    The import is deferred for the cycle ``build_bet_week_schedule``'s docstring names.
+
+    Args:
+        schedule: Any frame carrying ``game_id`` and ``gameday``. Rows are FILTERED, never
+            reshaped, so a caller's extra columns survive.
+        instant: The freeze instant this run is scoped to.
+        now: The run clock, injected rather than read so both sides of the fence are testable.
+
+    Returns:
+        The subset of *schedule* whose per-game freeze equals *instant*.
+
+    Raises:
+        FreezePassedError: when a selected game's freeze is at or before *now*.
+        NaiveTimestampError: when *now* or a derived freeze carries no timezone.
+    """
+    from scripts.ingest_historical_odds import (
+        get_synthetic_snapshot_ts,
+        require_aware_snapshot_ts,
+    )
+
+    run_instant = require_aware_snapshot_ts(now)
+    target = require_aware_snapshot_ts(instant)
+
+    if schedule.empty:
+        return schedule.iloc[0:0].copy()
+
+    freezes = [
+        require_aware_snapshot_ts(get_synthetic_snapshot_ts(str(gameday)))
+        for gameday in schedule["gameday"]
+    ]
+    in_scope = pd.Series([freeze == target for freeze in freezes], index=schedule.index)
+    selected = cast("pd.DataFrame", schedule[in_scope]).copy()
+
+    passed = [
+        (str(game_id), freeze)
+        for game_id, freeze, scoped in zip(
+            schedule["game_id"], freezes, in_scope, strict=True
+        )
+        if scoped and run_instant >= freeze
+    ]
+    if passed:
+        named = ", ".join(
+            f"{game_id} (freeze {freeze.isoformat()})" for game_id, freeze in passed
+        )
+        msg = (
+            f"refusing to emit a bet row at {run_instant.isoformat()} for {len(passed)} "
+            f"game(s) whose own freeze has already passed: {named}. The run instant is "
+            f"{run_instant.isoformat()} and the fence is `>=`, so a freeze equal to the run "
+            "instant is refused too -- at that instant the market has frozen and a pick made "
+            "now is made with the frozen line in hand. A row emitted here would be a post-hoc "
+            "pick wearing a pre-game timestamp. The honest outcome is a MISSING row with a "
+            "dated reason, never a present one with a fabricated observation time."
+        )
+        raise FreezePassedError(msg)
+
+    logger.info(
+        "Selected games for freeze instant",
+        instant=target.isoformat(),
+        now=run_instant.isoformat(),
+        n_scheduled=len(schedule),
+        n_selected=len(selected),
+    )
+    return selected
+
+
+def build_freeze_instant_candidates(
+    instant: datetime,
+    *,
+    now: datetime,
+    schedule: pd.DataFrame | None = None,
+    artifacts_dir: Path = Path("artifacts"),
+    gold_dir: Path = Path("data/gold"),
+    silver_dir: Path = Path("data/silver"),
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Candidates for every game sharing ONE freeze instant, across the weeks it spans.
+
+    A WRAPPER OVER THE WEEK-SCOPED BUILDER, NOT A SECOND IMPLEMENTATION.
+    :func:`build_weekly_candidates` takes one ``(season, week)`` and returns a 2-tuple, and a
+    freeze instant spans two of them by design (D33-28), so the week-scoped function cannot
+    serve an instant with one call. This groups the instant's games by ``(season, week)``, calls
+    the EXISTING builder once per group, RESTRICTS each group's result to the ``game_id``s the
+    instant actually selected, and concatenates. Candidate construction is not duplicated and
+    ``build_weekly_candidates``'s signature is not touched.
+
+    THE RESTRICTION IS LOAD-BEARING. A week-scoped call returns the WHOLE week, which includes
+    that week's Thursday game -- a game belonging to the PREVIOUS instant. Concatenating without
+    restricting would publish it under this run and restate a decision made six days earlier.
+
+    Args:
+        instant: The freeze instant this run is scoped to.
+        now: The run clock the fence is judged against.
+        schedule: An explicit schedule to select from; read from *silver_dir* when omitted.
+        artifacts_dir: Passed through to the week-scoped builder.
+        gold_dir: Passed through to the week-scoped builder.
+        silver_dir: Passed through to the week-scoped builder, and the schedule source.
+
+    Returns:
+        ``(candidates, schedule)`` -- the same 2-tuple shape :func:`build_weekly_candidates`
+        returns, so every downstream consumer is unchanged.
+
+    Raises:
+        ValueError: when the instant covers no scheduled game at all.
+        FreezePassedError: propagated from the selection fence.
+    """
+    universe = _load_full_schedule(silver_dir) if schedule is None else schedule
+    selected = select_games_for_freeze_instant(universe, instant, now=now)
+    if selected.empty:
+        msg = (
+            f"no scheduled game freezes at {instant.isoformat()}; an empty universe is refused "
+            "rather than published as a run in which nothing was recommended. Check the "
+            "instant against `get_synthetic_snapshot_ts` for the weeks it should cover."
+        )
+        raise ValueError(msg)
+
+    # Grouped by an EXPLICIT distinct-pair pass rather than ``groupby``: the loop needs the
+    # (season, week) pair as two plain ints to hand to the week-scoped builder, and a groupby key
+    # arrives as an opaque Hashable that has to be unpacked on trust.
+    pairs = (
+        cast("pd.DataFrame", selected[["season", "week"]])
+        .drop_duplicates()
+        .sort_values(["season", "week"])
+    )
+    candidate_frames: list[pd.DataFrame] = []
+    schedule_frames: list[pd.DataFrame] = []
+    for season, week in zip(pairs["season"], pairs["week"], strict=True):
+        group = selected[(selected["season"] == season) & (selected["week"] == week)]
+        wanted = sorted({str(game_id) for game_id in group["game_id"]})
+        candidates, week_schedule = build_weekly_candidates(
+            int(season),
+            int(week),
+            artifacts_dir=artifacts_dir,
+            gold_dir=gold_dir,
+            silver_dir=silver_dir,
+        )
+        candidate_frames.append(
+            cast(
+                "pd.DataFrame",
+                candidates[candidates["game_id"].astype(str).isin(wanted)],
+            )
+        )
+        schedule_frames.append(
+            cast(
+                "pd.DataFrame",
+                week_schedule[week_schedule["game_id"].astype(str).isin(wanted)],
+            )
+        )
+
+    merged_candidates = pd.concat(candidate_frames, ignore_index=True)
+    merged_schedule = pd.concat(schedule_frames, ignore_index=True)
+    logger.info(
+        "Built freeze-instant candidates",
+        instant=instant.isoformat(),
+        n_groups=len(candidate_frames),
+        n_games=len(selected),
+        n_candidates=len(merged_candidates),
+    )
+    return merged_candidates, merged_schedule
 
 
 def require_frozen_sd(fit: WeeklyChainFit) -> float:
@@ -774,20 +1005,63 @@ def records_to_bet_list_frame(
 # ---------------------------------------------------------------------------
 
 
+def read_bet_list_with_schema_shim(path: Path | str) -> pd.DataFrame:
+    """Read a stored bet list, filling an ABSENT ``decided_at_utc`` with NULL. READ ONLY.
+
+    THE SHIM IS A READ, AND ONLY A READ. A bet-list parquet written before this phase carries
+    TWENTY-EIGHT columns (22 immutable + 6 grading) -- measured, not assumed: the production
+    artifact is 234 rows by 28 columns. The ``decided_at_utc`` bump takes the schema to 29, and
+    without this shim every existing reader of that file would raise the moment the constant
+    moved.
+
+    IT MUST NEVER WRITE THE SHIMMED COLUMN BACK, and that is this plan's own named prohibition
+    rather than an implementation preference. Every stored row is a ``backtest_replay`` row that
+    is already past its freeze, so stamping an observation time onto it now -- from
+    ``snapshot_ts``, from the file's mtime, from anything -- would record a time at which
+    nobody observed anything. The 234 rows take NULL and are never backfilled.
+
+    Args:
+        path: The stored ``bet_list.parquet``.
+
+    Returns:
+        The frame in ``BET_LIST_READ_COLUMNS`` order, with ``decided_at_utc`` present.
+
+    Raises:
+        ValueError: when a column OTHER than ``decided_at_utc`` is missing. A file written by a
+            different schema is refused rather than merged; only the one column this phase adds
+            is filled.
+    """
+    stored = pd.read_parquet(Path(path))
+    if DECIDED_AT_COLUMN not in stored.columns:
+        stored = stored.copy()
+        stored[DECIDED_AT_COLUMN] = None
+
+    missing = [c for c in BET_LIST_READ_COLUMNS if c not in stored.columns]
+    if missing:
+        msg = (
+            f"the stored bet list at {Path(path).as_posix()} is missing column(s) {missing}; it "
+            "was written by a different schema and is refused rather than merged."
+        )
+        raise ValueError(msg)
+    return stored[list(BET_LIST_READ_COLUMNS)]
+
+
 def read_bet_list_artifact(output_dir: Path = DEFAULT_BET_LIST_DIR) -> pd.DataFrame:
-    """The stored bet list, or an EMPTY frame with the locked columns when none exists yet."""
+    """The stored bet list, or an EMPTY frame with the locked columns when none exists yet.
+
+    THE ONE READER OF THE STORED ARTIFACT, and therefore the one place the back-compat shim has
+    to be wired: ``data.graded_weeks`` and ``read_bet_list_cache_sources`` both come through
+    here rather than reading the parquet themselves, so routing this function through
+    :func:`read_bet_list_with_schema_shim` routes every reader in the tree.
+
+    The return is narrowed to ``BET_LIST_COLUMNS`` -- the LIVE locked order -- so this function's
+    contract is unchanged by the shim: before the schema bump the shimmed column is dropped
+    here, and after it the two orders are identical.
+    """
     path = Path(output_dir) / BET_LIST_ARTIFACT_NAME
     if not path.exists():
         return pd.DataFrame(columns=pd.Index(BET_LIST_COLUMNS))
-    stored = pd.read_parquet(path)
-    missing = [c for c in BET_LIST_COLUMNS if c not in stored.columns]
-    if missing:
-        msg = (
-            f"the stored bet list at {path.as_posix()} is missing column(s) {missing}; it was "
-            "written by a different schema and is refused rather than merged."
-        )
-        raise ValueError(msg)
-    return stored[BET_LIST_COLUMNS]
+    return read_bet_list_with_schema_shim(path)[BET_LIST_COLUMNS]
 
 
 def read_bet_tracker_artifact(
@@ -1052,10 +1326,80 @@ def _is_frozen(row: pd.Series, now: datetime) -> bool:
     freeze = pd.to_datetime(freeze_text, errors="coerce")
     if pd.isna(freeze):
         return False
-    freeze_dt = freeze.to_pydatetime()
-    if freeze_dt.tzinfo is None:
-        freeze_dt = freeze_dt.replace(tzinfo=UTC)
+    # THE SILENT UTC ASSUMPTION IS GONE (D33-27, T-33-23). A naive stored freeze used to be
+    # read AS UTC here, which moves a market-local 6 PM instant four or five hours earlier and
+    # silently un-freezes rows for the rest of that window. It now RAISES through the one strict
+    # parse helper. Unreachable from real data -- all 234 stored rows carry a tz-aware Eastern
+    # string -- which is exactly why converting it to a raise costs nothing and closes the hole.
+    from scripts.ingest_historical_odds import require_aware_snapshot_ts
+
+    freeze_dt = require_aware_snapshot_ts(freeze)
     return now >= freeze_dt
+
+
+def assert_decided_at_before_freeze(row: Mapping[str, Any]) -> None:
+    """A FORWARD row's own observation time must be AT OR BEFORE its own game freeze (R7).
+
+    THE ASSERTION IS ``<=``, NOT ``<``, and the equality case is a BOUNDARY-ONLY one. The
+    selection fence refuses ``now >= freeze``, so every row selection admits carries
+    ``decided_at_utc`` STRICTLY before its freeze; a row sitting exactly ON the freeze is
+    therefore unreachable in production and is proven on a constructed row. The two fences sit
+    on OPPOSITE SIDES of the same boundary and are jointly satisfiable -- a peer reviewer read
+    them as contradictory, and ``tests/unit/test_selection_scoped_by_freeze_instant.py`` proves
+    the conjunction rather than arguing it.
+
+    SCOPED TO ``provenance == forward``. A replay row is derived and fully regenerable, so it
+    carries no observation time and needs none; the 234 stored ``backtest_replay`` rows take
+    NULL and are never backfilled. Inside the forward scope a NULL is a NAMED REFUSAL, because
+    a forward row that cannot be checked is exactly the row the check exists for.
+
+    Both instants go through the ONE strict parse helper, so a naive value on either side raises
+    rather than being assumed UTC or Eastern.
+
+    Args:
+        row: A bet-list row as a mapping (a dict or a ``pandas.Series``).
+
+    Raises:
+        MissingDecidedAtError: a forward row with no ``decided_at_utc`` or no ``freeze_ts``.
+        DecidedAfterFreezeError: a forward row decided after its own freeze.
+        NaiveTimestampError: either instant carries no timezone.
+    """
+    if row.get("provenance") != PROVENANCE_FORWARD:
+        return
+
+    from scripts.ingest_historical_odds import require_aware_snapshot_ts
+
+    game_id = row.get("game_id")
+    decided_text = row.get(DECIDED_AT_COLUMN)
+    freeze_text = row.get("freeze_ts")
+    for label, value in ((DECIDED_AT_COLUMN, decided_text), ("freeze_ts", freeze_text)):
+        if value is None or _is_null(value):
+            msg = (
+                f"forward row {game_id!r}/{row.get('target')!r} carries no {label}; a forward "
+                "row must say when it was decided AND which freeze that claim is measured "
+                "against. A row that cannot be checked is exactly the row this check exists "
+                "for, so it is refused rather than written."
+            )
+            raise MissingDecidedAtError(msg)
+
+    decided = require_aware_snapshot_ts(decided_text)
+    freeze = require_aware_snapshot_ts(freeze_text)
+    if decided > freeze:
+        msg = (
+            f"refusing to write forward row {game_id!r}/{row.get('target')!r}: its "
+            f"{DECIDED_AT_COLUMN} is {decided.isoformat()}, which is AFTER its own game freeze "
+            f"{freeze.isoformat()}. That is a post-hoc pick wearing a pre-game timestamp -- the "
+            "one claim the forward ledger exists to make unforgeable."
+        )
+        raise DecidedAfterFreezeError(msg)
+
+
+def _is_null(value: Any) -> bool:
+    """True when *value* is a scalar null. Array-likes are never null for this purpose."""
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def upsert_bet_list_rows(
@@ -1421,4 +1765,17 @@ def generate_weekly_bet_list(
 # column added to one list and not the other cannot ship silently.
 if set(BET_LIST_IMMUTABLE_COLUMNS) - set(BET_LIST_COLUMNS):  # pragma: no cover
     msg = "BET_LIST_IMMUTABLE_COLUMNS names a column absent from BET_LIST_COLUMNS"
+    raise RuntimeError(msg)
+
+# The second import-time check: once ``api.cache`` carries ``decided_at_utc``, the shim's read
+# order must BE the locked order rather than a second 29-column order that agrees with it today.
+# Stated here so the collapse the ``dict.fromkeys`` derivation relies on cannot fail silently.
+if (
+    DECIDED_AT_COLUMN in BET_LIST_COLUMNS
+    and tuple(BET_LIST_COLUMNS) != BET_LIST_READ_COLUMNS
+):  # pragma: no cover
+    msg = (
+        "BET_LIST_READ_COLUMNS has drifted from BET_LIST_COLUMNS: the schema shim would return "
+        "a different column order from the one the writer and the DDL use"
+    )
     raise RuntimeError(msg)
