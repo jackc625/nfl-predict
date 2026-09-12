@@ -1361,3 +1361,75 @@ DATA_PHASE_STEP_COUNT_AFTER: int = 9
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_07: int = 43
+
+
+# ---------------------------------------------------------------------------
+# THE FROZEN GATE BASELINE BLOCK, PRESERVED AS A RECORD RATHER THAN USED AS A
+# COMPARATOR.
+#
+# APPENDED by Plan 33-08 Task 2 on 2026-09-12. Nothing above this line was edited.
+#
+# THE OWNER RULED `live-rescore` ON 2026-09-12. The five SECONDARY comparator
+# scalars stop reading `config/gate.toml`'s `[baseline.*]` block and start reading
+# a LIVE PAIRED RE-SCORE of the deployed incumbent on the same gold the candidate
+# was scored on -- the shape `_pooled_floor_reasons` has always had. The block
+# below is therefore no longer the operative comparator; it is a HISTORICAL RECORD
+# and it must stay BYTE-UNTOUCHED.
+#
+# WHY A DIGEST AND NOT A PROMISE. Two of the five deliberate tripwires ARE the
+# gate-baseline disclosure. Re-freezing the block would make them reproduce --
+# clearing a disclosure by making it pass -- so the phase needs a mechanical way to
+# say the bytes did not move. `git diff` alone is not that instrument: a committed
+# edit shows a clean working tree. A digest anchored here, compared by
+# tests/unit/test_phase33_gate_toml_untouched.py, fails on a committed edit too.
+#
+# THE BOUNDS ARE MEASURED, NOT TRANSCRIBED. Plan 33-08's own text states the block
+# spans lines (168, 265). The file carries 264 lines
+# (`len(Path('config/gate.toml').read_text(encoding='utf-8').splitlines())`), so
+# the upper bound overshoots the end of the file by one. The measured bound is
+# recorded instead. The digest is identical either way -- a slice past the end is
+# harmless -- which is exactly why the overshoot would never have announced itself.
+#
+# MEASURED 2026-09-12 on commit 549eb68. The span is the 97 lines from
+# '[baseline.wp.pooled]' to the file's final 'n = 272', joined on LF and LF-terminated,
+# then sha256'd:
+#
+#     uv run python -c "import hashlib, pathlib; s = pathlib.Path(
+#     'config/gate.toml').read_text(encoding='utf-8').splitlines()[167:264]; print(
+#     hashlib.sha256(chr(10).join(s).encode() + b'\n').hexdigest())"
+#
+# NEWLINE-NORMALIZED, per the idiom stated at
+# tests/unit/test_preregistration_ancestry.py:32-39: this repository has
+# core.autocrlf=true and no .gitattributes, so a tracked text file is LF in the git
+# blob and CRLF in a Windows working tree. The value below was checked against
+# `git cat-file blob HEAD:config/gate.toml` (LF, 0 CRLF pairs) and matches, so it
+# reproduces on any checkout rather than only on the machine that measured it.
+# ---------------------------------------------------------------------------
+
+GATE_TOML_BASELINE_LINES: tuple[int, int] = (168, 264)
+GATE_TOML_BASELINE_SHA256: str = (
+    "0d5628da61593c73049c5f94e73df6f2626840f7740a2080e4418a18ff515d43"
+)
+
+# The pre-phase production manifest, VERBATIM from artifacts/latest.json at commit
+# 549eb68. Recorded here so Plan 33-15's retained-incumbent assertions have a
+# committed reference rather than re-reading the file they are trying to prove
+# unchanged. FOUR entries, not three: `blend` shares the one production swap
+# surface and is the entry a per-target promotion is most likely to move by
+# accident (T-33-42).
+INCUMBENT_ARTIFACTS: tuple[tuple[str, str], ...] = (
+    ("wp", "wp_20260824_113325"),
+    ("ats", "ats_20260605_220128"),
+    ("ou", "ou_20260326_163930"),
+    ("blend", "blend_dynamic_20260606_020635"),
+)
+
+# FIVE, and the count is load-bearing. An earlier draft of Plan 33-08 said FOUR,
+# and a completeness check written against four would have PASSED while one scalar
+# went unchecked. The five are: WP accuracy, WP ECE, WP Brier, ATS MAE, O/U MAE.
+SECONDARY_SCALAR_COUNT: int = 5
+
+# The judge that renders a Phase-33 verdict. A permanent semantic change to
+# deployment policy needs a name, because a verdict that does not say which judge
+# produced it cannot be compared against a later one.
+JUDGE_VERSION_PHASE33: str = "phase33-live-secondary-rescore-1"
