@@ -1433,3 +1433,37 @@ SECONDARY_SCALAR_COUNT: int = 5
 # deployment policy needs a name, because a verdict that does not say which judge
 # produced it cannot be compared against a later one.
 JUDGE_VERSION_PHASE33: str = "phase33-live-secondary-rescore-1"
+
+
+# ---------------------------------------------------------------------------
+# THE PRE-REGISTERED FIX-CYCLE ALLOWANCE, AND THE CLOSED VERDICT VOCABULARY.
+#
+# APPENDED by Plan 33-08 Task 3 on 2026-09-12. Nothing above this line was edited.
+#
+# ZERO, DECLARED BEFORE ANY PHASE-33 VERDICT EXISTS. Phase 30 pre-registered a
+# single fix-cycle lever and it went UNSPENT for BOTH failing targets -- not
+# because anybody overlooked it, but because it had no unspent move. Phase 33 says
+# the same thing up front instead of discovering it by accident: the training
+# window belongs to Phase 37's recipe, the feature groups were bindingly ruled in
+# Phase 30 (snap KEEP / situational KEEP / injury DROP), and hyperparameter search
+# is out of scope, so an allowance of one would have nothing legitimate to spend.
+#
+# D33-33's PRE-FLIGHT HEALTH CHECK DOES NOT CREATE A RETRY STATE. It answers "what
+# if the environment breaks mid-run" by making the environment fail BEFORE any
+# number exists, not by allowing a second look after one does. The rule itself is
+# unchanged and absolute: no re-runnable failure category, no environmental-abort
+# escape hatch, no post-scoring retry. That distinction is easy to erode on a later
+# reading, which is why it is recorded here as well as in the runner's docstring.
+#
+# THE VOCABULARY HAS THREE MEMBERS AND THE THIRD IS NOT DECORATION.
+# backtest/diagnose.py:249-285 DELIBERATELY returns null `t` and `p` below
+# MIN_CLV_SAMPLE, and this phase's own success criterion says a zero-eligible-row
+# target is REFUSED. A schema demanding non-null statistics everywhere would reject
+# that legitimate refusal as malformed, and the only way to make such a record
+# valid would be to fabricate a number. So PASS and FAIL require statistics;
+# UNTESTABLE_REFUSAL permits nulls and requires a stated reason, always retains the
+# incumbent, and is never a promotion.
+# ---------------------------------------------------------------------------
+
+FIX_CYCLE_ALLOWANCE: int = 0
+GATE_VERDICT_STATES: tuple[str, ...] = ("PASS", "FAIL", "UNTESTABLE_REFUSAL")
