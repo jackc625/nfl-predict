@@ -712,3 +712,43 @@ TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
     ("models.train_ou", "main", 1423),
     ("models.train", "main", 632),
 )
+
+
+# ---------------------------------------------------------------------------
+# PLAN 33-04'S OWN COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-04 at plan close on 2026-09-12, AFTER the three-tier
+# measurement that produced it. Nothing above this line was edited.
+#
+# APPENDED AT CLOSE, NOT IN TASK 1, for the reason Plans 33-02 and 33-03 recorded
+# when they did the same: both tasks add tests, so a Task-1 value would have been
+# wrong at plan close and could only have been made right by EDITING it -- the
+# append-once violation the protocol exists to prevent.
+#
+# MEASURED over all THREE tiers with the guard armed and NFL_GUARD_OBSERVATIONS=1:
+#     uv run python -m pytest tests/unit -q
+#         3096 passed, 4 skipped, 5 xfailed          3105 collected   309.11 s
+#     uv run python -m pytest tests/integration -q
+#         5 failed, 743 passed, 8 skipped, 9 xfailed  765 collected   517.04 s
+#     uv run python -m pytest tests/api tests/test_*.py -q
+#         367 passed                                  367 collected   119.60 s
+#     SUM: 5 failed, 4206 passed, 12 skipped, 14 xfailed       4237 collected
+#
+# 4237 - 4196 (Plan 33-03's three-tier collected total) = 41.
+#
+# It closes exactly against the modules, which is the check that no test was quietly
+# deleted to make a number look better:
+#     13  tests/unit/test_snapshot_upcoming_week.py           (new)
+#     20  tests/unit/test_provisional_training_refusal.py     (new)
+#      2  tests/unit/test_elo_gold_features.py                (10 -> 12)
+#      6  tests/integration/test_gold_snap_injury_columns.py  (12 -> 18)
+#     --
+#     41
+#
+# The five failures are EXACTLY DELIBERATE_TRIPWIRE_NODE_IDS, unchanged. The SKIPPED
+# count did not move (12 -> 12): this plan added no pending guard and stepped aside
+# from nothing. No tier reported a production-store boundary crossing
+# (STAT_SIGNATURE_OBSERVATIONS 3 + 5 + 0, WAL_SIBLING_OBSERVATIONS 0 in every tier).
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_04: int = 41
