@@ -180,21 +180,64 @@ def _content_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _close_probable_holders() -> None:
+def _close_connections_onto(target: Path) -> None:
+    """Close every live ``DuckDBConnection`` whose database IS *target*.
+
+    THE THIRD HOLDER, and the one the first two cannot reach. MEASURED on
+    ``tests/integration/test_elo_integration.py``: it reads PRODUCTION silver
+    through ``data.storage`` -- opening and locking
+    ``data/nfl_predictions.duckdb`` -- and THEN monkeypatches ``_db_connection``
+    onto a sandbox. At teardown the module global points at the sandbox, so
+    ``close_db_connection`` closes the wrong one; and the production connection is
+    held alive by monkeypatch's own undo list, so ``gc.collect`` cannot free it.
+    The handle is real, reachable only by walking live objects, and it is exactly
+    the handle in the way.
+
+    FILTERED BY IDENTITY OF THE DATABASE, not by type: only a connection onto the
+    file we are trying to read is closed, so a test's sandbox database is left
+    untouched. Closing is safe by construction -- ``DuckDBConnection.connect``
+    reopens lazily on the next use.
+    """
+    try:
+        from data.storage import DuckDBConnection
+    except ImportError:
+        return
+
+    resolved = target.resolve()
+    for candidate in gc.get_objects():
+        if not isinstance(candidate, DuckDBConnection):
+            continue
+        db_path = getattr(candidate, "db_path", None)
+        if not db_path:
+            continue
+        with contextlib.suppress(OSError, ValueError):
+            if Path(db_path).resolve() == resolved:
+                with contextlib.suppress(Exception):
+                    candidate.close()
+
+
+def close_probable_holders(target: Path | None = None) -> None:
     """Drop the handles a test session is most likely to be holding.
 
-    `gc.collect()` releases connection objects nothing references any more --
-    a pattern this suite produces constantly, because a test that calls
-    `load_dataframe` leaves a connection behind when its frame goes out of scope.
-    `data.storage.close_db_connection` closes the MODULE-GLOBAL one, which no
-    collection can reach because the module still references it. Both are needed;
-    neither is sufficient.
+    Three holders, closed in increasing order of cost, because each reaches
+    something the ones before it cannot:
+
+    1. `gc.collect()` releases connection objects nothing references any more -- a
+       pattern this suite produces constantly, because a test that calls
+       `load_dataframe` leaves a connection behind when its frame goes out of scope.
+    2. `data.storage.close_db_connection` closes the MODULE-GLOBAL one, which no
+       collection can reach because the module still references it.
+    3. Where *target* is given, any live connection onto THAT database, wherever it
+       is referenced from. See `_close_connections_onto` for the measured case that
+       needs it.
     """
     gc.collect()
-    with contextlib.suppress(ImportError, Exception):
+    with contextlib.suppress(Exception):
         from data.storage import close_db_connection
 
         close_db_connection()
+    if target is not None:
+        _close_connections_onto(target)
 
 
 def require_content_digest(
@@ -223,7 +266,7 @@ def require_content_digest(
         last_failure: OSError = first_failure
 
     for _ in range(max(1, attempts)):
-        _close_probable_holders()
+        close_probable_holders(target)
         try:
             return _content_digest(target)
         except (PermissionError, OSError) as retry_failure:

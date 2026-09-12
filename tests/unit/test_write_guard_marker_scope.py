@@ -42,6 +42,7 @@ from pathlib import Path
 
 import pytest
 
+from tests import conftest
 from tests.conftest import (
     _assert_single_worker,
     _guard_verdict,
@@ -160,7 +161,14 @@ class TestTheMarkerIsPathScoped:
             "violation -- an over-cautious declaration must not redden a clean test."
         )
 
-        (sandbox / "gold" / "features_wp.parquet").write_bytes(b"WP-v2")
+        # A DIFFERENT LENGTH, deliberately. `b"WP-v2"` is the same five bytes long
+        # as the fixture's `b"WP-v1"`, and on a coarse-resolution clock the rewrite
+        # can land inside the same `st_mtime_ns` tick -- so the stat prefilter sees
+        # nothing and this test measures the filesystem rather than the marker.
+        # That blind spot is real and is what the session-end full sweep exists for;
+        # it is exercised deliberately in test_data_boundary_guard_arming.py and must
+        # not be smuggled into a test about marker scope.
+        (sandbox / "gold" / "features_wp.parquet").write_bytes(b"WP-v2-UNDECLARED")
         message = _guard_verdict(baseline, declared)
         assert message and "gold/features_wp.parquet" in message, (
             "the unused declaration granted an exemption to a DIFFERENT path.\n\n"
@@ -451,4 +459,75 @@ class TestTheMarkedWriterInventoryIsPinned:
             assert node_id in DELIBERATE_TRIPWIRE_NODE_IDS, (
                 f"{node_id} is no longer in DELIBERATE_TRIPWIRE_NODE_IDS -- the two "
                 "halves of this assertion have drifted apart."
+            )
+
+
+class TestADeclaredWriteIsCheckpointedInsideItsOwnWindow:
+    """The WAL defect, measured in Task 3(d) and closed here.
+
+    A DuckDB write lands in a `.duckdb.wal` sibling, not in the main `.duckdb`
+    file. `.wal` is deliberately NOT tracked, so for the whole of the declaring
+    test's teardown there is nothing to see: size, mtime and even a full content
+    hash of the main file all read exactly as they did at session start. The bytes
+    arrive later, whenever the connection checkpoints -- and are then attributed to
+    nobody, or worse, to whichever innocent test was running at the time. The
+    measured run that found this reported `WAL_SIBLING_OBSERVATIONS=1` and a
+    session-end sweep naming `nfl_predictions.duckdb` with no per-test sweep having
+    seen it.
+    """
+
+    def test_the_guard_checkpoints_before_judging_a_marked_test(self) -> None:
+        import inspect
+
+        source = inspect.getsource(conftest.production_store_write_guard)
+        assert "_checkpoint_declared_writes()" in source, (
+            "the guard judges a declared write without first settling it. With a "
+            "write-ahead log in play the declared bytes are still invisible at this "
+            "point, and they will surface later against a test that did not make "
+            "them."
+        )
+        checkpoint_at = source.index("_checkpoint_declared_writes()")
+        verdict_at = source.index("_guard_verdict(")
+        assert checkpoint_at < verdict_at, (
+            "the checkpoint must happen BEFORE the verdict, or it settles bytes the "
+            "verdict has already read past."
+        )
+
+    def test_the_closing_sweep_settles_the_session_before_hashing_it(self) -> None:
+        import inspect
+
+        source = inspect.getsource(conftest.pytest_sessionfinish)
+        assert "_checkpoint_declared_writes()" in source, (
+            "the closing full sweep hashes whatever the filesystem happens to show "
+            "while a write-ahead log may still be holding committed bytes back. Its "
+            "whole claim is that the SESSION's verdict is content-based."
+        )
+
+    def test_the_checkpoint_helper_closes_handles_rather_than_exempting_anything(
+        self,
+    ) -> None:
+        """It must change TIMING only. An exemption here would be a silent carve-out.
+
+        The scan is over the helper's CODE with its docstring removed -- the
+        docstring explains at length what the helper does NOT do, and a substring
+        scan over it would flag the explanation rather than the behaviour.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(conftest._checkpoint_declared_writes))
+        )
+        function = tree.body[0]
+        assert isinstance(function, ast.FunctionDef)
+        body = function.body[1:] if ast.get_docstring(function) else function.body
+        code = "\n".join(ast.unparse(node) for node in body)
+
+        assert "close_probable_holders" in code, code
+        for forbidden in ("pop(", "discard(", "skip", "return True"):
+            assert forbidden not in code, (
+                f"the checkpoint helper contains {forbidden!r}. It exists to make the "
+                "declared bytes VISIBLE to the verdict, never to remove anything from "
+                f"the verdict's reach.\n\n{code}"
             )

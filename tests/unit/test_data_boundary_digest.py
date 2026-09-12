@@ -624,3 +624,107 @@ class TestNoStatSignatureCanReachAVerdict:
             "assert_tree_unchanged still compares whatever it was handed, so a stat "
             "signature can reach a verdict through the opt-in fixtures."
         )
+
+
+class TestTheHolderCloserIsARealSeam:
+    """D33-32's retry is only as good as its ability to actually close the holder."""
+
+    def test_close_probable_holders_drops_the_global_duckdb_handle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Driven against a SANDBOX connection: the seam, not the production store."""
+        from data import storage
+        from tests.data_boundary import close_probable_holders
+
+        sandbox = storage.DuckDBConnection(str(tmp_path / "sandbox.duckdb"))
+        sandbox.connect()
+        monkeypatch.setattr(storage, "_db_connection", sandbox)
+
+        assert sandbox._connection is not None
+        close_probable_holders()
+        assert sandbox._connection is None, (
+            "close_probable_holders did not release the storage layer's handle, so "
+            "require_content_digest's retry has nothing new to try and D33-32's "
+            "'close the holder and read the bytes' is a rename rather than a fix."
+        )
+
+    def test_closing_the_handle_leaves_a_read_only_store_byte_identical(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The instrument must not perturb its own subject.
+
+        A guard whose remediation rewrites the file it is about to hash reports its
+        own side effects as data moves. Measured here on a sandbox database rather
+        than reasoned about.
+        """
+        from data import storage
+        from tests.data_boundary import close_probable_holders, digest_file
+
+        db_path = tmp_path / "sandbox.duckdb"
+        sandbox = storage.DuckDBConnection(str(db_path))
+        sandbox.connect()
+        sandbox.execute("CREATE TABLE t AS SELECT 1 AS a")
+        monkeypatch.setattr(storage, "_db_connection", sandbox)
+        close_probable_holders()
+
+        settled = digest_file(db_path)
+        assert not is_stat_signature(settled)
+
+        reopened = storage.DuckDBConnection(str(db_path))
+        reopened.connect()
+        reopened.fetchall("SELECT * FROM t")
+        monkeypatch.setattr(storage, "_db_connection", reopened)
+        close_probable_holders()
+
+        assert digest_file(db_path) == settled, (
+            "opening a database, reading it and closing it again moved the file's "
+            "bytes. The guard closes handles to READ them, so a close that rewrites "
+            "the store would make every verdict after it a report about the guard."
+        )
+
+    def test_a_displaced_connection_onto_the_target_is_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The measured elo case: the holder is not the module global any more.
+
+        A test reads a production store through `data.storage`, THEN monkeypatches
+        `_db_connection` onto a sandbox. The production handle is still open and is
+        still referenced -- by monkeypatch's undo list -- so neither
+        `close_db_connection` nor `gc.collect()` can reach it. Named targeting can.
+        """
+        from data import storage
+        from tests.data_boundary import close_probable_holders
+
+        target_path = tmp_path / "held.duckdb"
+        held = storage.DuckDBConnection(str(target_path))
+        held.connect()
+
+        displaced = storage.DuckDBConnection(str(tmp_path / "elsewhere.duckdb"))
+        displaced.connect()
+        monkeypatch.setattr(storage, "_db_connection", displaced)
+
+        close_probable_holders(target_path)
+
+        assert held._connection is None, (
+            "the connection actually holding the target was left open, so the "
+            "retry has nothing new to try and D33-32 refuses a file it could have "
+            "read."
+        )
+
+    def test_a_connection_onto_a_different_database_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Targeted by the identity of the DATABASE, so a sandbox survives."""
+        from data import storage
+        from tests.data_boundary import close_probable_holders
+
+        sandbox = storage.DuckDBConnection(str(tmp_path / "sandbox.duckdb"))
+        sandbox.connect()
+        monkeypatch.setattr(storage, "_db_connection", None)
+
+        close_probable_holders(tmp_path / "some_other.duckdb")
+
+        assert sandbox._connection is not None, (
+            "closing handles onto ONE unreadable file must not reach into every "
+            "other open database in the process."
+        )

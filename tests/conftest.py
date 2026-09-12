@@ -150,17 +150,25 @@ def _report_evidence_backed_skips(terminalreporter) -> None:
 
 @pytest.fixture
 def data_boundary_guard():
-    """Fail the test if anything under `data/` was added, removed or rewritten."""
+    """Fail the test if anything under `data/` was added, removed or rewritten.
+
+    BOTH SIDES are taken with `content_digest_tree` (D33-32). Taking the before
+    side with `digest_file` -- which degrades to a stat signature on a locked
+    DuckDB store -- while the after side is a content hash produces a MIXED,
+    UNDECIDED comparison on `data/nfl_predictions.duckdb` for any test that runs
+    after something opened it. That asymmetry is not a finding about the data; it
+    is a finding about the instrument, and the fix is to use one instrument.
+    """
     from tests.data_boundary import (
         PRODUCTION_DATA_ROOT,
         assert_tree_unchanged,
-        digest_tree,
+        content_digest_tree,
     )
 
-    before = digest_tree(PRODUCTION_DATA_ROOT)
+    before = content_digest_tree(PRODUCTION_DATA_ROOT)
     yield before
     assert_tree_unchanged(
-        before, digest_tree(PRODUCTION_DATA_ROOT), PRODUCTION_DATA_ROOT
+        before, content_digest_tree(PRODUCTION_DATA_ROOT), PRODUCTION_DATA_ROOT
     )
 
 
@@ -174,13 +182,15 @@ def artifacts_boundary_guard():
     from tests.data_boundary import (
         PRODUCTION_ARTIFACTS_ROOT,
         assert_tree_unchanged,
-        digest_tree,
+        content_digest_tree,
     )
 
-    before = digest_tree(PRODUCTION_ARTIFACTS_ROOT)
+    before = content_digest_tree(PRODUCTION_ARTIFACTS_ROOT)
     yield before
     assert_tree_unchanged(
-        before, digest_tree(PRODUCTION_ARTIFACTS_ROOT), PRODUCTION_ARTIFACTS_ROOT
+        before,
+        content_digest_tree(PRODUCTION_ARTIFACTS_ROOT),
+        PRODUCTION_ARTIFACTS_ROOT,
     )
 
 
@@ -443,6 +453,32 @@ def _guard_verdict(
     )
 
 
+def _checkpoint_declared_writes() -> None:
+    """Land a DECLARED write's bytes inside the window of the test that declared it.
+
+    MEASURED, not theorised (Plan 33-01 Task 3(d), WAL_SIBLING_OBSERVATIONS=1). A
+    DuckDB write goes to a `.duckdb.wal` sibling first and the main `.duckdb` file
+    is not touched at all until the connection checkpoints. `.wal` is NOT in
+    TRACKED_SUFFIXES, so across the whole of the declaring test's teardown there is
+    nothing for the stat prefilter to see and nothing for a content hash to catch:
+    the main file still reads byte-for-byte as it did at session start.
+
+    The bytes land later -- whenever something closes the connection, which in a
+    guarded session is the session-end sweep. The write is then perfectly real,
+    perfectly undeclared-looking, and attributed to nobody. That is exactly the
+    shape of report that gets a guard called unreliable.
+
+    So a test that DECLARES a production-store write has its write checkpointed
+    here, before it is judged. The declared bytes are then compared against the
+    marker that permits them, and the closing sweep has nothing left to
+    misattribute. Nothing is exempted and no comparison is skipped -- only the
+    TIMING is made deterministic.
+    """
+    from tests.data_boundary import close_probable_holders
+
+    close_probable_holders()
+
+
 def _assert_single_worker(config) -> None:
     """Refuse to arm under multiple workers. A named error, NEVER a skip.
 
@@ -588,6 +624,10 @@ def pytest_sessionfinish(session, exitstatus) -> None:
     baselines = _GUARD_STATE.get("baselines")
     if not baselines:
         return
+    # Checkpoint first, so the sweep hashes the session's SETTLED bytes rather than
+    # racing a write-ahead log it cannot see. Anything that lands here and was not
+    # declared by the test that caused it is a genuine finding.
+    _checkpoint_declared_writes()
     report = _closing_full_sweep(baselines)
     _GUARD_STATE["closing_report"] = report
     if report and session.exitstatus == 0:
@@ -610,6 +650,9 @@ def production_store_write_guard(request, _production_store_baseline):
     yield
 
     declared = _marker_paths_for_item(request.node)
+    if any(declared.values()):
+        _checkpoint_declared_writes()
+
     violations = [
         message
         for baseline in _production_store_baseline
