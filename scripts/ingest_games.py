@@ -52,6 +52,31 @@ def _load_venue_lookup() -> dict[str, str]:
     return lookup
 
 
+def _load_stadium_id_roof_lookup() -> dict[str, str]:
+    """Load venue roof types from data/venues.json, keyed on nflverse stadium_id.
+
+    A SECOND lookup rather than a widened first one, because the two answer
+    different questions and fail differently: the NAME key is a lossy, lowercased
+    string match that silently misses on a spelling variant, while the stadium_id
+    key is exact. Consulting the exact one FIRST is what stops this third resolver
+    from disagreeing with the other two (NF-05, T-33-29).
+
+    Returns:
+        Dict mapping stadium_id -> roof_type string. Matching is EXACT and
+        CASE-SENSITIVE: no normalization, no fuzzy match (R11).
+    """
+    venues_path = Path(__file__).resolve().parent.parent / "data" / "venues.json"
+    lookup: dict[str, str] = {}
+    if venues_path.exists():
+        with open(venues_path) as f:
+            venues_data = json.load(f)
+        for venue in venues_data.get("venues", []):
+            code = venue.get("stadium_id")
+            if isinstance(code, str) and code:
+                lookup[code] = venue.get("roof_type", "outdoor")
+    return lookup
+
+
 class GameDataIngester:
     """NFL game data ingestion from nflreadpy."""
 
@@ -59,20 +84,51 @@ class GameDataIngester:
         """Initialize game data ingester."""
         self.settings = get_settings()
         self._venue_lookup = _load_venue_lookup()
+        self._stadium_id_roof_lookup = _load_stadium_id_roof_lookup()
 
-    def _get_venue_roof_type(self, venue: str, nflverse_roof: str | None = None) -> str:
-        """Determine venue roof type from venue name using venues.json.
+    def _get_venue_roof_type(
+        self,
+        venue: str,
+        nflverse_roof: str | None = None,
+        stadium_id: str | None = None,
+    ) -> str:
+        """Determine venue roof type, preferring the venues.json stadium_id key.
 
-        Falls back to nflverse roof column mapping, then to 'outdoor' default.
+        Resolution order, and the order matters (NF-05, T-33-29, D33-16):
+
+        1. ``stadium_id`` against ``data/venues.json`` -- EXACT and case-sensitive.
+           This is the same key the other two resolvers use, so consulting it first
+           is what makes all three agree.
+        2. the lowercased venue NAME against ``data/venues.json``, unchanged.
+        3. the nflverse ``roof`` column mapping.
+        4. ``'outdoor'``.
+
+        ``data/venues.json`` is AUTHORITATIVE on roof for the eight 2026
+        international venues. The feed carries ``roof == 'dome'`` for MEL00, PAR00
+        and MUN01 and all three are OPEN-AIR; ``dome`` maps to ``indoor``, and
+        ``indoor`` makes the weather ingester skip the API call entirely. Inheriting
+        the feed at step 3 for those three would zero the weather on genuinely
+        outdoor games with no error raised.
+
+        An UNRECOGNISED ``stadium_id`` falls through to the later steps rather than
+        raising: ingestion is not the router, and turning a new code into a hard
+        stop here would fail a whole season's ingest over a roof value.
 
         Args:
             venue: Stadium name string
             nflverse_roof: Optional roof value from nflreadpy (dome/outdoors/closed/open)
+            stadium_id: Optional nflverse stadium code from the feed
 
         Returns:
             One of: 'indoor', 'outdoor', 'retractable'
         """
-        # Try venues.json first (most accurate)
+        # Try the exact stadium_id key first -- the key the other two resolvers use
+        if isinstance(stadium_id, str) and stadium_id:
+            roof = self._stadium_id_roof_lookup.get(stadium_id)
+            if roof:
+                return roof
+
+        # Then the (lossy, lowercased) venue NAME key
         if venue:
             roof = self._venue_lookup.get(venue.lower())
             if roof:
@@ -229,6 +285,7 @@ class GameDataIngester:
                     "venue_roof": self._get_venue_roof_type(
                         row.get("stadium", ""),
                         row.get("roof"),
+                        stadium_id=row.get("stadium_id"),
                     ),
                     "home_score": row.get("home_score")
                     if pd.notna(row.get("home_score"))

@@ -71,6 +71,23 @@ def _neutral_game(
     }
 
 
+def _record_warnings(monkeypatch) -> list[tuple[str, dict]]:
+    """Capture ``features.contextual``'s structlog warnings as (event, kwargs)."""
+    recorded: list[tuple[str, dict]] = []
+    real_logger = contextual.logger
+
+    class _Recorder:
+        def warning(self, event, **kwargs):
+            recorded.append((str(event), kwargs))
+            return real_logger.warning(event, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(real_logger, name)
+
+    monkeypatch.setattr(contextual, "logger", _Recorder())
+    return recorded
+
+
 def _home_game(
     stadium_id: str | None = "DAL00",
     season: int = 2026,
@@ -188,24 +205,35 @@ class TestTheNonNeutralUnknownStadiumCase:
             "the documented D33-15 rule."
         )
 
-    def test_it_emits_a_named_warning(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Silence would be the Maracana defect class, only quieter."""
-        with caplog.at_level("WARNING"):
-            contextual.resolve_venue_for_game(_home_game(stadium_id="DAL99"))
-        assert "DAL99" in caplog.text, (
+    def test_it_emits_a_named_warning(self, monkeypatch) -> None:
+        """Silence would be the Maracana defect class, only quieter.
+
+        The logger is captured DIRECTLY rather than through ``caplog``: this project
+        logs through structlog, so a stdlib-handler assertion would pass or fail on
+        the logging CONFIGURATION rather than on what the router actually recorded.
+        """
+        recorded = _record_warnings(monkeypatch)
+        contextual.resolve_venue_for_game(_home_game(stadium_id="DAL99"))
+
+        assert any(
+            "DAL99" in event or kwargs.get("stadium_id") == "DAL99"
+            for event, kwargs in recorded
+        ), (
             "an unrecognised stadium_id on a home game was absorbed without a word. "
             "A new home stadium silently inheriting the old venue's coordinates, "
-            "timezone and elevation is the same defect class as the Maracana case."
+            "timezone and elevation is the same defect class as the Maracana case. "
+            f"Warnings seen: {[event for event, _ in recorded]}"
         )
 
-    def test_a_recognised_home_id_warns_about_nothing(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        with caplog.at_level("WARNING"):
-            venue = contextual.resolve_venue_for_game(_home_game())
+    def test_a_recognised_home_id_warns_about_nothing(self, monkeypatch) -> None:
+        recorded = _record_warnings(monkeypatch)
+        venue = contextual.resolve_venue_for_game(_home_game())
+
         assert venue is not None
         assert venue["venue_id"] == "at_t_stadium"
-        assert "DAL00" not in caplog.text
+        assert not [
+            event for event, kwargs in recorded if kwargs.get("stadium_id") == "DAL00"
+        ], "a RECOGNISED stadium_id must not warn; the warning is for the unknown case"
 
 
 class TestTheRelocatedTeamCase:
@@ -279,11 +307,26 @@ class TestTheWeatherResolver:
         assert "ZZZ99" in message
         assert "data/venues.json" in message
 
-    def test_the_home_team_hard_fail_survives(self) -> None:
-        """The existing normalize_team_abbreviation refusal is not weakened."""
+    def test_the_normalize_team_hard_fail_survives(self) -> None:
+        """The EXISTING refusal must not be weakened by the new code path.
+
+        It fires BEFORE the venue lookup -- `normalize_team_abbreviation` refuses an
+        unknown abbreviation outright -- which is why this asserts on that message
+        and not on the venues.json one below.
+        """
         ingester = ingest_weather.WeatherDataIngester()
-        with pytest.raises(Exception, match="home_teams"):
+        with pytest.raises(Exception, match="Unknown team abbreviation"):
             ingester._get_venue_coordinates("ZZZ", _venues_frame())
+
+    def test_the_home_teams_refusal_survives(self) -> None:
+        """A KNOWN team with no venue record still carries its recovery command."""
+        ingester = ingest_weather.WeatherDataIngester()
+        without_buffalo = _venues_frame()
+        without_buffalo = without_buffalo[
+            ~without_buffalo["home_teams"].apply(lambda teams: "BUF" in teams)
+        ]
+        with pytest.raises(Exception, match="home_teams"):
+            ingester._get_venue_coordinates("BUF", without_buffalo)
 
 
 class TestTheIngestGamesResolver:

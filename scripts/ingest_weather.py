@@ -21,6 +21,10 @@ from conf.settings import get_settings
 from data.quality_gates import validate_bronze_to_silver
 from data.schemas import WeatherSchema
 from data.storage import load_dataframe, save_bronze_snapshot, upsert_silver
+from features.contextual import (
+    STADIUM_ID_ROUTING_FIRST_SEASON,
+    game_is_neutral_site,
+)
 from utils import (
     DataIngestionError,
     get_current_nfl_week,
@@ -271,6 +275,54 @@ class WeatherDataIngester:
         venue = venue_info.iloc[0]
         return venue["latitude"], venue["longitude"], venue["roof_type"]
 
+    def _get_venue_coordinates_by_stadium_id(
+        self, stadium_id: object, venues_df: pd.DataFrame
+    ) -> tuple[float, float, str]:
+        """Get venue coordinates and roof type by nflverse ``stadium_id``.
+
+        EXACT and CASE-SENSITIVE, with no normalization and no fuzzy match (R11).
+        A miss RAISES rather than falling back to the home team: for a neutral-site
+        game the home team's stadium is the wrong answer by construction, and the
+        wrong answer arriving silently is the defect this whole path exists to fix.
+
+        Raises:
+            WeatherDataError: ``stadium_id`` is absent from ``data/venues.json``.
+        """
+        if "stadium_id" in venues_df.columns:
+            match = venues_df[venues_df["stadium_id"] == stadium_id]
+            if not match.empty:
+                venue = match.iloc[0]
+                return venue["latitude"], venue["longitude"], venue["roof_type"]
+
+        raise WeatherDataError(
+            f"No venue found for stadium_id {stadium_id!r}. It is NOT resolved to "
+            "the home team's stadium: that would give the wrong coordinates and the "
+            "wrong weather for a neutral-site game, silently. Add the venue record "
+            "to data/venues.json with its stadium_id, latitude, longitude and "
+            "roof_type entered explicitly. Matching is exact and case-sensitive."
+        )
+
+    def _resolve_venue_for_game_row(
+        self, game: Any, venues_df: pd.DataFrame
+    ) -> tuple[float, float, str]:
+        """Coordinates and roof for one game, under the D33-15 routing rule.
+
+        Seasons before ``STADIUM_ID_ROUTING_FIRST_SEASON`` keep the home-team
+        resolution unchanged, including their neutral-site games -- those 91 rows
+        are a disclosure, not a repair (see the contextual module's note).
+        """
+        try:
+            season = int(game.get("season"))
+        except (TypeError, ValueError):
+            season = 0
+
+        if season >= STADIUM_ID_ROUTING_FIRST_SEASON and game_is_neutral_site(game):
+            return self._get_venue_coordinates_by_stadium_id(
+                game.get("stadium_id"), venues_df
+            )
+
+        return self._get_venue_coordinates(game["home_team"], venues_df)
+
     def _is_outdoor_game(self, roof_type: str) -> bool:
         """Determine if weather affects the game."""
         return roof_type.lower() in ["outdoor", "retractable"]
@@ -423,10 +475,11 @@ class WeatherDataIngester:
                 )
                 continue
 
-            # Get venue coordinates and roof type
-            lat, lon, roof_type = self._get_venue_coordinates(
-                game["home_team"], venues_df
-            )
+            # Get venue coordinates and roof type. D33-15: a 2026-and-later
+            # neutral-site game resolves by the feed's stadium_id, so the eight
+            # international games get their OWN coordinates and their own roof
+            # rather than the nominal home team's.
+            lat, lon, roof_type = self._resolve_venue_for_game_row(game, venues_df)
 
             # Convert game time to UTC through the ONE kickoff accessor (WR-06).
             #

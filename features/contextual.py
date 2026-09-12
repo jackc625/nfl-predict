@@ -60,6 +60,178 @@ _SCHEDULE_LOAD_ERRORS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# stadium_id-keyed venue routing (COLD-09 / R11 / D33-15 / T-33-26).
+#
+# THE DEFECT. All three venue resolvers key off the home team, so 2026's eight
+# international games resolve to the nominal home team's own stadium. The Maracana
+# game (BAL @ DAL, week 3) resolved to AT&T Stadium in Arlington: Dallas
+# coordinates, Dallas timezone, Dallas weather, and a travel distance of ZERO miles
+# for a trip to Brazil, with no error raised.
+#
+# THE RULE, STATED ONCE. For seasons from STADIUM_ID_ROUTING_FIRST_SEASON onward, a
+# game the feed marks NEUTRAL resolves by `stadium_id` and RAISES on a miss. Every
+# other game -- any earlier season, and any non-neutral game -- resolves by
+# `home_team` exactly as it does today.
+#
+# WHY THE SEASON GATE. The 91 historical neutral-site games across 27 stadium_ids
+# have resolved to the home team's own stadium for the life of this project. That is
+# a measured DISCLOSURE (tests/phase33_state.HISTORICAL_NEUTRAL_MISRESOLUTION), not
+# a defect to repair here: re-resolving them would move gold under three deployed
+# models in the same change that fixes the forward season, and the two would then be
+# inseparable.
+#
+# THE MATCH IS EXACT AND CASE-SENSITIVE. No casefolding, no stripping, no fuzzy
+# match. A feed value that differs from the recorded code IS a different value, and
+# quietly accepting it is how a cold start produces a confidently wrong venue.
+# ---------------------------------------------------------------------------
+
+STADIUM_ID_ROUTING_FIRST_SEASON: int = 2026
+
+_VENUES_JSON_PATH = Path(__file__).resolve().parent.parent / "data" / "venues.json"
+
+# The nflverse `location` value that marks a neutral-site game, and the silver column
+# that will carry the same fact once Plan 33-12 backfills it. Both spellings are read
+# because this router runs against BOTH shapes: the raw feed frame during ingestion
+# and the silver games frame during the feature build.
+_NEUTRAL_LOCATION_VALUE = "Neutral"
+
+
+class UnknownStadiumError(ValueError):
+    """A neutral-site game names a ``stadium_id`` ``data/venues.json`` does not carry.
+
+    Raised rather than falling back to the home team's stadium: on a neutral-site
+    game the home team's venue is the WRONG answer by construction, and it is
+    precisely the wrong answer that shipped silently for the whole life of this
+    project. The message follows the repo's refusal-carries-its-recovery-command
+    convention -- it names the id, the game, and the file to edit.
+    """
+
+
+def _load_venue_records(
+    venues: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """The venue records, either as handed in or read from ``data/venues.json``.
+
+    Callers inside the feature build pass their already-loaded copy; the
+    module-level helpers below read the file so they are usable from a one-line
+    verification command without constructing a calculator.
+    """
+    if venues is not None:
+        return venues
+    with open(_VENUES_JSON_PATH, encoding="utf-8") as handle:
+        return json.load(handle)["venues"]
+
+
+def _get_venue_by_stadium_id(
+    stadium_id: object,
+    venues: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """The venue whose ``stadium_id`` is EXACTLY ``stadium_id``, or None.
+
+    The LOOKUP answers None for a miss; the ROUTER below decides whether a miss is
+    fatal. Non-string and empty ids are misses rather than errors, so a frame with
+    an absent column behaves the same as one with a blank cell.
+    """
+    if not isinstance(stadium_id, str) or not stadium_id:
+        return None
+    for venue in _load_venue_records(venues):
+        if venue.get("stadium_id") == stadium_id:
+            return venue
+    return None
+
+
+def _get_venue_by_home_team(
+    home_team: object,
+    venues: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Today's resolution: the venue whose ``home_teams`` contains the team."""
+    if not isinstance(home_team, str) or not home_team:
+        return None
+    for venue in _load_venue_records(venues):
+        if home_team in venue.get("home_teams", []):
+            return venue
+    return None
+
+
+def game_is_neutral_site(game: Any) -> bool:
+    """Is this game at a neutral site, in either spelling?
+
+    The feed says ``location == 'Neutral'``; silver will say ``neutral_site == True``
+    once Plan 33-12 backfills it. ``location`` is preferred where present because it
+    is the source the other value is derived FROM.
+    """
+    location = game.get("location")
+    if isinstance(location, str):
+        return location.strip() == _NEUTRAL_LOCATION_VALUE
+
+    neutral = game.get("neutral_site")
+    if neutral is None or (isinstance(neutral, float) and pd.isna(neutral)):
+        return False
+    return bool(neutral)
+
+
+def resolve_venue_for_game(
+    game: Any,
+    venues: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Resolve the venue a game is actually played at (D33-15).
+
+    Args:
+        game: A mapping-like game row. Read: ``season``, ``home_team``, ``game_id``,
+            and either ``location`` or ``neutral_site``, plus ``stadium_id``.
+        venues: Optional pre-loaded venue records.
+
+    Returns:
+        The venue record, or None when the home-team path cannot resolve one (the
+        same shape today's callers already handle by emitting default metrics).
+
+    Raises:
+        UnknownStadiumError: a season >= 2026 neutral-site game whose ``stadium_id``
+            is absent from ``data/venues.json``.
+    """
+    try:
+        season = int(game.get("season"))
+    except (TypeError, ValueError):
+        season = 0
+
+    stadium_id = game.get("stadium_id")
+
+    if season >= STADIUM_ID_ROUTING_FIRST_SEASON and game_is_neutral_site(game):
+        venue = _get_venue_by_stadium_id(stadium_id, venues)
+        if venue is None:
+            raise UnknownStadiumError(
+                f"neutral-site game {game.get('game_id')!r} names stadium_id "
+                f"{stadium_id!r}, which is not in data/venues.json. It is NOT "
+                "resolved to the home team's stadium: that is the wrong answer by "
+                "construction and produces a game with the wrong coordinates, the "
+                "wrong timezone, the wrong weather and zero travel miles, silently. "
+                "Add the venue record to data/venues.json with its latitude, "
+                "longitude, elevation_ft, IANA timezone and roof_type entered "
+                "explicitly, then re-run."
+            )
+        return venue
+
+    if season >= STADIUM_ID_ROUTING_FIRST_SEASON and isinstance(stadium_id, str):
+        # A NON-NEUTRAL game whose stadium_id is unrecognised is a NEW or RENAMED
+        # home stadium. The documented rule still resolves it by home_team -- that
+        # answer is approximately right, unlike the neutral case -- but silence here
+        # would be the same defect class as the Maracana game, only quieter: a new
+        # home stadium inheriting the old venue's coordinates, timezone and
+        # elevation with nothing in the record to say so.
+        if stadium_id and _get_venue_by_stadium_id(stadium_id, venues) is None:
+            logger.warning(
+                f"Unrecognised stadium_id {stadium_id} on a non-neutral game; "
+                "resolving by home_team as documented (D33-15). A new or renamed "
+                "home stadium needs a record in data/venues.json.",
+                stadium_id=stadium_id,
+                game_id=game.get("game_id"),
+                home_team=game.get("home_team"),
+            )
+
+    return _get_venue_by_home_team(game.get("home_team"), venues)
+
+
 class ContextualFeaturesCalculator:
     """
     Calculate contextual features for NFL games.
@@ -128,6 +300,47 @@ class ContextualFeaturesCalculator:
             if venue["venue_id"] == venue_id:
                 return venue
         return None
+
+    def _get_venue_by_stadium_id(self, stadium_id: object) -> dict[str, Any] | None:
+        """Get venue information by nflverse ``stadium_id`` -- exact, case-sensitive.
+
+        ``venue_id`` is a slug (``highmark_stadium``) and ``stadium_id`` is an
+        nflverse code (``BUF00``); they are different keys and one is not a
+        substitute for the other.
+        """
+        return _get_venue_by_stadium_id(stadium_id, self.venues_data["venues"])
+
+    def resolve_venue_for_game(self, game: Any) -> dict[str, Any] | None:
+        """Resolve a game's true venue under the D33-15 routing rule."""
+        return resolve_venue_for_game(game, self.venues_data["venues"])
+
+    def _resolve_venue_id_for_game(self, game: Any) -> str:
+        """The venue_id the feature build should use for this game.
+
+        SEASONS BEFORE 2026 NEVER ENTER THE NEW PATH. They keep the venue-NAME
+        resolution they have always had, byte for byte, which is what keeps the
+        historical half of gold unchanged while the forward season is repaired
+        (D33-15). The 91 mis-resolved historical games stay mis-resolved, on
+        purpose, and are disclosed rather than silently corrected.
+
+        Raises:
+            UnknownStadiumError: a 2026-or-later neutral-site game whose
+                ``stadium_id`` is not in ``data/venues.json``.
+        """
+        try:
+            season = int(game.get("season"))
+        except (TypeError, ValueError):
+            season = 0
+
+        if season >= STADIUM_ID_ROUTING_FIRST_SEASON:
+            # Called even for non-neutral games so an unrecognised home
+            # ``stadium_id`` gets its named warning; only the NEUTRAL answer is
+            # allowed to override the venue-name resolution below.
+            venue = self.resolve_venue_for_game(game)
+            if venue is not None and game_is_neutral_site(game):
+                return venue["venue_id"]
+
+        return self._get_venue_id_by_name(game.get("venue", ""))
 
     def _get_venue_surface(self, venue_id: str) -> str | None:
         """Get the surface type for a venue by its ID.
@@ -847,9 +1060,11 @@ class ContextualFeaturesCalculator:
                 game_id = game["game_id"]
                 home_team = game["home_team"]
                 away_team = game["away_team"]
-                # Map venue name to venue_id
-                venue_name = game.get("venue", "")
-                venue_id = self._get_venue_id_by_name(venue_name)
+                # Resolve the venue the game is actually PLAYED at (D33-15).
+                # For 2026-and-later neutral-site games this is the stadium the
+                # feed names; for everything else it is today's venue-name
+                # resolution, unchanged.
+                venue_id = self._resolve_venue_id_for_game(game)
                 # WR-06 / N-02: resolve the kickoff to its ET WALL CLOCK exactly
                 # once, here, so detect_short_week, the travel metrics and the
                 # rest-days call all read the same instant through the one
@@ -1170,8 +1385,10 @@ class ContextualFeaturesCalculator:
                 game_id = game["game_id"]
                 home_team = game["home_team"]
                 away_team = game["away_team"]
-                venue_name = game.get("venue", "")
-                venue_id = self._get_venue_id_by_name(venue_name)
+                # D33-15: 2026-and-later neutral-site games resolve by the
+                # feed's stadium_id; every other game keeps today's venue-name
+                # resolution so the historical half of gold does not move.
+                venue_id = self._resolve_venue_id_for_game(game)
                 # WR-06 / N-02: resolve the kickoff to its ET WALL CLOCK exactly
                 # once, here, so detect_short_week, the travel metrics and the
                 # rest-days call all read the same instant through the one

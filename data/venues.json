@@ -2,6 +2,7 @@
   "venues": [
     {
       "venue_id": "highmark_stadium",
+      "stadium_id": "BUF00",
       "venue_name": "Highmark Stadium",
       "city": "Orchard Park",
       "state": "NY",
@@ -18,6 +19,7 @@
     },
     {
       "venue_id": "gillette_stadium",
+      "stadium_id": "BOS00",
       "venue_name": "Gillette Stadium", 
       "city": "Foxborough",
       "state": "MA",
@@ -34,6 +36,7 @@
     },
     {
       "venue_id": "hard_rock_stadium",
+      "stadium_id": "MIA00",
       "venue_name": "Hard Rock Stadium",
       "city": "Miami Gardens", 
       "state": "FL",
@@ -50,6 +53,7 @@
     },
     {
       "venue_id": "metlife_stadium",
+      "stadium_id": "NYC01",
       "venue_name": "MetLife Stadium",
       "city": "East Rutherford",
       "state": "NJ", 
@@ -66,6 +70,7 @@
     },
     {
       "venue_id": "m_t_bank_stadium",
+      "stadium_id": "BAL00",
       "venue_name": "M&T Bank Stadium",
       "city": "Baltimore",
       "state": "MD",
@@ -82,6 +87,7 @@
     },
     {
       "venue_id": "paycor_stadium",
+      "stadium_id": "CIN00",
       "venue_name": "Paycor Stadium",
       "city": "Cincinnati",
       "state": "OH",
@@ -98,6 +104,7 @@
     },
     {
       "venue_id": "cleveland_browns_stadium",
+      "stadium_id": "CLE00",
       "venue_name": "Cleveland Browns Stadium",
       "city": "Cleveland",
       "state": "OH",
@@ -114,6 +121,7 @@
     },
     {
       "venue_id": "heinz_field",
+      "stadium_id": "PIT00",
       "venue_name": "Acrisure Stadium",
       "city": "Pittsburgh",
       "state": "PA",
@@ -130,6 +138,7 @@
     },
     {
       "venue_id": "nrg_stadium",
+      "stadium_id": "HOU00",
       "venue_name": "NRG Stadium",
       "city": "Houston",
       "state": "TX",
@@ -145,7 +154,8 @@
       "home_teams": ["HOU"]
     },
     {
-      "venue_id": "lucas_oil_stadium", 
+      "venue_id": "lucas_oil_stadium",
+      "stadium_id": "IND00", 
       "venue_name": "Lucas Oil Stadium",
       "city": "Indianapolis",
       "state": "IN",
@@ -162,6 +172,7 @@
     },
     {
       "venue_id": "tiaa_bank_field",
+      "stadium_id": "JAX00",
       "venue_name": "TIAA Bank Field",
       "city": "Jacksonville",
       "state": "FL",
@@ -178,6 +189,7 @@
     },
     {
       "venue_id": "nissan_stadium",
+      "stadium_id": "NAS00",
       "venue_name": "Nissan Stadium",
       "city": "Nashville",
       "state": "TN",
@@ -194,6 +206,7 @@
     },
     {
       "venue_id": "empower_field",
+      "stadium_id": "DEN00",
       "venue_name": "Empower Field at Mile High",
       "city": "Denver",
       "state": "CO",
@@ -210,6 +223,7 @@
     },
     {
       "venue_id": "arrowhead_stadium",
+      "stadium_id": "KAN00",
       "venue_name": "Arrowhead Stadium", 
       "city": "Kansas City",
       "state": "MO",
@@ -226,6 +240,7 @@
     },
     {
       "venue_id": "allegiant_stadium",
+      "stadium_id": "VEG00",
       "venue_name": "Allegiant Stadium",
       "city": "Las Vegas",
       "state": "NV",
@@ -242,6 +257,7 @@
     },
     {
       "venue_id": "sofi_stadium",
+      "stadium_id": "LAX01",
       "venue_name": "SoFi Stadium",
       "city": "Los Angeles",
       "state": "CA",
@@ -258,6 +274,7 @@
     },
     {
       "venue_id": "soldier_field",
+      "stadium_id": "CHI98",
       "venue_name": "Soldier Field",
       "city": "Chicago", 
       "state": "IL",
@@ -274,6 +291,7 @@
     },
     {
       "venue_id": "ford_field",
+      "stadium_id": "DET00",
       "venue_name": "Ford Field",
       "city": "Detroit",
       "state": "MI",
@@ -290,6 +308,7 @@
     },
     {
       "venue_id": "lambeau_field",
+      "stadium_id": "GNB00",
       "venue_name": "Lambeau Field",
       "city": "Green Bay",
       "state": "WI",
@@ -306,6 +325,7 @@
     },
     {
       "venue_id": "u_s_bank_stadium",
+      "stadium_id": "MIN01",
       "venue_name": "U.S. Bank Stadium",
       "city": "Minneapolis",
       "state": "MN",
@@ -322,6 +342,7 @@
     },
     {
       "venue_id": "mercedes_benz_superdome",
+      "stadium_id": "NOR00",
       "venue_name": "Caesars Superdome",
       "city": "New Orleans",
       "state": "LA",
@@ -338,6 +359,7 @@
     },
     {
       "venue_id": "bank_of_america_stadium",
+      "stadium_id": "CAR00",
       "venue_name": "Bank of America Stadium",
       "city": "Charlotte",
       "state": "NC",
@@ -354,6 +376,7 @@
     },
     {
       "venue_id": "mercedes_benz_stadium",
+      "stadium_id": "ATL97",
       "venue_name": "Mercedes-Benz Stadium",
       "city": "Atlanta",
       "state": "GA",
@@ -370,6 +393,7 @@
     },
     {
       "venue_id": "raymond_james_stadium",
+      "stadium_id": "TAM00",
       "venue_name": "Raymond James Stadium",
       "city": "Tampa",
       "state": "FL",
@@ -386,6 +410,7 @@
     },
     {
       "venue_id": "fedex_field",
+      "stadium_id": "WAS00",
       "venue_name": "FedExField",
       "city": "Landover",
       "state": "MD",
@@ -402,6 +427,7 @@
     },
     {
       "venue_id": "at_t_stadium",
+      "stadium_id": "DAL00",
       "venue_name": "AT&T Stadium",
       "city": "Arlington",
       "state": "TX",
@@ -418,6 +444,7 @@
     },
     {
       "venue_id": "lincoln_financial_field",
+      "stadium_id": "PHI00",
       "venue_name": "Lincoln Financial Field",
       "city": "Philadelphia",
       "state": "PA",
@@ -434,6 +461,7 @@
     },
     {
       "venue_id": "state_farm_stadium",
+      "stadium_id": "PHO00",
       "venue_name": "State Farm Stadium",
       "city": "Glendale",
       "state": "AZ",
@@ -450,6 +478,7 @@
     },
     {
       "venue_id": "levi_s_stadium",
+      "stadium_id": "SFO01",
       "venue_name": "Levi's Stadium",
       "city": "Santa Clara",
       "state": "CA",
@@ -466,6 +495,7 @@
     },
     {
       "venue_id": "lumen_field",
+      "stadium_id": "SEA00",
       "venue_name": "Lumen Field",
       "city": "Seattle",
       "state": "WA",
@@ -479,6 +509,142 @@
       "climate_zone": "oceanic",
       "timezone": "America/Los_Angeles",
       "home_teams": ["SEA"]
+    },
+    {
+      "venue_id": "melbourne_cricket_ground",
+      "stadium_id": "MEL00",
+      "venue_name": "Melbourne Cricket Ground",
+      "city": "Melbourne",
+      "state": "",
+      "country": "Australia",
+      "latitude": -37.8199,
+      "longitude": 144.9834,
+      "elevation_ft": 43,
+      "roof_type": "outdoor",
+      "surface": "Matrix Turf",
+      "capacity": 100024,
+      "climate_zone": "oceanic",
+      "timezone": "Australia/Melbourne",
+      "home_teams": []
+    },
+    {
+      "venue_id": "maracana_stadium",
+      "stadium_id": "RIO00",
+      "venue_name": "Maracana Stadium",
+      "city": "Rio de Janeiro",
+      "state": "",
+      "country": "Brazil",
+      "latitude": -22.9122,
+      "longitude": -43.2303,
+      "elevation_ft": 49,
+      "roof_type": "outdoor",
+      "surface": "Matrix Turf",
+      "capacity": 73139,
+      "climate_zone": "tropical",
+      "timezone": "America/Sao_Paulo",
+      "home_teams": []
+    },
+    {
+      "venue_id": "tottenham_hotspur_stadium",
+      "stadium_id": "LON02",
+      "venue_name": "Tottenham Hotspur Stadium",
+      "city": "London",
+      "state": "",
+      "country": "United Kingdom",
+      "latitude": 51.6044,
+      "longitude": -0.0664,
+      "elevation_ft": 43,
+      "roof_type": "outdoor",
+      "surface": "Grass",
+      "capacity": 62850,
+      "climate_zone": "oceanic",
+      "timezone": "Europe/London",
+      "home_teams": []
+    },
+    {
+      "venue_id": "wembley_stadium",
+      "stadium_id": "LON00",
+      "venue_name": "Wembley Stadium",
+      "city": "London",
+      "state": "",
+      "country": "United Kingdom",
+      "latitude": 51.5556,
+      "longitude": -0.2794,
+      "elevation_ft": 154,
+      "roof_type": "outdoor",
+      "surface": "Grass",
+      "capacity": 90000,
+      "climate_zone": "oceanic",
+      "timezone": "Europe/London",
+      "home_teams": []
+    },
+    {
+      "venue_id": "stade_de_france",
+      "stadium_id": "PAR00",
+      "venue_name": "Stade de France",
+      "city": "Saint-Denis",
+      "state": "",
+      "country": "France",
+      "latitude": 48.9244,
+      "longitude": 2.36,
+      "elevation_ft": 108,
+      "roof_type": "outdoor",
+      "surface": "Sport Turf",
+      "capacity": 81338,
+      "climate_zone": "oceanic",
+      "timezone": "Europe/Paris",
+      "home_teams": []
+    },
+    {
+      "venue_id": "bernabeu",
+      "stadium_id": "MAD01",
+      "venue_name": "Bernabeu",
+      "city": "Madrid",
+      "state": "",
+      "country": "Spain",
+      "latitude": 40.4531,
+      "longitude": -3.6883,
+      "elevation_ft": 2349,
+      "roof_type": "retractable",
+      "surface": "FieldTurf",
+      "capacity": 83186,
+      "climate_zone": "mediterranean",
+      "timezone": "Europe/Madrid",
+      "home_teams": []
+    },
+    {
+      "venue_id": "fc_bayern_munich_stadium",
+      "stadium_id": "MUN01",
+      "venue_name": "FC Bayern Munich Stadium",
+      "city": "Munich",
+      "state": "",
+      "country": "Germany",
+      "latitude": 48.2188,
+      "longitude": 11.6248,
+      "elevation_ft": 1611,
+      "roof_type": "outdoor",
+      "surface": "FieldTurf",
+      "capacity": 75024,
+      "climate_zone": "oceanic",
+      "timezone": "Europe/Berlin",
+      "home_teams": []
+    },
+    {
+      "venue_id": "estadio_banorte",
+      "stadium_id": "MEX00",
+      "venue_name": "Estadio Banorte",
+      "city": "Mexico City",
+      "state": "",
+      "country": "Mexico",
+      "latitude": 19.3031,
+      "longitude": -99.1506,
+      "elevation_ft": 7365,
+      "roof_type": "outdoor",
+      "surface": "Grass",
+      "capacity": 87523,
+      "climate_zone": "subtropical_highland",
+      "timezone": "America/Mexico_City",
+      "home_teams": []
     }
   ]
 }
