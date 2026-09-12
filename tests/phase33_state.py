@@ -618,3 +618,29 @@ ELO_WRITE_SET_INCLUDING_DUCKDB: tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_03: int = 56
+
+
+# ---------------------------------------------------------------------------
+# THE SNAPSHOT TABLE'S WIDTH, BEFORE AND AFTER `is_provisional`.
+#
+# APPENDED by Plan 33-04 Task 1 on 2026-09-12. Nothing above this line was edited.
+#
+# THE 11 IS A MEASUREMENT, NOT A READING OF THE SOURCE CONSTANT. It was taken from
+# the PRE-PHASE production snapshot table -- data/silver/elo_game_snapshots.parquet,
+# 2,227 rows over seasons 2018-2025 -- so the "before" is the width of the table
+# that actually exists rather than the width of a tuple somebody could edit in the
+# same commit that widens it.
+#
+# The 12th column is `is_provisional`: True on a row emitted for a scheduled-but-
+# unplayed game by `EloBuilder.snapshot_upcoming_week`, False on every row either
+# canonical writer produces. It is APPENDED to the existing eleven and never
+# inserted among them -- reordering that table moves every column three deployed
+# models read through.
+#
+# There is NO null third state. Both writers set the flag explicitly, and the ONE
+# read seam (`features.elo_features.ensure_provisional_flag`) fills a pre-flag
+# parquet with False rather than leaving a NaN that would be neither.
+# ---------------------------------------------------------------------------
+
+SNAPSHOT_COLUMN_COUNT_BEFORE: int = 11
+SNAPSHOT_COLUMN_COUNT_AFTER: int = 12
