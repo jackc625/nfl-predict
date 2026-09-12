@@ -816,3 +816,55 @@ BET_LIST_COLUMN_COUNT_BEFORE: int = 28
 BET_LIST_COLUMN_COUNT_AFTER: int = 29
 DECIDED_AT_COLUMN: str = "decided_at_utc"
 BET_LIST_REPLAY_ROW_COUNT: int = 234
+
+
+# ---------------------------------------------------------------------------
+# THIS PLAN'S COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-05 at plan close on 2026-09-12, AFTER the three-tier
+# measurement that produced it. Nothing above this line was edited.
+#
+# APPENDED AT CLOSE, NOT IN TASK 1, for the reason Plans 33-02, 33-03 and 33-04
+# recorded when they did the same: three tasks add tests, so a Task-1 value would
+# have been wrong at plan close and could only have been made right by EDITING it
+# -- the append-once violation the protocol exists to prevent.
+#
+# MEASURED over all THREE tiers with the guard armed and NFL_GUARD_OBSERVATIONS=1:
+#     uv run python -m pytest tests/unit -q
+#         3167 passed, 4 skipped, 5 xfailed          3176 collected   308.55 s
+#     uv run python -m pytest tests/integration -q
+#         5 failed, 747 passed, 8 skipped, 9 xfailed  769 collected   522.76 s
+#     uv run python -m pytest tests/api tests/test_*.py -q
+#         370 passed                                  370 collected   117.23 s
+#     SUM: 5 failed, 4284 passed, 12 skipped, 14 xfailed       4315 collected
+#
+# 4315 - 4237 (Plan 33-04's three-tier collected total) = 78.
+#
+# It closes exactly against the modules, which is the check that no test was quietly
+# deleted to make a number look better:
+#     23  tests/unit/test_freeze_fence_binding.py            (new)
+#     13  tests/unit/test_freeze_parse_single_source.py      (new)
+#     12  tests/unit/test_selection_scoped_by_freeze_instant.py  (new)
+#     22  tests/unit/test_decided_at_utc.py                  (new)
+#      1  tests/unit/test_bet_list_schema.py                 (25 -> 26)
+#      3  tests/api/test_cache_betting.py                    ( 9 -> 12)
+#      4  tests/integration/test_bet_list_completeness.py    ( 8 -> 12)
+#     --
+#     78
+#
+# SIX FURTHER TEST MODULES WERE EDITED AND ADDED ZERO NODES, which is why they do
+# not appear above and why the arithmetic still closes: test_weekly_bet_list.py,
+# test_idempotency.py, test_bet_list_marker.py, test_bet_list_entry_point.py,
+# test_friday_prediction_step.py and test_cold_start_bet_list_recovery.py all took
+# FIXTURE changes only -- an observation stamp, or a pinned clock to match a pinned
+# historical week. A fixture edit that adds no node is invisible to this equation by
+# design; it is recorded in the SUMMARY's deviation 2 instead.
+#
+# The five failures are EXACTLY DELIBERATE_TRIPWIRE_NODE_IDS, unchanged. The SKIPPED
+# count did not move (12 -> 12) and neither did the XFAILED (14 -> 14): this plan
+# added no pending guard and stepped aside from nothing. No tier reported a
+# production-store boundary crossing (STAT_SIGNATURE_OBSERVATIONS 3 + 5 + 0,
+# WAL_SIBLING_OBSERVATIONS 0 in every tier).
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_05: int = 78
