@@ -69,6 +69,23 @@ _WEEKLY_MATCHUPS: tuple[tuple[str, str], ...] = (
     ("NYJ", "LV"),
 )
 
+# The HOME venue of each matchup above, as `data/venues.json` spells it.
+#
+# ADDED by Plan 33.1-04 (the owner-assigned hand-off from 33.1-03). Once a
+# stadium-resolution refusal stops being swallowed into an empty contextual
+# frame, a synthetic games frame with no `stadium_id` makes EVERY build over
+# this fixture hard-fail -- correctly, because the venue genuinely cannot be
+# resolved without it. Phase 33 Wave 12 backfills the column into
+# `data/silver/games.parquet`, so a fixture that omits it is describing a
+# silver shape this milestone is retiring; and a fixture that cannot resolve a
+# venue is exactly why the swallow went unnoticed for so long.
+_HOME_STADIUM_IDS: dict[str, str] = {
+    "BUF": "BUF00",
+    "KC": "KAN00",
+    "NE": "BOS00",
+    "NYJ": "NYC01",
+}
+
 
 def make_season_games(
     season: int,
@@ -91,7 +108,7 @@ def make_season_games(
 
     Returns:
         DataFrame with ``game_id``, ``season``, ``week``, ``home_team``, ``away_team``,
-        ``home_score``, ``away_score`` and ``kickoff_et``.
+        ``stadium_id``, ``home_score``, ``away_score`` and ``kickoff_et``.
     """
     graded = tuple(range(1, weeks + 1)) if graded_weeks is None else graded_weeks
 
@@ -106,6 +123,7 @@ def make_season_games(
                     "week": week,
                     "home_team": home,
                     "away_team": away,
+                    "stadium_id": _HOME_STADIUM_IDS[home],
                     "home_score": float(home_points) if is_graded else None,
                     "away_score": float(away_points) if is_graded else None,
                     "kickoff_et": _SEASON_OPENER.replace(year=season)

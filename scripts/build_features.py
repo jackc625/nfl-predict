@@ -37,7 +37,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from data.storage import load_dataframe, save_dataframe
-from features.contextual import ContextualFeaturesCalculator
+from features.contextual import ContextualFeaturesCalculator, UnknownStadiumError
 from features.elo_features import EloFeatureBuilder
 from features.injury import InjuryBuilder
 from features.market_anchors import MarketAnchorFeaturesCalculator
@@ -437,6 +437,26 @@ class FeatureMatrixBuilder:
                 )
                 feature_sources["contextual"] = contextual_df
                 logger.info("Built contextual features", records=len(contextual_df))
+            except UnknownStadiumError:
+                # A STADIUM-RESOLUTION REFUSAL IS NOT A SOURCE-LOAD FAILURE, and
+                # this handler exists only because the type system cannot say so
+                # (owner ruling 2026-09-13, found by Plan 33.1-03).
+                #
+                # `UnknownStadiumError` subclasses `ValueError`, which is a
+                # member of `_SOURCE_LOAD_ERRORS`, so without this line the
+                # loudest thing R1's resolver can say -- "this game names a
+                # stadium I have no record for" -- became a WARNING and an EMPTY
+                # contextual frame. Gold would then be built with no
+                # venue / travel / rest / situational family at all, and the run
+                # would exit 0. A green run is precisely what that defect
+                # produces, which is the milestone invariant this protects.
+                #
+                # SURGICAL on purpose. Removing `ValueError` from
+                # `_SOURCE_LOAD_ERRORS` would move eleven other optional-source
+                # guards whose degradation contract is deliberate and separately
+                # tested, and re-basing the exception would change what every
+                # existing `except ValueError` around the resolver catches.
+                raise
             except _SOURCE_LOAD_ERRORS as e:
                 logger.warning("Failed to build contextual features", error=str(e))
                 feature_sources["contextual"] = pd.DataFrame()
