@@ -4163,3 +4163,254 @@ WP_ACCURACY_ANCHOR_RERATIFICATION: dict[str, object] = {
         "test was red; it is re-confirmed by the green run rather than moved."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# THE COMPLETE LEGACY BRONZE WEATHER INVENTORY, THE CORPUS LOCK'S CONTRACT, AND
+# THE THREE-WAY NULL-OBSERVATION CLASSIFICATION.
+#
+# APPENDED by Plan 33.1-05 Task 1 on 2026-09-13. Nothing above this line was
+# edited.
+#
+# WHY THE INVENTORY IS PINNED BY CONTENT DIGEST AND NOT BY ROW COUNT. SPEC
+# prohibition 6 says the 1,942 pre-existing bronze rows are neither overwritten
+# nor deleted, and they are the ONLY evidence the routing fix can be
+# regression-tested against. A row count would miss a rewrite that preserved the
+# count -- which is exactly what a re-fetch under corrected routing would produce.
+# The digest is `tests.data_boundary.digest_file`, so it degrades to a DECLARED
+# stat signature on a locked file rather than lying about the instrument.
+#
+# THE 2025 FILE IS THE TRAP. `weather_raw_bronze_2025_W00_20260407T025733.parquet`
+# is a WHOLE-SEASON `week=0` sentinel written by the current code, and it holds 78
+# rows covering weeks 1 to 5 only, because `_load_games_data(2025, None)` read a
+# silver `games` table that held 78 rows of 2025 at the time. A resume rule keyed
+# on `_W00_` existence would call 2025 done and leave 207 games unfetched behind a
+# green log. That is N-06.
+#
+# MEASURED 2026-09-13 by reading every one of the ten files.
+# ---------------------------------------------------------------------------
+
+LEGACY_WEATHER_BRONZE_INVENTORY: dict[str, object] = {
+    "measured_on": "2026-09-13",
+    "measured_by": "Plan 33.1-05 Task 1",
+    "measured_from": "data/bronze/weather_raw_bronze_*.parquet",
+    "digest_instrument": "tests.data_boundary.digest_file (sha256 of file bytes)",
+    "legacy_total_rows": 1942,
+    "grand_total_rows": 2048,
+    "legacy_season_files": 7,
+    "file_count": 10,
+    "partial_2025_note": (
+        "weather_raw_bronze_2025_W00_20260407T025733.parquet is a WHOLE-SEASON "
+        "week=0 sentinel written by the current save_bronze_snapshot path. It "
+        "holds 78 rows covering weeks 1 to 5 ONLY. A filename-based resume rule "
+        "reads it as a completed season and leaves 207 games of 2025 unfetched "
+        "(N-06). This is why the resume rule is a game-id COVERAGE test under a "
+        "DISJOINT bronze table name."
+    ),
+    "disjointness": (
+        "the new corpus writes under scripts.backfill_historical_weather."
+        "BACKFILL_BRONZE_TABLE = 'weather_backfill', whose glob "
+        "'weather_backfill_raw_bronze_*' matches none of the ten filenames below. "
+        "SPEC prohibition 6 is satisfied STRUCTURALLY rather than by care, and the "
+        "disjointness is asserted at import time rather than assumed."
+    ),
+    "files": {
+        "weather_raw_bronze_2018_season.parquet": {
+            "rows": 267,
+            "columns": 17,
+            "scheme": "legacy whole-season, no _W##_, no timestamp",
+            "digest": (
+                "24684f32dd2bc4144f2356c605b301b5cb79bedb1b5872cd842616303ac81dd9"
+            ),
+        },
+        "weather_raw_bronze_2019_season.parquet": {
+            "rows": 267,
+            "columns": 17,
+            "scheme": "legacy whole-season, no _W##_, no timestamp",
+            "digest": (
+                "4dda8debdb9eccf40cf8a6dc413966a6bee73c032c6aff986d9d2e64449cc3df"
+            ),
+        },
+        "weather_raw_bronze_2020_season.parquet": {
+            "rows": 269,
+            "columns": 17,
+            "scheme": "legacy whole-season, no _W##_, no timestamp",
+            "digest": (
+                "bb414bb219e3489a2f875ef33bcaa09e6b1d3183be597e2d5da1ace3da7fe03a"
+            ),
+        },
+        "weather_raw_bronze_2021_season.parquet": {
+            "rows": 285,
+            "columns": 17,
+            "scheme": "legacy whole-season, no _W##_, no timestamp",
+            "digest": (
+                "f2244e24d2d4dc5afa8cc0d255a2ac3f6df2229859415dbcd86a1debc9de7fb6"
+            ),
+        },
+        "weather_raw_bronze_2022_season.parquet": {
+            "rows": 284,
+            "columns": 17,
+            "scheme": "legacy whole-season, no _W##_, no timestamp",
+            "digest": (
+                "770f3047e3c7dc6bd3388c69841ea466dfbfcb5c45d2ec036d4a6eb084875d0b"
+            ),
+        },
+        "weather_raw_bronze_2023_season.parquet": {
+            "rows": 285,
+            "columns": 17,
+            "scheme": "legacy whole-season, no _W##_, no timestamp",
+            "digest": (
+                "6aff392185ff79ed69849327189fd7dc9326e0fcb958e4e19386c80861d951f8"
+            ),
+        },
+        "weather_raw_bronze_2024_season.parquet": {
+            "rows": 285,
+            "columns": 17,
+            "scheme": "legacy whole-season, no _W##_, no timestamp",
+            "digest": (
+                "19a37202de3374184da761ed4a083724d58969c914ea395ad04cbab15f30748b"
+            ),
+        },
+        "weather_raw_bronze_2025_W05.parquet": {
+            "rows": 14,
+            "columns": 17,
+            "scheme": "legacy week file, no timestamp",
+            "digest": (
+                "daf0f0a475576841d5826e32442971db25b95952485dffdd8a847c62e0aa7143"
+            ),
+        },
+        "weather_raw_bronze_2024_W06_20260416T165923.parquet": {
+            "rows": 14,
+            "columns": 23,
+            "scheme": "current save_bronze_snapshot",
+            "digest": (
+                "2031b8d9971e470271b9587b7cac55a12a5e3b069c4098f2ad7a2240dcd10b96"
+            ),
+        },
+        "weather_raw_bronze_2025_W00_20260407T025733.parquet": {
+            "rows": 78,
+            "columns": 23,
+            "scheme": "current save_bronze_snapshot, week=0 whole-season sentinel",
+            "digest": (
+                "6e7ea65f7acdcea5d74a69945b11f666369a75cb520b169c621bb6208ce67c36"
+            ),
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# THE CORPUS LOCK'S CONTRACT (Ruling L3).
+#
+# WHY IT EXISTS AT ALL. `save_bronze_snapshot(..., exclusive=True)` is a FILENAME
+# backstop: it stops two writers creating the SAME snapshot path and says nothing
+# about two runs racing the corpus. `data.storage.upsert_silver`
+# (data/storage.py:1110-1123) reads the existing parquet, filters it by key,
+# concats and only then writes atomically -- the WRITE is atomic, the
+# READ-MODIFY-WRITE is not. Two promoters each read the pre-state, and the second
+# write silently discards the first's rows with no error and a digest bracket that
+# still reports exactly one CHANGED path, exactly as declared.
+#
+# WHY THE STALE-LOCK RULE IS A REFUSAL RATHER THAN AN AGE HEURISTIC. A paced
+# 81-minute run legitimately holds the lock for 81 minutes, so any age threshold
+# short enough to be useful is short enough to break a healthy run, and breaking a
+# healthy run mid-corpus is the one failure this phase cannot afford.
+# ---------------------------------------------------------------------------
+
+CORPUS_LOCK_CONTRACT: dict[str, object] = {
+    "recorded_by": "Plan 33.1-05 Task 1",
+    "recorded_on": "2026-09-13",
+    "path": "<data root>/bronze/.weather_backfill.lock",
+    "path_constant": "scripts.backfill_historical_weather.CORPUS_LOCK_PATH",
+    "path_resolver": "scripts.backfill_historical_weather.corpus_lock_path",
+    "primitive": (
+        "open(path, 'xb') -- the CREATE is the exclusive step, across processes. "
+        "The same primitive save_bronze_snapshot already relies on, applied at RUN "
+        "scope instead of FILE scope."
+    ),
+    "lives_under_bronze_because": (
+        "a lock that is not on the same filesystem as the thing it guards is "
+        "guarding a different filesystem -- the reason _atomic_write_parquet uses "
+        "a SIBLING tempfile rather than a system temp directory"
+    ),
+    "scope": (
+        "corpus identity",
+        "resume determination",
+        "every season's fetch",
+        "the silver promotion",
+        "post-state verification (Plan 33.1-06's digest bracket runs INSIDE it)",
+    ),
+    "recorded_fields": (
+        "pid",
+        "acquired_at_utc",
+        "corpus.table",
+        "corpus.first_season",
+        "corpus.last_season",
+    ),
+    "stale_lock_policy": "REFUSE, naming the recorded pid, the age and --force-unlock",
+    "never_takes_over_because": (
+        "a healthy paced run legitimately holds the lock for 81 minutes, so any age "
+        "threshold short enough to be useful would break it mid-corpus"
+    ),
+    "exception_policy": "RETAINED on an exception inside the context",
+    "exception_policy_is_why": (
+        "threat T-33.1-31c is a lock that silently disappears, letting the next run "
+        "proceed over a half-written corpus. An exception mid-corpus leaves the "
+        "corpus in an unknown state, so the lock stays and the operator clears it "
+        "deliberately with --force-unlock. The plan's Task-1 acceptance criteria and "
+        "its test list both require this; one prose bullet in Ruling L3 said the "
+        "opposite and was resolved in favour of the criteria and the threat."
+    ),
+    "proof": (
+        "tests/integration/test_weather_corpus_lock.py -- a TWO-PROCESS test. A "
+        "same-thread double-acquire proves nothing about the property, because the "
+        "hazard is cross-process."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# THE THREE-WAY NULL-OBSERVATION CLASSIFICATION (Ruling L4).
+#
+# R4 explicitly makes a MISSING OBSERVATION recordable data, and the D33.1-07
+# absent-observation state exists for exactly that case. A flat 1 percent bar would
+# therefore convert legitimate ERA5 absence into a phase-stopping condition --
+# refusing to write a season because the archive honestly has no reading for two
+# games, which is the opposite of what this phase is for.
+#
+# THE CONTIGUOUS-RUN TEST IS THE DISCRIMINATING ONE. RESEARCH A2's unprobed
+# assumption is that limit exhaustion returns a 400 carrying a `reason`; if the
+# provider instead answers 200-with-null-arrays, the absences arrive CONSECUTIVELY,
+# while genuine ERA5 gaps scatter across a season by geography and date. A 30
+# percent scattered season and a 30 percent consecutive season are different facts
+# and the gate must say which one it saw.
+# ---------------------------------------------------------------------------
+
+NULL_OBSERVATION_CLASSIFICATION: dict[str, object] = {
+    "recorded_by": "Plan 33.1-05 Task 1",
+    "recorded_on": "2026-09-13",
+    "arms": ("CLEAN", "AMBIGUOUS", "OUTAGE_LIKE"),
+    "isolated_null_fraction_ceiling": 0.01,
+    "outage_null_fraction_floor": 0.25,
+    "outage_contiguous_run": 8,
+    "denominator": (
+        "the games that were ACTUALLY FETCHED in the season, in fetch order. A dome "
+        "was never asked, so including it would dilute the fraction and make the "
+        "gate read a number it did not measure."
+    ),
+    "clean_is_written_with_no_override": True,
+    "only_outage_like_stops_the_run": True,
+    "r4_note": (
+        "R4 makes an ISOLATED missing observation recordable data, so only the "
+        "OUTAGE-LIKE arm is a phase-stopping condition. AMBIGUOUS refuses BY "
+        "DEFAULT but names the exact --accept-null-fraction <season>=<fraction> "
+        "flag carrying the OBSERVED fraction, so a season cannot be pre-authorised "
+        "blind; a flag carrying a different fraction still refuses."
+    ),
+    "accepted_override_is_recorded_in": (
+        "<data root>/bronze/.weather_backfill_overrides.jsonl, with the fraction, "
+        "the longest contiguous run and the date -- an override nobody can find "
+        "afterwards is indistinguishable from no gate at all"
+    ),
+    "replaced_constant": "MAX_NULL_OBSERVATION_FRACTION_PER_SEASON (never written)",
+}
