@@ -164,6 +164,40 @@ def validate_weather_source(value: object) -> str:
     return str(value)
 
 
+def normalize_wind_direction(value: Any) -> float | None:
+    """Map a meteorological bearing onto ``[0, 360)``, the range the schema states.
+
+    FOUND BY THE TRACER, ON REAL DATA (Plan 33.1-02 Task 1). Open-Meteo reports a
+    due-north wind as ``360.0``. ``WeatherSchema.wind_direction`` is declared
+    ``ge=0, lt=360``, so that value is REJECTED and one bad row kills the whole
+    batch by design. Season 2016 has exactly one: ``2016_W07_CHI@GB``, 360.0. Over
+    6,499 games the shape recurs, and it would have surfaced as a whole-season
+    hard failure partway through a paced 80-minute run.
+
+    THE SCHEMA IS RIGHT AND IS NOT WIDENED. 0 and 360 are the same direction, so
+    ``le=360`` would let one bearing have two encodings -- and then a comparison,
+    a bucketing or a circular mean over the column silently depends on which one
+    the provider happened to send. The half-open range is the correct invariant;
+    the fetch is the right place to canonicalise onto it.
+
+    ONE HELPER, BOTH FETCHERS. :func:`fetch_game_forecast` carries the identical
+    expression and therefore the identical latent defect -- a north wind on a live
+    2026 kickoff would have hard-failed the weekly ingest. Fixing it in one shared
+    place rather than twice is the same discipline that keeps the archive and
+    forecast paths from disagreeing about which stadium a game is at.
+
+    Args:
+        value: A bearing in degrees, or ``None``.
+
+    Returns:
+        The bearing in ``[0, 360)``, or ``None``. ``NaN`` passes through as
+        ``NaN`` for ``WeatherSchema.nan_to_none`` to resolve.
+    """
+    if value is None:
+        return None
+    return float(value) % 360.0
+
+
 class BeyondForecastHorizonError(WeatherDataError):
     """A kickoff lies beyond the horizon this project declares it can forecast.
 
@@ -266,41 +300,40 @@ def assert_within_forecast_horizon(
     return cutoff
 
 
-def select_forecast_hour_for_kickoff(
-    game: Any,
-    venue: Any,
-    *,
-    as_of_utc: datetime,
-) -> ForecastHour:
-    """Resolve the local day and hour a game's forecast must be read at.
+def resolve_venue_local_hour(game: Any, venue: Any) -> ForecastHour:
+    """Resolve WHICH hour of WHICH venue-local day a game must be read at.
 
-    THE VENUE'S OWN IANA ZONE, taken from the ``timezone`` field Plan 33-06 put on
-    all 38 records in ``data/venues.json``. Never a fixed zone and never the home
-    team's: eight of 2026's games are international, the Maracana game is nominally
-    a Dallas home game, and the Melbourne game read in Eastern time is the wrong
-    hour on the wrong DATE. This is COLD-09's defect expressed in time rather than
-    in space, and it has the same fix -- resolve the venue, then use what the venue
-    says.
+    THE ZONE-AND-HOUR HALF, WITH NO FORECAST HORIZON (Plan 33.1-02 Ruling F).
+    Extracted from :func:`select_forecast_hour_for_kickoff`, which now calls it
+    after asserting the horizon. The body lives HERE and is not duplicated: two
+    copies of a zone resolution would eventually disagree about which hour a game
+    is at, which is the same class of defect COLD-09 fixed in space.
 
-    The horizon check runs HERE, so a caller that reaches for the hour directly
-    cannot skip it.
+    THE ARCHIVE PATH DELIBERATELY DOES NOT PASS THROUGH THE HORIZON ASSERTION, and
+    that is a decision rather than an omission. A past kickoff is never beyond a
+    future cutoff, so reusing the forecast entry point would be SAFE -- and would
+    leave ``assert_within_forecast_horizon`` sitting in the call graph of a path
+    that reads an archive. A vacuous check in a call graph reads as a promise, and
+    the next reader would have to re-derive that it can never fire. So the horizon
+    stays with the forecast caller, which is the only caller it means anything to.
+
+    ``ForecastHour``'s NAME predates this shared use. It is not renamed here: it is
+    a frozen dataclass referenced by the forecast path and by its tests, and a
+    rename inside a tracer slice would be churn for a word. Read it as
+    "the resolved hour", not as "a forecast-only hour".
 
     Args:
         game: A game row (mapping or Series) carrying ``game_id`` and ``kickoff_et``.
         venue: A venue record (mapping or Series) carrying an IANA ``timezone``.
-        as_of_utc: The instant the horizon is measured from. Injected, never read
-            from a process clock.
 
     Returns:
         The resolved :class:`ForecastHour`.
 
     Raises:
         WeatherDataError: the venue record carries no usable zone.
-        BeyondForecastHorizonError: the kickoff is beyond the declared horizon.
     """
     game_id = str(game["game_id"])
     kickoff = kickoff_wall_clock_et(game["kickoff_et"]).astimezone(UTC)
-    assert_within_forecast_horizon(game_id, kickoff, as_of_utc=as_of_utc)
 
     # `.get` rather than `[...]`: a venue record with no zone at all must reach the
     # named refusal below, not a KeyError that says nothing about why it matters.
@@ -329,6 +362,49 @@ def select_forecast_hour_for_kickoff(
         kickoff_utc=kickoff,
         local_instant=local,
     )
+
+
+def select_forecast_hour_for_kickoff(
+    game: Any,
+    venue: Any,
+    *,
+    as_of_utc: datetime,
+) -> ForecastHour:
+    """Resolve the local day and hour a game's forecast must be read at.
+
+    THE VENUE'S OWN IANA ZONE, taken from the ``timezone`` field Plan 33-06 put on
+    all 38 records in ``data/venues.json``. Never a fixed zone and never the home
+    team's: eight of 2026's games are international, the Maracana game is nominally
+    a Dallas home game, and the Melbourne game read in Eastern time is the wrong
+    hour on the wrong DATE. This is COLD-09's defect expressed in time rather than
+    in space, and it has the same fix -- resolve the venue, then use what the venue
+    says.
+
+    The horizon check runs HERE, so a caller that reaches for the hour directly
+    cannot skip it. The zone-and-hour resolution itself now lives in
+    :func:`resolve_venue_local_hour`, which the archive backfill calls WITHOUT this
+    wrapper -- see that function's docstring for why the horizon does not travel
+    with it.
+
+    Args:
+        game: A game row (mapping or Series) carrying ``game_id`` and ``kickoff_et``.
+        venue: A venue record (mapping or Series) carrying an IANA ``timezone``.
+        as_of_utc: The instant the horizon is measured from. Injected, never read
+            from a process clock.
+
+    Returns:
+        The resolved :class:`ForecastHour`.
+
+    Raises:
+        WeatherDataError: the venue record carries no usable zone.
+        BeyondForecastHorizonError: the kickoff is beyond the declared horizon.
+    """
+    assert_within_forecast_horizon(
+        str(game["game_id"]),
+        kickoff_wall_clock_et(game["kickoff_et"]).astimezone(UTC),
+        as_of_utc=as_of_utc,
+    )
+    return resolve_venue_local_hour(game, venue)
 
 
 @retry(
@@ -425,7 +501,7 @@ async def fetch_game_forecast(
         "temp_f": temp_f,
         "temp_c": round((temp_f - 32) * 5 / 9, 1) if temp_f is not None else None,
         "wind_mph": hourly["wind_speed_10m"][idx],
-        "wind_direction": hourly["wind_direction_10m"][idx],
+        "wind_direction": normalize_wind_direction(hourly["wind_direction_10m"][idx]),
         "humidity_pct": hourly["relative_humidity_2m"][idx],
         "precip_mm": hourly["precipitation"][idx],
         # The FORECAST endpoint does offer `precipitation_probability`, which the
@@ -764,6 +840,14 @@ class WeatherDataIngester:
         indoor row is never fetched, but it is still produced BY a particular
         run, and a default here would let a caller ship an unstamped row -- the
         one state the provenance column exists to make impossible.
+
+        ``weather_coverage`` is TRUE here (Plan 33.1-02 Ruling E). The flag means
+        "this row carries the weather record it is ENTITLED to", not "a number was
+        fetched". A dome game is entitled to no observation, so it is covered. The
+        three D33.1-07 states are recoverable because the flag composes with
+        ``is_outdoor``: ``(coverage=1, outdoor=0)`` is this row, a dome;
+        ``(coverage=1, outdoor=1)`` is a real observation; ``(coverage=0,
+        outdoor=1)`` is an absence.
         """
         return {
             "game_id": game_id,
@@ -784,6 +868,73 @@ class WeatherDataIngester:
             "is_cold": False,
             "is_windy": False,
             "is_precipitation": False,
+            "weather_coverage": True,
+        }
+
+    def _create_absent_observation_record(
+        self,
+        game_id: str,
+        game_time: datetime,
+        forecast_time: datetime,
+        *,
+        weather_source: str,
+    ) -> dict[str, Any]:
+        """The THIRD D33.1-07 state: the venue resolved, the observation did not.
+
+        NOT a dome and NOT an observation. The game was played outdoors and the
+        provider has no reading for that hour, so every weather measurement is
+        NULL and ``weather_coverage`` is False. There is no numeric path through
+        this function at all -- that is the point. A missing observation silently
+        becoming a number is the fabricated-data class this project has already
+        disclosed once, and it is what ``features/weather.py``'s 65.0 default did
+        to 6,485 of 6,499 gold rows.
+
+        WHAT REACHES HERE is decided by a PAYLOAD PREDICATE, not by a caught
+        exception: :func:`scripts.backfill_historical_weather.observation_is_absent`
+        fires only when every one of the five
+        ``ABSENT_OBSERVATION_MEASUREMENTS`` series is null at the selected index.
+        A PARTIAL null is an observation with missing fields and routes to
+        :meth:`_create_weather_record` instead.
+
+        ``is_outdoor`` is True by construction. An absent observation is only
+        reachable for a game that needed a fetch, and a fetch is only issued for a
+        game whose own ``roof`` says weather applies. Writing False here would make
+        the row indistinguishable from a dome -- which is exactly the collapse the
+        coverage flag exists to undo.
+
+        ``weather_source`` copies :meth:`_create_indoor_weather_record`'s signature
+        discipline exactly: REQUIRED, keyword-only, no default. A row with no
+        observation still has a provenance -- it says which run looked and found
+        nothing -- and a default here would let a caller ship an unstamped row.
+        """
+        return {
+            "game_id": game_id,
+            "weather_source": validate_weather_source(weather_source),
+            "forecast_time": forecast_time,
+            "game_time": game_time,
+            "temp_f": None,
+            "temp_c": None,
+            "wind_mph": None,
+            "wind_direction": None,
+            "humidity_pct": None,
+            "precip_prob": None,
+            "precip_mm": None,
+            "condition": None,
+            "condition_code": None,
+            "visibility_km": None,
+            "dew_point_f": None,
+            "apparent_temp_f": None,
+            "snowfall_cm": None,
+            "wind_gusts_mph": None,
+            "cloud_cover_pct": None,
+            "is_outdoor": True,
+            # A derived flag inherits its input's NULL rather than defaulting to
+            # False (Plan 33.1-04 Ruling J). `is_cold=False` would be a claim that
+            # the game was not cold, which nothing here knows.
+            "is_cold": None,
+            "is_windy": None,
+            "is_precipitation": None,
+            "weather_coverage": False,
         }
 
     def _create_weather_record(
@@ -800,6 +951,14 @@ class WeatherDataIngester:
 
         ``weather_source`` is REQUIRED and keyword-only: an archive row and a
         forecast row are otherwise indistinguishable, so the caller has to say.
+
+        ``weather_coverage`` is TRUE here (Plan 33.1-02 Ruling E): reaching this
+        factory means a real observation was returned for the game's own hour. An
+        all-null payload never arrives here -- the payload predicate in
+        :func:`scripts.backfill_historical_weather.observation_is_absent` routes it
+        to :meth:`_create_absent_observation_record` instead. A PARTIAL null does
+        arrive here, and is covered: the present fields are carried and the absent
+        ones stay NULL.
         """
         is_outdoor = self._is_outdoor_game(roof_type)
 
@@ -825,6 +984,7 @@ class WeatherDataIngester:
             "is_cold": is_cold,
             "is_windy": is_windy,
             "is_precipitation": is_precipitation,
+            "weather_coverage": True,
             **weather_data,
         }
 

@@ -379,6 +379,40 @@ class WeatherSchema(BaseModel):
 
     # Derived fields
     is_outdoor: bool = Field(..., description="Whether weather affects the game")
+
+    # DOES THIS ROW CARRY THE WEATHER RECORD IT IS ENTITLED TO (Plan 33.1-02
+    # Ruling E). REQUIRED with NO default, mirroring `is_outdoor` directly above:
+    # a row that does not say whether it is covered is precisely the state this
+    # column exists to make impossible, and a defaulted field would be silently
+    # filled rather than refused.
+    #
+    # True  -- an outdoor game with a real observation, OR an indoor game where
+    #          weather does not apply. Both are entitled to what they carry.
+    # False -- the venue RESOLVED but no observation exists, and every weather
+    #          column on this row is NULL.
+    #
+    # It composes with `is_outdoor` to recover all three D33.1-07 states:
+    # (coverage=1, outdoor=0) is a dome, (coverage=1, outdoor=1) is an
+    # observation, (coverage=0, outdoor=1) is an absence. Before this column a
+    # dome, a fetch failure and an unmapped stadium were indistinguishable
+    # downstream, which is SPEC R4's defect.
+    #
+    # DECLARED IN THE SAME TASK THAT EMITS IT, deliberately (RESEARCH P-6):
+    # `validate_bronze_to_silver` rebuilds every row as
+    # `schema_class(**row).model_dump()` (data/quality_gates.py:52-57) and
+    # Pydantic v2 defaults to extra='ignore', so an emitted-but-undeclared column
+    # disappears between bronze and silver with no error at all. The comment
+    # eleven lines above records that this already happened once to the five
+    # Open-Meteo fields.
+    weather_coverage: bool = Field(
+        ...,
+        description=(
+            "Whether this row carries the weather record it is entitled to: "
+            "True for a real observation or an indoor game, False when the venue "
+            "resolved but no observation exists (every weather column then NULL)"
+        ),
+    )
+
     is_cold: bool | None = Field(None, description="Temperature below 32F")
     is_windy: bool | None = Field(None, description="Wind speed above 12 MPH")
     is_precipitation: bool | None = Field(None, description="Precipitation expected")

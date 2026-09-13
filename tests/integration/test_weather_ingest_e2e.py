@@ -65,15 +65,35 @@ def venues_df() -> pd.DataFrame:
     return pd.DataFrame(venues_data["venues"])
 
 
-def _game_row(home_team: str, game_id: str) -> pd.DataFrame:
+# REAL GAMES, NOT INVENTED ONES (Plan 33.1-02 Task 1).
+#
+# These rows used to read `2024_W06_KC@BUF` and `2024_W06_KC@LV`, neither of which
+# was played. The archive path now joins the pinned schedules for each game's own
+# `stadium_id` and `roof`, so a game the feed has never heard of is refused by name
+# instead of routed by home team. Both ids below were read from
+# `data.upstream_pin.load_schedules` on 2026-09-12.
+#
+# The recorded payload in `openmeteo_buf_2024_W06.json` is a Highmark Stadium day
+# and is still used as-is: these tests assert that a real Open-Meteo response
+# survives the schema roundtrip, which is a claim about the SHAPE and not about
+# which Sunday it was captured on.
+_OUTDOOR_GAME_ID = "2024_W07_TEN@BUF"  # BUF00 Highmark, feed roof "outdoors"
+_DOME_GAME_ID = "2024_W06_PIT@LV"  # VEG00 Allegiant, feed roof "dome"
+
+
+def _game_row(game_id: str) -> pd.DataFrame:
+    """A one-row games frame whose columns are DERIVED from *game_id*."""
+    from utils.game_id_utils import parse_game_id
+
+    parts = parse_game_id(game_id)
     return pd.DataFrame(
         [
             {
                 "game_id": game_id,
-                "season": 2024,
-                "week": 6,
-                "home_team": home_team,
-                "away_team": "KC",
+                "season": parts["season"],
+                "week": parts["week"],
+                "home_team": parts["home_team"],
+                "away_team": parts["away_team"],
                 "kickoff_et": datetime(2024, 10, 13, 13, 0),
             }
         ]
@@ -127,7 +147,7 @@ class TestWeatherIngestE2E:
             AsyncMock(return_value=record),
         ):
             df = backfiller.fetch_weather_for_games(
-                _game_row("BUF", "2024_W06_KC@BUF"),
+                _game_row(_OUTDOOR_GAME_ID),
                 venues_df,
                 forecast_time=datetime(2024, 10, 11, 22, 0, tzinfo=UTC),
             )
@@ -148,7 +168,7 @@ class TestWeatherIngestE2E:
         from data.schemas import WeatherSchema
 
         df = backfiller.fetch_weather_for_games(
-            _game_row("LV", "2024_W06_KC@LV"),
+            _game_row(_DOME_GAME_ID),
             venues_df,
             forecast_time=datetime(2024, 10, 11, 22, 0, tzinfo=UTC),
         )
@@ -182,7 +202,7 @@ class TestWeatherIngestE2E:
             AsyncMock(return_value=record),
         ):
             df = backfiller.fetch_weather_for_games(
-                _game_row("BUF", "2024_W06_KC@BUF"),
+                _game_row(_OUTDOOR_GAME_ID),
                 venues_df,
                 forecast_time=datetime(2024, 10, 11, 22, 0, tzinfo=UTC),
             )

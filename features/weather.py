@@ -27,6 +27,33 @@ from utils import get_logger
 
 logger = get_logger(__name__)
 
+# THE SILVER TABLE THIS BUILDER READS. Stated ONCE, because it was wrong twice.
+#
+# Plan 33.1-02 Ruling G, and it is load-bearing rather than tidy. Both weather
+# writers -- `scripts/ingest_weather.py` (the live forecast) and
+# `scripts/backfill_historical_weather.py` (the ERA5 archive) -- write the silver
+# table `weather`. This module was reading `weather_forecast`. There is no
+# `data/silver/weather_forecast.parquet` at all; `data.storage.load_dataframe`
+# tries DuckDB FIRST under `source="auto"` and found a stale `weather_forecast`
+# table there holding 14 rows, all `2025_W05_*`, 18 columns, no `weather_source`
+# -- a DIFFERENT 14 rows from the `2024_W06_*` rows in `data/silver/weather.parquet`.
+# That is why RESEARCH found gold's "real" weather rows are 2025 W05 while silver's
+# are 2024 W06, and it is the mechanical reason the mild-temperature default was
+# reached for 6,485 of 6,499 gold rows.
+#
+# A perfect 6,499-row silver promotion would change NOTHING in gold without this
+# repair, which is why it sits in the tracer: the tracer's whole job is to prove a
+# fetched observation reaches a feature frame.
+#
+# The reads below state `source="parquet"` rather than leaving `auto`, so a DuckDB
+# table created later cannot silently win over the parquet the promotion writes.
+#
+# NOT FIXED HERE, deliberately: `scripts/data_qa.py` still names `weather_forecast`
+# at :168, :309, :519, :868 and :1235. That is a QA reporting surface rather than a
+# model input, it is outside this phase's named scope, and Plan 33.1-11's readout
+# records it as a standing finding.
+SILVER_WEATHER_TABLE: str = "weather"
+
 
 class WeatherFeaturesCalculator:
     """
@@ -493,6 +520,8 @@ class WeatherFeaturesCalculator:
         games_df: pd.DataFrame,
         target_season: int | None = None,
         target_week: int | None = None,
+        *,
+        weather_df: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         """
         Build weather features for all games.
@@ -504,6 +533,15 @@ class WeatherFeaturesCalculator:
             games_df: DataFrame with game information
             target_season: Specific season to calculate features for
             target_week: Specific week to calculate features for
+            weather_df: The silver weather frame to build over. When given it is
+                used AS-IS and no store is read; when ``None`` the silver read
+                happens as before. This is the injection seam a sandboxed run or a
+                test uses -- `monkeypatch` is not a sandbox, and a test that
+                patched a table NAME while the write still resolved the production
+                root is how Phase 33 Wave 6 destroyed production gold. Threading
+                the frame is the same discipline
+                ``backtest.ou_divergence.run_ou_divergence_diagnosis`` already uses
+                for ``preds`` and ``odds``.
 
         Returns:
             DataFrame with weather features added (full 38+ columns, uncompressed)
@@ -521,8 +559,16 @@ class WeatherFeaturesCalculator:
         )
 
         try:
-            # Load weather data
-            weather_df = load_dataframe("weather_forecast", layer="silver")
+            # Load weather data, unless the caller supplied the frame.
+            #
+            # ONE LINE, layer and source POSITIONAL -- `load_dataframe(table_name,
+            # layer, source)`. Plan 33.1-02's guard scans for `load_dataframe(`,
+            # `SILVER_WEATHER_TABLE` and `parquet` CO-LOCATED on a line, and a
+            # wrapped call reads to it as absent. "parquet" is stated rather than
+            # left at "auto" so a DuckDB table created later cannot silently win
+            # over the parquet the promotion actually writes.
+            if weather_df is None:
+                weather_df = load_dataframe(SILVER_WEATHER_TABLE, "silver", "parquet")
             logger.info("Loaded weather data", weather_records=len(weather_df))
 
             # Filter to target if specified
@@ -791,6 +837,7 @@ class WeatherFeaturesCalculator:
         *,
         target_season: int | None = None,
         target_week: int | None = None,
+        weather_df: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         """Build compressed weather features (4 features) for games.
 
@@ -806,6 +853,10 @@ class WeatherFeaturesCalculator:
                 timestamp may be used.
             target_season: Optional season filter.
             target_week: Optional week filter.
+            weather_df: The silver weather frame to build over. When given it is
+                used AS-IS and no store is read; when ``None`` the silver read
+                happens as before. See :meth:`build_weather_features` for why this
+                seam exists rather than a monkeypatch.
 
         Returns:
             DataFrame with exactly 5 columns (game_id + 4 features).
@@ -819,8 +870,16 @@ class WeatherFeaturesCalculator:
         )
 
         try:
-            # Load weather data
-            weather_df = load_dataframe("weather_forecast", layer="silver")
+            # Load weather data, unless the caller supplied the frame.
+            #
+            # ONE LINE, layer and source POSITIONAL -- `load_dataframe(table_name,
+            # layer, source)`. Plan 33.1-02's guard scans for `load_dataframe(`,
+            # `SILVER_WEATHER_TABLE` and `parquet` CO-LOCATED on a line, and a
+            # wrapped call reads to it as absent. "parquet" is stated rather than
+            # left at "auto" so a DuckDB table created later cannot silently win
+            # over the parquet the promotion actually writes.
+            if weather_df is None:
+                weather_df = load_dataframe(SILVER_WEATHER_TABLE, "silver", "parquet")
             logger.info("Loaded weather data", weather_records=len(weather_df))
 
             # Time-fence: only use forecasts available before as_of_datetime

@@ -87,20 +87,54 @@ def sample_outdoor_weather() -> dict[str, Any]:
     }
 
 
+# REAL GAMES, NOT INVENTED ONES (Plan 33.1-02 Task 1).
+#
+# These fixtures used to describe `2024_W06_KC@BUF` and `2024_W06_KC@LV`, neither
+# of which was ever played. That was harmless while the backfill routed by HOME
+# TEAM -- any id with a plausible home team resolved. It is not harmless now: the
+# archive path joins the pinned schedules for each game's own `stadium_id` and
+# `roof`, and a game the feed has never heard of is refused by name rather than
+# routed on a default. A fixture that cannot describe a game the feed does not
+# have is the same discipline `tests/unit/test_venues_json_historical.py` applies
+# to venues.
+#
+# Each id below was read from `data.upstream_pin.load_schedules` on 2026-09-12,
+# with its stadium and its own feed `roof` recorded beside it.
+_DOME_GAME_ID = "2024_W06_PIT@LV"  # VEG00 Allegiant, feed roof "dome"
+_DOME_KICKOFF_ET = datetime(2024, 10, 13, 16, 5)
+
+_OUTDOOR_GAME_ID = "2024_W06_WAS@BAL"  # BAL00 M&T Bank, feed roof "outdoors"
+_OUTDOOR_KICKOFF_ET = datetime(2024, 10, 13, 13, 0)
+
+# The ONE shape that proves R4: a retractable stadium whose roof was OPEN for this
+# game. 2024 has no `open` game at all, so this comes from 2016 -- IND00 Lucas Oil
+# played two of its eight 2016 home games with the roof open and six closed.
+_OPEN_ROOF_GAME_ID = "2016_W01_DET@IND"  # IND00, feed roof "open"
+_OPEN_ROOF_KICKOFF_ET = datetime(2016, 9, 11, 13, 0)
+
+
 def _make_games_df(
-    home_team: str = "BUF",
-    game_id: str = "2024_W06_KC@BUF",
+    game_id: str = _OUTDOOR_GAME_ID,
+    *,
+    kickoff_et: datetime = _OUTDOOR_KICKOFF_ET,
 ) -> pd.DataFrame:
-    """Create a minimal games DataFrame for testing."""
+    """A one-row games frame for *game_id*, with its columns DERIVED from the id.
+
+    Season, week and both teams are parsed out of the id rather than passed
+    separately, so a fixture cannot describe a game whose id and columns disagree.
+    """
+    from utils.game_id_utils import parse_game_id
+
+    parts = parse_game_id(game_id)
     return pd.DataFrame(
         [
             {
                 "game_id": game_id,
-                "season": 2024,
-                "week": 6,
-                "home_team": home_team,
-                "away_team": "KC",
-                "kickoff_et": datetime(2024, 10, 13, 13, 0),
+                "season": parts["season"],
+                "week": parts["week"],
+                "home_team": parts["home_team"],
+                "away_team": parts["away_team"],
+                "kickoff_et": kickoff_et,
             }
         ]
     )
@@ -116,8 +150,8 @@ class TestIndoorWeather:
 
     def test_indoor_game_zeroed_fields(self, backfiller, venues_df):
         """Indoor game gets is_outdoor=False, temp=None, wind=0, precip=0."""
-        # LV plays at Allegiant Stadium (indoor)
-        games_df = _make_games_df(home_team="LV", game_id="2024_W06_KC@LV")
+        # PIT at Allegiant Stadium, whose feed roof for this game is "dome".
+        games_df = _make_games_df(_DOME_GAME_ID, kickoff_et=_DOME_KICKOFF_ET)
 
         weather_df = backfiller.fetch_weather_for_games(
             games_df, venues_df, forecast_time=datetime(2024, 10, 11, 22, 0)
@@ -134,6 +168,9 @@ class TestIndoorWeather:
         assert row["is_cold"] == False  # noqa: E712
         assert row["is_windy"] == False  # noqa: E712
         assert row["is_precipitation"] == False  # noqa: E712
+        # A dome IS covered: it carries the record it is entitled to, which is no
+        # observation at all (Plan 33.1-02 Ruling E).
+        assert row["weather_coverage"] == True  # noqa: E712
 
 
 # ---------------------------------------------------------------------------
@@ -142,11 +179,19 @@ class TestIndoorWeather:
 
 
 class TestRetractableRoof:
-    """Retractable roof game is treated as outdoor (is_outdoor=True)."""
+    """An OPEN roof is outdoor -- and it is the GAME's roof that decides (R4).
+
+    This class used to drive a 2024 NRG Stadium game and assert `is_outdoor=True`
+    because the VENUE's `roof_type` is "retractable". That assertion passed for the
+    wrong reason: every game at a retractable stadium answered the same way,
+    including the ones played with the roof shut. Plan 33.1-02 branches on the
+    game's own feed `roof`, so the fixture now names a game that was actually
+    played with the roof OPEN.
+    """
 
     def test_retractable_roof_is_outdoor(self, backfiller, venues_df):
-        """HOU plays at NRG Stadium (retractable) -- should be treated as outdoor."""
-        games_df = _make_games_df(home_team="HOU", game_id="2024_W06_KC@HOU")
+        """DET at Lucas Oil, roof OPEN in the feed -- weather applies."""
+        games_df = _make_games_df(_OPEN_ROOF_GAME_ID, kickoff_et=_OPEN_ROOF_KICKOFF_ET)
 
         mock_weather = AsyncMock(
             return_value={
@@ -194,8 +239,8 @@ class TestOutdoorWeatherFetch:
     """Outdoor game with successful weather fetch has populated fields."""
 
     def test_outdoor_game_populated_fields(self, backfiller, venues_df):
-        """BUF plays at Highmark Stadium (outdoor) -- real weather data returned."""
-        games_df = _make_games_df(home_team="BUF", game_id="2024_W06_KC@BUF")
+        """WAS at M&T Bank Stadium (outdoors) -- real weather data returned."""
+        games_df = _make_games_df(_OUTDOOR_GAME_ID)
 
         mock_weather = AsyncMock(
             return_value={
@@ -245,7 +290,7 @@ class TestOutdoorWeatherFetchFailure:
 
     def test_outdoor_fetch_failure_raises(self, backfiller, venues_df):
         """If Open-Meteo fails for an outdoor game, WeatherDataError propagates."""
-        games_df = _make_games_df(home_team="BUF", game_id="2024_W06_KC@BUF")
+        games_df = _make_games_df(_OUTDOOR_GAME_ID)
 
         mock_weather = AsyncMock(side_effect=WeatherDataError("API timeout"))
         with patch.object(
@@ -321,6 +366,7 @@ class TestCreateIndoorWeatherRecord:
         assert record["is_cold"] is False
         assert record["is_windy"] is False
         assert record["is_precipitation"] is False
+        assert record["weather_coverage"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +439,7 @@ class TestNanToNoneValidator:
             "forecast_time": datetime(2024, 10, 11, 22, 0, tzinfo=UTC),
             "game_time": datetime(2024, 10, 13, 17, 0, tzinfo=UTC),
             "is_outdoor": True,
+            "weather_coverage": True,
             "weather_source": "forecast",
         }
 
@@ -670,7 +717,7 @@ class TestTheBackfillPathStampsArchive:
     """The quarantined archive path stamps `archive`, never `forecast`."""
 
     def test_an_archive_row_is_stamped_archive(self, backfiller, venues_df):
-        games_df = _make_games_df(home_team="BUF", game_id="2024_W06_KC@BUF")
+        games_df = _make_games_df(_OUTDOOR_GAME_ID)
         record = {
             "temp_f": 45.0,
             "temp_c": 7.2,

@@ -128,6 +128,13 @@ class TestWeatherSchemaValidation:
             # identical in shape, so a row that does not say which it is cannot be
             # stored at all.
             "weather_source": "forecast",
+            # REQUIRED since Plan 33.1-02 (Ruling E), for the same reason and
+            # beside the same sibling: a row that does not say whether it carries
+            # the weather record it is ENTITLED to is precisely the state the flag
+            # exists to make impossible. True here means a real observation; False
+            # would mean the venue resolved and no observation exists, with every
+            # weather column NULL.
+            "weather_coverage": True,
         }
         defaults.update(overrides)
         return defaults

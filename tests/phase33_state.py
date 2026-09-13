@@ -3141,3 +3141,34 @@ HISTORICAL_VENUE_FIELD_SOURCES: tuple[tuple[str, str, str], ...] = (
 # .py's EXPECTED_TOTAL_RECORDS was UPDATED to match rather than forked: a new module
 # asserting 60 while the old one asserts 38 is two answers to one question.
 VENUE_RECORD_COUNT_AFTER: int = 60
+
+
+# ---------------------------------------------------------------------------
+# THE WEATHER COVERAGE FLAG, AND THE SILVER WEATHER WIDTH AFTER IT.
+#
+# APPENDED by Plan 33.1-02 Task 1 on 2026-09-12. Nothing above this line was
+# edited.
+#
+# THE THIRD READING OF THE SAME WIDTH, and the three together are the column's
+# whole history:
+#
+#     WEATHER_COLUMNS_BEFORE          = 23   (Plan 33-09 Task 1, pre-provenance)
+#     WEATHER_COLUMNS_AFTER           = 24   (Plan 33-09 Task 2, + weather_source)
+#     WEATHER_COLUMNS_AFTER_COVERAGE  = 25   (this slot,         + weather_coverage)
+#
+# MEASURED from `len(data.schemas.WeatherSchema.model_fields)` after the field was
+# declared, not counted by hand off the source.
+#
+# WHY THE FIELD IS REQUIRED RATHER THAN DEFAULTED (Plan 33.1-02 Ruling E): a row
+# that does not say whether it is covered is precisely the state the column exists
+# to make impossible. It mirrors `is_outdoor`, which is required for the same
+# reason and sits beside it in the schema.
+#
+# WHY IT HAD TO BE DECLARED IN THE SAME TASK THAT EMITS IT (RESEARCH P-6):
+# `data/quality_gates.validate_bronze_to_silver` rebuilds every row as
+# `schema_class(**row).model_dump()` and Pydantic v2 defaults to extra="ignore",
+# so an emitted-but-undeclared column disappears between bronze and silver with no
+# error at all. That already happened once, to the five Open-Meteo fields.
+# ---------------------------------------------------------------------------
+
+WEATHER_COLUMNS_AFTER_COVERAGE: int = 25
