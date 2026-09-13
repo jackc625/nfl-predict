@@ -124,9 +124,29 @@ def _drive_one_game(backfiller, venues_df, games_df, client):
     factory nothing calls.
     """
 
-    async def _fetch(latitude, longitude, game_date, game_hour, venue_timezone):
+    async def _fetch(
+        latitude,
+        longitude,
+        game_date,
+        game_hour,
+        venue_timezone,
+        *,
+        budget=None,
+        throttle=None,
+    ):
+        # `budget` and `throttle` are THREADED THROUGH rather than dropped: Plan
+        # 33.1-05's Ruling L2 puts the debit and the wait inside the retried
+        # `fetch_game_weather`, so a seam that swallowed them would exercise a
+        # different function from the one production calls.
         return await fetch_game_weather(
-            client, latitude, longitude, game_date, game_hour, venue_timezone
+            client,
+            latitude,
+            longitude,
+            game_date,
+            game_hour,
+            venue_timezone,
+            budget=budget,
+            throttle=throttle,
         )
 
     with patch.object(backfiller, "_fetch_openmeteo_weather", _fetch):

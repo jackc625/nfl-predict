@@ -58,7 +58,12 @@ from typing import Any
 
 import httpx
 import pandas as pd
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from data.quality_gates import validate_bronze_to_silver
 from data.schemas import WeatherSchema
@@ -255,6 +260,162 @@ def _archive_http_error_detail(error: httpx.HTTPStatusError) -> str:
     return f"{status} ({reason})" if reason else str(status)
 
 
+# ---------------------------------------------------------------------------
+# The run's self-imposed interval between archive requests.
+# ---------------------------------------------------------------------------
+
+# THE DECLARED MINIMUM WALL-CLOCK INTERVAL BETWEEN ARCHIVE REQUESTS.
+#
+# The arithmetic, so the number is a conclusion rather than a preference. The
+# corpus needs 4,847 fetches; at the extrapolated 1.2 weighted calls per request
+# that is about 5,816 weighted calls, which fits the free tier's 10,000/day cap
+# with roughly 42% headroom and does NOT fit its 5,000/HOUR cap. Staying under the
+# hourly cap therefore requires at least 5,816 / 5,000 = 1.164 hours, i.e. about 70
+# minutes, i.e. a mean inter-request interval of at least 0.87 s. 1.0 s gives about
+# 81 minutes with margin.
+#
+# MEASURED, for contrast: the steady-state request latency is 0.134 s median (Plan
+# 33.1-02's tracer, 200 real requests). Unpaced, the corpus would finish in about
+# eleven minutes and present roughly 31,700 weighted calls inside that hour.
+ARCHIVE_REQUEST_INTERVAL_SECONDS: float = 1.0
+
+# THE FREE TIER'S PUBLISHED LIMITS, scraped VERBATIM from the vendor's pricing
+# table. 600/minute, 5,000/HOUR, 10,000/day, 300,000/month. The two the run can
+# plausibly reach in one sitting are declared here; the minutely cap is far above
+# a 1.0 s interval and the monthly cap is 50x one corpus run.
+#
+# THE HOURLY CAP IS THE BINDING ONE, and that is the whole reason this module
+# holds itself to a clock. See ARCHIVE_REQUEST_INTERVAL_SECONDS above for the
+# arithmetic.
+ARCHIVE_HOURLY_CALL_BUDGET: int = 5000
+ARCHIVE_DAILY_CALL_BUDGET: int = 10000
+
+# A REQUEST IS NOT ALWAYS ONE CALL. The vendor states -- CITED -- that "requests
+# for data covering more than 10 weather variables ... are considered multiple API
+# calls", with fractional counts, and gives ONE worked example: 15 variables over
+# 14 days = 1.5 calls. `HOURLY_VARIABLES` sends TWELVE variables for ONE day, so
+# 12/10 = 1.2 is EXTRAPOLATED from that single example rather than read off a
+# published formula. Logged as assumption A1.
+#
+# THE CONSEQUENCE, recorded here so nobody has to re-derive it: 4,847 fetches at
+# 1.2 is roughly 5,816 weighted calls. That fits the DAILY cap with about 42%
+# headroom and does NOT fit the HOURLY cap, so the minimum run time is about 70
+# minutes and the declared 1.0 s interval gives about 81 with margin.
+ARCHIVE_CALL_WEIGHT_PER_REQUEST: float = 1.2
+
+
+class CallBudgetExceededError(DataIngestionError):
+    """The next request would breach a declared cap. Nothing was issued."""
+
+
+class CallBudget:
+    """Count this run's WEIGHTED calls and refuse BEFORE a breach.
+
+    THE COUNTER IS THE ONLY INSTRUMENT THERE IS. The archive response carries no
+    rate-limit header at all -- a live header scan of a successful response
+    returned nothing matching ``rate``, ``request`` or ``limit`` -- so the
+    Phase-29 pattern of reading ``x-requests-last`` back from the provider has no
+    analogue here. A run that miscounts has no way to find out.
+
+    THE DEBIT IS TAKEN PER ATTEMPT, NOT PER GAME, and :func:`fetch_game_weather`
+    is where it is taken. That function is wrapped in
+    ``@retry(stop=stop_after_attempt(3))``, so everything a CALLER does happens
+    once per logical game while the request happens up to three times. A
+    caller-side debit would undercount by up to 3x against a 5,000/hour binding
+    cap: a 10% retry rate would issue roughly 5,331 real requests while the
+    counter reported 4,847.
+
+    :meth:`acquire` is the refusal point. It raises BEFORE the request when the
+    next debit would breach either cap, so a breach cannot be discovered after
+    the fact.
+    """
+
+    def __init__(
+        self,
+        *,
+        weight: float = ARCHIVE_CALL_WEIGHT_PER_REQUEST,
+        hourly_budget: float = ARCHIVE_HOURLY_CALL_BUDGET,
+        daily_budget: float = ARCHIVE_DAILY_CALL_BUDGET,
+        resume_hint: str = "",
+    ) -> None:
+        self.weight = float(weight)
+        self.hourly_budget = hourly_budget
+        self.daily_budget = daily_budget
+        self.resume_hint = resume_hint
+        self.weighted_total = 0.0
+        self.debits = 0
+        self._window: list[tuple[float, float]] = []
+
+    @property
+    def hourly_weighted_total(self) -> float:
+        """The weighted calls issued inside the trailing hour."""
+        cutoff = time.monotonic() - 3600.0
+        self._window = [entry for entry in self._window if entry[0] > cutoff]
+        return sum(weight for _, weight in self._window)
+
+    def _refuse(self, scope: str, projected: float, cap: float) -> None:
+        hint = f" {self.resume_hint}." if self.resume_hint else ""
+        raise CallBudgetExceededError(
+            f"the next archive request would take this run's {scope} weighted call "
+            f"total to {projected:.1f}, past the declared cap of {cap}. NO request "
+            "was issued. The weight is an EXTRAPOLATION (12 variables / 10 = 1.2) "
+            "and the archive sends no rate-limit header, so this counter is the "
+            "only instrument there is -- it refuses early rather than discovering "
+            "a breach from a provider error. The run is RESUMABLE: wait for the "
+            "limit window to clear and re-invoke, and only the seasons still "
+            f"missing will be fetched.{hint}"
+        )
+
+    def acquire(self, weight: float | None = None) -> float:
+        """Debit one ATTEMPT, or refuse by name before it is issued."""
+        debit = self.weight if weight is None else float(weight)
+
+        projected_hour = self.hourly_weighted_total + debit
+        if projected_hour > self.hourly_budget:
+            self._refuse("hourly", projected_hour, self.hourly_budget)
+
+        projected_run = self.weighted_total + debit
+        if projected_run > self.daily_budget:
+            self._refuse("daily", projected_run, self.daily_budget)
+
+        self._window.append((time.monotonic(), debit))
+        self.weighted_total = projected_run
+        self.debits += 1
+        return self.weighted_total
+
+
+class RequestThrottle:
+    """Hold the run to a minimum wall-clock interval between archive requests.
+
+    The free tier's BINDING limit is 5,000 calls per HOUR and the archive response
+    carries no rate-limit header at all -- a live header scan of a successful
+    response returned nothing matching ``rate``, ``request`` or ``limit`` -- so the
+    run must hold itself to its own clock. There is no counter to read back.
+
+    ``interval_seconds=0`` disables the wait, which is what a test wants: a stubbed
+    season must not take one second per game.
+    """
+
+    def __init__(self, interval_seconds: float) -> None:
+        self.interval_seconds = float(interval_seconds)
+        # THE CLOCK STARTS AT CONSTRUCTION, so the FIRST attempt also waits. N
+        # attempts then take at least N intervals rather than N-1, which matters
+        # exactly when a run is re-invoked immediately after a budget refusal: the
+        # provider's window has not moved, and a free first request is the one most
+        # likely to land inside it.
+        self._last_at: float = time.monotonic()
+        self.waits = 0
+
+    def sleep_until_due(self) -> None:
+        """Block until the declared interval has elapsed since the last request."""
+        self.waits += 1
+        if self.interval_seconds > 0:
+            elapsed = time.monotonic() - self._last_at
+            if elapsed < self.interval_seconds:
+                time.sleep(self.interval_seconds - elapsed)
+        self._last_at = time.monotonic()
+
+
 # WHAT D33.1-08 CORRECTED IN `fetch_game_weather`, recorded here in COMMENTS
 # rather than in the docstring below. That placement is deliberate: the Plan
 # 33.1-02 source scan asserts this module contains ZERO non-comment lines naming
@@ -275,9 +436,23 @@ def _archive_http_error_detail(error: httpx.HTTPStatusError) -> str:
 #    says so. It is now the forecast sibling's two named refusals: an empty array
 #    raises, and an array that does not reach the requested hour raises and says
 #    the hour is not clamped.
+#
+# WHY THE RETRY CANNOT SUBSTITUTE FOR THE INTERVAL (Ruling L2). Three attempts
+# with at most about 30 s of backoff cannot clear an HOURLY limit, so a limit hit
+# mid-season burns the retries and hard-fails the season. That is survivable only
+# because the run is resumable per season, and it is the second reason to hold to
+# an interval rather than to lean on the retry. Note also that the backoff now
+# COMPOSES with the interval rather than replacing it: a retried game takes longer
+# than three intervals, so the projected wall clock is a FLOOR, not an estimate.
+#
+# A BUDGET REFUSAL IS NOT RETRIED. `retry_if_not_exception_type` excludes
+# `CallBudgetExceededError` because a cap breach is not transient: two more
+# attempts at 2 s and 4 s cannot clear an hourly window, and each would re-enter
+# this function only to refuse again.
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_not_exception_type(CallBudgetExceededError),
     reraise=True,
 )
 async def fetch_game_weather(
@@ -287,6 +462,9 @@ async def fetch_game_weather(
     game_date: str,
     game_hour: int,
     venue_timezone: str,
+    *,
+    budget: "CallBudget | None" = None,
+    throttle: "RequestThrottle | None" = None,
 ) -> dict[str, Any] | str:
     """Fetch an ERA5 observation for one game, on the VENUE'S OWN clock.
 
@@ -307,6 +485,18 @@ async def fetch_game_weather(
         game_date: The venue-LOCAL date, ``YYYY-MM-DD``.
         game_hour: The venue-LOCAL hour, 0-23.
         venue_timezone: The venue's own IANA zone, never a fixed one.
+        budget: The run's :class:`CallBudget`. Debited HERE, on the line
+            immediately before the request, and NEVER by a caller. THE PLACEMENT
+            IS LOAD-BEARING -- see the comment block above the decorator, and do
+            not "tidy" the debit up into the calling loop: this function is
+            retried up to three times per logical game, so a caller-side debit
+            undercounts by up to 3x against a 5,000/hour binding cap, and this
+            counter is the only instrument there is.
+        throttle: The run's :class:`RequestThrottle`, for the same reason and with
+            the same placement. A wait taken by the caller would separate the
+            GAMES and leave the retried attempts spaced only by tenacity's own
+            backoff, whose maximum is 30 s and whose purpose is a transient
+            failure rather than a rate limit.
 
     Returns:
         A measurement dict matching the system schema, or the
@@ -317,6 +507,8 @@ async def fetch_game_weather(
         a test that calls the factory directly.
 
     Raises:
+        CallBudgetExceededError: the attempt would breach a declared cap. Raised
+            BEFORE anything is issued, and deliberately not retried.
         WeatherDataError: the call failed, or the response is malformed, or it does
             not reach the requested hour.
     """
@@ -330,6 +522,15 @@ async def fetch_game_weather(
         "wind_speed_unit": "mph",
         "timezone": venue_timezone,
     }
+
+    # RULING L2. These two lines are INSIDE the retried function, immediately
+    # before the request, and that is the entire point of them being here: this
+    # body runs once per ATTEMPT, while everything a caller does runs once per
+    # logical GAME. Three retried attempts must cost three debits and three waits.
+    if budget is not None:
+        budget.acquire()
+    if throttle is not None:
+        throttle.sleep_until_due()
 
     try:
         response = await client.get(ARCHIVE_ENDPOINT_URL, params=params)
@@ -972,54 +1173,6 @@ def release_corpus_lock(base_path: Any = None) -> bool:
     return CorpusLock(base_path).release()
 
 
-# ---------------------------------------------------------------------------
-# The run's self-imposed interval between archive requests.
-# ---------------------------------------------------------------------------
-
-# THE DECLARED MINIMUM WALL-CLOCK INTERVAL BETWEEN ARCHIVE REQUESTS.
-#
-# The arithmetic, so the number is a conclusion rather than a preference. The
-# corpus needs 4,847 fetches; at the extrapolated 1.2 weighted calls per request
-# that is about 5,816 weighted calls, which fits the free tier's 10,000/day cap
-# with roughly 42% headroom and does NOT fit its 5,000/HOUR cap. Staying under the
-# hourly cap therefore requires at least 5,816 / 5,000 = 1.164 hours, i.e. about 70
-# minutes, i.e. a mean inter-request interval of at least 0.87 s. 1.0 s gives about
-# 81 minutes with margin.
-#
-# MEASURED, for contrast: the steady-state request latency is 0.134 s median (Plan
-# 33.1-02's tracer, 200 real requests). Unpaced, the corpus would finish in about
-# eleven minutes and present roughly 31,700 weighted calls inside that hour.
-ARCHIVE_REQUEST_INTERVAL_SECONDS: float = 1.0
-
-
-class RequestThrottle:
-    """Hold the run to a minimum wall-clock interval between archive requests.
-
-    The free tier's BINDING limit is 5,000 calls per HOUR and the archive response
-    carries no rate-limit header at all -- a live header scan of a successful
-    response returned nothing matching ``rate``, ``request`` or ``limit`` -- so the
-    run must hold itself to its own clock. There is no counter to read back.
-
-    ``interval_seconds=0`` disables the wait, which is what a test wants: a stubbed
-    season must not take one second per game.
-    """
-
-    def __init__(self, interval_seconds: float) -> None:
-        self.interval_seconds = float(interval_seconds)
-        self._last_at: float | None = None
-        self.waits = 0
-
-    def sleep_until_due(self) -> None:
-        """Block until the declared interval has elapsed since the last request."""
-        self.waits += 1
-        now = time.monotonic()
-        if self.interval_seconds > 0 and self._last_at is not None:
-            elapsed = now - self._last_at
-            if elapsed < self.interval_seconds:
-                time.sleep(self.interval_seconds - elapsed)
-        self._last_at = time.monotonic()
-
-
 def _reconcile_stadium_id(frame: pd.DataFrame) -> pd.DataFrame:
     """Collapse the merge's ``stadium_id`` columns to exactly ONE, or refuse.
 
@@ -1172,18 +1325,30 @@ class HistoricalWeatherBackfiller(WeatherDataIngester):
         game_date: str,
         game_hour: int,
         venue_timezone: str,
+        *,
+        budget: CallBudget | None = None,
+        throttle: RequestThrottle | None = None,
     ) -> dict[str, Any] | str:
         """Open a client and fetch one game's ARCHIVE observation.
 
         The seam tests replace, mirroring
-        :meth:`WeatherDataIngester._fetch_openmeteo_forecast`.
+        :meth:`WeatherDataIngester._fetch_openmeteo_forecast`. The budget and the
+        throttle are THREADED THROUGH rather than consumed here: they belong to the
+        retried function, one level down.
 
         Returns:
             A measurement dict, or the :data:`ABSENT_OBSERVATION` sentinel.
         """
         async with httpx.AsyncClient(timeout=30.0) as client:
             return await fetch_game_weather(
-                client, latitude, longitude, game_date, game_hour, venue_timezone
+                client,
+                latitude,
+                longitude,
+                game_date,
+                game_hour,
+                venue_timezone,
+                budget=budget,
+                throttle=throttle,
             )
 
     def _per_game_roof_is_outdoor(self, roof: object) -> bool:
@@ -1291,6 +1456,7 @@ class HistoricalWeatherBackfiller(WeatherDataIngester):
         venues_df: pd.DataFrame,
         forecast_time: datetime | None = None,
         *,
+        budget: CallBudget | None = None,
         throttle: RequestThrottle | None = None,
     ) -> pd.DataFrame:
         """Fetch an ERA5 observation for every game that needs one.
@@ -1319,9 +1485,9 @@ class HistoricalWeatherBackfiller(WeatherDataIngester):
                 ``kickoff_et``; ``stadium_id`` is optional (see Ruling D2).
             venues_df: The venue table, carrying ``stadium_id`` and ``timezone``.
             forecast_time: When this run was taken. Defaults to now, in UTC.
-            throttle: The run's :class:`RequestThrottle`. The free tier's binding
-                cap is 5,000 calls per HOUR and the archive carries no rate-limit
-                header, so a run holds itself to its own clock.
+            budget: The run's :class:`CallBudget`. THREADED THROUGH, never
+                consumed here -- see Ruling L2 and the comment beside the loop.
+            throttle: The run's :class:`RequestThrottle`, likewise threaded.
 
         Returns:
             One record per game, in the order the games arrived.
@@ -1380,9 +1546,13 @@ class HistoricalWeatherBackfiller(WeatherDataIngester):
                     )
                 )
             else:
-                if throttle is not None:
-                    throttle.sleep_until_due()
-
+                # RULING L2. This loop DEBITS NOTHING AND WAITS FOR NOTHING. Both
+                # happen one level down, inside the retried `fetch_game_weather`,
+                # immediately before the request -- because this loop body runs once
+                # per logical GAME while that request runs up to three times, and a
+                # debit taken here would undercount a retried game by up to 3x
+                # against a 5,000/hour binding cap. Do not move them up here.
+                #
                 # If this fails, WeatherDataError propagates (hard-fail).
                 weather_data = asyncio.run(
                     self._fetch_openmeteo_weather(
@@ -1391,6 +1561,8 @@ class HistoricalWeatherBackfiller(WeatherDataIngester):
                         selected.local_date,
                         selected.hour,
                         selected.timezone,
+                        budget=budget,
+                        throttle=throttle,
                     )
                 )
 
@@ -1554,6 +1726,7 @@ def backfill_season(
     backfiller: HistoricalWeatherBackfiller | None = None,
     forecast_time: datetime | None = None,
     throttle: RequestThrottle | None = None,
+    budget: CallBudget | None = None,
     accepted_null_fractions: dict[int, float] | None = None,
 ) -> dict[str, Any]:
     """Fetch ONE season and write ONE bronze snapshot. Promotes NOTHING.
@@ -1583,6 +1756,9 @@ def backfill_season(
         backfiller: The ingester. Constructed when None.
         forecast_time: When this run was taken. Defaults to now, in UTC.
         throttle: The run's request throttle.
+        budget: The run's weighted call budget. Shared ACROSS seasons by
+            :func:`backfill_corpus`, because the caps are per hour and per day
+            rather than per season.
         accepted_null_fractions: Operator-supplied ``{season: observed_fraction}``
             authorisations for AMBIGUOUS seasons (Ruling L4).
 
@@ -1600,6 +1776,8 @@ def backfill_season(
     backfiller = backfiller or HistoricalWeatherBackfiller()
     if throttle is None:
         throttle = RequestThrottle(ARCHIVE_REQUEST_INTERVAL_SECONDS)
+    if budget is None:
+        budget = CallBudget()
     if forecast_time is None:
         forecast_time = datetime.now(UTC)
 
@@ -1617,7 +1795,7 @@ def backfill_season(
 
     venues_df = backfiller._load_venue_data()
     weather_df = backfiller.fetch_weather_for_games(
-        games_df, venues_df, forecast_time, throttle=throttle
+        games_df, venues_df, forecast_time, budget=budget, throttle=throttle
     )
 
     if weather_df.empty:
@@ -1657,11 +1835,15 @@ def backfill_season(
         fetched=len(fetched),
         null_arm=arm,
         null_fraction=evidence["fraction"],
+        weighted_calls_so_far=round(budget.weighted_total, 1),
+        hourly_cap=budget.hourly_budget,
+        daily_cap=budget.daily_budget,
         path=str(path),
     )
 
     return {
         "season": season,
+        "weighted_calls_after": round(budget.weighted_total, 4),
         "games": len(weather_df),
         "fetched": len(fetched),
         "written_without_a_call": len(weather_df) - len(fetched),
@@ -1722,10 +1904,12 @@ def backfill_corpus(
     base_path: Any = None,
     fetch: bool = True,
     promote: bool = False,
+    dry_run: bool = False,
     force_unlock: bool = False,
     games_provider: Callable[[int], pd.DataFrame] | None = None,
     backfiller: HistoricalWeatherBackfiller | None = None,
     throttle: RequestThrottle | None = None,
+    budget: CallBudget | None = None,
     accepted_null_fractions: dict[int, float] | None = None,
     verify_archive_floor: bool = True,
 ) -> dict[str, Any]:
@@ -1736,27 +1920,38 @@ def backfill_corpus(
     a lock released between the pre-state digest and the promotion protects nothing.
     Plan 33.1-06's digest bracket runs inside it.
 
+    A DRY RUN TAKES NO LOCK. It writes nothing and issues no request, so it is a
+    pure read; the lock exists to serialise WRITERS, and making a read take it
+    would put a transient file into the production bronze directory for no gain.
+
     Args:
         seasons: Explicit seasons, or None to use :func:`seasons_still_missing`.
         base_path: Data lake root.
         fetch: Fetch the targeted seasons. False for a promotion-only run.
         promote: Promote the bronze corpus into silver after fetching.
+        dry_run: Report what WOULD be fetched, at zero network calls.
         force_unlock: Clear a stale lock first. The operator must have confirmed
             the recorded pid is gone.
         games_provider: Injection seam -- ``season -> games frame``.
         backfiller: The ingester. Constructed when None.
         throttle: The run's request throttle.
+        budget: The run's weighted call budget, shared across every season.
         accepted_null_fractions: ``{season: observed_fraction}`` authorisations.
         verify_archive_floor: Probe ERA5 coverage of the corpus floor before the
             first season. One request.
 
     Returns:
-        A run report carrying the seasons considered, the per-season reports and
-        the promotion result.
+        A run report carrying the seasons considered, the per-season reports, the
+        weighted call total and the promotion result.
     """
+    if dry_run:
+        return _dry_run_report(seasons, base_path=base_path)
+
     backfiller = backfiller or HistoricalWeatherBackfiller()
     if throttle is None:
         throttle = RequestThrottle(ARCHIVE_REQUEST_INTERVAL_SECONDS)
+    if budget is None:
+        budget = CallBudget()
 
     report: dict[str, Any] = {
         "seasons_requested": tuple(seasons) if seasons is not None else None,
@@ -1775,6 +1970,11 @@ def backfill_corpus(
                 report["archive_floor"] = assert_archive_covers_corpus_floor(
                     backfiller=backfiller
                 )
+            # The refusal has to name the operator's next action, and their next
+            # action is to wait and re-invoke rather than to start over.
+            budget.resume_hint = (
+                f"Seasons still missing at the start of this run: {list(missing)}."
+            )
             for season in targets:
                 report["seasons"].append(
                     backfill_season(
@@ -1787,6 +1987,7 @@ def backfill_corpus(
                         ),
                         backfiller=backfiller,
                         throttle=throttle,
+                        budget=budget,
                         accepted_null_fractions=accepted_null_fractions,
                     )
                 )
@@ -1794,7 +1995,62 @@ def backfill_corpus(
         if promote:
             report["promotion"] = promote_corpus_to_silver(base_path=base_path)
 
+    report["weighted_calls"] = round(budget.weighted_total, 4)
+    report["attempts"] = budget.debits
     return report
+
+
+def _dry_run_report(
+    seasons: Sequence[int] | None, *, base_path: Any = None
+) -> dict[str, Any]:
+    """What a run WOULD do, at ZERO network calls.
+
+    The split between games that need a fetch and games written with no call comes
+    from the pinned feed's own ``roof`` value -- the same input the real run branches
+    on -- so the projection is a statement about THIS corpus rather than a round
+    number.
+
+    THE PROJECTION ASSUMES ZERO RETRIES, and says so in a key. A retried game issues
+    up to three requests and the provider counts three, so the OBSERVED weighted
+    total a real run records will exceed this; the gap IS the retry rate.
+    """
+    missing = seasons_still_missing(base_path=base_path)
+    targets = tuple(seasons) if seasons is not None else missing
+
+    rows = []
+    total_fetch = 0
+    total_no_call = 0
+    for season in targets:
+        facts = load_pinned_game_facts((season,))
+        roofs = facts["roof"].astype(str).str.lower().str.strip()
+        fetch_count = int(roofs.isin(("outdoors", "open")).sum())
+        no_call = int(len(facts) - fetch_count)
+        total_fetch += fetch_count
+        total_no_call += no_call
+        rows.append(
+            {
+                "season": season,
+                "games": len(facts),
+                "would_fetch": fetch_count,
+                "written_without_a_call": no_call,
+            }
+        )
+
+    return {
+        "dry_run": True,
+        "requests_issued": 0,
+        "seasons_still_missing": missing,
+        "seasons_targeted": targets,
+        "per_season": rows,
+        "games_to_fetch": total_fetch,
+        "games_without_a_call": total_no_call,
+        "projected_weighted_calls": total_fetch * ARCHIVE_CALL_WEIGHT_PER_REQUEST,
+        "retries_assumed": 0,
+        "interval_seconds": ARCHIVE_REQUEST_INTERVAL_SECONDS,
+        "projected_seconds": total_fetch * ARCHIVE_REQUEST_INTERVAL_SECONDS,
+        "hourly_budget": ARCHIVE_HOURLY_CALL_BUDGET,
+        "daily_budget": ARCHIVE_DAILY_CALL_BUDGET,
+    }
 
 
 def stamp_weather_source_on_existing_rows(
@@ -1901,6 +2157,14 @@ def main():
         ),
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Report the seasons still missing, what each would fetch and the "
+            "PROJECTED weighted call total. Issues ZERO requests and takes no lock."
+        ),
+    )
+    parser.add_argument(
         "--promote-silver",
         action="store_true",
         help=(
@@ -1968,6 +2232,7 @@ def main():
             seasons=(args.season,) if args.season else None,
             fetch=bool(args.all_seasons or args.season),
             promote=bool(args.promote_silver),
+            dry_run=bool(args.dry_run),
             force_unlock=bool(args.force_unlock),
             accepted_null_fractions=accepted,
         )
@@ -1983,12 +2248,44 @@ def _print_run_report(report: dict[str, Any]) -> None:
     """Print what a run did, in the terms the operator's next action needs."""
     print(f"Seasons still missing: {list(report.get('seasons_still_missing', ()))}")
     print(f"Seasons targeted:      {list(report.get('seasons_targeted', ()))}")
+
+    if report.get("dry_run"):
+        print(f"DRY RUN -- requests issued: {report['requests_issued']}")
+        for row in report["per_season"]:
+            print(
+                f"  {row['season']}: {row['games']} games, "
+                f"{row['would_fetch']} would be fetched, "
+                f"{row['written_without_a_call']} written with no call"
+            )
+        print(f"Games to fetch:             {report['games_to_fetch']}")
+        print(f"Games written with no call: {report['games_without_a_call']}")
+        print(
+            f"Projected weighted calls:   "
+            f"{report['projected_weighted_calls']:.1f} "
+            f"(retries assumed: {report['retries_assumed']}; hourly cap "
+            f"{report['hourly_budget']}, daily cap {report['daily_budget']})"
+        )
+        print(
+            f"Projected wall clock:       "
+            f"{report['projected_seconds'] / 60:.1f} minutes at "
+            f"{report['interval_seconds']} s per request (a FLOOR: a retried game "
+            "costs more)"
+        )
+        return
+
     for season_report in report.get("seasons", ()):
         print(
             f"  {season_report['season']}: {season_report['games']} rows, "
             f"{season_report['fetched']} fetched, "
             f"{season_report['written_without_a_call']} written with no call, "
-            f"null arm {season_report['null_arm']}"
+            f"null arm {season_report['null_arm']}, "
+            f"weighted calls so far {season_report['weighted_calls_after']}"
+        )
+    if "weighted_calls" in report:
+        print(
+            f"Weighted calls OBSERVED: {report['weighted_calls']} over "
+            f"{report['attempts']} attempt(s) -- this INCLUDES retries, unlike the "
+            "zero-retry projection --dry-run prints"
         )
     promotion = report.get("promotion")
     if promotion:
