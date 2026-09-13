@@ -4528,3 +4528,76 @@ ARCHIVE_BUDGET_PLAN: dict[str, object] = {
         "which is exactly why the run counts its own calls."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# THE WITNESS FOR PHASE 33.1'S WEATHER CROSS-CHECK PRE-REGISTRATION.
+#
+# APPENDED by Plan 33.1-05 Task 3 on 2026-09-13, in a SEPARATE, LATER commit than
+# the pre-registration itself. THAT SEPARATION IS THE WHOLE POINT. Nothing above
+# this line was edited.
+#
+# WHY THE ANCHOR LIVES HERE AND NOT INSIDE THE FILE IT WITNESSES (REVIEW-CIRCULAR).
+# A document that must CONTAIN and exactly REPRODUCE its own whole-file hash is
+# self-referential: writing the hash changes the bytes the hash was computed over,
+# so no fixed point exists without a canonical exclusion rule nobody has defined. A
+# test written against such a marker would have to be relaxed into meaninglessness.
+# Phase 30 proved the outside-witness pattern and Phase 31 reused it; this is the
+# third use, not a new idea.
+#
+# WHAT IT IS NOT. This does NOT extend Phase 31's pre-registration.
+# `backtest.ev_chain_constants.PREREGISTRATION_PATHS` names exactly two paths and
+# `test_both_preregistration_files_exist_and_are_tracked` asserts that count;
+# adding to it would redefine a PUBLISHED pre-registration after the fact. Phase
+# 33.1's ancestry check is a NEW class in tests/unit/test_preregistration_ancestry.py
+# reusing that module's existing helpers (Ruling L).
+#
+# THE RELATION ASSERTED: the commit below is a STRICT ancestor of HEAD, and it is
+# NOT the commit that records it. A rule and the numbers it produced landing in one
+# commit is not a pre-registration; it is only a claim of one.
+#
+# THE DIGEST IS NEWLINE-NORMALIZED -- every CRLF folded to LF before hashing. This
+# repository has core.autocrlf=true and no .gitattributes, so the file is LF in the
+# git blob and CRLF in a fresh Windows working tree; a digest over raw working-tree
+# bytes would pin a value that holds only on the machine that measured it. Verified
+# equal by BOTH routes at append time: the normalized working-tree bytes and
+# `git cat-file blob <commit>:<path>` produce the same value.
+# ---------------------------------------------------------------------------
+
+WEATHER_CROSSCHECK_PREREGISTRATION_COMMIT: str = (
+    "57586c19125030153531ba55acc0fc6f9e417dde"
+)
+
+WEATHER_CROSSCHECK_PREREGISTRATION_FILE_SHA256: dict[str, str] = {
+    "scripts/weather_crosscheck_constants.py": (
+        "5825ed0343a11a61057db97f6823dd90ef9a6055eaaec2542c83fe61e9465219"
+    ),
+}
+
+WEATHER_CROSSCHECK_PREREGISTRATION_PROVENANCE: dict[str, str] = {
+    "plan": "33.1-05",
+    "task": "Task 3: register the expected diff SHAPE, then witness it from outside",
+    "date": "2026-09-13",
+    "resolved_by": "git log -1 --format=%H -- scripts/weather_crosscheck_constants.py",
+    "hash_basis": (
+        "newline-normalized file bytes (CRLF folded to LF); equals the git blob "
+        "sha256, verified by both routes at append time"
+    ),
+    "commit_contents": "exactly scripts/weather_crosscheck_constants.py and nothing else",
+    "does_not_extend": (
+        "backtest.ev_chain_constants.PREREGISTRATION_PATHS is UNTOUCHED -- that "
+        "tuple defines Phase 31's pre-registration and a test asserts it holds "
+        "exactly two paths (Ruling L)"
+    ),
+    "predicts": (
+        "three causes with measured populations -- the hour fix (1,580 comparable "
+        "measured rows of 1,942), the routing fix (737 weather-applicable, 44 inside "
+        "the 2018-2024 comparable window) and the per-game roof rule (621 closed "
+        "games, the only number-to-NULL category) -- plus two explicit NON-claims"
+    ),
+    "fourth_quantity": (
+        "the archive-versus-forecast provenance probe is pre-registered as a "
+        "MEASUREMENT with an explicit n and an interpretation rule, not as an "
+        "expectation. No sign and no magnitude is predicted, because none is known."
+    ),
+}

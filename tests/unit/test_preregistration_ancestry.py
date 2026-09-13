@@ -50,7 +50,8 @@ from pathlib import Path
 import pytest
 
 from backtest.ev_chain_constants import PREREGISTRATION_PATHS
-from tests import phase31_state
+from scripts import weather_crosscheck_constants
+from tests import phase31_state, phase33_state
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -535,3 +536,159 @@ def test_the_rule_commit_is_a_strict_ancestor_of_the_measurement_commit() -> Non
         "That is only possible if they are the same commit, which the check above already "
         "excluded, so the repository state is inconsistent."
     )
+
+
+# ---------------------------------------------------------------------------
+# PHASE 33.1's OWN pre-registration: the expected shape of the weather cross-check
+# diff (SPEC R2). Added by Plan 33.1-05 Task 3.
+#
+# A NEW CLASS, REUSING THIS MODULE'S HELPERS -- deliberately NOT an addition to
+# `backtest.ev_chain_constants.PREREGISTRATION_PATHS` (Ruling L). That tuple defines
+# PHASE 31's pre-registration, and
+# `test_both_preregistration_files_exist_and_are_tracked` asserts it holds exactly two
+# paths. Adding to it would redefine a PUBLISHED pre-registration after the fact,
+# which is the one thing `ev_chain_constants.py`'s own header says destroys the
+# evidence.
+#
+# The assertions are the same ones that mattered for Phase 31, because the property is
+# the same one: the rule is tracked, it still hashes to what was recorded, it does not
+# contain its own hash, and it landed STRICTLY BEFORE the witness.
+# ---------------------------------------------------------------------------
+
+WEATHER_CROSSCHECK_PATH = weather_crosscheck_constants.PREREGISTRATION_PATH
+
+
+class TestThePhase331WeatherCrosscheckPreRegistration:
+    """SPEC R2: the expectation was committed BEFORE the diff it predicts."""
+
+    def test_the_witness_covers_exactly_the_file_the_rule_names(self) -> None:
+        """The recorded hash keys EQUAL the single path the module names for itself.
+
+        Set equality rather than membership: a second file added to the rule without a
+        hash appended here would be silently unwitnessed, and editable after the fact
+        with nothing to catch it.
+        """
+        assert set(phase33_state.WEATHER_CROSSCHECK_PREREGISTRATION_FILE_SHA256) == {
+            WEATHER_CROSSCHECK_PATH
+        }
+
+    def test_the_file_exists_and_is_tracked(self) -> None:
+        assert (REPO_ROOT / WEATHER_CROSSCHECK_PATH).is_file()
+        tracked = _git("ls-files", WEATHER_CROSSCHECK_PATH).stdout.split()
+        assert WEATHER_CROSSCHECK_PATH in tracked, (
+            f"{WEATHER_CROSSCHECK_PATH} is on disk but NOT tracked by git. An "
+            "untracked pre-registration cannot anchor anything: there is no commit to "
+            "assert ancestry from."
+        )
+
+    def test_it_still_hashes_to_its_recorded_digest(self) -> None:
+        """The content lock: a ONE-BYTE edit to the expectation fails here."""
+        expected = phase33_state.WEATHER_CROSSCHECK_PREREGISTRATION_FILE_SHA256[
+            WEATHER_CROSSCHECK_PATH
+        ]
+        assert _SHA256_RE.match(expected), expected
+        actual = _normalized_sha256(WEATHER_CROSSCHECK_PATH)
+        assert actual == expected, (
+            f"{WEATHER_CROSSCHECK_PATH} has CHANGED since it was registered.\n"
+            f"  recorded (tests/phase33_state.py): {expected}\n"
+            f"  recomputed from the working tree:  {actual}\n"
+            "Editing this file after the diff has been computed does not fix a bug -- "
+            "it destroys the evidence. If the expectation was wrong, that is a FINDING "
+            "about the expectation, and the finding is what gets reported."
+        )
+
+    def test_it_does_not_contain_its_own_recorded_hash(self) -> None:
+        """REVIEW-CIRCULAR, asserted rather than merely explained in the header."""
+        expected = phase33_state.WEATHER_CROSSCHECK_PREREGISTRATION_FILE_SHA256[
+            WEATHER_CROSSCHECK_PATH
+        ]
+        content = (REPO_ROOT / WEATHER_CROSSCHECK_PATH).read_text(encoding="utf-8")
+        assert expected not in content, (
+            f"{WEATHER_CROSSCHECK_PATH} CONTAINS its own recorded sha256. A file "
+            "carrying its own whole-file hash has no fixed point: writing the hash "
+            "changes the bytes it was computed over."
+        )
+
+    def test_the_recorded_commit_is_what_git_resolves(self) -> None:
+        if _git_history_is_unavailable():
+            pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+        resolved = _git(
+            "log", "-1", "--format=%H", "--", WEATHER_CROSSCHECK_PATH
+        ).stdout.strip()
+        assert _SHA1_RE.match(resolved), resolved
+        assert resolved == phase33_state.WEATHER_CROSSCHECK_PREREGISTRATION_COMMIT, (
+            "the resolved pre-registration commit does NOT match the recorded "
+            "anchor.\n"
+            f"  resolved from git: {resolved}\n"
+            "  recorded:          "
+            f"{phase33_state.WEATHER_CROSSCHECK_PREREGISTRATION_COMMIT}\n"
+            "Either the rule was re-committed and the witness was not re-measured, or "
+            "the witness was edited."
+        )
+
+    def test_the_commit_contains_only_the_rule_file(self) -> None:
+        """The commit's claim to BE the pre-registration is checkable."""
+        if _git_history_is_unavailable():
+            pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+        commit = phase33_state.WEATHER_CROSSCHECK_PREREGISTRATION_COMMIT
+        listing = _git("show", "--name-only", "--format=", commit)
+        assert listing.returncode == 0, listing.stderr
+        touched = sorted(path for path in listing.stdout.split() if path)
+        assert touched == [WEATHER_CROSSCHECK_PATH], (
+            f"the pre-registration commit {commit} touches {touched}, expected exactly "
+            f"[{WEATHER_CROSSCHECK_PATH!r}]. Anything else in that commit means the "
+            "anchor points at a commit that did more than freeze the rule."
+        )
+
+    def test_the_rule_commit_is_a_STRICT_ancestor_of_head(self) -> None:
+        """The ordering that makes this a pre-registration rather than a description.
+
+        STRICT: the rule commit is an ancestor of HEAD and is not HEAD itself. A rule
+        that landed together with the measurement it produced was not registered in
+        advance.
+        """
+        if _git_history_is_unavailable():
+            pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+        rule = phase33_state.WEATHER_CROSSCHECK_PREREGISTRATION_COMMIT
+        head = _git("rev-parse", "HEAD").stdout.strip()
+
+        assert rule != head, (
+            f"the pre-registration commit IS HEAD ({rule}). Nothing has been committed "
+            "after it, so it cannot yet be shown to have preceded anything."
+        )
+        ancestry = _git("merge-base", "--is-ancestor", rule, head)
+        assert ancestry.returncode == 0, (
+            f"the pre-registration commit {rule} is NOT an ancestor of HEAD ({head})."
+        )
+
+    def test_the_witness_landed_after_the_rule_it_witnesses(self) -> None:
+        if _git_history_is_unavailable():
+            pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+        witness_commit = _git(
+            "log", "-1", "--format=%H", "--", "tests/phase33_state.py"
+        ).stdout.strip()
+        assert _SHA1_RE.match(witness_commit), witness_commit
+        rule = phase33_state.WEATHER_CROSSCHECK_PREREGISTRATION_COMMIT
+        assert witness_commit != rule, (
+            "the witness and the rule are the SAME commit. A file cannot record the "
+            "hash of a commit it is part of."
+        )
+        ancestry = _git("merge-base", "--is-ancestor", rule, witness_commit)
+        assert ancestry.returncode == 0, (
+            f"the rule commit {rule} is NOT an ancestor of the commit that records its "
+            f"anchor ({witness_commit}). The witness must be measured FROM a committed "
+            "rule, never before it."
+        )
+
+    def test_phase_31s_preregistration_paths_were_not_extended(self) -> None:
+        """Ruling L, asserted so a later 'tidy' cannot fold this phase into Phase 31's.
+
+        `PREREGISTRATION_PATHS` defines a PUBLISHED pre-registration. Adding a path to
+        it now would change what Phase 31 registered, retroactively.
+        """
+        assert WEATHER_CROSSCHECK_PATH not in PREREGISTRATION_PATHS
+        assert len(PREREGISTRATION_PATHS) == 2
