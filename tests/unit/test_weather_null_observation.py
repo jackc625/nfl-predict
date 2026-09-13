@@ -485,3 +485,532 @@ class TestNothingHereTouchesAProductionStore:
         assert Path(written).resolve().is_relative_to(sandbox_data_root.resolve())
         reread = pd.read_parquet(written)
         assert bool(reread.iloc[0]["weather_coverage"]) is False
+
+
+# ===========================================================================
+# PLAN 33.1-04 TASK 1 -- RULING J, THE THREE D33.1-07 STATES IN THE FEATURE FRAME
+#
+# Everything above this line is Plan 33.1-02's: it pins the three states in
+# BRONZE and SILVER, where the observation is written. Everything below pins the
+# same three states one layer down, in the FEATURE FRAME `features/weather.py`
+# builds -- which is where the mild-temperature default actually reached 6,485
+# of 6,499 gold rows.
+#
+# The two halves are deliberately in one module rather than two. D33.1-07 is ONE
+# ruling about three states, and splitting it across modules is how the silver
+# half and the feature half drift into disagreeing about what "absent" means.
+#
+# The builds below all drive the INJECTED `weather_df` seam. No storage layer is
+# read and nothing is monkeypatched, so no test here can reach a production
+# store (Phase 33 Wave 6: a `monkeypatch` is not a sandbox).
+# ===========================================================================
+
+import ast
+import inspect
+
+import numpy as np
+
+import features.weather as weather_module
+from features.weather import (
+    WEATHER_FEATURE_COLUMNS,
+    WEATHER_FEATURE_COLUMNS_BY_BUILDER,
+    WEATHER_NON_NUMERIC_FEATURE_COLUMNS,
+    WeatherFeaturesCalculator,
+    WeatherObservationError,
+)
+
+DOME_GAME_ID = "2016_W01_DME@DME"
+ABSENT_GAME_ID = "2016_W01_ABS@ABS"
+OBSERVED_GAME_ID = "2016_W01_OBS@OBS"
+
+FORECAST_TIME = datetime(2016, 9, 11, 13, 0)
+
+# Ruling J's row groups, as data. The committed copy lives in
+# tests.phase33_state.WEATHER_NULL_STATE_MATRIX; these are the names the
+# assertions below iterate, and the matrix is cross-checked against them.
+TEMPERATURE_GROUP: tuple[str, ...] = (
+    "raw_temp_f",
+    "temp_f",
+    "apparent_temp_f",
+    "temp_hot",
+    "temp_warm",
+    "temp_mild",
+    "temp_cool",
+    "temp_cold",
+    "temp_very_cold",
+)
+TEMPERATURE_IMPACT_GROUP: tuple[str, ...] = (
+    "cold_impact_score",
+    "heat_impact_score",
+    "scoring_multiplier",
+    "ball_handling_difficulty",
+)
+WIND_GROUP: tuple[str, ...] = (
+    "raw_wind_mph",
+    "wind_mph",
+    "wind_calm",
+    "wind_moderate",
+    "wind_high",
+    "wind_severe",
+    "wind_impact_score",
+    "kicking_difficulty",
+    "passing_difficulty",
+)
+PRECIPITATION_GROUP: tuple[str, ...] = (
+    "raw_precip_mm",
+    "raw_precip_prob",
+    "precip_mm",
+    "precip_prob",
+    "precip_none",
+    "precip_light",
+    "precip_moderate",
+    "precip_heavy",
+    "is_snow",
+    "is_rain",
+    "is_dry",
+    "precip_impact_score",
+    "turnover_multiplier",
+    "passing_efficiency",
+)
+COMPOSITE_GROUP: tuple[str, ...] = (
+    "weather_severity_score",
+    "home_weather_advantage",
+    "defensive_advantage",
+    "rushing_advantage",
+    "scoring_reduction",
+    "weather_game",
+    "extreme_weather",
+)
+
+
+def _ruling_j_games() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"game_id": DOME_GAME_ID, "season": 2016, "week": 1},
+            {"game_id": ABSENT_GAME_ID, "season": 2016, "week": 1},
+            {"game_id": OBSERVED_GAME_ID, "season": 2016, "week": 1},
+        ]
+    )
+
+
+def _ruling_j_weather() -> pd.DataFrame:
+    """One silver row per Ruling J state, written exactly as 33.1-02 writes them."""
+    return pd.DataFrame(
+        [
+            {
+                "game_id": DOME_GAME_ID,
+                "forecast_time": FORECAST_TIME,
+                "is_outdoor": False,
+                "weather_coverage": True,
+                "temp_f": None,
+                "wind_mph": 0.0,
+                "precip_prob": 0.0,
+                "precip_mm": 0.0,
+                "humidity_pct": None,
+                "condition": "indoor",
+            },
+            {
+                "game_id": ABSENT_GAME_ID,
+                "forecast_time": FORECAST_TIME,
+                "is_outdoor": True,
+                "weather_coverage": False,
+                "temp_f": None,
+                "wind_mph": None,
+                "precip_prob": None,
+                "precip_mm": None,
+                "humidity_pct": None,
+                "condition": None,
+            },
+            {
+                "game_id": OBSERVED_GAME_ID,
+                "forecast_time": FORECAST_TIME,
+                "is_outdoor": True,
+                "weather_coverage": True,
+                "temp_f": 41.0,
+                "wind_mph": 14.0,
+                "precip_prob": 0.6,
+                "precip_mm": 3.0,
+                "humidity_pct": 70.0,
+                "condition": "Rain",
+            },
+        ]
+    )
+
+
+@pytest.fixture
+def ruling_j_frame() -> pd.DataFrame:
+    """The full (uncompressed) weather feature frame over all three states."""
+    calculator = WeatherFeaturesCalculator()
+    with pytest.warns(DeprecationWarning):
+        return calculator.build_weather_features(
+            _ruling_j_games(), weather_df=_ruling_j_weather()
+        )
+
+
+def _one_row(frame: pd.DataFrame, game_id: str) -> pd.Series:
+    matched = frame[frame["game_id"] == game_id]
+    assert len(matched) == 1, f"expected exactly one row for {game_id}"
+    return matched.iloc[0]
+
+
+class TestRulingJRowByRow:
+    """One assertion block per row of Ruling J's table."""
+
+    def test_a_dome_row_is_null_in_temperature_and_genuine_elsewhere(
+        self, ruling_j_frame
+    ):
+        row = _one_row(ruling_j_frame, DOME_GAME_ID)
+
+        for column in (*TEMPERATURE_GROUP, *TEMPERATURE_IMPACT_GROUP):
+            assert _is_null(row[column]), (
+                f"{column} reads {row[column]!r} on a DOME row. There is no outdoor "
+                "temperature indoors, and a band with no temperature to band has no "
+                "answer -- 1.0 in temp_warm is the mild default in one-hot clothing."
+            )
+
+        assert row["wind_calm"] == 1.0, "indoors the wind genuinely IS calm"
+        assert row["is_dry"] == 1.0, "indoors it genuinely IS dry"
+        assert row["scoring_reduction"] == 0.0, (
+            "'weather reduced scoring by nothing' is a TRUE statement about an "
+            "indoor game, not a stand-in for an absent measurement"
+        )
+        assert row["weather_coverage"] == 1.0, "a dome is entitled to no observation"
+        assert row["weather_affects_game"] == 0.0
+
+    def test_an_absent_observation_row_is_null_in_every_weather_column(
+        self, ruling_j_frame
+    ):
+        row = _one_row(ruling_j_frame, ABSENT_GAME_ID)
+
+        assert row["weather_affects_game"] == 1.0, (
+            "weather DOES apply to this game; what is absent is the observation, "
+            "which weather_coverage records"
+        )
+        assert row["weather_coverage"] == 0.0
+
+        exempt = {"weather_affects_game", "weather_coverage"}
+        for column in WEATHER_FEATURE_COLUMNS_BY_BUILDER["full"]:
+            if column in exempt:
+                continue
+            assert _is_null(row[column]), (
+                f"{column} carries {row[column]!r} on a row with NO observation. "
+                "A missing observation silently becoming a number is the "
+                "fabricated-data class this phase exists to remove."
+            )
+            if column not in WEATHER_NON_NUMERIC_FEATURE_COLUMNS:
+                assert not np.isfinite(row[column]), (
+                    f"{column} is a finite number on an absent-observation row"
+                )
+
+    def test_an_observed_outdoor_row_is_finite_in_every_group(self, ruling_j_frame):
+        """The NEGATIVE CONTROL. Without it the NaN assertions above would pass
+        equally against a builder that returned an empty frame."""
+        row = _one_row(ruling_j_frame, OBSERVED_GAME_ID)
+
+        for group in (
+            TEMPERATURE_GROUP,
+            TEMPERATURE_IMPACT_GROUP,
+            WIND_GROUP,
+            PRECIPITATION_GROUP,
+            COMPOSITE_GROUP,
+        ):
+            for column in group:
+                assert np.isfinite(row[column]), (
+                    f"{column} is not finite on an OBSERVED outdoor row, so the "
+                    "NaN assertions above are describing an empty frame rather "
+                    "than distinguishing a state"
+                )
+
+        assert row["weather_coverage"] == 1.0
+        assert row["weather_affects_game"] == 1.0
+        assert row["raw_temp_f"] == 41.0
+
+
+class TestACaughtExceptionRaisesForEveryFamily:
+    """D33.1-07's third state, applied to the CALCULATION and not to temperature.
+
+    Three families, three tests. Removing only the temperature handler would
+    leave a malformed wind payload inventing a perfectly calm day -- in the
+    family the deployed O/U model reads most heavily.
+    """
+
+    def test_a_malformed_temperature_payload_raises_and_names_the_family(self):
+        calculator = WeatherFeaturesCalculator()
+        with pytest.raises(WeatherObservationError) as excinfo:
+            calculator.calculate_temperature_features(
+                {"game_id": OBSERVED_GAME_ID, "temp_f": "warm", "wind_mph": 3.0}
+            )
+        message = str(excinfo.value)
+        assert OBSERVED_GAME_ID in message
+        assert "temperature" in message
+
+    def test_a_malformed_wind_payload_raises_and_names_the_family(self):
+        calculator = WeatherFeaturesCalculator()
+        with pytest.raises(WeatherObservationError) as excinfo:
+            calculator.calculate_wind_features(
+                {"game_id": OBSERVED_GAME_ID, "wind_mph": "breezy"}
+            )
+        message = str(excinfo.value)
+        assert OBSERVED_GAME_ID in message
+        assert "wind" in message
+
+    def test_a_malformed_precipitation_payload_raises_and_names_the_family(self):
+        calculator = WeatherFeaturesCalculator()
+        with pytest.raises(WeatherObservationError) as excinfo:
+            calculator.calculate_precipitation_features(
+                {"game_id": OBSERVED_GAME_ID, "precip_mm": "heavy", "temp_f": 40.0}
+            )
+        message = str(excinfo.value)
+        assert OBSERVED_GAME_ID in message
+        assert "precipitation" in message
+
+    def test_a_caught_exception_is_named_a_bug_rather_than_a_state(self):
+        calculator = WeatherFeaturesCalculator()
+        with pytest.raises(WeatherObservationError) as excinfo:
+            calculator.calculate_wind_features(
+                {"game_id": OBSERVED_GAME_ID, "wind_mph": "breezy"}
+            )
+        assert "bug" in str(excinfo.value).lower(), (
+            "the message must SAY a caught exception is a bug rather than a "
+            "state -- recording it as missing data is precisely how the mild "
+            "default survived unnoticed for years"
+        )
+
+
+class TestTheIndoorFactoriesAreIndoorOnly:
+    """The Ruling J amendment: the rename is about REACHABILITY, not naming."""
+
+    def test_the_default_factories_are_gone_and_the_indoor_ones_exist(self):
+        for gone in (
+            "_default_temperature_features",
+            "_default_wind_features",
+            "_default_precipitation_features",
+        ):
+            assert not hasattr(WeatherFeaturesCalculator, gone), (
+                f"{gone} still exists. While it is called _default_ the next "
+                "reader will wire the next `except` branch to it by analogy, and "
+                "the name is the only thing that stops that."
+            )
+        for present in (
+            "_indoor_temperature_features",
+            "_indoor_wind_features",
+            "_indoor_precipitation_features",
+            "_absent_observation_features",
+        ):
+            assert hasattr(WeatherFeaturesCalculator, present)
+
+    @pytest.mark.parametrize(
+        "factory", ["_indoor_wind_features", "_indoor_precipitation_features"]
+    )
+    def test_each_renamed_factory_has_exactly_one_call_site(self, factory):
+        tree = ast.parse(inspect.getsource(weather_module))
+        call_sites = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and (
+                getattr(node.func, "attr", None) == factory
+                or getattr(node.func, "id", None) == factory
+            )
+        ]
+        assert len(call_sites) == 1, (
+            f"{factory} is called from {len(call_sites)} places ({call_sites}). "
+            "The indoor branch is the ONLY legitimate caller; a second call site "
+            "is a failure rather than a review question."
+        )
+
+    def test_no_except_handler_reaches_an_indoor_factory(self):
+        tree = ast.parse(inspect.getsource(weather_module))
+        handlers = [n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler)]
+        reached = [
+            (handler.lineno, name)
+            for handler in handlers
+            for node in ast.walk(handler)
+            if isinstance(node, ast.Call)
+            for name in [
+                getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            ]
+            if name
+            in {
+                "_indoor_wind_features",
+                "_indoor_precipitation_features",
+                "_indoor_temperature_features",
+                "_absent_observation_features",
+            }
+        ]
+        assert reached == [], (
+            f"an indoor factory is reachable from an `except` branch: {reached}. "
+            "That is the fabrication path the Ruling J amendment removes."
+        )
+
+    def test_every_except_handler_in_the_module_raises(self):
+        tree = ast.parse(inspect.getsource(weather_module))
+        handlers = [n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler)]
+        assert handlers, "no handlers found -- this scan would assert nothing"
+        non_raising = [
+            handler.lineno
+            for handler in handlers
+            if not any(isinstance(n, ast.Raise) for n in ast.walk(handler))
+        ]
+        assert non_raising == [], (
+            f"handlers at lines {non_raising} swallow an exception. In this "
+            "module an `except` branch that returns a value at all is the "
+            "fabrication pattern D33.1-07 forbids."
+        )
+
+
+class TestAMissingWeatherRowIsAnAnomalyRatherThanADefault:
+    def test_a_game_absent_from_the_weather_frame_raises_by_name(self):
+        calculator = WeatherFeaturesCalculator()
+        games = pd.concat(
+            [
+                _ruling_j_games(),
+                pd.DataFrame(
+                    [{"game_id": "2016_W01_GAP@GAP", "season": 2016, "week": 1}]
+                ),
+            ],
+            ignore_index=True,
+        )
+        with pytest.raises(WeatherObservationError) as excinfo:
+            with pytest.warns(DeprecationWarning):
+                calculator.build_weather_features(games, weather_df=_ruling_j_weather())
+        message = str(excinfo.value)
+        assert "2016_W01_GAP@GAP" in message
+        assert "weather" in message, "the raise must name the silver table to backfill"
+
+    def test_the_compressed_builder_also_raises_on_a_missing_row(self):
+        calculator = WeatherFeaturesCalculator()
+        games = pd.DataFrame(
+            [{"game_id": "2016_W01_GAP@GAP", "season": 2016, "week": 1}]
+        )
+        with pytest.raises(WeatherObservationError) as excinfo:
+            calculator.build_features(
+                games,
+                datetime(2016, 9, 12, 0, 0),
+                weather_df=_ruling_j_weather(),
+            )
+        assert "2016_W01_GAP@GAP" in str(excinfo.value)
+
+
+class TestTheColumnDeclarationCannotDriftFromEitherBuilder:
+    def test_the_full_builder_emits_exactly_its_declared_entry(self, ruling_j_frame):
+        emitted = set(ruling_j_frame.columns) - {"game_id", "season", "week"}
+        assert emitted == set(WEATHER_FEATURE_COLUMNS_BY_BUILDER["full"])
+        assert "weather_coverage" in WEATHER_FEATURE_COLUMNS
+
+    def test_the_compressed_builder_emits_exactly_its_declared_entry(self):
+        calculator = WeatherFeaturesCalculator()
+        frame = calculator.build_features(
+            _ruling_j_games(),
+            datetime(2016, 9, 12, 0, 0),
+            weather_df=_ruling_j_weather(),
+        )
+        emitted = set(frame.columns) - {"game_id"}
+        assert emitted == set(WEATHER_FEATURE_COLUMNS_BY_BUILDER["compressed"])
+
+    def test_the_two_builder_entries_are_a_real_distinction(self):
+        by_builder = WEATHER_FEATURE_COLUMNS_BY_BUILDER
+        assert sorted(by_builder) == ["compressed", "full"]
+        assert by_builder["full"] and by_builder["compressed"]
+        assert set(by_builder["full"]) != set(by_builder["compressed"]), (
+            "if the two entries were equal the per-builder split would be "
+            "describing a distinction that does not exist"
+        )
+        assert set(by_builder["full"]) | set(by_builder["compressed"]) == set(
+            WEATHER_FEATURE_COLUMNS
+        )
+
+
+class TestTheCompressedBuilderFollowsTheSameRuling:
+    def test_the_compressed_absent_row_is_null_and_the_dome_row_is_zero(self):
+        calculator = WeatherFeaturesCalculator()
+        frame = calculator.build_features(
+            _ruling_j_games(),
+            datetime(2016, 9, 12, 0, 0),
+            weather_df=_ruling_j_weather(),
+        )
+
+        absent = _one_row(frame, ABSENT_GAME_ID)
+        assert absent["is_outdoor"] == 1.0
+        for column in ("weather_severity_score", "wind_mph", "is_precipitation"):
+            assert _is_null(absent[column])
+
+        dome = _one_row(frame, DOME_GAME_ID)
+        assert dome["is_outdoor"] == 0.0
+        assert dome["weather_severity_score"] == 0.0
+        assert dome["wind_mph"] == 0.0
+
+        observed = _one_row(frame, OBSERVED_GAME_ID)
+        assert observed["is_outdoor"] == 1.0
+        assert np.isfinite(observed["weather_severity_score"])
+
+
+class TestANullMeasurementInsideAnObservationStaysNull:
+    """A PARTIAL null is an observation (33.1-02), and its derived family is
+    still NULL: the `or 0.0` and `or 50` fallbacks were the same stand-in.
+    """
+
+    def test_a_null_wind_on_an_observed_row_does_not_become_calm(self):
+        calculator = WeatherFeaturesCalculator()
+        features = calculator.calculate_wind_features(
+            {"game_id": OBSERVED_GAME_ID, "wind_mph": None}
+        )
+        assert _is_null(features["wind_mph"])
+        assert _is_null(features["wind_calm"]), (
+            "an absent wind reading became `wind_calm: 1.0` -- a perfectly calm "
+            "day invented from a missing measurement"
+        )
+
+    def test_a_null_precipitation_on_an_observed_row_does_not_become_dry(self):
+        calculator = WeatherFeaturesCalculator()
+        features = calculator.calculate_precipitation_features(
+            {
+                "game_id": OBSERVED_GAME_ID,
+                "precip_mm": None,
+                "precip_prob": None,
+                "temp_f": 40.0,
+            }
+        )
+        assert _is_null(features["is_dry"])
+        assert _is_null(features["precip_impact_score"])
+
+    def test_a_null_temperature_on_an_observed_row_does_not_become_mild(self):
+        calculator = WeatherFeaturesCalculator()
+        features = calculator.calculate_temperature_features(
+            {"game_id": OBSERVED_GAME_ID, "temp_f": None, "wind_mph": 5.0}
+        )
+        assert _is_null(features["temp_f"])
+        assert _is_null(features["temp_warm"])
+        assert _is_null(features["scoring_multiplier"])
+
+    def test_an_unknown_severity_does_not_become_a_calm_game(self):
+        calculator = WeatherFeaturesCalculator()
+        severity = calculator.calculate_weather_severity(
+            wind_features={"wind_impact_score": float("nan")},
+            temp_features={"cold_impact_score": 0.0, "heat_impact_score": 0.0},
+            precip_features={"precip_impact_score": 0.0},
+        )
+        assert _is_null(severity["weather_severity_score"])
+        assert _is_null(severity["weather_game"]), (
+            "`weather_game: 0.0` from an unknown severity is a fabricated "
+            "statement that this was not a weather game"
+        )
+
+
+class TestTheStateMatrixIsCommitted:
+    def test_the_matrix_records_all_three_states_and_their_column_groups(self):
+        from tests.phase33_state import WEATHER_NULL_STATE_MATRIX as matrix
+
+        assert sorted(matrix["states"]) == [
+            "covered_indoor",
+            "covered_outdoor_observed",
+            "uncovered_outdoor_absent",
+        ]
+        assert matrix["indoor_games_gaining_nan"] == 1652
+        assert matrix["indoor_columns_gaining_nan"] == 13
+        groups = matrix["column_groups"]
+        assert tuple(groups["temperature"]) == TEMPERATURE_GROUP
+        assert tuple(groups["temperature_impact"]) == TEMPERATURE_IMPACT_GROUP
+        assert tuple(groups["wind"]) == WIND_GROUP
+        assert tuple(groups["precipitation"]) == PRECIPITATION_GROUP
+        assert tuple(groups["composite"]) == COMPOSITE_GROUP
