@@ -50,6 +50,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 VENUES_PATH = REPO_ROOT / "data" / "venues.json"
 
 
+# The stand-in for "a stadium_id data/venues.json does not know".
+#
+# This used to be the literal "DAL99", which was a REAL nflverse code for Texas Stadium
+# that simply had no record yet. Plan 33.1-01 (2026-09-12) added the 22 historical venue
+# records, DAL99 among them, and this test silently stopped testing anything: the id
+# became known, the warning correctly stopped firing, and the assertion failed. The
+# lesson is that an "unknown" fixture must be unknown BY CONSTRUCTION, not by the
+# accident of nobody having added it yet. ZZZ99 is not an nflverse code and never will
+# be, and `test_the_unknown_id_fixture_is_genuinely_unknown` keeps that honest.
+UNKNOWN_STADIUM_ID = "ZZZ99"
+
+
 def _venues_frame() -> pd.DataFrame:
     return pd.DataFrame(json.loads(VENUES_PATH.read_text(encoding="utf-8"))["venues"])
 
@@ -197,8 +209,27 @@ class TestTheSeasonGateLeavesHistoryAlone:
 class TestTheNonNeutralUnknownStadiumCase:
     """A new or renamed HOME stadium resolves by home_team AND says so."""
 
+    def test_the_unknown_id_fixture_is_genuinely_unknown(self) -> None:
+        """Non-vacuity: the two tests below mean nothing if the id is actually known.
+
+        This is the control that would have caught Plan 33.1-01 turning the old DAL99
+        fixture into a recognised venue, instead of leaving it to be discovered as a
+        failing assertion whose cause was three files away.
+        """
+        known = {
+            str(record["stadium_id"])
+            for record in json.loads(VENUES_PATH.read_text(encoding="utf-8"))["venues"]
+        }
+        assert UNKNOWN_STADIUM_ID not in known, (
+            f"{UNKNOWN_STADIUM_ID} is now a real record in data/venues.json, so the "
+            "unknown-stadium tests below are asserting against a KNOWN id and prove "
+            "nothing. Pick an id that cannot be added."
+        )
+
     def test_an_unknown_id_on_a_home_game_resolves_by_home_team(self) -> None:
-        venue = contextual.resolve_venue_for_game(_home_game(stadium_id="DAL99"))
+        venue = contextual.resolve_venue_for_game(
+            _home_game(stadium_id=UNKNOWN_STADIUM_ID)
+        )
         assert venue is not None
         assert venue["venue_id"] == "at_t_stadium", (
             "a non-neutral game must keep today's home_team resolution -- that IS "
@@ -213,10 +244,11 @@ class TestTheNonNeutralUnknownStadiumCase:
         the logging CONFIGURATION rather than on what the router actually recorded.
         """
         recorded = _record_warnings(monkeypatch)
-        contextual.resolve_venue_for_game(_home_game(stadium_id="DAL99"))
+        contextual.resolve_venue_for_game(_home_game(stadium_id=UNKNOWN_STADIUM_ID))
 
         assert any(
-            "DAL99" in event or kwargs.get("stadium_id") == "DAL99"
+            UNKNOWN_STADIUM_ID in event
+            or kwargs.get("stadium_id") == UNKNOWN_STADIUM_ID
             for event, kwargs in recorded
         ), (
             "an unrecognised stadium_id on a home game was absorbed without a word. "

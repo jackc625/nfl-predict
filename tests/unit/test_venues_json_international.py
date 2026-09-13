@@ -44,7 +44,11 @@ from tests.fixtures import season_2026
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VENUES_PATH = REPO_ROOT / "data" / "venues.json"
 
-EXPECTED_TOTAL_RECORDS = 38
+# 38 -> 60: Plan 33.1-01 added the 22 historical venue records (R1), so that the 1,082
+# games at stadiums this file could not describe stop resolving by today's home team.
+# UPDATED here rather than forked -- a new module asserting 60 while this one asserts 38
+# is two answers to one question.
+EXPECTED_TOTAL_RECORDS = 60
 EXPECTED_EXISTING_RECORDS = 30
 
 # The field order INTERNATIONAL_VENUE_FACTS is stated in, named here so the unpacking
@@ -100,12 +104,18 @@ def _require_capture() -> None:
 class TestEveryRecordCarriesAStadiumId:
     """`venue_id` is a slug and `stadium_id` is an nflverse code; they are not the same."""
 
-    def test_the_file_holds_thirty_eight_records(self) -> None:
+    def test_the_file_holds_every_ratified_record(self) -> None:
+        """Renamed from `test_the_file_holds_thirty_eight_records` by Plan 33.1-01.
+
+        The count moved to 60 and a test whose NAME still said thirty-eight would be a
+        quiet lie in the one place a reader looks first.
+        """
         records = _load_venue_records()
         assert len(records) == EXPECTED_TOTAL_RECORDS, (
             f"data/venues.json holds {len(records)} records, expected "
-            f"{EXPECTED_EXISTING_RECORDS} existing US venues plus the eight "
-            "international ones ratified for 2026."
+            f"{EXPECTED_EXISTING_RECORDS} existing US venues, the eight international "
+            "ones ratified for 2026, and the 22 historical ones ratified by Plan "
+            "33.1-01."
         )
 
     def test_every_record_carries_a_non_empty_stadium_id(self) -> None:
@@ -149,7 +159,7 @@ class TestEveryRecordCarriesAStadiumId:
 
 
 class TestTheThirtyExistingCodesWereDerivedNotTyped:
-    """Every existing venue's code must reproduce from the captured 2026 schedule."""
+    """Every CURRENTLY-IN-SERVICE venue's code must reproduce from the 2026 schedule."""
 
     def test_each_existing_record_reproduces_its_code_from_the_feed(self) -> None:
         """Join `home_teams` to the feed's NON-neutral home games and read the code.
@@ -157,16 +167,31 @@ class TestTheThirtyExistingCodesWereDerivedNotTyped:
         A venue whose derived code is not unique, or which resolves to none, is a
         FINDING to report by name -- never a value to guess. A team that relocated
         between the venue record's era and 2026 is exactly the case this surfaces.
+
+        TWO SETS ARE EXCLUDED, AND FOR THE SAME REASON. The eight international venues
+        host only neutral-site games, so a non-neutral join cannot reach them. The 22
+        HISTORICAL venues Plan 33.1-01 added (2026-09-12) carry `home_teams == []` by
+        ratified design -- a demolished stadium must never win a home-team lookup and
+        shadow its successor -- and their franchises play somewhere else now, so
+        joining them to the 2026 feed asks a question with no answer. 33.1-01-PLAN.md
+        records the same constraint from the other direction: the historical module is
+        explicitly forbidden from copying this class, because "that join is meaningless
+        for a demolished stadium". Their codes are derived instead in
+        tests/unit/test_venues_json_historical.py::TestTheRatifiedTableIsTheSource,
+        against the pinned 2002-2025 schedules, which is the feed that actually carries
+        them.
         """
         _require_capture()
         feed = season_2026.load_captured_schedule()
         home_games = feed[feed["location"] != "Neutral"]
-        international = {row[0] for row in phase33_state.INTERNATIONAL_VENUE_FACTS}
+        not_in_service = {
+            row[0] for row in phase33_state.INTERNATIONAL_VENUE_FACTS
+        } | set(phase33_state.HISTORICAL_STADIUM_IDS)
 
         unresolved: list[str] = []
         mismatched: list[str] = []
         for record in _load_venue_records():
-            if record.get("stadium_id") in international:
+            if record.get("stadium_id") in not_in_service:
                 continue
             rows = home_games[home_games["home_team"].isin(record["home_teams"])]
             derived = sorted(set(rows["stadium_id"].dropna()))

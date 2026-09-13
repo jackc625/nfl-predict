@@ -1778,3 +1778,1366 @@ GOLD_WEATHER_CONSTANCY_MEASUREMENT: dict[str, object] = {
         "columns entering ONE model (the v1.0 pre-Elo O/U artifact).",
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# THE TWENTY-TWO HISTORICAL VENUES, AS THE OWNER RATIFIED THEM.
+#
+# APPENDED by Plan 33.1-01 Task 3 on 2026-09-12. Nothing above this line was edited.
+#
+# THE OWNER RULED ON 2026-09-12 at the Task-2 blocking checkpoint, selecting
+# "approved with NYC00 -> (40.8122, -74.0769)":
+#
+#     Twenty-one rows ratified exactly as tabled. NYC00 Giants Stadium takes the
+#     en.wikipedia article's own GeoHack coordinate instead of the Wikidata P625
+#     value, because the Wikidata value sits 0.02 km -- twenty metres -- from the
+#     already-ratified NYC01 MetLife record and is therefore the T-33.1-02
+#     successor-contamination failure mode itself. The article coordinate is
+#     0.29 km from MetLife and matches the demolished stadium's footprint.
+#
+# WHY THESE VALUES ARE A CONSTANT AND NOT AN EDIT TO data/venues.json.
+# The governing rule is Plan 33-06's (33-06-SUMMARY.md:40): a reference value
+# nothing in the repository can settle is RATIFIED by the owner, committed ONCE as
+# a constant, and the data file is GENERATED from that constant -- so the file
+# cannot drift from the record that authorised it. The values here were RESEARCHED
+# and TABLED before any write, and ratified at a blocking checkpoint.
+#
+# PROVENANCE IS PER FIELD, NOT PER VENUE (Ruling C2). HISTORICAL_VENUE_FIELD_SOURCES
+# below carries one row per (stadium_id, field) pair across all EIGHT non-identity
+# fields -- 176 rows. A Wikidata P625 coordinate statement substantiates a latitude
+# and a longitude and says NOTHING about what the playing surface was in 2003 or how
+# many seats the building held, and BOTH of those fields feed live contextual
+# features (features/contextual.py:345-356 and :653). The 88 `external` cells carry
+# the revision-pinned strings the owner ratified; the 88 `derived` cells carry the
+# citation the deriving function emitted.
+#
+# DUAL-SOURCE CORROBORATION, stronger than the plan required. Every Wikidata P625
+# was cross-checked against its en.wikipedia article's own GeoHack coordinate: 21 of
+# the 22 agree to within 0.27 km, most to 0.000 km, against an ERA5 grid cell of
+# roughly 9-11 km. GER00 carries no GeoHack in its infobox and instead matches the
+# already-ratified MUN01 record to all four decimals, which is correct -- they are
+# the same building. NYC00 was the ONE material disagreement and is the ruling above.
+#
+# `home_teams` IS DELIBERATELY EMPTY on all 22. scripts/ingest_weather._get_venue_record
+# (:621) returns the FIRST record whose `home_teams` contains the team, so a historical
+# record claiming `LV` would shadow VEG00 for the live 2026 season. These records are
+# reachable by `stadium_id` ONLY.
+#
+# RULING A, RECORDED HONESTLY AND WITH ITS OWN PREMISE CORRECTED. `elevation_ft` for
+# these 22 is DERIVED from Open-Meteo's /v1/elevation -- a ~90 m DEM terrain value at
+# the nearest grid cell -- so the 22 differ IN KIND from the 38 hand-sourced records.
+# Ruling A justified that by asserting "no venue among the 22 sits within 1,500 ft of
+# [the 3,000 ft venue_high_altitude] boundary -- the highest is PHO99 Sun Devil Stadium
+# at roughly 1,150 ft". THAT CLAIM IS FALSE AS WRITTEN and is not papered over here:
+# SAO00 Arena Corinthians is 2,562 ft (Sao Paulo sits at ~780 m), leaving 438 ft of
+# margin, and GER00 is 1,611 ft. The VERDICT is unchanged -- all 22 give
+# venue_high_altitude = 0.0 -- but the margin is 3.4x smaller than the ruling asserted.
+# Corroboration that the DEM is sound anyway: the Sun Devil Stadium article states
+# 1,160 ft AMSL against the derived 1,178 ft.
+#
+# `venue_name` IS THE MOST RECENT FEED `stadium` STRING, AND THE NAME PATH STAYS LOSSY
+# (Ruling C). Twenty of these ids carry two to five feed names each -- OAK00 has five --
+# so no single `venue_name` can satisfy features/contextual._get_venue_id_by_name for all
+# of a venue's games. That is why routing moves to `stadium_id` in Plan 33.1-03. The
+# constraint tests/phase33_state.py records for the international eight ("`venue_name`
+# MUST equal the feed's `stadium` string EXACTLY") is simply unsatisfiable for OAK00.
+#
+# Field order, stated once and asserted by tests/unit/test_venues_json_historical.py:
+#     (stadium_id, venue_id, venue_name, city, state, country, latitude, longitude,
+#      elevation_ft, roof_type, surface, capacity, climate_zone, timezone)
+#
+# FOURTEEN fields, one more than INTERNATIONAL_VENUE_FACTS's thirteen, because five of
+# the 22 are non-US and `state` must be recordable as the EMPTY STRING rather than
+# guessed -- the same boundary 33-06-SUMMARY.md:70 records for the international eight.
+# ---------------------------------------------------------------------------
+
+HISTORICAL_STADIUM_IDS: tuple[str, ...] = (
+    "OAK00",
+    "NYC00",
+    "SDG00",
+    "ATL00",
+    "STL00",
+    "SFO00",
+    "MIN00",
+    "DAL99",
+    "IND99",
+    "PHO99",
+    "LAX99",
+    "LAX97",
+    "MIN98",
+    "PHI99",
+    "CHI99",
+    "BUF01",
+    "BRG00",
+    "SAN00",
+    "LON01",
+    "GER00",
+    "FRA00",
+    "SAO00",
+)
+
+
+HISTORICAL_VENUE_FACTS: tuple[tuple[object, ...], ...] = (
+    (
+        "OAK00",
+        "ring_central_coliseum",
+        "Ring Central Coliseum",
+        "Oakland",
+        "CA",
+        "USA",
+        37.7517,
+        -122.2006,
+        23,
+        "outdoor",
+        "Bermuda Grass",
+        63122,
+        "mediterranean",
+        "America/Los_Angeles",
+    ),
+    (
+        "NYC00",
+        "giants_stadium",
+        "Giants Stadium",
+        "East Rutherford",
+        "NJ",
+        "USA",
+        40.8122,
+        -74.0769,
+        7,
+        "outdoor",
+        "FieldTurf",
+        80242,
+        "humid_continental",
+        "America/New_York",
+    ),
+    (
+        "SDG00",
+        "qualcomm_stadium",
+        "Qualcomm Stadium",
+        "San Diego",
+        "CA",
+        "USA",
+        32.7831,
+        -117.1194,
+        59,
+        "outdoor",
+        "Bermuda Grass",
+        70561,
+        "mediterranean",
+        "America/Los_Angeles",
+    ),
+    (
+        "ATL00",
+        "georgia_dome",
+        "Georgia Dome",
+        "Atlanta",
+        "GA",
+        "USA",
+        33.7575,
+        -84.4008,
+        988,
+        "indoor",
+        "FieldTurf",
+        71228,
+        "humid_subtropical",
+        "America/New_York",
+    ),
+    (
+        "STL00",
+        "edward_jones_dome",
+        "Edward Jones Dome",
+        "St. Louis",
+        "MO",
+        "USA",
+        38.6328,
+        -90.1886,
+        492,
+        "indoor",
+        "AstroTurf",
+        66000,
+        "humid_continental",
+        "America/Chicago",
+    ),
+    (
+        "SFO00",
+        "candlestick_park",
+        "Candlestick Park",
+        "San Francisco",
+        "CA",
+        "USA",
+        37.7136,
+        -122.3861,
+        52,
+        "outdoor",
+        "Kentucky Bluegrass",
+        69732,
+        "mediterranean",
+        "America/Los_Angeles",
+    ),
+    (
+        "MIN00",
+        "mall_of_america_field",
+        "Mall of America Field",
+        "Minneapolis",
+        "MN",
+        "USA",
+        44.9739,
+        -93.2581,
+        830,
+        "indoor",
+        "FieldTurf",
+        64121,
+        "humid_continental",
+        "America/Chicago",
+    ),
+    (
+        "DAL99",
+        "texas_stadium",
+        "Texas Stadium",
+        "Irving",
+        "TX",
+        "USA",
+        32.8398,
+        -96.9109,
+        449,
+        "outdoor",
+        "RealGrass",
+        65675,
+        "humid_subtropical",
+        "America/Chicago",
+    ),
+    (
+        "IND99",
+        "rca_dome",
+        "RCA Dome",
+        "Indianapolis",
+        "IN",
+        "USA",
+        39.7637,
+        -86.1633,
+        761,
+        "indoor",
+        "FieldTurf",
+        55506,
+        "humid_continental",
+        "America/Indiana/Indianapolis",
+    ),
+    (
+        "PHO99",
+        "sun_devil_stadium",
+        "Sun Devil Stadium",
+        "Tempe",
+        "AZ",
+        "USA",
+        33.4264,
+        -111.9325,
+        1178,
+        "outdoor",
+        "Bermuda Grass",
+        73379,
+        "desert",
+        "America/Phoenix",
+    ),
+    (
+        "LAX99",
+        "los_angeles_memorial_coliseum",
+        "Los Angeles Memorial Coliseum",
+        "Los Angeles",
+        "CA",
+        "USA",
+        34.0142,
+        -118.2878,
+        194,
+        "outdoor",
+        "Bermuda Grass",
+        77500,
+        "mediterranean",
+        "America/Los_Angeles",
+    ),
+    (
+        "LAX97",
+        "stubhub_center",
+        "StubHub Center",
+        "Carson",
+        "CA",
+        "USA",
+        33.8644,
+        -118.2611,
+        75,
+        "outdoor",
+        "Bermuda Grass",
+        27000,
+        "mediterranean",
+        "America/Los_Angeles",
+    ),
+    (
+        "MIN98",
+        "tcf_bank_stadium",
+        "TCF Bank Stadium",
+        "Minneapolis",
+        "MN",
+        "USA",
+        44.9764,
+        -93.2244,
+        830,
+        "outdoor",
+        "FieldTurf",
+        50805,
+        "humid_continental",
+        "America/Chicago",
+    ),
+    (
+        "PHI99",
+        "veterans_stadium",
+        "Veterans Stadium",
+        "Philadelphia",
+        "PA",
+        "USA",
+        39.9067,
+        -75.1711,
+        20,
+        "outdoor",
+        "NexTurf",
+        65352,
+        "humid_continental",
+        "America/New_York",
+    ),
+    (
+        "CHI99",
+        "memorial_stadium_champaign",
+        "Memorial Stadium (Champaign)",
+        "Champaign",
+        "IL",
+        "USA",
+        40.0992,
+        -88.2358,
+        748,
+        "outdoor",
+        "AstroPlay",
+        69249,
+        "humid_continental",
+        "America/Chicago",
+    ),
+    (
+        "BUF01",
+        "rogers_centre",
+        "Rogers Centre",
+        "Toronto",
+        "",
+        "Canada",
+        43.6414,
+        -79.3892,
+        276,
+        "indoor",
+        "FieldTurf",
+        53506,
+        "humid_continental",
+        "America/Toronto",
+    ),
+    (
+        "BRG00",
+        "tiger_stadium_lsu",
+        "Tiger Stadium (LSU)",
+        "Baton Rouge",
+        "LA",
+        "USA",
+        30.4119,
+        -91.1856,
+        26,
+        "outdoor",
+        "Bermuda Grass",
+        92400,
+        "humid_subtropical",
+        "America/Chicago",
+    ),
+    (
+        "SAN00",
+        "alamo_dome",
+        "Alamo Dome",
+        "San Antonio",
+        "TX",
+        "USA",
+        29.4169,
+        -98.4789,
+        640,
+        "indoor",
+        "AstroTurf",
+        65000,
+        "humid_subtropical",
+        "America/Chicago",
+    ),
+    (
+        "LON01",
+        "twickenham_stadium",
+        "Twickenham Stadium",
+        "London",
+        "",
+        "United Kingdom",
+        51.4561,
+        -0.3417,
+        23,
+        "outdoor",
+        "Desso GrassMaster",
+        75000,
+        "oceanic",
+        "Europe/London",
+    ),
+    (
+        "GER00",
+        "allianz_arena",
+        "Allianz Arena",
+        "Munich",
+        "",
+        "Germany",
+        48.2188,
+        11.6248,
+        1611,
+        "outdoor",
+        "Hybrid Grass",
+        75024,
+        "oceanic",
+        "Europe/Berlin",
+    ),
+    (
+        "FRA00",
+        "deutsche_bank_park",
+        "Deutsche Bank Park",
+        "Frankfurt",
+        "",
+        "Germany",
+        50.0686,
+        8.6453,
+        407,
+        "outdoor",
+        "Grass",
+        48000,
+        "oceanic",
+        "Europe/Berlin",
+    ),
+    (
+        "SAO00",
+        "arena_corinthians",
+        "Arena Corinthians",
+        "Sao Paulo",
+        "",
+        "Brazil",
+        -23.5456,
+        -46.474,
+        2562,
+        "outdoor",
+        "Desso GrassMaster",
+        47252,
+        "tropical",
+        "America/Sao_Paulo",
+    ),
+)
+
+
+# The four fields that are genuinely EXTERNAL -- nothing in this repository can settle
+# them, so each carries its own revision-pinned citation and each was ratified by the
+# owner. Pinned test-side as well as production-side so the tuple in
+# scripts/derive_historical_venue_facts.py and the coverage assertion in
+# tests/unit/test_venues_json_historical.py cannot drift apart.
+EXTERNALLY_SOURCED_VENUE_FIELDS: tuple[str, ...] = (
+    "latitude",
+    "longitude",
+    "surface",
+    "capacity",
+)
+
+# (stadium_id, field, source) for all 22 records across all EIGHT non-identity fields --
+# 176 rows. The 88 rows whose field is in EXTERNALLY_SOURCED_VENUE_FIELDS carry a
+# revision-pinned external citation; the other 88 carry the derivation citation the
+# deriving function emitted, which is reproducible rather than ratified.
+#
+# SIX VENUES CHANGED SURFACE OR CAPACITY DURING THEIR NFL LIFE. Where that happened the
+# ERA PLURALITY was taken and the citation says so with the game counts, rather than a
+# current value being written as though it had always been true.
+HISTORICAL_VENUE_FIELD_SOURCES: tuple[tuple[str, str, str], ...] = (
+    (
+        "OAK00",
+        "latitude",
+        "wikidata Q1147732 P625 coordinate location = (37.751666666667, -122.20055555556), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1147732&oldid=2541890918",
+    ),
+    (
+        "OAK00",
+        "longitude",
+        "wikidata Q1147732 P625 coordinate location = (37.751666666667, -122.20055555556), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1147732&oldid=2541890918",
+    ),
+    (
+        "OAK00",
+        "surface",
+        'en.wikipedia "Oakland Coliseum" infobox surface = "Tifway II Bermuda Grass"; revision-pinned https://en.wikipedia.org/w/index.php?title=Oakland_Coliseum&oldid=1374295982',
+    ),
+    (
+        "OAK00",
+        "capacity",
+        "wikidata Q1147732 P1083 seating capacity = 63122, qualified P641 sport = Q41323 American football; revision-pinned https://www.wikidata.org/w/index.php?title=Q1147732&oldid=2541890918",
+    ),
+    (
+        "OAK00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=OAK00, roof=outdoors (single-valued, n=141) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "OAK00",
+        "timezone",
+        'open-meteo timezone=auto @ (37.7517, -122.2006) -> "America/Los_Angeles"',
+    ),
+    (
+        "OAK00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (37.7517, -122.2006) -> 7.0 m -> 23 ft",
+    ),
+    (
+        "OAK00",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=SFO01 (Levi's Stadium) climate_zone=mediterranean",
+    ),
+    (
+        "NYC00",
+        "latitude",
+        'en.wikipedia "Giants Stadium" infobox coordinates = {{coord|40|48|44|N|74|4|37|W}} = (40.81222, -74.07694); revision-pinned https://en.wikipedia.org/w/index.php?title=Giants_Stadium&oldid=1372182586 -- OWNER RULING 2026-09-12: the Wikidata Q375365 P625 value (40.813726, -74.074433) was REJECTED because it sits 0.02 km from the successor record, which is the T-33.1-02 successor-contamination failure mode; this coordinate is 0.29 km from the successor and matches the demolished footprint',
+    ),
+    (
+        "NYC00",
+        "longitude",
+        'en.wikipedia "Giants Stadium" infobox coordinates = {{coord|40|48|44|N|74|4|37|W}} = (40.81222, -74.07694); revision-pinned https://en.wikipedia.org/w/index.php?title=Giants_Stadium&oldid=1372182586 -- OWNER RULING 2026-09-12: the Wikidata Q375365 P625 value (40.813726, -74.074433) was REJECTED because it sits 0.02 km from the successor record, which is the T-33.1-02 successor-contamination failure mode; this coordinate is 0.29 km from the successor and matches the demolished footprint',
+    ),
+    (
+        "NYC00",
+        "surface",
+        'en.wikipedia "Giants Stadium" infobox surface = "AstroTurf (1976-1999) / Grass (2000-2002) / FieldTurf (2003-2009)"; FieldTurf covers 115 of the 132 games here (2003-2009), natural grass the other 17 (2002); revision-pinned https://en.wikipedia.org/w/index.php?title=Giants_Stadium&oldid=1372182586',
+    ),
+    (
+        "NYC00",
+        "capacity",
+        'en.wikipedia "Giants Stadium" infobox capacity = "80,242"; revision-pinned https://en.wikipedia.org/w/index.php?title=Giants_Stadium&oldid=1372182586',
+    ),
+    (
+        "NYC00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=NYC00, roof=outdoors (single-valued, n=132) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "NYC00",
+        "timezone",
+        'open-meteo timezone=auto @ (40.8122, -74.0769) -> "America/New_York"',
+    ),
+    (
+        "NYC00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (40.8122, -74.0769) -> 2.0 m -> 7 ft",
+    ),
+    (
+        "NYC00",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=NYC01 (MetLife Stadium) climate_zone=humid_continental",
+    ),
+    (
+        "SDG00",
+        "latitude",
+        "wikidata Q956072 P625 coordinate location = (32.783055555556, -117.11944444444), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q956072&oldid=2475782501",
+    ),
+    (
+        "SDG00",
+        "longitude",
+        "wikidata Q956072 P625 coordinate location = (32.783055555556, -117.11944444444), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q956072&oldid=2475782501",
+    ),
+    (
+        "SDG00",
+        "surface",
+        'en.wikipedia "San Diego Stadium" infobox surface = "Bandera Bermuda Grass"; revision-pinned https://en.wikipedia.org/w/index.php?title=San_Diego_Stadium&oldid=1372228129',
+    ),
+    (
+        "SDG00",
+        "capacity",
+        'en.wikipedia "San Diego Stadium" infobox capacity = "70,561 (Football, Chargers)"; revision-pinned https://en.wikipedia.org/w/index.php?title=San_Diego_Stadium&oldid=1372228129',
+    ),
+    (
+        "SDG00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=SDG00, roof=outdoors (single-valued, n=125) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "SDG00",
+        "timezone",
+        'open-meteo timezone=auto @ (32.7831, -117.1194) -> "America/Los_Angeles"',
+    ),
+    (
+        "SDG00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (32.7831, -117.1194) -> 18.0 m -> 59 ft",
+    ),
+    (
+        "SDG00",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=LAX01 (SoFi Stadium) climate_zone=mediterranean",
+    ),
+    (
+        "ATL00",
+        "latitude",
+        "wikidata Q1058931 P625 coordinate location = (33.7575, -84.400833333333), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1058931&oldid=2501589476",
+    ),
+    (
+        "ATL00",
+        "longitude",
+        "wikidata Q1058931 P625 coordinate location = (33.7575, -84.400833333333), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1058931&oldid=2501589476",
+    ),
+    (
+        "ATL00",
+        "surface",
+        'en.wikipedia "Georgia Dome" infobox surface = "FieldTurf (2003-2017) / AstroTurf (1992-2002)"; FieldTurf covers 117 of the 125 games here, AstroTurf the other 8 (2002); revision-pinned https://en.wikipedia.org/w/index.php?title=Georgia_Dome&oldid=1372283248',
+    ),
+    (
+        "ATL00",
+        "capacity",
+        'en.wikipedia "Georgia Dome" infobox capacity = "Football: 71,228"; revision-pinned https://en.wikipedia.org/w/index.php?title=Georgia_Dome&oldid=1372283248',
+    ),
+    (
+        "ATL00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=ATL00, roof=dome (single-valued, n=125) -> NFLVERSE_ROOF_MAP -> indoor",
+    ),
+    (
+        "ATL00",
+        "timezone",
+        'open-meteo timezone=auto @ (33.7575, -84.4008) -> "America/New_York"',
+    ),
+    (
+        "ATL00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (33.7575, -84.4008) -> 301.0 m -> 988 ft",
+    ),
+    (
+        "ATL00",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=ATL97 (Mercedes-Benz Stadium) climate_zone=humid_subtropical",
+    ),
+    (
+        "STL00",
+        "latitude",
+        "wikidata Q1292739 P625 coordinate location = (38.632777777778, -90.188611111111), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1292739&oldid=2540146594",
+    ),
+    (
+        "STL00",
+        "longitude",
+        "wikidata Q1292739 P625 coordinate location = (38.632777777778, -90.188611111111), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1292739&oldid=2540146594",
+    ),
+    (
+        "STL00",
+        "surface",
+        'en.wikipedia "The Dome at America\'s Center" infobox surface = "AstroTurf RootZone 3D3 (2025-) / AstroTurf GameDay Grass 3D (2010-2024) / FieldTurf (2005-2010) / AstroTurf (1995-2004)"; the AstroTurf family covers 72 of the 112 games here (2002-2004 and 2010-2015), FieldTurf the other 40; revision-pinned https://en.wikipedia.org/w/index.php?title=The_Dome_at_America%27s_Center&oldid=1372241665',
+    ),
+    (
+        "STL00",
+        "capacity",
+        "wikidata Q1292739 P1083 seating capacity = 66000, the Rams-era football configuration (the article infobox states 67,277 for the present full-stadium configuration); revision-pinned https://www.wikidata.org/w/index.php?title=Q1292739&oldid=2540146594",
+    ),
+    (
+        "STL00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=STL00, roof=dome (single-valued, n=112) -> NFLVERSE_ROOF_MAP -> indoor",
+    ),
+    (
+        "STL00",
+        "timezone",
+        'open-meteo timezone=auto @ (38.6328, -90.1886) -> "America/Chicago"',
+    ),
+    (
+        "STL00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (38.6328, -90.1886) -> 150.0 m -> 492 ft",
+    ),
+    (
+        "STL00",
+        "climate_zone",
+        "operator entry, no same-metro sibling; consistent with the repository's other Midwest records KAN00, IND00 and CIN00, all humid_continental",
+    ),
+    (
+        "SFO00",
+        "latitude",
+        "wikidata Q1033076 P625 coordinate location = (37.713611111111, -122.38611111111), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1033076&oldid=2540053846",
+    ),
+    (
+        "SFO00",
+        "longitude",
+        "wikidata Q1033076 P625 coordinate location = (37.713611111111, -122.38611111111), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1033076&oldid=2540053846",
+    ),
+    (
+        "SFO00",
+        "surface",
+        'en.wikipedia "Candlestick Park" infobox surface = "Bluegrass (1960-1969, 1979-2013) / AstroTurf (1970-1978)" -- natural bluegrass for every one of the 99 games here, written with the repository existing Kentucky Bluegrass token so it classifies as natural grass; revision-pinned https://en.wikipedia.org/w/index.php?title=Candlestick_Park&oldid=1373026906',
+    ),
+    (
+        "SFO00",
+        "capacity",
+        'en.wikipedia "Candlestick Park" infobox capacity = "69,732", the 49ers media-guide football figure cited in the infobox; revision-pinned https://en.wikipedia.org/w/index.php?title=Candlestick_Park&oldid=1373026906',
+    ),
+    (
+        "SFO00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=SFO00, roof=outdoors (single-valued, n=99) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "SFO00",
+        "timezone",
+        'open-meteo timezone=auto @ (37.7136, -122.3861) -> "America/Los_Angeles"',
+    ),
+    (
+        "SFO00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (37.7136, -122.3861) -> 16.0 m -> 52 ft",
+    ),
+    (
+        "SFO00",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=SFO01 (Levi's Stadium) climate_zone=mediterranean",
+    ),
+    (
+        "MIN00",
+        "latitude",
+        "wikidata Q1072186 P625 coordinate location = (44.973888888889, -93.258055555556), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1072186&oldid=2241607175",
+    ),
+    (
+        "MIN00",
+        "longitude",
+        "wikidata Q1072186 P625 coordinate location = (44.973888888889, -93.258055555556), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1072186&oldid=2241607175",
+    ),
+    (
+        "MIN00",
+        "surface",
+        'en.wikipedia "Hubert H. Humphrey Metrodome" infobox surface = "SuperTurf (1982-1986) / AstroTurf (1987-2003) / FieldTurf (2004-2010) / Sportexe Momentum Turf (2010) / UBU-Intensity Series-S5-M (2011-2013)"; FieldTurf covers 54 of the 95 games here; revision-pinned https://en.wikipedia.org/w/index.php?title=Hubert_H._Humphrey_Metrodome&oldid=1372680769',
+    ),
+    (
+        "MIN00",
+        "capacity",
+        'en.wikipedia "Hubert H. Humphrey Metrodome" infobox capacity = "American football: 64,121"; revision-pinned https://en.wikipedia.org/w/index.php?title=Hubert_H._Humphrey_Metrodome&oldid=1372680769',
+    ),
+    (
+        "MIN00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=MIN00, roof=dome (single-valued, n=95) -> NFLVERSE_ROOF_MAP -> indoor",
+    ),
+    (
+        "MIN00",
+        "timezone",
+        'open-meteo timezone=auto @ (44.9739, -93.2581) -> "America/Chicago"',
+    ),
+    (
+        "MIN00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (44.9739, -93.2581) -> 253.0 m -> 830 ft",
+    ),
+    (
+        "MIN00",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=MIN01 (U.S. Bank Stadium) climate_zone=humid_continental",
+    ),
+    (
+        "DAL99",
+        "latitude",
+        "wikidata Q601596 P625 coordinate location = (32.839769444444, -96.910911111111), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q601596&oldid=2542836478",
+    ),
+    (
+        "DAL99",
+        "longitude",
+        "wikidata Q601596 P625 coordinate location = (32.839769444444, -96.910911111111), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q601596&oldid=2542836478",
+    ),
+    (
+        "DAL99",
+        "surface",
+        'en.wikipedia "Texas Stadium" infobox surface = "Artificial turf: Texas Turf (1971-1995) / AstroTurf (1996-2002) / RealGrass (2002-2008)"; RealGrass is listed UNDER Artificial turf and covers 2002-2008, all 57 games here; revision-pinned https://en.wikipedia.org/w/index.php?title=Texas_Stadium&oldid=1372241047',
+    ),
+    (
+        "DAL99",
+        "capacity",
+        'en.wikipedia "Texas Stadium" infobox capacity = "65,675"; revision-pinned https://en.wikipedia.org/w/index.php?title=Texas_Stadium&oldid=1372241047',
+    ),
+    (
+        "DAL99",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=DAL99, roof=outdoors (single-valued, n=57) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "DAL99",
+        "timezone",
+        'open-meteo timezone=auto @ (32.8398, -96.9109) -> "America/Chicago"',
+    ),
+    (
+        "DAL99",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (32.8398, -96.9109) -> 137.0 m -> 449 ft",
+    ),
+    (
+        "DAL99",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=DAL00 (AT&T Stadium) climate_zone=humid_subtropical",
+    ),
+    (
+        "IND99",
+        "latitude",
+        "wikidata Q2092780 P625 coordinate location = (39.763658333333, -86.163319444444), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q2092780&oldid=2344969515",
+    ),
+    (
+        "IND99",
+        "longitude",
+        "wikidata Q2092780 P625 coordinate location = (39.763658333333, -86.163319444444), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q2092780&oldid=2344969515",
+    ),
+    (
+        "IND99",
+        "surface",
+        'en.wikipedia "RCA Dome" infobox surface = "AstroTurf (1984-2004) / FieldTurf (2005-2008)"; FieldTurf covers 28 of the 54 games here (2005-2007), AstroTurf the other 26; revision-pinned https://en.wikipedia.org/w/index.php?title=RCA_Dome&oldid=1372222990',
+    ),
+    (
+        "IND99",
+        "capacity",
+        'en.wikipedia "RCA Dome" infobox capacity history = "56,127 (1999-2002) / 55,506 (2003-2005) / 55,531 (2006-2008)"; 55,506 covers 27 of the 54 games here; revision-pinned https://en.wikipedia.org/w/index.php?title=RCA_Dome&oldid=1372222990',
+    ),
+    (
+        "IND99",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=IND99, roof=dome (single-valued, n=54) -> NFLVERSE_ROOF_MAP -> indoor",
+    ),
+    (
+        "IND99",
+        "timezone",
+        'open-meteo timezone=auto @ (39.7637, -86.1633) -> "America/Indiana/Indianapolis"',
+    ),
+    (
+        "IND99",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (39.7637, -86.1633) -> 232.0 m -> 761 ft",
+    ),
+    (
+        "IND99",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=IND00 (Lucas Oil Stadium) climate_zone=humid_continental",
+    ),
+    (
+        "PHO99",
+        "latitude",
+        "wikidata Q1849318 P625 coordinate location = (33.426388888889, -111.9325), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1849318&oldid=2540570507",
+    ),
+    (
+        "PHO99",
+        "longitude",
+        "wikidata Q1849318 P625 coordinate location = (33.426388888889, -111.9325), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1849318&oldid=2540570507",
+    ),
+    (
+        "PHO99",
+        "surface",
+        'en.wikipedia "Mountain America Stadium" infobox surface = "Bermuda grass"; the article body states "The natural grass playing surface"; revision-pinned https://en.wikipedia.org/w/index.php?title=Mountain_America_Stadium&oldid=1373448808',
+    ),
+    (
+        "PHO99",
+        "capacity",
+        'en.wikipedia "Mountain America Stadium" article Capacity table = "1996-2003: 73,379 / 2004-2013: 71,706"; 73,379 covers 17 of the 32 games here; revision-pinned https://en.wikipedia.org/w/index.php?title=Mountain_America_Stadium&oldid=1373448808',
+    ),
+    (
+        "PHO99",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=PHO99, roof=outdoors (single-valued, n=32) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "PHO99",
+        "timezone",
+        'open-meteo timezone=auto @ (33.4264, -111.9325) -> "America/Phoenix"',
+    ),
+    (
+        "PHO99",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (33.4264, -111.9325) -> 359.0 m -> 1178 ft",
+    ),
+    (
+        "PHO99",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=PHO00 (State Farm Stadium) climate_zone=desert",
+    ),
+    (
+        "LAX99",
+        "latitude",
+        "wikidata Q849784 P625 coordinate location = (34.014167, -118.287778), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q849784&oldid=2541992842",
+    ),
+    (
+        "LAX99",
+        "longitude",
+        "wikidata Q849784 P625 coordinate location = (34.014167, -118.287778), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q849784&oldid=2541992842",
+    ),
+    (
+        "LAX99",
+        "surface",
+        'en.wikipedia "Los Angeles Memorial Coliseum" infobox surface = "Bermuda grass"; revision-pinned https://en.wikipedia.org/w/index.php?title=Los_Angeles_Memorial_Coliseum&oldid=1374517166',
+    ),
+    (
+        "LAX99",
+        "capacity",
+        'en.wikipedia "Los Angeles Memorial Coliseum" infobox capacity = "77,500 / 93,607 (pre-2018)"; 77,500 covers 16 of the 31 games here and 93,607 the other 15 -- both sit above the 75,000 band edge; revision-pinned https://en.wikipedia.org/w/index.php?title=Los_Angeles_Memorial_Coliseum&oldid=1374517166',
+    ),
+    (
+        "LAX99",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=LAX99, roof=outdoors (single-valued, n=31) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "LAX99",
+        "timezone",
+        'open-meteo timezone=auto @ (34.0142, -118.2878) -> "America/Los_Angeles"',
+    ),
+    (
+        "LAX99",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (34.0142, -118.2878) -> 59.0 m -> 194 ft",
+    ),
+    (
+        "LAX99",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=LAX01 (SoFi Stadium) climate_zone=mediterranean",
+    ),
+    (
+        "LAX97",
+        "latitude",
+        "wikidata Q200684 P625 coordinate location = (33.864444444444, -118.26111111111), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q200684&oldid=2532006428",
+    ),
+    (
+        "LAX97",
+        "longitude",
+        "wikidata Q200684 P625 coordinate location = (33.864444444444, -118.26111111111), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q200684&oldid=2532006428",
+    ),
+    (
+        "LAX97",
+        "surface",
+        'en.wikipedia "Dignity Health Sports Park" infobox surface = "Bandera Bermuda Grass"; revision-pinned https://en.wikipedia.org/w/index.php?title=Dignity_Health_Sports_Park&oldid=1372080521',
+    ),
+    (
+        "LAX97",
+        "capacity",
+        'en.wikipedia "Dignity Health Sports Park" infobox capacity = "27,000", the capacity for most games; revision-pinned https://en.wikipedia.org/w/index.php?title=Dignity_Health_Sports_Park&oldid=1372080521',
+    ),
+    (
+        "LAX97",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=LAX97, roof=outdoors (single-valued, n=22) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "LAX97",
+        "timezone",
+        'open-meteo timezone=auto @ (33.8644, -118.2611) -> "America/Los_Angeles"',
+    ),
+    (
+        "LAX97",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (33.8644, -118.2611) -> 23.0 m -> 75 ft",
+    ),
+    (
+        "LAX97",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=LAX01 (SoFi Stadium) climate_zone=mediterranean",
+    ),
+    (
+        "MIN98",
+        "latitude",
+        "wikidata Q3512039 P625 coordinate location = (44.976389, -93.224444), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q3512039&oldid=2540902485",
+    ),
+    (
+        "MIN98",
+        "longitude",
+        "wikidata Q3512039 P625 coordinate location = (44.976389, -93.224444), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q3512039&oldid=2540902485",
+    ),
+    (
+        "MIN98",
+        "surface",
+        'en.wikipedia "Huntington Bank Stadium" infobox surface = "FieldTurf Revolution"; revision-pinned https://en.wikipedia.org/w/index.php?title=Huntington_Bank_Stadium&oldid=1372204608',
+    ),
+    (
+        "MIN98",
+        "capacity",
+        'en.wikipedia "Huntington Bank Stadium" infobox capacity = "50,805"; revision-pinned https://en.wikipedia.org/w/index.php?title=Huntington_Bank_Stadium&oldid=1372204608',
+    ),
+    (
+        "MIN98",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=MIN98, roof=outdoors (single-valued, n=18) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "MIN98",
+        "timezone",
+        'open-meteo timezone=auto @ (44.9764, -93.2244) -> "America/Chicago"',
+    ),
+    (
+        "MIN98",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (44.9764, -93.2244) -> 253.0 m -> 830 ft",
+    ),
+    (
+        "MIN98",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=MIN01 (U.S. Bank Stadium) climate_zone=humid_continental",
+    ),
+    (
+        "PHI99",
+        "latitude",
+        "wikidata Q1545870 P625 coordinate location = (39.906666666667, -75.171111111111), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1545870&oldid=2502313486",
+    ),
+    (
+        "PHI99",
+        "longitude",
+        "wikidata Q1545870 P625 coordinate location = (39.906666666667, -75.171111111111), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1545870&oldid=2502313486",
+    ),
+    (
+        "PHI99",
+        "surface",
+        'en.wikipedia "Veterans Stadium" infobox surface = "AstroTurf (1971-2001) / NexTurf (2001-2003)"; NexTurf covers 2002, all 10 games here; revision-pinned https://en.wikipedia.org/w/index.php?title=Veterans_Stadium&oldid=1372249012',
+    ),
+    (
+        "PHI99",
+        "capacity",
+        'en.wikipedia "Veterans Stadium" infobox capacity = "Baseball: 61,831 / Football: 65,352"; revision-pinned https://en.wikipedia.org/w/index.php?title=Veterans_Stadium&oldid=1372249012',
+    ),
+    (
+        "PHI99",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=PHI99, roof=outdoors (single-valued, n=10) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "PHI99",
+        "timezone",
+        'open-meteo timezone=auto @ (39.9067, -75.1711) -> "America/New_York"',
+    ),
+    (
+        "PHI99",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (39.9067, -75.1711) -> 6.0 m -> 20 ft",
+    ),
+    (
+        "PHI99",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=PHI00 (Lincoln Financial Field) climate_zone=humid_continental",
+    ),
+    (
+        "CHI99",
+        "latitude",
+        "wikidata Q3305514 P625 coordinate location = (40.099166666667, -88.235833333333), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q3305514&oldid=2532027628",
+    ),
+    (
+        "CHI99",
+        "longitude",
+        "wikidata Q3305514 P625 coordinate location = (40.099166666667, -88.235833333333), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q3305514&oldid=2532027628",
+    ),
+    (
+        "CHI99",
+        "surface",
+        'en.wikipedia "Gies Memorial Stadium" infobox surface = "Grass (1923-1974) / AstroTurf (1975-2000) / AstroPlay (2001-2007) / FieldTurf (2008-)"; AstroPlay covers 2002, all 8 games here; revision-pinned https://en.wikipedia.org/w/index.php?title=Gies_Memorial_Stadium&oldid=1374437131',
+    ),
+    (
+        "CHI99",
+        "capacity",
+        'en.wikipedia "Gies Memorial Stadium" infobox former capacity = "69,249 (2002-2006)", the era the 2002 Bears season falls in; revision-pinned https://en.wikipedia.org/w/index.php?title=Gies_Memorial_Stadium&oldid=1374437131',
+    ),
+    (
+        "CHI99",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=CHI99, roof=outdoors (single-valued, n=8) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "CHI99",
+        "timezone",
+        'open-meteo timezone=auto @ (40.0992, -88.2358) -> "America/Chicago"',
+    ),
+    (
+        "CHI99",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (40.0992, -88.2358) -> 228.0 m -> 748 ft",
+    ),
+    (
+        "CHI99",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=CHI98 (Soldier Field) climate_zone=humid_continental",
+    ),
+    (
+        "BUF01",
+        "latitude",
+        "wikidata Q76318 P625 coordinate location = (43.641388888889, -79.389166666667), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q76318&oldid=2539727922",
+    ),
+    (
+        "BUF01",
+        "longitude",
+        "wikidata Q76318 P625 coordinate location = (43.641388888889, -79.389166666667), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q76318&oldid=2539727922",
+    ),
+    (
+        "BUF01",
+        "surface",
+        'en.wikipedia "Rogers Centre" infobox surface = "AstroTurf (1989-2004) / FieldTurf (2005-2010) / AstroTurf GameDay Grass 3D (2010-2014)"; FieldTurf covers the 2008-2010 games and GameDay Grass 3D the 2011-2013 ones, three each -- both synthetic, so the grass/turf classification is the same either way; revision-pinned https://en.wikipedia.org/w/index.php?title=Rogers_Centre&oldid=1374122313',
+    ),
+    (
+        "BUF01",
+        "capacity",
+        'en.wikipedia "Rogers Centre" article Seating capacity section, Football table = "53,506"; revision-pinned https://en.wikipedia.org/w/index.php?title=Rogers_Centre&oldid=1374122313',
+    ),
+    (
+        "BUF01",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=BUF01, roof=dome (single-valued, n=6) -> NFLVERSE_ROOF_MAP -> indoor",
+    ),
+    (
+        "BUF01",
+        "timezone",
+        'open-meteo timezone=auto @ (43.6414, -79.3892) -> "America/Toronto"',
+    ),
+    (
+        "BUF01",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (43.6414, -79.3892) -> 84.0 m -> 276 ft",
+    ),
+    (
+        "BUF01",
+        "climate_zone",
+        "operator entry, no same-metro sibling; Toronto sits across the lake from BUF00 Orchard Park, which is humid_continental",
+    ),
+    (
+        "BRG00",
+        "latitude",
+        "wikidata Q1594708 P625 coordinate location = (30.411944, -91.185556), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1594708&oldid=2540539711",
+    ),
+    (
+        "BRG00",
+        "longitude",
+        "wikidata Q1594708 P625 coordinate location = (30.411944, -91.185556), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1594708&oldid=2540539711",
+    ),
+    (
+        "BRG00",
+        "surface",
+        'en.wikipedia "Tiger Stadium (Louisiana)" infobox surface = "Celebration Bermuda Grass"; revision-pinned https://en.wikipedia.org/w/index.php?title=Tiger_Stadium_(Louisiana)&oldid=1373740250',
+    ),
+    (
+        "BRG00",
+        "capacity",
+        'en.wikipedia "Tiger Stadium (Louisiana)" infobox capacity history = "92,400 (2005-10)", the era the 2005 games fall in; revision-pinned https://en.wikipedia.org/w/index.php?title=Tiger_Stadium_(Louisiana)&oldid=1373740250',
+    ),
+    (
+        "BRG00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=BRG00, roof=outdoors (single-valued, n=4) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "BRG00",
+        "timezone",
+        'open-meteo timezone=auto @ (30.4119, -91.1856) -> "America/Chicago"',
+    ),
+    (
+        "BRG00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (30.4119, -91.1856) -> 8.0 m -> 26 ft",
+    ),
+    (
+        "BRG00",
+        "climate_zone",
+        "operator entry, no same-metro sibling; Baton Rouge follows the nearest existing Gulf record NOR00 New Orleans, which is humid_subtropical",
+    ),
+    (
+        "SAN00",
+        "latitude",
+        "wikidata Q1618347 P625 coordinate location = (29.416944444444, -98.478888888889), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1618347&oldid=2540540662",
+    ),
+    (
+        "SAN00",
+        "longitude",
+        "wikidata Q1618347 P625 coordinate location = (29.416944444444, -98.478888888889), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1618347&oldid=2540540662",
+    ),
+    (
+        "SAN00",
+        "surface",
+        'en.wikipedia "Alamodome" infobox surface = "AstroTurf Magic Carpet II"; revision-pinned https://en.wikipedia.org/w/index.php?title=Alamodome&oldid=1372061422',
+    ),
+    (
+        "SAN00",
+        "capacity",
+        "wikidata Q1618347 P1083 seating capacity = 65000, qualified P641 sport = Q41323 American football (the article infobox states 64,000 for the present configuration); revision-pinned https://www.wikidata.org/w/index.php?title=Q1618347&oldid=2540540662",
+    ),
+    (
+        "SAN00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=SAN00, roof=dome (single-valued, n=3) -> NFLVERSE_ROOF_MAP -> indoor",
+    ),
+    (
+        "SAN00",
+        "timezone",
+        'open-meteo timezone=auto @ (29.4169, -98.4789) -> "America/Chicago"',
+    ),
+    (
+        "SAN00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (29.4169, -98.4789) -> 195.0 m -> 640 ft",
+    ),
+    (
+        "SAN00",
+        "climate_zone",
+        "operator entry, no same-metro sibling; San Antonio follows the nearest existing Texas Gulf record HOU00 Houston, which is humid_subtropical",
+    ),
+    (
+        "LON01",
+        "latitude",
+        "wikidata Q209725 P625 coordinate location = (51.456111111111, -0.34166666666667), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q209725&oldid=2506987837",
+    ),
+    (
+        "LON01",
+        "longitude",
+        "wikidata Q209725 P625 coordinate location = (51.456111111111, -0.34166666666667), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q209725&oldid=2506987837",
+    ),
+    (
+        "LON01",
+        "surface",
+        'en.wikipedia "Twickenham Stadium" infobox surface = "Desso GrassMaster"; revision-pinned https://en.wikipedia.org/w/index.php?title=Twickenham_Stadium&oldid=1372246421',
+    ),
+    (
+        "LON01",
+        "capacity",
+        'en.wikipedia "Twickenham Stadium" infobox capacity = "82,000 (rugby) / 75,000 (American football) / 55,000 (concerts)"; the American-football figure is the configuration these games were played in; revision-pinned https://en.wikipedia.org/w/index.php?title=Twickenham_Stadium&oldid=1372246421',
+    ),
+    (
+        "LON01",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=LON01, roof=outdoors (single-valued, n=3) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "LON01",
+        "timezone",
+        'open-meteo timezone=auto @ (51.4561, -0.3417) -> "Europe/London"',
+    ),
+    (
+        "LON01",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (51.4561, -0.3417) -> 7.0 m -> 23 ft",
+    ),
+    (
+        "LON01",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=LON00 (Wembley Stadium) climate_zone=oceanic",
+    ),
+    (
+        "GER00",
+        "latitude",
+        "wikidata Q127429 P625 coordinate location = (48.218775, 11.624752777778), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q127429&oldid=2538614747",
+    ),
+    (
+        "GER00",
+        "longitude",
+        "wikidata Q127429 P625 coordinate location = (48.218775, 11.624752777778), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q127429&oldid=2538614747",
+    ),
+    (
+        "GER00",
+        "surface",
+        'en.wikipedia "Allianz Arena" infobox surface = "Hybrid grass"; revision-pinned https://en.wikipedia.org/w/index.php?title=Allianz_Arena&oldid=1374158363',
+    ),
+    (
+        "GER00",
+        "capacity",
+        "wikidata Q127429 P1083 seating capacity = 75024, preferred rank, qualified P580 start time = 2015, the domestic-match configuration and the era the 2022 and 2024 games fall in; revision-pinned https://www.wikidata.org/w/index.php?title=Q127429&oldid=2538614747",
+    ),
+    (
+        "GER00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=GER00, roof=outdoors (single-valued, n=2) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "GER00",
+        "timezone",
+        'open-meteo timezone=auto @ (48.2188, 11.6248) -> "Europe/Berlin"',
+    ),
+    (
+        "GER00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (48.2188, 11.6248) -> 491.0 m -> 1611 ft",
+    ),
+    (
+        "GER00",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=MUN01 (FC Bayern Munich Stadium) climate_zone=oceanic",
+    ),
+    (
+        "FRA00",
+        "latitude",
+        "wikidata Q157273 P625 coordinate location = (50.068611, 8.645278), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q157273&oldid=2531932043",
+    ),
+    (
+        "FRA00",
+        "longitude",
+        "wikidata Q157273 P625 coordinate location = (50.068611, 8.645278), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q157273&oldid=2531932043",
+    ),
+    (
+        "FRA00",
+        "surface",
+        'en.wikipedia "Waldstadion (Frankfurt)" infobox surface = "Grass"; revision-pinned https://en.wikipedia.org/w/index.php?title=Waldstadion_(Frankfurt)&oldid=1372250182',
+    ),
+    (
+        "FRA00",
+        "capacity",
+        'en.wikipedia "Waldstadion (Frankfurt)" infobox capacity = "American football: 48,000"; revision-pinned https://en.wikipedia.org/w/index.php?title=Waldstadion_(Frankfurt)&oldid=1372250182',
+    ),
+    (
+        "FRA00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=FRA00, roof=outdoors (single-valued, n=2) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "FRA00",
+        "timezone",
+        'open-meteo timezone=auto @ (50.0686, 8.6453) -> "Europe/Berlin"',
+    ),
+    (
+        "FRA00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (50.0686, 8.6453) -> 124.0 m -> 407 ft",
+    ),
+    (
+        "FRA00",
+        "climate_zone",
+        "operator entry, no same-metro sibling; Frankfurt follows the other existing German record MUN01 Munich, which is oceanic",
+    ),
+    (
+        "SAO00",
+        "latitude",
+        "wikidata Q1362236 P625 coordinate location = (-23.545555555556, -46.474), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1362236&oldid=2509659920",
+    ),
+    (
+        "SAO00",
+        "longitude",
+        "wikidata Q1362236 P625 coordinate location = (-23.545555555556, -46.474), read this session; revision-pinned https://www.wikidata.org/w/index.php?title=Q1362236&oldid=2509659920",
+    ),
+    (
+        "SAO00",
+        "surface",
+        'en.wikipedia "Arena Corinthians" infobox surface = "Perennial Ryegrass with Artificial Fibres (Desso GrassMaster)"; revision-pinned https://en.wikipedia.org/w/index.php?title=Arena_Corinthians&oldid=1374053041',
+    ),
+    (
+        "SAO00",
+        "capacity",
+        "wikidata Q1362236 P1083 seating capacity = 47252, normal rank (the article infobox states 48,905 after a February 2025 increase, which postdates the 2024 game); revision-pinned https://www.wikidata.org/w/index.php?title=Q1362236&oldid=2509659920",
+    ),
+    (
+        "SAO00",
+        "roof_type",
+        "pinned schedules, load_schedules(2002..2025), stadium_id=SAO00, roof=outdoors (single-valued, n=1) -> NFLVERSE_ROOF_MAP -> outdoor",
+    ),
+    (
+        "SAO00",
+        "timezone",
+        'open-meteo timezone=auto @ (-23.5456, -46.474) -> "America/Sao_Paulo"',
+    ),
+    (
+        "SAO00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (-23.5456, -46.474) -> 781.0 m -> 2562 ft",
+    ),
+    (
+        "SAO00",
+        "climate_zone",
+        "same-metro sibling rule: data/venues.json stadium_id=RIO00 (Maracana Stadium) climate_zone=tropical",
+    ),
+)
+
+
+# 38 existing records plus the 22 ratified above. tests/unit/test_venues_json_international
+# .py's EXPECTED_TOTAL_RECORDS was UPDATED to match rather than forked: a new module
+# asserting 60 while the old one asserts 38 is two answers to one question.
+VENUE_RECORD_COUNT_AFTER: int = 60
