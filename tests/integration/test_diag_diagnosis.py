@@ -83,6 +83,36 @@ has no column subsampling. No replacement mechanism is offered: two hypotheses r
 census cannot discriminate between them because those columns no longer exist in gold, and an
 honest open question beats a tidy wrong answer (D30-DEFER-17).
 
+FOURTH ANCHOR STATE (Plan 33.1-04, 2026-09-13; OWNER RULING of the same date on this plan's
+reported halt). ONE thing moved the accuracy anchor, it is named without hedging, and it is a
+METHODOLOGY CORRECTION rather than a finding:
+
+  D33.1-R3 changed ``WPTrainer`` into a fold-fitted imputation Pipeline. The fill rule is now
+  fitted INSIDE each walk-forward fold instead of across the whole frame, so no imputation
+  statistic crosses a fold boundary. ``run_diagnosis(run_backtest_half=True)`` drives
+  ``backtest/engine.py`` -> ``WPTrainer.train_and_evaluate``, which is the path that moved.
+
+  WP pooled accuracy    0.67691 -> 0.6821773485513608   drift +5.2673e-3  -- EXCEEDED the band
+
+THE DRIFT EXCEEDED THE 5e-3 BAND, which is why this needed an owner ruling rather than passing
+silently, and why the executor reported a HALT instead of editing anything. It was MEASURED TWICE
+and returned identical values to every printed digit; that reproducibility is what makes
+re-ratification defensible here rather than a guess about noise. The band is STILL 5e-3: it was
+not widened, re-expressed or made relative, and the constant is moved to what the code actually
+produces. A test that goes green because a band was loosened to cover a drift is a test that has
+stopped measuring anything.
+
+WHAT THIS NUMBER IS NOT (SPEC R8, and it is a hard constraint rather than a caveat). The reading
+moved UP. That is NOT a result and must not be quoted as one. Phase 33.1 re-fit no model,
+promoted no model, and left ``artifacts/latest.json`` byte-unchanged; what changed is that a
+temporal-correctness defect was corrected and this number moved as a side effect. The model did
+not get better. The real accuracy question is not answerable until a re-fit on real weather has
+actually run, and none has.
+
+The superseded reading 0.67691 is NOT deleted -- see the constant block below, where all four
+states stay on the page. That is this file's standing convention and this ruling does not
+suspend it.
+
 COST: this test now runs a genuine 100-trial search per target and takes about 225 seconds
 (measured 225.3s and 228.7s), against roughly 35 seconds when the search was vacuous. It carries
 the repository's ``slow`` marker for that reason, and for that reason alone.
@@ -109,16 +139,32 @@ from backtest.engine import BacktestEngine
 _GOLD_WP_PATH = Path("data/gold/features_wp.parquet")
 
 # Deterministic walk-forward backtest anchors (n-games-weighted pooled, 2021-2024).
-# THREE states, all of them on the page. See the module docstring for the cause of each move:
+# FOUR states, all of them on the page. See the module docstring for the cause of each move:
 #   accuracy     0.66725 (v2.1) -> 0.67691 (Phase-28 widened gold) -> 0.67691 (Plan 30-16)
+#                -> 0.6821773485513608 (Plan 33.1-04, owner ruling 2026-09-13)
 #   headline_clv -0.00207 (v2.1) -> -0.00469 (Phase-28 widened gold) -> -0.00280 (Plan 30-16)
+#                -> unchanged by Plan 33.1-04 (the accuracy assertion fires first, so the CLV
+#                   reading was never reached while the test was red; it is re-confirmed by the
+#                   green run and left at its Plan 30-16 value)
 # The Plan 30-16 state was measured 2026-08-24 on the four-rung Phase-30 gold through a backtest
 # whose tuned train GENUINELY SEARCHES for the first time: 0.6769095697980685 and
 # -0.0028010282747504157, byte-identical across two independent runs.
+#
+# THE FOURTH STATE, measured 2026-09-13 by Plan 33.1-04, TWICE and identical to every printed
+# digit. CAUSE, stated without hedging: D33.1-R3 made WPTrainer a fold-fitted imputation
+# Pipeline, so the fill rule is fitted inside each walk-forward fold rather than across the whole
+# frame. This drift EXCEEDED the 5e-3 band, which is why it went to the owner as a HALT and was
+# re-ratified by ruling rather than absorbed.
+#
+# SPEC R8: the reading moved UP and that is NOT a result. No model was re-fit or promoted in
+# Phase 33.1; a methodology defect was corrected and this number moved as a side effect. The
+# accuracy question is not answerable until a re-fit on real weather has run, and none has.
+#
 # IN-03 convention: a deliberate, DOCUMENTED anchor update -- never silenced, and never absorbed
-# by widening the 5e-3 band below. AUDIT-REPORT.md stays frozen at its v2.1 156/157/156-width
-# figures (it is a historical forensic record; Plan 30-14 owns its reconciliation).
-ANCHOR_WP_ACCURACY = 0.67691
+# by widening the 5e-3 band below. The superseded readings above are kept, not overwritten.
+# AUDIT-REPORT.md stays frozen at its v2.1 156/157/156-width figures (it is a historical forensic
+# record; Plan 30-14 owns its reconciliation).
+ANCHOR_WP_ACCURACY = 0.6821773485513608
 ANCHOR_HEADLINE_CLV_WP = -0.00280
 
 # Expected holdout population (verified): 1139 games per target across 2021-2024.
@@ -358,7 +404,7 @@ class TestDiagDiagnosis:
 
     @pytest.mark.slow
     def test_backtest_numbers_match_audit_report(self, gold_and_odds_2021_2024) -> None:
-        """Backtest WP pooled accuracy ~0.67691 and headline_clv wp ~ -0.00280.
+        """Backtest WP pooled accuracy ~0.68218 and headline_clv wp ~ -0.00280.
 
         UN-QUARANTINED by Plan 30-16 Task 3 (2026-08-24). The skip marker placed by Plan 30-15
         under D30-OWNER-05, and converted from xfail(strict) by Plan 30-18 under D30-OWNER-09,
@@ -368,9 +414,17 @@ class TestDiagDiagnosis:
         rung 4) and the tuned search this test runs is now genuine and reproducible, so the
         two conditions the quarantine was waiting on are both discharged.
 
-        The full drift trail, both anchor moves and their causes, is in the module docstring.
-        Do NOT widen the 5e-3 band. If this reddens, re-measure TWICE and re-ratify with the
-        drift recorded, or report a HALT -- never absorb a drift into the tolerance.
+        The full drift trail, all four anchor states and their causes, is in the module
+        docstring. Do NOT widen the 5e-3 band. If this reddens, re-measure TWICE and re-ratify
+        with the drift recorded, or report a HALT -- never absorb a drift into the tolerance.
+
+        THAT RULE WAS EXERCISED ON 2026-09-13 and it worked, which is worth recording because a
+        rule nobody has ever followed is not evidence of anything. Plan 33.1-04 moved the
+        accuracy reading past the band, reported a HALT rather than editing this file, measured
+        twice, and the OWNER re-ratified the constant on the re-ratify branch. The band was not
+        touched. The superseded readings were not deleted.
+
+        SPEC R8: the reading moved UP and that is NOT a result. Nothing was re-fit or promoted.
 
         Marked slow: a genuine 100-trial search per target costs about 225 seconds.
         """

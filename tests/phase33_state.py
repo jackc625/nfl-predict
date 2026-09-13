@@ -4078,3 +4078,88 @@ WP_NULLABLE_INPUT_CONTRACT: dict[str, object] = {
         "and artifacts/latest.json is untouched."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# THE WP POOLED-ACCURACY ANCHOR, RE-RATIFIED BY OWNER RULING.
+#
+# APPENDED by Plan 33.1-04 on 2026-09-13, under the owner ruling of the same
+# date. Nothing above this line was edited, and in particular
+# WP_NULLABLE_INPUT_CONTRACT is BYTE-UNCHANGED.
+#
+# WHAT HAPPENED, IN ORDER, BECAUSE THE ORDER IS THE POINT. Plan 33.1-04's
+# plan-level verification found
+# tests/integration/test_diag_diagnosis.py::TestDiagDiagnosis::
+# test_backtest_numbers_match_audit_report RED. The executor did NOT edit the
+# anchor and did NOT widen the band: that test's own docstring reserves both
+# branches to a deliberate act, so the executor re-measured TWICE and REPORTED A
+# HALT. The owner then took the RE-RATIFY branch. A rule that has never actually
+# been followed is not evidence that it works; this is the record that it was.
+#
+# THIS IS NOT A RESULT (SPEC R8, a hard constraint rather than a caveat). The
+# reading moved UP. Phase 33.1 re-fit no model, promoted no model and left
+# artifacts/latest.json byte-unchanged. A temporal-correctness defect was
+# corrected and a number moved as a side effect of that correction. The model did
+# not get better, and the accuracy question is not answerable until a re-fit on
+# real weather has actually run -- none has. Any sentence a reader could quote as
+# "Phase 33.1 improved accuracy" is a misreading of this slot.
+#
+# THE NODE IS NOT A TRIPWIRE. It is green again because the constant now records
+# what the code produces, so it is deliberately ABSENT from
+# DELIBERATE_TRIPWIRE_NODE_IDS, which stays at five members.
+# ---------------------------------------------------------------------------
+
+WP_ACCURACY_ANCHOR_RERATIFICATION: dict[str, object] = {
+    "ruled_on": "2026-09-13",
+    "ruled_by": "the owner, on Plan 33.1-04's reported halt",
+    "recorded_by": "Plan 33.1-04",
+    "node_id": (
+        "tests/integration/test_diag_diagnosis.py::TestDiagDiagnosis::"
+        "test_backtest_numbers_match_audit_report"
+    ),
+    "constant": "tests.integration.test_diag_diagnosis.ANCHOR_WP_ACCURACY",
+    "superseded_value": 0.67691,
+    "superseded_ratified_on": "2026-08-24",
+    "superseded_ratified_by": "Plan 30-16 Task 3, under owner ruling D30-OWNER-02",
+    "new_value": 0.6821773485513608,
+    "drift": 0.0052673485513608,
+    "band": 0.005,
+    "drift_exceeded_the_band": True,
+    "drift_exceeded_the_band_is_why": (
+        "a drift inside the band would have passed silently and needed no "
+        "ruling. This one did not, which is what sent it to the owner."
+    ),
+    # The reproducibility is what makes re-ratification defensible rather than a
+    # guess about noise. Two independent runs, identical to every printed digit.
+    "measured_times": 2,
+    "measurements": (0.6821773485513608, 0.6821773485513608),
+    "measurements_identical": True,
+    "band_was_widened": False,
+    "band_after": 0.005,
+    "superseded_value_retained_in_source": True,
+    "cause": "D33.1-R3",
+    "cause_stated": (
+        "D33.1-R3 changed WPTrainer into a fold-fitted imputation Pipeline, so "
+        "the fill rule is fitted INSIDE each walk-forward fold rather than "
+        "across the whole frame. run_diagnosis(run_backtest_half=True) drives "
+        "backtest/engine.py -> WPTrainer.train_and_evaluate, which is the path "
+        "that moved. A deliberate temporal-correctness change, not an "
+        "unexplained wobble."
+    ),
+    "is_a_result": False,
+    "spec_r8_note": (
+        "The reading moved UP and that is NOT a result. No model was re-fit and "
+        "none was promoted; artifacts/latest.json is byte-unchanged. A "
+        "methodology defect was corrected and this number moved as a side "
+        "effect. The accuracy question is not answerable until a re-fit on real "
+        "weather has run, and none has."
+    ),
+    "added_to_deliberate_tripwires": False,
+    "halt_was_reported_before_any_edit": True,
+    "clv_anchor_changed": False,
+    "clv_anchor_note": (
+        "ANCHOR_HEADLINE_CLV_WP stays at its Plan 30-16 value. The accuracy "
+        "assertion fires first, so the CLV reading was never reached while the "
+        "test was red; it is re-confirmed by the green run rather than moved."
+    ),
+}
