@@ -259,29 +259,34 @@ class FeatureMatrixBuilder:
                 builder entry, so no set can be derived from them honestly.
         """
         merged = [c for c in weather_features.columns if c != "game_id"]
-        candidates = [
-            key
-            for key, declared in WEATHER_FEATURE_COLUMNS_BY_BUILDER.items()
-            if set(merged) <= set(declared)
-        ]
-        if not candidates:
-            declared_union = set().union(
-                *(set(v) for v in WEATHER_FEATURE_COLUMNS_BY_BUILDER.values())
-            )
+        declared_union = set().union(
+            *(set(v) for v in WEATHER_FEATURE_COLUMNS_BY_BUILDER.values())
+        )
+        undeclared = sorted(set(merged) - declared_union)
+        if undeclared:
             msg = (
                 "the merged weather frame carries columns that belong to no "
-                "declared builder entry: "
-                f"{sorted(set(merged) - declared_union)}. Update "
-                "features.weather's family tuples rather than widening this "
-                "resolver -- a set derived from an unrecognised frame is a set "
-                "nobody declared."
+                f"declared builder entry: {undeclared}. Update features.weather's "
+                "family tuples rather than widening this resolver -- a set "
+                "derived from an unrecognised frame is a set nobody declared."
             )
             raise ValueError(msg)
 
-        # A frame that fits both entries (only possible for a frame narrow
-        # enough to be ambiguous) resolves to the one it matches most closely.
+        # RESOLVE BY BEST MATCH, not by subset.
+        #
+        # A subset test looks tighter and is wrong here: the two entries OVERLAP
+        # (`weather_severity_score` and `wind_mph` are in both) and each has
+        # columns the other lacks, so a frame carrying, say, `temp_f` AND
+        # `is_outdoor` is a subset of NEITHER entry while every one of its
+        # columns is declared. A synthetic build frame looks exactly like that,
+        # and refusing it would turn a legitimate build into a declaration
+        # error.
+        #
+        # Only the winning entry's columns are preserved. The rest keep today's
+        # behaviour, which is the conservative direction: the exemption stays
+        # narrow and opt-in rather than widening itself to whatever arrived.
         builder_key = max(
-            candidates,
+            BUILDER_KEYS,
             key=lambda key: len(
                 set(merged) & set(WEATHER_FEATURE_COLUMNS_BY_BUILDER[key])
             ),
