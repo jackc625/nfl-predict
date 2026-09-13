@@ -1246,3 +1246,211 @@ def assert_no_data_leakage(df, prediction_date=None):
     if prediction_date and "feature_timestamp" in df.columns:
         future_data = df[df["feature_timestamp"] > prediction_date]
         assert len(future_data) == 0, f"Found {len(future_data)} rows with future data"
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.1-02 Task 2: the corrected-archive-path fixtures.
+#
+# Three fixtures, each documented with the reason it exists rather than only
+# with what it returns. They are used by
+# tests/unit/test_weather_per_game_roof.py,
+# tests/unit/test_weather_unknown_stadium_refusal.py and
+# tests/unit/test_weather_null_observation.py.
+#
+# NONE of those three modules carries `writes_production_store`, and that is the
+# point of `sandbox_data_root`: they write somewhere else entirely rather than
+# being exempted from the guard. Adding any of them to MARKED_PRODUCTION_WRITERS
+# would widen the marked inventory `tests/unit/test_write_guard_marker_scope.py`
+# pins in BOTH directions, and an exemption nothing needs is the first one
+# somebody widens.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sandbox_data_root(tmp_path):
+    """A `tmp_path`-rooted data lake to thread through every `base_path=`.
+
+    THIS IS A SANDBOX BECAUSE THE WRITES GO SOMEWHERE ELSE, not because a name
+    was patched. The distinction is the whole fixture.
+
+    `monkeypatch` alone is NOT a sandbox. During Phase 33 Wave 6 a test omitted
+    the `gold_lake` fixture while calling a helper that ran
+    `save_feature_matrices`, and all three production gold matrices were
+    overwritten with 48 synthetic rows. The write guard caught it at TEARDOWN --
+    after the write. Patching a table NAME while the writer still resolves the
+    production root reads as a guarantee and behaves as a comment.
+
+    Returns:
+        A `Path` with `bronze/`, `silver/` and `gold/` already created, so a
+        writer that does not create its own parents still lands inside it.
+    """
+    root = tmp_path / "sandbox_lake"
+    for layer in ("bronze", "silver", "gold"):
+        (root / layer).mkdir(parents=True, exist_ok=True)
+    return root
+
+
+@pytest.fixture
+def stub_archive_client():
+    """An `httpx`-shaped async stub with FOUR programmable archive responses.
+
+    NO TEST IN PLAN 33.1-02 TOUCHES THE NETWORK. The four responses are the four
+    payload shapes the corrected fetch path has to tell apart, and the stub
+    COUNTS REQUESTS so a test can assert a refusal fired BEFORE any call was
+    issued -- which is the difference between "the run refused" and "the run
+    refused after spending the budget".
+
+    The four shapes, by keyword:
+
+    * "good"      -- a full day, every series populated.
+    * "absent"    -- all five ABSENT_OBSERVATION_MEASUREMENTS PRESENT AS ARRAYS
+                     but null at every index. This is Ruling D3's absent case,
+                     and the arrays being present is exactly what makes it
+                     different from a malformed payload.
+    * "partial"   -- `temperature_2m` populated, `cloud_cover` null. The control
+                     that proves "absent" is narrower than "any null".
+    * "error_400" -- a 400 whose JSON body carries the archive's own `reason`,
+                     so a refusal can be checked for it.
+
+    Returns:
+        A factory `make(shape, hours=24)` returning a client with `.get`, a
+        `.calls` counter and the `.params_seen` each request carried.
+    """
+    import httpx as _httpx
+
+    from scripts.backfill_historical_weather import ABSENT_OBSERVATION_MEASUREMENTS
+
+    hourly_names = (
+        "temperature_2m",
+        "relative_humidity_2m",
+        "dew_point_2m",
+        "apparent_temperature",
+        "precipitation",
+        "rain",
+        "snowfall",
+        "weather_code",
+        "cloud_cover",
+        "wind_speed_10m",
+        "wind_direction_10m",
+        "wind_gusts_10m",
+    )
+
+    def _hourly(hours, nulls=()):
+        block = {
+            name: [None if name in nulls else 12.0 for _ in range(hours)]
+            for name in hourly_names
+        }
+        block["time"] = [f"2016-10-02T{i:02d}:00" for i in range(hours)]
+        return block
+
+    class _Response:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise _httpx.HTTPStatusError(
+                    f"HTTP {self.status_code}",
+                    request=_httpx.Request("GET", "https://archive.invalid/v1/archive"),
+                    response=self,
+                )
+
+    class _Client:
+        """Counts requests and records the params each one carried."""
+
+        def __init__(self, response):
+            self._response = response
+            self.calls = 0
+            self.params_seen = []
+
+        async def get(self, url, params=None):
+            self.calls += 1
+            self.params_seen.append(dict(params or {}))
+            return self._response
+
+    # The five names are IMPORTED rather than retyped, so this fixture cannot
+    # describe an "absent" payload the predicate would not agree is absent.
+    def make(shape, hours=24):
+        if shape == "good":
+            return _Client(_Response({"hourly": _hourly(hours)}))
+        if shape == "absent":
+            return _Client(
+                _Response({"hourly": _hourly(hours, ABSENT_OBSERVATION_MEASUREMENTS)})
+            )
+        if shape == "partial":
+            return _Client(_Response({"hourly": _hourly(hours, ("cloud_cover",))}))
+        if shape == "error_400":
+            return _Client(
+                _Response(
+                    {
+                        "error": True,
+                        "reason": (
+                            "Parameter start_date is out of allowed range from "
+                            "1940-01-01 to 2026-09-12"
+                        ),
+                    },
+                    status_code=400,
+                )
+            )
+        raise ValueError(
+            f"unknown stub shape {shape!r}; the four programmed shapes are "
+            "good, absent, partial and error_400"
+        )
+
+    return make
+
+
+@pytest.fixture
+def per_game_roof_games():
+    """Two REAL games at ONE `stadium_id`, one feed roof `closed` and one `open`.
+
+    BUILT FROM THE PINNED FEED'S OWN VALUES, never typed. A typed fixture can
+    describe a stadium the feed does not have, or a roof a stadium never had, and
+    then it proves a property of the fixture rather than of the data. These two
+    rows are read from `data.upstream_pin.load_schedules` and from silver, so the
+    pair exists only while the feed still says it does.
+
+    IND00 (Lucas Oil) in 2016 is the pair: eight home games, two played with the
+    roof OPEN and six CLOSED. It is the case R4 turns on -- before Plan 33.1-02
+    both answered `is_outdoor=True`, because the VENUE's `roof_type` is
+    "retractable" and the game's own roof never reached the decision.
+
+    Returns:
+        A factory `make(with_silver_stadium_id=False)` returning the two-row
+        frame. The flag is Ruling D2's two input shapes: `False` is the
+        PRE-Wave-12 silver games table (no `stadium_id` column at all), `True` is
+        the POST-Wave-12 one. Asserting both is what stops this plan from
+        depending on a guess about which state Wave 12 leaves the tree in.
+    """
+    from scripts.backfill_historical_weather import load_pinned_game_facts
+
+    open_game_id = "2016_W01_DET@IND"
+    closed_game_id = "2016_W03_LAC@IND"
+
+    facts = load_pinned_game_facts([2016]).set_index("game_id")
+    games = pd.read_parquet(Path("data/silver/games.parquet"))
+    pair = games[games["game_id"].isin([open_game_id, closed_game_id])].copy()
+
+    assert len(pair) == 2, (
+        f"the IND00 2016 roof pair is not in silver: found {len(pair)} of 2. "
+        "This fixture is derived from the feed rather than typed, so it fails "
+        "loudly rather than describing a game that is not there."
+    )
+    stadium_ids = {facts.loc[gid, "stadium_id"] for gid in pair["game_id"]}
+    roofs = {facts.loc[gid, "roof"] for gid in pair["game_id"]}
+    assert stadium_ids == {"IND00"}, stadium_ids
+    assert roofs == {"open", "closed"}, roofs
+
+    def make(with_silver_stadium_id=False):
+        frame = pair.copy()
+        if with_silver_stadium_id:
+            frame["stadium_id"] = [
+                facts.loc[gid, "stadium_id"] for gid in frame["game_id"]
+            ]
+        return frame.reset_index(drop=True)
+
+    return make

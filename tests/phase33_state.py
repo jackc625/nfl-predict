@@ -3172,3 +3172,76 @@ VENUE_RECORD_COUNT_AFTER: int = 60
 # ---------------------------------------------------------------------------
 
 WEATHER_COLUMNS_AFTER_COVERAGE: int = 25
+
+
+# ---------------------------------------------------------------------------
+# THE TRACER SEASON, AND THE SHAPE IT WAS ASSERTED AGAINST.
+#
+# APPENDED by Plan 33.1-02 Task 2 on 2026-09-12. Nothing above this line was
+# edited.
+#
+# MEASURED from `data.upstream_pin.load_schedules([2016])` on 2026-09-12, joined
+# against `data/silver/games.parquet`. No network call was made to measure any of
+# it; the pin is sealed for 2016.
+#
+# WHY 2016 IS THE SLICE. It is the one season that exercises every seam of the
+# corrected path AT ONCE, which is what makes a single season a tracer rather
+# than a sample:
+#
+#   * FIVE of the 22 venues Plan 33.1-01 added are in it -- ATL00 (a dome, so
+#     the no-call branch), LAX99, LON01 (non-US, so a NON-Eastern IANA zone),
+#     OAK00 (a NON-neutral-site game that today misroutes to Allegiant, 650 km
+#     away) and SDG00 (which today misroutes to SoFi).
+#   * All four feed roof values appear, so both branches of the per-game roof
+#     rule are taken.
+#   * IND00 carries BOTH `open` and `closed` games, which is the ONLY shape that
+#     can prove `is_outdoor` comes from the GAME rather than from the building.
+#
+# THE COUNTS CLOSE: 198 outdoors + 2 open = 200 fetched; 34 dome + 33 closed = 67
+# written with no call; 200 + 67 = 267. A test that asserts the split without
+# asserting the sum would pass on a frame that had quietly lost a game.
+# ---------------------------------------------------------------------------
+
+TRACER_SEASON: int = 2016
+
+TRACER_SEASON_FACTS: dict[str, object] = {
+    "season": 2016,
+    "measured_on": "2026-09-12",
+    "measured_from": "data.upstream_pin.load_schedules([2016])",
+    # The corpus.
+    "games": 267,
+    "distinct_stadium_ids": 34,
+    # The feed's own `roof` distribution. Zero nulls.
+    "roof_outdoors": 198,
+    "roof_dome": 34,
+    "roof_closed": 33,
+    "roof_open": 2,
+    # The fetch split that follows from it: outdoors + open are fetched,
+    # dome + closed are written without a network call.
+    "games_fetched": 200,
+    "games_written_without_a_call": 67,
+    # The five Plan 33.1-01 venues 2016 exercises, with their game counts.
+    "historical_venues_present": (
+        ("ATL00", 10),
+        ("LAX99", 7),
+        ("LON01", 1),
+        ("OAK00", 7),
+        ("SDG00", 8),
+    ),
+    # The per-game-roof stadiums present in 2016. ATL97 is NOT among them.
+    # Only IND00 carries two different roofs, and its two `open` games are the
+    # season's only two.
+    "per_game_roof_stadiums_present": ("DAL00", "HOU00", "IND00", "PHO00"),
+    "stadium_with_both_roof_states": "IND00",
+    "open_roof_game_ids": ("2016_W01_DET@IND", "2016_W05_CHI@IND"),
+    # What the committed tracer run actually produced in its sandbox, so a later
+    # reader can tell a reproduction from a re-derivation.
+    "observed_silver_rows": 267,
+    "observed_silver_columns": 25,
+    "observed_distinct_temp_f": 182,
+    "observed_temp_f_min": 5.0,
+    "observed_temp_f_max": 90.8,
+    "observed_weather_coverage_true": 267,
+    "observed_weather_coverage_false": 0,
+    "observed_seconds_per_fetch": 1.0,
+}
