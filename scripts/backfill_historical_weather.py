@@ -78,13 +78,26 @@ from scripts.ingest_weather import (
     resolve_venue_local_hour,
     validate_weather_source,
 )
+from scripts.weather_crosscheck_constants import (
+    ABSENT_FROM_LEGACY_COLUMNS,
+    COMPARABLE_SEASONS,
+    COMPARED_COLUMNS,
+    CROSSCHECK_TOLERANCE_F,
+    JOIN_KEY,
+    NON_COMPARABLE_INTERSECTING_COLUMNS,
+    PREREGISTRATION_PATH,
+)
 from utils import (
     DataIngestionError,
     get_logger,
     log_data_operation,
 )
 from utils.exceptions import WeatherDataError
-from utils.game_id_utils import create_standard_game_id, is_valid_game_id
+from utils.game_id_utils import (
+    create_standard_game_id,
+    is_valid_game_id,
+    parse_game_id,
+)
 
 logger = get_logger(__name__)
 
@@ -1905,6 +1918,7 @@ def backfill_corpus(
     fetch: bool = True,
     promote: bool = False,
     dry_run: bool = False,
+    crosscheck: bool = False,
     force_unlock: bool = False,
     games_provider: Callable[[int], pd.DataFrame] | None = None,
     backfiller: HistoricalWeatherBackfiller | None = None,
@@ -1930,6 +1944,8 @@ def backfill_corpus(
         fetch: Fetch the targeted seasons. False for a promotion-only run.
         promote: Promote the bronze corpus into silver after fetching.
         dry_run: Report what WOULD be fetched, at zero network calls.
+        crosscheck: After fetching and promoting, REPORT the old-versus-new diff.
+            Never fails on a disagreement.
         force_unlock: Clear a stale lock first. The operator must have confirmed
             the recorded pid is gone.
         games_provider: Injection seam -- ``season -> games frame``.
@@ -1994,6 +2010,14 @@ def backfill_corpus(
 
         if promote:
             report["promotion"] = promote_corpus_to_silver(base_path=base_path)
+
+        if crosscheck:
+            # Inside the lock, like everything else in the run: the comparison is a
+            # statement about a corpus, and a corpus another process is writing is
+            # not a corpus this one can describe.
+            report["crosscheck"] = crosscheck_corpus_against_legacy_bronze(
+                base_path=base_path
+            )
 
     report["weighted_calls"] = round(budget.weighted_total, 4)
     report["attempts"] = budget.debits
@@ -2124,6 +2148,243 @@ def stamp_weather_source_on_existing_rows(
     return frame
 
 
+# ---------------------------------------------------------------------------
+# SPEC R2: the old-versus-new cross-check.
+#
+# THE EXPECTATION IT IS MEASURED AGAINST LIVES IN
+# `scripts/weather_crosscheck_constants.py`, committed BEFORE this comparator ever
+# ran, and witnessed from outside in a later commit. Nothing in this function
+# predicts anything; it only measures, and the terms of the measurement -- the
+# tolerance, the comparable columns, the join key -- are READ from that module
+# rather than restated here, so the two cannot drift apart.
+# ---------------------------------------------------------------------------
+
+
+def _blank_counts() -> dict[str, int]:
+    return {
+        "compared": 0,
+        "agreed": 0,
+        "disagreed": 0,
+        "became_null": 0,
+        "became_present": 0,
+        "both_null": 0,
+    }
+
+
+def _values_agree(new_value: Any, old_value: Any) -> bool:
+    """Equal within the ONE declared tolerance, for numbers; exact otherwise.
+
+    The epsilon guards float representation, not the contract: `70.0 + 0.1` is
+    `70.09999999999999` in binary floating point, and a comparison that called that
+    a disagreement would be reporting the machine rather than the weather.
+    """
+    if isinstance(new_value, bool) or isinstance(old_value, bool):
+        return bool(new_value) == bool(old_value)
+    if isinstance(new_value, (int, float)) and isinstance(old_value, (int, float)):
+        return abs(float(new_value) - float(old_value)) <= (
+            CROSSCHECK_TOLERANCE_F + 1e-9
+        )
+    return new_value == old_value
+
+
+def compare_weather_frames(
+    new_frame: pd.DataFrame,
+    legacy_frame: pd.DataFrame,
+) -> dict[str, Any]:
+    """Compare the new corpus against the legacy bronze, per season and per home team.
+
+    A DISAGREEMENT IS A FINDING, NEVER A FAILURE. This function does not raise on one,
+    and that is the decision rather than an omission: Phase 33.1 PREDICTS a large
+    disagreement -- the venue-local-hour fix alone moves nearly every comparable row --
+    so a comparator that refused on disagreement would refuse the corpus it exists to
+    validate.
+
+    THE COMPARISON IS OVER INTERSECTING COLUMNS ONLY. The seven legacy season files
+    carry seventeen columns; the current schema carries twenty-five. The eight columns
+    the legacy side does not have are EXCLUDED rather than reported as universal
+    disagreement -- a column that did not exist cannot have changed.
+
+    A NUMBER BECOMING A NULL IS ITS OWN CATEGORY, counted separately from a value
+    disagreement, because it is a different fact: the pre-registration predicts it is
+    the ONLY shape the per-game roof rule produces, and folding it into "disagreed"
+    would hide exactly the thing the check is for.
+
+    Args:
+        new_frame: The corpus this phase produced.
+        legacy_frame: The pre-existing bronze rows.
+
+    Returns:
+        A report carrying the terms of the comparison, the join accounting, the
+        per-column counts, and the per-season and per-home-team breakdowns.
+    """
+    compared_columns = tuple(
+        column
+        for column in COMPARED_COLUMNS
+        if column in new_frame.columns and column in legacy_frame.columns
+    )
+
+    new_by_id = {str(row[JOIN_KEY]): row for _, row in new_frame.iterrows()}
+    legacy_by_id = {str(row[JOIN_KEY]): row for _, row in legacy_frame.iterrows()}
+
+    joined_ids = sorted(set(new_by_id) & set(legacy_by_id))
+    new_only = sorted(set(new_by_id) - set(legacy_by_id))
+    legacy_only = sorted(set(legacy_by_id) - set(new_by_id))
+
+    per_column = {column: _blank_counts() for column in compared_columns}
+    per_season: dict[int, dict[str, int]] = {}
+    per_home_team: dict[str, dict[str, int]] = {}
+
+    def _bucket(store: dict, key: Any) -> dict[str, int]:
+        if key not in store:
+            store[key] = {"rows": 0, **_blank_counts()}
+        return store[key]
+
+    for game_id in joined_ids:
+        new_row = new_by_id[game_id]
+        old_row = legacy_by_id[game_id]
+
+        # The season and the home team come from the id itself. A parsed id cannot
+        # disagree with a `season` column that a frame may or may not carry.
+        try:
+            parsed = parse_game_id(game_id)
+            season_key: Any = parsed["season"]
+            team_key: Any = parsed["home_team"]
+        except ValueError:
+            season_key = "UNPARSEABLE"
+            team_key = "UNPARSEABLE"
+
+        season_bucket = _bucket(per_season, season_key)
+        team_bucket = _bucket(per_home_team, team_key)
+        season_bucket["rows"] += 1
+        team_bucket["rows"] += 1
+
+        for column in compared_columns:
+            new_value = new_row[column]
+            old_value = old_row[column]
+            new_null = pd.isna(new_value)
+            old_null = pd.isna(old_value)
+
+            if new_null and old_null:
+                outcome = "both_null"
+            elif new_null:
+                outcome = "became_null"
+            elif old_null:
+                outcome = "became_present"
+            elif _values_agree(new_value, old_value):
+                outcome = "agreed"
+            else:
+                outcome = "disagreed"
+
+            for bucket in (per_column[column], season_bucket, team_bucket):
+                bucket["compared"] += 1
+                bucket[outcome] += 1
+
+    return {
+        "tolerance": CROSSCHECK_TOLERANCE_F,
+        "join_key": JOIN_KEY,
+        "compared_columns": compared_columns,
+        "excluded_columns": ABSENT_FROM_LEGACY_COLUMNS,
+        "non_comparable_intersecting_columns": NON_COMPARABLE_INTERSECTING_COLUMNS,
+        "rows_compared": len(joined_ids),
+        "rows_new_only": len(new_only),
+        "rows_legacy_only": len(legacy_only),
+        "new_only_game_ids": tuple(new_only),
+        "legacy_only_game_ids": tuple(legacy_only),
+        "per_column": per_column,
+        "per_season": per_season,
+        "per_home_team": per_home_team,
+        "total_disagreements": sum(
+            counts["disagreed"] for counts in per_column.values()
+        ),
+        "number_to_null": sum(counts["became_null"] for counts in per_column.values()),
+        "null_to_number": sum(
+            counts["became_present"] for counts in per_column.values()
+        ),
+        "preregistration_path": PREREGISTRATION_PATH,
+    }
+
+
+def crosscheck_corpus_against_legacy_bronze(base_path: Any = None) -> dict[str, Any]:
+    """Load both corpora from bronze and compare them over COMPARABLE_SEASONS.
+
+    The LEGACY side is read from the ten filenames named in
+    :data:`LEGACY_WEATHER_BRONZE_FILENAMES`, filtered to the seven whole-season files
+    that cover 2018-2024 -- an explicit list rather than a glob, so widening the
+    pattern cannot quietly change what "the legacy corpus" means.
+    """
+    bronze = _resolve_data_root(base_path) / "bronze"
+
+    new_paths = sorted(bronze.glob(f"{BACKFILL_BRONZE_GLOB}.parquet"))
+    if not new_paths:
+        raise DataIngestionError(
+            f"there are no {BACKFILL_BRONZE_TABLE} bronze snapshots under "
+            f"{bronze.as_posix()} to cross-check. Run the fetch first."
+        )
+
+    legacy_names = [
+        name
+        for name in LEGACY_WEATHER_BRONZE_FILENAMES
+        if any(f"_{season}_season" in name for season in COMPARABLE_SEASONS)
+    ]
+    legacy_paths = [bronze / name for name in legacy_names if (bronze / name).is_file()]
+    if not legacy_paths:
+        raise DataIngestionError(
+            f"none of the legacy whole-season weather bronze files {legacy_names} is "
+            f"present under {bronze.as_posix()}. They are the ONLY evidence the "
+            "routing fix can be regression-tested against."
+        )
+
+    new_frame = pd.concat(
+        [pd.read_parquet(path, engine="pyarrow") for path in new_paths],
+        ignore_index=True,
+    ).drop_duplicates(subset=[JOIN_KEY], keep="last")
+    legacy_frame = pd.concat(
+        [pd.read_parquet(path, engine="pyarrow") for path in legacy_paths],
+        ignore_index=True,
+    ).drop_duplicates(subset=[JOIN_KEY], keep="last")
+
+    report = compare_weather_frames(new_frame, legacy_frame)
+    report["comparable_seasons"] = COMPARABLE_SEASONS
+    report["legacy_files"] = tuple(path.name for path in legacy_paths)
+    report["new_files"] = tuple(path.name for path in new_paths)
+    return report
+
+
+def _print_crosscheck_report(report: dict[str, Any]) -> None:
+    """Print the diff per season and per home team. It reports; it never verdicts."""
+    print(
+        f"Cross-check against the legacy bronze, tolerance "
+        f"{report['tolerance']} F over {len(report['compared_columns'])} columns"
+    )
+    print(
+        f"  rows compared {report['rows_compared']}, "
+        f"new-only {report['rows_new_only']}, legacy-only {report['rows_legacy_only']}"
+    )
+    print(f"  total disagreements {report['total_disagreements']}")
+    print(f"  number -> NULL      {report['number_to_null']}")
+
+    print("  per season:")
+    for season in sorted(report["per_season"]):
+        counts = report["per_season"][season]
+        print(
+            f"    {season}: {counts['rows']} rows, {counts['agreed']} agreed, "
+            f"{counts['disagreed']} disagreed, {counts['became_null']} became null"
+        )
+
+    print("  per home team:")
+    for team in sorted(report["per_home_team"]):
+        counts = report["per_home_team"][team]
+        print(
+            f"    {team}: {counts['rows']} rows, {counts['agreed']} agreed, "
+            f"{counts['disagreed']} disagreed, {counts['became_null']} became null"
+        )
+
+    print(
+        "  A DISAGREEMENT IS A FINDING, NOT A FAILURE. The expected shape was "
+        f"registered in advance at {report['preregistration_path']}."
+    )
+
+
 def main():
     """CLI entry point for the HISTORICAL (archive-endpoint) weather backfill.
 
@@ -2173,6 +2434,16 @@ def main():
         ),
     )
     parser.add_argument(
+        "--crosscheck",
+        action="store_true",
+        help=(
+            "Compare the weather_backfill corpus against the legacy 2018-2024 bronze "
+            "and REPORT the diff per season and per home team. Fetches nothing, and "
+            "never fails on a disagreement -- the expected shape was registered in "
+            "advance at scripts/weather_crosscheck_constants.py."
+        ),
+    )
+    parser.add_argument(
         "--force-unlock",
         action="store_true",
         help=(
@@ -2219,10 +2490,18 @@ def main():
         print("Cleared the corpus lock" if cleared else "No corpus lock to clear")
         return
 
+    if args.crosscheck and not (args.all_seasons or args.season or args.promote_silver):
+        try:
+            _print_crosscheck_report(crosscheck_corpus_against_legacy_bronze())
+        except (DataIngestionError, OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+
     if not (args.all_seasons or args.season or args.promote_silver):
         print(
             "nothing to do: give --all-seasons, --season, --promote-silver, "
-            "--stamp-weather-source or --force-unlock"
+            "--crosscheck, --stamp-weather-source or --force-unlock"
         )
         sys.exit(1)
 
@@ -2233,6 +2512,7 @@ def main():
             fetch=bool(args.all_seasons or args.season),
             promote=bool(args.promote_silver),
             dry_run=bool(args.dry_run),
+            crosscheck=bool(args.crosscheck),
             force_unlock=bool(args.force_unlock),
             accepted_null_fractions=accepted,
         )
@@ -2293,6 +2573,9 @@ def _print_run_report(report: dict[str, Any]) -> None:
             f"Promoted {promotion['rows']} rows from {promotion['snapshots']} "
             f"snapshot(s) into {promotion['silver_path']}"
         )
+    crosscheck = report.get("crosscheck")
+    if crosscheck:
+        _print_crosscheck_report(crosscheck)
 
 
 if __name__ == "__main__":
