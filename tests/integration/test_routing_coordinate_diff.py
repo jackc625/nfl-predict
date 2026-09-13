@@ -178,7 +178,13 @@ def _measure() -> dict[str, Any]:
     breakdown: dict[str, dict[str, Any]] = {}
     for code, entry in per_stadium.items():
         successors: Counter = entry["successors"]
-        primary, primary_games = successors.most_common(1)[0]
+        # The plurality successor, with ties broken ALPHABETICALLY rather than by
+        # `Counter.most_common`, whose tie order is insertion order -- that is, the
+        # order games happen to appear in the feed. Several neutral-site venues
+        # have ten or eleven successors at one game each, so an insertion-ordered
+        # answer would be a fact about the schedule's sort rather than about the
+        # routing, and would flip the recorded value if the pin were ever re-sorted.
+        primary, primary_games = min(successors.items(), key=lambda kv: (-kv[1], kv[0]))
         breakdown[code] = {
             "games": entry["games"],
             "successor": primary,

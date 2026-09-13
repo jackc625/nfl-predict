@@ -3245,3 +3245,477 @@ TRACER_SEASON_FACTS: dict[str, object] = {
     "observed_weather_coverage_false": 0,
     "observed_seconds_per_fetch": 1.0,
 }
+
+
+# ---------------------------------------------------------------------------
+# THE ROUTING CHANGE, MEASURED PER GAME AGAINST THE REAL PRIOR RULE.
+#
+# APPENDED by Plan 33.1-03 Task 2 on 2026-09-13. Nothing above this line was edited.
+#
+# WHAT WAS COMPARED (D33.1-09). For every one of the 6,499 pinned 2002-2025 games,
+# the COORDINATES the OLD home-team rule resolves
+# (scripts.ingest_weather.WeatherDataIngester._get_venue_record, CALLED rather than
+# paraphrased, because the thing most worth catching is a prior behaviour that was
+# not what anyone remembered) against the coordinates the NEW stadium_id rule
+# resolves (features.contextual.resolve_venue_for_game).
+#
+# WHY COORDINATES AND NOT WEATHER VALUES. A coordinate comparison is exact and
+# unconfounded. A weather-value comparison over the same games is confounded by
+# D33.1-08's venue-local-hour fix, which lands in this same phase and moves a value
+# on essentially every comparable row; a number that moved for two reasons at once
+# cannot be attributed to either.
+#
+# RE-DERIVED, NOT TRANSCRIBED. 33.1-RESEARCH.md section 3.1 reported this diff on
+# the same tree. It was recomputed here from the pinned feed rather than copied,
+# and tests/integration/test_routing_coordinate_diff.py recomputes it again on
+# every run and compares. Where a figure differs from the research, BOTH are
+# recorded below and the divergence says which measurement produced which -- the
+# idiom GOLD_WEATHER_CONSTANCY_MEASUREMENT's own divergence block established.
+#
+# NOTHING HERE IS A CLAIM ABOUT ACCURACY. It is a count of games whose resolved
+# venue moved. No model was re-fit, no gold matrix has been rebuilt at these
+# coordinates yet, and artifacts/latest.json is untouched.
+# ---------------------------------------------------------------------------
+
+ROUTING_COORDINATE_DIFF: dict[str, object] = {
+    "measured_on": "2026-09-13",
+    "measured_by": "Plan 33.1-03 Task 2",
+    "measured_from": "data.upstream_pin.load_schedules(range(2002, 2026))",
+    "old_rule": "scripts.ingest_weather.WeatherDataIngester._get_venue_record",
+    "new_rule": "features.contextual.resolve_venue_for_game",
+    "compared_on": ("latitude", "longitude"),
+    "games_total": 6499,
+    "games_changed": 1153,
+    "distinct_stadium_ids_changed": 40,
+    "games_naming_a_newly_added_id": 1082,
+    "games_naming_an_already_known_id": 71,
+    "neutral_site_games": 83,
+    "weather_applicable_games": 737,
+    # Every stadium_id whose games changed venue, not only the twelve largest:
+    # a truncated breakdown could not be checked against the total above, and
+    # the tail is where a misroute nobody predicted would sit.
+    "per_stadium_id": {
+        "OAK00": {
+            "games": 141,
+            "successor": "VEG00",
+            "successor_games": 141,
+            "successors": {"VEG00": 141},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 141,
+        },
+        "NYC00": {
+            "games": 132,
+            "successor": "NYC01",
+            "successor_games": 131,
+            "successors": {"NOR00": 1, "NYC01": 131},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 132,
+        },
+        "ATL00": {
+            "games": 125,
+            "successor": "ATL97",
+            "successor_games": 125,
+            "successors": {"ATL97": 125},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 0,
+        },
+        "SDG00": {
+            "games": 125,
+            "successor": "LAX01",
+            "successor_games": 124,
+            "successors": {"LAX01": 124, "TAM00": 1},
+            "neutral_site_games": 1,
+            "weather_applicable_games": 125,
+        },
+        "STL00": {
+            "games": 112,
+            "successor": "LAX01",
+            "successor_games": 112,
+            "successors": {"LAX01": 112},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 0,
+        },
+        "SFO00": {
+            "games": 99,
+            "successor": "SFO01",
+            "successor_games": 99,
+            "successors": {"SFO01": 99},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 99,
+        },
+        "MIN00": {
+            "games": 95,
+            "successor": "MIN01",
+            "successor_games": 95,
+            "successors": {"MIN01": 95},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 0,
+        },
+        "DAL99": {
+            "games": 57,
+            "successor": "DAL00",
+            "successor_games": 57,
+            "successors": {"DAL00": 57},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 57,
+        },
+        "IND99": {
+            "games": 54,
+            "successor": "IND00",
+            "successor_games": 54,
+            "successors": {"IND00": 54},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 0,
+        },
+        "PHO99": {
+            "games": 32,
+            "successor": "PHO00",
+            "successor_games": 31,
+            "successors": {"LAX01": 1, "PHO00": 31},
+            "neutral_site_games": 1,
+            "weather_applicable_games": 32,
+        },
+        "LAX99": {
+            "games": 31,
+            "successor": "LAX01",
+            "successor_games": 31,
+            "successors": {"LAX01": 31},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 31,
+        },
+        "LON00": {
+            "games": 26,
+            "successor": "JAX00",
+            "successor_games": 10,
+            "successors": {
+                "ATL97": 1,
+                "CIN00": 1,
+                "JAX00": 10,
+                "KAN00": 1,
+                "LAX01": 3,
+                "MIA00": 3,
+                "MIN01": 1,
+                "NOR00": 1,
+                "SFO01": 1,
+                "TAM00": 2,
+                "VEG00": 2,
+            },
+            "neutral_site_games": 26,
+            "weather_applicable_games": 26,
+        },
+        "LAX97": {
+            "games": 22,
+            "successor": "LAX01",
+            "successor_games": 22,
+            "successors": {"LAX01": 22},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 22,
+        },
+        "MIN98": {
+            "games": 18,
+            "successor": "MIN01",
+            "successor_games": 18,
+            "successors": {"MIN01": 18},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 18,
+        },
+        "LON02": {
+            "games": 10,
+            "successor": "ATL97",
+            "successor_games": 1,
+            "successors": {
+                "ATL97": 1,
+                "BUF00": 1,
+                "CHI98": 1,
+                "GNB00": 1,
+                "JAX00": 1,
+                "MIN01": 1,
+                "NAS00": 1,
+                "NOR00": 1,
+                "TAM00": 1,
+                "VEG00": 1,
+            },
+            "neutral_site_games": 10,
+            "weather_applicable_games": 10,
+        },
+        "PHI99": {
+            "games": 10,
+            "successor": "PHI00",
+            "successor_games": 10,
+            "successors": {"PHI00": 10},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 10,
+        },
+        "CHI99": {
+            "games": 8,
+            "successor": "CHI98",
+            "successor_games": 8,
+            "successors": {"CHI98": 8},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 8,
+        },
+        "PHO00": {
+            "games": 7,
+            "successor": "SFO01",
+            "successor_games": 3,
+            "successors": {"BOS00": 1, "LAX01": 1, "PHI00": 1, "SEA00": 1, "SFO01": 3},
+            "neutral_site_games": 7,
+            "weather_applicable_games": 0,
+        },
+        "BUF01": {
+            "games": 6,
+            "successor": "BUF00",
+            "successor_games": 6,
+            "successors": {"BUF00": 6},
+            "neutral_site_games": 2,
+            "weather_applicable_games": 0,
+        },
+        "MEX00": {
+            "games": 5,
+            "successor": "PHO00",
+            "successor_games": 2,
+            "successors": {"LAX01": 1, "PHO00": 2, "VEG00": 2},
+            "neutral_site_games": 5,
+            "weather_applicable_games": 5,
+        },
+        "BRG00": {
+            "games": 4,
+            "successor": "NOR00",
+            "successor_games": 4,
+            "successors": {"NOR00": 4},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 4,
+        },
+        "DET00": {
+            "games": 4,
+            "successor": "BUF00",
+            "successor_games": 2,
+            "successors": {"BUF00": 2, "MIN01": 1, "PIT00": 1},
+            "neutral_site_games": 4,
+            "weather_applicable_games": 0,
+        },
+        "LON01": {
+            "games": 3,
+            "successor": "LAX01",
+            "successor_games": 2,
+            "successors": {"CLE00": 1, "LAX01": 2},
+            "neutral_site_games": 3,
+            "weather_applicable_games": 3,
+        },
+        "MIA00": {
+            "games": 3,
+            "successor": "CHI98",
+            "successor_games": 1,
+            "successors": {"CHI98": 1, "IND00": 1, "KAN00": 1},
+            "neutral_site_games": 3,
+            "weather_applicable_games": 3,
+        },
+        "SAN00": {
+            "games": 3,
+            "successor": "NOR00",
+            "successor_games": 3,
+            "successors": {"NOR00": 3},
+            "neutral_site_games": 0,
+            "weather_applicable_games": 0,
+        },
+        "FRA00": {
+            "games": 2,
+            "successor": "BOS00",
+            "successor_games": 1,
+            "successors": {"BOS00": 1, "KAN00": 1},
+            "neutral_site_games": 2,
+            "weather_applicable_games": 2,
+        },
+        "GER00": {
+            "games": 2,
+            "successor": "CAR00",
+            "successor_games": 1,
+            "successors": {"CAR00": 1, "TAM00": 1},
+            "neutral_site_games": 2,
+            "weather_applicable_games": 2,
+        },
+        "HOU00": {
+            "games": 2,
+            "successor": "ATL97",
+            "successor_games": 1,
+            "successors": {"ATL97": 1, "BOS00": 1},
+            "neutral_site_games": 2,
+            "weather_applicable_games": 0,
+        },
+        "JAX00": {
+            "games": 2,
+            "successor": "NOR00",
+            "successor_games": 1,
+            "successors": {"NOR00": 1, "PHI00": 1},
+            "neutral_site_games": 2,
+            "weather_applicable_games": 2,
+        },
+        "NOR00": {
+            "games": 2,
+            "successor": "PHI00",
+            "successor_games": 1,
+            "successors": {"PHI00": 1, "SFO01": 1},
+            "neutral_site_games": 2,
+            "weather_applicable_games": 0,
+        },
+        "SFO01": {
+            "games": 2,
+            "successor": "BOS00",
+            "successor_games": 1,
+            "successors": {"BOS00": 1, "DEN00": 1},
+            "neutral_site_games": 2,
+            "weather_applicable_games": 2,
+        },
+        "ATL97": {
+            "games": 1,
+            "successor": "LAX01",
+            "successor_games": 1,
+            "successors": {"LAX01": 1},
+            "neutral_site_games": 1,
+            "weather_applicable_games": 0,
+        },
+        "DAL00": {
+            "games": 1,
+            "successor": "GNB00",
+            "successor_games": 1,
+            "successors": {"GNB00": 1},
+            "neutral_site_games": 1,
+            "weather_applicable_games": 0,
+        },
+        "IND00": {
+            "games": 1,
+            "successor": "BOS00",
+            "successor_games": 1,
+            "successors": {"BOS00": 1},
+            "neutral_site_games": 1,
+            "weather_applicable_games": 0,
+        },
+        "LAX01": {
+            "games": 1,
+            "successor": "CIN00",
+            "successor_games": 1,
+            "successors": {"CIN00": 1},
+            "neutral_site_games": 1,
+            "weather_applicable_games": 0,
+        },
+        "MIN01": {
+            "games": 1,
+            "successor": "BOS00",
+            "successor_games": 1,
+            "successors": {"BOS00": 1},
+            "neutral_site_games": 1,
+            "weather_applicable_games": 0,
+        },
+        "NYC01": {
+            "games": 1,
+            "successor": "DEN00",
+            "successor_games": 1,
+            "successors": {"DEN00": 1},
+            "neutral_site_games": 1,
+            "weather_applicable_games": 1,
+        },
+        "SAO00": {
+            "games": 1,
+            "successor": "PHI00",
+            "successor_games": 1,
+            "successors": {"PHI00": 1},
+            "neutral_site_games": 1,
+            "weather_applicable_games": 1,
+        },
+        "TAM00": {
+            "games": 1,
+            "successor": "PHO00",
+            "successor_games": 1,
+            "successors": {"PHO00": 1},
+            "neutral_site_games": 1,
+            "weather_applicable_games": 1,
+        },
+        "VEG00": {
+            "games": 1,
+            "successor": "KAN00",
+            "successor_games": 1,
+            "successors": {"KAN00": 1},
+            "neutral_site_games": 1,
+            "weather_applicable_games": 0,
+        },
+    },
+    "divergence_from_recorded_claims": {
+        "the_five_way_split": "REPRODUCED EXACTLY. 33.1-RESEARCH.md section 3.1 "
+        "recorded 1,153 changed / 1,082 naming a newly added id / 71 naming an "
+        "already-known id / 83 carrying location == Neutral / 737 weather-"
+        "applicable under R4's roof rule. All five re-derived to the same digit.",
+        "per_stadium_counts": "SHAPE REPRODUCED, THREE COUNTS DIVERGED, AND THE "
+        "TWO MEASUREMENTS ANSWER DIFFERENT QUESTIONS. RESEARCH's twelve-row table "
+        "counts games per (true venue, successor) PAIR; this slot counts games per "
+        "TRUE VENUE. Where a venue's games scattered across more than one "
+        "successor the two differ by exactly the scattered games: NYC00 131 "
+        "(pair) against 132 (venue), SDG00 124 against 125, PHO99 31 against 32. "
+        "Each difference is one neutral-site game whose nominal home team was a "
+        "different franchise. Both figures are recorded and neither is wrong.",
+        "the_twelve_largest": "RE-CUT. Ranked by games per TRUE VENUE, LON00 (26 "
+        "games) is larger than LAX97 (22) and MIN98 (18), so the twelve largest by "
+        "that ranking are not the twelve RESEARCH tabled. LON00 is deliberately "
+        "absent from the named-pair assertions in "
+        "tests/integration/test_routing_coordinate_diff.py because it is a "
+        "neutral-site venue whose old answers scatter across ELEVEN successors -- "
+        '"the successor it used to resolve to" is not a well-formed claim about '
+        "it. It is present in per_stadium_id above with all eleven.",
+        "distinct_stadium_ids": "NOT PREVIOUSLY RECORDED. 40 of the 55 pinned "
+        "stadium_id values had at least one game change venue. The 22 newly added "
+        "historical records account for 1,082 of the 1,153; the remaining 71 are "
+        "spread across 18 ALREADY-KNOWN ids, almost all of them neutral-site games "
+        "at venues the file already carried.",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# THE 91-GAME NEUTRAL-SITE MISRESOLUTION, REPAIRED.
+#
+# APPENDED by Plan 33.1-03 Task 2 on 2026-09-13. Nothing above this line was
+# edited, and in particular HISTORICAL_NEUTRAL_MISRESOLUTION is BYTE-UNCHANGED.
+#
+# THIS IS A NEW SLOT, NOT A CORRECTION TO THE OLD ONE. The slot above is the
+# record of a measured DEFECT and of the decision D33-15 took about it: history
+# kept its home-team resolution, on purpose, because re-resolving it would move
+# gold under three deployed models in the same change that fixed the forward
+# season. That decision was correct when it was taken and the record of it is not
+# rewritten. The append protocol is enforced mechanically by
+# tests/unit/test_phase33_state_append_once.py, which reports any name this file
+# assigns twice.
+#
+# WHAT CHANGED. The owner took the deferred repair at Phase 33.1 (D33.1-06), as
+# part of retiring the routing gate entirely rather than as a separate act. All 91
+# games now resolve to the stadium the feed says they were played at, and zero
+# remain misrouted. The cost the earlier slot named is REAL and is now PAID
+# deliberately: gold does move for those rows, and Plan 33.1-07 attributes that
+# movement to the venue/travel/timezone/elevation cause family rather than to
+# weather.
+#
+# THE TRAIN-ROW SHARES IN THE EARLIER SLOT ARE NOT RESTATED HERE. They describe
+# what the deployed artifacts were fitted under, and those artifacts have not been
+# re-fit -- this phase corrects inputs and promotes nothing.
+# ---------------------------------------------------------------------------
+
+HISTORICAL_NEUTRAL_MISRESOLUTION_REPAIRED: dict[str, object] = {
+    "measured_on": "2026-09-13",
+    "measured_by": "Plan 33.1-03 Task 2",
+    "measured_from": "data.upstream_pin.load_schedules(range(2002, 2026))",
+    # The population is the FEED's own `location` column, never silver's
+    # `neutral_site`: every one of the 6,499 silver cells reads False because
+    # `row.get("neutral_site", False)` never reads a feed value at all, and Phase
+    # 33 Wave 12, which backfills it, has not run.
+    "population_source": "the pinned feed's own `location` column",
+    "games_disclosed": 91,
+    "neutral_site_games_resolving_to_their_own_stadium": 91,
+    "still_misrouted": 0,
+    "repaired_by": "D33.1-06",
+    "deferred_by": "D33-15",
+    "supersedes": "HISTORICAL_NEUTRAL_MISRESOLUTION",
+    # The repair is a SUBSET of the wider routing change, not a separate one: 83 of
+    # the 91 changed venue, and the other 8 already resolved correctly by
+    # coincidence -- their nominal home team's present-day stadium happened to be
+    # the one the game was played at.
+    "of_which_changed_venue": 83,
+    "of_which_already_resolved_correctly": 8,
+}
