@@ -32,13 +32,18 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
+import inspect
 import shutil
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pandas as pd
 import pytest
+from tenacity import wait_none
 
 import scripts.backfill_historical_weather as backfill
 from data.storage import save_bronze_snapshot
@@ -682,3 +687,344 @@ class TestTheNullGateInsideASeasonRun:
         assert entry["fraction"] == pytest.approx(0.05)
         assert entry["longest_contiguous_run"] == 1
         assert entry["recorded_at"]
+
+
+# ---------------------------------------------------------------------------
+# Ruling L2: the budget debit and the wait live INSIDE the retried function.
+#
+# `fetch_game_weather` is wrapped in `@retry(stop=stop_after_attempt(3), ...)`.
+# Everything the CALLER does happens ONCE per logical game; `client.get` happens up to
+# three times. A caller-side debit therefore undercounts by up to 3x against a
+# 5,000/HOUR binding cap -- and the counter is the ONLY instrument there is, because
+# the archive response carries no rate-limit header at all.
+#
+# Every test below counts ATTEMPTS, not games. A test that counted games would pass at
+# one debit, which is exactly the defect.
+# ---------------------------------------------------------------------------
+
+
+class _StubResponse:
+    """A minimal httpx-shaped response carrying a full 24-hour archive day."""
+
+    HOURLY_NAMES = (
+        "temperature_2m",
+        "relative_humidity_2m",
+        "dew_point_2m",
+        "apparent_temperature",
+        "precipitation",
+        "rain",
+        "snowfall",
+        "weather_code",
+        "cloud_cover",
+        "wind_speed_10m",
+        "wind_direction_10m",
+        "wind_gusts_10m",
+    )
+
+    def __init__(self, hours: int = 24, status_code: int = 200, payload=None) -> None:
+        self.status_code = status_code
+        if payload is not None:
+            self._payload = payload
+        else:
+            block = {name: [12.0] * hours for name in self.HOURLY_NAMES}
+            block["time"] = [f"2016-10-02T{i:02d}:00" for i in range(hours)]
+            self._payload = {"hourly": block}
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=httpx.Request("GET", "https://archive.invalid/v1/archive"),
+                response=self,
+            )
+
+
+class _FlakyClient:
+    """Raises a retryable transport error for the first *failures* attempts."""
+
+    def __init__(
+        self, failures: int = 0, response: _StubResponse | None = None
+    ) -> None:
+        self.failures = failures
+        self.calls = 0
+        self._response = response or _StubResponse()
+
+    async def get(self, url, params=None):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise httpx.TimeoutException("simulated transient archive timeout")
+        return self._response
+
+
+def _one_fetch(client, budget=None, throttle=None):
+    """Drive ONE logical game through the REAL retried fetch."""
+    return asyncio.run(
+        backfill.fetch_game_weather(
+            client,
+            40.8135,
+            -74.0745,
+            "2016-10-02",
+            13,
+            "America/New_York",
+            budget=budget,
+            throttle=throttle,
+        )
+    )
+
+
+@pytest.fixture
+def instant_retry(monkeypatch):
+    """Strip the exponential backoff so a three-attempt test is not a six-second one.
+
+    Only the WAIT is neutralised. The attempt count, the retry predicate and the
+    reraise behaviour are the production ones, which is what these tests are about.
+    """
+    monkeypatch.setattr(backfill.fetch_game_weather.retry, "wait", wait_none())
+
+
+class TestTheDebitAndTheWaitAreInsideTheRetriedFunction:
+    def test_two_failures_then_success_costs_three_debits(self, instant_retry):
+        """THREE debits for ONE game. A per-GAME count would pass at one.
+
+        Do not "simplify" this back to a per-game assertion: the defect Codex found is
+        precisely a counter that reports 4,847 while the provider counts 5,331.
+        """
+        budget = backfill.CallBudget()
+        client = _FlakyClient(failures=2)
+
+        _one_fetch(client, budget=budget, throttle=backfill.RequestThrottle(0.0))
+
+        assert client.calls == 3
+        assert budget.debits == 3
+        assert budget.weighted_total == pytest.approx(
+            3 * backfill.ARCHIVE_CALL_WEIGHT_PER_REQUEST
+        )
+
+    def test_two_failures_then_success_costs_three_paced_attempts(self, instant_retry):
+        """THREE waits for ONE game, for the same reason as the debits.
+
+        A wait taken by the caller would space the GAMES and leave the retried attempts
+        separated only by tenacity's own backoff -- whose maximum is 30 s and whose
+        purpose is a transient failure, not a rate limit.
+        """
+        throttle = backfill.RequestThrottle(0.0)
+        client = _FlakyClient(failures=2)
+
+        _one_fetch(client, budget=backfill.CallBudget(), throttle=throttle)
+
+        assert client.calls == 3
+        assert throttle.waits == 3
+
+    def test_the_budget_refusal_fires_on_a_retried_attempt_not_only_on_a_first_attempt(
+        self, instant_retry
+    ):
+        """The refusal fires BEFORE the second attempt's request, not after the third."""
+        budget = backfill.CallBudget(
+            hourly_budget=backfill.ARCHIVE_CALL_WEIGHT_PER_REQUEST
+        )
+        client = _FlakyClient(failures=2)
+
+        with pytest.raises(backfill.CallBudgetExceededError):
+            _one_fetch(client, budget=budget, throttle=backfill.RequestThrottle(0.0))
+
+        assert client.calls == 1, (
+            "the second attempt issued its request anyway, so the budget was checked "
+            "after the fact rather than before it"
+        )
+        assert budget.debits == 1
+
+    def test_a_source_scan_finds_them_inside_and_not_in_the_caller(self):
+        """The placement itself is asserted, because it is the whole finding.
+
+        Comment lines are stripped first: the reasoning for the placement lives in
+        comments beside the code, and a scan that read those would pass on a module
+        that merely DESCRIBED the fix.
+        """
+        inner = [
+            line
+            for line in inspect.getsource(backfill.fetch_game_weather).splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        outer = [
+            line
+            for line in inspect.getsource(
+                backfill.HistoricalWeatherBackfiller.fetch_weather_for_games
+            ).splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+
+        acquires = [i for i, line in enumerate(inner) if ".acquire(" in line]
+        gets = [i for i, line in enumerate(inner) if "client.get" in line]
+
+        assert acquires, "no budget debit inside fetch_game_weather"
+        assert gets, "no client.get inside fetch_game_weather"
+        assert max(acquires) < min(gets), (
+            "the budget debit does not precede the request, so a breach would be "
+            "discovered after it had already been issued"
+        )
+        assert any("sleep" in line or "pace" in line for line in inner)
+        assert not any(".acquire(" in line for line in outer)
+        assert not any("sleep" in line or "pace" in line for line in outer)
+
+
+class TestTheRunCountsItsOwnBudget:
+    def test_the_run_refuses_before_the_breaching_request(self, instant_retry):
+        budget = backfill.CallBudget(
+            hourly_budget=2 * backfill.ARCHIVE_CALL_WEIGHT_PER_REQUEST,
+            resume_hint="seasons still missing: [2004, 2005]",
+        )
+        throttle = backfill.RequestThrottle(0.0)
+        client = _FlakyClient()
+
+        _one_fetch(client, budget=budget, throttle=throttle)
+        _one_fetch(client, budget=budget, throttle=throttle)
+        with pytest.raises(backfill.CallBudgetExceededError) as excinfo:
+            _one_fetch(client, budget=budget, throttle=throttle)
+
+        assert client.calls == 2, "the breaching request was issued before the refusal"
+        message = str(excinfo.value)
+        assert "RESUMABLE" in message
+        assert str(budget.hourly_budget) in message
+        assert "2004" in message
+
+    def test_the_daily_cap_refuses_independently_of_the_hourly_one(self, instant_retry):
+        budget = backfill.CallBudget(
+            hourly_budget=10_000_000,
+            daily_budget=backfill.ARCHIVE_CALL_WEIGHT_PER_REQUEST,
+        )
+        client = _FlakyClient()
+
+        _one_fetch(client, budget=budget, throttle=backfill.RequestThrottle(0.0))
+        with pytest.raises(backfill.CallBudgetExceededError):
+            _one_fetch(client, budget=budget, throttle=backfill.RequestThrottle(0.0))
+
+        assert client.calls == 1
+
+    def test_the_declared_budget_does_not_fit_the_hourly_cap_unpaced(self):
+        """The arithmetic that makes the throttle necessary rather than cautious."""
+        projected = 4847 * backfill.ARCHIVE_CALL_WEIGHT_PER_REQUEST
+        assert projected > backfill.ARCHIVE_HOURLY_CALL_BUDGET
+        assert projected < backfill.ARCHIVE_DAILY_CALL_BUDGET
+        assert (
+            3600 * projected / backfill.ARCHIVE_HOURLY_CALL_BUDGET / 4847
+        ) <= backfill.ARCHIVE_REQUEST_INTERVAL_SECONDS
+
+
+class TestThePace:
+    def test_the_measured_mean_interval_is_at_least_the_declared_one(self):
+        """MEASURED over the attempts, with the stub answering instantly.
+
+        Attempts rather than games: a retried game issues three requests and the
+        provider counts three.
+        """
+        attempts = 3
+        throttle = backfill.RequestThrottle(backfill.ARCHIVE_REQUEST_INTERVAL_SECONDS)
+        started = time.monotonic()
+        client = _FlakyClient()
+        for _ in range(attempts):
+            _one_fetch(client, budget=backfill.CallBudget(), throttle=throttle)
+        elapsed = time.monotonic() - started
+
+        assert client.calls == attempts
+        assert elapsed >= attempts * backfill.ARCHIVE_REQUEST_INTERVAL_SECONDS, (
+            f"{attempts} attempts took {elapsed:.3f}s, under the declared "
+            f"{attempts * backfill.ARCHIVE_REQUEST_INTERVAL_SECONDS:.3f}s floor"
+        )
+
+    def test_a_zero_interval_throttle_does_not_wait(self):
+        throttle = backfill.RequestThrottle(0.0)
+        started = time.monotonic()
+        for _ in range(5):
+            throttle.sleep_until_due()
+        assert time.monotonic() - started < 0.5
+        assert throttle.waits == 5
+
+
+class TestTheCorpusFloorProbe:
+    def test_it_reports_the_hour_and_null_counts(self, stub_archive_client):
+        client = stub_archive_client("good")
+
+        observed = backfill.assert_archive_covers_corpus_floor(client=client)
+
+        assert observed["date"] == "2002-09-05"
+        assert observed["hours"] == 24
+        assert observed["nulls"] == 0
+        assert client.calls == 1, "the boundary proof costs exactly ONE request"
+
+    def test_a_refusal_surfaces_the_apis_own_reason(self, stub_archive_client):
+        client = stub_archive_client("error_400")
+
+        with pytest.raises(WeatherDataError) as excinfo:
+            backfill.assert_archive_covers_corpus_floor(client=client)
+
+        assert "1940-01-01" in str(excinfo.value), (
+            "the refusal reports only a status code, throwing away the only "
+            "diagnostic the archive gave"
+        )
+
+    def test_an_empty_day_raises_rather_than_reporting_zero_hours(
+        self, stub_archive_client
+    ):
+        client = stub_archive_client("good", hours=0)
+
+        with pytest.raises(WeatherDataError):
+            backfill.assert_archive_covers_corpus_floor(client=client)
+
+
+class TestTheDryRun:
+    def test_it_issues_zero_requests_and_reports_the_projection(
+        self, sandbox_data_root, monkeypatch
+    ):
+        record = _install_stub_fetch(monkeypatch)
+
+        report = backfill.backfill_corpus(base_path=sandbox_data_root, dry_run=True)
+
+        assert record["calls"] == 0
+        assert report["requests_issued"] == 0
+        assert report["games_to_fetch"] == 4847
+        assert report["games_without_a_call"] == 1652
+        assert report["retries_assumed"] == 0
+        assert report["projected_weighted_calls"] == pytest.approx(
+            4847 * backfill.ARCHIVE_CALL_WEIGHT_PER_REQUEST, abs=1.0
+        )
+        assert len(report["per_season"]) == 24
+
+    def test_it_takes_no_corpus_lock(self, sandbox_data_root):
+        """A dry run writes nothing, so it is a pure read; the lock serialises WRITERS.
+
+        Asserted so the production verify command cannot leave a transient file in
+        data/bronze just by reporting a projection.
+        """
+        backfill.backfill_corpus(base_path=sandbox_data_root, dry_run=True)
+        assert not backfill.corpus_lock_path(sandbox_data_root).exists()
+
+
+class TestTheRecordedBudgetPlan:
+    def test_the_projection_declares_itself_a_zero_retry_projection(self):
+        """A projection that silently assumed no retries and an observation that
+        includes them are two different quantities. The gap between Plan 33.1-06's
+        OBSERVED total and this one IS the retry rate, not a model error."""
+        plan = phase33_state.ARCHIVE_BUDGET_PLAN
+
+        assert plan["retries_assumed"] == 0
+        assert plan["games_fetched"] == 4847
+        assert plan["games_without_a_call"] == 1652
+        assert plan["measured_seconds_per_request"] is not None
+        assert "pricing" in plan["limits"]["provenance"].lower()
+        assert plan["projected_weighted_calls"] == pytest.approx(
+            4847 * backfill.ARCHIVE_CALL_WEIGHT_PER_REQUEST, abs=1.0
+        )
+
+    def test_the_recorded_limits_equal_the_module_constants(self):
+        limits = phase33_state.ARCHIVE_BUDGET_PLAN["limits"]
+        assert limits["hourly"] == backfill.ARCHIVE_HOURLY_CALL_BUDGET
+        assert limits["daily"] == backfill.ARCHIVE_DAILY_CALL_BUDGET
+        assert phase33_state.ARCHIVE_BUDGET_PLAN["weight"] == (
+            backfill.ARCHIVE_CALL_WEIGHT_PER_REQUEST
+        )
+        assert phase33_state.ARCHIVE_BUDGET_PLAN["interval_seconds"] == (
+            backfill.ARCHIVE_REQUEST_INTERVAL_SECONDS
+        )

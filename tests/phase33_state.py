@@ -4414,3 +4414,117 @@ NULL_OBSERVATION_CLASSIFICATION: dict[str, object] = {
     ),
     "replaced_constant": "MAX_NULL_OBSERVATION_FRACTION_PER_SEASON (never written)",
 }
+
+
+# ---------------------------------------------------------------------------
+# THE ARCHIVE CALL BUDGET: what the run is PROJECTED to cost, beside what the
+# tracer MEASURED.
+#
+# APPENDED by Plan 33.1-05 Task 2 on 2026-09-13. Nothing above this line was
+# edited.
+#
+# THIS IS A ZERO-RETRY PROJECTION, and it says so in a key rather than only in
+# prose. `fetch_game_weather` is wrapped in `@retry(stop=stop_after_attempt(3))`,
+# so a retried game issues up to three requests and the provider counts three.
+# Ruling L2 therefore debits the budget INSIDE the retried function, immediately
+# before the request -- and the OBSERVED weighted total Plan 33.1-06 records
+# INCLUDES retries. The gap between that observation and the projection below IS
+# THE RETRY RATE. Comparing them without saying so is how a 10% retry rate reads
+# as a budget-model error.
+#
+# THE 1.2 MULTIPLIER IS AN EXTRAPOLATION, logged as assumption A1. The vendor
+# states that a request for more than ten weather variables counts as multiple
+# API calls and gives ONE worked example (15 variables over 14 days = 1.5). The
+# request here sends TWELVE variables for ONE day, so 12/10 = 1.2 is inferred
+# from that single example rather than from a published formula. The archive
+# response carries NO rate-limit header -- re-confirmed over the tracer's 200
+# responses, nothing matching `rate`, `request` or `limit` -- so there is no
+# observable counter to check the inference against. What is MEASURED below is
+# REQUESTS ISSUED; the weight applied to them is not.
+# ---------------------------------------------------------------------------
+
+ARCHIVE_BUDGET_PLAN: dict[str, object] = {
+    "recorded_by": "Plan 33.1-05 Task 2",
+    "recorded_on": "2026-09-13",
+    "limits": {
+        "minutely": 600,
+        "hourly": 5000,
+        "daily": 10000,
+        "monthly": 300000,
+        "provenance": (
+            "scraped VERBATIM from the vendor's pricing table "
+            "(open-meteo.com/en/pricing) during 33.1-RESEARCH section 5.1 -- CITED, "
+            "not inferred"
+        ),
+        "binding_limit": "hourly",
+        "binding_limit_is_why": (
+            "4,847 fetches at the 1.2 weight is about 5,816 weighted calls, which "
+            "fits the 10,000/day cap with roughly 42% headroom and does NOT fit "
+            "the 5,000/hour cap unless the run holds itself to an interval"
+        ),
+    },
+    "weight": 1.2,
+    "weight_provenance": (
+        "EXTRAPOLATED from the vendor's single worked example (15 variables over 14 "
+        "days = 1.5 calls). The rule that a request for more than ten weather "
+        "variables counts as multiple API calls is CITED; the 12/10 = 1.2 figure "
+        "for a twelve-variable single-day request is not. Assumption A1."
+    ),
+    "variables_requested": 12,
+    "variables_read": 11,
+    "unread_variable": "rain",
+    "unread_variable_note": (
+        "dropping `rain` would take the weight from 1.2 to 1.1 and the minimum run "
+        "from 70 to 64 minutes. NOT taken (Ruling M): HOURLY_VARIABLES is shared "
+        "with the live forecast path, so the change touches COLD-06's surface for a "
+        "six-minute saving. Recorded as a known lever rather than an oversight."
+    ),
+    # The corpus split, measured from the pinned feed's own `roof` values.
+    "games_total": 6499,
+    "games_fetched": 4847,
+    "games_without_a_call": 1652,
+    # THE PROJECTION. Zero retries assumed, stated in a key.
+    "projected_weighted_calls": 5816.4,
+    "retries_assumed": 0,
+    "retries_assumed_note": (
+        "the OBSERVED weighted total Plan 33.1-06 records INCLUDES retries. The gap "
+        "between the two IS the retry rate, not a model error."
+    ),
+    "interval_seconds": 1.0,
+    "interval_derivation": (
+        "5,816 weighted calls / 5,000 per hour = 1.164 hours minimum, i.e. about 70 "
+        "minutes, i.e. a mean inter-ATTEMPT interval of at least 0.87 s. 1.0 s gives "
+        "about 81 minutes with margin."
+    ),
+    "projected_seconds": 4847.0,
+    "projected_wall_clock": "about 81 minutes",
+    "projected_wall_clock_is_a_floor": True,
+    "projected_wall_clock_is_a_floor_because": (
+        "tenacity's exponential backoff now COMPOSES with the interval rather than "
+        "replacing it, so a retried game takes longer than three intervals"
+    ),
+    # MEASURED, so the cited limits sit beside an observation (Plan 33.1-02's
+    # tracer, 200 real requests over season 2016, recorded in COVERAGE.md).
+    "measured_seconds_per_request": 0.134,
+    "measured_seconds_per_request_basis": (
+        "median of 8 sequential steady-state requests (0.128-0.139); the first "
+        "request of a session cost 0.571 s for the TLS handshake, paid once"
+    ),
+    "measured_season": 2016,
+    "measured_requests_issued": 200,
+    "measured_mean_interval_seconds": 1.001,
+    "measured_paced_season_seconds": 200.3,
+    "measured_retries": 0,
+    "unpaced_wall_clock_note": (
+        "at 0.134 s per request the whole corpus would finish in about eleven "
+        "minutes and present roughly 31,700 weighted calls inside that hour -- more "
+        "than six times the hourly cap. The interval is what makes the run fit."
+    ),
+    "no_rate_limit_header": True,
+    "no_rate_limit_header_note": (
+        "a live header scan of a successful archive response returned nothing "
+        "matching `rate`, `request` or `limit`, re-confirmed over the tracer's 200 "
+        "responses. The Phase-29 x-requests-last pattern has NO analogue here, "
+        "which is exactly why the run counts its own calls."
+    ),
+}
