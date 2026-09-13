@@ -46,9 +46,14 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 import argparse
 import asyncio
+import fnmatch
+import json
+import os
 import sys
 import time
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -58,7 +63,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from data.quality_gates import validate_bronze_to_silver
 from data.schemas import WeatherSchema
 from data.storage import save_bronze_snapshot, upsert_silver
-from data.upstream_pin import load_schedules
+from data.upstream_pin import SEALED_THROUGH_SEASON, load_schedules
 from scripts.ingest_weather import (
     HOURLY_VARIABLES,
     NFLVERSE_ROOF_MAP,
@@ -70,7 +75,6 @@ from scripts.ingest_weather import (
 )
 from utils import (
     DataIngestionError,
-    get_current_nfl_week,
     get_logger,
     log_data_operation,
 )
@@ -103,6 +107,65 @@ assert WEATHER_SOURCE_HISTORICAL_FORECAST in WEATHER_SOURCE_VOCABULARY
 # bronze files live under that name, and a resume rule that globbed them would skip
 # seasons SPEC R2 requires re-fetching under the corrected routing.
 BACKFILL_BRONZE_TABLE: str = "weather_backfill"
+
+# THE CORPUS THIS BACKFILL OWNS: the SEALED upstream zone, 2002 through 2025.
+#
+# The upper bound is `data.upstream_pin.SEALED_THROUGH_SEASON`, IMPORTED rather
+# than transcribed, and it is the right bound for a structural reason rather than
+# a convenient one. Phase 32 split the pin into a SEALED zone (immutable history)
+# and a LIVE zone (2026, append-only, forward). This module reads an ERA5
+# REANALYSIS product -- it describes weather that has already occurred -- so the
+# corpus it can honestly answer for is exactly the sealed zone. The live season
+# belongs to `scripts/ingest_weather.py`'s FORECAST endpoint, and pointing the
+# archive at an unplayed game is the category error D33-26 quarantined this
+# endpoint over.
+#
+# Deriving the bound from the pin rather than from a wall clock also means the
+# range cannot drift out from under the coverage rule on 1 January.
+CORPUS_FIRST_SEASON: int = 2002
+CORPUS_LAST_SEASON: int = SEALED_THROUGH_SEASON
+
+# THE TEN PRE-EXISTING BRONZE WEATHER FILES, BY NAME (SPEC prohibition 6).
+#
+# They hold 1,942 legacy rows plus 106 more, and they are the ONLY evidence the
+# routing fix can be regression-tested against. They are listed here so the
+# disjointness assertion immediately below has something concrete to check, and so
+# the cross-check comparator reads ONE list rather than re-globbing a pattern that
+# could widen.
+#
+# Their measured row counts, column counts and content digests live in
+# `tests.phase33_state.LEGACY_WEATHER_BRONZE_INVENTORY`.
+LEGACY_WEATHER_BRONZE_FILENAMES: tuple[str, ...] = (
+    "weather_raw_bronze_2018_season.parquet",
+    "weather_raw_bronze_2019_season.parquet",
+    "weather_raw_bronze_2020_season.parquet",
+    "weather_raw_bronze_2021_season.parquet",
+    "weather_raw_bronze_2022_season.parquet",
+    "weather_raw_bronze_2023_season.parquet",
+    "weather_raw_bronze_2024_season.parquet",
+    "weather_raw_bronze_2025_W05.parquet",
+    "weather_raw_bronze_2024_W06_20260416T165923.parquet",
+    "weather_raw_bronze_2025_W00_20260407T025733.parquet",
+)
+
+# The glob the resume rule reads. Disjoint from every legacy filename BY
+# CONSTRUCTION -- checked at import, not assumed, because "by construction" is only
+# worth saying when something verifies it.
+BACKFILL_BRONZE_GLOB: str = f"{BACKFILL_BRONZE_TABLE}_raw_bronze_*"
+
+_COLLIDING_LEGACY_FILENAMES = tuple(
+    name
+    for name in LEGACY_WEATHER_BRONZE_FILENAMES
+    if fnmatch.fnmatch(name, f"{BACKFILL_BRONZE_GLOB}.parquet")
+)
+if _COLLIDING_LEGACY_FILENAMES:  # pragma: no cover -- an import-time impossibility
+    raise RuntimeError(
+        f"the backfill bronze glob {BACKFILL_BRONZE_GLOB!r} matches legacy weather "
+        f"bronze filenames {_COLLIDING_LEGACY_FILENAMES}. SPEC prohibition 6 is "
+        "satisfied by the two name spaces being DISJOINT; a collision means a new "
+        "run could overwrite the only evidence the routing fix can be "
+        "regression-tested against."
+    )
 
 # THE ABSENT-OBSERVATION PREDICATE (Plan 33.1-02 Ruling D3).
 #
@@ -427,6 +490,536 @@ def load_pinned_game_facts(seasons: list[int] | tuple[int, ...]) -> pd.DataFrame
     return facts
 
 
+def _resolve_data_root(base_path: Any = None) -> Path:
+    """The data lake root to read and write under.
+
+    ``base_path`` is threaded through every function in this module for the reason
+    ``stamp_weather_source_on_existing_rows`` already records: a sandbox argument
+    that is silently ignored reads as a guarantee and behaves as a comment.
+    """
+    if base_path is not None:
+        return Path(base_path)
+    from conf.settings import get_settings
+
+    return Path(get_settings().config.data.root_path)
+
+
+def pinned_season_game_ids(season: int) -> frozenset[str]:
+    """Every canonical ``game_id`` the pinned feed holds for *season*.
+
+    Derived through :func:`load_pinned_game_facts` so there is exactly ONE
+    derivation of the canonical id in this module. The pinned feed's own
+    ``game_id`` is nflverse-shaped and shares zero values with silver's form, so a
+    second, simpler derivation here would be a second chance to get that wrong.
+    """
+    return frozenset(
+        str(value) for value in load_pinned_game_facts((season,))["game_id"]
+    )
+
+
+def season_is_covered(season: int, base_path: Any = None) -> bool:
+    """Is every pinned game of *season* present in this corpus's bronze snapshots?
+
+    RULING K, AND THE REASON IT IS NOT A FILENAME TEST. Two obvious rules both
+    fail, and the next reader's instinct will be to simplify this back into one of
+    them:
+
+    * "This season is done iff a ``_W00_`` snapshot exists for it" SKIPS 2025.
+      ``data/bronze/weather_raw_bronze_2025_W00_20260407T025733.parquet`` is a
+      whole-season ``week=0`` sentinel written by the current code, and it holds 78
+      rows covering weeks 1 to 5 ONLY -- ``_load_games_data(2025, None)`` read a
+      silver ``games`` table that held 78 rows of 2025 at the time. That rule leaves
+      **207 games unfetched behind a green log**. It is defect N-06.
+    * "Done iff the union of this season's snapshots covers every game id" fixes
+      2025 but marks 2018-2024 done from the SEVEN LEGACY
+      ``weather_raw_bronze_{season}_season.parquet`` files, skipping the re-fetch
+      under corrected routing that is the entire purpose of SPEC R2.
+
+    So coverage is measured under :data:`BACKFILL_BRONZE_TABLE` ONLY -- a name
+    disjoint from all ten legacy filenames by construction -- and the test is
+    COVERAGE rather than existence, so an interrupted partial write cannot be
+    mistaken for a completed season.
+
+    Args:
+        season: The season to test. Must lie inside the corpus range.
+        base_path: Data lake root. Threaded so a test can redirect the read.
+
+    Returns:
+        True only when the union of this corpus's snapshots for *season* is a
+        superset of the pinned game ids for *season*.
+    """
+    assert_season_in_corpus(season)
+    bronze = _resolve_data_root(base_path) / "bronze"
+
+    covered: set[str] = set()
+    for path in sorted(
+        bronze.glob(f"{BACKFILL_BRONZE_TABLE}_raw_bronze_{season}_*.parquet")
+    ):
+        frame = pd.read_parquet(path, columns=["game_id"], engine="pyarrow")
+        covered.update(str(value) for value in frame["game_id"])
+
+    return pinned_season_game_ids(season).issubset(covered)
+
+
+def seasons_still_missing(base_path: Any = None) -> tuple[int, ...]:
+    """The corpus seasons this backfill has NOT yet covered, ascending.
+
+    The resume rule, and the reason an interrupted run costs at most one season
+    rather than a whole day of budget.
+    """
+    return tuple(
+        season
+        for season in range(CORPUS_FIRST_SEASON, CORPUS_LAST_SEASON + 1)
+        if not season_is_covered(season, base_path=base_path)
+    )
+
+
+def assert_season_in_corpus(season: int) -> int:
+    """Refuse a season outside ``[CORPUS_FIRST_SEASON, CORPUS_LAST_SEASON]`` by name.
+
+    SPEC edge boundary/R3, fired BEFORE any request is issued. The upper bound is
+    the sealed zone rather than the calendar: the archive is a reanalysis product
+    and the live season belongs to the forecast path.
+
+    Raises:
+        DataIngestionError: *season* is outside the corpus.
+    """
+    if not CORPUS_FIRST_SEASON <= int(season) <= CORPUS_LAST_SEASON:
+        raise DataIngestionError(
+            f"season {season} is outside the historical weather corpus "
+            f"[{CORPUS_FIRST_SEASON}, {CORPUS_LAST_SEASON}]. The upper bound is the "
+            "SEALED upstream zone (data.upstream_pin.SEALED_THROUGH_SEASON), not "
+            "the calendar: this module reads an ERA5 REANALYSIS product, which "
+            "cannot answer for a game that has not been played. For a live-season "
+            "game use scripts/ingest_weather.py, which reaches the FORECAST "
+            "endpoint."
+        )
+    return int(season)
+
+
+# ---------------------------------------------------------------------------
+# Ruling L4: the three-way null-observation classification.
+# ---------------------------------------------------------------------------
+
+# The arm names, declared once so the state manifest and the refusal messages
+# cannot drift apart from the code that decides them.
+NULL_ARM_CLEAN: str = "CLEAN"
+NULL_ARM_AMBIGUOUS: str = "AMBIGUOUS"
+NULL_ARM_OUTAGE_LIKE: str = "OUTAGE_LIKE"
+NULL_OBSERVATION_ARMS: tuple[str, ...] = (
+    NULL_ARM_CLEAN,
+    NULL_ARM_AMBIGUOUS,
+    NULL_ARM_OUTAGE_LIKE,
+)
+
+# At or below this fraction an absence is ISOLATED and the season is written with
+# no override. R4 explicitly makes a missing observation RECORDABLE DATA, and the
+# whole D33.1-07 absent-observation state exists for exactly that case, so a flat
+# bar that refused every season with two honest ERA5 gaps would be the opposite of
+# what this phase is for.
+ISOLATED_NULL_FRACTION_CEILING: float = 0.01
+
+# Strictly above this fraction the pattern is OUTAGE-LIKE on the fraction alone.
+OUTAGE_NULL_FRACTION_FLOOR: float = 0.25
+
+# ... and a contiguous run of at least this many absences IN FETCH ORDER is
+# OUTAGE-LIKE regardless of the fraction. THIS IS THE DISCRIMINATING TEST, and it
+# is why the gate is not a fraction alone: RESEARCH A2's unprobed assumption is
+# that limit exhaustion returns a 400 carrying a `reason`, and if the provider
+# instead answers 200-with-null-arrays then the absences arrive CONSECUTIVELY,
+# while genuine ERA5 gaps scatter across a season by geography and date. A 30%
+# scattered season and a 30% consecutive season are different facts.
+OUTAGE_CONTIGUOUS_RUN: int = 8
+
+# The number of decimals the observed fraction is reported and compared at. An
+# operator copies the printed number back in on --accept-null-fraction, so the two
+# have to be the same number of digits or a correct override would still refuse.
+NULL_FRACTION_DECIMALS: int = 6
+
+# Where an ACCEPTED override is durably recorded. An override nobody can find
+# afterwards is indistinguishable from no gate at all, so it lands on disk beside
+# the corpus it authorised rather than only in a log line that scrolls away.
+NULL_OVERRIDE_LEDGER_PATH: Path = Path("bronze") / ".weather_backfill_overrides.jsonl"
+
+
+def classify_null_observations(
+    absent_flags: Iterable[bool],
+) -> tuple[str, dict[str, Any]]:
+    """Classify a season's absence pattern as CLEAN, AMBIGUOUS or OUTAGE_LIKE.
+
+    *absent_flags* is one boolean per game THAT WAS ACTUALLY FETCHED, in fetch
+    order. A dome was never asked, so including it would dilute the fraction and
+    make the gate report a number it did not measure.
+
+    The order of the arms is load-bearing: the OUTAGE tests run FIRST, so a
+    contiguous run of eight absences inside a 4% season is outage-like rather than
+    ambiguous.
+
+    Returns:
+        ``(arm, evidence)`` where evidence carries the fraction, the absent count,
+        the total and the LONGEST CONTIGUOUS RUN of absences in fetch order.
+    """
+    flags = [bool(value) for value in absent_flags]
+    total = len(flags)
+    absent = sum(flags)
+
+    longest = run = 0
+    for flag in flags:
+        run = run + 1 if flag else 0
+        longest = max(longest, run)
+
+    fraction = (absent / total) if total else 0.0
+    evidence: dict[str, Any] = {
+        "total": total,
+        "absent": absent,
+        "fraction": fraction,
+        "longest_contiguous_run": longest,
+        "isolated_ceiling": ISOLATED_NULL_FRACTION_CEILING,
+        "outage_floor": OUTAGE_NULL_FRACTION_FLOOR,
+        "outage_contiguous_run": OUTAGE_CONTIGUOUS_RUN,
+    }
+
+    if fraction > OUTAGE_NULL_FRACTION_FLOOR or longest >= OUTAGE_CONTIGUOUS_RUN:
+        return NULL_ARM_OUTAGE_LIKE, evidence
+    if fraction <= ISOLATED_NULL_FRACTION_CEILING:
+        return NULL_ARM_CLEAN, evidence
+    return NULL_ARM_AMBIGUOUS, evidence
+
+
+def _format_null_fraction(fraction: float) -> str:
+    """The one rendering of an observed fraction, so the flag can be copied back."""
+    return f"{fraction:.{NULL_FRACTION_DECIMALS}f}"
+
+
+def parse_accept_null_fraction(values: Sequence[str] | None) -> dict[int, float]:
+    """Parse ``--accept-null-fraction SEASON=FRACTION`` arguments into a mapping."""
+    accepted: dict[int, float] = {}
+    for raw in values or ():
+        season_text, _, fraction_text = str(raw).partition("=")
+        if not fraction_text:
+            raise DataIngestionError(
+                f"--accept-null-fraction expects SEASON=FRACTION; got {raw!r}. The "
+                "fraction is REQUIRED and must be the OBSERVED one, so a season "
+                "cannot be pre-authorised blind."
+            )
+        try:
+            accepted[int(season_text)] = float(fraction_text)
+        except ValueError as exc:
+            raise DataIngestionError(
+                f"--accept-null-fraction could not read {raw!r} as SEASON=FRACTION: "
+                f"{exc}"
+            ) from exc
+    return accepted
+
+
+def recorded_null_overrides(base_path: Any = None) -> list[dict[str, Any]]:
+    """Every override this corpus has accepted, oldest first."""
+    path = _resolve_data_root(base_path) / NULL_OVERRIDE_LEDGER_PATH
+    if not path.is_file():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _record_null_override(
+    season: int, evidence: dict[str, Any], base_path: Any = None
+) -> dict[str, Any]:
+    """Append an accepted override to the durable ledger, and return the entry."""
+    entry = {
+        "season": int(season),
+        "fraction": float(evidence["fraction"]),
+        "absent": int(evidence["absent"]),
+        "total": int(evidence["total"]),
+        "longest_contiguous_run": int(evidence["longest_contiguous_run"]),
+        "recorded_at": datetime.now(UTC).isoformat(),
+    }
+    path = _resolve_data_root(base_path) / NULL_OVERRIDE_LEDGER_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, sort_keys=True) + "\n")
+    logger.warning(
+        "ACCEPTED a null-observation override",
+        season=season,
+        fraction=entry["fraction"],
+        longest_contiguous_run=entry["longest_contiguous_run"],
+        ledger=str(path),
+    )
+    return entry
+
+
+def _apply_null_observation_gate(
+    season: int,
+    absent_flags: Sequence[bool],
+    accepted_null_fractions: dict[int, float] | None,
+    base_path: Any = None,
+) -> tuple[str, dict[str, Any], bool]:
+    """Run Ruling L4's gate for one season, BEFORE anything is written.
+
+    Returns ``(arm, evidence, override_accepted)``; raises on OUTAGE_LIKE and on an
+    unauthorised AMBIGUOUS season.
+    """
+    arm, evidence = classify_null_observations(absent_flags)
+    observed = _format_null_fraction(evidence["fraction"])
+
+    if arm == NULL_ARM_OUTAGE_LIKE:
+        raise DataIngestionError(
+            f"season {season} classifies {NULL_ARM_OUTAGE_LIKE}: "
+            f"{evidence['absent']} of {evidence['total']} observations are absent "
+            f"(fraction {observed}), with a longest CONTIGUOUS run of "
+            f"{evidence['longest_contiguous_run']} in fetch order (outage floor "
+            f"{OUTAGE_NULL_FRACTION_FLOOR}, contiguous threshold "
+            f"{OUTAGE_CONTIGUOUS_RUN}). NOTHING is written for this season. A "
+            "provider that has stopped answering fails CONSECUTIVE requests, while "
+            "genuine ERA5 gaps scatter across a season -- so this looks like a "
+            "provider failure rather than honest absence. Wait for the limit "
+            "window to clear and re-invoke; the run is RESUMABLE and will fetch "
+            "only the seasons still missing."
+        )
+
+    if arm == NULL_ARM_AMBIGUOUS:
+        supplied = (accepted_null_fractions or {}).get(int(season))
+        authorised = (
+            supplied is not None and _format_null_fraction(supplied) == observed
+        )
+        if not authorised:
+            detail = (
+                f" The flag supplied {_format_null_fraction(supplied)}, which is not "
+                "the observed fraction, so it does not authorise this season."
+                if supplied is not None
+                else ""
+            )
+            raise DataIngestionError(
+                f"season {season} classifies {NULL_ARM_AMBIGUOUS}: "
+                f"{evidence['absent']} of {evidence['total']} observations are "
+                f"absent (fraction {observed}), above the isolated ceiling "
+                f"{ISOLATED_NULL_FRACTION_CEILING} and below the outage floor "
+                f"{OUTAGE_NULL_FRACTION_FLOOR}, with a longest contiguous run of "
+                f"{evidence['longest_contiguous_run']}. It REFUSES BY DEFAULT. To "
+                "authorise it, re-invoke with "
+                f"--accept-null-fraction {season}={observed} -- the flag must carry "
+                "the OBSERVED fraction, so a season cannot be pre-authorised "
+                f"blind.{detail}"
+            )
+        _record_null_override(season, evidence, base_path=base_path)
+        return arm, evidence, True
+
+    return arm, evidence, False
+
+
+# ---------------------------------------------------------------------------
+# Ruling L3: the run-level corpus lock.
+# ---------------------------------------------------------------------------
+
+# The lock's path RELATIVE to a data lake root. Relative rather than absolute so
+# importing this module never has to resolve settings, and so a sandboxed run and a
+# production run read the same rule rather than two.
+CORPUS_LOCK_PATH: Path = Path("bronze") / ".weather_backfill.lock"
+
+
+class CorpusLockedError(DataIngestionError):
+    """Another run holds the corpus lock, or a previous one left it behind."""
+
+
+def corpus_lock_path(base_path: Any = None) -> Path:
+    """The absolute lock path under *base_path*."""
+    return _resolve_data_root(base_path) / CORPUS_LOCK_PATH
+
+
+class CorpusLock:
+    """An OS-level exclusive lock over the WHOLE historical weather corpus.
+
+    WHY ``exclusive=True`` ON A BRONZE SNAPSHOT IS NOT ENOUGH, which is the thing
+    the next reader will assume. That parameter stops two writers creating the SAME
+    snapshot FILENAME and says nothing about two runs racing the corpus. The
+    corpus-level hazard is in :func:`data.storage.upsert_silver`
+    (``data/storage.py:1110-1123``): it reads the existing parquet, filters it by
+    key, concats, and only THEN writes atomically. The WRITE is atomic; the
+    READ-MODIFY-WRITE is not. Two promoters that each read the pre-state produce two
+    full frames, and the second write silently discards the first's rows -- with no
+    error, and with a digest bracket that still reports exactly one CHANGED path,
+    exactly as declared. Resume determination has the same shape: two runs can each
+    call :func:`seasons_still_missing`, see the same gap, and spend double budget
+    fetching one season twice.
+
+    THE PRIMITIVE is ``open(path, "xb")``, so the CREATE is the exclusive step --
+    the only place a race can actually be decided, and it holds ACROSS PROCESSES
+    where a check-then-write cannot. The file lives under ``bronze/`` rather than in
+    a system temp directory for the reason :func:`data.storage._atomic_write_parquet`
+    already records: a lock that is not on the same filesystem as the thing it
+    guards is guarding a different filesystem.
+
+    A STALE LOCK IS A REFUSAL, NEVER A TAKEOVER. The refusal names the recorded pid,
+    the age and the exact ``--force-unlock`` command. No age heuristic is used: a
+    paced 81-minute run legitimately holds the lock for 81 minutes, so any threshold
+    short enough to be useful is short enough to break a healthy run, and breaking a
+    healthy run mid-corpus is the one failure this phase cannot afford.
+
+    THE LOCK IS RETAINED WHEN THE CONTEXT EXITS WITH AN EXCEPTION. That is threat
+    T-33.1-31c: a lock that silently disappears lets the very next run proceed over
+    a half-written corpus. An exception mid-corpus means the corpus is in an unknown
+    state, so the operator clears it deliberately after looking. A clean exit
+    removes it.
+    """
+
+    def __init__(self, base_path: Any = None, *, force: bool = False) -> None:
+        self._base_path = base_path
+        self._force = force
+        self._path = corpus_lock_path(base_path)
+        self._held = False
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def held(self) -> bool:
+        return self._held
+
+    def _payload(self) -> dict[str, Any]:
+        return {
+            "pid": os.getpid(),
+            "acquired_at_utc": datetime.now(UTC).isoformat(),
+            "corpus": {
+                "table": BACKFILL_BRONZE_TABLE,
+                "first_season": CORPUS_FIRST_SEASON,
+                "last_season": CORPUS_LAST_SEASON,
+            },
+        }
+
+    def _refusal(self) -> CorpusLockedError:
+        try:
+            recorded = json.loads(self._path.read_text(encoding="utf-8"))
+            pid = recorded.get("pid", "unknown")
+            acquired = recorded.get("acquired_at_utc", "unknown")
+            try:
+                age = datetime.now(UTC) - datetime.fromisoformat(acquired)
+                age_text = f"{age.total_seconds() / 60:.1f} minutes"
+            except (TypeError, ValueError):
+                age_text = "unknown"
+        except (OSError, ValueError):
+            pid, acquired, age_text = "unreadable", "unreadable", "unknown"
+
+        return CorpusLockedError(
+            f"the historical weather corpus is LOCKED by pid {pid}, acquired at "
+            f"{acquired} ({age_text} ago), at {self._path.as_posix()}. This run "
+            "REFUSES rather than taking over: a paced full-corpus run legitimately "
+            "holds the lock for about 81 minutes, so no age heuristic can tell a "
+            "healthy run from a dead one, and breaking a healthy run mid-corpus is "
+            "worse than waiting. If you have CONFIRMED that pid is gone, clear it "
+            "with: uv run python -m scripts.backfill_historical_weather "
+            "--force-unlock"
+        )
+
+    def acquire(self) -> "CorpusLock":
+        if self._held:
+            raise CorpusLockedError(
+                "this CorpusLock instance already holds the lock; acquiring twice "
+                "would release it once and leave the corpus unguarded."
+            )
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        if self._force:
+            self.release()
+        try:
+            with self._path.open("xb") as handle:
+                handle.write(json.dumps(self._payload(), indent=2).encode("utf-8"))
+        except FileExistsError:
+            raise self._refusal() from None
+        self._held = True
+        return self
+
+    def release(self) -> bool:
+        """Remove the lock file. Returns True when a file was actually removed."""
+        existed = self._path.is_file()
+        self._path.unlink(missing_ok=True)
+        self._held = False
+        return existed
+
+    def __enter__(self) -> "CorpusLock":
+        if not self._held:
+            self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is None:
+            self.release()
+        else:
+            self._held = False
+            logger.error(
+                "CorpusLock RETAINED after an exception -- the corpus is in an "
+                "unknown state and the next run will REFUSE until an operator "
+                "clears it with --force-unlock",
+                lock=str(self._path),
+                error=str(exc),
+            )
+        return False
+
+
+def acquire_corpus_lock(base_path: Any = None, force: bool = False) -> CorpusLock:
+    """Take the corpus lock, or REFUSE naming the holder.
+
+    Returns an already-held :class:`CorpusLock`, which is also a context manager, so
+    ``with acquire_corpus_lock(root) as lock:`` releases it on a clean exit and
+    retains it on an exception.
+    """
+    return CorpusLock(base_path, force=force).acquire()
+
+
+def release_corpus_lock(base_path: Any = None) -> bool:
+    """Clear a stale lock. The ``--force-unlock`` implementation."""
+    return CorpusLock(base_path).release()
+
+
+# ---------------------------------------------------------------------------
+# The run's self-imposed interval between archive requests.
+# ---------------------------------------------------------------------------
+
+# THE DECLARED MINIMUM WALL-CLOCK INTERVAL BETWEEN ARCHIVE REQUESTS.
+#
+# The arithmetic, so the number is a conclusion rather than a preference. The
+# corpus needs 4,847 fetches; at the extrapolated 1.2 weighted calls per request
+# that is about 5,816 weighted calls, which fits the free tier's 10,000/day cap
+# with roughly 42% headroom and does NOT fit its 5,000/HOUR cap. Staying under the
+# hourly cap therefore requires at least 5,816 / 5,000 = 1.164 hours, i.e. about 70
+# minutes, i.e. a mean inter-request interval of at least 0.87 s. 1.0 s gives about
+# 81 minutes with margin.
+#
+# MEASURED, for contrast: the steady-state request latency is 0.134 s median (Plan
+# 33.1-02's tracer, 200 real requests). Unpaced, the corpus would finish in about
+# eleven minutes and present roughly 31,700 weighted calls inside that hour.
+ARCHIVE_REQUEST_INTERVAL_SECONDS: float = 1.0
+
+
+class RequestThrottle:
+    """Hold the run to a minimum wall-clock interval between archive requests.
+
+    The free tier's BINDING limit is 5,000 calls per HOUR and the archive response
+    carries no rate-limit header at all -- a live header scan of a successful
+    response returned nothing matching ``rate``, ``request`` or ``limit`` -- so the
+    run must hold itself to its own clock. There is no counter to read back.
+
+    ``interval_seconds=0`` disables the wait, which is what a test wants: a stubbed
+    season must not take one second per game.
+    """
+
+    def __init__(self, interval_seconds: float) -> None:
+        self.interval_seconds = float(interval_seconds)
+        self._last_at: float | None = None
+        self.waits = 0
+
+    def sleep_until_due(self) -> None:
+        """Block until the declared interval has elapsed since the last request."""
+        self.waits += 1
+        now = time.monotonic()
+        if self.interval_seconds > 0 and self._last_at is not None:
+            elapsed = now - self._last_at
+            if elapsed < self.interval_seconds:
+                time.sleep(self.interval_seconds - elapsed)
+        self._last_at = time.monotonic()
+
+
 def _reconcile_stadium_id(frame: pd.DataFrame) -> pd.DataFrame:
     """Collapse the merge's ``stadium_id`` columns to exactly ONE, or refuse.
 
@@ -698,7 +1291,7 @@ class HistoricalWeatherBackfiller(WeatherDataIngester):
         venues_df: pd.DataFrame,
         forecast_time: datetime | None = None,
         *,
-        request_interval_seconds: float = 0.0,
+        throttle: RequestThrottle | None = None,
     ) -> pd.DataFrame:
         """Fetch an ERA5 observation for every game that needs one.
 
@@ -726,13 +1319,9 @@ class HistoricalWeatherBackfiller(WeatherDataIngester):
                 ``kickoff_et``; ``stadium_id`` is optional (see Ruling D2).
             venues_df: The venue table, carrying ``stadium_id`` and ``timezone``.
             forecast_time: When this run was taken. Defaults to now, in UTC.
-            request_interval_seconds: Minimum wall-clock gap between requests. The
-                free tier's binding cap is 5,000 calls per HOUR with no
-                rate-limit header to read, so a run must pace itself against its
-                own clock. INTERIM: Plan 33.1-05 moves pacing and a weighted
-                ``CallBudget`` inside ``fetch_game_weather`` -- immediately before
-                ``client.get``, so a retried game is counted three times -- at
-                which point this parameter is redundant and should be removed.
+            throttle: The run's :class:`RequestThrottle`. The free tier's binding
+                cap is 5,000 calls per HOUR and the archive carries no rate-limit
+                header, so a run holds itself to its own clock.
 
         Returns:
             One record per game, in the order the games arrived.
@@ -749,11 +1338,10 @@ class HistoricalWeatherBackfiller(WeatherDataIngester):
         logger.info(
             "Fetching ARCHIVE weather for games",
             games=len(prepared),
-            interval_seconds=request_interval_seconds,
+            interval_seconds=throttle.interval_seconds if throttle else 0.0,
         )
 
         weather_records = []
-        last_request_at: float | None = None
 
         # `iterrows` rather than `itertuples`: `resolve_venue_local_hour` reads the
         # row with `game["kickoff_et"]`, which a namedtuple cannot answer. A Series
@@ -792,11 +1380,8 @@ class HistoricalWeatherBackfiller(WeatherDataIngester):
                     )
                 )
             else:
-                if request_interval_seconds > 0 and last_request_at is not None:
-                    elapsed = time.monotonic() - last_request_at
-                    if elapsed < request_interval_seconds:
-                        time.sleep(request_interval_seconds - elapsed)
-                last_request_at = time.monotonic()
+                if throttle is not None:
+                    throttle.sleep_until_due()
 
                 # If this fails, WeatherDataError propagates (hard-fail).
                 weather_data = asyncio.run(
@@ -841,137 +1426,375 @@ class HistoricalWeatherBackfiller(WeatherDataIngester):
 
         return weather_df
 
-    def backfill_weather(
-        self,
-        season: int | None = None,
-        week: int | None = None,
-        forecast_time: datetime | None = None,
-        base_path=None,
-    ) -> pd.DataFrame:
-        """
-        Full weather data ingestion pipeline.
 
-        Uses Bronze/Silver separation:
-        - Bronze: timestamped append-only snapshots via save_bronze_snapshot
-        - Silver: validated, upserted via validate_bronze_to_silver + upsert_silver
+async def _probe_archive_day(
+    client: Any,
+    latitude: float,
+    longitude: float,
+    day: str,
+    venue_timezone: str,
+) -> dict[str, Any]:
+    """Request ONE whole archive day and report its hour and null counts."""
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "start_date": day,
+        "end_date": day,
+        "hourly": HOURLY_VARIABLES,
+        "temperature_unit": "fahrenheit",
+        "wind_speed_unit": "mph",
+        "timezone": venue_timezone,
+    }
+    try:
+        response = await client.get(ARCHIVE_ENDPOINT_URL, params=params)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise WeatherDataError(
+            f"the archive REFUSED the corpus floor probe for {day} at "
+            f"({latitude}, {longitude}): {_archive_http_error_detail(exc)}. The "
+            "corpus cannot begin before the archive does, so the run stops here "
+            "rather than discovering it 24 seasons in."
+        ) from exc
 
-        Args:
-            season: Season to ingest (default: current)
-            week: Week to ingest (default: current), None for entire season
-            forecast_time: Time when forecast was made
+    payload = response.json()
+    hourly = payload.get("hourly") if isinstance(payload, dict) else None
+    temperatures = (hourly or {}).get("temperature_2m") or []
+    return {
+        "date": day,
+        "latitude": latitude,
+        "longitude": longitude,
+        "timezone": venue_timezone,
+        "hours": len(temperatures),
+        "nulls": sum(1 for value in temperatures if value is None),
+    }
 
-        Returns:
-            Ingested and validated weather data
-        """
-        # Handle default season
-        if season is None:
-            current_season, current_week = get_current_nfl_week()
-            season = current_season
-            # If no week specified, default to current week for current season
-            if week is None:
-                week = current_week
 
-        if forecast_time is None:
-            # tz-aware UTC -- Phase 15-04 requires storage writers to provide
-            # timezone-aware datetimes. Storage will reject naive datetimes
-            # at write time via _normalize_parquet_datetime_columns.
-            forecast_time = datetime.now(UTC)
+def assert_archive_covers_corpus_floor(
+    *,
+    client: Any = None,
+    backfiller: HistoricalWeatherBackfiller | None = None,
+) -> dict[str, Any]:
+    """Prove ERA5 reaches the EARLIEST game in the corpus, with ONE request.
 
-        scope = f"Week {week}" if week is not None else "Entire Season"
-        logger.info(
-            "Starting weather data ingestion",
-            season=season,
-            week=week,
-            scope=scope,
-            forecast_time=forecast_time.isoformat(),
+    SPEC edge boundary/R3, proven DIRECTLY rather than by citing the vendor's
+    documented 1940-01-01 floor. The probe is made at the earliest pinned gameday,
+    at that game's OWN venue and in that venue's OWN zone, because a coverage claim
+    about a date says nothing until it is asked at a place.
+
+    One request, issued before the first season of a corpus run. A refusal quotes
+    the archive's own ``reason`` string, so the operator reads what the provider
+    actually said rather than a status code.
+
+    Args:
+        client: An httpx-shaped async client. Injected so the refusal path can be
+            proven against a stub 400 without exhausting anything.
+        backfiller: The ingester, for venue resolution.
+
+    Returns:
+        The observed ``date``, coordinates, zone, ``hours`` and ``nulls``.
+
+    Raises:
+        WeatherDataError: the archive refused, or the day came back empty.
+    """
+    backfiller = backfiller or HistoricalWeatherBackfiller()
+    schedules = load_schedules([CORPUS_FIRST_SEASON]).sort_values("gameday")
+    earliest = schedules.iloc[0]
+    day = str(earliest["gameday"])
+
+    venues_df = backfiller._load_venue_data()
+    venue = backfiller._get_venue_record_by_stadium_id(
+        earliest["stadium_id"], venues_df, game_id=earliest["game_id"]
+    )
+
+    async def _run() -> dict[str, Any]:
+        if client is not None:
+            return await _probe_archive_day(
+                client,
+                venue["latitude"],
+                venue["longitude"],
+                day,
+                str(venue["timezone"]),
+            )
+        async with httpx.AsyncClient(timeout=30.0) as owned:
+            return await _probe_archive_day(
+                owned,
+                venue["latitude"],
+                venue["longitude"],
+                day,
+                str(venue["timezone"]),
+            )
+
+    observed = asyncio.run(_run())
+    observed["stadium_id"] = str(earliest["stadium_id"])
+    observed["game_id"] = str(earliest["game_id"])
+
+    if observed["hours"] == 0:
+        raise WeatherDataError(
+            f"the archive returned NO hourly data for the corpus floor {day} at "
+            f"{observed['stadium_id']} ({observed['latitude']}, "
+            f"{observed['longitude']}). The corpus starts here, so a run would "
+            "produce 24 seasons of absent observations. Nothing is imputed for it."
         )
 
-        try:
-            # Load required data
-            venues_df = self._load_venue_data()
-            games_df = self._load_games_data(season, week)
+    logger.info(
+        "Archive coverage of the corpus floor CONFIRMED",
+        date=day,
+        stadium_id=observed["stadium_id"],
+        hours=observed["hours"],
+        nulls=observed["nulls"],
+    )
+    return observed
 
-            if games_df.empty:
-                logger.warning("No games found", season=season, week=week)
-                return pd.DataFrame()
 
-            # Fetch weather data (hard-fails on missing outdoor weather)
-            weather_df = self.fetch_weather_for_games(
-                games_df, venues_df, forecast_time
-            )
+def backfill_season(
+    season: int,
+    *,
+    base_path: Any = None,
+    games_df: pd.DataFrame | None = None,
+    backfiller: HistoricalWeatherBackfiller | None = None,
+    forecast_time: datetime | None = None,
+    throttle: RequestThrottle | None = None,
+    accepted_null_fractions: dict[int, float] | None = None,
+) -> dict[str, Any]:
+    """Fetch ONE season and write ONE bronze snapshot. Promotes NOTHING.
 
-            if weather_df.empty:
-                logger.warning("No weather data fetched")
-                return weather_df
+    THE UNIT OF RESUMABILITY. A season is roughly 176 to 219 fetches -- under four
+    minutes at the declared interval -- so an interrupted corpus run loses at most
+    one season's budget rather than a whole day's.
 
-            # Save Bronze snapshot (append-only, timestamped)
-            if week is not None:
-                save_bronze_snapshot(
-                    weather_df,
-                    "weather",
-                    season=season,
-                    week=week,
-                    base_path=base_path,
+    The snapshot is written with ``exclusive=True``, which is not optional here: it
+    makes the CREATE the exclusive step, which is the only place a same-second
+    collision can actually be decided, and it holds ACROSS PROCESSES where a
+    check-then-write cannot. That is SPEC R2's concurrency BACKSTOP, obtained from
+    an existing parameter rather than from new machinery -- and it is a FILENAME
+    backstop only. The corpus-level guarantee is :class:`CorpusLock`.
+
+    THE FRAME IS VALIDATED AT BRONZE-WRITE TIME as well as at promotion.
+    :func:`data.quality_gates.validate_bronze_to_silver` raises if ANY row fails,
+    killing the whole batch, so validating once over 6,499 rows at the end would let
+    one bad 2003 row destroy an 81-minute run at its last step. Validating per
+    season makes the failure local, named and cheap.
+
+    Args:
+        season: The season to fetch. Refused by name if outside the corpus.
+        base_path: Data lake root. Threaded so a test writes somewhere else.
+        games_df: The games to fetch. The INJECTION SEAM: when None, the season is
+            read from the silver ``games`` table exactly as production does.
+        backfiller: The ingester. Constructed when None.
+        forecast_time: When this run was taken. Defaults to now, in UTC.
+        throttle: The run's request throttle.
+        accepted_null_fractions: Operator-supplied ``{season: observed_fraction}``
+            authorisations for AMBIGUOUS seasons (Ruling L4).
+
+    Returns:
+        A per-season report: the season, the game and fetch counts, the snapshot
+        path, the null-observation arm and its evidence, and whether an override
+        was accepted.
+
+    Raises:
+        DataIngestionError: the season is outside the corpus, its games frame is
+            empty, or the null-observation gate refuses it.
+    """
+    assert_season_in_corpus(season)
+
+    backfiller = backfiller or HistoricalWeatherBackfiller()
+    if throttle is None:
+        throttle = RequestThrottle(ARCHIVE_REQUEST_INTERVAL_SECONDS)
+    if forecast_time is None:
+        forecast_time = datetime.now(UTC)
+
+    if games_df is None:
+        games_df = backfiller._load_games_data(season, None)
+
+    if games_df.empty:
+        raise DataIngestionError(
+            f"season {season} has NO games to fetch. NOTHING is written for it: an "
+            "empty bronze snapshot would make the season look attempted while "
+            "covering no game, and the coverage-based resume rule would keep "
+            "reporting it missing with no log line explaining why (SPEC edge "
+            "empty/R2). Check data/silver/games.parquet for that season."
+        )
+
+    venues_df = backfiller._load_venue_data()
+    weather_df = backfiller.fetch_weather_for_games(
+        games_df, venues_df, forecast_time, throttle=throttle
+    )
+
+    if weather_df.empty:
+        raise DataIngestionError(
+            f"season {season} produced NO weather records from {len(games_df)} "
+            "games. Nothing is written for it."
+        )
+
+    # The absent flags, in FETCH ORDER, over the games that were ACTUALLY ASKED. A
+    # dome was never asked, so including it would dilute the fraction and make the
+    # gate report a number it did not measure.
+    fetched = weather_df[weather_df["is_outdoor"].astype(bool)]
+    absent_flags = [not bool(value) for value in fetched["weather_coverage"]]
+
+    arm, evidence, override_accepted = _apply_null_observation_gate(
+        season, absent_flags, accepted_null_fractions, base_path=base_path
+    )
+
+    # Per-season validation, BEFORE the write. The frame written to bronze is the
+    # RAW one -- bronze is the snapshot of record -- but it is proven promotable
+    # first, so a bad row is caught where it is cheap to fix.
+    promote_weather_bronze_to_silver(weather_df)
+
+    path = save_bronze_snapshot(
+        weather_df,
+        BACKFILL_BRONZE_TABLE,
+        season=season,
+        week=0,
+        base_path=base_path,
+        exclusive=True,
+    )
+
+    logger.info(
+        "Season written to bronze",
+        season=season,
+        games=len(weather_df),
+        fetched=len(fetched),
+        null_arm=arm,
+        null_fraction=evidence["fraction"],
+        path=str(path),
+    )
+
+    return {
+        "season": season,
+        "games": len(weather_df),
+        "fetched": len(fetched),
+        "written_without_a_call": len(weather_df) - len(fetched),
+        "path": str(path),
+        "null_arm": arm,
+        "null_evidence": evidence,
+        "override_accepted": override_accepted,
+    }
+
+
+def promote_corpus_to_silver(base_path: Any = None) -> dict[str, Any]:
+    """Validate every `weather_backfill` bronze snapshot and upsert silver `weather`.
+
+    LATEST SNAPSHOT WINS, per ``game_id``. Snapshot filenames carry a UTC timestamp,
+    so reading them in sorted order and keeping the LAST row per game makes a re-run
+    supersede its predecessor rather than duplicate it -- which, with
+    :func:`data.storage.upsert_silver`'s latest-wins merge, is what makes a double
+    run leave the silver row count unchanged (SPEC edge idempotency/R4).
+
+    This function FETCHES NOTHING. It is the ``--promote-silver`` half of the run,
+    and Plan 33.1-06 brackets it with a digest of the whole data tree.
+    """
+    bronze = _resolve_data_root(base_path) / "bronze"
+    paths = sorted(bronze.glob(f"{BACKFILL_BRONZE_GLOB}.parquet"))
+    if not paths:
+        raise DataIngestionError(
+            f"there are no {BACKFILL_BRONZE_TABLE} bronze snapshots under "
+            f"{bronze.as_posix()} to promote. Bronze is the snapshot of record, so "
+            "silver is never written from anything else. Run the fetch first."
+        )
+
+    frames = [pd.read_parquet(path, engine="pyarrow") for path in paths]
+    combined = pd.concat(frames, ignore_index=True)
+    combined = combined.drop_duplicates(subset=["game_id"], keep="last")
+
+    validated = promote_weather_bronze_to_silver(combined)
+    validated["created_at"] = datetime.now(UTC)
+
+    silver_path = upsert_silver(validated, "weather", base_path=base_path)
+
+    log_data_operation(
+        operation="promote",
+        table="weather",
+        rows=len(validated),
+        snapshots=len(paths),
+    )
+
+    return {
+        "snapshots": len(paths),
+        "rows": len(validated),
+        "silver_path": str(silver_path),
+    }
+
+
+def backfill_corpus(
+    seasons: Sequence[int] | None = None,
+    *,
+    base_path: Any = None,
+    fetch: bool = True,
+    promote: bool = False,
+    force_unlock: bool = False,
+    games_provider: Callable[[int], pd.DataFrame] | None = None,
+    backfiller: HistoricalWeatherBackfiller | None = None,
+    throttle: RequestThrottle | None = None,
+    accepted_null_fractions: dict[int, float] | None = None,
+    verify_archive_floor: bool = True,
+) -> dict[str, Any]:
+    """Run the corpus: take the lock, decide what is missing, fetch, then promote.
+
+    THE LOCK SPANS THE WHOLE RUN (Ruling L3). It is taken BEFORE resume
+    determination and held through every season and through the promotion, because
+    a lock released between the pre-state digest and the promotion protects nothing.
+    Plan 33.1-06's digest bracket runs inside it.
+
+    Args:
+        seasons: Explicit seasons, or None to use :func:`seasons_still_missing`.
+        base_path: Data lake root.
+        fetch: Fetch the targeted seasons. False for a promotion-only run.
+        promote: Promote the bronze corpus into silver after fetching.
+        force_unlock: Clear a stale lock first. The operator must have confirmed
+            the recorded pid is gone.
+        games_provider: Injection seam -- ``season -> games frame``.
+        backfiller: The ingester. Constructed when None.
+        throttle: The run's request throttle.
+        accepted_null_fractions: ``{season: observed_fraction}`` authorisations.
+        verify_archive_floor: Probe ERA5 coverage of the corpus floor before the
+            first season. One request.
+
+    Returns:
+        A run report carrying the seasons considered, the per-season reports and
+        the promotion result.
+    """
+    backfiller = backfiller or HistoricalWeatherBackfiller()
+    if throttle is None:
+        throttle = RequestThrottle(ARCHIVE_REQUEST_INTERVAL_SECONDS)
+
+    report: dict[str, Any] = {
+        "seasons_requested": tuple(seasons) if seasons is not None else None,
+        "seasons": [],
+        "promotion": None,
+    }
+
+    with acquire_corpus_lock(base_path=base_path, force=force_unlock):
+        missing = seasons_still_missing(base_path=base_path)
+        report["seasons_still_missing"] = missing
+        targets = tuple(seasons) if seasons is not None else missing
+        report["seasons_targeted"] = targets
+
+        if fetch and targets:
+            if verify_archive_floor:
+                report["archive_floor"] = assert_archive_covers_corpus_floor(
+                    backfiller=backfiller
                 )
-            else:
-                # For full-season ingestion, use week=0 as a sentinel
-                save_bronze_snapshot(
-                    weather_df,
-                    "weather",
-                    season=season,
-                    week=0,
-                    base_path=base_path,
+            for season in targets:
+                report["seasons"].append(
+                    backfill_season(
+                        season,
+                        base_path=base_path,
+                        games_df=(
+                            games_provider(season)
+                            if games_provider is not None
+                            else None
+                        ),
+                        backfiller=backfiller,
+                        throttle=throttle,
+                        accepted_null_fractions=accepted_null_fractions,
+                    )
                 )
 
-            # Validate through quality gate (hard-fail on bad rows) AND assert the
-            # coverage flag survived the schema's extra="ignore" (RESEARCH P-6).
-            validated_df = promote_weather_bronze_to_silver(weather_df)
+        if promote:
+            report["promotion"] = promote_corpus_to_silver(base_path=base_path)
 
-            # Ensure no duplicate weather records per game
-            initial_count = len(validated_df)
-            validated_df = validated_df.drop_duplicates(
-                subset=["game_id"], keep="first"
-            )
-            final_count = len(validated_df)
-
-            if initial_count != final_count:
-                logger.info(
-                    "Deduplicated weather records",
-                    initial_records=initial_count,
-                    final_records=final_count,
-                    duplicates_removed=initial_count - final_count,
-                )
-
-            # Add metadata timestamp
-            validated_df["created_at"] = datetime.now(UTC)
-
-            # Upsert to Silver (latest wins by game_id)
-            upsert_silver(validated_df, "weather", base_path=base_path)
-
-            log_data_operation(
-                operation="ingest",
-                table="weather",
-                rows=len(validated_df),
-                season=season,
-                week=week,
-            )
-
-            logger.info(
-                "Weather data ingestion completed successfully",
-                total_records=len(validated_df),
-                unique_games=len(validated_df),
-                outdoor_games=int(validated_df["is_outdoor"].sum()),
-                season=season,
-                week=week,
-            )
-
-            return validated_df
-
-        except DataIngestionError:
-            raise
-        except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
-            logger.error("Weather data ingestion failed", error=str(e))
-            raise DataIngestionError(f"Weather ingestion failed: {e}")
+    return report
 
 
 def stamp_weather_source_on_existing_rows(
@@ -1060,9 +1883,50 @@ def main():
             "been played."
         )
     )
-    parser.add_argument("--season", type=int, help="Season to backfill")
     parser.add_argument(
-        "--week", type=int, default=None, help="Week to backfill (default: all)"
+        "--season",
+        type=int,
+        help=(
+            "ONE season to backfill. The whole season is the unit -- `--week` is "
+            "gone, because the corpus is whole seasons and the resume rule is "
+            "keyed on a season's game-id coverage."
+        ),
+    )
+    parser.add_argument(
+        "--all-seasons",
+        action="store_true",
+        help=(
+            "Backfill every season seasons_still_missing() reports, ascending. "
+            "Safe to re-invoke after an interruption: a covered season is skipped."
+        ),
+    )
+    parser.add_argument(
+        "--promote-silver",
+        action="store_true",
+        help=(
+            "Validate the weather_backfill bronze corpus and upsert silver "
+            "`weather`. Fetches nothing."
+        ),
+    )
+    parser.add_argument(
+        "--force-unlock",
+        action="store_true",
+        help=(
+            "Clear a stale corpus lock before running. Use ONLY after confirming "
+            "the pid the refusal named is gone: a healthy paced run legitimately "
+            "holds the lock for about 81 minutes."
+        ),
+    )
+    parser.add_argument(
+        "--accept-null-fraction",
+        action="append",
+        metavar="SEASON=FRACTION",
+        default=[],
+        help=(
+            "Authorise an AMBIGUOUS season's absent-observation fraction. The "
+            "fraction must be the OBSERVED one the refusal printed, so a season "
+            "cannot be pre-authorised blind. Repeatable."
+        ),
     )
     parser.add_argument(
         "--stamp-weather-source",
@@ -1084,22 +1948,54 @@ def main():
         print(f"Stamped weather_source on {len(frame)} silver weather rows")
         return
 
-    if args.season is None:
-        print("--season is required unless --stamp-weather-source is given")
+    if args.force_unlock and not (
+        args.all_seasons or args.season or args.promote_silver
+    ):
+        cleared = release_corpus_lock()
+        print("Cleared the corpus lock" if cleared else "No corpus lock to clear")
+        return
+
+    if not (args.all_seasons or args.season or args.promote_silver):
+        print(
+            "nothing to do: give --all-seasons, --season, --promote-silver, "
+            "--stamp-weather-source or --force-unlock"
+        )
         sys.exit(1)
 
     try:
-        backfiller = HistoricalWeatherBackfiller()
-        weather_df = backfiller.backfill_weather(season=args.season, week=args.week)
-        if weather_df.empty:
-            print("No weather data backfilled")
-            return
-        print(f"Backfilled {len(weather_df)} weather records from the ARCHIVE endpoint")
-        print(f"Season: {args.season}, Week: {args.week or 'all'}")
+        accepted = parse_accept_null_fraction(args.accept_null_fraction)
+        report = backfill_corpus(
+            seasons=(args.season,) if args.season else None,
+            fetch=bool(args.all_seasons or args.season),
+            promote=bool(args.promote_silver),
+            force_unlock=bool(args.force_unlock),
+            accepted_null_fractions=accepted,
+        )
     except (DataIngestionError, WeatherDataError, OSError, ValueError) as exc:
         logger.error("Historical weather backfill failed", error=str(exc))
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+    _print_run_report(report)
+
+
+def _print_run_report(report: dict[str, Any]) -> None:
+    """Print what a run did, in the terms the operator's next action needs."""
+    print(f"Seasons still missing: {list(report.get('seasons_still_missing', ()))}")
+    print(f"Seasons targeted:      {list(report.get('seasons_targeted', ()))}")
+    for season_report in report.get("seasons", ()):
+        print(
+            f"  {season_report['season']}: {season_report['games']} rows, "
+            f"{season_report['fetched']} fetched, "
+            f"{season_report['written_without_a_call']} written with no call, "
+            f"null arm {season_report['null_arm']}"
+        )
+    promotion = report.get("promotion")
+    if promotion:
+        print(
+            f"Promoted {promotion['rows']} rows from {promotion['snapshots']} "
+            f"snapshot(s) into {promotion['silver_path']}"
+        )
 
 
 if __name__ == "__main__":
