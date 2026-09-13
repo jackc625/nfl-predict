@@ -47,7 +47,10 @@ from features.qb_tracking import QBTracker
 from features.snaps import SnapCountBuilder
 from features.team_form import TeamFormCalculator
 from features.validation import LeakageGate, LeakageViolation
-from features.weather import WeatherFeaturesCalculator
+from features.weather import (
+    WEATHER_FEATURE_COLUMNS_BY_BUILDER,
+    WeatherFeaturesCalculator,
+)
 from utils import get_logger
 from utils.date_utils import ET
 from utils.exceptions import DataIngestionError
@@ -111,6 +114,20 @@ _SOURCE_LOAD_ERRORS = (
 #      EMPTY list, ``excluded_columns`` adds nothing, and the family is excluded
 #      again AUTOMATICALLY if it ever returns.
 _LINE_MOVEMENT_GROUP = "line_movement"
+
+# THE TWO WEATHER BUILDER IDENTITIES (Ruling K1, Plan 33.1-04).
+#
+# `features.weather` exposes two builders that do NOT emit the same weather
+# columns: `build_weather_features` (the "full" builder, which writes silver
+# `weather_features` and therefore feeds gold) and `build_features` (the
+# "compressed" FeatureBuilder-Protocol builder). The missing-preserving set
+# below is keyed by these names because ONE broad set would become an assertion
+# about whichever builder a test happened to exercise, while the other silently
+# median-filled -- and half the evidence saying it works is worse than none.
+#
+# The order matches `WEATHER_FEATURE_COLUMNS_BY_BUILDER`, and a test asserts
+# the two agree, so a third builder cannot appear on one side only.
+BUILDER_KEYS: tuple[str, ...] = ("full", "compressed")
 
 
 def drop_feature_group(df: pd.DataFrame, group: str) -> pd.DataFrame:
@@ -204,6 +221,122 @@ class FeatureMatrixBuilder:
         # coverage floor -- a fact worth surfacing, which a log line alone would
         # never make checkable.
         self.self_fit_seasons: dict[str, list[int]] = {}
+
+        # RULING K1: the per-builder missing-preserving set. `None` until a
+        # weather frame is merged, and the weather branch of `combine_features`
+        # is its ONLY writer. The mapping carries exactly ONE key -- the builder
+        # whose frame was actually merged -- because a build merges one weather
+        # frame, and declaring an entry for a builder that did not run would be
+        # asserting about a set nothing consumed.
+        self.missing_preserving_columns: dict[str, tuple[str, ...]] | None = None
+        self.active_builder_key: str | None = None
+
+    # ------------------------------------------------------------------
+    # Ruling K1: the per-builder missing-preserving seam
+    # ------------------------------------------------------------------
+
+    def record_missing_preserving_columns(self, weather_features: pd.DataFrame) -> str:
+        """Declare the preserving set from the weather frame that was MERGED.
+
+        DERIVED, never hand-listed. The set is the merged frame's own columns
+        minus ``game_id``, cross-checked against
+        ``features.weather.WEATHER_FEATURE_COLUMNS_BY_BUILDER`` so a hand edit
+        to either side is a failure rather than a silent divergence.
+
+        The builder identity is RESOLVED from those columns rather than passed
+        in, because the caller reads the frame off silver and does not otherwise
+        know which builder wrote it.
+
+        Args:
+            weather_features: The weather frame about to be merged, carrying
+                ``game_id`` plus one builder's feature columns.
+
+        Returns:
+            The resolved builder key.
+
+        Raises:
+            ValueError: The frame's columns are not a subset of either declared
+                builder entry, so no set can be derived from them honestly.
+        """
+        merged = [c for c in weather_features.columns if c != "game_id"]
+        candidates = [
+            key
+            for key, declared in WEATHER_FEATURE_COLUMNS_BY_BUILDER.items()
+            if set(merged) <= set(declared)
+        ]
+        if not candidates:
+            declared_union = set().union(
+                *(set(v) for v in WEATHER_FEATURE_COLUMNS_BY_BUILDER.values())
+            )
+            msg = (
+                "the merged weather frame carries columns that belong to no "
+                "declared builder entry: "
+                f"{sorted(set(merged) - declared_union)}. Update "
+                "features.weather's family tuples rather than widening this "
+                "resolver -- a set derived from an unrecognised frame is a set "
+                "nobody declared."
+            )
+            raise ValueError(msg)
+
+        # A frame that fits both entries (only possible for a frame narrow
+        # enough to be ambiguous) resolves to the one it matches most closely.
+        builder_key = max(
+            candidates,
+            key=lambda key: len(
+                set(merged) & set(WEATHER_FEATURE_COLUMNS_BY_BUILDER[key])
+            ),
+        )
+        declared = WEATHER_FEATURE_COLUMNS_BY_BUILDER[builder_key]
+        self.missing_preserving_columns = {
+            builder_key: tuple(c for c in merged if c in set(declared))
+        }
+        self.active_builder_key = builder_key
+        logger.info(
+            "Recorded the missing-preserving weather columns",
+            builder=builder_key,
+            preserved=len(self.missing_preserving_columns[builder_key]),
+        )
+        return builder_key
+
+    def _preserved_weather_columns(self) -> tuple[str, ...]:
+        """The active builder's preserving set. FAIL-CLOSED, per builder.
+
+        An exemption that silently does nothing is worse than none, because it
+        reads as a guarantee and behaves as a comment -- the same failure mode
+        ``stamp_weather_source_on_existing_rows`` records for a silently-ignored
+        ``base_path``. An exemption that is live for one builder and inert for
+        the other is worse still, because half the evidence says it works, so
+        the refusal names WHICH builder it is refusing for.
+
+        Returns:
+            The preserved column names, or an empty tuple when no weather frame
+            was merged at all (a build with no weather source has nothing to
+            preserve and nothing to fabricate).
+
+        Raises:
+            ValueError: A weather frame WAS merged and its entry is absent,
+                ``None`` or empty.
+        """
+        if self.missing_preserving_columns is None:
+            return ()
+        builder_key = self.active_builder_key
+        if builder_key is None:
+            msg = (
+                "missing_preserving_columns is set but active_builder_key is "
+                "None, so no call site can tell which builder's entry to read"
+            )
+            raise ValueError(msg)
+        preserved = self.missing_preserving_columns.get(builder_key)
+        if not preserved:
+            msg = (
+                "missing_preserving_columns has no usable entry for builder "
+                f"{builder_key!r}. A weather frame WAS merged, so the "
+                "prior-seasons median and the neutral 0.0 z-score would both "
+                "run over the weather family and put back the numeric stand-in "
+                "SPEC prohibition 1 forbids. Refusing rather than imputing."
+            )
+            raise ValueError(msg)
+        return tuple(preserved)
 
     def load_all_feature_sources(
         self,
@@ -487,6 +620,10 @@ class FeatureMatrixBuilder:
             weather_features = weather_df.drop(
                 columns=["season", "week"], errors="ignore"
             )
+            # RULING K1: the ONE writer of the missing-preserving set, placed
+            # at the merge so the set is derived from the frame that actually
+            # arrived rather than from a list somebody maintains by hand.
+            self.record_missing_preserving_columns(weather_features)
             combined_features = combined_features.merge(
                 weather_features, on=merge_cols, how="left"
             )
@@ -809,11 +946,34 @@ class FeatureMatrixBuilder:
         # time any imputation could see it. Keeping an unreachable guard that names
         # a builder this module no longer imports would be a false statement about
         # what the code does.
+        # RULING K1, evaluated ONCE and FAIL-CLOSED. Read before the loop so a
+        # merged weather frame with no usable entry refuses here rather than
+        # after silently median-filling the first weather column it meets.
+        preserved_weather_columns = set(self._preserved_weather_columns())
+
         for col in numeric_cols:
             original_missing = processed_df[col].isna().sum()
 
+            # THE WEATHER EXEMPTION (SPEC prohibition 1). Neither imputer runs
+            # for a column in the active builder's preserving set: a seasonal or
+            # venue median for an absent observation is the same defect wearing
+            # a better label, which is exactly what the WR-10 neutral-default
+            # branch removed from the top of this loop was doing for the
+            # line-movement family. The NaN is the answer, and it survives
+            # expanding_normalize too.
+            #
+            # The exemption is from IMPUTATION only, and deliberately not from
+            # winsorization: a MEASURED temperature has genuine outliers, and
+            # `_is_discrete_indicator` below already exempts `weather_coverage`
+            # by the CR-02 rule, which is why the coverage flag cannot be
+            # clipped into a constant on a single-season build. Missing-handling
+            # and outlier-handling have been independent since CR-02 and stay so.
+            preserve_this_column = col in preserved_weather_columns
+            if preserve_this_column and original_missing > 0:
+                missing_stats[col] = original_missing
+
             # Handle missing data
-            if original_missing > 0:
+            if original_missing > 0 and not preserve_this_column:
                 # For team-based features, use team's season average
                 if any(prefix in col for prefix in ["home_", "away_"]):
                     processed_df[col] = self._impute_team_features(processed_df, col)
@@ -1074,6 +1234,91 @@ class FeatureMatrixBuilder:
             result.loc[season_mask] = season_values.fillna(median_value)
 
         return result
+
+    def normalize_combined_features(
+        self,
+        processed_features: pd.DataFrame,
+        target_season: int | None = None,
+    ) -> pd.DataFrame:
+        """Expanding-window normalization (replaces within-season Z-scores).
+
+        EXTRACTED from ``generate_feature_matrices`` by Plan 33.1-04 Task 2,
+        verbatim apart from the new missing-preserving argument. (Spelling that
+        argument's name out here would make it look like a third pass site to
+        the source scan that counts them, which is exactly the kind of hollow
+        hit a scan over prose produces.) The extraction is what makes Ruling
+        K1's CONSUMPTION test possible: the
+        argument at each real call site can now be captured without driving the
+        whole build, which would write gold.
+
+        Args:
+            processed_features: The combined matrix, after missing-data and
+                outlier handling.
+            target_season: Single-season mode when set, batch mode when None.
+
+        Returns:
+            The normalized frame.
+        """
+        # Identifier columns plus the display-only raw_* passthroughs. The
+        # display half is DERIVED from utils.feature_columns, the single place
+        # those names are stated, so the same list also governs which columns
+        # models.temporal keeps out of the MODEL feature set (Plan 30-15 /
+        # D30-OWNER-04). A display column added there needs no edit here.
+        exclude_cols = normalization_exclude_columns()
+        feature_cols = [
+            col for col in processed_features.columns if col not in exclude_cols
+        ]
+        numeric_feature_cols = (
+            processed_features[feature_cols]
+            .select_dtypes(include=[np.number])
+            .columns.tolist()
+        )
+
+        # RULING K1: read the entry for the builder that actually ran, ONCE,
+        # and hand the SAME entry to both call sites below. Fail-closed: a
+        # merged weather frame with no usable entry raises here rather than
+        # letting the neutral 0.0 z-score put the stand-in back.
+        preserve_by_builder = {
+            self.active_builder_key
+            or BUILDER_KEYS[0]: self._preserved_weather_columns()
+        }
+        active_builder = self.active_builder_key or BUILDER_KEYS[0]
+
+        # Compute prior-season stats for bootstrap and normalize
+        if target_season:
+            # Single-season mode: compute prior stats once
+            prior_stats = compute_prior_season_stats(
+                processed_features, numeric_feature_cols, target_season - 1
+            )
+            return expanding_normalize(
+                processed_features,
+                feature_cols=numeric_feature_cols,
+                group_col="season",
+                sort_cols=["season", "week"],
+                min_periods=4,
+                prior_season_stats=prior_stats,
+                preserve_missing_cols=preserve_by_builder[active_builder],
+            )
+
+        # Batch mode: compute prior-season stats per season
+        seasons = sorted(processed_features["season"].unique())
+        normalized_parts = []
+        for s in seasons:
+            season_df = processed_features[processed_features["season"] == s].copy()
+            prior_stats = compute_prior_season_stats(
+                processed_features, numeric_feature_cols, s - 1
+            )
+            norm_part = expanding_normalize(
+                season_df,
+                feature_cols=numeric_feature_cols,
+                group_col="season",
+                sort_cols=["season", "week"],
+                min_periods=4,
+                prior_season_stats=prior_stats,
+                preserve_missing_cols=preserve_by_builder[active_builder],
+            )
+            normalized_parts.append(norm_part)
+        return pd.concat(normalized_parts, ignore_index=False)
 
     @staticmethod
     def _is_discrete_indicator(series: pd.Series) -> bool:
@@ -1550,59 +1795,9 @@ class FeatureMatrixBuilder:
                 "weather_severity_score"
             ]
 
-            # -- Expanding-window normalization (replaces within-season Z-scores) --
-            #
-            # Identifier columns plus the display-only raw_* passthroughs. The
-            # display half is DERIVED from utils.feature_columns, the single
-            # place those names are stated, so the same list also governs which
-            # columns models.temporal keeps out of the MODEL feature set
-            # (Plan 30-15 / D30-OWNER-04). A display column added there needs no
-            # edit here.
-            exclude_cols = normalization_exclude_columns()
-            feature_cols = [
-                col for col in processed_features.columns if col not in exclude_cols
-            ]
-            numeric_feature_cols = (
-                processed_features[feature_cols]
-                .select_dtypes(include=[np.number])
-                .columns.tolist()
+            normalized_features = self.normalize_combined_features(
+                processed_features, target_season=target_season
             )
-
-            # Compute prior-season stats for bootstrap and normalize
-            if target_season:
-                # Single-season mode: compute prior stats once
-                prior_stats = compute_prior_season_stats(
-                    processed_features, numeric_feature_cols, target_season - 1
-                )
-                normalized_features = expanding_normalize(
-                    processed_features,
-                    feature_cols=numeric_feature_cols,
-                    group_col="season",
-                    sort_cols=["season", "week"],
-                    min_periods=4,
-                    prior_season_stats=prior_stats,
-                )
-            else:
-                # Batch mode: compute prior-season stats per season
-                seasons = sorted(processed_features["season"].unique())
-                normalized_parts = []
-                for s in seasons:
-                    season_df = processed_features[
-                        processed_features["season"] == s
-                    ].copy()
-                    prior_stats = compute_prior_season_stats(
-                        processed_features, numeric_feature_cols, s - 1
-                    )
-                    norm_part = expanding_normalize(
-                        season_df,
-                        feature_cols=numeric_feature_cols,
-                        group_col="season",
-                        sort_cols=["season", "week"],
-                        min_periods=4,
-                        prior_season_stats=prior_stats,
-                    )
-                    normalized_parts.append(norm_part)
-                normalized_features = pd.concat(normalized_parts, ignore_index=False)
 
             # Create target variables
             final_features = self.create_target_variables(normalized_features)

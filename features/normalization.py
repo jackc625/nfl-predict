@@ -12,6 +12,7 @@ Key behaviors:
 """
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -32,6 +33,7 @@ def expanding_normalize(
     sort_cols: list[str] | None = None,
     min_periods: int = 4,
     prior_season_stats: dict[str, tuple[float, float]] | None = None,
+    preserve_missing_cols: Sequence[str] = (),
 ) -> pd.DataFrame:
     """Normalize features using expanding window within each season.
 
@@ -56,6 +58,18 @@ def expanding_normalize(
             are used as fallback.
         prior_season_stats: Dict mapping column name to (mean, std) tuple
             from the prior season. Used as bootstrap for early weeks.
+        preserve_missing_cols: Columns whose INPUT NaNs must come back out as
+            NaN instead of the neutral 0.0 z-score. Defaults to empty, so every
+            existing caller is byte-preserved.
+
+            TWO CAUSES WERE COLLAPSED INTO ONE FILL, and this separates them.
+            The ``fillna(0.0)`` below exists for a position whose STATISTIC was
+            unavailable -- an early week with fewer than ``min_periods`` points
+            and no prior-season bootstrap. Applied to a position whose VALUE was
+            absent it fabricates a neutral reading for a measurement that does
+            not exist. A weather observation that never arrived is the second
+            case, not the first (SPEC R5, D33.1-07), and only a caller that
+            NAMES a column gets the second treatment for it.
 
     Returns:
         DataFrame with normalized values replacing raw values in
@@ -63,6 +77,8 @@ def expanding_normalize(
     """
     if sort_cols is None:
         sort_cols = [group_col, "week"]
+
+    preserve_missing = set(preserve_missing_cols)
 
     result = df.sort_values(sort_cols).copy()
 
@@ -75,6 +91,12 @@ def expanding_normalize(
                 continue
 
             values = result.loc[season_idx, col].copy()
+
+            # The INPUT absence mask, captured BEFORE anything is computed.
+            # It has to be taken here rather than derived afterwards: by the
+            # time the fill below runs, a position that was absent and a
+            # position whose statistic was unavailable are both simply NaN.
+            absent_mask = values.isna() if col in preserve_missing else None
 
             # Compute expanding mean and std (only uses data up to current row)
             exp_mean = values.expanding(min_periods=min_periods).mean()
@@ -102,6 +124,15 @@ def expanding_normalize(
             still_missing = normalized.isna()
             if still_missing.any():
                 normalized = normalized.fillna(0.0)
+
+            # ...EXCEPT where the input VALUE was absent rather than its
+            # statistic. The fill above answers "this column could not be
+            # normalized here"; it must not also answer "this measurement does
+            # not exist". SPEC prohibition 1: replacing an absent observation
+            # with any number, under any name, is the same defect wearing a
+            # better label -- and a neutral z-score is a number.
+            if absent_mask is not None and absent_mask.any():
+                normalized = normalized.mask(absent_mask)
 
             result.loc[season_idx, col] = normalized
 

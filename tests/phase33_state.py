@@ -3891,3 +3891,91 @@ WEATHER_NULL_STATE_MATRIX: dict[str, object] = {
         "the same way for the same recorded reason."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# THE TWO MECHANISMS THAT WOULD HAVE PUT THE STAND-IN BACK, AND THE OPT-IN,
+# PER-BUILDER SEAM THAT STOPS THEM.
+#
+# APPENDED by Plan 33.1-04 Task 2 on 2026-09-13. Nothing above this line was
+# edited.
+#
+# WHY THIS SLOT EXISTS AT ALL. Plan 33.1-04 Task 1 stopped `features/weather.py`
+# producing a numeric stand-in for an absent observation. Two mechanisms
+# DOWNSTREAM of it would have re-introduced one, silently, after the deletion --
+# and neither is named in the SPEC, the CONTEXT or the research. Recording them
+# here is what stops the next reader concluding that deleting the factory was
+# the whole fix.
+#
+# THE SEAM IS OPT-IN AND PER BUILDER. `preserve_missing_cols` defaults to empty,
+# so every column outside the declared weather set keeps today's behaviour byte
+# for byte, and the declared set is keyed by builder identity because the two
+# weather builders do not emit the same columns (Ruling K1, Codex 33.1-04
+# MEDIUM). The proof is a CONSUMPTION assertion captured at the real call sites,
+# not a reading of the constant.
+# ---------------------------------------------------------------------------
+
+MISSING_PRESERVING_SEAM: dict[str, object] = {
+    "recorded_on": "2026-09-13",
+    "recorded_by": "Plan 33.1-04 Task 2",
+    "requirement": "R5",
+    "prohibition": (
+        "MUST NOT replace the 65.0 constant with any other numeric stand-in "
+        "for a missing observation, under any name -- a seasonal average or a "
+        "venue mean is the same defect wearing a better label"
+    ),
+    "mechanisms": {
+        "game_level_median": {
+            "file": "scripts/build_features.py",
+            "symbol": "FeatureMatrixBuilder._impute_game_level_features",
+            "what_it_would_have_done": (
+                "filled an absent weather observation with a prior-seasons "
+                "median -- the seasonal average SPEC prohibition 1 names"
+            ),
+            "exempted_by": (
+                "handle_missing_data_and_outliers skips BOTH imputers for a "
+                "column in the active builder's preserving set"
+            ),
+        },
+        "neutral_z_score": {
+            "file": "features/normalization.py",
+            "symbol": "expanding_normalize",
+            "what_it_would_have_done": (
+                "mapped the NaN to 0.0 -- the neutral z-score -- at the final "
+                "normalized.fillna(0.0)"
+            ),
+            "exempted_by": (
+                "the input NaN mask is captured BEFORE normalizing and "
+                "restored after the fill, for named columns only"
+            ),
+            "why_the_fill_still_exists": (
+                "TWO CAUSES WERE COLLAPSED INTO ONE FILL. The fallback is "
+                "correct for a position whose STATISTIC was unavailable -- an "
+                "early week below min_periods with no prior-season bootstrap. "
+                "It is wrong for a position whose VALUE was absent. This "
+                "separates them and changes nothing for the first case."
+            ),
+        },
+    },
+    "default_is_empty": True,
+    "fail_closed": True,
+    "fail_closed_rule": (
+        "a merged weather frame whose entry for the builder about to run is "
+        "absent, None or empty raises, naming BOTH the attribute and the "
+        "builder key. An exemption that silently does nothing is worse than "
+        "none, because it reads as a guarantee and behaves as a comment; one "
+        "that is live for a single builder is worse still, because half the "
+        "evidence says it works."
+    ),
+    "builder_keys": ("full", "compressed"),
+    "preserved_set_size_by_builder": {"full": 47, "compressed": 4},
+    "attribute": "scripts.build_features.FeatureMatrixBuilder.missing_preserving_columns",
+    "sole_writer": "FeatureMatrixBuilder.record_missing_preserving_columns",
+    "derived_not_hand_listed": True,
+    # The winsorization pass is DELIBERATELY not exempted: a measured
+    # temperature has genuine outliers. `weather_coverage` is already exempt
+    # under the CR-02 discrete-indicator rule, which is why the coverage flag
+    # cannot be clipped into a constant on a single-season build.
+    "winsorization_exempted": False,
+    "consumption_test": "tests/unit/test_missing_preserving_seam.py",
+}
