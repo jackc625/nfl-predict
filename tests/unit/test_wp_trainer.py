@@ -15,8 +15,9 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
 
-from models.trainers.wp_trainer import WPTrainer
+from models.trainers.wp_trainer import WP_PIPELINE_STEP_NAMES, WPTrainer
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -95,14 +96,33 @@ def wide_features_df() -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Test 1: _create_model returns LogisticRegression
+# Test 1: _create_model returns the four-step Pipeline (D33.1-R3)
 # ---------------------------------------------------------------------------
 
 
-def test_wp_trainer_creates_logistic_regression(wp_trainer):
-    """WPTrainer._create_model({}) returns a LogisticRegression instance."""
+def test_wp_trainer_creates_a_logistic_regression_pipeline(wp_trainer):
+    """WPTrainer._create_model({}) returns a Pipeline ending in LogisticRegression.
+
+    INVERTED IN PLACE by Plan 33.1-04 Task 4. It read, verbatim:
+
+        def test_wp_trainer_creates_logistic_regression(wp_trainer):
+            model = wp_trainer._create_model({})
+            assert isinstance(model, LogisticRegression)
+
+    The rule CHANGED; it did not vanish. D33.1-R3 (owner-ratified 2026-09-12)
+    wraps the estimator in `imputer -> missing_indicator -> scaler -> estimator`
+    so that `BaseTrainer.select_features`, which fits `_create_model(...)`
+    BEFORE anything is scaled, can consume the NaN-bearing weather columns this
+    phase puts into gold. A bare `LogisticRegression` raises on them.
+
+    The final step is still the same estimator, and that half is asserted below
+    -- so this test still pins "WP is a logistic regression", which is what the
+    original was protecting (MODL-02).
+    """
     model = wp_trainer._create_model({})
-    assert isinstance(model, LogisticRegression)
+    assert isinstance(model, Pipeline)
+    assert [name for name, _ in model.steps] == list(WP_PIPELINE_STEP_NAMES)
+    assert isinstance(model.named_steps["estimator"], LogisticRegression)
 
 
 # ---------------------------------------------------------------------------

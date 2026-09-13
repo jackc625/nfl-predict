@@ -20,6 +20,7 @@ import numpy as np
 import optuna
 import pandas as pd
 from sklearn.feature_selection import SelectFromModel
+from sklearn.pipeline import Pipeline
 
 from models.artifacts import save_model_artifact
 from models.clv import compute_clv_for_predictions
@@ -536,13 +537,23 @@ class BaseTrainer(ABC):
             )
         fit_frame = X[informative] if informative else X
 
+        # D33.1-R3: for WP this is now a four-step Pipeline, and that IS the fix.
+        #
+        # `informative_columns` above withholds a column that does not VARY. A
+        # NaN-bearing weather column DOES vary, so it is offered to the
+        # estimator -- and a bare `LogisticRegression` raises
+        # `ValueError: Input X contains NaN` on it. The currently-deployed WP
+        # feature list containing zero weather features does NOT protect
+        # re-selection: this function re-runs on every `train_and_evaluate`
+        # call and `models.train` exposes no feature-list flag, so a re-fit
+        # re-selects from the whole informative candidate pool.
+        #
+        # Behaviour-preserving for ATS and O/U, whose `_create_model` returns an
+        # XGBoost model that takes NaN natively.
         model = self._create_model(self._get_default_params())
         model.fit(fit_frame, y)
 
-        selector = SelectFromModel(
-            model, max_features=max_features, threshold="mean", prefit=True
-        )
-        selected_mask = selector.get_support()
+        selected_mask = self._selection_support(model, fit_frame, max_features)
         selected_features = sorted(fit_frame.columns[selected_mask].tolist())
 
         self.logger.info(
@@ -555,6 +566,64 @@ class BaseTrainer(ABC):
         )
 
         return selected_features
+
+    @staticmethod
+    def _selection_support(
+        model: Any,
+        fit_frame: pd.DataFrame,
+        max_features: int | None,
+    ) -> np.ndarray:
+        """Return a boolean mask over ``fit_frame.columns``.
+
+        Two things a plain ``SelectFromModel(model, prefit=True)`` cannot do
+        once WP's ``_create_model`` returns a Pipeline (D33.1-R3), both of them
+        mechanical rather than a change of rule:
+
+        * A ``Pipeline`` exposes neither ``coef_`` nor ``feature_importances_``,
+          so the importances are read off its FINAL STEP. Which of the two
+          shapes was needed is recorded here rather than left to be rediscovered:
+          it is the final step, because sklearn's importance getter does not
+          traverse a pipeline.
+        * WP's estimator sees TWICE the input width -- the imputed values and
+          then one missing indicator per column. The mask therefore comes back
+          at double width and is OR-reduced back onto the original columns: a
+          column is selected if its VALUE or its ABSENCE scored at or above the
+          mean. Dropping the indicator half instead would silently discard the
+          half of the signal that "this reading was missing" carries.
+
+        Byte-identical for a non-Pipeline estimator of matching width, which is
+        every ATS and O/U selection.
+
+        Args:
+            model: The fitted scoring model.
+            fit_frame: The frame it was fitted on.
+            max_features: Cap passed through to ``SelectFromModel``.
+
+        Returns:
+            Boolean mask of length ``len(fit_frame.columns)``.
+        """
+        scoring_model = model
+        if isinstance(model, Pipeline):
+            scoring_model = model.steps[-1][1]
+
+        selector = SelectFromModel(
+            scoring_model, max_features=max_features, threshold="mean", prefit=True
+        )
+        support = np.asarray(selector.get_support())
+
+        width = len(fit_frame.columns)
+        if len(support) == width:
+            return support
+        if len(support) % width == 0:
+            blocks = support.reshape(len(support) // width, width)
+            return blocks.any(axis=0)
+        msg = (
+            f"feature-selection support has length {len(support)}, which is "
+            f"neither {width} nor a multiple of it. The scoring model's feature "
+            "space cannot be mapped back onto the fit frame's columns, and "
+            "guessing an alignment here would silently select the wrong ones."
+        )
+        raise ValueError(msg)
 
     def _make_objective(
         self,

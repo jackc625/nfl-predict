@@ -3979,3 +3979,102 @@ MISSING_PRESERVING_SEAM: dict[str, object] = {
     "winsorization_exempted": False,
     "consumption_test": "tests/unit/test_missing_preserving_seam.py",
 }
+
+
+# ---------------------------------------------------------------------------
+# WP'S NULLABLE-INPUT CONTRACT, AND THE ALTERNATIVE THE OWNER REJECTED.
+#
+# APPENDED by Plan 33.1-04 Task 4 on 2026-09-13. Nothing above this line was
+# edited.
+#
+# THIS IS A SCOPE EXPANSION PAST THE SPEC'S LITERAL WORDING, and it is recorded
+# here rather than left silent. The SPEC's R4 says an absent observation is
+# written as NULL; it does not say what the WP trainer does when that NULL
+# reaches feature selection. D33.1-R3 answers that, owner-ratified at replan
+# time 2026-09-12 and attributed to R4 as nullable-input handling.
+#
+# THE MECHANISM, SO THE DECISION IS READABLE WITHOUT THE REVIEW THREAD.
+# `WPTrainer.train_and_evaluate` calls `select_features` BEFORE anything is
+# scaled; `BaseTrainer.select_features` fits `self._create_model(...)` over
+# every informative candidate column; `informative_columns` withholds a column
+# that does not VARY, and a NaN-bearing weather column DOES vary. WP's estimator
+# was `sklearn.linear_model.LogisticRegression`, which rejects NaN. The
+# currently-deployed `wp_20260824_113325` feature list containing zero weather
+# features does NOT protect re-selection: selection re-runs on every call and
+# `models.train` exposes no feature-list flag.
+#
+# THE REJECTION IS THE PART WORTH KEEPING. Excluding nullable weather from WP's
+# selection would have worked and would have been less code. The owner refused
+# it because it forecloses WP ever using the weather this phase exists to
+# produce -- a decision about what the system is FOR, not about how to write it.
+# ---------------------------------------------------------------------------
+
+WP_NULLABLE_INPUT_CONTRACT: dict[str, object] = {
+    "ruled_on": "2026-09-12",
+    "recorded_on": "2026-09-13",
+    "recorded_by": "Plan 33.1-04 Task 4",
+    "decision": "D33.1-R3",
+    "requirement": "R4",
+    "owner_ratified": True,
+    "scope_expansion_past_spec_wording": True,
+    "composes_with": "D33.1-R1 (Plan 33.1-10 persists this same object)",
+    "pipeline_steps": ("imputer", "missing_indicator", "scaler", "estimator"),
+    "declared_in": "models.trainers.wp_trainer.WP_PIPELINE_STEP_NAMES",
+    "imputer_strategy": "median",
+    "imputer_strategy_reason": (
+        "robust to the heavy tails a temperature or wind distribution has. The "
+        "imputed VALUE is not asked to mean anything -- the indicator column "
+        "beside it is what carries the information that the reading was absent."
+    ),
+    "missing_indicator_features": "all",
+    "missing_indicator_features_reason": (
+        "the emitted column set is then a deterministic function of the INPUT "
+        "COLUMNS rather than of which rows happened to be null in the fit "
+        "window. A data-dependent indicator set would make two re-fits produce "
+        "two different feature spaces, which is the reproducibility constraint "
+        "CLAUDE.md states."
+    ),
+    "missing_indicator_suffix": "_was_missing",
+    "imputer_fitted_per_fold": True,
+    "imputer_fitted_per_fold_is": "a TEMPORAL-SAFETY requirement, not a nicety",
+    "imputer_fitted_per_fold_reason": (
+        "an imputation statistic computed over the whole frame and applied "
+        "inside a fold leaks the holdout's distribution into the training set "
+        "-- the class of defect CLAUDE.md's walk-forward constraint forbids and "
+        "that this milestone exists to detect. Pipeline.fit fits every step on "
+        "the rows it is handed, and the fit site hands it that fold's "
+        "pre-holdout rows."
+    ),
+    "per_fold_proof": (
+        "tests/unit/test_wp_nullable_weather_inputs.py::"
+        "TestTheImputerNeverCrossesAFoldBoundary::test_the_imputer_is_fitted_per_fold"
+    ),
+    "applies_to_pre_selection_path": True,
+    "applies_to_pre_selection_path_via": (
+        "models.trainers.base.BaseTrainer.select_features fits "
+        "self._create_model(...), which for WP is now the Pipeline, so the "
+        "selection path never hands NaN to a bare estimator"
+    ),
+    # The scaler moved INSIDE the estimator. Recorded because it is the property
+    # D33.1-R1 exists to guarantee and the reason wp_20260824_113325 is
+    # trained-scaled and served-raw today.
+    "scaler_is_inseparable_from_the_estimator": True,
+    "scaler_accessor": "WPTrainer.scaler (a property reading the fitted pipeline)",
+    "ats_and_ou_unaffected": True,
+    "ats_and_ou_unaffected_reason": (
+        "both _create_model methods return an XGBoost model, which takes NaN "
+        "natively, so the base.py selection change is behaviour-preserving"
+    ),
+    "rejected_alternative": {
+        "option": "exclude nullable weather columns from WP's feature selection",
+        "rejected_by": "the owner, at replan time 2026-09-12",
+        "reason": (
+            "it would foreclose WP ever using the weather this phase exists to produce"
+        ),
+    },
+    "nothing_was_fitted_or_promoted": True,
+    "nothing_was_fitted_or_promoted_note": (
+        "this task changes how WP WOULD fit. Phase 33 Wave 15 is what fits it, "
+        "and artifacts/latest.json is untouched."
+    ),
+}

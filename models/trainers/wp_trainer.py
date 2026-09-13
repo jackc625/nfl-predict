@@ -14,7 +14,10 @@ from __future__ import annotations
 import numpy as np
 import optuna
 import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.impute import MissingIndicator, SimpleImputer
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from models.calibrate import ProbabilityCalibrator
@@ -24,6 +27,89 @@ from models.trainers.base import BaseTrainer
 
 # Maximum number of features to select (soft target ~16, hard cap 20)
 _WP_MAX_FEATURES = 20
+
+# THE FOUR PIPELINE STEP NAMES, DECLARED ONCE (D33.1-R3, composing with
+# D33.1-R1). Plan 33.1-10 IMPORTS this when it persists the pipeline, so the two
+# plans read one declaration and not two.
+WP_PIPELINE_STEP_NAMES: tuple[str, ...] = (
+    "imputer",
+    "missing_indicator",
+    "scaler",
+    "estimator",
+)
+
+# The suffix every missing-indicator column carries. These columns are part of
+# WP's feature space from here on, so they are new symbols of this phase and are
+# named rather than positional.
+MISSING_INDICATOR_SUFFIX: str = "_was_missing"
+
+
+class _ImputeAndCarryRaw(BaseEstimator, TransformerMixin):
+    """Pipeline step ``imputer``: median-impute, and CARRY the original beside it.
+
+    WHY THIS IS NOT A BARE ``SimpleImputer``. A linear ``Pipeline`` hands step
+    N+1 whatever step N returned, so a stock ``MissingIndicator`` placed after a
+    stock imputer would see data with no missing values left and emit an
+    all-False indicator -- the exact opposite of what it is there for. The
+    indicator has to see the ORIGINAL, so this step emits both halves and
+    :class:`_FoldRawIntoMissingIndicator` folds the second one.
+
+    MEDIAN, and the choice is deliberate: a median is robust to the heavy tails
+    a temperature or a wind distribution has. The imputed VALUE is not asked to
+    mean anything -- the indicator column beside it is what carries the
+    information that the reading was absent.
+
+    ``statistics_`` is re-exposed so the per-fold temporal-safety assertion can
+    read the fitted statistic off a fitted pipeline.
+    """
+
+    def __init__(self, strategy: str = "median") -> None:
+        self.strategy = strategy
+
+    def fit(self, X, y=None):
+        self.imputer_ = SimpleImputer(strategy=self.strategy)
+        self.imputer_.fit(np.asarray(X, dtype=float))
+        self.n_features_in_ = np.asarray(X, dtype=float).shape[1]
+        return self
+
+    def transform(self, X):
+        raw = np.asarray(X, dtype=float)
+        return np.hstack([self.imputer_.transform(raw), raw])
+
+    @property
+    def statistics_(self) -> np.ndarray:
+        """The fitted per-column imputation statistic."""
+        return self.imputer_.statistics_
+
+
+class _FoldRawIntoMissingIndicator(BaseEstimator, TransformerMixin):
+    """Pipeline step ``missing_indicator``: append one indicator per column.
+
+    Takes the ``[imputed | raw]`` pair the step above emits and returns
+    ``[imputed | indicators]``, so the indicator columns are APPENDED rather
+    than replacing the imputed ones. Both are needed: the imputed value is what
+    the estimator fits on, and the indicator is what tells it the value was
+    absent.
+
+    ``features="all"`` is what makes the emitted column set a deterministic
+    function of the INPUT COLUMNS rather than of which rows happened to be null
+    in the fit window. A data-dependent indicator set would make two re-fits
+    produce two different feature spaces, which is the reproducibility
+    constraint CLAUDE.md states.
+    """
+
+    def fit(self, X, y=None):
+        paired = np.asarray(X, dtype=float)
+        self.n_features_ = paired.shape[1] // 2
+        self.indicator_ = MissingIndicator(features="all")
+        self.indicator_.fit(paired[:, self.n_features_ :])
+        return self
+
+    def transform(self, X):
+        paired = np.asarray(X, dtype=float)
+        split = self.n_features_
+        indicators = self.indicator_.transform(paired[:, split:]).astype(float)
+        return np.hstack([paired[:, :split], indicators])
 
 
 class WPTrainer(BaseTrainer):
@@ -44,7 +130,6 @@ class WPTrainer(BaseTrainer):
             config: Temporal split configuration. Defaults to default split.
         """
         super().__init__(target="wp", config=config)
-        self.scaler: StandardScaler | None = None
 
     # ------------------------------------------------------------------
     # Abstract method implementations
@@ -54,18 +139,82 @@ class WPTrainer(BaseTrainer):
         """Return the target column name for WP prediction."""
         return "home_win"
 
-    def _create_model(self, params: dict) -> LogisticRegression:
-        """Create a LogisticRegression model with the given parameters.
+    def _create_model(self, params: dict) -> Pipeline:
+        """Create WP's four-step Pipeline with the given parameters.
+
+        D33.1-R3, owner-ratified 2026-09-12 and attributed to R4 as this
+        phase's nullable-input handling.
+
+        THIS IS THE ONLY CONSTRUCTION SITE, so there is NO path that produces a
+        bare ``LogisticRegression``. That matters because
+        ``BaseTrainer.select_features`` fits ``self._create_model(...)`` BEFORE
+        anything is scaled, over every informative candidate column -- and after
+        Plan 33.1-07 those candidates include 45 weather columns carrying NaN,
+        which a bare ``LogisticRegression`` rejects. The currently-deployed
+        feature list containing zero weather features does not protect
+        re-selection: selection re-runs on every ``train_and_evaluate`` call and
+        ``models.train`` exposes no feature-list flag.
+
+        The scaler lives INSIDE the returned object, which is the property
+        D33.1-R1 exists to guarantee and the reason ``wp_20260824_113325`` is
+        trained-scaled and served-raw today.
 
         Args:
             params: Model hyperparameters. Merged with defaults.
 
         Returns:
-            Unfitted LogisticRegression instance.
+            Unfitted, serializable Pipeline whose step names are exactly
+            :data:`WP_PIPELINE_STEP_NAMES` and whose final step is a
+            ``LogisticRegression``.
         """
         default_params = self._get_default_params()
         default_params.update(params)
-        return LogisticRegression(**default_params)
+        return Pipeline(
+            [
+                ("imputer", _ImputeAndCarryRaw(strategy="median")),
+                ("missing_indicator", _FoldRawIntoMissingIndicator()),
+                ("scaler", StandardScaler()),
+                ("estimator", LogisticRegression(**default_params)),
+            ]
+        )
+
+    # ------------------------------------------------------------------
+    # Pipeline accessors (D33.1-R3)
+    # ------------------------------------------------------------------
+
+    @property
+    def scaler(self) -> StandardScaler | None:
+        """The fitted scaler, read off the pipeline rather than held beside it.
+
+        Kept as an accessor so existing callers and Plan 33.1-10's persistence
+        contract have ONE name for it. The scaler is now INSEPARABLE from the
+        estimator by construction -- which is exactly the property D33.1-R1
+        exists to guarantee, and the reason a separately-held scaler was how
+        ``wp_20260824_113325`` came to be trained-scaled and served-raw.
+        """
+        if isinstance(self.model, Pipeline):
+            return self.model.named_steps.get("scaler")
+        return None
+
+    @staticmethod
+    def imputer_statistics(model: Pipeline) -> np.ndarray:
+        """The fitted per-column imputation statistic of *model*.
+
+        Exposed so the per-fold temporal-safety assertion reads the statistic
+        through one named accessor rather than reaching into step internals.
+        """
+        return model.named_steps["imputer"].statistics_
+
+    @staticmethod
+    def indicator_feature_names(model: Pipeline, feature_names: list[str]) -> list[str]:
+        """The indicator column names *model* emits for *feature_names*.
+
+        One per input column, always, because the indicator is configured
+        ``features="all"``. The count is therefore a function of the columns and
+        not of the fit window's null pattern.
+        """
+        count = model.named_steps["missing_indicator"].n_features_
+        return [f"{name}{MISSING_INDICATOR_SUFFIX}" for name in feature_names[:count]]
 
     def _get_default_params(self) -> dict:
         """Return default hyperparameters for LogisticRegression."""
@@ -117,12 +266,14 @@ class WPTrainer(BaseTrainer):
 
         return params
 
-    def _predict_raw(self, model: LogisticRegression, X: pd.DataFrame) -> np.ndarray:
-        """Generate raw probabilities from a fitted LogisticRegression.
+    def _predict_raw(self, model: Pipeline, X: pd.DataFrame) -> np.ndarray:
+        """Generate raw probabilities from a fitted WP pipeline.
 
         Args:
-            model: Fitted LogisticRegression.
-            X: Feature matrix.
+            model: Fitted Pipeline (imputer -> indicator -> scaler -> estimator).
+            X: RAW feature matrix. It is not pre-scaled: the pipeline scales
+                internally, and handing it an already-scaled frame would scale
+                twice.
 
         Returns:
             Array of P(home_win=1) probabilities.
@@ -176,24 +327,35 @@ class WPTrainer(BaseTrainer):
 
     def _get_feature_importances(
         self,
-        model: LogisticRegression,
+        model: Pipeline,
         feature_names: list[str],
     ) -> dict[str, float]:
-        """Extract feature importances from LogReg coefficients.
+        """Extract feature importances from the pipeline's LogReg coefficients.
 
         Uses absolute coefficient values, sorted descending.
 
+        The fitted estimator carries TWICE as many coefficients as there are
+        input columns -- the imputed values and then the missing indicators --
+        so the indicator half is reported under its own
+        ``<column>_was_missing`` names rather than dropped. "This feature was
+        absent" is a thing WP can learn from, and hiding its weight would make
+        the importance table describe a model that is not the one fitted.
+
         Args:
-            model: Fitted LogisticRegression.
+            model: Fitted Pipeline.
             feature_names: List of feature column names.
 
         Returns:
             Dict mapping feature name to absolute coefficient value.
         """
-        coefficients = model.coef_[0]
-        importance = dict(
-            zip(feature_names, np.abs(coefficients).tolist(), strict=False)
-        )
+        estimator = model.named_steps["estimator"]
+        coefficients = estimator.coef_[0]
+        names = list(feature_names)
+        if len(coefficients) == 2 * len(names):
+            names = names + [
+                f"{name}{MISSING_INDICATOR_SUFFIX}" for name in feature_names
+            ]
+        importance = dict(zip(names, np.abs(coefficients).tolist(), strict=False))
         return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
 
     # ------------------------------------------------------------------
@@ -272,9 +434,12 @@ class WPTrainer(BaseTrainer):
             features=self.feature_names[:10],
         )
 
-        # Step 2: Fit StandardScaler on training data
-        self.scaler = StandardScaler()
-        self.scaler.fit(train_val_split.train_data[self.feature_names])
+        # Step 2: THERE IS NO SEPARATE SCALER STEP ANY MORE (D33.1-R3).
+        #
+        # The scaler is the third step of the Pipeline `_create_model` returns,
+        # so every fit below scales on the rows it is handed and every predict
+        # scales with that fit's statistics. `self.scaler` remains readable as a
+        # property that reads the fitted pipeline.
 
         # Step 3: Tune hyperparameters on train + hp_val
         combined_train = pd.concat(
@@ -283,14 +448,9 @@ class WPTrainer(BaseTrainer):
         combined_targets = pd.concat(
             [train_val_split.train_targets, train_val_split.test_targets]
         )
-        combined_X_scaled = pd.DataFrame(
-            self.scaler.transform(combined_train[self.feature_names]),
-            columns=self.feature_names,
-            index=combined_train.index,
-        )
         best_params = (
             self.tune_hyperparameters(
-                combined_X_scaled,
+                combined_train[self.feature_names],
                 combined_targets,
             )
             if tune
@@ -299,20 +459,15 @@ class WPTrainer(BaseTrainer):
 
         # Step 4: Fit calibrator on HP-validation predictions
         # Train model on train data only, predict HP-val, fit calibrator on those
-        X_train_scaled = pd.DataFrame(
-            self.scaler.transform(train_val_split.train_data[self.feature_names]),
-            columns=self.feature_names,
-            index=train_val_split.train_data.index,
-        )
         hp_val_model = self._create_model(best_params)
-        hp_val_model.fit(X_train_scaled, train_val_split.train_targets)
-
-        X_hp_val_scaled = pd.DataFrame(
-            self.scaler.transform(train_val_split.test_data[self.feature_names]),
-            columns=self.feature_names,
-            index=train_val_split.test_data.index,
+        hp_val_model.fit(
+            train_val_split.train_data[self.feature_names],
+            train_val_split.train_targets,
         )
-        hp_val_predictions = self._predict_raw(hp_val_model, X_hp_val_scaled)
+
+        hp_val_predictions = self._predict_raw(
+            hp_val_model, train_val_split.test_data[self.feature_names]
+        )
 
         # Fit isotonic calibrator on HP-val predictions
         prob_calibrator = ProbabilityCalibrator(
@@ -346,22 +501,20 @@ class WPTrainer(BaseTrainer):
             X_test = split.test_data[self.feature_names]
             y_test = split.test_targets
 
-            # Scale features
-            X_train_s = pd.DataFrame(
-                self.scaler.transform(X_train),
-                columns=self.feature_names,
-                index=X_train.index,
-            )
-            X_test_s = pd.DataFrame(
-                self.scaler.transform(X_test),
-                columns=self.feature_names,
-                index=X_test.index,
-            )
-
             model = self._create_model(best_params)
-            model.fit(X_train_s, y_train)
 
-            raw_predictions = self._predict_raw(model, X_test_s)
+            # THE FIT RECEIVES THE RAW FOLD FRAME, AND THAT IS WHAT MAKES THE
+            # IMPUTER FOLD-FITTED. This is a TEMPORAL-SAFETY property, not an
+            # implementation detail: `Pipeline.fit` fits EVERY step on the rows
+            # it is handed, and the rows it is handed are this fold's
+            # pre-holdout rows. An imputation statistic computed over the whole
+            # frame and applied inside a fold leaks the holdout's distribution
+            # into training -- which CLAUDE.md's walk-forward constraint forbids
+            # and which this milestone exists to detect. The same now goes for
+            # the scaler, which used to be fitted ONCE outside this loop.
+            model.fit(X_train, y_train)
+
+            raw_predictions = self._predict_raw(model, X_test)
 
             # Apply calibration
             calibrated_predictions = prob_calibrator.apply_calibration(
