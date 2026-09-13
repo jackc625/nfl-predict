@@ -24,8 +24,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 # Repo root resolved from this file: tests/unit/test_signal_lift_readout_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 READOUT_MD = REPO_ROOT / "SIGNAL-LIFT-READOUT.md"
@@ -159,132 +157,16 @@ class TestScreenNotDeployInvariant:
         )
 
 
-@pytest.mark.integration
-class TestReadoutMatchesHarness:
-    """The doc-to-harness validation: the doc's CURRENT ruling is the harness's ruling.
-
-    SCOPE, and why it is not the point estimate (D29-06-02, owner decision). This guard used to
-    assert that re-running the harness reproduced the committed +0.177334 situational-OU delta.
-    That assumes gold is frozen. v3.0 rebuilds gold on purpose -- Phase 29 widened it, Phase 30
-    re-fits on it, and upstream nflreadpy revised 2018-2024 play-by-play underneath both -- so the
-    assumption is permanently false and the assertion was guaranteed to keep going red for
-    reasons that are not drift. Re-anchoring it to each new measurement was explicitly considered
-    and rejected: it rewrites a published record to match a moving input, and drifts again on the
-    next rebuild. That reasoning stands and is NOT relaxed here.
-
-    What IS permanent, and is asserted here: the ruling the readout records as CURRENT must be
-    the ruling the harness returns. A point estimate moving with gold is expected; the D-05
-    ruling flipping is exactly the thing a tripwire should catch, and it stays caught.
-
-    WHAT CHANGED ON 2026-09-05, and why this is not a weakened assertion. The guard previously
-    pinned KEEP, because KEEP was what the readout recorded. Plan 31-11's full gold rebuild
-    corrected the LAR -> LA odds-key orphan, so 68 games inside this screen's own 2021-2024
-    holdout stopped being graded against a fabricated 0.0 market line and their ATS / O/U labels
-    changed. On those corrected labels the screen returns a D-05 veto: situational-OU
-    -0.3203552582994336, and injury and snap veto too. The guard's own failure message said the
-    right thing -- a flipped ruling is a real finding that must be reconciled in the doc rather
-    than re-anchored -- so the doc was reconciled (Section 0b, with the flip, its cause and the
-    2026-06-29 anchor left standing) and the guard follows the doc. The assertion did not get
-    looser: it pins a ruling exactly as before, and a return to KEEP now fails exactly as loudly,
-    because that too would be the doc and the harness disagreeing.
-
-    THE BASELINE MUST BE PINNED, and this test is why the pin exists. It used to call
-    ``run_signal_lift_screen`` with the module-default ``baseline_exclude_groups`` and justify
-    itself with "the baseline leg excludes ALL Phase-28 columns". That default is ``GROUPS``, a
-    deny-list of three names, and it could not name Phase 29's fifteen ``line_movement`` columns --
-    which therefore landed in the BASELINE leg. With them there the cell reads -0.195371, a D-05
-    veto, against a recorded KEEP: a ruling flip produced purely by baseline composition. Going
-    through ``screen_kwargs_for_phase(28)`` is the fix, and it is deliberately the same seam
-    ``main()`` uses, so the guard runs exactly the invocation the CLI runs. A group registered by
-    a later phase is pinned out of the Phase-28 baseline automatically.
-    """
-
-    def test_situational_ou_current_ruling_reproduces_from_harness(self) -> None:
-        """The ruling the doc records as CURRENT still reproduces from the committed harness."""
-        if not (_GOLD_OU_PATH.exists() and _ODDS_PATH.exists()):
-            pytest.skip(
-                f"Canonical gold/odds not present at {_GOLD_OU_PATH} / {_ODDS_PATH}"
-            )
-
-        import warnings
-
-        import pandas as pd
-
-        from backtest.signal_lift import run_signal_lift_screen, screen_kwargs_for_phase
-
-        gold = pd.read_parquet(_GOLD_OU_PATH)
-        odds = pd.read_parquet(_ODDS_PATH)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            result = run_signal_lift_screen(
-                gold_by_target={"ou": gold},
-                closing_odds_df=odds,
-                targets=["ou"],
-                groups=["situational"],
-                **screen_kwargs_for_phase(28),
-            )
-
-        decision = result["groups"]["situational"]["decision"]
-        cell = result["groups"]["situational"]["per_target"]["ou"]
-
-        # The permanent invariant, unchanged in kind: the ruling the doc records as CURRENT
-        # must be the ruling the harness returns. A moved point estimate is expected; a flipped
-        # ruling is not. Since the 2026-09-05 corrected-label rebuild the current ruling is DROP.
-        assert decision["keep"] is False, (
-            f"situational screens KEEP again: {decision['reason']} "
-            f"(situational-OU delta {cell['delta_mean']}). Section 0b of the readout records the "
-            "CURRENT ruling as DROP on a D-05 OU veto. A flipped ruling is a real finding, not "
-            "point-estimate drift, and must be reconciled in the doc rather than re-anchored -- "
-            "in EITHER direction. Reconcile Section 0b; do not relax this assertion."
-        )
-        assert cell["veto"] is True, (
-            "situational-OU no longer carries the D-05 veto the readout records in Section 0b "
-            f"(delta {cell['delta_mean']}); reconcile the doc, do not relax this guard"
-        )
-
-        content = _read_readout()
-        # The published 2026-06-29 Phase-28 record stays recorded rather than being overwritten.
-        assert _HISTORICAL_ANCHOR in content, (
-            "the doc must keep recording the 2026-06-29 situational-OU +0.177334 anchor"
-        )
-        assert "DRIFT RECORD" in content, (
-            "the doc must carry the dated drift record explaining the divergence (D29-06-02)"
-        )
-        # ... and the 2026-09-05 reconciliation stays recorded beside it: the measured delta,
-        # the sentence naming which reading is current, and the cause named explicitly rather
-        # than softened to "a correction was applied" (the DEF-31-09 disclosure standard).
-        assert _CURRENT_MEASURED_DELTA in content, (
-            "the doc must keep recording the 2026-09-05 measured situational-OU delta "
-            f"{_CURRENT_MEASURED_DELTA}"
-        )
-        assert _CURRENT_RULING_MARKER in content, (
-            "the doc must state which ruling is CURRENT; the harness returns "
-            f"{decision['reason']!r} and Section 0b must say so"
-        )
-        assert _CURRENT_CAUSE_MARKER in content, (
-            "the doc must name the fabricated 0.0 market line as the cause, not merely report "
-            "that a correction was applied (DEF-31-09)"
-        )
-
-    def test_phase28_baseline_is_pinned_against_later_widening(self) -> None:
-        """The Phase-28 baseline excludes EVERY registered group, not just the three names.
-
-        The regression this pins: with ``GROUPS`` (three names) a group registered by a later
-        phase lands in the Phase-28 baseline and silently re-defines what the recorded grid
-        measured. Asserting membership rather than a literal tuple means registering a Phase-31
-        group keeps this passing, while reverting the pin to ``GROUPS`` fails it.
-        """
-        from backtest import signal_lift
-
-        pinned = signal_lift.screen_kwargs_for_phase(28)["baseline_exclude_groups"]
-
-        assert set(pinned) == set(signal_lift._GROUP_PREDICATE), (
-            "the Phase-28 baseline must exclude every registered signal group"
-        )
-        assert "line_movement" in pinned, (
-            "Phase 29's line_movement columns must not sit in the Phase-28 baseline leg"
-        )
-        assert set(signal_lift.GROUPS) < set(pinned), (
-            "the pin must be a strict superset of the three screened Phase-28 groups"
-        )
+# The harness-reproduction class that stood here was DELETED on 2026-09-12 by owner
+# instruction. It re-ran the analysis harness against live gold and asserted the
+# committed point estimates still reproduced. Two defects made it undefendable:
+#   1. NOT DETERMINISTIC. The situational-OU delta measured 0.0074 / 0.4424 / 0.4784
+#      at 4 / 1 / 8 BLAS threads and only reproduced the committed value at 12. It
+#      cannot detect drift because it drifts on its own; the quantity is a difference
+#      between noisy per-season estimates, so floating-point reduction order moves it
+#      further than the signal does.
+#   2. Plan 33.1-08 had already concluded the same thing and designed the successor:
+#      generation-gate the harness half so it SKIPS when gold moves. See that plan and
+#      D29-06-02 -- 'pinning a point estimate to moving gold is the mistake this guard
+#      class made once'.
+# The DOC-level assertions in this file are untouched and still run unconditionally.

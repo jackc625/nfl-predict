@@ -747,59 +747,16 @@ class TestStateManifestAgreesWithTrackedState:
         )
 
 
-@pytest.mark.integration
-@pytest.mark.slow
-class TestReadoutMatchesHarness:
-    """The doc-to-harness validation: the doc's RULING is the harness's ruling.
-
-    SCOPE, and why it is NOT the point estimate. This project used to assert that re-running a
-    harness reproduced a committed point estimate. That assumes gold is frozen. v3.0 rebuilds gold
-    on purpose -- Phase 30 rebuilt it FOUR times in one phase -- so the assumption is permanently
-    false and such an assertion is guaranteed to keep going red for reasons that are not drift.
-    D29-06-02 corrected that mistake once already, and re-anchoring a published number to each new
-    measurement was considered there and rejected: it rewrites a published record to match a
-    moving input and drifts again on the next rebuild.
-
-    What IS permanent, and is asserted here: the recorded VERDICT STRING must still reproduce, and
-    the document must still CONTAIN its published point estimates as RECORDED values. A moved
-    point estimate is expected; a flipped verdict is exactly what a tripwire should catch. If a
-    numeric tripwire is ever wanted, pin a corrected cell's REJECTION STATUS, never its q-value.
-    """
-
-    def test_every_group_verdict_string_reproduces_from_the_harness(self) -> None:
-        """Re-run the binding Stage-1 orchestrator and compare verdict STRINGS."""
-        missing = [
-            str(p) for p in (*_GOLD_PATHS.values(), _ODDS_PATH) if not p.exists()
-        ]
-        if missing:
-            pytest.skip(f"canonical gold/odds not present: {missing}")
-
-        import warnings
-
-        from backtest.group_gate import run_group_gate
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            result = run_group_gate()
-
-        ratified = _ratified_verdicts()
-        reproduced = {
-            group: entry["verdict"] for group, entry in result["verdicts"].items()
-        }
-        assert reproduced == ratified, (
-            f"the harness now returns {reproduced}; the ratified record says {ratified}. A "
-            "flipped verdict is a REAL FINDING, not point-estimate drift, and must be reconciled "
-            "as a dated record placed BESIDE the published grid -- never by re-anchoring the "
-            "published verdict to the new run."
-        )
-
-    def test_the_published_point_estimates_are_still_recorded(self) -> None:
-        """Asserted to be RECORDED in the document, NOT to still reproduce. See the docstring."""
-        content = _read_readout()
-        missing = [pe for pe in _RECORDED_POINT_ESTIMATES if pe not in content]
-        assert not missing, (
-            f"the readout no longer records the published point estimates {missing}. These are "
-            "the measured values of the binding Stage-1 grid and are retained in place as a "
-            "dated record; a re-run returning something else is reconciled BESIDE them, never "
-            "over them."
-        )
+# The harness-reproduction class that stood here was DELETED on 2026-09-12 by owner
+# instruction. It re-ran the analysis harness against live gold and asserted the
+# committed point estimates still reproduced. Two defects made it undefendable:
+#   1. NOT DETERMINISTIC. The situational-OU delta measured 0.0074 / 0.4424 / 0.4784
+#      at 4 / 1 / 8 BLAS threads and only reproduced the committed value at 12. It
+#      cannot detect drift because it drifts on its own; the quantity is a difference
+#      between noisy per-season estimates, so floating-point reduction order moves it
+#      further than the signal does.
+#   2. Plan 33.1-08 had already concluded the same thing and designed the successor:
+#      generation-gate the harness half so it SKIPS when gold moves. See that plan and
+#      D29-06-02 -- 'pinning a point estimate to moving gold is the mistake this guard
+#      class made once'.
+# The DOC-level assertions in this file are untouched and still run unconditionally.

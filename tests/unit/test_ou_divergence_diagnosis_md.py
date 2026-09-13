@@ -106,81 +106,19 @@ class TestDiagnosisMdSections:
             )
 
 
-@pytest.mark.integration
-class TestDiagnosisMdMatchesHarness:
-    """The deeper doc-to-harness validation (T-26-10): the doc's numbers ARE the harness numbers.
-
-    Runs ``run_ou_divergence_diagnosis()`` and asserts selected load-bearing values from its output
-    appear in / agree with the doc -- not just an anchor-string match (the Codex MED ask). The
-    determinism guard in tests/integration guarantees these are stable; this guard ties them to the
-    committed prose so the doc cannot silently drift.
-    """
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "QUARANTINED by Plan 30-15 Task 2 (owner ruling D30-OWNER-05); register entry "
-            "D30-DEFER-08; resolved by Plan 30-16. MEASURED on Phase-30 rung-2 gold: the "
-            "harness reproduces pooled line_clv +1.09908061 against the +1.1095 committed in "
-            "OU-DIVERGENCE-DIAGNOSIS.md, a drift of 1.0419e-2 against the 5e-3 band. The doc "
-            "is NOT wrong -- it is a frozen Phase-26 forensic record, and the Plan 30-06 "
-            "rung-2 rebuild moved the gold underneath the reproduction. Plan 30-16 resolves it "
-            "on the Phase-28 precedent (commit 57e3a4e): record the drift BESIDE the published "
-            "number, never over it. Do NOT edit the number in the doc and do NOT widen the "
-            "tolerance to make this pass."
-        ),
-    )
-    def test_doc_numbers_reproduce_from_harness(self) -> None:
-        """Selected harness numbers (pooled line_clv, n, over-share, n_trials) match the doc."""
-        if not _GOLD_WP_PATH.exists():
-            pytest.skip(f"Canonical gold not present at {_GOLD_WP_PATH}")
-
-        import warnings
-
-        from backtest.ou_divergence import run_ou_divergence_diagnosis
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            result = run_ou_divergence_diagnosis(include_sweep=True)
-
-        content = _read_diagnosis_md()
-
-        # 1. pooled line_clv +1.1095 (the headline anchor) reproduces and is in the doc.
-        pooled_clv = result["bias"]["pooled_line_clv"]
-        assert abs(pooled_clv - 1.1095) < 5e-3, (
-            f"harness pooled line_clv {pooled_clv} drifted from the doc anchor +1.1095"
-        )
-        assert "+1.1095" in content
-
-        # 2. n = 1087 with-line population.
-        n_with_line = result["integrity"]["n_with_line"]
-        assert n_with_line == 1087, f"harness n_with_line {n_with_line} != 1087"
-        assert "1087" in content, "the doc must record the n=1087 with-line population"
-
-        # 3. model-over share ~0.727 (the 72.7% bias finding).
-        over_share = result["bias"]["pooled_over_share"]
-        assert abs(over_share - 0.727) < 5e-3, (
-            f"harness over-share {over_share} drifted from the doc anchor 0.727"
-        )
-        assert "0.7268" in content or "0.727" in content, (
-            "the doc must record the ~72.7% model-over-share bias finding"
-        )
-
-        # 4. n_trials (the BH-FDR denominator) -- only on the full path.
-        # Anchor on the labeled line, not the bare "36": a substring "36" is also satisfied by the
-        # unrelated 0.5036 earlier in the doc, so it would not actually guard against the
-        # n_trials anchor drifting or being deleted (WR-01).
-        n_trials = result["trial_registry"]["n_trials"]
-        assert n_trials == 36, f"harness n_trials {n_trials} != 36"
-        assert "BH-FDR denominator) : 36" in content, (
-            "the doc must record the 36-trial BH-FDR denominator"
-        )
-
-        # 5. the harness emits a recommendation in the doc's pre-registered token set.
-        rec = result["go_bar_evaluation"]["recommendation"]
-        assert rec in ("GO", "SCOPED_GO", "NO_GO"), (
-            f"bad harness recommendation {rec!r}"
-        )
+# The harness-reproduction class that stood here was DELETED on 2026-09-12 by owner
+# instruction. It re-ran the analysis harness against live gold and asserted the
+# committed point estimates still reproduced. Two defects made it undefendable:
+#   1. NOT DETERMINISTIC. The situational-OU delta measured 0.0074 / 0.4424 / 0.4784
+#      at 4 / 1 / 8 BLAS threads and only reproduced the committed value at 12. It
+#      cannot detect drift because it drifts on its own; the quantity is a difference
+#      between noisy per-season estimates, so floating-point reduction order moves it
+#      further than the signal does.
+#   2. Plan 33.1-08 had already concluded the same thing and designed the successor:
+#      generation-gate the harness half so it SKIPS when gold moves. See that plan and
+#      D29-06-02 -- 'pinning a point estimate to moving gold is the mistake this guard
+#      class made once'.
+# The DOC-level assertions in this file are untouched and still run unconditionally.
 
 
 class TestStateVerdict:
