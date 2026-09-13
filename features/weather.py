@@ -19,6 +19,7 @@ import warnings
 from datetime import datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from conf.settings import get_settings
@@ -53,6 +54,291 @@ logger = get_logger(__name__)
 # model input, it is outside this phase's named scope, and Plan 33.1-11's readout
 # records it as a standing finding.
 SILVER_WEATHER_TABLE: str = "weather"
+
+# THE ONE SPELLING OF "WE DO NOT KNOW" IN THIS MODULE (Plan 33.1-04, D33.1-07).
+#
+# There is deliberately NO numeric stand-in beside it. The SPEC's first
+# prohibition is that the mild-temperature default must not be replaced by any
+# other number under any name: "a seasonal average or a venue mean is the same
+# defect wearing a better label".
+NAN: float = float("nan")
+
+
+class WeatherObservationError(RuntimeError):
+    """A weather calculation failed, or a game has no weather record at all.
+
+    DERIVES FROM ``RuntimeError`` ON PURPOSE, and the base class is
+    load-bearing rather than incidental. ``scripts/build_features.py`` guards
+    every optional silver source with ``_SOURCE_LOAD_ERRORS``, which contains
+    ``ValueError``, ``KeyError`` and ``TypeError`` -- so a refusal typed as any
+    of those would be caught, logged as a warning and converted into an empty
+    frame, which is the very swallow-and-continue shape this refusal exists to
+    replace. ``features.elo_features.ProvisionalSnapshotAsTrainingInputError``
+    is typed the same way for the same reason, and for the same recorded
+    reason: a green build with a silently missing family is indistinguishable
+    from one that worked.
+
+    D33.1-07's third state: a caught exception is a BUG, not a state. Recording
+    it as missing data is precisely how the mild-temperature default survived
+    unnoticed for years.
+    """
+
+
+# ---------------------------------------------------------------------------
+# THE COLUMNS EACH BUILDER CONTRIBUTES, STATED ONCE PER BUILDER.
+#
+# Ruling K1 (Plan 33.1-04): this is a MAPPING keyed by builder identity, not one
+# broad constant, because the two builders in this module do not emit the same
+# weather columns. `build_weather_features` (the "full" builder, which writes
+# silver `weather_features` and therefore feeds gold) emits 47 columns;
+# `build_features` (the "compressed" FeatureBuilder-Protocol builder) emits 4.
+# A single constant would become an assertion about whichever builder a test
+# happened to exercise while the other one silently median-filled.
+#
+# The families below are the source; the two builder entries and the union are
+# DERIVED from them, and both builders assert their own emitted frame against
+# their own entry at the end of the build. That is the same
+# single-source-with-an-importing-drift-test shape `api/cache.BET_LIST_COLUMNS`
+# uses, applied per builder.
+# ---------------------------------------------------------------------------
+
+TEMPERATURE_FEATURE_COLUMNS: tuple[str, ...] = (
+    "temp_f",
+    "apparent_temp_f",
+    "temp_hot",
+    "temp_warm",
+    "temp_mild",
+    "temp_cool",
+    "temp_cold",
+    "temp_very_cold",
+    "cold_impact_score",
+    "scoring_multiplier",
+    "ball_handling_difficulty",
+    "heat_impact_score",
+)
+
+WIND_FEATURE_COLUMNS: tuple[str, ...] = (
+    "wind_mph",
+    "wind_calm",
+    "wind_moderate",
+    "wind_high",
+    "wind_severe",
+    "wind_impact_score",
+    "kicking_difficulty",
+    "passing_difficulty",
+)
+
+PRECIPITATION_FEATURE_COLUMNS: tuple[str, ...] = (
+    "precip_prob",
+    "precip_mm",
+    "precip_none",
+    "precip_light",
+    "precip_moderate",
+    "precip_heavy",
+    "is_snow",
+    "is_rain",
+    "is_dry",
+    "precip_impact_score",
+    "turnover_multiplier",
+    "passing_efficiency",
+)
+
+SEVERITY_FEATURE_COLUMNS: tuple[str, ...] = (
+    "weather_severity_score",
+    "home_weather_advantage",
+    "defensive_advantage",
+    "rushing_advantage",
+    "scoring_reduction",
+    "weather_game",
+    "extreme_weather",
+)
+
+RAW_WEATHER_COLUMNS: tuple[str, ...] = (
+    "raw_temp_f",
+    "raw_wind_mph",
+    "raw_precip_prob",
+    "raw_precip_mm",
+    "raw_humidity_pct",
+    "weather_condition",
+)
+
+# The two flags that answer "does weather apply" and "was there an observation".
+# They are the ONLY two columns an absent-observation row carries a number in.
+WEATHER_FLAG_COLUMNS: tuple[str, ...] = (
+    "weather_affects_game",
+    "weather_coverage",
+)
+
+# Not a measurement and not a float. Callers that assert "every weather column
+# is NaN" must skip it, because `numpy.isfinite` raises on a string rather than
+# returning False -- so naming it here is what keeps that assertion honest
+# instead of making it silently skip a column it could not evaluate.
+WEATHER_NON_NUMERIC_FEATURE_COLUMNS: tuple[str, ...] = ("weather_condition",)
+
+_FULL_BUILDER_COLUMNS: tuple[str, ...] = (
+    *TEMPERATURE_FEATURE_COLUMNS,
+    *WIND_FEATURE_COLUMNS,
+    *PRECIPITATION_FEATURE_COLUMNS,
+    *SEVERITY_FEATURE_COLUMNS,
+    *RAW_WEATHER_COLUMNS,
+    *WEATHER_FLAG_COLUMNS,
+)
+
+_COMPRESSED_BUILDER_COLUMNS: tuple[str, ...] = (
+    "weather_severity_score",
+    "wind_mph",
+    "is_precipitation",
+    "is_outdoor",
+)
+
+WEATHER_FEATURE_COLUMNS_BY_BUILDER: dict[str, tuple[str, ...]] = {
+    "full": _FULL_BUILDER_COLUMNS,
+    "compressed": _COMPRESSED_BUILDER_COLUMNS,
+}
+
+# The union over both builders. `dict.fromkeys` preserves first-seen order and
+# de-duplicates the two columns the compressed builder shares with the full one.
+WEATHER_FEATURE_COLUMNS: tuple[str, ...] = tuple(
+    dict.fromkeys((*_FULL_BUILDER_COLUMNS, *_COMPRESSED_BUILDER_COLUMNS))
+)
+
+# The merge keys. Carried by the frame, contributed by neither builder as a
+# feature, and therefore excluded from every declaration above.
+WEATHER_MERGE_KEY_COLUMNS: tuple[str, ...] = ("game_id", "season", "week")
+
+
+def _validate_column_declarations() -> None:
+    """Fail at IMPORT time if the per-builder split has drifted.
+
+    An explicit raise rather than an ``assert``: ``python -O`` strips asserts,
+    and a declaration that silently stops being checked under an optimisation
+    flag is not a declaration.
+    """
+    for key, columns in WEATHER_FEATURE_COLUMNS_BY_BUILDER.items():
+        if not columns:
+            msg = f"WEATHER_FEATURE_COLUMNS_BY_BUILDER[{key!r}] is empty"
+            raise ValueError(msg)
+        if len(set(columns)) != len(columns):
+            msg = f"WEATHER_FEATURE_COLUMNS_BY_BUILDER[{key!r}] has duplicates"
+            raise ValueError(msg)
+    union = set(_FULL_BUILDER_COLUMNS) | set(_COMPRESSED_BUILDER_COLUMNS)
+    if union != set(WEATHER_FEATURE_COLUMNS):
+        msg = (
+            "WEATHER_FEATURE_COLUMNS is not the union of the two builder "
+            f"entries; symmetric difference {sorted(union ^ set(WEATHER_FEATURE_COLUMNS))}"
+        )
+        raise ValueError(msg)
+
+
+_validate_column_declarations()
+
+
+def _is_missing(value: Any) -> bool:
+    """True when a measurement is genuinely ABSENT (``None``, NaN, ``pd.NA``).
+
+    Deliberately NOT ``not value``. The old code wrote ``weather_data.get(
+    "wind_mph", 0.0) or 0.0``, which maps a real, measured calm of ``0.0`` and
+    an absent reading onto the same number -- and then reports the absent one
+    as ``wind_calm: 1.0``. Zero is a measurement; absence is not.
+    """
+    if value is None:
+        return True
+    if isinstance(value, str):
+        # A condition string is never a missing measurement, and `pd.isna`
+        # would be asked a question about it that it cannot answer usefully.
+        return False
+    missing = pd.isna(value)
+    if isinstance(missing, bool | np.bool_):
+        return bool(missing)
+    # An array-like was handed in. That is not a scalar measurement, so it is
+    # not an absent one either. Written as a type test rather than a
+    # `try/except` on purpose: every `except` branch in this module raises, and
+    # a probe that swallows a TypeError is the shape this plan is removing.
+    return False
+
+
+def _observation_failure(
+    family: str, weather_data: dict[str, Any], error: Exception
+) -> WeatherObservationError:
+    """Build the ONE message shape all three family handlers raise.
+
+    Three handlers, three raises, one message shape -- so a reader who sees one
+    of them has seen all three, and a partial removal is visible as a message
+    that does not match.
+    """
+    game_id = weather_data.get("game_id", "<unknown game_id>")
+    return WeatherObservationError(
+        f"{family} feature calculation FAILED for game {game_id!r}: {error!r}. "
+        "A caught exception is a BUG, not a state (D33.1-07). Recording it as "
+        "missing data is precisely how the mild-temperature default survived "
+        "unnoticed for years and reached 6,485 of 6,499 gold rows. Fix the "
+        "payload or the calculation -- do not substitute a default family."
+    )
+
+
+def _or_null(value: Any) -> Any:
+    """Return *value*, or NaN when it is absent -- never a substitute reading."""
+    return NAN if _is_missing(value) else value
+
+
+def _row_is_covered(weather_data: dict[str, Any]) -> bool:
+    """Whether this silver row carries an OBSERVATION.
+
+    A row with no ``weather_coverage`` column at all is treated as covered.
+    That is not a silent assumption about missing data: before Plan 33.1-02
+    added the flag, every row in the table WAS an observation (or a dome
+    record), because the state this flag names could not be written. A legacy
+    frame therefore reads exactly as it always did, and a frame written by the
+    current backfill reads the flag.
+    """
+    if "weather_coverage" not in weather_data:
+        return True
+    coverage = weather_data.get("weather_coverage")
+    if _is_missing(coverage):
+        return True
+    return bool(coverage)
+
+
+def _no_weather_row(game_id: str) -> WeatherObservationError:
+    """The refusal that replaced both "no weather row" default blocks.
+
+    After the historical backfill every game HAS a row, so the reachability of
+    this path is itself the anomaly.
+    """
+    return WeatherObservationError(
+        f"game {game_id!r} has NO row in the silver `{SILVER_WEATHER_TABLE}` "
+        "table. This used to produce a default row carrying `temp_f: 65.0`, "
+        '`is_outdoor: False` and `condition: "Clear"` -- which made a missing '
+        "record indistinguishable from a dome BY CONSTRUCTION, and is how the "
+        "default reached 6,485 of 6,499 gold rows. Run the historical weather "
+        "backfill (`scripts/backfill_historical_weather.py`) so the game has a "
+        "real record, or an explicit absent-observation record; do not restore "
+        "a default."
+    )
+
+
+def _assert_builder_columns(features_df: pd.DataFrame, builder: str) -> None:
+    """Fail if *builder* emitted anything other than its declared entry.
+
+    Ruling K1's drift guard, run PER BUILDER at the end of each build. An empty
+    frame carries no columns at all and is skipped: a build over zero games has
+    nothing to disagree with, and failing there would turn an empty input into
+    a declaration error.
+    """
+    if features_df.empty:
+        return
+    emitted = set(features_df.columns) - set(WEATHER_MERGE_KEY_COLUMNS)
+    declared = set(WEATHER_FEATURE_COLUMNS_BY_BUILDER[builder])
+    if emitted != declared:
+        msg = (
+            f"the {builder!r} weather builder emitted columns that do not match "
+            f"WEATHER_FEATURE_COLUMNS_BY_BUILDER[{builder!r}]. "
+            f"Emitted-not-declared: {sorted(emitted - declared)}. "
+            f"Declared-not-emitted: {sorted(declared - emitted)}. "
+            "The declaration and the builder are single-sourced on purpose; "
+            "update the family tuples rather than hand-editing one side."
+        )
+        raise ValueError(msg)
 
 
 class WeatherFeaturesCalculator:
@@ -144,7 +430,13 @@ class WeatherFeaturesCalculator:
             Dictionary with wind features
         """
         try:
-            wind_mph = weather_data.get("wind_mph", 0.0) or 0.0
+            raw_wind = weather_data.get("wind_mph")
+            if _is_missing(raw_wind):
+                # A NULL wind reading is not a calm day. D33.1-07: anything
+                # derived from a NULL observation is itself NULL.
+                return dict.fromkeys(WIND_FEATURE_COLUMNS, NAN)
+
+            wind_mph = float(raw_wind)
 
             # Basic wind features
             wind_features = {
@@ -192,11 +484,29 @@ class WeatherFeaturesCalculator:
             return wind_features
 
         except (ValueError, KeyError, TypeError) as e:
-            logger.error("Failed to calculate wind features", error=str(e))
-            return self._default_wind_features()
+            logger.error(
+                "Wind feature calculation failed",
+                game_id=weather_data.get("game_id"),
+                error=str(e),
+            )
+            raise _observation_failure("wind", weather_data, e) from e
 
-    def _default_wind_features(self) -> dict[str, float]:
-        """Return default wind features when calculation fails."""
+    def _indoor_wind_features(self) -> dict[str, float]:
+        """The INDOOR wind state. Indoors the wind genuinely IS zero.
+
+        These values are a TRUE statement about a covered game, in Ruling J's
+        own terms: the wind column answers "what was the wind", and indoors the
+        answer is calm. That is why D33.1-07 keeps indoor wind at a genuine
+        ``0.0`` rather than calling it NULL.
+
+        THIS IS NOT A FALLBACK FOR A FAILED CALCULATION. It was called
+        ``_default_wind_features`` and was reached from an ``except`` branch,
+        where it invented a perfectly calm day out of a malformed payload -- in
+        the family the deployed O/U model reads most heavily. The rename is the
+        guard: while it is called ``_default_*`` the next reader wires the next
+        ``except`` branch to it by analogy. It has exactly ONE call site, the
+        indoor branch, and a test asserts that count.
+        """
         return {
             "wind_mph": 0.0,
             "wind_calm": 1.0,
@@ -234,16 +544,20 @@ class WeatherFeaturesCalculator:
             Dictionary with temperature features including apparent_temp_f
         """
         try:
-            temp_f = weather_data.get("temp_f")
-            wind_mph = weather_data.get("wind_mph", 0)
-            humidity_pct = weather_data.get("humidity_pct", 50)
+            raw_temp = weather_data.get("temp_f")
+            raw_wind = weather_data.get("wind_mph")
+            raw_humidity = weather_data.get("humidity_pct")
 
-            if temp_f is None:
-                return self._default_temperature_features()
+            if _is_missing(raw_temp):
+                # NO TEMPERATURE MEANS NO TEMPERATURE FAMILY. The deleted
+                # `_default_temperature_features` returned 65.0 here, plus
+                # temp_warm 1.0, cold_impact_score 0.0, scoring_multiplier 1.0
+                # and ball_handling_difficulty 1.0 -- the same fabrication in
+                # one-hot clothing, which is why deleting the literal alone
+                # would not have been the fix (RESEARCH 8.2).
+                return dict.fromkeys(TEMPERATURE_FEATURE_COLUMNS, NAN)
 
-            temp_f = float(temp_f)
-            wind_mph = float(wind_mph or 0)
-            humidity_pct = float(humidity_pct or 50)
+            temp_f = float(raw_temp)
 
             # Basic temperature categories
             temp_features = {
@@ -258,33 +572,47 @@ class WeatherFeaturesCalculator:
                 "temp_very_cold": 1.0 if temp_f < self.very_cold_threshold else 0.0,
             }
 
-            # Calculate apparent temperature (wind chill / heat index)
-            apparent_temp = self._calculate_apparent_temperature(
-                temp_f, wind_mph, humidity_pct
+            # Calculate apparent temperature (wind chill / heat index).
+            #
+            # The old code substituted `wind_mph or 0` and `humidity_pct or 50`
+            # here. Those are stand-ins for a measurement, and `or 50` in
+            # particular invents a humidity. What replaces them is NARROWER
+            # than refusing on any null: the apparent temperature is NULL only
+            # when the input it actually USES is absent. Below 50F the wind
+            # chill needs wind; at or above 80F the heat index needs humidity;
+            # in between the apparent temperature IS the temperature and no
+            # second measurement is consulted at all.
+            apparent_temp = self._apparent_temperature_or_null(
+                temp_f, raw_wind, raw_humidity
             )
-            temp_features["apparent_temp_f"] = round(apparent_temp, 1)
+            temp_features["apparent_temp_f"] = (
+                NAN if _is_missing(apparent_temp) else round(apparent_temp, 1)
+            )
 
-            # Research-based temperature impact (using apparent temperature)
-            # Cold weather impact (0-1 scale) - only significant below 25°F
-            if apparent_temp >= 25.0:
-                cold_impact = 0.0  # No cold impact above 25°F
+            # Research-based temperature impact (using apparent temperature).
+            # Both scores below are pure functions of the apparent temperature,
+            # so both are NULL when it is (D33.1-07's inheritance rule).
+            if _is_missing(apparent_temp):
+                cold_impact = NAN
+                scoring_impact = NAN
             else:
-                # Linear scaling from 25°F to 0°F
-                cold_impact = min(1.0, (25.0 - apparent_temp) / 25.0)
+                # Cold weather impact (0-1 scale) - only significant below 25°F
+                if apparent_temp >= 25.0:
+                    cold_impact = 0.0  # No cold impact above 25°F
+                else:
+                    # Linear scaling from 25°F to 0°F
+                    cold_impact = min(1.0, (25.0 - apparent_temp) / 25.0)
+
+                # Research-based scoring impact (piecewise function)
+                # Based on data from Sharp Football Analysis and others
+                if 55 <= apparent_temp <= 85:
+                    scoring_impact = 1.00  # No effect in normal range
+                elif 25 <= apparent_temp < 55:
+                    scoring_impact = 0.95  # 5% reduction in cool weather
+                else:
+                    scoring_impact = 0.92  # 8% reduction in extreme weather
 
             temp_features["cold_impact_score"] = cold_impact
-
-            # Research-based scoring impact (piecewise function)
-            # Based on data from Sharp Football Analysis and others
-            if 55 <= apparent_temp <= 85:
-                scoring_impact = 1.00  # No effect in normal range
-            elif 25 <= apparent_temp < 55:
-                scoring_impact = 0.95  # 5% reduction in cool weather
-            elif apparent_temp < 25 or apparent_temp > 85:
-                scoring_impact = 0.92  # 8% reduction in extreme weather
-            else:
-                scoring_impact = 1.00  # Fallback
-
             temp_features["scoring_multiplier"] = scoring_impact
 
             # Ball handling difficulty (fumbles increase in cold)
@@ -308,25 +636,89 @@ class WeatherFeaturesCalculator:
             return temp_features
 
         except (ValueError, KeyError, TypeError) as e:
-            logger.error("Failed to calculate temperature features", error=str(e))
-            return self._default_temperature_features()
+            logger.error(
+                "Temperature feature calculation failed",
+                game_id=weather_data.get("game_id"),
+                error=str(e),
+            )
+            raise _observation_failure("temperature", weather_data, e) from e
 
-    def _default_temperature_features(self) -> dict[str, float]:
-        """Return default temperature features when calculation fails."""
-        return {
-            "temp_f": 65.0,  # Default mild temperature
-            "apparent_temp_f": 65.0,  # Default apparent temperature
-            "temp_hot": 0.0,
-            "temp_warm": 1.0,
-            "temp_mild": 0.0,
-            "temp_cool": 0.0,
-            "temp_cold": 0.0,
-            "temp_very_cold": 0.0,
-            "cold_impact_score": 0.0,
-            "scoring_multiplier": 1.0,
-            "ball_handling_difficulty": 1.0,
-            "heat_impact_score": 0.0,
-        }
+    def _apparent_temperature_or_null(
+        self, temp_f: float, raw_wind: Any, raw_humidity: Any
+    ) -> float:
+        """Apparent temperature, or NaN when the input it USES is absent.
+
+        Args:
+            temp_f: The measured temperature, already known to be present.
+            raw_wind: The raw wind reading, possibly absent.
+            raw_humidity: The raw humidity reading, possibly absent.
+
+        Returns:
+            The wind chill, the heat index, the temperature itself, or NaN.
+        """
+        if temp_f <= 50:
+            # The wind-chill branch consults wind, and `wind >= 3` cannot be
+            # decided without it.
+            if _is_missing(raw_wind):
+                return NAN
+            return self._calculate_apparent_temperature(
+                temp_f,
+                float(raw_wind),
+                50.0 if _is_missing(raw_humidity) else float(raw_humidity),
+            )
+        if temp_f >= 80:
+            # The heat-index branch consults humidity, and `humidity >= 40`
+            # cannot be decided without it.
+            if _is_missing(raw_humidity):
+                return NAN
+            return self._calculate_apparent_temperature(
+                temp_f,
+                0.0 if _is_missing(raw_wind) else float(raw_wind),
+                float(raw_humidity),
+            )
+        # Between 50F and 80F neither formula applies and the apparent
+        # temperature IS the temperature, so no second measurement is read.
+        return temp_f
+
+    def _indoor_temperature_features(self) -> dict[str, float]:
+        """The INDOOR temperature state: NULL for every temperature column.
+
+        Replaces the deleted ``_default_temperature_features``. There is no
+        outdoor temperature indoors, and a band with no temperature to band has
+        no answer -- so every one of the twelve columns is NaN rather than the
+        old 65.0 / ``temp_warm: 1.0`` family. The four impact and multiplier
+        columns are included for the same reason: each is a pure function of
+        temperature, and they are exactly the stand-ins that survived deleting
+        the literal (RESEARCH 8.2).
+        """
+        return dict.fromkeys(TEMPERATURE_FEATURE_COLUMNS, NAN)
+
+    def _absent_observation_features(
+        self, *, is_outdoor: bool
+    ) -> dict[str, float | None]:
+        """Every full-builder weather column NULL, bar the two flags.
+
+        The state D33.1-07 calls "venue resolves, observation absent". Before
+        the coverage flag existed this state was unrepresentable: a missing
+        record was filled with ``temp_f: 65.0`` AND ``is_outdoor: False``, so it
+        was indistinguishable from a dome BY CONSTRUCTION.
+
+        Args:
+            is_outdoor: Whether weather APPLIES to this game. What is absent is
+                the observation, not the applicability -- which is exactly the
+                distinction ``weather_coverage`` records.
+
+        Returns:
+            Every full-builder column at NaN (``weather_condition`` at None,
+            because it is a string column), with ``weather_affects_game``
+            derived from *is_outdoor* and ``weather_coverage`` at 0.0.
+        """
+        features: dict[str, float | None] = dict.fromkeys(_FULL_BUILDER_COLUMNS, NAN)
+        for column in WEATHER_NON_NUMERIC_FEATURE_COLUMNS:
+            features[column] = None
+        features["weather_affects_game"] = 1.0 if is_outdoor else 0.0
+        features["weather_coverage"] = 0.0
+        return features
 
     def calculate_precipitation_features(
         self, weather_data: dict[str, Any]
@@ -347,10 +739,19 @@ class WeatherFeaturesCalculator:
             Dictionary with precipitation features
         """
         try:
-            precip_prob = weather_data.get("precip_prob", 0.0) or 0.0
-            precip_mm = weather_data.get("precip_mm", 0.0) or 0.0
+            raw_prob = weather_data.get("precip_prob")
+            raw_mm = weather_data.get("precip_mm")
             condition = (weather_data.get("condition") or "").lower()
-            temp_f = weather_data.get("temp_f", 40.0) or 40.0
+            raw_temp = weather_data.get("temp_f")
+
+            if _is_missing(raw_prob) or _is_missing(raw_mm):
+                # Every band, score and multiplier below reads BOTH readings,
+                # so neither can be answered from one of them. The old code
+                # wrote `or 0.0` for both and reported the result as a dry day.
+                return dict.fromkeys(PRECIPITATION_FEATURE_COLUMNS, NAN)
+
+            precip_prob = float(raw_prob)
+            precip_mm = float(raw_mm)
 
             # Basic precipitation features
             precip_features = {
@@ -369,21 +770,35 @@ class WeatherFeaturesCalculator:
                 else 0.0,
             }
 
-            # Precipitation type (snow vs rain has different effects)
-            is_snow = temp_f <= 35.0 and (
-                precip_prob > 0.3 or precip_mm > 0.5 or "snow" in condition
+            # Precipitation TYPE needs the temperature, and the temperature is
+            # the one reading that can be absent while the two precipitation
+            # readings are present. `or 40.0` used to supply it -- a 40F
+            # stand-in that decided rain-versus-snow for a game nobody measured.
+            # Without it, snow-versus-rain is unknown, so those three one-hots
+            # and the impact score that reads them are NULL; the bands and the
+            # two multipliers below do not consult temperature and stay real.
+            temperature_known = not _is_missing(raw_temp)
+            temp_f = float(raw_temp) if temperature_known else NAN
+
+            is_snow = temperature_known and (
+                temp_f <= 35.0
+                and (precip_prob > 0.3 or precip_mm > 0.5 or "snow" in condition)
             )
-            is_rain = temp_f > 35.0 and (
-                precip_prob > 0.3 or precip_mm > 0.5 or "rain" in condition
+            is_rain = temperature_known and (
+                temp_f > 35.0
+                and (precip_prob > 0.3 or precip_mm > 0.5 or "rain" in condition)
             )
 
-            precip_features.update(
-                {
-                    "is_snow": 1.0 if is_snow else 0.0,
-                    "is_rain": 1.0 if is_rain else 0.0,
-                    "is_dry": 1.0 if not (is_snow or is_rain) else 0.0,
-                }
-            )
+            if temperature_known:
+                precip_features.update(
+                    {
+                        "is_snow": 1.0 if is_snow else 0.0,
+                        "is_rain": 1.0 if is_rain else 0.0,
+                        "is_dry": 1.0 if not (is_snow or is_rain) else 0.0,
+                    }
+                )
+            else:
+                precip_features.update({"is_snow": NAN, "is_rain": NAN, "is_dry": NAN})
 
             # Precipitation impact scoring
             if precip_prob <= 0.2 and precip_mm <= 0.5:
@@ -396,10 +811,14 @@ class WeatherFeaturesCalculator:
                 precip_impact = 1.0  # Heavy impact
 
             # Snow has different impact than rain
-            if is_snow:
-                precip_impact *= 1.2  # Snow generally worse than rain
-
-            precip_features["precip_impact_score"] = min(precip_impact, 1.0)
+            if not temperature_known:
+                # The snow multiplier below cannot be applied or ruled out, so
+                # the impact score is unknown rather than un-multiplied.
+                precip_features["precip_impact_score"] = NAN
+            else:
+                if is_snow:
+                    precip_impact *= 1.2  # Snow generally worse than rain
+                precip_features["precip_impact_score"] = min(precip_impact, 1.0)
 
             # Turnover multiplier (wet conditions increase fumbles/interceptions)
             if precip_prob <= 0.3 and precip_mm <= 1.0:
@@ -427,11 +846,25 @@ class WeatherFeaturesCalculator:
             return precip_features
 
         except (ValueError, KeyError, TypeError) as e:
-            logger.error("Failed to calculate precipitation features", error=str(e))
-            return self._default_precipitation_features()
+            logger.error(
+                "Precipitation feature calculation failed",
+                game_id=weather_data.get("game_id"),
+                error=str(e),
+            )
+            raise _observation_failure("precipitation", weather_data, e) from e
 
-    def _default_precipitation_features(self) -> dict[str, float]:
-        """Return default precipitation features when calculation fails."""
+    def _indoor_precipitation_features(self) -> dict[str, float]:
+        """The INDOOR precipitation state. Indoors it genuinely IS dry.
+
+        These values are a TRUE statement about a covered game, in Ruling J's
+        own terms, which is why D33.1-07 keeps indoor precipitation at a genuine
+        dry level rather than calling it NULL.
+
+        THIS IS NOT A FALLBACK FOR A FAILED CALCULATION. It was called
+        ``_default_precipitation_features`` and was reached from an ``except``
+        branch, where it invented a dry day out of a malformed payload. The
+        rename is the guard, and a test asserts the single indoor call site.
+        """
         return {
             "precip_prob": 0.0,
             "precip_mm": 0.0,
@@ -465,11 +898,27 @@ class WeatherFeaturesCalculator:
             Dictionary with overall weather severity features
         """
         try:
-            # Individual impact scores
-            wind_impact = wind_features.get("wind_impact_score", 0.0)
-            cold_impact = temp_features.get("cold_impact_score", 0.0)
-            heat_impact = temp_features.get("heat_impact_score", 0.0)
-            precip_impact = precip_features.get("precip_impact_score", 0.0)
+            # Individual impact scores.
+            #
+            # The `.get` fallback is NaN rather than 0.0 on purpose: a missing
+            # key is an unknown impact, and defaulting it to "no impact" is the
+            # same fabrication one level up from the families below.
+            wind_impact = wind_features.get("wind_impact_score", NAN)
+            cold_impact = temp_features.get("cold_impact_score", NAN)
+            heat_impact = temp_features.get("heat_impact_score", NAN)
+            precip_impact = precip_features.get("precip_impact_score", NAN)
+
+            if any(
+                _is_missing(value)
+                for value in (wind_impact, cold_impact, heat_impact, precip_impact)
+            ):
+                # D33.1-07's inheritance rule, applied to the composites. Note
+                # what NaN arithmetic alone would have produced here:
+                # `1.0 if nan >= 0.6 else 0.0` is 0.0, so `weather_game` would
+                # have read as a confident "this was not a weather game" for a
+                # game nobody measured. The comparisons must be skipped, not
+                # merely fed a NaN.
+                return dict.fromkeys(SEVERITY_FEATURE_COLUMNS, NAN)
 
             # Combined weather severity (research-based weights)
             # Wind is the larger driver, temperature has independent but smaller signal
@@ -504,16 +953,15 @@ class WeatherFeaturesCalculator:
             }
 
         except (ValueError, KeyError, TypeError) as e:
-            logger.error("Failed to calculate weather severity", error=str(e))
-            return {
-                "weather_severity_score": 0.0,
-                "home_weather_advantage": 0.0,
-                "defensive_advantage": 0.0,
-                "rushing_advantage": 0.0,
-                "scoring_reduction": 0.0,
-                "weather_game": 0.0,
-                "extreme_weather": 0.0,
-            }
+            # The FOURTH fabricating handler, and not one the plan named. It
+            # returned the whole composite family at 0.0 -- "weather reduced
+            # scoring by nothing" asserted from a crash. D33.1-07's third state
+            # is about the CALCULATION, and this is one.
+            logger.error(
+                "Weather severity calculation failed",
+                error=str(e),
+            )
+            raise _observation_failure("weather severity", {}, e) from e
 
     def build_weather_features(
         self,
@@ -594,46 +1042,48 @@ class WeatherFeaturesCalculator:
                 game_weather = weather_df[weather_df["game_id"] == game_id]
 
                 if len(game_weather) == 0:
-                    logger.warning("No weather data found for game", game_id=game_id)
-                    # Use default weather (no impact)
-                    weather_data = {
-                        "is_outdoor": False,
-                        "temp_f": 65.0,
-                        "wind_mph": 0.0,
-                        "precip_prob": 0.0,
-                        "precip_mm": 0.0,
-                        "condition": "Clear",
-                    }
-                else:
-                    # Use most recent weather forecast for this game
-                    latest_weather = game_weather.sort_values("forecast_time").iloc[-1]
-                    weather_data = latest_weather.to_dict()
+                    raise _no_weather_row(game_id)
+
+                # Use most recent weather forecast for this game
+                latest_weather = game_weather.sort_values("forecast_time").iloc[-1]
+                weather_data = latest_weather.to_dict()
 
                 # Basic game identifiers
-                game_features = {"game_id": game_id, "season": season, "week": week}
+                game_features: dict[str, Any] = {
+                    "game_id": game_id,
+                    "season": season,
+                    "week": week,
+                }
 
-                # Check if weather should impact this game (outdoor only)
-                is_outdoor = weather_data.get("is_outdoor", False)
+                covered = _row_is_covered(weather_data)
+                is_outdoor = bool(weather_data.get("is_outdoor", False))
+
+                if not covered:
+                    # RULING J, the middle row: the venue resolved, the ERA5
+                    # observation did not arrive. Nothing is calculated, and the
+                    # only two numbers on the row are the two flags.
+                    game_features.update(
+                        self._absent_observation_features(is_outdoor=is_outdoor)
+                    )
+                    weather_features.append(game_features)
+                    continue
+
                 game_features["weather_affects_game"] = 1.0 if is_outdoor else 0.0
+                game_features["weather_coverage"] = 1.0
 
                 if not is_outdoor:
-                    # Indoor game - weather has no impact
-                    game_features.update(self._default_wind_features())
-                    game_features.update(self._default_temperature_features())
-                    game_features.update(self._default_precipitation_features())
+                    # Indoor game. Wind and precipitation are genuinely calm and
+                    # dry; the TEMPERATURE family is NULL, because there is no
+                    # outdoor temperature to report and a band with nothing to
+                    # band has no answer (Ruling J).
+                    game_features.update(self._indoor_wind_features())
+                    game_features.update(self._indoor_temperature_features())
+                    game_features.update(self._indoor_precipitation_features())
 
-                    # No weather severity for indoor games
-                    game_features.update(
-                        {
-                            "weather_severity_score": 0.0,
-                            "home_weather_advantage": 0.0,
-                            "defensive_advantage": 0.0,
-                            "rushing_advantage": 0.0,
-                            "scoring_reduction": 0.0,
-                            "weather_game": 0.0,
-                            "extreme_weather": 0.0,
-                        }
-                    )
+                    # The seven composites keep their genuine no-impact level:
+                    # "weather reduced scoring by nothing" is a TRUE statement
+                    # about an indoor game rather than a stand-in.
+                    game_features.update(dict.fromkeys(SEVERITY_FEATURE_COLUMNS, 0.0))
                 else:
                     # Outdoor game - calculate weather features
                     wind_features = self.calculate_wind_features(weather_data)
@@ -654,11 +1104,11 @@ class WeatherFeaturesCalculator:
                 # Add raw weather values for reference
                 game_features.update(
                     {
-                        "raw_temp_f": weather_data.get("temp_f"),
-                        "raw_wind_mph": weather_data.get("wind_mph"),
-                        "raw_precip_prob": weather_data.get("precip_prob"),
-                        "raw_precip_mm": weather_data.get("precip_mm"),
-                        "raw_humidity_pct": weather_data.get("humidity_pct"),
+                        "raw_temp_f": _or_null(weather_data.get("temp_f")),
+                        "raw_wind_mph": _or_null(weather_data.get("wind_mph")),
+                        "raw_precip_prob": _or_null(weather_data.get("precip_prob")),
+                        "raw_precip_mm": _or_null(weather_data.get("precip_mm")),
+                        "raw_humidity_pct": _or_null(weather_data.get("humidity_pct")),
                         "weather_condition": weather_data.get("condition", "Unknown"),
                     }
                 )
@@ -667,6 +1117,7 @@ class WeatherFeaturesCalculator:
 
             # Convert to DataFrame
             features_df = pd.DataFrame(weather_features)
+            _assert_builder_columns(features_df, "full")
 
             logger.info(
                 "Built weather features",
@@ -727,6 +1178,11 @@ class WeatherFeaturesCalculator:
             return features_dict
 
         except (ValueError, KeyError, TypeError) as e:
+            # Returned `{}` before Plan 33.1-04. An empty feature dict is not a
+            # smaller answer, it is a DIFFERENT one -- and a caller that merges
+            # it gets a game with no weather at all, reported as success. In
+            # this module an `except` branch that returns a value is the
+            # fabrication pattern (D33.1-07).
             logger.error(
                 "Failed to get weather features for game",
                 game_id=game_id,
@@ -734,7 +1190,9 @@ class WeatherFeaturesCalculator:
                 week=week,
                 error=str(e),
             )
-            return {}
+            raise _observation_failure(
+                "weather feature lookup", {"game_id": game_id}, e
+            ) from e
 
     def validate_weather_features(self, features_df: pd.DataFrame) -> bool:
         """
@@ -905,23 +1363,27 @@ class WeatherFeaturesCalculator:
                 game_weather = weather_df[weather_df["game_id"] == game_id]
 
                 if len(game_weather) == 0:
-                    logger.warning("No weather data found for game", game_id=game_id)
-                    weather_data: dict[str, Any] = {
-                        "is_outdoor": False,
-                        "temp_f": 65.0,
-                        "wind_mph": 0.0,
-                        "precip_prob": 0.0,
-                        "precip_mm": 0.0,
-                        "condition": "Clear",
-                        "humidity_pct": 50.0,
-                    }
-                else:
-                    latest_weather = game_weather.sort_values("forecast_time").iloc[-1]
-                    weather_data = latest_weather.to_dict()
+                    raise _no_weather_row(game_id)
+
+                latest_weather = game_weather.sort_values("forecast_time").iloc[-1]
+                weather_data: dict[str, Any] = latest_weather.to_dict()
 
                 is_outdoor = bool(weather_data.get("is_outdoor", False))
 
-                if not is_outdoor:
+                if not _row_is_covered(weather_data):
+                    # Ruling J's middle row, in the compressed shape: the three
+                    # feature columns are NULL, and `is_outdoor` still records
+                    # that weather APPLIES. What is absent is the observation.
+                    compressed_rows.append(
+                        {
+                            "game_id": game_id,
+                            "weather_severity_score": NAN,
+                            "wind_mph": NAN,
+                            "is_precipitation": NAN,
+                            "is_outdoor": 1.0 if is_outdoor else 0.0,
+                        }
+                    )
+                elif not is_outdoor:
                     # Indoor/dome: all features zeroed
                     compressed_rows.append(
                         {
@@ -973,6 +1435,7 @@ class WeatherFeaturesCalculator:
                     )
 
             features_df = pd.DataFrame(compressed_rows)
+            _assert_builder_columns(features_df, "compressed")
 
             logger.info(
                 "Built compressed weather features",
@@ -1018,9 +1481,13 @@ class WeatherFeaturesCalculator:
             return {col: float(row[col]) for col in result.columns if col != "game_id"}
 
         except (ValueError, KeyError, TypeError) as e:
+            # See `get_weather_features_for_game`: the same swallow, the same
+            # replacement. An `except` branch in this module raises.
             logger.error(
                 "Failed to get weather features for game",
                 game_id=game_id,
                 error=str(e),
             )
-            return {}
+            raise _observation_failure(
+                "compressed weather feature lookup", {"game_id": game_id}, e
+            ) from e

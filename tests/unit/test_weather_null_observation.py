@@ -758,7 +758,12 @@ class TestACaughtExceptionRaisesForEveryFamily:
         calculator = WeatherFeaturesCalculator()
         with pytest.raises(WeatherObservationError) as excinfo:
             calculator.calculate_precipitation_features(
-                {"game_id": OBSERVED_GAME_ID, "precip_mm": "heavy", "temp_f": 40.0}
+                {
+                    "game_id": OBSERVED_GAME_ID,
+                    "precip_prob": 0.5,
+                    "precip_mm": "heavy",
+                    "temp_f": 40.0,
+                }
             )
         message = str(excinfo.value)
         assert OBSERVED_GAME_ID in message

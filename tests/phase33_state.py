@@ -3719,3 +3719,175 @@ HISTORICAL_NEUTRAL_MISRESOLUTION_REPAIRED: dict[str, object] = {
     "of_which_changed_venue": 83,
     "of_which_already_resolved_correctly": 8,
 }
+
+
+# ---------------------------------------------------------------------------
+# RULING J -- WHAT EACH OF THE THREE D33.1-07 STATES PRODUCES, GROUP BY GROUP.
+#
+# APPENDED by Plan 33.1-04 Task 1 on 2026-09-13. Nothing above this line was
+# edited.
+#
+# THE PRINCIPLE THE TABLE RESOLVES. D33.1-07 gives three states and one
+# inheritance rule, and the inheritance rule and the dome rule appear to pull in
+# opposite directions for the impact columns. The rule that resolves them: a
+# column that answers "WHAT WAS THE WEATHER" is NULL when there was no
+# measurement; a column that answers "HOW MUCH DID WEATHER AFFECT THIS GAME"
+# carries its no-impact level when weather DOES NOT APPLY, and is NULL when
+# weather applies but was not measured. D33.1-07 already applies exactly this
+# reasoning when it keeps indoor wind and precipitation at a genuine 0.0.
+#
+# THE INTENDED CONSEQUENCE, STATED RATHER THAN DISCOVERED. 1,652 indoor games
+# gain NaN across THIRTEEN columns -- the nine temperature columns plus the four
+# temperature-derived impact and multiplier columns. That is a real part of the
+# R5 rung's change set and Plan 33.1-07 pre-declares it. The seven composite
+# columns are the ONLY group whose indoor value is unchanged from before this
+# plan, and that is the same judgement D33.1-07 makes for wind and
+# precipitation, applied to the columns that express impact rather than
+# measurement.
+#
+# THIS IS A RULING, NOT A MEASUREMENT. Every other slot in this module records
+# something counted off the repository. This one records a DECISION about what
+# the code should produce, committed here so the three states cannot be
+# re-litigated from memory by a later plan that reads only the code.
+# ---------------------------------------------------------------------------
+
+WEATHER_NULL_STATE_MATRIX: dict[str, object] = {
+    "ruled_on": "2026-09-13",
+    "ruled_by": "Plan 33.1-04 Task 1 (Ruling J, with the Codex HIGH amendment)",
+    "decision": "D33.1-07",
+    "requirements": ("R4", "R5"),
+    # The three states, keyed by the (weather_coverage, is_outdoor) pair that
+    # distinguishes them. Before the coverage flag existed all three collapsed
+    # into one, because a missing record was written with is_outdoor False.
+    "states": {
+        "covered_indoor": {"weather_coverage": 1.0, "is_outdoor": False},
+        "covered_outdoor_observed": {"weather_coverage": 1.0, "is_outdoor": True},
+        "uncovered_outdoor_absent": {"weather_coverage": 0.0, "is_outdoor": True},
+    },
+    "column_groups": {
+        "temperature": (
+            "raw_temp_f",
+            "temp_f",
+            "apparent_temp_f",
+            "temp_hot",
+            "temp_warm",
+            "temp_mild",
+            "temp_cool",
+            "temp_cold",
+            "temp_very_cold",
+        ),
+        "temperature_impact": (
+            "cold_impact_score",
+            "heat_impact_score",
+            "scoring_multiplier",
+            "ball_handling_difficulty",
+        ),
+        "humidity": ("raw_humidity_pct",),
+        "wind": (
+            "raw_wind_mph",
+            "wind_mph",
+            "wind_calm",
+            "wind_moderate",
+            "wind_high",
+            "wind_severe",
+            "wind_impact_score",
+            "kicking_difficulty",
+            "passing_difficulty",
+        ),
+        "precipitation": (
+            "raw_precip_mm",
+            "raw_precip_prob",
+            "precip_mm",
+            "precip_prob",
+            "precip_none",
+            "precip_light",
+            "precip_moderate",
+            "precip_heavy",
+            "is_snow",
+            "is_rain",
+            "is_dry",
+            "precip_impact_score",
+            "turnover_multiplier",
+            "passing_efficiency",
+        ),
+        "composite": (
+            "weather_severity_score",
+            "home_weather_advantage",
+            "defensive_advantage",
+            "rushing_advantage",
+            "scoring_reduction",
+            "weather_game",
+            "extreme_weather",
+        ),
+        "flags": ("weather_affects_game", "weather_coverage"),
+    },
+    # One row of Ruling J's table per group: what the group takes in each state.
+    # "null" means NaN; "genuine" means a true statement about a covered game
+    # rather than a stand-in; "measured" means the calculation ran on a reading.
+    "table": {
+        "temperature": {
+            "covered_indoor": "null",
+            "uncovered_outdoor_absent": "null",
+            "covered_outdoor_observed": "measured",
+        },
+        "temperature_impact": {
+            "covered_indoor": "null",
+            "uncovered_outdoor_absent": "null",
+            "covered_outdoor_observed": "measured",
+        },
+        "humidity": {
+            "covered_indoor": "null",
+            "uncovered_outdoor_absent": "null",
+            "covered_outdoor_observed": "measured",
+        },
+        "wind": {
+            "covered_indoor": "genuine calm",
+            "uncovered_outdoor_absent": "null",
+            "covered_outdoor_observed": "measured",
+        },
+        "precipitation": {
+            "covered_indoor": "genuine dry",
+            "uncovered_outdoor_absent": "null",
+            "covered_outdoor_observed": "measured",
+        },
+        "composite": {
+            "covered_indoor": "genuine 0.0",
+            "uncovered_outdoor_absent": "null",
+            "covered_outdoor_observed": "measured",
+        },
+        "flags": {
+            "covered_indoor": "weather_affects_game 0.0, weather_coverage 1.0",
+            "uncovered_outdoor_absent": (
+                "weather_affects_game 1.0, weather_coverage 0.0"
+            ),
+            "covered_outdoor_observed": (
+                "weather_affects_game 1.0, weather_coverage 1.0"
+            ),
+        },
+    },
+    "indoor_games_gaining_nan": 1652,
+    "indoor_columns_gaining_nan": 13,
+    # The Ruling J amendment (Codex 33.1-04 HIGH). The two indoor factories were
+    # reached from TWO places: the indoor branch, where their values are true,
+    # and an `except` handler, where they fabricated a whole family out of a
+    # calculation error. The rename is what stops the next `except` branch being
+    # wired to them by analogy.
+    "renamed_indoor_factories": {
+        "_default_wind_features": "_indoor_wind_features",
+        "_default_precipitation_features": "_indoor_precipitation_features",
+    },
+    "deleted_factories": ("_default_temperature_features",),
+    # Every family whose `except` handler now re-raises as
+    # WeatherObservationError. FOUR, not the three the plan named: the composite
+    # severity handler returned the whole family at 0.0 and is the same defect.
+    "raising_families": ("temperature", "wind", "precipitation", "weather severity"),
+    "exception_type": "features.weather.WeatherObservationError",
+    "exception_base": "RuntimeError",
+    "exception_base_reason": (
+        "scripts/build_features._SOURCE_LOAD_ERRORS contains ValueError, "
+        "KeyError and TypeError, so a refusal typed as any of those would be "
+        "caught and converted into an empty frame -- the swallow this refusal "
+        "exists to replace. ProvisionalSnapshotAsTrainingInputError is typed "
+        "the same way for the same recorded reason."
+    ),
+}
