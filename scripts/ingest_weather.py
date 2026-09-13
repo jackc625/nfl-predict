@@ -31,10 +31,16 @@ from conf.settings import get_settings
 from data.quality_gates import validate_bronze_to_silver
 from data.schemas import WeatherSchema
 from data.storage import load_dataframe, save_bronze_snapshot, upsert_silver
-from features.contextual import (
-    STADIUM_ID_ROUTING_FIRST_SEASON,
-    game_is_neutral_site,
-)
+
+# THE MODULE, NOT THE FUNCTION, AND THAT IS DELIBERATE (Plan 33.1-03, Ruling I2).
+# `from features.contextual import venue_record_for_stadium_id` would bind a SECOND
+# name to the resolver here, and monkeypatching the canonical one would then leave
+# this call site pointing at the original -- so a mutation test could not tell one
+# shared implementation from two that happen to agree, which is the exact thing it
+# exists to distinguish. Reaching the function through the module keeps ONE binding.
+# The exception class is imported directly: it is re-raised as a type, never called.
+from features import contextual as venue_routing
+from features.contextual import UnknownStadiumError
 from utils import (
     DataIngestionError,
     get_current_nfl_week,
@@ -698,7 +704,14 @@ class WeatherDataIngester:
             raise DataIngestionError(f"Games data load failed: {e}")
 
     def _get_venue_record(self, home_team: str, venues_df: pd.DataFrame) -> Any:
-        """The WHOLE venue row for a team, not just its coordinates.
+        """The WHOLE venue row for a TEAM -- "where does this team play".
+
+        NOT REACHABLE FROM ANY GAME-VENUE RESOLUTION PATH since D33.1-06. It answers
+        a different question from "where was this game played", and confusing the two
+        is what gave 1,153 of 6,499 games the wrong stadium. It is kept because the
+        team question is still asked (the surface-mismatch comparison needs the AWAY
+        team's own home venue) and because Plan 33.1-03's coordinate diff evaluates
+        the real prior rule through it rather than through a paraphrase of it.
 
         The row is what the forecast path needs: R8 reads the venue's IANA
         ``timezone`` as well as its latitude and longitude, and returning a triple
@@ -726,53 +739,63 @@ class WeatherDataIngester:
         return venue_info.iloc[0]
 
     def _get_venue_record_by_stadium_id(
-        self, stadium_id: object, venues_df: pd.DataFrame
+        self,
+        stadium_id: object,
+        venues_df: pd.DataFrame,
+        *,
+        game_id: object = None,
     ) -> Any:
-        """The WHOLE venue row for an nflverse ``stadium_id``.
+        """Adapt a venues FRAME to the shared resolver. The DECISION is not here.
 
-        EXACT and CASE-SENSITIVE, with no normalization and no fuzzy match (R11).
-        A miss RAISES rather than falling back to the home team: for a neutral-site
-        game the home team's stadium is the wrong answer by construction, and the
-        wrong answer arriving silently is the defect this whole path exists to fix.
+        THE LOOKUP DECISION LIVES IN ``features.contextual.venue_record_for_stadium_id``
+        (Plan 33.1-03, Ruling I2). This function exists for ONE reason: its callers
+        hand it a ``venues_df``, and the shared resolver takes a list of records. It
+        adapts the frame and nothing else -- do NOT re-inline the match body or the
+        refusal string for convenience. Two implementations that happen to agree are
+        not one rule; they are two rules waiting for the next edit to either, and
+        that is the drift COLD-09 exists to close.
+
+        The refusal is likewise raised by the shared resolver and merely re-typed
+        here. ``WeatherDataError`` is this module's contract with its callers, so the
+        TYPE is preserved while the TEXT stays single-sourced -- the two consumers
+        cannot hand an operator different recovery instructions for the same missing
+        record.
+
+        EXACT and CASE-SENSITIVE, with no normalization and no fuzzy match. A miss
+        RAISES rather than falling back to the home team, for every game of every
+        season (D33.1-06).
+
+        Returns:
+            The venue RECORD (a mapping). Callers read it by key, so a mapping and a
+            frame row are interchangeable here -- and returning what the shared
+            resolver returned is what makes the mutation test in
+            ``tests/unit/test_venue_resolver_is_shared.py`` able to observe that this
+            path really does go through it.
 
         Raises:
-            WeatherDataError: ``stadium_id`` is absent from ``data/venues.json``.
-        """
-        if "stadium_id" in venues_df.columns:
-            match = venues_df[venues_df["stadium_id"] == stadium_id]
-            if not match.empty:
-                return match.iloc[0]
-
-        raise WeatherDataError(
-            f"No venue found for stadium_id {stadium_id!r}. It is NOT resolved to "
-            "the home team's stadium: that would give the wrong coordinates and the "
-            "wrong weather for a neutral-site game, silently. Add the venue record "
-            "to data/venues.json with its stadium_id, latitude, longitude and "
-            "roof_type entered explicitly. Matching is exact and case-sensitive."
-        )
-
-    def _resolve_venue_record_for_game(self, game: Any, venues_df: pd.DataFrame) -> Any:
-        """The venue ROW for one game, under the D33-15 routing rule.
-
-        ONE routing rule, in one place. The coordinate accessors below delegate to
-        it rather than repeating the season/neutral-site test, so the forecast path
-        and the archive path can never diverge about which stadium a game is at.
-
-        Seasons before ``STADIUM_ID_ROUTING_FIRST_SEASON`` keep the home-team
-        resolution unchanged, including their neutral-site games -- those 91 rows
-        are a disclosure, not a repair (see the contextual module's note).
+            WeatherDataError: ``stadium_id`` is absent from the given records.
         """
         try:
-            season = int(game.get("season"))
-        except (TypeError, ValueError):
-            season = 0
-
-        if season >= STADIUM_ID_ROUTING_FIRST_SEASON and game_is_neutral_site(game):
-            return self._get_venue_record_by_stadium_id(
-                game.get("stadium_id"), venues_df
+            return venue_routing.venue_record_for_stadium_id(
+                stadium_id, venues_df.to_dict("records"), game_id=game_id
             )
+        except UnknownStadiumError as exc:
+            raise WeatherDataError(str(exc)) from exc
 
-        return self._get_venue_record(game["home_team"], venues_df)
+    def _resolve_venue_record_for_game(self, game: Any, venues_df: pd.DataFrame) -> Any:
+        """The venue record for one game: ONE routing rule, in one place.
+
+        The rule is the game's own ``stadium_id``, for EVERY season and EVERY game
+        (D33.1-06). There is no season test and no neutral-site test. The coordinate
+        accessors below delegate to this rather than repeating the lookup, and this
+        delegates in turn to ``features.contextual.venue_record_for_stadium_id`` --
+        so the contextual builder, the forecast path and the archive path cannot
+        diverge about which stadium a game is at, mechanically rather than by
+        coincidence.
+        """
+        return self._get_venue_record_by_stadium_id(
+            game.get("stadium_id"), venues_df, game_id=game.get("game_id")
+        )
 
     def _get_venue_coordinates(
         self, home_team: str, venues_df: pd.DataFrame

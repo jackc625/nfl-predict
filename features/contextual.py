@@ -61,50 +61,71 @@ _SCHEDULE_LOAD_ERRORS = (
 
 
 # ---------------------------------------------------------------------------
-# stadium_id-keyed venue routing (COLD-09 / R11 / D33-15 / T-33-26).
+# stadium_id-keyed venue routing: ONE RULE, EVERY SEASON, EVERY GAME
+# (COLD-09 / R1 / D33-15 / D33.1-06 / T-33.1-15, T-33.1-16, T-33.1-17).
 #
-# THE DEFECT. All three venue resolvers key off the home team, so 2026's eight
-# international games resolve to the nominal home team's own stadium. The Maracana
+# THE DEFECT. All three venue resolvers used to key off the home team, so a game
+# resolved to whatever stadium that franchise plays in TODAY. The 2026 Maracana
 # game (BAL @ DAL, week 3) resolved to AT&T Stadium in Arlington: Dallas
 # coordinates, Dallas timezone, Dallas weather, and a travel distance of ZERO miles
-# for a trip to Brazil, with no error raised.
+# for a trip to Brazil, with no error raised. History carried the same defect at
+# scale: 141 outdoor Oakland Coliseum games took Las Vegas desert weather under an
+# indoor roof, 112 St. Louis dome games and 125 San Diego games took Los Angeles
+# weather. MEASURED against the pinned 2002-2025 feed, 1,153 of 6,499 games
+# resolved to a stadium other than the one they were played at -- and not one of
+# them raised.
 #
-# THE RULE, STATED ONCE. For seasons from STADIUM_ID_ROUTING_FIRST_SEASON onward, a
-# game the feed marks NEUTRAL resolves by `stadium_id` and RAISES on a miss. Every
-# other game -- any earlier season, and any non-neutral game -- resolves by
-# `home_team` exactly as it does today.
+# WHAT CHANGED HERE, AND ON WHOSE AUTHORITY. Plan 33-06 gated the repair on a
+# CONJUNCTION -- a module constant `STADIUM_ID_ROUTING_FIRST_SEASON = 2026` AND the
+# game being neutral-site -- so history kept its home-team answer and the 91
+# historical neutral-site games stayed a recorded DISCLOSURE
+# (tests/phase33_state.HISTORICAL_NEUTRAL_MISRESOLUTION) that D33-15 deliberately
+# deferred. The owner took that repair at Phase 33.1 (decision D33.1-06,
+# 2026-09-12). The constant is RETIRED and BOTH halves of the conjunction are gone:
+# the season test AND the neutral-site test. Retiring only the season half would
+# have fixed nothing for the Oakland games, because they are NOT neutral-site --
+# only 83 of the 1,153 misroutes are (33.1-RESEARCH.md pitfall P-1).
 #
-# WHY THE SEASON GATE. The 91 historical neutral-site games across 27 stadium_ids
-# have resolved to the home team's own stadium for the life of this project. That is
-# a measured DISCLOSURE (tests/phase33_state.HISTORICAL_NEUTRAL_MISRESOLUTION), not
-# a defect to repair here: re-resolving them would move gold under three deployed
-# models in the same change that fixes the forward season, and the two would then be
-# inseparable.
+# WHAT IT COSTS, STATED HERE RATHER THAN DISCOVERED LATER. This WIDENS SPEC R5's
+# acceptance from "the measured column-level diff touches only weather-family
+# columns and the new coverage flag" to "weather-family columns, the
+# venue/travel/timezone/elevation family, and the new coverage flag". The rung Plan
+# 33.1-07 rebuilds therefore carries a COMPOUND cause and is never called "the
+# weather rung" without qualification.
 #
-# THE MATCH IS EXACT AND CASE-SENSITIVE. No casefolding, no stripping, no fuzzy
-# match. A feed value that differs from the recorded code IS a different value, and
-# quietly accepting it is how a cold start produces a confidently wrong venue.
+# THE MATCH IS EXACT AND CASE-SENSITIVE, unchanged. No casefolding, no stripping,
+# no fuzzy match -- and now no fallback either. An id absent from data/venues.json
+# RAISES and names the game, because the home team's stadium is the wrong answer by
+# construction and a plausible wrong answer arriving quietly is the whole defect.
 # ---------------------------------------------------------------------------
-
-STADIUM_ID_ROUTING_FIRST_SEASON: int = 2026
 
 _VENUES_JSON_PATH = Path(__file__).resolve().parent.parent / "data" / "venues.json"
 
 # The nflverse `location` value that marks a neutral-site game, and the silver column
 # that will carry the same fact once Plan 33-12 backfills it. Both spellings are read
-# because this router runs against BOTH shapes: the raw feed frame during ingestion
-# and the silver games frame during the feature build.
+# because the predicate below runs against BOTH shapes: the raw feed frame during
+# ingestion and the silver games frame during the feature build.
+#
+# NOTE, since it changed under D33.1-06: `game_is_neutral_site` is NO LONGER part of
+# the routing decision. Every game routes by its own `stadium_id`, neutral or not.
+# The predicate survives because "was this game at a neutral site" is still a fact
+# worth asking (the Plan 33.1-03 diff reports it, and Plan 33-12 backfills the silver
+# column), but nothing in this module branches on it any more.
 _NEUTRAL_LOCATION_VALUE = "Neutral"
 
 
 class UnknownStadiumError(ValueError):
-    """A neutral-site game names a ``stadium_id`` ``data/venues.json`` does not carry.
+    """A game names a ``stadium_id`` ``data/venues.json`` does not carry.
 
-    Raised rather than falling back to the home team's stadium: on a neutral-site
-    game the home team's venue is the WRONG answer by construction, and it is
-    precisely the wrong answer that shipped silently for the whole life of this
-    project. The message follows the repo's refusal-carries-its-recovery-command
-    convention -- it names the id, the game, and the file to edit.
+    Raised rather than falling back to the home team's stadium: the home team's
+    venue is the WRONG answer by construction for any game not played there, and it
+    is precisely the wrong answer that shipped silently for the whole life of this
+    project -- 1,153 games of it. The message follows the repo's
+    refusal-carries-its-recovery-command convention: it names the id, the game, and
+    the file to edit.
+
+    Under D33-15 this was scoped to season >= 2026 neutral-site games. D33.1-06
+    widened it to every game of every season.
     """
 
 
@@ -123,29 +144,97 @@ def _load_venue_records(
         return json.load(handle)["venues"]
 
 
+def venue_record_for_stadium_id(
+    stadium_id: object,
+    venues: list[dict[str, Any]] | None = None,
+    *,
+    game_id: object = None,
+) -> dict[str, Any]:
+    """The ONE exact ``stadium_id`` -> venue-record resolver (Ruling I2).
+
+    This is the single place the lookup DECISION lives. ``resolve_venue_for_game``
+    below routes through it, and ``scripts.ingest_weather`` DELEGATES to it rather
+    than carrying its own copy -- so neither the match nor the refusal string exists
+    twice, and the contextual builder and both weather paths cannot drift apart
+    about which stadium a game was played at or about what to tell an operator when
+    the record is missing.
+
+    WHY THE EXTRACTION IS REAL AND NOT DESCRIPTIVE. Before Plan 33.1-03 there were
+    two independently maintained implementations -- this module's router and
+    ``WeatherDataIngester._get_venue_record_by_stadium_id`` -- that happened to
+    agree. Agreeing today is not being one rule: the next edit to either is where
+    they diverge. ``tests/unit/test_venue_resolver_is_shared.py`` proves the merge
+    by MUTATION (monkeypatching this function moves BOTH consumers' answers) rather
+    than by an equality check over the real data, which would pass identically
+    against two copies.
+
+    THE MATCH IS EXACT AND CASE-SENSITIVE. No casefolding, no stripping, no fuzzy
+    match, and no fallback to the home team.
+
+    Args:
+        stadium_id: The nflverse stadium code from the feed (e.g. ``OAK00``).
+        venues: Optional pre-loaded venue records; ``data/venues.json`` otherwise.
+        game_id: Optional, for the refusal message only. A refusal that cannot name
+            the game leaves the reader to guess which of 6,499 it was about.
+
+    Returns:
+        The venue record.
+
+    Raises:
+        UnknownStadiumError: ``stadium_id`` is absent, empty, non-string, or not in
+            the venue records.
+    """
+    if isinstance(stadium_id, str) and stadium_id:
+        for venue in _load_venue_records(venues):
+            if venue.get("stadium_id") == stadium_id:
+                return venue
+
+    subject = (
+        f"game {game_id!r} names stadium_id {stadium_id!r}"
+        if game_id is not None
+        else f"No venue found for stadium_id {stadium_id!r}"
+    )
+    raise UnknownStadiumError(
+        f"{subject}, which is not in data/venues.json. It is NOT resolved to the "
+        "home team's stadium: that is the wrong answer by construction and produces "
+        "a game with the wrong coordinates, the wrong timezone, the wrong weather "
+        "and zero travel miles, silently. Add the venue record to data/venues.json "
+        "with its stadium_id, latitude, longitude, elevation_ft, IANA timezone and "
+        "roof_type entered explicitly, then re-run. Matching is exact and "
+        "case-sensitive."
+    )
+
+
 def _get_venue_by_stadium_id(
     stadium_id: object,
     venues: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """The venue whose ``stadium_id`` is EXACTLY ``stadium_id``, or None.
+    """A SOFT miss over :func:`venue_record_for_stadium_id`: the record, or None.
 
-    The LOOKUP answers None for a miss; the ROUTER below decides whether a miss is
-    fatal. Non-string and empty ids are misses rather than errors, so a frame with
-    an absent column behaves the same as one with a blank cell.
+    A thin wrapper, deliberately NOT a second implementation. Some callers -- the
+    corpus-completeness tests, the roof lookup in ``scripts.ingest_games`` -- are
+    asking "is this code known?" rather than "where was this game played?", and for
+    that question a miss is an answer rather than a refusal.
     """
-    if not isinstance(stadium_id, str) or not stadium_id:
+    try:
+        return venue_record_for_stadium_id(stadium_id, venues)
+    except UnknownStadiumError:
         return None
-    for venue in _load_venue_records(venues):
-        if venue.get("stadium_id") == stadium_id:
-            return venue
-    return None
 
 
 def _get_venue_by_home_team(
     home_team: object,
     venues: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Today's resolution: the venue whose ``home_teams`` contains the team."""
+    """The venue whose ``home_teams`` contains the team -- "where does this TEAM play".
+
+    NO LONGER REACHABLE FROM ANY GAME-VENUE RESOLUTION PATH (D33.1-06). It answers a
+    different question from "where was this game played", and that difference is
+    exactly what produced 1,153 misroutes while it was the routing rule. It stays
+    because the question it does answer is still asked -- the away team's home
+    surface in ``_compute_surface_mismatch``, and the team-to-venue mapping the
+    travel origin is read from.
+    """
     if not isinstance(home_team, str) or not home_team:
         return None
     for venue in _load_venue_records(venues):
@@ -174,62 +263,165 @@ def game_is_neutral_site(game: Any) -> bool:
 def resolve_venue_for_game(
     game: Any,
     venues: list[dict[str, Any]] | None = None,
-) -> dict[str, Any] | None:
-    """Resolve the venue a game is actually played at (D33-15).
+) -> dict[str, Any]:
+    """Resolve the venue a game was actually played at (D33.1-06).
+
+    ONE routing rule, applied to EVERY season and EVERY game: the game's own
+    ``stadium_id``. There is no season test and no neutral-site test, and there is
+    no home-team fallback -- an unresolvable id raises rather than returning a
+    plausible wrong answer.
+
+    ``season``, ``home_team``, ``location`` and ``neutral_site`` are no longer read
+    by this function at all. That is the point: the game says where it was played,
+    and nothing else gets a vote.
 
     Args:
-        game: A mapping-like game row. Read: ``season``, ``home_team``, ``game_id``,
-            and either ``location`` or ``neutral_site``, plus ``stadium_id``.
+        game: A mapping-like game row. Read: ``stadium_id``, and ``game_id`` for the
+            refusal message.
         venues: Optional pre-loaded venue records.
 
     Returns:
-        The venue record, or None when the home-team path cannot resolve one (the
-        same shape today's callers already handle by emitting default metrics).
+        The venue record.
 
     Raises:
-        UnknownStadiumError: a season >= 2026 neutral-site game whose ``stadium_id``
-            is absent from ``data/venues.json``.
+        UnknownStadiumError: the game's ``stadium_id`` is absent from
+            ``data/venues.json``.
     """
-    try:
-        season = int(game.get("season"))
-    except (TypeError, ValueError):
-        season = 0
+    return venue_record_for_stadium_id(
+        game.get("stadium_id"), venues, game_id=game.get("game_id")
+    )
 
-    stadium_id = game.get("stadium_id")
 
-    if season >= STADIUM_ID_ROUTING_FIRST_SEASON and game_is_neutral_site(game):
-        venue = _get_venue_by_stadium_id(stadium_id, venues)
-        if venue is None:
-            raise UnknownStadiumError(
-                f"neutral-site game {game.get('game_id')!r} names stadium_id "
-                f"{stadium_id!r}, which is not in data/venues.json. It is NOT "
-                "resolved to the home team's stadium: that is the wrong answer by "
-                "construction and produces a game with the wrong coordinates, the "
-                "wrong timezone, the wrong weather and zero travel miles, silently. "
-                "Add the venue record to data/venues.json with its latitude, "
-                "longitude, elevation_ft, IANA timezone and roof_type entered "
-                "explicitly, then re-run."
+# ---------------------------------------------------------------------------
+# Feature-bearing venue fields, VALIDATED rather than defaulted (Ruling I3).
+#
+# `encode_venue_features` wraps its whole body in an `except` that returns
+# `_default_venue_features()`. Corpus-completeness tests protect a MISSING venue;
+# nothing protected a PRESENT venue with a MALFORMED feature-bearing field, and each
+# of the five such fields crosses a band or an equality:
+#
+#     roof_type     -> venue_outdoor / venue_indoor / venue_retractable
+#     elevation_ft  -> venue_elevation_ft and the >= 3000 venue_high_altitude band
+#     climate_zone  -> venue_cold_climate / venue_warm_climate
+#     capacity      -> venue_capacity and the >= 75000 venue_large_stadium band
+#     surface       -> the grass/turf mismatch feature
+#
+# A malformed cell would therefore move a gold column on up to 1,082 games for a
+# reason nobody chose, silently, inside Plan 33.1-07's rung -- which is why that
+# plan carries `validate_venue_feature_fields` as a PRECONDITION on the rebuild.
+#
+# THE VOCABULARIES ARE LITERALS AND ARE DELIBERATELY NOT DERIVED FROM
+# data/venues.json. Deriving the allowed set from the file being validated lets a
+# malformed record legalise itself by being present, which is a validator that
+# cannot fail. The cross-check that these literals still cover the RATIFIED records
+# lives on the test side (tests/unit/test_venue_feature_fields_are_valid.py), where
+# `tests.phase33_state`'s owner-ratified tables are importable -- a production module
+# must not import from `tests/`.
+# ---------------------------------------------------------------------------
+
+VENUE_FEATURE_BEARING_FIELDS: tuple[str, ...] = (
+    "roof_type",
+    "elevation_ft",
+    "climate_zone",
+    "capacity",
+    "surface",
+)
+
+# The three values `encode_venue_features` actually tests for. Anything else encodes
+# to all-zeros across the three roof flags, which is not a state any venue is in.
+VENUE_ROOF_TYPE_VOCABULARY: frozenset[str] = frozenset(
+    {"outdoor", "indoor", "retractable"}
+)
+
+# The closed climate vocabulary. Only `humid_continental` sets venue_cold_climate and
+# only `humid_subtropical`/`tropical`/`desert` set venue_warm_climate; the rest are
+# INERT BY DESIGN and are listed here so that being inert is a ratified state rather
+# than the silent consequence of a typo (see test_the_new_climate_token_encodes_to_
+# neither_flag, which pins exactly that for `subtropical_highland`).
+VENUE_CLIMATE_ZONE_VOCABULARY: frozenset[str] = frozenset(
+    {
+        "desert",
+        "humid_continental",
+        "humid_subtropical",
+        "mediterranean",
+        "oceanic",
+        "semi_arid",
+        "subtropical_highland",
+        "tropical",
+    }
+)
+
+
+def validate_venue_feature_fields(
+    venues: list[dict[str, Any]] | None = None,
+) -> None:
+    """Every feature-bearing field on every venue record is well formed, or refuse.
+
+    Checks all of :data:`VENUE_FEATURE_BEARING_FIELDS` on every record in ONE pass
+    and refuses naming EVERY offending ``<stadium_id>.<field>`` pair with its value,
+    so an operator fixing the file sees the whole list rather than discovering the
+    second fault after fixing the first.
+
+    Args:
+        venues: Optional pre-loaded venue records; ``data/venues.json`` otherwise.
+
+    Raises:
+        ValueError: one or more records carry a malformed feature-bearing field.
+    """
+    offences: list[str] = []
+
+    for index, venue in enumerate(_load_venue_records(venues)):
+        # A record with no stadium_id at all still has to be nameable in the
+        # refusal, or the message points at nothing.
+        name = venue.get("stadium_id") or venue.get("venue_id") or f"record[{index}]"
+
+        roof_type = venue.get("roof_type")
+        if roof_type not in VENUE_ROOF_TYPE_VOCABULARY:
+            offences.append(
+                f"{name}.roof_type is {roof_type!r}; allowed: "
+                f"{sorted(VENUE_ROOF_TYPE_VOCABULARY)}"
             )
-        return venue
 
-    if season >= STADIUM_ID_ROUTING_FIRST_SEASON and isinstance(stadium_id, str):
-        # A NON-NEUTRAL game whose stadium_id is unrecognised is a NEW or RENAMED
-        # home stadium. The documented rule still resolves it by home_team -- that
-        # answer is approximately right, unlike the neutral case -- but silence here
-        # would be the same defect class as the Maracana game, only quieter: a new
-        # home stadium inheriting the old venue's coordinates, timezone and
-        # elevation with nothing in the record to say so.
-        if stadium_id and _get_venue_by_stadium_id(stadium_id, venues) is None:
-            logger.warning(
-                f"Unrecognised stadium_id {stadium_id} on a non-neutral game; "
-                "resolving by home_team as documented (D33-15). A new or renamed "
-                "home stadium needs a record in data/venues.json.",
-                stadium_id=stadium_id,
-                game_id=game.get("game_id"),
-                home_team=game.get("home_team"),
+        climate_zone = venue.get("climate_zone")
+        if climate_zone not in VENUE_CLIMATE_ZONE_VOCABULARY:
+            offences.append(
+                f"{name}.climate_zone is {climate_zone!r}; allowed: "
+                f"{sorted(VENUE_CLIMATE_ZONE_VOCABULARY)}"
             )
 
-    return _get_venue_by_home_team(game.get("home_team"), venues)
+        for field in ("elevation_ft", "capacity"):
+            value = venue.get(field)
+            # `bool` is an `int` in Python, and True would sail through every
+            # numeric check below while meaning nothing as an elevation.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                offences.append(
+                    f"{name}.{field} is {value!r}; it must be a finite number, "
+                    "entered explicitly"
+                )
+            elif not np.isfinite(float(value)):
+                offences.append(
+                    f"{name}.{field} is {value!r}; NaN and infinity are not "
+                    "elevations or capacities"
+                )
+
+        surface = venue.get("surface")
+        if not isinstance(surface, str) or not surface.strip():
+            offences.append(
+                f"{name}.surface is {surface!r}; it must be a non-empty string"
+            )
+
+    if offences:
+        listed = "\n  ".join(offences)
+        raise ValueError(
+            f"{len(offences)} malformed feature-bearing venue field(s) in "
+            "data/venues.json:\n  "
+            f"{listed}\n"
+            "Each of these fields crosses a band or an equality in "
+            "features.contextual.encode_venue_features, so a malformed value would "
+            "be caught there and SILENTLY replaced by _default_venue_features() -- "
+            "moving a gold column for a reason nobody chose. Fix the named cells in "
+            "data/venues.json; do not widen this validator."
+        )
 
 
 class ContextualFeaturesCalculator:
@@ -310,37 +502,30 @@ class ContextualFeaturesCalculator:
         """
         return _get_venue_by_stadium_id(stadium_id, self.venues_data["venues"])
 
-    def resolve_venue_for_game(self, game: Any) -> dict[str, Any] | None:
-        """Resolve a game's true venue under the D33-15 routing rule."""
+    def resolve_venue_for_game(self, game: Any) -> dict[str, Any]:
+        """Resolve a game's true venue under the D33.1-06 routing rule."""
         return resolve_venue_for_game(game, self.venues_data["venues"])
 
     def _resolve_venue_id_for_game(self, game: Any) -> str:
         """The venue_id the feature build should use for this game.
 
-        SEASONS BEFORE 2026 NEVER ENTER THE NEW PATH. They keep the venue-NAME
-        resolution they have always had, byte for byte, which is what keeps the
-        historical half of gold unchanged while the forward season is repaired
-        (D33-15). The 91 mis-resolved historical games stay mis-resolved, on
-        purpose, and are disclosed rather than silently corrected.
+        EVERY SEASON AND EVERY GAME ROUTES BY ``stadium_id`` (D33.1-06). This
+        method's previous docstring said that seasons before 2026 never enter the
+        new path, that they keep their venue-NAME resolution byte for byte, and that
+        the 91 mis-resolved historical games stay mis-resolved on purpose. None of
+        that holds any more: the owner took the repair D33-15 deferred, so history
+        is re-resolved here and the resulting gold movement is a declared,
+        separately-attributed part of Plan 33.1-07's rung rather than a surprise.
+
+        The venue-NAME path is no longer how a game's own venue is found. It could
+        never have been complete -- twenty ``stadium_id`` values carry two to five
+        feed ``stadium`` names each -- which is Ruling I.
 
         Raises:
-            UnknownStadiumError: a 2026-or-later neutral-site game whose
-                ``stadium_id`` is not in ``data/venues.json``.
+            UnknownStadiumError: the game's ``stadium_id`` is not in
+                ``data/venues.json``, or the frame carries no ``stadium_id`` at all.
         """
-        try:
-            season = int(game.get("season"))
-        except (TypeError, ValueError):
-            season = 0
-
-        if season >= STADIUM_ID_ROUTING_FIRST_SEASON:
-            # Called even for non-neutral games so an unrecognised home
-            # ``stadium_id`` gets its named warning; only the NEUTRAL answer is
-            # allowed to override the venue-name resolution below.
-            venue = self.resolve_venue_for_game(game)
-            if venue is not None and game_is_neutral_site(game):
-                return venue["venue_id"]
-
-        return self._get_venue_id_by_name(game.get("venue", ""))
+        return self.resolve_venue_for_game(game)["venue_id"]
 
     def _get_venue_surface(self, venue_id: str) -> str | None:
         """Get the surface type for a venue by its ID.
@@ -399,7 +584,17 @@ class ContextualFeaturesCalculator:
         return 1.0 if away_is_grass != game_is_grass else 0.0
 
     def _get_venue_id_by_name(self, venue_name: str) -> str:
-        """Map venue name to venue ID."""
+        """Map venue name to venue ID -- LOSSY, and no longer how a game is routed.
+
+        NOT REACHABLE FROM ANY GAME-VENUE RESOLUTION PATH since D33.1-06 (Ruling I).
+        It is kept rather than deleted because the name question is still asked
+        elsewhere, and it is NOT repaired because it cannot be: twenty ``stadium_id``
+        values carry two to five feed ``stadium`` names each (``OAK00`` has five), so
+        no single ``venue_name`` can satisfy an exact-then-partial match for all of a
+        venue's games. Its miss behaviour is the reason it had to stop being
+        load-bearing -- it returns a synthesised slug rather than raising, and that
+        slug flows into the default-metrics branch without a word.
+        """
         if not venue_name:
             return ""
 
@@ -665,6 +860,15 @@ class ContextualFeaturesCalculator:
                 "venue_large_stadium": large_stadium,
             }
 
+        # RETAINED AS DEFENCE-IN-DEPTH, AND UNREACHABLE FOR A COMMITTED RECORD
+        # (Ruling I3). Substituting neutral defaults for a malformed field is how a
+        # gold column moves for a reason nobody chose, on up to 1,082 games, with
+        # nothing but a log line. It is not deleted -- a genuinely absent venue_id
+        # still has to land somewhere -- but every feature-bearing field on all 60
+        # committed records is checked by `validate_venue_feature_fields` FIRST, and
+        # Plan 33.1-07 carries that validation as a stated PRECONDITION on the gold
+        # rebuild. The branch is what happens if the validator is skipped; the
+        # validator is what stops the branch from being how the system behaves.
         except (ValueError, KeyError, TypeError, AttributeError) as e:
             logger.error(
                 "Failed to encode venue features", venue_id=venue_id, error=str(e)
@@ -1060,10 +1264,10 @@ class ContextualFeaturesCalculator:
                 game_id = game["game_id"]
                 home_team = game["home_team"]
                 away_team = game["away_team"]
-                # Resolve the venue the game is actually PLAYED at (D33-15).
-                # For 2026-and-later neutral-site games this is the stadium the
-                # feed names; for everything else it is today's venue-name
-                # resolution, unchanged.
+                # Resolve the venue the game is actually PLAYED at (D33.1-06).
+                # EVERY game, EVERY season, by its own stadium_id. An id absent
+                # from data/venues.json raises here rather than resolving to the
+                # home team's stadium.
                 venue_id = self._resolve_venue_id_for_game(game)
                 # WR-06 / N-02: resolve the kickoff to its ET WALL CLOCK exactly
                 # once, here, so detect_short_week, the travel metrics and the
@@ -1385,9 +1589,10 @@ class ContextualFeaturesCalculator:
                 game_id = game["game_id"]
                 home_team = game["home_team"]
                 away_team = game["away_team"]
-                # D33-15: 2026-and-later neutral-site games resolve by the
-                # feed's stadium_id; every other game keeps today's venue-name
-                # resolution so the historical half of gold does not move.
+                # D33.1-06: EVERY game of EVERY season resolves by its own
+                # stadium_id. The historical half of gold DOES move as a result,
+                # deliberately, and that movement is a declared cause family in
+                # Plan 33.1-07's rung rather than an untracked side effect.
                 venue_id = self._resolve_venue_id_for_game(game)
                 # WR-06 / N-02: resolve the kickoff to its ET WALL CLOCK exactly
                 # once, here, so detect_short_week, the travel metrics and the

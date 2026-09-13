@@ -1,31 +1,38 @@
-"""`stadium_id`-keyed venue routing: the hard-fail, the case rule, and the season gate.
+"""`stadium_id`-keyed venue routing: the hard-fail and the case rule. No gate.
 
-Phase 33, Plan 33-06 Task 2 (COLD-09, R11, D33-15, T-33-26/29).
+Phase 33, Plan 33-06 Task 2 (COLD-09, R11, D33-15, T-33-26/29), REVISED by Phase
+33.1, Plan 33.1-03 Task 1 (D33.1-06, T-33.1-15).
 
 THE DEFECT THIS ROUTES AROUND
 -----------------------------
-All three venue resolvers key off the home team (or, in the contextual builder, off the
-venue NAME with a home-team-shaped fallback), so the 2026 Maracana game resolves to
-AT&T Stadium in Arlington: Dallas coordinates, Dallas timezone, Dallas weather, and a
-travel distance of zero miles for a trip to Brazil, with no error raised.
+All three venue resolvers used to key off the home team (or, in the contextual builder,
+off the venue NAME with a home-team-shaped fallback), so the 2026 Maracana game resolved
+to AT&T Stadium in Arlington: Dallas coordinates, Dallas timezone, Dallas weather, and a
+travel distance of zero miles for a trip to Brazil, with no error raised. Across the
+pinned 2002-2025 feed the same rule gave 1,153 of 6,499 games the wrong stadium.
 
-THE ROUTING RULE (D33-15), STATED ONCE
----------------------------------------
-For ``season >= 2026``, a game the feed marks neutral resolves BY ``stadium_id`` and
-RAISES ``UnknownStadiumError`` on a miss. Every other game -- any season before 2026,
-and any non-neutral game -- resolves by ``home_team`` exactly as it does today. History
-is NOT re-resolved: the 91 historical neutral-site games keep the resolution they have
-always had, and that is a disclosure (``HISTORICAL_NEUTRAL_MISRESOLUTION``), not a
-repair.
+THE ROUTING RULE (D33.1-06), STATED ONCE
+-----------------------------------------
+EVERY game of EVERY season resolves by its own ``stadium_id``, and a miss RAISES
+``UnknownStadiumError``. There is no season test and no neutral-site test.
 
-WHY THE UNKNOWN-ID CASE HARD-FAILS ON A NEUTRAL GAME AND ONLY WARNS ON A HOME GAME
------------------------------------------------------------------------------------
-A neutral game with an unresolvable stadium has NO defensible fallback -- the home
-team's stadium is the wrong answer by construction, which is the whole defect. A HOME
-game with an unrecognised ``stadium_id`` is a new or renamed home stadium; the home-team
-resolution is still the documented rule and still approximately right, so it resolves
-and emits a NAMED warning. Silence there would be the same defect class as the Maracana
-case, only quieter.
+WHAT THIS MODULE USED TO SAY, AND WHY IT NO LONGER SAYS IT. Plan 33-06 gated the repair
+on ``season >= 2026 AND game_is_neutral_site(game)``, so history kept its home-team
+answer and the 91 historical neutral-site games stayed a DISCLOSURE
+(``HISTORICAL_NEUTRAL_MISRESOLUTION``) rather than a repair. The owner took that repair
+at Phase 33.1. Both halves of the conjunction are gone -- retiring only the season half
+would have fixed nothing for the 141 Oakland Coliseum games, which are not neutral-site.
+The classes below that asserted the gate now assert its ABSENCE, by name, so a reader
+finding this file later sees a rule that changed rather than a rule that vanished.
+
+WHY THE UNKNOWN-ID CASE HARD-FAILS FOR EVERY GAME NOW
+-------------------------------------------------------
+It used to hard-fail only on a neutral game and merely WARN on a home game, on the
+argument that a new or renamed home stadium resolves "approximately right" by home team.
+That argument does not survive history: for 1,082 games the home team's present-day
+stadium was built after the game was played, and "approximately right" meant Las Vegas
+weather for an Oakland game. There is no fallback left, so there is no warning either --
+an unresolvable id stops the run and names the game and the file to edit.
 
 Modules are imported as MODULES and the new names reached through them, so a missing
 symbol is a failure of the test that needs it rather than a collection error that takes
@@ -36,6 +43,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
@@ -178,36 +186,87 @@ class TestTheNeutralSiteHardFail:
         )
 
 
-class TestTheSeasonGateLeavesHistoryAlone:
-    """D33-15: routing binds at 2026; every earlier season is untouched."""
+class TestThereIsNoSeasonGate:
+    """D33.1-06: history routes by `stadium_id` too. The gate is gone by name."""
 
-    def test_a_pre_2026_neutral_game_still_resolves_by_home_team(self) -> None:
+    def test_a_pre_2026_neutral_game_resolves_by_its_own_stadium_id(self) -> None:
+        """The inversion of what this test asserted under D33-15.
+
+        It used to require that a 2025 neutral-site game at Wembley resolve to
+        Arrowhead, because history kept its home-team answer. The owner took that
+        repair (D33.1-06), so the game now resolves to the stadium it was played at.
+        """
         game = _neutral_game(season=2025, game_id="2025_W05_JAX@KC")
         game["home_team"] = "KC"
         game["stadium_id"] = "LON00"
         venue = contextual.resolve_venue_for_game(game)
-        assert venue is not None
-        assert venue["stadium_id"] == "KAN00", (
-            "a 2025 neutral-site game resolved by stadium_id. History keeps its "
-            "home_team resolution -- the 91 mis-resolved games are a DISCLOSURE, not "
-            "a repair, and re-resolving them would move gold for three deployed "
-            "models."
+        assert venue["stadium_id"] == "LON00", (
+            "a 2025 neutral-site game still resolved by home_team. The 91 "
+            "historical neutral-site games are REPAIRED under D33.1-06, not "
+            "disclosed -- see HISTORICAL_NEUTRAL_MISRESOLUTION_REPAIRED."
         )
 
-    def test_the_routing_first_season_is_2026(self) -> None:
-        assert contextual.STADIUM_ID_ROUTING_FIRST_SEASON == 2026
+    def test_the_routing_first_season_constant_is_gone(self) -> None:
+        """The gate is retired, not set to a different year.
 
-    def test_a_pre_2026_unknown_id_does_not_raise(self) -> None:
-        """History cannot be made to hard-fail on a code it never carried."""
+        A constant left at 1 would route everything correctly today and would be a
+        dial somebody could turn back. There is nothing to turn.
+        """
+        assert not hasattr(contextual, "STADIUM_ID_ROUTING_FIRST_SEASON"), (
+            "features.contextual still exposes STADIUM_ID_ROUTING_FIRST_SEASON. "
+            "D33.1-06 retires the season gate rather than moving it."
+        )
+
+    def test_the_router_does_not_consult_the_neutral_site_predicate(self) -> None:
+        """The SECOND half of the conjunction, asserted separately.
+
+        Dropping only the season test would leave `game_is_neutral_site` deciding,
+        and the 141 Oakland Coliseum games are NOT neutral-site -- they would stay
+        at Allegiant. Only 83 of the 1,153 misroutes were neutral (RESEARCH P-1).
+        """
+        source = [
+            line
+            for line in inspect.getsource(
+                contextual.resolve_venue_for_game
+            ).splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        assert not [line for line in source if "game_is_neutral_site" in line], (
+            "the router still branches on neutrality; the conjunction is half-retired"
+        )
+
+    def test_a_pre_2026_unknown_id_raises(self) -> None:
+        """History hard-fails on a code the venue table does not carry, too."""
         game = _neutral_game(season=2019, stadium_id="ZZZ99")
         game["home_team"] = "KC"
-        venue = contextual.resolve_venue_for_game(game)
-        assert venue is not None
-        assert venue["stadium_id"] == "KAN00"
+        with pytest.raises(contextual.UnknownStadiumError, match="ZZZ99"):
+            contextual.resolve_venue_for_game(game)
+
+    def test_a_2015_oakland_game_resolves_to_oakland_not_las_vegas(self) -> None:
+        """The headline historical case, and it is NOT neutral-site."""
+        venue = contextual.resolve_venue_for_game(
+            {
+                "game_id": "2015_W01_CIN@OAK",
+                "season": 2015,
+                "home_team": "OAK",
+                "away_team": "CIN",
+                "location": "Home",
+                "stadium_id": "OAK00",
+            }
+        )
+        assert venue["stadium_id"] == "OAK00"
+        assert venue["venue_id"] != "allegiant_stadium"
 
 
 class TestTheNonNeutralUnknownStadiumCase:
-    """A new or renamed HOME stadium resolves by home_team AND says so."""
+    """A new or renamed HOME stadium RAISES now; it used to warn and resolve.
+
+    Under D33-15 an unrecognised `stadium_id` on a HOME game resolved by home team
+    and emitted a named warning, on the argument that the answer was approximately
+    right. D33.1-06 removed the fallback, so there is nothing left to warn about --
+    and "approximately right" is what gave 141 Oakland Coliseum games Las Vegas
+    weather. The warning assertions below became refusal assertions.
+    """
 
     def test_the_unknown_id_fixture_is_genuinely_unknown(self) -> None:
         """Non-vacuity: the two tests below mean nothing if the id is actually known.
@@ -226,35 +285,35 @@ class TestTheNonNeutralUnknownStadiumCase:
             "nothing. Pick an id that cannot be added."
         )
 
-    def test_an_unknown_id_on_a_home_game_resolves_by_home_team(self) -> None:
-        venue = contextual.resolve_venue_for_game(
-            _home_game(stadium_id=UNKNOWN_STADIUM_ID)
-        )
-        assert venue is not None
-        assert venue["venue_id"] == "at_t_stadium", (
-            "a non-neutral game must keep today's home_team resolution -- that IS "
-            "the documented D33-15 rule."
-        )
+    def test_an_unknown_id_on_a_home_game_raises_rather_than_resolving(self) -> None:
+        with pytest.raises(contextual.UnknownStadiumError) as excinfo:
+            contextual.resolve_venue_for_game(_home_game(stadium_id=UNKNOWN_STADIUM_ID))
+        message = str(excinfo.value)
+        assert UNKNOWN_STADIUM_ID in message
+        assert "2026_W05_PHI@DAL" in message
+        assert "data/venues.json" in message
 
-    def test_it_emits_a_named_warning(self, monkeypatch) -> None:
-        """Silence would be the Maracana defect class, only quieter.
+    def test_it_does_not_warn_and_carry_on(self, monkeypatch) -> None:
+        """The old behaviour, asserted ABSENT rather than merely not asserted.
 
-        The logger is captured DIRECTLY rather than through ``caplog``: this project
-        logs through structlog, so a stdlib-handler assertion would pass or fail on
-        the logging CONFIGURATION rather than on what the router actually recorded.
+        A warning plus a plausible answer is the quietest form of this defect: the
+        run completes, the numbers look fine, and the log line is read by nobody.
+        The logger is captured DIRECTLY rather than through ``caplog``, because this
+        project logs through structlog and a stdlib-handler assertion would pass or
+        fail on the logging CONFIGURATION rather than on what the router recorded.
         """
         recorded = _record_warnings(monkeypatch)
-        contextual.resolve_venue_for_game(_home_game(stadium_id=UNKNOWN_STADIUM_ID))
+        with pytest.raises(contextual.UnknownStadiumError):
+            contextual.resolve_venue_for_game(_home_game(stadium_id=UNKNOWN_STADIUM_ID))
 
-        assert any(
-            UNKNOWN_STADIUM_ID in event
-            or kwargs.get("stadium_id") == UNKNOWN_STADIUM_ID
+        assert not [
+            event
             for event, kwargs in recorded
-        ), (
-            "an unrecognised stadium_id on a home game was absorbed without a word. "
-            "A new home stadium silently inheriting the old venue's coordinates, "
-            "timezone and elevation is the same defect class as the Maracana case. "
-            f"Warnings seen: {[event for event, _ in recorded]}"
+            if kwargs.get("stadium_id") == UNKNOWN_STADIUM_ID
+        ], (
+            "the router warned about the unknown id, which means it still has a "
+            "path that continues past one. Warnings seen: "
+            f"{[event for event, _ in recorded]}"
         )
 
     def test_a_recognised_home_id_warns_about_nothing(self, monkeypatch) -> None:
@@ -295,23 +354,45 @@ class TestTheRelocatedTeamCase:
         assert venue["timezone"] == "Australia/Melbourne"
 
 
-class TestTheNeutralSiteFactCanBeReadFromEitherSpelling:
-    """The feed says `location`; silver will say `neutral_site`. Both must route."""
+class TestTheNeutralSiteFactNoLongerSteersRouting:
+    """Neutrality is not an input to the route any more (D33.1-06).
+
+    This class used to assert that BOTH spellings of the neutral flag route
+    correctly, which was necessary while the flag was half of the routing
+    conjunction. It now asserts the stronger and simpler property: the resolved
+    venue is INVARIANT to the flag, in either spelling and in its absence. The
+    predicate itself survives -- the Plan 33.1-03 diff reports how many changed
+    games were neutral -- but nothing branches on it.
+    """
 
     def test_the_silver_spelling_routes(self) -> None:
         game = _neutral_game()
         del game["location"]
         game["neutral_site"] = True
-        venue = contextual.resolve_venue_for_game(game)
-        assert venue is not None
-        assert venue["stadium_id"] == "RIO00"
+        assert contextual.resolve_venue_for_game(game)["stadium_id"] == "RIO00"
 
-    def test_neither_spelling_present_means_not_neutral(self) -> None:
+    def test_neither_spelling_present_still_routes_by_stadium_id(self) -> None:
         game = _neutral_game()
         del game["location"]
-        venue = contextual.resolve_venue_for_game(game)
-        assert venue is not None
-        assert venue["venue_id"] == "at_t_stadium"
+        assert contextual.resolve_venue_for_game(game)["stadium_id"] == "RIO00", (
+            "dropping the neutral flag changed the answer, so the flag is still "
+            "deciding something. Under D33.1-06 only stadium_id decides."
+        )
+
+    def test_a_home_flagged_game_at_a_neutral_stadium_routes_the_same_way(
+        self,
+    ) -> None:
+        """The flag cannot be WRONG in a way that matters, because it is unread."""
+        game = _neutral_game()
+        game["location"] = "Home"
+        assert contextual.resolve_venue_for_game(game)["stadium_id"] == "RIO00"
+
+    def test_the_predicate_itself_still_reads_both_spellings(self) -> None:
+        """It is unused by the router, not deleted -- so it still has to work."""
+        assert contextual.game_is_neutral_site({"location": "Neutral"}) is True
+        assert contextual.game_is_neutral_site({"neutral_site": True}) is True
+        assert contextual.game_is_neutral_site({"location": "Home"}) is False
+        assert contextual.game_is_neutral_site({}) is False
 
 
 class TestTheWeatherResolver:

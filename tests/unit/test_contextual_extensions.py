@@ -22,6 +22,7 @@ MOCK_VENUES = {
     "venues": [
         {
             "venue_id": "grass_stadium",
+            "stadium_id": "MIA00",
             "venue_name": "Grass Stadium",
             "city": "Miami Gardens",
             "state": "FL",
@@ -38,6 +39,7 @@ MOCK_VENUES = {
         },
         {
             "venue_id": "turf_stadium",
+            "stadium_id": "NYC01",
             "venue_name": "Turf Stadium",
             "city": "East Rutherford",
             "state": "NJ",
@@ -54,6 +56,7 @@ MOCK_VENUES = {
         },
         {
             "venue_id": "matrix_stadium",
+            "stadium_id": "LAX01",
             "venue_name": "Matrix Stadium",
             "city": "Los Angeles",
             "state": "CA",
@@ -70,6 +73,7 @@ MOCK_VENUES = {
         },
         {
             "venue_id": "bluegrass_stadium",
+            "stadium_id": "GNB00",
             "venue_name": "Bluegrass Stadium",
             "city": "Green Bay",
             "state": "WI",
@@ -86,6 +90,7 @@ MOCK_VENUES = {
         },
         {
             "venue_id": "kc_stadium",
+            "stadium_id": "KAN00",
             "venue_name": "KC Stadium",
             "city": "Kansas City",
             "state": "MO",
@@ -104,6 +109,21 @@ MOCK_VENUES = {
 }
 
 
+# Plan 33.1-03 / D33.1-06: a game's venue is resolved by its own `stadium_id`, for
+# every season, and the venue NAME no longer decides anything. These fixtures kept
+# steering the venue by name, which silently stopped working -- so the map below
+# states, once, which mock venue each name belongs to, and `_make_games_df` writes
+# the corresponding code into the column the router actually reads. The `venue`
+# column stays because silver still carries it; it is simply no longer load-bearing.
+VENUE_NAME_TO_STADIUM_ID: dict[str, str] = {
+    "Grass Stadium": "MIA00",
+    "Turf Stadium": "NYC01",
+    "Matrix Stadium": "LAX01",
+    "Bluegrass Stadium": "GNB00",
+    "KC Stadium": "KAN00",
+}
+
+
 def _make_games_df(
     game_id: str = "2024_01_KC_MIA",
     season: int = 2024,
@@ -111,8 +131,11 @@ def _make_games_df(
     home_team: str = "KC",
     away_team: str = "MIA",
     venue_name: str = "KC Stadium",
+    stadium_id: str | None = None,
 ) -> pd.DataFrame:
     """Create a minimal games DataFrame for testing."""
+    if stadium_id is None:
+        stadium_id = VENUE_NAME_TO_STADIUM_ID[venue_name]
     return pd.DataFrame(
         [
             {
@@ -122,6 +145,7 @@ def _make_games_df(
                 "home_team": home_team,
                 "away_team": away_team,
                 "venue": venue_name,
+                "stadium_id": stadium_id,
                 "kickoff_et": datetime(2024, 9, 5, 20, 0),
             }
         ]

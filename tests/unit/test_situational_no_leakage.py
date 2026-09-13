@@ -34,10 +34,16 @@ from features.contextual import ContextualFeaturesCalculator
 # Minimal venues so the calculator instantiates without the on-disk JSON; the
 # spot derivation never touches venue data, and build_features only needs the
 # home venue (KC) for the rows under test.
+#
+# `stadium_id` is present on the record AND on every fixture game because Plan
+# 33.1-03 (D33.1-06) routes every game by its own stadium_id and RAISES on a
+# miss. A fixture that names no stadium is a fixture that names no venue, and
+# under the new rule that is a refusal rather than a name lookup.
 _MOCK_VENUES = {
     "venues": [
         {
             "venue_id": "kc_stadium",
+            "stadium_id": "KAN00",
             "venue_name": "KC Stadium",
             "city": "Kansas City",
             "state": "MO",
@@ -214,6 +220,7 @@ class TestSituationalOffBye:
                     "home_team": "KC",
                     "away_team": "MIA",
                     "venue": "KC Stadium",
+                    "stadium_id": "KAN00",
                     "kickoff_et": datetime(2024, 9, 10, 13, 0),
                 },
                 {
@@ -223,6 +230,7 @@ class TestSituationalOffBye:
                     "home_team": "KC",
                     "away_team": "DEN",
                     "venue": "KC Stadium",
+                    "stadium_id": "KAN00",
                     "kickoff_et": datetime(2024, 9, 24, 13, 0),  # 14 days -> bye
                 },
             ]
@@ -265,6 +273,7 @@ class TestSituationalOffBye:
                     "home_team": "KC",
                     "away_team": "MIA",
                     "venue": "KC Stadium",
+                    "stadium_id": "KAN00",
                     "kickoff_et": datetime(2024, 9, 10, 13, 0),
                 },
                 {
@@ -274,6 +283,7 @@ class TestSituationalOffBye:
                     "home_team": "KC",
                     "away_team": "DEN",
                     "venue": "KC Stadium",
+                    "stadium_id": "KAN00",
                     "kickoff_et": datetime(2024, 9, 24, 13, 0),  # 14 days -> bye
                 },
             ]
@@ -329,6 +339,7 @@ class TestSituationalFullSchedule:
                     "home_team": "KC",
                     "away_team": "CAR",
                     "venue": "KC Stadium",
+                    "stadium_id": "KAN00",
                     "kickoff_et": datetime(2023, 9, 10, 13, 0),
                 }
             ]
