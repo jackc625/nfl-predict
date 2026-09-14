@@ -32,6 +32,32 @@ from utils import get_logger
 
 logger = get_logger(__name__)
 
+# ---------------------------------------------------------------------------
+# THE PERSISTED-PREPROCESSING CONTRACT (D33.1-R1, owner-ratified 2026-09-12,
+# attributed to SPEC R6; Plan 33.1-10 Ruling T2).
+#
+# Until this existed, this module had NO preprocessing parameter, returned none, and
+# the string `scaler` appeared nowhere in it. That absence WAS the contract gap: an
+# estimator fitted on standardised features and served on unstandardised ones produces
+# a PLAUSIBLE WRONG ANSWER rather than an error, so nothing fails and nobody looks.
+# `wp_20260824_113325` is in exactly that state in production today.
+#
+# The contract binds artifacts saved UNDER it only (D33.1-R2). An artifact carrying
+# neither of the two names below is served exactly as it was before -- byte-identical,
+# zero change to current predictions -- and serving never REFUSES a legacy artifact.
+# ---------------------------------------------------------------------------
+
+#: The filename the fitted preprocessing object is written to, when one is given.
+PREPROCESSING_FILENAME: str = "preprocessing.pkl"
+
+#: The metadata key carrying the ATS / O/U converter parameters as JSON.
+#:
+#: JSON rather than a second pickle, deliberately: three fields describe those
+#: converters completely and reconstruct them exactly, a JSON record is readable a year
+#: from now by a human auditing why a cover probability was what it was, and it does not
+#: widen the `joblib.load` deserialisation surface.
+CONVERTER_PARAMS_METADATA_KEY: str = "converter_params"
+
 
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     """Write a JSON manifest atomically (temp file in the same dir, then os.replace).
@@ -66,6 +92,7 @@ def save_model_artifact(
     metadata: dict,
     feature_list: list[str],
     calibrator: Any | None = None,
+    preprocessing: Any | None = None,
     artifacts_dir: Path = Path("artifacts"),
     best_params: dict | None = None,
     tuning_metadata: dict | None = None,
@@ -78,7 +105,23 @@ def save_model_artifact(
     - metadata.json: Training metadata (metrics, params, etc.)
     - feature_list.json: Ordered list of feature names
     - calibrator.pkl: Calibrator model (if provided)
+    - preprocessing.pkl: Fitted preprocessing object (if provided)
     - {target}_params.json: Tuning parameters sidecar (if best_params provided)
+
+    WHY ``preprocessing`` EXISTS, which is the load-bearing part (D33.1-R1,
+    owner-ratified 2026-09-12, attributed to SPEC R6). A WP estimator fitted on
+    STANDARDISED features and served on UNSTANDARDISED ones produces a plausible WRONG
+    answer rather than an error: nothing raises, nothing is logged, and the served
+    probability is simply not the one the model was fitted to give. No amount of
+    convention prevents that, because a convention is a thing a future edit can forget.
+    The only structural defence is that the transform and the estimator are ONE PERSISTED
+    OBJECT -- for WP the value passed here IS the four-step Pipeline whose final step is
+    the estimator, so there is no way to load the estimator without its scaler.
+
+    The deployed ``wp_20260824_113325`` predates this and is in exactly the state
+    described above. It is NAMED rather than repaired (D33.1-R2): repairing it without a
+    re-fit would change live predictions, which this phase's SPEC forbids. Phase 33's
+    Wave 15 resolves it by shipping a replacement under this contract.
 
     Updating the latest.json manifest is now OPT-IN via update_latest (D24-08).
     By default the manifest is NOT touched: writing artifacts/latest.json is a
@@ -96,6 +139,9 @@ def save_model_artifact(
         metadata: Training metadata dictionary.
         feature_list: Ordered list of feature column names.
         calibrator: Optional fitted calibrator.
+        preprocessing: Optional fitted preprocessing object, persisted BESIDE the model
+            so the serving path can apply the same transform the model was fitted under.
+            Omitting it reproduces the pre-D33.1-R1 directory exactly, file for file.
         artifacts_dir: Root directory for artifacts.
         best_params: Optional dict of tuned hyperparameters.
             When provided, a JSON sidecar file is saved alongside the model.
@@ -121,6 +167,13 @@ def save_model_artifact(
     if calibrator is not None:
         calibrator_path = artifact_dir / "calibrator.pkl"
         joblib.dump(calibrator, calibrator_path)
+
+    # Save preprocessing if provided (D33.1-R1). The same OPTIONAL-FILE mechanism the
+    # calibrator already uses, deliberately: the contract gains one key rather than a new
+    # mechanism, and an artifact saved without it is byte-identical in file set to what
+    # this function produced before the parameter existed.
+    if preprocessing is not None:
+        joblib.dump(preprocessing, artifact_dir / PREPROCESSING_FILENAME)
 
     # Save metadata
     metadata_path = artifact_dir / "metadata.json"
@@ -151,6 +204,7 @@ def save_model_artifact(
         artifact_dir=str(artifact_dir),
         n_features=len(feature_list),
         has_calibrator=calibrator is not None,
+        has_preprocessing=preprocessing is not None,
         has_params=best_params is not None,
         update_latest=update_latest,
     )
@@ -204,7 +258,11 @@ def load_model_artifact(
 
     Returns:
         Dict with keys: model, metadata, feature_list, calibrator (or None),
-        artifact_dir.
+        preprocessing (or None), params (or None), artifact_dir.
+
+        ``preprocessing`` is None for every artifact saved before D33.1-R1, and that is
+        the LEGACY case rather than an error: serving falls through to the pre-contract
+        path for it and never refuses it (D33.1-R2).
 
     Raises:
         FileNotFoundError: If artifact directory or latest.json not found.
@@ -240,6 +298,14 @@ def load_model_artifact(
     calibrator_path = artifact_dir / "calibrator.pkl"
     calibrator = joblib.load(calibrator_path) if calibrator_path.exists() else None
 
+    # Load preprocessing if it exists (D33.1-R1). Absent is the LEGACY case, not an
+    # error: every artifact saved before this contract has no such file, and returning
+    # None is what lets the serving path keep those byte-identical (D33.1-R2).
+    preprocessing_path = artifact_dir / PREPROCESSING_FILENAME
+    preprocessing = (
+        joblib.load(preprocessing_path) if preprocessing_path.exists() else None
+    )
+
     # Load params sidecar if it exists
     params_path = artifact_dir / f"{target}_params.json"
     params = json.loads(params_path.read_text()) if params_path.exists() else None
@@ -250,6 +316,7 @@ def load_model_artifact(
         version=version,
         n_features=len(feature_list),
         has_calibrator=calibrator is not None,
+        has_preprocessing=preprocessing is not None,
         has_params=params is not None,
     )
 
@@ -258,6 +325,7 @@ def load_model_artifact(
         "metadata": metadata,
         "feature_list": feature_list,
         "calibrator": calibrator,
+        "preprocessing": preprocessing,
         "params": params,
         "artifact_dir": artifact_dir,
     }

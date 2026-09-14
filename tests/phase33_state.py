@@ -9993,3 +9993,280 @@ FINAL_FIT_COMPONENT_DECISIONS: dict[str, str] = {
     "requirement": "R6",
     "decision": "D33.1-01 / D33.1-02 (Ruling S of 33.1-10-PLAN.md)",
 }
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.1-10 Task 2 -- THE PERSISTED-PREPROCESSING / CONVERTER-PARAMETER CONTRACT.
+#
+# DECIDED 2026-09-12 (D33.1-R1, owner-ratified at replan time), IMPLEMENTED and
+# MEASURED 2026-09-14. A deliberate SCOPE EXPANSION past the SPEC's literal wording,
+# attributed to R6.
+#
+# THE GAP IT CLOSES. `save_model_artifact` had no preprocessing parameter,
+# `load_model_artifact` returned none, and the string `scaler` appeared nowhere in
+# `models/artifacts.py` -- that ABSENCE was the contract. An estimator fitted on
+# standardised features and served on unstandardised ones produces a plausible WRONG
+# answer rather than an error, so nothing fails and nobody looks. Separately the ATS and
+# O/U converters the trainers FIT were never persisted under any name, and serving
+# rebuilt conversion from `metadata.get("residual_std", 13.5)` / `13.0`.
+# ---------------------------------------------------------------------------
+
+ARTIFACT_PREPROCESSING_CONTRACT: dict[str, object] = {
+    "preprocessing_filename": "preprocessing.pkl",
+    "converter_params_metadata_key": "converter_params",
+    "converter_param_fields": (
+        "distribution_type",
+        "residual_std",
+        "distribution_params",
+    ),
+    "binds": (
+        "ARTIFACTS SAVED UNDER IT ONLY. An artifact directory carrying neither "
+        "preprocessing.pkl nor a converter_params metadata key is served EXACTLY as it "
+        "was before this contract existed: raw selected columns into model.predict_proba, "
+        "converters rebuilt from residual_std with the 13.5 / 13.0 defaults. All three "
+        "currently-deployed artifacts are in that class."
+    ),
+    "legacy_path_preserved": True,
+    "legacy_path_removal_condition": (
+        "The 13.5 / 13.0 fallbacks and the raw-feature branch MUST NOT be removed while "
+        "any legacy artifact is deployed. Their absence would fail the D33.1-R2 "
+        "byte-identity proof as loudly as their being the only path fails D33.1-R1."
+    ),
+    "serving_never_refuses_a_legacy_artifact": (
+        "The branch is `if preprocessing is not None`, never an assertion. The owner "
+        "rejected a refusal explicitly: it would take current-week prediction generation "
+        "down on purpose."
+    ),
+    "wp_persisted_object": (
+        "The four-step Pipeline from D33.1-R3 (imputer -> missing_indicator -> scaler -> "
+        "estimator). A Pipeline rather than a bare scaler because it makes the transform "
+        "and the estimator ONE object: there is no way to load the estimator without its "
+        "scaler, which is a structural defence rather than a convention."
+    ),
+    "converter_form": (
+        "JSON in metadata, NOT a second pickle. Three fields describe either converter "
+        "completely and reconstruct it exactly; a JSON record is readable a year from now "
+        "by a human auditing why a cover probability was what it was; and it does not "
+        "widen the joblib.load deserialisation surface (threat T-33.1-65g)."
+    ),
+    "proof": (
+        "tests/unit/test_artifact_preprocessing_roundtrip.py -- per-target fit / save / "
+        "reload / serve, asserted under numpy.testing.assert_array_equal and never "
+        "allclose, because a missing standardisation is not a near-miss."
+    ),
+    "requirement": "R6",
+    "decision": "D33.1-R1",
+    "owner_ratified": "2026-09-12",
+    "measured": "2026-09-14",
+}
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.1-10 Task 2 -- THE PRE-CHANGE LEGACY SERVING BASELINE.
+#
+# CAPTURED 2026-09-14 at commit a916504, BEFORE the D33.1-R1 serving edits were made.
+# THE ORDERING IS LOAD-BEARING and is the same argument `p331_rung0.json` and the
+# cross-check pre-registration both rest on: a baseline captured AFTER the change is a
+# transcription of the change, not a baseline.
+#
+# ONE FIX PRECEDES IT, and is named rather than folded in. `predict_games` was the single
+# site in this repository calling `calibrator.transform()`; the deployed WP calibrator is
+# a `models.calibrate.PlattCalibrator`, which exposes `predict` and not `transform`, so
+# serving the real deployed artifact through this pipeline RAISED AttributeError. The
+# legacy path could not be captured at all until that was repaired (commit a916504,
+# deviation Rule 1). It moved no served number, because the branch produced none.
+#
+# THE FRAME IS REPRODUCIBLE FROM THIS RECORD ALONE, which is what lets the test rebuild it
+# rather than store it: seed `baseline_seed`, `n_rows` rows, and for the i-th name in the
+# SORTED UNION of the three artifacts' feature lists, the column is
+# `numpy.random.default_rng(baseline_seed + i).standard_normal(n_rows)`. market_spread and
+# market_total use the two declared offsets. If the rule and the capture ever disagreed,
+# the pinned predictions below would not match -- so the record checks itself.
+# ---------------------------------------------------------------------------
+
+LEGACY_ARTIFACT_SERVING_BASELINE: dict[str, object] = {
+    "captured_at_commit": "a916504",
+    "captured_before": "the D33.1-R1 edits to models/prediction_pipeline.predict_games",
+    "artifacts": (
+        "wp_20260824_113325",
+        "ats_20260605_220128",
+        "ou_20260326_163930",
+    ),
+    "baseline_seed": 3311003,
+    "n_rows": 24,
+    "spread_seed_offset": 9001,
+    "total_seed_offset": 9002,
+    "feature_union_size": 59,
+    "frame_rule": (
+        "Columns are the SORTED UNION of the three artifacts' feature lists. Column i is "
+        "numpy.random.default_rng(baseline_seed + i).standard_normal(n_rows). "
+        "market_spread is default_rng(baseline_seed + spread_seed_offset)."
+        "standard_normal(n_rows) * 3.0; market_total is 44.0 + "
+        "default_rng(baseline_seed + total_seed_offset).standard_normal(n_rows) * 3.0."
+    ),
+    "series": {
+        "wp_home_probability": (
+            0.3286147393126939,
+            0.6109543961053129,
+            0.6487927358446811,
+            0.5626405851466023,
+            0.44536675216229055,
+            0.9019047556248532,
+            0.5419342245520633,
+            0.5033821551788693,
+            0.11406951270949264,
+            0.6974731643786121,
+            0.41105330748973246,
+            0.46840896627918716,
+            0.17990323557364132,
+            0.40843179479206837,
+            0.0955200513994877,
+            0.24294428725978848,
+            0.2039853954998342,
+            0.16724392056144743,
+            0.4273914735780277,
+            0.40552539039427765,
+            0.22306895889389258,
+            0.6665598872833663,
+            0.5380702221771154,
+            0.5704338486441125,
+        ),
+        "predicted_margin": (
+            -4.285736560821533,
+            0.7871482372283936,
+            7.209689617156982,
+            5.820453643798828,
+            1.9469223022460938,
+            5.816115379333496,
+            0.5511355400085449,
+            -4.9769606590271,
+            3.543321132659912,
+            7.84668493270874,
+            0.6631534695625305,
+            1.1536474227905273,
+            3.655007839202881,
+            -3.0673835277557373,
+            -6.8723344802856445,
+            2.406721591949463,
+            -3.3203885555267334,
+            -7.446810722351074,
+            -1.2644047737121582,
+            0.9717382192611694,
+            -3.8437631130218506,
+            2.371617555618286,
+            3.686084270477295,
+            -1.9243866205215454,
+        ),
+        "ats_cover_probability": (
+            0.3224630719248104,
+            0.4420124465968941,
+            0.6732770550019527,
+            0.639198892597915,
+            0.44618145122673936,
+            0.7163957218043244,
+            0.5884532578748258,
+            0.45090959916708484,
+            0.5415921923502203,
+            0.7587776673954543,
+            0.3773461029868883,
+            0.5678568890439389,
+            0.5672830668727291,
+            0.25863084010207515,
+            0.2900326387812584,
+            0.70771534925464,
+            0.3372958040886318,
+            0.2084682356663039,
+            0.5847564426144709,
+            0.5124204318301468,
+            0.23745560530484833,
+            0.49031868099870834,
+            0.6321992125145298,
+            0.5073895950809308,
+        ),
+        "predicted_total": (
+            45.17256164550781,
+            50.32017517089844,
+            47.07448196411133,
+            47.53922653198242,
+            46.673255920410156,
+            49.27655792236328,
+            42.86054992675781,
+            44.797847747802734,
+            48.031219482421875,
+            41.60919189453125,
+            41.86784744262695,
+            42.83418655395508,
+            47.089534759521484,
+            49.62985610961914,
+            49.481998443603516,
+            41.44801330566406,
+            43.46241760253906,
+            46.09697723388672,
+            49.61927795410156,
+            46.5479736328125,
+            40.07179260253906,
+            49.23410415649414,
+            50.85796356201172,
+            46.93551254272461,
+        ),
+        "over_probability": (
+            0.7437359007373157,
+            0.7467092173200668,
+            0.536625646075304,
+            0.6026601915964309,
+            0.5000988072242663,
+            0.5863563437658266,
+            0.5851333797878899,
+            0.6268130418420721,
+            0.6222508041318336,
+            0.4651066450824819,
+            0.36758212552860803,
+            0.3660265564037658,
+            0.5742289631432592,
+            0.6685531440138526,
+            0.7712854346251206,
+            0.37993442406424294,
+            0.4377376316528113,
+            0.574475503010461,
+            0.5415149927282727,
+            0.38700986357336165,
+            0.3559143938871967,
+            0.47506542743370805,
+            0.6182647615156507,
+            0.4995363537512896,
+        ),
+        "under_probability": (
+            0.25626409926268434,
+            0.2532907826799332,
+            0.46337435392469595,
+            0.3973398084035691,
+            0.49990119277573375,
+            0.41364365623417343,
+            0.41486662021211007,
+            0.3731869581579279,
+            0.37774919586816635,
+            0.5348933549175181,
+            0.632417874471392,
+            0.6339734435962342,
+            0.4257710368567408,
+            0.3314468559861474,
+            0.22871456537487944,
+            0.6200655759357571,
+            0.5622623683471887,
+            0.425524496989539,
+            0.45848500727172725,
+            0.6129901364266384,
+            0.6440856061128033,
+            0.524934572566292,
+            0.3817352384843493,
+            0.5004636462487104,
+        ),
+    },
+    "re_measured_after_the_change": (
+        "All six series were re-measured after the D33.1-R1 serving edits and every one "
+        "is IDENTICAL, which is the D33.1-R2 claim: the new contract binds new artifacts "
+        "only and current predictions did not move."
+    ),
+    "requirement": "R6",
+    "decision": "D33.1-R2",
+}

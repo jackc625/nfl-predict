@@ -29,7 +29,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from models.artifacts import load_model_artifact
+from models.artifacts import CONVERTER_PARAMS_METADATA_KEY, load_model_artifact
 from models.train_ats import ResidualDistributionConverter
 from models.train_ou import TotalDistributionConverter
 from utils import get_logger
@@ -399,6 +399,28 @@ class BetRecommendationEngine:
         )
 
 
+def _converter_from_params(converter_cls: type, params: dict[str, Any]) -> Any:
+    """Rebuild a distribution converter from its PERSISTED parameters (D33.1-R1).
+
+    The three fields describe either converter completely, so this reconstruction is
+    exact rather than approximate -- which is what makes the save / load / predict round
+    trip assertable under ``assert_array_equal`` rather than a tolerance.
+
+    Args:
+        converter_cls: ``ResidualDistributionConverter`` or ``TotalDistributionConverter``.
+        params: ``distribution_type``, ``residual_std`` and ``distribution_params``, as
+            written into ``metadata.json`` by ``BaseTrainer.save``.
+
+    Returns:
+        A converter in the fitted state, ready to convert.
+    """
+    converter = converter_cls(distribution_type=params["distribution_type"])
+    converter.is_fitted = True
+    converter.residual_std = params["residual_std"]
+    converter.distribution_params = dict(params["distribution_params"])
+    return converter
+
+
 def _apply_calibrator(calibrator: Any, raw_probabilities: np.ndarray) -> np.ndarray:
     """Apply a fitted WP calibrator to raw probabilities, using ONE convention.
 
@@ -721,8 +743,25 @@ class NFLPredictionPipeline:
         """
         Generate unified predictions for multiple games.
 
-        Uses raw model.predict() / model.predict_proba() on feature DataFrames
-        with feature columns specified by each artifact's feature_list.
+        Calls model.predict() / model.predict_proba() on feature DataFrames with feature
+        columns specified by each artifact's feature_list.
+
+        WHETHER THOSE FEATURES ARE RAW IS NOW CONDITIONAL (D33.1-R1 / D33.1-R2). This
+        docstring used to state the raw-feature behaviour as unconditional, and it was:
+        a WP estimator fitted on standardised features was served on unstandardised ones,
+        which is the state ``wp_20260824_113325`` is in today. Two paths now exist:
+
+        * NEW CONTRACT -- the artifact carries ``preprocessing.pkl``. That object is a
+          fitted Pipeline whose FINAL STEP IS THE ESTIMATOR, so ``predict_proba`` on it is
+          the whole prediction and the separately-loaded ``model`` is not used for WP.
+          Likewise ``metadata["converter_params"]`` reconstructs the ATS / O/U converter
+          from the parameters that were actually fitted.
+        * LEGACY -- the artifact carries neither. It is served EXACTLY as before: raw
+          selected columns into ``model.predict_proba``, and converters rebuilt from
+          ``residual_std`` with the 13.5 / 13.0 defaults. Byte-identical, zero change to
+          current predictions, and serving never REFUSES a legacy artifact -- the owner
+          rejected a refusal explicitly, because it would take current-week prediction
+          generation down on purpose.
 
         Args:
             games_data: DataFrame with game data, features, and market lines.
@@ -742,6 +781,7 @@ class NFLPredictionPipeline:
         wp_model = self.wp_artifact["model"]
         wp_features = self.wp_artifact["feature_list"]
         wp_calibrator = self.wp_artifact.get("calibrator")
+        wp_preprocessing = self.wp_artifact.get("preprocessing")
 
         ats_model = self.ats_artifact["model"]
         ats_features = self.ats_artifact["feature_list"]
@@ -751,7 +791,17 @@ class NFLPredictionPipeline:
 
         # -- WP predictions: predict_proba for classification --
         wp_feature_df = games_data[wp_features].copy()
-        wp_raw_probs = wp_model.predict_proba(wp_feature_df)[:, 1]
+        if wp_preprocessing is not None:
+            # NEW CONTRACT (D33.1-R1). The persisted object is a fitted Pipeline whose
+            # final step IS the estimator, so this one call imputes, indicates, scales and
+            # predicts -- and `wp_model` is deliberately not invoked for this artifact.
+            wp_raw_probs = wp_preprocessing.predict_proba(wp_feature_df)[:, 1]
+        else:
+            # LEGACY PATH -- DO NOT REMOVE while any legacy artifact is deployed.
+            # D33.1-R2 requires artifacts saved before the persisted-preprocessing
+            # contract to be served byte-identically, and all three currently-deployed
+            # artifacts are in that class.
+            wp_raw_probs = wp_model.predict_proba(wp_feature_df)[:, 1]
 
         # Apply calibrator if available
         wp_calibrated_probs = None
@@ -769,15 +819,24 @@ class NFLPredictionPipeline:
         else:
             spreads = -ats_margins  # Default: predicted margin as implied spread
 
-        # Build a simple converter with a normal distribution fallback
-        # The residual_std is embedded in metadata if available, otherwise use a
-        # reasonable default (NFL margin std ~13.5 points)
         ats_metadata = self.ats_artifact.get("metadata", {})
-        ats_residual_std = ats_metadata.get("residual_std", 13.5)
-        ats_converter = ResidualDistributionConverter(distribution_type="normal")
-        ats_converter.is_fitted = True
-        ats_converter.residual_std = ats_residual_std
-        ats_converter.distribution_params = {"loc": 0.0, "scale": ats_residual_std}
+        ats_converter_params = ats_metadata.get(CONVERTER_PARAMS_METADATA_KEY)
+        if ats_converter_params is not None:
+            # NEW CONTRACT (D33.1-R1): the converter the trainer actually FITTED, rebuilt
+            # from the three parameters that describe it completely.
+            ats_converter = _converter_from_params(
+                ResidualDistributionConverter, ats_converter_params
+            )
+        else:
+            # LEGACY PATH -- DO NOT REMOVE while any legacy artifact is deployed.
+            # A hardcoded 13.5 standing in for a fitted object is the defect D33.1-R1
+            # closes, but D33.1-R2 requires the three currently-deployed artifacts to be
+            # served byte-identically, and none of them carries converter_params.
+            ats_residual_std = ats_metadata.get("residual_std", 13.5)
+            ats_converter = ResidualDistributionConverter(distribution_type="normal")
+            ats_converter.is_fitted = True
+            ats_converter.residual_std = ats_residual_std
+            ats_converter.distribution_params = {"loc": 0.0, "scale": ats_residual_std}
 
         cover_probs = ats_converter.predict_cover_probability(
             np.array(ats_margins), np.array(spreads)
@@ -794,11 +853,21 @@ class NFLPredictionPipeline:
             market_totals = ou_totals  # Default: predicted total as market total
 
         ou_metadata = self.ou_artifact.get("metadata", {})
-        ou_residual_std = ou_metadata.get("residual_std", 13.0)
-        ou_converter = TotalDistributionConverter(distribution_type="normal")
-        ou_converter.is_fitted = True
-        ou_converter.residual_std = ou_residual_std
-        ou_converter.distribution_params = {"loc": 0.0, "scale": ou_residual_std}
+        ou_converter_params = ou_metadata.get(CONVERTER_PARAMS_METADATA_KEY)
+        if ou_converter_params is not None:
+            # NEW CONTRACT (D33.1-R1).
+            ou_converter = _converter_from_params(
+                TotalDistributionConverter, ou_converter_params
+            )
+        else:
+            # LEGACY PATH -- DO NOT REMOVE while any legacy artifact is deployed
+            # (D33.1-R2). `ou_20260326_163930`, the retained v1.0 pre-Elo model, is
+            # served through exactly this branch.
+            ou_residual_std = ou_metadata.get("residual_std", 13.0)
+            ou_converter = TotalDistributionConverter(distribution_type="normal")
+            ou_converter.is_fitted = True
+            ou_converter.residual_std = ou_residual_std
+            ou_converter.distribution_params = {"loc": 0.0, "scale": ou_residual_std}
 
         over_probs, under_probs = ou_converter.predict_over_under_probabilities(
             np.array(ou_totals), np.array(market_totals)

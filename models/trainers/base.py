@@ -22,7 +22,7 @@ import pandas as pd
 from sklearn.feature_selection import SelectFromModel
 from sklearn.pipeline import Pipeline
 
-from models.artifacts import save_model_artifact
+from models.artifacts import CONVERTER_PARAMS_METADATA_KEY, save_model_artifact
 from models.clv import compute_clv_for_predictions
 from models.temporal import (
     TemporalSplitConfig,
@@ -996,6 +996,20 @@ class BaseTrainer(ABC):
             msg = "Cannot save: model has not been trained yet"
             raise RuntimeError(msg)
 
+        # D33.1-R1: record the converter parameters where SERVING can read them.
+        #
+        # This method has always passed `self.calibrator`, which ATS and O/U leave None --
+        # their fitted `residual_converter` / `total_converter` were never persisted under
+        # ANY name, and `prediction_pipeline` rebuilt conversion from
+        # `metadata.get("residual_std", 13.5)` / `13.0`, hardcoded fallbacks standing in
+        # for a fitted object. The hook is read through `getattr` so a trainer that does
+        # not define it is unaffected, byte for byte.
+        converter_params_hook = getattr(self, "converter_params", None)
+        if callable(converter_params_hook):
+            converter_params = converter_params_hook()
+            if converter_params is not None:
+                self.metadata[CONVERTER_PARAMS_METADATA_KEY] = converter_params
+
         # Get tuning result if available
         tuning_result = getattr(self, "_tuning_result", None)
         best_params = self.metadata.get("best_params")
@@ -1015,6 +1029,9 @@ class BaseTrainer(ABC):
             metadata=self.metadata,
             feature_list=self.feature_names,
             calibrator=self.calibrator,
+            # D33.1-R1: None for every trainer that has no preprocessing, which is the
+            # BaseTrainer class default, so ATS and O/U produce a byte-identical file set.
+            preprocessing=getattr(self, "preprocessing", None),
             best_params=best_params,
             tuning_metadata=tuning_metadata,
             artifacts_dir=artifacts_dir,

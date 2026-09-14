@@ -39,6 +39,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from models.artifacts import (
     CONVERTER_PARAMS_METADATA_KEY,
@@ -243,29 +246,21 @@ class TestTheDeletedPreprocessingControls:
 
         np.testing.assert_array_equal(after, before)
 
-    def test_deleted_preprocessing_breaks_the_roundtrip_for_a_bare_estimator_artifact(
-        self, tmp_path: Path, frame: pd.DataFrame, trainers: dict[str, Any]
-    ) -> None:
-        """THE CONTROL THAT FIRES -- the exact shape the contract defends against.
-
-        An artifact whose ``model.pkl`` is the BARE estimator (fitted on standardised
-        features) and whose ``preprocessing.pkl`` is the Pipeline. That is the shape of
-        every WP artifact saved before D33.1-R3, including the deployed
-        ``wp_20260824_113325``. With the preprocessing present the served values equal the
-        in-memory Pipeline's exactly; delete it and they do not -- which is the plausible
-        wrong answer, not an error.
-        """
-        root = tmp_path / "bare_estimator_artifacts"
-        root.mkdir()
-        pipeline = trainers["wp"].model
-        expected = pipeline.predict_proba(frame[list(_FEATURES)])[:, 1]
-
+    def _save_split_artifacts(
+        self,
+        root: Path,
+        model: Any,
+        preprocessing: Any,
+        trainers: dict[str, Any],
+    ) -> Path:
+        """Save a SPLIT WP artifact -- bare estimator in model.pkl, transform beside it."""
+        root.mkdir(parents=True, exist_ok=True)
         wp_dir = save_model_artifact(
-            model=pipeline.named_steps["estimator"],
+            model=model,
             target="wp",
             metadata={"target": "wp"},
             feature_list=list(_FEATURES),
-            preprocessing=pipeline,
+            preprocessing=preprocessing,
             artifacts_dir=root,
             update_latest=True,
         )
@@ -278,6 +273,68 @@ class TestTheDeletedPreprocessingControls:
                 artifacts_dir=root,
             )
             update_manifest(target, other_dir.name, root)
+        return wp_dir
+
+    def test_deleted_preprocessing_breaks_the_roundtrip_for_a_bare_estimator_artifact(
+        self, tmp_path: Path, frame: pd.DataFrame, trainers: dict[str, Any]
+    ) -> None:
+        """MEASURED: for a POST-D33.1-R3 estimator the failure is loud, not silent.
+
+        Split the four-step Pipeline: the bare ``estimator`` step into ``model.pkl``, the
+        whole Pipeline into ``preprocessing.pkl``. With the preprocessing present the
+        served values equal the in-memory Pipeline's EXACTLY. Delete it and serving does
+        not merely disagree -- it RAISES, because the estimator was fitted on twice the
+        input width (the imputed values and then one missing indicator per column) and
+        the raw frame is half that.
+
+        That is a stronger protection than a wrong number, and it is recorded here
+        because it is not what the plan predicted. The sibling below covers the shape the
+        plan DID predict, which is the one the deployed artifact is actually in.
+        """
+        pipeline = trainers["wp"].model
+        expected = pipeline.predict_proba(frame[list(_FEATURES)])[:, 1]
+        root = tmp_path / "bare_estimator_artifacts"
+        wp_dir = self._save_split_artifacts(
+            root, pipeline.named_steps["estimator"], pipeline, trainers
+        )
+
+        with_preprocessing = np.array(
+            [p.wp_home_probability for p in _serve(root, frame)]
+        )
+        np.testing.assert_array_equal(with_preprocessing, expected)
+
+        (wp_dir / PREPROCESSING_FILENAME).unlink()
+        with pytest.raises(ValueError, match="features"):
+            _serve(root, frame)
+
+    def test_deleted_preprocessing_gives_a_plausible_wrong_answer_for_a_scaled_estimator(
+        self, tmp_path: Path, frame: pd.DataFrame, trainers: dict[str, Any]
+    ) -> None:
+        """THE CONTROL THAT FIRES, in the shape the DEPLOYED artifact is actually in.
+
+        ``wp_20260824_113325`` was fitted before D33.1-R3: a bare ``LogisticRegression``
+        fitted on SCALED features of the same width as the raw frame, served raw. That
+        combination raises nothing. It returns a different probability per game, silently,
+        which is why the defect survived to be found by reading rather than by a failure.
+
+        Reproduced here with a two-step scaler + estimator Pipeline. With the
+        preprocessing persisted the served values are EXACT; delete it and they differ
+        while every single one stays a perfectly plausible probability in [0, 1].
+        """
+        features = frame[list(_FEATURES)]
+        scaled_pipeline = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                ("estimator", LogisticRegression(max_iter=1000)),
+            ]
+        )
+        scaled_pipeline.fit(features, frame["home_win"])
+        expected = scaled_pipeline.predict_proba(features)[:, 1]
+
+        root = tmp_path / "scaled_estimator_artifacts"
+        wp_dir = self._save_split_artifacts(
+            root, scaled_pipeline.named_steps["estimator"], scaled_pipeline, trainers
+        )
 
         with_preprocessing = np.array(
             [p.wp_home_probability for p in _serve(root, frame)]
@@ -290,8 +347,14 @@ class TestTheDeletedPreprocessingControls:
         )
 
         assert not np.array_equal(without_preprocessing, expected), (
-            "deleting preprocessing.pkl for a BARE-estimator artifact changed nothing, so "
-            "the round-trip equality is not asserting the transform"
+            "deleting preprocessing.pkl changed nothing, so the round-trip equality is "
+            "not asserting the transform"
+        )
+        assert np.all(
+            (without_preprocessing >= 0.0) & (without_preprocessing <= 1.0)
+        ), (
+            "the wrong answers must still LOOK like probabilities -- that is what makes "
+            "this defect class survive unnoticed"
         )
 
 
