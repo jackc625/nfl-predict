@@ -8568,3 +8568,209 @@ PHASE331_RUNG3_MEASURED: dict[str, object] = {
     "no_gate_run": True,
     "latest_json_byte_identical": True,
 }
+
+
+# -------------------------------------------------------------------------
+# THE GOLD WEATHER CONSTANCY, AFTER. R5'S PAIR, SECOND HALF.
+#
+# APPENDED by Plan 33.1-07 Task 4 on 2026-09-14, after the rung-3 rebuild.
+# GOLD_WEATHER_CONSTANCY_MEASUREMENT above is BYTE-UNCHANGED: R5's acceptance
+# is a measured before/after PAIR, and a pair with one half overwritten is a
+# single number wearing a pair's clothes.
+#
+# THE HEADLINE, in ordinary words: the weather columns in gold used to be the
+# same number for every game in every window that mattered. They now vary,
+# because they are measurements of real weather instead of one fabricated
+# temperature repeated 6,485 times.
+#
+#   BEFORE   45 of 46 weather columns EXACTLY CONSTANT in all three windows
+#   AFTER     4 of 47 constant; 43 vary
+#
+#   BEFORE   the O/U model's 17 weather features 17-of-17 constant in its own
+#            2018-2019 train window AND in the 2021-2024 gate holdout
+#   AFTER    1 of 17 in both
+#
+# THE FOUR THAT ARE STILL CONSTANT ARE CONSTANT FOR HONEST REASONS, and each
+# is named rather than left as a residual:
+#
+#   precip_prob, raw_precip_prob -- the FORECAST probability. ERA5 reanalysis
+#     reports what happened, never what was expected, so there is nothing to
+#     put here and inventing one is what this phase exists to stop. These two
+#     are NaN for every outdoor game and a genuine 0.0 for the 1,652 domes.
+#   weather_coverage -- constant 1.0 because every one of the 6,499 games HAS
+#     a real observation. A coverage flag cannot vary over a corpus with full
+#     coverage; what changed is that it now says so. Before rung 3 it read 0.0
+#     on all 6,499 rows, which is the value that means NO OBSERVATION.
+#   extreme_weather -- the severity >= 0.8 indicator. No game in 2002-2025
+#     reaches that threshold on real ERA5 readings. That is a fact about the
+#     weather, not about the pipeline.
+#
+# AND THE ONE STILL CONSTANT AMONG THE O/U 17 IS raw_precip_prob -- the same
+# forecast probability, for the same reason.
+# -------------------------------------------------------------------------
+
+GOLD_WEATHER_CONSTANCY_AFTER: dict[str, object] = {
+    "measured_on": "2026-09-14",
+    "measured_by": "Plan 33.1-07 Task 4",
+    "supersedes": "GOLD_WEATHER_CONSTANCY_MEASUREMENT",
+    "supersedes_note": (
+        "SUPERSEDES means 'is the AFTER half of', never 'replaces'. The before "
+        "slot is byte-unchanged and both halves are required to read R5's "
+        "acceptance, which is a measured PAIR"
+    ),
+    "measured_after": "the Plan 33.1-07 rung-3 input-correction rebuild",
+    # 47 here against the before slot's 46, and the difference is exactly one
+    # named column -- see divergence_from_recorded_claims below.
+    "weather_columns_counted": 47,
+    "populations": {
+        # Identical in all three gold matrices, so one entry per population
+        # rather than three that agree -- the same shape the before slot uses.
+        "ats_train_2015_2019": {
+            "rows": 1335,
+            "constant": 4,
+            "varying": 43,
+            "constant_columns": (
+                "extreme_weather",
+                "precip_prob",
+                "raw_precip_prob",
+                "weather_coverage",
+            ),
+        },
+        "wp_ou_train_2018_2019": {
+            "rows": 534,
+            "constant": 4,
+            "varying": 43,
+            "constant_columns": (
+                "extreme_weather",
+                "precip_prob",
+                "raw_precip_prob",
+                "weather_coverage",
+            ),
+        },
+        "gate_holdout_2021_2024": {
+            "rows": 1139,
+            "constant": 4,
+            "varying": 43,
+            "constant_columns": (
+                "extreme_weather",
+                "precip_prob",
+                "raw_precip_prob",
+                "weather_coverage",
+            ),
+        },
+        "all_2002_2025": {
+            "rows": 6499,
+            "constant": 4,
+            "varying": 43,
+            "constant_columns": (
+                "extreme_weather",
+                "precip_prob",
+                "raw_precip_prob",
+                "weather_coverage",
+            ),
+        },
+    },
+    # Why each surviving constant is HONEST rather than a residual defect.
+    "why_the_four_are_still_constant": {
+        "precip_prob": (
+            "the FORECAST probability. ERA5 reanalysis does not report one and "
+            "COVERAGE.md records the opt-out, so it is NaN for every outdoor "
+            "game and a genuine 0.0 for the 1,652 domes"
+        ),
+        "raw_precip_prob": "the same reading, un-normalized",
+        "weather_coverage": (
+            "constant 1.0 because all 6,499 games have a real observation "
+            "(weather_source = 'archive' on 6,499 of 6,499). A coverage flag "
+            "cannot vary over a fully-covered corpus; before rung 3 it read "
+            "0.0 on every row, which is the value that means NO OBSERVATION"
+        ),
+        "extreme_weather": (
+            "the weather_severity_score >= 0.8 indicator. No game in 2002-2025 "
+            "reaches that threshold on real readings -- a fact about the "
+            "weather, not about the pipeline"
+        ),
+    },
+    # THE HEADLINE PAIR. Both halves printed by the failing message in
+    # tests/integration/test_gold_weather_constancy_after.py, because R5's
+    # acceptance is a pair rather than a bare after.
+    "ou_weather_features_constant": {
+        "ou_train_2018_2019": (1, 17),
+        "gate_holdout_2021_2024": (1, 17),
+        "all_2002_2025": (1, 17),
+        "ats_train_2015_2019": (1, 17),
+        "the_one_still_constant": ("raw_precip_prob",),
+    },
+    "ou_weather_features_constant_before": {
+        "ou_train_2018_2019": (17, 17),
+        "gate_holdout_2021_2024": (17, 17),
+        "all_2002_2025": (6, 17),
+    },
+    "raw_temp_f_imputed": {
+        "default_value": 65.0,
+        "rows_total": 6499,
+        "rows_at_default_before": 6485,
+        "rows_at_default_after": 6,
+        "distinct_values_after": 700,
+        "non_null_after": 4847,
+        "note": (
+            "6 rows measuring exactly 65.0F is a handful of games that "
+            "genuinely were that temperature, not a surviving default. The "
+            "1,652 NULL rows are the domes, where there is no outdoor "
+            "temperature to report"
+        ),
+    },
+    # THE NO-STAND-IN PROPERTY, asserted POSITIVELY via per-column NaN counts
+    # rather than by the absence of one literal. A test that only checked "no
+    # cell equals 65.0" would pass against a column median-filled with a new
+    # number, which is SPEC prohibition 1 wearing a better label.
+    "indoor_games": 1652,
+    "outdoor_games": 4847,
+    "nan_counts": {
+        "temperature_derived_columns": 13,
+        "nan_per_temperature_derived_column": 1652,
+        "identical_in_all_three_matrices": True,
+        "composite_columns": 7,
+        "nan_among_indoor_games_per_composite_column": 0,
+        "composite_note": (
+            "the seven composites keep a genuine 0.0 indoors -- 'weather "
+            "reduced scoring by nothing' is a TRUE statement about a covered "
+            "indoor game, not a stand-in. The two populations are asserted "
+            "SEPARATELY so the distinction is proven rather than described"
+        ),
+    },
+    "weather_coverage_value_counts": {"1.0": 6499},
+    "gold_widths": (195, 196, 195),
+    "gold_rows": (6499, 6499, 6499),
+    "divergence_from_recorded_claims": {
+        "weather_columns_counted": (
+            "DENOMINATOR DIVERGED BY EXACTLY ONE NAMED COLUMN, and the column "
+            "is weather_coverage. The before slot counted 46 on 2026-09-12, "
+            "BEFORE the Plan 33.1-07 rung-1 rebuild added the coverage flag to "
+            "silver weather_features; this slot counts 47 on the same rule "
+            "afterwards. Same rule, one more column in the source it reads. "
+            "Both figures are recorded and the earlier one is not overwritten."
+        ),
+        "ou_all_2002_2025": (
+            "REPRODUCED AND IMPROVED. The before slot recorded 6 of 17 "
+            "constant across the full span -- the fourteen real 2024 Week 6 "
+            "rows were the only real weather anywhere. After: 1 of 17."
+        ),
+        "indoor_columns_gaining_nan": (
+            "WEATHER_NULL_STATE_MATRIX records 13 (the temperature and "
+            "temperature-impact groups). MEASURED: those 13 each carry exactly "
+            "1,652 NaN, AND raw_humidity_pct carries 1,652 as well -- a "
+            "FOURTEENTH column, which Ruling J's own table also marks 'null' "
+            "for covered_indoor under its separate 'humidity' group. The "
+            "recorded 13 counts two of the six groups; the measurement counts "
+            "three. Both are recorded and neither is overwritten."
+        ),
+        "raw_humidity_pct_nan": 1652,
+    },
+    # WHAT THIS MEASUREMENT IS NOT (SPEC R8). It is a statement that the
+    # weather columns now carry real measurements instead of one repeated
+    # fabrication. It is NOT a claim that any model is more accurate. No model
+    # was re-fit, no gate was run, and artifacts/latest.json is byte-unchanged.
+    "is_not_an_accuracy_claim": True,
+    "no_model_refit": True,
+    "no_gate_run": True,
+}

@@ -20,6 +20,15 @@ The named list is cross-checked against ``backtest.signal_lift.group_columns`` -
 ONE group registry the screen, the drop and the rung-3 attribution all read (D30-02)
 -- so a hand-written list here cannot silently drift away from the predicate that
 actually did the removing.
+
+PHASE 33.1 (Plan 33.1-07) adds ONE column on top of the Phase-28 width: the weather
+coverage flag. The discipline is unchanged and the direction inverted again -- a
+WIDENING this time -- so the Phase-30 residual assertion moved from ``== 0`` to the
+length of a NAMED tuple, with the reason recorded in that test's docstring rather
+than the assertion simply being relaxed. ``PHASE_28_WIDTHS`` and
+``PHASE_30_REMOVED_LINE_MOVEMENT_COLUMNS`` are left exactly as they are: both are
+historical records of what earlier phases did, and a historical record that gets
+edited every time the present changes is not a record.
 """
 
 from pathlib import Path
@@ -28,6 +37,7 @@ import pandas as pd
 import pytest
 
 from backtest.signal_lift import group_columns
+from features.weather import WEATHER_COVERAGE_COLUMN
 from scripts.data_qa import GOLD_FEATURE_MATRICES
 
 GOLD_DIR = Path(__file__).resolve().parents[2] / "data" / "gold"
@@ -55,6 +65,20 @@ PHASE_30_REMOVED_LINE_MOVEMENT_COLUMNS = (
 
 # The Phase-28 widths Phase 29 widened FROM and Phase 30 rung 3 returns TO.
 PHASE_28_WIDTHS = {"features_wp": 194, "features_ats": 195, "features_ou": 194}
+
+# The ONE column Phase 33.1 adds on top of the Phase-28 width (Plan 33.1-07).
+#
+# NAMED, NOT COUNTED. The Phase-30 residual assertion below used to read
+# `== 0`, which was exactly right while the tripwire had returned to the
+# Phase-28 width and nothing else had moved it. Phase 33.1's rung 1 added the
+# weather coverage flag, so the residual is now +1 BY DECISION rather than by
+# accident -- and the difference between those two is the whole reason this
+# tuple exists instead of the integer 1.
+#
+# The flag is imported from the ONE module that owns the name rather than
+# spelled here, so a rename cannot leave this file pinning a column that no
+# longer exists while the integer still matches.
+PHASE_331_ADDED_WEATHER_COLUMNS = (WEATHER_COVERAGE_COLUMN,)
 
 # The market columns that must SURVIVE the drop. ``snapshot_total`` /
 # ``snapshot_spread`` are the freeze anchors and ``total_movement`` /
@@ -122,8 +146,20 @@ def test_phase_30_narrowing_is_exactly_the_line_movement_family(
     the integer still matched.
 
     Both halves are asserted: the fifteen are ABSENT from the rebuilt matrix, and
-    the tripwire has returned to the Phase-28 width -- a zero delta, because the
-    phase gives back exactly what Phase 29 took.
+    the tripwire sits at the Phase-28 width plus the columns Phase 33.1 added.
+
+    THE RESIDUAL WAS ZERO AND IS NOW +1, UPDATED WITH A REASON RATHER THAN
+    SILENCED (Plan 33.1-07 Task 4). Phase 30's narrowing returned each matrix to
+    exactly its Phase-28 width, so a zero residual was the right assertion for as
+    long as nothing else moved the width. Phase 33.1's rung 1 then added the
+    weather coverage flag -- the column that lets a reader tell "no weather
+    record" from "the weather was mild" -- so the residual is now +1 BY DECISION.
+
+    The expected residual is ``len(PHASE_331_ADDED_WEATHER_COLUMNS)`` rather than
+    the integer 1, and the NAME is asserted separately below. That is the
+    difference between "the width moved by one" and "the width moved by one, and
+    the one is the column we meant": a build that added an unrelated column while
+    omitting the flag satisfies the integer exactly as well as the right one does.
     """
     path = GOLD_DIR / f"{table_name}.parquet"
     if not path.exists():
@@ -138,14 +174,57 @@ def test_phase_30_narrowing_is_exactly_the_line_movement_family(
     )
 
     residual_delta = GOLD_FEATURE_MATRICES[table_name] - PHASE_28_WIDTHS[table_name]
-    assert residual_delta == 0, (
+    expected_residual = len(PHASE_331_ADDED_WEATHER_COLUMNS)
+    assert residual_delta == expected_residual, (
         f"{table_name}: the tripwire reads "
         f"{GOLD_FEATURE_MATRICES[table_name]}, which is {residual_delta} columns "
         f"from the Phase-28 width {PHASE_28_WIDTHS[table_name]}. Removing the "
         f"{len(PHASE_30_REMOVED_LINE_MOVEMENT_COLUMNS)}-column line-movement family "
-        f"returns the matrix to exactly its Phase-28 width, so a non-zero residual "
-        f"means something ELSE changed the gold width. Identify it before updating "
-        f"the tripwire."
+        f"returns the matrix to exactly its Phase-28 width, and Phase 33.1 adds "
+        f"{expected_residual} on top of that: "
+        f"{list(PHASE_331_ADDED_WEATHER_COLUMNS)}. A residual other than "
+        f"{expected_residual} means something ELSE changed the gold width. "
+        f"Identify it before updating the tripwire."
+    )
+
+
+@pytest.mark.parametrize("table_name", list(GOLD_FEATURE_MATRICES))
+def test_the_phase_331_widening_is_pinned_to_the_named_coverage_flag(
+    table_name: str,
+) -> None:
+    """The +1 is pinned to a NAME, in both directions (Plan 33.1-07 Task 4).
+
+    Direction one: the named column is PRESENT in the matrix. Direction two: the
+    width equals the Phase-28 width plus exactly the length of the named tuple.
+
+    Asserting only the second would pass for a build that added an unrelated
+    column while omitting the flag; asserting only the first would pass for a
+    build that added the flag AND something else. Together they say the width
+    moved by these columns and no others.
+
+    Removing ``weather_coverage`` from a copy of a matrix makes THIS test fail by
+    NAME, where the width tripwire alone would only have reported an integer.
+    """
+    path = GOLD_DIR / f"{table_name}.parquet"
+    if not path.exists():
+        pytest.skip(f"{path} not built yet -- run scripts.build_features first")
+
+    columns = set(pd.read_parquet(path).columns)
+    missing = [c for c in PHASE_331_ADDED_WEATHER_COLUMNS if c not in columns]
+    assert not missing, (
+        f"{table_name} does not carry {missing}. Without the coverage flag a NULL "
+        f"observation is indistinguishable from a measured one, which is the whole "
+        f"point of the Phase-33.1 rung (SPEC R5) -- and the width integer alone "
+        f"cannot say WHICH column arrived."
+    )
+
+    assert GOLD_FEATURE_MATRICES[table_name] == PHASE_28_WIDTHS[table_name] + len(
+        PHASE_331_ADDED_WEATHER_COLUMNS
+    ), (
+        f"{table_name}: the tripwire reads {GOLD_FEATURE_MATRICES[table_name]}, "
+        f"which is not the Phase-28 width {PHASE_28_WIDTHS[table_name]} plus the "
+        f"{len(PHASE_331_ADDED_WEATHER_COLUMNS)} named Phase-33.1 column(s) "
+        f"{list(PHASE_331_ADDED_WEATHER_COLUMNS)}."
     )
 
 
