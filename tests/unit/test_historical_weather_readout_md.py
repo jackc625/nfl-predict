@@ -78,7 +78,11 @@ REQUIRED_PHRASES: tuple[str, ...] = (
     "in-sample",
     "never promoted",
     "Ninety gold columns",
-    "sample size",
+    # The probe's explicit n, pinned. A committed record rather than a moving measurement: the
+    # population cannot grow, because it is every row in this repository whose provenance is known
+    # or claimed to be the forecast feed. Reporting the probe WITHOUT its sample size is how a
+    # directional probe on 28 games turns into an estimate somebody acts on.
+    "Sample size: n = 28 at most",
     "D33.1-R1",
     "D33.1-R2",
     "D33.1-R3",
@@ -114,12 +118,62 @@ def forbidden_phrases() -> tuple[str, ...]:
 def readout_problems(path: Path) -> list[str]:
     """Every doc-drift problem in the readout at *path*, as actionable strings.
 
-    FIRST DRAFT -- reports nothing. Replaced in this task's GREEN commit; kept only long enough for
-    the planted-violation controls to fail against it, so a guard that has only ever seen a healthy
-    document is proven inadequate rather than assumed adequate.
+    Returns problems rather than raising, so one run reports every failure mode at once instead of
+    stopping at the first -- a guard that names one missing section per run is a guard somebody
+    fixes three times.
+
+    Each problem string CONTAINS the marker, phrase or word it is about, so the assertion a later
+    reader sees tells them what to put back rather than only that something is wrong.
+
+    Args:
+        path: The readout to check. The committed one at the repository root in normal use, and a
+            temporary copy in ``tmp_path`` for every planted-violation control.
+
+    Returns:
+        A list of actionable problem descriptions; empty when the document is healthy.
     """
-    del path
-    return []
+    if not path.is_file():
+        return [
+            f"missing: {path}. The R8 deliverable must exist at the repository root as "
+            f"{READOUT_MD.name}, beside GATED-REFIT-READOUT.md and its siblings -- NOT under the "
+            "gitignored .planning/ directory."
+        ]
+
+    content = path.read_text(encoding="utf-8")
+    problems: list[str] = []
+
+    if not content.isascii():
+        offenders = sorted(
+            {character for character in content if not character.isascii()}
+        )
+        problems.append(
+            f"non-ascii characters in {path.name}: {offenders}. CLAUDE.md requires ASCII only; "
+            "arrows are '->', dashes are '--' and quotes are straight."
+        )
+
+    problems.extend(
+        f"required section marker dropped: {marker!r}"
+        for marker in REQUIRED_SECTION_MARKERS
+        if marker not in content
+    )
+
+    problems.extend(
+        f"required phrase removed: {phrase!r}"
+        for phrase in REQUIRED_PHRASES
+        if phrase not in content
+    )
+
+    lowered = content.lower()
+    problems.extend(
+        f"forbidden phrase present: {phrase!r}. This phase re-fit no model and moved no "
+        "production pointer, so it claims no accuracy or profitability change (33.1-SPEC.md "
+        "prohibition 4), and no file in this phase may claim the suite reaches a clean summary "
+        "line while five tests are deliberately red."
+        for phrase in forbidden_phrases()
+        if phrase.lower() in lowered
+    )
+
+    return problems
 
 
 def _plant(tmp_path: Path, *, mutate) -> Path:

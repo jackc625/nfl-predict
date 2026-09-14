@@ -10658,3 +10658,91 @@ WEATHER_BRIDGE_FLIP_CONDITION: dict[str, object] = {
     "recorded_by": "Plan 33.1-11 Task 1",
     "recorded_on": "2026-09-14",
 }
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.1-11 Task 3 -- THE PHASE-33.1 CLOSE RECORD.
+#
+# APPENDED ONCE by Plan 33.1-11 Task 3 on 2026-09-14. Nothing above this line was
+# edited.
+#
+# APPEND-ONCE, AND WHY THIS SLOT IS NOT THE ONE THE PLAN PREDICTED. 33.1-11-PLAN.md
+# has Task 2 open `PHASE_331_CLOSE` and Task 3 extend it. Those are two separate
+# commits here, and the protocol this module lives by -- enforced mechanically by
+# tests/unit/test_phase33_state_append_once.py -- says a slot is APPENDED ONCE and
+# is NOT edited afterwards. So the slot is written once, HERE, in the task that can
+# actually measure every field it carries. Task 2 committed the readout alone.
+#
+# THE INSTRUMENT IS PART OF THE MEASUREMENT, WHICH IS WHY THE RUN LINES ARE
+# RECORDED INDIVIDUALLY RATHER THAN SUMMED -- the same argument PRE_PHASE_TIER_LINES
+# makes. But they are NOT the three tiers that slot records, and the difference is
+# stated rather than glossed: see `runs_are_not_whole_tier_sweeps` below.
+# ---------------------------------------------------------------------------
+
+PHASE_331_CLOSE: dict[str, object] = {
+    "phase": "33.1",
+    "closed_on": "2026-09-14",
+    "closed_by": "Plan 33.1-11 Task 3",
+    "readout_path": "HISTORICAL-WEATHER-READOUT.md",
+    "readout_is_at_the_repository_root": True,
+    "readout_guard": "tests/unit/test_historical_weather_readout_md.py",
+    # THE THREE MEASURED RUN LINES, VERBATIM, in the order they were run, each
+    # prefixed with WHAT was run. A bare summary line whose instrument is not
+    # recorded is a number, not a measurement.
+    "tier_lines": (
+        "tests/unit/test_weather_bridge_expiry.py tests/unit/test_historical_weather_readout_md.py -- 35 passed",
+        "tests/unit/test_phase33_state_append_once.py tests/unit/test_phase33_state_shape.py tests/unit/test_phase33_no_zero_failures_claim.py tests/unit/test_weather_gold_default_2026.py -- 39 passed",
+        "the six repo-root readout guards + tests/unit/test_gold_generation.py -- 116 passed",
+    ),
+    # STATED PLAINLY. The plan's verification section asks for three whole-tier
+    # sweeps; the STANDING OWNER INSTRUCTION of 2026-09-14 recorded in
+    # .planning/STATE.md `## Decisions` forbids directory sweeps, it is later than
+    # the plan, and it is the owner's, so it wins. The three lines above are the
+    # targeted runs this plan actually made. They are NOT tier lines and are not
+    # comparable to PRE_PHASE_TIER_LINES, and calling them tier lines without
+    # saying so would be describing suite-wide state nobody measured.
+    "runs_are_not_whole_tier_sweeps": True,
+    "whole_tier_sweep_deliberately_skipped": (
+        "STANDING OWNER INSTRUCTION 2026-09-14: run only the specific test files or "
+        "node ids covering the code just changed; never a bare pytest and never a "
+        "directory sweep. The plan's three-tier verification line was deliberately "
+        "NOT executed, and the substitution is recorded here rather than hidden. No "
+        "suite-wide figure is claimed anywhere in this plan."
+    ),
+    # THE EXPECTED FAILURE SET AT CLOSE, BY NODE ID. Sixteen, all registered, none
+    # measured afresh by this plan -- each is carried from the register that DID
+    # measure it, and that provenance is stated rather than implied.
+    "failing_node_ids": (
+        *DELIBERATE_TRIPWIRE_NODE_IDS,
+        *(node_id for node_id, _disposition in GOLD_REBUILD_NEWLY_RED),
+        "tests/unit/test_wp_trainer.py::test_wp_train_on_synthetic_data",
+    ),
+    "failing_node_ids_provenance": (
+        "5 from DELIBERATE_TRIPWIRE_NODE_IDS (Plan 33-01, re-checked by Plan "
+        "33.1-08 against their RECORDED reasons); 10 from GOLD_REBUILD_NEWLY_RED "
+        "(Plan 33.1-08 Task 1, 8 SUPERSEDED and 2 EXPECTED-BY-DESIGN, none a "
+        "DEFECT); and 1 pre-existing stale partition literal measured at Plan "
+        "33.1-10's base commit bcde33a in a detached worktree and deferred to "
+        "Wave 9's owner. This plan did not re-measure any of them: it ran only its "
+        "own modules, and a carried-forward register is stated as carried forward."
+    ),
+    "tripwire_count_unchanged": 5,
+    "nothing_added_to_any_skip_list": True,
+    # THE HARD BOUNDARY, measured at close.
+    "no_model_refit": True,
+    "no_gate_run": True,
+    "no_gold_rebuild_in_this_plan": True,
+    "latest_json_byte_identical": True,
+    "latest_json_digest": (
+        "7ff78a506b1cb06e206705c5900438a5388be64e963bcc8a39c7ed6a8d0f66f1"
+    ),
+    "deployed_pointers": DEPLOYED_POINTERS_AT_PHASE_331_CLOSE,
+    "no_earlier_readout_edited": True,
+    "r7_disposition": "satisfied (Branch A -- the switch exists and is bounded)",
+    "r8_disposition": (
+        "satisfied -- HISTORICAL-WEATHER-READOUT.md is committed at the repository "
+        "root, names specific invalidated instructions in both 33-14-PLAN.md and "
+        "33-15-PLAN.md, and states plainly that no model was re-fit and that nothing "
+        "reached production."
+    ),
+}
