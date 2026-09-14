@@ -29,6 +29,9 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -47,6 +50,8 @@ from models.trainers.final_fit import (
 )
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WP_PIPELINE_STEP_NAMES, WPTrainer
+from tests.data_boundary import digest_file
+from tests.phase33_state import FINAL_FIT_NOT_RUN_IN_PHASE_331
 
 # The LIVE partition, derived rather than typed. A literal here would fall behind
 # `conf/season_partition.py` the moment `LATEST_COMPLETED_SEASON` is bumped, and the
@@ -400,3 +405,138 @@ class TestTheBaseClassDocumentationStaysTrue:
         assert hasattr(ATSTrainer, "converter_params")
         assert hasattr(OUTrainer, "converter_params")
         assert not hasattr(WPTrainer, "converter_params")
+
+
+# ---------------------------------------------------------------------------
+# THE BOUNDARY (Plan 33.1-10 Task 4). This is the section that keeps the plan inside
+# its own SPEC: `33.1-SPEC.md`'s Boundaries put ANY model re-fit out of scope by name,
+# and authoring a re-fit mechanism is in scope while CALLING one is not.
+# ---------------------------------------------------------------------------
+
+#: The production entry modules a re-fit would have to be invoked from.
+_PRODUCTION_ENTRY_MODULES: tuple[str, ...] = (
+    "models/train.py",
+    "scripts/promote_models.py",
+    "scripts/run_phase33_gate.py",
+    "pipeline/steps.py",
+)
+
+#: All THREE public symbols, not just the two that fit. `apply_final_fit_to_trainer`
+#: MUTATES trainer state, and a call to it on a production path would be as much a
+#: re-fit as a call to the fit itself -- it is what makes the save path persist a
+#: different model.
+_FINAL_FIT_SYMBOLS: frozenset[str] = frozenset(
+    {
+        "final_fit",
+        "final_fit_over_completed_seasons",
+        "apply_final_fit_to_trainer",
+    }
+)
+
+
+def _scan_for_final_fit_calls(paths: tuple[str, ...]) -> list[str]:
+    """Return ``path:lineno`` for every call to a final-fit symbol in *paths*.
+
+    A REQUIRED MODULE THAT IS ABSENT FAILS BY NAME rather than shortening the scanned
+    list. The same guard the quarantine scan uses, and for the same reason: a boundary
+    check that can pass by visiting nothing is not a boundary check.
+    """
+    hits: list[str] = []
+    for path in paths:
+        source_path = Path(path)
+        if not source_path.exists():
+            msg = (
+                f"required module {path} is absent from the checkout, so the boundary "
+                "scan would pass by not visiting it. Fix the path or remove it from "
+                "_PRODUCTION_ENTRY_MODULES with a recorded reason."
+            )
+            raise AssertionError(msg)
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name in _FINAL_FIT_SYMBOLS:
+                hits.append(f"{path}:{node.lineno}")
+    return hits
+
+
+class TestThisPhaseAuthorsTheEntryPointAndDoesNotRunIt:
+    """T-33.1-67: this phase re-fitting a production model."""
+
+    def test_no_production_module_calls_the_final_fit_entry_point(self) -> None:
+        hits = _scan_for_final_fit_calls(_PRODUCTION_ENTRY_MODULES)
+
+        assert hits == [], (
+            f"a production path calls the final fit at {hits}. Authoring the entry point "
+            "is in scope for Phase 33.1; calling it is a model re-fit, which "
+            "33.1-SPEC.md's Boundaries put out of scope by name. Phase 33 Wave 15 is the "
+            "intended caller."
+        )
+
+    def test_the_boundary_scan_reports_exactly_one_planted_call(
+        self, tmp_path: Path
+    ) -> None:
+        """The control. A scan that never fires proves nothing about the code it read."""
+        planted = tmp_path / "planted_train.py"
+        original = Path("models/train.py").read_text(encoding="utf-8")
+        planted.write_text(
+            original + "\n\napply_final_fit_to_trainer(trainer, result)\n",
+            encoding="utf-8",
+        )
+
+        hits = _scan_for_final_fit_calls((str(planted),))
+
+        assert len(hits) == 1, hits
+
+    def test_the_boundary_scan_refuses_an_absent_required_module(self) -> None:
+        with pytest.raises(AssertionError) as excinfo:
+            _scan_for_final_fit_calls(("models/no_such_module.py",))
+
+        assert "models/no_such_module.py" in str(excinfo.value)
+        assert "pass by not visiting" in str(excinfo.value)
+
+    def test_the_record_names_the_module_its_symbols_and_the_scanned_modules(
+        self,
+    ) -> None:
+        record = FINAL_FIT_NOT_RUN_IN_PHASE_331
+
+        assert record["entry_point_module"] == "models/trainers/final_fit.py"
+        assert set(record["symbols"]) == set(_FINAL_FIT_SYMBOLS)
+        assert tuple(record["scanned_modules"]) == _PRODUCTION_ENTRY_MODULES
+        assert "Wave 15" in str(record["intended_caller"])
+
+    def test_the_recorded_latest_json_digests_are_the_same_value_twice(self) -> None:
+        """The claim IS that the two are equal: this plan moved nothing."""
+        record = FINAL_FIT_NOT_RUN_IN_PHASE_331
+
+        assert (
+            record["latest_json_digest_before"] == record["latest_json_digest_after"]
+        ), (
+            "the recorded before and after digests differ, which would mean Plan 33.1-10 "
+            "changed the deployed-model manifest"
+        )
+
+    def test_the_live_latest_json_digest_matches_the_record(self) -> None:
+        latest = Path("artifacts") / "latest.json"
+        if not latest.exists():
+            pytest.skip(
+                "artifacts/latest.json is absent; it is gitignored and is written by "
+                "models.artifacts.update_manifest via scripts/promote_models.py"
+            )
+
+        live = digest_file(latest)
+
+        assert live == FINAL_FIT_NOT_RUN_IN_PHASE_331["latest_json_digest_after"]
+
+    def test_the_entry_point_writes_nothing_under_production_artifacts(
+        self, wp_trained: WPTrainer, frame: pd.DataFrame
+    ) -> None:
+        """Belt and braces beside the autouse COLD-05 guard, because it is cheap."""
+        artifacts_root = Path("artifacts")
+        before = sorted(p.name for p in artifacts_root.iterdir())
+
+        result = wp_trained.final_fit(frame, _PARTITION)
+        apply_final_fit_to_trainer(wp_trained, result)
+
+        assert sorted(p.name for p in artifacts_root.iterdir()) == before
