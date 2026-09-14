@@ -3043,3 +3043,301 @@ class TestPhase331StalenessGameIdsWereMeasuredBeforeTheRebuild:
             state.PHASE331_STALENESS_GAME_IDS
         )
         assert declaration["staleness_game_id_count_recorded_by_research"] == 207
+
+
+# ---------------------------------------------------------------------------
+# PHASE 33.1 RUNG 3 -- THE INPUT-CORRECTION RUNG (Plan 33.1-07 Task 4).
+#
+# Rung 1 rebuilt gold on the corrected weather. MEASURING rung 1's output found
+# three defects in the INPUTS it had been consuming, all three of which discard
+# real data that exists on disk: rainfall thrown away for want of a forecast
+# probability ERA5 never reports, a coverage flag z-scored into the value that
+# means NO OBSERVATION, and season 2025's team strength never built because a
+# range literal stopped at 2024.
+#
+# The structural prediction is the OPPOSITE of rungs 1 and 2 in the one way that
+# matters: they predicted a column ARRIVING, this one predicts the shape not
+# moving at all.
+# ---------------------------------------------------------------------------
+
+
+def _phase331_rung3_report(
+    *,
+    added: tuple[str, ...] = (),
+    removed: tuple[str, ...] = (),
+    changed: dict[str, list[str]] | None = None,
+    width_delta: int = 0,
+    rows_before: int = 6499,
+    rows_after: int = 6499,
+) -> dict:
+    """A three-matrix report in the shape RUNG 3 predicts.
+
+    The defaults ARE the prediction: nothing added, nothing removed, rows
+    unchanged at 6,499, width UNCHANGED. Each test states only its departure.
+    """
+    widths = _widths()
+    return {
+        matrix: _detail(
+            width_before=widths[matrix] + 1,
+            width_after=widths[matrix] + 1 + width_delta,
+            rows_before=rows_before,
+            rows_after=rows_after,
+            added=added,
+            removed=removed,
+            changed=dict(changed or {}),
+        )
+        for matrix in GOLD_MATRICES
+    }
+
+
+def _phase331_rung3_clean_changed() -> dict[str, list[str]]:
+    """A changed set carrying exactly one member of each of the three families."""
+    return {
+        # family 1 -- features.weather.WEATHER_FEATURE_COLUMNS, ANY season. The
+        # precipitation correction restores a value that was discarded in every
+        # season, so a season restriction here would be unfounded.
+        "precip_mm": ["2002", "2014", "2025"],
+        # family 2 -- the SOURCE-DERIVED widening: an un-normalized copy of a
+        # registry column, checked against the live registry at attribution time.
+        "raw_weather_severity": ["2002", "2019"],
+        # family 3 -- twelve EXACT names restricted to 2025 and nothing else.
+        "home_off_rolling_opp_adj_epa_per_play": ["2025"],
+    }
+
+
+class TestPhase331Rung3InputCorrections:
+    """Rung 3's cause is COMPOUND and its three families discriminate.
+
+    TEST CLASS: plain unit test. Hand-built compare_fingerprints-shaped
+    reports, so the contract is provable without running a rebuild and the class
+    passes on a fresh checkout with no data/ directory.
+    """
+
+    def test_the_cause_names_all_three_input_corrections(self) -> None:
+        """A label naming one of three is the mislabelling, not a shorthand."""
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_rung3_report(changed=_phase331_rung3_clean_changed()),
+            f.PHASE331_RUNG3,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        cause = verdict["cause"].lower()
+        for word in ("precip_mm", "weather_coverage", "opponent-adjusted"):
+            assert word in cause, (
+                f"rung 3's declared cause does not name {word!r}: {verdict['cause']!r}"
+            )
+
+    def test_a_diff_inside_the_three_families_attributes_cleanly(self) -> None:
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_rung3_report(changed=_phase331_rung3_clean_changed()),
+            f.PHASE331_RUNG3,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is True, _all_failures(verdict)
+        for matrix in GOLD_MATRICES:
+            split = verdict["matrices"][matrix]["changed_by_family"]
+            assert split["weather"] == ["precip_mm"]
+            assert split["weather_widening"] == ["raw_weather_severity"]
+            assert split["team_strength_2025"] == [
+                "home_off_rolling_opp_adj_epa_per_play"
+            ]
+
+    def test_adding_any_column_is_unattributed(self) -> None:
+        """THE STRUCTURAL DIFFERENCE FROM RUNGS 1 AND 2.
+
+        Those two predicted the coverage flag ARRIVING and would have FAILED on
+        its absence. This rung corrects what existing families contain, so an
+        addition -- including the coverage flag itself -- is undeclared.
+        """
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_rung3_report(
+                added=("weather_coverage",),
+                width_delta=1,
+                changed=_phase331_rung3_clean_changed(),
+            ),
+            f.PHASE331_RUNG3,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert verdict["blocking"] is True
+        assert any("was ADDED" in message for message in verdict["failures"])
+
+    def test_removing_any_column_is_unattributed(self) -> None:
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_rung3_report(
+                removed=("temp_f",),
+                width_delta=-1,
+                changed=_phase331_rung3_clean_changed(),
+            ),
+            f.PHASE331_RUNG3,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert any("was REMOVED" in message for message in verdict["failures"])
+
+    def test_a_moved_row_count_is_unattributed(self) -> None:
+        """This rung restores no absent row, unlike rung 1's 207."""
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_rung3_report(
+                rows_after=6500, changed=_phase331_rung3_clean_changed()
+            ),
+            f.PHASE331_RUNG3,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert any("rows moved" in message for message in verdict["failures"])
+
+    def test_an_empty_diff_is_refused(self) -> None:
+        """Twenty columns were NULL for 4,847 games; recovery MUST move something."""
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_rung3_report(changed={}),
+            f.PHASE331_RUNG3,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert any("moved no column at all" in m for m in verdict["failures"])
+
+    def test_a_team_strength_column_that_moved_in_2019_is_unattributed(self) -> None:
+        """THE DISCRIMINATION PROOF, first direction.
+
+        The twelve names are declared, but only for 2025. A read-only probe of
+        the real adjustment stage measured ZERO moved rows in 2018-2024 before
+        this declaration was written, so a 2019 move is a different cause
+        wearing a declared name.
+        """
+        f = _p331_module()
+        changed = _phase331_rung3_clean_changed()
+        changed["home_off_rolling_opp_adj_epa_per_play"] = ["2019", "2025"]
+        verdict = attribute_rung(
+            _phase331_rung3_report(changed=changed),
+            f.PHASE331_RUNG3,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert verdict["blocking"] is True
+        assert any("team_strength_2025" in m for m in verdict["failures"])
+
+    def test_every_one_of_the_twelve_names_attributes_in_2025(self) -> None:
+        """THE DISCRIMINATION PROOF, second direction.
+
+        All twelve must be reachable, or the family is narrower than it claims
+        and the rebuild would block on a column it declared.
+        """
+        f = _p331_module()
+        changed = {
+            name: ["2025"] for name in f.PHASE331_RUNG3_TEAM_STRENGTH_2025_COLUMNS
+        }
+        changed["precip_mm"] = ["2002"]
+        verdict = attribute_rung(
+            _phase331_rung3_report(changed=changed),
+            f.PHASE331_RUNG3,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is True, _all_failures(verdict)
+        for matrix in GOLD_MATRICES:
+            split = verdict["matrices"][matrix]["changed_by_family"]
+            assert len(split["team_strength_2025"]) == 12
+
+    def test_a_prohibited_column_outside_the_twelve_still_blocks(self) -> None:
+        """Declaring twelve bye-window-shaped names does not open the family."""
+        f = _p331_module()
+        changed = _phase331_rung3_clean_changed()
+        changed["home_elo"] = ["2025"]
+        verdict = attribute_rung(
+            _phase331_rung3_report(changed=changed),
+            f.PHASE331_RUNG3,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert verdict["blocking"] is True
+        assert any("PROHIBITED" in m and "rung" in m for m in verdict["failures"])
+
+    def test_an_undeclared_column_moving_only_in_2025_is_still_unattributed(
+        self,
+    ) -> None:
+        """NO ROW-SCOPED STALENESS ESCAPE AT THIS RUNG.
+
+        Rung 1 carried one because 207 absent rows genuinely arrived. This rung
+        restores none, so a 2025-only move by an undeclared column has no cause
+        to fall back on.
+        """
+        f = _p331_module()
+        changed = _phase331_rung3_clean_changed()
+        changed["home_qb_adjustment"] = ["2025"]
+        report = _phase331_rung3_report(changed=changed)
+
+        verdict = attribute_rung(
+            report, f.PHASE331_RUNG3, rung_prefix=f.PHASE331_RUNG_PREFIX
+        )
+        assert verdict["ok"] is False
+        assert any("restores no absent row" in m for m in verdict["failures"])
+
+    def test_the_widening_family_is_checked_against_the_live_registry(self) -> None:
+        """SOURCE-DERIVED, not a second hand-written name."""
+        f = _p331_module()
+        from features.weather import WEATHER_FEATURE_COLUMNS
+
+        for name, source in f.PHASE331_FOLLOWUP_WEATHER_WIDENING.items():
+            assert source in WEATHER_FEATURE_COLUMNS, (
+                f"{name} is declared as a copy of {source}, which is not a "
+                "registered weather column"
+            )
+
+    def test_rung_1_and_rung_2_signatures_are_byte_unchanged_by_rung_3(self) -> None:
+        """A NEW rung, never a widened declaration (Ruling N2)."""
+        f = _p331_module()
+        rung1 = f._expected_signature(f.PHASE331_RUNG, prefix=f.PHASE331_RUNG_PREFIX)
+        rung2 = f._expected_signature(
+            f.PHASE331_FOLLOWUP_RUNG, prefix=f.PHASE331_RUNG_PREFIX
+        )
+
+        assert rung1["columns_added"] == ("weather_coverage",)
+        assert rung1["width"] == "increased by exactly one, the named coverage flag"
+        assert rung1["declared_families"] == ("weather", "venue", "staleness_2025")
+        assert rung2["no_new_rebuild"] is True
+        assert rung2["group1_trigger"] == "NOT ESTABLISHED"
+
+    def test_phase_30s_four_causes_are_still_exactly_four(self) -> None:
+        f = _p331_module()
+        assert f.RUNG_CAUSES == {
+            1: "CR-02",
+            2: "WR-06",
+            3: "line_movement drop",
+            4: "N-01",
+        }
+
+    def test_the_unprefixed_rung_3_still_resolves_to_the_line_movement_drop(
+        self,
+    ) -> None:
+        """THE NEGATIVE CONTROL. The new entry must not capture the bare integer."""
+        f = _p331_module()
+        assert f._expected_signature(3)["cause"] == "line_movement drop"
+
+    def test_the_declaration_carries_no_cause_story_family(self) -> None:
+        """Ruling N2's machine check, applied to this rung's mechanisms."""
+        f = _p331_module()
+        signature = f._expected_signature(
+            f.PHASE331_RUNG3, prefix=f.PHASE331_RUNG_PREFIX
+        )
+        allowed = {
+            "source-derived constant",
+            "enumerated names with a season restriction",
+            "row-scoped per-season-digest predicate",
+        }
+        assert set(signature["family_mechanisms"].values()) <= allowed
+        assert signature["ok_required_unconditionally"] is True
+        assert signature["declared_before_the_rebuild"] is True

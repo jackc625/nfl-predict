@@ -511,6 +511,12 @@ RUNG_CAUSES_BY_PREFIX: dict[str, dict[int, str]] = {
     PHASE331_RUNG_PREFIX: {
         PHASE331_RUNG: PHASE331_RUNG_CAUSE,
         PHASE331_FOLLOWUP_RUNG: PHASE331_FOLLOWUP_RUNG_CAUSE,
+        # Rung 3 is a REAL rebuild again, unlike rung 2. Its cause is declared
+        # further down, beside its families, because it could not be written
+        # until rung 1's OUTPUT had been measured -- which is what found the
+        # three input defects it corrects. The entry is filled in immediately
+        # after that declaration so this table stays the one place a prefix's
+        # rungs are enumerated.
     },
 }
 
@@ -939,6 +945,161 @@ PHASE331_FOLLOWUP_EXPECTED_SIGNATURE: dict[str, object] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# RUNG 3 -- THE INPUT-CORRECTION RUNG, DECLARED BEFORE ANYTHING WAS REBUILT
+# (Plan 33.1-07 Task 4, declared 2026-09-14).
+#
+# WHY THERE IS A THIRD RUNG AT ALL. Rung 1 rebuilt gold on the corrected
+# weather. Measuring rung 1's OUTPUT -- which is what Task 4 exists to do --
+# found three defects in the INPUTS that rung, and every rung before it, had
+# been consuming. All three discard real data that exists on disk:
+#
+#   1. RAIN THAT FELL WAS DISCARDED. `calculate_precipitation_features` refused
+#      when `precip_prob` was absent. That is a FORECAST probability; ERA5
+#      reanalysis never reports one. So the gate fired on all 4,847 outdoor
+#      games and threw away `precip_mm`, which is present on all 6,499 rows.
+#      Twelve precipitation columns and the seven composites that read
+#      `precip_impact_score` were NULL for every outdoor game -- the games where
+#      rain is the entire point.
+#   2. THE COVERAGE FLAG WAS INERT. Silver carried `weather_coverage` = 1.0 on
+#      all 6,499 rows; gold recorded 0.0 on all 6,499 -- the value that MEANS no
+#      observation. The flag was z-scored, and the expanding std of a constant
+#      column is zero, so every row collapsed to the neutral 0.0.
+#   3. SEASON 2025'S TEAM STRENGTH WAS FAKE. `range(2018, 2025)` stops at 2024,
+#      so the twelve `*_rolling_opp_adj_*` columns carried 2 distinct values
+#      across the 285 games of 2025 -- against 285 in both 2023 and 2024. 2025
+#      is the season feeding the live 2026 predictions.
+#
+# WHY ONE RUNG AND NOT THREE. The OWNER ruled on 2026-09-14: fix all three, then
+# ONE rebuild. The tradeoff they were given and accepted is stated plainly --
+# three causes in one rebuild cannot be separated afterwards. That mattered when
+# the frozen pre-correction baseline was the thing being protected; the STANDING
+# OWNER RULING of the same date voids that baseline, so what one rebuild costs
+# here is separability between three corrections that all point the same way,
+# and what it buys is ending the phase with inputs that are actually correct.
+#
+# THIS RUNG'S BASELINE IS NOT STALE, and that is the difference from rung 1.
+# `p331_rung2.json` is a fingerprint of gold as rung 1 left it -- freshly built,
+# freshly attributed, 38 minutes of controlled rebuilds already run over it by
+# the Group-1 diagnosis. Rung 1's own baseline was five and a half hours old and
+# carried the unexplained carry-forward the follow-up rung had to declare.
+#
+# THERE IS NO `p331_rung2` REBUILD, so where does its fingerprint come from? The
+# follow-up rung rebuilt nothing -- it re-judged the rung0 -> rung1 transition --
+# so gold at rung 2 IS gold at rung 1. `p331_rung2.json` is therefore a fresh
+# MEASUREMENT of current gold rather than a copy of rung 1's document, taken
+# before this rung rebuilds anything. `require_rung_ladder(dir, 3, "p331_")`
+# demands rungs 0, 1 and 2, and all three then exist.
+# ---------------------------------------------------------------------------
+
+PHASE331_RUNG3: int = 3
+
+PHASE331_RUNG3_CAUSE: str = (
+    "COMPOUND (three INPUT corrections, never 'the precipitation rung'): "
+    "(1) precipitation derived from ERA5's measured precip_mm instead of being "
+    "discarded for want of a forecast probability the archive never reports, "
+    "which moves the twelve precipitation columns and the seven composites that "
+    "read precip_impact_score across every season; (2) the weather_coverage "
+    "flag preserved at its recorded level instead of being z-scored to 0.0 -- "
+    "the value that means NO OBSERVATION -- on all 6,499 rows; and (3) season "
+    "2025's twelve opponent-adjusted team-strength columns built from real "
+    "play-by-play instead of imputed, because the per-game season pool was the "
+    "hardcoded range(2018, 2025) and stopped at 2024"
+)
+
+# DECLARED FAMILY 3A and 3B reuse rung 1's and the follow-up's source-derived
+# mechanisms unchanged: `phase331_weather_family()` for the registry columns and
+# `PHASE331_FOLLOWUP_WEATHER_WIDENING` for the un-normalized copy. They are
+# REFERENCED rather than re-listed, which is the same second-list discipline
+# D30-02 exists to enforce.
+
+# DECLARED FAMILY 3C -- the 2025 team-strength repair. TWELVE EXACT NAMES plus a
+# SEASON RESTRICTION of 2025 and nothing else.
+#
+# THE SEASON RESTRICTION IS MEASURED, NOT ASSUMED. Adding 2025 to the per-game
+# pool could in principle have moved every season: `features/opponent_adj.py`
+# computes `league_avg_def` as a WHOLE-FRAME mean over the fetched rows, and a
+# wider pool moves that scalar (measured: -0.003941 -> -0.002092). A read-only
+# probe ran the REAL adjustment stage under both pools before this declaration
+# was written and compared the per-game and the rolling outputs:
+#
+#     per-game rows compared 7,476   moved 0   max delta 0.0
+#     rolling  rows compared 8,064   moved 0   max delta 0.0
+#
+# ZERO rows moved outside 2025, and the reason is itself a finding recorded in
+# the SUMMARY: the opponent adjustment is INERT. `opp_adj_<metric>` equals the
+# raw metric for all 8,564 rows, because the `has_enough` gate never fires, so
+# the league average it would have been added to never reaches the output. That
+# is a PRE-EXISTING defect, outside this plan's scope, deliberately NOT fixed
+# here -- fixing it would move all of 2018-2024 and blow past this declaration.
+#
+# So the restriction to 2025 is a measurement of what this change does, and a
+# member that moved in 2019 is UNATTRIBUTED and blocks, exactly as it would be
+# if it were undeclared.
+PHASE331_RUNG3_TEAM_STRENGTH_2025_COLUMNS: tuple[str, ...] = tuple(
+    f"{side}_{unit}_rolling_opp_adj_{metric}"
+    for side in ("home", "away")
+    for unit in ("off", "def")
+    for metric in ("epa_per_play", "pass_epa", "rush_epa")
+)
+
+PHASE331_RUNG3_TEAM_STRENGTH_SEASONS: tuple[int, ...] = (2025,)
+
+PHASE331_RUNG3_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE331_RUNG3,
+    "prefix": PHASE331_RUNG_PREFIX,
+    "cause": PHASE331_RUNG3_CAUSE,
+    # NOTHING IS ADDED HERE, and that is the structural difference from rungs 1
+    # and 2. Those predicted the coverage flag ARRIVING; this rung corrects what
+    # three existing columns families CONTAIN. A build that added a column would
+    # be doing something this rung did not declare.
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to three DECLARED families, each ENUMERABLE or "
+        "SOURCE-DERIVED: (1) the weather family named by "
+        "features.weather.WEATHER_FEATURE_COLUMNS, any season, because replacing "
+        "a discarded measurement with a real one moves every season it was "
+        "discarded in; (2) PHASE331_FOLLOWUP_WEATHER_WIDENING, the "
+        "source-derived mapping from raw_weather_severity to the registry "
+        "column it copies, checked against the live registry at attribution "
+        "time; and (3) PHASE331_RUNG3_TEAM_STRENGTH_2025_COLUMNS -- twelve exact "
+        "names restricted to season "
+        f"{PHASE331_RUNG3_TEAM_STRENGTH_SEASONS}, measured by a read-only probe "
+        "of the real adjustment stage under both season pools BEFORE this "
+        "declaration was written"
+    ),
+    "declared_families": (
+        "weather",
+        "weather_widening",
+        "team_strength_2025",
+    ),
+    "family_mechanisms": {
+        "weather": "source-derived constant",
+        "weather_widening": "source-derived constant",
+        "team_strength_2025": "enumerated names with a season restriction",
+    },
+    # Ruling N2, restated rather than inherited for the same reason the
+    # follow-up rung restates it: a rung that quietly relaxed the unconditional
+    # check would be a footnote wearing a rung's clothes.
+    "ok_required_unconditionally": True,
+    "owner_ruling": (
+        "the owner ruled on 2026-09-14 that all three input defects be fixed "
+        "and ONE rebuild run, having been told and having accepted that three "
+        "causes in one rebuild cannot be separated afterwards"
+    ),
+    "declared_before_the_rebuild": True,
+}
+
+# Registered into the ONE table that enumerates a prefix's rungs. Written here
+# rather than inline above because the cause string could not exist until rung
+# 1's output had been measured; the table above carries a pointer so a reader
+# scanning it does not conclude the prefix has two rungs.
+RUNG_CAUSES_BY_PREFIX[PHASE331_RUNG_PREFIX][PHASE331_RUNG3] = PHASE331_RUNG3_CAUSE
+
+
 def _rung_causes(prefix: str = "") -> dict[int, str]:
     """The cause table *prefix* names.
 
@@ -1296,6 +1457,8 @@ def _expected_signature(
         # follow-up rung has its OWN signature; rung 1's is byte-untouched by it,
         # which is the difference between a follow-up rung and a widened
         # declaration (Ruling N2).
+        if rung == PHASE331_RUNG3:
+            return dict(PHASE331_RUNG3_EXPECTED_SIGNATURE)
         if rung == PHASE331_FOLLOWUP_RUNG:
             return dict(PHASE331_FOLLOWUP_EXPECTED_SIGNATURE)
         return dict(PHASE331_EXPECTED_SIGNATURE)
@@ -1656,6 +1819,8 @@ def _attribute_one_matrix(
 ) -> bool:
     """Apply *rung*'s predicted signature to one matrix. Returns whether it blocks."""
     if rung_prefix == PHASE331_RUNG_PREFIX:
+        if rung == PHASE331_RUNG3:
+            return _attribute_phase331_rung3(detail, diff, verdict, fail)
         if rung == PHASE331_FOLLOWUP_RUNG:
             return _attribute_phase331_followup(detail, diff, verdict, fail)
         return _attribute_phase331(detail, diff, verdict, fail)
@@ -2115,6 +2280,186 @@ def _attribute_phase331_followup(detail: dict, diff: dict, verdict: dict, fail) 
             "diagnosis; it is not an open bucket, and an undeclared column is "
             "refused here exactly as it was at rung 1. `ok` must be True "
             "unconditionally (Ruling N2)"
+        )
+
+    return blocking
+
+
+def _phase331_rung3_structure(detail: dict, diff: dict, fail) -> bool:
+    """The STRUCTURAL half of rung 3's prediction: the SHAPE does not move at all.
+
+    NOT SHARED WITH ``_phase331_structure``, and the difference is the point.
+    Rungs 1 and 2 predicted a column ARRIVING -- the coverage flag -- so their
+    structural claim is width +1. Rung 3 corrects what three existing column
+    families CONTAIN, so its claim is that nothing is added, nothing is removed
+    and the width does not move. Sharing one helper would have meant one of the
+    two rungs judging against the other's prediction.
+
+    Returns:
+        Whether this matrix BLOCKS the phase on structure alone.
+    """
+    blocking = False
+    width_before = detail["width_before"]
+    width_after = detail["width_after"]
+    rows_before = detail.get("rows_before")
+    rows_after = detail.get("rows_after")
+
+    for column in diff["added"]:
+        blocking = True
+        fail(
+            f"column '{column}' was ADDED at the Phase-33.1 rung 3, which adds "
+            "NO column. This rung corrects what three existing families "
+            "CONTAIN -- discarded rainfall, a z-scored coverage flag and an "
+            "unbuilt 2025 -- and none of those three arrivals is a new column"
+        )
+    for column in diff["removed"]:
+        blocking = True
+        fail(
+            f"column '{column}' was REMOVED at the Phase-33.1 rung 3; none of "
+            "its three causes removes a column"
+        )
+
+    if width_after != width_before:
+        fail(
+            f"width moved {width_before} -> {width_after} at the Phase-33.1 "
+            "rung 3, which predicts an UNCHANGED width"
+        )
+    if rows_before != rows_after:
+        fail(
+            f"rows moved {rows_before} -> {rows_after} at the Phase-33.1 rung 3. "
+            "The rung re-derives the SAME games from the SAME silver row "
+            "population -- only the values three families carry change -- so a "
+            "row-count move means the rebuild did something this rung did not "
+            "declare"
+        )
+
+    if (
+        not diff["changed"]
+        and not diff["added"]
+        and not diff["removed"]
+        and not diff["renames"]
+        and not diff["dtype_preserved"]
+    ):
+        fail(
+            "the Phase-33.1 rung 3 moved no column at all. Twenty weather "
+            "columns were NULL for 4,847 outdoor games and the coverage flag "
+            "read 0.0 on all 6,499 rows; recovering them MUST move something, "
+            "and an empty diff means the rebuild did not do what it claimed"
+        )
+
+    return blocking
+
+
+def _attribute_phase331_rung3(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Rung 3: three input corrections, three declared families, `ok` or STOP.
+
+    THE ORDER, and why the team-strength family is checked FIRST:
+
+    1. ``PHASE331_RUNG3_TEAM_STRENGTH_2025_COLUMNS``, by EXACT NAME plus a
+       SEASON RESTRICTION of 2025. Checked first because all twelve match the
+       ``_off_rolling_`` / ``_def_rolling_`` marker and therefore belong to the
+       PROHIBITED bye-window family. Checking the prohibition first would refuse
+       the very columns this rung exists to declare -- the same ordering, and
+       the same reason, as the follow-up rung's two enumerated families.
+    2. ``PHASE331_FOLLOWUP_WEATHER_WIDENING``, the SOURCE-DERIVED mapping from
+       an un-normalized copy to the registry column it copies, re-checked
+       against the live registry rather than trusted.
+    3. The PROHIBITED families, for everything not named above. Unchanged in
+       force: an Elo, bye-window or ``ats_edge`` column that is not one of the
+       twelve is still UNATTRIBUTED and still BLOCKS.
+    4. ``features.weather.WEATHER_FEATURE_COLUMNS``, any season. The
+       precipitation correction replaces a value that was discarded in every
+       season, so a season restriction here would be a prediction this rung has
+       no basis for.
+    5. Everything else is UNATTRIBUTED and fails.
+
+    THERE IS NO ROW-SCOPED STALENESS PREDICATE AT THIS RUNG. Rung 1 carried one
+    because it restored 207 absent rows; this rung restores none -- the silver
+    row population is identical on both sides -- so offering that escape would
+    hand a moved column a cause that cannot be true here.
+
+    Returns:
+        Whether this matrix BLOCKS the phase.
+    """
+    verdict["changed_by_family"] = {
+        "weather": [],
+        "weather_widening": [],
+        "team_strength_2025": [],
+    }
+    blocking = _phase331_rung3_structure(detail, diff, fail)
+
+    weather = {_canonical(name) for name in phase331_weather_family()}
+    team_strength = {
+        _canonical(name) for name in PHASE331_RUNG3_TEAM_STRENGTH_2025_COLUMNS
+    }
+    widening = {
+        _canonical(name): _canonical(source)
+        for name, source in PHASE331_FOLLOWUP_WEATHER_WIDENING.items()
+    }
+
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+
+        if column in team_strength:
+            if not _phase331_season_restricted(
+                column,
+                seasons,
+                PHASE331_RUNG3_TEAM_STRENGTH_SEASONS,
+                "team_strength_2025",
+                verdict,
+                fail,
+                "Season 2025 was the ONLY season the per-game pool omitted, and "
+                "a read-only probe of the real adjustment stage under both "
+                "pools measured ZERO moved rows in 2018-2024 (7,476 per-game "
+                "and 8,064 rolling rows compared, max delta 0.0) BEFORE this "
+                "declaration was written. A move in another season is a "
+                "DIFFERENT cause wearing a declared name.",
+            ):
+                blocking = True
+            continue
+
+        if column in widening:
+            source = widening[column]
+            if source in weather:
+                verdict["attributed"].append(column)
+                verdict["changed_by_family"]["weather_widening"].append(column)
+                continue
+            blocking = True
+            verdict["unattributed"].append(column)
+            fail(
+                f"column '{column}' is declared in the weather-widening family "
+                f"as an un-normalized copy of '{source}', but '{source}' is NOT "
+                "in features.weather.WEATHER_FEATURE_COLUMNS. The family is "
+                "SOURCE-DERIVED: each entry is attributable only because the "
+                "column it copies is a registered weather column"
+            )
+            continue
+
+        prohibited = _phase331_prohibited_family(column)
+        if prohibited is not None:
+            blocking = True
+            verdict["unattributed"].append(column)
+            fail(
+                f"column '{column}' moved at the Phase-33.1 rung 3 but belongs "
+                f"to the PROHIBITED '{prohibited}' family and is NOT one of the "
+                "twelve names this rung declares. " + _PHASE331_MISLABELLING_PROHIBITION
+            )
+            continue
+
+        if column in weather:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["weather"].append(column)
+            continue
+
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at the Phase-33.1 rung 3 in season(s) "
+            f"{', '.join(seasons) or '(none attributed)'} and belongs to NONE "
+            "of its three declared families. This rung restores no absent row, "
+            "so there is no row-scoped staleness cause to fall back on -- "
+            "unlike rung 1, where 207 rows genuinely arrived. `ok` must be True "
+            "unconditionally (Ruling N2): the remedy is to understand the "
+            "column, never to widen this declaration after the diff is seen"
         )
 
     return blocking

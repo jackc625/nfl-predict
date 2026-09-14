@@ -8097,3 +8097,228 @@ PHASE331_RUNG_MEASURED: dict[str, object] = {
 GOLD_WIDTHS_AFTER_WEATHER_RUNG: tuple[int, int, int] = (195, 196, 195)
 
 WEATHER_COVERAGE_GOLD_COLUMN: str = "weather_coverage"
+
+
+# -------------------------------------------------------------------------
+# THE PHASE-33.1 RUNG 3 DECLARATION -- THREE INPUT CORRECTIONS, ONE REBUILD.
+#
+# APPENDED by Plan 33.1-07 Task 4 on 2026-09-14, and COMMITTED BEFORE the
+# first digest snapshot of this rung was taken. Nothing above this line was
+# edited: rungs 1 and 2 keep their own declarations, their own verdicts and
+# their own residuals, which is the difference between a NEW rung and a
+# widened one (Ruling N2).
+#
+# WHY THERE IS A THIRD RUNG. Task 4's job was to MEASURE what rung 1
+# produced. The measurement found three defects in the INPUTS rung 1 -- and
+# every rung before it -- had been consuming. All three DISCARD REAL DATA
+# THAT IS SITTING ON DISK:
+#
+#   1. RAIN THAT FELL WAS DISCARDED FOR EVERY OUTDOOR GAME.
+#      features/weather.calculate_precipitation_features refused whenever
+#      precip_prob was absent. precip_prob is a FORECAST probability and the
+#      corpus is ERA5 REANALYSIS, which reports what happened rather than
+#      what was expected -- COVERAGE.md records the opt-out and
+#      scripts/ingest_weather writes precip_prob: None for exactly that
+#      reason. MEASURED in gold before the fix: raw_precip_mm non-null on
+#      6,499 rows, precip_mm non-null on 1,652 -- the indoor games alone.
+#      Twenty columns were NULL for all 4,847 outdoor games: the twelve
+#      precipitation columns, and the seven composites plus is_dry that read
+#      precip_impact_score. It also contradicted Plan 33.1-04's Ruling J,
+#      which says those columns are MEASURED for a covered outdoor game.
+#
+#   2. THE COVERAGE FLAG WAS INERT. Silver weather_features carried
+#      weather_coverage = 1.0 on all 6,499 rows; gold recorded 0.0 on all
+#      6,499 -- the value _absent_observation_features writes to mean NO
+#      OBSERVATION. The flag was not mis-written: normalize_combined_features
+#      z-scored it, and the expanding std of a constant column is zero, so
+#      every row collapsed onto the neutral 0.0. R5 requires a NaN null
+#      observation ALONGSIDE a MEANINGFUL coverage column, and a column
+#      asserting the opposite of the truth is not meaningful.
+#
+#   3. SEASON 2025'S TEAM STRENGTH WAS FAKE. features/team_form.py resolved
+#      its per-game pool as range(2018, 2025), which stops at 2024. MEASURED
+#      in gold: the twelve *_rolling_opp_adj_* columns carry 285 distinct
+#      values across the 285 rows of 2023 and of 2024, and TWO across the 285
+#      rows of 2025. 2025 is the season feeding the live 2026 predictions.
+#
+# THE OWNER'S RULING, 2026-09-14: fix all three, then ONE rebuild. The
+# tradeoff they were given and ACCEPTED is recorded here rather than softened
+# -- three causes in one rebuild cannot be separated afterwards. That
+# separability mattered while the frozen pre-correction gate baseline was the
+# thing being protected; the STANDING OWNER RULING of the same date voids
+# that baseline ("you cannot non-regress against a lie"), so what one rebuild
+# costs is separability between three corrections that all point the same
+# way, and what it buys is ending the phase with inputs that are correct.
+#
+# THIS RUNG'S BASELINE IS NOT STALE, unlike rung 1's. p331_rung2.json is a
+# fingerprint of gold as rung 1 left it -- freshly built, freshly attributed,
+# and already the subject of eight controlled rebuilds by the Group-1
+# diagnosis. Rung 1's baseline was five and a half hours old and carried the
+# unexplained 2024 carry-forward the follow-up rung had to declare.
+#
+# WHY p331_rung2.json EXISTS AT ALL when rung 2 rebuilt nothing: gold at rung
+# 2 IS gold at rung 1, so the document is a fresh MEASUREMENT of current gold
+# rather than a copy, taken before this rung rebuilds anything.
+# require_rung_ladder(dir, 3, "p331_") then finds rungs 0, 1 and 2 present.
+# -------------------------------------------------------------------------
+
+PHASE331_RUNG3_DECLARATION: dict[str, object] = {
+    "declared_on": "2026-09-14",
+    "declared_by": "Plan 33.1-07 Task 4",
+    "committed_before_rebuild": True,
+    "rung": 3,
+    "rung_prefix": "p331_",
+    "baseline_document": "p331_rung2.json",
+    "baseline_is_a_fresh_measurement_not_a_copy": True,
+    "cause": (
+        "COMPOUND (three INPUT corrections, never 'the precipitation rung'): "
+        "(1) precipitation derived from ERA5's measured precip_mm instead of "
+        "being discarded for want of a forecast probability the archive never "
+        "reports; (2) the weather_coverage flag preserved at its recorded "
+        "level instead of z-scored to 0.0, the value that means NO "
+        "OBSERVATION, on all 6,499 rows; and (3) season 2025's twelve "
+        "opponent-adjusted team-strength columns built from real play-by-play "
+        "instead of imputed, because the per-game season pool was the "
+        "hardcoded range(2018, 2025) and stopped at 2024"
+    ),
+    # THE THREE FAMILIES AND THE MECHANISM EACH IS EXPRESSED AS. Ruling N2
+    # forbids a CAUSE STORY -- a family that cannot be evaluated against a
+    # diff -- and a machine check in the attribution tests asserts that every
+    # value below is one of the three permitted mechanisms.
+    "declared_families": ("weather", "weather_widening", "team_strength_2025"),
+    "family_mechanisms": {
+        "weather": "source-derived constant",
+        "weather_widening": "source-derived constant",
+        "team_strength_2025": "enumerated names with a season restriction",
+    },
+    # THE STRUCTURAL PREDICTION, and it is the OPPOSITE of rungs 1 and 2 in
+    # the one way that matters. Those predicted a column ARRIVING. This rung
+    # corrects what three existing families CONTAIN, so the shape must not
+    # move at all -- and an ADDED column, including the coverage flag itself,
+    # is undeclared here.
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged at 6,499",
+    "width": "unchanged at 195 / 196 / 195",
+    # WHY THE TEAM-STRENGTH FAMILY IS RESTRICTED TO 2025, MEASURED RATHER
+    # THAN ASSUMED. Adding 2025 to the per-game pool could in principle have
+    # moved every season: features/opponent_adj.py computes league_avg_def as
+    # a WHOLE-FRAME mean over the fetched rows, and the wider pool does move
+    # that scalar (-0.003941 -> -0.002092). A READ-ONLY probe ran the REAL
+    # adjustment stage under both pools BEFORE this declaration was written:
+    #
+    #     per-game rows compared  7,476   moved 0   max delta 0.0
+    #     rolling  rows compared  8,064   moved 0   max delta 0.0
+    #
+    # ZERO rows moved outside 2025. The REASON is itself a finding, recorded
+    # below rather than buried: the opponent adjustment is INERT.
+    "team_strength_2025_probe": {
+        "probe_was_read_only": True,
+        "ran_before_the_declaration": True,
+        "league_avg_def_2018_2024": -0.003940736770744526,
+        "league_avg_def_2018_2025": -0.002092015581006465,
+        "per_game_rows_compared": 7476,
+        "per_game_rows_moved_outside_2025": 0,
+        "rolling_rows_compared": 8064,
+        "rolling_rows_moved_outside_2025": 0,
+        "max_absolute_delta_outside_2025": 0.0,
+    },
+    # A PRE-EXISTING DEFECT, FOUND BY THE PROBE, DELIBERATELY NOT FIXED HERE.
+    #
+    # opp_adj_<metric> equals the RAW metric for all 8,564 per-game rows: the
+    # has_enough gate in _adjust_per_game_epa never fires, so the league
+    # average is never added and the "opponent-adjusted" columns are rolling
+    # averages of UNADJUSTED EPA. It predates this plan and has nothing to do
+    # with the three corrections above. Fixing it would move every season
+    # 2018-2024 and blow straight past this declaration, which is exactly the
+    # scope boundary that keeps a rung attributable. Recorded so the finding
+    # is not lost, and carried into the SUMMARY's deferred items.
+    "pre_existing_finding_opponent_adjustment_is_inert": {
+        "measured_on": "2026-09-14",
+        "rows_where_opp_adj_equals_raw": 8564,
+        "rows_compared": 8564,
+        "mechanism": (
+            "features/opponent_adj._adjust_per_game_epa gates the adjustment "
+            "on has_enough = game_count >= min_opponent_games, and the count "
+            "arrives NaN from the opponent merge, so NaN >= 4 is False for "
+            "every row and the raw value is kept"
+        ),
+        "in_scope_for_this_plan": False,
+        "why_not": (
+            "it predates this plan, it is unrelated to the three input "
+            "corrections, and fixing it would move seasons 2018-2024 -- "
+            "outside this rung's declared change set"
+        ),
+    },
+    # Ruling N2, restated rather than inherited.
+    "ok_required_unconditionally": True,
+    "remedy_for_an_out_of_family_move": (
+        "STOP and report. A legitimate out-of-family move is a NEW declared "
+        "family in a follow-up rung, never a footnote on this one, and never "
+        "an edit to this declaration after the diff has been seen"
+    ),
+    # WHAT THIS RUNG STILL DOES NOT DO. Unchanged from rung 1: Phase 33's
+    # Wave 15 owns the re-fit, and nothing here touches a model.
+    "no_model_refit": True,
+    "no_gate_run": True,
+}
+
+# -------------------------------------------------------------------------
+# THE DECLARED BLAST RADIUS OF RUNG 3.
+#
+# NARROWER THAN RUNG 1'S BY ONE PATH, and the difference is deliberate rather
+# than an omission. Rung 1 rebuilt silver contextual_features because the
+# stadium_id routing correction changed it. NONE of rung 3's three
+# corrections touches the contextual builder, so re-running it would add an
+# undeclared cause to the diff for no gain -- and contextual_features.parquet
+# moving here would be a FINDING, not a formality.
+#
+# nfl_predictions.duckdb IS in the set, for the same reason it was in rung
+# 1's: build_weather.py and build_features.py both write through
+# data.storage.save_dataframe, whose save_to_db defaults True, so both halves
+# move.
+#
+# A FILE OUTSIDE THIS SET IS A FINDING TO REPORT, NEVER A REASON TO WIDEN THE
+# SET.
+# -------------------------------------------------------------------------
+
+PHASE331_RUNG3_EXPECTED_CHANGED_FILES: tuple[str, ...] = (
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "gold/features_wp.parquet",
+    "nfl_predictions.duckdb",
+    "silver/weather_features.parquet",
+)
+
+# The TWO commands this rung runs, in order, and the one it deliberately does
+# NOT. Ruling N3's discipline: ONE exact command per rebuilt artifact, quoted
+# from PIPELINE.md, with --all-seasons rather than --season because
+# --all-seasons REPLACES the tables while a scoped build MERGES latest-wins.
+PHASE331_RUNG3_RUNBOOK: tuple[dict[str, str], ...] = (
+    {
+        "artifact": "data/silver/weather_features.parquet",
+        "command": "uv run python scripts/build_weather.py --all-seasons",
+        "why": (
+            "the precipitation correction lives in the FULL weather builder, "
+            "which writes this table; gold reads it rather than re-deriving "
+            "from silver weather"
+        ),
+    },
+    {
+        "artifact": "data/gold/features_{wp,ats,ou}.parquet",
+        "command": "uv run python scripts/build_features.py --all-seasons",
+        "why": (
+            "the coverage-flag normalization exemption and the per-game "
+            "season pool both live in the gold build"
+        ),
+    },
+)
+
+PHASE331_RUNG3_DELIBERATELY_NOT_RUN: dict[str, str] = {
+    "uv run python scripts/build_contextual.py --all-seasons": (
+        "none of the three input corrections touches the contextual builder. "
+        "Re-running it would add an undeclared cause to the diff for no gain, "
+        "and silver/contextual_features.parquet is deliberately ABSENT from "
+        "PHASE331_RUNG3_EXPECTED_CHANGED_FILES so a move there is a FINDING"
+    )
+}
