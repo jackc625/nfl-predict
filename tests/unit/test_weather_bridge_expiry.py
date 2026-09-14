@@ -157,17 +157,79 @@ def _read_artifact_metadata(
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
+def _artifact_declares_a_post_rung_generation(metadata: Mapping[str, Any]) -> bool:
+    """Whether *metadata* carries a generation marker naming corrected-weather gold.
+
+    "At or after this phase's rung" cannot be written as an inequality: a gold generation
+    key is a CONTENT DIGEST, and content digests do not order. The testable form is "the
+    marker names a generation that is not the uncaptured pre-rung sentinel" -- which is the
+    only pre-rung generation this repository can name at all, because nobody captured a real
+    key before the rebuild overwrote the bytes.
+    """
+    marker = metadata.get(WEATHER_GENERATION_MARKER_KEY)
+    if not isinstance(marker, str) or not marker.strip():
+        return False
+    return marker != phase33_state.GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED
+
+
 def flip_condition_is_met(
     manifest: Mapping[str, Any], artifacts_root: Path | str
 ) -> bool:
     """Whether the 2026 bridge's flip condition is satisfied by *manifest*.
 
-    FIRST DRAFT -- POINTER MOVEMENT ONLY. Replaced in this task's GREEN commit; kept here
-    only long enough for the anti-assertion below to fail against it, so the false positive
-    Ruling V rejects is PROVEN live rather than described.
+    THE CONDITION IS ARTIFACT SEMANTICS, WITH A MOVED POINTER AS THE TRIGGER ONLY. Each step
+    of the argument corrects the one before it, and a reader who sees only the conclusion
+    will simplify it straight back to the version that is wrong.
+
+    "WAVE 15 RAN" IS WRONG. Wave 15 may promote nothing -- two refusals is the gate working,
+    as Phase 30 already demonstrated -- and if it promotes nothing then every deployed model
+    is still weather-blind and holding the 2026 gold weather family at its default is still
+    the CORRECT train/serve agreement.
+
+    "A POINTER MOVED" IS ALSO WRONG, AND IN THE DANGEROUS DIRECTION.
+    ``models/prediction_pipeline.py:705-716`` reads ONLY the artifact's selected
+    ``feature_list`` (``games_data[wp_features]``), so a promoted artifact with zero weather
+    features serves EXACTLY as a weather-blind model does. That is the live case, not a
+    hypothetical: ``wp_20260824_113325`` and ``ats_20260605_220128`` each select zero
+    defaulted weather columns today. Under a pointer predicate, a Wave-15 promotion of a
+    still-weatherless WP would flip the condition and this tripwire would demand the bridge
+    be REMOVED while its reason still held -- a false positive that removes a guard.
+
+    SO THE PREDICATE IS SEMANTICS, IN TWO STAGES:
+
+      1. THE TRIGGER. A pointer differs from ``DEPLOYED_POINTERS_AT_PHASE_331_CLOSE``. If
+         none has, return False without reading any artifact -- there is nothing to
+         evaluate.
+      2. THE PREDICATE, on the artifact that moved. True if EITHER its selected feature list
+         intersects ``defaulted_weather_columns()``, OR its metadata carries the
+         ``trained_on_real_weather_generation`` marker. Clause 1 is
+         necessary-and-sufficient for HARM; clause 2 exists because it is not sufficient for
+         INTENT -- a model deliberately re-fit on corrected weather that still selected none
+         is a model whose training distribution changed, and the marker is how Wave 15 says
+         so explicitly.
+
+    Args:
+        manifest: A manifest MAPPING, never a path. The live ``artifacts/latest.json`` is
+            read-only here and the tests build synthetic mappings.
+        artifacts_root: Directory holding the artifact directories to read.
+
+    Returns:
+        True once a deployed artifact actually consumes, or declares that it was trained on,
+        the corrected weather record.
     """
-    del artifacts_root
-    return bool(moved_pointers(manifest))
+    moved = moved_pointers(manifest)
+    if not moved:
+        return False
+    defaulted = defaulted_weather_columns()
+    for _target, artifact_id in moved:
+        selected = _read_artifact_feature_list(artifacts_root, artifact_id)
+        if selected & defaulted:
+            return True
+        if _artifact_declares_a_post_rung_generation(
+            _read_artifact_metadata(artifacts_root, artifact_id)
+        ):
+            return True
+    return False
 
 
 def _write_synthetic_artifact(
@@ -242,22 +304,75 @@ class TestTheSwitchIsBounded:
         """Green today. Red once a deployed model has actually seen weather vary."""
         manifest = _live_manifest()
         met = flip_condition_is_met(manifest, LIVE_ARTIFACTS_ROOT)
-        assert not met, _bounding_failure_message(manifest)
+        assert not met, _bounding_failure_message(manifest, LIVE_ARTIFACTS_ROOT)
 
     def test_the_bounding_failure_message_names_the_switch(self) -> None:
         """The failure a later reader will actually see names the switch and what to do."""
-        message = _bounding_failure_message(_live_manifest())
+        message = _bounding_failure_message(_live_manifest(), LIVE_ARTIFACTS_ROOT)
         assert SWITCH_SYMBOL in message
         assert SWITCH_MODULE in message
         assert "must be REMOVED" in message
 
+    def test_the_bounding_assertion_FIRES_against_a_simulated_post_flip_state(
+        self, tmp_path: Path
+    ) -> None:
+        """THE PLANTED CONTROL. Driven against a post-flip state, this assertion FAILS.
 
-def _bounding_failure_message(manifest: Mapping[str, Any]) -> str:
+        Without it the bounding test is a green assertion that has only ever seen the state
+        it passes on -- indistinguishable from one that is not wired up. The control runs the
+        SAME assertion expression against a SYNTHETIC manifest and artifact directory, never
+        the real ones, and asserts both that it raises and that the message a later reader
+        will actually be shown names the switch, its module, its flip-condition string, the
+        pointer that moved and which clause fired.
+        """
+        _write_synthetic_artifact(
+            tmp_path,
+            "ou_synthetic_post_flip",
+            features=("snapshot_total", "raw_temp_f", "wind_mph"),
+            metadata={
+                WEATHER_GENERATION_MARKER_KEY: (
+                    phase33_state.GOLD_GENERATION_AFTER_WEATHER_RUNG
+                )
+            },
+        )
+        manifest = _manifest_with_one_pointer_moved("ou", "ou_synthetic_post_flip")
+
+        raised: AssertionError | None = None
+        try:
+            met = flip_condition_is_met(manifest, tmp_path)
+            assert not met, _bounding_failure_message(manifest, tmp_path)
+        except AssertionError as error:
+            raised = error
+
+        assert raised is not None, (
+            "the bounding assertion did NOT fire against a simulated post-flip state. A "
+            "tripwire that cannot be made to fail proves nothing about the state it "
+            "passes on."
+        )
+        message = str(raised)
+        assert SWITCH_SYMBOL in message
+        assert SWITCH_MODULE in message
+        assert getattr(_weather_module(), FLIP_CONDITION_SYMBOL) in message
+        assert "ou -> ou_synthetic_post_flip" in message
+        assert "raw_temp_f" in message
+        assert WEATHER_GENERATION_MARKER_KEY in message
+        assert "must be REMOVED" in message
+        assert "not re-dated" in message
+
+    def test_the_live_tree_is_untouched_by_the_planted_control(self) -> None:
+        """The control wrote only into ``tmp_path``; the live manifest still reads as before."""
+        manifest = _live_manifest()
+        assert flip_condition_is_met(manifest, LIVE_ARTIFACTS_ROOT) is False
+
+
+def _bounding_failure_message(
+    manifest: Mapping[str, Any], artifacts_root: Path | str
+) -> str:
     """The message the bounding assertion prints once the flip condition is met."""
     moved = moved_pointers(manifest)
     clauses = []
     for target, artifact_id in moved:
-        selected = _read_artifact_feature_list(LIVE_ARTIFACTS_ROOT, artifact_id)
+        selected = _read_artifact_feature_list(artifacts_root, artifact_id)
         intersecting = sorted(selected & defaulted_weather_columns())
         metadata = _read_artifact_metadata(LIVE_ARTIFACTS_ROOT, artifact_id)
         marker = metadata.get(WEATHER_GENERATION_MARKER_KEY)
