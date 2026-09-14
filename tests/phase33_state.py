@@ -5626,3 +5626,150 @@ WEATHER_CROSSCHECK_MEASURED: dict[str, object] = {
         "measured_by": "Plan 33.1-06 Task 3",
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# QUICK TASK 260913-w8x -- the measured after-state of two test-suite fixes.
+#
+# MEASURED 2026-09-14 on commit bc8bbec, in ONE process:
+#
+#     uv run python -m pytest tests -q
+#
+# The two fixes, both landed before this measurement was taken:
+#
+# QT-W8X-01 -- data/storage.DuckDBConnection.connect opens the database
+# READ-ONLY unless a caller passes write=True. It previously connected with no
+# read_only flag (read-WRITE) and held that handle as a module global for the
+# whole of any process that touched load_dataframe, so a purely reading pytest
+# session locked data/nfl_predictions.duckdb against every other opener,
+# including a plain byte read of the file.
+#
+# QT-W8X-02 -- tests/conftest.production_store_write_guard moved from FUNCTION
+# scope to MODULE scope. Attribution degrades from "which test wrote it" to
+# "which test FILE wrote it"; the owner accepted that trade explicitly. The
+# exemption is still a union of DECLARED PATHS, the session-end full content
+# sweep is untouched, and the Phase 33 Wave 6 shape -- an unmarked test
+# overwriting all three production gold matrices -- still fails the session,
+# naming all three files and naming the module that wrote them.
+#
+# THE BASELINE THIS IS COMPARED AGAINST IS OLDER THAN THE TREE, AND THAT IS THE
+# FIRST FINDING. The 994.40 s / 4852-passed line in the URGENT-fix-test-suite
+# todo was measured on commit 5cfe621 on 2026-09-12. Phase 33.1 waves 5-6 and
+# Plan 33-09 landed between then and this task, adding 247 collected tests.
+# Every number below is reconciled against that intervening delta rather than
+# against the stale line alone.
+# ---------------------------------------------------------------------------
+
+W8X_MEASURED_ON: str = "2026-09-14"
+W8X_MEASURED_AT_COMMIT: str = "bc8bbec"
+W8X_COMMAND: str = "uv run python -m pytest tests -q"
+
+# The whole-suite line VERBATIM.
+W8X_POST_TASK_FAILURE_SET: str = (
+    "5 failed, 5118 passed, 12 skipped, 9 xfailed, 2913 warnings in 1381.52s"
+)
+
+# 5 + 5118 + 12 + 9. Independently confirmed by a --collect-only run reporting
+# "5144 tests collected", so the summary line and the collection agree.
+W8X_POST_TASK_COLLECTED: int = 5144
+
+W8X_POST_TASK_TOTAL_SECONDS: float = 1381.52
+
+# The failure set was compared MEMBER BY MEMBER against
+# DELIBERATE_TRIPWIRE_NODE_IDS: both set differences are empty. Exactly the five
+# deliberate tripwires, no sixth failure and no error.
+W8X_FAILURE_SET_IS_EXACTLY_THE_TRIPWIRES: bool = True
+
+# THE PASSED-COUNT ARITHMETIC, closed to the unit.
+#
+#   4852 (baseline, commit 5cfe621) + 246 (intervening) + 20 (this task) = 5118
+#     11 (baseline skipped)         +   1 (intervening)                  =   12
+#      5 failed and 9 xfailed are UNCHANGED.
+#   4877 (baseline collected)       + 247 (intervening) + 20 (this task) = 5144
+#
+# The intervening +247 collected is +206 test FUNCTIONS across 16 modules (13 of
+# them new) plus +41 from parametrised expansion in those same modules, measured
+# by an AST census of every tests test module at 5cfe621, at 94769f2 and at
+# HEAD. One of the new modules skips on this checkout, which is the +1 skip, so
+# the intervening contribution to PASSED is 246 rather than 247.
+W8X_NET_NEW_TESTS: int = 20
+W8X_NET_NEW_TESTS_BY_MODULE: tuple[tuple[str, int], ...] = (
+    # A new module: the read-only connection-mode proof.
+    ("tests/unit/test_storage_connection_mode.py", 11),
+    # TestTheGuardIsScopedToTheModule.
+    ("tests/unit/test_write_guard_marker_scope.py", 5),
+    # The generated mini-suite re-authored from one child module into five: the
+    # module went from 8 collected tests to 12.
+    ("tests/integration/test_data_boundary_guard_arming.py", 4),
+)
+W8X_INTERVENING_TESTS_NOT_FROM_THIS_TASK: int = 247
+W8X_INTERVENING_SKIP: str = (
+    "tests/integration/test_weather_corpus_coverage.py::"
+    "TestTheThreeCoverageStatesStayApart::"
+    "test_an_absent_observation_is_outdoor_covered_false_and_entirely_null"
+)
+
+# THE WALL CLOCK, AND WHY IT DOES NOT ANSWER THE QUESTION IT LOOKS LIKE IT
+# ANSWERS. 1381.52 s against the 994.40 s baseline is +387.12 s, and the ~179 s
+# saving this task predicted is NOT visible in it. The comparison is CONFOUNDED:
+# the tree gained 247 tests between the two runs, among them the Phase-33.1
+# weather rebuild and crosscheck integration modules, which are not cheap. This
+# run therefore NEITHER SUPPORTS NOR REFUTES the ~179 s hypothesis. It is
+# recorded as measured and is not spun.
+W8X_WALL_CLOCK_DELTA_SECONDS: float = 387.12
+W8X_WALL_CLOCK_COMPARISON_IS_CONFOUNDED: bool = True
+
+# WHAT DOES ANSWER IT: an A/B run at THIS commit that changes ONE variable.
+# 300 identical trivial tests across 10 modules, over the LIVE production roots,
+# two repetitions per arm. The function-scope arm re-declares the pre-change
+# guard verbatim over the same helpers; nothing in the repository was modified
+# to take the measurement.
+#
+#   module scope   2.26 s, 2.24 s
+#   function scope 12.20 s, 12.09 s
+#
+# 9.895 s over 290 additional sweeps = 34.1 ms per sweep, which independently
+# reproduces the 36.7 ms the quick task RESEARCH measured a different way.
+W8X_GUARD_AB_MODULE_SCOPE_SECONDS: tuple[float, ...] = (2.26, 2.24)
+W8X_GUARD_AB_FUNCTION_SCOPE_SECONDS: tuple[float, ...] = (12.20, 12.09)
+W8X_GUARD_PER_SWEEP_MILLISECONDS: float = 34.1
+
+# MEASURED per-sweep cost times a COUNTED number of sweeps avoided (5144
+# collected tests minus roughly 265 test modules). A projection, labelled as
+# one, and never a measured whole-suite delta.
+W8X_GUARD_PROJECTED_SUITE_SAVING_SECONDS: float = 166.5
+
+# THE ATTRIBUTION TRADE, stated plainly.
+W8X_ATTRIBUTION_TRADE: str = (
+    "Per-TEST attribution was exchanged for the per-sweep cost above. The guard "
+    "now names the FILE that wrote a production store, not the test inside it, "
+    "and within a module that declares a path a DIFFERENT unmarked test writing "
+    "that SAME path is permitted. The recovery is stated in the guard's own "
+    "violation message: re-run that one file on its own and the window narrows "
+    "to the tests in it. THE GUARANTEE IS UNCHANGED -- the exemption is still a "
+    "union of declared PATHS and never a licence for the file, the session-end "
+    "full content sweep is untouched and still content-based, and the Phase 33 "
+    "Wave 6 shape still fails the session naming all three gold matrices."
+)
+
+# ---------------------------------------------------------------------------
+# What the guard OBSERVED about its own instrument after QT-W8X-01.
+#
+#     NFL_GUARD_OBSERVATIONS=1 uv run python -m pytest tests/integration -q
+#     5 failed, 850 passed, 9 skipped, 9 xfailed in 1063.48s
+#
+# THERE IS NO BEFORE-FIGURE FOR THIS TIER ON RECORD. Plan 33-01 Task 3(d)
+# measured a different selection, so this is a first observation and NOT a
+# comparison; nothing here should be read as a delta.
+#
+# STAT_SIGNATURE_OBSERVATIONS=0 means the locked-file read path did not fire
+# ONCE across an armed integration tier. That is the QT-W8X-01 claim seen from
+# the guard's side: with the production database opened read-only, its bytes
+# stay readable, so no verdict in this tier had to reach for the weaker stat
+# signature or refuse.
+# ---------------------------------------------------------------------------
+
+W8X_INTEGRATION_TIER_LINE: str = "5 failed, 850 passed, 9 skipped, 9 xfailed"
+W8X_INTEGRATION_TIER_SECONDS: float = 1063.48
+W8X_STAT_SIGNATURE_OBSERVATIONS: int = 0
+W8X_WAL_SIBLING_OBSERVATIONS: int = 0
