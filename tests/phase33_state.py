@@ -6206,3 +6206,46 @@ feature-engineering knob, which is a new predictive signal, which the SPEC exclu
 phase-wide. The assumption is recorded here so that the readout states it, rather
 than having a later reader discover it in the arithmetic.
 """
+
+
+# ---------------------------------------------------------------------------
+# THE POSTSEASON HALF OF R12 IS FIXTURE-BACKED, AND SAYING SO IS THE POINT.
+#
+# APPENDED by Plan 33-11 Task 2 on 2026-09-14. Nothing above this line was edited.
+#
+# T-33-54 names the risk this constant exists to close: a held-out constructed
+# fixture presented as live evidence is how an unproven property comes to look
+# proven. The label lives in three places on purpose -- the plan's must_haves mark
+# the truth a BACKSTOP, tests/unit/test_postseason_partition.py's module docstring
+# states it and asserts its own statement, and it is recorded here so a reader of
+# the state manifest alone still learns it.
+POSTSEASON_PARTITION_EVIDENCE_NOTE: str = """\
+EVIDENCE CLASS: BACKSTOP (held-out constructed fixture). NOT live evidence.
+
+WHY. All 272 rows of the single live 2026 capture
+(schedules_raw_bronze_2026_W01_20260911T110252.parquet) are game_type REG in weeks 1
+to 18. Weeks 19-22 are unseeded at capture time -- the bracket does not exist until
+the regular season ends -- so there is no 2026 postseason row to measure. The proof
+therefore runs on tests/fixtures/season_2026.WEEK_19_POSTSEASON_FIXTURE, the two
+constructed wild-card rows Plan 33-02 built for the whole phase.
+
+WHAT IS NEVERTHELESS REAL IN IT. The fixture is built in the FEED's column shape and
+carries NO season_type of its own -- the feed has only game_type. The test runs it
+through scripts.ingest_games.GameDataIngester.transform_schedule_data and compares
+the stored value against _derive_season_type applied to the same rows, so the
+Postseason value is PRODUCED by the real derivation rather than typed into a fixture.
+A hand-typed literal would have made the module agree with itself forever, including
+on the day the derivation changed -- which is the failure that let every postseason
+game in this project be labelled a regular-season one in the first place.
+
+WHAT WOULD UPGRADE IT TO LIVE EVIDENCE. One thing: a future capture carrying 2026
+weeks 19-22. When one exists, load_captured_schedule returns rows whose game_type is
+WC, DIV, CON or SB, the assertions re-point at them, and the constructed frame is
+demoted to a shape check. Nothing else has to change, and no code has to move.
+
+NOTE FOR PLAN 33-12. Silver's season_type is not yet real for historical seasons:
+data/silver/games.parquet currently labels all 285 rows of 2025 -- including its 13
+postseason games -- Regular. Plan 33-12 is the plan that makes the column true. This
+plan asserts the DERIVATION and the PARTITION, both of which are correct today; it
+deliberately asserts nothing about the historical stored values, which are not.
+"""
