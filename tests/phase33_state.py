@@ -7649,3 +7649,270 @@ PHASE331_RUNG_EXPECTED_CHANGED_FILES: tuple[str, ...] = (
     "silver/contextual_features.parquet",
     "silver/weather_features.parquet",
 )
+
+
+# -------------------------------------------------------------------------
+# THE PHASE-33.1 FOLLOW-UP RUNG, DECLARED AFTER THE RESIDUAL WAS DIAGNOSED.
+#
+# APPENDED by Plan 33.1-07 Task 3 on 2026-09-14, AFTER the rebuild and AFTER
+# the root-cause investigation the owner ordered at the rung's fail-closed
+# checkpoint. Nothing above this line was edited.
+#
+# WHY THIS SLOT EXISTS AT ALL. Rung 1 returned ok=False with 45 unattributed
+# columns, identical in all three matrices. Ruling N2 names exactly two
+# legitimate responses -- STOP, or declare a NEW family in a FOLLOW-UP RUNG --
+# and forbids the third, a footnote on rung 1. The owner ordered the residual
+# diagnosed before anything was declared, so this is the second response taken
+# on EVIDENCE rather than as a guess.
+#
+# WHAT IS DIFFERENT FROM A WIDENED DECLARATION, and it is the whole point:
+# PHASE331_RUNG_DECLARATION above is BYTE-UNCHANGED, PHASE331_EXPECTED_SIGNATURE
+# is byte-unchanged, and rung 1 STILL RETURNS ok=False on this diff. A test
+# asserts that last property directly. A follow-up rung bounds the unknown and
+# writes it down; a widened declaration would have hidden it inside a
+# plausible-looking bucket and reported green.
+#
+# THE HONESTY THIS SLOT IS REQUIRED TO CARRY. Group 1's trigger is NOT
+# ESTABLISHED and its magnitude is PERMANENTLY UNMEASURABLE. Both are recorded
+# below as machine-readable values rather than as prose a later reader can skim
+# past, and what the diagnosis ELIMINATED is recorded beside what it could not
+# find -- because the value of naming a family here is that the unknown is
+# bounded and legible, not that it looks explained.
+# -------------------------------------------------------------------------
+
+PHASE331_FOLLOWUP_RUNG_DECLARATION: dict[str, object] = {
+    "declared_on": "2026-09-14",
+    "declared_by": "Plan 33.1-07 Task 3, after the ordered root-cause diagnosis",
+    "rung": 2,
+    "rung_prefix": "p331_",
+    "ruled_by_owner": (
+        "close the attribution with a FOLLOW-UP RUNG declaring all three "
+        "residual groups"
+    ),
+    "ruling_basis": (
+        "Ruling N2's second legitimate move, taken on evidence rather than as a guess"
+    ),
+    # It rebuilt NOTHING. The same transition, re-judged under a second
+    # declaration -- which is why no p331_rung2.json fingerprint document
+    # exists. Writing one would assert a rebuild that did not happen.
+    "judges_transition": (
+        "p331_rung0.json -> p331_rung1.json (the SAME one rung 1 judged)"
+    ),
+    "no_new_rebuild": True,
+    "fingerprint_document_written": None,
+    "attribution_document_written": (
+        "outputs/fingerprints/p331_rung2_attribution.json"
+    ),
+    "diagnosis_document": (
+        ".planning/phases/33.1-real-historical-weather-and-training-window-"
+        "correction/33.1-07-GROUP1-DIAGNOSIS.md"
+    ),
+    "debug_session_file": ".planning/debug/p331-group1-2024-drift.md",
+    # Rung 1's declaration is untouched, and its verdict on this diff is
+    # unchanged. Asserted by a test, not claimed here.
+    "rung_1_declaration_byte_unchanged": True,
+    "rung_1_still_returns_ok_false_on_this_diff": True,
+    "ok_required_unconditionally": True,
+    "residual_columns_declared": 45,
+    "identical_across_all_three_matrices": True,
+    "declared_families": (
+        "carried_at_rung_1",
+        "stale_baseline_2024",
+        "prohibited_family_2025",
+        "weather_widening",
+    ),
+    "family_mechanisms": {
+        "carried_at_rung_1": "source-derived constant",
+        "stale_baseline_2024": "enumerated names with a season restriction",
+        "prohibited_family_2025": "enumerated names with a season restriction",
+        "weather_widening": "source-derived constant",
+    },
+    "family_sources": {
+        "carried_at_rung_1": (
+            "rung 1's own three families, unchanged -- "
+            "features.weather.WEATHER_FEATURE_COLUMNS, "
+            "scripts.fingerprint_gold.PHASE331_VENUE_FAMILY_COLUMNS, and the "
+            "row-scoped 2025 staleness predicate"
+        ),
+        "stale_baseline_2024": (
+            "scripts.fingerprint_gold.PHASE331_FOLLOWUP_STALE_BASELINE_COLUMNS, "
+            "restricted to PHASE331_FOLLOWUP_STALE_BASELINE_SEASONS"
+        ),
+        "prohibited_family_2025": (
+            "scripts.fingerprint_gold.PHASE331_FOLLOWUP_PROHIBITED_2025_COLUMNS, "
+            "restricted to PHASE331_FOLLOWUP_PROHIBITED_2025_SEASONS"
+        ),
+        "weather_widening": (
+            "scripts.fingerprint_gold.PHASE331_FOLLOWUP_WEATHER_WIDENING -- a "
+            "mapping from each un-normalized copy to the "
+            "WEATHER_FEATURE_COLUMNS member it copies, checked against the live "
+            "registry at attribution time"
+        ),
+    },
+    # ------------------------------------------------------------------
+    # GROUP 1 -- THE STALE-BASELINE CARRY-FORWARD (40 columns)
+    # ------------------------------------------------------------------
+    "group_1": {
+        "label": "stale-baseline carry-forward from Phase 33's waves 9-12",
+        "columns": 40,
+        "seasons_moved": "24 columns in 2024 only, 16 in 2024 and 2025",
+        "what_they_are": (
+            "12 opponent-adjusted rolling (all that exist), 26 silver-sourced "
+            "team-form rolling, and both Elo momentum columns. Every "
+            "non-degenerate team-form column moved; the 9 that did not are the "
+            "degenerate defensive-side duplicates of offence-only metrics."
+        ),
+        # THE TWO FACTS THE RULING REQUIRES, RECORDED WITHOUT SOFTENING.
+        "trigger": "NOT ESTABLISHED",
+        "magnitude": "PERMANENTLY UNMEASURABLE",
+        "trigger_detail": (
+            "Localised to 2026-09-12 08:36 -> 2026-09-14 02:55, the window in "
+            "which Phase 33's waves 9-12 ran. Inside that window every "
+            "observable input and all builder code are byte-identical, and BOTH "
+            "the pre-rung code and the current code produce the CURRENT 2024 "
+            "values when run against today's data. The pre-rung values are not "
+            "reproducible from any state that still exists."
+        ),
+        "magnitude_detail": (
+            "p331_rung0.json holds per-season sha256 digests, never values, and "
+            "no copy of the pre-rung gold survives -- an exhaustive search of "
+            "the repository and the machine's temp tree found none. A digest can "
+            "say 'different'; it can never say 'how different'. The sharp "
+            "2020-2023-clean / 2024-moved boundary is an ARGUMENT against float "
+            "noise (numpy and pandas unchanged since 2026-03-18), not a "
+            "measurement, and it is not recorded as one."
+        ),
+        "predates_this_rung": (
+            "The Plan 33-12 sandbox gold, built 02:55:48 on 2026-09-14 from the "
+            "OLD 6,292-row weather silver -- five and a half hours BEFORE the "
+            "rung -- already carries 40/40 of the new 2024 values and 0/40 of "
+            "rung 0's. The move is not caused by the real weather, not by the "
+            "stadium_id routing correction and not by the 2025 coverage "
+            "restore. The rung inherited it."
+        ),
+        # What the investigation ELIMINATED, each by a controlled rebuild rather
+        # than by argument. Recorded because a bounded unknown is only bounded
+        # if the boundary is written down too.
+        "eliminated_by_measurement": (
+            "build nondeterminism -- a fresh full rebuild reproduced gold "
+            "byte-for-byte in every column of every season except "
+            "feature_timestamp",
+            "the wall-clock as_of default -- pinning as_of_datetime 4.5 months "
+            "earlier was byte-identical",
+            "population-dependent normalisation -- read in code and refuted by "
+            "measurement (40 of 181 normalised columns moved, and only in 2024)",
+            "the Wave-12 identity migration -- reverting kickoff_et, "
+            "venue_roof, season_type and neutral_site moves only the rest-days "
+            "family",
+            "the builder code -- the pre-rung tree at bc31982 run against "
+            "today's data gives 40/40 match to CURRENT gold",
+            "row order -- reversing season 2024's rows within each week moves "
+            "146 columns, not 40",
+            "the pinned upstream play-by-play -- all 76 "
+            "config/upstream_pin.json entries re-hash clean",
+            "the DuckDB/parquet two-copy divergence -- all three silver tables "
+            "are row-order-and-value identical in both copies",
+        ),
+        "not_eliminated": (
+            "that the 2026-09-12 build read something no longer on disk -- a "
+            "silver table in a since-overwritten state, a different "
+            "DATA_ROOT_PATH, or an environment that differed in a way nothing "
+            "recorded. Untestable after the fact, which is the argument for the "
+            "input-provenance manifest the diagnosis recommends."
+        ),
+        "why_2024_specifically": (
+            "team-form silver covers only 2020-2025, so 2002-2019 are a "
+            "structural 0.0 constant and CANNOT move; "
+            "features/team_form.py:714 hardcodes range(2018, 2025), making 2024 "
+            "the last opponent-adjusted season; and season 2025's normalisation "
+            "bootstraps on season 2024, which is the 24-only / 16-both split."
+        ),
+        "season_restriction": (2024, 2025),
+    },
+    # ------------------------------------------------------------------
+    # GROUP 2 -- THE PROHIBITION FIRING CORRECTLY (4 columns)
+    # ------------------------------------------------------------------
+    "group_2": {
+        "label": (
+            "the mislabelling prohibition firing correctly -- the guard "
+            "working, not a defect"
+        ),
+        "columns": 4,
+        "column_names": (
+            "elo_prob_home",
+            "home_def_rolling_red_zone_td_rate",
+            "home_elo",
+            "home_elo_uncertainty",
+        ),
+        "seasons_moved": "2025 only",
+        "why_rung_1_refused_them": (
+            "They satisfy rung 1's row-scoped staleness predicate exactly -- "
+            "2025 and no other season -- and would have been attributed to the "
+            "207-game coverage restore, except that they belong to PROHIBITED "
+            "families (elo, and the bye-window team-form rolling predicate) and "
+            "_attribute_phase331 checks the prohibition FIRST by design, so a "
+            "prohibited column can never be absorbed by a declared family."
+        ),
+        "verdict": (
+            "NOT a defect. Declaring these four does not open the prohibited "
+            "families: every prohibited column NOT named here is still refused "
+            "at the follow-up rung, and these four keep a season restriction of "
+            "exactly 2025."
+        ),
+        "season_restriction": (2025,),
+    },
+    # ------------------------------------------------------------------
+    # GROUP 3 -- A GENUINE WEATHER-FAMILY WIDENING (1 column)
+    # ------------------------------------------------------------------
+    "group_3": {
+        "label": "genuine weather-family widening",
+        "columns": 1,
+        "column_names": ("raw_weather_severity",),
+        "seasons_moved": "all 24 seasons, 2002-2025",
+        "why_rung_1_refused_it": (
+            "It is absent from features.weather.WEATHER_FEATURE_COLUMNS. "
+            "scripts/build_features.py:1819 mints it as a verbatim "
+            "un-normalized COPY of weather_severity_score after imputation and "
+            "before normalisation, so it never passes through the registry rung "
+            "1's family 1 is derived from."
+        ),
+        "verdict": (
+            "It is weather-derived, and moving in every season is exactly what "
+            "replacing a fabricated 65.0F constant with real ERA5 observations "
+            "does to a weather column. Declared as a SOURCE-DERIVED mapping to "
+            "the registered column it copies, so an entry whose source is not a "
+            "weather column is refused."
+        ),
+        "source_column": "weather_severity_score",
+    },
+    # The verdict this rung actually returned, measured.
+    "measured_verdict": {
+        "ok": True,
+        "blocking": False,
+        "failures": 0,
+        "attributed_per_matrix": 131,
+        "unattributed_per_matrix": 0,
+        "changed_by_family_per_matrix": {
+            "carried_at_rung_1": 86,
+            "stale_baseline_2024": 40,
+            "prohibited_family_2025": 4,
+            "weather_widening": 1,
+        },
+    },
+    # What this rung does NOT claim, stated because a clean verdict is the most
+    # likely thing to be over-read.
+    "what_this_rung_does_not_claim": (
+        "It does NOT claim the Group-1 trigger was found -- it was not, and the "
+        "declaration says so in machine-readable form.",
+        "It does NOT claim the current 2024 values are CORRECT. They are "
+        "reproducible from today's inputs by both the current and the pre-rung "
+        "code and the old ones are reproducible from nothing, which is an "
+        "argument for them and not a proof; neither set was audited against "
+        "ground truth.",
+        "It does NOT re-open, defend or re-freeze any gate baseline. The "
+        "standing owner ruling of 2026-09-14 voids the pre-correction artifacts "
+        "and every verdict resting on the corrupted inputs, so there is nothing "
+        "here to preserve and no non-regression comparison to protect.",
+        "It rebuilt NOTHING, re-fit NOTHING and left artifacts/ byte-unchanged.",
+    ),
+}

@@ -2580,6 +2580,334 @@ class TestPhase331WeatherRoutingRung:
         assert state.PHASE331_RUNG_DECLARATION["cause"] == f.PHASE331_RUNG_CAUSE
 
 
+# ---------------------------------------------------------------------------
+# THE PHASE-33.1 FOLLOW-UP RUNG -- the three residual groups, declared on
+# evidence (Plan 33.1-07, Ruling N2's second legitimate move)
+# ---------------------------------------------------------------------------
+#
+# TEST CLASS (this module's phase-wide rule): ``TestPhase331FollowupRung`` is a
+# plain UNIT test -- hand-built reports plus source-derived family checks, so it
+# passes on a fresh checkout with no ``data/``.
+#
+# WHY A FOLLOW-UP RUNG AND NOT A WIDER RUNG 1. Rung 1 returned ``ok=False`` with
+# 45 unattributed columns. Ruling N2 permits exactly two responses -- STOP, or
+# declare a NEW family in a FOLLOW-UP RUNG -- and forbids the third, a footnote on
+# rung 1. The residual was DIAGNOSED first (eight controlled rebuilds,
+# ``33.1-07-GROUP1-DIAGNOSIS.md``), and the tests below pin the property that
+# makes the follow-up honest rather than cosmetic: rung 1's declaration is
+# UNCHANGED and STILL REFUSES this diff.
+
+
+def _phase331_followup_changed() -> dict[str, list[str]]:
+    """A changed set carrying one member of each family the follow-up rung knows.
+
+    The first three are rung 1's, recorded by the follow-up as
+    ``carried_at_rung_1``; the last three are the residual groups this rung
+    declares, each with the seasons its declaration restricts it to.
+    """
+    return {
+        **_phase331_clean_changed(),
+        # Group 1 -- the stale-baseline carry-forward. 2024, reaching 2025 only
+        # through season 2025's normalisation bootstrap on season 2024.
+        "home_off_rolling_cpoe": ["2024", "2025"],
+        # Group 2 -- the mislabelling prohibition firing correctly: 2025 only.
+        "home_elo": ["2025"],
+        # Group 3 -- the weather-family widening. Every season, which is what
+        # replacing a fabricated constant with real observations does.
+        "raw_weather_severity": [str(season) for season in range(2002, 2026)],
+    }
+
+
+class TestPhase331FollowupRung:
+    """The residual is declared in a SECOND rung, and rung 1 still refuses it.
+
+    TEST CLASS: plain unit test. Hand-built ``compare_fingerprints``-shaped
+    reports, so the contract is provable without running a rebuild.
+    """
+
+    def test_the_followup_cause_names_all_three_residual_groups(self) -> None:
+        f = _p331_module()
+        cause = f.PHASE331_FOLLOWUP_RUNG_CAUSE.lower()
+        for phrase in ("stale-baseline", "prohibition", "widening"):
+            assert phrase in cause, (
+                f"the follow-up rung's declared cause does not name {phrase!r}: "
+                f"{f.PHASE331_FOLLOWUP_RUNG_CAUSE!r}. It carries THREE residual "
+                "groups and a label naming fewer of them hides one inside another."
+            )
+
+    def test_the_cause_records_the_trigger_as_not_established(self) -> None:
+        """The unknown must be written down, not smoothed over."""
+        f = _p331_module()
+        signature = f._expected_signature(
+            f.PHASE331_FOLLOWUP_RUNG, prefix=f.PHASE331_RUNG_PREFIX
+        )
+        assert signature["group1_trigger"] == "NOT ESTABLISHED"
+        assert signature["group1_magnitude"] == "PERMANENTLY UNMEASURABLE"
+        assert "NOT ESTABLISHED" in f.PHASE331_FOLLOWUP_RUNG_CAUSE
+        assert "PERMANENTLY" in f.PHASE331_FOLLOWUP_RUNG_CAUSE
+
+    def test_the_full_residual_attributes_cleanly_at_the_followup_rung(self) -> None:
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_report(changed=_phase331_followup_changed()),
+            f.PHASE331_FOLLOWUP_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is True, _all_failures(verdict)
+        for matrix in GOLD_MATRICES:
+            families = verdict["matrices"][matrix]["changed_by_family"]
+            assert verdict["matrices"][matrix]["unattributed"] == []
+            assert families["stale_baseline_2024"] == ["home_off_rolling_cpoe"]
+            assert families["prohibited_family_2025"] == ["home_elo"]
+            assert families["weather_widening"] == ["raw_weather_severity"]
+            assert sorted(families["carried_at_rung_1"]) == [
+                "home_qb_adjustment",
+                "temp_f",
+                "venue_cold_climate",
+            ]
+
+    def test_rung_1_STILL_REFUSES_the_same_diff(self) -> None:
+        """The load-bearing property: the follow-up did NOT widen rung 1.
+
+        A follow-up rung that silently made rung 1 pass would be the retroactive
+        edit Ruling N2 forbids, wearing a rung's clothes. Rung 1's verdict on this
+        diff is what it always was.
+        """
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_report(changed=_phase331_followup_changed()),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert tuple(f.PHASE331_EXPECTED_SIGNATURE["declared_families"]) == (
+            "weather",
+            "venue",
+            "staleness_2025",
+        )
+
+    def test_a_group_1_column_that_moved_in_2019_is_still_UNATTRIBUTED(self) -> None:
+        """The season restriction is what makes an enumerated family discriminate."""
+        f = _p331_module()
+        changed = _phase331_followup_changed()
+        changed["home_off_rolling_cpoe"] = ["2019", "2024"]
+        verdict = attribute_rung(
+            _phase331_report(changed=changed),
+            f.PHASE331_FOLLOWUP_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        failures = _all_failures(verdict)
+        assert "home_off_rolling_cpoe" in failures
+        assert "2019" in failures
+
+    def test_a_group_2_column_that_moved_outside_2025_is_still_UNATTRIBUTED(
+        self,
+    ) -> None:
+        f = _p331_module()
+        changed = _phase331_followup_changed()
+        changed["home_elo"] = ["2019", "2025"]
+        verdict = attribute_rung(
+            _phase331_report(changed=changed),
+            f.PHASE331_FOLLOWUP_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert "home_elo" in _all_failures(verdict)
+
+    def test_an_UNDECLARED_prohibited_column_is_still_refused(self) -> None:
+        """Declaring 44 names does not open the prohibited families."""
+        f = _p331_module()
+        changed = _phase331_followup_changed()
+        changed["elo_diff"] = ["2024"]
+        verdict = attribute_rung(
+            _phase331_report(changed=changed),
+            f.PHASE331_FOLLOWUP_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        failures = _all_failures(verdict)
+        assert "elo_diff" in failures
+        assert "PROHIBITED" in failures
+
+    def test_an_undeclared_out_of_family_column_is_still_refused(self) -> None:
+        f = _p331_module()
+        changed = _phase331_followup_changed()
+        changed["home_snap_continuity"] = ["2019"]
+        verdict = attribute_rung(
+            _phase331_report(changed=changed),
+            f.PHASE331_FOLLOWUP_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert "home_snap_continuity" in _all_failures(verdict)
+
+    def test_the_negative_control_rung_2_with_no_prefix_is_still_WR_06(self) -> None:
+        """The follow-up entry must not have captured Phase 30's integer 2."""
+        assert _expected_signature(2)["cause"] == RUNG_CAUSES[2] == "WR-06"
+
+    def test_the_three_declared_groups_are_disjoint_and_exactly_45_columns(
+        self,
+    ) -> None:
+        f = _p331_module()
+        group1 = set(f.PHASE331_FOLLOWUP_STALE_BASELINE_COLUMNS)
+        group2 = set(f.PHASE331_FOLLOWUP_PROHIBITED_2025_COLUMNS)
+        group3 = set(f.PHASE331_FOLLOWUP_WEATHER_WIDENING)
+
+        assert len(group1) == 40
+        assert len(group2) == 4
+        assert len(group3) == 1
+        assert group1 & group2 == set()
+        assert group1 & group3 == set()
+        assert group2 & group3 == set()
+        assert len(group1 | group2 | group3) == 45
+
+    def test_groups_1_and_2_are_EXACTLY_what_rung_1_refused_on_the_prohibition(
+        self,
+    ) -> None:
+        """Every enumerated name belongs to a prohibited family -- nothing else.
+
+        This is what bounds the follow-up: it declares the columns rung 1 refused
+        on the prohibited-family check and no others. A name that was NOT refused
+        there would be a column smuggled into a declaration built for a different
+        refusal.
+        """
+        f = _p331_module()
+        declared = (
+            *f.PHASE331_FOLLOWUP_STALE_BASELINE_COLUMNS,
+            *f.PHASE331_FOLLOWUP_PROHIBITED_2025_COLUMNS,
+        )
+        for column in declared:
+            assert f._phase331_prohibited_family(column) is not None, (
+                f"{column!r} is declared by the follow-up rung but is NOT in any "
+                "prohibited family, so rung 1 did not refuse it on the "
+                "prohibition. The follow-up declares that refusal's residual and "
+                "nothing else."
+            )
+
+    def test_the_widening_family_is_SOURCE_DERIVED_not_a_second_hand_written_list(
+        self,
+    ) -> None:
+        """Each widening entry names the registered weather column it copies.
+
+        And the widening column itself is NOT in that registry -- which is
+        precisely why rung 1's family 1 could never reach it.
+        """
+        f = _p331_module()
+        weather = set(f.phase331_weather_family())
+        for column, source in f.PHASE331_FOLLOWUP_WEATHER_WIDENING.items():
+            assert source in weather, (
+                f"{column!r} is declared as an un-normalized copy of {source!r}, "
+                f"but {source!r} is not in WEATHER_FEATURE_COLUMNS"
+            )
+            assert column not in weather, (
+                f"{column!r} IS in WEATHER_FEATURE_COLUMNS, so rung 1's family 1 "
+                "already reached it and the widening family is unnecessary"
+            )
+
+    def test_a_widening_entry_whose_source_is_not_a_weather_column_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The source check is live, not decorative."""
+        f = _p331_module()
+        monkeypatch.setattr(
+            f,
+            "PHASE331_FOLLOWUP_WEATHER_WIDENING",
+            {"raw_weather_severity": "home_rest_days"},
+        )
+        verdict = attribute_rung(
+            _phase331_report(changed=_phase331_followup_changed()),
+            f.PHASE331_FOLLOWUP_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert "home_rest_days" in _all_failures(verdict)
+
+    def test_the_followup_rung_declares_that_it_rebuilt_nothing(self) -> None:
+        f = _p331_module()
+        signature = f._expected_signature(
+            f.PHASE331_FOLLOWUP_RUNG, prefix=f.PHASE331_RUNG_PREFIX
+        )
+        assert signature["no_new_rebuild"] is True
+        assert signature["ok_required_unconditionally"] is True
+
+    def test_the_state_declaration_agrees_with_the_judge_it_describes(self) -> None:
+        """No second-list drift between the record and the predicate.
+
+        ``tests/unit/test_data_qa_gold_width.py``'s docstring already records what
+        a second hand-written list of a family costs. The state manifest records
+        COUNTS and the two small enumerations a reader needs in the document; both
+        are checked against the judge rather than trusted.
+        """
+        f = _p331_module()
+        declaration = _p331_state().PHASE331_FOLLOWUP_RUNG_DECLARATION
+
+        assert declaration["rung"] == f.PHASE331_FOLLOWUP_RUNG
+        assert declaration["rung_prefix"] == f.PHASE331_RUNG_PREFIX
+        assert tuple(declaration["declared_families"]) == tuple(
+            f.PHASE331_FOLLOWUP_EXPECTED_SIGNATURE["declared_families"]
+        )
+        assert declaration["group_1"]["columns"] == len(
+            f.PHASE331_FOLLOWUP_STALE_BASELINE_COLUMNS
+        )
+        assert tuple(declaration["group_1"]["season_restriction"]) == tuple(
+            f.PHASE331_FOLLOWUP_STALE_BASELINE_SEASONS
+        )
+        assert tuple(declaration["group_2"]["column_names"]) == tuple(
+            f.PHASE331_FOLLOWUP_PROHIBITED_2025_COLUMNS
+        )
+        assert tuple(declaration["group_2"]["season_restriction"]) == tuple(
+            f.PHASE331_FOLLOWUP_PROHIBITED_2025_SEASONS
+        )
+        assert tuple(declaration["group_3"]["column_names"]) == tuple(
+            f.PHASE331_FOLLOWUP_WEATHER_WIDENING
+        )
+        assert (
+            declaration["group_3"]["source_column"]
+            == f.PHASE331_FOLLOWUP_WEATHER_WIDENING["raw_weather_severity"]
+        )
+        assert declaration["group_1"]["trigger"] == "NOT ESTABLISHED"
+        assert declaration["group_1"]["magnitude"] == "PERMANENTLY UNMEASURABLE"
+        assert declaration["no_new_rebuild"] is True
+        assert declaration["fingerprint_document_written"] is None
+
+    def test_the_followup_ladder_demands_rung_0_AND_rung_1(self, tmp_path) -> None:
+        """A follow-up rung is still a rung: the chain is enforced, not assumed."""
+        f = _p331_module()
+        with pytest.raises(MissingPredecessorFingerprintError) as absent:
+            require_rung_ladder(
+                tmp_path, f.PHASE331_FOLLOWUP_RUNG, f.PHASE331_RUNG_PREFIX
+            )
+        assert "p331_rung0.json" in str(absent.value)
+
+        rung_document_path(tmp_path, 0, f.PHASE331_RUNG_PREFIX).write_text(
+            "{}", encoding="utf-8"
+        )
+        with pytest.raises(MissingPredecessorFingerprintError) as still:
+            require_rung_ladder(
+                tmp_path, f.PHASE331_FOLLOWUP_RUNG, f.PHASE331_RUNG_PREFIX
+            )
+        assert "p331_rung1.json" in str(still.value)
+
+        rung_document_path(tmp_path, 1, f.PHASE331_RUNG_PREFIX).write_text(
+            "{}", encoding="utf-8"
+        )
+        verified = require_rung_ladder(
+            tmp_path, f.PHASE331_FOLLOWUP_RUNG, f.PHASE331_RUNG_PREFIX
+        )
+        assert [path.name for path in verified] == [
+            "p331_rung0.json",
+            "p331_rung1.json",
+        ]
+
+
 class TestPhase331TheDeliberateTripwiresInTheEditedModulesAreUnchanged:
     """The two registered tripwires living in modules this plan edits still exist.
 

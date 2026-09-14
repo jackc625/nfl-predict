@@ -443,6 +443,50 @@ PHASE331_RUNG_CAUSE: str = (
     "independently of any weather or routing change"
 )
 
+# ---------------------------------------------------------------------------
+# THE FOLLOW-UP RUNG (Plan 33.1-07, declared 2026-09-14 AFTER the diagnosis).
+#
+# Ruling N2 names exactly two legitimate moves when a changed column falls
+# outside rung 1's declared families: STOP, or declare a NEW family in a FOLLOW-UP
+# RUNG. It explicitly forbids the third -- a footnote on rung 1 -- and it forbids
+# widening rung 1's declaration after the diff has been seen, because a signature
+# edited after the observation is a transcription wearing a prediction's clothes.
+#
+# Rung 1 returned ok=False with 45 unattributed columns, identical in all three
+# matrices. The owner ordered the residual DIAGNOSED before anything was declared;
+# the investigation ran eight controlled rebuilds and is recorded in full at
+# `.planning/phases/33.1-.../33.1-07-GROUP1-DIAGNOSIS.md`. This rung is the second
+# legitimate move, taken on that evidence rather than as a guess.
+#
+# IT JUDGES THE SAME TRANSITION. No rebuild happened between rung 1 and this rung
+# and none will: `p331_rung0.json -> p331_rung1.json` is re-judged under a SECOND
+# declaration that adds three families rung 1 did not carry. That is why there is
+# no `p331_rung2.json` fingerprint document -- writing one would assert a rebuild
+# that did not occur. `require_rung_ladder(dir, 2, "p331_")` demands rung 0 and
+# rung 1, which is exactly right: both exist, and the chain is intact.
+# ---------------------------------------------------------------------------
+
+PHASE331_FOLLOWUP_RUNG: int = 2
+
+PHASE331_FOLLOWUP_RUNG_CAUSE: str = (
+    "FOLLOW-UP to the Phase-33.1 compound rung, declaring the three residual "
+    "groups rung 1 refused (45 columns, identical in all three matrices). It "
+    "re-judges the SAME p331_rung0 -> p331_rung1 transition and rebuilds "
+    "nothing. (1) STALE-BASELINE CARRY-FORWARD -- 40 rolling team-form, "
+    "opponent-adjusted and Elo-momentum columns that moved in season 2024 (24 in "
+    "2024 only, 16 in 2024 and 2025 through the prior-season normalisation "
+    "channel). The move PREDATES this rung: the Plan 33-12 sandbox gold, built "
+    "five and a half hours earlier from the OLD silver, already carries 40/40 of "
+    "the new values and 0/40 of rung 0's. ITS TRIGGER IS NOT ESTABLISHED and its "
+    "MAGNITUDE IS PERMANENTLY UNMEASURABLE -- see PHASE331_FOLLOWUP_GROUP1_. "
+    "(2) THE MISLABELLING PROHIBITION FIRING CORRECTLY -- 4 columns that satisfy "
+    "the 2025 staleness predicate but belong to prohibited families, where the "
+    "prohibition takes precedence by design. That is the guard working, not a "
+    "defect. (3) A GENUINE WEATHER-FAMILY WIDENING -- raw_weather_severity, the "
+    "un-normalized copy of a WEATHER_FEATURE_COLUMNS member, absent from that "
+    "registry and therefore never reachable by rung 1's family 1"
+)
+
 RUNG_CAUSES_BY_PREFIX: dict[str, dict[int, str]] = {
     # Phase 30's ladder, and every unprefixed caller. Referenced, NOT copied: a
     # second spelling of the four entries is the second-list failure mode D30-02
@@ -459,7 +503,15 @@ RUNG_CAUSES_BY_PREFIX: dict[str, dict[int, str]] = {
     # as a reference to the same dict rather than a copy -- a second spelling of
     # the four entries is the second-list failure mode D30-02 exists to prevent.
     PHASE31_RUNG_PREFIX: RUNG_CAUSES,
-    PHASE331_RUNG_PREFIX: {PHASE331_RUNG: PHASE331_RUNG_CAUSE},
+    # TWO rungs under this one prefix, and they are NOT two rebuilds. Rung 1 is
+    # the compound gold rebuild; rung 2 is the follow-up DECLARATION over the same
+    # transition. Ruling N2's remedy for a legitimate out-of-family move is a new
+    # family in a follow-up rung, so the follow-up must be a real ladder entry
+    # with its own cause -- not a second key on rung 1's.
+    PHASE331_RUNG_PREFIX: {
+        PHASE331_RUNG: PHASE331_RUNG_CAUSE,
+        PHASE331_FOLLOWUP_RUNG: PHASE331_FOLLOWUP_RUNG_CAUSE,
+    },
 }
 
 # The season(s) the 207 previously-absent rows belong to. MEASURED before the
@@ -694,6 +746,196 @@ PHASE331_EXPECTED_SIGNATURE: dict[str, object] = {
     # legitimate, the correct act is a NEW declared family in a follow-up rung,
     # not a footnote on this one.
     "ok_required_unconditionally": True,
+}
+
+
+# ---------------------------------------------------------------------------
+# THE FOLLOW-UP RUNG'S THREE DECLARED FAMILIES.
+#
+# Each is EXACT NAMES plus a SEASON RESTRICTION, or a SOURCE-DERIVED mapping.
+# Ruling N2's discipline is unchanged and is not relaxed by the fact that this
+# declaration is written after the diff: the families below are enumerable, they
+# DISCRIMINATE (a member that moved in a season outside its declared restriction
+# is still UNATTRIBUTED and still blocks), and a column that is in no family is
+# refused exactly as it was at rung 1. What a follow-up rung buys is that the
+# unknown is BOUNDED AND WRITTEN DOWN rather than hidden inside a
+# plausible-looking bucket -- which is the whole reason "declare a new family"
+# is a legitimate move and "annotate past it" is not.
+# ---------------------------------------------------------------------------
+
+# GROUP 1 -- THE STALE-BASELINE CARRY-FORWARD. 40 columns, measured from
+# `p331_rung1_attribution.json` and identical in all three matrices.
+#
+# WHAT IS SETTLED, each by a controlled rebuild (33.1-07-GROUP1-DIAGNOSIS.md):
+#   * The build is DETERMINISTIC. A fresh full rebuild reproduced every column of
+#     every season byte-for-byte except `feature_timestamp`, and pinning
+#     `as_of_datetime` 4.5 months earlier was byte-identical too.
+#   * The move PREDATES this rung. The Plan 33-12 sandbox gold, built 02:55:48 on
+#     2026-09-14 from the OLD 6,292-row weather silver -- five and a half hours
+#     BEFORE the rung -- already carries 40/40 of the new 2024 values and 0/40 of
+#     rung 0's. So it is NOT caused by the real weather, NOT by the stadium_id
+#     routing correction and NOT by the 2025 coverage restore.
+#   * ELIMINATED by controlled rebuild, each by measurement rather than argument:
+#     wall-clock `as_of` default; population-dependent normalisation; the Wave-12
+#     identity migration (reverting it moves only the rest-days family); the
+#     builder code itself (the pre-rung tree at bc31982 run against today's data
+#     gives 40/40 match to current gold); row order (reversing 2024's rows moves
+#     146 columns, not 40); the pinned upstream play-by-play (all 76
+#     `config/upstream_pin.json` entries re-hash clean); and DuckDB/parquet
+#     divergence.
+#
+# WHAT IS NOT SETTLED, stated without softening:
+#   * THE TRIGGER IS NOT ESTABLISHED. It is localised to 2026-09-12 08:36 ->
+#     2026-09-14 02:55 (Phase 33's waves 9-12), but every observable input and all
+#     builder code are byte-identical across that window, and BOTH the old and the
+#     current code produce today's values from today's data. The pre-rung 2024
+#     values are not reproducible from any surviving state.
+#   * THE MAGNITUDE IS PERMANENTLY UNMEASURABLE. `p331_rung0.json` holds per-season
+#     digests, not values, and no copy of the pre-rung gold survives. A digest can
+#     say "different"; it can never say "how different". The sharp
+#     2020-2023-clean / 2024-moved boundary argues against float noise, but that is
+#     an argument, not a measurement, and it is not recorded as one.
+#
+# WHY 2024, measured: team-form silver covers only 2020-2025 so 2002-2019 are a
+# structural 0.0 constant and CANNOT move; `features/team_form.py:714` hardcodes
+# `range(2018, 2025)`, making 2024 the last opponent-adjusted season; and season
+# 2025's normalisation bootstraps on season 2024, which is the 24-only / 16-both
+# split. The declared seasons below are exactly those two and no others.
+PHASE331_FOLLOWUP_STALE_BASELINE_COLUMNS: tuple[str, ...] = (
+    "away_def_rolling_opp_adj_epa_per_play",
+    "away_def_rolling_opp_adj_pass_epa",
+    "away_def_rolling_opp_adj_rush_epa",
+    "away_def_rolling_pass_success_rate",
+    "away_def_rolling_red_zone_td_rate",
+    "away_def_rolling_rush_success_rate",
+    "away_def_rolling_success_rate",
+    "away_def_rolling_third_down_conversion_rate",
+    "away_elo_momentum",
+    "away_off_rolling_avg_drive_start_yardline",
+    "away_off_rolling_cpoe",
+    "away_off_rolling_neutral_pace",
+    "away_off_rolling_neutral_pass_rate",
+    "away_off_rolling_opp_adj_epa_per_play",
+    "away_off_rolling_opp_adj_pass_epa",
+    "away_off_rolling_opp_adj_rush_epa",
+    "away_off_rolling_pass_success_rate",
+    "away_off_rolling_red_zone_td_rate",
+    "away_off_rolling_rush_success_rate",
+    "away_off_rolling_success_rate",
+    "away_off_rolling_third_down_conversion_rate",
+    "home_def_rolling_opp_adj_epa_per_play",
+    "home_def_rolling_opp_adj_pass_epa",
+    "home_def_rolling_opp_adj_rush_epa",
+    "home_def_rolling_pass_success_rate",
+    "home_def_rolling_rush_success_rate",
+    "home_def_rolling_success_rate",
+    "home_def_rolling_third_down_conversion_rate",
+    "home_elo_momentum",
+    "home_off_rolling_avg_drive_start_yardline",
+    "home_off_rolling_cpoe",
+    "home_off_rolling_neutral_pass_rate",
+    "home_off_rolling_opp_adj_epa_per_play",
+    "home_off_rolling_opp_adj_pass_epa",
+    "home_off_rolling_opp_adj_rush_epa",
+    "home_off_rolling_pass_success_rate",
+    "home_off_rolling_red_zone_td_rate",
+    "home_off_rolling_rush_success_rate",
+    "home_off_rolling_success_rate",
+    "home_off_rolling_third_down_conversion_rate",
+)
+
+# The ONLY seasons a Group-1 column may move in. 2024 is where the carry-forward
+# sits; 2025 is reachable ONLY through season 2025's normalisation bootstrap on
+# season 2024, which Run E4 of the diagnosis demonstrated directly. A Group-1
+# column that moved in 2019 is NOT this cause and is UNATTRIBUTED -- the same
+# discrimination rung 1's row-scoped staleness predicate carries.
+PHASE331_FOLLOWUP_STALE_BASELINE_SEASONS: tuple[int, ...] = (2024, 2025)
+
+# GROUP 2 -- THE MISLABELLING PROHIBITION FIRING CORRECTLY, not a defect.
+#
+# These four satisfy rung 1's staleness predicate exactly (they moved in 2025 and
+# in no other season) and would have been attributed to the 2025 coverage restore
+# -- except that they belong to PROHIBITED families, and
+# `_attribute_phase331` checks the prohibition FIRST, by design, so a prohibited
+# column can never be absorbed by a declared family. Rung 1 refusing them is the
+# guard doing its job. Declaring them here does not weaken it: the prohibition
+# still fires for every prohibited column NOT named below, and these four keep a
+# season restriction of exactly 2025.
+PHASE331_FOLLOWUP_PROHIBITED_2025_COLUMNS: tuple[str, ...] = (
+    "elo_prob_home",
+    "home_def_rolling_red_zone_td_rate",
+    "home_elo",
+    "home_elo_uncertainty",
+)
+
+PHASE331_FOLLOWUP_PROHIBITED_2025_SEASONS: tuple[int, ...] = (2025,)
+
+# GROUP 3 -- A GENUINE WEATHER-FAMILY WIDENING, expressed as a SOURCE-DERIVED
+# MAPPING rather than a bare name.
+#
+# `raw_weather_severity` moved in ALL 24 seasons, which is exactly what replacing
+# a fabricated 65.0F constant with real ERA5 observations does to a weather
+# column. It was refused only because it is absent from
+# `features.weather.WEATHER_FEATURE_COLUMNS`: `scripts/build_features.py:1819`
+# mints it as a verbatim un-normalized COPY of `weather_severity_score` after
+# imputation and before normalisation, so it never passes through the registry
+# rung 1's family 1 is derived from.
+#
+# The value is the WEATHER_FEATURE_COLUMNS member each widening column copies, and
+# the predicate CHECKS it at attribution time against the live registry. That is
+# what makes this source-derived rather than a second hand-written list: an entry
+# whose source is not a weather column is refused, so the family cannot be
+# extended into a general-purpose bucket.
+PHASE331_FOLLOWUP_WEATHER_WIDENING: dict[str, str] = {
+    "raw_weather_severity": "weather_severity_score",
+}
+
+PHASE331_FOLLOWUP_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE331_FOLLOWUP_RUNG,
+    "prefix": PHASE331_RUNG_PREFIX,
+    "cause": PHASE331_FOLLOWUP_RUNG_CAUSE,
+    # The SAME transition. This rung rebuilds nothing, so its structural
+    # prediction is rung 1's structural prediction, unchanged.
+    "judges": (
+        "the SAME p331_rung0 -> p331_rung1 transition, re-judged under a second "
+        "declaration. No rebuild happened between the two rungs and none will, "
+        "which is why there is no p331_rung2.json fingerprint document"
+    ),
+    "no_new_rebuild": True,
+    "columns_added": (PHASE331_ADDED_COLUMN,),
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "increased by exactly one, the named coverage flag",
+    "columns_changed": (
+        "rung 1's three families, PLUS three declared residual families: "
+        "(4) PHASE331_FOLLOWUP_STALE_BASELINE_COLUMNS -- 40 exact names "
+        f"restricted to seasons {PHASE331_FOLLOWUP_STALE_BASELINE_SEASONS}, whose "
+        "TRIGGER IS NOT ESTABLISHED and whose MAGNITUDE IS PERMANENTLY "
+        "UNMEASURABLE; (5) PHASE331_FOLLOWUP_PROHIBITED_2025_COLUMNS -- 4 exact "
+        f"names restricted to seasons {PHASE331_FOLLOWUP_PROHIBITED_2025_SEASONS}, "
+        "the mislabelling prohibition firing correctly; and (6) "
+        "PHASE331_FOLLOWUP_WEATHER_WIDENING -- a source-derived mapping from each "
+        "un-normalized copy to the WEATHER_FEATURE_COLUMNS member it copies, "
+        "checked against the live registry at attribution time"
+    ),
+    "declared_families": (
+        "carried_at_rung_1",
+        "stale_baseline_2024",
+        "prohibited_family_2025",
+        "weather_widening",
+    ),
+    "family_mechanisms": {
+        "carried_at_rung_1": "source-derived constant",
+        "stale_baseline_2024": "enumerated names with a season restriction",
+        "prohibited_family_2025": "enumerated names with a season restriction",
+        "weather_widening": "source-derived constant",
+    },
+    # UNCHANGED from rung 1, and deliberately restated rather than inherited: a
+    # follow-up rung that quietly relaxed the unconditional check would be the
+    # footnote Ruling N2 forbids, wearing a rung's clothes.
+    "ok_required_unconditionally": True,
+    "group1_trigger": "NOT ESTABLISHED",
+    "group1_magnitude": "PERMANENTLY UNMEASURABLE",
 }
 
 
@@ -1050,7 +1292,12 @@ def _expected_signature(
 
     if prefix == PHASE331_RUNG_PREFIX:
         # The PRE-DECLARED change set, returned as a copy so a caller cannot edit
-        # the prediction it is about to be judged against (T-33.1-43).
+        # the prediction it is about to be judged against (T-33.1-43). The
+        # follow-up rung has its OWN signature; rung 1's is byte-untouched by it,
+        # which is the difference between a follow-up rung and a widened
+        # declaration (Ruling N2).
+        if rung == PHASE331_FOLLOWUP_RUNG:
+            return dict(PHASE331_FOLLOWUP_EXPECTED_SIGNATURE)
         return dict(PHASE331_EXPECTED_SIGNATURE)
 
     signature = {
@@ -1409,6 +1656,8 @@ def _attribute_one_matrix(
 ) -> bool:
     """Apply *rung*'s predicted signature to one matrix. Returns whether it blocks."""
     if rung_prefix == PHASE331_RUNG_PREFIX:
+        if rung == PHASE331_FOLLOWUP_RUNG:
+            return _attribute_phase331_followup(detail, diff, verdict, fail)
         return _attribute_phase331(detail, diff, verdict, fail)
 
     cause = _rung_causes(rung_prefix)[rung]
@@ -1508,44 +1757,30 @@ _PHASE331_MISLABELLING_PROHIBITION = (
 )
 
 
-def _attribute_phase331(detail: dict, diff: dict, verdict: dict, fail) -> bool:
-    """The Phase-33.1 rung: one added column, three declared families, `ok` or STOP.
+def _phase331_structure(detail: dict, diff: dict, fail) -> bool:
+    """The STRUCTURAL half of the Phase-33.1 prediction, shared by both rungs.
 
-    STRUCTURE FIRST. Exactly one column is added and it is the NAMED coverage flag;
-    nothing is removed; width moves by exactly +1; rows are UNCHANGED, because this
-    rung re-derives the same 6,499 games rather than adding any. The added column is
-    asserted by NAME in BOTH directions -- an unexpected addition fails, and so does
-    the flag's ABSENCE -- so a build that added something unrelated while omitting
-    the flag cannot satisfy the integer and pass.
+    EXTRACTED rather than copied when the follow-up rung was declared. The two
+    rungs judge the SAME p331_rung0 -> p331_rung1 transition, so they must make
+    the SAME structural prediction -- exactly one added column and it is the NAMED
+    coverage flag, nothing removed, width +1, rows unchanged, and a non-empty
+    diff. Two copies of that prediction could drift apart, and a follow-up rung
+    whose structural claim had quietly diverged from the rung it follows would be
+    judging a different rebuild than the one that ran.
 
-    THEN THE THREE FAMILIES, in order:
-
-    1. A column in the PROHIBITED families (Elo, the team-form rolling family the
-       bye-window rule governs, ``ats_edge``) is UNATTRIBUTED and BLOCKS, with the
-       SPEC prohibition quoted. This is checked FIRST and the families are proven
-       disjoint from the declared ones by a test, so a prohibited column cannot be
-       absorbed by a declared family.
-    2. ``features.weather.WEATHER_FEATURE_COLUMNS`` -- family 1.
-    3. ``phase331_venue_family()`` -- family 2, the contextual builder's own emitted
-       set. Ruling H puts ``venue_cold_climate`` here, not in the weather family:
-       it is derived from the stadium's geography and from no weather observation.
-    4. Everything else falls to the ROW-SCOPED staleness predicate: attributable
-       ONLY IF every season it moved in is in ``PHASE331_STALENESS_SEASONS``. The
-       season lists come from ``compare_fingerprints``, which derives them from the
-       same per-season digests ``_per_season_digests`` computes -- so "byte-identical
-       in 2002-2024" is a measurement here, not a description. A column that moved in
-       2019 cannot have moved because 2025 gained rows, and it is UNATTRIBUTED.
+    The added column is asserted by NAME in BOTH directions -- an unexpected
+    addition fails, and so does the flag's ABSENCE -- so a build that added
+    something unrelated while omitting the flag cannot satisfy the integer and
+    pass.
 
     Returns:
-        Whether this matrix BLOCKS the phase.
+        Whether this matrix BLOCKS the phase on structure alone.
     """
     blocking = False
     width_before = detail["width_before"]
     width_after = detail["width_after"]
     rows_before = detail.get("rows_before")
     rows_after = detail.get("rows_after")
-
-    verdict["changed_by_family"] = {"weather": [], "venue": [], "staleness_2025": []}
 
     expected_added = [_canonical(PHASE331_ADDED_COLUMN)]
     for column in diff["added"]:
@@ -1599,6 +1834,42 @@ def _attribute_phase331(detail: dict, diff: dict, verdict: dict, fail) -> bool:
             "did not do what it claimed"
         )
 
+    return blocking
+
+
+def _attribute_phase331(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """The Phase-33.1 rung: one added column, three declared families, `ok` or STOP.
+
+    STRUCTURE FIRST. Exactly one column is added and it is the NAMED coverage flag;
+    nothing is removed; width moves by exactly +1; rows are UNCHANGED, because this
+    rung re-derives the same 6,499 games rather than adding any. The added column is
+    asserted by NAME in BOTH directions -- an unexpected addition fails, and so does
+    the flag's ABSENCE -- so a build that added something unrelated while omitting
+    the flag cannot satisfy the integer and pass.
+
+    THEN THE THREE FAMILIES, in order:
+
+    1. A column in the PROHIBITED families (Elo, the team-form rolling family the
+       bye-window rule governs, ``ats_edge``) is UNATTRIBUTED and BLOCKS, with the
+       SPEC prohibition quoted. This is checked FIRST and the families are proven
+       disjoint from the declared ones by a test, so a prohibited column cannot be
+       absorbed by a declared family.
+    2. ``features.weather.WEATHER_FEATURE_COLUMNS`` -- family 1.
+    3. ``phase331_venue_family()`` -- family 2, the contextual builder's own emitted
+       set. Ruling H puts ``venue_cold_climate`` here, not in the weather family:
+       it is derived from the stadium's geography and from no weather observation.
+    4. Everything else falls to the ROW-SCOPED staleness predicate: attributable
+       ONLY IF every season it moved in is in ``PHASE331_STALENESS_SEASONS``. The
+       season lists come from ``compare_fingerprints``, which derives them from the
+       same per-season digests ``_per_season_digests`` computes -- so "byte-identical
+       in 2002-2024" is a measurement here, not a description. A column that moved in
+       2019 cannot have moved because 2025 gained rows, and it is UNATTRIBUTED.
+
+    Returns:
+        Whether this matrix BLOCKS the phase.
+    """
+    verdict["changed_by_family"] = {"weather": [], "venue": [], "staleness_2025": []}
+    blocking = _phase331_structure(detail, diff, fail)
     weather = {_canonical(name) for name in phase331_weather_family()}
     venue = {_canonical(name) for name in phase331_venue_family()}
     staleness = {str(season) for season in PHASE331_STALENESS_SEASONS}
@@ -1650,6 +1921,200 @@ def _attribute_phase331(detail: dict, diff: dict, verdict: dict, fail) -> bool:
             + " Do NOT annotate past it: `ok` must be True unconditionally "
             "(Ruling N2), and a legitimate out-of-family move is a NEW declared "
             "family in a follow-up rung, never a footnote on this one"
+        )
+
+    return blocking
+
+
+def _phase331_season_restricted(
+    column: str,
+    seasons: list[str],
+    allowed: tuple[int, ...],
+    family: str,
+    verdict: dict,
+    fail,
+    note: str,
+) -> bool:
+    """Attribute *column* to *family* only if every season it moved in is *allowed*.
+
+    THE SEASON RESTRICTION IS WHAT MAKES AN ENUMERATED FAMILY DISCRIMINATE. A
+    bare name list would accept its members in ANY season, which is precisely the
+    non-discriminating shape Ruling N2 refuses -- ``_attribute_rung2``'s own
+    comment records that its blanket predicate "cannot FAIL on a moved column"
+    while 18 columns had been silently destroyed. Under this helper a Group-1
+    column that moved in 2019 is UNATTRIBUTED and blocks, exactly as an
+    undeclared column would be, because 2019 is not a season the declared cause
+    can reach.
+
+    Returns:
+        Whether the column was ATTRIBUTED.
+    """
+    allowed_labels = {str(season) for season in allowed}
+    outside = [season for season in seasons if season not in allowed_labels]
+    if seasons and not outside:
+        verdict["attributed"].append(column)
+        verdict["changed_by_family"][family].append(column)
+        return True
+
+    verdict["unattributed"].append(column)
+    fail(
+        f"column '{column}' is DECLARED in the Phase-33.1 follow-up rung's "
+        f"'{family}' family, but that family is restricted to season(s) "
+        f"{', '.join(sorted(allowed_labels))} and this column moved in "
+        f"{', '.join(seasons) or '(no season at all)'}. "
+        + note
+        + " A declared family with no season restriction would accept its members "
+        "in ANY season, which is the non-discriminating shape Ruling N2 refuses. "
+        "The remedy is to understand the column, never to widen the restriction "
+        "after the diff is seen."
+    )
+    return False
+
+
+def _attribute_phase331_followup(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """The FOLLOW-UP rung: rung 1's families PLUS the three declared residual groups.
+
+    WHAT THIS RUNG IS. Rung 1 returned ``ok=False`` with 45 unattributed columns.
+    Ruling N2 permits exactly two responses -- STOP, or declare a NEW family in a
+    FOLLOW-UP RUNG -- and forbids the third, a footnote on rung 1. The owner
+    ordered the residual diagnosed first; the investigation ran eight controlled
+    rebuilds, and this rung is the second response taken on that evidence. It
+    re-judges the SAME transition and rebuilds nothing.
+
+    WHAT IT DOES NOT DO. It does not widen rung 1's declaration: rung 1's
+    signature, its three families and its verdict are byte-untouched, and
+    ``attribute_rung(report, PHASE331_RUNG, rung_prefix=...)`` still returns
+    ``ok=False`` on this diff. That is the whole difference between a follow-up
+    rung and a retroactive edit, and a test asserts it.
+
+    THE ORDER, and why the prohibition check moves:
+
+    1. The three FOLLOW-UP families, by EXACT NAME plus a SEASON RESTRICTION.
+       They are checked FIRST because two of them are populated by columns rung 1
+       refused ON the prohibition -- checking the prohibition first would refuse
+       the very columns this rung exists to declare.
+    2. The PROHIBITED families, for everything NOT named above. Unchanged in
+       force: an Elo, bye-window or ``ats_edge`` column that is not one of the 44
+       enumerated names is still UNATTRIBUTED and still BLOCKS, with the SPEC
+       prohibition quoted. Declaring 44 names does not open the family.
+    3. Rung 1's own three families -- weather, venue, and the row-scoped 2025
+       staleness predicate -- which attribute the 86 columns rung 1 already
+       attributed, recorded here as ``carried_at_rung_1`` rather than re-derived
+       into a new bucket.
+    4. Everything else is UNATTRIBUTED and fails, exactly as at rung 1.
+
+    Returns:
+        Whether this matrix BLOCKS the phase.
+    """
+    verdict["changed_by_family"] = {
+        "carried_at_rung_1": [],
+        "stale_baseline_2024": [],
+        "prohibited_family_2025": [],
+        "weather_widening": [],
+    }
+    blocking = _phase331_structure(detail, diff, fail)
+
+    weather = {_canonical(name) for name in phase331_weather_family()}
+    venue = {_canonical(name) for name in phase331_venue_family()}
+    staleness = {str(season) for season in PHASE331_STALENESS_SEASONS}
+    stale_baseline = {
+        _canonical(name) for name in PHASE331_FOLLOWUP_STALE_BASELINE_COLUMNS
+    }
+    prohibited_2025 = {
+        _canonical(name) for name in PHASE331_FOLLOWUP_PROHIBITED_2025_COLUMNS
+    }
+    widening = {
+        _canonical(name): _canonical(source)
+        for name, source in PHASE331_FOLLOWUP_WEATHER_WIDENING.items()
+    }
+
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+
+        if column in stale_baseline:
+            if not _phase331_season_restricted(
+                column,
+                seasons,
+                PHASE331_FOLLOWUP_STALE_BASELINE_SEASONS,
+                "stale_baseline_2024",
+                verdict,
+                fail,
+                "The carry-forward sits in 2024 and reaches 2025 ONLY through "
+                "season 2025's normalisation bootstrap on season 2024. Seasons "
+                "2002-2019 are structurally incapable of moving (team-form silver "
+                "starts in 2020) and 2020-2023 were measured byte-identical, so a "
+                "move anywhere else is a DIFFERENT cause wearing a declared name.",
+            ):
+                blocking = True
+            continue
+
+        if column in prohibited_2025:
+            if not _phase331_season_restricted(
+                column,
+                seasons,
+                PHASE331_FOLLOWUP_PROHIBITED_2025_SEASONS,
+                "prohibited_family_2025",
+                verdict,
+                fail,
+                "These four are declared BECAUSE they satisfy rung 1's 2025 "
+                "staleness predicate and were refused only on the prohibited-family "
+                "check, which fires first by design. A move outside 2025 would mean "
+                "they are not that, and the prohibition would be right again.",
+            ):
+                blocking = True
+            continue
+
+        if column in widening:
+            source = widening[column]
+            if source in weather:
+                verdict["attributed"].append(column)
+                verdict["changed_by_family"]["weather_widening"].append(column)
+                continue
+            blocking = True
+            verdict["unattributed"].append(column)
+            fail(
+                f"column '{column}' is declared in the follow-up rung's "
+                f"weather-widening family as an un-normalized copy of "
+                f"'{source}', but '{source}' is NOT in "
+                "features.weather.WEATHER_FEATURE_COLUMNS. The widening family is "
+                "SOURCE-DERIVED: each entry is attributable only because the column "
+                "it copies is a registered weather column. An entry whose source is "
+                "not a weather column would turn the family into a "
+                "general-purpose bucket, which is exactly what Ruling N2 forbids"
+            )
+            continue
+
+        prohibited = _phase331_prohibited_family(column)
+        if prohibited is not None:
+            blocking = True
+            verdict["unattributed"].append(column)
+            fail(
+                f"column '{column}' moved at the Phase-33.1 FOLLOW-UP rung but "
+                f"belongs to the PROHIBITED '{prohibited}' family and is NOT one of "
+                "the names this rung declares. " + _PHASE331_MISLABELLING_PROHIBITION
+            )
+            continue
+
+        if column in weather or column in venue:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["carried_at_rung_1"].append(column)
+            continue
+
+        outside = [season for season in seasons if season not in staleness]
+        if seasons and not outside:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["carried_at_rung_1"].append(column)
+            continue
+
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at the Phase-33.1 FOLLOW-UP rung in "
+            f"season(s) {', '.join(seasons) or '(none attributed)'} and belongs to "
+            "NEITHER rung 1's three families NOR any of the three this rung "
+            "declares. A follow-up rung declares a BOUNDED residual measured off a "
+            "diagnosis; it is not an open bucket, and an undeclared column is "
+            "refused here exactly as it was at rung 1. `ok` must be True "
+            "unconditionally (Ruling N2)"
         )
 
     return blocking
