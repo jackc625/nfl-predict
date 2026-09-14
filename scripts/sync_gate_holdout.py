@@ -31,11 +31,22 @@ byte, and the block's digest (``tests/phase33_state.GATE_TOML_BASELINE_SHA256``)
 bytes. Re-serializing would turn two deliberate tripwires green by accident -- clearing a
 disclosure by reformatting it.
 
-So this edits ONE LINE, in place, on raw bytes, and REFUSES if its edit would move any other
-byte. The refusal is verified by a digest over the whole file with that one line masked out:
-identical before and after, or nothing is written. Line endings are preserved exactly (the file
-is CRLF in this Windows working tree and LF in the git blob), which is why it works on bytes
-rather than on decoded text.
+So this edits ONE LINE, in place, on raw bytes, and REFUSES if any other byte moved. Line
+endings are preserved exactly (the file is CRLF in this Windows working tree and LF in the git
+blob), which is why it works on bytes rather than on decoded text.
+
+HOW THE REFUSAL IS ACTUALLY VERIFIED, stated precisely because it used to be stated wrongly
+(code review WR-05). This paragraph claimed the guarantee was "a digest over the whole file
+with that one line masked out: identical before and after". That check existed and COULD NOT
+FAIL: it masked the same index on both sides of a one-element replacement, so the comparison
+was between a value and itself. It read as a guarantee and behaved as a comment. There are now
+two checks, and the difference between them is stated rather than blurred:
+
+  * BEFORE the write, the reconstructed bytes are digested against the bytes as read. This
+    catches a broken split/replace/join round trip. It proves nothing about the filesystem.
+  * AFTER the write, the file is READ BACK from disk and digested again. THIS is the
+    guarantee: two independently-produced byte strings, so it can fail. If it does, the
+    ORIGINAL bytes are restored before raising.
 
 WHAT IT DOES NOT TOUCH
 ----------------------
@@ -50,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -72,6 +84,15 @@ GATE_CONFIG_PATH = Path("config/gate.toml")
 #: some future table, and silently rewrite the wrong one.
 MIRRORED_TABLE = "[gate.seasons]"
 MIRRORED_KEY = "holdout"
+
+#: ``MIRRORED_KEY`` as bytes, compared by EQUALITY against a line's key half.
+_MIRRORED_KEY_BYTES = MIRRORED_KEY.encode()
+
+#: What a TOML table header looks like, so an array continuation line that merely
+#: starts with "[" and ends with "]" cannot be mistaken for one (code review WR-05).
+#: A header is a dotted key in brackets: no commas, no digits-only elements, and
+#: `[[x]]` array-of-table headers are accepted too.
+_TABLE_HEADER_RE = re.compile(rb"\[{1,2}\s*[A-Za-z_][A-Za-z0-9_.\-\"' ]*\s*\]{1,2}")
 
 
 def _target_line_index(lines: list[bytes]) -> int:
@@ -103,12 +124,24 @@ def _target_line_index(lines: list[bytes]) -> int:
         )
         raise ValueError(msg) from None
 
+    # THE KEY MATCH IS AN EQUALITY, NOT A PREFIX (code review WR-05). It was
+    # `stripped.startswith(b"holdout")`, which would also claim a future
+    # `holdout_seasons = [...]` in this same table -- and the mirror would then
+    # rewrite the wrong line while reporting success.
+    #
+    # THE TABLE BOUNDARY IS A HEADER PATTERN, NOT "starts with [ and ends with ]"
+    # (also WR-05). A multi-line array value whose continuation line reads
+    # `[2021, 2022]` matched the old test and ENDED the scan early, so the mirror
+    # would report "no holdout assignment" for a key that is plainly there.
     matches = []
     for index in range(start + 1, len(lines)):
         stripped = lines[index].strip()
-        if stripped.startswith(b"[") and stripped.endswith(b"]"):
+        if _TABLE_HEADER_RE.fullmatch(stripped):
             break
-        if stripped.startswith(MIRRORED_KEY.encode()) and b"=" in stripped:
+        if (
+            b"=" in stripped
+            and stripped.split(b"=", 1)[0].strip() == _MIRRORED_KEY_BYTES
+        ):
             matches.append(index)
 
     if not matches:
@@ -128,13 +161,33 @@ def _target_line_index(lines: list[bytes]) -> int:
     return matches[0]
 
 
-def _masked_digest(lines: list[bytes], index: int) -> str:
-    """sha256 over the whole file with line *index* replaced by a fixed placeholder.
+def _masked_digest(raw: bytes, index: int) -> str:
+    """sha256 over FILE BYTES with line *index* replaced by a fixed placeholder.
 
-    This is the instrument behind the other-bytes-unchanged refusal: the one line the mirror
-    owns is masked out, so the digest answers "did anything ELSE move?" and nothing else.
+    The instrument behind the other-bytes-unchanged check: the one line the mirror owns
+    is masked out, so the digest answers "did anything ELSE move?" and nothing else.
+
+    IT TAKES RAW BYTES, NOT A LIST (code review WR-05). It used to take the same
+    ``lines`` list the replacement was applied to, which made the check it powered
+    UNFALSIFIABLE: ``updated = list(lines)`` then ``updated[index] = replacement``
+    changes exactly one element, and both sides masked that same index, so
+    ``before != after`` was provably always False and ``len(updated) != len(lines)``
+    provably always equal. A refusal the module docstring presents as THE guarantee
+    protecting a byte-identical ``[baseline.*]`` block was dead code -- the same
+    "reads as a guarantee, behaves as a comment" failure mode
+    ``build_features._preserved_weather_columns`` warns about.
+
+    Digesting BYTES lets the same function run over the file as READ and over the file
+    as WRITTEN AND READ BACK, which are genuinely different objects, so it CAN fail.
+
+    Args:
+        raw: Whole-file bytes.
+        index: Zero-based index of the line to mask.
+
+    Returns:
+        The hex digest.
     """
-    masked = list(lines)
+    masked = raw.split(b"\n")
     masked[index] = b"<MIRRORED-HOLDOUT-LINE>"
     return hashlib.sha256(b"\n".join(masked)).hexdigest()
 
@@ -186,17 +239,25 @@ def sync_gate_holdout(dry_run: bool = False) -> str:
             ]
         )
 
-    before = _masked_digest(lines, index)
+    # The masked digest of the file AS READ. The post-write read-back below compares
+    # against this, and that comparison is the only one here that can actually fail.
+    before = _masked_digest(raw, index)
     updated = list(lines)
     updated[index] = replacement
-    after = _masked_digest(updated, index)
+    new_raw = b"\n".join(updated)
 
-    if before != after or len(updated) != len(lines):
+    # A pre-write check over the RECONSTRUCTED bytes. Weaker than the read-back, and
+    # stated as such: it catches a defect in the split/replace/join round trip -- a
+    # lost line, a mangled separator -- rather than proving anything about the
+    # filesystem. Kept because it is free, and a corrupted buffer should never reach
+    # write_bytes.
+    rebuilt = _masked_digest(new_raw, index)
+    if rebuilt != before or len(updated) != len(lines):
         msg = (
-            "REFUSING to write: the edit would move bytes OUTSIDE the "
-            f"{MIRRORED_TABLE}.{MIRRORED_KEY} line.\n"
-            f"  masked digest before: {before}\n"
-            f"  masked digest after:  {after}\n"
+            "REFUSING to write: rebuilding the file from its lines moved bytes "
+            f"OUTSIDE the {MIRRORED_TABLE}.{MIRRORED_KEY} line.\n"
+            f"  masked digest as read:    {before}\n"
+            f"  masked digest as rebuilt: {rebuilt}\n"
             f"  line count before/after: {len(lines)}/{len(updated)}\n"
             "config/gate.toml's [baseline.*] block must stay byte-identical (D33-11, "
             "D33.1-05) -- it carries an undischarged 47-of-68-field divergence and two "
@@ -204,7 +265,6 @@ def sync_gate_holdout(dry_run: bool = False) -> str:
         )
         raise ValueError(msg)
 
-    new_raw = b"\n".join(updated)
     parsed = tomllib.loads(new_raw.decode("utf-8"))
     parsed_holdout = tuple(int(s) for s in parsed["gate"]["seasons"]["holdout"])
     if parsed_holdout != tuple(holdout):
@@ -224,11 +284,31 @@ def sync_gate_holdout(dry_run: bool = False) -> str:
         )
 
     GATE_CONFIG_PATH.write_bytes(new_raw)
+
+    # THE REAL GUARANTEE (code review WR-05): read the file BACK and digest it with
+    # the mirrored line masked. This compares two independently-produced byte strings
+    # -- the file as it was read, and the file as it now exists on disk -- so it CAN
+    # fail, which is the point. On a mismatch the ORIGINAL bytes are RESTORED before
+    # raising: leaving a half-correct config/gate.toml behind would be strictly worse
+    # than the stale mirror this command exists to fix.
+    read_back = _masked_digest(GATE_CONFIG_PATH.read_bytes(), index)
+    if read_back != before:
+        GATE_CONFIG_PATH.write_bytes(raw)
+        msg = (
+            "REFUSING the write, and the ORIGINAL bytes have been RESTORED: the file "
+            f"on disk differs outside the {MIRRORED_TABLE}.{MIRRORED_KEY} line.\n"
+            f"  masked digest as read:      {before}\n"
+            f"  masked digest as read back: {read_back}\n"
+            "config/gate.toml's [baseline.*] block must stay byte-identical (D33-11, "
+            "D33.1-05) -- it carries an undischarged 47-of-68-field divergence and two "
+            "deliberate tripwires depend on those bytes."
+        )
+        raise ValueError(msg)
     return "\n".join(
         [
             "WROTE one line.",
             *report_lines,
-            "  other bytes: unchanged (masked digest identical)",
+            "  other bytes: unchanged (read back from disk, masked digest identical)",
         ]
     )
 
