@@ -284,6 +284,31 @@ def final_fit_over_completed_seasons(
         )
         raise ValueError(msg)
 
+    # THE PARTIAL CASE IS REFUSED BY NAME (code review WR-04).
+    #
+    # The guard above fires only when NONE of the requested seasons is present. The gap it
+    # left is the partial one: gold holding 2002-2024 while the rule says 2002-2025 fits on
+    # 23 seasons and then records 24 -- into components["final_fit_seasons"], into the
+    # model's own description string ("refit on N completed seasons (2002-2025)") and into
+    # the persisted FINAL_FIT_SEASONS_METADATA_KEY. A metadata key that names a season the
+    # model never saw is the wrong shape in any milestone; in one whose stated purpose is
+    # that records must not overstate, it is the defect class itself.
+    #
+    # Refusing rather than silently narrowing `seasons` is deliberate. A silent narrowing
+    # would ship a model fitted on less than the locked D33.1-01 corpus with nothing to
+    # notice, which is the same overstatement moved one level down.
+    present_seasons = {int(season) for season in final_fit_rows["season"].unique()}
+    missing_seasons = [season for season in seasons if season not in present_seasons]
+    if missing_seasons:
+        msg = (
+            f"final_fit_over_completed_seasons was asked for seasons {list(seasons)} but "
+            f"{missing_seasons} carry no rows in the frame handed in. Recording them anyway "
+            "would make final_fit_seasons -- and the saved artifact's metadata -- name a "
+            "season the model never saw. Either hand in a frame that covers the partition, "
+            "or change the partition in its own commit; do not fit on less and record more."
+        )
+        raise ValueError(msg)
+
     X = final_fit_rows[feature_names]
     y = final_fit_rows[target_col]
 

@@ -190,6 +190,47 @@ class TestTheModelIsRefitOnEveryCompletedSeason:
         assert newest_season_ids
 
 
+class TestTheRecordedSeasonsAreTheSeasonsFitted:
+    """Code review WR-04: final_fit recorded seasons the model may never have seen.
+
+    ``seasons = tuple(partition.final_fit)`` was written unconditionally into
+    ``components["final_fit_seasons"]``, into the model's own description string
+    ("refit on N completed seasons (2002-2025)") and into the persisted
+    ``FINAL_FIT_SEASONS_METADATA_KEY``. The only guard fired when NONE of the
+    requested seasons was present. A frame holding 2002-2024 against a rule saying
+    2002-2025 therefore fitted 23 seasons and recorded 24 -- naming a season the
+    model never saw, in a milestone whose stated purpose is that records must not
+    overstate.
+    """
+
+    def test_a_frame_missing_ONE_requested_season_refuses_by_name(
+        self, wp_trained: WPTrainer, frame: pd.DataFrame
+    ) -> None:
+        dropped = _PARTITION.final_fit[-1]
+        short = frame[frame["season"] != dropped]
+
+        with pytest.raises(ValueError) as excinfo:
+            wp_trained.final_fit(short, _PARTITION)
+
+        message = str(excinfo.value)
+        assert str(dropped) in message, (
+            f"the refusal must NAME the season with no rows. Got: {message}"
+        )
+        assert "never saw" in message, (
+            "the refusal must say what the silent alternative would have produced, "
+            f"not merely that something is missing. Got: {message}"
+        )
+
+    def test_the_complete_frame_still_fits_and_records_every_season(
+        self, wp_trained: WPTrainer, frame: pd.DataFrame
+    ) -> None:
+        """The control: the refusal must not fire on the normal case."""
+        result = wp_trained.final_fit(frame, _PARTITION)
+
+        assert result.components["final_fit_seasons"] == list(_PARTITION.final_fit)
+        assert result.components["final_fit_rows"] == len(frame)
+
+
 class TestTheCalibratorIsCarriedOverAndNotRefitted:
     """T-33.1-64: the defect class this milestone exists to detect."""
 
