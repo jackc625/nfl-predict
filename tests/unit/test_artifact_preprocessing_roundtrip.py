@@ -46,6 +46,7 @@ from sklearn.preprocessing import StandardScaler
 from models.artifacts import (
     CONVERTER_PARAMS_METADATA_KEY,
     PREPROCESSING_FILENAME,
+    PREPROCESSING_IS_MODEL_METADATA_KEY,
     load_model_artifact,
     save_model_artifact,
     update_manifest,
@@ -448,3 +449,88 @@ class TestTheContractItself:
             )
         manifest = json.loads(production_latest.read_text())
         assert set(manifest) >= {"wp", "ats", "ou"}
+
+
+class TestAOneObjectArtifactIsLoadedAsOneObject:
+    """Code review WR-13: two files, two deserialized objects, nothing comparing them.
+
+    For WP under D33.1-R1 ``self.preprocessing = model`` -- one four-step Pipeline -- so
+    ``save_model_artifact`` writes the SAME estimator to ``model.pkl`` and to
+    ``preprocessing.pkl``. On load they became two DISTINCT objects, and the serving
+    routes split: ``predict_games`` reads ``preprocessing`` for WP while backtest
+    scoring, the deploy gate and ``promote_models`` all read ``model``. Both answer
+    identically today. The risk is a future path that writes or repairs one file and not
+    the other, after which the two routes diverge with no error.
+
+    The artifact now RECORDS which shape it is, and the load path returns one object
+    when it was one object. Both files are still written, so the file set -- and
+    D33.1-R1's "inseparable on the way to disk" property -- is unchanged.
+    """
+
+    def test_a_one_object_save_records_the_flag_and_aliases_on_load(
+        self, tmp_path: Path, trainers: dict[str, Any]
+    ) -> None:
+        pipeline = trainers["wp"].model
+        root = tmp_path / "one_object_artifacts"
+        artifact_dir = save_model_artifact(
+            model=pipeline,
+            target="wp",
+            metadata={"target": "wp"},
+            feature_list=list(_FEATURES),
+            preprocessing=pipeline,
+            artifacts_dir=root,
+            update_latest=True,
+        )
+
+        payload = json.loads((artifact_dir / "metadata.json").read_text())
+        assert payload[PREPROCESSING_IS_MODEL_METADATA_KEY] is True
+        assert (artifact_dir / PREPROCESSING_FILENAME).exists(), (
+            "the second file must still be written -- the fix records the relationship, "
+            "it does not change the artifact's file set"
+        )
+
+        loaded = load_model_artifact("wp", artifacts_dir=root)
+        assert loaded["preprocessing"] is loaded["model"], (
+            "a one-object artifact deserialized into TWO objects, so the two serving "
+            "routes can diverge with nothing to notice"
+        )
+
+    def test_a_genuinely_SPLIT_artifact_keeps_two_distinct_objects(
+        self, tmp_path: Path, trainers: dict[str, Any]
+    ) -> None:
+        """The control. A bare estimator with its transform beside it is a real shape."""
+        pipeline = trainers["wp"].model
+        root = tmp_path / "split_artifacts"
+        artifact_dir = save_model_artifact(
+            model=pipeline.named_steps["estimator"],
+            target="wp",
+            metadata={"target": "wp"},
+            feature_list=list(_FEATURES),
+            preprocessing=pipeline,
+            artifacts_dir=root,
+            update_latest=True,
+        )
+
+        payload = json.loads((artifact_dir / "metadata.json").read_text())
+        assert payload[PREPROCESSING_IS_MODEL_METADATA_KEY] is False
+
+        loaded = load_model_artifact("wp", artifacts_dir=root)
+        assert loaded["preprocessing"] is not loaded["model"]
+
+    def test_the_callers_metadata_dict_is_not_mutated(
+        self, tmp_path: Path, trainers: dict[str, Any]
+    ) -> None:
+        """Recording a fact about the save must not edit the trainer's own record."""
+        pipeline = trainers["wp"].model
+        metadata = {"target": "wp"}
+
+        save_model_artifact(
+            model=pipeline,
+            target="wp",
+            metadata=metadata,
+            feature_list=list(_FEATURES),
+            preprocessing=pipeline,
+            artifacts_dir=tmp_path / "no_mutation_artifacts",
+        )
+
+        assert metadata == {"target": "wp"}

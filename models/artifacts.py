@@ -50,6 +50,26 @@ logger = get_logger(__name__)
 #: The filename the fitted preprocessing object is written to, when one is given.
 PREPROCESSING_FILENAME: str = "preprocessing.pkl"
 
+#: Metadata key recording that ``model.pkl`` and ``preprocessing.pkl`` were serialized
+#: from the SAME object (code review WR-13).
+#:
+#: For WP under D33.1-R1 ``self.preprocessing = model`` -- one four-step Pipeline whose
+#: third step is the scaler and whose fourth is the estimator -- so both files hold the
+#: same estimator. On load they became two DISTINCT deserialized objects with nothing
+#: asserting they agree, and the serving paths split: ``predict_games`` uses
+#: ``preprocessing`` for WP (prediction_pipeline.py:794-798) while backtest scoring, the
+#: deploy gate and promote_models all use ``model``. Today both answer identically; the
+#: risk is a future path that writes or repairs one file and not the other, after which
+#: the two serving routes diverge with NO error -- the silent divergence D33.1-R1 exists
+#: to make structurally impossible.
+#:
+#: When this key is True, ``load_model_artifact`` returns ONE object under both names.
+#: It is FALSE, and both files are loaded independently, for a genuinely SPLIT artifact
+#: (a bare estimator in ``model.pkl`` with its transform beside it), which is a supported
+#: and different shape. Artifacts saved before this key exists carry no flag and take the
+#: legacy path unchanged, so nothing on disk today changes behaviour.
+PREPROCESSING_IS_MODEL_METADATA_KEY: str = "preprocessing_is_model"
+
 #: The metadata key carrying the ATS / O/U converter parameters as JSON.
 #:
 #: JSON rather than a second pickle, deliberately: three fields describe those
@@ -79,6 +99,12 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     try:
         with os.fdopen(fd, "w") as f:
             f.write(payload)
+            # WR-13: flush the application buffer AND the OS buffer before the rename.
+            # Without this the atomicity guarantee held against a crashed PROCESS but not
+            # against power loss: os.replace could land while the temp file's contents
+            # were still only in the page cache, leaving a renamed but empty latest.json.
+            f.flush()
+            os.fsync(f.fileno())
         # Atomic rename on the same filesystem (Path.replace -> os.replace under the hood).
         Path(tmp).replace(path)
     except BaseException:
@@ -175,9 +201,20 @@ def save_model_artifact(
     if preprocessing is not None:
         joblib.dump(preprocessing, artifact_dir / PREPROCESSING_FILENAME)
 
-    # Save metadata
+    # Save metadata.
+    #
+    # WR-13: the flag is recorded rather than the second write being skipped. Both files
+    # still exist, so the artifact FILE SET is unchanged and D33.1-R1's "inseparable on
+    # the way to disk" property is untouched -- what changes is that the LOAD path can
+    # now tell a one-object artifact from a genuinely split one, instead of silently
+    # producing two copies that nothing compares. A copy of the caller's dict is written
+    # so recording this cannot mutate a trainer's own metadata.
     metadata_path = artifact_dir / "metadata.json"
-    metadata_path.write_text(json.dumps(metadata, indent=2, default=str))
+    metadata_to_write = dict(metadata)
+    metadata_to_write[PREPROCESSING_IS_MODEL_METADATA_KEY] = (
+        preprocessing is not None and preprocessing is model
+    )
+    metadata_path.write_text(json.dumps(metadata_to_write, indent=2, default=str))
 
     # Save feature list
     feature_list_path = artifact_dir / "feature_list.json"
@@ -302,9 +339,18 @@ def load_model_artifact(
     # error: every artifact saved before this contract has no such file, and returning
     # None is what lets the serving path keep those byte-identical (D33.1-R2).
     preprocessing_path = artifact_dir / PREPROCESSING_FILENAME
-    preprocessing = (
-        joblib.load(preprocessing_path) if preprocessing_path.exists() else None
-    )
+    if metadata.get(PREPROCESSING_IS_MODEL_METADATA_KEY):
+        # ONE object under both names (WR-13). The artifact's own metadata records that
+        # these two files were serialized from the same estimator, so deserializing the
+        # second one would produce a duplicate that the two serving routes -- predict_games
+        # reads `preprocessing` for WP, everything else reads `model` -- could later
+        # diverge across with no error. Repairing one file alone is not a supported
+        # operation, and this flag is what makes that explicit rather than implicit.
+        preprocessing = model
+    else:
+        preprocessing = (
+            joblib.load(preprocessing_path) if preprocessing_path.exists() else None
+        )
 
     # Load params sidecar if it exists
     params_path = artifact_dir / f"{target}_params.json"
