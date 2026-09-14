@@ -6292,3 +6292,494 @@ deliberately asserts nothing about the historical stored values, which are not.
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_11: int = 55
+
+
+# ---------------------------------------------------------------------------
+# THE IDENTITY MIGRATION'S BLAST RADIUS, DECLARED BEFORE THE RUN.
+#
+# APPENDED by Plan 33-12 Task 1 on 2026-09-14, BEFORE a single byte of
+# data/silver/games.parquet was rewritten, and committed in its own commit so the
+# ordering is provable from git rather than asserted in prose. Declaring after the
+# fact is not a declaration (T-33-61).
+#
+# DERIVED BY READING THE WRITE PATH, NOT BY ASSUMING IT:
+#
+#   scripts/ingest_games.GameDataIngester.ingest_games calls, in this order,
+#     FIRST, save_bronze_snapshot with the schedule frame, the table name games,
+#         season taken from seasons[0] and week 0.
+#         data/storage.py:1135 -- writes ONE new timestamped parquet under
+#         data/bronze/ per ingest_games() CALL, named
+#         games_raw_bronze_{season}_W{week:02d}_{YYYYmmddTHHMMSS}.parquet.
+#         It is season=seasons[0], so the file count follows the number of CLI
+#         INVOCATIONS, not the number of seasons inside one invocation. This
+#         migration therefore runs ONE INVOCATION PER SEASON -- twenty-four of
+#         them -- so that each bronze file's embedded season is truthful. A
+#         single --seasons 2002 ... 2025 call would have written ONE file
+#         labelled 2002 holding all 6,499 rows, which is a misleading artifact.
+#     THEN, upsert_silver with the validated frame and the table name games.
+#         data/storage.py:1215 -- rewrites data/silver/games.parquet in place via
+#         _atomic_write_parquet.
+#
+# THE SHARED DuckDB IS NOT IN THIS SET, AND THAT IS A READ FINDING RATHER THAN AN
+# OMISSION. The Codex HIGH concern this plan carries is that
+# data.storage.save_dataframe defaults save_to_db=True / save_to_parquet=True
+# (data/storage.py:959-1063), so a silver write normally moves
+# data/nfl_predictions.duckdb too. MEASURED BY READING upsert_silver
+# (data/storage.py:1215-1263): it does NOT go through save_dataframe at all. It
+# reads the existing parquet with pd.read_parquet, concatenates, normalises
+# datetimes through a locally constructed ParquetManager, and calls
+# _atomic_write_parquet. There is no get_db_connection call and no
+# create_table_from_df call on that path. The DuckDB half is BYPASSED, so naming
+# the file here would have declared a write that cannot happen -- and this phase's
+# evidence model is that the declaration is EXACT, in both directions. If the
+# bracket reports data/nfl_predictions.duckdb anyway, that is a finding about a
+# second writer, not a reason to widen this tuple.
+#
+# THE FOURTH COLUMN THIS MIGRATION MOVES, DECLARED RATHER THAN DISCOVERED. The
+# plan's prose says three identity columns. A dry run of the whole transform
+# against the pinned schedules, taken BEFORE the migration and writing nothing,
+# measured a FOURTH moved column: venue_roof, on 505 of 6,499 rows. It is not a
+# surprise once located -- Plan 33-06 made _get_venue_roof_type consult the exact
+# stadium_id key in data/venues.json FIRST (scripts/ingest_games.py:190-247) -- and
+# it is the same repair reaching the same store, so it is inside this migration's
+# declared cause rather than outside it. It is recorded here, before the run,
+# because a value movement that feeds gold must never be found afterwards.
+# See IDENTITY_MIGRATION_VENUE_ROOF_MOVEMENT below for the measured breakdown.
+# ---------------------------------------------------------------------------
+
+# POSIX-relative to the digest root `data`, matching tests/data_boundary.digest_tree's
+# key form. The bronze entry is a PATTERN, not twenty-four guessed literals: the
+# timestamp is minted at write time and cannot be known in advance.
+IDENTITY_MIGRATION_EXPECTED_CHANGED_FILES: tuple[str, ...] = (
+    # REWRITTEN. The upsert at scripts/ingest_games.py:342-343.
+    "silver/games.parquet",
+    # ADDED, one per CLI invocation. The snapshot at scripts/ingest_games.py:334-340.
+    # <season> is 2002..2025; <ts> is a second-resolution UTC stamp.
+    "bronze/games_raw_bronze_<season>_W00_<ts>.parquet",
+)
+
+# The number of ADDED bronze files the declaration above predicts: one per season,
+# because the migration runs one CLI invocation per season.
+IDENTITY_MIGRATION_EXPECTED_BRONZE_COUNT: int = 24
+
+# The regular-expression form of the bronze pattern, so the verification can MATCH
+# rather than eyeball. Kept beside the human-readable pattern deliberately: the
+# prose entry is what a reader checks, this is what a test checks.
+IDENTITY_MIGRATION_BRONZE_PATTERN: str = (
+    r"^bronze/games_raw_bronze_(20(?:0[2-9]|1[0-9]|2[0-5]))_W00_\d{8}T\d{6}\.parquet$"
+)
+
+# EXPLICITLY NOT EXPECTED, and named so the absence is a claim rather than a gap.
+IDENTITY_MIGRATION_EXPLICITLY_NOT_EXPECTED: tuple[str, ...] = (
+    # upsert_silver bypasses save_dataframe entirely -- see the block above.
+    "nfl_predictions.duckdb",
+    # data/venues.json is Plan 33-06's artifact and is READ, never written, by the
+    # ingest path. The snapshot for this bracket is taken AFTER that edit landed
+    # (NF-06), so a REWRITTEN report here would mean something else touched it.
+    "venues.json",
+    # No gold matrix is written by an ingest. If one moves, the migration reached a
+    # layer it has no business in.
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+)
+
+# ---------------------------------------------------------------------------
+# WHICH IMMUTABLE UPSTREAM BYTES REPRODUCE EACH SEASON (Codex MEDIUM).
+#
+# A migration whose input cannot be named is not reproducible. Every season in
+# 2002-2025 is covered by BOTH pinned datasets the ingest reads -- schedules (the
+# identity source) and pbp (the score merge) -- so NO SEASON IS REFUSED. Coverage
+# measured from config/upstream_pin.json on 2026-09-14:
+#     schedules  1999-2025  (27 seasons)
+#     pbp        2001-2025  (25 seasons)
+# data.upstream_pin.SEALED_THROUGH_SEASON is 2025, so every row this migration
+# writes comes from the SEALED, immutable zone. Nothing is fetched live.
+#
+# (season, dataset, path relative to data/, sha256 of those bytes)
+# ---------------------------------------------------------------------------
+
+IDENTITY_MIGRATION_PIN_MAPPING: tuple[tuple[int, str, str, str], ...] = (
+    (
+        2002,
+        "schedules",
+        "bronze/schedules_raw_bronze_2002_W00_20260905T044449.parquet",
+        "be1bfdbdad8cf4057def76fd1208ba3b63eec0dc062ed0320a8f18118961685a",
+    ),
+    (
+        2002,
+        "pbp",
+        "bronze/pbp_raw_bronze_2002_W00_20260905T044432.parquet",
+        "64c61c84d88b632371be5f0bfe9c080c04b804cd8c47ddbbf684d8d923f5133e",
+    ),
+    (
+        2003,
+        "schedules",
+        "bronze/schedules_raw_bronze_2003_W00_20260905T044449.parquet",
+        "d8076921a22b75f39403f96cbbd34b479a55bfcd879f95944b1508b450d83679",
+    ),
+    (
+        2003,
+        "pbp",
+        "bronze/pbp_raw_bronze_2003_W00_20260905T044433.parquet",
+        "f381057320178272a1334f40f3a1b82cecbe4078bda9a0d9d7892cbaf536a2cf",
+    ),
+    (
+        2004,
+        "schedules",
+        "bronze/schedules_raw_bronze_2004_W00_20260905T044449.parquet",
+        "9e87caaabe65223a1982a939c4b598d25abe582ad1b535805f00d7e03e8c6b08",
+    ),
+    (
+        2004,
+        "pbp",
+        "bronze/pbp_raw_bronze_2004_W00_20260905T044434.parquet",
+        "6209519031f773cf9867997395986c7b015d65a81e82afb9f1c7b1a637c06562",
+    ),
+    (
+        2005,
+        "schedules",
+        "bronze/schedules_raw_bronze_2005_W00_20260905T044449.parquet",
+        "da69bed5b788e96739d006ee1162365a87d0051df9b16a97618b9a1aeaaa735f",
+    ),
+    (
+        2005,
+        "pbp",
+        "bronze/pbp_raw_bronze_2005_W00_20260905T044434.parquet",
+        "d70b21fe16eeef7e55d44d0ac1ec793c52d9ba0ee3098dfaf847b7a9e9e16f75",
+    ),
+    (
+        2006,
+        "schedules",
+        "bronze/schedules_raw_bronze_2006_W00_20260905T044449.parquet",
+        "a1445d57a19da2b685ebf36b532722173efb6e29f859321d8ca4ce1bca27044c",
+    ),
+    (
+        2006,
+        "pbp",
+        "bronze/pbp_raw_bronze_2006_W00_20260905T044435.parquet",
+        "07f258419224114542b86cf2ed337107266736c2372984a7057e2cabe36046a6",
+    ),
+    (
+        2007,
+        "schedules",
+        "bronze/schedules_raw_bronze_2007_W00_20260905T044449.parquet",
+        "2b5f81d44a644da36ee970b2b1a893e3eaea91642eda2c48e370ede4754f9210",
+    ),
+    (
+        2007,
+        "pbp",
+        "bronze/pbp_raw_bronze_2007_W00_20260905T044436.parquet",
+        "e62bd1f3f04a89e6853b9b5811bf6bd30b78a35320d1d577594b253aad1bd4e8",
+    ),
+    (
+        2008,
+        "schedules",
+        "bronze/schedules_raw_bronze_2008_W00_20260905T044449.parquet",
+        "f57d677eeff318cf592bcfd9da6d056972a3233540ffd6e84af1decc267ac08f",
+    ),
+    (
+        2008,
+        "pbp",
+        "bronze/pbp_raw_bronze_2008_W00_20260905T044436.parquet",
+        "41b724b22ea1479ce422fa6b5493c10bc8eeb898ed31f58617ca25fdb6635449",
+    ),
+    (
+        2009,
+        "schedules",
+        "bronze/schedules_raw_bronze_2009_W00_20260905T044449.parquet",
+        "2c4e705d1a772ea453e55d528b268cf638daf3b9e7382fdb206a0b5410f6b59b",
+    ),
+    (
+        2009,
+        "pbp",
+        "bronze/pbp_raw_bronze_2009_W00_20260905T044437.parquet",
+        "12eb6b4e689b72ca221be85c9d0e7cae5128bc471cbc389dda7b9cf83a584194",
+    ),
+    (
+        2010,
+        "schedules",
+        "bronze/schedules_raw_bronze_2010_W00_20260905T044449.parquet",
+        "720167aaa2f83cd188595c0252e99475165e2767b4cd22cd4b42cb0cf4cd9bb9",
+    ),
+    (
+        2010,
+        "pbp",
+        "bronze/pbp_raw_bronze_2010_W00_20260905T044438.parquet",
+        "567ce40efb787ff800f3636d1eb5cb472833e5d18a4bfdd133b2375b4c4a815a",
+    ),
+    (
+        2011,
+        "schedules",
+        "bronze/schedules_raw_bronze_2011_W00_20260905T044449.parquet",
+        "f8d52da91e095655476b897f24c38cef4986c232d5b10aa6c75236f7c1f73cfc",
+    ),
+    (
+        2011,
+        "pbp",
+        "bronze/pbp_raw_bronze_2011_W00_20260905T044438.parquet",
+        "9ad722a5ac90b520b8b0385db9550b0f524fad6872f81757fc2d7abc95743b52",
+    ),
+    (
+        2012,
+        "schedules",
+        "bronze/schedules_raw_bronze_2012_W00_20260905T044449.parquet",
+        "396b38cd3cfc6be7183d3e896d9cf3af2be74c21e85349ba6dc1127b7689bf75",
+    ),
+    (
+        2012,
+        "pbp",
+        "bronze/pbp_raw_bronze_2012_W00_20260905T044439.parquet",
+        "14ed7d17d6a177aea44a12a451926ae8670d4b29e53d405c0f86660c6e50cadf",
+    ),
+    (
+        2013,
+        "schedules",
+        "bronze/schedules_raw_bronze_2013_W00_20260905T044449.parquet",
+        "6ec41e9586018832bbb1a476a1fc234d24d42743c0e1d3b806b8d5ce6b435f4b",
+    ),
+    (
+        2013,
+        "pbp",
+        "bronze/pbp_raw_bronze_2013_W00_20260905T044440.parquet",
+        "d7648ecdf6fa20982025788f26915229e950643ad85c3311b8ee9a8524c4c74d",
+    ),
+    (
+        2014,
+        "schedules",
+        "bronze/schedules_raw_bronze_2014_W00_20260905T044449.parquet",
+        "0a5a7bcf957befff41841e9fb850730284dc4f5b946f8cc3780bacdbcefcd532",
+    ),
+    (
+        2014,
+        "pbp",
+        "bronze/pbp_raw_bronze_2014_W00_20260905T044440.parquet",
+        "53fa81f59086938fe50e957df8455b2d50ac4dfc55e49da78d21d03cf9174342",
+    ),
+    (
+        2015,
+        "schedules",
+        "bronze/schedules_raw_bronze_2015_W00_20260905T044449.parquet",
+        "cc232bd93359b5f20bdb8c50b7c9b09988c8c7722082a1060b8633742df961cf",
+    ),
+    (
+        2015,
+        "pbp",
+        "bronze/pbp_raw_bronze_2015_W00_20260905T044441.parquet",
+        "34577e8b53ce3355c2af800b77f8b867b3e4d88ced1d953d0dcb30b5cd77b3df",
+    ),
+    (
+        2016,
+        "schedules",
+        "bronze/schedules_raw_bronze_2016_W00_20260905T044449.parquet",
+        "c746580582985630edf789feccf0834c0ff986df00101e6051d918a4cb77e5c4",
+    ),
+    (
+        2016,
+        "pbp",
+        "bronze/pbp_raw_bronze_2016_W00_20260905T044442.parquet",
+        "1fc397b5a6fb3c80d4644fe6e6ac2456062ae0c4b2115ed59c5ca2cf18763d57",
+    ),
+    (
+        2017,
+        "schedules",
+        "bronze/schedules_raw_bronze_2017_W00_20260905T044449.parquet",
+        "99ef5bf88c7f11cc8207bdf12f108696b27c25e09147c65e89acc0919fc14327",
+    ),
+    (
+        2017,
+        "pbp",
+        "bronze/pbp_raw_bronze_2017_W00_20260905T044443.parquet",
+        "f06dd77c8fda477539949bcc6601c4ebb4585da9c231d1d53c443c231c60acb4",
+    ),
+    (
+        2018,
+        "schedules",
+        "bronze/schedules_raw_bronze_2018_W00_20260905T044449.parquet",
+        "0717edd443347b5f8db9aa16d80f54dbb4ec7bcb979e1c7f741c2b0dae1ee237",
+    ),
+    (
+        2018,
+        "pbp",
+        "bronze/pbp_raw_bronze_2018_W00_20260905T044443.parquet",
+        "3f1911453d42abfbf3c4aba4fc582bd52297712b62c68dab92550a8ba0eab67c",
+    ),
+    (
+        2019,
+        "schedules",
+        "bronze/schedules_raw_bronze_2019_W00_20260905T044449.parquet",
+        "b34d29acc4d4a1b9f780a421e3abb385566c5c61554921f185bd338530beb850",
+    ),
+    (
+        2019,
+        "pbp",
+        "bronze/pbp_raw_bronze_2019_W00_20260905T044444.parquet",
+        "d1b49b2251920b160f8d651c00b4ee4f38a6ce41237ae20c8b5c8f1881773742",
+    ),
+    (
+        2020,
+        "schedules",
+        "bronze/schedules_raw_bronze_2020_W00_20260905T044449.parquet",
+        "a5e0706516944849199f5ec9bb95cccf961fa124d3b0106c94b66e4a9b6e196d",
+    ),
+    (
+        2020,
+        "pbp",
+        "bronze/pbp_raw_bronze_2020_W00_20260905T044445.parquet",
+        "4d958443091a7ea9f6f819898b410a9ab80ddae1faa258270f77601c0076d14f",
+    ),
+    (
+        2021,
+        "schedules",
+        "bronze/schedules_raw_bronze_2021_W00_20260905T044449.parquet",
+        "4fb7e9e10cb10741cacb16f92f3401cfa74ab62c75884771fc7c3e1e6b5ee83d",
+    ),
+    (
+        2021,
+        "pbp",
+        "bronze/pbp_raw_bronze_2021_W00_20260905T044445.parquet",
+        "8b9a2ad3258eb69e914b78f9712a330855a83a184f7ed51b7e19914295b65f47",
+    ),
+    (
+        2022,
+        "schedules",
+        "bronze/schedules_raw_bronze_2022_W00_20260905T044449.parquet",
+        "b7728a683ce4c62a344ebfa1395072d627fbfaeced792d659a3dff699a56e3b4",
+    ),
+    (
+        2022,
+        "pbp",
+        "bronze/pbp_raw_bronze_2022_W00_20260905T044446.parquet",
+        "5c23f0fdcf9d6832dfab83b69cd94126a83ffed887d4d09e572ccf952cad7117",
+    ),
+    (
+        2023,
+        "schedules",
+        "bronze/schedules_raw_bronze_2023_W00_20260905T044449.parquet",
+        "c7a19c9bc92f60d8ca5c940536616389b204ed4a6c53b99803aa58fc17d59d18",
+    ),
+    (
+        2023,
+        "pbp",
+        "bronze/pbp_raw_bronze_2023_W00_20260905T044447.parquet",
+        "2f5b8326a440b09fd2dcfced2b0b6e477f6c6ee8fbb8c68cf9265302453eef12",
+    ),
+    (
+        2024,
+        "schedules",
+        "bronze/schedules_raw_bronze_2024_W00_20260905T044449.parquet",
+        "9c5279ba4c762b37f423597c8eb4eb0ca77791dc49fcaaebc213eadf2e9704e6",
+    ),
+    (
+        2024,
+        "pbp",
+        "bronze/pbp_raw_bronze_2024_W00_20260905T044447.parquet",
+        "c4875686c1baf25db35711c5e4f214ad209618cdcfb238054d83681da4e3dded",
+    ),
+    (
+        2025,
+        "schedules",
+        "bronze/schedules_raw_bronze_2025_W00_20260905T044449.parquet",
+        "b15e2ecffcd34a161d5337b549eaea2d91bad989890a981e7ed3dac9de0b5f00",
+    ),
+    (
+        2025,
+        "pbp",
+        "bronze/pbp_raw_bronze_2025_W00_20260905T044448.parquet",
+        "586d7cee6f3e526349a2c4145c7c6e304332793f6e800f669894079a6384715f",
+    ),
+)
+
+# ---------------------------------------------------------------------------
+# THE venue_roof MOVEMENT, MEASURED BEFORE THE MIGRATION RAN.
+#
+# 505 of 6,499 rows change roof classification, across 2002-2024 and ZERO rows of
+# 2025. The 2025 slice already agrees with the new resolver, because it was
+# re-ingested after Plan 33-06 landed; 2002-2024 was not. So the store currently
+# carries TWO roof conventions at once, and this migration makes it carry one.
+# That is a consistency repair, and stating it as one is more honest than calling
+# 505 moved rows a side effect.
+#
+# Every transition is a venue whose NAME key missed in data/venues.json and fell
+# through to the nflverse roof column, which maps both `dome` and `closed` to
+# `indoor`. The stadium_id key does not miss.
+# ---------------------------------------------------------------------------
+
+IDENTITY_MIGRATION_VENUE_ROOF_MOVEMENT: tuple[tuple[str, str, str, str, int], ...] = (
+    # (stadium_id, venue name as stored, before, after, rows)
+    ("DAL00", "AT&T Stadium", "indoor", "retractable", 61),
+    ("DAL00", "Cowboys Stadium", "indoor", "retractable", 28),
+    ("HOU00", "NRG Stadium", "indoor", "retractable", 62),
+    ("HOU00", "Reliant Stadium", "indoor", "retractable", 58),
+    ("IND00", "Lucas Oil Stadium", "indoor", "retractable", 58),
+    ("LAX01", "SoFi Stadium", "outdoor", "indoor", 87),
+    ("PHO00", "State Farm Stadium", "indoor", "retractable", 62),
+    ("PHO00", "University of Phoenix Stadium", "indoor", "retractable", 89),
+)
+
+IDENTITY_MIGRATION_VENUE_ROOF_ROWS_MOVED: int = 505
+
+# ---------------------------------------------------------------------------
+# THE PRE-MIGRATION DRY RUN, IN FULL.
+#
+# The whole transform was run in memory against the pinned schedules and diffed
+# column by column against the live data/silver/games.parquet, writing nothing.
+# Recorded because a migration that can say in advance exactly what it will move
+# is a different object from one that reports afterwards what it did.
+#
+#     game_id set          IDENTICAL both ways, 6,499 rows, zero duplicates
+#     season, week         0 rows differ
+#     home_team, away_team 0 rows differ
+#     venue                0 rows differ
+#     kickoff_et           0 rows differ
+#     home_score           0 rows differ
+#     away_score           0 rows differ
+#     result               0 rows differ
+#     game_type            0 rows differ
+#     venue_roof         505 rows differ   <- declared above
+#     season_type        276 rows differ   REG 6223 / Postseason 276
+#     neutral_site        91 rows differ
+#     stadium_id         NEW column, 0 nulls, 55 distinct ids, all present in
+#                        data/venues.json (60 records)
+#
+# home_score and away_score are already IDENTICAL to the pinned schedule feed, so
+# the pbp merge this ingest still performs cannot move them. The merge is left ON
+# anyway: the whole pinned pbp corpus is 30.9 MB over 23 columns, so running the
+# tested default path costs nothing worth trading a deviation for.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# THE SILVER WIDTH THIS MIGRATION ACTUALLY PRODUCES: 16, NOT 18.
+#
+# SILVER_GAMES_COLUMNS_AFTER (18), appended by Plan 33-06 on 2026-09-12, is
+# ARITHMETICALLY WRONG and is left exactly as written -- the manifest is
+# append-only, and a slot is a record of what was believed when it was measured.
+# The correction is appended beside it.
+#
+# THE ERROR IS 15 + 3. Only ONE of the three identity columns is NEW as a COLUMN.
+# The measured pre-migration frame already carries `season_type` and
+# `neutral_site` as columns; what it does not carry is a TRUE VALUE in either of
+# them -- every cell reads 'Regular' and False respectively, which is the defect
+# D33-15 describes. Adding `stadium_id` takes the frame from 15 to 16. The
+# migration's real content is one new column and two columns that stop being
+# constants, which is a bigger correction than a width change and a smaller number.
+#
+# MEASURED: validate_bronze_to_silver returns GameSchema.model_dump()'s 16 fields
+# (data/schemas.py:26-77), and ingest_games overwrites created_at in place rather
+# than adding a seventeenth.
+# ---------------------------------------------------------------------------
+
+SILVER_GAMES_COLUMNS_AFTER_MEASURED: int = 16
+
+SILVER_GAMES_COLUMNS_AFTER_CORRECTION: str = """\
+SILVER_GAMES_COLUMNS_AFTER is 18. The migration produces 16. The slot is not
+edited; this is the correction appended beside it.
+
+15 columns before, and TWO of the three identity columns were already among them:
+season_type (constant 'Regular' on all 6,499 rows) and neutral_site (constant
+False on all 6,499 rows). Only stadium_id is new as a column. 15 + 1 = 16.
+
+Nothing downstream of the 18 was built on it: no test asserted the value, and the
+only consumer was Plan 33-12's own verification, which is where the error surfaced
+-- before the migration ran, not after.
+"""
