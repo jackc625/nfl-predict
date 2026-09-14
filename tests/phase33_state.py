@@ -10406,3 +10406,255 @@ FINAL_FIT_NOT_RUN_IN_PHASE_331: dict[str, object] = {
     "decision": "D33.1-01 / D33.1-02 (Ruling T of 33.1-10-PLAN.md)",
     "measured": "2026-09-14",
 }
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.1-11 Task 1 -- THE DEPLOYED POINTERS AND FEATURE LISTS AT THIS
+# PHASE'S CLOSE, which are the TRIGGER half of the bridge-expiry predicate.
+#
+# APPENDED by Plan 33.1-11 Task 1 on 2026-09-14. Nothing above this line was
+# edited.
+#
+# THIS PHASE DOES NOT AUTHOR THE 2026 GOLD-DEFAULT SWITCH. Phase 33 Wave 9 Task 5
+# wrote it (`features/weather.WEATHER_GOLD_DEFAULT_SEASONS`, commit ed42df3,
+# under the owner ruling of 2026-09-14 taken at Plan 33-09's Task-4 blocking
+# checkpoint). 33.1-SPEC.md `## Boundaries` assigns the authoring to that wave by
+# name; this phase only BOUNDS the switch, and only because the switch exists.
+#
+# WHY THE POINTERS ARE RECORDED HERE RATHER THAN RE-READ AT ASSERTION TIME. The
+# bridge-expiry tripwire must notice that a pointer MOVED, and a test that reads
+# today's manifest on both sides of that comparison can never notice anything. The
+# committed record is the fixed half.
+#
+# A MOVED POINTER IS THE TRIGGER AND NOT THE PREDICATE -- see
+# WEATHER_BRIDGE_FLIP_CONDITION, appended by the same task.
+# ---------------------------------------------------------------------------
+
+DEPLOYED_POINTERS_AT_PHASE_331_CLOSE: tuple[tuple[str, str], ...] = (
+    ("wp", "wp_20260824_113325"),
+    ("ats", "ats_20260605_220128"),
+    ("ou", "ou_20260326_163930"),
+)
+
+# The three deployed artifacts' SELECTED feature lists, verbatim from each
+# artifact's `feature_list.json`, read on 2026-09-14.
+#
+# WHY THEY ARE COMMITTED RATHER THAN RE-READ. `artifacts/` is gitignored, so a
+# fresh checkout cannot answer "which weather columns did the deployed models
+# actually consume" at all. More importantly, clause 1 of the flip predicate is an
+# INTERSECTION against these lists, and an intersection that re-reads both sides
+# from the same moving directory proves nothing about what was true at this
+# phase's close.
+#
+# THE MEASURED FACT THEY CARRY, and it is the whole reason Ruling V rejected a
+# pointer-movement predicate: WP selects ZERO weather columns and ATS selects
+# ZERO. Only the v1.0 pre-Elo O/U artifact consumes any, and it consumes 17. So a
+# Wave-15 promotion of a still-weatherless WP would move a pointer while every
+# deployed model remained weather-blind -- and a predicate keyed on pointer
+# movement would have demanded the 2026 bridge be REMOVED while the train/serve
+# reason for it still held exactly.
+DEPLOYED_FEATURE_LISTS_AT_PHASE_331_CLOSE: dict[str, tuple[str, ...]] = {
+    "wp": (
+        "away_abs_timezone_diff_hours",
+        "away_cross_country_travel",
+        "away_def_rolling_opp_adj_pass_epa",
+        "away_off_rolling_opp_adj_pass_epa",
+        "away_rest_days",
+        "away_rolling_snap_share_dl",
+        "away_rolling_snap_share_ol",
+        "away_rolling_snap_share_qb",
+        "away_snap_continuity",
+        "away_westward_travel",
+        "elo_diff",
+        "hfa_used",
+        "home_elo",
+        "home_elo_uncertainty",
+        "home_rest_days",
+        "home_rolling_snap_share_dl",
+        "home_rolling_snap_share_lb",
+        "is_divisional",
+        "snapshot_spread",
+        "thursday_game",
+    ),
+    "ats": (
+        "away_def_rolling_opp_adj_epa_per_play",
+        "away_def_rolling_opp_adj_pass_epa",
+        "away_elo_percentile",
+        "away_off_rolling_opp_adj_epa_per_play",
+        "away_off_rolling_opp_adj_pass_epa",
+        "away_off_rolling_opp_adj_rush_epa",
+        "away_qb_adjustment",
+        "away_rest_days",
+        "away_westward_travel",
+        "elo_diff",
+        "elo_prob_away",
+        "elo_prob_home",
+        "home_def_rolling_opp_adj_rush_epa",
+        "home_elo_percentile",
+        "home_elo_rank",
+        "home_off_rolling_opp_adj_epa_per_play",
+        "home_off_rolling_opp_adj_pass_epa",
+        "home_off_rolling_opp_adj_rush_epa",
+        "home_short_rest",
+        "is_divisional",
+        "late_season",
+        "season_progress",
+        "snapshot_ml_prob_home_fair",
+        "snapshot_spread",
+        "venue_capacity",
+    ),
+    "ou": (
+        "away_def_rolling_opp_adj_pass_epa",
+        "away_eastward_travel",
+        "away_off_rolling_opp_adj_epa_per_play",
+        "home_def_rolling_opp_adj_epa_per_play",
+        "home_off_rolling_opp_adj_epa_per_play",
+        "home_off_rolling_opp_adj_pass_epa",
+        "home_weather_advantage",
+        "is_dry",
+        "is_rain",
+        "precip_impact_score",
+        "precip_mm",
+        "precip_moderate",
+        "raw_precip_mm",
+        "raw_precip_prob",
+        "raw_wind_mph",
+        "scoring_reduction",
+        "snapshot_total",
+        "temp_cold",
+        "temp_warm",
+        "turnover_multiplier",
+        "venue_large_stadium",
+        "weather_severity_score",
+        "wind_calm",
+        "wind_moderate",
+        "wind_mph",
+    ),
+}
+
+# The count of DEFAULTED weather columns each deployed artifact selects, measured
+# 2026-09-14 against the switch's own held-state producer rather than against a
+# hand-written weather-column list.
+DEPLOYED_DEFAULTED_WEATHER_SELECTION_AT_PHASE_331_CLOSE: dict[str, int] = {
+    "wp": 0,
+    "ats": 0,
+    "ou": 17,
+}
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.1-11 Task 1 -- R7'S DISPOSITION, AND THE FLIP CONDITION IT BOUNDS.
+#
+# APPENDED by Plan 33.1-11 Task 1 on 2026-09-14. Nothing above this line was
+# edited.
+#
+# SWITCH EXISTENCE WAS A PHASE PRECONDITION, CHECKED AGAINST THE LIVE TREE AT
+# EXECUTION TIME rather than assumed. The plan carried BOTH branches because the
+# owner ruling that authorises the switch had not been taken when the plan was
+# written: Branch A if `WEATHER_GOLD_DEFAULT_SEASONS` exists (author the bounding
+# tripwire, R7 SATISFIED), Branch B if it does not (author the predicate and its
+# proofs but NO bounding assertion, R7 recorded UNMET / INAPPLICABLE by a named
+# refusal). A green bounding assertion over a symbol that does not exist reports
+# coverage it does not have, which is worse than an absent test.
+#
+# MEASURED 2026-09-14, at execution time: the switch EXISTS. Branch A ran.
+# ---------------------------------------------------------------------------
+
+WEATHER_BRIDGE_R7_DISPOSITION: dict[str, object] = {
+    "requirement": "R7",
+    "status": "satisfied",
+    "branch": "A",
+    "switch_present": True,
+    "switch_symbol": "features.weather.WEATHER_GOLD_DEFAULT_SEASONS",
+    "switch_seasons_held": (2026,),
+    "measured_on": "2026-09-14",
+    "measured_by": "Plan 33.1-11 Task 1, against the live tree",
+    "authored_by": (
+        "Phase 33 Wave 9, 33-09-PLAN.md Task 5, gated on that plan's Task-4 "
+        "blocking owner checkpoint (D33-25). Commit ed42df3, 'hold the 2026 gold "
+        "weather family behind a dated switch'."
+    ),
+    "authored_here": False,
+    "authored_here_note": (
+        "33.1-SPEC.md `## Boundaries` puts authoring the switch out of scope by "
+        "name and assigns it to Phase 33 Wave 9. This phase only BOUNDS it."
+    ),
+    "replan_time_measurement_was_stale": (
+        "33.1-11-PLAN.md records that on 2026-09-12 `grep -rn WEATHER_GOLD_DEFAULT` "
+        "returned nothing and that Branch B was the expectation. Between the replan "
+        "and this execution Phase 33's Wave 9 ran, the owner ruled APPROVED WITH ONE "
+        "CHANGE at its Task-4 checkpoint, and Task 5 wrote the switch. The plan's "
+        "note is superseded by measurement, not by assumption -- and it is left "
+        "where it was written rather than edited."
+    ),
+    "refusal": "",
+    "bounding_test": (
+        "tests/unit/test_weather_bridge_expiry.py::TestTheSwitchIsBounded"
+    ),
+    "is_a_deliberate_tripwire": False,
+    "tripwire_note": (
+        "Deliberately ABSENT from DELIBERATE_TRIPWIRE_NODE_IDS. A tripwire encodes "
+        "an owner-accepted fact and must stay RED; this module must pass NOW and "
+        "fail LATER. Listing it would neuter the one instrument that stops the 2026 "
+        "bridge becoming permanent (33.1-SPEC.md prohibition 7)."
+    ),
+}
+
+# The flip condition, in two clauses, either sufficient.
+#
+# A MOVED DEPLOYMENT POINTER IS THE TRIGGER AND NOT THE PREDICATE. The first draft
+# of this plan defined the condition as "any of the three deployed pointers differs
+# from the set recorded at this phase's close". That is wrong, and it is wrong in
+# the dangerous direction: `models/prediction_pipeline.py:705-716` reads ONLY the
+# artifact's selected `feature_list` (`games_data[wp_features]`), so a newly
+# promoted WP or ATS artifact can contain ZERO weather features and serve exactly
+# as a weather-blind model does. That is not hypothetical -- `wp_20260824_113325`
+# and `ats_20260605_220128` each select zero today. Under a pointer-movement
+# predicate a Wave-15 promotion of a still-weatherless WP would flip the condition
+# and the tripwire would demand the 2026 bridge be REMOVED while the reason for the
+# bridge -- train/serve agreement for a model that never saw weather -- still held
+# exactly. A false positive that removes a guard.
+WEATHER_BRIDGE_FLIP_CONDITION: dict[str, object] = {
+    "trigger": (
+        "one of the three deployed pointers in artifacts/latest.json differs from "
+        "DEPLOYED_POINTERS_AT_PHASE_331_CLOSE. NECESSARY but INSUFFICIENT: it is "
+        "the signal to EVALUATE the predicate, never the predicate itself."
+    ),
+    "clause_1": (
+        "the newly-pointed artifact's selected feature_list INTERSECTS the actual "
+        "defaulted weather columns, read from the switch's own held-state producer "
+        "rather than from a copied list. If a served model reads a column the bridge "
+        "is defaulting, the bridge is now train/serve DISAGREEMENT and must go."
+    ),
+    "clause_2": (
+        "OR the newly-pointed artifact's metadata carries the "
+        "trained_on_real_weather_generation marker naming a gold generation that is "
+        "not the uncaptured pre-rung sentinel. Clause 1 is necessary-and-sufficient "
+        "for HARM but not for INTENT: a model deliberately re-fit on corrected "
+        "weather that still selected none is a model whose training distribution "
+        "changed, and the marker is how Wave 15 declares that explicitly."
+    ),
+    "clauses_are_independently_sufficient": True,
+    "marker_key": "trained_on_real_weather_generation",
+    "marker_is_defined_and_tested_here_and_written_by_wave_15": (
+        "Writing the marker in this phase would be claiming a re-fit happened. "
+        "Phase 33 Wave 15 writes it."
+    ),
+    "marker_ordering_note": (
+        "'at or after this phase's rung' cannot be expressed as an inequality: a "
+        "gold generation key is a CONTENT DIGEST and content digests do not order. "
+        "The testable form is 'the marker names a generation that is not "
+        "GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED', which is the only "
+        "pre-rung generation this repository can name at all -- nobody captured a "
+        "real key before the rebuild overwrote the bytes."
+    ),
+    "why_not_wave_15_ran": (
+        "Wave 15 may promote nothing -- two refusals is the gate working. If it "
+        "promotes nothing, every deployed model is still weather-blind and holding "
+        "the 2026 gold weather family at a default is still the CORRECT train/serve "
+        "agreement."
+    ),
+    "prediction_pipeline_site": "models/prediction_pipeline.py:705-716",
+    "recorded_by": "Plan 33.1-11 Task 1",
+    "recorded_on": "2026-09-14",
+}
