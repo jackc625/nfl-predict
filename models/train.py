@@ -32,6 +32,7 @@ from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 # select_group_columns returns a FRESH in-memory copy and never mutates data/gold, which is why
 # a Stage-2 exclusion needs no second gold-shaped artifact (D30-01's rejected alternative).
 from backtest.signal_lift import ALL_REGISTERED_GROUPS, select_group_columns
+from conf.season_partition import default_season_partition
 from models.temporal import TemporalSplitConfig
 from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.ou_trainer import OUTrainer
@@ -510,23 +511,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Straight re-fit with existing default params; skip Optuna tuning (D24-12).",
     )
+    # SITE 5 of the season partition (RESEARCH 11.1), and the one that matters most for what
+    # a FUTURE run records. R6's target names "all three model configs", which read
+    # holdout_seasons [2021..2024] -- but those live in artifacts/<id>/metadata.json, the
+    # RECORD of a past training run, and D33.1-04 PROHIBITS editing them. The source-side
+    # surrogate is these three defaults plus TemporalSplitConfig.default(): together they
+    # decide what the next run WRITES into a new metadata.json.
+    #
+    # DERIVED from conf.season_partition (SPEC R6, D33.1-03). They used to be three string
+    # literals reading "2018,2019" / "2020" / "2021,2022,2023,2024".
+    _partition = default_season_partition()
+    _train_default = ",".join(str(season) for season in _partition.selection)
+    _hp_val_default = ",".join(str(season) for season in _partition.hp_val)
+    _holdout_default = ",".join(str(season) for season in _partition.holdout)
     parser.add_argument(
         "--config-train-seasons",
         type=str,
-        default="2018,2019",
-        help="Comma-separated training seasons. Default: 2018,2019",
+        default=_train_default,
+        help=f"Comma-separated training seasons. Default: {_train_default}",
     )
     parser.add_argument(
         "--config-hp-val-seasons",
         type=str,
-        default="2020",
-        help="Comma-separated HP validation seasons. Default: 2020",
+        default=_hp_val_default,
+        help=f"Comma-separated HP validation seasons. Default: {_hp_val_default}",
     )
     parser.add_argument(
         "--config-holdout-seasons",
         type=str,
-        default="2021,2022,2023,2024",
-        help="Comma-separated holdout seasons. Default: 2021,2022,2023,2024",
+        default=_holdout_default,
+        help=f"Comma-separated holdout seasons. Default: {_holdout_default}",
     )
     parser.add_argument(
         "--exclude-groups",

@@ -128,17 +128,31 @@ class TemporalSplitConfig:
 
     @classmethod
     def default(cls) -> TemporalSplitConfig:
-        """Return the default temporal split configuration.
+        """Return the default temporal split, DERIVED from the one committed rule.
 
-        Default boundaries:
-        - Train: 2018-2019 (initial model fitting, feature selection)
-        - HP-Validation: 2020 (COVID season absorbs anomaly)
-        - Holdout: 2021-2024 (walk-forward reporting, CLV computation)
+        SITE 4 of the season partition (RESEARCH 11.1). Until Plan 33.1-09 this method
+        carried its own three literals -- train 2018-2019, hp_val 2020, holdout 2021-2024 --
+        and it was one of eleven places in the repository that each independently declared
+        what the partition was. They are now one declaration:
+        ``conf.season_partition.derive_season_partition``, whose rule and evidence are
+        readable in that module (SPEC R6, D33.1-03).
+
+        On today's completed seasons that is train 2018-2022, hp_val 2023, holdout
+        2024-2025. The change that matters is the last one: 2025 is IN the partition now,
+        and under D33.1-01 the deployed model stops being fitted a season behind the league.
+
+        The import is LOCAL rather than module-level and deliberately so: ``conf`` is a
+        configuration package and ``models`` is the model stack, so keeping the edge inside
+        the one method that needs it means importing ``models.temporal`` never imports
+        pydantic or reads a YAML file.
         """
+        from conf.season_partition import default_season_partition
+
+        partition = default_season_partition()
         return cls(
-            train_seasons=[2018, 2019],
-            hp_val_seasons=[2020],
-            holdout_seasons=[2021, 2022, 2023, 2024],
+            train_seasons=list(partition.selection),
+            hp_val_seasons=list(partition.hp_val),
+            holdout_seasons=list(partition.holdout),
         )
 
     @property

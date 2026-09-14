@@ -9495,3 +9495,118 @@ SEASON_PARTITION_RULE_PROVENANCE: dict[str, str] = {
         "invalidates the digest above, which is the point."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# THE ELEVEN (NOW SIXTEEN) SITES THAT DEFINE THE SEASON PARTITION, AND HOW EACH
+# ONE GETS ITS VALUE.
+#
+# APPENDED by Plan 33.1-09 Task 2 on 2026-09-14. Nothing above this line was
+# edited.
+#
+# WHY A `mechanism` COLUMN (Ruling S2, Codex 33.1-09 MEDIUM). The plan's first
+# draft said all eleven sites "derive" from conf.season_partition. That overstates
+# the mechanism for exactly one of them: config/gate.toml is TOML, its
+# gate.seasons.holdout is a literal list parsed by tomllib, and no mechanism exists
+# by which a TOML file could import a Python rule. It is a GENERATED / PINNED
+# MIRROR, kept honest by the agreement test rather than by construction, and
+# scripts/sync_gate_holdout.py regenerates exactly that one line. In a milestone
+# whose whole point is not overstating mechanisms, the record says which is which.
+#
+# WHY SIXTEEN ROWS FOR ELEVEN RESEARCH SITES. 33.1-RESEARCH.md section 11.1 lists
+# eleven SITES; several of them carry more than one independently-evaluatable
+# value (models/train.py has three argparse defaults, TemporalSplitConfig.default()
+# has three season lists, backtest.engine.BacktestConfig has three fields). The
+# rows below are the EVALUATABLE values, because that is what the agreement test
+# can actually read. The research-row mapping is recorded per row so neither
+# count has to be re-derived.
+#
+# ROW 16 IS THE WAVE-7 FOLD-IN. features/team_form.TEAM_FORM_PER_GAME_FIRST_SEASON
+# was introduced by commit ad26b30 ("derive the per-game season pool from the data,
+# not a literal") as a NAMED, test-pinned literal whose own comment says Plan
+# 33.1-09 owns consolidating it here. Leaving it would have left two mechanisms
+# side by side, which is the defect this plan exists to remove.
+#
+# EACH ROW IS (path, symbol, mechanism). `symbol` is an EVALUATABLE expression
+# relative to its module, not a line number: line numbers rot and an evaluated
+# value cannot.
+# ---------------------------------------------------------------------------
+
+SEASON_PARTITION_SITES: tuple[tuple[str, str, str], ...] = (
+    # RESEARCH 11.1 row 1 -- the single-source gate constant.
+    ("models/deploy_gate.py", "HOLDOUT_SEASONS", "derives"),
+    # RESEARCH 11.1 row 3.
+    ("conf/settings.py", "BacktestConfig().seasons", "derives"),
+    # RESEARCH 11.1 row 4 -- three season lists on one default().
+    ("models/temporal.py", "TemporalSplitConfig.default().train_seasons", "derives"),
+    ("models/temporal.py", "TemporalSplitConfig.default().hp_val_seasons", "derives"),
+    ("models/temporal.py", "TemporalSplitConfig.default().holdout_seasons", "derives"),
+    # RESEARCH 11.1 row 5 -- the real source-side surrogate for "all three model
+    # configs" (11.4: the artifacts' metadata.json is a RECORD and may not be
+    # edited; these argparse defaults decide what a FUTURE run writes).
+    ("models/train.py", "--config-train-seasons default", "derives"),
+    ("models/train.py", "--config-hp-val-seasons default", "derives"),
+    ("models/train.py", "--config-holdout-seasons default", "derives"),
+    # RESEARCH 11.1 rows 6, 7 and 8. Row 7 (max_backtest_season) is the site
+    # CONTEXT's four-site inventory never named and the strongest 2025-hider in the
+    # repository: _load_features drops season > max_backtest_season, so EVERY
+    # backtest and gate consumer loading gold through the engine had never seen a
+    # 2025 row.
+    ("backtest/engine.py", "BacktestConfig().holdout_seasons", "derives"),
+    ("backtest/engine.py", "BacktestConfig().max_backtest_season", "derives"),
+    ("backtest/engine.py", "BacktestConfig().first_data_season", "derives"),
+    # RESEARCH 11.1 row 9 -- the two literals _load_gold_holdout slices on.
+    ("scripts/promote_models.py", "_HOLDOUT_FIRST_SEASON", "derives"),
+    ("scripts/promote_models.py", "_HOLDOUT_LAST_SEASON", "derives"),
+    # RESEARCH 11.1 row 10 -- the ONE site that cannot derive. See the block
+    # comment above, and scripts/sync_gate_holdout.py.
+    ("config/gate.toml", "gate.seasons.holdout", "generated mirror"),
+    # RESEARCH 11.1 row 11 -- the legacy runner. Its two BacktestConfig
+    # constructions carried four more literals between them; both now go through
+    # one helper that takes the engine's derived defaults.
+    (
+        "scripts/retrain_models.py",
+        "_default_backtest_config().holdout_seasons",
+        "derives",
+    ),
+    # THE WAVE-7 FOLD-IN (commit ad26b30). Not in RESEARCH 11.1 -- it did not exist
+    # when that table was written.
+    ("features/team_form.py", "TEAM_FORM_PER_GAME_FIRST_SEASON", "derives"),
+)
+
+# The partition those sixteen sites must agree on, on TODAY's data. Recorded as
+# the AFTER state so a reader does not have to run the rule to know what it
+# produced, and so the agreement test has an outside reference rather than only
+# comparing the sites to each other (sixteen sites that all derive from one broken
+# rule would agree perfectly).
+SEASON_PARTITION_AFTER: dict[str, object] = {
+    "selection": (2018, 2019, 2020, 2021, 2022),
+    "hp_val": (2023,),
+    "holdout": (2024, 2025),
+    "final_fit_first": 2002,
+    "final_fit_last": 2025,
+    "final_fit_count": 24,
+    "backtest_seasons_first": 2018,
+    "backtest_seasons_last": 2025,
+    "latest_completed_season": 2025,
+    "before": (
+        "selection 2018-2019 (WP/OU) or 2015-2019 (ATS), hp_val 2020, holdout "
+        "2021-2024, and 2025 absent from every model config"
+    ),
+    "measured_on": "2026-09-14, Plan 33.1-09 Task 2",
+}
+
+# The frozen 2021-2024 set, PINNED from outside the module that declares it
+# (models.deploy_gate.FROZEN_BASELINE_SEASONS). Ruling R put the constant in
+# deploy_gate.py because validate_gate_config is production code and must not
+# import from tests/; this is the test-side pin, which keeps the witness outside
+# the witnessed file exactly as every other pinned constant here does.
+#
+# IT IS NOT THE LIVE PARTITION AND MUST NEVER BECOME IT. config/gate.toml's
+# [baseline.*] block is a HISTORICAL RECORD of what Phase 30 measured, frozen over
+# these four seasons, with an undischarged 47-of-68-field divergence D33.1-05
+# deliberately preserves. validate_gate_config's season-key check is a SHAPE CHECK
+# over that record -- per N-05 nothing in the deploy decision reads the block any
+# more -- so it is retargeted here rather than being made to agree with a holdout
+# that has moved.
+FROZEN_BASELINE_SEASONS_PIN: tuple[int, ...] = (2021, 2022, 2023, 2024)

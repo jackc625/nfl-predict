@@ -105,6 +105,7 @@ from backtest.diagnose import (
     clv_significance,
 )
 from backtest.metrics import compute_wp_metrics
+from conf.season_partition import default_season_partition
 from models.clv import compute_clv_for_predictions
 from utils import get_logger
 
@@ -142,10 +143,52 @@ __all__ = [
     "validate_gate_config",
 ]
 
-# The frozen holdout window (matches BacktestConfig + diagnose.py). per_season_clv slices
-# the per-game CLV arrays by these seasons; load_gate_config asserts a populated baseline
-# season table matches this set exactly.
-HOLDOUT_SEASONS: tuple[int, ...] = (2021, 2022, 2023, 2024)
+# ---------------------------------------------------------------------------
+# TWO SEASON SETS, AND THEY ARE NOT THE SAME THING. Keeping them apart is the whole
+# of D33.1-05, and conflating them is what a reader will do by default.
+#
+#   HOLDOUT_SEASONS        -- the LIVE partition. What a candidate is scored on. It
+#                             MOVES: it is derived from conf.season_partition and
+#                             rolls forward as seasons complete.
+#   FROZEN_BASELINE_SEASONS -- the seasons config/gate.toml's [baseline.*] block was
+#                             frozen over. It NEVER moves. It is a historical record,
+#                             not a partition.
+# ---------------------------------------------------------------------------
+
+# SITE 1 of the season partition (RESEARCH 11.1): the single-source live constant.
+# DERIVED from conf.season_partition (SPEC R6, D33.1-03), never typed -- it used to read
+# (2021, 2022, 2023, 2024) as its own literal, and was one of eleven independent
+# declarations of the same thing. per_season_clv slices the per-game CLV arrays by these
+# seasons. On today's completed seasons it is (2024, 2025).
+HOLDOUT_SEASONS: tuple[int, ...] = default_season_partition().holdout
+
+# The seasons the FROZEN gate baseline was frozen over (D33.1-05, Ruling R). It is NOT the
+# live holdout and must never be re-pointed at it.
+#
+# WHY IT EXISTS. `validate_gate_config` used to assert that config/gate.toml's
+# [baseline.<t>.season.YYYY] key set equalled `set(HOLDOUT_SEASONS)`. Once the live holdout
+# moves, that assertion fails -- not because anything is wrong, but because it was asking a
+# moving constant to match a frozen record.
+#
+# WHY RETARGETING IS HONEST RATHER THAN A WORKAROUND. Per N-05 nothing in the deploy
+# decision reads the [baseline.*] block any more: the pooled CLV floor, the per-season CLV
+# floor, the secondary non-regression checks and the WP calibration check all take the LIVE
+# PAIRED RE-SCORE as their comparator (D33-11, section 0 above). So the season-key assertion
+# is a SHAPE CHECK over a historical record, not a gate input, and pointing it at the record
+# it is actually about is what it always meant.
+#
+# WHY THE BLOCK IS NOT RE-FROZEN. Its own header requires it to be a verbatim generator
+# paste, and it carries an UNDISCHARGED disclosure: the frozen values diverge from a
+# re-score in 47 of 68 fields, and two deliberate tripwires are RED because of it
+# (tests/phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS). Re-freezing would turn those green --
+# clearing a disclosure by making it pass. D33-11 and D33.1-05 both prohibit it by name.
+#
+# WHAT THIS CONSTANT DOES *NOT* CLAIM. It does not claim the frozen baseline is a valid
+# comparator for any future model. Under the owner's standing ruling of 2026-09-14 the
+# pre-correction data was wrong, so every verdict resting on that baseline is void as an
+# AUTHORITY. Preserving the block preserves the RECORD of what was measured and when --
+# which is a different thing, and the reason it is still worth a shape check.
+FROZEN_BASELINE_SEASONS: tuple[int, ...] = (2021, 2022, 2023, 2024)
 
 # CLV/odds columns dropped from a scored frame before recomputing CLV, so the left-merge in
 # compute_clv_for_predictions does not produce duplicate odds columns (mirrors the
@@ -854,11 +897,22 @@ def validate_gate_config(cfg: dict[str, Any]) -> None:
         # Tolerate an empty Wave-1 baseline table (numeric values are Plan 24-03's job).
         season = baseline[target].get("season")
         if isinstance(season, dict) and season:
+            # RETARGETED, not satisfied (D33.1-05, Plan 33.1-09 Task 2). This compares the
+            # [baseline.*] block against FROZEN_BASELINE_SEASONS -- the seasons it was
+            # actually frozen over -- and NOT against the live HOLDOUT_SEASONS, which now
+            # moves with the committed partition rule. A shape check over a historical
+            # record cannot sensibly be asked to match a window that has moved past it; see
+            # the FROZEN_BASELINE_SEASONS block comment for why the record itself stays
+            # byte-untouched.
             season_keys = {int(k) for k in season}
-            if season_keys != set(HOLDOUT_SEASONS):
+            if season_keys != set(FROZEN_BASELINE_SEASONS):
                 msg = (
-                    f"baseline.{target}.season has wrong holdout key set {sorted(season_keys)}; "
-                    f"expected {sorted(HOLDOUT_SEASONS)}"
+                    f"baseline.{target}.season has wrong frozen key set {sorted(season_keys)}; "
+                    f"expected {sorted(FROZEN_BASELINE_SEASONS)}. This is a SHAPE CHECK over "
+                    "the historical [baseline.*] record, not a check against the live holdout "
+                    f"{sorted(HOLDOUT_SEASONS)} -- the two are deliberately different (D33.1-05). "
+                    "Do NOT re-freeze the block to make this pass: it carries an undischarged "
+                    "47-of-68-field divergence and two deliberate tripwires depend on it."
                 )
                 raise ValueError(msg)
 

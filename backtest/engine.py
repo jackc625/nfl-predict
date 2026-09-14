@@ -14,7 +14,11 @@ Provides:
 Key design decisions:
 - Rolling HP-val: For holdout Y, hp_val=[Y-1], train=[first..Y-2]
 - Fresh trainer instances per season (no state leakage)
-- 2025 data filtered before processing
+- Seasons after the most recent COMPLETED one are filtered before processing.
+  This used to read '2025 data filtered before processing' and was literally true:
+  max_backtest_season was the literal 2024, so 285 games of 2025 gold were dropped
+  from every consumer of this engine. Plan 33.1-09 derived the bound from
+  conf.season_partition; it now excludes only genuinely incomplete seasons.
 - CLV computed via models/clv.py (single source of truth)
 - PER-RUN Optuna STORAGE (Plan 30-16, D30-OWNER-02): each BacktestEngine instance mints
   its own run id and opts every trainer it builds into it, so a "tuned" backtest genuinely
@@ -39,6 +43,10 @@ from typing import Any
 import pandas as pd
 
 from backtest.era import get_covid_hfa_annotation, get_season_total_weeks
+from conf.season_partition import (
+    SELECTION_WINDOW_FIRST_SEASON,
+    default_season_partition,
+)
 from models.temporal import TemporalSplitConfig
 from models.trainers.ats_trainer import ATSTrainer
 from models.trainers.base import BACKTEST_TUNING_STORAGE_DIR, BaseTrainer
@@ -67,10 +75,29 @@ class BacktestConfig:
             (Phase 6 baseline behavior).
     """
 
-    holdout_seasons: list[int] = field(default_factory=lambda: [2021, 2022, 2023, 2024])
-    first_data_season: int = 2018
+    # SITES 6, 7 and 8 of the season partition (RESEARCH 11.1). All three are DERIVED from
+    # conf.season_partition (SPEC R6, D33.1-03); they used to be three literals reading
+    # [2021..2024], 2018 and 2024.
+    #
+    # SITE 7 -- `max_backtest_season` -- IS THE ONE CONTEXT'S FOUR-SITE INVENTORY NEVER
+    # NAMED, AND IT WAS THE STRONGEST 2025-HIDER IN THE REPOSITORY. `_load_features` drops
+    # every row with `season > max_backtest_season`, so EVERY backtest and gate consumer
+    # that loads gold through this engine had never seen a 2025 row -- 285 games that were
+    # present in gold the whole time. It is now the most recent COMPLETED season, which is
+    # the same thing the partition's last holdout season is, by construction.
+    #
+    # SITE 8 -- `first_data_season` -- STAYS AT 2018, and now says why. It is the measured
+    # coverage floor of three silver sources (elo_game_snapshots 2018-2025, odds_snapshot
+    # 2018-2025, team_game_stats 2020-2025), not folklore: ninety gold columns are a flat
+    # imputed constant before it. See conf/season_partition.py's Ruling Q evidence block.
+    holdout_seasons: list[int] = field(
+        default_factory=lambda: list(default_season_partition().holdout)
+    )
+    first_data_season: int = SELECTION_WINDOW_FIRST_SEASON
     targets: list[str] = field(default_factory=lambda: ["wp", "ats", "ou"])
-    max_backtest_season: int = 2024
+    max_backtest_season: int = field(
+        default_factory=lambda: default_season_partition().latest_completed_season
+    )
     blend_config: Any | None = None  # BlendConfig from models.blending
 
 

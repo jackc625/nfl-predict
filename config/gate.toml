@@ -62,7 +62,7 @@ calibration_in_gate = true  # D24-05 / Pitfall 14: WP ECE + Brier non-regression
 # The walk-forward holdout window (matches BacktestConfig + diagnose.py). Parsed
 # as a list of ints by tomllib. per_season_clv slices the per-game CLV arrays by
 # these seasons and each must clear the floor when per_season_must_pass is true.
-holdout = [2021, 2022, 2023, 2024]
+holdout = [2024, 2025]
 
 [gate.secondary]
 # Secondary (non-CLV) non-regression gates. Open Question A resolution: secondary

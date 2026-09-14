@@ -124,6 +124,27 @@ def _set_n_trials_on_trainers(n_trials: int) -> int:
     return n_trials
 
 
+def _default_backtest_config() -> BacktestConfig:
+    """The backtest configuration BOTH entry points in this module use.
+
+    SITE 11 of the season partition (RESEARCH 11.1). This module is a LEGACY runner and it
+    carried FOUR season literals across two separate ``BacktestConfig(...)`` constructions --
+    ``holdout_seasons=[2021, 2022, 2023, 2024]``, ``first_data_season=2018`` and
+    ``max_backtest_season=2024``, written out twice. Two copies of a partition in one file is
+    exactly the drift hazard this plan exists to remove, so both now come through here, and
+    here takes ``BacktestConfig``'s own defaults -- which are themselves derived from
+    ``conf.season_partition`` (SPEC R6, D33.1-03).
+
+    ``targets`` is stated explicitly because it is this module's own choice rather than part
+    of the partition. It happens to equal the dataclass default, and saying so is cheaper
+    than leaving a reader to go and check.
+
+    Returns:
+        A fresh ``BacktestConfig`` on the live partition.
+    """
+    return BacktestConfig(targets=["wp", "ats", "ou"])
+
+
 def run_retraining(n_trials: int) -> BacktestResults:
     """Run backtest with Optuna-tuned hyperparameters.
 
@@ -145,12 +166,7 @@ def run_retraining(n_trials: int) -> BacktestResults:
     # Patch n_trials on trainers
     _set_n_trials_on_trainers(n_trials)
 
-    config = BacktestConfig(
-        holdout_seasons=[2021, 2022, 2023, 2024],
-        first_data_season=2018,
-        targets=["wp", "ats", "ou"],
-        max_backtest_season=2024,
-    )
+    config = _default_backtest_config()
 
     engine = BacktestEngine(config)
     results = engine.run()
@@ -178,12 +194,7 @@ def capture_v2_baseline(output_dir: Path) -> Path:
     """
     logger.info("Capturing v2.0 baseline", output_dir=str(output_dir))
 
-    config = BacktestConfig(
-        holdout_seasons=[2021, 2022, 2023, 2024],
-        first_data_season=2018,
-        targets=["wp", "ats", "ou"],
-        max_backtest_season=2024,
-    )
+    config = _default_backtest_config()
 
     capture = BaselineCapture(output_dir=output_dir, config=config)
     return capture.run()

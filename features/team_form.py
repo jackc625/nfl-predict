@@ -35,6 +35,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from conf.season_partition import SELECTION_WINDOW_FIRST_SEASON
 from conf.settings import get_settings
 from data import upstream_pin
 from data.storage import load_dataframe, save_dataframe
@@ -73,9 +74,26 @@ logger = get_logger(__name__)
 # literal in the repository into `conf/season_partition.py` -- is where it
 # should be re-decided. This constant is deliberately shaped to be folded into
 # that module without changing any call site.
+#
+# ---------------------------------------------------------------------------
+# THE FOLD-IN (Plan 33.1-09 Task 2, 2026-09-14). The paragraph above asked for
+# exactly this, and here it is: the floor is no longer a literal in this module,
+# it is `conf.season_partition.SELECTION_WINDOW_FIRST_SEASON`. No call site
+# changed, as that paragraph predicted; the name and its type are unchanged.
+#
+# THE TWO FLOORS ARE THE SAME NUMBER FOR THE SAME MEASURED REASON, AND THE
+# RESIDUAL DIFFERENCE IS RECORDED RATHER THAN SMOOTHED OVER. The selection
+# window's 2018 IS a coverage floor: it is where elo_game_snapshots,
+# odds_snapshot and team_game_stats begin, which is why ninety gold columns are
+# a flat imputed constant before it. This per-game floor is NOT forced by its
+# own source -- the play-by-play pin reaches back to 2001 -- but widening it
+# would move that same ninety-column family, so it is held at the same boundary
+# deliberately rather than coincidentally. Consolidating them means a future
+# decision to widen the window moves BOTH, which is the point: two literals that
+# must agree and are free to drift is the defect this plan exists to remove.
 # ---------------------------------------------------------------------------
 
-TEAM_FORM_PER_GAME_FIRST_SEASON: int = 2018
+TEAM_FORM_PER_GAME_FIRST_SEASON: int = SELECTION_WINDOW_FIRST_SEASON
 
 
 class TeamFormCalculator:

@@ -68,11 +68,18 @@ logger = get_logger(__name__)
 # touched by a re-fit -- update_manifest's per-key write preserves it).
 _TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
 
-# The frozen walk-forward holdout window (matches BacktestConfig + diagnose + gate.toml).
-# Staged candidates are scored on this window so the candidate metrics line up with the
-# frozen baseline window in config/gate.toml.
-_HOLDOUT_FIRST_SEASON = 2021
-_HOLDOUT_LAST_SEASON = 2024
+# SITE 9 of the season partition (RESEARCH 11.1): the LIVE holdout bounds this module
+# slices gold on. DERIVED from deploy_gate.HOLDOUT_SEASONS, which is itself derived from
+# conf.season_partition (SPEC R6, D33.1-03). They used to be two more literals reading
+# 2021 and 2024, and the research table records them as the site that could let the legacy
+# path silently disagree with the gate.
+#
+# THESE ARE THE *LIVE* BOUNDS AND THEY MOVE. The frozen 2021-2024 window the
+# config/gate.toml [baseline.*] block was frozen over is a DIFFERENT set with a different
+# name: deploy_gate.FROZEN_BASELINE_SEASONS. `_load_gold_holdout` slices on the pair below;
+# `_load_drift_reproduction_frame` slices on the frozen set. Do not collapse them.
+_HOLDOUT_FIRST_SEASON = deploy_gate.HOLDOUT_SEASONS[0]
+_HOLDOUT_LAST_SEASON = deploy_gate.HOLDOUT_SEASONS[-1]
 
 # D25-15 gate-time drift tripwire: RECOMPUTATION tolerance for the re-scored v1.0 aggregates
 # vs the frozen config/gate.toml baseline. This is NOT a loosening of D25-15's "exact match"
@@ -271,16 +278,21 @@ def _incumbent_window(target: str, artifacts_dir: Path) -> dict[str, str]:
         artifacts_dir: The PRODUCTION artifacts dir holding ``latest.json`` and the version dirs.
 
     Returns:
-        ``{"train": "2015,2016,...", "hp_val": "2020", "holdout": "2021,..."}`` -- the three
-        comma-joined season strings, ready to hand to ``models.train --config-*-seasons``.
+        ``{"train": "2015,2016,...", "hp_val": "2020", "holdout": "2024,2025",
+        "holdout_report": "..."}``. The first three are comma-joined season strings ready to
+        hand to ``models.train --config-*-seasons``; ``train`` and ``hp_val`` come from the
+        incumbent's own metadata (D30-12) and ``holdout`` comes from the committed partition
+        rule, which supersedes the metadata for that one field (D33.1-03).
+        ``holdout_report`` is the DIFFERENCE between the incumbent's recorded holdout and the
+        live one -- empty when they agree, and otherwise a sentence naming both windows and
+        the in-sample consequence. It used to be a raise; see the block comment below for why
+        it is now a report (D33.1-04).
 
     Raises:
         FileNotFoundError: If ``latest.json`` or the resolved ``{version}/metadata.json`` is
             absent, naming the exact missing path.
         KeyError: If the manifest has no pointer for the target, or the metadata has no
             ``config`` block or is missing one of the season lists, naming the missing key.
-        ValueError: If the derived holdout is not the frozen ``deploy_gate.HOLDOUT_SEASONS``
-            (WR-02) -- the candidate would be trained over seasons the gate scores it on.
     """
     manifest_path = artifacts_dir / "latest.json"
     if not manifest_path.exists():
@@ -354,17 +366,58 @@ def _incumbent_window(target: str, artifacts_dir: Path) -> dict[str, str]:
     # is checked HERE, before any train can start, because that is the only place it is
     # cheap: after twelve walk-forward re-fits it would be a refusal nobody could afford to
     # trust.
-    derived_holdout = [int(season) for season in config["holdout_seasons"]]
-    frozen_holdout = [int(season) for season in deploy_gate.HOLDOUT_SEASONS]
-    if derived_holdout != frozen_holdout:
-        msg = (
+    #
+    # ---------------------------------------------------------------------------
+    # RETARGETED FROM A REFUSAL TO A REPORT (D33.1-04, Plan 33.1-09 Task 2).
+    #
+    # The comment above is kept VERBATIM because it is the clearest statement in this
+    # repository of what D33.1-01 costs, and that cost is now REAL rather than latent. Under
+    # D33.1-03 the partition comes from the committed rule in conf/season_partition.py, so
+    # the per-target derivation from incumbent metadata (D30-12) is SUPERSEDED for the
+    # holdout: all three incumbents record [2021..2024] and the live partition is (2024,
+    # 2025), so this raise would fire on every target, every run, for a reason that is not a
+    # defect.
+    #
+    # THE OWNER HAS ACCEPTED THE COST, AND ACCEPTING IT IS NOT THE SAME AS HIDING IT. Once
+    # the shipped artifact has been fitted on the holdout seasons, promote_models' re-score of
+    # it on those seasons is IN-SAMPLE and is no longer an out-of-sample generalisation
+    # estimate. Wave 15's verdict must be LABELLED in-sample rather than presented as a clean
+    # gate pass, and the readout must say so. That is what this report is for.
+    #
+    # EDITING AN ARTIFACT'S metadata.json TO MAKE THIS PASS IS PROHIBITED (D33.1-04). Those
+    # files are the RECORD of a past training run; falsifying a record to unblock a gate is
+    # the defect class this milestone exists to detect. The sentence this function used to
+    # raise with -- "never widen a window to make this pass" -- was right, and it applies to
+    # the record just as much as to the window.
+    # ---------------------------------------------------------------------------
+    recorded_holdout = [int(season) for season in config["holdout_seasons"]]
+    live_holdout = [int(season) for season in deploy_gate.HOLDOUT_SEASONS]
+    if recorded_holdout == live_holdout:
+        window["holdout_report"] = ""
+    else:
+        window["holdout_report"] = (
             f"'{target}' incumbent metadata ('{metadata_path}') records holdout "
-            f"{derived_holdout}, which is not the frozen gate holdout {frozen_holdout}. The "
-            "candidate would be trained over seasons the gate scores it on, comparing an "
-            "in-sample candidate against an out-of-sample baseline. Re-freeze or restore the "
-            "metadata deliberately; never widen a window to make this pass."
+            f"{recorded_holdout}; the LIVE partition from conf/season_partition.py is "
+            f"{live_holdout}. This is a REPORTED DIFFERENCE, not a refusal (D33.1-04): the "
+            "partition now comes from the committed rule, so the incumbent's recorded window "
+            "is a historical fact about a past run rather than an input. CONSEQUENCE, stated "
+            "plainly: the candidate is trained over seasons the gate then re-scores it on, so "
+            "that verdict is IN-SAMPLE and must be labelled in-sample rather than read as a "
+            "clean gate pass. The metadata.json files are the record of past training runs "
+            "and MUST NOT be edited to make this agree."
         )
-        raise ValueError(msg)
+        logger.warning(
+            "Incumbent holdout differs from the live partition",
+            target=target,
+            recorded=recorded_holdout,
+            live=live_holdout,
+            metadata_path=str(metadata_path),
+        )
+
+    # The window handed to models.train uses the LIVE partition for the holdout. The train and
+    # hp_val halves still come from the incumbent's own metadata (D30-12's per-target
+    # asymmetry fix is untouched); only the holdout is superseded by the rule.
+    window["holdout"] = ",".join(str(season) for season in live_holdout)
 
     return window
 
@@ -663,18 +716,30 @@ def _warn_skip_train_staleness(staging_dir: Path, *, promote: bool) -> None:
 
 
 def _load_gold_holdout(target: str, engine: BacktestEngine) -> pd.DataFrame:
-    """Load the 2021-2024 gold holdout for a target via the canonical engine loader.
+    """Load the LIVE gold holdout for a target via the canonical engine loader.
+
+    THIS IS THE LIVE FRAME: what the CANDIDATE and the INCUMBENT are scored on. It follows
+    ``deploy_gate.HOLDOUT_SEASONS``, so it moves as the committed partition rule rolls
+    forward -- on today's data, 2024-2025.
+
+    IT IS NOT THE FRAME THE DRIFT TRIPWIRE WANTS, and the next reader's instinct will be to
+    reuse it because it is already loaded. ``_drift_tripwire`` asks a question about a
+    HISTORICAL record -- "does the frozen [baseline.*] block still reproduce on the seasons it
+    was frozen over" -- and it can only ask that on THOSE seasons' rows. Handing it this frame
+    is a deterministic abort, not a subtle inaccuracy: with the live holdout at 2024-2025,
+    seasons 2021-2023 arrive with zero rows against a non-None frozen ``n`` and the exact
+    integer sample-size comparison raises every time. Use
+    :func:`_load_drift_reproduction_frame` for that, and keep the two frames apart.
 
     Reuses ``BacktestEngine._load_features`` (season-filtered, canonical team mapping) then
-    restricts to the 2021-2024 holdout so the staged candidate is scored on the SAME window the
-    frozen gate.toml baseline was frozen on.
+    restricts to the live holdout bounds.
 
     Args:
         target: One of "wp", "ats", "ou".
         engine: A constructed BacktestEngine (loader-only use here).
 
     Returns:
-        The 2021-2024 gold frame for the target.
+        The LIVE holdout gold frame for the target.
     """
     df = engine._load_features(target)
     in_holdout = (df["season"] >= _HOLDOUT_FIRST_SEASON) & (
@@ -682,6 +747,47 @@ def _load_gold_holdout(target: str, engine: BacktestEngine) -> pd.DataFrame:
     )
     holdout: pd.DataFrame = df.loc[in_holdout].copy()
     return holdout
+
+
+def _load_drift_reproduction_frame(target: str, engine: BacktestEngine) -> pd.DataFrame:
+    """Load the FROZEN-baseline gold frame the drift tripwire re-derives its record on.
+
+    THIS IS THE FROZEN FRAME, and it exists because the live one is the wrong population for
+    the question ``_drift_tripwire`` asks (Plan 33.1-09 Ruling S1). The tripwire compares the
+    re-scored incumbent's pooled and per-season CLV aggregates -- including per-season sample
+    sizes, as EXACT integers -- against ``config/gate.toml``'s ``[baseline.*]`` block. That
+    block was frozen over ``deploy_gate.FROZEN_BASELINE_SEASONS`` (2021-2024) and never moves.
+    So the only population on which the question "does the frozen record still reproduce" has
+    an answer is the rows of those seasons.
+
+    THIS PRESERVES THE CHECK RATHER THAN RELAXING IT. Nothing here loosens a tolerance or
+    drops a field. The alternative that WOULD have relaxed it -- retargeting the tripwire's
+    season LIST while leaving it fed from the live frame -- is what produced the deterministic
+    abort; the alternative that would have REMOVED it -- retiring the legacy runner -- was
+    rejected, because this tripwire is the only instrument asserting that the deployed
+    artifacts still match ``config/gate.toml``, whose 47-of-68-field divergence is an
+    undischarged disclosure (D33.1-05), and because ``scripts/run_phase33_gate.stage_two_promote``
+    calls into this module's ``_promote_artifact_dir`` so the two runners are not separable
+    anyway.
+
+    RESEARCH P-7 records that ``_drift_tripwire`` is absent from CONTEXT's refusal inventory:
+    it is the third runtime refusal, and the one nobody had named.
+
+    Loads through the SAME canonical ``BacktestEngine._load_features`` the live frame uses, so
+    the two differ only in which seasons they carry.
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        engine: A constructed BacktestEngine (loader-only use here).
+
+    Returns:
+        The gold frame restricted to ``deploy_gate.FROZEN_BASELINE_SEASONS``.
+    """
+    frozen = deploy_gate.FROZEN_BASELINE_SEASONS
+    df = engine._load_features(target)
+    in_frozen = (df["season"] >= min(frozen)) & (df["season"] <= max(frozen))
+    reproduction: pd.DataFrame = df.loc[in_frozen].copy()
+    return reproduction
 
 
 def _baseline_bundle(target: str, cfg: dict[str, Any]) -> dict[str, Any]:
@@ -872,6 +978,21 @@ def _drift_tripwire(
 ) -> None:
     """HARD-assert the re-scored v1.0 aggregates equal config/gate.toml BEFORE the paired test.
 
+    THE FRAME THIS TAKES IS THE FROZEN ONE, NOT THE LIVE ONE (Plan 33.1-09 Ruling S1). Feed it
+    ``_load_drift_reproduction_frame``'s output -- gold restricted to
+    ``deploy_gate.FROZEN_BASELINE_SEASONS`` -- and NEVER ``_load_gold_holdout``'s, even though
+    that one is already loaded two lines earlier at the call site. This function asks whether
+    the frozen ``[baseline.*]`` record still reproduces on the seasons it was frozen over, and
+    it can only ask that on those seasons' rows. Handing it the live frame is a deterministic
+    abort: with the live holdout at 2024-2025 every frozen season yields zero rows against a
+    non-None frozen ``n``, and the exact-integer sample-size comparison below raises every
+    time. Retargeting the season LIST alone is NOT enough, and believing it was is the defect
+    this ruling corrects.
+
+    Nothing here is relaxed to accommodate the moved holdout. The tolerance, the field list and
+    the exact-integer sample-size rule are unchanged; only the POPULATION the question is asked
+    on is corrected to the one the question is about.
+
     D25-15 anchor (T-25-02-drift): the paired non-regression delta is only meaningful if the
     baseline side is the SAME frozen judge ``config/gate.toml`` describes. This re-derives the
     re-scored v1.0 pooled AND per-season CLV aggregates from ``baseline_valid`` and HARD-asserts
@@ -894,7 +1015,8 @@ def _drift_tripwire(
     Args:
         target: One of "wp", "ats", "ou".
         baseline_valid: The re-scored v1.0 per-game frame (``game_id``, ``season``, CLV column),
-            ``has_closing_odds``-filtered, from ``_score_baseline_clv``.
+            ``has_closing_odds``-filtered, from ``_score_baseline_clv`` applied to
+            ``_load_drift_reproduction_frame``'s FROZEN frame -- never to the live holdout.
         cfg: The loaded gate config (with int-normalized baseline season keys).
 
     Raises:
@@ -946,8 +1068,12 @@ def _drift_tripwire(
             raise ValueError(msg)
 
     # Per-season means AND sample sizes (Codex MEDIUM: compare per-season fields, not only pooled).
+    #
+    # The season list is FROZEN_BASELINE_SEASONS, not the live HOLDOUT_SEASONS (Plan 33.1-09,
+    # D33.1-05). These are the seasons the [baseline.*] block was frozen over; the live
+    # holdout has moved past them and is a different question, asked elsewhere.
     season_frozen = frozen.get("season", {})
-    for season in deploy_gate.HOLDOUT_SEASONS:
+    for season in deploy_gate.FROZEN_BASELINE_SEASONS:
         season_block = season_frozen.get(int(season))
         if not season_block:
             continue
@@ -1175,6 +1301,12 @@ def main(argv: list[str] | None = None) -> int:
             f"  Selection window [{target}]: train={window['train']} "
             f"hp_val={window['hp_val']} holdout={window['holdout']}"
         )
+        # D33.1-04: a holdout that differs from the incumbent's record is REPORTED here
+        # rather than raised in _incumbent_window. Printed at the same place the window is,
+        # because checkpoint 4 reviews this output and an in-sample verdict is exactly the
+        # thing that must not print with no warning at all.
+        if window.get("holdout_report"):
+            print(f"  Holdout DIFFERENCE [{target}]: {window['holdout_report']}")
     print("=" * 70)
 
     # -- STEP 1: staging TUNED re-fit (Optuna ON, SPEC R5), into the staging dir only --
@@ -1284,17 +1416,40 @@ def main(argv: list[str] | None = None) -> int:
                 raise KeyError(msg)
             _assert_artifacts_dir_present(target, args.artifacts_dir, prod_version)
 
+            # TWO FRAMES, TWO PURPOSES (Plan 33.1-09 Ruling S1). Each is named for what it
+            # is for, because the one that is already loaded is the wrong one for the
+            # tripwire and reusing it is the obvious mistake.
+            #
+            #   gold_holdout[target] -- the LIVE partition. What the candidate is scored on,
+            #                           and therefore what the incumbent must be paired
+            #                           against for the non-regression delta (D25-15).
+            #   drift_frame          -- the FROZEN partition. The only population on which
+            #                           "does config/gate.toml's [baseline.*] record still
+            #                           reproduce" has an answer.
+            #
+            # Before this split the live frame was handed to both, which was correct only
+            # while the two windows happened to coincide. They no longer do.
+            drift_frame = _load_drift_reproduction_frame(target, engine)
+            drift_valid = _score_baseline_clv(
+                target, drift_frame, odds_df, args.artifacts_dir
+            )
+            # Gate-time drift tripwire: HARD-abort if the re-scored v1.0 drifted from gate.toml on
+            # ANY frozen field (CLV column, pooled mean, per-season means + sample sizes).
+            _drift_tripwire(target, drift_valid, cfg)
+            print(
+                f"  {target}: frozen-baseline re-scored {len(drift_valid)} games over "
+                f"{sorted(deploy_gate.FROZEN_BASELINE_SEASONS)} (drift tripwire PASS)"
+            )
+
             # Reuse the gold frame loaded for the candidate side (same window, same target) so the
             # baseline is paired on the SAME gold without a redundant parquet read.
             baseline_valid = _score_baseline_clv(
                 target, gold_holdout[target], odds_df, args.artifacts_dir
             )
-            # Gate-time drift tripwire: HARD-abort if the re-scored v1.0 drifted from gate.toml on
-            # ANY frozen field (CLV column, pooled mean, per-season means + sample sizes).
-            _drift_tripwire(target, baseline_valid, cfg)
             print(
-                f"  {target}: baseline re-scored {len(baseline_valid)} games "
-                "(drift tripwire PASS)"
+                f"  {target}: live-partition baseline re-scored "
+                f"{len(baseline_valid)} games over "
+                f"{sorted(deploy_gate.HOLDOUT_SEASONS)}"
             )
             candidate_valid = _candidate_clv_frame(target, scored[target], odds_df)
             _populate_paired_delta_keys(

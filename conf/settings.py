@@ -8,6 +8,12 @@ import yaml
 from pydantic import BaseModel, Field, validator
 from pydantic_settings import BaseSettings
 
+# THE season partition rule (SPEC R6, D33.1-03, Plan 33.1-09). Imported RELATIVELY so this
+# module does not re-enter `conf/__init__`'s body while that body is still executing its own
+# `from .settings import ...`. `conf.season_partition` imports nothing from this project --
+# that is why it lives in `conf/` at all -- so there is no cycle in either direction.
+from .season_partition import backtest_seasons, default_season_partition
+
 
 class DataPaths(BaseModel):
     """Data storage paths configuration."""
@@ -118,7 +124,13 @@ class ModelsConfig(BaseModel):
 class BacktestConfig(BaseModel):
     """Backtesting configuration."""
 
-    seasons: list[int] = [2018, 2019, 2020, 2021, 2022, 2023, 2024]
+    # SITE 3 of the season partition (RESEARCH 11.1). DERIVED from
+    # conf.season_partition, never typed: this list used to stop at 2024, which is one of
+    # the places 2025 was invisible. `default_factory` rather than a bare call so the list
+    # is rebuilt per instance and one caller's mutation cannot reach another's.
+    seasons: list[int] = Field(
+        default_factory=lambda: list(backtest_seasons(default_season_partition()))
+    )
     validation_method: str = "walk_forward"
     min_train_seasons: int = 2
     metrics: dict[str, list[str]] = {
