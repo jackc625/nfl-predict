@@ -5773,3 +5773,63 @@ W8X_INTEGRATION_TIER_LINE: str = "5 failed, 850 passed, 9 skipped, 9 xfailed"
 W8X_INTEGRATION_TIER_SECONDS: float = 1063.48
 W8X_STAT_SIGNATURE_OBSERVATIONS: int = 0
 W8X_WAL_SIBLING_OBSERVATIONS: int = 0
+
+
+# ---------------------------------------------------------------------------
+# THE ATS EDGE'S UNIT, AND THE BAND DISTRIBUTION IT PRODUCED BEFORE THE REPAIR.
+#
+# APPENDED by Plan 33-10 Task 1 on 2026-09-14. Nothing above this line was edited.
+#
+# R13 / D33-05 redefine ``ats_edge`` on a FIXED POINTS SCALE. What it was before is
+# the reason the numbers below exist: ``(ats_prediction - market_spread) /
+# |market_spread|``, a ratio whose denominator is a point count that approaches
+# zero, banded by ``utils.edge_tier`` against the SAME 0.05 / 0.02 threshold pair
+# that bands a WP probability. The unit is recorded here because Plan 33-16 freezes
+# per-target thresholds derived from THIS edge's own distribution, and a threshold
+# without a stated unit is a number nobody can check.
+# ---------------------------------------------------------------------------
+
+ATS_EDGE_SCALE: str = "points"  # signed model-minus-market home-margin difference
+
+# The MEASURED pre-repair band distribution, RE-DERIVED by Plan 33-10 Task 1 on
+# 2026-09-14 rather than copied from the plan text, read-only, over
+# ``outputs/backtest/predictions_all.csv`` (1,139 games, seasons 2021-2024 -- the
+# whole file, which carries no 2026 rows, so "the pre-2026 population" and "the file"
+# are the same population here).
+#
+# THE DENOMINATOR IS NOT THE ROW COUNT. 52 of the 1,139 games carry no market line
+# at all, so all three edges are NULL on them and ``edge_tier`` answers "low" for an
+# absent edge. Banding those 52 as "low" would attribute a real band to a game that
+# has no edge. The shares below are therefore over the 1,087 rows with a COMPUTABLE
+# edge, and the row count is recorded beside them so the other denominator is always
+# recoverable.
+#
+# RECONCILIATION AGAINST THE CARRIED FIGURES. Plan 33-10's own text carried
+# wp 0.268/0.300/0.432, ats 0.028/0.046/0.926, ou 0.220/0.293/0.487. The re-derivation
+# REPRODUCES all nine to the precision they were quoted at, under the 1,087-row
+# denominator. Under the 1,139-row denominator they do NOT reproduce
+# (ats 0.0720/0.0439/0.8841), which is how the denominator was identified. Both are
+# recorded; neither overwrites the other.
+ATS_BAND_SHARES_BEFORE: dict[str, dict[str, float]] = {
+    "wp": {"low": 0.2677, "medium": 0.2999, "high": 0.4324},
+    "ats": {"low": 0.0276, "medium": 0.0460, "high": 0.9264},
+    "ou": {"low": 0.2199, "medium": 0.2935, "high": 0.4867},
+}
+
+# Rows with a computable edge -- the denominator of every share above.
+ATS_BAND_SHARES_BEFORE_DENOMINATOR: int = 1087
+
+# The same measurement over ALL rows, absent edges banded "low" by ``edge_tier``.
+# Recorded so the two instruments stay distinguishable and Plan 33-16's "after" half
+# can be taken with whichever one it declares.
+ATS_BAND_SHARES_BEFORE_ALL_ROWS: dict[str, dict[str, float]] = {
+    "wp": {"low": 0.3011, "medium": 0.2862, "high": 0.4126},
+    "ats": {"low": 0.0720, "medium": 0.0439, "high": 0.8841},
+    "ou": {"low": 0.2555, "medium": 0.2801, "high": 0.4644},
+}
+ATS_BAND_SHARES_BEFORE_ALL_ROWS_DENOMINATOR: int = 1139
+
+# R13's headline case CANNOT BE FOUND IN THE DATA, measured on the same pass: zero of
+# the 1,139 rows carry ``|market_spread| <= 0.5``. That is why the half-point proof is
+# a CONSTRUCTED row (Plan 33-02's ``build_half_point_ats_frame``) and not a real one.
+ATS_HALF_POINT_ROWS_IN_POPULATION: int = 0
