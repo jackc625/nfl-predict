@@ -276,6 +276,34 @@ _EV_SLIPPAGE_POINTS = 0.5
 _WEATHER_OUTDOOR_COL = "venue_outdoor"
 _WEATHER_SEVERITY_COL = "weather_severity_score"
 
+# THE VENUE-LEVEL KEY ABOVE IS DELIBERATELY NO LONGER USED BY `_weather_cut`. It is kept
+# declared so a later reader meets this warning instead of rediscovering the defect and
+# repointing the split back for looking tidier.
+#
+# `venue_outdoor` is derived from the VENUE record's `roof_type`
+# (`features/contextual._encode_venue_features`), which encodes `retractable` as its own
+# separate indicator rather than folding it into outdoor. Every game at a retractable
+# stadium therefore carries ONE value regardless of whether that day's roof was open or
+# shut. MEASURED on this population (6,499 games, 2002-2025): 749 games at the five
+# retractable stadiums DAL00 / HOU00 / IND00 / PHO00 / ATL97 share a single venue-level
+# value, while 621 of them were played CLOSED and 128 OPEN. Splitting on it grades 621
+# games whose weather never reached the field as though it had.
+#
+# So applicability is keyed on the GAME's own roof fact instead. That fact lives in the
+# silver weather table as `weather_affects_game`: a clean 0/1 over all 6,499 rows
+# (4,847 outdoor, 1,652 indoor, no nulls, no duplicate game_id), which splits those same
+# 749 retractable games exactly 621/128. Gold cannot supply it -- expanding normalization
+# z-scores the flag into 5,315 distinct floats, and the cut's own `is_clean_binary` guard
+# refuses that column, correctly. Reading it from silver is the same read-only access
+# pattern `_RAW_SILVER_ODDS_PATH` already uses in this module for the provenance columns
+# the normalized loader strips.
+_WEATHER_PER_GAME_OUTDOOR_COL = "weather_affects_game"
+_WEATHER_COVERAGE_COL = "weather_coverage"
+
+# Raw silver weather path -- read ONLY for the two per-game applicability columns above.
+# Never written.
+_RAW_SILVER_WEATHER_PATH = Path("data/silver/weather_features.parquet")
+
 # Pre-registered residual threshold for the de-biased re-score interpretation (D26-18): if the
 # pooled prior-season bias-adjusted line_clv collapses below this magnitude (in total points), the
 # +1.11 was "nothing underneath" the bias (strong no-go evidence); otherwise "residual
@@ -849,6 +877,12 @@ def _sweep_per_game(
     if gold is not None:
         valid = valid.merge(gold, on="game_id", how="left")
 
+    # The per-game roof fact comes from SILVER, read-only, because gold z-scores it into a
+    # float column the cut's own binary guard refuses (see the note on _WEATHER_OUTDOOR_COL).
+    roof = _load_ou_silver_roof()
+    if roof is not None:
+        valid = valid.merge(roof, on="game_id", how="left")
+
     keep = [
         "game_id",
         "season",
@@ -861,7 +895,12 @@ def _sweep_per_game(
         "model_over",
         "key_total_distance",
     ]
-    for wcol in (_WEATHER_OUTDOOR_COL, _WEATHER_SEVERITY_COL):
+    for wcol in (
+        _WEATHER_OUTDOOR_COL,
+        _WEATHER_SEVERITY_COL,
+        _WEATHER_PER_GAME_OUTDOOR_COL,
+        _WEATHER_COVERAGE_COL,
+    ):
         if wcol in valid.columns:
             keep.append(wcol)
     per_game = valid[keep].copy()
@@ -887,6 +926,103 @@ def _load_ou_gold_weather() -> pd.DataFrame | None:
     if not present:
         return pd.DataFrame(columns=["game_id"])
     return pd.read_parquet(gold_path, columns=["game_id", *present])
+
+
+def _load_ou_silver_roof() -> pd.DataFrame | None:
+    """Load the per-game roof fact and its coverage flag from SILVER (READ ONLY).
+
+    Returns:
+        A frame with ``game_id`` plus whichever of ``weather_affects_game`` /
+        ``weather_coverage`` the silver weather table carries, or None when that table
+        is absent (a bare checkout without ``data/``). A missing table yields None
+        rather than an empty frame so the cut reports ``unavailable`` with its reason
+        instead of grading an empty applicability split.
+
+    WHY SILVER AND NOT GOLD. The fact this returns is the game's OWN roof, and gold
+    does not carry it in a usable form: expanding normalization z-scores the flag into
+    5,315 distinct floats, which the cut's ``is_clean_binary`` guard refuses, correctly.
+    Silver carries it clean -- 0/1 over all 6,499 rows, no nulls, unique on ``game_id``.
+    This is the same read-only silver access ``_RAW_SILVER_ODDS_PATH`` already makes in
+    this module; nothing here writes.
+    """
+    if not _RAW_SILVER_WEATHER_PATH.exists():
+        return None
+    available = pd.read_parquet(_RAW_SILVER_WEATHER_PATH).columns
+    present = [
+        c
+        for c in (_WEATHER_PER_GAME_OUTDOOR_COL, _WEATHER_COVERAGE_COL)
+        if c in available
+    ]
+    if not present:
+        return None
+    return pd.read_parquet(
+        _RAW_SILVER_WEATHER_PATH, columns=["game_id", *present]
+    ).drop_duplicates(subset=["game_id"])
+
+
+def _bucket_masks_excluding_missing(
+    series: pd.Series,
+    *,
+    split: str = "median",
+) -> tuple[pd.Series, pd.Series, int]:
+    """Split *series* into two buckets over OBSERVED rows only, and count the rest.
+
+    Args:
+        series: The column a split is taken on. Missing entries are rows where no
+            observation exists.
+        split: ``"median"`` for a band split at the median of the observed values,
+            or ``"indicator"`` for a 0/1 flag.
+
+    Returns:
+        ``(upper_mask, lower_mask, n_excluded)``. Under ``"median"`` the masks are
+        strictly-above-median and at-or-below-median; under ``"indicator"`` they are
+        the ones and the zeros. ``n_excluded`` is the count of missing rows, which
+        belong to NEITHER mask.
+
+    Raises:
+        ValueError: *split* is not a known mode, or an ``"indicator"`` series carries
+            an observed value that is neither 0 nor 1. A row that silently belongs to
+            no side would break the accounting the caller reports, so it is refused
+            by name instead.
+
+    THE PROPERTY THIS FUNCTION EXISTS FOR. The idiom it replaces was
+    ``upper = series > median`` with ``lower = ~upper``. In pandas every comparison
+    against a missing value is False, so ``~upper`` is True for those rows and every
+    game whose weather nobody observed was filed on the LOWER side -- reported as a
+    measurement of calm days while partly being a list of days nobody measured. The
+    same shape one level up files an unobserved game as ``indoor``. Here BOTH masks
+    are built positively from ``notna()``, so a missing row cannot reach either, and
+    the caller is handed the count it must disclose. For every split the invariant
+    holds: ``upper.sum() + lower.sum() + n_excluded == len(series)``.
+    """
+    observed = series.notna()
+    n_observed = int(observed.sum())
+    n_excluded = len(series) - n_observed
+
+    if split == "median":
+        if n_observed == 0:
+            empty = pd.Series(False, index=series.index)
+            return empty, empty.copy(), n_excluded
+        threshold = float(series[observed].median())
+        upper = observed & (series > threshold)
+        lower = observed & (series <= threshold)
+        return upper, lower, n_excluded
+
+    if split == "indicator":
+        stray = sorted(set(series[observed].unique()) - {0.0, 1.0})
+        if stray:
+            msg = (
+                f"an indicator split needs a clean 0/1 column; observed values "
+                f"{stray[:6]} belong to neither side and would fall out of the "
+                "bucket accounting"
+            )
+            raise ValueError(msg)
+        upper = observed & (series == 1.0)
+        lower = observed & (series == 0.0)
+        return upper, lower, n_excluded
+
+    msg = f"unknown split mode {split!r}; expected 'median' or 'indicator'"
+    raise ValueError(msg)
 
 
 def _graded_hit_rate_for_slice(
@@ -1068,41 +1204,71 @@ def _weather_cut(
     preds: pd.DataFrame,
     odds: pd.DataFrame,
 ) -> dict[str, dict[str, Any]]:
-    """Weather/outdoor cut against the CORRECT gold columns (Codex MED; the correct names only).
+    """Weather/outdoor cut, keyed on the GAME's roof and with unobserved games set aside.
 
-    Uses ``venue_outdoor`` (the outdoor indicator) and ``weather_severity_score``. A column that is
-    absent OR degenerate (<=1 distinct non-null value -- the weather features were never populated
-    in this gold) yields an ``unavailable`` bucket carrying a ``coverage_note``, NOT a silent skip
-    and NOT a hand-picked substitute column.
+    Two splits, and the same two the Phase-26 trial registry recorded: applicability
+    (the weather could reach this field / it could not) and severity (rough conditions /
+    calm ones). SAME harness, SAME grading through the LOCKED ``BettingSimulator``, SAME
+    bucket names, no p-value, no new trial. Two things about the cut changed, and both are
+    repairs to WHICH ROWS a bucket contains rather than new comparisons:
+
+    1. APPLICABILITY IS PER GAME, NOT PER VENUE. It splits on the silver
+       ``weather_affects_game`` flag -- the game's own roof -- instead of the venue-level
+       ``venue_outdoor``, which cannot tell an open-roof game from a closed-roof one at the
+       same stadium and so graded 621 closed-roof games as outdoor. The venue-level
+       constant is still declared at the top of this module, carrying the measured note
+       that explains why it is the wrong key here; the cut does not consult it.
+    2. AN UNOBSERVED GAME IS EXCLUDED FROM BOTH DENOMINATORS, and its count is reported as
+       ``excluded_missing`` on both sides of the split. The previous idiom built one side as
+       the bare complement of the other, and because every comparison against a missing
+       value is False, a game whose weather nobody recorded was filed as ``mild`` (and, one
+       level up, as ``indoor``). Both sides are now built positively by
+       ``_bucket_masks_excluding_missing``.
+
+    NO CUT IS ADDED HERE, deliberately. Wind and precipitation already feed the severity
+    score this band splits on; promoting them to bands of their own would add two
+    comparisons to a correction family fixed in Phase 26 -- the forking-paths defect
+    ``DEBIAS_RESIDUAL_THRESHOLD`` above is annotated against. A column that is absent OR
+    degenerate still yields an ``unavailable`` bucket carrying a ``coverage_note``, never a
+    silent skip and never a hand-picked substitute.
     """
     out: dict[str, dict[str, Any]] = {}
 
-    # -- venue_outdoor: usable only if a clean {0,1} indicator with both classes present --
-    if _WEATHER_OUTDOOR_COL not in per_game.columns:
+    # -- applicability: the game's own roof, usable only as a clean {0,1} with both classes --
+    if _WEATHER_PER_GAME_OUTDOOR_COL not in per_game.columns:
         out["outdoor"] = {
             "unavailable": True,
             "coverage_note": (
-                f"gold column '{_WEATHER_OUTDOOR_COL}' absent from the loaded frame -- "
-                "weather/outdoor cut not gradeable"
+                f"per-game column '{_WEATHER_PER_GAME_OUTDOOR_COL}' absent from the loaded "
+                "frame -- weather/outdoor cut not gradeable"
             ),
         }
     else:
-        col = per_game[_WEATHER_OUTDOOR_COL].dropna()
+        applies = per_game[_WEATHER_PER_GAME_OUTDOOR_COL]
+        if _WEATHER_COVERAGE_COL in per_game.columns:
+            # A roof fact recorded for a game with no weather observation is not an
+            # observation. Masking it to missing here routes it to excluded_missing.
+            applies = applies.where(per_game[_WEATHER_COVERAGE_COL] == 1.0)
+        col = applies.dropna()
         distinct = set(np.unique(np.round(col.to_numpy(), 6))) if len(col) else set()
         is_clean_binary = distinct.issubset({0.0, 1.0}) and len(distinct) == 2
         if not is_clean_binary:
             out["outdoor"] = {
                 "unavailable": True,
                 "coverage_note": (
-                    f"gold column '{_WEATHER_OUTDOOR_COL}' is not a clean 0/1 outdoor indicator "
-                    f"(distinct rounded values={sorted(distinct)[:6]}...); the weather features "
-                    "were not populated in this gold, so the outdoor cut is not gradeable"
+                    f"per-game column '{_WEATHER_PER_GAME_OUTDOOR_COL}' is not a clean 0/1 "
+                    f"applicability indicator (distinct rounded values={sorted(distinct)[:6]}"
+                    "...), so the outdoor cut is not gradeable"
                 ),
             }
         else:
-            outdoor_mask = per_game[_WEATHER_OUTDOOR_COL] == 1.0
+            outdoor_mask, indoor_mask, n_missing = _bucket_masks_excluding_missing(
+                applies, split="indicator"
+            )
             out["outdoor"] = _grade_bucket(per_game[outdoor_mask], n_total, preds, odds)
-            out["indoor"] = _grade_bucket(per_game[~outdoor_mask], n_total, preds, odds)
+            out["indoor"] = _grade_bucket(per_game[indoor_mask], n_total, preds, odds)
+            out["outdoor"]["excluded_missing"] = n_missing
+            out["indoor"]["excluded_missing"] = n_missing
 
     # -- weather_severity_score: usable only if it varies (a severity band needs >1 value) --
     if _WEATHER_SEVERITY_COL not in per_game.columns:
@@ -1124,14 +1290,17 @@ def _weather_cut(
                 ),
             }
         else:
-            median = float(sev.median())
-            severe_mask = per_game[_WEATHER_SEVERITY_COL] > median
+            severe_mask, mild_mask, n_missing = _bucket_masks_excluding_missing(
+                per_game[_WEATHER_SEVERITY_COL], split="median"
+            )
             out["severe_weather"] = _grade_bucket(
                 per_game[severe_mask], n_total, preds, odds
             )
             out["mild_weather"] = _grade_bucket(
-                per_game[~severe_mask], n_total, preds, odds
+                per_game[mild_mask], n_total, preds, odds
             )
+            out["severe_weather"]["excluded_missing"] = n_missing
+            out["mild_weather"]["excluded_missing"] = n_missing
 
     return out
 
@@ -1216,6 +1385,10 @@ def extended_bucket_sweep(
     gold = _load_ou_gold_weather()
     if gold is not None:
         blended_valid = blended_valid.merge(gold, on="game_id", how="left")
+    # ...and the per-game roof fact, read-only from silver, on the same game_id key.
+    roof = _load_ou_silver_roof()
+    if roof is not None:
+        blended_valid = blended_valid.merge(roof, on="game_id", how="left")
 
     # The blended stream is re-graded against its OWN model_total, so it needs its own preds frame.
     blended_preds = blended_valid.copy()
