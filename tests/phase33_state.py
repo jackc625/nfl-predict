@@ -4642,3 +4642,439 @@ WEATHER_PROMOTION_EXPECTED_CHANGED_FILES: tuple[str, ...] = ("silver/weather.par
 # `--all-seasons` promotes nothing.
 WEATHER_CORPUS_RUN_EXPECTED_ADDED_PREFIX: str = "bronze/weather_backfill_raw_bronze_"
 WEATHER_CORPUS_RUN_EXPECTED_ADDED_COUNT: int = 24
+
+
+# ---------------------------------------------------------------------------
+# WHAT THE FULL-CORPUS RUN ACTUALLY DID.
+#
+# APPENDED by Plan 33.1-06 Task 2 on 2026-09-13, AFTER the run. Nothing above
+# this line was edited -- the declaration slot above stays exactly as it was
+# written before the run, which is the only thing that makes it a declaration.
+#
+# THE BRACKET, in the order it was executed, ALL OF IT INSIDE ONE LOCK
+# ACQUISITION (Ruling L3, threat T-33.1-40c):
+#
+#   0. CorpusLock acquired -- pid 13128, 2026-09-14T00:23:33.585813+00:00 --
+#      BEFORE the pre-state digest. A lock taken AFTER the digest protects
+#      nothing: upsert_silver is read-filter-concat-write, so a second promoter
+#      that read the same pre-state silently discards the first promoter's rows
+#      while the bracket still reports exactly one CHANGED path, as declared.
+#   1. data      -> outputs/phase331_corpus_before.json     (424 files digested)
+#   2. artifacts -> outputs/phase331_artifacts_before.json  (159 files digested)
+#   3. the 24-season fetch, promoting NOTHING
+#   4. both trees re-digested, still inside the lock
+#
+# THE RUN HALF REPORTED EXACTLY THE DECLARED SHAPE: 24 ADDED paths, every one
+# matching WEATHER_CORPUS_RUN_EXPECTED_ADDED_PREFIX, and ZERO changed, ZERO
+# removed and ZERO undecided (no MIXED key). `artifacts/` did not move at all.
+# `data/silver/weather.parquet` digested to its pre-run value on both sides --
+# the fetch promoted nothing, which is what makes the promotion in Task 3 a
+# separately-bracketed single write. `data/nfl_predictions.duckdb` did not move:
+# save_bronze_snapshot is parquet-only and append-only.
+#
+# THE LOCK WAS ABSENT AFTER THE CLEAN EXIT, which is the other half of
+# CORPUS_LOCK_CONTRACT: retained on an exception, removed on a clean one.
+#
+# ZERO RETRIES, AND THAT IS A MEASUREMENT RATHER THAN AN ASSUMPTION. The
+# projection in ARCHIVE_BUDGET_PLAN is labelled `retries_assumed: 0`, and Ruling
+# L2 put the debit INSIDE the retried fetch precisely so that the OBSERVED total
+# would include retries if any occurred. Observed 5,816.4 weighted over 4,847
+# attempts; projected 5,816.4 over 4,847 requests. The gap is exactly zero, so
+# the retry rate is exactly zero -- 4,847 games, 4,847 attempts, no attempt
+# repeated. Recorded as the measurement it is, BESIDE the projection rather than
+# instead of it.
+#
+# THE 1.2 WEIGHT IS STILL UNVERIFIED, AND THIS RUN COULD NOT VERIFY IT
+# (.planning/WINDOWS.md row 26, assumption A1). What was MEASURED is REQUESTS
+# ISSUED: 4,847 game fetches plus ONE corpus-floor probe, 4,848 live requests in
+# total. The 1.2 multiplier applied to them is an EXTRAPOLATION from a single
+# published vendor example, the archive response carries no rate-limit header,
+# and the provider never refused -- so the run supplies EVIDENCE THAT THE REAL
+# WEIGHT IS NOT CATASTROPHICALLY HIGHER (a true weight above about 2.06 would
+# have breached the 10,000/day cap at this volume) but it does NOT confirm 1.2.
+# An unverified constant that happened not to bind is still unverified, and row
+# 26 stays OPEN.
+# ---------------------------------------------------------------------------
+
+WEATHER_CORPUS_RUN: dict[str, object] = {
+    "measured_on": "2026-09-13",
+    "measured_by": "Plan 33.1-06 Task 2",
+    "command": "uv run python -m scripts.backfill_historical_weather --bracket run",
+    "owner_ruling": (
+        "APPROVED 2026-09-13 about 20:20 EDT. The owner authorised the budget "
+        "spend and the silver overwrite after being shown the dry run's zero "
+        "requests, the 4,847/1,652 split, the 81-minute paced projection against "
+        "the HOURLY 5,000 binding limit, and the 14-row pre-state. Assumption A2 "
+        "was ACCEPTED with the per-season null-fraction gate as its control."
+    ),
+    # THE LOCK.
+    "lock_path": "data/bronze/.weather_backfill.lock",
+    "lock_pid": 13128,
+    "lock_acquired_at_utc": "2026-09-14T00:23:33.585813+00:00",
+    "lock_acquired_before_the_pre_state_digest": True,
+    "lock_absent_after_clean_exit": True,
+    # THE CLOCK.
+    "started_utc": "2026-09-14T00:23:32Z",
+    "first_fetch_utc": "2026-09-14T00:23:35.929271Z",
+    "last_snapshot_utc": "2026-09-14T01:44:35.372929Z",
+    "observed_wall_clock_seconds": 4863.4,
+    "observed_wall_clock": "81.1 minutes",
+    "projected_wall_clock": "about 81 minutes",
+    "observed_seconds_per_attempt": 1.0026,
+    "declared_interval_seconds": 1.0,
+    # THE CORPUS.
+    "seasons_fetched": tuple(range(2002, 2026)),
+    "seasons_still_missing_after": (),
+    "games_total": 6499,
+    "games_fetched": 4847,
+    "games_without_a_call": 1652,
+    "snapshots_written": 24,
+    "snapshot_column_count": 25,
+    "bronze_rows_written": 6499,
+    # THE BUDGET -- observed BESIDE projected, never instead of it.
+    "observed_weighted_calls": 5816.4,
+    "projected_weighted_calls": 5816.4,
+    "attempts": 4847,
+    "retry_count": 0,
+    "retry_count_is_how_derived": (
+        "attempts (4,847) minus games fetched (4,847). The debit sits INSIDE the "
+        "retried fetch (Ruling L2), so a retried game costs an extra attempt and "
+        "the difference IS the retry rate."
+    ),
+    "corpus_floor_probe_requests": 1,
+    "live_requests_total": 4848,
+    "provider_refusals": 0,
+    "rate_limit_headers_seen": 0,
+    "weight_still_unverified": True,
+    "weight_still_unverified_because": (
+        "ARCHIVE_CALL_WEIGHT_PER_REQUEST = 1.2 is extrapolated from one published "
+        "vendor example and the archive sends no rate-limit header, so this run "
+        "measured REQUESTS ISSUED and not calls CHARGED. The provider never "
+        "refused, which bounds the real weight below roughly 2.06 against the "
+        "daily cap, but a constant that happened not to bind is still unverified. "
+        "WINDOWS.md row 26 stays OPEN."
+    ),
+    # THE NULL-OBSERVATION GATE (Ruling L4). Every season, with its arm, below.
+    "null_arms_observed": ("CLEAN",),
+    "absent_observations_total": 0,
+    "overrides_accepted": (),
+    "ambiguous_seasons": (),
+    "outage_like_seasons": (),
+    "null_gate_note": (
+        "ALL 24 SEASONS CLASSIFIED CLEAN AT A ZERO ABSENT-OBSERVATION FRACTION. "
+        "The archive answered every one of the 4,847 outdoor games. So the gate "
+        "never fired, the AMBIGUOUS and OUTAGE_LIKE arms were never exercised on "
+        "live data, and no --accept-null-fraction override was requested or "
+        "granted. Recorded plainly because 'the gate did not fire' and 'the gate "
+        "works' are different statements, and only the first one was observed "
+        "here; the arms are exercised by "
+        "tests/unit/test_weather_backfill_resume.py."
+    ),
+    # RESUMABILITY. Recorded as a fact about this run rather than as a claim.
+    "interruptions": 0,
+    "resumed_from_season": None,
+    "resumability_note": (
+        "the run completed in ONE invocation and was never interrupted, so its "
+        "resume path was NOT exercised here. R3's resumability is proven by "
+        "tests/unit/test_weather_backfill_resume.py and by the coverage rule "
+        "returning all 24 seasons before the run and the empty tuple after it -- "
+        "not by this run, which had no interruption to recover from."
+    ),
+    "archive_floor_probe": {
+        "date": "2002-09-05",
+        "stadium_id": "NYC00",
+        "timezone": "America/New_York",
+        "hours": 24,
+        "nulls": 0,
+    },
+    "per_season": (
+        {
+            "season": 2002,
+            "games": 267,
+            "fetched": 216,
+            "written_without_a_call": 51,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2002_W00_20260914T002711.parquet",
+        },
+        {
+            "season": 2003,
+            "games": 267,
+            "fetched": 211,
+            "written_without_a_call": 56,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2003_W00_20260914T003043.parquet",
+        },
+        {
+            "season": 2004,
+            "games": 267,
+            "fetched": 214,
+            "written_without_a_call": 53,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2004_W00_20260914T003418.parquet",
+        },
+        {
+            "season": 2005,
+            "games": 267,
+            "fetched": 219,
+            "written_without_a_call": 48,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2005_W00_20260914T003757.parquet",
+        },
+        {
+            "season": 2006,
+            "games": 267,
+            "fetched": 206,
+            "written_without_a_call": 61,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2006_W00_20260914T004124.parquet",
+        },
+        {
+            "season": 2007,
+            "games": 267,
+            "fetched": 207,
+            "written_without_a_call": 60,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2007_W00_20260914T004451.parquet",
+        },
+        {
+            "season": 2008,
+            "games": 267,
+            "fetched": 214,
+            "written_without_a_call": 53,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2008_W00_20260914T004825.parquet",
+        },
+        {
+            "season": 2009,
+            "games": 267,
+            "fetched": 198,
+            "written_without_a_call": 69,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2009_W00_20260914T005143.parquet",
+        },
+        {
+            "season": 2010,
+            "games": 267,
+            "fetched": 199,
+            "written_without_a_call": 68,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2010_W00_20260914T005502.parquet",
+        },
+        {
+            "season": 2011,
+            "games": 267,
+            "fetched": 196,
+            "written_without_a_call": 71,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2011_W00_20260914T005819.parquet",
+        },
+        {
+            "season": 2012,
+            "games": 267,
+            "fetched": 195,
+            "written_without_a_call": 72,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2012_W00_20260914T010139.parquet",
+        },
+        {
+            "season": 2013,
+            "games": 267,
+            "fetched": 196,
+            "written_without_a_call": 71,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2013_W00_20260914T010456.parquet",
+        },
+        {
+            "season": 2014,
+            "games": 267,
+            "fetched": 203,
+            "written_without_a_call": 64,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2014_W00_20260914T010819.parquet",
+        },
+        {
+            "season": 2015,
+            "games": 267,
+            "fetched": 205,
+            "written_without_a_call": 62,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2015_W00_20260914T011144.parquet",
+        },
+        {
+            "season": 2016,
+            "games": 267,
+            "fetched": 200,
+            "written_without_a_call": 67,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2016_W00_20260914T011504.parquet",
+        },
+        {
+            "season": 2017,
+            "games": 267,
+            "fetched": 205,
+            "written_without_a_call": 62,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2017_W00_20260914T011829.parquet",
+        },
+        {
+            "season": 2018,
+            "games": 267,
+            "fetched": 202,
+            "written_without_a_call": 65,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2018_W00_20260914T012152.parquet",
+        },
+        {
+            "season": 2019,
+            "games": 267,
+            "fetched": 206,
+            "written_without_a_call": 61,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2019_W00_20260914T012518.parquet",
+        },
+        {
+            "season": 2020,
+            "games": 269,
+            "fetched": 176,
+            "written_without_a_call": 93,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2020_W00_20260914T012814.parquet",
+        },
+        {
+            "season": 2021,
+            "games": 285,
+            "fetched": 202,
+            "written_without_a_call": 83,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2021_W00_20260914T013136.parquet",
+        },
+        {
+            "season": 2022,
+            "games": 284,
+            "fetched": 198,
+            "written_without_a_call": 86,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2022_W00_20260914T013455.parquet",
+        },
+        {
+            "season": 2023,
+            "games": 285,
+            "fetched": 199,
+            "written_without_a_call": 86,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2023_W00_20260914T013814.parquet",
+        },
+        {
+            "season": 2024,
+            "games": 285,
+            "fetched": 187,
+            "written_without_a_call": 98,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2024_W00_20260914T014122.parquet",
+        },
+        {
+            "season": 2025,
+            "games": 285,
+            "fetched": 193,
+            "written_without_a_call": 92,
+            "null_arm": "CLEAN",
+            "absent_observations": 0,
+            "null_fraction": 0.0,
+            "longest_contiguous_run": 0,
+            "override_accepted": False,
+            "snapshot": "weather_backfill_raw_bronze_2025_W00_20260914T014435.parquet",
+        },
+    ),
+}
