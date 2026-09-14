@@ -9874,3 +9874,51 @@ UPDATED_HOLDOUT_PIN_TESTS_FOUND_BY_MEASUREMENT: tuple[tuple[str, str, str], ...]
         "live_partition",
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# TWO TESTS THAT CARRIED A STALE PARTITION LITERAL BUT ARE NOT PARTITION GUARDS.
+#
+# Recorded SEPARATELY from UPDATED_HOLDOUT_PIN_TESTS, and the separation is the
+# honest part rather than a filing convenience.
+#
+# The Ruling R amendment requires every UPDATED HOLDOUT PIN to carry
+# `live_partition` or `frozen_baseline` in its own node id, because a GUARD whose
+# name no longer says which window it covers leaves a future reader unable to tell
+# a correct 2025 from a regression. These two are not guards of that kind. One is
+# about merge-on-game_id pairing and the delta invariant; the other is about a
+# Phase-29 diagnostic config being a separate object from the canonical one.
+# Neither asserts a partition value any more -- both now DERIVE -- so renaming
+# them to carry `live_partition` would MISDESCRIBE what they test in order to
+# satisfy a naming rule written for something else.
+#
+# What they DID carry was a partition literal, which is why they went red. That is
+# worth recording, and it is recorded here, in a slot whose name says what it
+# holds.
+# ---------------------------------------------------------------------------
+
+PARTITION_LITERALS_REMOVED_FROM_NON_GUARD_TESTS: tuple[tuple[str, str, str], ...] = (
+    (
+        "tests/integration/test_promote_models.py::"
+        "test_paired_delta_keys_populated_on_game_id",
+        "Its synthetic frame hand-wrote seasons (2021, 2022, 2023, 2024) and read "
+        "the per-season keys back by the same literals. _populate_paired_delta_keys "
+        "rebuilds those dicts from deploy_gate.HOLDOUT_SEASONS, so the keys vanished "
+        "and the test raised KeyError: 2021. The fixture now derives its seasons; "
+        "what the test is about -- the merge-on-game_id pairing and the delta "
+        "invariant -- does not depend on which seasons they are.",
+        "live_partition",
+    ),
+    (
+        "tests/integration/test_signal_lift.py::TestPhase29CliWiring::"
+        "test_covered_selection_window_config_shape",
+        "Asserted TemporalSplitConfig.default().train_seasons == [2018, 2019] to "
+        "prove the Phase-29 diagnostic sibling had not mutated the canonical "
+        "window. The PROPERTY is right and is kept; the literal was the partition "
+        "written down again, so it is now asserted as a difference against the "
+        "rule. The sibling's own [2018, 2019, 2020] window is DELIBERATELY left a "
+        "literal: it is a frozen historical diagnostic window and must not roll "
+        "forward with a rule it was never measured under.",
+        "live_partition",
+    ),
+)

@@ -920,9 +920,15 @@ def _paired_frames() -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     rng = np.random.default_rng(2502)
     rows = []
-    for season in (2021, 2022, 2023, 2024):
+    # DERIVED from deploy_gate.HOLDOUT_SEASONS (Plan 33.1-09 Task 3). These were the
+    # hand-written seasons (2021, 2022, 2023, 2024). _populate_paired_delta_keys rebuilds
+    # its per-season dicts from the LIVE holdout, so a synthetic frame carrying different
+    # seasons produced empty per-season arrays and a KeyError on read-back -- a fixture
+    # silently declaring the partition. What this test is about is the merge-on-game_id
+    # pairing and the delta invariant, neither of which depends on WHICH seasons they are.
+    for season in deploy_gate.HOLDOUT_SEASONS:
         for i in range(50):
-            rows.append((f"{season}_G{i}", season))
+            rows.append((f"{season}_G{i}", int(season)))
     game_ids = [r[0] for r in rows]
     seasons = [r[1] for r in rows]
     n = len(rows)
@@ -947,13 +953,14 @@ def test_paired_delta_keys_populated_on_game_id() -> None:
     arrays carry the integer holdout seasons.
     """
     candidate_valid, baseline_valid = _paired_frames()
+    seasons = tuple(int(season) for season in deploy_gate.HOLDOUT_SEASONS)
     candidate: dict[str, Any] = {
         "clv_values": None,
         "baseline_clv_values": None,
         "clv_delta_values": None,
-        "per_season_clv_values": dict.fromkeys((2021, 2022, 2023, 2024), None),
-        "per_season_baseline_clv_values": dict.fromkeys((2021, 2022, 2023, 2024), None),
-        "per_season_clv_delta_values": dict.fromkeys((2021, 2022, 2023, 2024), None),
+        "per_season_clv_values": dict.fromkeys(seasons, None),
+        "per_season_baseline_clv_values": dict.fromkeys(seasons, None),
+        "per_season_clv_delta_values": dict.fromkeys(seasons, None),
         "per_season": {},
     }
 
@@ -966,13 +973,16 @@ def test_paired_delta_keys_populated_on_game_id() -> None:
     delta = candidate["clv_delta_values"]
     assert cand is not None and base is not None and delta is not None
     # Equal n on the merged intersection (T-25-02-pairing).
-    assert len(cand) == len(base) == len(delta) == 200
+    assert len(cand) == len(base) == len(delta) == 50 * len(seasons)
     # Plan 25-01 internal-consistency invariant holds element-wise.
     assert np.allclose(delta, cand - base)
     # The positive offset means the paired delta is positive on average (candidate not worse).
     assert float(np.mean(delta)) > 0
-    # Per-season delta keys carry the integer holdout seasons with equal n.
-    for season in (2021, 2022, 2023, 2024):
+    # Per-season delta keys carry the integer LIVE holdout seasons with equal n. Derived,
+    # so the assertion is about the pairing rather than about which seasons the partition
+    # happens to name today.
+    assert set(candidate["per_season_clv_delta_values"]) == set(seasons)
+    for season in seasons:
         season_delta = candidate["per_season_clv_delta_values"][season]
         assert season_delta is not None
         assert len(season_delta) == 50

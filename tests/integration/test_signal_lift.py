@@ -996,7 +996,25 @@ class TestPhase29CliWiring:
         assert config.holdout_seasons == [2022, 2023, 2024]
         config.validate()
         # The canonical window is NOT mutated by adding this sibling (D-Q2).
-        assert TemporalSplitConfig.default().train_seasons == [2018, 2019]
+        #
+        # UPDATED by Plan 33.1-09 Task 3. This asserted the literal [2018, 2019], which was
+        # the canonical default's train window at the time and is now the committed rule's
+        # business (conf/season_partition.py, SPEC R6). The PROPERTY under test is that the
+        # Phase-29 diagnostic sibling is a SEPARATE config and leaves the canonical one
+        # alone -- so it is asserted as a difference against the rule, which cannot go stale.
+        #
+        # This sibling's own [2018, 2019, 2020] window is deliberately left as a literal: it
+        # is a frozen Phase-29 DIAGNOSTIC window, chosen for line-movement coverage, and it
+        # is not the live partition. Deriving it would make a historical diagnostic roll
+        # forward with a rule it was never measured under.
+        from conf.season_partition import default_season_partition
+
+        canonical = TemporalSplitConfig.default()
+        assert canonical.train_seasons == list(default_season_partition().selection)
+        assert canonical.train_seasons != config.train_seasons, (
+            "the Phase-29 covered-selection-window sibling has become the canonical "
+            "default. It is a diagnostic window, not the live partition."
+        )
 
     def test_covered_selection_window_is_strictly_ordered(self) -> None:
         """max(train) < hp_val < min(measure): no season is trained on and measured."""
