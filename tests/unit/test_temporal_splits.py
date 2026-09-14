@@ -12,11 +12,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from conf.season_partition import default_season_partition
 from models.temporal import (
     TemporalSplitConfig,
     WalkForwardSplitter,
     make_temporal_cv_splits,
 )
+
+# The seasons the synthetic frame must cover for the LIVE partition to be exercisable:
+# selection through the last holdout season, inclusive. Derived, never typed -- see the
+# fixture docstring for what a stale literal here silently did.
+_LIVE = default_season_partition()
+_LIVE_PARTITION_SEASON_SPAN = range(_LIVE.selection[0], _LIVE.holdout[-1] + 1)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -25,9 +32,17 @@ from models.temporal import (
 
 @pytest.fixture
 def synthetic_features_df() -> pd.DataFrame:
-    """Create a synthetic feature DataFrame with seasons 2018-2024, 10 rows per season."""
+    """A synthetic feature frame spanning the LIVE partition, 10 rows per season.
+
+    The range is DERIVED from ``conf.season_partition`` rather than written out. It used to be
+    the literal ``range(2018, 2025)``, which stopped one season short the moment Plan 33.1-09
+    moved the holdout to 2024-2025 -- and the failure mode was not an error: ``generate_splits``
+    SKIPS a holdout season with no test rows, so the walk-forward tests below would silently
+    measure one fold instead of two. A fixture that decides how many folds a test sees must not
+    be able to fall behind the partition.
+    """
     rows = []
-    for season in range(2018, 2025):
+    for season in _LIVE_PARTITION_SEASON_SPAN:
         for i in range(10):
             rows.append(
                 {
@@ -108,17 +123,38 @@ def test_three_fold_temporal_ordering():
 # ---------------------------------------------------------------------------
 
 
-def test_walk_forward_splits(synthetic_features_df, default_config):
-    """WalkForwardSplitter generates 4 splits for 4 holdout seasons."""
+def test_walk_forward_splits_cover_the_live_partition(
+    synthetic_features_df, default_config
+):
+    """One split per holdout season of the LIVE partition (conf.season_partition).
+
+    UPDATED by Plan 33.1-09 Task 3, not deleted. It used to assert a literal 4 splits, from
+    the four holdout seasons 2021-2024. The live partition is the two most recent COMPLETED
+    seasons, so the count is 2 -- and asserting a new literal would put another declaration of
+    the partition in a test file. Both the count and the first fold's boundaries are derived
+    from the config under test.
+
+    This asserts over the LIVE partition (``conf.season_partition``), NOT over
+    ``models.deploy_gate.FROZEN_BASELINE_SEASONS``: the splitter is what a future run
+    executes, while the frozen 2021-2024 set is the historical window ``config/gate.toml``'s
+    [baseline.*] block was frozen over and never moves.
+    """
     splitter = WalkForwardSplitter(config=default_config, target_col="home_win")
     splits = list(splitter.generate_splits(synthetic_features_df))
 
-    # 4 holdout seasons -> 4 splits
-    assert len(splits) == 4, f"Expected 4 splits, got {len(splits)}"
+    expected = len(default_config.holdout_seasons)
+    assert len(splits) == expected, (
+        f"Expected {expected} splits for holdout {default_config.holdout_seasons}, got "
+        f"{len(splits)}. A SHORT count usually means the synthetic frame does not reach the "
+        "last holdout season: generate_splits SKIPS a season with no test rows rather than "
+        "raising."
+    )
 
-    # First split: train on [2018, 2019, 2020], test on 2021
-    assert splits[0].train_seasons == [2018, 2019, 2020]
-    assert splits[0].test_season == 2021
+    first_holdout = default_config.holdout_seasons[0]
+    assert splits[0].test_season == first_holdout
+    assert splits[0].train_seasons == [
+        season for season in _LIVE_PARTITION_SEASON_SPAN if season < first_holdout
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -126,14 +162,25 @@ def test_walk_forward_splits(synthetic_features_df, default_config):
 # ---------------------------------------------------------------------------
 
 
-def test_walk_forward_expanding_window(synthetic_features_df, default_config):
-    """For holdout season 2023, train data includes seasons 2018-2022 (expanding)."""
+def test_walk_forward_expanding_window_over_the_live_partition(
+    synthetic_features_df, default_config
+):
+    """The LAST holdout season of the live partition trains on everything before it.
+
+    UPDATED by Plan 33.1-09 Task 3, not deleted. It used to name season 2023 and the literal
+    train list [2018..2022], both of which describe the pre-correction partition. The
+    EXPANDING property is what is under test, so it is asserted against the live partition's
+    own last holdout season -- which on today's data is 2025, the season that used to be
+    invisible. Asserts over the LIVE partition, not over FROZEN_BASELINE_SEASONS.
+    """
     splitter = WalkForwardSplitter(config=default_config, target_col="home_win")
     splits = list(splitter.generate_splits(synthetic_features_df))
 
-    # Find the split for season 2023 (index 2 in holdout [2021,2022,2023,2024])
-    split_2023 = next(s for s in splits if s.test_season == 2023)
-    assert split_2023.train_seasons == [2018, 2019, 2020, 2021, 2022]
+    last_holdout = default_config.holdout_seasons[-1]
+    split = next(s for s in splits if s.test_season == last_holdout)
+    assert split.train_seasons == [
+        season for season in _LIVE_PARTITION_SEASON_SPAN if season < last_holdout
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -188,16 +235,34 @@ def test_make_temporal_cv_splits(synthetic_features_df):
 # ---------------------------------------------------------------------------
 
 
-def test_default_config():
-    """TemporalSplitConfig.default() returns the expected default split."""
+def test_default_config_is_the_live_partition():
+    """``TemporalSplitConfig.default()`` IS ``conf.season_partition``'s live partition.
+
+    UPDATED by Plan 33.1-09 Task 3, not deleted. It used to pin the three literals
+    [2018, 2019] / [2020] / [2021..2024]. The recorded reason: Phase 31 SPENT the 2025 clean
+    split -- the one-shot verdict run happened and PROFITABILITY-READOUT.md records that it
+    cannot be repeated -- so the reason 2025 was withheld is consumed, and D33.1-01
+    deliberately overrides it. Under SPEC R6 the partition comes from ONE committed rule, so
+    re-pinning literals here would make this file a second declaration of it.
+
+    Asserts over the LIVE partition (``conf.season_partition``), NOT over
+    ``models.deploy_gate.FROZEN_BASELINE_SEASONS``. The two are different things and stay
+    different: the frozen set is the historical window ``config/gate.toml``'s [baseline.*]
+    block was frozen over and never moves; this one rolls forward as seasons complete.
+    """
+    partition = default_season_partition()
     config = TemporalSplitConfig.default()
 
-    assert config.train_seasons == [2018, 2019]
-    assert config.hp_val_seasons == [2020]
-    assert config.holdout_seasons == [2021, 2022, 2023, 2024]
+    assert config.train_seasons == list(partition.selection)
+    assert config.hp_val_seasons == list(partition.hp_val)
+    assert config.holdout_seasons == list(partition.holdout)
 
-    # Should validate cleanly
+    # SPEC R6's acceptance, asserted here and not only in the agreement module: the rule's own
+    # output must be a config validate() accepts.
     config.validate()
+
+    # The clause the requirement exists for, by name.
+    assert 2025 in config.holdout_seasons, config.holdout_seasons
 
 
 # ---------------------------------------------------------------------------

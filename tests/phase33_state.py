@@ -9610,3 +9610,166 @@ SEASON_PARTITION_AFTER: dict[str, object] = {
 # more -- so it is retargeted here rather than being made to agree with a holdout
 # that has moved.
 FROZEN_BASELINE_SEASONS_PIN: tuple[int, ...] = (2021, 2022, 2023, 2024)
+
+
+# ---------------------------------------------------------------------------
+# THE LIVE PINS THAT WERE UPDATED WHEN THE PARTITION MOVED, AND WHY.
+#
+# APPENDED by Plan 33.1-09 Task 3 on 2026-09-14. Nothing above this line was
+# edited.
+#
+# NONE OF THESE IS A DELIBERATE TRIPWIRE, AND NONE WAS DELETED. That distinction
+# is the point of the slot. A control that stops being true has exactly three
+# honest dispositions -- update it with a recorded reason, delete it with a
+# recorded reason, or record it as deliberately red -- and only the first is
+# correct here. These pinned the PRE-CORRECTION partition; the partition moved by
+# owner decision (D33.1-01), so the guards move with it and keep guarding.
+# `DELIBERATE_TRIPWIRE_NODE_IDS` is UNCHANGED at five entries and is asserted
+# disjoint from this set: a pin quietly relabelled as a tripwire is a control
+# neutered rather than updated, which is the failure this record exists to make
+# visible.
+#
+# THE RECORDED REASON, ONCE, SO EACH ROW CAN BE SHORT. Phase 31 held 2025 back as
+# the single unburned clean split and then SPENT it: the one-shot pre-registered
+# verdict run happened, and PROFITABILITY-READOUT.md records that it cannot be
+# repeated. So the condition the strongest of these guards set for ITSELF -- "a
+# future milestone genuinely needing 2025 in the gate is a decision to record
+# AFTER the Phase-31 verdict is published" -- is met. D33.1-01 is that decision,
+# taken by the owner after the cost was stated twice.
+#
+# EACH ROW NAMES THE PARTITION IT NOW COVERS (Ruling R amendment, Codex 33.1-09
+# LOW). A guard whose name no longer says which window it is about leaves a
+# future reader unable to tell a correct 2025 from a regression, because 2025 in
+# the LIVE partition is the requirement working and 2025 in the FROZEN baseline's
+# key set would be a disclosure being erased. Every node id below carries
+# `live_partition` or `frozen_baseline` in its own name, so the distinction
+# survives without this file being consulted.
+#
+# ELEVEN ROWS, NOT FIVE. The plan's inventory named five live pins. Driving the
+# modules turned up six more that pinned the same pre-correction partition and
+# would have gone red for the same reason -- three walk-forward/temporal pins,
+# the bundle-shape per-season key set, and two frozen-baseline population slices
+# that were reading the LIVE constant because the two windows used to coincide.
+# The last two are the quiet ones: they PASSED either way, because both sides of
+# their comparison used one window, so they were measuring the wrong population
+# without failing. They are recorded here rather than fixed silently.
+#
+# EACH ROW IS (node_id, reason, partition), where partition is `live_partition`
+# or `frozen_baseline`.
+# ---------------------------------------------------------------------------
+
+UPDATED_HOLDOUT_PIN_TESTS: tuple[tuple[str, str, str], ...] = (
+    (
+        "tests/integration/test_gate_baseline_byte_identity.py::"
+        "TestTheLivePartitionIncludesTheSpentCleanSplit::"
+        "test_the_holdout_constant_is_the_live_partition",
+        "Asserted HOLDOUT_SEASONS was exactly (2021, 2022, 2023, 2024) with 2025 "
+        "absent. The constant is now derived from conf.season_partition and the "
+        "clean split is spent, so it asserts the live partition instead -- and "
+        "additionally asserts FROZEN_BASELINE_SEASONS did NOT follow it.",
+        "live_partition",
+    ),
+    (
+        "tests/integration/test_gate_baseline_byte_identity.py::"
+        "TestTheLivePartitionIncludesTheSpentCleanSplit::"
+        "test_the_committed_gate_configuration_mirrors_the_live_partition",
+        "Asserted config/gate.toml's holdout was the four tune seasons with 2025 "
+        "absent. That file is a GENERATED MIRROR of the rule (TOML cannot import "
+        "it), so the test now evaluates the parsed value against the rule -- "
+        "which is what catches a stale mirror whether or not anyone ran "
+        "scripts/sync_gate_holdout.py.",
+        "live_partition",
+    ),
+    (
+        "tests/integration/test_gate_baseline_byte_identity.py::"
+        "TestTheLivePartitionIncludesTheSpentCleanSplit::"
+        "test_the_scored_population_is_the_live_partition_and_reaches_2025",
+        "NOT in the plan's five. Asserted that NO 2025 game reaches the scored "
+        "population, via two mechanisms that were both literal-driven: "
+        "_load_features' max_backtest_season filter and the holdout constant. "
+        "Both are corrected, so it now asserts 2025 DOES reach it. The original "
+        "docstring's warning -- read the parquet, not the loader, because the "
+        "loader is itself one of the mechanisms -- is kept, since it is still "
+        "true in the other direction.",
+        "live_partition",
+    ),
+    (
+        "tests/integration/test_gate_baseline_byte_identity.py::"
+        "TestTheRegeneratedBaselineIsByteIdenticalToTheCommittedOne::"
+        "test_the_frozen_baseline_extraction_is_not_vacuous",
+        "NOT in the plan's five, and it never failed. It checked the extracted "
+        "[baseline.*] block carries a per-season table for each of the LIVE "
+        "holdout's seasons, which was right only while the two windows "
+        "coincided. Retargeted to FROZEN_BASELINE_SEASONS, which is what that "
+        "block's season tables are by definition.",
+        "frozen_baseline",
+    ),
+    (
+        "tests/integration/test_gate_baseline_byte_identity.py::"
+        "TestTheWidenedOddsTableDoesNotPerturbTheBaseline::"
+        "test_dropping_the_juice_columns_changes_no_frozen_baseline_per_season_figure",
+        "NOT in the plan's five, and it never failed either -- both sides of its "
+        "comparison used one window, so it kept passing while sliced to the "
+        "wrong population. It exists to make a byte-identity FAILURE "
+        "unambiguous, and byte-identity is a property of the frozen block, so it "
+        "now slices FROZEN_BASELINE_SEASONS.",
+        "frozen_baseline",
+    ),
+    (
+        "tests/unit/test_deploy_gate.py::"
+        "test_gate_holdout_is_the_live_partition_and_now_contains_2025",
+        "The strongest of the five. It asserted gate.seasons.holdout was exactly "
+        "2021-2024 and stated its own release condition: a milestone needing "
+        "2025 is a decision to record AFTER the Phase-31 verdict is published. "
+        "It was published. The old sentence is quoted in the new docstring so "
+        "the change is visible rather than silent.",
+        "live_partition",
+    ),
+    (
+        "tests/unit/test_deploy_gate.py::"
+        "test_the_phase_start_snapshot_holdout_was_re_read_to_the_live_partition",
+        "NEW, and the reason it is new rather than a rename: "
+        "PHASE_START_GATE_SETTINGS['seasons.holdout'] was RE-READ from the new "
+        "committed config in the same commit as the config edit, exactly as that "
+        "snapshot's own comment instructs. The ten-key snapshot test keeps its "
+        "name because nine keys are untouched; this guards the tenth and asserts "
+        "the re-read value IS the live partition rather than a third number.",
+        "live_partition",
+    ),
+    (
+        "tests/unit/test_deploy_gate.py::"
+        "test_bundle_delta_keys_pinned_in_builder_over_the_live_partition",
+        "NOT in the plan's five. It pinned the per-season bundle keys to the "
+        "literal set {2021, 2022, 2023, 2024} -- a copy of the partition living "
+        "in a bundle-shape test. It now reads gate.HOLDOUT_SEASONS, since what "
+        "is under test is that the keys COVER the scored window.",
+        "live_partition",
+    ),
+    (
+        "tests/unit/test_temporal_splits.py::test_default_config_is_the_live_partition",
+        "Pinned TemporalSplitConfig.default() to the three literals [2018, 2019] "
+        "/ [2020] / [2021..2024]. It now derives them from the rule and "
+        "additionally asserts the rule's own output passes validate() -- SPEC "
+        "R6's pairwise-disjoint and non-empty acceptance clauses.",
+        "live_partition",
+    ),
+    (
+        "tests/unit/test_temporal_splits.py::"
+        "test_walk_forward_splits_cover_the_live_partition",
+        "NOT in the plan's five. It asserted a literal 4 splits. The failure was "
+        "instructive: its synthetic fixture stopped at 2024, and "
+        "generate_splits SKIPS a holdout season with no test rows rather than "
+        "raising, so a stale fixture silently changes how many folds a test "
+        "sees. The fixture's span is now derived from the partition too.",
+        "live_partition",
+    ),
+    (
+        "tests/unit/test_temporal_splits.py::"
+        "test_walk_forward_expanding_window_over_the_live_partition",
+        "NOT in the plan's five. It named season 2023 and the literal train list "
+        "[2018..2022]. The EXPANDING property is what it tests, so it now "
+        "asserts that against the live partition's own last holdout season -- "
+        "2025, the season that used to be invisible.",
+        "live_partition",
+    ),
+)
