@@ -7158,3 +7158,309 @@ IDENTITY_MIGRATION_CUMULATIVE_CHANGED_FILES: tuple[tuple[str, str], ...] = (
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_12: int = 33
+
+
+# -------------------------------------------------------------------------
+# THE PHASE-33.1 GOLD RUNG, DECLARED BEFORE ANYTHING WAS REBUILT.
+#
+# APPENDED by Plan 33.1-07 Task 1 on 2026-09-14, BEFORE the owner ruling of
+# Task 2 and BEFORE the Task-3 rebuild. Nothing above this line was edited.
+#
+# WHY A DECLARATION AND NOT A RECORD. Every other slot in this module records
+# what some run MEASURED. This one records what the rung PREDICTS, and it is
+# committed first for exactly one reason: a signature written after the diff is
+# seen is a transcription wearing a prediction's clothes (T-33.1-43). Task 3
+# STOPS on a verdict it cannot satisfy rather than adjusting this.
+#
+# ALL THREE FAMILIES ARE ENUMERABLE OR SOURCE-DERIVED (Ruling N2). The first
+# draft declared the third as "any column that moves because 207 rows gained
+# coverage", which is a CAUSE STORY: it cannot be evaluated against a diff, so
+# any moved column can be argued into it afterwards. This repository has the
+# worked example -- scripts/fingerprint_gold._attribute_rung2 is a blanket
+# predicate whose own comment records that it "cannot FAIL on a moved column",
+# and that rung 2's first attempt "attributed perfectly cleanly -- ok, zero
+# unattributed -- while having silently destroyed 18 columns".
+#
+# THE 207 IDS ARE A ONE-SHOT MEASUREMENT. They are exactly the games gold
+# carries and the two silver feature tables lack; the rebuild CLOSES that gap,
+# so afterwards the set cannot be re-derived. Measured here, before it ran, on
+# the same argument p331_rung0.json rests on. RESEARCH section 10 recorded 207
+# and the re-derivation measured 207 -- the two agree, so there is no
+# divergence to record in the GOLD_WEATHER_CONSTANCY_MEASUREMENT idiom.
+# -------------------------------------------------------------------------
+
+PHASE331_RUNG_DECLARATION: dict[str, object] = {
+    "declared_on": "2026-09-14",
+    "declared_by": "Plan 33.1-07 Task 1",
+    "committed_before_rebuild": True,
+    "rung": 1,
+    "rung_prefix": "p331_",
+    "cause": (
+        "COMPOUND (three causes, never 'the weather rung'): (1) real ERA5 "
+        "weather replacing the fabricated 65.0F constant across 2002-2025 "
+        "[R5/D33.1-07]; (2) the all-seasons stadium_id routing correction "
+        "[D33.1-06], which moves the venue/travel/timezone/elevation "
+        "family for the 1,153 games that resolved to the wrong stadium; "
+        "and (3) restored 2025 coverage -- the 207 games the two silver "
+        "feature tables were missing, which the rebuild adds "
+        "independently of any weather or routing change"
+    ),
+    # The three families, and the MECHANISM each is expressed as. A value
+    # outside these two mechanisms would be a cause story, which Ruling N2
+    # forbids -- and a test asserts the set membership rather than trusting
+    # the prose above.
+    "declared_families": ("weather", "venue", "staleness_2025"),
+    "family_mechanisms": {
+        "weather": "source-derived constant",
+        "venue": "source-derived constant",
+        "staleness_2025": "row-scoped per-season-digest predicate",
+    },
+    "family_sources": {
+        "weather": "features.weather.WEATHER_FEATURE_COLUMNS",
+        "venue": (
+            "scripts.fingerprint_gold.PHASE331_VENUE_FAMILY_COLUMNS, derived "
+            "from the columns features.contextual.ContextualFeaturesCalculator"
+            ".build_features actually emits, minus the merge keys"
+        ),
+        "staleness_2025": (
+            "PHASE331_STALENESS_GAME_IDS restricted to the per-season digests "
+            "outside 2025 -- a changed column outside the two column families "
+            "is attributable only if it is byte-identical in every season "
+            "except 2025"
+        ),
+    },
+    # The predicted diff shape. ASSERTED by the rung, not described to it.
+    "columns_added": ("weather_coverage",),
+    "columns_removed": (),
+    "rows": "unchanged",
+    "rows_expected": 6499,
+    "width_delta_per_matrix": 1,
+    "widths_before": (194, 195, 194),
+    "widths_predicted": (195, 196, 195),
+    # Ruling N2, second half. An explanation SUPPLEMENTS the check and can
+    # never substitute for it. Where an out-of-family move turns out to be
+    # legitimate, the correct act is a NEW declared family in a follow-up
+    # rung, not a footnote on this one.
+    "ok_required_unconditionally": True,
+    "staleness_seasons": (2025,),
+    "staleness_game_id_count": 207,
+    "staleness_game_id_count_recorded_by_research": 207,
+    "staleness_measured_from": (
+        "set(data/gold/features_ats.parquet.game_id) minus "
+        "set(data/silver/weather_features.parquet.game_id), cross-checked "
+        "against contextual_features.parquet -- the two agree exactly"
+    ),
+}
+
+# The 207 ids themselves, measured 2026-09-14 BEFORE the rebuild. All 207 are
+# season 2025: gold holds 285 rows of 2025 and both silver feature tables held
+# 78, and 285 - 78 = 207 exactly.
+PHASE331_STALENESS_GAME_IDS: tuple[str, ...] = (
+    "2025_W06_ARI@IND",
+    "2025_W06_BUF@ATL",
+    "2025_W06_CHI@WAS",
+    "2025_W06_CIN@GB",
+    "2025_W06_CLE@PIT",
+    "2025_W06_DAL@CAR",
+    "2025_W06_DEN@NYJ",
+    "2025_W06_DET@KC",
+    "2025_W06_LA@BAL",
+    "2025_W06_LAC@MIA",
+    "2025_W06_NE@NO",
+    "2025_W06_PHI@NYG",
+    "2025_W06_SEA@JAX",
+    "2025_W06_SF@TB",
+    "2025_W06_TEN@LV",
+    "2025_W07_ATL@SF",
+    "2025_W07_CAR@NYJ",
+    "2025_W07_GB@ARI",
+    "2025_W07_HOU@SEA",
+    "2025_W07_IND@LAC",
+    "2025_W07_LA@JAX",
+    "2025_W07_LV@KC",
+    "2025_W07_MIA@CLE",
+    "2025_W07_NE@TEN",
+    "2025_W07_NO@CHI",
+    "2025_W07_NYG@DEN",
+    "2025_W07_PHI@MIN",
+    "2025_W07_PIT@CIN",
+    "2025_W07_TB@DET",
+    "2025_W07_WAS@DAL",
+    "2025_W08_BUF@CAR",
+    "2025_W08_CHI@BAL",
+    "2025_W08_CLE@NE",
+    "2025_W08_DAL@DEN",
+    "2025_W08_GB@PIT",
+    "2025_W08_MIA@ATL",
+    "2025_W08_MIN@LAC",
+    "2025_W08_NYG@PHI",
+    "2025_W08_NYJ@CIN",
+    "2025_W08_SF@HOU",
+    "2025_W08_TB@NO",
+    "2025_W08_TEN@IND",
+    "2025_W08_WAS@KC",
+    "2025_W09_ARI@DAL",
+    "2025_W09_ATL@NE",
+    "2025_W09_BAL@MIA",
+    "2025_W09_CAR@GB",
+    "2025_W09_CHI@CIN",
+    "2025_W09_DEN@HOU",
+    "2025_W09_IND@PIT",
+    "2025_W09_JAX@LV",
+    "2025_W09_KC@BUF",
+    "2025_W09_LAC@TEN",
+    "2025_W09_MIN@DET",
+    "2025_W09_NO@LA",
+    "2025_W09_SEA@WAS",
+    "2025_W09_SF@NYG",
+    "2025_W10_ARI@SEA",
+    "2025_W10_ATL@IND",
+    "2025_W10_BAL@MIN",
+    "2025_W10_BUF@MIA",
+    "2025_W10_CLE@NYJ",
+    "2025_W10_DET@WAS",
+    "2025_W10_JAX@HOU",
+    "2025_W10_LA@SF",
+    "2025_W10_LV@DEN",
+    "2025_W10_NE@TB",
+    "2025_W10_NO@CAR",
+    "2025_W10_NYG@CHI",
+    "2025_W10_PHI@GB",
+    "2025_W10_PIT@LAC",
+    "2025_W11_BAL@CLE",
+    "2025_W11_CAR@ATL",
+    "2025_W11_CHI@MIN",
+    "2025_W11_CIN@PIT",
+    "2025_W11_DAL@LV",
+    "2025_W11_DET@PHI",
+    "2025_W11_GB@NYG",
+    "2025_W11_HOU@TEN",
+    "2025_W11_KC@DEN",
+    "2025_W11_LAC@JAX",
+    "2025_W11_NYJ@NE",
+    "2025_W11_SEA@LA",
+    "2025_W11_SF@ARI",
+    "2025_W11_TB@BUF",
+    "2025_W11_WAS@MIA",
+    "2025_W12_ATL@NO",
+    "2025_W12_BUF@HOU",
+    "2025_W12_CAR@SF",
+    "2025_W12_CLE@LV",
+    "2025_W12_IND@KC",
+    "2025_W12_JAX@ARI",
+    "2025_W12_MIN@GB",
+    "2025_W12_NE@CIN",
+    "2025_W12_NYG@DET",
+    "2025_W12_NYJ@BAL",
+    "2025_W12_PHI@DAL",
+    "2025_W12_PIT@CHI",
+    "2025_W12_SEA@TEN",
+    "2025_W12_TB@LA",
+    "2025_W13_ARI@TB",
+    "2025_W13_ATL@NYJ",
+    "2025_W13_BUF@PIT",
+    "2025_W13_CHI@PHI",
+    "2025_W13_CIN@BAL",
+    "2025_W13_DEN@WAS",
+    "2025_W13_GB@DET",
+    "2025_W13_HOU@IND",
+    "2025_W13_JAX@TEN",
+    "2025_W13_KC@DAL",
+    "2025_W13_LA@CAR",
+    "2025_W13_LV@LAC",
+    "2025_W13_MIN@SEA",
+    "2025_W13_NO@MIA",
+    "2025_W13_NYG@NE",
+    "2025_W13_SF@CLE",
+    "2025_W14_CHI@GB",
+    "2025_W14_CIN@BUF",
+    "2025_W14_DAL@DET",
+    "2025_W14_DEN@LV",
+    "2025_W14_HOU@KC",
+    "2025_W14_IND@JAX",
+    "2025_W14_LA@ARI",
+    "2025_W14_MIA@NYJ",
+    "2025_W14_NO@TB",
+    "2025_W14_PHI@LAC",
+    "2025_W14_PIT@BAL",
+    "2025_W14_SEA@ATL",
+    "2025_W14_TEN@CLE",
+    "2025_W14_WAS@MIN",
+    "2025_W15_ARI@HOU",
+    "2025_W15_ATL@TB",
+    "2025_W15_BAL@CIN",
+    "2025_W15_BUF@NE",
+    "2025_W15_CAR@NO",
+    "2025_W15_CLE@CHI",
+    "2025_W15_DET@LA",
+    "2025_W15_GB@DEN",
+    "2025_W15_IND@SEA",
+    "2025_W15_LAC@KC",
+    "2025_W15_LV@PHI",
+    "2025_W15_MIA@PIT",
+    "2025_W15_MIN@DAL",
+    "2025_W15_NYJ@JAX",
+    "2025_W15_TEN@SF",
+    "2025_W15_WAS@NYG",
+    "2025_W16_ATL@ARI",
+    "2025_W16_BUF@CLE",
+    "2025_W16_CIN@MIA",
+    "2025_W16_GB@CHI",
+    "2025_W16_JAX@DEN",
+    "2025_W16_KC@TEN",
+    "2025_W16_LA@SEA",
+    "2025_W16_LAC@DAL",
+    "2025_W16_LV@HOU",
+    "2025_W16_MIN@NYG",
+    "2025_W16_NE@BAL",
+    "2025_W16_NYJ@NO",
+    "2025_W16_PHI@WAS",
+    "2025_W16_PIT@DET",
+    "2025_W16_SF@IND",
+    "2025_W16_TB@CAR",
+    "2025_W17_ARI@CIN",
+    "2025_W17_BAL@GB",
+    "2025_W17_CHI@SF",
+    "2025_W17_DAL@WAS",
+    "2025_W17_DEN@KC",
+    "2025_W17_DET@MIN",
+    "2025_W17_HOU@LAC",
+    "2025_W17_JAX@IND",
+    "2025_W17_LA@ATL",
+    "2025_W17_NE@NYJ",
+    "2025_W17_NO@TEN",
+    "2025_W17_NYG@LV",
+    "2025_W17_PHI@BUF",
+    "2025_W17_PIT@CLE",
+    "2025_W17_SEA@CAR",
+    "2025_W17_TB@MIA",
+    "2025_W18_ARI@LA",
+    "2025_W18_BAL@PIT",
+    "2025_W18_CAR@TB",
+    "2025_W18_CLE@CIN",
+    "2025_W18_DAL@NYG",
+    "2025_W18_DET@CHI",
+    "2025_W18_GB@MIN",
+    "2025_W18_IND@HOU",
+    "2025_W18_KC@LV",
+    "2025_W18_LAC@DEN",
+    "2025_W18_MIA@NE",
+    "2025_W18_NO@ATL",
+    "2025_W18_NYJ@BUF",
+    "2025_W18_SEA@SF",
+    "2025_W18_TEN@JAX",
+    "2025_W18_WAS@PHI",
+    "2025_W19_BUF@JAX",
+    "2025_W19_GB@CHI",
+    "2025_W19_HOU@PIT",
+    "2025_W19_LA@CAR",
+    "2025_W19_LAC@NE",
+    "2025_W19_SF@PHI",
+    "2025_W20_BUF@DEN",
+    "2025_W20_HOU@NE",
+    "2025_W20_LA@CHI",
+    "2025_W20_SF@SEA",
+    "2025_W21_LA@SEA",
+    "2025_W21_NE@DEN",
+    "2025_W22_SEA@NE",
+)

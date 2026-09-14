@@ -394,6 +394,339 @@ PHASE30_RUNG_DOCUMENTS = tuple(f"rung{rung}.json" for rung in range(5))
 PHASE31_RUNG_PREFIX = "p31_"
 
 
+# ---------------------------------------------------------------------------
+# PHASE 33.1'S RUNG -- A PREFIX-AWARE CAUSE TABLE, NOT A WIDENED INTEGER SPACE
+# (Plan 33.1-07 Task 1, Ruling N).
+#
+# THE THREE REASONS THIS IS A PREFIX AND NOT A NEW INTEGER, on the record so the
+# choice reads as a decision rather than as a number somebody picked:
+#
+# 1. Taking rung integer 5 would land in `_expected_signature`'s `else` branch,
+#    which is rung 4's signature -- "rows strictly increased" plus a season-list
+#    rule -- and THIS rung's rows are UNCHANGED at 6,499. It would be judged
+#    against the wrong prediction, and a judge applying the wrong prediction is
+#    worse than no judge, because its verdict still reads as one.
+# 2. Taking rung integer 5 under a fresh prefix would make `require_rung_ladder`
+#    demand `p331_rung0.json` through `p331_rung4.json` -- four documents
+#    describing rebuilds this phase does not run.
+# 3. Plan 33-14 wants to extend the SAME closed dict for the Elo rung. Racing for
+#    an integer now leaves the two phases colliding later; a prefix gives 33-14
+#    the same seam instead of a contested key.
+#
+# So the cause LOOKUP became prefix-aware. Phase 30's four `RUNG_CAUSES` entries
+# are byte-untouched, Phase 31's `p31_` ladder is unaffected, and
+# `require_rung_ladder(dir, 1, "p331_")` demands exactly `p331_rung0.json` -- the
+# fingerprint of CURRENT gold taken BEFORE the rebuild, which is precisely the
+# control it exists to enforce.
+# ---------------------------------------------------------------------------
+
+PHASE331_RUNG_PREFIX: str = "p331_"
+PHASE331_RUNG: int = 1
+
+# The ONE column this rung adds, by NAME. The width integer alone cannot say
+# WHICH column arrived, and a build that added an unrelated column while omitting
+# the flag satisfies +1 exactly as well as the right one does.
+PHASE331_ADDED_COLUMN: str = "weather_coverage"
+
+# THE COMPOUND LABEL. The SPEC prohibition this phase carries reads: "MUST NOT
+# label a gold rebuild 'the weather rung' if it also carries Elo, bye-window or
+# ats_edge changes -- that re-creates the attribution failure this phase exists to
+# prevent." The same reasoning binds the rung's own name: it has THREE causes, and
+# a label naming one of them is the mislabelling, not a shorthand for it.
+PHASE331_RUNG_CAUSE: str = (
+    "COMPOUND (three causes, never 'the weather rung'): (1) real ERA5 weather "
+    "replacing the fabricated 65.0F constant across 2002-2025 [R5/D33.1-07]; "
+    "(2) the all-seasons stadium_id routing correction [D33.1-06], which moves "
+    "the venue/travel/timezone/elevation family for the 1,153 games that "
+    "resolved to the wrong stadium; and (3) restored 2025 coverage -- the 207 "
+    "games the two silver feature tables were missing, which the rebuild adds "
+    "independently of any weather or routing change"
+)
+
+RUNG_CAUSES_BY_PREFIX: dict[str, dict[int, str]] = {
+    # Phase 30's ladder, and every unprefixed caller. Referenced, NOT copied: a
+    # second spelling of the four entries is the second-list failure mode D30-02
+    # exists to prevent, and the negative control in
+    # tests/integration/test_gold_rebuild_attribution.py proves the new table did
+    # not capture the old integer.
+    "": RUNG_CAUSES,
+    # PHASE 31 SHARES PHASE 30'S CAUSES ON PURPOSE, and the reason is that a
+    # prefix has TWO jobs which happen to coincide here and not there. It
+    # name-spaces the DOCUMENTS (so `p31_rung0.json` cannot overwrite Phase 30's
+    # unregenerable `rung0.json`), and it selects the CAUSE TABLE. Phase 31's
+    # ladder re-runs Phase 30's named causes over new inputs, so only the first
+    # job applies; Phase 33.1's rung has a cause of its own, so both do. Written
+    # as a reference to the same dict rather than a copy -- a second spelling of
+    # the four entries is the second-list failure mode D30-02 exists to prevent.
+    PHASE31_RUNG_PREFIX: RUNG_CAUSES,
+    PHASE331_RUNG_PREFIX: {PHASE331_RUNG: PHASE331_RUNG_CAUSE},
+}
+
+# The season(s) the 207 previously-absent rows belong to. MEASURED before the
+# rebuild (tests.phase33_state.PHASE331_STALENESS_GAME_IDS carries the exact ids)
+# and committed, because the rebuild is what CLOSES the gap -- afterwards the set
+# is unmeasurable, which is the same argument `p331_rung0.json` rests on.
+PHASE331_STALENESS_SEASONS: tuple[int, ...] = (2025,)
+
+# The columns `combine_features` (scripts/build_features.py:558) strips or merges
+# ON rather than merging IN, so they are carried by the frame and contributed by
+# no builder as a feature.
+PHASE331_CONTEXTUAL_MERGE_KEYS: tuple[str, ...] = (
+    "game_id",
+    "season",
+    "week",
+    "home_team",
+    "away_team",
+)
+
+# The gold-name shape `FeatureMatrixBuilder._get_team_features`
+# (scripts/build_features.py:803) constructs for the team-form rolling family --
+# `{home,away}_{off,def}_rolling_{metric}`. That family is what the R12
+# bye-window rule in `features/team_form.py` governs, so it is the bye-window
+# cause's footprint in gold.
+#
+# A PREDICATE HERE IS SAFE WHERE A NAME HEURISTIC FOR THE BUILD CLOCK WOULD NOT
+# BE, and the asymmetry is the reason `_is_build_clock` insists on a REGISTERED
+# set. A name test that GRANTS an exemption lets a real move through wearing a
+# costume; this one WIDENS a refusal, so its failure mode is an extra refusal
+# rather than an absorbed change. The markers deliberately exclude
+# `_rolling_snap_share_`, which is the snap-count family and not team form.
+_PHASE331_TEAM_FORM_ROLLING_MARKERS: tuple[str, ...] = (
+    "_off_rolling_",
+    "_def_rolling_",
+)
+
+
+def phase331_weather_family() -> tuple[str, ...]:
+    """DECLARED FAMILY 1: the weather columns, from the ONE registry that owns them.
+
+    Derived from ``features.weather.WEATHER_FEATURE_COLUMNS`` rather than
+    re-listed here. The import is deferred for the same reason
+    ``_discrete_indicator_predicate``'s is: this module is also used as a plain
+    fingerprint reader and must not pull the feature stack to do that.
+    """
+    from features.weather import WEATHER_FEATURE_COLUMNS
+
+    return tuple(WEATHER_FEATURE_COLUMNS)
+
+
+_PHASE331_VENUE_FAMILY_CACHE: tuple[str, ...] | None = None
+
+
+def _derive_phase331_venue_family() -> tuple[str, ...]:
+    """Run the contextual builder once and return the columns it ACTUALLY emits.
+
+    DERIVED, NEVER TYPED. ``tests/unit/test_data_qa_gold_width.py``'s docstring
+    already records what a second hand-written list of a family costs: the list
+    and the predicate that did the work drift apart, and every assertion resting
+    on the list is then pinning a fiction. The contextual builder emits its column
+    set by composing several factory dicts inside one loop, so the only honest way
+    to name that set is to run it.
+
+    The probe frame is ONE synthetic game built from the builder's OWN venue
+    records -- a real ``stadium_id`` and a real home team -- because
+    ``_resolve_venue_id_for_game`` RAISES on an id absent from ``data/venues.json``
+    rather than falling back to the home team's stadium (D33.1-06). The
+    situational spot-flag block reloads the season schedule from silver and
+    degrades to neutral flags on any load error, so the emitted COLUMN SET is the
+    same with or without ``data/`` -- which is what lets this run on a fresh
+    checkout.
+    """
+    from features.contextual import ContextualFeaturesCalculator
+
+    calculator = ContextualFeaturesCalculator()
+    record = next(
+        venue
+        for venue in calculator.venues_data["venues"]
+        if venue.get("stadium_id") and venue.get("home_teams")
+    )
+    team = record["home_teams"][0]
+    probe = pd.DataFrame(
+        [
+            {
+                "game_id": "2024_W01_PROBE",
+                "season": 2024,
+                "week": 1,
+                "home_team": team,
+                "away_team": team,
+                "kickoff_et": pd.Timestamp(
+                    "2024-09-08 13:00:00", tz="America/New_York"
+                ),
+                "stadium_id": record["stadium_id"],
+                "home_score": 0.0,
+                "away_score": 0.0,
+            }
+        ]
+    )
+    emitted = calculator.build_features(probe, datetime(2024, 9, 9, tzinfo=UTC))
+    merge_keys = set(PHASE331_CONTEXTUAL_MERGE_KEYS)
+    family = tuple(
+        sorted(column for column in emitted.columns if column not in merge_keys)
+    )
+    if not family:
+        msg = (
+            "the contextual builder emitted no feature column at all, so DECLARED "
+            "FAMILY 2 would be empty and the Phase-33.1 rung would refuse every "
+            "venue/travel/timezone/elevation move it exists to attribute. "
+            "Refusing to derive an empty family rather than judging against one."
+        )
+        raise ValueError(msg)
+    return family
+
+
+def phase331_venue_family() -> tuple[str, ...]:
+    """DECLARED FAMILY 2, derived once and cached for the process."""
+    global _PHASE331_VENUE_FAMILY_CACHE
+    if _PHASE331_VENUE_FAMILY_CACHE is None:
+        _PHASE331_VENUE_FAMILY_CACHE = _derive_phase331_venue_family()
+    return _PHASE331_VENUE_FAMILY_CACHE
+
+
+def phase331_prohibited_families(
+    columns: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """The three families the SPEC prohibition names, resolved over *columns*.
+
+    Two of the three are EXACT NAMES and ignore *columns* entirely:
+
+    * ``elo`` -- ``features.elo_features.ELO_FEATURE_COLUMNS``, the tuple
+      ``combine_features`` itself merges by (scripts/build_features.py:616).
+    * ``ats_edge`` -- one exact name. It is not in gold today; the guard is
+      forward-looking, because Plan 33-10's points-scale repair is a separate
+      cause and a separate rung.
+
+    ``bye_window`` is a PREDICATE over the team-form rolling shape, so it can only
+    be enumerated against a universe. *columns* is that universe -- a diff's
+    changed set at attribution time, or the two DECLARED families when the caller
+    is checking disjointness. It defaults to the declared families precisely so
+    that disjointness check is NON-VACUOUS: the predicate is resolved against
+    exactly the set it must not intersect.
+
+    NOT IN ANY OF THE THREE: ``home_off_bye`` / ``away_off_bye``. They are
+    contextual-emitted, so they are inside DECLARED FAMILY 2 by construction, and
+    the bye-WINDOW cause is the rolling-window selector in ``features/team_form.py``
+    rather than the off-bye rest flag. Stated here so a later reader does not
+    "fix" it by moving them.
+    """
+    from features.elo_features import ELO_FEATURE_COLUMNS
+
+    universe = (
+        tuple(columns)
+        if columns is not None
+        else (*phase331_weather_family(), *phase331_venue_family())
+    )
+    return {
+        "elo": tuple(ELO_FEATURE_COLUMNS),
+        "bye_window": tuple(
+            sorted(
+                column
+                for column in universe
+                if any(
+                    marker in _canonical(column)
+                    for marker in _PHASE331_TEAM_FORM_ROLLING_MARKERS
+                )
+            )
+        ),
+        "ats_edge": ("ats_edge",),
+    }
+
+
+def _phase331_prohibited_family(column: str) -> str | None:
+    """The prohibited family *column* belongs to, or None."""
+    canonical = _canonical(column)
+    for label, names in phase331_prohibited_families([canonical]).items():
+        if canonical in {_canonical(name) for name in names}:
+            return label
+    return None
+
+
+# THE EXPECTED CHANGE SET, DECLARED AS A MODULE CONSTANT.
+#
+# A constant rather than something assembled inside `_expected_signature`'s
+# branch, because it is this phase's PRE-DECLARED prediction and it has to be
+# readable in committed source BEFORE the rebuild runs. `T-33.1-43` is the threat
+# it answers: a signature edited after the diff is seen converts a prediction into
+# a transcription.
+#
+# EVERY FAMILY IS ENUMERABLE OR SOURCE-DERIVED (Ruling N2). The first draft
+# declared family 3 as "any column that moves because 207 rows gained coverage",
+# which is a CAUSE STORY, not an allow-list: it cannot be evaluated against a
+# diff, so any moved column can be argued into it afterwards. This repository has
+# the worked example -- `_attribute_rung2` below is a blanket attribution whose
+# own comment records that it "cannot FAIL on a moved column", and that rung 2's
+# first attempt "attributed perfectly cleanly -- ok, zero unattributed -- while
+# having silently destroyed 18 columns". So family 3 is a ROW-SCOPED PREDICATE
+# instead: a changed column outside families 1 and 2 is attributable ONLY IF its
+# per-season digests are byte-identical in every season except 2025. A column that
+# moved in 2019 cannot have moved because 2025 gained rows, and under this
+# predicate it is UNATTRIBUTED and blocks.
+PHASE331_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE331_RUNG,
+    "prefix": PHASE331_RUNG_PREFIX,
+    "cause": PHASE331_RUNG_CAUSE,
+    "columns_added": (PHASE331_ADDED_COLUMN,),
+    "columns_removed": "empty",
+    "columns_changed": (
+        "restricted to three DECLARED families, each ENUMERABLE or SOURCE-DERIVED: "
+        "(1) the weather family named by features.weather.WEATHER_FEATURE_COLUMNS; "
+        "(2) PHASE331_VENUE_FAMILY_COLUMNS, derived at first use from the columns "
+        "features.contextual.ContextualFeaturesCalculator.build_features actually "
+        "emits, minus the merge keys -- the family D33.1-06 widened SPEC R5's "
+        "acceptance to include, and where Ruling H puts venue_cold_climate; and "
+        "(3) the 2025 staleness repair, which is a ROW population rather than a "
+        "column family and therefore gets a ROW-SCOPED predicate -- a changed "
+        "column outside (1) and (2) is attributable only if its per-season digests "
+        "are byte-identical in every season except "
+        f"{PHASE331_STALENESS_SEASONS}"
+    ),
+    "rows": "unchanged",
+    "width": "increased by exactly one, the named coverage flag",
+    "declared_families": ("weather", "venue", "staleness_2025"),
+    "family_mechanisms": {
+        "weather": "source-derived constant",
+        "venue": "source-derived constant",
+        "staleness_2025": "row-scoped per-season-digest predicate",
+    },
+    # Ruling N2's second half, stated where the judge can be read. `ok` must be
+    # True UNCONDITIONALLY. `unattributed_with_reason` still exists and is still
+    # populated -- an explanation is worth having -- but it SUPPLEMENTS the check
+    # and can never substitute for it. Where an out-of-family move turns out to be
+    # legitimate, the correct act is a NEW declared family in a follow-up rung,
+    # not a footnote on this one.
+    "ok_required_unconditionally": True,
+}
+
+
+def _rung_causes(prefix: str = "") -> dict[int, str]:
+    """The cause table *prefix* names.
+
+    An UNKNOWN prefix is a refusal rather than a silent fall-back to Phase 30's
+    causes: a typo that resolved to CR-02 would judge this rung against the wrong
+    prediction and still print a verdict.
+    """
+    if prefix not in RUNG_CAUSES_BY_PREFIX:
+        msg = (
+            f"Unknown rung prefix {prefix!r}. Must be one of "
+            f"{sorted(RUNG_CAUSES_BY_PREFIX)}."
+        )
+        raise ValueError(msg)
+    return RUNG_CAUSES_BY_PREFIX[prefix]
+
+
+def __getattr__(name: str):
+    """Expose ``PHASE331_VENUE_FAMILY_COLUMNS`` as a lazily-derived constant.
+
+    It READS like the module constant it is, and it COSTS nothing until something
+    asks for it -- deriving it means constructing the contextual builder and
+    running it over one synthetic game, and this module is also imported as a
+    plain fingerprint reader that has no business pulling the feature stack.
+    """
+    if name == "PHASE331_VENUE_FAMILY_COLUMNS":
+        return phase331_venue_family()
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
+
+
 class MissingPredecessorFingerprintError(RuntimeError):
     """A rung was asked to attribute before its ladder predecessor existed.
 
@@ -447,6 +780,54 @@ def require_rung_ladder(
             raise MissingPredecessorFingerprintError(msg)
         verified.append(path)
     return verified
+
+
+def assert_ladder_is_recoverable(
+    directory: Path | str, rung: int, prefix: str = ""
+) -> None:
+    """Refuse BEFORE a rebuild if this ladder's baseline cannot still be recovered.
+
+    ``require_rung_ladder`` already raises when a predecessor document is absent
+    -- but it raises at ATTRIBUTION time, which is AFTER the rebuild has
+    overwritten the gold the missing document was supposed to describe. At that
+    moment the refusal is a diagnosis of an unrecoverable state; run here, before
+    anything is rebuilt, it is a refusal the operator can still act on, because
+    the recovery it names -- re-fingerprint CURRENT gold -- is only possible while
+    current gold still stands.
+
+    ``outputs/`` is gitignored, so an absent document is a reachable state rather
+    than a hypothetical.
+
+    THE PARSE CHECK IS THE ADDITION. A truncated or half-written JSON document
+    passes ``exists()`` and fails at the comparison later -- at exactly the same
+    unrecoverable moment an absent one would. Existence is not readability.
+
+    Raises:
+        MissingPredecessorFingerprintError: naming the first unusable document and
+            carrying the command that rewrites it.
+    """
+    recovery = f"`--rung 0 --rung-prefix {prefix}`" if prefix else "`--rung 0`"
+    for predecessor in range(rung):
+        path = rung_document_path(directory, predecessor, prefix)
+        preamble = (
+            f"Refusing to REBUILD under rung prefix {prefix!r}: its ladder "
+            f"baseline '{path}' "
+        )
+        remedy = (
+            " Once a rebuild has run, the gold this document describes is gone and "
+            "the attribution cannot be recovered at all. Re-write it NOW, while "
+            f"current gold still stands, with {recovery}, then re-run the rebuild."
+        )
+        if not path.exists():
+            raise MissingPredecessorFingerprintError(
+                preamble + "does not exist." + remedy
+            )
+        try:
+            json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise MissingPredecessorFingerprintError(
+                preamble + f"exists but does not parse as JSON ({error})." + remedy
+            ) from error
 
 
 # Rungs whose failures may legitimately be upstream drift rather than a wrong fix.
@@ -644,21 +1025,37 @@ def _prove_value_preserving_dtype(
     return True
 
 
-def _expected_signature(rung: int, before: dict | None = None) -> dict:
+def _expected_signature(
+    rung: int, before: dict | None = None, prefix: str = ""
+) -> dict:
     """Return the predicted ``compare_fingerprints`` diff shape for *rung*.
 
     When *before* (the pre-rung fingerprint document) is supplied, rung 3's expected
     removed-set is DERIVED per matrix from that document's column list rather than
     described. That is the difference between "every removed column looks like a
     line-movement column" and "the removed set IS the line-movement family".
+
+    *prefix* selects the CAUSE TABLE (Ruling N). It defaults to the empty prefix, so
+    every call written before Plan 33.1-07 resolves exactly where it always did --
+    the negative control in the attribution tests asserts that rung 1 with no prefix
+    is still CR-02, so the new table cannot have captured the old integer.
     """
-    if rung not in RUNG_CAUSES:
-        msg = f"Unknown rung {rung!r}. Must be one of {sorted(RUNG_CAUSES)}."
+    causes = _rung_causes(prefix)
+    if rung not in causes:
+        msg = (
+            f"Unknown rung {rung!r} under rung prefix {prefix!r}. Must be one of "
+            f"{sorted(causes)}."
+        )
         raise ValueError(msg)
+
+    if prefix == PHASE331_RUNG_PREFIX:
+        # The PRE-DECLARED change set, returned as a copy so a caller cannot edit
+        # the prediction it is about to be judged against (T-33.1-43).
+        return dict(PHASE331_EXPECTED_SIGNATURE)
 
     signature = {
         "rung": rung,
-        "cause": RUNG_CAUSES[rung],
+        "cause": causes[rung],
         "columns_added": "empty",
         "columns_removed": "empty",
         "columns_changed": "",
@@ -904,11 +1301,17 @@ def attribute_rung(
     if ladder_directory is not None:
         require_rung_ladder(ladder_directory, rung, rung_prefix)
 
-    signature = _expected_signature(rung, before=before)
-    cause = RUNG_CAUSES[rung]
+    signature = _expected_signature(rung, before=before, prefix=rung_prefix)
+    cause = _rung_causes(rung_prefix)[rung]
+    # THE PHASE-33.1 RUNG GETS NO UPSTREAM-DRIFT ESCAPE, and the suppression is
+    # scoped to the PREFIX rather than expressed by editing `_UPSTREAM_ESCAPE_RUNGS`
+    # -- that tuple is Phase 30's record and rung 1 legitimately carries the escape
+    # there. This rung rebuilds from SILVER, not from nflreadpy, so offering an
+    # "upstream revision" candidate cause would send a reader hunting for something
+    # that cannot be the explanation.
     upstream = (
         " " + _UPSTREAM_DRIFT_NOTE.format(cause=cause)
-        if rung in _UPSTREAM_ESCAPE_RUNGS
+        if rung in _UPSTREAM_ESCAPE_RUNGS and rung_prefix != PHASE331_RUNG_PREFIX
         else ""
     )
 
@@ -965,6 +1368,7 @@ def attribute_rung(
             expected_removed=derived_removed.get(matrix)
             if derived_removed is not None
             else None,
+            rung_prefix=rung_prefix,
         )
 
     ok = all(verdict["ok"] for verdict in matrices.values())
@@ -1001,10 +1405,13 @@ def _summarize_moves(matrices: dict) -> tuple[list[str], list[str]]:
 
 
 def _attribute_one_matrix(
-    rung, detail, diff, verdict, fail, expected_removed=None
+    rung, detail, diff, verdict, fail, expected_removed=None, rung_prefix: str = ""
 ) -> bool:
     """Apply *rung*'s predicted signature to one matrix. Returns whether it blocks."""
-    cause = RUNG_CAUSES[rung]
+    if rung_prefix == PHASE331_RUNG_PREFIX:
+        return _attribute_phase331(detail, diff, verdict, fail)
+
+    cause = _rung_causes(rung_prefix)[rung]
     width_before = detail["width_before"]
     width_after = detail["width_after"]
     rows_before = detail.get("rows_before")
@@ -1087,6 +1494,163 @@ def _attribute_one_matrix(
         _attribute_rung1(diff, verdict, fail)
     else:
         _attribute_rung2(diff, verdict, fail)
+
+    return blocking
+
+
+_PHASE331_MISLABELLING_PROHIBITION = (
+    "The SPEC prohibition this rung carries reads: MUST NOT label a gold rebuild "
+    "'the weather rung' if it also carries Elo, bye-window or ats_edge changes -- "
+    "that re-creates the attribution failure this phase exists to prevent. A "
+    "column from one of those three families is therefore UNATTRIBUTED here, not "
+    "absorbed. The remedy is a SEPARATE rung for the separate cause, never a "
+    "footnote on this one."
+)
+
+
+def _attribute_phase331(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """The Phase-33.1 rung: one added column, three declared families, `ok` or STOP.
+
+    STRUCTURE FIRST. Exactly one column is added and it is the NAMED coverage flag;
+    nothing is removed; width moves by exactly +1; rows are UNCHANGED, because this
+    rung re-derives the same 6,499 games rather than adding any. The added column is
+    asserted by NAME in BOTH directions -- an unexpected addition fails, and so does
+    the flag's ABSENCE -- so a build that added something unrelated while omitting
+    the flag cannot satisfy the integer and pass.
+
+    THEN THE THREE FAMILIES, in order:
+
+    1. A column in the PROHIBITED families (Elo, the team-form rolling family the
+       bye-window rule governs, ``ats_edge``) is UNATTRIBUTED and BLOCKS, with the
+       SPEC prohibition quoted. This is checked FIRST and the families are proven
+       disjoint from the declared ones by a test, so a prohibited column cannot be
+       absorbed by a declared family.
+    2. ``features.weather.WEATHER_FEATURE_COLUMNS`` -- family 1.
+    3. ``phase331_venue_family()`` -- family 2, the contextual builder's own emitted
+       set. Ruling H puts ``venue_cold_climate`` here, not in the weather family:
+       it is derived from the stadium's geography and from no weather observation.
+    4. Everything else falls to the ROW-SCOPED staleness predicate: attributable
+       ONLY IF every season it moved in is in ``PHASE331_STALENESS_SEASONS``. The
+       season lists come from ``compare_fingerprints``, which derives them from the
+       same per-season digests ``_per_season_digests`` computes -- so "byte-identical
+       in 2002-2024" is a measurement here, not a description. A column that moved in
+       2019 cannot have moved because 2025 gained rows, and it is UNATTRIBUTED.
+
+    Returns:
+        Whether this matrix BLOCKS the phase.
+    """
+    blocking = False
+    width_before = detail["width_before"]
+    width_after = detail["width_after"]
+    rows_before = detail.get("rows_before")
+    rows_after = detail.get("rows_after")
+
+    verdict["changed_by_family"] = {"weather": [], "venue": [], "staleness_2025": []}
+
+    expected_added = [_canonical(PHASE331_ADDED_COLUMN)]
+    for column in diff["added"]:
+        if column not in expected_added:
+            blocking = True
+            fail(
+                f"column '{column}' was ADDED at the Phase-33.1 rung, which adds "
+                f"exactly ONE column -- the coverage flag "
+                f"'{PHASE331_ADDED_COLUMN}'. The width integer alone cannot say "
+                "WHICH column arrived, which is why the addition is pinned by name"
+            )
+    for column in expected_added:
+        if column not in diff["added"]:
+            fail(
+                f"the coverage flag '{PHASE331_ADDED_COLUMN}' was NOT added at the "
+                "Phase-33.1 rung. Without it a NULL observation is indistinguishable "
+                "from a measured one, which is the whole point of the rung (SPEC R5)"
+            )
+    for column in diff["removed"]:
+        blocking = True
+        fail(
+            f"column '{column}' was REMOVED at the Phase-33.1 rung; none of its "
+            "three causes removes a column"
+        )
+
+    if width_after != width_before + len(expected_added):
+        fail(
+            f"width moved {width_before} -> {width_after} at the Phase-33.1 rung, "
+            f"which is not {width_before} plus the "
+            f"{len(expected_added)} declared added column(s)"
+        )
+    if rows_before != rows_after:
+        fail(
+            f"rows moved {rows_before} -> {rows_after} at the Phase-33.1 rung. The "
+            "rung re-derives the SAME games -- the 207 restored rows are a silver "
+            "staleness repair that gold already carried -- so a row-count move "
+            "means the rebuild did something this rung did not declare"
+        )
+
+    if (
+        not diff["changed"]
+        and not diff["added"]
+        and not diff["removed"]
+        and not diff["renames"]
+        and not diff["dtype_preserved"]
+    ):
+        fail(
+            "the Phase-33.1 rung moved no column and added none. Replacing a "
+            "fabricated 65.0F constant with real ERA5 observations across 4,847 "
+            "outdoor games MUST move something; an empty diff means the rebuild "
+            "did not do what it claimed"
+        )
+
+    weather = {_canonical(name) for name in phase331_weather_family()}
+    venue = {_canonical(name) for name in phase331_venue_family()}
+    staleness = {str(season) for season in PHASE331_STALENESS_SEASONS}
+
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+
+        prohibited = _phase331_prohibited_family(column)
+        if prohibited is not None:
+            blocking = True
+            verdict["unattributed"].append(column)
+            fail(
+                f"column '{column}' moved at the Phase-33.1 rung but belongs to the "
+                f"PROHIBITED '{prohibited}' family. "
+                + _PHASE331_MISLABELLING_PROHIBITION
+            )
+            continue
+
+        if column in weather:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["weather"].append(column)
+            continue
+        if column in venue:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["venue"].append(column)
+            continue
+
+        outside = [season for season in seasons if season not in staleness]
+        if seasons and not outside:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["staleness_2025"].append(column)
+            continue
+
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at the Phase-33.1 rung in season(s) "
+            f"{', '.join(seasons) or '(none attributed)'} and belongs to NEITHER "
+            "declared column family. The only remaining cause is the 2025 staleness "
+            "repair, which is a ROW population: it can move a column in "
+            f"{', '.join(sorted(staleness))} and in no other season, because those "
+            "are the only rows that were absent. "
+            + (
+                f"This column ALSO moved in {', '.join(outside)}, which no declared "
+                "cause reaches."
+                if outside
+                else "This column carries NO attributed season at all, so nothing "
+                "can be said about when it moved."
+            )
+            + " Do NOT annotate past it: `ok` must be True unconditionally "
+            "(Ruling N2), and a legitimate out-of-family move is a NEW declared "
+            "family in a follow-up rung, never a footnote on this one"
+        )
 
     return blocking
 
@@ -1408,10 +1972,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         metavar="PREFIX",
         help=(
-            "Name-space every rung document written or required by this run. Phase 31 "
-            f"uses '{PHASE31_RUNG_PREFIX}' so its ladder cannot overwrite the Phase-30 "
+            "Name-space every rung document written or required by this run, AND "
+            "select the cause table. Phase 31 uses "
+            f"'{PHASE31_RUNG_PREFIX}' so its ladder cannot overwrite the Phase-30 "
             f"documents {', '.join(PHASE30_RUNG_DOCUMENTS)}, which record the phase "
-            "that produced the standing gold and cannot be regenerated."
+            "that produced the standing gold and cannot be regenerated; Phase 33.1 "
+            f"uses '{PHASE331_RUNG_PREFIX}' for the same reason and because its rung "
+            "is judged against its own declared signature rather than Phase 30's "
+            f"(known prefixes: {sorted(RUNG_CAUSES_BY_PREFIX)})."
         ),
     )
     parser.add_argument(
