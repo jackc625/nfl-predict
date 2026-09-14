@@ -866,49 +866,75 @@ class WeatherFeaturesCalculator:
             condition = (weather_data.get("condition") or "").lower()
             raw_temp = weather_data.get("temp_f")
 
-            if _is_missing(raw_prob) or _is_missing(raw_mm):
-                # Every band, score and multiplier below reads BOTH readings,
-                # so neither can be answered from one of them. The old code
-                # wrote `or 0.0` for both and reported the result as a dry day.
+            if _is_missing(raw_mm):
+                # THE GATE NARROWED, and what it now refuses on is the
+                # MEASUREMENT (Plan 33.1-07 Task 4, 2026-09-14).
+                #
+                # It used to refuse when EITHER reading was absent. But
+                # `precip_prob` is a FORECAST probability, and the corpus this
+                # phase built is ERA5 REANALYSIS -- a reanalysis states what
+                # happened, not what was forecast to happen. `COVERAGE.md`
+                # records `precipitation_probability` as a deliberate opt-out
+                # because the archive does not carry it, and
+                # `scripts/ingest_weather.fetch_game_weather` writes
+                # `precip_prob: None` for exactly that reason. So the old gate
+                # fired on EVERY outdoor game in the corrected corpus and threw
+                # away `precip_mm` -- the rain that ACTUALLY FELL -- because a
+                # number nobody can ever supply was absent.
+                #
+                # MEASURED on production gold before the fix: `raw_precip_mm`
+                # non-null on all 6,499 rows, `precip_mm` non-null on 1,652 --
+                # exactly the indoor games, which take the dome branch and never
+                # reach here. All 4,847 outdoor games carried NULL across twelve
+                # precipitation columns, and the seven composites inherited it.
+                #
+                # THE GATE DID NOT DISAPPEAR. Without the MEASUREMENT there is
+                # nothing to band, score or multiply, and the whole family is
+                # still NULL. That is the difference between narrowing this gate
+                # and restoring the pre-33.1 `or 0.0`, which reported an absent
+                # reading as a dry day.
                 return dict.fromkeys(PRECIPITATION_FEATURE_COLUMNS, NAN)
 
-            precip_prob = float(raw_prob)
             precip_mm = float(raw_mm)
+
+            # NO PROBABILITY IS INVENTED. Where the archive gave none, the
+            # column stays NULL and every derived quantity is computed from the
+            # millimetres alone. Inferring a probability from an observed
+            # rainfall would be the same fabrication this phase exists to
+            # delete, wearing a statistician's hat (SPEC prohibition 1).
+            probability_known = not _is_missing(raw_prob)
+            precip_prob: float | None = float(raw_prob) if probability_known else None
 
             # Basic precipitation features
             precip_features = {
-                "precip_prob": float(precip_prob),
+                "precip_prob": float(precip_prob) if precip_prob is not None else NAN,
                 "precip_mm": float(precip_mm),
-                "precip_none": 1.0 if precip_prob <= 0.2 and precip_mm <= 0.5 else 0.0,
-                "precip_light": 1.0
-                if 0.2 < precip_prob <= 0.5 or 0.5 < precip_mm <= 2.0
-                else 0.0,
-                "precip_moderate": 1.0
-                if 0.5 < precip_prob <= 0.8
-                or 2.0 < precip_mm <= self.heavy_precip_threshold
-                else 0.0,
-                "precip_heavy": 1.0
-                if precip_prob > 0.8 or precip_mm > self.heavy_precip_threshold
-                else 0.0,
+                **self._precipitation_bands(precip_mm, precip_prob),
             }
 
             # Precipitation TYPE needs the temperature, and the temperature is
-            # the one reading that can be absent while the two precipitation
-            # readings are present. `or 40.0` used to supply it -- a 40F
-            # stand-in that decided rain-versus-snow for a game nobody measured.
-            # Without it, snow-versus-rain is unknown, so those three one-hots
-            # and the impact score that reads them are NULL; the bands and the
-            # two multipliers below do not consult temperature and stay real.
+            # the one reading that can be absent while the rainfall measurement
+            # is present. `or 40.0` used to supply it -- a 40F stand-in that
+            # decided rain-versus-snow for a game nobody measured. Without it,
+            # snow-versus-rain is unknown, so those three one-hots and the impact
+            # score that reads them are NULL; the bands and the two multipliers
+            # below do not consult temperature and stay real.
             temperature_known = not _is_missing(raw_temp)
             temp_f = float(raw_temp) if temperature_known else NAN
 
+            # "Something fell" from the readings that EXIST. With a probability
+            # this is the original disjunction unchanged; without one the
+            # probability disjunct is simply not applied -- it is not replaced by
+            # a zero-probability assumption, and the millimetres carry the test.
+            measurable_precipitation = (
+                precip_prob is not None and precip_prob > 0.3
+            ) or precip_mm > 0.5
+
             is_snow = temperature_known and (
-                temp_f <= 35.0
-                and (precip_prob > 0.3 or precip_mm > 0.5 or "snow" in condition)
+                temp_f <= 35.0 and (measurable_precipitation or "snow" in condition)
             )
             is_rain = temperature_known and (
-                temp_f > 35.0
-                and (precip_prob > 0.3 or precip_mm > 0.5 or "rain" in condition)
+                temp_f > 35.0 and (measurable_precipitation or "rain" in condition)
             )
 
             if temperature_known:
@@ -923,14 +949,7 @@ class WeatherFeaturesCalculator:
                 precip_features.update({"is_snow": NAN, "is_rain": NAN, "is_dry": NAN})
 
             # Precipitation impact scoring
-            if precip_prob <= 0.2 and precip_mm <= 0.5:
-                precip_impact = 0.0  # No impact
-            elif precip_prob <= 0.5 or precip_mm <= 2.0:
-                precip_impact = 0.3  # Light impact
-            elif precip_prob <= 0.8 or precip_mm <= self.heavy_precip_threshold:
-                precip_impact = 0.6  # Moderate impact
-            else:
-                precip_impact = 1.0  # Heavy impact
+            precip_impact = self._precipitation_impact(precip_mm, precip_prob)
 
             # Snow has different impact than rain
             if not temperature_known:
@@ -943,27 +962,14 @@ class WeatherFeaturesCalculator:
                 precip_features["precip_impact_score"] = min(precip_impact, 1.0)
 
             # Turnover multiplier (wet conditions increase fumbles/interceptions)
-            if precip_prob <= 0.3 and precip_mm <= 1.0:
-                turnover_multiplier = 1.0
-            else:
-                # Turnovers can increase 20-40% in wet conditions
-                base_increase = (
-                    0.2 + (precip_prob * 0.2) + (min(precip_mm, 10.0) / 10.0 * 0.2)
-                )
-                turnover_multiplier = 1.0 + base_increase
-
-            precip_features["turnover_multiplier"] = min(turnover_multiplier, 1.5)
+            precip_features["turnover_multiplier"] = self._turnover_multiplier(
+                precip_mm, precip_prob
+            )
 
             # Passing efficiency reduction
-            if precip_prob <= 0.3:
-                passing_efficiency = 1.0
-            else:
-                # Completion percentage drops in wet conditions
-                passing_efficiency = max(
-                    0.85, 1.0 - (precip_prob * 0.15) - (min(precip_mm, 5.0) / 5.0 * 0.1)
-                )
-
-            precip_features["passing_efficiency"] = passing_efficiency
+            precip_features["passing_efficiency"] = self._passing_efficiency(
+                precip_mm, precip_prob
+            )
 
             return precip_features
 
@@ -974,6 +980,139 @@ class WeatherFeaturesCalculator:
                 error=str(e),
             )
             raise _observation_failure("precipitation", weather_data, e) from e
+
+    # ------------------------------------------------------------------
+    # THE TWO PRECIPITATION PATHS, STATED ONCE EACH (Plan 33.1-07 Task 4).
+    #
+    # WHY THERE ARE TWO AT ALL. A live Open-Meteo FORECAST carries a
+    # probability; the ERA5 REANALYSIS archive does not and cannot, because a
+    # reanalysis records what happened rather than what was expected to. Both
+    # feed this module, so both have to be answerable, and they are answerable
+    # to DIFFERENT precision.
+    #
+    # THE RULE EACH HELPER FOLLOWS, and it is one rule: when the probability is
+    # absent its term is NOT APPLIED. It is not replaced by zero, by a
+    # climatological average, or by anything inferred from the rainfall -- the
+    # mm-only branch is a NARROWER function with its own documented range, not
+    # the same function fed a fabricated input. The ranges differ and are stated
+    # per helper so nobody later reads the two branches as interchangeable.
+    #
+    # THE DUAL-READING BRANCHES ARE BYTE-UNCHANGED from the pre-33.1-07 code.
+    # `tests/unit/test_precipitation_from_measurement.py` pins their exact
+    # outputs, because narrowing a gate is the kind of change that quietly
+    # rewrites the branch it was not aiming at.
+    #
+    # `precip_prob=None` is the ONLY spelling of "the probability is absent" in
+    # these four helpers -- a float parameter carrying NaN would make every
+    # comparison below silently False, which is the shape that produced
+    # `weather_game: 0.0` for games nobody measured.
+    # ------------------------------------------------------------------
+
+    def _precipitation_bands(
+        self, precip_mm: float, precip_prob: float | None
+    ) -> dict[str, float]:
+        """The four intensity one-hots.
+
+        The mm cut points are NOT new: ``0.5``, ``2.0`` and
+        ``self.heavy_precip_threshold`` are the same thresholds the dual-reading
+        branch already used. Dropping the probability disjunct also makes the
+        mm-only bands an ordered PARTITION, where the ``or`` form can report a
+        game as both light and moderate.
+
+        Args:
+            precip_mm: The measured rainfall in millimetres.
+            precip_prob: The forecast probability, or ``None`` when absent.
+
+        Returns:
+            The four band columns.
+        """
+        if precip_prob is None:
+            return {
+                "precip_none": 1.0 if precip_mm <= 0.5 else 0.0,
+                "precip_light": 1.0 if 0.5 < precip_mm <= 2.0 else 0.0,
+                "precip_moderate": 1.0
+                if 2.0 < precip_mm <= self.heavy_precip_threshold
+                else 0.0,
+                "precip_heavy": 1.0 if precip_mm > self.heavy_precip_threshold else 0.0,
+            }
+        return {
+            "precip_none": 1.0 if precip_prob <= 0.2 and precip_mm <= 0.5 else 0.0,
+            "precip_light": 1.0
+            if 0.2 < precip_prob <= 0.5 or 0.5 < precip_mm <= 2.0
+            else 0.0,
+            "precip_moderate": 1.0
+            if 0.5 < precip_prob <= 0.8
+            or 2.0 < precip_mm <= self.heavy_precip_threshold
+            else 0.0,
+            "precip_heavy": 1.0
+            if precip_prob > 0.8 or precip_mm > self.heavy_precip_threshold
+            else 0.0,
+        }
+
+    def _precipitation_impact(
+        self, precip_mm: float, precip_prob: float | None
+    ) -> float:
+        """The 0-1 impact score, before the snow multiplier.
+
+        Both branches span the full 0.0 / 0.3 / 0.6 / 1.0 range, because the
+        rainfall alone already separates all four levels; the probability only
+        ever widened the LIGHT and MODERATE bands, never added a level.
+        """
+        if precip_prob is None:
+            if precip_mm <= 0.5:
+                return 0.0
+            if precip_mm <= 2.0:
+                return 0.3
+            if precip_mm <= self.heavy_precip_threshold:
+                return 0.6
+            return 1.0
+        if precip_prob <= 0.2 and precip_mm <= 0.5:
+            return 0.0
+        if precip_prob <= 0.5 or precip_mm <= 2.0:
+            return 0.3
+        if precip_prob <= 0.8 or precip_mm <= self.heavy_precip_threshold:
+            return 0.6
+        return 1.0
+
+    def _turnover_multiplier(
+        self, precip_mm: float, precip_prob: float | None
+    ) -> float:
+        """Wet-ball turnover multiplier.
+
+        RANGE, stated because the two branches differ and the difference is a
+        consequence rather than an oversight: with a probability the multiplier
+        reaches 1.5; without one the ``precip_prob * 0.2`` term is not applied,
+        so the mm-only branch spans 1.0 and then 1.2 to 1.4. The missing term is
+        not assumed to be zero -- it is a quantity this observation does not
+        carry, and the multiplier says so by being narrower rather than by
+        inventing the input that would widen it.
+        """
+        if precip_prob is None:
+            if precip_mm <= 1.0:
+                return 1.0
+            return min(1.0 + 0.2 + (min(precip_mm, 10.0) / 10.0 * 0.2), 1.5)
+        if precip_prob <= 0.3 and precip_mm <= 1.0:
+            return 1.0
+        base_increase = 0.2 + (precip_prob * 0.2) + (min(precip_mm, 10.0) / 10.0 * 0.2)
+        return min(1.0 + base_increase, 1.5)
+
+    def _passing_efficiency(self, precip_mm: float, precip_prob: float | None) -> float:
+        """Completion-percentage multiplier in the wet.
+
+        RANGE: with a probability, 0.85 to 1.0; without one the
+        ``precip_prob * 0.15`` term is not applied and the branch spans 0.9 to
+        1.0. The dry gate also moves from ``precip_prob <= 0.3`` to
+        ``precip_mm <= 0.5`` -- the module's OWN millimetre threshold for "no
+        meaningful precipitation", already used by ``precip_none`` and by the
+        rain/snow test, rather than a new number chosen here.
+        """
+        if precip_prob is None:
+            if precip_mm <= 0.5:
+                return 1.0
+            return max(0.85, 1.0 - (min(precip_mm, 5.0) / 5.0 * 0.1))
+        if precip_prob <= 0.3:
+            return 1.0
+        return max(0.85, 1.0 - (precip_prob * 0.15) - (min(precip_mm, 5.0) / 5.0 * 0.1))
 
     def _indoor_precipitation_features(self) -> dict[str, float]:
         """The INDOOR precipitation state. Indoors it genuinely IS dry.
@@ -1558,22 +1697,35 @@ class WeatherFeaturesCalculator:
                         wind_features, temp_features, precip_features
                     )
 
-                    # Determine is_precipitation: binary flag
-                    precip_prob = float(weather_data.get("precip_prob", 0.0) or 0.0)
-                    precip_mm = float(weather_data.get("precip_mm", 0.0) or 0.0)
+                    # Determine is_precipitation: binary flag.
+                    #
+                    # THE LAST `or 0.0` IN THIS MODULE, removed by Plan 33.1-07
+                    # Task 4. It read an ABSENT probability and an ABSENT
+                    # rainfall as 0.0 and reported the game as dry -- the exact
+                    # shape `_is_missing` exists to prevent, surviving here
+                    # because this is the compressed FeatureBuilder-Protocol
+                    # path and the full builder is what feeds gold. It is the
+                    # SERVING path, which answers a live prediction, so the
+                    # defect was reachable even though no gold column carries
+                    # `is_precipitation` today.
+                    #
+                    # The readings are now consulted only where they EXIST, and
+                    # a row with neither reading reports NULL rather than dry.
+                    raw_prob = weather_data.get("precip_prob")
+                    raw_mm = weather_data.get("precip_mm")
                     is_snow = precip_features.get("is_snow", 0.0)
                     is_rain = precip_features.get("is_rain", 0.0)
 
-                    is_precip = (
-                        1.0
-                        if (
-                            precip_prob > 0.3
-                            or precip_mm > 0.5
-                            or is_snow == 1.0
-                            or is_rain == 1.0
-                        )
-                        else 0.0
+                    fell = (not _is_missing(raw_prob) and float(raw_prob) > 0.3) or (
+                        not _is_missing(raw_mm) and float(raw_mm) > 0.5
                     )
+
+                    if _is_missing(raw_prob) and _is_missing(raw_mm):
+                        is_precip = NAN
+                    else:
+                        is_precip = (
+                            1.0 if (fell or is_snow == 1.0 or is_rain == 1.0) else 0.0
+                        )
 
                     compressed_rows.append(
                         {

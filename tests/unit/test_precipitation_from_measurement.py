@@ -258,8 +258,17 @@ class TestTheGateNarrowsRatherThanDisappears:
         ``_is_missing`` exists precisely because ``not value`` collapses a
         measured calm onto an absent reading. The same distinction has to hold
         one level up, in the bands.
+
+        The condition string is set to ``Clear`` here rather than inherited.
+        The module has ALWAYS treated the condition text as an independent
+        signal -- ``"rain" in condition`` sets ``is_rain`` on its own -- so a
+        payload measuring 0.0 mm while its condition still said ``Rain`` would
+        be contradictory input, and would be testing that contradiction rather
+        than the measured-zero rule this test is about.
         """
-        features = calculator.calculate_precipitation_features(_payload(precip_mm=0.0))
+        features = calculator.calculate_precipitation_features(
+            _payload(precip_mm=0.0, condition="Clear")
+        )
         assert features["precip_mm"] == 0.0
         assert features["precip_none"] == 1.0
         assert features["is_dry"] == 1.0
