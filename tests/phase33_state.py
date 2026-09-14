@@ -5973,3 +5973,236 @@ TESTS_ADDED_33_09: int = 92
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_10: int = 27
+
+
+# ---------------------------------------------------------------------------
+# THE BYE-WEEK ROLLING-WINDOW AGEING FIXTURE.
+#
+# APPENDED by Plan 33-11 Task 1 on 2026-09-14. Nothing above this line was edited.
+#
+# WHAT IS PINNED HERE AND WHY. R12 claims a bye team's rolling window AGES rather
+# than RESETS. The claim is checked on the real captured 2026 season, so the week,
+# the teams, the control and the exact selected game_ids are committed constants
+# rather than values a test re-derives from whatever the schedule happens to say on
+# the day it runs. A test that derives its own expectation cannot disagree with the
+# data; it can only disagree with itself.
+#
+# THE WEEK PAIR IS (11, 12) AND NOT (10, 11) -- A MEASURED CORRECTION.
+# Plan 33-11's own prose asked for week 10 against week 11. That pairing does NOT
+# express the claim, and the difference is not cosmetic.
+# features/team_form._select_dynamic_window selects, for target week W, the games
+# played in weeks 1..W-1 (plus a prior-season tail). A team whose bye is week 11
+# played every week from 1 to 10, so:
+#
+#     window(10) = weeks 1..9    -> 9 games
+#     window(11) = weeks 1..10   -> 10 games     <- the bye has not happened yet
+#     window(12) = weeks 1..10   -> 10 games     <- the bye is now inside the window
+#
+# The bye first shows up in the window selected for week 12. Comparing 10 against 11
+# measures an ordinary week of football -- the count grows by one, as it should --
+# and would have been recorded as a proof of R12. Comparing 11 against 12 measures
+# the bye: the selected set is identical while the target week advances.
+#
+# MEASURED 2026-09-14: across the pair (11, 12) all six bye teams move 10 -> 10
+# (delta 0) and all twenty-six other teams move by exactly +1. The discrimination is
+# total; no team is ambiguous.
+BYE_WEEK_FIXTURE: int = 11
+
+# The "after" half of the pair -- the first target week whose window holds the bye.
+#
+# IT HAPPENS TO EQUAL ZERO_BYE_WEEK BELOW, AND THAT IS A CALENDAR ACCIDENT, NOT A
+# DESIGN. 2026 puts its byes in weeks 5-11 and 13-14, so the week after the richest
+# bye week is also the one week in that range with no byes at all. The two constants
+# are kept separate because they play different roles: this one is the second half of
+# an ageing comparison, and the one below is a vacuity control.
+BYE_WEEK_FIXTURE_AFTER: int = 12
+
+# WEEK 12 HAS ZERO BYES AND THAT IS NOT AN ERROR (NF-11). A test parameterising over
+# weeks 5-14 hits week 12 and finds nothing; an empty bye set there is a MEASURED
+# fact about the 2026 calendar, recorded by tests/fixtures/season_2026.py as an
+# explicit empty frozenset rather than as an absent key.
+ZERO_BYE_WEEK: int = 12
+
+# THE CONTROL TEAM, CHOSEN BY MEASUREMENT AND NOT BY EYE.
+#
+# The selection rule, applied to the captured 2026 schedule on 2026-09-14 and stated
+# so that it can be re-run: the alphabetically first team that
+#   (a) PLAYS in both week 11 and week 12 -- so it is the same week pair, and the
+#       only difference between it and a bye team is the bye;
+#   (b) has NOT yet had its bye by week 11 -- so its week-11 window count is 10,
+#       IDENTICAL to all six bye teams. A control whose "before" count differs from
+#       the subject's leaves a reader unable to say which difference did the work;
+#   (c) is PAST THE EARLY-SEASON BOOTSTRAP REGIME, meaning its current-season game
+#       count already exceeds max_prior_games (8), so its window draws ZERO
+#       prior-season games and its stability is structural rather than lucky.
+#
+# Six teams satisfy all three: ARI, BAL, DAL, IND, LV and NYJ -- every team whose
+# 2026 bye falls in week 13 or 14. ARI is the alphabetical first.
+#
+# ARI'S MEASURED NUMBERS: 10 games in the week-11 window, 11 in the week-12 window,
+# gaining EXACTLY ONE -- 2026_11_ARI_KC -- and losing none. Its earliest selected
+# game is week 1 at both target weeks, so it does not reset either. It is the same
+# schedule shape as a bye team in every respect except that it played.
+BYE_CONTROL_TEAM: str = "ARI"
+
+# The single game ARI's window gains between week 11 and week 12. Pinned because
+# "shifts by exactly one game" is a claim about WHICH game, not only about how many.
+BYE_CONTROL_TEAM_GAME_GAINED: str = "2026_11_ARI_KC"
+
+# THE EXACT SELECTED game_id SETS, MEASURED 2026-09-14 by driving
+# features/team_form.TeamFormCalculator._select_dynamic_window over the captured
+# 2026 schedule.
+#
+# THESE SETS ARE THE WEEK-11 WINDOW **AND** THE WEEK-12 WINDOW. That one recording
+# serves both is not a shortcut -- it IS the finding. The window did not change
+# across the bye; only the week did.
+#
+# ROW IDENTITIES, NOT COUNTS. A window holding ten games satisfies a count assertion
+# no matter which ten it holds. These sets are what make the assertion say something.
+BYE_WEEK_EXPECTED_GAME_IDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "ATL",
+        (
+            "2026_01_ATL_PIT",
+            "2026_02_CAR_ATL",
+            "2026_03_ATL_GB",
+            "2026_04_ATL_NO",
+            "2026_05_BAL_ATL",
+            "2026_06_CHI_ATL",
+            "2026_07_SF_ATL",
+            "2026_08_ATL_TB",
+            "2026_09_CIN_ATL",
+            "2026_10_KC_ATL",
+        ),
+    ),
+    (
+        "CLE",
+        (
+            "2026_01_CLE_JAX",
+            "2026_02_CLE_TB",
+            "2026_03_CAR_CLE",
+            "2026_04_PIT_CLE",
+            "2026_05_CLE_NYJ",
+            "2026_06_BAL_CLE",
+            "2026_07_CLE_TEN",
+            "2026_08_CLE_PIT",
+            "2026_09_CLE_NO",
+            "2026_10_HOU_CLE",
+        ),
+    ),
+    (
+        "GB",
+        (
+            "2026_01_GB_MIN",
+            "2026_02_GB_NYJ",
+            "2026_03_ATL_GB",
+            "2026_04_GB_TB",
+            "2026_05_CHI_GB",
+            "2026_06_DAL_GB",
+            "2026_07_GB_DET",
+            "2026_08_CAR_GB",
+            "2026_09_GB_NE",
+            "2026_10_MIN_GB",
+        ),
+    ),
+    (
+        "LA",
+        (
+            "2026_01_SF_LA",
+            "2026_02_NYG_LA",
+            "2026_03_LA_DEN",
+            "2026_04_LA_PHI",
+            "2026_05_BUF_LA",
+            "2026_06_ARI_LA",
+            "2026_07_LA_LV",
+            "2026_08_LAC_LA",
+            "2026_09_LA_WAS",
+            "2026_10_LA_ARI",
+        ),
+    ),
+    (
+        "NE",
+        (
+            "2026_01_NE_SEA",
+            "2026_02_PIT_NE",
+            "2026_03_NE_JAX",
+            "2026_04_NE_BUF",
+            "2026_05_LV_NE",
+            "2026_06_NYJ_NE",
+            "2026_07_NE_CHI",
+            "2026_08_NE_MIA",
+            "2026_09_GB_NE",
+            "2026_10_NE_DET",
+        ),
+    ),
+    (
+        "SEA",
+        (
+            "2026_01_NE_SEA",
+            "2026_02_SEA_ARI",
+            "2026_03_SEA_WAS",
+            "2026_04_LAC_SEA",
+            "2026_05_SF_SEA",
+            "2026_06_SEA_DEN",
+            "2026_07_KC_SEA",
+            "2026_08_CHI_SEA",
+            "2026_09_ARI_SEA",
+            "2026_10_SEA_LV",
+        ),
+    ),
+)
+
+# The SPAN either side of the pair, in weeks, MEASURED on the same pass. All six bye
+# teams played in week 1, so all six read the same pair. Recorded as numbers because
+# "the span grows" is checkable only against the values it grew between.
+BYE_WEEK_SPAN_BEFORE: int = 10
+BYE_WEEK_SPAN_AFTER: int = 11
+
+# THE D33-18 OBSERVATION, RECORDED RATHER THAN MERELY ASSERTED -- AND CORRECTED.
+#
+# D33-18 asked that a finding be carried into the readout: "a bye team's window pulls
+# in MORE prior-season data than its peers that week ... a second bootstrap-regime
+# effect stacked on weeks 2-4". MEASURED, the finding is REAL but its window of
+# applicability is NARROWER than the decision assumed, and at this plan's own fixture
+# week the effect is exactly ZERO. Carrying the decision forward unchecked would have
+# put a wrong number in the readout.
+BYE_WINDOW_SPAN_OBSERVATION: str = """\
+MEASURED 2026-09-14, Plan 33-11 Task 1, driving
+features/team_form.TeamFormCalculator._select_dynamic_window (max_prior_games = 8)
+over the captured 2026 schedule with the real 2025 season attached as the prior year.
+
+THE EXTRA PRIOR-SEASON PULL IS EXACTLY ONE GAME, AND ONLY IN THE BOOTSTRAP REGIME.
+The selector sets prior_count = max(0, 8 - current_season_count). A team that has
+already had its bye carries one fewer current-season game than a peer that has not,
+so it draws exactly one more prior-season game -- never two, and never a fraction:
+
+    target week   6     7     8     9    10    11    12
+    bye teams     4     3     2     1     0     0     0   prior-season games
+    peers         3     2     1     0     0     0     0   prior-season games
+    extra         1     1     1     1     0     0     0
+    window size   8     8     8     8   8-9  9-10 10-11   total observations
+
+AT WEEK 11 -- THIS PLAN'S OWN FIXTURE WEEK -- THE EXTRA PULL IS ZERO. By week 10
+every team's current-season count has reached or passed max_prior_games, so
+prior_count is 0 for bye team and peer alike and the window has stopped blending
+seasons at all. The bye's whole effect at week 11 is that the window holds ten games
+at week 11 and the SAME ten at week 12 while the target week advances: it ages, and
+nothing is pulled forward to replace the missing game.
+
+SO THE EFFECT IS NOT "STACKED ON WEEKS 2-4" -- IT SPANS TARGET WEEKS 6 TO 9, and it
+is bounded above by one game. Weeks 2-4 carry a bootstrap effect of their own (a
+window that is 5 to 7 parts prior season), but NO BYE HAS OCCURRED BY THEN: 2026's
+earliest byes are week 5, so the earliest target week at which any team can show the
+extra pull is 6.
+
+THE ROSTER-CONTINUITY CAVEAT, STATED RATHER THAN LEFT IMPLICIT (Antigravity MEDIUM).
+Every prior-season game a window pulls in -- in the first weeks of a season, or the
+one extra game a post-bye team pulls in weeks 6-9 -- is evidence about a roster that
+no longer exists in the same form. Offseason trades, the draft, free agency and
+coaching changes all degrade the continuity assumption, and the selector applies NO
+decay weight to distinguish a game played by last year's roster from one played by
+this year's. Plan 33-11 deliberately does NOT add one: a decay parameter is a new
+feature-engineering knob, which is a new predictive signal, which the SPEC excludes
+phase-wide. The assumption is recorded here so that the readout states it, rather
+than having a later reader discover it in the arithmetic.
+"""
