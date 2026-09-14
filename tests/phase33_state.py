@@ -7916,3 +7916,184 @@ PHASE331_FOLLOWUP_RUNG_DECLARATION: dict[str, object] = {
         "It rebuilt NOTHING, re-fit NOTHING and left artifacts/ byte-unchanged.",
     ),
 }
+
+
+# -------------------------------------------------------------------------
+# WHAT THE PHASE-33.1 RUNG ACTUALLY MOVED -- Plan 33.1-07 Task 3.
+#
+# APPENDED on 2026-09-14, after the rebuild, after the ordered diagnosis and
+# after the follow-up rung closed the attribution. Nothing above this line was
+# edited -- in particular PHASE331_RUNG_DECLARATION, which is the PREDICTION
+# this slot is the OBSERVATION of, is byte-unchanged. The two being separate
+# names appended at different moments is what makes the pair readable as a
+# prediction and its outcome rather than as one self-consistent story.
+#
+# READING `ok`. The attribution is CLOSED and `ok` is True -- but the number
+# that would be easiest to misread is recorded beside it, not behind it:
+# `rung_1_ok` is FALSE. Rung 1 refused 45 columns and still does. The True
+# belongs to the FOLLOW-UP rung, which declared those 45 in three families
+# after the owner ordered them diagnosed. Ruling N2's unconditional check is
+# satisfied by a second declaration, never by annotating past the first, and
+# both verdicts are on the record so a later reader can see which is which.
+# -------------------------------------------------------------------------
+
+PHASE331_RUNG_MEASURED: dict[str, object] = {
+    "measured_on": "2026-09-14",
+    "measured_by": "Plan 33.1-07 Task 3",
+    # THE ATTRIBUTION'S FINAL STATE, and the intermediate one beside it.
+    "ok": True,
+    "ok_meaning": (
+        "the attribution is CLOSED: every one of the 131 non-clock moved columns "
+        "is attributed to a declared family across the two-rung ladder. It does "
+        "NOT mean rung 1 passed -- see rung_1_ok."
+    ),
+    "rung_1_ok": False,
+    "rung_1_blocking": True,
+    "rung_1_failures": 135,
+    "rung_1_unattributed_per_matrix": 45,
+    "closed_by_followup_rung": True,
+    "followup_rung": 2,
+    "followup_ok": True,
+    "followup_failures": 0,
+    "followup_attribution_document": (
+        "outputs/fingerprints/p331_rung2_attribution.json"
+    ),
+    "cause": (
+        "COMPOUND (three causes, never 'the weather rung'): (1) real ERA5 "
+        "weather replacing the fabricated 65.0F constant across 2002-2025 "
+        "[R5/D33.1-07]; (2) the all-seasons stadium_id routing correction "
+        "[D33.1-06], which moves the venue/travel/timezone/elevation family for "
+        "the 1,153 games that resolved to the wrong stadium; and (3) restored "
+        "2025 coverage -- the 207 games the two silver feature tables were "
+        "missing, which the rebuild adds independently of any weather or "
+        "routing change"
+    ),
+    # THE SHAPE. Every prediction in PHASE331_RUNG_DECLARATION held.
+    "columns_added": ("weather_coverage",),
+    "columns_removed": (),
+    "widths_before": (194, 195, 194),
+    "widths_after": (195, 196, 195),
+    "rows_before": (6499, 6499, 6499),
+    "rows_after": (6499, 6499, 6499),
+    "coverage_flag_present_in_all_three": True,
+    "silver_rows_before": 6292,
+    "silver_rows_after": 6499,
+    "silver_2025_rows_after": 285,
+    "non_clock_moves": 131,
+    "build_clock_moves": ("feature_timestamp",),
+    "identical_residual_across_all_three_matrices": True,
+    # THE PER-FAMILY SPLIT, per matrix. Rung 1's three families attributed 86;
+    # the follow-up's three declared the 45 rung 1 refused.
+    "changed_by_family": {
+        "rung_1": {"weather": 45, "venue": 24, "staleness_2025": 17},
+        "followup_rung_2": {
+            "carried_at_rung_1": 86,
+            "stale_baseline_2024": 40,
+            "prohibited_family_2025": 4,
+            "weather_widening": 1,
+        },
+    },
+    # Ruling N2: this SUPPLEMENTS the check and never replaces it. It is
+    # populated because the explanation is worth having -- and the check it
+    # supplements was satisfied by a FOLLOW-UP RUNG, which is the remedy Ruling
+    # N2 names, not by this text.
+    "unattributed_with_reason": {
+        "stale_baseline_2024": (
+            "40 columns, 24 moving in 2024 only and 16 in 2024 and 2025. A "
+            "STALE-BASELINE CARRY-FORWARD from Phase 33's waves 9-12: the Plan "
+            "33-12 sandbox gold, built five and a half hours BEFORE this rung "
+            "from the OLD silver, already carries 40/40 of the new 2024 values "
+            "and 0/40 of rung 0's, so the move predates the rung and none of "
+            "its three causes produced it. ITS TRIGGER IS NOT ESTABLISHED and "
+            "ITS MAGNITUDE IS PERMANENTLY UNMEASURABLE -- see "
+            "PHASE331_FOLLOWUP_RUNG_DECLARATION['group_1'] for the eight "
+            "eliminations and the two unknowns, both stated without softening."
+        ),
+        "prohibited_family_2025": (
+            "4 columns moving in 2025 only. The mislabelling prohibition firing "
+            "CORRECTLY: they satisfy rung 1's staleness predicate but belong to "
+            "prohibited families, and the prohibition takes precedence by "
+            "design. The guard working, not a defect."
+        ),
+        "weather_widening": (
+            "raw_weather_severity, moving in all 24 seasons -- a genuine "
+            "weather-family widening. It is an un-normalized copy of "
+            "weather_severity_score minted at "
+            "scripts/build_features.py:1819, so it never passes through "
+            "features.weather.WEATHER_FEATURE_COLUMNS and rung 1's family 1 "
+            "could not reach it."
+        ),
+    },
+    # THE RUNBOOK, as run. Ruling N3's ONE command per artifact, in order.
+    "commands_run": (
+        {
+            "artifact": "data/silver/contextual_features.parquet",
+            "command": "uv run python scripts/build_contextual.py --all-seasons",
+            "wall_clock_seconds": 19.2,
+        },
+        {
+            "artifact": "data/silver/weather_features.parquet",
+            "command": "uv run python scripts/build_weather.py --all-seasons",
+            "wall_clock_seconds": 6.4,
+        },
+        {
+            "artifact": "data/gold/features_{wp,ats,ou}.parquet",
+            "command": "uv run python scripts/build_features.py --all-seasons",
+            "wall_clock_seconds": 563.0,
+        },
+    ),
+    # Ruling N3's second half: R3's zero-network property proven on the REAL
+    # bytes, not only in Plan 33.1-06's sandbox. The guard was proven live on a
+    # deliberate probe BEFORE the builders ran, so a silent no-op guard could
+    # not have passed for a denial.
+    "rebuilt_with_network_denied": True,
+    "network_guard_proven_on_a_deliberate_probe_first": True,
+    # The digest bracket, closed. EXACTLY the declared six paths moved -- one
+    # REWRITTEN section, no ADDED, no REMOVED, no MIXED.
+    "declared_changed_files_verdict": "exact match, 6 of 6, REWRITTEN only",
+    "artifacts_tree_unchanged": True,
+    "artifacts_files_compared": 159,
+    # THE TRAINER SMOKE FIT (step 7). READ-AND-FIT-IN-MEMORY: `save()` was never
+    # called and `git status --short artifacts/` was empty afterwards. A build
+    # can produce three valid parquet files while leaving a target untrainable,
+    # and the rebuilt gold carries NaN-bearing weather columns.
+    "trainer_smoke_feature_counts": {"wp": 20, "ats": 25, "ou": 25},
+    "trainer_smoke_fitted_models": {
+        "wp": "Pipeline",
+        "ats": "XGBRegressor",
+        "ou": "XGBRegressor",
+    },
+    "trainer_smoke_wrote_no_artifact": True,
+    "trainer_smoke_partition": "TemporalSplitConfig.default() -- train 2018-2019, hp_val 2020, holdout 2021-2024",
+    "trainer_smoke_tune": False,
+    # AN OBSERVATION, NOT A TARGET. Whether WP or ATS now selects weather is
+    # Wave 15's measurement and this phase predicts nothing about it. Recorded
+    # because it is the first time WP -- a LogReg that consumed ZERO weather
+    # features on the fabricated-constant gold -- selects any.
+    "trainer_smoke_weather_columns_selected": {
+        "wp": (
+            "passing_difficulty",
+            "temp_cold",
+            "wind_high",
+            "wind_severe",
+        ),
+        "ats": ("ball_handling_difficulty", "temp_mild", "wind_mph"),
+        "ou": ("passing_difficulty", "temp_cold", "wind_high", "wind_mph"),
+    },
+    "trainer_smoke_weather_selection_is_an_observation_not_a_target": True,
+    # WHAT THIS RUNG STILL DOES NOT DO.
+    "no_model_refit": True,
+    "no_gate_run": True,
+    "latest_json_byte_identical": True,
+}
+
+# The counted widths after the rung, and the NAME of the one column that moved
+# them. Both are appended here rather than left implicit in the integers,
+# because the delta is pinned to the NAME in
+# tests/unit/test_data_qa_gold_width.py: a build that added an unrelated column
+# while omitting the flag satisfies +1 exactly as well as the right one does.
+#
+# GOLD_WIDTHS_BEFORE_ELO_REBUILD above is the BEFORE half and is byte-unchanged.
+GOLD_WIDTHS_AFTER_WEATHER_RUNG: tuple[int, int, int] = (195, 196, 195)
+
+WEATHER_COVERAGE_GOLD_COLUMN: str = "weather_coverage"

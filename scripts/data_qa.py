@@ -75,10 +75,23 @@ logger = get_logger(__name__)
 # tests/unit/test_data_qa_gold_width.py pins the DELTA to a named column set, so a
 # build that removed one intended column while incidentally adding an unrelated
 # one cannot satisfy the integer alone.
+# PHASE 33.1 (Plan 33.1-07 Task 3, rebuilt 2026-09-14) moves each matrix by
+# exactly +1, from 194/195/194 to 195/196/195. The added column is
+# ``weather_coverage``, and the delta is pinned to that NAME in
+# tests/unit/test_data_qa_gold_width.py rather than to the integer alone -- a
+# build that added an unrelated column while omitting the flag satisfies +1
+# exactly as well as the right one does.
+#
+# UPDATED, NOT SILENCED. This tripwire's own failure message instructs the reader
+# to reconcile it to the new empirically-counted width with a reason on the
+# record, and that is what happened here: the widths below were COUNTED off the
+# rebuilt matrices, and the rung that moved them is attributed under its own
+# document prefix (``p331_``) with a compound cause declared in committed source
+# BEFORE the rebuild ran.
 GOLD_FEATURE_MATRICES = {
-    "features_wp": 194,
-    "features_ats": 195,
-    "features_ou": 194,
+    "features_wp": 195,
+    "features_ats": 196,
+    "features_ou": 195,
 }
 
 # Tables whose DuckDB and parquet copies must agree on row-set MEMBERSHIP (D30-18).
