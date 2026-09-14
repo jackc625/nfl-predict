@@ -9209,3 +9209,198 @@ GOLD_GENERATION_GATED_CALL_SITES: tuple[tuple[str, str], ...] = (
         "moved. The published Phase-26 reading is not rewritten",
     ),
 )
+
+# ---------------------------------------------------------------------------
+# THE O/U WEATHER-CONDITIONS BREAKDOWN -- Plan 33.1-08 Task 4 (D33.1-11).
+#
+# MEASURED 2026-09-14 by running the COMMITTED run_ou_divergence_diagnosis()
+# orchestrator once against post-rung gold, on commit cb39c19. Nothing was
+# re-fit. data/ and artifacts/ were digest-bracketed around the run and both
+# verified byte-unchanged (472 and 159 files).
+#
+# WHAT THIS IS. The dome-versus-outdoor and severe-versus-mild breakdown the
+# phase context asked for, produced from the harness that was already committed,
+# using the two cuts Phase 26 already registered. Those two cuts had never
+# produced a graded number: their columns were degenerate on the old gold and the
+# harness refused honestly rather than substituting. Correcting the weather made
+# one of them gradeable, and re-keying applicability onto the game's own roof
+# (Task 3) made the other one gradeable and correct.
+#
+# WHAT THIS IS NOT. It is not a new comparison, not a significance claim, not a
+# gate input, and not a replacement for the Phase-26 readings. Those stay in
+# OU-DIVERGENCE-DIAGNOSIS.md exactly where they were written, with their date.
+#
+# TWO SPLITS, NOT FOUR. Plan 33.1-08 describes four splits -- applicability plus
+# three median bands (calm/windy, dry/wet, mild/severe). The harness has TWO. The
+# plan's own Ruling O is the reason it must stay that way: CONTEXT's calm versus
+# windy and dry versus wet map onto the existing severity split, and no new cut
+# is added, because adding bands now would widen a correction family fixed in
+# Phase 26 after the fact. Wind and precipitation already feed the severity score
+# the single band splits on. Every split that exists is covered; none is added.
+# ---------------------------------------------------------------------------
+
+OU_WEATHER_CONDITIONS_BREAKDOWN: dict[str, object] = {
+    "measured_on": "2026-09-14",
+    "measured_by": "Plan 33.1-08 Task 4, on commit cb39c19",
+    "harness": "backtest.ou_divergence.run_ou_divergence_diagnosis (committed, unchanged)",
+    "window": "2021-2024 walk-forward holdout",
+    "gold_generation_key": (
+        "eea0882f4410d22af6e4b54d1c0929a28072325fff9b556a91ca12de900290d1"
+    ),
+    "deployed_ou_artifact": "ou_20260326_163930",
+    "flat_breakeven_hit_rate": 0.5238095238095238,
+    "coverage_count": 1087,
+    # The RAW stream. Every hit rate below was identical in the BLENDED stream to
+    # machine precision, and so was every other cut in the sweep (22 of 22 bucket
+    # pairs). That identity is a PRE-EXISTING property of this harness, present
+    # before Plan 33.1-08 touched it and not caused by the re-keying; it is
+    # recorded here as an observation and deliberately NOT interpreted.
+    "buckets": {
+        "outdoor": {
+            "n": 749,
+            "n_graded": 749,
+            "hit_rate": 0.4766355140186916,
+            "line_clv_mean": 2.887171227082073,
+            "vs_flat_breakeven": "below",
+            "graded_edge_direction_by_season": (-1, -1, -1, 1),
+        },
+        "indoor": {
+            "n": 338,
+            "n_graded": 338,
+            "hit_rate": 0.4822485207100592,
+            "line_clv_mean": 3.687811394414958,
+            "vs_flat_breakeven": "below",
+            "graded_edge_direction_by_season": (-1, 0, -1, -1),
+        },
+        "severe_weather": {
+            "n": 543,
+            "n_graded": 543,
+            "hit_rate": 0.4732965009208103,
+            "line_clv_mean": 2.830641681537663,
+            "vs_flat_breakeven": "below",
+            "graded_edge_direction_by_season": (-1, -1, -1, 1),
+        },
+        "mild_weather": {
+            "n": 544,
+            "n_graded": 544,
+            "hit_rate": 0.4834558823529412,
+            "line_clv_mean": 3.4410534325767967,
+            "vs_flat_breakeven": "below",
+            "graded_edge_direction_by_season": (-1, -1, -1, -1),
+        },
+    },
+    # Two splits, two counts. BOTH ARE ZERO, and the zero is reported rather than
+    # dressed up: in this 2021-2024 window every game carries a weather
+    # observation (silver weather_coverage is 1.0 on all 6,499 rows and the roof
+    # flag has no nulls), so there was nothing to set aside. The exclusion
+    # mechanism is proven by fixture in
+    # tests/unit/test_ou_divergence_weather_cut.py, not by this population. A
+    # mechanism that happens not to fire on today's data is still the difference
+    # between a bucket that is a measurement and a bucket that is partly a gap --
+    # the 2025 forward season is where it will start to matter.
+    "excluded_missing_by_split": {
+        "applicability_outdoor_vs_indoor": 0,
+        "severity_severe_vs_mild": 0,
+    },
+    "split_accounting": {
+        "applicability_outdoor_vs_indoor": "749 + 338 + 0 == 1087",
+        "severity_severe_vs_mild": "543 + 544 + 0 == 1087",
+    },
+    "claims": (
+        "It required NO re-fit, and it DID require a re-score. "
+        "backtest.ou_divergence._deployed_ou_preds calls score_deployed_artifacts "
+        "for the O/U target on every run where predictions are not supplied, so "
+        "the deployed artifact is loaded and run over gold each time. That is how "
+        "the published Phase-26 diagnosis was produced as well. A claim that it "
+        "requires no re-score would be one the code does not support.",
+        "No new cut was added and no new bucket was created, so no new comparison "
+        "entered the Phase-26 correction family. The bucket names, the harness and "
+        "the LOCKED BettingSimulator grading path are the ones already committed. "
+        "The numbers above are DESCRIPTIVE and carry no p-value.",
+        "They were measured on post-Phase-33.1 gold and DO NOT supersede the "
+        "Phase-26 readings in OU-DIVERGENCE-DIAGNOSIS.md. Those were measured on "
+        "gold whose weather family was a fabricated constant; they stay where they "
+        "were written, with their date and their reason, and these numbers are "
+        "reported beside them, never instead of them.",
+        "Closing-line value remains REPORT-ONLY. The line_clv_mean figures above "
+        "are disclosure, not evidence of profitability, and nothing here is an "
+        "input to any gate.",
+    ),
+    # The two ways this cut's DEFINITION differs from the Phase-26 registered cut.
+    # Its IDENTITY is preserved -- same harness, same LOCKED simulator, same bucket
+    # names, no new trial -- but calling it the existing cut on better data without
+    # stating these would be a mislabelling.
+    "semantics": {
+        "applicability_is_per_game_not_per_venue": (
+            "Phase 26's cut split on the VENUE-level venue_outdoor, which encodes "
+            "retractable as its own indicator and cannot distinguish an open-roof "
+            "game from a closed-roof one at the same stadium. This cut splits on "
+            "the game's own roof fact, read read-only from silver "
+            "weather_features.weather_affects_game. Across the full 6,499-game "
+            "population that moves 621 closed-roof games at the five retractable "
+            "stadiums out of the outdoor bucket, where the venue key had put all "
+            "749 of their games together."
+        ),
+        "a_missing_observation_is_excluded_from_the_denominator": (
+            "Phase 26's severity band built mild as the bare complement of "
+            "severity greater than the median. Every comparison against a missing "
+            "value is False, so a game whose weather nobody observed was counted "
+            "as a mild-weather game. Both sides of both splits are now built "
+            "positively over observed rows and the set-aside count is reported. On "
+            "this window the count is zero; the definition is different regardless."
+        ),
+    },
+    "not_comparable_to_a_phase_26_run_of_the_same_cut": (
+        "Stated plainly: these numbers are NOT comparable to a hypothetical "
+        "Phase-26 run of the same cut. The applicability and coverage definitions "
+        "changed, as recorded above, and the underlying weather data changed. A "
+        "Phase-26 run never produced a graded result in any case -- the columns "
+        "were degenerate and the harness refused, which is the state this phase "
+        "removed."
+    ),
+    # A CONSEQUENCE that must not be buried. Making a pre-registered cut gradeable
+    # changes the BH-FDR denominator, because eight entries that were recorded as
+    # unavailable with a null p-value are now testable.
+    "trial_denominator_note": (
+        "OU-DIVERGENCE-DIAGNOSIS.md records n_trials = 36. Today's run reports 44. "
+        "The eight new entries are exactly the weather cut's four buckets across "
+        "the two streams, which were always REGISTERED and were previously counted "
+        "as unavailable with a null p-value because the columns were degenerate. "
+        "The registered family did not grow; the part of it that can be tested "
+        "did. The arithmetic consequence is that every BH-adjusted p-value in "
+        "today's run is computed over a 44-trial denominator rather than a "
+        "36-trial one, so today's adjusted p-values are not the published ones. "
+        "The published readout is NOT edited."
+    ),
+    # Both halves of the D33.1-11 hypothesis evidence, so a later readout can quote
+    # rather than re-argue. The readout leads with neither half.
+    "evidence_for_the_weather_hypothesis": (
+        "PUBLISHED Phase 26, on pre-correction gold: the model picked over 790 "
+        "times to under 297 and its over picks graded 0.4747, below breakeven.",
+        "PUBLISHED Phase 26: a flat per-season bias subtraction FAILED to collapse "
+        "the recorded bias, which is what a game-VARYING bias would predict.",
+        "PUBLISHED Phase 26: the high-total bucket graded 0.5521, above breakeven, "
+        "and high totals skew towards domes and fair conditions where a missing "
+        "weather input costs nothing.",
+    ),
+    "evidence_against_the_weather_hypothesis": (
+        "PROFITABILITY-READOUT.md: WP shows the same CLV-positive, ROI-flat shape "
+        "with ZERO weather features -- +0.0918 at p 6.8e-34 beside an ROI p of "
+        "0.67. Weather cannot be the general explanation for a shape that appears "
+        "where weather is not an input at all.",
+        "The 2021 under-heavy sign flip recorded in Phase 26 is not explained by "
+        "the weather hypothesis.",
+        "MEASURED TODAY, on corrected gold, and this one is new: two of the three "
+        "FOR facts above are Phase-26 readings taken on fabricated weather, and "
+        "they MOVED. The over/under split is now 966 over to 121 under, not "
+        "790/297; and the high-total bucket now grades 0.5000, at or below "
+        "breakeven, where it graded 0.5521 above it. The published figures are not "
+        "rewritten -- they are what Phase 26 measured -- but a hypothesis resting "
+        "on them is resting on numbers the correction moved.",
+        "MEASURED TODAY: all four weather buckets grade BELOW the flat breakeven, "
+        "between 0.4733 and 0.4835, a spread of about one percentage point. "
+        "Neither split separates a winning population from a losing one. If "
+        "weather were the missing input, the bucket where weather cannot reach the "
+        "field is where the model should look best, and it does not.",
+    ),
+}
