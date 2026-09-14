@@ -128,7 +128,7 @@ def _good_metadata(train: list[int]) -> dict[str, Any]:
         ("ou", _DEFAULT_TRAIN_WINDOW),
     ],
 )
-def test_incumbent_window_derived_from_live_metadata(
+def test_incumbent_window_derived_from_live_metadata_with_the_live_partition_holdout(
     target: str, expected_train: str
 ) -> None:
     """Each target's selection window comes from ITS OWN deployed incumbent's metadata.
@@ -156,9 +156,17 @@ def test_incumbent_window_derived_from_live_metadata(
         f"_incumbent_window('{target}')['hp_val'] is {window['hp_val']!r}, expected "
         "'2020'. The hp-val fold must be derived from the incumbent, not typed."
     )
-    assert window["holdout"] == "2021,2022,2023,2024", (
-        f"_incumbent_window('{target}')['holdout'] is {window['holdout']!r}, expected "
-        "'2021,2022,2023,2024' (the frozen gate.toml holdout window)."
+    # UPDATED by Plan 33.1-09 Task 3. This asserted the derived holdout was
+    # "2021,2022,2023,2024". Under D33.1-03 the holdout is SUPERSEDED by the committed
+    # partition rule -- train and hp_val still come from the incumbent's own metadata
+    # (D30-12 is untouched), but the holdout comes from conf.season_partition. Asserts over
+    # the LIVE partition, not over models.deploy_gate.FROZEN_BASELINE_SEASONS.
+    from conf.season_partition import default_season_partition
+
+    live = ",".join(str(s) for s in default_season_partition().holdout)
+    assert window["holdout"] == live, (
+        f"_incumbent_window('{target}')['holdout'] is {window['holdout']!r}, expected the "
+        f"live partition {live!r} from conf/season_partition.py."
     )
 
 
@@ -607,21 +615,31 @@ def test_an_armed_run_with_a_ratified_verdict_proceeds(
 # ---------------------------------------------------------------------------
 
 
-def test_a_narrower_incumbent_holdout_raises_before_any_train(
+def test_a_narrower_incumbent_holdout_is_reported_against_the_live_partition(
     tmp_path: Path,
 ) -> None:
-    """A derived holdout that is not the frozen one would train ON the scoring seasons.
+    """UPDATED by Plan 33.1-09 Task 3: the refusal became a REPORT (D33.1-04).
 
-    ``_WINDOW_KEYS`` derives ``holdout_seasons`` from the incumbent's metadata and passes it
-    to ``models.train --config-holdout-seasons``, while ``_load_gold_holdout`` and every gate
-    call read the frozen ``deploy_gate.HOLDOUT_SEASONS``. Nothing reconciled the two.
-    ``BaseTrainer.train_and_evaluate`` keeps the model from the LAST split, so a narrower
-    derived holdout would produce a saved artifact that had SEEN seasons the gate then scores
-    it on -- an in-sample candidate against an out-of-sample baseline, printing a confident
-    2x2 with no warning.
+    WHAT THIS USED TO ASSERT, and why it was right at the time: a derived holdout that was
+    not the frozen one would train ON the seasons the gate then scores, so the check RAISED.
+    The hazard it named has not gone away and is quoted from the function's own comment:
+    ``BaseTrainer.train_and_evaluate`` keeps the model from the LAST split, so the saved
+    artifact would have SEEN those seasons, and an in-sample candidate would be compared
+    against an out-of-sample baseline -- "a confident 2x2 would print with no warning at all".
 
-    All three live incumbents record [2021, 2022, 2023, 2024], so this is latent, not live.
+    WHY IT IS NOW A REPORT. Under D33.1-01 the deployed model is deliberately fitted on every
+    completed season, so that condition is no longer an anomaly to refuse -- it is the chosen
+    design, and raising on it would refuse every run. The owner accepted the cost after it was
+    stated twice. What must NOT happen is the second half of the old comment: the difference
+    printing with no warning. So the assertion moves from "it raises" to "it reports, and the
+    report names both windows and the in-sample consequence", which is the part that was
+    load-bearing.
+
+    Editing an artifact's metadata.json to make the old check pass is PROHIBITED (D33.1-04)
+    and is not what happened here: this drives a synthetic tree in tmp_path.
     """
+    from conf.season_partition import default_season_partition
+
     metadata = _good_metadata([2015, 2016, 2017, 2018, 2019])
     metadata["config"]["holdout_seasons"] = [2021, 2022]
     root = _write_artifacts_tree(
@@ -630,12 +648,23 @@ def test_a_narrower_incumbent_holdout_raises_before_any_train(
         {"ats_20260101_000000": metadata},
     )
 
-    with pytest.raises(ValueError, match="frozen gate holdout"):
-        promote._incumbent_window("ats", root)
+    window = promote._incumbent_window("ats", root)
+
+    report = window["holdout_report"]
+    assert report, "a differing incumbent holdout must be REPORTED, never silent."
+    assert "[2021, 2022]" in report, report
+    assert "in-sample" in report.lower(), (
+        f"the report must name the consequence, not merely the difference: {report}"
+    )
+    assert window["holdout"] == ",".join(
+        str(s) for s in default_season_partition().holdout
+    )
 
 
-def test_a_wider_incumbent_holdout_also_raises(tmp_path: Path) -> None:
-    """The check is an EQUALITY. Widening is not a safe direction either."""
+def test_a_wider_incumbent_holdout_is_reported_against_the_live_partition(
+    tmp_path: Path,
+) -> None:
+    """The report fires on ANY difference, in either direction. See the test above."""
     metadata = _good_metadata([2018, 2019])
     metadata["config"]["holdout_seasons"] = [2020, 2021, 2022, 2023, 2024]
     root = _write_artifacts_tree(
@@ -644,13 +673,51 @@ def test_a_wider_incumbent_holdout_also_raises(tmp_path: Path) -> None:
         {"ats_20260101_000000": metadata},
     )
 
-    with pytest.raises(ValueError, match="frozen gate holdout"):
-        promote._incumbent_window("ats", root)
+    window = promote._incumbent_window("ats", root)
+    assert window["holdout_report"], (
+        "widening is not a safe direction either -- the old check was an EQUALITY and the "
+        "report must fire on the same set of differences the raise used to."
+    )
+
+
+def test_an_incumbent_recording_the_live_partition_reports_NOTHING(
+    tmp_path: Path,
+) -> None:
+    """The control that keeps the report from being unconditional.
+
+    A report that fires on every input is not a report. Once a future re-fit writes the live
+    partition into a new metadata.json, there is no difference to state and the field must be
+    empty -- which is also how a reader will know the difference above was real.
+    """
+    from conf.season_partition import default_season_partition
+
+    metadata = _good_metadata([2018, 2019])
+    metadata["config"]["holdout_seasons"] = list(default_season_partition().holdout)
+    root = _write_artifacts_tree(
+        tmp_path / "artifacts",
+        {"ats": "ats_20260101_000000"},
+        {"ats_20260101_000000": metadata},
+    )
+
+    window = promote._incumbent_window("ats", root)
+    assert window["holdout_report"] == "", window["holdout_report"]
 
 
 @pytest.mark.parametrize("target", ["wp", "ats", "ou"])
-def test_every_live_incumbent_agrees_with_the_frozen_gate_holdout(target: str) -> None:
-    """The latent condition is measured, not assumed: all three currently agree."""
+def test_every_live_incumbent_DIFFERS_from_the_live_partition_and_says_so(
+    target: str,
+) -> None:
+    """UPDATED by Plan 33.1-09 Task 3. The latent condition became live.
+
+    It asserted all three incumbents AGREED with the gate holdout, which was true while the
+    two were the same four seasons. They are not: all three record [2021..2024] and the live
+    partition is the two most recent completed seasons. Under D33.1-04 the correct outcome is
+    a reported DIFFERENCE -- agreement here would mean somebody EDITED a record of a past
+    training run rather than re-fitting, which is the defect class this milestone exists to
+    detect.
+
+    Measured against the LIVE artifacts tree, not a copy, so it asserts the real state.
+    """
     if not (LIVE_ARTIFACTS / "latest.json").exists():
         pytest.skip(
             f"{LIVE_ARTIFACTS / 'latest.json'} not present -- artifacts/ is gitignored, so "
@@ -658,11 +725,16 @@ def test_every_live_incumbent_agrees_with_the_frozen_gate_holdout(target: str) -
         )
 
     window = promote._incumbent_window(target, LIVE_ARTIFACTS)
-    frozen = ",".join(str(int(s)) for s in deploy_gate.HOLDOUT_SEASONS)
+    live = ",".join(str(int(s)) for s in deploy_gate.HOLDOUT_SEASONS)
 
-    assert window["holdout"] == frozen, (
-        f"'{target}' incumbent records holdout {window['holdout']!r} against the frozen "
-        f"gate holdout {frozen!r}."
+    assert window["holdout"] == live, (
+        f"'{target}' window carries holdout {window['holdout']!r}, not the live partition "
+        f"{live!r}."
+    )
+    assert window["holdout_report"], (
+        f"'{target}' incumbent's recorded window matches the live partition, so nothing was "
+        "reported. All three incumbents record [2021..2024] and no re-fit has run; "
+        "agreement means a metadata.json was edited (D33.1-04 prohibits that)."
     )
 
 

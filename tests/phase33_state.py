@@ -9773,3 +9773,104 @@ UPDATED_HOLDOUT_PIN_TESTS: tuple[tuple[str, str, str], ...] = (
         "live_partition",
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# SIX MORE UPDATED PINS, FOUND BY MEASURING RATHER THAN BY READING.
+#
+# APPENDED by Plan 33.1-09 Task 3 on 2026-09-14, in the same task and the same
+# commit as the eleven above. A SECOND slot rather than an edit to the first,
+# because this file's APPEND PROTOCOL says a slot is appended once and not
+# edited afterwards -- and because the way these were found is itself the
+# record: the eleven came from the plan's inventory plus the three modules it
+# named, and these six came from running the blast radius the changed symbols
+# actually have.
+#
+# HOW THE RADIUS WAS DERIVED, so it can be re-derived rather than trusted: a
+# grep over tests/ for every symbol this plan changed (HOLDOUT_SEASONS,
+# TemporalSplitConfig, BacktestConfig, max_backtest_season, first_data_season,
+# the two promote_models bounds, _incumbent_window, _drift_tripwire,
+# _load_gold_holdout, TEAM_FORM_PER_GAME_FIRST_SEASON, gate.seasons,
+# validate_gate_config, season_partition, the models/train argparse flags and
+# build_parser) produced 21 unit modules, which were run as an explicit list.
+#
+# WHAT THAT RUN FOUND: 14 failures, of which SIX are recorded below and the
+# other EIGHT were already dispositioned -- six in
+# tests/unit/test_temporal_display_columns.py::TestRealGold, every one of them
+# already in GOLD_REBUILD_NEWLY_RED from Plan 33.1-08, plus the two counted
+# there under other modules. No suite-wide run was made and none is claimed.
+#
+# THE TWO SITES. `tests/unit/test_backtest_engine.py` pinned the engine's own
+# defaults, INCLUDING an assertion that 2025 is filtered OUT -- the test-side
+# statement of the very defect SPEC R6 removed.
+# `tests/unit/test_promote_models_tuned_path.py` asserted that a differing
+# incumbent holdout RAISES, which D33.1-04 deliberately turned into a report.
+#
+# Same dispositions as the eleven: updated with recorded reasons, none deleted,
+# none added to DELIBERATE_TRIPWIRE_NODE_IDS, every node id naming the partition
+# it covers.
+# ---------------------------------------------------------------------------
+
+UPDATED_HOLDOUT_PIN_TESTS_FOUND_BY_MEASUREMENT: tuple[tuple[str, str, str], ...] = (
+    (
+        "tests/unit/test_backtest_engine.py::TestBacktestConfig::"
+        "test_default_holdout_seasons_are_the_live_partition",
+        "Pinned BacktestConfig().holdout_seasons to the literal [2021, 2022, 2023, "
+        "2024]. Derived from conf.season_partition now, because re-pinning a "
+        "literal would make this file another declaration of the partition.",
+        "live_partition",
+    ),
+    (
+        "tests/unit/test_backtest_engine.py::TestBacktestConfig::"
+        "test_default_max_backtest_season_is_the_live_partitions_latest_completed_season",
+        "Pinned max_backtest_season to the literal 2024 -- the site that hid 2025 "
+        "from every consumer loading gold through the engine. Derived from the "
+        "partition's latest completed season, and additionally asserted >= 2025 so "
+        "the specific regression cannot come back unnoticed.",
+        "live_partition",
+    ),
+    (
+        "tests/unit/test_backtest_engine.py::TestTheFutureSeasonFilter::"
+        "test_filters_only_seasons_after_the_live_partition",
+        "Asserted that 2025 was FILTERED OUT of _load_features -- the test-side "
+        "statement of the defect. Now asserts 2025 is KEPT and that a season beyond "
+        "the most recent completed one is still dropped, so the filter is proven to "
+        "still bite rather than merely proven not to bite on 2025. Its class was "
+        "renamed from TestFilters2025Data, which named a season instead of a "
+        "behaviour.",
+        "live_partition",
+    ),
+    (
+        "tests/unit/test_promote_models_tuned_path.py::"
+        "test_incumbent_window_derived_from_live_metadata_with_the_live_partition_holdout",
+        "Asserted the derived holdout was '2021,2022,2023,2024'. Under D33.1-03 the "
+        "holdout is superseded by the committed rule while train and hp_val still "
+        "come from the incumbent's own metadata -- D30-12's per-target asymmetry fix "
+        "is untouched, and the test now says which half comes from where.",
+        "live_partition",
+    ),
+    (
+        "tests/unit/test_promote_models_tuned_path.py::"
+        "test_a_narrower_incumbent_holdout_is_reported_against_the_live_partition",
+        "Asserted _incumbent_window RAISES on a differing holdout. D33.1-04 turned "
+        "that refusal into a REPORT, because under D33.1-01 the condition is the "
+        "chosen design rather than an anomaly -- raising would refuse every run. The "
+        "load-bearing half of the old comment is what the test now asserts: the "
+        "difference must NOT print with no warning. Its sibling "
+        "test_a_wider_incumbent_holdout_is_reported_against_the_live_partition was "
+        "updated identically, and a NEW control "
+        "(test_an_incumbent_recording_the_live_partition_reports_NOTHING) keeps the "
+        "report from being unconditional.",
+        "live_partition",
+    ),
+    (
+        "tests/unit/test_promote_models_tuned_path.py::"
+        "test_every_live_incumbent_DIFFERS_from_the_live_partition_and_says_so",
+        "Asserted all three live incumbents AGREED with the gate holdout, true only "
+        "while the windows coincided. They record [2021..2024] and no re-fit has "
+        "run, so under D33.1-04 the correct assertion is the reported DIFFERENCE -- "
+        "agreement would mean a metadata.json was edited rather than a model "
+        "re-fitted.",
+        "live_partition",
+    ),
+)

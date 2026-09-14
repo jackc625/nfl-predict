@@ -23,21 +23,54 @@ from models.temporal import TemporalSplitConfig
 class TestBacktestConfig:
     """Tests for BacktestConfig defaults."""
 
-    def test_default_holdout_seasons(self) -> None:
+    def test_default_holdout_seasons_are_the_live_partition(self) -> None:
+        """UPDATED by Plan 33.1-09 Task 3: DERIVED from the rule, not the old literal.
+
+        It pinned [2021, 2022, 2023, 2024]. The partition now comes from ONE committed rule
+        (conf/season_partition.py, SPEC R6 / D33.1-03), so re-pinning a literal here would
+        make this file another declaration of it. Asserts over the LIVE partition, not over
+        models.deploy_gate.FROZEN_BASELINE_SEASONS.
+        """
+        from conf.season_partition import default_season_partition
+
         config = BacktestConfig()
-        assert config.holdout_seasons == [2021, 2022, 2023, 2024]
+        assert config.holdout_seasons == list(default_season_partition().holdout)
 
     def test_default_first_data_season(self) -> None:
+        """UNCHANGED at 2018, and that is the point: not every number moved.
+
+        The selection floor stays where it was; what changed is that it is now DERIVED from
+        conf.season_partition.SELECTION_WINDOW_FIRST_SEASON, where its measured justification
+        is readable -- it is the coverage floor of three silver sources, not folklore.
+        """
+        from conf.season_partition import SELECTION_WINDOW_FIRST_SEASON
+
         config = BacktestConfig()
+        assert config.first_data_season == SELECTION_WINDOW_FIRST_SEASON
         assert config.first_data_season == 2018
 
     def test_default_targets(self) -> None:
         config = BacktestConfig()
         assert config.targets == ["wp", "ats", "ou"]
 
-    def test_default_max_backtest_season(self) -> None:
+    def test_default_max_backtest_season_is_the_live_partitions_latest_completed_season(
+        self,
+    ) -> None:
+        """UPDATED by Plan 33.1-09 Task 3. This pinned the literal 2024.
+
+        THE SITE THIS GUARDS IS THE ONE THAT HID 2025. ``_load_features`` drops every row with
+        ``season > max_backtest_season``, so while this was 2024 every backtest and gate
+        consumer that loaded gold through the engine saw no 2025 row -- 285 games that were in
+        gold the whole time. It is now the most recent COMPLETED season.
+        """
+        from conf.season_partition import default_season_partition
+
         config = BacktestConfig()
-        assert config.max_backtest_season == 2024
+        assert (
+            config.max_backtest_season
+            == default_season_partition().latest_completed_season
+        )
+        assert config.max_backtest_season >= 2025
 
 
 class TestCreateSplitConfig:
@@ -122,11 +155,29 @@ class TestCreateTrainer:
             self.engine._create_trainer("invalid", config)
 
 
-class TestFilters2025Data:
-    """Tests for _load_features filtering."""
+class TestTheFutureSeasonFilter:
+    """Tests for _load_features' incomplete-season filtering.
 
-    def test_filters_2025_data(self) -> None:
-        """Create a mock features_df with seasons [2018..2025], verify filtering."""
+    RENAMED by Plan 33.1-09 Task 3 from ``TestFilters2025Data``. The old name named a
+    SEASON, and the season it named is now a completed one the filter must keep -- so the
+    name described the defect rather than the behaviour. The filter itself is unchanged and
+    still tested in both directions; only its boundary moved, from the literal 2024 to the
+    most recent completed season.
+    """
+
+    def test_filters_only_seasons_after_the_live_partition(self) -> None:
+        """UPDATED by Plan 33.1-09 Task 3. It used to assert 2025 was FILTERED OUT.
+
+        That assertion was the test-side statement of the defect SPEC R6 removed: 2025 is a
+        COMPLETED season present in gold, and dropping it here made it invisible to every
+        engine consumer without anything failing. The filter still exists and is still tested
+        -- an INCOMPLETE season must still be dropped -- but the boundary is now the most
+        recent completed season rather than the literal 2024.
+
+        Asserts over the LIVE partition. The frozen 2021-2024 baseline window is a different
+        object (models.deploy_gate.FROZEN_BASELINE_SEASONS) and is not what bounds this
+        loader.
+        """
         engine = BacktestEngine()
 
         # Build fake features DataFrame with seasons 2018-2025
@@ -148,8 +199,27 @@ class TestFilters2025Data:
 
         with patch("backtest.engine.pd.read_parquet", return_value=mock_df):
             result = engine._load_features("wp")
-            assert result["season"].max() <= 2024
-            assert 2025 not in result["season"].values
+            seasons = set(result["season"].values)
+
+            assert 2025 in seasons, (
+                "2025 was dropped. It is a COMPLETED season and it is in gold; the filter "
+                "exists to exclude INCOMPLETE seasons, and treating a completed one as "
+                "future is the defect SPEC R6 removed. It fails silently because the frame "
+                "still looks full."
+            )
+            assert result["season"].max() <= engine.config.max_backtest_season
+
+            # The filter still bites: an INCOMPLETE season is still excluded. Without this
+            # half the test would pass for a loader that filtered nothing at all.
+            future = engine.config.max_backtest_season + 1
+            beyond = mock_df.copy()
+            beyond.loc[beyond.index[0], "season"] = future
+            with patch("backtest.engine.pd.read_parquet", return_value=beyond):
+                filtered = engine._load_features("wp")
+            assert future not in set(filtered["season"].values), (
+                f"season {future} is beyond the most recent completed season and must be "
+                "dropped; the future-season filter is inert."
+            )
 
 
 class TestBacktestResultsStructure:
