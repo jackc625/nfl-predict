@@ -12,6 +12,20 @@ WINDOW HAS BEEN SCORED DOES NOT FIX A BUG -- IT DESTROYS THE EVIDENCE. A value t
 here is wrong for the remainder of the phase, and the only legitimate response is to say so in
 the readout, not to amend the file.
 
+THE ONE AMENDMENT MADE SINCE THE RULE WAS FROZEN, AND WHY IT IS NOT THAT
+-----------------------------------------------------------------------
+2026-09-14, code review WR-01: ``completed_seasons_from`` gained an upper bound. NO WINDOW
+HAD BEEN SCORED when it was made -- no re-fit had run, the gate had not been run, and no
+candidate existed -- so there was no evidence to destroy. More to the point, the amendment
+CANNOT change any partition this repository has ever computed: it drops seasons ABOVE
+``LATEST_COMPLETED_SEASON``, and no completed-season input has ever contained one.
+``default_season_partition()`` is identical before and after, field for field, and that was
+checked rather than assumed. What it changes is the partition a caller would get MID-SEASON
+out of a gold frame carrying live 2026 rows, which was silently wrong. The rule's witness
+(``tests/phase33_state.SEASON_PARTITION_RULE_COMMIT`` and the file digest beside it) was
+re-measured from the new commit in a strictly later one, which is the procedure
+``tests/unit/test_preregistration_ancestry.py`` names for a deliberate change.
+
 THE PROHIBITION IS SATISFIED VACUOUSLY, AND THE ANCESTRY CHECK EXISTS ANYWAY
 ----------------------------------------------------------------------------
 The SPEC's third prohibition reads: "MUST NOT select the training window after observing its
@@ -254,22 +268,42 @@ def completed_seasons_from(gold_seasons: Iterable[object]) -> tuple[int, ...]:
 
     This is the derivation for every caller that HOLDS DATA: pass a gold frame's ``season``
     column, a list, a set, anything whose members coerce to ``int``. Duplicates collapse,
-    which is what lets a per-game frame be passed straight in. Seasons before
-    ``CORPUS_FIRST_SEASON`` are DROPPED rather than raising, because the corpus floor is a
-    property of the rule and not of the caller's frame.
+    which is what lets a per-game frame be passed straight in.
+
+    THE WINDOW IS CLAMPED AT BOTH ENDS, and the upper bound is the one that matters
+    operationally. Seasons below ``CORPUS_FIRST_SEASON`` are DROPPED rather than raising,
+    because the corpus floor is a property of the rule and not of the caller's frame.
+    Seasons ABOVE ``LATEST_COMPLETED_SEASON`` are dropped for the same reason and for a
+    sharper one: this function is named "COMPLETED seasons", it advertises "pass a gold
+    frame's ``season`` column", and gold is rebuilt DURING a season. With no ceiling, the
+    first caller that followed that instruction mid-season silently got a partition whose
+    holdout was a partial season, whose hp-val fold had moved, and whose final fit included
+    games that had not been played -- with no error anywhere. Measured before the ceiling
+    existed: ``derive_season_partition(range(2002, 2027))`` returned hp_val (2024,) and
+    holdout (2025, 2026).
+
+    A caller that genuinely means "include the live season" does NOT get it by passing a
+    frame that happens to contain one. It says so by bumping ``LATEST_COMPLETED_SEASON``,
+    in its own reviewable commit, which is the mechanism that already exists and the only
+    one that leaves a record of the partition having moved.
 
     Args:
         gold_seasons: Any iterable of season labels.
 
     Returns:
-        The sorted, de-duplicated seasons at or above ``CORPUS_FIRST_SEASON``.
+        The sorted, de-duplicated seasons from ``CORPUS_FIRST_SEASON`` through
+        ``LATEST_COMPLETED_SEASON`` inclusive.
     """
     return tuple(
         sorted(
             {
                 int(season)  # type: ignore[call-overload]
                 for season in gold_seasons
-                if int(season) >= CORPUS_FIRST_SEASON  # type: ignore[call-overload]
+                # Both bounds, in one expression, so no future edit can add a floor check
+                # and forget the ceiling.
+                if CORPUS_FIRST_SEASON
+                <= int(season)  # type: ignore[call-overload]
+                <= LATEST_COMPLETED_SEASON
             }
         )
     )
