@@ -10840,3 +10840,193 @@ SEASON_PARTITION_RULE_REANCHOR: dict[str, str] = {
     "commit_contents": "exactly conf/season_partition.py and nothing else",
     "hash_basis": "newline-normalized file bytes (CRLF folded to LF), as before",
 }
+
+
+# ---------------------------------------------------------------------------
+# THE ELO RE-DERIVATION, DECLARED BEFORE ANYTHING WAS OVERWRITTEN.
+#
+# APPENDED by Plan 33-13 Task 2 on 2026-09-14, BEFORE the re-derivation ran.
+# Nothing above this line was edited.
+#
+# WHY THIS SLOT IS WRITTEN FIRST. The re-derivation overwrites all five Elo
+# artifacts and NO BACKUP OF THEM EXISTED ANYWHERE IN THE TREE. A declaration
+# written after the run is a transcription of the run wearing a prediction's
+# clothes: it agrees with whatever happened, including a catastrophe. Everything
+# in this slot was measured on the PRE-run store and committed before the
+# --full-rebuild invocation, so the run had something it could fail against.
+#
+# THE OWNER RULING THIS SLOT SERVES. Plan 33-13 Task 1 was a blocking-human
+# decision checkpoint; the owner selected `rederive-now` on 2026-09-14 --
+# authorise the re-derivation now, bracketed, with the changed-file set declared
+# beforehand (the D33-01/D33-09 recommendation). `snapshot-first` was rejected as
+# a way to make the OLD state canonical, and `defer` was rejected because it
+# leaves COLD-04 unmet and leaves the live 2026 season served by a model trained
+# on 61.2% fabricated Elo.
+# ---------------------------------------------------------------------------
+
+# WHAT WAS REPLACED, measured on 2026-09-14 immediately before the run.
+#
+# The snapshot table is the defect this phase exists to end: 2,227 rows covering
+# 2018-2025 ONLY, written by tests/integration/test_elo_integration.py with no
+# sandbox during Phase 31 (mtime 2026-09-05T02:05:25Z). Gold's Elo columns are a
+# LEFT JOIN off it, so 4,288 of 6,499 gold rows carried a fabricated 0.0 Elo. The
+# other four artifacts carry v2.0-era mtimes (2026-05-29T00:57Z) from a build
+# whose inputs have since moved.
+ELO_PRE_PHASE_STATE: dict[str, object] = {
+    "measured_at": "2026-09-14",
+    "elo_game_snapshots": {
+        "rows": 2227,
+        "columns": 11,
+        "first_season": 2018,
+        "last_season": 2025,
+        "mtime_utc": "2026-09-05T02:05:25.908082+00:00",
+        "sha256": "442c839f7067bf9bb2f2b8d1ad637e6ba16f78b494dbb85b8940b850a14987c1",
+    },
+    "games_with_elo": {
+        "rows": 6292,
+        "columns": 21,
+        "first_season": 2002,
+        "last_season": 2025,
+        "mtime_utc": "2026-05-29T00:57:06.791097+00:00",
+        "sha256": "56ada170805494935d87b431797ce3dabd59bd4760765d3bb081ad7b5b468581",
+    },
+    "elo_rating_history": {
+        "rows": 6263,
+        "columns": 15,
+        "first_season": 2002,
+        "last_season": 2025,
+        "mtime_utc": "2026-05-29T00:57:06.876796+00:00",
+        "sha256": "f4fff022dadcbe408ad33e26268a4e5f01dd4f2691cc549b7803cc2bcbfeb880",
+    },
+    "elo_ratings_current": {
+        "rows": 32,
+        "columns": 6,
+        "first_season": 2025,
+        "last_season": 2025,
+        "mtime_utc": "2026-05-29T00:57:06.791097+00:00",
+        "sha256": "e46e32b44076ba058a1b40687cdd053963916db3a932ddae19a132d518efe522",
+    },
+    "elo_ratings": {
+        "bytes": 7529,
+        "mtime_utc": "2026-05-29T00:57:06.876796+00:00",
+        "sha256": "78c5bc760f5f4faf2f29f2e12007009f9f61595f34591485225dea77a941fc66",
+    },
+    # There was no backup of any of them, anywhere in the tree, before the
+    # forensic copy below was taken. F-03: this is a RE-DERIVATION and not a
+    # restore, because no known-good source exists to restore FROM.
+    "backup_existed_before_this_plan": False,
+}
+
+# THE SANITY BAND, FROZEN BEFORE THE RUN AND DERIVED FROM THE PRE-RUN CHAIN.
+#
+# REVIEW-CONFIRMED (Codex HIGH). A band recorded from a run's own observed min and
+# max, and then asserted against that same run's values, is TRUE BY CONSTRUCTION
+# for any output whatever -- including a catastrophically wrong one. It would
+# prove only that max() >= min(). So the endpoints here were measured on the store
+# as it stood BEFORE the re-derivation and committed before it ran.
+#
+# HOW IT WAS DERIVED, stated so it is reproducible rather than merely quoted:
+#
+#   1. Every rating-valued column of the three PRE-run row tables was pooled --
+#      elo_rating_history.{home,away}_rating_{pre,post}, games_with_elo's same
+#      four, and elo_game_snapshots.{home,away}_elo_pre. Pooled min 1132.4435,
+#      pooled max 1918.2884, over 29,506 values.
+#   2. Widened by 150 Elo points on each side. 150 is not arbitrary: the largest
+#      single mechanical displacement this system applies to one rating in one
+#      step is the season carryover, which moves a rating 25% of the way to 1500
+#      -- about 105 points at the pre-run extremes (1918 -> 1814, 1132 -> 1224).
+#      150 covers that plus margin.
+#   3. Rounded OUTWARD to the nearest whole 10.
+#
+# It is strictly TIGHTER than the band scripts/build_elo.validate_ratings already
+# warns outside of (800, 2200), so it is a real constraint rather than a
+# restatement of one the code makes anyway.
+ELO_RATING_BAND_FROZEN: tuple[float, float] = (980.0, 2070.0)
+
+# The pooled pre-run endpoints the band above was widened FROM, recorded so the
+# derivation can be checked rather than taken on trust.
+ELO_RATING_BAND_PRE_RUN_POOLED: tuple[float, float] = (1132.4435, 1918.2884)
+
+# WHAT THE RE-DERIVATION IS EXPECTED TO MOVE. Declared before the run; a moved
+# path outside this set is a FINDING TO REPORT and never a reason to widen the
+# set.
+#
+# DETERMINED BY READING THE CODE, not assumed either way (the plan's
+# instruction):
+#
+# * The five live artifacts are replaced by EloBuilder.save_full_rebuild
+#   (scripts/build_elo.py).
+# * data/nfl_predictions.duckdb IS in the set. save_full_rebuild persists four of
+#   the five through data.storage.save_dataframe, whose `save_to_db` parameter
+#   DEFAULTS TO TRUE (data/storage.py:959-968, 1046-1048), so every parquet write
+#   is accompanied by a create_table_from_df(..., if_exists="replace") against
+#   the shared DuckDB store. No parquet-only staged writer is used on the LIVE
+#   path. The STAGING path IS parquet-and-json-only by deliberate design --
+#   scripts/elo_generation.default_stage_writer says so in its own docstring and
+#   explains why -- but staging is not the live write, and the live write is what
+#   moves the store.
+# * data/silver/elo_generation.json is ADDED: the generation pointer
+#   publish_elo_generation moves once, atomically, after staging and validation.
+#   It does not exist on the pre-run store, so this is the first generation ever
+#   published here.
+# * data/silver/elo_generations/<generation_id>/ is ADDED: the five STAGED copies
+#   the publisher validates together before it publishes. The generation id is
+#   minted at run time (scripts/elo_generation.new_generation_id), so this member
+#   is declared as a PATTERN rather than as a literal path -- the alternative
+#   would be a declaration that could only be written after the run, which is the
+#   thing this slot exists not to be.
+ELO_REDERIVATION_EXPECTED_CHANGED_FILES: tuple[str, ...] = (
+    "data/silver/elo_game_snapshots.parquet",
+    "data/silver/games_with_elo.parquet",
+    "data/silver/elo_rating_history.parquet",
+    "data/silver/elo_ratings_current.parquet",
+    "data/silver/elo_ratings.json",
+    "data/nfl_predictions.duckdb",
+    "data/silver/elo_generation.json",
+)
+
+# The one member whose exact path cannot be known before the run, and why
+# (above). Matched with fnmatch against repo-relative POSIX keys.
+ELO_REDERIVATION_EXPECTED_CHANGED_PATTERNS: tuple[str, ...] = (
+    "data/silver/elo_generations/*/*",
+)
+
+# THE ROLLBACK ARTIFACT (REVIEW-CONFIRMED, Codex HIGH, with Antigravity reaching
+# the same place).
+#
+# A read-only copy of the five prior artifacts, taken before the run, OUTSIDE the
+# active data root. Outside on purpose: a copy under data/ would itself be a
+# guarded production store and a second source of truth inside the lake, which is
+# why Antigravity's suggested data/silver/.archive/ was NOT used.
+#
+# WHAT IT IS NOT. It is not a baseline and not a known-good source -- the old
+# state is KNOWN-CORRUPT, which is the entire reason for the re-derivation. Task
+# 1's ruling rejected `snapshot-first` precisely as a way to make the OLD state
+# canonical. This is the narrower move and is compatible with that ruling: it is
+# an undo for THIS PHASE'S OWN MISTAKE, and nothing downstream ever reads it.
+ELO_FORENSIC_COPY_ROOT: str = "outputs/phase33_elo_forensic_pre_rederivation"
+
+# (filename under ELO_FORENSIC_COPY_ROOT, sha256 of the copied bytes). Each value
+# was verified equal to the source artifact's digest at copy time.
+ELO_FORENSIC_COPY_DIGESTS: tuple[tuple[str, str], ...] = (
+    (
+        "elo_game_snapshots.parquet",
+        "442c839f7067bf9bb2f2b8d1ad637e6ba16f78b494dbb85b8940b850a14987c1",
+    ),
+    (
+        "games_with_elo.parquet",
+        "56ada170805494935d87b431797ce3dabd59bd4760765d3bb081ad7b5b468581",
+    ),
+    (
+        "elo_rating_history.parquet",
+        "f4fff022dadcbe408ad33e26268a4e5f01dd4f2691cc549b7803cc2bcbfeb880",
+    ),
+    (
+        "elo_ratings_current.parquet",
+        "e46e32b44076ba058a1b40687cdd053963916db3a932ddae19a132d518efe522",
+    ),
+    (
+        "elo_ratings.json",
+        "78c5bc760f5f4faf2f29f2e12007009f9f61595f34591485225dea77a941fc66",
+    ),
+)
