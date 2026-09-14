@@ -197,6 +197,14 @@ def _close_connections_onto(target: Path) -> None:
     file we are trying to read is closed, so a test's sandbox database is left
     untouched. Closing is safe by construction -- ``DuckDBConnection.connect``
     reopens lazily on the next use.
+
+    SINCE QT-W8X-01 the measured case above opens READ-ONLY, and a read-only handle
+    does not block a byte read -- so that particular handle is no longer in the way.
+    The paragraph is left as the record of what was measured. The helper is kept
+    because the holder it exists to reach is now the read-WRITE one: a declared
+    production writer mid-work, or a leftover handle from an earlier run. Closing
+    also de-escalates, since ``close()`` resets the recorded mode and the next lazy
+    open is read-only again.
     """
     try:
         from data.storage import DuckDBConnection
@@ -288,14 +296,29 @@ def require_content_digest(
 def digest_file(path: Path) -> str:
     """Return the sha256 of *path*'s bytes, read in chunks so a 40 MB store is cheap.
 
-    LOCKED FILES. On Windows, DuckDB holds an exclusive lock on an open database, and
-    ``data/nfl_predictions.duckdb`` is open for the whole of any pytest session that
-    touched ``load_dataframe``. Opening it for reading raises ``PermissionError``.
-    Rather than crash (a guard that errors gets disabled) or skip the file silently (a
-    guard that lies), fall back to a stat signature and SAY SO in the returned value:
-    the digest string itself declares which instrument produced it, so a comparison can
-    never quietly mix a content hash on one side with a stat signature on the other and
-    call the difference a data move.
+    LOCKED FILES. On Windows, DuckDB holds an exclusive lock on a database opened
+    READ-WRITE, and a plain ``open(path, "rb")`` against one raises
+    ``PermissionError``. Rather than crash (a guard that errors gets disabled) or skip
+    the file silently (a guard that lies), fall back to a stat signature and SAY SO in
+    the returned value: the digest string itself declares which instrument produced it,
+    so a comparison can never quietly mix a content hash on one side with a stat
+    signature on the other and call the difference a data move.
+
+    WHAT CHANGED, AND WHAT DID NOT (QT-W8X-01). This paragraph used to say
+    ``data/nfl_predictions.duckdb`` is locked "for the whole of any pytest session that
+    touched ``load_dataframe``". That is no longer true, and correcting it is part of
+    the same change that made it false: ``data/storage.DuckDBConnection.connect`` now
+    opens read-only unless a caller passes ``write=True``, and a read-only handle does
+    NOT block a byte read. MEASURED, duckdb 1.5.0 / Windows 11 -- with a READ-ONLY
+    handle held, ``open(path, "rb")`` SUCCEEDS; with a read-write handle held it raises
+    ``PermissionError: [Errno 13]``. So the ordinary reading session no longer degrades
+    this instrument at all.
+
+    The fallback is KEPT, because the case it covers is still real: the one legitimate
+    production writer holds a genuine read-write handle, and an editor or a leftover
+    process can hold one too. It simply should not fire on an ordinary run any more --
+    ``STAT_SIGNATURE_OBSERVATIONS`` (see ``locked_read_observations``) is how that claim
+    is checked rather than assumed.
 
     A stat signature is weaker than a content hash -- it would miss a rewrite that
     preserved both size and mtime -- but it detects every write DuckDB actually makes,

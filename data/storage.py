@@ -56,7 +56,34 @@ def _atomic_write_parquet(
 
 
 class DuckDBConnection:
-    """DuckDB connection manager with utilities."""
+    """DuckDB connection manager with utilities.
+
+    OPENS READ-ONLY UNLESS A CALLER ASKS, IN WORDS, TO WRITE (QT-W8X-01).
+
+    MEASURED on duckdb 1.5.0 / Windows 11, two processes over one database file:
+
+    ===============  ===============  =========================================
+    holder           second opener    result
+    ===============  ===============  =========================================
+    read-only        read-only        both OPEN, concurrently
+    read-write       read-only        ``IOException: ... by another process``
+    read-write       read-write       ``IOException: ... by another process``
+    ===============  ===============  =========================================
+
+    This connection is held as a module global (``_db_connection``) for the whole of
+    any process that touched ``load_dataframe``, so before this change a purely
+    READ-ONLY workload -- a pytest session, a report script -- locked
+    ``data/nfl_predictions.duckdb`` against everything else on the machine,
+    including a plain ``open(path, "rb")``. Nothing that only reads should hold a
+    write lock.
+
+    The fix is a DEFAULT, not a heuristic. ``connect()`` with no argument is a READ
+    connection; a caller that needs to write says ``connect(write=True)`` at the
+    call site. Write intent is deliberately NEVER inferred from the text of a query:
+    a regex over SQL that decides whether to take a write lock is exactly the
+    implicit default this change removes, and an AST scan in
+    ``tests/unit/test_storage_connection_mode.py`` asserts against it.
+    """
 
     def __init__(self, db_path: str | None = None):
         """
@@ -67,45 +94,138 @@ class DuckDBConnection:
         """
         self.db_path = db_path
         self._connection = None
+        # None when no handle is live. Tracks the mode of the handle that IS live,
+        # so `connect(write=True)` can tell "already sufficient" from "must upgrade"
+        # and so `close()` can de-escalate back to the safe default.
+        self._write_mode: bool | None = None
 
-    def connect(self) -> duckdb.DuckDBPyConnection:
-        """Get or create DuckDB connection."""
-        if self._connection is None:
-            try:
-                if self.db_path:
-                    # Ensure directory exists
+    @property
+    def connection_mode(self) -> str | None:
+        """``"read"``, ``"write"``, or None when no handle is live."""
+        if self._connection is None or self._write_mode is None:
+            return None
+        return "write" if self._write_mode else "read"
+
+    def connect(self, *, write: bool = False) -> duckdb.DuckDBPyConnection:
+        """Get or open the DuckDB handle; read-only unless *write* is True.
+
+        Mode changes, and why each is what it is:
+
+        * ``write=True`` over a live READ handle is an UPGRADE: the read handle is
+          CLOSED and a read-write one opened. duckdb caches the database instance
+          per process and refuses a second connection onto one file under a
+          different configuration (MEASURED: ``ConnectionException: Can't open a
+          connection to same database file with a different configuration``), so
+          reusing the read handle is not possible and neither is opening alongside
+          it. Close-then-reopen is required, not stylistic.
+        * ``write=False`` over a live WRITE handle returns the existing handle. It is
+          NOT auto-downgraded: a live write handle belongs to a caller that is
+          mid-work. De-escalation happens at ``close()``, which resets the recorded
+          mode so the next lazy open is read-only again -- which is what makes
+          ``close_db_connection`` (and through it the test suite's
+          ``close_probable_holders``) a real seam rather than a no-op.
+        """
+        if self._connection is not None:
+            if write and not self._write_mode:
+                logger.info(
+                    "Upgrading the DuckDB handle to read-write",
+                    db_path=self.db_path,
+                )
+                self.close()
+            else:
+                return self._connection
+
+        try:
+            if not self.db_path:
+                # In-memory. Locks nothing, so there is nothing to protect.
+                self._connection = duckdb.connect()
+                self._write_mode = True
+                logger.info("Connected to DuckDB in-memory")
+            elif write:
+                Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+                self._connection = duckdb.connect(self.db_path)
+                self._write_mode = True
+                logger.info(
+                    "Connected to DuckDB file", db_path=self.db_path, mode="read-write"
+                )
+            elif Path(self.db_path).exists():
+                # THE BRANCH THE PRODUCTION DATABASE TAKES on every ordinary session.
+                try:
+                    self._connection = duckdb.connect(self.db_path, read_only=True)
+                    self._write_mode = False
+                    logger.info(
+                        "Connected to DuckDB file",
+                        db_path=self.db_path,
+                        mode="read-only",
+                    )
+                except (duckdb.Error, OSError) as read_only_failure:
+                    # A `.duckdb.wal` sibling awaiting replay is the realistic case:
+                    # duckdb cannot replay a write-ahead log through a read-only
+                    # handle. Availability wins here, but LOUDLY -- this fallback
+                    # must not be reachable on a healthy database, and the warning
+                    # is how a reader finds out if it ever becomes the normal path.
+                    logger.warning(
+                        "Read-only DuckDB open failed; taking a read-write handle",
+                        db_path=self.db_path,
+                        error=str(read_only_failure),
+                        exception_type=type(read_only_failure).__name__,
+                    )
                     Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
                     self._connection = duckdb.connect(self.db_path)
-                    logger.info("Connected to DuckDB file", db_path=self.db_path)
-                else:
-                    self._connection = duckdb.connect()
-                    logger.info("Connected to DuckDB in-memory")
-
-                # Configure DuckDB settings
-                self._connection.execute("SET memory_limit='4GB'")
-                self._connection.execute("SET threads=4")
-
-            except (duckdb.Error, OSError) as e:
-                logger.error(
-                    "Failed to connect to DuckDB",
+                    self._write_mode = True
+            else:
+                # Read mode over a file that does not exist. Read-only cannot open
+                # one, and an absent file has nothing to protect, so today's
+                # behaviour is kept EXACTLY: make the parent and open read-write,
+                # which brings the database into being. This is what keeps every
+                # sandbox and temp-root test working unchanged -- a `load_dataframe`
+                # against a fresh root still falls through to parquet.
+                Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+                self._connection = duckdb.connect(self.db_path)
+                self._write_mode = True
+                logger.info(
+                    "Connected to DuckDB file",
                     db_path=self.db_path,
-                    error=str(e),
-                    exception_type=type(e).__name__,
+                    mode="read-write",
+                    absent_before=True,
                 )
-                raise DataIngestionError(f"DuckDB connection failed: {e}") from e
+
+            # Session configuration, issued on every handle. PROBED on duckdb 1.5.0:
+            # both statements are ACCEPTED on a read-only handle -- neither is a
+            # write to the database -- so the read path issues them unchanged.
+            self._connection.execute("SET memory_limit='4GB'")
+            self._connection.execute("SET threads=4")
+
+        except (duckdb.Error, OSError) as e:
+            logger.error(
+                "Failed to connect to DuckDB",
+                db_path=self.db_path,
+                error=str(e),
+                exception_type=type(e).__name__,
+            )
+            raise DataIngestionError(f"DuckDB connection failed: {e}") from e
 
         return self._connection
 
     def close(self) -> None:
-        """Close DuckDB connection."""
+        """Close DuckDB connection, resetting the recorded mode to the safe default."""
         if self._connection:
             self._connection.close()
             self._connection = None
             logger.info("DuckDB connection closed")
+        self._write_mode = None
 
-    def execute(self, query: str, parameters: dict | None = None):
-        """Execute SQL query."""
-        conn = self.connect()
+    def execute(
+        self, query: str, parameters: dict | None = None, *, write: bool = False
+    ):
+        """Execute SQL query.
+
+        *write* is the caller's DECLARATION that this statement mutates the
+        database. It is keyword-only so a call site reads as ``execute(sql,
+        write=True)`` rather than as an anonymous boolean, and it defaults to False
+        so a caller that says nothing gets a read-only handle.
+        """
+        conn = self.connect(write=write)
         try:
             if parameters:
                 result = conn.execute(query, parameters)
@@ -135,8 +255,12 @@ class DuckDBConnection:
     def create_table_from_df(
         self, df: pd.DataFrame, table_name: str, if_exists: str = "replace"
     ) -> None:
-        """Create table from DataFrame."""
-        conn = self.connect()
+        """Create table from DataFrame.
+
+        A NAMED WRITE: this DROPs and re-creates a table, so it asks for the
+        read-write handle explicitly rather than inheriting one by accident.
+        """
+        conn = self.connect(write=True)
         sanitized_name = self._sanitize_table_name(table_name)
 
         try:
@@ -723,6 +847,10 @@ def db_transaction():
     bare ``raise`` statement, so no information is lost.
     """
     conn = get_db_connection()
+    # A transaction boundary IS a mutation boundary -- there is no read-only caller
+    # of this context manager -- so the write handle is acquired before BEGIN rather
+    # than being inferred from whatever the body turns out to run.
+    conn.connect(write=True)
     try:
         conn.execute("BEGIN TRANSACTION")
         yield conn
@@ -738,10 +866,14 @@ def db_transaction():
         raise
 
 
-def execute_query(query: str, parameters: dict | None = None):
-    """Execute SQL query using global connection."""
+def execute_query(query: str, parameters: dict | None = None, *, write: bool = False):
+    """Execute SQL query using global connection.
+
+    *write* exists so a caller OUTSIDE this module that must issue DDL has a named
+    way to say so. The default is unchanged and is read-only.
+    """
     conn = get_db_connection()
-    return conn.execute(query, parameters)
+    return conn.execute(query, parameters, write=write)
 
 
 def _migrate_schema_for_append(
@@ -1311,16 +1443,22 @@ def create_data_directories() -> None:
 
 
 def optimize_database() -> None:
-    """Optimize DuckDB database."""
+    """Optimize DuckDB database.
+
+    ANALYZE and VACUUM both rewrite the database, so the write handle is acquired
+    by name before either runs.
+    """
     db = get_db_connection()
 
     try:
+        db.connect(write=True)
+
         # Analyze tables for query optimization
-        db.execute("ANALYZE")
+        db.execute("ANALYZE", write=True)
 
         # Vacuum if using file-based database
         if db.db_path:
-            db.execute("VACUUM")
+            db.execute("VACUUM", write=True)
 
         logger.info("Database optimization completed")
 
