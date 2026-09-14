@@ -244,36 +244,44 @@ def compute_edges(
     if "wp_edge" not in merged.columns:
         merged["wp_edge"] = np.nan
 
-    # ATS edge: (model home margin - market home margin) / abs(market home margin).
+    # ATS edge: model home margin MINUS market home margin, in POINTS.
     #
-    # DEF-31-03, FIXED HERE (plan 31-17). This line used to negate the stored spread --
-    # ``(ats_prediction - (-spread))`` -- which assumed the OPPOSITE line convention and therefore
-    # computed model PLUS market rather than model MINUS market: a sum, not a difference, so a
-    # model agreeing exactly with the market scored the largest possible edge and a model that
-    # thought the home side OVERVALUED was displayed with a POSITIVE home edge. DEF-31-01 measured
-    # the real convention on 2026-09-04, the owner ruled on it, and it was reproduced again here:
+    # THE UNIT IS POINTS (R13 / D33-05, Plan 33-10). There is NO DENOMINATOR. This used to be
+    # ``(ats_prediction - spread) / abs(spread)`` -- an unbounded ratio whose divisor is a point
+    # count that approaches zero -- so a three-point disagreement on a half-point line scored 6.0,
+    # and ``utils.edge_tier`` bands it against the same 0.05 / 0.02 pair it applies to a WP
+    # probability. The pre-repair band distribution is recorded in
+    # ``tests/phase33_state.ATS_BAND_SHARES_BEFORE``.
+    #
+    # THE ZERO BRANCH IS GONE (D33-31, owner ruling). A pick-em used to be forced to an edge of
+    # 0.0, which was right while the edge was a ratio -- dividing by a zero line is undefined --
+    # and wrong the moment it became a point margin. A pick'em is a REAL line, not a missing one,
+    # so a model with the home team by three against it disagrees with the market by exactly
+    # three points. ONE branch survives: no stored line means NO edge (NaN), because there is no
+    # disagreement to measure.
+    #
+    # THE SIGN CONVENTION, unchanged and still the reason the arithmetic is this simple.
+    # DEF-31-01 measured it on 2026-09-04, the owner ruled on it, and it was reproduced here:
     # corr(spread, ml_home) = -0.9506 over all 2140 stored rows, mean spread +9.19 when the home
     # side is a big favourite versus -8.49 when the away side is, and corr(spread, realized home
     # margin) = +0.4517. The stored ``spread`` is the nflverse ``spread_line``, POSITIVE when the
     # home team is favored, on the SAME home-margin scale ``models/trainers/ats_trainer.py``
-    # regresses (``_get_target_column`` returns ``home_margin``). The two quantities are directly
-    # comparable, so the disagreement between them is the plain difference.
+    # regresses (``_get_target_column`` returns ``home_margin``). So a POSITIVE ``ats_edge`` means
+    # the model expects the home team to beat the line. (Before plan 31-17 this line negated the
+    # stored spread and so computed model PLUS market: a model agreeing exactly with the market
+    # scored the largest possible edge.)
     #
-    # This is a LIVE DISPLAY VALUE on the current-week page, which is why the register flagged it
-    # for re-check once DEF-31-01 was ruled on. It is not a backtest artifact and moves no
-    # published /betting figure: ``api/cache.py`` derives its own ``ats_edge`` from
-    # ``outputs/backtest/predictions_all.csv`` and never reads this file.
-    # ``tests/unit/test_current_week_ats_edge.py`` pins it, and five of its seven cases fail under
-    # the old expression.
+    # TWO COPIES, ONE RULE. This is a LIVE DISPLAY VALUE on the current-week page, and
+    # ``api/cache.py`` derives its OWN ``ats_edge`` from ``outputs/backtest/predictions_all.csv``
+    # and never reads this file -- which is exactly why a defect once survived in one copy after
+    # being fixed in the other. Both now compute the same point difference in the same vectorized
+    # shape, and ``tests/unit/test_current_week_ats_edge.py`` runs one committed table
+    # (``tests.phase33_state.ATS_EDGE_PARITY_CASES``) through BOTH and asserts they agree
+    # value-for-value. Mind the column name: this copy reads ``spread``, the cache reads
+    # ``market_spread``.
     if "spread" in merged.columns:
-        valid_spread = merged["spread"].notna() & (merged["spread"] != 0)
-        merged.loc[valid_spread, "ats_edge"] = merged.loc[valid_spread].apply(
-            lambda row: (row["ats_prediction"] - row["spread"]) / abs(row["spread"]),
-            axis=1,
-        )
-        # Where spread == 0, edge is 0
-        zero_spread = merged["spread"].notna() & (merged["spread"] == 0)
-        merged.loc[zero_spread, "ats_edge"] = 0.0
+        spread = merged["spread"]
+        merged["ats_edge"] = (merged["ats_prediction"] - spread).where(spread.notna())
     if "ats_edge" not in merged.columns:
         merged["ats_edge"] = np.nan
 
