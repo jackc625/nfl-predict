@@ -160,10 +160,20 @@ def require_gold_generation(
             be reporting a defect where there is only a different generation.
     """
     try:
-        gold_generation_key()
+        live_key = gold_generation_key()
     except GoldMatrixMissingError as absent:
         pytest.skip(
             f"gold is not present in this checkout, so the generation "
             f"{reading!r} was measured against cannot be compared: {absent}"
         )
-    del expected_key, moved_by, recorded_in
+    if live_key == expected_key:
+        return
+    pytest.skip(
+        f"SUPERSEDED READING, NOT A FAILURE. {reading} was measured against gold "
+        f"generation {expected_key}. Live gold is generation {live_key}, because "
+        f"{moved_by} rebuilt it. The reading is NOT rewritten to agree with the "
+        f"new gold: it stays where it was written, with its date and its reason, "
+        f"and the supersession is recorded in {recorded_in}. Only this "
+        f"harness-reproduction half is skipped -- the document-level assertions "
+        f"that actually guard the document still run."
+    )

@@ -170,3 +170,32 @@ class TestScreenNotDeployInvariant:
 #      D29-06-02 -- 'pinning a point estimate to moving gold is the mistake this guard
 #      class made once'.
 # The DOC-level assertions in this file are untouched and still run unconditionally.
+
+# ---------------------------------------------------------------------------
+# THE GENERATION SEAM, AND WHY THIS MODULE DOES NOT CALL IT -- Plan 33.1-08
+# Task 2, 2026-09-14.
+#
+# Plan 33.1-08 was written to GENERATION-GATE the harness-reproduction class
+# above rather than let a gold rebuild turn it red. By the time the plan ran the
+# class was already gone, deleted on 2026-09-12 for a different and better
+# reason: it was not deterministic, so it could not detect drift because it
+# drifted on its own. A seam that refuses to compare across gold generations
+# cannot help a measurement that disagrees with itself at a fixed generation.
+#
+# The seam was still built -- tests/gold_generation.py -- because two OTHER
+# harness reproductions did redden on the rung-3 rebuild and needed it, and
+# because Phase 33's Wave 14 Elo rung will hit the same wall again. It is
+# recorded here so a reader of this file can find it:
+#
+#   tests.gold_generation.require_gold_generation(expected_key, *, reading,
+#       moved_by, recorded_in) -- skips, never fails, and names all three in the
+#       skip message.
+#   tests.phase33_state.GOLD_GENERATION_AFTER_WEATHER_RUNG -- the live key
+#       measured after the rung.
+#   tests.phase33_state.GOLD_DERIVED_READINGS -- every reading and the
+#       generation it was measured against, including this module's.
+#
+# The document-level assertions in this file read no gold and are not gated by
+# anything. They run unconditionally, and they are what actually guards the
+# document.
+# ---------------------------------------------------------------------------

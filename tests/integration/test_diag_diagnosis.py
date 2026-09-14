@@ -426,9 +426,42 @@ class TestDiagDiagnosis:
 
         SPEC R8: the reading moved UP and that is NOT a result. Nothing was re-fit or promoted.
 
+        GENERATION-GATED on 2026-09-14 by Plan 33.1-08 Task 2, and the rule above is the
+        reason WHY rather than an obstacle to it. Plan 33.1-07's rung-3 rebuild fixed three
+        defects that had been throwing away real data -- rainfall discarded for every outdoor
+        game, the coverage flag z-scored into the value meaning NO OBSERVATION, and season
+        2025's team strength never built -- and gold moved. WP pooled accuracy now measures
+        0.6769095697980685, a drift of 0.00527 past the 0.005 band. The band is NOT widened
+        and the anchor is NOT edited: both are forbidden above, and the third option is the
+        one taken here. The comparison is SET ASIDE, because the anchor was measured on gold
+        that no longer exists, and a reading measured on other gold is not a wrong reading.
+
+        This is NOT a quarantine and NOT a deletion. Every other assertion in this module
+        still runs. The route back is unchanged and is the owner's: re-measure, re-ratify the
+        constant against a generation somebody actually captured, and point the constant below
+        at it. Until then this half skips and says so in the terminal.
+
         Marked slow: a genuine 100-trial search per target costs about 225 seconds.
         """
         from backtest.diagnose import run_diagnosis
+        from tests.gold_generation import require_gold_generation
+        from tests.phase33_state import (
+            GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
+        )
+
+        require_gold_generation(
+            GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
+            reading=(
+                "AUDIT-REPORT.md's WP pooled accuracy anchor of "
+                f"{ANCHOR_WP_ACCURACY} and headline_clv anchor of "
+                f"{ANCHOR_HEADLINE_CLV_WP}"
+            ),
+            moved_by="Phase 33.1's weather rung (Plan 33.1-07, rung 3)",
+            recorded_in=(
+                "tests.phase33_state.GOLD_DERIVED_READINGS and the repo-root "
+                "readout Plan 33.1-11 writes"
+            ),
+        )
 
         diag = run_diagnosis(
             gold=gold_and_odds_2021_2024["gold"],

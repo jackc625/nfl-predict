@@ -1148,3 +1148,21 @@ class TestRequiredDisclosures:
         assert "six deferred registers remain open" in content.lower(), (
             "the readout does not carry the standing deferred-register count"
         )
+
+
+# ---------------------------------------------------------------------------
+# THE GENERATION SEAM, AND WHY THIS MODULE NEEDS NO GATE -- Plan 33.1-08 Task 2,
+# 2026-09-14.
+#
+# Plan 33.1-08 predicted this module would redden when Plan 33.1-07's rung-3
+# rebuild moved gold. It did not, and the reason is worth writing down rather
+# than leaving as a lucky escape: this module never re-derives a number from
+# gold. It compares the document against the FROZEN committed verdict artifact,
+# which the rebuild did not touch. A guard anchored to an artifact is immune to a
+# gold generation change in a way a guard anchored to a re-run is not.
+#
+# If a future edit ever makes an assertion here call a harness that scores gold,
+# that assertion needs tests.gold_generation.require_gold_generation and this
+# note stops being true. See tests.phase33_state.GOLD_DERIVED_READINGS, which
+# records this readout and states exactly this.
+# ---------------------------------------------------------------------------

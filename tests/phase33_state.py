@@ -9068,3 +9068,144 @@ GOLD_REBUILD_PREDECLARED_POPULATION_OUTCOME: dict[str, object] = {
 # measuring gold which no longer exists, and it tripped two controls that exist
 # to announce exactly the kind of change it made.
 GOLD_REBUILD_DEFECT_COUNT: int = 0
+
+# ---------------------------------------------------------------------------
+# THE GOLD GENERATION SEAM -- Plan 33.1-08 Task 2.
+#
+# APPENDED on 2026-09-14, after Plan 33.1-07's rung-3 rebuild (commit cc5f0e7).
+#
+# RULING P, and the rule it rests on. `GATED-REFIT-READOUT.md` states the
+# governing rule in its own header: nothing published earlier is overwritten, and
+# superseded readings stay where they were written, with their dates and their
+# reasons. A gold rebuild makes a pinned point estimate false, and there are only
+# three honest responses to that -- rewrite the readout (forbidden; it overwrites
+# a published reading), delete the guard (forbidden; it removes the anti-rot
+# control), or make the harness-reproduction half state which gold generation it
+# was measured against and REFUSE TO COMPARE ACROSS GENERATIONS. The third is the
+# seam, and it lives in tests/gold_generation.py.
+#
+# THE SPLIT THAT MAKES THIS SAFE. Only the harness-reproduction half is gated.
+# Every document-level assertion -- the file is present at the repo root, the
+# content is ASCII, the required sections are present, the forbidden phrases are
+# absent -- keeps running unconditionally, because those are the assertions that
+# actually guard the DOCUMENT and they do not read gold at all. Gating them would
+# turn a real control into a no-op, which is the failure
+# tests/unit/test_weather_archive_quarantined.py keeps a non-vacuity control for,
+# and tests/unit/test_gold_generation.py::TestTheGateIsReal carries the
+# equivalent control here: a MATCHING key must NOT skip.
+#
+# PLAN 33-14 IS THE NEXT CALLER. Phase 33's Wave 14 Elo rung will move gold
+# again and will hit this wall in the identical shape. It should reuse this seam
+# -- append a new generation constant, point the affected readings at it -- and
+# not rediscover the problem or reach for one of the two forbidden responses.
+# ---------------------------------------------------------------------------
+
+# The live gold generation key MEASURED on 2026-09-14, after Plan 33.1-07's rung
+# 3, by tests.gold_generation.gold_generation_key(). It is a sha256 over the
+# CONTENT digests of the three gold matrices: a rebuild that changes only VALUES
+# -- which is exactly what rung 3 did to 32 columns, changing no column name --
+# changes this key, where a schema-shaped key would have missed it entirely.
+GOLD_GENERATION_AFTER_WEATHER_RUNG: str = (
+    "eea0882f4410d22af6e4b54d1c0929a28072325fff9b556a91ca12de900290d1"
+)
+
+# The sentinel used as the "expected" generation for every reading measured
+# BEFORE the rung.
+#
+# WHY A SENTINEL AND NOT A REAL KEY. Nobody captured a content key of pre-rung
+# gold before it was overwritten, and the bytes are gone -- the rebuild is
+# one-way. Inventing a plausible-looking hex string here would be fabricating the
+# very kind of record this phase exists to delete. The sentinel is NOT a hex
+# digest, cannot equal any output of gold_generation_key(), and therefore makes
+# every reading below skip unconditionally until somebody deliberately re-ratifies
+# it against a generation they actually measured. That is the correct behaviour
+# and it is arrived at honestly rather than by a number chosen to produce it.
+GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED: str = (
+    "uncaptured-pre-33.1-07-rung-3-gold"
+)
+
+# Each guarded reading, and the generation key it was MEASURED against.
+#
+# Every entry below reads the sentinel, because every one of them was measured on
+# gold that no longer exists. None of the six readouts was edited to produce this
+# table: the readings stay exactly where they were written.
+GOLD_DERIVED_READINGS: tuple[tuple[str, str], ...] = (
+    (
+        "AUDIT-REPORT.md's WP pooled accuracy anchor of 0.6821773485513608, "
+        "re-ratified by the owner on 2026-09-13 and re-asserted by "
+        "tests/integration/test_diag_diagnosis.py::TestDiagDiagnosis::"
+        "test_backtest_numbers_match_audit_report",
+        GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
+    ),
+    (
+        "OU-DIVERGENCE-DIAGNOSIS.md's pooled model-over share anchor of 0.727, "
+        "re-asserted by tests/integration/test_ou_divergence.py::TestOuDivergence::"
+        "test_bias_over_share",
+        GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
+    ),
+    (
+        "SIGNAL-LIFT-READOUT.md's situational-OU incremental-CLV delta of "
+        "-0.3203552582994336, measured 2026-09-05. Its harness-reproduction class "
+        "was DELETED on 2026-09-12 by owner instruction for non-determinism, so "
+        "there is no live re-run to gate; the reading is recorded here so the "
+        "generation it belongs to is not lost with the class",
+        GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
+    ),
+    (
+        "LINE-MOVEMENT-READOUT.md's lift figures. Its harness-reproduction class "
+        "was DELETED on 2026-09-12 by owner instruction, same cause",
+        GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
+    ),
+    (
+        "GATED-REFIT-READOUT.md's per-target paired CLV figures -- WP +0.006094 "
+        "p=0.0142, ATS -0.212797 p=0.0375, O/U -0.487007 p=9.24e-12. Its "
+        "harness-reproduction class was DELETED on 2026-09-12 by owner "
+        "instruction, same cause",
+        GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
+    ),
+    (
+        "PROFITABILITY-READOUT.md's one-shot 2025 per-target ROI figures. These "
+        "are NOT re-derived from gold by any guard: "
+        "tests/unit/test_profitability_readout_md.py compares the document "
+        "against the FROZEN committed verdict artifact, which is why that module "
+        "did not redden and why it needs no gate. Recorded for completeness, so "
+        "a later reader does not mistake its absence from the gated set for an "
+        "oversight",
+        GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
+    ),
+)
+
+# The call sites that consume the seam, with what each one guards. A seam with no
+# recorded consumers is a seam a later plan will duplicate.
+#
+# THE LIST IS SHORTER THAN PLAN 33.1-08 EXPECTED, AND WHY IS THE FINDING. The
+# plan named the harness-reproduction classes of five readout guards. Four of
+# those classes no longer exist -- deleted 2026-09-12, two days before this
+# measurement -- and the fifth never read gold. So the seam is applied where the
+# casualties ACTUALLY are: the two harness reproductions that genuinely reddened
+# on rung-3 gold, both found by Task 1's triage and both dispositioned
+# SUPERSEDED. Applying a gate to a class that does not exist would have been
+# bookkeeping; applying it to the tests that actually broke is the work.
+GOLD_GENERATION_GATED_CALL_SITES: tuple[tuple[str, str], ...] = (
+    (
+        "tests/integration/test_diag_diagnosis.py::TestDiagDiagnosis::"
+        "test_backtest_numbers_match_audit_report",
+        "WP pooled accuracy measured 0.6769095697980685 against the re-ratified "
+        "anchor 0.6821773485513608, a drift of 0.005267778753292318 past a band "
+        "of 0.005. The band is NOT widened and the anchor is NOT edited -- that "
+        "test's own docstring forbids both, and records that the owner exercised "
+        "the re-ratify route on 2026-09-13. Generation-gating is the third "
+        "option: it sets the comparison aside without touching either number, "
+        "and an owner re-ratification against a measured generation is what "
+        "turns the check back on",
+    ),
+    (
+        "tests/integration/test_ou_divergence.py::TestOuDivergence::"
+        "test_bias_over_share",
+        "Pooled over-share measured 0.8886844526218951 against the "
+        "OU-DIVERGENCE-DIAGNOSIS.md anchor of 0.727, a drift of 0.1617 past a "
+        "band of 0.005. The deployed O/U model consumes 17 weather features and "
+        "16 of them were a constant fabrication before the rung, so its picks "
+        "moved. The published Phase-26 reading is not rewritten",
+    ),
+)

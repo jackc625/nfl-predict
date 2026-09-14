@@ -394,3 +394,22 @@ def test_secondary_blend_weights_are_the_deployed_weights() -> None:
         assert 0.0 <= float(weights[target]) <= 1.0, (
             f"deployed blend weight for {target} out of [0,1]: {weights[target]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# THE GENERATION SEAM, AND WHY THIS MODULE NEEDS NO GATE -- Plan 33.1-08 Task 2,
+# 2026-09-14.
+#
+# Plan 33.1-08 named "any test in this module that pins a SCORED VALUE rather
+# than a SHAPE" as expected to redden when Plan 33.1-07's rung-3 rebuild moved
+# gold. Measured on 2026-09-14: the module passes. Its parity assertions compare
+# the cache against the backtest and the deployed metadata -- two things that
+# move TOGETHER when gold moves -- rather than against a committed constant. A
+# comparison between two live sides survives a generation change; a comparison
+# against a pinned number does not. That is the distinction, and it is why this
+# module needed nothing while tests/integration/test_ou_divergence.py and
+# tests/integration/test_diag_diagnosis.py each needed a gate.
+#
+# If an assertion here is ever anchored to a committed scalar, it needs
+# tests.gold_generation.require_gold_generation and this note stops being true.
+# ---------------------------------------------------------------------------

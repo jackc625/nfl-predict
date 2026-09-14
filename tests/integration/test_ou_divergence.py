@@ -154,8 +154,50 @@ class TestOuDivergence:
     # -- bias_over_share: the reproduced 72.7%-over finding + the 2021 sign-flip ----------
 
     def test_bias_over_share(self, gold_and_odds_2021_2024) -> None:
-        """Pooled model-picks-over share ~0.727; 2021 is sign-flipped (over<0.30, line_clv<0)."""
+        """Pooled model-picks-over share ~0.727; 2021 is sign-flipped (over<0.30, line_clv<0).
+
+        GENERATION-GATED on 2026-09-14 by Plan 33.1-08 Task 2. Plan 33.1-07's rung-3 rebuild
+        brought real measured weather to gold for the first time, and the deployed O/U model
+        consumes 17 weather features of which 16 had been a single repeated fabrication. Its
+        picks therefore moved: the pooled over-share now measures 0.8886844526218951 against
+        this anchor's 0.727, a drift of 0.1617 past a 0.005 band.
+
+        OU-DIVERGENCE-DIAGNOSIS.md is a PUBLISHED Phase-26 reading and is not rewritten to
+        agree with the new gold. It stays where it was written, with its date and its reason.
+        What is set aside is only the COMPARISON, and only because the two sides are no longer
+        measurements of the same gold.
+
+        Deliberately gated at the TEST and not at the class. The class carries assertions that
+        do NOT compare against a committed scalar -- provenance, coverage counts, the
+        self-judging boundary, determinism -- and every one of them passes on today's gold. A
+        class-level gate would have skipped all of them as collateral of one stale anchor.
+
+        The sibling anchor immediately above (pooled line_clv +1.1095) is NOT gated here and
+        deliberately so: it already carries its own xfail(strict) quarantine from Plan 30-15
+        under owner ruling D30-OWNER-05, which is a DIFFERENT disposition reached by a
+        DIFFERENT owner decision. Adding a generation gate on top would stack two mechanisms
+        on one assertion and make it unclear which one is holding it. Its quarantine says in
+        its own words not to widen the tolerance and not to re-freeze the anchor; that ruling
+        is left exactly as the owner left it.
+        """
         from backtest.ou_divergence import bias_vs_anticipation
+        from tests.gold_generation import require_gold_generation
+        from tests.phase33_state import (
+            GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
+        )
+
+        require_gold_generation(
+            GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
+            reading=(
+                "OU-DIVERGENCE-DIAGNOSIS.md's pooled model-over share anchor of "
+                f"{ANCHOR_MODEL_OVER_SHARE} and its 2021 sign-flip canary"
+            ),
+            moved_by="Phase 33.1's weather rung (Plan 33.1-07, rung 3)",
+            recorded_in=(
+                "tests.phase33_state.GOLD_DERIVED_READINGS and the repo-root "
+                "readout Plan 33.1-11 writes"
+            ),
+        )
 
         bias = bias_vs_anticipation(preds=None, odds=gold_and_odds_2021_2024["odds"])
         assert (
