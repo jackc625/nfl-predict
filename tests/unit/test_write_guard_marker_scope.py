@@ -121,6 +121,36 @@ class _StubConfig:
         return self._options.get(name, default)
 
 
+class _StubModule:
+    """Stands in for a pytest Module collector node.
+
+    Only its IDENTITY matters: the module-level union selects items by
+    ``item.getparent(pytest.Module) is node``, never by a nodeid string prefix,
+    because nodeid formatting is not a contract.
+    """
+
+    def __init__(self, nodeid: str) -> None:
+        self.nodeid = nodeid
+
+
+class _StubItemInModule(_StubItem):
+    """A stub item that reports which stub module collected it."""
+
+    def __init__(self, module: _StubModule, paths=None, nodeid: str = "") -> None:
+        super().__init__(paths=paths, nodeid=nodeid or f"{module.nodeid}::test_stub")
+        self._module = module
+
+    def getparent(self, cls):
+        return self._module
+
+
+class _StubSession:
+    """A session carrying only the selected item list the union walks."""
+
+    def __init__(self, items) -> None:
+        self.items = list(items)
+
+
 # ---------------------------------------------------------------------------
 # 1. The marker exempts a PATH, not a test
 # ---------------------------------------------------------------------------
@@ -531,3 +561,144 @@ class TestADeclaredWriteIsCheckpointedInsideItsOwnWindow:
                 "declared bytes VISIBLE to the verdict, never to remove anything from "
                 f"the verdict's reach.\n\n{code}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 7. QT-W8X-02: the guard sweeps once per MODULE, and the report says so
+# ---------------------------------------------------------------------------
+
+
+class TestTheGuardIsScopedToTheModule:
+    """The speed-up, and the exact thing it cost, both asserted.
+
+    MEASURED: `_stat_sweep` over the live production stores costs 36.7 ms, and the
+    guard ran it after every one of 4,872 tests -- ~179 s, 18% of a 994 s
+    whole-suite run. Moving it to module granularity gives that back and costs
+    attribution: the report can now name the FILE that wrote a store, not the test
+    in it. The owner accepted that trade explicitly.
+
+    What it does NOT cost is the guarantee, and the two properties that make that
+    true are asserted here: the exemption is still PATH-scoped, and one module's
+    declaration reaches no other module.
+    """
+
+    def test_the_guard_fixture_is_module_scoped_and_still_autouse(self) -> None:
+        """Read off the fixture object's own marker, never off the source text.
+
+        A source scan for `scope="module"` would pass on a comment saying the words.
+        """
+        marker = conftest.production_store_write_guard._fixture_function_marker
+        assert marker.scope == "module", (
+            f"the guard fixture is {marker.scope!r}-scoped. At function scope it "
+            "re-sweeps 680 tracked files after every test, which is the ~179 s this "
+            "change exists to give back."
+        )
+        assert marker.autouse is True, (
+            "the guard stopped being autouse. A module that never thought about the "
+            "boundary would be unguarded again -- the exact defect COLD-05 closed."
+        )
+
+    def test_the_module_union_is_built_from_that_modules_own_items_alone(
+        self,
+    ) -> None:
+        """A path declared in module A grants nothing whatsoever in module B."""
+        module_a = _StubModule("tests/unit/test_a.py")
+        module_b = _StubModule("tests/unit/test_b.py")
+        session = _StubSession(
+            [
+                _StubItemInModule(module_a, paths=["data/nfl_predictions.duckdb"]),
+                _StubItemInModule(module_a),
+                _StubItemInModule(module_b),
+                _StubItemInModule(module_b, paths=["artifacts/latest.json"]),
+            ]
+        )
+
+        union_a = conftest._marker_paths_for_module(module_a, session)
+        union_b = conftest._marker_paths_for_module(module_b, session)
+
+        assert union_a["data"] == frozenset({"nfl_predictions.duckdb"})
+        assert union_a["artifacts"] == frozenset(), (
+            "module A picked up module B's artifacts declaration. The union must be "
+            "over the module's OWN selected items and nothing else."
+        )
+        assert union_b["artifacts"] == frozenset({"latest.json"})
+        assert union_b["data"] == frozenset(), (
+            "module B inherited module A's declared duckdb path. One file's marker "
+            "must never stand the guard down for another file."
+        )
+
+    def test_the_module_union_is_still_path_scoped(self, sandbox: Path) -> None:
+        """Declaring one store does not license moving a different one.
+
+        This is the property that keeps module granularity from degenerating into
+        "a module with any marker may write anything", which would be the same
+        blanket permission the opt-in design already gave every unmarked module.
+        """
+        module = _StubModule("tests/unit/test_declares_the_duckdb.py")
+        session = _StubSession(
+            [
+                _StubItemInModule(module, paths=["data/nfl_predictions.duckdb"]),
+                _StubItemInModule(module),
+            ]
+        )
+        baseline = _baseline(sandbox)
+        declared = conftest._marker_paths_for_module(module, session)["data"]
+
+        (sandbox / "gold" / "features_wp.parquet").write_bytes(b"WP-v2-UNDECLARED")
+
+        message = _guard_verdict(baseline, declared)
+        assert message, (
+            "a module that declares the duckdb moved a gold matrix and the guard "
+            "said nothing. The union is a union of DECLARED PATHS, not a licence."
+        )
+        assert "gold/features_wp.parquet" in message, message
+        assert "nfl_predictions.duckdb" not in message, (
+            f"the violation named the DECLARED path.\n\n{message}"
+        )
+
+    def test_the_module_scope_rewrite_kept_the_checkpoint_before_the_verdict(
+        self,
+    ) -> None:
+        """Restated here because the rewrite is exactly when it could be dropped.
+
+        `TestADeclaredWriteIsCheckpointedInsideItsOwnWindow` pins this ordering for
+        the WAL defect it closed. The claim here is narrower and about this change:
+        moving the fixture to module scope did not lose it.
+        """
+        import inspect
+
+        source = inspect.getsource(conftest.production_store_write_guard)
+        assert "_checkpoint_declared_writes()" in source, source
+        assert source.index("_checkpoint_declared_writes()") < source.index(
+            "_guard_verdict("
+        ), source
+        assert "_marker_paths_for_module(" in source, (
+            "the module-scoped fixture still resolves markers with the per-ITEM "
+            "helper. At module scope `request.node` is the Module, not the Function, "
+            "so that call returns the markers of nothing."
+        )
+
+    def test_the_violation_header_names_the_module_and_the_way_back(self) -> None:
+        """The report a reader meets during a real incident has to explain itself.
+
+        Under module scope the old header -- `{nodeid} wrote a production store it
+        did not declare` -- would name whichever test happened to run LAST in the
+        file, which is an innocent one. So the header leads with the module, says in
+        words that the attribution is file-level, and names the recovery.
+        """
+        module = "tests/integration/test_something.py"
+        header = conftest._module_violation_header(module)
+
+        assert module in header, header
+        assert "file-level" in header.lower(), (
+            "the header does not say that attribution is file-level. A reader who "
+            f"meets this for the first time would read it as per-test.\n\n{header}"
+        )
+        assert f"pytest {module}" in header, (
+            "the header does not tell the reader how to narrow the window -- re-run "
+            f"that one file on its own.\n\n{header}"
+        )
+        assert "session-end" in header.lower(), (
+            "the header does not say the session-end full content sweep is "
+            f"unchanged, which is what the trade rests on.\n\n{header}"
+        )

@@ -24,18 +24,38 @@ exact contamination risk the reviewer named. The child therefore runs as a SUBPR
 ``subprocess.run([sys.executable, "-m", "pytest", ...])``. A child process cannot
 contaminate the parent, and its stdout is the evidence.
 
-THE SIX GENERATED CASES, and what each one is for:
+THE GENERATED MINI-SUITE IS SEVERAL MODULES, NOT ONE (QT-W8X-02)
+----------------------------------------------------------------
+The guard now sweeps once per MODULE rather than once per test -- a measured 36.7 ms x
+4,872 tests, ~179 s, 18% of a whole-suite run, given back at the cost of file-level
+rather than test-level attribution. The mini-suite had to be re-authored to match: six
+cases in ONE child module would collapse into a SINGLE teardown error and every per-case
+assertion would go vacuous while still passing. So each claim gets its own child module,
+and the report is keyed by the module the guard's own header names.
 
-1. an UNMARKED test that REWRITES a tracked store            -> must fail, REWRITTEN
-2. a MARKED test that writes its DECLARED path               -> must pass
-3. a SECOND unmarked test that rewrites a different store    -> must fail (the marker
-   suppressed the guard for nobody but case 2)
-4. an UNMARKED test that CREATES a tracked file              -> must fail, ADDED
-5. an UNMARKED test that DELETES a tracked file              -> must fail, REMOVED
-6. an UNMARKED test that writes different bytes and then RESTORES ``st_size`` and
-   ``st_mtime_ns`` -> INVISIBLE to the per-test stat prefilter, and STILL caught, by the
-   session-end full content sweep. Two assertions, because the point of the case is
-   WHICH instrument catches it.
+They run in filename order (``-p no:randomly``), and the ORDER IS PART OF THE PROOF: the
+module carrying the marker runs FIRST, so every later module demonstrates that one
+file's declaration stood the guard down for nobody else.
+
+1. ``test_1_marked_writer.py`` -- a MARKED test writes its DECLARED path (permitted) and
+   an unmarked sibling in the SAME file writes a DIFFERENT path. The module FAILS, and
+   the report names the undeclared path ALONE. Module scope is a union of declared
+   PATHS, never a licence for the file.
+2. ``test_2_accepted_loss.py`` -- THE ACCEPTED LOSS, recorded as a test rather than as
+   prose. One test declares ``data/nfl_predictions.duckdb``; a DIFFERENT unmarked test
+   in the same file writes that SAME path and is now PERMITTED. That is precisely what
+   module granularity costs and the owner accepted it explicitly.
+3. ``test_3_wave6_overwrite.py`` -- THE PHASE 33 WAVE 6 INCIDENT, reproduced. A module
+   with NO marker anywhere in it overwrites all three production gold matrices, exactly
+   as a test that omitted the ``gold_lake`` sandbox fixture did. The session FAILS, the
+   report names all three matrices, and it names the module that wrote them.
+4. ``test_4_creation_and_deletion.py`` -- ADDED and REMOVED are still reported as their
+   own kinds, with digests.
+5. ``test_5_metadata_restoring.py`` -- a write that restores its own ``st_size`` and
+   ``st_mtime_ns`` is INVISIBLE to the per-module stat prefilter and is STILL caught, by
+   the session-end full content sweep. Two assertions, because the point of the case is
+   WHICH instrument catches it. This case is unchanged in substance and is the backstop
+   the whole speed/attribution trade rests on.
 
 TEST CLASS: **integration**. It spawns a real pytest process. It writes nothing outside
 ``tmp_path``; the ``data_boundary_guard`` request on every test is the belt-and-braces
@@ -60,14 +80,28 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _SHA256_RE = re.compile(r"\b[0-9a-f]{64}\b")
 
-# pytest prints a teardown error block headed `ERROR at teardown of <name>` and a call
-# failure block headed `___ <name> ___`. The guard fires in teardown, but matching both
-# keeps the parser from silently returning nothing if that ever changes.
-_TEARDOWN_HEADER_RE = re.compile(r"ERROR at teardown of (test_\w+)")
-_FAILURE_HEADER_RE = re.compile(r"^_+ (test_\w+) _+$")
-_SEPARATOR_RULE_RE = re.compile(r"^-{4,}")
+# The guard's own header is what keys the report now. Under module scope pytest heads
+# the block `ERROR at teardown of <test>` naming whichever test happened to run LAST in
+# the file -- an innocent one -- so parsing THAT would attribute every finding to the
+# wrong place. The guard states the module itself; this reads what it states.
+_GUARD_MODULE_HEADER_RE = re.compile(r"PRODUCTION STORE WRITE GUARD -- MODULE (\S+) ")
+
+# Anything that ends a per-module report region. `-{4,}` is a `write_sep("-", ...)` rule
+# from the terminal summary; `_{4,}` is the next failure/error block header; `=` opens
+# the session summary.
+_SEPARATOR_RULE_RE = re.compile(r"^[-_]{4,}")
 
 CLOSING_SWEEP_HEADER = "SESSION-END FULL CONTENT SWEEP"
+
+MARKED_MODULE = "test_1_marked_writer.py"
+ACCEPTED_LOSS_MODULE = "test_2_accepted_loss.py"
+WAVE6_MODULE = "test_3_wave6_overwrite.py"
+ADD_REMOVE_MODULE = "test_4_creation_and_deletion.py"
+METADATA_MODULE = "test_5_metadata_restoring.py"
+
+# Eight generated tests across five generated modules. Pinned so a mini-suite that
+# silently stopped collecting cannot leave every assertion below vacuously true.
+EXPECTED_CHILD_TESTS = 8
 
 _CHILD_CONFTEST = '''\
 """Generated mini-suite conftest: borrow the REAL guard, guard a sandbox root."""
@@ -92,8 +126,9 @@ def pytest_configure(config):
     )
 '''
 
-_CHILD_TESTS = '''\
-"""Generated mini-suite: six writes, one of them declared."""
+_CHILD_MODULES: dict[str, str] = {
+    MARKED_MODULE: '''\
+"""A declared write, and an undeclared one, in the SAME file."""
 
 import os
 import pathlib
@@ -103,17 +138,55 @@ import pytest
 DATA = pathlib.Path(os.environ["NFL_GUARD_DATA_ROOT"])
 
 
-def test_unmarked_rewrite_is_rejected():
-    (DATA / "gold" / "features_wp.parquet").write_bytes(b"WP-REWRITTEN-BY-A-TEST")
-
-
 @pytest.mark.writes_production_store(paths=["data/nfl_predictions.duckdb"])
 def test_marked_writer_is_permitted():
     (DATA / "nfl_predictions.duckdb").write_bytes(b"DUCKDB-PAGES-v2")
 
 
-def test_second_unmarked_rewrite_is_still_rejected():
+def test_an_unmarked_sibling_writing_a_DIFFERENT_path_is_still_rejected():
     (DATA / "silver" / "games.parquet").write_bytes(b"GAMES-REWRITTEN-BY-A-TEST")
+''',
+    ACCEPTED_LOSS_MODULE: '''\
+"""THE ACCEPTED LOSS. Module granularity exempts the PATH for the whole file."""
+
+import os
+import pathlib
+
+import pytest
+
+DATA = pathlib.Path(os.environ["NFL_GUARD_DATA_ROOT"])
+
+
+@pytest.mark.writes_production_store(paths=["data/nfl_predictions.duckdb"])
+def test_the_declaring_test_writes_what_it_declared():
+    (DATA / "nfl_predictions.duckdb").write_bytes(b"DUCKDB-PAGES-v3")
+
+
+def test_an_unmarked_sibling_writing_the_SAME_declared_path_is_now_permitted():
+    (DATA / "nfl_predictions.duckdb").write_bytes(b"DUCKDB-PAGES-v4-UNMARKED")
+''',
+    WAVE6_MODULE: '''\
+"""THE PHASE 33 WAVE 6 INCIDENT. NO marker anywhere in this file."""
+
+import os
+import pathlib
+
+DATA = pathlib.Path(os.environ["NFL_GUARD_DATA_ROOT"])
+
+SYNTHETIC = b"48-SYNTHETIC-ROWS-FROM-A-HELPER-THAT-SKIPPED-THE-SANDBOX"
+
+
+def test_a_helper_without_the_sandbox_fixture_overwrote_all_three_gold_matrices():
+    for name in ("features_wp", "features_ats", "features_ou"):
+        (DATA / "gold" / (name + ".parquet")).write_bytes(SYNTHETIC)
+''',
+    ADD_REMOVE_MODULE: '''\
+"""Creation and deletion are their own kinds, not rewrites."""
+
+import os
+import pathlib
+
+DATA = pathlib.Path(os.environ["NFL_GUARD_DATA_ROOT"])
 
 
 def test_unmarked_creation_is_rejected():
@@ -121,15 +194,24 @@ def test_unmarked_creation_is_rejected():
 
 
 def test_unmarked_deletion_is_rejected():
-    (DATA / "gold" / "features_ou.parquet").unlink()
+    (DATA / "gold" / "features_gone.parquet").unlink()
+''',
+    METADATA_MODULE: '''\
+"""A write that restores its own size and mtime. The prefilter cannot see it."""
+
+import os
+import pathlib
+
+DATA = pathlib.Path(os.environ["NFL_GUARD_DATA_ROOT"])
 
 
 def test_metadata_restoring_write_slips_past_the_prefilter():
-    target = DATA / "gold" / "features_ats.parquet"
+    target = DATA / "gold" / "features_meta.parquet"
     before = target.stat()
-    target.write_bytes(b"ATS-v2")
+    target.write_bytes(b"MTA-v2")
     os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
-'''
+''',
+}
 
 _CHILD_INI = """\
 [pytest]
@@ -147,11 +229,16 @@ def _build_sandbox(root: Path) -> tuple[Path, Path]:
     (data / "silver").mkdir(parents=True)
     artifacts.mkdir(parents=True)
 
+    # The three production gold matrices the Wave-6 incident overwrote.
     (data / "gold" / "features_wp.parquet").write_bytes(b"WP-COLUMN-BYTES-v1")
-    # Exactly six bytes, so case 6 can rewrite it with six DIFFERENT bytes and leave
-    # st_size untouched. A prefilter that reads size and mtime cannot see that write.
-    (data / "gold" / "features_ats.parquet").write_bytes(b"ATS-v1")
+    (data / "gold" / "features_ats.parquet").write_bytes(b"ATS-COLUMN-BYTES-v1")
     (data / "gold" / "features_ou.parquet").write_bytes(b"OU-COLUMN-BYTES-v1")
+    # Exactly six bytes, so the metadata-restoring case can rewrite it with six
+    # DIFFERENT bytes and leave st_size untouched. A prefilter that reads size and
+    # mtime cannot see that write. Kept on its OWN path so the Wave-6 module's
+    # overwrite of the gold matrices cannot be confused with it.
+    (data / "gold" / "features_meta.parquet").write_bytes(b"MTA-v1")
+    (data / "gold" / "features_gone.parquet").write_bytes(b"GONE-v1")
     (data / "silver" / "games.parquet").write_bytes(b"GAMES-v1")
     (data / "nfl_predictions.duckdb").write_bytes(b"DUCKDB-PAGES-v1")
     (artifacts / "latest.json").write_bytes(b'{"wp": "v1"}')
@@ -161,7 +248,8 @@ def _build_sandbox(root: Path) -> tuple[Path, Path]:
     (suite / "conftest.py").write_text(
         _CHILD_CONFTEST.format(repo_root=str(REPO_ROOT)), encoding="utf-8"
     )
-    (suite / "test_mini.py").write_text(_CHILD_TESTS, encoding="utf-8")
+    for name, source in _CHILD_MODULES.items():
+        (suite / name).write_text(source, encoding="utf-8")
     (suite / "pytest.ini").write_text(_CHILD_INI, encoding="utf-8")
     return suite, data
 
@@ -181,6 +269,10 @@ def _run_child(suite: Path, data: Path, artifacts: Path) -> subprocess.Completed
             str(suite),
             "-q",
             "--no-header",
+            # Explicit rather than inherited: `--tb=auto` renders the middle failures
+            # of a multi-block run differently from the first and last, and this
+            # module PARSES those blocks. One shape, deterministically.
+            "--tb=long",
             "-p",
             "no:cacheprovider",
             "-p",
@@ -195,25 +287,20 @@ def _run_child(suite: Path, data: Path, artifacts: Path) -> subprocess.Completed
 
 
 def _blocks(output: str) -> dict[str, str]:
-    """Split a pytest report into per-test blocks keyed by test function name."""
+    """Split a pytest report into per-MODULE regions, keyed as the guard names them."""
     blocks: dict[str, list[str]] = {}
     current: str | None = None
     for line in output.splitlines():
-        teardown = _TEARDOWN_HEADER_RE.search(line)
-        failure = _FAILURE_HEADER_RE.match(line.strip())
-        if teardown:
-            current = teardown.group(1)
+        header = _GUARD_MODULE_HEADER_RE.search(line)
+        if header:
+            current = header.group(1)
             blocks.setdefault(current, [])
             continue
-        if failure:
-            current = failure.group(1)
-            blocks.setdefault(current, [])
-            continue
-        # Anything that ends the per-test report region closes the open block. The
+        # Anything that ends the per-module report region closes the open block. The
         # closing full sweep in particular is printed by `pytest_terminal_summary`
         # AFTER the last error block, under a `write_sep("-", ...)` rule -- letting it
         # leak into the block above would attribute a session-level finding to an
-        # innocent test, which is the exact mis-attribution the sweep is reported at
+        # innocent module, which is the exact mis-attribution the sweep is reported at
         # session level to avoid.
         if (
             line.startswith("=")
@@ -243,16 +330,16 @@ def nested_session(tmp_path_factory) -> dict[str, object]:
     }
 
 
-class TestTheGuardFiresOnAnUndeclaredWrite:
-    """An unmarked test that writes a production store fails, and the message says so."""
+class TestTheChildSessionIsTheEvidenceItClaimsToBe:
+    """Anti-vacuity. Every assertion below reads one run's output."""
 
     def test_the_child_session_failed(
         self, nested_session, data_boundary_guard
     ) -> None:
         completed = nested_session["completed"]
         assert completed.returncode != 0, (
-            "the nested session exited 0. A session in which five tests wrote a guarded "
-            "production store and only one of them declared the write MUST fail.\n\n"
+            "the nested session exited 0. A session in which several modules wrote a "
+            "guarded production store without declaring the write MUST fail.\n\n"
             + str(nested_session["output"])
         )
         assert "no tests ran" not in nested_session["output"], (
@@ -260,80 +347,185 @@ class TestTheGuardFiresOnAnUndeclaredWrite:
             "module would be vacuous.\n\n" + str(nested_session["output"])
         )
 
-    def test_the_unmarked_rewrite_names_the_file_and_both_digests(
+    def test_every_generated_test_ran(
         self, nested_session, data_boundary_guard
     ) -> None:
-        block = nested_session["blocks"].get("test_unmarked_rewrite_is_rejected")
-        assert block, "no failure was reported for the unmarked rewrite.\n\n" + str(
-            nested_session["output"]
+        """A mini-suite that silently stopped collecting would pass by ABSENCE.
+
+        Three assertions below are of the form "this module is NOT in the report",
+        and a module that was never collected satisfies them for entirely the wrong
+        reason. The child's own count line is the instrument.
+
+        The generated tests all PASS -- they only write files. The guard fires in
+        module teardown, so the findings are reported as ERRORS, not as failures.
+        """
+        output = str(nested_session["output"])
+        assert re.search(rf"\b{EXPECTED_CHILD_TESTS} passed\b", output), (
+            f"the child session's summary does not report {EXPECTED_CHILD_TESTS} "
+            "passed tests, so the mini-suite is not the one this module "
+            f"generated.\n\n{output}"
         )
-        assert "gold/features_wp.parquet" in block, block
+        errors = re.search(r"\b(\d+) errors?\b", output)
+        assert errors and int(errors.group(1)) == 3, (
+            "exactly three of the five generated modules must be reported -- the "
+            "Wave-6 overwrite, the marked writer's undeclared neighbour, and the "
+            "creation/deletion pair. The other two are the accepted loss (permitted) "
+            f"and the metadata-restoring write (caught at session end).\n\n{output}"
+        )
+
+
+class TestThePhase33Wave6IncidentIsStillCaught:
+    """THE GUARANTEE. An unmarked module that overwrites production gold FAILS."""
+
+    def test_the_three_gold_matrices_are_all_named_with_both_digests(
+        self, nested_session, data_boundary_guard
+    ) -> None:
+        block = nested_session["blocks"].get(WAVE6_MODULE)
+        assert block, (
+            "the Wave-6 reproduction was NOT reported. A module with no marker "
+            "anywhere in it overwrote all three production gold matrices and the "
+            "guard said nothing -- which is the incident this guard exists to "
+            "catch.\n\n" + str(nested_session["output"])
+        )
+        for key in (
+            "gold/features_wp.parquet",
+            "gold/features_ats.parquet",
+            "gold/features_ou.parquet",
+        ):
+            assert key in block, f"{key} is missing from the report.\n\n{block}"
         assert "REWRITTEN:" in block, block
         digests = _SHA256_RE.findall(block)
-        assert len(digests) >= 2, (
-            "the violation must carry BOTH digests -- before and after -- so the report "
-            f"is checkable against the file. Found {len(digests)}.\n\n{block}"
-        )
-        assert "test_unmarked_rewrite_is_rejected" in block, block
-
-    def test_the_marked_writer_is_permitted(
-        self, nested_session, data_boundary_guard
-    ) -> None:
-        assert "test_marked_writer_is_permitted" not in nested_session["blocks"], (
-            "the marked writer was reported as a violation. A path-scoped marker must "
-            "permit exactly the write it declares.\n\n" + str(nested_session["output"])
+        assert len(digests) >= 6, (
+            "the violation must carry BOTH digests for EACH of the three matrices, so "
+            f"the report is checkable against the files. Found {len(digests)}.\n\n"
+            f"{block}"
         )
 
-    def test_the_marker_suppressed_nothing_for_the_second_unmarked_writer(
+    def test_the_finding_is_attributed_to_the_module_that_wrote_them(
         self, nested_session, data_boundary_guard
     ) -> None:
-        block = nested_session["blocks"].get(
-            "test_second_unmarked_rewrite_is_still_rejected"
+        """Module-level attribution, asserted POSITIVELY rather than by absence."""
+        output = str(nested_session["output"])
+        assert f"MODULE {WAVE6_MODULE}" in output, (
+            "the report does not name the module that wrote the gold matrices. Under "
+            "module scope the pytest block header names whichever test ran last in the "
+            f"file, so the guard must state the module itself.\n\n{output}"
         )
+
+    def test_a_marker_in_an_earlier_module_stood_the_guard_down_for_nobody(
+        self, nested_session, data_boundary_guard
+    ) -> None:
+        """``test_1_marked_writer.py`` runs FIRST. This module still fails."""
+        block = nested_session["blocks"][WAVE6_MODULE]
+        assert "nfl_predictions.duckdb" not in block, (
+            "the Wave-6 report named the path an EARLIER module declared. The two "
+            f"modules' verdicts have leaked into each other.\n\n{block}"
+        )
+
+
+class TestTheExemptionIsPathScopedWithinAModule:
+    """A module that declares one store gets nothing for any other."""
+
+    def test_the_marked_writers_module_fails_for_the_path_it_did_not_declare(
+        self, nested_session, data_boundary_guard
+    ) -> None:
+        block = nested_session["blocks"].get(MARKED_MODULE)
         assert block, (
-            "the second unmarked writer was NOT reported. One test's marker must never "
-            "stand the guard down for the rest of the session.\n\n"
-            + str(nested_session["output"])
+            "a module containing a marked writer wrote an UNDECLARED path and was not "
+            "reported. Module scope is a union of declared PATHS, never a licence for "
+            "the file.\n\n" + str(nested_session["output"])
         )
         assert "silver/games.parquet" in block, block
         assert "nfl_predictions.duckdb" not in block, (
-            "the second violation named the marked writer's declared path. The two "
-            "tests' verdicts have leaked into each other.\n\n" + block
+            "the violation named the module's DECLARED path. A path-scoped marker must "
+            f"permit exactly the write it declares.\n\n{block}"
         )
 
-    def test_creation_and_deletion_are_reported_as_their_own_kinds(
+
+class TestTheAcceptedAttributionLoss:
+    """What module granularity COSTS, recorded as a test and not as a docstring.
+
+    In a module where one test declares ``data/nfl_predictions.duckdb``, a DIFFERENT
+    unmarked test in that same module writing that same path is now PERMITTED. Under
+    per-test scope it would have failed. The owner accepted that trade explicitly in
+    exchange for the measured ~179 s, and a degradation that lives only in prose is a
+    degradation nobody re-reads -- so it lives here, under a name that says what it is.
+
+    The recovery is real and is stated in the guard's own violation message: re-run
+    that one file on its own and the window narrows to the tests in it.
+    """
+
+    def test_an_unmarked_sibling_writing_the_same_declared_path_is_permitted(
         self, nested_session, data_boundary_guard
     ) -> None:
-        created = nested_session["blocks"].get("test_unmarked_creation_is_rejected")
-        deleted = nested_session["blocks"].get("test_unmarked_deletion_is_rejected")
-        assert created, str(nested_session["output"])
-        assert deleted, str(nested_session["output"])
-
-        assert "ADDED:" in created and "REWRITTEN:" not in created, (
-            "a file that did not exist before is ADDED, not REWRITTEN -- reporting both "
-            f"as one kind loses the distinction that says what happened.\n\n{created}"
+        assert ACCEPTED_LOSS_MODULE not in nested_session["blocks"], (
+            "the accepted loss did not occur -- the unmarked sibling was reported. "
+            "That is a STRICTER guard than this change describes, so either the union "
+            "is not module-wide or this test is describing the wrong behaviour. Fix "
+            "the description, not the guard.\n\n" + str(nested_session["output"])
         )
-        assert "gold/features_new.parquet" in created, created
 
-        assert "REMOVED:" in deleted and "REWRITTEN:" not in deleted, (
-            f"a deleted store is REMOVED, not REWRITTEN.\n\n{deleted}"
+    def test_the_session_end_sweep_did_not_report_it_either(
+        self, nested_session, data_boundary_guard
+    ) -> None:
+        """The rebase is what keeps the permitted write out of the closing sweep."""
+        output = str(nested_session["output"])
+        tail = (
+            output.split(CLOSING_SWEEP_HEADER, 1)[1]
+            if CLOSING_SWEEP_HEADER in output
+            else ""
         )
-        assert "gold/features_ou.parquet" in deleted, deleted
+        assert "nfl_predictions.duckdb" not in tail, (
+            "a PERMITTED write surfaced in the session-end sweep, which means the "
+            f"per-module rebase did not land.\n\n{tail}"
+        )
+
+
+class TestCreationAndDeletionAreReportedAsTheirOwnKinds:
+    def test_added_and_removed_both_appear_with_their_digests(
+        self, nested_session, data_boundary_guard
+    ) -> None:
+        block = nested_session["blocks"].get(ADD_REMOVE_MODULE)
+        assert block, str(nested_session["output"])
+
+        assert "ADDED:" in block, (
+            "a file that did not exist before must be reported as ADDED -- reporting "
+            f"it as a rewrite loses the distinction that says what happened.\n\n{block}"
+        )
+        assert "gold/features_new.parquet" in block, block
+
+        assert "REMOVED:" in block, (
+            f"a deleted store is REMOVED, not REWRITTEN.\n\n{block}"
+        )
+        assert "gold/features_gone.parquet" in block, block
+
+        assert "REWRITTEN:" not in block, (
+            "nothing in this module rewrote an existing store, so a REWRITTEN section "
+            f"means the kinds have blurred.\n\n{block}"
+        )
+        assert len(_SHA256_RE.findall(block)) >= 2, (
+            "the ADDED file's after-digest and the REMOVED file's before-digest must "
+            f"both appear.\n\n{block}"
+        )
 
 
 class TestTheClosingSweepCatchesWhatThePrefilterCannot:
-    """D33-23 review hardening: the prefilter buys speed, the closing sweep buys truth."""
+    """D33-23 review hardening: the prefilter buys speed, the closing sweep buys truth.
+
+    UNCHANGED IN SUBSTANCE by the move to module scope, and deliberately so. The
+    per-module pass is still a stat prefilter, so it still cannot see a write that
+    restores its own size and mtime; the session-end full content sweep is still what
+    makes the SESSION's verdict content-based. That is the backstop the whole
+    speed-for-attribution trade rests on.
+    """
 
     def test_the_prefilter_reported_nothing_for_the_metadata_restoring_write(
         self, nested_session, data_boundary_guard
     ) -> None:
-        assert (
-            "test_metadata_restoring_write_slips_past_the_prefilter"
-            not in nested_session["blocks"]
-        ), (
-            "the per-test stat prefilter reported the metadata-restoring write. If it "
-            "can see that write on this filesystem the case is not exercising what it "
-            "was written for -- check that st_size and st_mtime_ns really were "
+        assert METADATA_MODULE not in nested_session["blocks"], (
+            "the per-module stat prefilter reported the metadata-restoring write. If "
+            "it can see that write on this filesystem the case is not exercising what "
+            "it was written for -- check that st_size and st_mtime_ns really were "
             "restored.\n\n" + str(nested_session["output"])
         )
 
@@ -348,13 +540,13 @@ class TestTheClosingSweepCatchesWhatThePrefilterCannot:
             + output
         )
         tail = output.split(CLOSING_SWEEP_HEADER, 1)[1]
-        assert "gold/features_ats.parquet" in tail, (
+        assert "gold/features_meta.parquet" in tail, (
             "the closing sweep fired but did not name the file whose bytes moved.\n\n"
             + tail
         )
         assert len(_SHA256_RE.findall(tail)) >= 2, (
-            "the closing sweep must carry both digests, exactly as a per-test violation "
-            f"does.\n\n{tail}"
+            "the closing sweep must carry both digests, exactly as a per-module "
+            f"violation does.\n\n{tail}"
         )
 
 
