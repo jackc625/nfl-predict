@@ -536,6 +536,68 @@ def _build_train_argv(
     ]
 
 
+#: The metadata key the in-sample window report is persisted under. Named once so the
+#: writer here and any consumer of a promoted artifact spell it the same way.
+WINDOW_REPORT_METADATA_KEY = "holdout_in_sample_report"
+
+
+def _record_window_report(
+    target: str,
+    version: str,
+    staging_dir: Path,
+    report: str,
+) -> bool:
+    """Persist the in-sample window report into the STAGED candidate's metadata.
+
+    WHY THIS EXISTS (code review WR-12). ``holdout_report`` -- the sentence saying the
+    verdict is in-sample and must be LABELLED so -- was built into a dict, logged at
+    WARNING and printed to stdout, and that was all. Nothing wrote it into the
+    candidate's ``metadata.json``, into the gate verdict record, or into any other
+    machine-readable place. ``HISTORICAL-WEATHER-READOUT.md`` (7e) makes the label
+    BINDING: "Wave 15's verdict must be LABELLED in-sample, never presented as a clean
+    gate pass." A stdout line in a long promotion run is the weakest possible carrier
+    for a binding label, and it is exactly the "prints with no warning at all" outcome
+    the function's own comment argues against.
+
+    WHY THE STAGED COPY AND NOT THE PROMOTED ONE. D33.1-04 prohibits editing an
+    artifact's ``metadata.json``: those files are the RECORD of a past training run.
+    This writes into the STAGING dir, which D24-09 allows and which holds the run that
+    has just happened -- so the label is part of the record from birth and travels into
+    production with ``_promote_artifact_dir``'s copy. No existing record is edited.
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        version: The staged artifact dir name.
+        staging_dir: The staging artifacts root -- never production (D24-08).
+        report: The window report; an empty string writes nothing.
+
+    Returns:
+        True when the report was written, False when there was nothing to write or the
+        staged metadata could not be read.
+    """
+    if not report:
+        return False
+
+    metadata_path = staging_dir / version / "metadata.json"
+    if not metadata_path.exists():
+        # NOT fatal, and deliberately so: the label is a disclosure ABOUT a verdict, and
+        # losing the disclosure must not destroy the run that produced it. It is loud
+        # instead, and the stdout line still prints.
+        logger.warning(
+            "Cannot persist the in-sample window report: staged metadata is absent",
+            target=target,
+            metadata_path=str(metadata_path),
+        )
+        return False
+
+    with metadata_path.open(encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    metadata[WINDOW_REPORT_METADATA_KEY] = report
+    with metadata_path.open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2)
+    return True
+
+
 def _parse_version_timestamp(version_dir_name: str) -> datetime:
     """Parse the trailing ``{YYYYMMDD}_{HHMMSS}`` timestamp from an artifact dir name.
 
@@ -1416,6 +1478,12 @@ def main(argv: list[str] | None = None) -> int:
             continue  # --skip-train: target excluded from the gate loop and any swap.
         staged_version[target] = chosen
         update_manifest(target, chosen, artifacts_dir=args.staging_dir)
+        # WR-12: the in-sample label rides in the candidate's own metadata, so any
+        # consumer of the promoted artifact inherits it instead of relying on somebody
+        # having read the console. Written into STAGING, before the promotion copy.
+        report = windows.get(target, {}).get("window_report", "")
+        if _record_window_report(target, chosen, args.staging_dir, report):
+            print(f"  {target}: in-sample window report recorded in metadata.json")
         print(f"  {target}: {chosen}")
     if not staged_version:
         print("  No staged candidates resolved; nothing to gate.")
@@ -1521,6 +1589,11 @@ def main(argv: list[str] | None = None) -> int:
         baseline = _baseline_bundle(target, cfg)
         gate_results[target] = deploy_gate.evaluate_target(
             target, candidate, baseline, cfg
+        )
+        # WR-12: the verdict carries its own label. A consumer reading gate_results and
+        # nothing else would otherwise have no way to know the verdict is in-sample.
+        gate_results[target][WINDOW_REPORT_METADATA_KEY] = windows.get(target, {}).get(
+            "window_report", ""
         )
 
     print("\n" + "=" * 70)

@@ -796,6 +796,87 @@ def test_every_live_incumbent_DIFFERS_from_the_live_partition_and_says_so(
 
 
 # ---------------------------------------------------------------------------
+# Review WR-12: the in-sample label is MACHINE-READABLE, not only printed
+# ---------------------------------------------------------------------------
+
+
+class TestTheInSampleLabelIsPersistedRatherThanPrinted:
+    """The readout makes the label binding; stdout is the weakest carrier there is.
+
+    ``HISTORICAL-WEATHER-READOUT.md`` (7e): "Wave 15's verdict must be LABELLED
+    in-sample, never presented as a clean gate pass." Before this, the sentence that
+    says so was built into a dict, logged at WARNING and printed -- and nothing wrote
+    it anywhere a consumer of the verdict or of the promoted artifact could find it.
+    """
+
+    def test_the_report_is_written_into_the_staged_metadata(
+        self, tmp_path: Path
+    ) -> None:
+        staging = tmp_path / "staging"
+        version = "ats_20260101_000000"
+        (staging / version).mkdir(parents=True)
+        (staging / version / "metadata.json").write_text(
+            json.dumps({"target": "ats", "config": {"train_seasons": [2018]}}),
+            encoding="utf-8",
+        )
+
+        wrote = promote._record_window_report(
+            "ats", version, staging, "the verdict is IN-SAMPLE"
+        )
+
+        assert wrote is True
+        payload = json.loads(
+            (staging / version / "metadata.json").read_text(encoding="utf-8")
+        )
+        assert payload[promote.WINDOW_REPORT_METADATA_KEY] == (
+            "the verdict is IN-SAMPLE"
+        )
+        assert payload["target"] == "ats", (
+            "the existing record must survive: this ADDS a disclosure, it does not "
+            "rewrite the metadata"
+        )
+
+    def test_an_empty_report_writes_nothing(self, tmp_path: Path) -> None:
+        """No difference to report means no label; a label that always fires is noise."""
+        staging = tmp_path / "staging"
+        version = "ats_20260101_000000"
+        (staging / version).mkdir(parents=True)
+        original = json.dumps({"target": "ats"})
+        (staging / version / "metadata.json").write_text(original, encoding="utf-8")
+
+        assert promote._record_window_report("ats", version, staging, "") is False
+        assert (staging / version / "metadata.json").read_text(
+            encoding="utf-8"
+        ) == original
+
+    def test_absent_staged_metadata_is_LOUD_but_not_fatal(self, tmp_path: Path) -> None:
+        """Losing a disclosure must not destroy the run that produced it."""
+        staging = tmp_path / "staging"
+        (staging / "ats_20260101_000000").mkdir(parents=True)
+
+        assert (
+            promote._record_window_report(
+                "ats", "ats_20260101_000000", staging, "in-sample"
+            )
+            is False
+        )
+
+    def test_nothing_is_written_under_production_artifacts(
+        self, tmp_path: Path
+    ) -> None:
+        """D24-08: the writer is staging-only, and D33.1-04 forbids editing a record."""
+        before = sorted(p.name for p in LIVE_ARTIFACTS.iterdir())
+        staging = tmp_path / "staging"
+        version = "ats_20260101_000000"
+        (staging / version).mkdir(parents=True)
+        (staging / version / "metadata.json").write_text("{}", encoding="utf-8")
+
+        promote._record_window_report("ats", version, staging, "in-sample")
+
+        assert sorted(p.name for p in LIVE_ARTIFACTS.iterdir()) == before
+
+
+# ---------------------------------------------------------------------------
 # WR-04: the promoted artifact records WHAT was excluded, and on whose authority
 # ---------------------------------------------------------------------------
 
