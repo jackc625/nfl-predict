@@ -1022,6 +1022,70 @@ class TestANullMeasurementInsideAnObservationStaysNull:
         )
 
 
+class TestNoFabricatedReadingReachesTheApparentTemperatureFormula:
+    """Code review WR-08: the last two numeric stand-ins in this module.
+
+    ``_apparent_temperature_or_null`` passed ``50.0`` for an absent humidity in the
+    wind-chill branch and ``0.0`` for an absent wind in the heat-index branch. Both
+    were INERT, because ``_calculate_apparent_temperature``'s wind-chill formula
+    never reads humidity and its heat-index formula never reads wind -- but that is
+    a coupling to ANOTHER function's internal thresholds, not a property of this
+    one. The module's own docstring names ``or 50`` as the defect being removed.
+
+    These tests pin the argument that is PASSED, not just the value that comes back,
+    because the returned value cannot distinguish the two versions today. That is
+    exactly why a behavioural test alone would not have caught it.
+    """
+
+    @staticmethod
+    def _captured_call(monkeypatch, temp_f, raw_wind, raw_humidity):
+        calculator = WeatherFeaturesCalculator()
+        seen: dict[str, float] = {}
+
+        def _spy(temp, wind, humidity):
+            seen.update(temp=temp, wind=wind, humidity=humidity)
+            return temp
+
+        monkeypatch.setattr(calculator, "_calculate_apparent_temperature", _spy)
+        calculator._apparent_temperature_or_null(temp_f, raw_wind, raw_humidity)
+        return seen
+
+    def test_an_absent_humidity_is_passed_as_NULL_not_as_fifty(self, monkeypatch):
+        seen = self._captured_call(monkeypatch, 40.0, 10.0, None)
+
+        assert seen["wind"] == 10.0
+        assert _is_null(seen["humidity"]), (
+            f"absent humidity reached the formula as {seen['humidity']!r}. A "
+            "plausible number here is a fabricated measurement one branch-threshold "
+            "change away from becoming a model input."
+        )
+
+    def test_an_absent_wind_is_passed_as_NULL_not_as_calm(self, monkeypatch):
+        seen = self._captured_call(monkeypatch, 90.0, None, 60.0)
+
+        assert seen["humidity"] == 60.0
+        assert _is_null(seen["wind"]), (
+            f"absent wind reached the formula as {seen['wind']!r} -- an invented "
+            "perfectly calm day, the same stand-in as `wind_mph or 0`."
+        )
+
+    def test_a_null_reading_can_only_fall_THROUGH_a_branch(self):
+        """Why NAN is safe: neither guard can be satisfied by an absent reading."""
+        calculator = WeatherFeaturesCalculator()
+        nan = float("nan")
+
+        assert not (nan >= 3)
+        assert not (nan >= 40)
+        # Cold with real wind: the wind chill applies and humidity is never read.
+        assert calculator._apparent_temperature_or_null(
+            40.0, 10.0, None
+        ) == calculator._calculate_apparent_temperature(40.0, 10.0, nan)
+        # Hot with real humidity: the heat index applies and wind is never read.
+        assert calculator._apparent_temperature_or_null(
+            90.0, None, 60.0
+        ) == calculator._calculate_apparent_temperature(90.0, nan, 60.0)
+
+
 class TestTheStateMatrixIsCommitted:
     def test_the_matrix_records_all_three_states_and_their_column_groups(self):
         from tests.phase33_state import WEATHER_NULL_STATE_MATRIX as matrix

@@ -805,6 +805,24 @@ class WeatherFeaturesCalculator:
         Returns:
             The wind chill, the heat index, the temperature itself, or NaN.
         """
+        # THE UNUSED ARGUMENT IS NAN, NOT A PLAUSIBLE NUMBER (code review WR-08).
+        #
+        # These two calls used to pass `50.0 if _is_missing(raw_humidity) else ...`
+        # and `0.0 if _is_missing(raw_wind) else ...` -- stand-ins for a measurement,
+        # in the module whose entire point is that it contains exactly ONE spelling of
+        # "we do not know", and `or 50` in particular is named four screens up as the
+        # defect being removed. They were inert, because
+        # `_calculate_apparent_temperature`'s wind-chill branch never reads humidity
+        # and its heat-index branch never reads wind -- but that safety was a coupling
+        # to ANOTHER function's internal branch thresholds, not a property of this
+        # one. If the wind chill ever gained a humidity term, a fabricated 50% would
+        # have become a model input silently.
+        #
+        # NAN is now passed instead, and the formula's own guards decide: `NAN >= 3`
+        # and `NAN >= 40` are both False, so an absent reading can only ever fall
+        # THROUGH a branch, never satisfy one. Verified exhaustively over the
+        # temperature/wind/humidity grid: every output is bit-identical to the
+        # stand-in version, so no gold value moves.
         if temp_f <= 50:
             # The wind-chill branch consults wind, and `wind >= 3` cannot be
             # decided without it.
@@ -813,7 +831,7 @@ class WeatherFeaturesCalculator:
             return self._calculate_apparent_temperature(
                 temp_f,
                 float(raw_wind),
-                50.0 if _is_missing(raw_humidity) else float(raw_humidity),
+                NAN if _is_missing(raw_humidity) else float(raw_humidity),
             )
         if temp_f >= 80:
             # The heat-index branch consults humidity, and `humidity >= 40`
@@ -822,7 +840,7 @@ class WeatherFeaturesCalculator:
                 return NAN
             return self._calculate_apparent_temperature(
                 temp_f,
-                0.0 if _is_missing(raw_wind) else float(raw_wind),
+                NAN if _is_missing(raw_wind) else float(raw_wind),
                 float(raw_humidity),
             )
         # Between 50F and 80F neither formula applies and the apparent
