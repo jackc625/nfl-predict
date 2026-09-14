@@ -50,6 +50,10 @@ from sklearn.model_selection import (
 )
 from sklearn.preprocessing import StandardScaler
 
+from conf.season_partition import (
+    LATEST_COMPLETED_SEASON,
+    SELECTION_WINDOW_FIRST_SEASON,
+)
 from data.storage import load_dataframe
 from models.calibrate import ProbabilityCalibrator
 from models.evaluation import ModelEvaluationFramework
@@ -248,7 +252,7 @@ class WinProbabilityModel:
                 "game_id": game["game_id"],
                 "home_team": game["home_team"],
                 "away_team": game["away_team"],
-                "season": game.get("season", 2024),
+                "season": game.get("season", LATEST_COMPLETED_SEASON),
                 "week": game.get("week", 1),
                 # Basic Elo features (if available)
                 "elo_home": game.get("elo_home", 1500),
@@ -723,7 +727,7 @@ class WinProbabilityModel:
             # Add missing features with default values
             for feature in missing_features:
                 if "season" in feature.lower():
-                    features_df[feature] = 2024
+                    features_df[feature] = LATEST_COMPLETED_SEASON
                 elif "week" in feature.lower():
                     features_df[feature] = 1
                 elif "elo" in feature.lower():
@@ -861,8 +865,8 @@ class WinProbabilityModel:
     def run_walk_forward_validation(
         self,
         games_df: pd.DataFrame,
-        start_season: int = 2018,
-        end_season: int = 2024,
+        start_season: int = SELECTION_WINDOW_FIRST_SEASON,
+        end_season: int = LATEST_COMPLETED_SEASON,
         feature_path: str | None = None,
     ) -> dict[str, Any]:
         """

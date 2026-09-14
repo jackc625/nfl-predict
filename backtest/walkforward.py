@@ -17,6 +17,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from conf.season_partition import (
+    LATEST_COMPLETED_SEASON,
+    SELECTION_WINDOW_FIRST_SEASON,
+)
 from utils.exceptions import BacktestError, DataValidationError, ModelTrainingError
 from utils.logging_config import get_logger
 
@@ -67,9 +71,12 @@ class SeasonSplit:
 class BacktestConfig:
     """Configuration for walk-forward backtesting."""
 
-    # Season range
-    start_season: int = 2018
-    end_season: int = 2024
+    # Season range. DERIVED from the committed rule in conf/season_partition.py
+    # (review WR-14): these were the literals 2018 and 2024, and an end_season that
+    # names a season is exactly how 2025 stayed invisible to every consumer that
+    # loaded data through a config like this one.
+    start_season: int = SELECTION_WINDOW_FIRST_SEASON
+    end_season: int = LATEST_COMPLETED_SEASON
 
     # Validation strategy
     min_training_seasons: int = 3  # Minimum seasons needed before validation
@@ -786,8 +793,8 @@ class WalkForwardBacktester:
 def create_default_config() -> BacktestConfig:
     """Create default backtesting configuration."""
     return BacktestConfig(
-        start_season=2018,
-        end_season=2024,
+        start_season=SELECTION_WINDOW_FIRST_SEASON,
+        end_season=LATEST_COMPLETED_SEASON,
         min_training_seasons=3,
         validation_start_week=5,
         validation_level=ValidationLevel.MODERATE,
@@ -800,8 +807,8 @@ def create_default_config() -> BacktestConfig:
 def create_strict_config() -> BacktestConfig:
     """Create strict backtesting configuration with maximum validation."""
     return BacktestConfig(
-        start_season=2018,
-        end_season=2024,
+        start_season=SELECTION_WINDOW_FIRST_SEASON,
+        end_season=LATEST_COMPLETED_SEASON,
         min_training_seasons=3,
         validation_start_week=4,
         validation_level=ValidationLevel.STRICT,

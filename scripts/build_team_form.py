@@ -21,6 +21,7 @@ import pandas as pd
 # Add project root to path
 sys.path.append(".")
 
+from conf.season_partition import LATEST_COMPLETED_SEASON
 from conf.settings import get_settings
 from data.storage import load_dataframe, save_dataframe
 from features.team_form import TeamFormCalculator
@@ -415,7 +416,10 @@ def main():
 
         if args.analyze_team:
             # Analyze specific team trends
-            seasons = [2022, 2023, 2024]  # Default recent seasons
+            # The three most recent COMPLETED seasons, derived from the committed rule
+            # (review WR-14). This was the literal [2022, 2023, 2024], which excluded
+            # 2025 from every trend analysis run without a --seasons flag.
+            seasons = [LATEST_COMPLETED_SEASON - offset for offset in (2, 1, 0)]
             if args.seasons:
                 seasons = args.seasons
             elif args.season:

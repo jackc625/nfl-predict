@@ -94,15 +94,16 @@ class BaselineCapture:
         for sr in results.season_results:
             tr = sr.target_results.get(target)
             if tr is not None:
-                per_season_results.append({
-                    "season": tr.season,
-                    "metrics": _sanitize_for_json(tr.metrics),
-                })
+                per_season_results.append(
+                    {
+                        "season": tr.season,
+                        "metrics": _sanitize_for_json(tr.metrics),
+                    }
+                )
 
         # Filter odds coverage keys for this target
         target_odds = {
-            k: v for k, v in results.odds_coverage.items()
-            if k.startswith(target)
+            k: v for k, v in results.odds_coverage.items() if k.startswith(target)
         }
 
         metrics_data = {
@@ -120,10 +121,17 @@ class BaselineCapture:
 
         if preds_df.empty:
             # Create minimal empty DataFrame with required columns
-            preds_df = pd.DataFrame(columns=[
-                "game_id", "season", "week", "home_team", "away_team",
-                "predicted_prob", "actual_outcome",
-            ])
+            preds_df = pd.DataFrame(
+                columns=[
+                    "game_id",
+                    "season",
+                    "week",
+                    "home_team",
+                    "away_team",
+                    "predicted_prob",
+                    "actual_outcome",
+                ]
+            )
 
         output_path = self.output_dir / f"predictions_{target}.parquet"
         preds_df.to_parquet(output_path, index=False)
@@ -189,8 +197,15 @@ class BaselineCapture:
             f"| Headline CLV | {wp_clv} | --- | {ats_clv} | --- | {ou_clv} | --- |"
         )
 
-        # Row: Per-season CLV (2021-2024) -- extract from season results
-        for season in [2021, 2022, 2023, 2024]:
+        # Row: Per-season CLV -- extract from season results.
+        #
+        # DERIVED from the results being reported (review WR-14). This was the literal
+        # [2021, 2022, 2023, 2024]. Once the backtest holdout moved with the committed
+        # season rule, those four rows would have rendered "N/A" across the board while
+        # the seasons actually measured went unreported -- a table that silently
+        # describes a window the run did not use.
+        measured_seasons = sorted({int(sr.season) for sr in results.season_results})
+        for season in measured_seasons:
             season_clvs = {}
             for target in self.TARGETS:
                 # Find this season's CLV from season_results
@@ -198,11 +213,19 @@ class BaselineCapture:
                 for sr in results.season_results:
                     if sr.season == season:
                         tr = sr.target_results.get(target)
-                        if tr is not None and tr.clv_df is not None and not tr.clv_df.empty:
+                        if (
+                            tr is not None
+                            and tr.clv_df is not None
+                            and not tr.clv_df.empty
+                        ):
                             if "probability_clv" in tr.clv_df.columns:
-                                valid = tr.clv_df[tr.clv_df.get("has_closing_odds", True) == True]  # noqa: E712
+                                valid = tr.clv_df[
+                                    tr.clv_df.get("has_closing_odds", True) == True  # noqa: E712
+                                ]
                                 if not valid.empty:
-                                    season_clv = str(round(float(valid["probability_clv"].mean()), 4))
+                                    season_clv = str(
+                                        round(float(valid["probability_clv"].mean()), 4)
+                                    )
                 season_clvs[target] = season_clv
             lines.append(
                 f"| CLV {season} | {season_clvs['wp']} | --- | {season_clvs['ats']} | --- | {season_clvs['ou']} | --- |"
@@ -210,7 +233,10 @@ class BaselineCapture:
 
         # Rows: Brier Score, Hit Rate, Odds Coverage
         # Extract aggregate metrics where available
-        for metric_name, metric_key in [("Brier Score", "brier_score"), ("Hit Rate", "accuracy")]:
+        for metric_name, metric_key in [
+            ("Brier Score", "brier_score"),
+            ("Hit Rate", "accuracy"),
+        ]:
             values = {}
             for target in self.TARGETS:
                 val = "N/A"

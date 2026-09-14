@@ -94,7 +94,13 @@ __all__ = [
     "throwaway_ev_preview",
 ]
 
-# Backtest holdout window (walk-forward, 2021-2024). Matches BacktestConfig defaults.
+# The Phase-26 divergence study's holdout window (walk-forward, 2021-2024).
+#
+# FROZEN BY DESIGN, and NOT the live partition (review WR-14). The comment here used to
+# read "Matches BacktestConfig defaults"; that stopped being true when Phase 33.1 moved
+# BacktestConfig onto conf/season_partition.py. These stay put because they are the
+# window OU-DIVERGENCE-DIAGNOSIS.md was measured on. See backtest/diagnose.py's copy of
+# this pair for the full reasoning.
 HOLDOUT_FIRST_SEASON = 2021
 HOLDOUT_LAST_SEASON = 2024
 

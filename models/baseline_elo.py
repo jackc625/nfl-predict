@@ -31,6 +31,10 @@ import joblib
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 
+from conf.season_partition import (
+    LATEST_COMPLETED_SEASON,
+    SELECTION_WINDOW_FIRST_SEASON,
+)
 from models.calibrate import ProbabilityCalibrator
 from models.utils import ModelMetadata, WalkForwardValidator
 from ratings.elo import EloRatingSystem
@@ -318,7 +322,7 @@ class BaselineEloModel:
                         away_team=game["away_team"],
                         home_score=int(home_score),
                         away_score=int(away_score),
-                        season=game.get("season", 2024),
+                        season=game.get("season", LATEST_COMPLETED_SEASON),
                         game_date=game.get("kickoff_et", datetime.now()),
                         game_id=game.get(
                             "game_id", f"{game['home_team']}_vs_{game['away_team']}"
@@ -624,7 +628,10 @@ class BaselineEloModel:
         return metrics
 
     def run_walk_forward_validation(
-        self, games_df: pd.DataFrame, start_season: int = 2018, end_season: int = 2024
+        self,
+        games_df: pd.DataFrame,
+        start_season: int = SELECTION_WINDOW_FIRST_SEASON,
+        end_season: int = LATEST_COMPLETED_SEASON,
     ) -> dict[str, Any]:
         """
         Run walk-forward validation on historical data.

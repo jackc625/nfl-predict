@@ -53,7 +53,18 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Backtest holdout window (walk-forward, 2021-2024). Matches BacktestConfig defaults.
+# The DIAG harness's holdout window (walk-forward, 2021-2024).
+#
+# FROZEN BY DESIGN, and NOT the live partition (review WR-14). The comment here used to
+# read "Matches BacktestConfig defaults", which stopped being true when Phase 33.1 moved
+# BacktestConfig onto conf/season_partition.py: the live holdout is now the two most
+# recent completed seasons. These two constants are deliberately NOT moved with it --
+# they fence a PUBLISHED measurement (the Phase-22 diagnosis, and every consumer that
+# calls score_deployed_artifacts without passing its own gold_df), and
+# scripts/audit_odds_preingest.py asserts this exact pair by name before measuring, so
+# changing them here would silently re-window a pre-registered result.
+#
+# Every gate and promotion caller passes gold_df explicitly and is unaffected by these.
 HOLDOUT_FIRST_SEASON = 2021
 HOLDOUT_LAST_SEASON = 2024
 

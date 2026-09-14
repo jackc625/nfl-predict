@@ -11,6 +11,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
+from conf.season_partition import LATEST_COMPLETED_SEASON
 from conf.settings import get_settings
 from data.storage import get_database_stats, get_db_connection, load_dataframe
 from utils import (
@@ -140,11 +141,15 @@ _COPY_READ_FAILURES = (
 # COUNT is exact; the id list is a bounded sample for diagnosis.
 _CONSISTENCY_SAMPLE_LIMIT = 20
 
-# Last season for which gold is considered fully ingested. Seasons beyond this
-# are treated as expected, documented trailing-coverage gaps (D-05), NOT failures.
-# 2025 is ingested through ~week 4 only and is intentionally NOT backfilled in
-# this phase (AUDIT-REPORT.md currency gap).
-GOLD_LAST_COMPLETE_SEASON = 2024
+# Last season for which gold is considered fully ingested. Seasons beyond this are
+# treated as expected, documented trailing-coverage gaps (D-05), NOT failures.
+#
+# DERIVED from the committed season rule (review WR-14). It was the literal 2024,
+# written when 2025 was ingested through about week 4 only. Phase 33.1 completed
+# 2025 -- gold holds all of 2002-2025 and the rule's holdout is 2024-2025 -- so the
+# literal had become a licence to ignore a REAL coverage gap in the most recent
+# completed season, which is the opposite of what it is for.
+GOLD_LAST_COMPLETE_SEASON = LATEST_COMPLETED_SEASON
 
 
 class DataQualityMonitor:

@@ -27,6 +27,7 @@ import numpy as np
 import optuna
 import pandas as pd
 
+from conf.season_partition import default_season_partition
 from models.blending import (
     BlendConfig,
     BlendWeights,
@@ -683,6 +684,7 @@ def _generate_comparison_report(
     gating: dict[str, dict],
     dynamic_weights: DynamicBlendWeights,
     output_path: Path,
+    backtest_span: str,
 ) -> None:
     """Generate markdown comparison report (per D-20).
 
@@ -699,6 +701,9 @@ def _generate_comparison_report(
         gating: Output from _gate_per_target.
         dynamic_weights: The DynamicBlendWeights that were tested.
         output_path: Where to write the markdown report.
+        backtest_span: The season span actually backtested, e.g. "2024-2025". Passed in
+            rather than written into the methodology prose, which read "2021-2024" and would
+            have described a window the run did not use (review WR-14).
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -784,7 +789,8 @@ def _generate_comparison_report(
             "",
             "## Methodology",
             "",
-            "- One unblended backtest (2021-2024) provides identical raw predictions",
+            f"- One unblended backtest ({backtest_span}) provides identical raw "
+            "predictions",
             "- Static and dynamic blending applied post-hoc to same raw predictions",
             "- CLV computed via same compute_clv_for_predictions code path",
             "- Edge thresholds held constant (from Plan 03 calibration)",
@@ -826,7 +832,10 @@ def run_comparison(
     Args:
         artifacts_dir: Directory containing blend artifacts.
         baselines_dir: Directory for comparison report output.
-        backtest_seasons: Seasons to backtest (default [2021, 2022, 2023, 2024]).
+        backtest_seasons: Seasons to backtest. Defaults to the committed partition rule's
+            holdout (``conf/season_partition.py``), NOT a typed list -- this default used to
+            read [2021, 2022, 2023, 2024] and would now silently disagree with
+            ``deploy_gate.HOLDOUT_SEASONS`` and with ``BacktestConfig`` (review WR-14).
 
     Returns:
         Dict with "static_clv", "dynamic_clv", "gating", "report_path", "any_passed".
@@ -834,7 +843,7 @@ def run_comparison(
     from backtest.engine import BacktestConfig, BacktestEngine
 
     if backtest_seasons is None:
-        backtest_seasons = [2021, 2022, 2023, 2024]
+        backtest_seasons = list(default_season_partition().holdout)
 
     artifacts_path = Path(artifacts_dir)
     baselines_path = Path(baselines_dir)
@@ -852,7 +861,8 @@ def run_comparison(
     static_blender = MarketBlender(config=dynamic_blender.config)
 
     # ---- Step 1: Run UNBLENDED backtest (shared base for both comparisons) ----
-    print("Running unblended backtest (2021-2024)...")
+    span = f"{backtest_seasons[0]}-{backtest_seasons[-1]}"
+    print(f"Running unblended backtest ({span})...")
     unblended_config = BacktestConfig(
         holdout_seasons=backtest_seasons,
         targets=["wp", "ats", "ou"],
@@ -987,6 +997,7 @@ def run_comparison(
         gating=gating,
         dynamic_weights=dynamic_blender._dynamic_weights,
         output_path=report_path,
+        backtest_span=span,
     )
 
     # Save gating results JSON

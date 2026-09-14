@@ -160,6 +160,12 @@ LIFT_ANCHOR = "BaseTrainer.train_and_evaluate(tune=False)"
 # It is a DIAGNOSTIC, never the canonical measurement: it trains on holdout seasons, leaving a
 # single measured season (2024, ~255 paired games), so it is low-powered and consumes holdout.
 # Results from it are reported as such and never presented as the pre-registered screen.
+#
+# FROZEN BY DESIGN -- DO NOT DERIVE THESE FROM conf/season_partition.py (review WR-14).
+# These seasons are the window a PUBLISHED measurement was taken on, not a live default.
+# Moving them to the committed rule would silently re-window SIGNAL-LIFT-READOUT.md's
+# numbers so that the document no longer describes the run that produced it. A literal
+# here is the correct shape: it is a record, and a record does not roll forward.
 COVERAGE_WINDOW_CONFIG = TemporalSplitConfig(
     train_seasons=[2021, 2022],
     hp_val_seasons=[2023],
@@ -194,6 +200,11 @@ COVERAGE_WINDOW_CONFIG = TemporalSplitConfig(
 # ``--covered-selection-window`` flag. ``TemporalSplitConfig.default()`` is NOT touched, so Phase
 # 30's binding gate and every trainer keep the canonical 2018-2019 selection window unless Phase
 # 30 adopts a covered window deliberately (D29-07-01).
+#
+# FROZEN BY DESIGN -- DO NOT DERIVE THESE FROM conf/season_partition.py (review WR-14).
+# Same reason as COVERAGE_WINDOW_CONFIG above: this is the window the published 4c-bis
+# registration was measured on. The next season-literal consolidation pass must leave
+# both of these alone.
 COVERED_SELECTION_WINDOW_CONFIG = TemporalSplitConfig(
     train_seasons=[2018, 2019, 2020],
     hp_val_seasons=[2021],

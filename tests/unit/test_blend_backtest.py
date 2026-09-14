@@ -26,6 +26,11 @@ from backtest.report import BacktestReporter
 from backtest.run import export_summary_json
 from backtest.simulation import BettingSimulator, SimulationResults
 from backtest.tune import _gate_per_target, _generate_comparison_report
+
+# The season span a report describes is now PASSED IN rather than written into the
+# methodology prose as the literal "2021-2024" (review WR-14): a report that names a
+# window the run did not use is a report that lies about its own population.
+_SPAN = "2024-2025"
 from models.blending import (
     BlendConfig,
     DynamicBlendWeights,
@@ -608,6 +613,7 @@ class TestDynamicComparison:
             gating=gating,
             dynamic_weights=dynamic_weights,
             output_path=output_path,
+            backtest_span=_SPAN,
         )
         assert output_path.exists()
         content = output_path.read_text(encoding="utf-8")
@@ -652,6 +658,7 @@ class TestDynamicComparison:
             gating=gating,
             dynamic_weights=dynamic_weights,
             output_path=output_path,
+            backtest_span=_SPAN,
         )
         content = output_path.read_text(encoding="utf-8")
         assert "Per-Season CLV Breakdown" in content

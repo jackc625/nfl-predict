@@ -30,6 +30,10 @@ import pandas as pd
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from conf.season_partition import (
+    LATEST_COMPLETED_SEASON,
+    SELECTION_WINDOW_FIRST_SEASON,
+)
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -131,8 +135,8 @@ class WalkForwardValidator:
         self,
         data: pd.DataFrame,
         target_column: str,
-        start_season: int = 2018,
-        end_season: int = 2024,
+        start_season: int = SELECTION_WINDOW_FIRST_SEASON,
+        end_season: int = LATEST_COMPLETED_SEASON,
     ) -> Iterator[TrainTestSplit]:
         """
         Create walk-forward splits by season.
@@ -143,8 +147,11 @@ class WalkForwardValidator:
         Args:
             data: DataFrame with features and targets
             target_column: Name of target column
-            start_season: First season to include
-            end_season: Last season to include
+            start_season: First season to include. Defaults to the committed rule's
+                selection floor (conf/season_partition.py), not a literal (review WR-14).
+            end_season: Last season to include. Defaults to the rule's most recent
+                COMPLETED season; it was the literal 2024, which silently ended every
+                default split one season early once 2025 completed.
 
         Yields:
             TrainTestSplit objects for each season
@@ -724,8 +731,8 @@ class TrainingPipeline:
         model_params: dict[str, Any],
         model_name: str,
         target_type: str,
-        start_season: int = 2018,
-        end_season: int = 2024,
+        start_season: int = SELECTION_WINDOW_FIRST_SEASON,
+        end_season: int = LATEST_COMPLETED_SEASON,
         save_models: bool = True,
     ) -> dict[str, Any]:
         """
