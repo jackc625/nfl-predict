@@ -5833,3 +5833,42 @@ ATS_BAND_SHARES_BEFORE_ALL_ROWS_DENOMINATOR: int = 1139
 # the 1,139 rows carry ``|market_spread| <= 0.5``. That is why the half-point proof is
 # a CONSTRUCTED row (Plan 33-02's ``build_half_point_ats_frame``) and not a real one.
 ATS_HALF_POINT_ROWS_IN_POPULATION: int = 0
+
+
+# ---------------------------------------------------------------------------
+# THE CROSS-COPY ATS EDGE PARITY TABLE.
+#
+# APPENDED by Plan 33-10 Task 2 on 2026-09-14. Nothing above this line was edited.
+#
+# ONE formula, TWO homes: ``api/cache.py``'s vectorized expression (feeding the
+# ``predictions`` table, ``/`` and ``/betting``) and
+# ``scripts/generate_current_week_predictions.compute_edges`` (feeding the
+# current-week CSV). The cache derives its own edge from
+# ``outputs/backtest/predictions_all.csv`` and NEVER reads the current-week file, so
+# nothing in the running system would notice if one were repaired and the other left
+# alone -- which is exactly what happened once already under DEF-31-03, and why this
+# table exists. It lives HERE, committed once, so both test modules assert the same
+# rows rather than each carrying a copy that can drift.
+#
+# Each entry is ``(market_spread, ats_prediction, expected_edge)`` in POINTS. The
+# second copy spells the first field ``spread``; the value is the same quantity.
+# ``None`` in the first field means NO STORED LINE and ``None`` in the third means NO
+# EDGE -- the one surviving special branch, and it must be compared with explicit
+# NaN handling rather than by an equality that silently skips it.
+#
+# THE PICK-EM ROW WITH A NON-ZERO PREDICTION IS THE POINT OF THE TABLE (D33-31). A
+# pick-em whose prediction is also zero agrees under BOTH the repaired arithmetic and
+# the old forced-zero branch, so a table carrying only that row would prove nothing
+# about the ruling. The row below predicts the away side by four against a zero line
+# and expects -4.0.
+ATS_EDGE_PARITY_CASES: tuple[tuple[float | None, float, float | None], ...] = (
+    (8.5, 12.0, 3.5),  # positive spread, model more bullish on home
+    (-6.0, -2.5, 3.5),  # negative spread (road favourite), model less bearish
+    (0.5, 2.5, 2.0),  # half-point line: the ratio scored 4.0 here
+    (-0.5, -3.5, -3.0),  # half-point line, mirrored sign: the ratio scored -6.0
+    (0.0, -4.0, -4.0),  # PICK-EM with a NON-ZERO prediction -- the D33-31 case
+    (0.0, 0.0, 0.0),  # pick-em with a zero prediction: zero by arithmetic, not branch
+    (None, 1.5, None),  # no stored line: NO edge, distinct from an edge of zero
+    (-13.5, -7.0, 6.5),  # large favourite
+    (11.0, 14.5, 3.5),  # large underdog
+)
