@@ -2065,3 +2065,653 @@ class TestTheRung3ProtectedSliceHelperCanActuallyFire:
             "a 2025-only move was flagged. Rung 3 exists to re-derive 2025 with its "
             "prior-season context; moving 2025 is the point."
         )
+
+
+# ---------------------------------------------------------------------------
+# THE PHASE-33.1 RUNG -- a COMPOUND cause under its own document prefix
+# (Plan 33.1-07 Task 1, Rulings N and N2)
+# ---------------------------------------------------------------------------
+#
+# TEST CLASS (this module's phase-wide rule -- every class declares its kind in its
+# docstring): ``TestPhase331WeatherRoutingRung`` and
+# ``TestPhase331TheDeliberateTripwiresInTheEditedModulesAreUnchanged`` are plain
+# UNIT tests -- hand-built reports and an AST scan, so both pass on a fresh checkout
+# with no ``data/``. ``TestPhase331StalenessGameIdsWereMeasuredBeforeTheRebuild`` is
+# INTEGRATION / slow: it re-derives the 207 ids off live gold and live silver and
+# skips with a remediation-carrying message when either is absent.
+#
+# WHY A PREFIX AND NOT A NEW INTEGER (Ruling N). ``RUNG_CAUSES`` is a closed
+# four-entry dict keyed by a bare integer. Taking integer 5 would land in
+# ``_expected_signature``'s ``else`` branch, which is rung 4's "rows strictly
+# increased" signature, and this rung's rows are UNCHANGED at 6,499. Taking 5 under
+# a fresh prefix would make ``require_rung_ladder`` demand four documents describing
+# rebuilds this phase does not run. And Plan 33-14 wants the same dict for the Elo
+# rung. So the cause lookup became PREFIX-AWARE, and the negative control below
+# proves the new table did not capture the old integer.
+
+
+def _p331_module():
+    """The fingerprint module, imported inside the test rather than at module scope.
+
+    Deliberate: the symbols this section exercises did not exist before Plan
+    33.1-07 Task 1, and a module-scope ``from ... import`` of a name that is not
+    there yet is a COLLECTION error -- which reports "no tests ran" rather than
+    "this test failed", and is exactly the INVALID_RED shape a TDD gate must not
+    accept as evidence.
+    """
+    import scripts.fingerprint_gold as module
+
+    return module
+
+
+def _p331_state():
+    """``tests.phase33_state``, imported lazily for the same reason as above."""
+    import tests.phase33_state as state
+
+    return state
+
+
+def _phase331_report(
+    *,
+    added: tuple[str, ...] = ("weather_coverage",),
+    removed: tuple[str, ...] = (),
+    changed: dict[str, list[str]] | None = None,
+    width_delta: int = 1,
+    rows_before: int = 6499,
+    rows_after: int = 6499,
+    discrete: tuple[str, ...] = (),
+    became_discrete: tuple[str, ...] = (),
+) -> dict:
+    """A three-matrix report in the shape the Phase-33.1 rung PREDICTS.
+
+    The defaults ARE the prediction: one column added (the coverage flag), nothing
+    removed, rows unchanged at 6,499, width +1. Every test below states only its
+    departure from that, rather than restating the whole shape each time.
+    """
+    widths = _widths()
+    return {
+        matrix: _detail(
+            width_before=widths[matrix],
+            width_after=widths[matrix] + width_delta,
+            rows_before=rows_before,
+            rows_after=rows_after,
+            added=added,
+            removed=removed,
+            changed=dict(changed or {}),
+            discrete=discrete,
+            became_discrete=became_discrete,
+        )
+        for matrix in GOLD_MATRICES
+    }
+
+
+def _phase331_clean_changed() -> dict[str, list[str]]:
+    """A changed set carrying exactly one member of each of the three families."""
+    return {
+        # family 1 -- features.weather.WEATHER_FEATURE_COLUMNS
+        "temp_f": ["2002", "2019", "2024"],
+        # family 2 -- the contextual builder's own emitted set. Ruling H puts
+        # venue_cold_climate HERE rather than in the weather family, because it is
+        # derived from the stadium's geography and from no weather observation.
+        "venue_cold_climate": ["2004", "2019"],
+        # family 3 -- the ROW-SCOPED staleness repair. A column outside families 1
+        # and 2 may move ONLY in the season the 207 absent rows belong to.
+        "home_qb_adjustment": ["2025"],
+    }
+
+
+class TestPhase331WeatherRoutingRung:
+    """The rung's cause is COMPOUND and its three families are enumerable or derived.
+
+    TEST CLASS: plain unit test. Hand-built ``compare_fingerprints``-shaped reports,
+    so the contract is provable without running a rebuild and the class passes on a
+    fresh checkout with no ``data/``.
+    """
+
+    def test_the_rung_cause_is_the_compound_label_and_names_all_three(self) -> None:
+        """SPEC prohibition: this rebuild must never be called "the weather rung"."""
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_report(changed=_phase331_clean_changed()),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        cause = verdict["cause"].lower()
+        for word in ("weather", "routing", "coverage"):
+            assert word in cause, (
+                f"the Phase-33.1 rung's declared cause does not name {word!r}: "
+                f"{verdict['cause']!r}. The rung carries THREE causes -- real ERA5 "
+                "weather, the all-seasons stadium_id routing correction, and the "
+                "restored 2025 coverage -- and a label naming only one of them "
+                "re-creates the attribution failure this phase exists to prevent."
+            )
+
+    def test_a_diff_inside_the_three_families_attributes_cleanly(self) -> None:
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_report(changed=_phase331_clean_changed()),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is True, _all_failures(verdict)
+        for matrix in GOLD_MATRICES:
+            detail = verdict["matrices"][matrix]
+            assert detail["unattributed"] == []
+            assert detail["changed_by_family"]["weather"] == ["temp_f"]
+            assert detail["changed_by_family"]["venue"] == ["venue_cold_climate"]
+            assert detail["changed_by_family"]["staleness_2025"] == [
+                "home_qb_adjustment"
+            ]
+
+    def test_the_negative_control_the_same_report_at_rung_1_is_still_CR_02(
+        self,
+    ) -> None:
+        """The new table must not have captured Phase 30's integer 1."""
+        verdict = attribute_rung(_phase331_report(changed=_phase331_clean_changed()), 1)
+        assert verdict["cause"] == RUNG_CAUSES[1] == "CR-02"
+
+    def test_phase_30_rung_causes_still_holds_exactly_its_four_entries(self) -> None:
+        assert RUNG_CAUSES == {
+            1: "CR-02",
+            2: "WR-06",
+            3: "line_movement drop",
+            4: "N-01",
+        }
+
+    def test_an_added_column_other_than_the_coverage_flag_is_refused(self) -> None:
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_report(
+                added=("weather_coverage", "some_new_column"),
+                width_delta=2,
+                changed=_phase331_clean_changed(),
+            ),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert "some_new_column" in _all_failures(verdict)
+
+    def test_the_coverage_flag_MUST_be_added_and_its_absence_is_refused(self) -> None:
+        """A rebuild that moved the right columns and forgot the flag is not this rung."""
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_report(
+                added=(), width_delta=0, changed=_phase331_clean_changed()
+            ),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert "weather_coverage" in _all_failures(verdict)
+
+    def test_a_removed_column_is_refused(self) -> None:
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_report(
+                removed=("home_rest_days",),
+                width_delta=0,
+                changed=_phase331_clean_changed(),
+            ),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert "home_rest_days" in _all_failures(verdict)
+
+    def test_a_changed_row_count_is_refused(self) -> None:
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_report(rows_after=6706, changed=_phase331_clean_changed()),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        assert "rows" in _all_failures(verdict).lower()
+
+    def test_an_empty_diff_is_refused(self) -> None:
+        f = _p331_module()
+        verdict = attribute_rung(
+            _phase331_report(added=(), width_delta=0, changed={}),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+
+    @pytest.mark.parametrize(
+        "column",
+        [
+            "home_elo",
+            "elo_diff",
+            "home_off_rolling_opp_adj_epa_per_play",
+            "away_def_rolling_success_rate",
+            "ats_edge",
+        ],
+    )
+    def test_an_elo_or_bye_window_or_ats_edge_column_is_unattributable_at_this_rung(
+        self, column: str
+    ) -> None:
+        """The SPEC prohibition, enforced rather than stated.
+
+        "MUST NOT label a gold rebuild 'the weather rung' if it also carries Elo,
+        bye-window or ats_edge changes." A moved column from any of those three is
+        reported UNATTRIBUTED here and the message names the prohibition, so the
+        rung refuses to absorb another phase's cause instead of disclosing it in
+        prose afterwards.
+        """
+        f = _p331_module()
+        changed = _phase331_clean_changed()
+        changed[column] = ["2019"]
+        verdict = attribute_rung(
+            _phase331_report(changed=changed),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert verdict["ok"] is False
+        for matrix in GOLD_MATRICES:
+            assert column in verdict["matrices"][matrix]["unattributed"]
+        failures = _all_failures(verdict)
+        assert column in failures
+        assert "rung" in failures
+        assert "weather rung" in failures, (
+            "the failure must name the SPEC prohibition about mislabelling a "
+            "compound rebuild, not merely report an unexplained column"
+        )
+
+    def test_the_row_scoped_predicate_DISCRIMINATES_rather_than_accepting(self) -> None:
+        """Both directions, so the third family is proven able to FAIL.
+
+        ``_attribute_rung2`` is this repository's worked example of the opposite: a
+        blanket predicate whose own comment records that it "cannot FAIL on a moved
+        column", and that once reported "ok, zero unattributed" while eighteen
+        columns had been silently destroyed.
+        """
+        f = _p331_module()
+
+        only_2025 = _phase331_clean_changed()
+        only_2025["home_snap_continuity"] = ["2025"]
+        accepted = attribute_rung(
+            _phase331_report(changed=only_2025),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+        assert accepted["ok"] is True, _all_failures(accepted)
+        for matrix in GOLD_MATRICES:
+            assert (
+                "home_snap_continuity"
+                in (accepted["matrices"][matrix]["changed_by_family"]["staleness_2025"])
+            )
+
+        also_2019 = _phase331_clean_changed()
+        also_2019["home_snap_continuity"] = ["2019", "2025"]
+        refused = attribute_rung(
+            _phase331_report(changed=also_2019),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+        assert refused["ok"] is False, (
+            "a column that moved in 2019 cannot have moved because 207 rows of 2025 "
+            "gained coverage, and a predicate that accepts it is not a predicate"
+        )
+        for matrix in GOLD_MATRICES:
+            assert "home_snap_continuity" in refused["matrices"][matrix]["unattributed"]
+
+    def test_the_signature_predicts_unchanged_rows_and_a_width_of_plus_one(
+        self,
+    ) -> None:
+        f = _p331_module()
+        signature = f._expected_signature(
+            f.PHASE331_RUNG, prefix=f.PHASE331_RUNG_PREFIX
+        )
+
+        assert signature["rows"] == "unchanged"
+        assert "one" in str(signature["width"]).lower()
+        assert signature["cause"] == f.PHASE331_RUNG_CAUSE
+
+    def test_the_phase_30_signatures_are_unchanged(self) -> None:
+        f = _p331_module()
+        assert f._expected_signature(4)["rows"] == "strictly increased"
+        assert f._expected_signature(1)["cause"] == "CR-02"
+        assert f._expected_signature(1)["width"] == "unchanged"
+
+    def test_an_unknown_rung_under_the_prefix_raises_naming_both(self) -> None:
+        f = _p331_module()
+        with pytest.raises(ValueError) as excinfo:
+            f._expected_signature(99, prefix=f.PHASE331_RUNG_PREFIX)
+
+        message = str(excinfo.value)
+        assert "99" in message
+        assert f.PHASE331_RUNG_PREFIX in message
+
+    def test_the_ladder_demands_exactly_p331_rung0(self, tmp_path: Path) -> None:
+        f = _p331_module()
+        with pytest.raises(MissingPredecessorFingerprintError) as excinfo:
+            attribute_rung(
+                _phase331_report(changed=_phase331_clean_changed()),
+                f.PHASE331_RUNG,
+                ladder_directory=tmp_path,
+                rung_prefix=f.PHASE331_RUNG_PREFIX,
+            )
+
+        assert "p331_rung0.json" in str(excinfo.value)
+
+        rung_document_path(tmp_path, 0, f.PHASE331_RUNG_PREFIX).write_text(
+            "{}", encoding="utf-8"
+        )
+        verified = require_rung_ladder(
+            tmp_path, f.PHASE331_RUNG, f.PHASE331_RUNG_PREFIX
+        )
+        assert [path.name for path in verified] == ["p331_rung0.json"]
+
+    def test_no_p331_document_collides_with_phase_30_or_phase_31(self) -> None:
+        f = _p331_module()
+        directory = Path("outputs/fingerprints")
+        for rung in range(5):
+            prefixed = rung_document_path(directory, rung, f.PHASE331_RUNG_PREFIX)
+            assert prefixed.name not in PHASE30_RUNG_DOCUMENTS
+            assert prefixed != rung_document_path(directory, rung)
+            assert prefixed != rung_document_path(directory, rung, PHASE31_RUNG_PREFIX)
+
+    def test_the_rung_offers_no_upstream_drift_escape(self) -> None:
+        """The rebuild reads SILVER, not nflreadpy, so that excuse would not be true."""
+        f = _p331_module()
+        changed = _phase331_clean_changed()
+        changed["home_elo"] = ["2019"]
+        verdict = attribute_rung(
+            _phase331_report(changed=changed),
+            f.PHASE331_RUNG,
+            rung_prefix=f.PHASE331_RUNG_PREFIX,
+        )
+
+        assert "nflreadpy" not in _all_failures(verdict).lower()
+
+    def test_the_unprefixed_rung_1_still_offers_the_upstream_escape(self) -> None:
+        """The suppression above is scoped to this PREFIX, not to the integer."""
+        report = _pre_drop_report(changed={"home_rest_days": ["2021"]})
+        assert "nflreadpy" in _all_failures(attribute_rung(report, 1)).lower()
+
+    def test_the_venue_family_is_the_contextual_builders_own_emitted_set(self) -> None:
+        """Computed HERE from the builder, never compared against a second list.
+
+        ``tests/unit/test_data_qa_gold_width.py``'s docstring already records what a
+        second hand-written list of a family costs: the list and the predicate that
+        actually did the work drift apart, and the assertion resting on them pins a
+        fiction.
+        """
+        from datetime import UTC, datetime
+
+        from features.contextual import ContextualFeaturesCalculator
+
+        f = _p331_module()
+        calculator = ContextualFeaturesCalculator()
+        record = next(
+            venue
+            for venue in calculator.venues_data["venues"]
+            if venue.get("stadium_id") and venue.get("home_teams")
+        )
+        team = record["home_teams"][0]
+        probe = pd.DataFrame(
+            [
+                {
+                    "game_id": "2024_W01_PROBE",
+                    "season": 2024,
+                    "week": 1,
+                    "home_team": team,
+                    "away_team": team,
+                    "kickoff_et": pd.Timestamp(
+                        "2024-09-08 13:00:00", tz="America/New_York"
+                    ),
+                    "stadium_id": record["stadium_id"],
+                    "home_score": 0.0,
+                    "away_score": 0.0,
+                }
+            ]
+        )
+        emitted = calculator.build_features(probe, datetime(2024, 9, 9, tzinfo=UTC))
+        expected = {
+            column
+            for column in emitted.columns
+            if column not in f.PHASE331_CONTEXTUAL_MERGE_KEYS
+        }
+
+        assert set(f.PHASE331_VENUE_FAMILY_COLUMNS) == expected
+        assert f.PHASE331_VENUE_FAMILY_COLUMNS
+        assert "venue_cold_climate" in f.PHASE331_VENUE_FAMILY_COLUMNS
+
+    def test_the_staleness_seasons_are_2025_alone(self) -> None:
+        f = _p331_module()
+        assert f.PHASE331_STALENESS_SEASONS == (2025,)
+
+    def test_the_declared_families_are_disjoint_from_the_prohibited_ones(self) -> None:
+        """Otherwise a prohibited column could be absorbed by a declared family."""
+        f = _p331_module()
+        declared = {c.lower() for c in f.PHASE331_VENUE_FAMILY_COLUMNS} | {
+            c.lower() for c in f.phase331_weather_family()
+        }
+        for label, columns in f.phase331_prohibited_families().items():
+            overlap = declared & {c.lower() for c in columns}
+            assert not overlap, (
+                f"the prohibited {label!r} family overlaps a DECLARED family at "
+                f"{sorted(overlap)}, so a column this rung must refuse could be "
+                "attributed instead"
+            )
+
+    def test_assert_ladder_is_recoverable_refuses_an_absent_document(
+        self, tmp_path: Path
+    ) -> None:
+        f = _p331_module()
+        with pytest.raises(MissingPredecessorFingerprintError) as excinfo:
+            f.assert_ladder_is_recoverable(
+                tmp_path, f.PHASE331_RUNG, f.PHASE331_RUNG_PREFIX
+            )
+
+        message = str(excinfo.value)
+        assert "p331_rung0.json" in message
+        assert "--rung 0 --rung-prefix p331_" in message
+
+    def test_assert_ladder_is_recoverable_refuses_an_UNPARSEABLE_document(
+        self, tmp_path: Path
+    ) -> None:
+        """A truncated document passes ``exists()`` and fails at the unrecoverable moment."""
+        f = _p331_module()
+        rung_document_path(tmp_path, 0, f.PHASE331_RUNG_PREFIX).write_text(
+            '{"features_wp": {"columns": ', encoding="utf-8"
+        )
+
+        with pytest.raises(MissingPredecessorFingerprintError) as excinfo:
+            f.assert_ladder_is_recoverable(
+                tmp_path, f.PHASE331_RUNG, f.PHASE331_RUNG_PREFIX
+            )
+
+        message = str(excinfo.value)
+        assert "--rung 0 --rung-prefix p331_" in message
+        assert "parse" in message.lower()
+
+    def test_assert_ladder_is_recoverable_passes_on_a_complete_ladder(
+        self, tmp_path: Path
+    ) -> None:
+        f = _p331_module()
+        rung_document_path(tmp_path, 0, f.PHASE331_RUNG_PREFIX).write_text(
+            "{}", encoding="utf-8"
+        )
+        assert (
+            f.assert_ladder_is_recoverable(
+                tmp_path, f.PHASE331_RUNG, f.PHASE331_RUNG_PREFIX
+            )
+            is None
+        )
+
+    def test_the_declaration_was_committed_with_all_three_family_mechanisms(
+        self,
+    ) -> None:
+        """No cause-story family: every mechanism is a constant or a predicate."""
+        state = _p331_state()
+        declaration = state.PHASE331_RUNG_DECLARATION
+
+        assert set(declaration["declared_families"]) == {
+            "weather",
+            "venue",
+            "staleness_2025",
+        }
+        assert set(declaration["family_mechanisms"].values()) <= {
+            "source-derived constant",
+            "row-scoped per-season-digest predicate",
+        }
+        assert declaration["committed_before_rebuild"] is True
+        assert declaration["ok_required_unconditionally"] is True
+        assert declaration["rows"] == "unchanged"
+        assert declaration["columns_added"] == ("weather_coverage",)
+        assert declaration["rung_prefix"] == "p331_"
+
+    def test_the_declaration_and_the_signature_agree_about_the_families(self) -> None:
+        f = _p331_module()
+        state = _p331_state()
+        assert tuple(state.PHASE331_RUNG_DECLARATION["declared_families"]) == tuple(
+            f.PHASE331_EXPECTED_SIGNATURE["declared_families"]
+        )
+        assert state.PHASE331_RUNG_DECLARATION["cause"] == f.PHASE331_RUNG_CAUSE
+
+
+class TestPhase331TheDeliberateTripwiresInTheEditedModulesAreUnchanged:
+    """The two registered tripwires living in modules this plan edits still exist.
+
+    TEST CLASS: plain unit test (an AST scan over two committed source files).
+
+    A plan that appends a class to a module holding a DELIBERATE tripwire can turn
+    that tripwire green by accident -- renaming the class, renaming the method, or
+    deleting it while tidying. Both node ids are asserted as STRINGS against the
+    registry AND resolved against the real source, so neither half can drift alone.
+    """
+
+    _EDITED_MODULE_TRIPWIRES = (
+        "tests/integration/test_gold_rebuild_attribution.py::"
+        "TestThePhase31Rung3IsTheFullRebuildOfTheVerdictPopulation::"
+        "test_no_NON_CLOCK_column_moved_in_a_protected_season",
+        "tests/integration/test_gate_baseline_byte_identity.py::"
+        "TestTheRegeneratedBaselineIsByteIdenticalToTheCommittedOne::"
+        "test_the_generated_block_equals_the_committed_block_byte_for_byte",
+    )
+
+    def test_both_node_ids_are_still_registered_verbatim(self) -> None:
+        state = _p331_state()
+        for node_id in self._EDITED_MODULE_TRIPWIRES:
+            assert node_id in state.DELIBERATE_TRIPWIRE_NODE_IDS, (
+                f"{node_id} is no longer in DELIBERATE_TRIPWIRE_NODE_IDS. Each of "
+                "the five encodes an owner-accepted fact; a phase that turned one "
+                "green erased a disclosure rather than fixing a defect."
+            )
+
+    def test_both_node_ids_still_resolve_to_a_real_class_and_method(self) -> None:
+        import ast as _ast
+
+        for node_id in self._EDITED_MODULE_TRIPWIRES:
+            relative, class_name, method_name = node_id.split("::")
+            path = REPO_ROOT / relative
+            assert path.is_file(), f"{relative} is missing from the checkout"
+            tree = _ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            classes = {
+                node.name: node for node in tree.body if isinstance(node, _ast.ClassDef)
+            }
+            assert class_name in classes, (
+                f"{relative} no longer defines {class_name}; the registered tripwire "
+                "node id can no longer be collected."
+            )
+            methods = {
+                node.name
+                for node in classes[class_name].body
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef))
+            }
+            assert method_name in methods, (
+                f"{relative}::{class_name} no longer defines {method_name}."
+            )
+
+
+@pytest.mark.integration
+class TestPhase331StalenessGameIdsWereMeasuredBeforeTheRebuild:
+    """The 207 ids are re-derived off the live tree, never transcribed.
+
+    TEST CLASS: integration / slow. Reads live gold and live silver, and SKIPS with
+    a remediation-carrying message when either is absent -- ``data/`` is gitignored.
+
+    THE MEASUREMENT IS ONE-SHOT. The ids are exactly the games present in gold and
+    ABSENT from the two silver feature tables; the Plan 33.1-07 rebuild is what
+    closes that gap, so afterwards the set is unmeasurable. That is the same
+    argument ``p331_rung0.json`` rests on, and it is why the set is COMMITTED.
+    """
+
+    _WEATHER = REPO_ROOT / "data" / "silver" / "weather_features.parquet"
+    _CONTEXTUAL = REPO_ROOT / "data" / "silver" / "contextual_features.parquet"
+
+    def _gold_ids(self) -> set[str]:
+        path = _GOLD_DIR / "features_ats.parquet"
+        if not path.exists():
+            pytest.skip(
+                f"live gold is not present at {path} -- run "
+                "`uv run python scripts/build_features.py --all-seasons`, or ignore "
+                "on a fresh checkout where data/ is legitimately empty"
+            )
+        return set(pd.read_parquet(path, columns=["game_id"])["game_id"])
+
+    def test_the_recorded_ids_are_non_empty_and_all_belong_to_2025(self) -> None:
+        state = _p331_state()
+        ids = state.PHASE331_STALENESS_GAME_IDS
+        assert ids
+        assert len(set(ids)) == len(ids), "the recorded id set carries duplicates"
+        for game_id in ids:
+            assert game_id.startswith("2025_"), (
+                f"{game_id} is not a 2025 game, but PHASE331_STALENESS_SEASONS "
+                "declares the staleness repair is 2025 alone"
+            )
+
+    def test_every_recorded_id_is_in_gold_and_absent_from_both_silver_tables(
+        self,
+    ) -> None:
+        state = _p331_state()
+        gold = self._gold_ids()
+        if not (self._WEATHER.exists() and self._CONTEXTUAL.exists()):
+            pytest.skip(
+                "the silver feature tables are not present at "
+                f"{self._WEATHER} / {self._CONTEXTUAL} -- outputs of "
+                "`uv run python scripts/build_weather.py --all-seasons` and "
+                "`uv run python scripts/build_contextual.py --all-seasons`"
+            )
+        weather = set(pd.read_parquet(self._WEATHER, columns=["game_id"])["game_id"])
+        contextual = set(
+            pd.read_parquet(self._CONTEXTUAL, columns=["game_id"])["game_id"]
+        )
+        recorded = set(state.PHASE331_STALENESS_GAME_IDS)
+
+        if not (recorded - weather) and not (recorded - contextual):
+            pytest.skip(
+                "the silver feature tables already carry every recorded id, so the "
+                "staleness gap this set measures has been CLOSED by the Plan 33.1-07 "
+                "rebuild. The set was measured before that rebuild ran and cannot be "
+                "re-derived afterwards -- which is exactly why it is committed."
+            )
+
+        assert recorded <= gold, sorted(recorded - gold)[:5]
+        assert recorded == (gold - weather), (
+            "the recorded ids are not exactly the games gold has and "
+            "weather_features.parquet lacks"
+        )
+        assert recorded == (gold - contextual), (
+            "the recorded ids are not exactly the games gold has and "
+            "contextual_features.parquet lacks"
+        )
+
+    def test_the_recorded_count_is_stated_against_the_research_figure(self) -> None:
+        """RESEARCH section 10 says 207. Re-derived here, not transcribed."""
+        state = _p331_state()
+        declaration = state.PHASE331_RUNG_DECLARATION
+        assert declaration["staleness_game_id_count"] == len(
+            state.PHASE331_STALENESS_GAME_IDS
+        )
+        assert declaration["staleness_game_id_count_recorded_by_research"] == 207
