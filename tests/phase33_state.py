@@ -8322,3 +8322,249 @@ PHASE331_RUNG3_DELIBERATELY_NOT_RUN: dict[str, str] = {
         "PHASE331_RUNG3_EXPECTED_CHANGED_FILES so a move there is a FINDING"
     )
 }
+
+
+# -------------------------------------------------------------------------
+# WHAT RUNG 3 ACTUALLY MOVED.
+#
+# APPENDED by Plan 33.1-07 Task 4 on 2026-09-14, AFTER the rebuild. Nothing
+# above this line was edited -- PHASE331_RUNG3_DECLARATION is byte-unchanged,
+# which is what makes it a prediction rather than a transcription.
+#
+# EVERY PREDICTION HELD. 32 non-clock columns moved, identical in all three
+# matrices, and all 32 decomposed into the three declared families with ZERO
+# unattributed. Nothing was added, nothing removed, rows unchanged at 6,499,
+# widths unchanged at 195 / 196 / 195.
+#
+# THE DISCRIMINATION HELD TOO, and that is the part worth reading twice. The
+# twelve opponent-adjusted columns are declared for 2025 AND NO OTHER SEASON,
+# and the diff reports them moving in 2025 and no other season. Had the
+# league-average scalar reached the output -- it moves when the pool widens --
+# they would have moved in every season 2018-2024 as well, been UNATTRIBUTED,
+# and blocked. The declaration would have refused the rebuild rather than
+# absorbing it.
+# -------------------------------------------------------------------------
+
+PHASE331_RUNG3_MEASURED: dict[str, object] = {
+    "measured_on": "2026-09-14",
+    "measured_by": "Plan 33.1-07 Task 4",
+    "rung": 3,
+    "rung_prefix": "p331_",
+    "ok": True,
+    "blocking": False,
+    "failures": 0,
+    "unattributed_per_matrix": 0,
+    "identical_residual_across_all_three_matrices": True,
+    # The BASELINE this rung was judged against, and the proof it was not
+    # stale: p331_rung2.json is BYTE-IDENTICAL to p331_rung1.json, because the
+    # follow-up rung re-judged the rung0 -> rung1 transition and rebuilt
+    # nothing. Gold had not moved between the two.
+    "baseline_document": "p331_rung2.json",
+    "baseline_sha256": (
+        "8bc804b0bcce45b1323a88adca3c2063d38fcd8994d0f563ea7d1bb75e9e18ea"
+    ),
+    "baseline_is_byte_identical_to_p331_rung1": True,
+    "ladder_precheck_passed_before_the_rebuild": True,
+    "ladder_preserved_to_a_second_directory": "outputs/fingerprints/preserved/",
+    # THE SHAPE. Every structural prediction held.
+    "columns_added": (),
+    "columns_removed": (),
+    "widths_before": (195, 196, 195),
+    "widths_after": (195, 196, 195),
+    "rows_before": (6499, 6499, 6499),
+    "rows_after": (6499, 6499, 6499),
+    "non_clock_moves": 32,
+    "build_clock_moves": ("feature_timestamp",),
+    # THE PER-FAMILY SPLIT, identical in each of the three matrices.
+    "changed_by_family": {
+        "weather": 19,
+        "weather_widening": 1,
+        "team_strength_2025": 12,
+    },
+    "weather_family_columns_moved": (
+        "defensive_advantage",
+        "extreme_weather",
+        "home_weather_advantage",
+        "is_dry",
+        "is_rain",
+        "is_snow",
+        "passing_efficiency",
+        "precip_heavy",
+        "precip_impact_score",
+        "precip_light",
+        "precip_mm",
+        "precip_moderate",
+        "precip_none",
+        "rushing_advantage",
+        "scoring_reduction",
+        "turnover_multiplier",
+        "weather_coverage",
+        "weather_game",
+        "weather_severity_score",
+    ),
+    # Ruling N2: `ok` was True UNCONDITIONALLY, with nothing to supplement.
+    "unattributed_with_reason": {},
+    # THE RUNBOOK, as run. TWO commands, not three: contextual_features was
+    # deliberately NOT rebuilt (see PHASE331_RUNG3_DELIBERATELY_NOT_RUN) and
+    # the digest bracket confirms it did not move.
+    "commands_run": (
+        {
+            "artifact": "data/silver/weather_features.parquet",
+            "command": "uv run python scripts/build_weather.py --all-seasons",
+            "wall_clock_seconds": 6.3,
+        },
+        {
+            "artifact": "data/gold/features_{wp,ats,ou}.parquet",
+            "command": "uv run python scripts/build_features.py --all-seasons",
+            "wall_clock_seconds": 591.5,
+        },
+    ),
+    "rebuilt_with_network_denied": True,
+    "network_guard_proven_on_a_deliberate_probe_first": True,
+    "network_guard_layers_proven": (
+        "scripts.backfill_historical_weather.fetch_game_weather -> "
+        "ArchiveReachedUnderDenyNetwork",
+        "scripts.backfill_historical_weather._probe_archive_day -> "
+        "ArchiveReachedUnderDenyNetwork",
+        "scripts.ingest_weather.fetch_game_forecast -> ForecastReachedUnderDenyNetwork",
+        "socket.socket -> SocketOpenedUnderDenyNetwork",
+    ),
+    # THE DIGEST BRACKET, closed. EXACTLY the declared five paths moved -- all
+    # REWRITTEN, none ADDED, none REMOVED, no MIXED key -- and
+    # silver/contextual_features.parquet did NOT move, which is what the
+    # declaration predicted for the builder it deliberately did not run.
+    "declared_changed_files_verdict": "exact match, 5 of 5, REWRITTEN only",
+    "contextual_features_did_not_move": True,
+    "artifacts_tree_unchanged": True,
+    "artifacts_files_compared": 159,
+    # -----------------------------------------------------------------
+    # THE THREE ACCEPTANCE MEASUREMENTS, each stated as a before/after pair
+    # and each reported at the value MEASURED rather than the value hoped for.
+    # -----------------------------------------------------------------
+    "acceptance_precip_mm_non_null_rows": {
+        "before": 1652,
+        "after": 6499,
+        "of": 6499,
+        "note": (
+            "1,652 was exactly the indoor games, which take the dome branch "
+            "and never reached the gate. All 4,847 outdoor games now carry the "
+            "measured rainfall"
+        ),
+    },
+    "acceptance_outdoor_columns_recovered": {
+        "outdoor_games": 4847,
+        "columns_listed": 20,
+        "columns_now_populated_for_outdoor_games": 18,
+        "columns_still_null_for_outdoor_games": ("precip_prob", "raw_precip_prob"),
+        "why_those_two_stay_null": (
+            "they ARE the forecast probability. ERA5 reanalysis does not "
+            "report one and COVERAGE.md records the opt-out, so the owner's "
+            "ruling forbids inventing one. Two columns staying NULL is that "
+            "ruling being honoured, not a shortfall -- and the value they "
+            "would otherwise have carried is precisely the fabrication this "
+            "phase exists to delete"
+        ),
+    },
+    # A DIVERGENCE FROM THE STATED ACCEPTANCE NUMBER, RECORDED AS ONE.
+    #
+    # The acceptance criterion read "weather_coverage must VARY". It does not:
+    # it reads 1.0 on all 6,499 rows. That expectation rested on a diagnosis
+    # that the 1.0 path never fired. The 1.0 path DID fire -- silver carried
+    # 1.0 on every row all along -- and what destroyed the flag was the z-score
+    # of a constant column, which maps it to 0.0.
+    #
+    # So the column moved from a CONSTANT FALSEHOOD to a CONSTANT TRUTH. 0.0
+    # means NO OBSERVATION and was wrong for all 6,499 games; 1.0 means
+    # OBSERVED and is right for all 6,499, because the ERA5 backfill covered
+    # the whole corpus (weather_source = 'archive' on 6,499 of 6,499 rows, and
+    # zero rows carry an all-null core observation).
+    #
+    # A flag cannot vary over a population with no variation in it. What is
+    # proven instead, by unit test rather than by gold's own variance, is that
+    # the column WOULD read 0.0 for an absent observation and that the two
+    # levels survive to gold distinguishable -- which is the property R5 needs
+    # and the property a constant 0.0 could never have demonstrated.
+    "acceptance_weather_coverage": {
+        "expected_by_the_acceptance_criterion": "must VARY",
+        "measured": {1.0: 6499},
+        "diverges_from_the_stated_expectation": True,
+        "why": (
+            "every one of the 6,499 games HAS a real ERA5 observation "
+            "(weather_source = 'archive' on all 6,499; zero rows carry an "
+            "all-null core observation), so a coverage flag over this corpus "
+            "is constant by construction. The change is from a constant "
+            "FALSEHOOD (0.0, which means NO OBSERVATION) to a constant TRUTH"
+        ),
+        "variation_is_proven_by_test_instead": (
+            "tests/unit/test_weather_coverage_flag_survives_normalization.py"
+            "::TestTheFlagIsTheOneColumnItsOwnLevelsAreTheMeaningOf"
+            "::test_a_varying_flag_keeps_both_of_its_levels_distinguishable"
+        ),
+    },
+    "acceptance_opp_adj_distinct_values_in_2025": {
+        "before": 2,
+        "after": 285,
+        "rows_in_2025": 285,
+        "comparable_seasons": {"2023": 285, "2024": 285},
+        "all_twelve_columns": True,
+    },
+    # THE TRAINER SMOKE FIT. READ-AND-FIT-IN-MEMORY, `save()` never called,
+    # artifacts/ verified unchanged at 159 files afterwards.
+    "trainer_smoke_feature_counts": {"wp": 20, "ats": 25, "ou": 25},
+    "trainer_smoke_fitted_models": {
+        "wp": "Pipeline",
+        "ats": "XGBRegressor",
+        "ou": "XGBRegressor",
+    },
+    "trainer_smoke_wrote_no_artifact": True,
+    "trainer_smoke_tune": False,
+    "trainer_smoke_partition": (
+        "TemporalSplitConfig.default() -- train 2018-2019, hp_val 2020, "
+        "holdout 2021-2024"
+    ),
+    # AN OBSERVATION, NOT A TARGET, and it is repeated here because the
+    # temptation to read it as a result is exactly what the phase's own
+    # prohibition R8 forbids. Whether a target selects weather is Wave 15's
+    # measurement; this phase predicts nothing about it and claims no accuracy
+    # improvement from it.
+    "trainer_smoke_weather_columns_selected": {
+        "wp": (
+            "passing_difficulty",
+            "passing_efficiency",
+            "precip_mm",
+            "scoring_reduction",
+            "turnover_multiplier",
+            "wind_high",
+        ),
+        "ats": (
+            "apparent_temp_f",
+            "kicking_difficulty",
+            "precip_light",
+            "scoring_reduction",
+            "temp_f",
+            "temp_mild",
+            "weather_game",
+        ),
+        "ou": (
+            "cold_impact_score",
+            "home_weather_advantage",
+            "is_snow",
+            "kicking_difficulty",
+            "passing_difficulty",
+            "passing_efficiency",
+            "precip_light",
+            "precip_mm",
+            "precip_moderate",
+            "precip_none",
+            "scoring_reduction",
+            "turnover_multiplier",
+            "weather_severity_score",
+        ),
+    },
+    "trainer_smoke_weather_selection_is_an_observation_not_a_target": True,
+    "trainer_smoke_withheld_zero_variance_columns": 45,
+    # WHAT THIS RUNG STILL DOES NOT DO.
+    "no_model_refit": True,
+    "no_gate_run": True,
+    "latest_json_byte_identical": True,
+}
