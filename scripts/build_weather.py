@@ -11,7 +11,8 @@ This script builds weather features including:
 Usage:
     python scripts/build_weather.py --season 2024 --week 1
     python scripts/build_weather.py --season 2024  # All weeks in season
-    python scripts/build_weather.py  # All available data
+    python scripts/build_weather.py --all-seasons  # All available data
+    python scripts/build_weather.py  # Same as --all-seasons
 """
 
 import argparse
@@ -34,7 +35,29 @@ logger = get_logger(__name__)
 def main():
     """Build weather features."""
     parser = argparse.ArgumentParser(description="Build weather features")
-    parser.add_argument("--season", type=int, help="Target season (e.g., 2024)")
+    # --all-seasons is the EXPLICIT name for the full historical build, which is
+    # also what omitting --season already did. It is a NAMING alias and not new
+    # build logic: it leaves target_season None, byte-identically to omission.
+    #
+    # It exists for the reason scripts/build_features.py:2122-2129 records about
+    # its own copy of this flag -- the full build should be ASKED FOR by name
+    # rather than reached by leaving an argument out. PIPELINE.md's Stage 2 and
+    # Plan 33.1-07's Ruling N3 both name
+    # `uv run python scripts/build_weather.py --all-seasons` as the ONE command
+    # for data/silver/weather_features.parquet, and before this flag existed
+    # argparse rejected that documented command with exit 2. The "correction" an
+    # operator then reaches for is --season <YEAR>, which builds one season and
+    # is the wrong act entirely.
+    scope_group = parser.add_mutually_exclusive_group()
+    scope_group.add_argument("--season", type=int, help="Target season (e.g., 2024)")
+    scope_group.add_argument(
+        "--all-seasons",
+        action="store_true",
+        help=(
+            "Build weather features over every available season (the default "
+            "when no --season is given)."
+        ),
+    )
     parser.add_argument("--week", type=int, help="Target week (1-18)")
     parser.add_argument(
         "--save",

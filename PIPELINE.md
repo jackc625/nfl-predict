@@ -45,8 +45,8 @@ Build each feature component, then assemble the per-target Gold matrices. Use
 ```powershell
 uv run python scripts/build_elo.py --all-seasons --full-rebuild
 uv run python scripts/build_team_form.py --all-seasons
-uv run python scripts/build_contextual.py --season <YEAR>
-uv run python scripts/build_weather.py --season <YEAR>
+uv run python scripts/build_contextual.py --all-seasons
+uv run python scripts/build_weather.py --all-seasons
 uv run python scripts/build_market_anchors.py --season <YEAR>
 uv run python scripts/build_features.py --all-seasons
 ```
@@ -64,8 +64,14 @@ uv run python scripts/build_features.py --all-seasons
 > against 24 seasons of burn-in is a destructive operation that has to be asked for
 > rather than reached by default (Plan 33-03, T-33-12). `--current` takes the live
 > append path instead, which upserts the named season and leaves prior seasons
-> alone, so it needs no such flag. The contextual/weather/market-anchor
-> builders take `--season` and `--week`. `build_features.py` takes `--all-seasons`
+> alone, so it needs no such flag. `build_contextual.py` and `build_weather.py`
+> take `--season` / `--week` for a scoped build and `--all-seasons` for the full
+> historical one; the two are mutually exclusive, and `--all-seasons` is an
+> explicit NAMING alias for what omitting `--season` already did (Plan 33.1-07
+> Ruling N3 -- the full build is asked for by name rather than reached by
+> omission, so the documented command is literally runnable). The market-anchor
+> builder still takes only `--season` and `--week`.
+> `build_features.py` takes `--all-seasons`
 > (the full historical build, which is also what a bare invocation does) OR
 > `--season` / `--week` (a scoped build); the two are mutually exclusive. The
 > commands above are for the historical/full build; for the current-week build use
