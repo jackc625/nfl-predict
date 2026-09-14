@@ -1454,3 +1454,113 @@ def per_game_roof_games():
         return frame.reset_index(drop=True)
 
     return make
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.1-06 Task 4 (Ruling W): the THREE-LAYER network deny.
+#
+# SPEC R3's acceptance is "Rebuilding silver and gold from bronze afterwards
+# requires zero network calls", and the SPEC's `## Constraints` names it a
+# CLAUDE.md hard constraint. Proving it means proving a NEGATIVE, and a test that
+# simply runs the rebuild and passes proves only that this particular code path
+# happened not to call out on this particular day.
+#
+# SO THE DENY IS AT THREE LAYERS, AND THE THIRD IS THE POINT. Patching the two
+# named archive entry points and the named forecast client proves that the paths
+# SOMEBODY THOUGHT OF do not reach the network. R3 is a claim about ALL paths, so
+# `socket.socket` itself is patched as the outer net: a call path nobody
+# anticipated then fails LOUDLY instead of quietly succeeding.
+#
+# EACH LAYER RAISES ITS OWN TYPE so a test can assert WHICH ONE fired, and so the
+# three reachability controls in
+# `tests/integration/test_weather_rebuild_offline.py` can prove each patch is
+# LIVE. Without those controls a green offline test asserts nothing at all: a
+# fixture that silently stopped patching a layer would look exactly the same.
+#
+# THE ONE THING THAT WILL SURPRISE YOU: `asyncio.run` DOES NOT WORK UNDER THIS
+# FIXTURE ON WINDOWS, and that is the outer net working rather than a defect.
+# Constructing a ProactorEventLoop calls `socket.socketpair()` to build the
+# loop's own self-pipe (`asyncio/proactor_events.py:781`), so layer three fires
+# on asyncio's internal plumbing before your coroutine is ever started -- and you
+# get `SocketOpenedUnderDenyNetwork` where you expected the archive or forecast
+# error. MEASURED during Plan 33.1-06 Task 4, where it broke all three named
+# controls on first run.
+#
+# To reach a named client under this fixture, STEP THE COROUTINE instead of
+# running a loop: each stub raises on its first step, so
+# `tests/integration/test_weather_rebuild_offline.drive_once` is enough and needs
+# no loop at all. A test under this fixture that genuinely requires a live event
+# loop has to build one BEFORE entering the fixture.
+# ---------------------------------------------------------------------------
+
+
+class ArchiveReachedUnderDenyNetwork(RuntimeError):
+    """The Open-Meteo ARCHIVE endpoint was reached under the `deny_network` fixture."""
+
+
+class ForecastReachedUnderDenyNetwork(RuntimeError):
+    """The Open-Meteo FORECAST endpoint was reached under the `deny_network` fixture."""
+
+
+class SocketOpenedUnderDenyNetwork(RuntimeError):
+    """A raw socket was opened under the `deny_network` fixture -- the outer net."""
+
+
+@pytest.fixture
+def deny_network(monkeypatch):
+    """Deny the network at three layers, each raising a distinguishable error.
+
+    The layers, outermost last:
+
+    1. Both ARCHIVE entry points in `scripts.backfill_historical_weather` --
+       `fetch_game_weather` (the per-game fetch) and `_probe_archive_day` (the
+       corpus-floor coverage probe). Two entry points, not one: a rebuild that
+       reached the archive through the floor probe would be just as much a
+       network call as one that reached it through the fetch.
+    2. The FORECAST client `scripts.ingest_weather.fetch_game_forecast`. The
+       archive is quarantined away from the live path (D33-26), so a rebuild that
+       reached for weather at all would most plausibly reach for it HERE.
+    3. `socket.socket` itself. Layers 1 and 2 are an enumeration and every
+       enumeration is incomplete; this one is not.
+
+    Returns:
+        A mapping of layer name to the exception type it raises, so a control can
+        assert the specific type rather than a bare `Exception`.
+    """
+    import socket as _socket
+
+    import scripts.backfill_historical_weather as _backfill
+    import scripts.ingest_weather as _ingest
+
+    async def _deny_archive(*args, **kwargs):
+        raise ArchiveReachedUnderDenyNetwork(
+            "the ARCHIVE endpoint was reached while the network was denied. SPEC "
+            "R3 says silver and gold rebuild from bronze with ZERO network calls, "
+            "and bronze is the snapshot of record -- a rebuild that fetches is "
+            "not a rebuild."
+        )
+
+    async def _deny_forecast(*args, **kwargs):
+        raise ForecastReachedUnderDenyNetwork(
+            "the FORECAST endpoint was reached while the network was denied. SPEC "
+            "R3 says silver and gold rebuild from bronze with ZERO network calls."
+        )
+
+    def _deny_socket(*args, **kwargs):
+        raise SocketOpenedUnderDenyNetwork(
+            "a raw socket was opened while the network was denied. This is the "
+            "OUTER NET: layers 1 and 2 patch the network clients this repository "
+            "knows about, and SPEC R3 is a claim about every path, including the "
+            "ones nobody enumerated."
+        )
+
+    monkeypatch.setattr(_backfill, "fetch_game_weather", _deny_archive)
+    monkeypatch.setattr(_backfill, "_probe_archive_day", _deny_archive)
+    monkeypatch.setattr(_ingest, "fetch_game_forecast", _deny_forecast)
+    monkeypatch.setattr(_socket, "socket", _deny_socket)
+
+    return {
+        "archive": ArchiveReachedUnderDenyNetwork,
+        "forecast": ForecastReachedUnderDenyNetwork,
+        "socket": SocketOpenedUnderDenyNetwork,
+    }
