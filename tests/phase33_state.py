@@ -6883,3 +6883,134 @@ SILVER_VENUE_ROOF_COUNTS_AFTER_IDENTITY: tuple[tuple[str, int], ...] = (
     ("indoor", 1031),
     ("retractable", 749),
 )
+
+
+# ---------------------------------------------------------------------------
+# THE PRE-ELO-REBUILD GOLD WIDTH REFERENCE (P6 / Q-01).
+#
+# APPENDED by Plan 33-12 Task 2 on 2026-09-14. Nothing above this line was edited.
+#
+# MEASURED through scripts/fingerprint_gold.fingerprint_gold -- the SAME instrument
+# Plan 33-14 compares its rebuild with, so the two plans read the same numbers from
+# the same tool rather than from two tools that happen to agree today.
+#
+# THE MEASUREMENT. A full-history gold build was driven from the MIGRATED
+# 16-column data/silver/games.parquet into a sandbox lake, with the parquet
+# manager injected onto the sandbox root and the DuckDB half disabled. It took
+# 577 s and produced:
+#
+#     features_wp    6499 rows x 194 columns
+#     features_ats   6499 rows x 195 columns
+#     features_ou    6499 rows x 194 columns
+#
+# identical to the widths data/gold/ carries today, with a column SET identical to
+# production's in all three matrices -- zero columns added, zero removed -- and
+# none of stadium_id, neutral_site or season_type among them.
+#
+# SO THE MIGRATION IS SCHEMA-INERT AND VALUE-ACTIVE, AND BOTH HALVES ARE STATED.
+# compare_fingerprints(production, sandbox) reports 132 of the 194/195/194 columns
+# with MOVED VALUES in every matrix. That number is an UPPER BOUND on this
+# migration's value effect and NOT an attribution to it: production gold predates
+# the Phase-33.1 weather corrections and the Elo re-derivation as well, and
+# separating those is exactly what running each as its own declared rung is for.
+# What this measurement settles is the SCHEMA question, which is the one Plan
+# 33-14's expected change set is anchored on.
+#
+# THE SANDBOX IS PROVEN TO BE THE SUBJECT (Codex HIGH). The committed instrument
+# -- tests/integration/test_gold_write_scope.py, the full-history arm -- asserts
+# each matrix file exists and carries an mtime at or after the build-start instant,
+# brackets the whole build with digest_tree over the production data/ root and
+# asserts identity, and records the three sandbox digests below. A build that
+# silently fell back to the production root is therefore a boundary violation
+# rather than a passing test.
+#
+# WHY THE COMMITTED ARM IS OPT-IN. 577 s against a suite that already runs about
+# 23 minutes. It is run by name:
+#     NFL_RUN_FULL_GOLD_BUILD=1 uv run python -m pytest
+#         tests/integration/test_gold_write_scope.py -k full_history -q
+# The always-on tests beside it check these recorded values against today's
+# production gold, so the reference cannot go stale unnoticed.
+# ---------------------------------------------------------------------------
+
+GOLD_WIDTHS_BEFORE_ELO_REBUILD: tuple[int, int, int] = (194, 195, 194)
+
+# WHICH FILES those widths were read from, rather than leaving it to be assumed.
+# Content sha256, in the (wp, ats, ou) order of GOLD_WIDTHS_BEFORE_ELO_REBUILD.
+# Each differs from the production gold digest of the same name, which is the
+# anti-fallback control: a sandbox build that quietly read production gold would
+# have produced three identical pairs.
+SANDBOX_GOLD_DIGESTS_33_12: tuple[tuple[str, str], ...] = (
+    (
+        "features_wp.parquet",
+        "c6842210e7968fd6ac4c85040cc0b54e67ce1f5c52af3d85edd1a26b3cd73ce3",
+    ),
+    (
+        "features_ats.parquet",
+        "8463bd20eb26ab78100e7930132a499579d2baa4374d26f9735d624d5f00bd40",
+    ),
+    (
+        "features_ou.parquet",
+        "7fb46b21b835742486283186e39a59d8f422693508d7855f2ece917e166f5a7d",
+    ),
+)
+
+# The production gold digests the three above were compared against, recorded at
+# the same instant so the comparison is reproducible from the manifest alone.
+PRODUCTION_GOLD_DIGESTS_AT_33_12: tuple[tuple[str, str], ...] = (
+    (
+        "features_wp.parquet",
+        "8b8a82b1e032b933d40eb9c8a3b7758d32ce82a3958ef5062cd1fd346064bf4f",
+    ),
+    (
+        "features_ats.parquet",
+        "362dbca9213d02a39a23b5430b26ad55ae9519ec55d36cb73abde8775a1fdd0b",
+    ),
+    (
+        "features_ou.parquet",
+        "453a83dc6b37080bdfefd2da438bfd1e98048fb425a3d31772330debb6fa7b2f",
+    ),
+)
+
+# The bounded observation described above, recorded as a number so the readout can
+# quote it rather than re-deriving it. Per matrix: columns whose VALUES moved
+# between production gold and a fresh full-history build from today's inputs.
+# NOT an attribution to this migration -- see the block above.
+GOLD_COLUMNS_MOVED_PRODUCTION_VS_FRESH_BUILD: tuple[tuple[str, int, int], ...] = (
+    # (matrix, columns whose values moved, total columns)
+    ("features_wp", 132, 194),
+    ("features_ats", 132, 195),
+    ("features_ou", 132, 194),
+)
+
+# ---------------------------------------------------------------------------
+# stadium_id IS LOAD-BEARING, NOT AN OPTIONAL EXTRA COLUMN.
+#
+# The plan's downstream-compatibility ask was that every reader of
+# data/silver/games.parquet TOLERATE the added columns, including a null
+# stadium_id. Driven against the real builders, two of the three are inert and the
+# third is the opposite of tolerated, so the result is recorded split rather than
+# averaged into a comfortable summary.
+#
+# season_type and neutral_site: dropping both changes not one output cell of the
+# contextual or market-anchor builders.
+#
+# stadium_id: dropping it, or nulling one cell, raises UnknownStadiumError BY NAME.
+# Since D33.1-06 the contextual builder routes EVERY game of EVERY season by its
+# own stadium_id (features/contextual.py:1268, :1593), and Plan 33.1-04's
+# owner-assigned fix made an unresolvable id a loud hard failure rather than an
+# empty contextual frame. Refusing is the CORRECT behaviour: the alternative is
+# silently resolving to the home team's stadium, which is the misresolution
+# HISTORICAL_NEUTRAL_MISRESOLUTION measures on 91 games. The migrated store carries
+# ZERO nulls, so the refusal is unreachable in practice -- unreachable by refusal
+# rather than by luck, which is why it is asserted.
+#
+# THIS IS THE MECHANICAL REASON PLAN 33-12 HAD TO PRECEDE PLAN 33.1-07, and it is
+# now measured rather than inferred from the sequencing document.
+# ---------------------------------------------------------------------------
+
+IDENTITY_COLUMNS_INERT_FOR_READERS: tuple[str, ...] = (
+    "season_type",
+    "neutral_site",
+)
+
+IDENTITY_COLUMNS_LOAD_BEARING_FOR_READERS: tuple[str, ...] = ("stadium_id",)

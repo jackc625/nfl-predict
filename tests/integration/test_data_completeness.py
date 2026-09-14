@@ -12,6 +12,8 @@ Tests run on synthetic fixture data -- they do not require network access or
 real nflreadpy calls, making them suitable for CI environments.
 """
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -449,3 +451,115 @@ class TestSilverTableStructure:
         actual = set(sample_weather_df.columns)
         missing = required - actual
         assert len(missing) == 0, f"Weather table missing columns: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-12 Task 2(c): COMPLETENESS OF THE POSTSEASON, on the live store.
+#
+# Everything above this line runs on synthetic fixtures, deliberately, so the
+# module works in CI with no data lake. These tests are the exception and they SAY
+# so: they describe the MIGRATED production store, and they skip with a pinned
+# message when there is not one. A completeness suite that can only see the
+# regular season is not a completeness suite -- and until the Plan 33-12
+# migration, `season_type` read 'Regular' on all 6,499 rows, so every postseason
+# game in project history was invisible to exactly this kind of check.
+# ---------------------------------------------------------------------------
+
+LIVE_SILVER_GAMES = Path("data") / "silver" / "games.parquet"
+
+# D33-17's floor. The measured value is 276; the floor is what the phase committed
+# to, and asserting the floor rather than the exact count keeps this test from
+# going red the first time a season is added.
+MINIMUM_POSTSEASON_ROWS = 90
+
+
+def _live_games() -> pd.DataFrame:
+    if not LIVE_SILVER_GAMES.exists():
+        pytest.skip(
+            "data/silver/games.parquet is absent -- data/ is gitignored, so a "
+            "fresh checkout has no production store to measure completeness on."
+        )
+    frame = pd.read_parquet(LIVE_SILVER_GAMES)
+    if "stadium_id" not in frame.columns:
+        pytest.skip(
+            "data/silver/games.parquet predates the Plan 33-12 identity migration "
+            "(no stadium_id column), so season_type is still the constant "
+            "'Regular' and these assertions would describe a defect that has "
+            "already been fixed in code."
+        )
+    return frame
+
+
+@pytest.mark.integration
+class TestThePostseasonIsPresentInTheLiveStore:
+    """COLD-09 / D33-17 on the migrated store, not on a fixture."""
+
+    def test_at_least_ninety_postseason_rows_exist_across_history(self) -> None:
+        frame = _live_games()
+        postseason = int((frame["season_type"] != "Regular").sum())
+        assert postseason >= MINIMUM_POSTSEASON_ROWS, (
+            f"the store carries {postseason} postseason rows over "
+            f"{frame['season'].nunique()} seasons. Before the Plan 33-12 migration "
+            "it carried ZERO: season_type was defaulted from a column the feed "
+            "does not have, so every WC, DIV, CON and SB game read 'Regular'."
+        )
+
+    def test_every_season_with_a_postseason_game_type_has_postseason_rows(self) -> None:
+        """The partition must agree with game_type SEASON BY SEASON, not in total.
+
+        A total can be satisfied by one season carrying every postseason row,
+        which is what a partial re-ingest would look like.
+        """
+        frame = _live_games()
+        expected = frame[frame["game_type"] != "REG"].groupby("season").size()
+        measured = frame[frame["season_type"] != "Regular"].groupby("season").size()
+        assert expected.to_dict() == measured.to_dict(), (
+            "season_type's per-season postseason counts disagree with game_type's: "
+            f"expected {expected.to_dict()}, measured {measured.to_dict()}"
+        )
+
+
+@pytest.mark.integration
+class TestTheSeasonTypeConsumerNowReadsARealValue:
+    """`utils/similar_games.py` read season_type with a game_type fallback.
+
+    It has always had the fallback; what it has never had is a season_type worth
+    reading. Resolving is not the same as MATTERING, so both are asserted: the
+    fallback resolves to more than one distinct value across the store, and the
+    term it feeds changes the similarity score.
+    """
+
+    def test_the_fallback_resolves_to_more_than_one_distinct_value(self) -> None:
+        frame = _live_games()
+        resolved = {
+            row.get("season_type", row.get("game_type"))
+            for row in frame.to_dict("records")
+        }
+        assert len(resolved) > 1, (
+            f"the consumer's `target.get('season_type', target.get('game_type'))` "
+            f"resolves to {sorted(resolved)} across the whole store. A single value "
+            "means the season-type term contributes the same constant to every "
+            "comparison, which is what it did before this migration."
+        )
+        assert resolved == {"Regular", "Postseason"}
+
+    def test_the_season_type_term_changes_the_similarity_score(self) -> None:
+        """It must MATTER, not merely resolve. Isolated by holding week fixed."""
+        from utils.similar_games import SimilarGamesEngine
+
+        frame = _live_games()
+        regular = frame[frame["season_type"] == "Regular"].iloc[0].copy()
+        postseason = frame[frame["season_type"] == "Postseason"].iloc[0].copy()
+        # Hold the week term constant so the only moving part is season_type.
+        postseason["week"] = regular["week"]
+        twin = regular.copy()
+
+        engine = SimilarGamesEngine()
+        same = engine._calculate_context_similarity(regular, twin)
+        different = engine._calculate_context_similarity(regular, postseason)
+        assert same - different == pytest.approx(0.4), (
+            "the season_type term is worth exactly 0.4 in "
+            "_calculate_context_similarity; measured "
+            f"{same} vs {different}. If it is now 0.0 the consumer is reading a "
+            "constant again."
+        )

@@ -29,6 +29,11 @@ no real data lake is touched.
 
 from __future__ import annotations
 
+import os
+import re
+import shutil
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -37,6 +42,7 @@ import pytest
 import data.storage as storage_mod
 from data.storage import ParquetManager
 from scripts.build_features import FeatureMatrixBuilder
+from tests import phase33_state
 
 GOLD_COLUMNS = [
     "game_id",
@@ -594,3 +600,399 @@ class TestTheIdentityColumnsNeverReachAModelFeatureMatrix:
             "They are supposed to be inert for gold; if they are not, the Plan "
             "33-12 backfill is a gold-shape change and must be planned as one."
         )
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-12 Task 2(a): P6 / Q-01 -- the identity migration moves no gold COLUMN,
+# measured on a REAL full-history build from the migrated 16-column silver.
+#
+# WHY THIS LIVES HERE, BESIDE PLAN 33-06'S SEMANTIC SCAN. That scan proves the
+# three identity names never become model features, using SYNTHETIC sources. It
+# cannot say what the real matrices are WIDE, and the width is the number Plan
+# 33-14's expected change set is anchored on. This is the other half of the same
+# claim, on the same artifacts, in the same module (Plan 33-06's own block above
+# says Plan 33-12 owns it).
+#
+# THE MEASUREMENT IS TAKEN **BEFORE** THE ELO RE-DERIVATION, DELIBERATELY. If the
+# widths hold here, then whatever Plan 33-14's rebuild moves in the gold SCHEMA is
+# attributable to the Elo change and not to this migration. IF THIS TEST FAILS,
+# the "identity columns are INERT for gold" claim is WITHDRAWN and the rebuild
+# needs a second, separately attributed rung -- exactly as 33-12-PLAN.md:207 says.
+#
+# WHAT WAS MEASURED, AND THE HONEST SHAPE OF THE RESULT. A full-history build from
+# the migrated silver into a sandbox produced 194 / 195 / 194 columns and a column
+# SET identical to production gold's, while 132 of those columns' VALUES differ
+# from production gold. Zero columns added, zero removed. So the migration is
+# schema-inert and value-active, and calling it simply "inert" would have been the
+# comfortable half of the truth. The 132 is an UPPER BOUND on this migration's
+# value effect, not an attribution: production gold predates several other pending
+# input corrections, and separating them is Plan 33.1-07's and Plan 33-14's job,
+# which is precisely why each runs as its own declared rung.
+#
+# WHY THE HEAVY ARM IS OPT-IN. The full-history build takes 577 s measured. The
+# suite already runs about 23 minutes and the owner's standing instruction is to
+# measure one thing rather than verify broadly, so a ten-minute tax on every run
+# would buy a re-measurement of a number that cannot drift without some other test
+# in this file going red first. The instrument is COMMITTED and re-runnable by
+# name; what is skipped is paying for it on every unrelated run.
+# ---------------------------------------------------------------------------
+
+FULL_BUILD_ENV_FLAG = "NFL_RUN_FULL_GOLD_BUILD"
+
+FULL_BUILD_SKIP_MESSAGE = (
+    "the full-history sandbox gold build is OPT-IN: it takes about 577 s (measured "
+    "2026-09-14) and the suite is already ~23 minutes. Run it by name with "
+    "NFL_RUN_FULL_GOLD_BUILD=1 uv run python -m pytest "
+    "tests/integration/test_gold_write_scope.py -k full_history -q . The values it "
+    "produces are recorded in tests.phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD "
+    "and SANDBOX_GOLD_DIGESTS_33_12, and the always-on tests in this class check "
+    "those recorded values against today's production gold."
+)
+
+GOLD_TARGETS = ("wp", "ats", "ou")
+
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _production_gold_widths() -> tuple[int, ...]:
+    """Widths read through ``scripts/fingerprint_gold.py`` -- Plan 33-14's instrument.
+
+    The same tool on both sides is the point: a width this plan measures with one
+    instrument and the next plan compares with another is a comparison of
+    instruments.
+    """
+    from scripts.fingerprint_gold import fingerprint_gold
+
+    document = fingerprint_gold(Path("data"))
+    return tuple(
+        len(document[f"features_{target}"]["columns"]) for target in GOLD_TARGETS
+    )
+
+
+def _production_gold_digests() -> dict[str, str]:
+    from tests.data_boundary import digest_file
+
+    return {
+        target: digest_file(Path("data") / "gold" / f"features_{target}.parquet")
+        for target in GOLD_TARGETS
+    }
+
+
+@pytest.mark.integration
+class TestTheIdentityMigrationMovesNoGoldColumn:
+    """COLD-09 / P6 / Q-01, always-on half: the recorded reference is still true."""
+
+    def test_the_recorded_reference_matches_todays_production_gold(self) -> None:
+        """The committed reference and the live store must not drift apart silently.
+
+        ``GOLD_WIDTHS_BEFORE_ELO_REBUILD`` is what Plan 33-14 will compare its
+        rebuild against. A reference that no longer describes the store it is a
+        reference FOR is worse than no reference, because it will be trusted.
+        """
+        measured = _production_gold_widths()
+        recorded = tuple(phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD)
+        assert measured == recorded, (
+            f"production gold is {measured} wide but "
+            f"GOLD_WIDTHS_BEFORE_ELO_REBUILD records {recorded}. Either gold was "
+            "rebuilt with a schema change that nobody attributed, or the recorded "
+            "pre-Elo-rebuild reference is stale. Plan 33-14's expected change set "
+            "is anchored on this number; do not adjust one to match the other "
+            "without deciding which is wrong."
+        )
+
+    def test_no_identity_column_is_in_any_production_matrix(self) -> None:
+        """The migration added a column to silver; none of the three reached gold."""
+        for target in GOLD_TARGETS:
+            columns = set(
+                pd.read_parquet(
+                    Path("data") / "gold" / f"features_{target}.parquet"
+                ).columns
+            )
+            present = sorted(set(IDENTITY_COLUMNS) & columns)
+            assert not present, (
+                f"identity column(s) {present!r} are columns of features_{target}. "
+                "generate_feature_matrices treats every non-excluded column as a "
+                "model feature, so this is a model-input change, not a cosmetic one."
+            )
+
+    def test_the_recorded_widths_are_three_plausible_integers(self) -> None:
+        """Anti-typo. A reference nobody can sanity-check is a reference nobody checks."""
+        recorded = tuple(phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD)
+        assert len(recorded) == 3
+        assert all(isinstance(width, int) and width > 100 for width in recorded), (
+            f"GOLD_WIDTHS_BEFORE_ELO_REBUILD is {recorded!r}; a real matrix carries "
+            "well over a hundred columns."
+        )
+
+    def test_the_sandbox_digests_name_the_three_matrices_and_are_content_hashes(
+        self,
+    ) -> None:
+        """The record says WHICH files the widths were read from, not merely the widths."""
+        recorded = phase33_state.SANDBOX_GOLD_DIGESTS_33_12
+        assert [name for name, _ in recorded] == [
+            f"features_{target}.parquet" for target in GOLD_TARGETS
+        ], f"SANDBOX_GOLD_DIGESTS_33_12 names {[n for n, _ in recorded]!r}"
+        for name, digest in recorded:
+            assert _HEX64.match(digest), (
+                f"{name}'s recorded digest {digest!r} is not a 64-character sha256. "
+                "A stat signature would mean the measurement rested on size and "
+                "mtime, which D33-32 forbids for a verdict."
+            )
+
+    def test_the_measured_files_were_not_production_gold(self) -> None:
+        """THE ANTI-FALLBACK CONTROL, and the reason the digests are recorded at all.
+
+        A test that runs a sandboxed build and then reads PRODUCTION gold passes
+        identically when the sandbox path did nothing whatever. The recorded
+        sandbox digests must therefore NOT equal the production ones -- if they
+        did, the widths above would be a description of files the build never
+        wrote (Codex HIGH).
+        """
+        production = _production_gold_digests()
+        for (name, sandbox_digest), target in zip(
+            phase33_state.SANDBOX_GOLD_DIGESTS_33_12, GOLD_TARGETS, strict=True
+        ):
+            assert sandbox_digest != production[target], (
+                f"the recorded sandbox digest for {name} is byte-identical to "
+                f"production data/gold/features_{target}.parquet. Either the "
+                "sandbox build silently fell back to the production root, or the "
+                "digest was copied from the wrong file. Both make the width "
+                "measurement meaningless."
+            )
+
+    @pytest.mark.skipif(
+        not os.environ.get(FULL_BUILD_ENV_FLAG),
+        reason=FULL_BUILD_SKIP_MESSAGE,
+    )
+    def test_a_full_history_sandbox_build_is_194_195_194_and_carries_no_identity_column(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The heavy arm: the real builder, the real migrated silver, a real sandbox.
+
+        Three separate proofs that the SANDBOX is the thing being measured:
+
+        1. the sandbox paths are INJECTED through the readers and the writer, and
+           the production lake is asserted not to be the parquet root;
+        2. each matrix file is asserted to EXIST and to carry an mtime at or after
+           the build-start instant, so a pre-existing file cannot be read as
+           though this build had produced it;
+        3. the production ``data/`` tree is digested before and after and asserted
+           IDENTICAL, so a silent fallback to the production root is a boundary
+           violation rather than a passing test.
+        """
+        from scripts.fingerprint_gold import fingerprint_gold
+        from tests.data_boundary import (
+            PRODUCTION_DATA_ROOT,
+            assert_tree_unchanged,
+            digest_file,
+            digest_tree,
+        )
+
+        before_tree = digest_tree(PRODUCTION_DATA_ROOT)
+
+        sandbox = tmp_path / "lake"
+        sandbox.mkdir()
+        shutil.copytree(Path("data") / "silver", sandbox / "silver")
+
+        monkeypatch.setattr(
+            storage_mod, "_parquet_manager", ParquetManager(str(sandbox))
+        )
+        import scripts.build_features as bf_mod
+
+        real_save = storage_mod.save_dataframe
+
+        def _parquet_only(*args, **kwargs):
+            kwargs["save_to_db"] = False
+            return real_save(*args, **kwargs)
+
+        real_load = storage_mod.load_dataframe
+
+        def _parquet_load(table_name, layer="silver", source="auto", **kwargs):
+            return real_load(table_name, layer=layer, source="parquet", **kwargs)
+
+        monkeypatch.setattr(bf_mod, "save_dataframe", _parquet_only)
+        monkeypatch.setattr(storage_mod, "save_dataframe", _parquet_only)
+        monkeypatch.setattr(bf_mod, "load_dataframe", _parquet_load)
+
+        assert (
+            Path(storage_mod._parquet_manager.base_path).resolve()
+            != Path("data").resolve()
+        ), "the parquet manager still points at the production lake"
+
+        build_start_ns = time.time_ns()
+        builder = FeatureMatrixBuilder()
+        matrices = builder.generate_feature_matrices(
+            as_of_datetime=datetime(2030, 1, 1, tzinfo=UTC)
+        )
+        builder.save_feature_matrices(matrices)
+
+        measured_digests = []
+        for target in GOLD_TARGETS:
+            path = sandbox / "gold" / f"features_{target}.parquet"
+            assert path.exists(), (
+                f"the sandbox build produced no {path.name}; the width assertions "
+                "below would otherwise have read production gold."
+            )
+            assert path.stat().st_mtime_ns >= build_start_ns, (
+                f"{path.name} is OLDER than the build start instant, so it is not "
+                "a file this build wrote."
+            )
+            measured_digests.append((path.name, digest_file(path)))
+
+        document = fingerprint_gold(sandbox)
+        widths = tuple(
+            len(document[f"features_{target}"]["columns"]) for target in GOLD_TARGETS
+        )
+        assert widths == tuple(phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD), (
+            f"a full-history build from the migrated 16-column silver produced "
+            f"{widths}, not {tuple(phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD)}. "
+            "The 'identity columns are INERT for gold' claim is WITHDRAWN: Plan "
+            "33-14's rebuild now has two causes to attribute, not one, and needs a "
+            "second separately-attributed rung."
+        )
+
+        for target in GOLD_TARGETS:
+            columns = set(document[f"features_{target}"]["columns"])
+            present = sorted(set(IDENTITY_COLUMNS) & columns)
+            assert not present, (
+                f"identity column(s) {present!r} reached the sandbox features_{target}."
+            )
+
+        assert [digest for _, digest in measured_digests] != [
+            digest_file(Path("data") / "gold" / f"features_{target}.parquet")
+            for target in GOLD_TARGETS
+        ], "the sandbox matrices are byte-identical to production gold"
+
+        assert_tree_unchanged(
+            before_tree, digest_tree(PRODUCTION_DATA_ROOT), PRODUCTION_DATA_ROOT
+        )
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-12 Task 2(a2): DOWNSTREAM COMPATIBILITY, and the one column that is NOT
+# merely tolerated.
+#
+# The review asked that every reader of data/silver/games.parquet be driven
+# against the widened frame and against the narrow one and be shown to produce the
+# same output. Driving it produced a finding that changes the shape of the answer,
+# so the answer is split rather than averaged:
+#
+#   season_type and neutral_site ARE inert for the gold-reaching builders. Dropping
+#   them changes no output cell.
+#
+#   stadium_id IS NOT INERT AND IS NOT OPTIONAL. Since D33.1-06 the contextual
+#   builder routes EVERY game of EVERY season by its own stadium_id
+#   (features/contextual.py:1268, :1593), and Plan 33.1-04's owner-assigned fix made
+#   an unresolvable id a LOUD hard failure instead of an empty contextual frame. So
+#   the honest assertion is not "every reader tolerates the new column" -- it is
+#   that dropping it RAISES UnknownStadiumError BY NAME. That is a stronger
+#   statement than tolerance, and it is the reason this migration had to run before
+#   Plan 33.1-07 rather than after it.
+# ---------------------------------------------------------------------------
+
+INERT_IDENTITY_COLUMNS = ("season_type", "neutral_site")
+
+# A small REAL slice of the migrated store: enough games to exercise the per-row
+# loops, few enough that the whole class runs in a couple of seconds. Read-only.
+COMPAT_SLICE_SEASON = 2024
+COMPAT_SLICE_MAX_WEEK = 2
+
+
+def _migrated_games_slice() -> pd.DataFrame:
+    path = Path("data") / "silver" / "games.parquet"
+    if not path.exists():
+        pytest.skip(
+            "data/silver/games.parquet is absent -- a fresh checkout has no data/ "
+            "(it is gitignored). Run the Plan 33-12 migration to populate it."
+        )
+    frame = pd.read_parquet(path)
+    if "stadium_id" not in frame.columns:
+        pytest.skip(
+            "data/silver/games.parquet carries no stadium_id, so the Plan 33-12 "
+            "identity migration has not been run against this checkout."
+        )
+    return frame[
+        (frame["season"] == COMPAT_SLICE_SEASON)
+        & (frame["week"] <= COMPAT_SLICE_MAX_WEEK)
+    ].copy()
+
+
+@pytest.mark.integration
+class TestTheWidenedSilverFrameIsSafeForItsReaders:
+    """Task 2(a2). Driven, not asserted from a source scan."""
+
+    def test_the_slice_is_non_vacuous(self) -> None:
+        """Asserted first: identical output over zero rows proves nothing."""
+        games = _migrated_games_slice()
+        assert len(games) >= 24, (
+            f"the compatibility slice holds {len(games)} games; a comparison over "
+            "an empty frame is vacuously equal."
+        )
+        assert games["stadium_id"].notna().all()
+
+    @pytest.mark.parametrize("builder_name", ["contextual", "market"])
+    def test_the_gold_reaching_builders_ignore_season_type_and_neutral_site(
+        self, builder_name: str
+    ) -> None:
+        """The 16-column frame and the 14-column one produce identical output."""
+        from features.contextual import ContextualFeaturesCalculator
+        from features.market_anchors import MarketAnchorFeaturesCalculator
+
+        calculators = {
+            "contextual": ContextualFeaturesCalculator,
+            "market": MarketAnchorFeaturesCalculator,
+        }
+        as_of = datetime(2030, 1, 1, tzinfo=UTC)
+        games = _migrated_games_slice()
+        narrowed = games.drop(columns=list(INERT_IDENTITY_COLUMNS))
+
+        wide = calculators[builder_name]().build_features(games, as_of)
+        narrow = calculators[builder_name]().build_features(narrowed, as_of)
+
+        assert not wide.empty, (
+            f"the {builder_name} builder produced an empty frame, so the "
+            "comparison below is vacuous."
+        )
+        pd.testing.assert_frame_equal(wide, narrow)
+
+    def test_dropping_stadium_id_is_refused_by_name_rather_than_tolerated(self) -> None:
+        """THE FINDING. stadium_id is load-bearing, not an optional extra column."""
+        from features.contextual import (
+            ContextualFeaturesCalculator,
+            UnknownStadiumError,
+        )
+
+        games = _migrated_games_slice().drop(columns=["stadium_id"])
+        with pytest.raises(UnknownStadiumError) as excinfo:
+            ContextualFeaturesCalculator().build_features(
+                games, datetime(2030, 1, 1, tzinfo=UTC)
+            )
+        assert "stadium_id" in str(excinfo.value), (
+            "the refusal must NAME the column it could not route on; a generic "
+            "message sends the operator back to the source to find out what broke."
+        )
+
+    def test_a_null_stadium_id_raises_a_named_refusal_rather_than_resolving_silently(
+        self,
+    ) -> None:
+        """Nullability, answered in the direction the code actually takes.
+
+        The review asked that a null ``stadium_id`` be tolerated. It is NOT, and
+        that is correct rather than a defect: a null id means the game's venue is
+        unknown, and the alternative to refusing is silently resolving to the home
+        team's stadium -- which is exactly the misresolution
+        HISTORICAL_NEUTRAL_MISRESOLUTION measures on 91 games. The migrated store
+        carries ZERO nulls, so the refusal is unreachable in practice; it is
+        asserted so that it stays unreachable by refusal rather than by luck.
+        """
+        from features.contextual import (
+            ContextualFeaturesCalculator,
+            UnknownStadiumError,
+        )
+
+        games = _migrated_games_slice()
+        games.loc[games.index[0], "stadium_id"] = None
+        with pytest.raises(UnknownStadiumError):
+            ContextualFeaturesCalculator().build_features(
+                games, datetime(2030, 1, 1, tzinfo=UTC)
+            )
