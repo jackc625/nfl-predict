@@ -5078,3 +5078,509 @@ WEATHER_CORPUS_RUN: dict[str, object] = {
         },
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# THE SINGLE BRACKETED SILVER PROMOTION, AND WHAT THE DIFF ACTUALLY LOOKED LIKE.
+#
+# APPENDED by Plan 33.1-06 Task 3 on 2026-09-13, AFTER the promotion and the
+# cross-check. Nothing above this line was edited.
+#
+# THE BRACKET, in the order it was executed, ALL OF IT INSIDE ONE LOCK
+# ACQUISITION separate from the run half's:
+#
+#   0. CorpusLock acquired -- pid 15016, 2026-09-14T01:48:44.604185+00:00 --
+#      BEFORE the pre-state digest.
+#   1. data      -> outputs/phase331_promote_before.json            (448 files)
+#   2. artifacts -> outputs/phase331_promote_artifacts_before.json  (159 files)
+#   3. promote_corpus_to_silver -- ONE upsert_silver over all 6,499 games, read
+#      from the 24 bronze snapshots. ZERO network calls: 0 attempts, 0 weighted.
+#   4. and 5. both trees re-digested, still inside the lock.
+#
+# THE DATA VERIFY REPORTED EXACTLY ONE CHANGED PATH AND IT IS THE DECLARED ONE.
+# Zero added, zero removed, and no comparison left undecided (no MIXED key). The
+# single rewritten path was silver/weather.parquet, which is exactly
+# WEATHER_PROMOTION_EXPECTED_CHANGED_FILES as committed in 8cfc1cc BEFORE the run
+# half's first snapshot. `artifacts/` did not move at all.
+#
+# `data/nfl_predictions.duckdb` did NOT move, which is the POSITIVE confirmation
+# the declaration was making: promote_corpus_to_silver writes through
+# upsert_silver (parquet only, ending at _atomic_write_parquet) and never through
+# save_dataframe, whose save_to_db=True default would have moved the database
+# half as well.
+#
+# 14 ROWS IN, 6,499 ROWS OUT. 23 -> 25 columns. 745 distinct temperatures
+# spanning -9.0 F to 101.6 F, against a prior state of 6,485 gold rows at a
+# single fabricated 65.0. 1,652 rows carry a NULL temperature and every one of
+# them is an indoor game; every row is coverage-flagged True, because the archive
+# answered for all 4,847 outdoor games and there is not one absent observation in
+# the corpus.
+# ---------------------------------------------------------------------------
+
+WEATHER_CORPUS_DIGEST_BEFORE: str = (
+    "3034b00b86ab95332cf1d385b736379b1b6796be2fa812acf3a4d1dcb9114d4d"
+)
+WEATHER_CORPUS_DIGEST_AFTER: str = (
+    "53f11e8cee99a7f7cc6b6cb613319d23d9112eb05eed91244d346ad5a491543d"
+)
+
+
+# ---------------------------------------------------------------------------
+# RULING X -- WHAT THE PROMOTION READ, AND WHAT IT PROVABLY DID NOT.
+#
+# "Silver holds 6,499 rows" is satisfied by the right bronze and by the wrong
+# bronze. The seven legacy weather_raw_bronze_{2018..2024}_season.parquet files
+# hold 1,942 rows at SEVENTEEN columns against this corpus's TWENTY-FIVE, so a
+# promotion that accidentally globbed them would produce a silver frame mixing
+# two schemas and two provenances -- and A ROW-COUNT MATCH CANNOT DETECT THAT.
+# R2's acceptance is about provenance, not arithmetic.
+#
+# TWO INDEPENDENT INSTRUMENTS ON ONE PROPERTY: the filename set (asserted
+# disjoint from LEGACY_WEATHER_BRONZE_INVENTORY's ten names, and the promotion
+# RAISES if it is not) and the per-file column width (25 on every one of the 24,
+# so a 17-column legacy file could not have contributed even if the filename
+# check were wrong).
+# ---------------------------------------------------------------------------
+
+WEATHER_PROMOTION_INPUTS: dict[str, object] = {
+    "measured_on": "2026-09-13",
+    "measured_by": "Plan 33.1-06 Task 3",
+    "bronze_tables_read": ("weather_backfill",),
+    "bronze_glob": "weather_backfill_raw_bronze_*",
+    "legacy_files_read": (),
+    "legacy_inventory_checked_against": tuple(
+        sorted(LEGACY_WEATHER_BRONZE_INVENTORY["files"])
+    ),
+    "column_counts_read": (25,),
+    "legacy_column_count": 17,
+    "rows_promoted": 6499,
+    "snapshots_promoted": 24,
+    "network_calls": 0,
+    "digest_instrument": (
+        "sha256 of file bytes -- the same value tests.data_boundary.digest_file "
+        "returns for a readable file, computed inside the script because "
+        "production code does not import from the test tree"
+    ),
+    "bronze_files_read": {
+        "weather_backfill_raw_bronze_2002_W00_20260914T002711.parquet": {
+            "digest": (
+                "eb17a7dcb77ebbd415fe69771e4e1e7a52e56d347b21614e918deefde2e4263d"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2003_W00_20260914T003043.parquet": {
+            "digest": (
+                "e3df310d1b3b8a246a23f2217d0b395fd4e6a71d0f55da3f5d9669d7323cc82e"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2004_W00_20260914T003418.parquet": {
+            "digest": (
+                "cb08f79520013d758bcd55533504437392f89e45f7a60ac06fb85b6ca7f1c8ee"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2005_W00_20260914T003757.parquet": {
+            "digest": (
+                "948761a16419b524e2fb668cf2671655a18798ac88c2619a19bdd5ce714f4a57"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2006_W00_20260914T004124.parquet": {
+            "digest": (
+                "f7d9054abdef0fcdfb19bd0173c7268f1bc8c67d40e67d12d776680e8c4bcf04"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2007_W00_20260914T004451.parquet": {
+            "digest": (
+                "a6f9cc0e4751cc161f9ff1aac79097474806ac06a82df86e1202de077c40742d"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2008_W00_20260914T004825.parquet": {
+            "digest": (
+                "ecb42e13dad1d74bbae8504f8fa3ca9aeba6b8fe3badaa2e43abea04de676e8e"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2009_W00_20260914T005143.parquet": {
+            "digest": (
+                "45acc7ca2e9ae0cc6e7b68501e84b40ef3794b8770e905cb965bbccdf75a5761"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2010_W00_20260914T005502.parquet": {
+            "digest": (
+                "543fd3cc463ade3d33b36539373958d9253818e98ce842b9a537dadb05693038"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2011_W00_20260914T005819.parquet": {
+            "digest": (
+                "88f6f367f7c488d740f779b0d1b21e5ed5343f84b6fb74dc0a256f088fa78d71"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2012_W00_20260914T010139.parquet": {
+            "digest": (
+                "382f38194862c5d58b8feb0d1f7761b4e181f9f229057333d335e90906c71848"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2013_W00_20260914T010456.parquet": {
+            "digest": (
+                "8367b5766c5f08956585d678ba67f1ad731ac8a6d8cb3ddc30e001db9b0a528e"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2014_W00_20260914T010819.parquet": {
+            "digest": (
+                "d7f00771af12e2b6e8f632e2c1b40a5b17e623557ec62ba307237f65ee467ad7"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2015_W00_20260914T011144.parquet": {
+            "digest": (
+                "dbe3aa01922548046192f84804b86419e5b9ffadb16f254241f4f6c2a0d1aee1"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2016_W00_20260914T011504.parquet": {
+            "digest": (
+                "111c292472d4eb79f28c4a0a7a4d9f3295fbd894234885c073d7c153badc7ac7"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2017_W00_20260914T011829.parquet": {
+            "digest": (
+                "1fa2968b9bd570281c67e94284d74711cbbba54854f73cf5fba46bdee2a32a3d"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2018_W00_20260914T012152.parquet": {
+            "digest": (
+                "bd4facc522c250f5e5f5e3c59aa308d7cd3240ba3b21b2cbc9432ca288446f3d"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2019_W00_20260914T012518.parquet": {
+            "digest": (
+                "362c6fac827bb8e81e70e1758c9107456ee127f41cbcc0971880b115d91d3982"
+            ),
+            "rows": 267,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2020_W00_20260914T012814.parquet": {
+            "digest": (
+                "74433d00da74b9835600bb171a37b6a2eb8dd09ade1b79c7d719cba80abf9de6"
+            ),
+            "rows": 269,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2021_W00_20260914T013136.parquet": {
+            "digest": (
+                "437a1cf317d9a60cb2fb9f4e8bd71a7c1f667c11414e18344d7d93bffdac0fb0"
+            ),
+            "rows": 285,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2022_W00_20260914T013455.parquet": {
+            "digest": (
+                "17fa3f788104f2de49eafaff2f81b6f704af9b45876610b5909758890784104a"
+            ),
+            "rows": 284,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2023_W00_20260914T013814.parquet": {
+            "digest": (
+                "ae477a53edd610f9c1510d8700cb1cd57eb37c94fc41667f1f1f2cc245331263"
+            ),
+            "rows": 285,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2024_W00_20260914T014122.parquet": {
+            "digest": (
+                "ba5c9ad3640586e1f3363ba7b7163f31989ed1622a0de612135c5aff66fd74c3"
+            ),
+            "rows": 285,
+            "columns": 25,
+        },
+        "weather_backfill_raw_bronze_2025_W00_20260914T014435.parquet": {
+            "digest": (
+                "a7f1211fa32ede134eace24bad925d03d12521ab3325bd5683d649b331400c8b"
+            ),
+            "rows": 285,
+            "columns": 25,
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# THE MEASURED DIFF, JUDGED AGAINST A PREDICTION MADE BEFORE IT EXISTED.
+#
+# The prediction is scripts/weather_crosscheck_constants.EXPECTED_DIFF_SHAPE,
+# committed ALONE in 57586c1 and witnessed from outside in 9e28d40, both strict
+# ancestors of this measurement. THE PREDICTION WAS NOT EDITED, and it must not
+# be: correcting a prediction so that it matches the answer turns a
+# pre-registration into a description. Where the measurement disagrees with it,
+# THE DISAGREEMENT IS THE FINDING and is recorded here as one.
+#
+# THE VERDICT IS **PARTIAL**. Two of the three predicted causes matched -- one of
+# them exactly -- and the third matched in KIND but under-predicted its
+# population and carried an exclusivity claim that the measurement FALSIFIES.
+#
+# 1. THE HOUR FIX -- MATCHED, and more strongly than predicted. The prediction
+#    said "essentially every comparable row differs". ALL 1,942 of 1,942 do:
+#    every single comparable row disagrees on at least one column. Temperature
+#    fell on 65.3% of the 1,370 rows where both sides carry a reading, mean
+#    signed -0.66 F, mean absolute 3.02 F. Wind speed fell by 3.74 mph on
+#    average. The direction the prediction named is the direction observed.
+#
+# 2. THE ROUTING FIX -- MATCHED EXACTLY, on every clause. The prediction named
+#    44 comparable games at OAK00, LAX99 and LAX97; the measurement finds exactly
+#    44. It predicted "CATEGORICALLY DIFFERENT VALUES, not shifted ones" and the
+#    largest differences in the diff: those 44 games average 15.61 F of absolute
+#    temperature difference against 2.60 F for every other comparable game, six
+#    times larger. It predicted the signs would NOT agree; they split 36 positive
+#    to 8 negative. And the three largest per-home-team mean absolute differences
+#    are LA (16.59), LAC (15.23) and LV (13.61) -- exactly the three relocated
+#    franchises, ranked ahead of every other team by a factor of three.
+#
+# 3. THE PER-GAME ROOF RULE -- PARTIAL, and this is the finding. The prediction
+#    was right that these rows go from a number to a NULL temperature, and right
+#    about its own population: all 260 `closed` games in the comparable window
+#    did go number-to-NULL, with none missing. But the measured population is
+#    **572, not 260**. The extra 312 are DOME games.
+#
+#    WHY THE PREDICTION MISSED THEM, stated so the miss is understood rather than
+#    explained away. The prediction reasoned from where the feed's per-game
+#    `roof` DISAGREES with venues.json's `roof_type` about is_outdoor, and for a
+#    dome the two agree -- so domes were outside the population it computed. What
+#    it did not anticipate is that THE LEGACY CORPUS CARRIED A TEMPERATURE FOR
+#    EVERY ONE OF ITS 1,942 ROWS, dome games included: the old code fetched and
+#    stored a reading for all 312 dome games in the window while recording
+#    is_outdoor False on 308 of them. Those rows go number-to-NULL now not
+#    because the roof RULE changed for them but because the new code refuses to
+#    store a measurement for a game weather does not apply to.
+#
+#    SO THE PREDICTION'S CLAUSE "this is the ONLY category where that happens" IS
+#    FALSIFIED. There are two categories, not one. The measured number-to-NULL
+#    set is EXACTLY the indoor population -- 260 closed plus 312 dome = 572 --
+#    with no outdoor game in it and no indoor game outside it.
+#
+#    The direction of the finding happens to favour the phase: 572 meaningless
+#    stored temperatures are gone rather than 260. That does not make the
+#    prediction right, and it is recorded as a miss.
+# ---------------------------------------------------------------------------
+
+WEATHER_CROSSCHECK_MEASURED: dict[str, object] = {
+    "measured_on": "2026-09-13",
+    "measured_by": "Plan 33.1-06 Task 3",
+    "command": "uv run python -m scripts.backfill_historical_weather --crosscheck",
+    "process_exit_status": 0,
+    "disagreement_failed_the_run": False,
+    "preregistration_path": "scripts/weather_crosscheck_constants.py",
+    "preregistration_commit": WEATHER_CROSSCHECK_PREREGISTRATION_COMMIT,
+    "preregistration_was_edited": False,
+    "tolerance_f": 0.1,
+    "compared_columns": 15,
+    # THE JOIN.
+    "comparable_rows": 1942,
+    "rows_new_only": 4557,
+    "rows_legacy_only": 0,
+    # ROW-LEVEL. The prediction is phrased about rows, so the judgement is too.
+    "rows_differing": 1942,
+    "rows_differing_share": 1.0,
+    "rows_number_to_null": 572,
+    "rows_number_to_null_any_column": 624,
+    # COLUMN-LEVEL, as the shipped comparator reports it.
+    "column_level_disagreements": 7812,
+    "column_level_number_to_null": 2802,
+    "column_level_null_to_number": 3160,
+    # THE THREE PREDICTED CAUSES, measured.
+    "hour_fix": {
+        "verdict": "MATCHED",
+        "mean_signed_temp_delta_f": -0.6642,
+        "mean_abs_temp_delta_f": 3.0216,
+        "temp_comparable_n": 1370,
+        "share_of_rows_where_temperature_fell": 0.6533,
+        "mean_signed_wind_delta_mph": -3.7351,
+    },
+    "routing_fix": {
+        "verdict": "MATCHED EXACTLY",
+        "predicted_comparable_window_size": 44,
+        "measured_comparable_window_size": 44,
+        "relocation_mean_abs_temp_delta_f": 15.6091,
+        "everything_else_mean_abs_temp_delta_f": 2.6039,
+        "signs": {"positive": 36, "negative": 8},
+        "signs_note": (
+            "the prediction said these rows would NOT share a sign, because a "
+            "different place is not a warmer version of the same one. They do "
+            "not: 36 positive against 8 negative."
+        ),
+    },
+    "per_game_roof_rule": {
+        "verdict": "PARTIAL -- right in kind, population under-predicted, "
+        "exclusivity claim FALSIFIED",
+        "predicted_comparable_window_size": 260,
+        "measured_number_to_null_rows": 572,
+        "predicted_population_fully_accounted_for": True,
+        "closed_games_in_window": 260,
+        "dome_games_in_window": 312,
+        "open_games_in_window": 41,
+        "outdoor_games_in_window": 1329,
+        "number_to_null_set_equals_the_indoor_population": True,
+        "legacy_rows_carrying_a_temperature": 1942,
+        "legacy_dome_rows_carrying_a_temperature": 312,
+        "falsified_clause": (
+            "THESE ROWS GO FROM A NUMBER TO A NULL TEMPERATURE, and this is the "
+            "ONLY category where that happens"
+        ),
+        "falsified_because": (
+            "dome games are a SECOND category. The legacy corpus stored a "
+            "temperature for all 312 dome games in the comparable window while "
+            "recording is_outdoor False on 308 of them, so they too go "
+            "number-to-NULL under the new rule -- not because their roof "
+            "classification changed, but because the new code refuses to store a "
+            "measurement for a game weather does not apply to."
+        ),
+    },
+    # THE BREAKDOWNS THE ACCEPTANCE REQUIRES.
+    "per_season": {
+        2018: {"rows": 267, "agreed": 1436, "disagreed": 1143, "became_null": 351},
+        2019: {"rows": 267, "agreed": 1431, "disagreed": 1154, "became_null": 330},
+        2020: {"rows": 269, "agreed": 1483, "disagreed": 1028, "became_null": 429},
+        2021: {"rows": 285, "agreed": 1589, "disagreed": 1116, "became_null": 405},
+        2022: {"rows": 284, "agreed": 1573, "disagreed": 1115, "became_null": 417},
+        2023: {"rows": 285, "agreed": 1549, "disagreed": 1147, "became_null": 414},
+        2024: {"rows": 285, "agreed": 1555, "disagreed": 1109, "became_null": 456},
+    },
+    "ten_largest_per_home_team_mean_abs_temp_delta_f": (
+        ("LA", 16.588, 17),
+        ("LAC", 15.225, 16),
+        ("LV", 13.606, 16),
+        ("NO", 9.5, 2),
+        ("DEN", 5.021, 58),
+        ("MIN", 3.9, 1),
+        ("JAX", 3.703, 59),
+        ("TB", 3.317, 64),
+        ("TEN", 3.118, 60),
+        ("BAL", 3.006, 63),
+    ),
+    "per_home_team_note": (
+        "(team, mean absolute temp delta in F, comparable rows). The full "
+        "per-home-team breakdown over all 32 teams is printed by --crosscheck; "
+        "the ten largest are recorded here. The top three are exactly the three "
+        "relocated franchises."
+    ),
+    # THE VERDICT.
+    "matched_expectation": "PARTIAL",
+    "matched_expectation_reason": (
+        "Two of the three pre-registered causes MATCHED and the third did not. "
+        "The HOUR FIX matched and exceeded its prediction: all 1,942 of 1,942 "
+        "comparable rows differ, temperature fell on 65.3 percent of the 1,370 "
+        "rows where both sides carry a reading, and the mean signed shift is "
+        "-0.66 F, the direction predicted. The ROUTING FIX matched EXACTLY on "
+        "every clause: 44 comparable games as predicted, averaging 15.61 F of "
+        "absolute difference against 2.60 F elsewhere, signs split 36 to 8 "
+        "rather than shared, and the three largest per-home-team differences are "
+        "LA, LAC and LV. The PER-GAME ROOF RULE was right in kind and about its "
+        "own 260 closed games, every one of which went number-to-NULL, but the "
+        "measured population is 572 rather than 260 and its clause 'this is the "
+        "ONLY category where that happens' is FALSIFIED: 312 dome games are a "
+        "second category, because the legacy corpus stored a temperature for "
+        "them too. The pre-registration was NOT edited to accommodate this. The "
+        "disagreement is the finding."
+    ),
+    # THE FOURTH REPORTED QUANTITY (pre-registered in Plan 33.1-05 Task 3).
+    "archive_versus_forecast_probe": {
+        "n": 20,
+        "n_is_temperature_pairs": True,
+        "n_wind": 28,
+        "population_joined_on_game_id": 28,
+        "archive_minus_forecast_temp_f_mean_signed": 0.87,
+        "archive_minus_forecast_temp_f_sd": 3.3452,
+        "archive_minus_forecast_wind_mph_mean_signed": -2.4714,
+        "archive_minus_forecast_wind_mph_sd": 3.671,
+        "per_half": {
+            "2024_W06_silver_pre_promotion": {
+                "rows_in_half": 14,
+                "joined_on_game_id": 14,
+                "temp_n": 11,
+                "temp_mean_signed": -0.7091,
+                "temp_sd": 2.3518,
+                "wind_n": 14,
+                "wind_mean_signed": -1.0,
+                "wind_sd": 2.5926,
+            },
+            "2025_W05_duckdb_weather_forecast": {
+                "rows_in_half": 14,
+                "joined_on_game_id": 14,
+                "temp_n": 9,
+                "temp_mean_signed": 2.8,
+                "temp_sd": 3.4706,
+                "wind_n": 14,
+                "wind_mean_signed": -3.9429,
+                "wind_sd": 4.0748,
+            },
+        },
+        "halves_disagree_in_sign_on_temperature": True,
+        "excluded_population": (
+            "the 1,942 legacy 2018-2024 bronze rows are EXCLUDED. They carry no "
+            "weather_source and RESEARCH established that their provenance "
+            "cannot be reconstructed, so including them would answer a DIFFERENT "
+            "question while looking like this one."
+        ),
+        "interpretation_rule": (
+            "WITH n AT MOST 28 THIS IS A DIRECTIONAL PROBE AND NOT AN ESTIMATE. "
+            "No bias correction, no feature change and no Wave-15 instruction "
+            "may rest on it. Its ONLY legitimate use is to say whether the "
+            "question deserves its own measurement later, on a population built "
+            "for it. A phase that measured 28 games and then acted on the sign "
+            "would be doing exactly what this repository's pre-registration "
+            "discipline exists to prevent. This rule is registered BEFORE any "
+            "number exists so it cannot be chosen afterwards."
+        ),
+        "nothing_rests_on_it": True,
+        # THE PROVENANCE CONTRADICTION, recorded rather than resolved.
+        "provenance_finding": (
+            "THE TWO HALVES OF THE PRE-REGISTERED POPULATION ARE NOT EQUALLY "
+            "WELL-FOUNDED, and the pre-registration and this repository's own "
+            "records DISAGREE about one of them. The probe spec calls the 14 "
+            "2024_W06 rows in data/silver/weather.parquet rows 'whose provenance "
+            "is KNOWN to be the forecast feed'. All 14 of them read "
+            "weather_source = 'archive', stamped by Plan 33-09, whose own "
+            "recorded reasoning is that 'every pre-existing row was produced by "
+            "the archive endpoint ... and that ingest hit ARCHIVE_ENDPOINT_URL'. "
+            "Both statements are in committed source and they cannot both be "
+            "right. The 14 2025_W05 rows in the DuckDB weather_forecast table "
+            "are NOT in dispute: their forecast_time is 2025-09-29, before those "
+            "games were played, and they sit in a table named for the forecast "
+            "feed. The registered n=20 figure is reported as registered; the "
+            "per-half split is reported beside it so a later reader can see that "
+            "the uncontested half alone gives +2.80 F on n=9 while the contested "
+            "half gives -0.71 F on n=11 -- opposite signs. NOTHING is concluded "
+            "from either. The pre-registration was NOT edited."
+        ),
+        "measured_by": "Plan 33.1-06 Task 3",
+    },
+}
