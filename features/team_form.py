@@ -751,6 +751,25 @@ class TeamFormCalculator:
         separate decision with a ninety-column blast radius (see the constant's
         comment).
 
+        THERE IS DELIBERATELY NO UPPER BOUND, and code review WR-07 asked for
+        one, so the reasoning is recorded here rather than left implicit. A
+        ceiling at the most recent COMPLETED season would drop the LIVE season
+        from the per-game pool -- which is precisely the defect Plan 33.1-07
+        Task 4 removed, when a hardcoded ``range(2018, 2025)`` stopped at 2024
+        and left season 2025's twelve opponent-adjusted columns carrying two
+        distinct values across 285 games. Deriving that same ceiling from a
+        constant would make it the same bug with a better provenance.
+
+        WHAT HAPPENS INSTEAD, stated so the boundary is not a surprise: a
+        season above ``data.upstream_pin.SEALED_THROUGH_SEASON`` is served from
+        the LIVE zone, and if that season has not been captured the pin refuses
+        by name (``UpstreamLiveCaptureMissing`` / ``UpstreamPinMissing``, which
+        are not in ``scripts/build_features``' swallow tuple, so they propagate
+        and stop the build). A loud stop naming the uncaptured season is the
+        correct outcome: it is recoverable by running the capture, whereas a
+        silent ceiling produces a full-looking gold matrix with the live
+        season's opponent-adjusted family imputed and nothing to notice it.
+
         Args:
             covered_seasons: Any iterable of season labels -- a games frame's
                 ``season`` column, a list of integers, anything sortable to
@@ -783,20 +802,30 @@ class TeamFormCalculator:
         Raises:
             RuntimeError: silver ``games`` cannot be read, or carries no season.
         """
+        # THE COLUMN READ IS INSIDE THE TRY (code review WR-07). It used to sit
+        # after it, so a `games` frame that LOADED but carried no `season`
+        # column raised a bare KeyError -- which IS in the caller's
+        # `except (ValueError, KeyError, TypeError, AttributeError)` tuple and
+        # was therefore swallowed into a warning plus an empty per-game frame,
+        # silently dropping the whole opponent-adjusted family from gold. That
+        # is the exact outcome the RuntimeError typing exists to prevent, so
+        # the one read that could produce it belonged in here all along.
         try:
             games = load_dataframe("games", "silver", "parquet")
+            raw_seasons = games["season"].dropna().tolist()
         except Exception as error:
             msg = (
                 "cannot resolve the per-game season pool: silver `games` could "
-                f"not be read ({error!r}). The pool used to be the hardcoded "
-                "range(2018, 2025), which silently stopped at 2024 and left "
-                "season 2025's opponent-adjusted columns imputed. Refusing "
-                "rather than guessing a range. Pass `seasons=` explicitly if "
-                "the caller already holds a games frame."
+                f"not be read, or carries no `season` column ({error!r}). The "
+                "pool used to be the hardcoded range(2018, 2025), which "
+                "silently stopped at 2024 and left season 2025's "
+                "opponent-adjusted columns imputed. Refusing rather than "
+                "guessing a range. Pass `seasons=` explicitly if the caller "
+                "already holds a games frame."
             )
             raise RuntimeError(msg) from error
 
-        seasons = self.per_game_seasons(games["season"].dropna().tolist())
+        seasons = self.per_game_seasons(raw_seasons)
         if not seasons:
             msg = (
                 "silver `games` carries no season at or above "

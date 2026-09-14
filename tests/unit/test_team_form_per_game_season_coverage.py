@@ -250,6 +250,68 @@ class TestTheFallbackRefusesRatherThanGuessing:
 
         assert not captured_seasons
 
+    def test_a_games_frame_with_NO_season_column_refuses_rather_than_KeyError(
+        self, monkeypatch, captured_seasons: list[list[int]]
+    ) -> None:
+        """Code review WR-07: the one input shape that failed OPEN.
+
+        The two tests above cover an unreadable table and a table whose seasons
+        are all below the floor. The gap between them was a table that LOADS
+        FINE and has no ``season`` column: that read sat OUTSIDE the try, so it
+        raised a bare ``KeyError`` -- which IS in ``scripts/build_features``'
+        except tuple, so it was swallowed into a warning plus an empty per-game
+        frame. A full-looking gold build with the entire opponent-adjusted
+        family missing, which is the exact outcome the RuntimeError typing
+        exists to prevent.
+        """
+        import features.team_form as team_form_module
+
+        monkeypatch.setattr(
+            team_form_module,
+            "load_dataframe",
+            lambda *a, **k: pd.DataFrame({"game_id": ["x"], "week": [1]}),
+        )
+
+        calculator = TeamFormCalculator()
+        with pytest.raises(RuntimeError) as excinfo:
+            calculator.get_per_game_stats(AS_OF)
+
+        assert not isinstance(
+            excinfo.value, ValueError | KeyError | TypeError | AttributeError
+        ), (
+            "a games frame with no season column must refuse OUTSIDE the "
+            "caller's except tuple; a KeyError here is swallowed and the "
+            "opponent-adjusted family silently disappears from gold"
+        )
+        assert "season" in str(excinfo.value)
+        assert not captured_seasons, "nothing should have been fetched"
+
+
+class TestTheLiveSeasonIsNOTCappedOut:
+    """Code review WR-07(b): the reviewer asked for a ceiling. There is not one.
+
+    A ceiling at the most recent COMPLETED season would drop the LIVE season from
+    the per-game pool -- the same defect the hardcoded ``range(2018, 2025)`` had,
+    rebuilt from a constant. The deliberate behaviour is that the pool follows the
+    caller's data, and an uncaptured season above the pin's sealed zone stops the
+    build by name rather than vanishing from it. This pins that choice so it is a
+    decision on record instead of an omission.
+    """
+
+    def test_a_season_above_the_sealed_pin_stays_in_the_pool(self) -> None:
+        from data.upstream_pin import SEALED_THROUGH_SEASON
+
+        live = SEALED_THROUGH_SEASON + 1
+        pool = TeamFormCalculator().per_game_seasons([2018, 2024, live])
+
+        assert live in pool, (
+            f"season {live} was dropped from the per-game pool. Silently "
+            "excluding the live season is how season 2025's twelve "
+            "opponent-adjusted columns came to carry two distinct values "
+            "across 285 games; the correct failure is a named pin refusal."
+        )
+        assert pool[-1] == live
+
 
 class TestTheRealPerGameFrameReachesTheLatestSeason:
     """KIND: integration against the PINNED play-by-play snapshot. Slow, no network."""
