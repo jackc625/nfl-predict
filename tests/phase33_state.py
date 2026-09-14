@@ -9447,11 +9447,11 @@ OU_WEATHER_CONDITIONS_BREAKDOWN: dict[str, object] = {
 # zero CRLF pairs.
 # ---------------------------------------------------------------------------
 
-SEASON_PARTITION_RULE_COMMIT: str = "e7d0ca5b0997f7660acaa7e75420416c4b309dd7"
+SEASON_PARTITION_RULE_COMMIT: str = "a6061c0656af334f241eea7003d8abe10923a72a"
 
 SEASON_PARTITION_RULE_FILE_SHA256: dict[str, str] = {
     "conf/season_partition.py": (
-        "edd580beb0f7df06d4cebbcf10bdf3252ec2747aa7eabe51efa3032899b76acb"
+        "47567814137cd3d8bc46188552a97e1ac7c446f42fd987ad9b9f970ee4b01dd9"
     ),
 }
 
@@ -10790,3 +10790,53 @@ REVIEW_FIX_RENAMED_TESTS: tuple[tuple[str, str, str], ...] = (
         "new and asserts the sameness directly.",
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# THE RULE'S WITNESS, RE-MEASURED ONCE.
+#
+# APPENDED 2026-09-14 by the Phase-33.1 code-review fix pass (REVIEW.md WR-01).
+#
+# THE TWO CONSTANTS ABOVE WERE EDITED, WHICH THE APPEND PROTOCOL OTHERWISE
+# FORBIDS. They are edited because the test that reads them PRESCRIBES it for a
+# deliberate change, in its own words: "re-measure BOTH constants in
+# tests/phase33_state.py from the new commit, in a strictly later commit, and
+# record why." They are the only two values in this file that are a MEASUREMENT
+# OF THE CURRENT TREE rather than a record of a past one, so leaving them stale
+# would not preserve a record -- it would break the check they exist to power.
+# This slot is the "record why", and it keeps the old pair readable.
+#
+# SEASON_PARTITION_RULE_PROVENANCE above is NOT edited and still describes the
+# ORIGINAL freeze (Plan 33.1-09 Task 1). It is a record of that event, and that
+# event happened. Read it together with this slot, not instead of it.
+# ---------------------------------------------------------------------------
+
+SEASON_PARTITION_RULE_REANCHOR: dict[str, str] = {
+    "previous_commit": "e7d0ca5b0997f7660acaa7e75420416c4b309dd7",
+    "previous_sha256": (
+        "edd580beb0f7df06d4cebbcf10bdf3252ec2747aa7eabe51efa3032899b76acb"
+    ),
+    "new_commit": "a6061c0656af334f241eea7003d8abe10923a72a",
+    "new_sha256": ("47567814137cd3d8bc46188552a97e1ac7c446f42fd987ad9b9f970ee4b01dd9"),
+    "date": "2026-09-14",
+    "why": (
+        "Code review WR-01: completed_seasons_from had no upper bound, so a gold "
+        "frame carrying live 2026 rows -- which its own docstring invites callers "
+        "to pass, and which a mid-season rebuild produces -- silently returned a "
+        "partition with holdout (2025, 2026), a partial holdout season, a moved "
+        "hp-val fold and a final fit over unplayed games. The clamp closes it."
+    ),
+    "what_it_did_not_change": (
+        "default_season_partition() is IDENTICAL field for field before and after, "
+        "checked by executing the pre-edit file beside the new one rather than by "
+        "reading. The clamp drops seasons above LATEST_COMPLETED_SEASON and no "
+        "completed-season input has ever contained one."
+    ),
+    "no_window_had_been_scored": (
+        "No re-fit had run, the gate had not been run and no candidate existed "
+        "when this was made, so the module docstring's prohibition on amending a "
+        "rule AFTER a window has been scored was not engaged."
+    ),
+    "commit_contents": "exactly conf/season_partition.py and nothing else",
+    "hash_basis": "newline-normalized file bytes (CRLF folded to LF), as before",
+}
