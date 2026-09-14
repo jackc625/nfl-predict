@@ -10353,3 +10353,56 @@ WP_TRAINED_SCALED_SERVED_RAW: dict[str, object] = {
     "owner_ratified": "2026-09-12",
     "measured": "2026-09-14",
 }
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.1-10 Task 4 -- THE ENTRY POINT IS AUTHORED HERE AND RUN BY WAVE 15.
+#
+# MEASURED 2026-09-14. `33.1-SPEC.md`'s Boundaries put ANY model re-fit out of scope by
+# name: Phase 33's Wave 15 owns the re-fit and Phase 33.1 corrects its inputs. Authoring
+# a re-fit MECHANISM is in scope; CALLING one is not, and the difference between those two
+# is the whole reason this slot exists rather than a sentence in a readout.
+#
+# The scan covers THREE symbols, not two. `apply_final_fit_to_trainer` mutates trainer
+# state so the existing save path persists the final-fit object instead of the last fold's
+# -- a call to it on a production path would be as much a re-fit as a call to the fit.
+#
+# The two digests below are THE SAME VALUE, and that identity IS the claim.
+# ---------------------------------------------------------------------------
+
+FINAL_FIT_NOT_RUN_IN_PHASE_331: dict[str, object] = {
+    "entry_point_module": "models/trainers/final_fit.py",
+    "symbols": (
+        "final_fit",
+        "final_fit_over_completed_seasons",
+        "apply_final_fit_to_trainer",
+    ),
+    "scanned_modules": (
+        "models/train.py",
+        "scripts/promote_models.py",
+        "scripts/run_phase33_gate.py",
+        "pipeline/steps.py",
+    ),
+    "call_sites_found": 0,
+    "intended_caller": (
+        "Phase 33 Wave 15, which owns the re-fit. A call site added in Phase 33.1 would "
+        "BE a model re-fit, which 33.1-SPEC.md's Boundaries put out of scope by name."
+    ),
+    "scan_controls": (
+        "A planted call into a temporary copy of models/train.py must produce exactly one "
+        "hit, so the scan is proven to fire; and a required module absent from the "
+        "checkout fails BY NAME rather than shortening the scanned list, so the scan "
+        "cannot pass by visiting nothing.",
+    ),
+    "latest_json_digest_before": (
+        "7ff78a506b1cb06e206705c5900438a5388be64e963bcc8a39c7ed6a8d0f66f1"
+    ),
+    "latest_json_digest_after": (
+        "7ff78a506b1cb06e206705c5900438a5388be64e963bcc8a39c7ed6a8d0f66f1"
+    ),
+    "digest_instrument": "tests.data_boundary.digest_file (sha256 over the file bytes)",
+    "test_module": "tests/unit/test_final_fit_entry_point.py",
+    "requirement": "R6",
+    "decision": "D33.1-01 / D33.1-02 (Ruling T of 33.1-10-PLAN.md)",
+    "measured": "2026-09-14",
+}
