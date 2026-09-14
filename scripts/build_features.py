@@ -48,6 +48,7 @@ from features.snaps import SnapCountBuilder
 from features.team_form import TeamFormCalculator
 from features.validation import LeakageGate, LeakageViolation
 from features.weather import (
+    WEATHER_COVERAGE_COLUMN,
     WEATHER_FEATURE_COLUMNS_BY_BUILDER,
     WeatherFeaturesCalculator,
 )
@@ -1309,6 +1310,30 @@ class FeatureMatrixBuilder:
         }
         active_builder = self.active_builder_key or BUILDER_KEYS[0]
 
+        # THE COVERAGE FLAG IS NOT A MEASUREMENT, so it is not z-scored
+        # (Plan 33.1-07 Task 4). DERIVED from the set the merged frame actually
+        # contributed, never hardcoded: the compressed builder emits no coverage
+        # flag at all, so a build over that frame must pass an EMPTY set rather
+        # than name a column nothing contributed.
+        #
+        # WHY THIS EXEMPTION EXISTS, measured rather than argued: silver
+        # weather_features carried weather_coverage = 1.0 on all 6,499 rows and
+        # gold recorded 0.0 on all 6,499. The expanding std of a constant column
+        # is zero, safe_std clips to 1e-8, and (1.0 - 1.0) / 1e-8 is 0.0 -- which
+        # is the value features.weather._absent_observation_features writes to
+        # mean NO OBSERVATION. The one column whose whole purpose is to tell an
+        # absence from a mild day was reporting absence for every game that had
+        # a real ERA5 observation behind it.
+        #
+        # It is the same argument CR-02 already makes about winsorization one
+        # stage earlier -- "clipping one destroys the distinction it exists to
+        # encode" -- applied to the transform that runs next.
+        preserve_level_cols = tuple(
+            column
+            for column in preserve_by_builder[active_builder]
+            if column == WEATHER_COVERAGE_COLUMN
+        )
+
         # Compute prior-season stats for bootstrap and normalize
         if target_season:
             # Single-season mode: compute prior stats once
@@ -1323,6 +1348,7 @@ class FeatureMatrixBuilder:
                 min_periods=4,
                 prior_season_stats=prior_stats,
                 preserve_missing_cols=preserve_by_builder[active_builder],
+                preserve_level_cols=preserve_level_cols,
             )
 
         # Batch mode: compute prior-season stats per season
@@ -1341,6 +1367,7 @@ class FeatureMatrixBuilder:
                 min_periods=4,
                 prior_season_stats=prior_stats,
                 preserve_missing_cols=preserve_by_builder[active_builder],
+                preserve_level_cols=preserve_level_cols,
             )
             normalized_parts.append(norm_part)
         return pd.concat(normalized_parts, ignore_index=False)

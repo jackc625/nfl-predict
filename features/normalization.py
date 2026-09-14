@@ -34,6 +34,7 @@ def expanding_normalize(
     min_periods: int = 4,
     prior_season_stats: dict[str, tuple[float, float]] | None = None,
     preserve_missing_cols: Sequence[str] = (),
+    preserve_level_cols: Sequence[str] = (),
 ) -> pd.DataFrame:
     """Normalize features using expanding window within each season.
 
@@ -70,6 +71,27 @@ def expanding_normalize(
             not exist. A weather observation that never arrived is the second
             case, not the first (SPEC R5, D33.1-07), and only a caller that
             NAMES a column gets the second treatment for it.
+        preserve_level_cols: Columns returned at their RECORDED LEVEL rather
+            than z-scored. Defaults to empty, so every existing caller is
+            byte-preserved.
+
+            FOR A COLUMN WHOSE LEVELS ARE ITS MEANING, and for no other kind
+            (Plan 33.1-07 Task 4). CR-02 already makes this argument one stage
+            earlier, about winsorization: "a DISCRETE INDICATOR has no outliers
+            to winsorize, and clipping one destroys the distinction it exists to
+            encode". A z-score destroys it too, and in the degenerate case it
+            destroys it completely -- the expanding std of a CONSTANT column is
+            zero, ``safe_std`` clips to 1e-8, and every row comes back 0.0.
+
+            That is not hypothetical. ``weather_coverage`` reached gold as a
+            constant 0.0 on all 6,499 rows while silver carried a constant 1.0,
+            so the column that exists to distinguish "no observation" from "mild
+            weather" recorded NO OBSERVATION for 6,499 games that all had one.
+
+            NOT A GENERAL EXEMPTION FOR INDICATORS. A binary flag that VARIES
+            still carries its distinction through a monotone transform, and
+            z-scoring it is this pipeline's convention. Only a caller that NAMES
+            a column opts it out, and the set is expected to stay very small.
 
     Returns:
         DataFrame with normalized values replacing raw values in
@@ -79,6 +101,7 @@ def expanding_normalize(
         sort_cols = [group_col, "week"]
 
     preserve_missing = set(preserve_missing_cols)
+    preserve_level = set(preserve_level_cols)
 
     result = df.sort_values(sort_cols).copy()
 
@@ -91,6 +114,16 @@ def expanding_normalize(
                 continue
 
             values = result.loc[season_idx, col].copy()
+
+            # A LEVEL-PRESERVED COLUMN IS NOT TRANSFORMED AT ALL, and the skip
+            # sits here -- before the statistics -- rather than being undone
+            # afterwards. Restoring the values after z-scoring would give the
+            # same numbers, but it would also leave a reader unable to tell
+            # whether the column had been normalized and then repaired. It was
+            # never normalized. An absent cell stays absent for free, because
+            # nothing touched it.
+            if col in preserve_level:
+                continue
 
             # The INPUT absence mask, captured BEFORE anything is computed.
             # It has to be taken here rather than derived afterwards: by the

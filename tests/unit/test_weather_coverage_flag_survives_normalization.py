@@ -213,6 +213,35 @@ class TestTheNormalizerIsWhatDestroysTheFlag:
             "to 1e-8 and (v - v) / 1e-8 is 0.0. That is the whole mechanism"
         )
 
+    def test_without_the_parameter_the_flag_itself_still_flattens_to_zero(
+        self,
+    ) -> None:
+        """CONTROL 4 at the lower layer: the new behaviour is OPT-IN.
+
+        Called directly, with no ``preserve_level_cols``, the normalizer treats
+        the coverage flag exactly as it always did -- so every existing caller
+        is byte-preserved and only the gold build's named opt-in changes.
+        """
+        frame = _combined_frame([1.0] * 8)
+        result = expanding_normalize(
+            frame.copy(), feature_cols=[WEATHER_COVERAGE_COLUMN]
+        )
+        assert set(result[WEATHER_COVERAGE_COLUMN].tolist()) == {0.0}
+
+    def test_with_the_parameter_the_recorded_levels_are_returned_unchanged(
+        self,
+    ) -> None:
+        """And a column outside the named set in the SAME call still z-scores."""
+        coverage = [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0]
+        frame = _combined_frame(coverage)
+        result = expanding_normalize(
+            frame.copy(),
+            feature_cols=[WEATHER_COVERAGE_COLUMN, CONTROL_COLUMN],
+            preserve_level_cols=[WEATHER_COVERAGE_COLUMN],
+        )
+        assert result[WEATHER_COVERAGE_COLUMN].tolist() == coverage
+        assert set(result[CONTROL_COLUMN].tolist()) == {0.0}
+
 
 class TestTheColumnIsNamedOnce:
     """The single-source check, so the name cannot drift between two spellings."""
