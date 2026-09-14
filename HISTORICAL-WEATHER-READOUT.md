@@ -297,6 +297,25 @@ supporting evidence is itself measured and committed beside the rule: feature se
 534-row 2018-2019 window selected 6 of ATS's 25 and 9 of O/U's 25 features from pure synthetic noise
 columns at N=50.
 
+> **ADDED 2026-09-14 (code review WR-11). A consequence this section did not state: the
+> DIAGNOSTIC BACKTEST now walks TWO folds where it walked FOUR.** `BacktestConfig.holdout_seasons`
+> was the literal `[2021, 2022, 2023, 2024]` and is now the rule's holdout, `(2024, 2025)` --
+> measured, 4 folds to 2. Section 3 presented the partition change as "2025 finally visible",
+> which is true and is not the whole of it. Every anchor, every Brier decomposition and every
+> betting simulation this engine reports is now computed over a different population than the one
+> any v2.1 `AUDIT-REPORT.md` figure was measured on, so those figures are not comparable to a
+> fresh run without saying which window each used.
+>
+> **This is ACCEPTED, not a defect, and the reason is the owner's own words.** The ruling above
+> reads "hold back 2024-2025 for an honest score" -- the backtest is what produces that score, so
+> the grading population moving with the rule is the ruling being obeyed rather than a side effect
+> of it. `conf/season_partition.py` already treats the backtest as governed by the rule: it ships a
+> `backtest_seasons()` helper describing exactly this span. Giving the engine its own separate
+> season count would create a second partition to keep in step by hand, which is the thing this
+> whole section exists to abolish. **What was wrong was the silence, and this paragraph is the
+> fix.** The narrower window is also lower-powered -- roughly 570 games rather than 1,139 -- and
+> anyone comparing a new anchor to an old one must say which window produced each.
+
 > **CORRECTION, 2026-09-14 (code review CR-01).** The table above is the rule, and the rule is
 > unchanged. What was not true when this was published is that every consumer obeyed it. The
 > promotion path took only the holdout row from this table; the feature-selection and tuning rows
