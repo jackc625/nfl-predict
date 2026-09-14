@@ -1756,9 +1756,19 @@ class FeatureMatrixBuilder:
             # not the rolling averages from the silver table.
             games_df = feature_sources["games"]
             try:
+                # THE SEASON POOL COMES FROM THE FRAME ABOVE (Plan 33.1-07
+                # Task 4). It used to come from a hardcoded range(2018, 2025)
+                # inside the calculator, which stopped at 2024 and left season
+                # 2025's twelve opponent-adjusted columns carrying 2 distinct
+                # values across 285 games. The caller already holds the games
+                # frame, so it names the coverage rather than making the
+                # calculator re-derive the same fact from a second store read.
                 per_game_stats = self.team_form_calc.get_per_game_stats(
                     as_of_datetime,
                     target_season=target_season,
+                    seasons=None
+                    if target_season is not None
+                    else games_df["season"].dropna().tolist(),
                 )
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 logger.warning(

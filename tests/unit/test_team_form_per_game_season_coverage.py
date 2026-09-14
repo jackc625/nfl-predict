@@ -72,7 +72,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
-from features.team_form import TeamFormCalculator
+from features.team_form import TEAM_FORM_PER_GAME_FIRST_SEASON, TeamFormCalculator
 
 AS_OF = datetime(2026, 9, 14, 12, 0, tzinfo=ZoneInfo("America/New_York"))
 
@@ -123,11 +123,151 @@ class TestTheUpperBoundFollowsTheDataThatExists:
             f"distinct in both 2023 and 2024. Resolved here: {resolved}"
         )
 
+    def test_the_bound_tracks_a_caller_whose_data_ends_somewhere_else(
+        self, captured_seasons: list[list[int]]
+    ) -> None:
+        """The property a replacement literal could not have.
+
+        Swapping 2025 for 2026 would satisfy the test above and rot on the same
+        schedule. Only a derivation tracks a caller whose data ends in 2027.
+        """
+        calculator = TeamFormCalculator()
+        calculator.get_per_game_stats(AS_OF, seasons=[2019, 2027])
+
+        assert captured_seasons[-1] == [2019, 2027], (
+            "the pool is the seasons the caller CARRIES, floored at the "
+            "coverage floor -- not a range whose end is typed in"
+        )
+
+    def test_a_caller_whose_data_ends_in_2024_does_not_resolve_2025(
+        self, captured_seasons: list[list[int]]
+    ) -> None:
+        """PLANTED VIOLATION: the bound follows the data in BOTH directions.
+
+        A fix that simply appended one more season would pass the two tests
+        above and would fabricate a season the caller does not have.
+        """
+        calculator = TeamFormCalculator()
+        calculator.get_per_game_stats(AS_OF, seasons=[2023, 2024, 2024])
+
+        assert captured_seasons[-1] == [2023, 2024]
+
+
+class TestTheFloorAndTheTargetSeasonBranchAreUnchanged:
+    """CONTROL 4: the two behaviours this fix must not disturb."""
+
+    def test_the_floor_is_preserved(self, captured_seasons: list[list[int]]) -> None:
+        """Seasons below the floor are dropped, and the floor is still 2018.
+
+        Widening it would move roughly ninety gold columns that are a flat
+        imputed constant for 2002-2017 -- outside this rung's declared change
+        set. The floor is an INHERITED literal, not a data-coverage fact: the
+        play-by-play pin reaches back to 2001. Plan 33.1-09 owns re-deciding it.
+        """
+        assert TEAM_FORM_PER_GAME_FIRST_SEASON == 2018
+
+        calculator = TeamFormCalculator()
+        calculator.get_per_game_stats(AS_OF, seasons=[2002, 2017, 2018, 2019])
+
+        assert captured_seasons[-1] == [2018, 2019], (
+            "a season below the floor must be dropped, not silently fetched"
+        )
+
     def test_the_target_season_branch_is_byte_preserved(
         self, captured_seasons: list[list[int]]
     ) -> None:
-        """CONTROL 4. A scoped build still reads the target season and its predecessor."""
+        """A scoped build still reads the target season and its predecessor."""
         calculator = TeamFormCalculator()
         calculator.get_per_game_stats(AS_OF, target_season=2024)
 
         assert captured_seasons[-1] == [2023, 2024]
+
+    def test_an_explicit_seasons_argument_wins_over_the_silver_fallback(
+        self, captured_seasons: list[list[int]]
+    ) -> None:
+        """The caller already holds the games frame, so it names the pool.
+
+        ``scripts/build_features`` reads ``feature_sources["games"]`` two lines
+        before this call. Re-deriving the coverage from a second store read
+        would be a second source of truth for the same fact.
+        """
+        calculator = TeamFormCalculator()
+        calculator.get_per_game_stats(AS_OF, seasons=[2021, 2022])
+
+        assert captured_seasons[-1] == [2021, 2022]
+
+
+class TestTheFallbackRefusesRatherThanGuessing:
+    """The refusal is typed to ESCAPE the caller's except tuple, and that matters."""
+
+    def test_an_unreadable_silver_games_table_raises_a_named_refusal(
+        self, monkeypatch, captured_seasons: list[list[int]]
+    ) -> None:
+        """And the refusal names the defect it replaced.
+
+        ``scripts/build_features`` catches ValueError, KeyError, TypeError and
+        AttributeError around this call and substitutes an EMPTY per-game
+        frame, which drops the whole opponent-adjusted family from gold in
+        silence. A refusal typed as any of those four would be swallowed into
+        exactly the shape this fix removes.
+        """
+        import features.team_form as team_form_module
+
+        def _unreadable(*args, **kwargs):
+            raise FileNotFoundError("silver games is not there")
+
+        monkeypatch.setattr(team_form_module, "load_dataframe", _unreadable)
+
+        calculator = TeamFormCalculator()
+        with pytest.raises(RuntimeError) as excinfo:
+            calculator.get_per_game_stats(AS_OF)
+
+        message = str(excinfo.value)
+        assert "range(2018, 2025)" in message
+        assert not isinstance(
+            excinfo.value, ValueError | KeyError | TypeError | AttributeError
+        ), (
+            "the refusal must escape the caller's except tuple, or the build "
+            "reports success with the opponent-adjusted family missing"
+        )
+        assert not captured_seasons, "nothing should have been fetched"
+
+    def test_a_silver_table_with_no_season_above_the_floor_refuses(
+        self, monkeypatch, captured_seasons: list[list[int]]
+    ) -> None:
+        """An empty pool is the defect, not a smaller answer."""
+        import features.team_form as team_form_module
+
+        monkeypatch.setattr(
+            team_form_module,
+            "load_dataframe",
+            lambda *a, **k: pd.DataFrame({"season": [2002, 2010, 2017]}),
+        )
+
+        calculator = TeamFormCalculator()
+        with pytest.raises(RuntimeError, match="carries no season at or above"):
+            calculator.get_per_game_stats(AS_OF)
+
+        assert not captured_seasons
+
+
+class TestTheRealPerGameFrameReachesTheLatestSeason:
+    """KIND: integration against the PINNED play-by-play snapshot. Slow, no network."""
+
+    def test_the_per_game_frame_carries_2025_rows(self) -> None:
+        """The end-to-end statement: real per-game rows exist for 2025.
+
+        The resolution tests above are about a list of integers. This one is
+        about whether the per-game EPA frame the opponent adjuster consumes
+        actually contains the season -- which is the fact the twelve gold
+        columns depend on.
+        """
+        calculator = TeamFormCalculator()
+        stats = calculator.get_per_game_stats(AS_OF, seasons=list(range(2018, 2026)))
+
+        assert not stats.empty
+        seasons = sorted(int(season) for season in stats["season"].unique())
+        assert seasons[-1] == LATEST_COVERED_SEASON, (
+            f"per-game seasons resolved: {seasons}"
+        )
+        assert int((stats["season"] == LATEST_COVERED_SEASON).sum()) > 0

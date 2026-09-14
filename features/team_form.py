@@ -43,6 +43,41 @@ from utils import get_logger
 logger = get_logger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# THE PER-GAME SEASON POOL (Plan 33.1-07 Task 4, 2026-09-14).
+#
+# WHAT WAS WRONG. `get_per_game_stats` resolved its full-build pool as
+# `list(range(2018, 2025))`. `range` stops BEFORE its second argument, so season
+# 2025 was never built -- and 2025 is the season feeding the live 2026
+# predictions. MEASURED in production gold, for each of the twelve
+# `{home,away}_{off,def}_rolling_opp_adj_*` columns: 285 distinct values across
+# the 285 rows of 2023, 285 across 2024, and TWO across the 285 rows of 2025.
+# Two distinct values is not a team-strength signal; it is the imputation that
+# runs when the real column is absent, wearing the column's name.
+#
+# WHY A CONSTANT AND A DERIVATION RATHER THAN A NEW RANGE. Writing
+# `range(2018, 2026)` would rot on exactly the same schedule and in exactly the
+# same silent way: a wrong upper bound produces a full-looking column rather
+# than an error, which is why this one survived unnoticed. So the UPPER bound
+# now comes from the seasons the DATA carries -- the caller's own games frame
+# where it has one, the silver `games` table where it does not -- and only the
+# FLOOR is a literal.
+#
+# THE FLOOR IS INHERITED, NOT DERIVED, AND THAT IS DELIBERATE. The play-by-play
+# pin reaches back to 2001, so 2018 is NOT a coverage floor; it is a literal
+# whose origin this plan did not establish. Widening it would move roughly
+# ninety gold columns that are a flat imputed constant for 2002-2017 -- far
+# outside the change set the Phase-33.1 rung declares, and a different decision
+# from the one this plan was asked to make. It is named here so it is visible
+# and pinned by a test, and Plan 33.1-09 -- which consolidates every season
+# literal in the repository into `conf/season_partition.py` -- is where it
+# should be re-decided. This constant is deliberately shaped to be folded into
+# that module without changing any call site.
+# ---------------------------------------------------------------------------
+
+TEAM_FORM_PER_GAME_FIRST_SEASON: int = 2018
+
+
 class TeamFormCalculator:
     """Calculate rolling team form metrics from play-by-play data.
 
@@ -689,11 +724,78 @@ class TeamFormCalculator:
             return pd.concat(all_rolling_stats, ignore_index=True)
         return pd.DataFrame()
 
+    def per_game_seasons(self, covered_seasons: object) -> list[int]:
+        """The per-game pool for *covered_seasons*, floored and sorted.
+
+        The FLOOR is ``TEAM_FORM_PER_GAME_FIRST_SEASON`` and the CEILING is
+        whatever the caller's data reaches. A season below the floor is
+        DROPPED rather than fetched, because widening the pool downward is a
+        separate decision with a ninety-column blast radius (see the constant's
+        comment).
+
+        Args:
+            covered_seasons: Any iterable of season labels -- a games frame's
+                ``season`` column, a list of integers, anything sortable to
+                integers. Duplicates are collapsed, which is what lets a games
+                frame be passed straight in.
+
+        Returns:
+            The sorted, de-duplicated seasons at or above the floor.
+        """
+        return sorted(
+            {
+                int(season)
+                for season in covered_seasons
+                if int(season) >= TEAM_FORM_PER_GAME_FIRST_SEASON
+            }
+        )
+
+    def _covered_seasons_from_silver(self) -> list[int]:
+        """The seasons silver ``games`` carries, for a caller that named none.
+
+        FAIL-CLOSED, and typed as ``RuntimeError`` on purpose.
+        ``scripts/build_features`` guards its ``get_per_game_stats`` call with
+        ``except (ValueError, KeyError, TypeError, AttributeError)`` and falls
+        back to an EMPTY per-game frame, which silently drops the entire
+        opponent-adjusted family from gold. A refusal typed as any of those four
+        would be swallowed into exactly the shape this fix exists to remove: a
+        full-looking build with a family quietly missing. ``RuntimeError`` is
+        outside that tuple and propagates.
+
+        Raises:
+            RuntimeError: silver ``games`` cannot be read, or carries no season.
+        """
+        try:
+            games = load_dataframe("games", "silver", "parquet")
+        except Exception as error:
+            msg = (
+                "cannot resolve the per-game season pool: silver `games` could "
+                f"not be read ({error!r}). The pool used to be the hardcoded "
+                "range(2018, 2025), which silently stopped at 2024 and left "
+                "season 2025's opponent-adjusted columns imputed. Refusing "
+                "rather than guessing a range. Pass `seasons=` explicitly if "
+                "the caller already holds a games frame."
+            )
+            raise RuntimeError(msg) from error
+
+        seasons = self.per_game_seasons(games["season"].dropna().tolist())
+        if not seasons:
+            msg = (
+                "silver `games` carries no season at or above "
+                f"{TEAM_FORM_PER_GAME_FIRST_SEASON}, so the per-game pool would "
+                "be empty and every opponent-adjusted column would be imputed. "
+                "That is the defect this resolution replaced, so it refuses "
+                "rather than returning an empty frame."
+            )
+            raise RuntimeError(msg)
+        return seasons
+
     def get_per_game_stats(
         self,
         as_of_datetime: datetime,
         *,
         target_season: int | None = None,
+        seasons: object = None,
     ) -> pd.DataFrame:
         """Get per-game team stats (not rolling) for opponent adjustment.
 
@@ -701,19 +803,37 @@ class TeamFormCalculator:
         season, week, side, and raw EPA metrics. Used by OpponentAdjuster
         as input for opponent strength adjustment.
 
+        THE POOL IS DERIVED, NEVER TYPED (Plan 33.1-07 Task 4). The three
+        branches below are ordered by how much the caller knows:
+
+        1. *seasons* -- the caller holds the games frame and says what it
+           covers. ``scripts/build_features`` reads ``feature_sources["games"]``
+           two lines before this call, so re-deriving the same fact from a
+           second store read would be a second source of truth for it.
+        2. *target_season* -- a scoped build. Byte-unchanged: the target and its
+           predecessor, exactly as before.
+        3. Neither -- read the coverage off silver ``games``. This is the branch
+           that replaced ``list(range(2018, 2025))``.
+
         Args:
             as_of_datetime: Time-fence cutoff.
             target_season: If set, loads this season and prior.
+            seasons: The seasons the caller's data covers. Floored at
+                ``TEAM_FORM_PER_GAME_FIRST_SEASON``. Takes precedence over
+                *target_season*, because a caller that names its own coverage
+                has more information than a season label does.
 
         Returns:
             DataFrame with per-game team stats.
         """
-        if target_season is not None:
-            seasons = [target_season - 1, target_season]
+        if seasons is not None:
+            resolved = self.per_game_seasons(seasons)
+        elif target_season is not None:
+            resolved = [target_season - 1, target_season]
         else:
-            seasons = list(range(2018, 2025))
+            resolved = self._covered_seasons_from_silver()
 
-        pbp_df = self.fetch_pbp_data(seasons)
+        pbp_df = self.fetch_pbp_data(resolved)
         team_stats_df = self.calculate_team_game_stats(pbp_df)
         return team_stats_df
 
