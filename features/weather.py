@@ -169,6 +169,25 @@ WEATHER_FLAG_COLUMNS: tuple[str, ...] = (
     "weather_coverage",
 )
 
+# THE COVERAGE FLAG, NAMED ONCE (Plan 33.1-07 Task 4, 2026-09-14).
+#
+# It already appears inside WEATHER_FLAG_COLUMNS above, but a tuple membership
+# is not a name a downstream module can import, and three of them now need to
+# refer to THIS column specifically rather than to the flag family: the gold
+# build's normalization exemption, the constancy measurement, and the width
+# tripwire's delta pinning. Naming it here rather than spelling the string in
+# each is the same single-source discipline the family tuples themselves follow.
+#
+# WHY IT NEEDS ITS OWN TREATMENT AT ALL: it is the one column whose LEVELS ARE
+# ITS MEANING. `weather_affects_game` is a real predicate about the venue and
+# survives a monotone transform; this one answers "is there an observation
+# behind this row", and a z-score maps that answer onto window-dependent
+# numbers. On the corrected corpus -- constant 1.0, because every game now HAS
+# an observation -- the z-score of a constant is exactly 0.0, which is the value
+# `_absent_observation_features` writes to mean NO OBSERVATION. The column ended
+# up asserting the precise opposite of the truth on all 6,499 gold rows.
+WEATHER_COVERAGE_COLUMN: str = "weather_coverage"
+
 # Not a measurement and not a float. Callers that assert "every weather column
 # is NaN" must skip it, because `numpy.isfinite` raises on a string rather than
 # returning False -- so naming it here is what keeps that assertion honest
@@ -221,6 +240,14 @@ def _validate_column_declarations() -> None:
         if len(set(columns)) != len(columns):
             msg = f"WEATHER_FEATURE_COLUMNS_BY_BUILDER[{key!r}] has duplicates"
             raise ValueError(msg)
+    if WEATHER_COVERAGE_COLUMN not in WEATHER_FLAG_COLUMNS:
+        msg = (
+            f"WEATHER_COVERAGE_COLUMN {WEATHER_COVERAGE_COLUMN!r} is not a "
+            "member of WEATHER_FLAG_COLUMNS. The single-name constant exists so "
+            "downstream modules can refer to THIS column rather than spelling "
+            "the string; a name that is not in the family is a second spelling."
+        )
+        raise ValueError(msg)
     union = set(_FULL_BUILDER_COLUMNS) | set(_COMPRESSED_BUILDER_COLUMNS)
     if union != set(WEATHER_FEATURE_COLUMNS):
         msg = (
