@@ -8774,3 +8774,297 @@ GOLD_WEATHER_CONSTANCY_AFTER: dict[str, object] = {
     "no_model_refit": True,
     "no_gate_run": True,
 }
+
+# ---------------------------------------------------------------------------
+# WHAT THE RUNG-3 GOLD REBUILD TURNED RED -- Plan 33.1-08 Task 1.
+#
+# APPENDED on 2026-09-14, after Plan 33.1-07's rung-3 rebuild (commit cc5f0e7).
+#
+# THE INSTRUMENT IS NOT THE ONE THE PLAN ASKED FOR, AND THAT IS RECORDED RATHER
+# THAN HIDDEN. Plan 33.1-08 Task 1 as written asked for three whole-tier runs
+# (tests/unit, tests/integration, tests/api + tests/test_*.py) and their three
+# summary lines verbatim. A STANDING OWNER INSTRUCTION dated 2026-09-14 -- later
+# than the plan, and recorded as the first entry under `## Decisions` in
+# .planning/STATE.md -- forbids exactly that: no bare pytest, no directory sweep,
+# targeted modules only. The instruction outranks the plan because it is later
+# and because it is the owner's.
+#
+# So the enumeration was taken over a MEASURED BLAST RADIUS instead of a blind
+# sweep. The radius was derived mechanically, not guessed: every test module in
+# the repository that reads data/gold/*.parquet or invokes a harness that scores
+# gold (score_deployed_artifacts, run_ou_divergence_diagnosis,
+# run_signal_lift_screen, run_backtest, load_gold, load_feature_matrix), plus the
+# four modules that host the five registered tripwires, plus the two modules
+# already identified as casualties by Plan 33.1-07. 44 modules, run as explicit
+# module lists.
+#
+# A gold rebuild can only turn a test red through gold. A module that never reads
+# gold and never scores against it cannot be a casualty of one. That is the
+# argument for the radius, and it is the argument a reader should attack if they
+# think this enumeration is incomplete.
+#
+# WHAT THIS MEASUREMENT DOES NOT ESTABLISH: any statement about the suite as a
+# whole. The three tiers were not run. A tier line is not recorded here because
+# one was not measured, and carrying a count over from an earlier run would be
+# the exact defect PRE_PHASE_TIER_LINES exists to prevent.
+# ---------------------------------------------------------------------------
+
+# The summary lines of the runs that WERE made, verbatim, each beside the module
+# list that produced it. The instrument is part of the measurement.
+GOLD_REBUILD_TRIAGE_RUNS: tuple[tuple[str, str], ...] = (
+    (
+        "the five repo-root readout guards (ou_divergence_diagnosis_md, "
+        "signal_lift_readout_md, line_movement_readout_md, gated_refit_readout_md, "
+        "profitability_readout_md)",
+        "107 passed, 31 warnings in 5.67s",
+    ),
+    (
+        "test_activation_parity.py + test_temporal_display_columns.py "
+        "(the predeclared parity module and the already-identified casualty)",
+        "6 failed, 34 passed, 31 warnings in 5.99s",
+    ),
+    (
+        "20 gold-reading unit modules (bet_list_entry_point, bet_list_schema, "
+        "build_features_gold_write, build_features_wr06_bounds, "
+        "data_boundary_digest, data_qa_duckdb_parquet, empty_week_refusals, "
+        "evidence_skip_visibility, feature_selection_stability, group_gate, "
+        "output_path_guards, pipeline_model_validation, "
+        "provisional_training_refusal, required_artifacts_currency, "
+        "storage_atomic_write, train_exclude_groups, weekly_decision_frame, "
+        "write_guard_marker_scope, precipitation_from_measurement, "
+        "team_form_per_game_season_coverage)",
+        "443 passed, 162 warnings in 108.57s (0:01:48)",
+    ),
+    (
+        "the three tripwire-host integration modules "
+        "(gate_baseline_byte_identity, n01_resync_control, promote_models)",
+        "4 failed, 42 passed, 57 warnings in 27.73s",
+    ),
+    (
+        "the single gold_rebuild_attribution tripwire node, run alone to confirm "
+        "it is still red for its recorded reason",
+        "1 failed, 31 warnings in 8.77s",
+    ),
+    (
+        "9 gold-reading integration and api modules "
+        "(data_boundary_guard_arming, diag_diagnosis, gold_write_scope, "
+        "ingest_2025_odds, lift_validation, ou_divergence, ou_monetization_roi, "
+        "api/cache_game_context, api/cold_start_bet_list_recovery)",
+        "4 failed, 182 passed, 8 skipped, 8 xfailed, 499 warnings in 297.26s (0:04:57)",
+    ),
+    (
+        "9 modules that invoke a gold-scoring harness without naming a gold path "
+        "(friday_prediction_step, audit_stage_runner, group_gate_determinism, "
+        "signal_lift, backtest_tuning_identity, blend_backtest, elo_gold_features, "
+        "promote_models_tuned_path, runbook_md)",
+        "206 passed, 37 warnings in 89.26s (0:01:29)",
+    ),
+)
+
+# Every node id that was red after the rung and is NOT one of the five registered
+# deliberate tripwires, with its disposition.
+#
+# THE DISPOSITION VOCABULARY IS CLOSED, and deliberately does not include a
+# fourth value meaning "absorbed": no id here was dispositioned by adding it to
+# DELIBERATE_TRIPWIRE_NODE_IDS, which stays byte-unchanged at five entries.
+#
+#   SUPERSEDED         a point estimate or anchor MEASURED on pre-rung gold. The
+#                      reading is not wrong about the gold it was taken on; it is
+#                      no longer about the gold that exists.
+#   DEFECT             a real breakage introduced by the rung.
+#   EXPECTED-BY-DESIGN a control that asserts a state this phase deliberately
+#                      changed, and that is doing exactly what it was built to do
+#                      by saying so.
+GOLD_REBUILD_NEWLY_RED: tuple[tuple[str, str], ...] = (
+    (
+        "tests/unit/test_temporal_display_columns.py::TestRealGold::test_the_wp_feature_set_is_free_of_nan",
+        "SUPERSEDED",
+    ),
+    (
+        "tests/unit/test_temporal_display_columns.py::TestRealGold::test_raw_humidity_pct_was_excluded_not_imputed",
+        "SUPERSEDED",
+    ),
+    (
+        "tests/unit/test_temporal_display_columns.py::TestRealGold::test_display_columns_are_not_constant_on_live_gold[features_wp]",
+        "SUPERSEDED",
+    ),
+    (
+        "tests/unit/test_temporal_display_columns.py::TestRealGold::test_display_columns_are_not_constant_on_live_gold[features_ats]",
+        "SUPERSEDED",
+    ),
+    (
+        "tests/unit/test_temporal_display_columns.py::TestRealGold::test_display_columns_are_not_constant_on_live_gold[features_ou]",
+        "SUPERSEDED",
+    ),
+    (
+        "tests/unit/test_temporal_display_columns.py::TestRealGold::test_only_raw_humidity_pct_carries_nulls_on_live_gold",
+        "SUPERSEDED",
+    ),
+    (
+        "tests/integration/test_diag_diagnosis.py::TestDiagDiagnosis::test_backtest_numbers_match_audit_report",
+        "SUPERSEDED",
+    ),
+    (
+        "tests/integration/test_ou_divergence.py::TestOuDivergence::test_bias_over_share",
+        "SUPERSEDED",
+    ),
+    (
+        "tests/integration/test_gold_write_scope.py::TestTheIdentityMigrationMovesNoGoldColumn::test_the_recorded_reference_matches_todays_production_gold",
+        "EXPECTED-BY-DESIGN",
+    ),
+    (
+        "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_the_negative_mean_season_set_is_still_exactly_2022",
+        "EXPECTED-BY-DESIGN",
+    ),
+)
+
+# One line per row above, saying WHY, with the measured numbers that decided it.
+# Keyed by the same node id so a reader cannot read a disposition without its
+# reason, and so a later plan can look one up without re-deriving it.
+GOLD_REBUILD_NEWLY_RED_REASONS: dict[str, str] = {
+    "tests/unit/test_temporal_display_columns.py::TestRealGold::test_the_wp_feature_set_is_free_of_nan": (
+        "A Phase-30 anchor over live gold. Real weather brings real NULLs: the "
+        "1,652 dome games have no outdoor temperature to report, so the "
+        "temperature-derived columns are NaN there by construction. The anchor "
+        "describes gold in which every weather cell carried the fabricated 65.0."
+    ),
+    "tests/unit/test_temporal_display_columns.py::TestRealGold::test_raw_humidity_pct_was_excluded_not_imputed": (
+        "Same anchor family. raw_humidity_pct now carries 1,652 NaN rather than "
+        "the single shape the Phase-30 anchor recorded."
+    ),
+    "tests/unit/test_temporal_display_columns.py::TestRealGold::test_display_columns_are_not_constant_on_live_gold[features_wp]": (
+        "Anchored distinct-value counts measured in Phase 30. raw_temp_f read 15 "
+        "distinct values then and reads 700 now. Already red BEFORE Plan "
+        "33.1-07's session began -- it went stale at rung 1, the first rebuild to "
+        "bring real weather to gold, not at rung 3."
+    ),
+    "tests/unit/test_temporal_display_columns.py::TestRealGold::test_display_columns_are_not_constant_on_live_gold[features_ats]": (
+        "The features_ats parametrisation of the same anchor."
+    ),
+    "tests/unit/test_temporal_display_columns.py::TestRealGold::test_display_columns_are_not_constant_on_live_gold[features_ou]": (
+        "The features_ou parametrisation of the same anchor."
+    ),
+    "tests/unit/test_temporal_display_columns.py::TestRealGold::test_only_raw_humidity_pct_carries_nulls_on_live_gold": (
+        "The anchor names raw_humidity_pct as the ONLY null-bearing display "
+        "column. Thirteen temperature-derived columns now carry 1,652 NaN each, "
+        "for the domes. The module's own comments say a legitimate weather "
+        "backfill must update these DELIBERATELY, which is why re-anchoring is "
+        "not a side effect of some other plan's commit."
+    ),
+    "tests/integration/test_diag_diagnosis.py::TestDiagDiagnosis::test_backtest_numbers_match_audit_report": (
+        "A point estimate pinned to moving gold, the D29-06-02 mistake. WP "
+        "pooled accuracy measures 0.6769095697980685 against an AUDIT-REPORT.md "
+        "anchor of 0.6821773485513608; the drift is 0.005267778753292318 against "
+        "a tolerance of 0.005. It fails by 0.00027 -- it is a stale anchor, not a "
+        "collapse. AUDIT-REPORT.md is a published reading and is NOT rewritten."
+    ),
+    "tests/integration/test_ou_divergence.py::TestOuDivergence::test_bias_over_share": (
+        "The same class of failure, far larger. Pooled over-share measures "
+        "0.8886844526218951 against the OU-DIVERGENCE-DIAGNOSIS.md anchor of "
+        "0.727, a drift of 0.1617 against a tolerance of 0.005. The deployed O/U "
+        "model consumes 17 weather features and 16 of them were a constant "
+        "fabrication before the rung, so its picks moved. "
+        "OU-DIVERGENCE-DIAGNOSIS.md is a published Phase-26 reading and is NOT "
+        "rewritten."
+    ),
+    "tests/integration/test_gold_write_scope.py::TestTheIdentityMigrationMovesNoGoldColumn::test_the_recorded_reference_matches_todays_production_gold": (
+        "Production gold is (195, 196, 195) wide; GOLD_WIDTHS_BEFORE_ELO_REBUILD "
+        "records (194, 195, 194). The one-column delta is weather_coverage, added "
+        "to silver weather_features by Plan 33.1-07's rung 1 and pinned by name "
+        "in GOLD_WIDTHS_AFTER_WEATHER_RUNG. The reference is a PRE-ELO-REBUILD "
+        "anchor owned by Plan 33-14, whose expected change set is built on it. "
+        "The test's own message says not to adjust either number to match the "
+        "other without deciding which is wrong. Deciding that is Plan 33-14's "
+        "call, not this plan's, so the row is recorded and left red."
+    ),
+    "tests/integration/test_ingest_2025_odds.py::TestTheAppendedATSResidualConstantsStillHold::test_the_negative_mean_season_set_is_still_exactly_2022": (
+        "An XPASS under strict=True: an xfail-marked disclosure tripwire that now "
+        "PASSES. DEF-31-06 recorded that the live re-score had stopped "
+        "reproducing the RATIFIED ATS residual constants, and the xfail carries "
+        "the owner's instruction that a RETURN to the ratified values must fail "
+        "loudly rather than pass unnoticed. It has returned: on corrected gold "
+        "the negative-mean season set is exactly 2022 again, and this red line is "
+        "the mechanism telling us so. The tripwire is working. What it now means "
+        "is a question for whoever owns DEF-31-06, and it is deliberately NOT "
+        "answered here."
+    ),
+}
+
+# The five registered tripwires, each re-checked against its RECORDED reason
+# rather than merely counted as still-red. Two of them are failing for a WIDER
+# fact than the one recorded, and a tripwire that fails differently is a
+# different fact -- so the new fact is written down.
+GOLD_REBUILD_TRIPWIRES_RECHECKED: dict[str, str] = {
+    "tests/integration/test_gate_baseline_byte_identity.py::TestTheRegeneratedBaselineIsByteIdenticalToTheCommittedOne::test_the_generated_block_equals_the_committed_block_byte_for_byte": (
+        "Still red for its recorded reason: the frozen gate baseline diverges "
+        "from a re-score and was deliberately not re-frozen."
+    ),
+    "tests/integration/test_gold_rebuild_attribution.py::TestThePhase31Rung3IsTheFullRebuildOfTheVerdictPopulation::test_no_NON_CLOCK_column_moved_in_a_protected_season": (
+        "Still red for its recorded reason: 11 non-clock column-slots moved in "
+        "the protected 2021-2024 window (the snapshot_* market family across all "
+        "three matrices, plus target_ats and target_ou). Unchanged in kind and in "
+        "count from the fact Plan 33.1-07 recorded."
+    ),
+    "tests/integration/test_n01_resync_control.py::TestEvery2021To2024ValueIsByteIdentical::test_every_data_column_reproduces_its_pre_resync_digest_exactly": (
+        "Still red, but for a WIDER fact. Recorded reason: a 2021-2024 data "
+        "column does not reproduce its pre-resync digest. MEASURED NOW: the "
+        "features_ats 2021-2024 slice GAINED a column -- weather_coverage -- and "
+        "lost none. The failure is no longer only about values; the column SET "
+        "moved too, by exactly the one column Plan 33.1-07's rung 1 added."
+    ),
+    "tests/integration/test_n01_resync_control.py::TestEvery2021To2024ValueIsByteIdentical::test_the_moved_set_is_exactly_the_build_clock": (
+        "Still red, but for a MUCH wider fact. Recorded reason: the moved set is "
+        "wider than the build clock alone. MEASURED NOW: roughly 110 columns "
+        "moved in the features_ats 2021-2024 slice, against an expected set of "
+        "exactly ['feature_timestamp']. The moved set is the entire weather "
+        "family (temp_*, wind_*, precip_*, raw_*, the composites), the venue "
+        "family, the opponent-adjusted family, the snapshot market family and "
+        "target_ats. This is the rung-3 rebuild seen from the resync control's "
+        "side and it is expected in kind, but the SET is far wider than when this "
+        "tripwire was registered."
+    ),
+    "tests/integration/test_promote_models.py::test_frozen_baseline_matches_rescore_all_fields": (
+        "Still red for its recorded reason: the 47-of-68-field frozen-baseline "
+        "divergence, seen from the promotion gate."
+    ),
+}
+
+# The population Plan 33.1-08 Task 1 PREDECLARED as the expected newly-red set,
+# and what was actually found there. Recorded because a triage checked against a
+# prediction is worth more than one assembled from whatever happened -- and
+# because the prediction was WRONG, which is itself the finding.
+GOLD_REBUILD_PREDECLARED_POPULATION_OUTCOME: dict[str, object] = {
+    "predicted": (
+        "the harness-reproduction classes of the five repo-root readout guards, "
+        "plus any test in tests/integration/test_activation_parity.py that pins a "
+        "scored value rather than a shape"
+    ),
+    "found_red_in_that_population": 0,
+    "why": (
+        "FOUR of the five harness-reproduction classes NO LONGER EXIST. They were "
+        "DELETED on 2026-09-12 by owner instruction -- two days before this "
+        "measurement and after Plan 33.1-08 was written -- from "
+        "test_ou_divergence_diagnosis_md.py, test_signal_lift_readout_md.py, "
+        "test_line_movement_readout_md.py and test_gated_refit_readout_md.py. "
+        "Each deletion comment names TWO causes, and names Plan 33.1-08 as the "
+        "author of the successor design: the classes were not deterministic (a "
+        "situational-OU delta measured 0.0074 / 0.4424 / 0.4784 at 4 / 1 / 8 BLAS "
+        "threads), and generation-gating was already the agreed answer. The fifth "
+        "guard, test_profitability_readout_md.py, never re-ran a harness against "
+        "gold: it reads the committed verdict artifact. All 107 assertions across "
+        "the five modules pass. test_activation_parity.py passes as well."
+    ),
+    "consequence": (
+        "Every one of the ten rows in GOLD_REBUILD_NEWLY_RED is OUTSIDE the "
+        "predeclared population, so by Plan 33.1-08 Task 1's own rule every one "
+        "of them is a FINDING with its cause recorded, not a quiet DEFECT label. "
+        "None of the ten was found where the plan expected to find it."
+    ),
+}
+
+# WHAT THIS TRIAGE FOUND ZERO OF, stated positively so the absence is a result
+# rather than an omission: not one of the ten rows is dispositioned DEFECT. The
+# rung broke nothing that was working. It made stale a set of anchors that were
+# measuring gold which no longer exists, and it tripped two controls that exist
+# to announce exactly the kind of change it made.
+GOLD_REBUILD_DEFECT_COUNT: int = 0
