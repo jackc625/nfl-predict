@@ -428,8 +428,11 @@ def run_group_gate(
     STATED LIMITATION ON THE PHASE-30 DROP (WR-03). This call previously passed no
     ``config``, so every one of the nine grid cells was measured under
     ``TemporalSplitConfig.default()`` -- train 2018-2019, hp_val 2020. Stage 2 then trains
-    each candidate under ``scripts.promote_models._incumbent_window``, which for ATS is
-    train **2015-2019** (the D25-05 fix-cycle artifact's own window, derived per D30-12).
+    each candidate under ``scripts.promote_models._incumbent_window``, which at the time of
+    the Phase-30 measurement gave ATS train **2015-2019** (the D25-05 fix-cycle artifact's
+    own window, derived per D30-12) and which since Phase 33.1's review finding CR-01 gives
+    every target the committed rule's **2018-2022**. The mismatch below is therefore not
+    closed by that fix -- it is MOVED, to a third window.
 
     The phase's ONE binding DROP rests entirely on the ``injury/ats`` cell
     (``config/group_gate_verdict.toml``, ``rejected_negative_targets = ["ats"]``). That

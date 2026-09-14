@@ -18,12 +18,16 @@ the gate prints a 2x2, and the number is wrong:
     ``data/optuna``; this phase's prohibition forbids writing under ``data/`` outside the one
     sanctioned fingerprinted rebuild, and the prohibition's own hash manifest reads through
     ``load_dataframe`` and would NOT have caught a ``data/optuna/`` write. Asserted directly.
-  * THE D30-12 WINDOW ASYMMETRY. The deployed ATS incumbent is the D25-05 fix-cycle artifact
-    and records a FIVE-season train window, while ``promote_models`` trained every candidate
-    on the two-season default -- so the ATS candidate faced its own incumbent from a strictly
-    worse configuration, a handicap nobody chose. ``_incumbent_window`` derives each target's
-    window from that target's own metadata; a silent fallback to
-    ``TemporalSplitConfig.default()`` would reintroduce exactly the bug it exists to fix.
+  * THE D30-12 WINDOW ASYMMETRY, AND HOW IT WAS FINALLY CLOSED. The deployed ATS incumbent is
+    the D25-05 fix-cycle artifact and records a FIVE-season train window, while
+    ``promote_models`` trained every candidate on the two-season default -- so the ATS
+    candidate faced its own incumbent from a strictly worse configuration, a handicap nobody
+    chose. D30-12's answer was to derive each target's window from that target's own metadata.
+    Review finding CR-01 replaced that with the stronger one: ALL THREE windows now come from
+    the committed rule in ``conf/season_partition.py``, so both sides of every comparison are
+    stated by one reviewable commit rather than by three artifacts that were fitted on data
+    since found to be wrong. A window read back out of an artifact's metadata -- or a silent
+    fallback to ``TemporalSplitConfig.default()`` -- is the regression these tests catch.
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
@@ -42,6 +46,7 @@ import optuna
 import pandas as pd
 import pytest
 
+from conf.season_partition import default_season_partition
 from models import deploy_gate
 from models.trainers import base as base_trainer
 from models.trainers.base import (
@@ -120,24 +125,30 @@ def _good_metadata(train: list[int]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("target", "expected_train"),
-    [
-        ("ats", _ATS_FIX_CYCLE_TRAIN_WINDOW),
-        ("wp", _DEFAULT_TRAIN_WINDOW),
-        ("ou", _DEFAULT_TRAIN_WINDOW),
-    ],
-)
-def test_incumbent_window_derived_from_live_metadata_with_the_live_partition_holdout(
-    target: str, expected_train: str
-) -> None:
-    """Each target's selection window comes from ITS OWN deployed incumbent's metadata.
+@pytest.mark.parametrize("target", ["wp", "ats", "ou"])
+def test_all_three_windows_come_from_the_committed_partition_rule(target: str) -> None:
+    """ALL THREE windows -- train, hp_val, holdout -- come from conf/season_partition.py.
 
-    Asserted against the LIVE ``artifacts/`` tree, not a copy of it, so the test proves
-    D30-12's actual claim. Remediation if this goes red: do NOT edit the expected constant --
-    inspect ``artifacts/{version}/metadata.json`` for that target and confirm whether the
-    deployed incumbent genuinely changed. If it did, the recorded gate 2x2s were measured on
-    the old window and must be re-measured.
+    THIS IS THE PROOF FOR REVIEW FINDING CR-01, and the assertion it replaces is the defect
+    itself: this test used to pin ``train`` to the incumbent artifact's recorded window
+    ("2015,2016,2017,2018,2019" for ATS, "2018,2019" for WP and O/U) and ``hp_val`` to
+    "2020", with only the holdout taken from the rule. That is what ``promote_models``
+    actually did, so the test was an accurate pin of a wrong behaviour.
+
+    WHY THE OLD SHAPE WAS WRONG. A Wave-15 WP candidate would have been trained as
+    ``--config-train-seasons 2018,2019``: feature selection on the 534-row window
+    ``conf/season_partition.py``'s own evidence block records as admitting six of ATS's 25
+    and nine of O/U's 25 features from pure synthetic noise -- with 45 new live weather
+    candidates now entering the same selector -- while the hp-val fold of 2020 against a
+    2024-2025 holdout put the calibrator in-sample against the shipped model over five
+    seasons instead of one. It also derived the next model's training window from the
+    metadata of an artifact the owner has declared VOID.
+
+    Asserted against the LIVE ``artifacts/`` tree so it proves the real promotion path.
+    Remediation if this goes red: do NOT re-pin the expectation to whatever the incumbent
+    records. Either the committed rule changed -- in which case that commit is the record and
+    every window moves with it -- or the promotion path has regressed to reading a window out
+    of an artifact's metadata again.
     """
     if not (LIVE_ARTIFACTS / "latest.json").exists():
         pytest.skip(
@@ -145,49 +156,82 @@ def test_incumbent_window_derived_from_live_metadata_with_the_live_partition_hol
             "manifest per the clean-checkout step (RUNBOOK, Plan 25-05)"
         )
 
+    partition = default_season_partition()
     window = promote._incumbent_window(target, LIVE_ARTIFACTS)
 
-    assert window["train"] == expected_train, (
-        f"_incumbent_window('{target}')['train'] is {window['train']!r}, expected "
-        f"{expected_train!r}. Either the deployed incumbent changed (re-measure every "
-        "recorded gate 2x2) or the derivation regressed to a hardcoded/default window."
-    )
-    assert window["hp_val"] == "2020", (
-        f"_incumbent_window('{target}')['hp_val'] is {window['hp_val']!r}, expected "
-        "'2020'. The hp-val fold must be derived from the incumbent, not typed."
-    )
-    # UPDATED by Plan 33.1-09 Task 3. This asserted the derived holdout was
-    # "2021,2022,2023,2024". Under D33.1-03 the holdout is SUPERSEDED by the committed
-    # partition rule -- train and hp_val still come from the incumbent's own metadata
-    # (D30-12 is untouched), but the holdout comes from conf.season_partition. Asserts over
-    # the LIVE partition, not over models.deploy_gate.FROZEN_BASELINE_SEASONS.
-    from conf.season_partition import default_season_partition
-
-    live = ",".join(str(s) for s in default_season_partition().holdout)
-    assert window["holdout"] == live, (
-        f"_incumbent_window('{target}')['holdout'] is {window['holdout']!r}, expected the "
-        f"live partition {live!r} from conf/season_partition.py."
-    )
+    expected = {
+        "train": ",".join(str(s) for s in partition.selection),
+        "hp_val": ",".join(str(s) for s in partition.hp_val),
+        "holdout": ",".join(str(s) for s in partition.holdout),
+    }
+    for flag_stem, want in expected.items():
+        assert window[flag_stem] == want, (
+            f"_incumbent_window('{target}')[{flag_stem!r}] is {window[flag_stem]!r}, "
+            f"expected {want!r} from conf/season_partition.py. Every window on the "
+            "promotion path comes from the committed rule (review CR-01); a value that "
+            "matches an artifact's metadata instead means the incumbent-derived window is "
+            "back."
+        )
 
 
-def test_ats_incumbent_window_is_not_the_default_window() -> None:
-    """The ATS window must DIFFER from wp/ou -- that difference IS the D30-12 finding.
+@pytest.mark.parametrize("target", ["wp", "ats", "ou"])
+def test_no_window_field_is_the_incumbents_recorded_window(target: str) -> None:
+    """The negative half: no field may equal what the VOID incumbent records.
 
-    Remediation if this goes red: a single global window has been reintroduced on the
-    promote path. The per-target window derived from each incumbent's own metadata is
-    primary; ``TemporalSplitConfig.default()`` is a fallback for callers that specify none,
-    and is never reached here.
+    The old ``test_ats_incumbent_window_is_not_the_default_window`` lived here and asserted
+    the OPPOSITE of this -- that ATS's window differed from WP's, because each came from its
+    own artifact. That per-target difference was D30-12's fix for a real asymmetry (the ATS
+    candidate faced its own incumbent from a strictly worse configuration). CR-01 closes the
+    same asymmetry one level up: both sides are now stated by one committed rule, so the
+    windows are identical across targets BY CONSTRUCTION and the per-target difference is
+    reported in ``window_report`` instead of silently honoured.
+
+    Measured live, because the three deployed incumbents genuinely record pre-correction
+    windows and this must fail if one of them ever leaks back into the argv.
     """
     if not (LIVE_ARTIFACTS / "latest.json").exists():
         pytest.skip(f"{LIVE_ARTIFACTS / 'latest.json'} not present")
 
-    ats = promote._incumbent_window("ats", LIVE_ARTIFACTS)["train"]
-    wp = promote._incumbent_window("wp", LIVE_ARTIFACTS)["train"]
+    window = promote._incumbent_window(target, LIVE_ARTIFACTS)
 
-    assert ats != wp, (
-        f"ATS and WP both resolve to train window {ats!r}. The D25-05 fix-cycle ATS "
-        "artifact records a five-season window; identical windows mean the derivation "
-        "collapsed to one global default (the exact D30-12 bug)."
+    assert window["train"] not in {
+        _ATS_FIX_CYCLE_TRAIN_WINDOW,
+        _DEFAULT_TRAIN_WINDOW,
+    }, (
+        f"'{target}' resolves train={window['train']!r}, which is a window recorded by a "
+        "deployed pre-correction artifact. Those artifacts were fitted on data since found "
+        "to be wrong; deriving the next model's training window from one is the CR-01 "
+        "defect."
+    )
+    assert window["hp_val"] != "2020", (
+        f"'{target}' resolves hp_val='2020' -- the incumbents' recorded fold. Against a "
+        "2024-2025 holdout that puts the calibrator in-sample against the shipped model "
+        "over five seasons."
+    )
+
+
+def test_every_target_gets_the_same_window() -> None:
+    """One rule, read once: the three targets cannot disagree about their windows.
+
+    Not a restatement of the test above. That one pins each target against the rule; this
+    one would still catch a per-target branch that read the rule correctly for two targets
+    and something else for the third.
+    """
+    if not (LIVE_ARTIFACTS / "latest.json").exists():
+        pytest.skip(f"{LIVE_ARTIFACTS / 'latest.json'} not present")
+
+    resolved = {
+        target: tuple(
+            promote._incumbent_window(target, LIVE_ARTIFACTS)[stem]
+            for stem in ("train", "hp_val", "holdout")
+        )
+        for target in ("wp", "ats", "ou")
+    }
+
+    assert len(set(resolved.values())) == 1, (
+        f"the three targets resolve DIFFERENT windows: {resolved}. Under the committed rule "
+        "they are identical by construction, so a difference means at least one target is "
+        "reading its window from somewhere else."
     )
 
 
@@ -611,7 +655,8 @@ def test_an_armed_run_with_a_ratified_verdict_proceeds(
 
 
 # ---------------------------------------------------------------------------
-# WR-02: the DERIVED holdout is reconciled against the FROZEN gate holdout
+# WR-02 / review CR-01: the WHOLE window is reconciled against the incumbent's
+# record, and every field that moved is named
 # ---------------------------------------------------------------------------
 
 
@@ -650,7 +695,7 @@ def test_a_narrower_incumbent_holdout_is_reported_against_the_live_partition(
 
     window = promote._incumbent_window("ats", root)
 
-    report = window["holdout_report"]
+    report = window["window_report"]
     assert report, "a differing incumbent holdout must be REPORTED, never silent."
     assert "[2021, 2022]" in report, report
     assert "in-sample" in report.lower(), (
@@ -658,6 +703,12 @@ def test_a_narrower_incumbent_holdout_is_reported_against_the_live_partition(
     )
     assert window["holdout"] == ",".join(
         str(s) for s in default_season_partition().holdout
+    )
+    # WIDENED for review CR-01: the train window moved too (the incumbent records
+    # 2015-2019, the rule says 2018-2022), and a report that named only the holdout is
+    # how a silently-inherited selection window stayed invisible for a whole phase.
+    assert "train:" in report, (
+        f"the report must name EVERY field that moved, not the holdout alone: {report}"
     )
 
 
@@ -674,7 +725,7 @@ def test_a_wider_incumbent_holdout_is_reported_against_the_live_partition(
     )
 
     window = promote._incumbent_window("ats", root)
-    assert window["holdout_report"], (
+    assert window["window_report"], (
         "widening is not a safe direction either -- the old check was an EQUALITY and the "
         "report must fire on the same set of differences the raise used to."
     )
@@ -688,11 +739,17 @@ def test_an_incumbent_recording_the_live_partition_reports_NOTHING(
     A report that fires on every input is not a report. Once a future re-fit writes the live
     partition into a new metadata.json, there is no difference to state and the field must be
     empty -- which is also how a reader will know the difference above was real.
+
+    WIDENED for review CR-01: the control now writes all THREE windows from the rule, because
+    the report now compares all three. Writing only the holdout would leave train and hp_val
+    differing and the report non-empty, and the control would pass for the wrong reason.
     """
     from conf.season_partition import default_season_partition
 
-    metadata = _good_metadata([2018, 2019])
-    metadata["config"]["holdout_seasons"] = list(default_season_partition().holdout)
+    partition = default_season_partition()
+    metadata = _good_metadata(list(partition.selection))
+    metadata["config"]["hp_val_seasons"] = list(partition.hp_val)
+    metadata["config"]["holdout_seasons"] = list(partition.holdout)
     root = _write_artifacts_tree(
         tmp_path / "artifacts",
         {"ats": "ats_20260101_000000"},
@@ -700,7 +757,7 @@ def test_an_incumbent_recording_the_live_partition_reports_NOTHING(
     )
 
     window = promote._incumbent_window("ats", root)
-    assert window["holdout_report"] == "", window["holdout_report"]
+    assert window["window_report"] == "", window["window_report"]
 
 
 @pytest.mark.parametrize("target", ["wp", "ats", "ou"])
@@ -731,7 +788,7 @@ def test_every_live_incumbent_DIFFERS_from_the_live_partition_and_says_so(
         f"'{target}' window carries holdout {window['holdout']!r}, not the live partition "
         f"{live!r}."
     )
-    assert window["holdout_report"], (
+    assert window["window_report"], (
         f"'{target}' incumbent's recorded window matches the live partition, so nothing was "
         "reported. All three incumbents record [2021..2024] and no re-fit has run; "
         "agreement means a metadata.json was edited (D33.1-04 prohibits that)."

@@ -497,13 +497,20 @@ class TestTheIncumbentRecordsDifferAndAreNotEdited:
 
         for target in sorted(self._incumbent_windows()):
             window = _incumbent_window(target, artifacts_dir)
-            report = window["holdout_report"]
+            report = window["window_report"]
             assert report, (
                 f"'{target}': the incumbent's recorded window differs from the live "
                 "partition, so _incumbent_window must REPORT it. An empty report means the "
                 "difference is silent, which is what the raise used to prevent."
             )
             assert "2021" in report and "2024" in report, report
+            # Review CR-01: all three windows come from the committed rule now, so the
+            # report must name every field that moved. The train window is the one that
+            # was silently inherited from a VOID artifact before the fix.
+            assert "train:" in report, (
+                "the report names only some of the fields that moved; a window difference "
+                f"that is not stated is the CR-01 defect. Got: {report}"
+            )
             assert "in-sample" in report.lower(), (
                 "the report must name the consequence -- the gate's re-score of an artifact "
                 f"fitted on those seasons is IN-SAMPLE. Got: {report}"

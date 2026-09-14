@@ -10746,3 +10746,47 @@ PHASE_331_CLOSE: dict[str, object] = {
         "reached production."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# THE POST-REVIEW FIX SLOT.
+#
+# APPENDED 2026-09-14 by the Phase-33.1 code-review fix pass (REVIEW.md
+# CR-01), under the APPEND PROTOCOL: a new slot rather than an edit to any
+# slot above, because the slots above are the record of what their own tasks
+# did and that record is still accurate as written.
+#
+# WHY A SLOT AT ALL. Two slots above name node ids in
+# tests/unit/test_promote_models_tuned_path.py that no longer exist under
+# those names. They were renamed here, not deleted, and a reader following
+# those pointers needs somewhere to land. The reason for each rename is the
+# finding itself: the tests were accurate pins of a behaviour that was wrong.
+#
+# NOTHING WAS ADDED TO ANY SKIP LIST AND DELIBERATE_TRIPWIRE_NODE_IDS IS
+# UNTOUCHED.
+# ---------------------------------------------------------------------------
+
+REVIEW_FIX_RENAMED_TESTS: tuple[tuple[str, str, str], ...] = (
+    (
+        "tests/unit/test_promote_models_tuned_path.py::"
+        "test_incumbent_window_derived_from_live_metadata_with_the_live_partition_holdout",
+        "tests/unit/test_promote_models_tuned_path.py::"
+        "test_all_three_windows_come_from_the_committed_partition_rule",
+        "It pinned train to each incumbent artifact's recorded window and hp_val to "
+        "2020, with only the holdout from the rule -- an accurate pin of the CR-01 "
+        "defect. It now asserts all three windows against "
+        "conf.season_partition.default_season_partition(). The old name said 'derived "
+        "from live metadata', which is exactly what must no longer happen.",
+    ),
+    (
+        "tests/unit/test_promote_models_tuned_path.py::"
+        "test_ats_incumbent_window_is_not_the_default_window",
+        "tests/unit/test_promote_models_tuned_path.py::"
+        "test_no_window_field_is_the_incumbents_recorded_window",
+        "It asserted ATS and WP resolve DIFFERENT train windows, which was D30-12's "
+        "per-target fix. Under the committed rule they are identical by construction, "
+        "so the assertion inverted: no field may equal what a void pre-correction "
+        "artifact records. Its companion test_every_target_gets_the_same_window is "
+        "new and asserts the sameness directly.",
+    ),
+)

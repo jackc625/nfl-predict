@@ -54,6 +54,7 @@ import numpy as np
 
 from backtest.diagnose import CLV_COLUMN_FOR, clv_significance, score_deployed_artifacts
 from backtest.engine import BacktestEngine
+from conf.season_partition import default_season_partition
 from models import deploy_gate
 from models.artifacts import update_manifest
 from models.clv import compute_clv_for_predictions
@@ -105,8 +106,10 @@ _GROUP_GATE_VERDICT_PATH = (
     Path(__file__).resolve().parent.parent / "config" / "group_gate_verdict.toml"
 )
 
-# The season lists ``_incumbent_window`` derives, mapped from the metadata config key to the
-# ``models.train --config-*-seasons`` flag stem.
+# The season lists ``_incumbent_window`` READS OUT OF THE INCUMBENT'S RECORD, mapped from the
+# metadata config key to the ``models.train --config-*-seasons`` flag stem they are compared
+# against. Since review CR-01 the values handed to models.train come from the committed rule,
+# not from here; this mapping is what lets the drift report name all three fields.
 _WINDOW_KEYS: tuple[tuple[str, str], ...] = (
     ("train_seasons", "train"),
     ("hp_val_seasons", "hp_val"),
@@ -260,33 +263,54 @@ def _resolve_exclude_groups(args: argparse.Namespace) -> tuple[list[str], str]:
 
 
 def _incumbent_window(target: str, artifacts_dir: Path) -> dict[str, str]:
-    """Derive one target's selection window from ITS OWN deployed incumbent's metadata.
+    """Resolve one target's training window from THE COMMITTED RULE, and report the drift.
 
-    D30-12: the deployed ATS incumbent is the D25-05 fix-cycle artifact and records a FIVE-season
-    train window, while ``promote_models`` trained every candidate on the two-season
-    ``TemporalSplitConfig.default()``. The ATS candidate therefore faced its own incumbent from a
-    strictly worse configuration -- a handicap nobody chose. Deriving each window from the
-    incumbent's own metadata removes the asymmetry by construction.
+    WHAT THIS FUNCTION DOES NOW, AND WHY THE NAME IS KEPT ANYWAY. All three windows --
+    train, hp_val and holdout -- come from ``conf.season_partition.default_season_partition()``
+    (SPEC R6, D33.1-03). The deployed incumbent's ``metadata.json`` is still READ, and an
+    unresolvable one is still a STOP, but it is read as the RECORD of a past training run
+    rather than as an input to the next one: it supplies the left-hand side of the difference
+    report below and nothing else. The name is kept because every caller, test and readout
+    refers to it, and renaming it would be a refactor beyond this fix.
 
-    Every failure branch RAISES with the offending path or key named. This function silently
-    underwrites every gate comparison the phase records, so an unresolvable window must be a stop,
-    never a guess: falling back to ``TemporalSplitConfig.default()`` is precisely the bug this
-    function exists to eliminate, and it would still print a confident 2x2.
+    WHY ALL THREE, AND NOT JUST THE HOLDOUT (Phase 33.1 review CR-01). Until this change the
+    holdout came from the rule while train and hp_val were passed through from the incumbent's
+    metadata verbatim. Three things were wrong with that, and none of them was cosmetic:
+
+      1. Measured, a Wave-15 WP candidate would have run as ``--config-train-seasons 2018,2019``
+         -- the 534-row window ``conf/season_partition.py``'s own evidence block records as
+         admitting SIX of ATS's 25 and NINE of O/U's 25 selected features from pure synthetic
+         noise, with 45 new live weather candidates now entering that same selector.
+      2. The calibrator is fitted on the hp-val fold while the shipped model trains on
+         everything before the last holdout season. An hp_val of 2020 against a 2024-2025
+         holdout widened that in-sample overlap from one season to five.
+      3. ``HISTORICAL-WEATHER-READOUT.md`` sections 0 and 3 tell Wave 15 that it consumes the
+         committed rule "or it disagrees with the rest of the repository". Only the readout
+         was true; this path was not.
+
+    WHAT WAS DELIBERATELY NOT DISCARDED. D30-12's finding stands: the deployed ATS incumbent
+    records a five-season train window that ``promote_models`` did not match, and a candidate
+    facing its own incumbent from a worse configuration is a handicap nobody chose. The fix for
+    that asymmetry is that BOTH sides are now stated by one committed rule instead of by three
+    artifacts' metadata -- which is the same asymmetry closed one level up, not the asymmetry
+    reintroduced. The per-target difference is now REPORTED rather than silently honoured.
+
+    THE OWNER'S STANDING RULING is what makes this the only defensible shape: the pre-correction
+    artifacts were fitted on data since found to be wrong, so they are void. Deriving the NEXT
+    model's training window from a void model's metadata is the defect, not the safeguard.
 
     Args:
         target: One of "wp", "ats", "ou".
         artifacts_dir: The PRODUCTION artifacts dir holding ``latest.json`` and the version dirs.
 
     Returns:
-        ``{"train": "2015,2016,...", "hp_val": "2020", "holdout": "2024,2025",
-        "holdout_report": "..."}``. The first three are comma-joined season strings ready to
-        hand to ``models.train --config-*-seasons``; ``train`` and ``hp_val`` come from the
-        incumbent's own metadata (D30-12) and ``holdout`` comes from the committed partition
-        rule, which supersedes the metadata for that one field (D33.1-03).
-        ``holdout_report`` is the DIFFERENCE between the incumbent's recorded holdout and the
-        live one -- empty when they agree, and otherwise a sentence naming both windows and
-        the in-sample consequence. It used to be a raise; see the block comment below for why
-        it is now a report (D33.1-04).
+        ``{"train": "2018,...,2022", "hp_val": "2023", "holdout": "2024,2025",
+        "window_report": "..."}``. The first three are comma-joined season strings ready to
+        hand to ``models.train --config-*-seasons``, and ALL THREE come from the committed
+        partition rule. ``window_report`` is the DIFFERENCE between the incumbent's recorded
+        windows and the live ones -- empty when all three agree, and otherwise a sentence
+        naming every field that moved, both values, and the in-sample consequence. It used to
+        be a raise, and then a holdout-only report; see the block comment below.
 
     Raises:
         FileNotFoundError: If ``latest.json`` or the resolved ``{version}/metadata.json`` is
@@ -339,18 +363,22 @@ def _incumbent_window(target: str, artifacts_dir: Path) -> dict[str, str]:
         )
         raise KeyError(msg)
 
-    window: dict[str, str] = {}
+    # The incumbent's recorded windows. Still read, and an unresolvable one is still a STOP --
+    # but as the RECORD of a past run, which is the left-hand side of the difference report
+    # below. Nothing here reaches models.train any more (review CR-01).
+    recorded: dict[str, list[int]] = {}
     for metadata_key, flag_stem in _WINDOW_KEYS:
         seasons = config.get(metadata_key)
         if not seasons:
             msg = (
                 f"Cannot derive the '{target}' selection window: '{metadata_path}' config block "
-                f"has no '{metadata_key}' season list. An empty window would reach models.train's "
-                "season parser and fail deep inside a subprocess instead of here. Inspect that "
-                "file; do not substitute a default."
+                f"has no '{metadata_key}' season list. A metadata file that cannot state what "
+                "its own run was trained on cannot support the difference report this function "
+                "returns, and a silently absent record is how an undisclosed window change "
+                "happens. Inspect that file; do not substitute a default."
             )
             raise KeyError(msg)
-        window[flag_stem] = ",".join(str(int(season)) for season in seasons)
+        recorded[flag_stem] = [int(season) for season in seasons]
 
     # WR-02: the derived holdout is passed straight to ``models.train
     # --config-holdout-seasons``, while ``_load_gold_holdout`` and every gate call read the
@@ -389,35 +417,63 @@ def _incumbent_window(target: str, artifacts_dir: Path) -> dict[str, str]:
     # the defect class this milestone exists to detect. The sentence this function used to
     # raise with -- "never widen a window to make this pass" -- was right, and it applies to
     # the record just as much as to the window.
+    #
     # ---------------------------------------------------------------------------
-    recorded_holdout = [int(season) for season in config["holdout_seasons"]]
-    live_holdout = [int(season) for season in deploy_gate.HOLDOUT_SEASONS]
-    if recorded_holdout == live_holdout:
-        window["holdout_report"] = ""
+    # RETARGETED AGAIN, FROM A HOLDOUT-ONLY REPORT TO A WHOLE-WINDOW ONE (review CR-01).
+    #
+    # Both comments above are kept VERBATIM: they are the clearest statement in this
+    # repository of what D33.1-01 costs, and every word of them still holds. What changed is
+    # their SCOPE. The report covered the holdout alone because the holdout alone came from
+    # the rule; all three windows come from the rule now, so all three are compared. A field
+    # that moved and was not named is precisely the failure this block exists to prevent, and
+    # under the previous shape a train window inherited from a VOID pre-correction artifact
+    # moved the next model's feature selection without appearing in any report at all.
+    # ---------------------------------------------------------------------------
+    # THE WINDOW HANDED TO models.train, ALL THREE FIELDS FROM THE COMMITTED RULE.
+    # ``deploy_gate.HOLDOUT_SEASONS`` is this same ``partition.holdout`` (deploy_gate.py:163),
+    # so the candidate is trained on exactly the window the gate then scores it over -- one
+    # rule, read once, rather than two derivations that could drift apart.
+    partition = default_season_partition()
+    live: dict[str, tuple[int, ...]] = {
+        "train": partition.selection,
+        "hp_val": partition.hp_val,
+        "holdout": partition.holdout,
+    }
+    window: dict[str, str] = {
+        flag_stem: ",".join(str(season) for season in seasons)
+        for flag_stem, seasons in live.items()
+    }
+
+    moved = [
+        (flag_stem, recorded[flag_stem], list(live[flag_stem]))
+        for flag_stem in ("train", "hp_val", "holdout")
+        if recorded[flag_stem] != list(live[flag_stem])
+    ]
+    if not moved:
+        window["window_report"] = ""
     else:
-        window["holdout_report"] = (
-            f"'{target}' incumbent metadata ('{metadata_path}') records holdout "
-            f"{recorded_holdout}; the LIVE partition from conf/season_partition.py is "
-            f"{live_holdout}. This is a REPORTED DIFFERENCE, not a refusal (D33.1-04): the "
-            "partition now comes from the committed rule, so the incumbent's recorded window "
-            "is a historical fact about a past run rather than an input. CONSEQUENCE, stated "
-            "plainly: the candidate is trained over seasons the gate then re-scores it on, so "
-            "that verdict is IN-SAMPLE and must be labelled in-sample rather than read as a "
-            "clean gate pass. The metadata.json files are the record of past training runs "
-            "and MUST NOT be edited to make this agree."
+        differences = "; ".join(
+            f"{flag_stem}: recorded {was} -> live {now}"
+            for flag_stem, was, now in moved
+        )
+        window["window_report"] = (
+            f"'{target}' incumbent metadata ('{metadata_path}') records windows that differ "
+            f"from the LIVE partition in conf/season_partition.py -- {differences}. This is a "
+            "REPORTED DIFFERENCE, not a refusal (D33.1-04): every window now comes from the "
+            "committed rule, so the incumbent's recorded windows are historical facts about a "
+            "past run rather than inputs to the next one. CONSEQUENCE, stated plainly: the "
+            "candidate is trained over seasons the gate then re-scores it on, so that verdict "
+            "is IN-SAMPLE and must be labelled in-sample rather than read as a clean gate "
+            "pass. The metadata.json files are the record of past training runs and MUST NOT "
+            "be edited to make this agree."
         )
         logger.warning(
-            "Incumbent holdout differs from the live partition",
+            "Incumbent windows differ from the live partition",
             target=target,
-            recorded=recorded_holdout,
-            live=live_holdout,
+            recorded=recorded,
+            live={key: list(value) for key, value in live.items()},
             metadata_path=str(metadata_path),
         )
-
-    # The window handed to models.train uses the LIVE partition for the holdout. The train and
-    # hp_val halves still come from the incumbent's own metadata (D30-12's per-target
-    # asymmetry fix is untouched); only the holdout is superseded by the rule.
-    window["holdout"] = ",".join(str(season) for season in live_holdout)
 
     return window
 
@@ -438,9 +494,13 @@ def _build_train_argv(
       * ``--no-tune`` is ABSENT. SPEC R5 requires the Stage-2 candidate to be trained WITH Optuna
         tuning; the flag that STEP 1 carried through Phases 24-25 would silently downgrade every
         candidate to a straight re-fit.
-      * the three ``--config-*-seasons`` values come from ``_incumbent_window``, which is why
-        STEP 1 must issue one subprocess PER TARGET: a single ``--target all`` invocation cannot
-        carry three different windows (D30-12).
+      * the three ``--config-*-seasons`` values come from ``_incumbent_window``, which since
+        review CR-01 takes ALL THREE from the committed partition rule. STEP 1 still issues one
+        subprocess PER TARGET: that is left UNCHANGED by the fix, because the argv is built per
+        target regardless and because a future per-target window would need exactly this shape
+        again (D30-12). What is no longer true is that the windows must differ between targets
+        -- under the committed rule they are identical, and the per-target DIFFERENCE now shows
+        up in ``window_report`` instead of in the argv.
 
     Args:
         target: One of "wp", "ats", "ou".
@@ -1290,8 +1350,10 @@ def main(argv: list[str] | None = None) -> int:
             windows[target] = _incumbent_window(target, args.artifacts_dir)
     except (FileNotFoundError, KeyError, ValueError) as exc:
         if not args.skip_train:
-            # A window that cannot be derived -- or one whose holdout contradicts the frozen
-            # gate holdout (WR-02) -- is a STOP, never a default (D30-12).
+            # A window that cannot be resolved is a STOP, never a default (D30-12). Since
+            # review CR-01 the windows themselves come from the committed rule, so what stops
+            # the run here is an incumbent whose RECORD cannot be read -- which would leave
+            # the in-sample window difference unstatable.
             raise
         # --skip-train trains nothing, so an underivable window is not fatal here; say so.
         windows = {}
@@ -1301,12 +1363,13 @@ def main(argv: list[str] | None = None) -> int:
             f"  Selection window [{target}]: train={window['train']} "
             f"hp_val={window['hp_val']} holdout={window['holdout']}"
         )
-        # D33.1-04: a holdout that differs from the incumbent's record is REPORTED here
-        # rather than raised in _incumbent_window. Printed at the same place the window is,
-        # because checkpoint 4 reviews this output and an in-sample verdict is exactly the
-        # thing that must not print with no warning at all.
-        if window.get("holdout_report"):
-            print(f"  Holdout DIFFERENCE [{target}]: {window['holdout_report']}")
+        # D33.1-04: a window that differs from the incumbent's record is REPORTED here rather
+        # than raised in _incumbent_window. Printed at the same place the window is, because
+        # checkpoint 4 reviews this output and an in-sample verdict is exactly the thing that
+        # must not print with no warning at all. Since review CR-01 this covers all three
+        # fields, not the holdout alone.
+        if window.get("window_report"):
+            print(f"  WINDOW DIFFERENCE [{target}]: {window['window_report']}")
     print("=" * 70)
 
     # -- STEP 1: staging TUNED re-fit (Optuna ON, SPEC R5), into the staging dir only --

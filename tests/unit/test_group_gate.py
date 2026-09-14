@@ -1277,11 +1277,15 @@ class TestTheMeasurementWindowIsStated:
     ``run_group_gate`` called ``run_signal_lift_screen`` with no ``config``, so every one
     of the nine grid cells was measured under ``TemporalSplitConfig.default()`` -- train
     2018-2019, hp_val 2020. Stage 2 then trains each candidate under
-    ``scripts.promote_models._incumbent_window``, which for ATS is train 2015-2019.
+    ``scripts.promote_models._incumbent_window``, which at the time of the Phase-30
+    measurement gave ATS train 2015-2019 (read out of that target's incumbent metadata) and
+    which since review CR-01 gives every target the committed rule's 2018-2022.
 
     The phase's ONE binding DROP rests entirely on the ``injury/ats`` cell. It was measured
     with a two-season selection window and constrains a candidate fitted with a five-season
-    one, and nothing in the code or the readout put the two side by side.
+    one, and nothing in the code or the readout put the two side by side. CR-01 does not
+    close that mismatch -- it moves it: the next candidate is fitted on 2018-2022, which is
+    a THIRD window, and the Phase-30 grid is still the frozen measurement it always was.
 
     This is a LIMITATION, not a defect to be resolved by re-measuring: the rule was frozen
     and owner-ratified BEFORE the measurement, so re-measuring now, after seeing the

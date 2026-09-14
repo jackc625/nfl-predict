@@ -83,6 +83,17 @@ Section 3 below replaces every hand-typed season list with one deterministic rul
 rule there is no such thing as a per-target training window to hold constant. Wave 15 consumes
 `conf.season_partition.default_season_partition()` or it disagrees with the rest of the repository.
 
+> **CORRECTION, 2026-09-14 (code review CR-01).** When this document was published the sentence
+> above was a true statement of what Wave 15 *should* do and a false statement of what the code
+> *would* do. `scripts/promote_models.py` -- the path that actually runs Wave 15 -- took only the
+> holdout from the rule and still read the training and tuning windows out of the deployed
+> incumbent's own `metadata.json`. Measured at the time: a WP candidate would have run with
+> `--config-train-seasons 2018,2019 --config-hp-val-seasons 2020`, so feature selection would have
+> happened on the 534-row window this phase argued against, using the training window of a model
+> the owner has declared void. All three windows now come from the rule. Nothing in this document's
+> measurements changes; what changed is that the instruction it gives Wave 15 is now true of the
+> code as well as of the intent.
+
 ---
 
 ## 1. The measured weather rung -- and it is a COMPOUND rung, never "the weather rung"
@@ -285,6 +296,17 @@ narrower than the fit window. **Nothing was fitted, ranked or compared to pick t
 supporting evidence is itself measured and committed beside the rule: feature selection on the
 534-row 2018-2019 window selected 6 of ATS's 25 and 9 of O/U's 25 features from pure synthetic noise
 columns at N=50.
+
+> **CORRECTION, 2026-09-14 (code review CR-01).** The table above is the rule, and the rule is
+> unchanged. What was not true when this was published is that every consumer obeyed it. The
+> promotion path took only the holdout row from this table; the feature-selection and tuning rows
+> were still read out of each deployed model's stored metadata, which records 2018-2019 (2015-2019
+> for ATS) and 2020. So a Wave-15 candidate would have selected features on 534 rows -- the exact
+> thing Ruling Q exists to stop -- while this table said otherwise. All three rows now come from
+> the rule on that path, proved by
+> `tests/unit/test_promote_models_tuned_path.py::test_all_three_windows_come_from_the_committed_partition_rule`.
+> The difference between the rule and what each deployed model recorded is still REPORTED on every
+> run, and now names every window that moved rather than the holdout alone.
 
 Nineteen live test pins carried the old partition where the plan predicted five. Two of the nineteen
 were **PASSING while measuring the wrong seasons** -- both sides of their comparison drew from one
