@@ -6783,3 +6783,103 @@ Nothing downstream of the 18 was built on it: no test asserted the value, and th
 only consumer was Plan 33-12's own verification, which is where the error surfaced
 -- before the migration ran, not after.
 """
+
+
+# ---------------------------------------------------------------------------
+# WHAT THE MIGRATION ACTUALLY DID.
+#
+# APPENDED by Plan 33-12 Task 1 on 2026-09-14, AFTER the run, in a SECOND commit.
+# Nothing above this line was edited -- in particular the declaration block is the
+# one that was committed before the run, byte for byte.
+#
+# THE BRACKET. tests/data_boundary snapshot was taken over `data` (448 tracked
+# files, ZERO stat signatures -- every baseline value is a content hash) after
+# Plan 33-06's and Plan 33.1-01's data/venues.json edits had landed and been
+# committed (NF-06), and re-read afterwards. The CLI exits 1 because the tree DID
+# move; that is the point of a deliberate migration, and the acceptance test is
+# that the moved set EQUALS the declaration, not that nothing moved.
+#
+#     REWRITTEN   silver/games.parquet                             1 file
+#     ADDED       bronze/games_raw_bronze_<season>_W00_<ts>.parquet  24 files
+#     REMOVED     none
+#     MIXED       none        (no UNDECIDED comparison anywhere)
+#     UNEXPLAINED none        (every moved key matches an entry or the pattern)
+#
+# Every member of IDENTITY_MIGRATION_EXPLICITLY_NOT_EXPECTED held: the shared
+# data/nfl_predictions.duckdb did NOT move, confirming by measurement the read
+# finding that upsert_silver bypasses save_dataframe; data/venues.json did not
+# move; no gold matrix moved.
+#
+# THE CORROBORATION THAT THE INPUT WAS THE PINNED INPUT. Each of the 24 bronze
+# snapshots the migration WROTE is BYTE-IDENTICAL to the sealed pinned schedule
+# snapshot for that season recorded in IDENTITY_MIGRATION_PIN_MAPPING -- 24 of 24
+# sha256 matches. The ingest therefore demonstrably read the immutable bytes the
+# declaration named, rather than anything upstream happens to serve today. This is
+# a stronger statement than "a pin covers the season": it is the same bytes out.
+#
+# THE RUN. Twenty-four invocations of the PUBLISHED command form
+# (PIPELINE.md:29, RUNBOOK.md:140):
+#     uv run python scripts/ingest_games.py --season <YEAR>
+# for YEAR in 2002..2025, with the pbp score merge left ON (the tested default
+# path). No parquet was hand-edited and nothing was written from a one-liner
+# (T-33-60).
+# ---------------------------------------------------------------------------
+
+# The content sha256 of data/silver/games.parquet AFTER the migration, taken
+# through tests.data_boundary.require_content_digest so it cannot be a stat
+# signature (D33-32). Binary, so newlines are irrelevant.
+SILVER_GAMES_DIGEST_AFTER_IDENTITY: str = (
+    "3bc8cfa3e88d8e3218735502f20caf24fd583e67b11302bd867a3dc16f478f10"
+)
+
+# The digest the same file carried BEFORE, from the committed pre-run snapshot.
+# Recorded beside the after value so the pair is checkable without the JSON.
+SILVER_GAMES_DIGEST_BEFORE_IDENTITY: str = (
+    "48901e5c24865896507fa1314a67a09325a164236a08ce267ad24707a98bc22f"
+)
+
+# Rows whose season_type is the postseason value, measured on the migrated store.
+# Before the migration this was ZERO: season_type.unique() was ['Regular'] across
+# all 6,499 rows, including every WC, DIV, CON and SB game ever played (D33-17).
+POSTSEASON_ROW_COUNT: int = 276
+
+# The full partition, so the count above is checkable rather than merely quoted.
+SILVER_SEASON_TYPE_COUNTS_AFTER_IDENTITY: tuple[tuple[str, int], ...] = (
+    ("Regular", 6223),
+    ("Postseason", 276),
+)
+
+# Rows whose neutral_site is True on the migrated store. Before: zero, on a column
+# that was a constant False. These are the same 91 games
+# HISTORICAL_NEUTRAL_MISRESOLUTION enumerates -- the column now SAYS so, while the
+# venue routing for those historical rows is deliberately NOT repaired here.
+NEUTRAL_SITE_TRUE_ROW_COUNT: int = 91
+
+# The migrated frame, measured rather than predicted.
+SILVER_GAMES_ROWS_AFTER_IDENTITY: int = 6499
+SILVER_GAMES_SEASONS_AFTER_IDENTITY: tuple[int, int] = (2002, 2025)
+
+# Whole-store integrity checks taken at the same instant as the digest above.
+# Recorded as a tuple of (check, value) so a later reader sees WHICH checks were
+# run, not only that some were.
+SILVER_GAMES_INTEGRITY_AFTER_IDENTITY: tuple[tuple[str, int], ...] = (
+    ("rows", 6499),
+    ("columns", 16),
+    ("distinct_seasons", 24),
+    ("duplicate_game_ids", 0),
+    ("stadium_id_nulls", 0),
+    ("primary_key_nulls", 0),
+    ("season_type_game_type_disagreements", 0),
+)
+
+# The migrated roof distribution, the measured consequence of
+# IDENTITY_MIGRATION_VENUE_ROOF_ROWS_MOVED. The BEFORE distribution is DERIVED by
+# reversing the transition table rather than separately measured, because the file
+# it would have been measured from no longer exists: outdoor 4806 (4719 + 87 that
+# moved to indoor), indoor 1362 (1031 + 418 that moved to retractable - 87 that
+# arrived from outdoor), retractable 331 (749 - 418). 4806 + 1362 + 331 = 6499.
+SILVER_VENUE_ROOF_COUNTS_AFTER_IDENTITY: tuple[tuple[str, int], ...] = (
+    ("outdoor", 4719),
+    ("indoor", 1031),
+    ("retractable", 749),
+)
