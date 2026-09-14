@@ -7014,3 +7014,87 @@ IDENTITY_COLUMNS_INERT_FOR_READERS: tuple[str, ...] = (
 )
 
 IDENTITY_COLUMNS_LOAD_BEARING_FOR_READERS: tuple[str, ...] = ("stadium_id",)
+
+
+# ---------------------------------------------------------------------------
+# THE SECOND COPY OF SILVER games, AND WHY A PARQUET-ONLY MIGRATION IS HALF DONE.
+#
+# APPENDED by Plan 33-12 on 2026-09-14, AFTER the migration and AFTER the
+# verification run that found it. Nothing above this line was edited -- in
+# particular IDENTITY_MIGRATION_EXPECTED_CHANGED_FILES and the read finding
+# beside it are left exactly as declared before the run. They were CORRECT about
+# what upsert_silver writes. What they did not foresee was the CONSEQUENCE.
+#
+# THE FINDING. There are TWO copies of silver `games`: the parquet the migration
+# rewrote, and a base table inside the shared data/nfl_predictions.duckdb.
+# data.storage.load_dataframe's DEFAULT source="auto" tries DuckDB FIRST
+# (data/storage.py:1093-1099), so after a parquet-only write every ordinary
+# reader -- build_features, build_contextual, data_qa, the prediction scripts --
+# is served the STALE copy. On this migration that copy had no `stadium_id`
+# column at all, which since D33.1-06 is a hard contextual-build failure.
+#
+# HOW IT SURFACED, recorded because the route matters. Not by foresight: by the
+# idempotency control in tests/integration/test_n01_resync_control.py, whose
+# "second apply" was in fact the FIRST apply after a divergence this migration
+# had just created. It failed, correctly, and in failing it ran resync_games()
+# and brought the two copies into agreement. The right end state by an accidental
+# route, which is not the same as the right process, and saying so is the point
+# of recording it here.
+#
+# THE BRACKET IS UNHARMED AND THE TWO EVENTS ARE NOT CONFLATED. The migration's
+# own bracket was VERIFIED at 02:45 on 2026-09-14, before any test ran, and was
+# exactly {silver/games.parquet REWRITTEN, 24 bronze ADDED}. The DuckDB moved
+# LATER, during verification, and its mover is the repository's one declared
+# production writer -- the node carrying
+# @pytest.mark.writes_production_store(paths=["data/nfl_predictions.duckdb"]).
+# A cumulative diff against the pre-migration snapshot therefore reports
+# {silver/games.parquet, nfl_predictions.duckdb, 24 bronze} and every member of
+# it is attributable by name.
+#
+# THE END STATE, MEASURED. `uv run python -m scripts.resync_games_duckdb` reports
+# `parquet 6499  db 6499  divergence 0`, and the two copies' table_content_digest
+# values are identical.
+#
+# THE GUARD THAT WAS MISSING. No test asserted that the two copies agree, which
+# is why a parquet-only migration could look complete. Plan 33-12 adds it to
+# tests/integration/test_data_completeness.py in the cheap always-on form.
+#
+# THE RUNBOOK CONSEQUENCE FOR EVERY LATER PLAN THAT REWRITES SILVER games --
+# 33-13's Elo re-derivation and 33.1-07's rung both read it, and 33-18's readout
+# reports on it:
+#
+#     uv run python -m scripts.resync_games_duckdb --apply
+#
+# must follow the write, and it moves data/nfl_predictions.duckdb, so it belongs
+# in that plan's DECLARED changed-file set rather than arriving as a surprise.
+# ---------------------------------------------------------------------------
+
+SILVER_GAMES_HAS_TWO_COPIES: bool = True
+
+SILVER_GAMES_DUCKDB_RESYNC_COMMAND: str = (
+    "uv run python -m scripts.resync_games_duckdb --apply"
+)
+
+# The agreed content digest of BOTH copies after the re-sync, taken with
+# scripts.resync_games_duckdb.table_content_digest -- a digest of the TABLE's
+# content, not of either file's bytes, so it is comparable across the two stores.
+SILVER_GAMES_TABLE_DIGEST_AFTER_RESYNC: str = (
+    "f64bbd1be38b70f2e8e8cb15f1e48e792123bd46c488f9b283d74ed7c3f792b7"
+)
+
+# The cumulative moved set over the WHOLE plan -- the migration itself plus the
+# verification run that re-synced the DuckDB. Recorded beside the migration's own
+# declared set rather than replacing it, because the two answer different
+# questions and merging them would hide which event moved what.
+IDENTITY_MIGRATION_CUMULATIVE_CHANGED_FILES: tuple[tuple[str, str], ...] = (
+    ("silver/games.parquet", "REWRITTEN by the migration, bracket verified 02:45"),
+    (
+        "bronze/games_raw_bronze_<season>_W00_<ts>.parquet",
+        "24 ADDED by the migration, bracket verified 02:45",
+    ),
+    (
+        "nfl_predictions.duckdb",
+        "REWRITTEN LATER, during verification, by the declared production writer "
+        "in tests/integration/test_n01_resync_control.py -- the N-01 re-sync",
+    ),
+)

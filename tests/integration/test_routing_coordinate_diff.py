@@ -387,13 +387,34 @@ class TestTheNeutralSiteDisclosureIsRepaired:
             "repair below is scoped to exactly that population."
         )
 
-    def test_silver_would_have_reported_zero(self) -> None:
-        """Why the population comes from the feed and not from silver.
+    def test_silver_now_agrees_with_the_feed_and_the_source_stays_the_feed(
+        self,
+    ) -> None:
+        """THE WAVE-12 DECISION, recorded where the tripwire asked for it.
 
-        Stated as an assertion rather than a comment so that when Phase 33 Wave 12
-        backfills the column, this test turns RED and somebody decides whether the
-        source should change -- rather than the source silently becoming viable
-        while the comment above still says it is not.
+        This test was `test_silver_would_have_reported_zero`. It asserted that
+        silver's `neutral_site` was a constant False, so that when Phase 33 Wave 12
+        backfilled the column the test would turn RED and somebody would decide
+        whether this module should switch its source -- rather than the source
+        silently becoming viable while the comment above still said it was not.
+
+        WAVE 12 HAS RUN (Plan 33-12). THE DECISION IS: THE SOURCE STAYS THE FEED.
+
+        Two reasons, and the first is the binding one.
+
+        1. Silver's `neutral_site` is DERIVED from the feed's `location` by
+           `scripts.ingest_games._derive_neutral_site`. Measuring the neutral-site
+           population from silver would therefore be measuring the derivation
+           against itself, and this module's whole job is to state a disclosure
+           about the PINNED UPSTREAM population -- which has to stay anchored on
+           the immutable bytes, not on a store any later plan may rewrite.
+        2. The disclosure is a historical record. Re-sourcing it would make the
+           numbers move whenever silver is re-ingested, which is the opposite of
+           what a record is for.
+
+        WHAT IS ASSERTED INSTEAD IS STRICTLY STRONGER than the old constant-False
+        claim: silver and the feed now AGREE, game for game. That was not
+        assertable before the backfill, because one side was a constant.
         """
         silver_path = REPO_ROOT / "data" / "silver" / "games.parquet"
         if not silver_path.is_file():
@@ -401,11 +422,42 @@ class TestTheNeutralSiteDisclosureIsRepaired:
         silver = pd.read_parquet(silver_path, columns=None)
         if "neutral_site" not in silver.columns:
             pytest.skip("silver games carries no neutral_site column yet")
-        assert not silver["neutral_site"].any(), (
-            "silver's neutral_site column now carries True somewhere, so Phase 33 "
-            "Wave 12 has run. Re-decide whether this module should read it rather "
-            "than the feed's own `location`, and record the decision."
+        if not silver["neutral_site"].any():
+            pytest.skip(
+                "silver's neutral_site is still a constant False, so the Plan "
+                "33-12 backfill has not run against this checkout. The agreement "
+                "below is only meaningful once it has."
+            )
+
+        # COMPARED PER SEASON, NOT PER game_id, and the reason is a real
+        # incompatibility rather than convenience: the FEED keys games as
+        # `2002_21_OAK_TB` and silver keys them as `2002_W21_LV@TB` -- a different
+        # scheme AND a different team vocabulary (the feed's OAK against the
+        # canonical LV). Bridging the two here would mean re-implementing
+        # `_create_game_id` inside the test, which is the fixture-agrees-with-itself
+        # failure this module exists to avoid. The per-season histogram is
+        # instrument-independent and, at 91 games over 24 seasons, tight.
+        feed_by_season = Counter(
+            int(row.season)
+            for row in _schedules().itertuples()
+            if str(row.location) == NEUTRAL_LOCATION
         )
+        silver_by_season = Counter(
+            int(season) for season in silver.loc[silver["neutral_site"], "season"]
+        )
+
+        assert silver_by_season == feed_by_season, (
+            "silver's neutral_site and the feed's `location` disagree season by "
+            f"season: silver {dict(sorted(silver_by_season.items()))} against feed "
+            f"{dict(sorted(feed_by_season.items()))}. The column is a derivation of "
+            "the feed, so a disagreement means a row was written by something "
+            "other than _derive_neutral_site -- and this module would report a "
+            "different population depending on which side it read."
+        )
+        assert (
+            sum(feed_by_season.values())
+            == phase33_state.HISTORICAL_NEUTRAL_MISRESOLUTION["games"]
+        ), "the agreed population must still be the one the disclosure recorded"
 
     def test_every_neutral_game_resolves_to_its_own_stadium(self) -> None:
         measured = _measure()

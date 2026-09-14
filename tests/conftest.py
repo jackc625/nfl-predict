@@ -1543,6 +1543,20 @@ def per_game_roof_games():
             frame["stadium_id"] = [
                 facts.loc[gid, "stadium_id"] for gid in frame["game_id"]
             ]
+        else:
+            # WAVE 12 HAS NOW RUN (Plan 33-12), so the live silver frame this
+            # fixture reads ALREADY carries stadium_id and the PRE-Wave-12 shape
+            # can no longer be OBTAINED -- it has to be CONSTRUCTED. This drop is
+            # the change the failing assertion in
+            # tests/unit/test_weather_unknown_stadium_refusal.py:201 asked for by
+            # name ("the fixture flag is what to change").
+            #
+            # The control is KEPT rather than deleted. Ruling D2's claim is that
+            # _prepare_games_frame handles BOTH input shapes, and a pre-Wave-12
+            # frame is still reachable in the wild: any checkout whose data/ was
+            # populated before this migration, and any caller that hands the
+            # backfiller a frame it built itself.
+            frame = frame.drop(columns=["stadium_id"], errors="ignore")
         return frame.reset_index(drop=True)
 
     return make

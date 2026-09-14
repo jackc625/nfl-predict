@@ -563,3 +563,98 @@ class TestTheSeasonTypeConsumerNowReadsARealValue:
             f"{same} vs {different}. If it is now 0.0 the consumer is reading a "
             "constant again."
         )
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-12, DEVIATION-DRIVEN: THE SECOND COPY OF SILVER games.
+#
+# THE FINDING, and it was found by a test rather than foreseen by the plan.
+#
+# `upsert_silver` writes the PARQUET only -- that read finding is correct and is
+# recorded in `IDENTITY_MIGRATION_EXPECTED_CHANGED_FILES`, and the content-digest
+# bracket confirmed `data/nfl_predictions.duckdb` did not move during the
+# migration. What the declaration did not foresee is the CONSEQUENCE: there are
+# TWO copies of silver `games`, and `data.storage.load_dataframe`'s default
+# `source="auto"` tries DuckDB FIRST (data/storage.py:1093-1099). So a
+# parquet-only migration leaves every ordinary reader -- build_features,
+# build_contextual, data_qa, the prediction scripts -- reading the STALE copy,
+# and on this migration that copy had no `stadium_id` column at all.
+#
+# It surfaced as a red in `tests/integration/test_n01_resync_control.py`'s
+# idempotency control: that test's "second apply" was in fact the FIRST apply
+# after a divergence this migration created, so the DuckDB table's content digest
+# moved and the test said so. The repository's one declared production writer
+# then brought the two copies back into agreement, which is the correct end state
+# reached by an accidental route.
+#
+# THE GUARD. There was no test asserting the two copies agree. That absence is
+# why a parquet-only migration could look complete. This is that test, and it is
+# the cheap always-on form: shapes, column order and a content digest, using the
+# resync tool's own digest function so the two instruments cannot drift.
+#
+# THE RUNBOOK CONSEQUENCE, stated where it will be read: any plan that rewrites
+# silver `games` must follow it with
+#     uv run python -m scripts.resync_games_duckdb --apply
+# or the write is only half done.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestTheTwoCopiesOfSilverGamesAgree:
+    """A parquet-only write leaves the copy that `source='auto'` actually reads."""
+
+    def test_the_duckdb_and_parquet_copies_are_the_same_table(self) -> None:
+        from data.storage import get_db_connection, load_dataframe
+        from scripts.resync_games_duckdb import table_content_digest
+
+        _live_games()  # the pinned skip, shared with the tests above
+
+        if not get_db_connection().table_exists("games"):
+            pytest.skip(
+                "this lake has no DuckDB `games` table, so there is no second copy "
+                "to disagree with the parquet one."
+            )
+
+        from_db = load_dataframe("games", layer="silver", source="db")
+        from_parquet = load_dataframe("games", layer="silver", source="parquet")
+
+        assert len(from_db) == len(from_parquet), (
+            f"the DuckDB copy holds {len(from_db)} rows and the parquet copy "
+            f"{len(from_parquet)}. load_dataframe's default source='auto' reads "
+            "the DuckDB one FIRST, so the row count a caller sees depends on which "
+            "store was written last. Run "
+            "`uv run python -m scripts.resync_games_duckdb --apply`."
+        )
+        assert list(from_db.columns) == list(from_parquet.columns), (
+            "the two copies of silver games carry different columns: only in db "
+            f"{sorted(set(from_db.columns) - set(from_parquet.columns))}, only in "
+            f"parquet {sorted(set(from_parquet.columns) - set(from_db.columns))}. "
+            "This is exactly the state the Plan 33-12 migration created before the "
+            "N-01 re-sync ran: the parquet gained stadium_id and the DuckDB copy "
+            "did not, while source='auto' kept serving the DuckDB one."
+        )
+        assert table_content_digest(from_db) == table_content_digest(from_parquet), (
+            "the two copies of silver games have the same shape but different "
+            "CONTENT. Re-sync them before trusting anything built on top."
+        )
+
+    def test_the_copy_that_auto_serves_carries_the_real_season_type(self) -> None:
+        """The property that matters, asserted on the copy readers ACTUALLY get.
+
+        `source='auto'` is what every production caller uses. Asserting the
+        partition on the parquet while callers read the DuckDB would be asserting
+        about a file nobody opens.
+        """
+        from data.storage import load_dataframe
+
+        _live_games()
+        served = load_dataframe("games", layer="silver")
+        assert set(served["season_type"].unique()) == {"Regular", "Postseason"}, (
+            "the copy load_dataframe serves by default still reports "
+            f"{sorted(served['season_type'].unique())}."
+        )
+        assert "stadium_id" in served.columns, (
+            "the copy load_dataframe serves by default carries no stadium_id, so "
+            "every contextual build routing by it will hard-fail even though the "
+            "parquet has been migrated."
+        )
