@@ -7098,3 +7098,63 @@ IDENTITY_MIGRATION_CUMULATIVE_CHANGED_FILES: tuple[tuple[str, str], ...] = (
         "in tests/integration/test_n01_resync_control.py -- the N-01 re-sync",
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# THIS PLAN'S COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-12 at plan close on 2026-09-14, AFTER both tasks and the
+# deviation fixes landed. Nothing above this line was edited.
+#
+# APPENDED AT CLOSE, NOT IN TASK 1, for the reason Plans 33-02 through 33-11 each
+# recorded when they did the same: both tasks add tests, so a Task-1 value would
+# have been wrong at close and could only have been made right by EDITING it --
+# the append-once violation the protocol exists to prevent. This plan is the case
+# in point: the value after Task 2 was 31, and the deviation fix that closed the
+# DuckDB finding added two more.
+#
+# MEASURED by a whole-suite `--collect-only` BRACKET around this plan's own
+# commits. Collection runs no test and takes about five seconds, and it counts the
+# protocol's unit: COLLECTED NODES, a parametrised case counting once per
+# generated node.
+#
+#     uv run python -m pytest tests -q --collect-only
+#         b01dd25 (Plan 33-11's close, this plan's base)   5246 collected
+#         e27ffa8 (this plan's last code commit)           5279 collected
+#         delta                                              33
+#
+# INDEPENDENTLY CONFIRMED per module against the SAME files at the base commit,
+# which is the check that no test was quietly deleted elsewhere to make the number
+# look right. All four modules already existed; this plan created none:
+#
+#     module                                            base   now   delta
+#     tests/integration/test_gold_write_scope.py          15    26     +11
+#     tests/integration/test_data_completeness.py         14    20      +6
+#     tests/unit/test_games_identity_columns.py           26    42     +16
+#     tests/integration/test_routing_coordinate_diff.py   43    43      +0
+#                                                                      ---
+#                                                                      +33
+#
+# The two instruments agree exactly. routing_coordinate_diff contributes ZERO
+# because its Wave-12 tripwire was RESOLVED IN PLACE rather than removed or
+# doubled: one node renamed, its body replaced with the recorded decision and a
+# strictly stronger assertion.
+#
+# ONE OF THE 33 IS SKIPPED BY DEFAULT and that is deliberate: the full-history
+# sandbox gold build costs 577 s measured. It is COLLECTED, which is the unit this
+# number counts, and it is RUN by name with NFL_RUN_FULL_GOLD_BUILD=1 -- it was run
+# once during this plan, passing in 608 s. A further group of nodes -- every one
+# that asserts about the MIGRATED production store -- skips by pinned message on a
+# checkout with no data/ directory, because data/ is gitignored and a hard failure
+# there would report a fact about the checkout rather than about the data.
+#
+# No whole-suite RUN was taken; see this plan's SUMMARY for exactly what was run,
+# what was not, and the residual risk. What WAS run is a 113-module affected set
+# closing on the five DELIBERATE_TRIPWIRE_NODE_IDS and nothing else:
+#
+#     5 failed, 2101 passed, 11 skipped, 9 xfailed in 1108.77 s
+#
+# None of the four modules touches a DELIBERATE_TRIPWIRE_NODE_IDS member.
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_12: int = 33
