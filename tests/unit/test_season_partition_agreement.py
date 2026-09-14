@@ -515,3 +515,63 @@ class TestTheIncumbentRecordsDifferAndAreNotEdited:
                 "the report must name the consequence -- the gate's re-score of an artifact "
                 f"fitted on those seasons is IN-SAMPLE. Got: {report}"
             )
+
+
+class TestTheRuleWillNotTreatALiveSeasonAsCompleted:
+    """Code review WR-01: ``completed_seasons_from`` had no upper bound.
+
+    ``completed_seasons_from`` dropped anything below ``CORPUS_FIRST_SEASON`` and applied no
+    ceiling, while its own docstring told callers to "pass a gold frame's ``season`` column".
+    Gold is rebuilt DURING a season and 2026 is underway, so following that instruction
+    mid-season returned a partition whose holdout was a PARTIAL season, whose hp-val fold had
+    moved, and whose final fit covered games that had not been played -- with no error.
+
+    These are the assertions that would have caught it. They are written against the RULE
+    rather than against a caller, because the rule is where the bound belongs: a ceiling
+    enforced by each caller is a ceiling that the next caller forgets.
+    """
+
+    def test_a_season_beyond_the_latest_completed_one_is_dropped(self) -> None:
+        from conf.season_partition import (
+            LATEST_COMPLETED_SEASON,
+            completed_seasons_from,
+        )
+
+        live = LATEST_COMPLETED_SEASON + 1
+        kept = completed_seasons_from([*range(2002, LATEST_COMPLETED_SEASON + 1), live])
+
+        assert live not in kept, (
+            f"season {live} survived completed_seasons_from. It is not COMPLETE -- "
+            "LATEST_COMPLETED_SEASON says so -- and a partition that treats an "
+            "in-progress season as completed holds out a partial season and finally "
+            "fits on games that have not been played."
+        )
+        assert kept[-1] == LATEST_COMPLETED_SEASON, kept[-1]
+
+    def test_a_gold_frame_carrying_live_rows_cannot_move_the_holdout(self) -> None:
+        """The end-to-end shape, measured the way the defect was measured."""
+        from conf.season_partition import (
+            LATEST_COMPLETED_SEASON,
+            derive_season_partition,
+        )
+
+        with_live_rows = derive_season_partition(
+            range(2002, LATEST_COMPLETED_SEASON + 2)
+        )
+
+        assert with_live_rows.holdout == _partition().holdout, (
+            f"a completed-season pool containing the live season produced holdout "
+            f"{list(with_live_rows.holdout)}, not {list(_partition().holdout)}. Before the "
+            "fix, derive_season_partition(range(2002, 2027)) returned hp_val (2024,) and "
+            "holdout (2025, 2026) -- silently."
+        )
+        assert with_live_rows.hp_val == _partition().hp_val
+        assert with_live_rows.final_fit[-1] == LATEST_COMPLETED_SEASON
+
+    def test_the_floor_still_drops_too(self) -> None:
+        """The control: a ceiling that swallowed the floor would pass the two above."""
+        from conf.season_partition import CORPUS_FIRST_SEASON, completed_seasons_from
+
+        kept = completed_seasons_from([1999, 2001, CORPUS_FIRST_SEASON, 2010])
+
+        assert kept == (CORPUS_FIRST_SEASON, 2010), kept
