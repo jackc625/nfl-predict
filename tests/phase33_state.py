@@ -4723,7 +4723,35 @@ WEATHER_CORPUS_RUN: dict[str, object] = {
     "observed_seconds_per_attempt": 1.0026,
     "declared_interval_seconds": 1.0,
     # THE CORPUS.
-    "seasons_fetched": tuple(range(2002, 2026)),
+    # Written out rather than built with tuple(range(...)): this module's own
+    # contract is NO module-level calls, asserted by
+    # tests/unit/test_phase33_state_shape.test_the_state_module_has_no_module_level_calls.
+    "seasons_fetched": (
+        2002,
+        2003,
+        2004,
+        2005,
+        2006,
+        2007,
+        2008,
+        2009,
+        2010,
+        2011,
+        2012,
+        2013,
+        2014,
+        2015,
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025,
+    ),
     "seasons_still_missing_after": (),
     "games_total": 6499,
     "games_fetched": 4847,
@@ -5148,8 +5176,22 @@ WEATHER_PROMOTION_INPUTS: dict[str, object] = {
     "bronze_tables_read": ("weather_backfill",),
     "bronze_glob": "weather_backfill_raw_bronze_*",
     "legacy_files_read": (),
-    "legacy_inventory_checked_against": tuple(
-        sorted(LEGACY_WEATHER_BRONZE_INVENTORY["files"])
+    # The ten filenames the promotion is proven NOT to have read. Written out
+    # rather than derived from LEGACY_WEATHER_BRONZE_INVENTORY with a
+    # tuple(sorted(...)) call, because this module's contract is NO module-level
+    # calls. tests/unit/test_weather_backfill_resume.py already asserts the two
+    # lists agree, so the duplication cannot drift silently.
+    "legacy_inventory_checked_against": (
+        "weather_raw_bronze_2018_season.parquet",
+        "weather_raw_bronze_2019_season.parquet",
+        "weather_raw_bronze_2020_season.parquet",
+        "weather_raw_bronze_2021_season.parquet",
+        "weather_raw_bronze_2022_season.parquet",
+        "weather_raw_bronze_2023_season.parquet",
+        "weather_raw_bronze_2024_season.parquet",
+        "weather_raw_bronze_2024_W06_20260416T165923.parquet",
+        "weather_raw_bronze_2025_W00_20260407T025733.parquet",
+        "weather_raw_bronze_2025_W05.parquet",
     ),
     "column_counts_read": (25,),
     "legacy_column_count": 17,

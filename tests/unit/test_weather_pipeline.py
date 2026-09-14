@@ -584,19 +584,43 @@ class TestWeatherSourceOnTheSilverTable:
     """The stored table, read-only. Nothing in this class writes."""
 
     def test_the_silver_weather_table_is_the_widened_shape(self):
+        """The width is WEATHER_COLUMNS_AFTER_COVERAGE now, not WEATHER_COLUMNS_AFTER.
+
+        RE-TARGETED by Plan 33.1-06 Task 4, not weakened. Plan 33-09 widened this
+        table 23 -> 24 by adding `weather_source`, and this assertion pinned that
+        24. Plan 33.1-02 then declared `weather_coverage` as the 25th column and
+        recorded the new width in its OWN constant,
+        `WEATHER_COLUMNS_AFTER_COVERAGE`, which until now no test read. The
+        promotion in Plan 33.1-06 Task 3 is the write that makes the stored table
+        25 wide.
+
+        The assertion still pins an EXACT declared width against a constant in the
+        manifest; only which constant it reads has moved, and the superseded
+        `WEATHER_COLUMNS_AFTER = 24` is retained in source with its own history.
+        """
         from tests import phase33_state
 
         frame = pd.read_parquet("data/silver/weather.parquet")
-        assert len(frame.columns) == phase33_state.WEATHER_COLUMNS_AFTER
+        assert len(frame.columns) == phase33_state.WEATHER_COLUMNS_AFTER_COVERAGE
         assert "weather_source" in frame.columns
+        assert "weather_coverage" in frame.columns
 
     def test_the_pre_existing_rows_are_stamped_archive(self):
         """The fourteen rows already on disk came from the ARCHIVE endpoint, and the
-        backfill says so rather than leaving them null."""
+        backfill says so rather than leaving them null.
+
+        THE SELECTOR NARROWED, THE CLAIM DID NOT (Plan 33.1-06 Task 4). Those
+        fourteen rows are 2024 WEEK 6, and `2024_` isolated them only while 2024
+        was the sole season in the table. The full-corpus promotion put all 285
+        rows of 2024 in, so the old selector now names a population this assertion
+        was never about. `2024_W06_` names exactly the original fourteen -- still
+        fourteen, still every one of them stamped `archive` -- so the assertion
+        tests what it always tested.
+        """
         from tests import phase33_state
 
         frame = pd.read_parquet("data/silver/weather.parquet")
-        pre_existing = frame[frame["game_id"].str.startswith("2024_")]
+        pre_existing = frame[frame["game_id"].str.startswith("2024_W06_")]
         assert len(pre_existing) == phase33_state.WEATHER_ROWS_BEFORE
         assert set(pre_existing["weather_source"]) == {"archive"}
 
