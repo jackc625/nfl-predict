@@ -32,6 +32,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+
+from conf.season_partition import SeasonPartition, default_season_partition
+from models.temporal import WalkForwardSplitter
+from models.trainers.ats_trainer import ATSTrainer
+from models.trainers.base import BaseTrainer
 from models.trainers.final_fit import (
     FINAL_FIT_COMPONENT_POLICY,
     FINAL_FIT_COMPONENTS_METADATA_KEY,
@@ -40,11 +45,6 @@ from models.trainers.final_fit import (
     apply_final_fit_to_trainer,
     final_fit_over_completed_seasons,
 )
-
-from conf.season_partition import SeasonPartition, default_season_partition
-from models.temporal import WalkForwardSplitter
-from models.trainers.ats_trainer import ATSTrainer
-from models.trainers.base import BaseTrainer
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WP_PIPELINE_STEP_NAMES, WPTrainer
 

@@ -345,6 +345,57 @@ class ATSTrainer(BaseTrainer):
             predicted_margins, spreads
         )
 
+    def converter_params(self) -> dict[str, Any] | None:
+        """The fitted residual converter's parameters, as plain JSON-able values.
+
+        THE FORM IS THE DECISION (D33.1-R1, Plan 33.1-10 Ruling T2 part 2). Three fields
+        describe this converter completely and reconstruct it exactly, so they are
+        persisted as JSON in ``metadata.json`` rather than as a second pickle. Two reasons,
+        both deliberate: a JSON record is readable a year from now by a human auditing why
+        a cover probability was what it was, which a pickle is not; and it does not widen
+        the ``joblib.load`` deserialisation surface.
+
+        Until this existed the converter was never persisted under ANY name --
+        ``BaseTrainer.save`` passes ``self.calibrator``, which ATS leaves None -- and
+        serving rebuilt conversion from ``metadata.get("residual_std", 13.5)``, a hardcoded
+        fallback standing in for a fitted object.
+
+        Returns:
+            The three parameters, or None when the converter is unfitted (so a caller
+            that saves before training does not write a half-built record).
+        """
+        converter = self.residual_converter
+        if converter is None or not converter.is_fitted:
+            return None
+        return {
+            "distribution_type": converter.distribution_type,
+            "residual_std": float(converter.residual_std),
+            "distribution_params": {
+                key: float(value)
+                for key, value in (converter.distribution_params or {}).items()
+            },
+        }
+
+    def final_fit(
+        self,
+        features_df: pd.DataFrame,
+        partition: Any,
+        *,
+        closing_odds_df: pd.DataFrame | None = None,
+    ) -> Any:
+        """Fit the SHIPPED model on every completed season in *partition*.
+
+        A thin wrapper over
+        ``models.trainers.final_fit.final_fit_over_completed_seasons``; the decisions and
+        their reasons live in that module. It WRITES NOTHING, and no production path in
+        Phase 33.1 calls it -- the re-fit is Phase 33 Wave 15's act.
+        """
+        from models.trainers.final_fit import final_fit_over_completed_seasons
+
+        return final_fit_over_completed_seasons(
+            self, features_df, partition, closing_odds_df=closing_odds_df
+        )
+
     def _fit_residual_converter(
         self,
         y_true: np.ndarray,

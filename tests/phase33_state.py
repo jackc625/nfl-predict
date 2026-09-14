@@ -9922,3 +9922,74 @@ PARTITION_LITERALS_REMOVED_FROM_NON_GUARD_TESTS: tuple[tuple[str, str, str], ...
         "live_partition",
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.1-10 Task 1 -- THE FOUR PERSISTED COMPONENTS OF THE FINAL FIT, each
+# decided separately, with the rejected alternative and its cost.
+#
+# MEASURED/DECIDED 2026-09-14. Ruling S of `33.1-10-PLAN.md`, authored in
+# `models/trainers/final_fit.py` as `FINAL_FIT_COMPONENT_POLICY` (the data form) and
+# in that module's docstring (the prose form). Recorded HERE so Plan 33.1-11's
+# readout can QUOTE the record rather than re-argue it, and so the decision survives
+# independently of any one module's docstring.
+#
+# The load-bearing one is the CALIBRATOR. All three trainers fit a calibrator or a
+# residual converter on hp-val PREDICTIONS from a model trained on the selection
+# window only, OUTSIDE the tuning branch. The final fit INCLUDES those hp-val rows.
+# Refitting the calibrator on them would make it in-sample: it would look perfectly
+# calibrated while being useless, and WP's entire stated value is calibration. So it
+# is carried over by reference and the test asserts object IDENTITY, not numeric
+# agreement -- a silently refitted calibrator that happened to agree would still fail.
+# ---------------------------------------------------------------------------
+
+FINAL_FIT_COMPONENT_DECISIONS: dict[str, str] = {
+    "model": (
+        "REFIT on every completed season in SeasonPartition.final_fit. This is the "
+        "point of D33.1-02 and the only reason the entry point exists: "
+        "WalkForwardSplitter.generate_splits builds every fold as season < "
+        "holdout_season and each trainer keeps the LAST fold's model, so the newest "
+        "completed season never enters the shipped model under ANY choice of the "
+        "three season lists."
+    ),
+    "preprocessing": (
+        "REFIT on the SAME rows as the final model and PERSISTED WITH IT as one "
+        "inseparable sklearn Pipeline (D33.1-R1). Under D33.1-R3 the scaler is the "
+        "third step of the object whose fourth step is the estimator, so the two "
+        "cannot be handed different row sets even deliberately. This is a DELIBERATE "
+        "behaviour change from the pre-D33.1-R3 code, where the scaler was fitted on "
+        "train_val_split.train_data while the model came from the last walk-forward "
+        "fold -- the two had never shared a row set."
+    ),
+    "calibrator": (
+        "CARRIED OVER unchanged from the walk-forward stage -- NOT refitted, and "
+        "carried by REFERENCE so object identity is assertable. It was fitted on "
+        "hp-val PREDICTIONS from a model trained on the selection window only, which "
+        "is what makes it out-of-sample. Refitting it on rows the final model was "
+        "fitted on would make it IN-SAMPLE: the reliability curve would look "
+        "excellent and mean nothing. The carried-over pairing biases mildly toward "
+        "UNDER-confidence, which is a conservative, statable error rather than a "
+        "flattering, unstatable one."
+    ),
+    "feature_names": (
+        "CARRIED OVER from the walk-forward stage's selection on the selection "
+        "window. Selection stays where Ruling Q put it, which is what keeps a "
+        "candidate comparable to its incumbent on the axis the deploy gate measures."
+    ),
+    "rejected_alternative": (
+        "HOLDING hp_val OUT of the final fit. It keeps the calibrator honestly "
+        "refittable, and it was NOT taken."
+    ),
+    "rejected_alternative_cost": (
+        "It would leave the shipped model ONE SEASON SHORT of every completed season, "
+        "which silently defeats D33.1-01 -- a locked owner decision, not a default to "
+        "trade away in an implementer's judgement. The cost of the choice made "
+        "INSTEAD is recorded rather than hidden: the shipped model's calibrator was "
+        "fitted against a NARROWER model than the one that ships."
+    ),
+    "final_fit_seasons_metadata_key": "final_fit_seasons",
+    "final_fit_components_metadata_key": "final_fit_components",
+    "entry_point_module": "models/trainers/final_fit.py",
+    "requirement": "R6",
+    "decision": "D33.1-01 / D33.1-02 (Ruling S of 33.1-10-PLAN.md)",
+}

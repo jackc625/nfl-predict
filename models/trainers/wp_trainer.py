@@ -11,6 +11,8 @@ Extends BaseTrainer to implement WP-specific model logic:
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import optuna
 import pandas as pd
@@ -549,8 +551,13 @@ class WPTrainer(BaseTrainer):
                 metrics=season_metrics,
             )
 
-        # Store the final model
+        # Store the final model. It IS the preprocessing (D33.1-R1): the scaler is the
+        # third step of the same object whose fourth step is the estimator, so assigning
+        # both names to one Pipeline is what makes them inseparable on the way to disk --
+        # `BaseTrainer.save` passes `self.preprocessing` to `save_model_artifact`, which
+        # writes `preprocessing.pkl` beside `model.pkl`.
         self.model = model
+        self.preprocessing = model
 
         # Step 6: Compute ECE on all holdout predictions
         all_predictions_arr = np.array(all_predictions)
@@ -606,3 +613,31 @@ class WPTrainer(BaseTrainer):
             "clv_results": clv_results,
             "metadata": self.metadata,
         }
+
+    # ------------------------------------------------------------------
+    # The final fit (D33.1-01 / D33.1-02, Plan 33.1-10)
+    # ------------------------------------------------------------------
+
+    def final_fit(
+        self,
+        features_df: pd.DataFrame,
+        partition: Any,
+        *,
+        closing_odds_df: pd.DataFrame | None = None,
+    ) -> Any:
+        """Fit the SHIPPED model on every completed season in *partition*.
+
+        A thin wrapper over
+        ``models.trainers.final_fit.final_fit_over_completed_seasons``; the decisions and
+        their reasons live in that module. The import is LOCAL because that module imports
+        ``WP_PIPELINE_STEP_NAMES`` from here rather than re-declaring it, and a
+        module-level import in both directions would be a cycle.
+
+        This method WRITES NOTHING, and no production path in Phase 33.1 calls it -- the
+        re-fit is Phase 33 Wave 15's act.
+        """
+        from models.trainers.final_fit import final_fit_over_completed_seasons
+
+        return final_fit_over_completed_seasons(
+            self, features_df, partition, closing_odds_df=closing_odds_df
+        )

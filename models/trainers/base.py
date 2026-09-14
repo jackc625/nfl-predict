@@ -322,7 +322,22 @@ class BaseTrainer(ABC):
         calibrator: Fitted calibrator (set after calibration).
         feature_names: Selected feature names (set after feature selection).
         metadata: Training metadata dict (populated during training).
+        preprocessing: The fitted preprocessing object persisted ALONGSIDE the model
+            (D33.1-R1), or None for a trainer that has none.
     """
+
+    # The class DEFAULT for the persisted-preprocessing contract (D33.1-R1, Plan
+    # 33.1-10). It is a DEFAULT and not reachable behaviour: ATS and O/U carry the
+    # attribute with a None value so `save` can read it unconditionally, and neither
+    # trainer's behaviour changes by one byte. WP assigns the fitted four-step Pipeline
+    # in its own `train_and_evaluate`.
+    #
+    # `models/trainers/base.py`'s statement that `train_and_evaluate` is unreachable dead
+    # code is untouched by this: a class attribute is not a reachable sibling method, and
+    # there is deliberately NO `final_fit` here -- that entry point is a module beside the
+    # three concrete trainers (Ruling T), so this base class's own documentation stays
+    # true.
+    preprocessing: Any = None
 
     def __init__(
         self,
