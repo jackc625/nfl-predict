@@ -1448,8 +1448,13 @@ class WeatherFeaturesCalculator:
             Dictionary with weather features
         """
         try:
-            # Load weather features
-            features_df = load_dataframe("weather_features", layer="silver")
+            # Load weather features. source="parquet", NOT the default "auto"
+            # (code review WR-02): "auto" tries DuckDB first and db.table_exists is
+            # layer-blind, which is the mechanism named in this module's
+            # SILVER_WEATHER_TABLE comment above. That comment hardened the two raw
+            # `weather` reads and left this one, inside the very module carrying the
+            # warning.
+            features_df = load_dataframe("weather_features", "silver", "parquet")
 
             # Filter to specific game
             game_features = features_df[

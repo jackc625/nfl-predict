@@ -467,9 +467,20 @@ class FeatureMatrixBuilder:
                 logger.warning("Failed to build contextual features", error=str(e))
                 feature_sources["contextual"] = pd.DataFrame()
 
-            # Weather features
+            # Weather features.
+            #
+            # source="parquet", NOT the default "auto" (code review WR-02). This is
+            # the read that FEEDS GOLD, and it was the one read left on "auto" after
+            # Plan 33.1-02 hardened the two raw-table reads. "auto" tries DuckDB
+            # FIRST (data/storage.py:1091-1096) and db.table_exists is LAYER-BLIND,
+            # so a DuckDB table named weather_features under any layer wins over
+            # data/silver/weather_features.parquet -- which is the exact mechanism
+            # this phase's root-cause analysis blames for 6,485 of 6,499 gold rows
+            # sitting at a fabricated mild-temperature default. The two stores agree
+            # today (6,499 rows, identical columns, weather_coverage sums equal), so
+            # naming the source changes nothing now and closes the way back.
             try:
-                weather_df = load_dataframe("weather_features", layer="silver")
+                weather_df = load_dataframe("weather_features", "silver", "parquet")
                 if target_season and target_week:
                     weather_df = weather_df[
                         (weather_df["season"] == target_season)
