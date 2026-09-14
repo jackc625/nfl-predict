@@ -1339,10 +1339,37 @@ class FeatureMatrixBuilder:
         # It is the same argument CR-02 already makes about winsorization one
         # stage earlier -- "clipping one destroys the distinction it exists to
         # encode" -- applied to the transform that runs next.
+        # THE INTENT IS ASSERTED, NOT MERELY FILTERED FOR (code review WR-10).
+        #
+        # The filter below is correctly non-WIDEABLE -- it can only ever yield the one
+        # named column. Its mirror failure was silent: if weather_coverage ever LEAVES
+        # the preserving set (a builder change, a renamed family tuple), the generator
+        # yields an EMPTY tuple, expanding_normalize z-scores the flag back to 0.0 on
+        # every row, and NOTHING raises. That is the defect this phase spent a rung
+        # fixing, restored by omission -- and 0.0 is the code's own word for NO
+        # OBSERVATION, so it would be asserting absence for every game with a real ERA5
+        # reading behind it.
+        #
+        # _preserved_weather_columns twenty screens up already refuses BY NAME when its
+        # entry is missing for the active builder. This is the same discipline at the
+        # one site that consumes it. The compressed builder legitimately contributes no
+        # coverage flag, so the refusal is scoped to the FULL builder -- the one that
+        # writes gold.
+        active_preserved = preserve_by_builder[active_builder]
+        if (
+            active_builder == BUILDER_KEYS[0]
+            and WEATHER_COVERAGE_COLUMN not in active_preserved
+        ):
+            msg = (
+                f"{WEATHER_COVERAGE_COLUMN!r} is not in the {active_builder!r} builder's "
+                f"preserving set ({sorted(active_preserved)}), so the level exemption "
+                "would be an EMPTY tuple and the coverage flag would be z-scored back to "
+                "0.0 -- the value that means NO OBSERVATION -- on every row. Refusing "
+                "rather than silently rebuilding gold with the defect this phase removed."
+            )
+            raise ValueError(msg)
         preserve_level_cols = tuple(
-            column
-            for column in preserve_by_builder[active_builder]
-            if column == WEATHER_COVERAGE_COLUMN
+            column for column in active_preserved if column == WEATHER_COVERAGE_COLUMN
         )
 
         # Compute prior-season stats for bootstrap and normalize

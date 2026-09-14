@@ -243,6 +243,52 @@ class TestTheNormalizerIsWhatDestroysTheFlag:
         assert set(result[CONTROL_COLUMN].tolist()) == {0.0}
 
 
+class TestTheExemptionCannotNARROWToNothingInSilence:
+    """Code review WR-10: the mirror failure of "it cannot widen".
+
+    The exemption is computed as a filter over the active builder's preserving set,
+    keeping only ``weather_coverage``. That is correctly non-WIDEABLE. But if the
+    column ever LEAVES that set -- a builder change, a renamed family tuple -- the
+    generator yields an EMPTY tuple, ``expanding_normalize`` z-scores the flag back
+    to 0.0 on every row, and nothing raises. That is the defect this phase spent a
+    rung fixing, restored by omission, and 0.0 is the code's own word for NO
+    OBSERVATION.
+
+    ``_preserved_weather_columns`` already refuses BY NAME when its entry is missing.
+    These pin the same discipline at the site that consumes it.
+    """
+
+    def test_a_full_build_whose_preserving_set_lost_the_flag_REFUSES(self) -> None:
+        builder = _builder_with_merged_weather()
+        assert builder.active_builder_key == "full"
+        # Drop exactly the coverage flag from the recorded preserving set.
+        builder.missing_preserving_columns = {
+            "full": tuple(
+                column
+                for column in builder.missing_preserving_columns["full"]
+                if column != WEATHER_COVERAGE_COLUMN
+            )
+        }
+
+        with pytest.raises(ValueError) as excinfo:
+            builder.normalize_combined_features(_combined_frame([1.0] * len(WEEKS)))
+
+        message = str(excinfo.value)
+        assert WEATHER_COVERAGE_COLUMN in message, message
+        assert "NO OBSERVATION" in message, (
+            "the refusal must say what the silent alternative asserts about every "
+            f"game, not merely that a column is missing. Got: {message}"
+        )
+
+    def test_the_control_is_that_the_intact_set_does_NOT_refuse(self) -> None:
+        """A refusal that fires on the normal case is worse than no refusal."""
+        builder = _builder_with_merged_weather()
+
+        out = builder.normalize_combined_features(_combined_frame([1.0] * len(WEEKS)))
+
+        assert (out[WEATHER_COVERAGE_COLUMN] == 1.0).all()
+
+
 class TestTheColumnIsNamedOnce:
     """The single-source check, so the name cannot drift between two spellings."""
 
