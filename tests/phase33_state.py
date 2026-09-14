@@ -5872,3 +5872,104 @@ ATS_EDGE_PARITY_CASES: tuple[tuple[float | None, float, float | None], ...] = (
     (-13.5, -7.0, 6.5),  # large favourite
     (11.0, 14.5, 3.5),  # large underdog
 )
+
+
+# ---------------------------------------------------------------------------
+# PLAN 33-09'S COLLECTED-NODE COUNT, MEASURED AND FILLED BY PLAN 33-10.
+#
+# APPENDED by Plan 33-10 at plan close on 2026-09-14. Nothing above this line was
+# edited. The slot is APPENDED, never inserted, so this block sits below
+# TESTS_ADDED_33_08's even though its number is Plan 33-09's.
+#
+# WHY ANOTHER PLAN IS WRITING THIS SLOT. Plan 33-09 closed WITHOUT it, deliberately,
+# recording in its SUMMARY that the protocol's prescribed measurement -- SUBTRACT THE
+# PREVIOUS THREE-TIER COLLECTED TOTAL FROM YOUR OWN -- was "not computable at this
+# plan's close", because Phase 33.1's waves 1-6 and the owner-directed test-
+# infrastructure commits landed BETWEEN Plan 33-08's recorded 4,592 and Plan 33-09's
+# own closing commits. That reasoning was right about the instrument it had. Leaving
+# the hole was the honest choice at the time.
+#
+# The hole then BLOCKED Plan 33-10: appending TESTS_ADDED_33_10 over a gap turns
+# tests/unit/test_phase33_state_arithmetic.py::
+# test_the_slots_that_exist_so_far_are_a_contiguous_prefix RED. That test exists to
+# force exactly this discovery -- its own docstring says a hole is "the term that
+# would later be missing from the closing sum, discovered at phase close instead of
+# at the plan that dropped it". It did its job one plan later, which is the earliest
+# it could.
+#
+# WHAT MADE IT COMPUTABLE AFTER ALL. Plan 33-09's seven commits are not scattered:
+# `git log --oneline 1ab8562..ed42df3` shows them in exactly TWO CONTIGUOUS BLOCKS
+# with no foreign commit inside either.
+#
+#     BLOCK A  1ab8562 -> bc31982   bd326e1, d5cb966, 2333a53, 8c8ce05, bc31982
+#     BLOCK B  40488ee -> ed42df3   d4466ab, ed42df3
+#
+# So the delta across each block IS Plan 33-09's contribution, with nothing else
+# inside it to subtract. Measured on 2026-09-14 by whole-suite `--collect-only` in
+# the MAIN TREE at each boundary -- collection runs no test, takes about five
+# seconds, and counts the protocol's own unit (COLLECTED NODES, a parametrised case
+# counting once per case):
+#
+#     uv run python -m pytest tests -q --collect-only
+#         1ab8562   4592 collected     (Plan 33-09's base)
+#         bc31982   4664 collected     BLOCK A = +72
+#         40488ee   5144 collected     (Plan 33-09's Task-4 gate; 33.1 + w8x in between)
+#         ed42df3   5164 collected     BLOCK B = +20
+#         BLOCK A plus BLOCK B          92 nodes, this plan's total
+#
+# THREE INDEPENDENT CORROBORATIONS, none of them arranged by this plan:
+#   * 4592 at 1ab8562 EQUALS Plan 33-08's recorded three-tier collected total to the
+#     unit. A single-process `--collect-only` and the three-tier sum are therefore the
+#     SAME INSTRUMENT for this unit, which is what licenses the comparison at all.
+#   * 5144 at 40488ee EQUALS W8X_POST_TASK_COLLECTED, recorded above on 2026-09-14
+#     from a different run by a different task.
+#   * BLOCK B's +20 EQUALS the 20 nodes Plan 33-09's own SUMMARY attributes to
+#     tests/unit/test_weather_gold_default_2026.py, the only test file Block B touches.
+#
+# AND IT CLEARS PLAN 33-09'S OWN FLOOR. That SUMMARY records a 74-node new-module
+# subtotal and LABELS IT A FLOOR, because two modules it also extended were not
+# separable from the 33.1 edits that followed. 92 >= 74, and the 18-node difference
+# is those extensions plus tests/unit/test_audit_trace_epa_weather.py and
+# tests/unit/test_quality_gates.py, which Block A also touched.
+#
+# A MEASUREMENT, NOT A RECONSTRUCTION. Nothing here is derived by counting test
+# functions, which is the method Plan 33-09 rightly refused.
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_09: int = 92
+
+
+# ---------------------------------------------------------------------------
+# THIS PLAN'S COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-10 at plan close on 2026-09-14, AFTER both tasks landed.
+# Nothing above this line was edited.
+#
+# APPENDED AT CLOSE, NOT IN TASK 2, for the reason Plans 33-02 through 33-08 each
+# recorded when they did the same: two tasks add tests, so a mid-plan value would
+# have been wrong at close and could only have been made right by EDITING it -- the
+# append-once violation the protocol exists to prevent.
+#
+# MEASURED the same way as the block above, by a whole-suite `--collect-only` BRACKET
+# around this plan's own commits, in the main tree:
+#
+#     uv run python -m pytest tests -q --collect-only
+#         ed42df3 (Plan 33-09's close, this plan's base)   5164 collected
+#         this plan's close                                5191 collected
+#         delta                                              27
+#
+# INDEPENDENTLY CONFIRMED per module, which is the check that no test was quietly
+# deleted elsewhere to make the number look right. Both modules were EXTENDED, not
+# created; neither is new:
+#      8 -> 22   tests/unit/test_cache_ats_edge.py          (+14, Task 1)
+#      7 -> 20   tests/unit/test_current_week_ats_edge.py   (+13, Task 2)
+#     --
+#     +27
+#
+# The two instruments agree exactly. No whole-suite RUN was taken (see this plan's
+# SUMMARY for what was run and the residual risk); a collected-node count does not
+# need one, and the standing five DELIBERATE_TRIPWIRE_NODE_IDS are untouched by both
+# modules.
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_10: int = 27
