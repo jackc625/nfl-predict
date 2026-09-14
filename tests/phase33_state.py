@@ -6249,3 +6249,46 @@ postseason games -- Regular. Plan 33-12 is the plan that makes the column true. 
 plan asserts the DERIVATION and the PARTITION, both of which are correct today; it
 deliberately asserts nothing about the historical stored values, which are not.
 """
+
+
+# ---------------------------------------------------------------------------
+# THIS PLAN'S COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-11 at plan close on 2026-09-14, AFTER both tasks landed.
+# Nothing above this line was edited.
+#
+# APPENDED AT CLOSE, NOT IN TASK 1, for the reason Plans 33-02 through 33-10 each
+# recorded when they did the same: two tasks add tests, so a mid-plan value would
+# have been wrong at close and could only have been made right by EDITING it --
+# the append-once violation the protocol exists to prevent.
+#
+# MEASURED by a whole-suite `--collect-only` BRACKET around this plan's own
+# commits, in the main tree. Collection runs no test and takes about five seconds,
+# and it counts the protocol's unit: COLLECTED NODES, a parametrised case counting
+# once per generated node.
+#
+#     uv run python -m pytest tests -q --collect-only
+#         07eaad4 (Plan 33-10's close, this plan's base)   5191 collected
+#         9f0a408 (this plan's close)                      5246 collected
+#         delta                                              55
+#
+# INDEPENDENTLY CONFIRMED per module, which is the check that no test was quietly
+# deleted elsewhere to make the number look right. All three modules are NEW; this
+# plan extended none:
+#     38   tests/integration/test_bye_week_window_ageing.py    (Task 1)
+#      9   tests/unit/test_bye_window_negative_control.py      (Task 2)
+#      8   tests/unit/test_postseason_partition.py             (Task 2)
+#     --
+#     +55
+#
+# The two instruments agree exactly. 30 of the 38 integration nodes are the five
+# parametrised properties generated once per bye team (5 x 6), which is why a count
+# of test FUNCTIONS would have under-reported by 24 -- the multiplier the protocol's
+# unit exists to capture.
+#
+# No whole-suite RUN was taken; see this plan's SUMMARY for what was run and the
+# residual risk. A collected-node count does not need one, and none of the three new
+# modules touches a DELIBERATE_TRIPWIRE_NODE_IDS member.
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_11: int = 55
