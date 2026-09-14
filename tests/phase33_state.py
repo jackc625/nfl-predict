@@ -7600,3 +7600,52 @@ PHASE331_ALL_SEASONS_FLAG_RULING: dict[str, object] = {
         "purpose only; recorded in the SUMMARY as a Rule 3 deviation"
     ),
 }
+
+
+# -------------------------------------------------------------------------
+# THE DECLARED BLAST RADIUS OF THE PHASE-33.1 GOLD RUNG.
+#
+# APPENDED by Plan 33.1-07 Task 3 on 2026-09-14, and COMMITTED BEFORE the
+# first digest snapshot of the rung was taken. Nothing above this line was
+# edited.
+#
+# THE ORDER IS THE POINT, as it was for Plan 33-09's 14-row backfill and Plan
+# 33.1-06's full-corpus promotion above. A blast radius declared after the fact
+# is not a declaration, it is a transcription of whatever happened. This slot
+# was committed first, then p331_rung0.json was written, then the ladder
+# pre-check ran, then the three builders ran, then `verify` was run against
+# this declaration. A FILE OUTSIDE THIS SET IS A FINDING TO REPORT, NEVER A
+# REASON TO WIDEN THE SET.
+#
+# THE DUCKDB HALF IS *IN* THIS SET, AND IT WAS *OUT* OF THE SILVER
+# PROMOTION'S. That contrast is the reason this declaration was written fresh
+# rather than copied, and a copied declaration would have hidden it.
+#
+#   * WEATHER_PROMOTION_EXPECTED_CHANGED_FILES (Plan 33.1-06) EXCLUDES
+#     nfl_predictions.duckdb because that promotion writes through
+#     `data.storage.upsert_silver`, which reads the existing parquet, filters,
+#     concats and ends at `_atomic_write_parquet`. It never opens the database.
+#   * THIS rung runs the two feature builders and the gold build, all of which
+#     write through `data.storage.save_dataframe`, whose `save_to_db` defaults
+#     True. Both halves move. `pipeline/steps.py:523-533`
+#     (`step_build_weather_features`) is the same path.
+#
+# Two declarations differing because two WRITE PATHS differ is the point. If
+# the database had NOT moved here, the write did not go where this declaration
+# says it went, and that would itself be a finding.
+#
+# WHAT IS DELIBERATELY ABSENT: every bronze path. This rung fetches nothing --
+# Plan 33.1-06 already fetched the corpus and promoted it to silver. A bronze
+# file moving here would mean a builder reached for data it was supposed to
+# read from silver, which is the same class of finding as the network guard
+# firing.
+# -------------------------------------------------------------------------
+
+PHASE331_RUNG_EXPECTED_CHANGED_FILES: tuple[str, ...] = (
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "gold/features_wp.parquet",
+    "nfl_predictions.duckdb",
+    "silver/contextual_features.parquet",
+    "silver/weather_features.parquet",
+)
