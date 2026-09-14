@@ -4601,3 +4601,44 @@ WEATHER_CROSSCHECK_PREREGISTRATION_PROVENANCE: dict[str, str] = {
         "expectation. No sign and no magnitude is predicted, because none is known."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# THE DECLARED BLAST RADIUS OF THE FULL-CORPUS SILVER PROMOTION.
+#
+# APPENDED by Plan 33.1-06 Task 2 on 2026-09-13, and COMMITTED BEFORE the first
+# digest snapshot of the run was taken. Nothing above this line was edited.
+#
+# THE ORDER MATTERS AND IS THE POINT, exactly as it was for the 14-row backfill
+# above (Plan 33-09). A blast radius declared after the fact is not a declaration,
+# it is a transcription of whatever happened. This slot was committed first, then
+# the corpus lock was acquired, then the pre-state digests were taken, then the
+# corpus was fetched, then the promotion ran, then `verify` was run against this
+# declaration. A FILE OUTSIDE THIS SET IS A FINDING TO REPORT, NEVER A REASON TO
+# WIDEN THE SET.
+#
+# ONE FILE, and the DuckDB half is deliberately NOT in it. The promotion writes
+# through `data.storage.upsert_silver`, which reads the existing parquet, filters
+# it by key, concats and ends at `_atomic_write_parquet` -- it NEVER opens the
+# database. It is `save_dataframe`, whose `save_to_db` defaults True, that writes
+# both halves, and this path does not call it. So `data/nfl_predictions.duckdb` is
+# EXCLUDED as a POSITIVE STATEMENT ABOUT THE WRITE PATH, not as an oversight: if
+# it moves, the write did not go where this declaration says it went, and that is
+# a finding.
+#
+# THE RUN HALF OF THE BRACKET IS A DIFFERENT SHAPE AND IS DECLARED SEPARATELY
+# BELOW. Fetching 24 seasons legitimately ADDS 24 bronze files and CHANGES
+# nothing; the promotion CHANGES exactly one file and ADDS nothing. Two steps,
+# two declared shapes, so neither can absorb the other's surprise.
+# ---------------------------------------------------------------------------
+
+WEATHER_PROMOTION_EXPECTED_CHANGED_FILES: tuple[str, ...] = ("silver/weather.parquet",)
+
+# The RUN half. `backfill_season` writes one timestamped bronze snapshot per
+# season through `data.storage.save_bronze_snapshot`, which is parquet-only and
+# append-only: it creates a NEW file and never opens the database either. So the
+# fetch is declared as 24 ADDED paths, every one of them matching this prefix, and
+# ZERO changed and ZERO removed. Silver must not move at all during the fetch --
+# `--all-seasons` promotes nothing.
+WEATHER_CORPUS_RUN_EXPECTED_ADDED_PREFIX: str = "bronze/weather_backfill_raw_bronze_"
+WEATHER_CORPUS_RUN_EXPECTED_ADDED_COUNT: int = 24
