@@ -46,7 +46,9 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 import argparse
 import asyncio
+import contextlib
 import fnmatch
+import hashlib
 import json
 import os
 import sys
@@ -1867,6 +1869,23 @@ def backfill_season(
     }
 
 
+def _file_sha256(path: Path) -> str:
+    """The sha256 of *path*'s bytes, read in chunks.
+
+    THE SAME VALUE ``tests.data_boundary.digest_file`` returns for a readable file,
+    computed here rather than imported because production code does not import from
+    the test tree. It deliberately does NOT carry that function's locked-file stat
+    fallback: a bronze snapshot this process has just finished reading is readable
+    by construction, and a provenance record that could silently degrade to size
+    and mtime would not be a provenance record.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def promote_corpus_to_silver(base_path: Any = None) -> dict[str, Any]:
     """Validate every `weather_backfill` bronze snapshot and upsert silver `weather`.
 
@@ -1878,6 +1897,26 @@ def promote_corpus_to_silver(base_path: Any = None) -> dict[str, Any]:
 
     This function FETCHES NOTHING. It is the ``--promote-silver`` half of the run,
     and Plan 33.1-06 brackets it with a digest of the whole data tree.
+
+    IT RECORDS WHICH BRONZE IT READ, AND ASSERTS IT READ NO LEGACY TABLE (Ruling X).
+    "Silver holds 6,499 rows" is satisfied by the right bronze and by the wrong
+    bronze. The seven legacy ``weather_raw_bronze_{2018..2024}_season.parquet`` files
+    hold 1,942 rows at SEVENTEEN columns against this corpus's TWENTY-FIVE, so a
+    promotion that accidentally globbed them would mix two schemas and two
+    provenances -- and a ROW-COUNT MATCH CANNOT DETECT THAT. R2's acceptance is about
+    provenance, not arithmetic. So the returned record carries, and the caller
+    asserts:
+
+    * ``bronze_tables_read`` -- the table name(s) globbed. ``weather_backfill``, and
+      nothing else.
+    * ``bronze_files_read`` -- every filename with its sha256 and its column count,
+      so the promotion's INPUT is pinned as precisely as its output.
+    * ``legacy_files_read`` -- asserted EMPTY against the ten legacy filenames, a
+      POSITIVE statement about what was not read, in the same idiom as the DuckDB
+      exclusion in the changed-file declaration.
+    * ``column_counts_read`` -- two INDEPENDENT instruments on one property, because
+      a 17-column legacy file could not contribute even if the filename check were
+      wrong.
     """
     bronze = _resolve_data_root(base_path) / "bronze"
     paths = sorted(bronze.glob(f"{BACKFILL_BRONZE_GLOB}.parquet"))
@@ -1888,7 +1927,33 @@ def promote_corpus_to_silver(base_path: Any = None) -> dict[str, Any]:
             "silver is never written from anything else. Run the fetch first."
         )
 
-    frames = [pd.read_parquet(path, engine="pyarrow") for path in paths]
+    # Ruling X. Recorded from the paths that were ACTUALLY globbed, before any of
+    # them is read, so the record describes the promotion's real input rather than
+    # the input it was supposed to have.
+    read_record: dict[str, dict[str, Any]] = {}
+    frames = []
+    for path in paths:
+        frame = pd.read_parquet(path, engine="pyarrow")
+        frames.append(frame)
+        read_record[path.name] = {
+            "digest": _file_sha256(path),
+            "rows": len(frame),
+            "columns": len(frame.columns),
+        }
+
+    legacy_read = sorted(
+        name for name in read_record if name in LEGACY_WEATHER_BRONZE_FILENAMES
+    )
+    if legacy_read:
+        raise DataIngestionError(
+            "the promotion globbed LEGACY weather bronze files and REFUSES: "
+            f"{legacy_read}. SPEC prohibition 6 keeps the 1,942 pre-existing rows as "
+            "the only evidence the routing fix can be regression-tested against, and "
+            f"the {BACKFILL_BRONZE_TABLE} glob is supposed to be disjoint from them. "
+            "A silver frame mixing a 17-column and a 25-column provenance would pass "
+            "a row-count check while answering a different question."
+        )
+
     combined = pd.concat(frames, ignore_index=True)
     combined = combined.drop_duplicates(subset=["game_id"], keep="last")
 
@@ -1908,6 +1973,14 @@ def promote_corpus_to_silver(base_path: Any = None) -> dict[str, Any]:
         "snapshots": len(paths),
         "rows": len(validated),
         "silver_path": str(silver_path),
+        "bronze_tables_read": (BACKFILL_BRONZE_TABLE,),
+        "bronze_glob": BACKFILL_BRONZE_GLOB,
+        "bronze_files_read": read_record,
+        "legacy_files_read": tuple(legacy_read),
+        "legacy_inventory_checked_against": LEGACY_WEATHER_BRONZE_FILENAMES,
+        "column_counts_read": tuple(
+            sorted({meta["columns"] for meta in read_record.values()})
+        ),
     }
 
 
@@ -1926,6 +1999,7 @@ def backfill_corpus(
     budget: CallBudget | None = None,
     accepted_null_fractions: dict[int, float] | None = None,
     verify_archive_floor: bool = True,
+    lock: "CorpusLock | None" = None,
 ) -> dict[str, Any]:
     """Run the corpus: take the lock, decide what is missing, fetch, then promote.
 
@@ -1955,6 +2029,16 @@ def backfill_corpus(
         accepted_null_fractions: ``{season: observed_fraction}`` authorisations.
         verify_archive_floor: Probe ERA5 coverage of the corpus floor before the
             first season. One request.
+        lock: An ALREADY-HELD :class:`CorpusLock`. When given, this function runs
+            INSIDE the caller's acquisition instead of taking a second one -- which
+            it could not do anyway, since the primitive is ``open(path, "xb")`` and
+            a second acquire would refuse. This is what lets
+            :func:`bracketed_corpus_operation` take the lock BEFORE the pre-state
+            digest and hold it through post-state verification: a lock released
+            between the digest and the write protects nothing, because a second
+            promoter that read the same pre-state produces a frame silently
+            discarding this one's rows while the bracket still reports exactly one
+            CHANGED path, as declared (threat T-33.1-40c).
 
     Returns:
         A run report carrying the seasons considered, the per-season reports, the
@@ -1975,7 +2059,17 @@ def backfill_corpus(
         "promotion": None,
     }
 
-    with acquire_corpus_lock(base_path=base_path, force=force_unlock):
+    # An already-held lock is entered as a no-op context, so the caller's single
+    # acquisition -- taken before the pre-state digest -- spans this whole run.
+    # Without a held lock this function takes its own, exactly as it always has.
+    lock_context: Any = (
+        contextlib.nullcontext(lock)
+        if lock is not None and lock.held
+        else acquire_corpus_lock(base_path=base_path, force=force_unlock)
+    )
+    report["lock_supplied_by_caller"] = lock is not None and lock.held
+
+    with lock_context:
         missing = seasons_still_missing(base_path=base_path)
         report["seasons_still_missing"] = missing
         targets = tuple(seasons) if seasons is not None else missing
@@ -2022,6 +2116,173 @@ def backfill_corpus(
     report["weighted_calls"] = round(budget.weighted_total, 4)
     report["attempts"] = budget.debits
     return report
+
+
+# The two halves of Plan 33.1-06's bracket, and the digest documents each writes.
+# Named here rather than passed on the command line so the operator cannot point a
+# verify at the wrong half's pre-state and get a clean answer about the wrong thing.
+BRACKET_DOCUMENTS: dict[str, dict[str, str]] = {
+    "run": {
+        "data": "outputs/phase331_corpus_before.json",
+        "artifacts": "outputs/phase331_artifacts_before.json",
+    },
+    "promote": {
+        "data": "outputs/phase331_promote_before.json",
+        "artifacts": "outputs/phase331_promote_artifacts_before.json",
+    },
+}
+
+
+def bracketed_corpus_operation(
+    operation: str,
+    *,
+    base_path: Any = None,
+    accepted_null_fractions: dict[int, float] | None = None,
+    force_unlock: bool = False,
+    verify_archive_floor: bool = True,
+) -> dict[str, Any]:
+    """Take the lock, digest the production trees, run one half, then re-digest.
+
+    THE LOCK IS STEP 0 AND THAT IS THE WHOLE POINT (Ruling L3, threat T-33.1-40c).
+    ``backfill_corpus`` has always taken its own lock, but it takes it AFTER the
+    caller's pre-state digest -- and a lock released between the digest and the
+    write protects nothing. ``data.storage.upsert_silver`` is read-filter-concat-
+    write: the WRITE is atomic, the SEQUENCE is not. A second promoter that read the
+    same pre-state produces a frame that silently discards this one's rows, with no
+    error, while the digest bracket still reports exactly ONE CHANGED path -- exactly
+    as declared. The bracket cannot see that race; only the lock can prevent it. So
+    the lock is acquired here, before the first digest, and held through resume
+    determination, every season's fetch, the promotion and the post-state
+    verification.
+
+    THE DIGEST INSTRUMENT IS THE SHIPPED ONE. ``tests.data_boundary`` is imported
+    lazily, and deliberately rather than re-implemented: ``data/`` is gitignored, so
+    a git check is structurally incapable of failing here (COLD-05), and minting a
+    second content-digest instrument for this one run would mean the bracket and the
+    suite disagree about what "unchanged" means. This is an OPERATOR entry point on a
+    CLI path; no production consumer imports it.
+
+    BOTH SIDES USE ``content_digest_tree`` rather than ``digest_tree``. The degrading
+    stat fallback exists so the CLI can keep reporting on a locked store, but a
+    content hash on one side and a stat signature on the other is an UNDECIDED
+    comparison (NF-02), and this bracket's whole output is a verdict. An unreadable
+    file raises ``LockedStoreDigestError`` here instead of quietly becoming a MIXED
+    key -- which is the intended behaviour, not a hazard.
+
+    IT REPORTS; IT DOES NOT JUDGE. The measured diff is returned and printed. Whether
+    it matches ``tests.phase33_state.WEATHER_PROMOTION_EXPECTED_CHANGED_FILES`` is
+    decided against the DECLARATION, which lives in the test tree because that is
+    where it was committed before the run. A file outside the declared set is a
+    FINDING to report, never a reason to widen the set.
+
+    Args:
+        operation: ``"run"`` -- fetch every missing season, promote nothing; or
+            ``"promote"`` -- promote the bronze corpus into silver, fetch nothing.
+        base_path: Data lake root for the OPERATION. The digested trees are always
+            the production roots.
+        accepted_null_fractions: ``{season: observed_fraction}`` authorisations.
+        force_unlock: Clear a stale lock first. Only after confirming the pid is gone.
+        verify_archive_floor: Probe ERA5 coverage of the corpus floor. One request.
+
+    Returns:
+        The operation's own report plus ``bracket``: the documents written, the
+        file counts digested, and the measured ``added``/``removed``/``changed``/
+        ``mixed`` diff for each of the two production roots.
+    """
+    if operation not in BRACKET_DOCUMENTS:
+        raise ValueError(
+            f"unknown bracket half {operation!r}; expected one of "
+            f"{sorted(BRACKET_DOCUMENTS)}"
+        )
+
+    from tests import data_boundary
+
+    documents = BRACKET_DOCUMENTS[operation]
+    roots = {
+        "data": data_boundary.PRODUCTION_DATA_ROOT,
+        "artifacts": data_boundary.PRODUCTION_ARTIFACTS_ROOT,
+    }
+
+    bracket: dict[str, Any] = {"operation": operation, "documents": documents}
+
+    # STEP 0 -- the lock, BEFORE the pre-state digest.
+    lock = acquire_corpus_lock(base_path=base_path, force=force_unlock)
+    bracket["lock_path"] = str(lock.path)
+    bracket["lock_payload"] = json.loads(lock.path.read_text(encoding="utf-8"))
+    logger.info(
+        "Corpus lock acquired BEFORE the pre-state digest",
+        lock=str(lock.path),
+        pid=bracket["lock_payload"].get("pid"),
+        acquired_at_utc=bracket["lock_payload"].get("acquired_at_utc"),
+        operation=operation,
+    )
+
+    with lock:
+        # STEPS 1 and 2 -- the pre-state, written where a later `verify` can read it.
+        before: dict[str, dict[str, str]] = {}
+        for name, root in roots.items():
+            before[name] = data_boundary.content_digest_tree(root)
+            document = Path(documents[name])
+            document.parent.mkdir(parents=True, exist_ok=True)
+            document.write_text(json.dumps(before[name], indent=2), encoding="utf-8")
+            bracket[f"{name}_files_digested"] = len(before[name])
+
+        # STEP 3 -- the one thing this half does, inside the SAME acquisition.
+        report = backfill_corpus(
+            base_path=base_path,
+            fetch=(operation == "run"),
+            promote=(operation == "promote"),
+            accepted_null_fractions=accepted_null_fractions,
+            verify_archive_floor=verify_archive_floor and operation == "run",
+            lock=lock,
+        )
+
+        # STEPS 4 and 5 -- the post-state, still inside the lock.
+        for name, root in roots.items():
+            after = data_boundary.content_digest_tree(root)
+            bracket[f"{name}_diff"] = data_boundary.diff_digests(before[name], after)
+            if name == "data":
+                bracket["silver_weather_digest_before"] = before[name].get(
+                    "silver/weather.parquet"
+                )
+                bracket["silver_weather_digest_after"] = after.get(
+                    "silver/weather.parquet"
+                )
+
+    report["bracket"] = bracket
+
+    # The run record, written where the state manifest can be transcribed from it
+    # rather than from a scrollback. An 81-minute run whose only account of itself
+    # is a terminal buffer is a run nobody can check afterwards.
+    record = Path(f"outputs/phase331_bracket_{operation}_report.json")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    bracket["report_document"] = str(record)
+    return report
+
+
+def _print_bracket_report(bracket: dict[str, Any]) -> None:
+    """Print what the bracket measured, naming every path on both trees."""
+    print(f"Bracket half:  {bracket['operation']}")
+    print(
+        f"  lock         {bracket['lock_path']} "
+        f"(pid {bracket['lock_payload'].get('pid')}, "
+        f"acquired {bracket['lock_payload'].get('acquired_at_utc')})"
+    )
+    for name in ("data", "artifacts"):
+        diff = bracket[f"{name}_diff"]
+        print(
+            f"  {name}: {bracket[f'{name}_files_digested']} file(s) digested -> "
+            f"{len(diff['added'])} added, {len(diff['changed'])} changed, "
+            f"{len(diff['removed'])} removed, {len(diff.get('mixed', []))} undecided"
+        )
+        for label in ("added", "changed", "removed", "mixed"):
+            for key in diff.get(label, []):
+                print(f"    {label.upper():8s} {key}")
+    print(
+        "  A path outside the declaration committed before this run is a FINDING "
+        "to report, never a reason to widen the declaration."
+    )
 
 
 def _dry_run_report(
@@ -2464,6 +2725,19 @@ def main():
         ),
     )
     parser.add_argument(
+        "--bracket",
+        choices=sorted(BRACKET_DOCUMENTS),
+        help=(
+            "Run ONE half of Plan 33.1-06's declared bracket: take the corpus lock "
+            "FIRST, digest data/ and artifacts/, do the half, then re-digest -- all "
+            "inside a single lock acquisition. `run` fetches every missing season "
+            "and promotes nothing; `promote` promotes the bronze corpus into silver "
+            "and fetches nothing. A lock released between the digest and the write "
+            "protects nothing, which is why the ordinary --all-seasons path (which "
+            "takes its lock AFTER the caller's digest) is not the bracket."
+        ),
+    )
+    parser.add_argument(
         "--stamp-weather-source",
         action="store_true",
         help=(
@@ -2481,6 +2755,23 @@ def main():
     if args.stamp_weather_source:
         frame = stamp_weather_source_on_existing_rows()
         print(f"Stamped weather_source on {len(frame)} silver weather rows")
+        return
+
+    if args.bracket:
+        try:
+            report = bracketed_corpus_operation(
+                args.bracket,
+                accepted_null_fractions=parse_accept_null_fraction(
+                    args.accept_null_fraction
+                ),
+                force_unlock=bool(args.force_unlock),
+            )
+        except (DataIngestionError, WeatherDataError, OSError, ValueError) as exc:
+            logger.error("Bracketed corpus operation failed", error=str(exc))
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        _print_run_report(report)
+        _print_bracket_report(report["bracket"])
         return
 
     if args.force_unlock and not (
