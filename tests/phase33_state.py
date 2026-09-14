@@ -10270,3 +10270,86 @@ LEGACY_ARTIFACT_SERVING_BASELINE: dict[str, object] = {
     "requirement": "R6",
     "decision": "D33.1-R2",
 }
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.1-10 Task 3 -- THE LIVE DEFECT, NAMED RATHER THAN FIXED (D33.1-R2,
+# owner-ratified 2026-09-12). MEASURED 2026-09-14.
+#
+# `wp_20260824_113325` -- the WP model serving production right now -- was fitted on
+# STANDARDISED features and is served on UNSTANDARDISED ones. Nothing raises. The served
+# probability is simply not the one the model was fitted to give, which is why the defect
+# survived to be found by READING source rather than by any failure.
+#
+# IT PREDATES THIS PHASE. It was found by the orchestrator during the Plan 33.1-10
+# cross-AI review, raised by no reviewer lane, and it has been true since that artifact
+# was promoted on 2026-08-24.
+#
+# THIS PHASE DOES NOT FIX IT, and the reason is not caution. Serving the existing artifact
+# scaled would change live predictions with NO re-fit -- breaking `33.1-SPEC.md`'s fence
+# (no re-fit, no promotion, artifacts/latest.json byte-identical) and R8's prohibition on
+# presenting this data-correction phase as an accuracy change. A silent production
+# behaviour change made by a correction phase is precisely the defect class this milestone
+# exists to detect, so committing one to close another would be self-defeating. The honest
+# act is to MEASURE it.
+#
+# PHASE 33 WAVE 15 RESOLVES IT by shipping a WP artifact under the persisted-preprocessing
+# contract (ARTIFACT_PREPROCESSING_CONTRACT above), at which point the estimator and its
+# scaler travel as one object and the mismatch cannot recur.
+# ---------------------------------------------------------------------------
+
+WP_TRAINED_SCALED_SERVED_RAW: dict[str, object] = {
+    "artifact_id": "wp_20260824_113325",
+    "source_sites": (
+        "models/trainers/wp_trainer.py -- the kept estimator is fitted on SCALED "
+        "features. Pre-D33.1-R3 the fold loop fitted it on an explicitly scaled frame; "
+        "post-D33.1-R3 `_create_model` returns a Pipeline whose `scaler` step sits "
+        "immediately before its `estimator` step, so the estimator still never sees an "
+        "unscaled value at fit time. Either way, the artifact on disk was produced by the "
+        "PRE-D33.1-R3 path and its model.pkl is a bare LogisticRegression.",
+        "models/prediction_pipeline.py predict_games -- `wp_feature_df = "
+        "games_data[wp_features].copy()` followed by `wp_model.predict_proba("
+        "wp_feature_df)`, i.e. RAW selected columns into an estimator fitted on scaled "
+        "ones. That branch is now the LEGACY path and is preserved deliberately.",
+        "artifacts/wp_20260824_113325/ -- the directory carries model.pkl, "
+        "calibrator.pkl, feature_list.json, metadata.json and wp_params.json, and NO "
+        "preprocessing.pkl. There is therefore nothing on disk from which the serving "
+        "path could recover the fitted scaler.",
+        "scripts/generate_current_week_predictions.py -- the production current-week "
+        "path calls model.predict_proba(X) on the raw gold columns for the same reason.",
+        "backtest/diagnose.py -- the diagnostic re-score path does the same.",
+    ),
+    "predates_phase_331": True,
+    "found_by": (
+        "the orchestrator, reading live source during the Plan 33.1-10 cross-AI review. "
+        "No reviewer lane raised it; Codex framed the same mechanism only as a RISK for a "
+        "future final fit, not as a fact about the deployed artifact."
+    ),
+    "fixed_in_this_phase": False,
+    "why_not_fixed_here": (
+        "Serving the existing artifact scaled would change live predictions with NO "
+        "re-fit. That breaks 33.1-SPEC.md's Boundaries fence -- any model re-fit, any "
+        "deploy-gate run and any promotion are out of scope, and artifacts/latest.json "
+        "stays byte-identical -- and it breaks R8's prohibition on describing this phase "
+        "as an accuracy change. A data-correction phase that silently moved production "
+        "numbers would be committing the defect class it exists to detect."
+    ),
+    "resolved_by": (
+        "Phase 33 Wave 15's re-fit, by shipping a WP artifact UNDER the "
+        "persisted-preprocessing contract: the transform and the estimator then travel as "
+        "one Pipeline and cannot drift apart."
+    ),
+    "test_module": "tests/unit/test_legacy_artifact_serving_is_unchanged.py",
+    "test_class": "TestTheDeployedWPArtifactIsTrainedScaledAndServedRaw",
+    "is_a_deliberate_tripwire": False,
+    "tripwire_note": (
+        "Deliberately ABSENT from DELIBERATE_TRIPWIRE_NODE_IDS. It is GREEN and describes "
+        "a fact; a tripwire is RED and encodes an accepted failure. When Wave 15 ships a "
+        "replacement this test must be UPDATED with a recorded reason, never deleted -- "
+        "deleting it erases the disclosure instead of closing it."
+    ),
+    "requirement": "R6",
+    "decision": "D33.1-R2",
+    "owner_ratified": "2026-09-12",
+    "measured": "2026-09-14",
+}
