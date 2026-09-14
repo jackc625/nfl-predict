@@ -1610,37 +1610,47 @@ def _load_predictions(
             merged.loc[wp_edge_mask, "wp_prob"] - fair_prob
         )
 
-    # ATS edge: (model home margin - market home margin) / abs(market home margin).
+    # ATS edge: model home margin MINUS market home margin, in POINTS.
     #
-    # DEF-31-03, MIRRORED HERE (WR-02). This line used to negate the stored spread --
-    # ``(ats_prediction - (-market_spread))`` -- which assumed the OPPOSITE line convention and
-    # therefore computed model PLUS market rather than model MINUS market: a sum, not a
-    # difference. A model agreeing EXACTLY with the market scored the largest possible edge
-    # (3.0 vs 3.0 gave 6.0/3.0 = 2.0, which ``edge_tier_series`` bands "high"), and a model that
-    # thought the home side OVERVALUED was shown with a POSITIVE home edge.
+    # THE UNIT IS POINTS (R13 / D33-05, Plan 33-10). There is NO DENOMINATOR. This used to be
+    # ``(ats_prediction - market_spread) / abs(market_spread)`` -- an unbounded ratio whose
+    # divisor is a point count that approaches zero -- and ``utils.edge_tier`` applies the same
+    # 0.05 / 0.02 threshold pair to it that it applies to a WP probability. On a half-point line
+    # a three-point disagreement scored 6.0, so the ATS band read "high" on 92.64 per cent of the
+    # 1,087 gate-holdout rows carrying a computable edge. The band is rendered and sorted on by
+    # ``/`` and ``/betting``: a published figure. The pre-repair distribution is recorded in
+    # ``tests/phase33_state.ATS_BAND_SHARES_BEFORE`` as the "before" half of the label-movement
+    # table Plan 33-16 publishes, and Plan 33-16 derives its frozen ATS thresholds from THIS
+    # edge's distribution, which is why the repair lands first.
     #
-    # The identical expression was corrected in
-    # ``scripts/generate_current_week_predictions.compute_edges`` under DEF-31-03. Its comment
-    # notes that api/cache derives its own ``ats_edge`` and never reads that file -- which is
-    # exactly why the defect survived HERE, in the copy the dashboard renders. This value drives
-    # ``ats_edge``, ``ats_confidence``, the ``/`` page's ``sort=edge`` ordering and both exports.
+    # THE ZERO BRANCH IS GONE (D33-31, owner ruling). A pick-em used to be forced to an edge of
+    # 0.0. That was right while the edge was a ratio -- dividing by a zero line is undefined --
+    # but a point margin has no such problem: a model predicting the home team by three against a
+    # pick'em line disagrees with the market by exactly three points, and reporting zero there
+    # would have misstated every nonzero disagreement on a pick'em. A pick'em is a REAL line, not
+    # a missing one.
     #
-    # ``market_spread`` is the nflverse ``spread_line`` (POSITIVE when the home team is favored)
-    # and ``ats_prediction`` is a predicted home margin, per the DEF-31-01 ruling -- the same
-    # scale, so their disagreement is the plain difference. The zero-spread branch and the
-    # absent-spread branch are both carried over from the fixed copy: a pick-em is zero edge, and
-    # a game with no stored spread has no edge rather than an edge of zero. The old
-    # ``.clip(lower=0.5)`` denominator floor is gone with them; it silently doubled the edge on a
-    # +/-0.5 line and hid the pick-em case.
+    # ONE BRANCH SURVIVES: a game with NO STORED SPREAD has NO edge (NULL), because there is no
+    # disagreement to measure. The absent case and the zero-line case stay distinct.
+    #
+    # THE SIGN INVARIANT. ``market_spread`` is the nflverse ``spread_line``, POSITIVE when the
+    # home team is favored; ``ats_prediction`` is a predicted HOME MARGIN per the DEF-31-01
+    # ruling. The two are on the same scale, so a POSITIVE ``ats_edge`` means the model expects
+    # the home team to BEAT the line. (The earlier DEF-31-03 / WR-02 defect negated the stored
+    # spread and so computed model PLUS market: a model agreeing exactly with the market scored
+    # the largest edge the formula could produce. That negation, and the ``.clip(lower=0.5)``
+    # denominator floor that followed it, are both long gone.)
+    #
+    # The identical expression lives in
+    # ``scripts/generate_current_week_predictions.compute_edges``, which api/cache never reads --
+    # which is exactly why a defect once survived here, in the copy the dashboard renders. Both
+    # copies were repaired together under D33-22 and
+    # ``tests/unit/test_current_week_ats_edge.py`` pins them value-for-value against one shared
+    # table so they cannot drift again. This value drives ``ats_edge``, ``ats_confidence``, the
+    # ``/`` page's ``sort=edge`` ordering and both exports.
     market_spread = merged["market_spread"]
-    market_spread_abs = market_spread.abs()
-    merged["ats_edge"] = (
-        (
-            (merged["ats_prediction"] - market_spread)
-            / market_spread_abs.where(market_spread_abs > 0)
-        )
-        .where(market_spread_abs > 0, 0.0)
-        .where(market_spread.notna())
+    merged["ats_edge"] = (merged["ats_prediction"] - market_spread).where(
+        market_spread.notna()
     )
 
     # O/U edge: model total vs market total, normalized

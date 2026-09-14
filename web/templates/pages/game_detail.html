@@ -87,7 +87,12 @@
             <td class="py-2 text-right stat-num">{{ "%+.1f"|format(game.ats_prediction or 0) }}</td>
             <td class="py-2 text-right stat-num">{{ "%+.1f"|format(game.market_spread or 0) }}</td>
             <td class="py-2 text-right stat-num">{% if game.blended_ats is not none %}{{ "%+.1f"|format(game.blended_ats) }}{% else %}-{% endif %}</td>
-            <td class="py-2 text-right {% if (game.ats_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format((game.ats_edge or 0) * 100) }}%</td>
+            {# R13 / D33-05 (Plan 33-10): ats_edge is a POINT DIFFERENCE, not a ratio. It used to
+               be divided by |market_spread|, so rendering it as a percentage was arithmetically
+               coherent; it no longer is. Left as ``* 100 ... %`` a 3.5-point disagreement would
+               print "+350.0%". wp_edge (a probability delta) and ou_edge (a fraction of the
+               total) are still ratios and keep their percentage rendering. #}
+            <td class="py-2 text-right {% if (game.ats_edge or 0) > 0 %}text-green-700{% else %}text-red-600{% endif %} stat-num">{{ "%+.1f"|format(game.ats_edge or 0) }} pts</td>
           </tr>
           <tr>
             <td class="py-2 text-gray-700">Total

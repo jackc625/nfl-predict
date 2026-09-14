@@ -389,3 +389,35 @@ def test_the_cache_and_the_current_week_csv_agree_on_the_same_row(
         f"the cache says {from_cache} and the current-week CSV says {from_csv} for the same "
         "game. One copy of a duplicated formula was repaired and the other was not."
     )
+
+
+# ---------------------------------------------------------------------------
+# The one RENDERING consequence of the unit change (Rule 1 -- see the SUMMARY).
+# ---------------------------------------------------------------------------
+
+
+def test_the_game_detail_page_renders_the_ats_edge_in_points_not_as_a_percentage() -> (
+    None
+):
+    """A points-scale edge multiplied by 100 and suffixed ``%`` prints "+350.0%" for +3.5 points.
+
+    ``web/templates/pages/game_detail.html`` rendered ``ats_edge`` as ``(x or 0) * 100`` with a
+    per-cent sign, which was arithmetically coherent while the edge was a RATIO and is nonsense
+    now. ``wp_edge`` (a probability delta) and ``ou_edge`` (a fraction of the market total) are
+    still ratios and deliberately keep their percentage rendering, so this is asserted on the ATS
+    row alone rather than by banning ``* 100`` from the file.
+    """
+    template = Path("web/templates/pages/game_detail.html").read_text(encoding="utf-8")
+    ats_cells = [line for line in template.splitlines() if "game.ats_edge" in line]
+
+    assert ats_cells, "the ATS edge cell disappeared from the game-detail template"
+    for line in ats_cells:
+        assert "game.ats_edge or 0) * 100" not in line, (
+            "the game-detail page still scales ats_edge by 100; a points-scale edge rendered as "
+            "a percentage reports a 3.5-point disagreement as +350.0%"
+        )
+
+    assert any("pts" in line for line in ats_cells), (
+        "the ATS edge cell no longer states its unit; the whole point of R13 is that the number "
+        "is a point count"
+    )
