@@ -209,6 +209,32 @@ def artifacts_boundary_guard():
 # judged, and a test that legitimately writes a production store says so with a
 # PATH-SCOPED marker naming exactly what it writes.
 #
+# QT-W8X-02 -- the sweep runs once per MODULE, not once per test, and what that
+# bought and what it cost are both recorded here rather than in a commit message.
+#
+# WHAT IT COST. Attribution degrades from "which TEST wrote it" to "which test FILE
+# wrote it" -- a window of roughly twenty tests instead of one. Two consequences
+# follow, and neither is hidden: the violation message now leads with the module and
+# says so in words, and within a module that declares a path, a DIFFERENT unmarked
+# test writing that SAME path is permitted. That second one is a real loss of
+# resolution, the owner accepted it explicitly, and it is pinned as a named test
+# (`TestTheAcceptedAttributionLoss` in
+# tests/integration/test_data_boundary_guard_arming.py) rather than left in prose,
+# because a degradation that lives only in a docstring is a degradation nobody
+# re-reads. The recovery is real and the message names it: re-run that one file on
+# its own and the window narrows to the tests in it.
+#
+# WHAT IT BOUGHT. MEASURED on the live production stores: `_stat_sweep(data)` walks
+# 448 tracked files in 23.4 ms and `_stat_sweep(artifacts)` 159 in 13.3 ms -- 36.7 ms
+# per test, x 4,872 tests = ~179 s, 18% of a 994 s single-process whole-suite run.
+#
+# WHAT DID NOT CHANGE, and this is the part the trade rests on. The exemption is
+# still a union of DECLARED PATHS and never a licence for the file. The session-end
+# full content sweep below is untouched. And the Phase 33 Wave 6 shape -- an unmarked
+# test overwriting all three production gold matrices -- still fails the session,
+# naming all three files; that is reproduced against the nested child session rather
+# than asserted.
+#
 # THE INSTRUMENT IS `tests/data_boundary.py`, REUSED AND NEVER REIMPLEMENTED.
 # `digest_tree`, `diff_digests` and `format_digest_diff` do the hashing and the
 # reporting here exactly as they do for the opt-in fixtures; the only thing this
@@ -383,6 +409,69 @@ def _marker_paths_for_item(item) -> dict[str, frozenset[str]]:
     return {label: frozenset(keys) for label, keys in scoped.items()}
 
 
+def _marker_paths_for_module(node, session) -> dict[str, frozenset[str]]:
+    """The store paths THIS MODULE's own selected tests declare, by root label.
+
+    The module-scope sibling of `_marker_paths_for_item`, and it DELEGATES to it
+    rather than re-reading markers: that helper is directly unit-tested with stub
+    items and it is the one place that raises on a declared path routing to no
+    guarded root. Nothing about marker parsing is duplicated here.
+
+    Items are selected by IDENTITY against the collector --
+    `item.getparent(pytest.Module) is node` -- and never by a nodeid string prefix.
+    nodeid formatting is not a contract: it varies with rootdir, with parametrisation
+    and with packaging, and a prefix match would silently pull in a neighbouring
+    module whose name starts with this one's.
+
+    The union is over the module's OWN items, so a path declared in module A grants
+    nothing whatsoever in module B.
+    """
+    labels = [label for label, _ in _guarded_roots()]
+    union: dict[str, set[str]] = {label: set() for label in labels}
+
+    for item in getattr(session, "items", ()):
+        if item.getparent(pytest.Module) is not node:
+            continue
+        for label, keys in _marker_paths_for_item(item).items():
+            union.setdefault(label, set()).update(keys)
+
+    return {label: frozenset(keys) for label, keys in union.items()}
+
+
+def _module_violation_header(module_nodeid: str) -> str:
+    """The first thing a reader meets during a real incident. It explains itself.
+
+    The header used to read `{nodeid} wrote a production store it did not declare`.
+    Under module scope that nodeid is whichever test happened to run LAST in the file
+    -- an innocent one -- so naming it would be worse than naming nothing. This leads
+    with the module, states that the attribution is file-level and WHY, and names the
+    way back to per-test resolution.
+    """
+    return "\n".join(
+        [
+            "PRODUCTION STORE WRITE GUARD -- MODULE "
+            f"{module_nodeid} wrote a production store that no test in it declared.",
+            "",
+            "ATTRIBUTION IS FILE-LEVEL, NOT TEST-LEVEL (QT-W8X-02). This guard used "
+            "to sweep after EVERY test, at a measured 36.7 ms x 4,872 tests -- about "
+            "179 s, 18% of a whole-suite run. It now sweeps once per module, so what "
+            "it can tell you is WHICH FILE wrote the store, not which test inside it. "
+            "The window is the tests in the module named above.",
+            "",
+            "TO RECOVER PER-TEST ATTRIBUTION, re-run that one file on its own:",
+            f"    uv run python -m pytest {module_nodeid}",
+            "The guard still fires once per module, but a module run alone contains "
+            "only its own tests, so the window narrows to them. Bisect from there.",
+            "",
+            "WHAT DID NOT CHANGE: the exemption is still PATH-SCOPED -- a module that "
+            "declares one store gets nothing for any other -- and the session-end "
+            "full content sweep is untouched and still re-hashes every tracked file "
+            "against the session baseline, so the SESSION's verdict is still "
+            "content-based rather than metadata-based.",
+        ]
+    )
+
+
 def _guard_verdict(
     baseline: _StoreBaseline,
     declared: frozenset[str],
@@ -446,8 +535,11 @@ def _guard_verdict(
                     for category in ("added", "removed", "changed", "mixed")
                     for key in undeclared.get(category, [])
                 ],
-                "The marker exempts the marked test alone, for the paths it names alone; "
-                "record it in tests/phase33_state.MARKED_PRODUCTION_WRITERS.",
+                "The marker names PATHS, and only the paths it names are exempt. Since "
+                "QT-W8X-02 the guard judges once per MODULE, so a declared path is "
+                "exempt for the whole file the marker lives in -- never for any other "
+                "path, and never for any other file. Record it in "
+                "tests/phase33_state.MARKED_PRODUCTION_WRITERS.",
             ]
         )
     )
@@ -562,14 +654,14 @@ def _closing_full_sweep(baselines) -> str | None:
     return "\n\n".join(
         [
             CLOSING_SWEEP_HEADER
-            + " -- a production store moved and NO per-test stat sweep saw it.",
-            "The per-test prefilter reads (st_size, st_mtime_ns) and content-hashes "
+            + " -- a production store moved and NO per-module stat sweep saw it.",
+            "The per-module prefilter reads (st_size, st_mtime_ns) and content-hashes "
             "only what moved. A write that RESTORES both, or that lands inside this "
             "filesystem's timestamp resolution, passes it unseen. This sweep re-hashes "
             "every tracked file against the session baseline as rebased by the "
             "permitted writes, so the session's verdict is content-based even where "
             "the prefilter's was not. That the finding appears HERE and not against a "
-            "test is the diagnostic: the metadata did not move with the bytes.",
+            "module is the diagnostic: the metadata did not move with the bytes.",
             *sections,
         ]
     )
@@ -644,12 +736,18 @@ def _production_store_baseline(request):
     return baselines
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(scope="module", autouse=True)
 def production_store_write_guard(request, _production_store_baseline):
-    """COLD-05: fail any test that writes a production store it did not declare."""
+    """COLD-05: fail any MODULE that writes a production store it did not declare.
+
+    MODULE-SCOPED (QT-W8X-02). At this scope `request.node` is the Module collector,
+    not the Function, so the declared paths come from `_marker_paths_for_module` --
+    the union over this module's own selected items -- rather than from a single
+    item's marker.
+    """
     yield
 
-    declared = _marker_paths_for_item(request.node)
+    declared = _marker_paths_for_module(request.node, request.session)
     if any(declared.values()):
         _checkpoint_declared_writes()
 
@@ -668,13 +766,7 @@ def production_store_write_guard(request, _production_store_baseline):
     from tests.data_boundary import DataBoundaryViolation
 
     raise DataBoundaryViolation(
-        "\n\n".join(
-            [
-                "PRODUCTION STORE WRITE GUARD -- "
-                f"{request.node.nodeid} wrote a production store it did not declare.",
-                *violations,
-            ]
-        )
+        "\n\n".join([_module_violation_header(request.node.nodeid), *violations])
     )
 
 

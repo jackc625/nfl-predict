@@ -10,7 +10,7 @@ whether the guard is worth having once it does:
    declared ``paths=`` still fails, and the failure names the undeclared path. An
    exemption that widened to "this test may write anything" would be the same
    blanket permission the opt-in design already gave every unmarked module.
-2. **The prefilter is not the verdict** (D33-23). The per-test pass reads
+2. **The prefilter is not the verdict** (D33-23). The per-module pass reads
    ``(st_size, st_mtime_ns)`` to decide WHERE to look. A file whose stat signature moved
    but whose bytes did not is NOT a violation -- if it were, the guard would report noise
    and be switched off inside a week.
