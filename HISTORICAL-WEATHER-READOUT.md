@@ -609,6 +609,32 @@ model can use, but less cleanly. The normalization exemption is currently one na
 recorded and disturb Wave 14's expected change set, so it is an owner decision scheduled before the
 re-fit rather than a change made here. Registered in `.planning/WINDOWS.md`.
 
+> **ADDED 2026-09-14 (code review WR-03). The sentence above says the exemption is one named column
+> wide. It does not say that SIX MORE COLUMNS OF THE ACTIVELY-FALSE CLASS are still unexempted, and
+> that omission is the part worth correcting.** `home_`/`away_availability_coverage`,
+> `home_`/`away_injury_coverage` and `home_`/`away_date_modified_coverage` are coverage flags of
+> exactly the kind `weather_coverage` was fixed for. Measured on `data/gold/features_ou.parquet`:
+> `home_injury_coverage` is a constant `0.0` across 2002-2008, which are genuinely uncovered, while
+> 2009-2024 range from `-15.97` to `+0.207`. So an uncovered 2002 row reads `0.0` -- far CLOSER to
+> the covered level than to the uncovered one. The same conflation, in the opposite direction.
+> **Mitigating, and it is why this is a disclosure rather than an alarm:** all six belong to the
+> `injury` group, which Phase 30 DROPPED at train time, so none of them reaches a deployed model
+> today. The defect is in the data and in the disclosure, not in a served number. **Nothing is
+> decided here** -- the owner decision this section schedules now covers these six as well, and
+> `.planning/WINDOWS.md` carries them.
+
+> **ADDED 2026-09-14 (code review WR-09). A second pre-re-fit registration, in the same family of
+> "the flag is not the shape it claims to be".** The precipitation band one-hots are a clean ordered
+> partition on the archive path and are NOT one on the live-forecast path: `precip_light` fires on
+> `0.2 < prob <= 0.5` **or** `0.5 < mm <= 2.0`, and `precip_moderate` on `0.5 < prob <= 0.8` **or**
+> `2.0 < mm <= 5.0`, so a forecast of `prob=0.4, mm=3.0` sets BOTH to 1.0. The module's own docstring
+> already admits this. What was not recorded anywhere is which path it affects: **only the live
+> Open-Meteo forecast carries a probability, so the broken branch is precisely the one that serves
+> 2026 predictions, while the branch this phase repaired is the historical one.** It was kept
+> byte-unchanged during this phase deliberately, for reproducibility, and that was the right call.
+> Leaving it unregistered was not. It is now registered in `.planning/WINDOWS.md` so the one-hot
+> family is made a partition on both paths BEFORE the next re-fit rather than after.
+
 ### 7j. The opponent adjustment is INERT
 
 Measured 2026-09-14 across all 8,564 per-game rows: `opp_adj_<metric>` equals the raw metric to within
