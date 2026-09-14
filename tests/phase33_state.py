@@ -7464,3 +7464,139 @@ PHASE331_STALENESS_GAME_IDS: tuple[str, ...] = (
     "2025_W21_NE@DEN",
     "2025_W22_SEA@NE",
 )
+
+
+# -------------------------------------------------------------------------
+# THE OWNER RULING THAT AUTHORISED THE RUNG -- Plan 33.1-07 Task 2.
+#
+# APPENDED on 2026-09-14, AFTER Task 1 committed PHASE331_RUNG_DECLARATION and
+# BEFORE Task 3 rebuilt anything. Nothing above this line was edited.
+#
+# Task 2 is a checkpoint:decision with reversibility rating="one-way":
+# data/gold/ is gitignored and unbacked, the three matrices are overwritten in
+# place, and the OLD gold is the state the three currently-deployed models were
+# fitted and gate-baselined against. It cannot be reconstructed once the
+# corrected silver has replaced its input. So the ruling is recorded here, as a
+# constant, rather than living only in a SUMMARY: Task 3's own precondition
+# reads "Task 2's owner ruling is recorded as approved", and a precondition
+# that can only be satisfied by prose is a precondition nothing can check.
+#
+# WHAT THE OWNER WAS SHOWN AND ACCEPTED. All five what-to-check items were put
+# to the owner and accepted ON THE RECORD. They are recorded here in the order
+# they were put, because the fourth one in particular -- the ninety columns
+# this rung does NOT fix -- is the one a later reader is most likely to assume
+# away.
+# -------------------------------------------------------------------------
+
+PHASE331_RUNG_OWNER_RULING: dict[str, object] = {
+    "ruled_on": "2026-09-14",
+    "plan": "33.1-07",
+    "task": "Task 2 (checkpoint:decision, reversibility one-way)",
+    "verdict": "approved",
+    "option_selected": "one-compound-rung",
+    "option_declined": "three-rungs",
+    "authorises": (
+        "rebuilding data/silver/weather_features.parquet, "
+        "data/silver/contextual_features.parquet and all three "
+        "data/gold/features_*.parquet as ONE rung with the compound cause, "
+        "against the change set already declared in committed source at "
+        "77fe13c"
+    ),
+    # Ruling N2 survives the authorisation UNCHANGED. What the owner authorised
+    # is the one-rung ATTRIBUTION -- not a promise that the change set turns out
+    # to be exactly that narrow. A residual STOPS Task 3; it is never annotated
+    # past, and the declared set is never widened after the diff is seen.
+    "authorises_the_attribution_not_the_outcome": True,
+    "ok_still_required_unconditionally": True,
+    "remedy_for_a_legitimate_out_of_family_move": (
+        "a NEW declared family in a follow-up rung, never a footnote on this one"
+    ),
+    "facts_shown_and_accepted": (
+        (
+            "1. The declared change set predicts ONE added column "
+            "(weather_coverage), nothing removed, rows unchanged at 6,499, "
+            "widths 194/195/194 -> 195/196/195. attribute_rung's ok must be "
+            "True UNCONDITIONALLY; a residual STOPS Task 3 and is surfaced as "
+            "a new checkpoint rather than annotated past."
+        ),
+        (
+            "2. The third cause is NOT a weather change. Both silver feature "
+            "tables hold 6,292 rows against gold's 6,499; the 207 missing "
+            "games are all season 2025 and are committed as "
+            "PHASE331_STALENESS_GAME_IDS. Including them in this rung is "
+            "authorised."
+        ),
+        (
+            "3. Thirteen columns become NaN for 1,652 indoor games (nine "
+            "temperature plus four temperature-derived), per Ruling J and "
+            "WEATHER_NULL_STATE_MATRIX. The seven composite columns keep a "
+            "genuine 0.0. Authorised and understood."
+        ),
+        (
+            "4. The 90 columns that stay a flat imputed constant for "
+            "2002-2017 -- every Elo column, every rolling opponent-adjusted "
+            "EPA column, all three market snapshot columns and the "
+            "situational spots -- are NOT fixed by this rung and must NOT be "
+            "described as fixed. The readout says so plainly."
+        ),
+        (
+            "5. No model is re-fit, no gate runs, artifacts/latest.json stays "
+            "byte-identical. Task 3's trainer smoke fit is "
+            "read-and-fit-in-memory only: save() is never called and "
+            "`git status --short artifacts/` is asserted empty afterwards."
+        ),
+    ),
+}
+
+# The SECOND ruling the owner made in the same sitting, on a Rule-3 blocker the
+# checkpoint surfaced rather than on the rung itself.
+#
+# THE BLOCKER. Ruling N3's runbook names
+# `uv run python scripts/build_contextual.py --all-seasons` and
+# `uv run python scripts/build_weather.py --all-seasons` as the ONE command per
+# artifact, and Task 3's own <verify> REJECTS a recorded command naming
+# --season rather than --all-seasons. But neither script accepted the flag:
+# both took only --season / --week / --save / --validate, and OMITTING --season
+# is what produced the full historical build. The documented command exited 2.
+#
+# THE RULING: add the flag rather than record a different command. --all-seasons
+# becomes an explicit alias for the full historical build in BOTH scripts,
+# mirroring scripts/build_features.py:2133 and its recorded rationale -- the
+# destructive/full mode should be ASKED FOR by name rather than reached by
+# omission -- and PIPELINE.md is updated to match, so the runbook's "ONE exact
+# command per artifact" is literally executable rather than a description.
+#
+# The alias is a NAMING alias and not new build logic: it is mutually exclusive
+# with --season and leaves target_season None, which is byte-identically what
+# omitting --season already did.
+PHASE331_ALL_SEASONS_FLAG_RULING: dict[str, object] = {
+    "ruled_on": "2026-09-14",
+    "plan": "33.1-07",
+    "raised_during": "Task 2 (checkpoint:decision)",
+    "deviation_rule": "Rule 3 (blocking issue)",
+    "verdict": "add the flag alias",
+    "scripts_changed": (
+        "scripts/build_contextual.py",
+        "scripts/build_weather.py",
+    ),
+    "docs_changed": ("PIPELINE.md",),
+    "mirrors": "scripts/build_features.py --all-seasons",
+    "behaviour": (
+        "a NAMING alias for the full historical build, mutually exclusive with "
+        "--season; it leaves target_season None, which is exactly what "
+        "omitting --season already did. No new build logic."
+    ),
+    "why_not_record_a_different_command": (
+        "Ruling N3's point is that 'the rebuild' must be a reproducible ACT "
+        "rather than a description, and Task 3's verify rejects a --season "
+        "invocation because a scoped build MERGES latest-wins and is refused "
+        "if it tries to change the schema. Recording a bare invocation instead "
+        "would have left the full/destructive mode reachable only by omission, "
+        "which is the exact shape build_features.py:2122-2129 already records "
+        "as the mistake --all-seasons exists to prevent."
+    ),
+    "scope": (
+        "AUTHORISED addition beyond the plan's files_modified list, for this "
+        "purpose only; recorded in the SUMMARY as a Rule 3 deviation"
+    ),
+}
