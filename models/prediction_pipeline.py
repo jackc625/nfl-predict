@@ -399,6 +399,46 @@ class BetRecommendationEngine:
         )
 
 
+def _apply_calibrator(calibrator: Any, raw_probabilities: np.ndarray) -> np.ndarray:
+    """Apply a fitted WP calibrator to raw probabilities, using ONE convention.
+
+    ``.predict()`` IS the convention in this repository, and this function exists because
+    ``predict_games`` was the single site that did not follow it. Every other consumer
+    calls ``.predict()``: ``scripts/generate_current_week_predictions.py:187`` (the
+    production current-week path), ``backtest/diagnose.py:138``,
+    ``models/calibrate.py:186`` and ``models/train_wp.py:748``. ``predict_games`` called
+    ``.transform()``.
+
+    That mattered, and had never fired, because the deployed WP artifact's calibrator is a
+    ``models.calibrate.PlattCalibrator`` -- a thin wrapper exposing ``predict`` and NOT
+    ``transform`` -- so serving the real deployed artifact through this pipeline raised
+    ``AttributeError: 'PlattCalibrator' object has no attribute 'transform'``. No test
+    caught it because every synthetic fixture saves its artifacts WITHOUT a calibrator, so
+    the branch was never entered; and no production path calls ``predict_games``, so the
+    defect was latent rather than live. Plan 33.1-10 found it while capturing the
+    pre-change legacy serving baseline, which could not be captured at all until it was
+    fixed (deviation Rule 1).
+
+    This changes NO served number. The branch it repairs produced nothing before -- it
+    raised -- so there is no prior output for a fix to move.
+
+    ``transform`` is kept as the fallback because a bare
+    ``sklearn.isotonic.IsotonicRegression`` (the fallback calibrator ``ProbabilityCalibrator``
+    can return) exposes both names and they are equivalent, while some sklearn transformers
+    expose only ``transform``.
+
+    Args:
+        calibrator: A fitted calibrator exposing ``predict`` or ``transform``.
+        raw_probabilities: Uncalibrated P(home_win) values.
+
+    Returns:
+        The calibrated probabilities.
+    """
+    if hasattr(calibrator, "predict"):
+        return np.asarray(calibrator.predict(raw_probabilities))
+    return np.asarray(calibrator.transform(raw_probabilities))
+
+
 class NFLPredictionPipeline:
     """
     Unified NFL prediction pipeline combining WP, ATS, and O/U models.
@@ -506,9 +546,7 @@ class NFLPredictionPipeline:
         fair_lines[BetType.MONEYLINE_AWAY] = FairLine(
             bet_type=BetType.MONEYLINE_AWAY,
             fair_probability=1 - wp_prob,
-            fair_odds_american=self.odds_converter.probability_to_american(
-                1 - wp_prob
-            ),
+            fair_odds_american=self.odds_converter.probability_to_american(1 - wp_prob),
             fair_odds_decimal=self.odds_converter.american_to_decimal(
                 self.odds_converter.probability_to_american(1 - wp_prob)
             ),
@@ -718,7 +756,7 @@ class NFLPredictionPipeline:
         # Apply calibrator if available
         wp_calibrated_probs = None
         if wp_calibrator is not None:
-            wp_calibrated_probs = wp_calibrator.transform(wp_raw_probs)
+            wp_calibrated_probs = _apply_calibrator(wp_calibrator, wp_raw_probs)
 
         # -- ATS predictions: predict for regression --
         ats_feature_df = games_data[ats_features].copy()
@@ -774,7 +812,11 @@ class NFLPredictionPipeline:
 
             # Build WP prediction
             raw_prob = float(wp_raw_probs[i])
-            cal_prob = float(wp_calibrated_probs[i]) if wp_calibrated_probs is not None else None
+            cal_prob = (
+                float(wp_calibrated_probs[i])
+                if wp_calibrated_probs is not None
+                else None
+            )
             confidence = abs(raw_prob - 0.5) * 2  # Distance from 0.5 scaled to [0, 1]
 
             wp_pred = WPPrediction(
@@ -866,7 +908,8 @@ class NFLPredictionPipeline:
                 prediction_date=datetime.now(),
                 # Core predictions
                 wp_home_probability=cal_prob if cal_prob is not None else raw_prob,
-                wp_away_probability=1 - (cal_prob if cal_prob is not None else raw_prob),
+                wp_away_probability=1
+                - (cal_prob if cal_prob is not None else raw_prob),
                 predicted_margin=ats_pred.predicted_margin,
                 predicted_spread=ats_pred.predicted_spread,
                 ats_cover_probability=ats_pred.cover_probability,
