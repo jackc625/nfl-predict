@@ -233,6 +233,128 @@ def _validate_column_declarations() -> None:
 _validate_column_declarations()
 
 
+# ---------------------------------------------------------------------------
+# THE DATED 2026 GOLD-DEFAULT SWITCH (Plan 33-09 Task 5, D33-25).
+#
+# APPENDED by Plan 33-09 Task 5. Nothing above this line was edited.
+#
+# WHAT IT DOES. For a season named in the switch, both builders in this module
+# write the ABSENT-OBSERVATION weather family into the feature frame -- every
+# weather column NULL, with the coverage flag at 0.0 -- no matter what the
+# silver weather table holds for that game. For every other season nothing
+# changes at all: silver is consumed exactly as it was before this block
+# existed, and a frame-identity test on 2025 asserts that.
+#
+# WHY. This is a TRAIN/SERVE AGREEMENT decision and NOT an accuracy one. The
+# deployed O/U artifact was fitted on gold whose weather columns do not vary at
+# all inside its training window (the measurement below). A winsorization bound
+# fitted on a constant collapses, so every live 2026 weather value would land
+# outside it -- out-of-distribution columns entering a deployed model days
+# before the season this milestone exists to measure. Holding gold at its
+# default buys the time to re-fit rather than the right never to.
+#
+# WHAT IT IS NOT. It is NOT a restoration of the deleted mild-temperature
+# default. Plan 33.1-04 removed `temp_f: 65.0` and its one-hot family, and
+# D33.1-07 leaves exactly ONE spelling of "we do not know" in this module. The
+# SPEC's first prohibition is that no other number may take the old default's
+# place under any name -- "a seasonal average or a venue mean is the same defect
+# wearing a better label". So the held state is NULL, and the row SAYS SO: the
+# coverage flag reads 0.0 on a held row, which keeps it distinguishable in the
+# data from an observed one and from a dome.
+#
+# IT DOES NOT REACH SILVER. `scripts/ingest_weather.py` carries no reference to
+# this switch and is not meant to. The live forecast values accumulate from week
+# one exactly as they would without it -- which is the point, because the re-fit
+# that flips this switch needs them as its input.
+#
+# THE RECORD, and the record is what makes this honest rather than a dodge: the
+# default is EXPLICIT, DATED and DISCLOSED in committed source, which is the
+# exact opposite of the Elo case where the imputation was silent and unintended.
+#
+#   MEASURED on 2026-09-12 by Plan 33-09 Task 3, read-only, and recorded in
+#   `tests/phase33_state.GOLD_WEATHER_CONSTANCY_MEASUREMENT`: 45 of 46 gold
+#   weather columns are EXACTLY CONSTANT in the ATS train window 2015-2019
+#   (1,335 rows), in the WP/OU train window 2018-2019 (534 rows) AND in the
+#   2021-2024 gate holdout (1,139 rows); `venue_cold_climate` is the only column
+#   that varies in any of them. `raw_temp_f` equals the imputed 65.0 default on
+#   6,485 of 6,499 gold rows (99.7846%), and inside each of those three windows
+#   the imputation is TOTAL. The same measurement NARROWED the blast radius, and
+#   that is recorded rather than quietly dropped: WP and ATS consume ZERO
+#   weather features, so this is 17 columns entering ONE deployed model (the
+#   v1.0 pre-Elo O/U artifact), not 33 entering three.
+#
+#   RULED by the OWNER on 2026-09-14, at Plan 33-09's Task-4 blocking
+#   checkpoint, against that re-derived constancy measurement and BEFORE this
+#   switch was written: APPROVED, WITH ONE CHANGE. The plan asked for Phase 37
+#   as the flip condition. The owner set it to Phase 33 Wave 15's re-fit
+#   instead, in their own words -- "The only justification for holding 2026
+#   weather back was that the O/U model had never seen weather vary. Phase 33.1
+#   fixed the historical record, so that reason expires at the next re-fit
+#   rather than a future phase." The hold is a BRIDGE, not a season-long policy,
+#   and the flip condition below is written to expire it at the next re-fit.
+# ---------------------------------------------------------------------------
+
+WEATHER_GOLD_DEFAULT_SEASONS: frozenset[int] = frozenset({2026})
+
+WEATHER_GOLD_DEFAULT_FLIP_CONDITION: str = (
+    "Remove 2026 from the held-season set when Phase 33 Wave 15's re-fit has "
+    "trained the deployed artifacts on gold rebuilt from the corrected "
+    "historical weather record (Plan 33.1-07's weather rung), and not before. "
+    "Its input is the historical weather backfill plus the 2026 forecast rows "
+    "this switch deliberately keeps collecting. At that point the deployed "
+    "model HAS seen weather vary and the sole reason for the hold has expired; "
+    "until then it has not, whatever the calendar says."
+)
+
+
+def _resolve_season(game: Any, game_id: Any) -> int | None:
+    """The season of *game*, from its column or, failing that, its ``game_id``.
+
+    The fallback is not belt-and-braces. ``get_features_for_game`` builds its
+    one-row frame with ``season: 0`` and a real ``game_id``, so a resolver that
+    read the column alone would return nothing there -- and a season that cannot
+    be resolved is a season that is NOT held. That fails OPEN on the
+    single-game serving path, which is precisely the path that answers a live
+    2026 prediction.
+
+    Args:
+        game: The games-frame row, or any mapping carrying ``season``.
+        game_id: The game identifier, whose first underscore-delimited field is
+            the four-digit season.
+
+    Returns:
+        The season, or ``None`` when neither source can supply one.
+    """
+    season = game.get("season") if hasattr(game, "get") else None
+    # WRITTEN AS TYPE TESTS RATHER THAN A `try/except`, for the reason
+    # `_is_missing` records: every `except` branch in this module raises, and a
+    # probe that swallows a TypeError is the shape D33.1-07 removed.
+    # `float.is_integer` is what rejects NaN and infinity here without one.
+    if isinstance(season, int | float | np.integer | np.floating) and not isinstance(
+        season, bool
+    ):
+        as_float = float(season)
+        if as_float.is_integer() and as_float > 0:
+            return int(as_float)
+    if isinstance(season, str) and season.isdigit() and int(season) > 0:
+        return int(season)
+    prefix = str(game_id).split("_", 1)[0]
+    if len(prefix) == 4 and prefix.isdigit():
+        return int(prefix)
+    return None
+
+
+def _game_is_held_at_gold_default(game: Any, game_id: Any) -> bool:
+    """Whether the gold weather family for *game* is held at its default.
+
+    Reads the module constant at CALL time rather than binding it at import, so
+    a test can empty the switch and drive the same builder over the same silver
+    frame as a controlled A/B.
+    """
+    season = _resolve_season(game, game_id)
+    return season is not None and season in WEATHER_GOLD_DEFAULT_SEASONS
+
+
 def _is_missing(value: Any) -> bool:
     """True when a measurement is genuinely ABSENT (``None``, NaN, ``pd.NA``).
 
@@ -1058,6 +1180,19 @@ class WeatherFeaturesCalculator:
                 covered = _row_is_covered(weather_data)
                 is_outdoor = bool(weather_data.get("is_outdoor", False))
 
+                if _game_is_held_at_gold_default(game, game_id):
+                    # THE 2026 GOLD-DEFAULT SWITCH (D33-25), applied to the full
+                    # builder. The silver row was still REQUIRED above -- a game
+                    # with no record at all is an anomaly in every season and is
+                    # still refused by name. What the switch overrides is the
+                    # row's CONTENT: the observation exists, it is real, and
+                    # gold deliberately does not consume it yet.
+                    game_features.update(
+                        self._absent_observation_features(is_outdoor=is_outdoor)
+                    )
+                    weather_features.append(game_features)
+                    continue
+
                 if not covered:
                     # RULING J, the middle row: the venue resolved, the ERA5
                     # observation did not arrive. Nothing is calculated, and the
@@ -1369,6 +1504,24 @@ class WeatherFeaturesCalculator:
                 weather_data: dict[str, Any] = latest_weather.to_dict()
 
                 is_outdoor = bool(weather_data.get("is_outdoor", False))
+
+                if _game_is_held_at_gold_default(game, game_id):
+                    # THE 2026 GOLD-DEFAULT SWITCH (D33-25), in the compressed
+                    # shape. Both builders feed gold, so a switch on one of them
+                    # would be half a switch: the full builder writes silver
+                    # `weather_features`, and this one is the FeatureBuilder
+                    # Protocol path. `is_outdoor` still records that weather
+                    # APPLIES -- what is held back is the observation.
+                    compressed_rows.append(
+                        {
+                            "game_id": game_id,
+                            "weather_severity_score": NAN,
+                            "wind_mph": NAN,
+                            "is_precipitation": NAN,
+                            "is_outdoor": 1.0 if is_outdoor else 0.0,
+                        }
+                    )
+                    continue
 
                 if not _row_is_covered(weather_data):
                     # Ruling J's middle row, in the compressed shape: the three
