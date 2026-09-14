@@ -50,6 +50,7 @@ from pathlib import Path
 import pytest
 
 from backtest.ev_chain_constants import PREREGISTRATION_PATHS
+from conf import season_partition
 from scripts import weather_crosscheck_constants
 from tests import phase31_state, phase33_state
 
@@ -692,3 +693,192 @@ class TestThePhase331WeatherCrosscheckPreRegistration:
         """
         assert WEATHER_CROSSCHECK_PATH not in PREREGISTRATION_PATHS
         assert len(PREREGISTRATION_PATHS) == 2
+
+
+# ---------------------------------------------------------------------------
+# PHASE 33.1's SEASON PARTITION RULE (SPEC R6, D33.1-03). Added by Plan 33.1-09
+# Task 1.
+#
+# A THIRD CLASS, REUSING THIS MODULE'S HELPERS -- and, like the weather
+# cross-check class above, deliberately NOT an addition to
+# `backtest.ev_chain_constants.PREREGISTRATION_PATHS` (Ruling L, applied again).
+# That tuple defines PHASE 31's pre-registration and a test asserts it holds
+# exactly two paths; adding to it would redefine a PUBLISHED pre-registration
+# after the fact.
+#
+# WHAT THIS CLASS PROVES, AND WHAT IT DELIBERATELY CANNOT.
+# It proves the rule file is tracked, that it still hashes to the digest recorded
+# OUTSIDE it, that it does not carry its own hash, and that its commit is a
+# STRICT ancestor of both HEAD and the commit that witnesses it.
+#
+# It does NOT prove that the window was chosen before anyone looked at a score --
+# and under D33.1-03 it does not need to. The rule is DETERMINISTIC and scores
+# nothing: no candidate window is ever fitted, ranked or compared, so the SPEC's
+# third prohibition ("MUST NOT select the training window after observing its
+# scores") is satisfied VACUOUSLY. This class exists so that the property stays
+# CHECKABLE if a future phase ever does score a window.
+# ---------------------------------------------------------------------------
+
+SEASON_PARTITION_RULE_PATH = season_partition.PARTITION_RULE_PATH
+
+
+class TestThePhase331SeasonPartitionRule:
+    """SPEC R6: the rule was committed, alone, before anything consumed it."""
+
+    def test_the_witness_covers_exactly_the_file_the_rule_names(self) -> None:
+        """The recorded hash keys EQUAL the single path the rule names for itself.
+
+        Set equality rather than membership: a second file folded into the rule
+        without a hash appended here would be silently unwitnessed, and editable
+        after the fact with nothing to catch it.
+        """
+        assert set(phase33_state.SEASON_PARTITION_RULE_FILE_SHA256) == {
+            SEASON_PARTITION_RULE_PATH
+        }
+
+    def test_the_file_exists_and_is_tracked(self) -> None:
+        assert (REPO_ROOT / SEASON_PARTITION_RULE_PATH).is_file()
+        tracked = _git("ls-files", SEASON_PARTITION_RULE_PATH).stdout.split()
+        assert SEASON_PARTITION_RULE_PATH in tracked, (
+            f"{SEASON_PARTITION_RULE_PATH} is on disk but NOT tracked by git. An "
+            "untracked rule cannot anchor anything: there is no commit to assert "
+            "ancestry from."
+        )
+
+    def test_it_still_hashes_to_its_recorded_digest(self) -> None:
+        """The content lock: a ONE-BYTE edit to the rule fails here."""
+        expected = phase33_state.SEASON_PARTITION_RULE_FILE_SHA256[
+            SEASON_PARTITION_RULE_PATH
+        ]
+        assert _SHA256_RE.match(expected), expected
+        actual = _normalized_sha256(SEASON_PARTITION_RULE_PATH)
+        assert actual == expected, (
+            f"{SEASON_PARTITION_RULE_PATH} has CHANGED since it was registered.\n"
+            f"  recorded (tests/phase33_state.py): {expected}\n"
+            f"  recomputed from the working tree:  {actual}\n"
+            "Editing the rule after a window has been scored does not fix a bug -- "
+            "it destroys the evidence. If the rule was wrong, that is a FINDING "
+            "about the rule, and the finding is what gets reported. A DELIBERATE "
+            "change (bumping LATEST_COMPLETED_SEASON when a season ends, say) is "
+            "legitimate: re-measure BOTH constants in tests/phase33_state.py from "
+            "the new commit, in a strictly later commit, and record why."
+        )
+
+    def test_it_does_not_contain_its_own_recorded_hash(self) -> None:
+        """REVIEW-CIRCULAR, asserted rather than merely explained in the header."""
+        expected = phase33_state.SEASON_PARTITION_RULE_FILE_SHA256[
+            SEASON_PARTITION_RULE_PATH
+        ]
+        content = (REPO_ROOT / SEASON_PARTITION_RULE_PATH).read_text(encoding="utf-8")
+        assert expected not in content, (
+            f"{SEASON_PARTITION_RULE_PATH} CONTAINS its own recorded sha256. A file "
+            "carrying its own whole-file hash has no fixed point: writing the hash "
+            "changes the bytes it was computed over."
+        )
+
+    def test_the_recorded_commit_is_what_git_resolves(self) -> None:
+        if _git_history_is_unavailable():
+            pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+        resolved = _git(
+            "log", "-1", "--format=%H", "--", SEASON_PARTITION_RULE_PATH
+        ).stdout.strip()
+        assert _SHA1_RE.match(resolved), resolved
+        assert resolved == phase33_state.SEASON_PARTITION_RULE_COMMIT, (
+            "the resolved rule commit does NOT match the recorded anchor.\n"
+            f"  resolved from git: {resolved}\n"
+            f"  recorded:          {phase33_state.SEASON_PARTITION_RULE_COMMIT}\n"
+            "Either the rule was re-committed and the witness was not re-measured, "
+            "or the witness was edited."
+        )
+
+    def test_the_commit_contains_only_the_rule_file(self) -> None:
+        """The commit's claim to BE the rule is checkable.
+
+        Plan 33.1-09 Task 1 commits the module BY ITSELF and Task 2 rewires the
+        consumers in a later commit, precisely so this assertion can hold: a rule
+        that landed together with a consumer cannot be shown to have preceded it.
+        """
+        if _git_history_is_unavailable():
+            pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+        commit = phase33_state.SEASON_PARTITION_RULE_COMMIT
+        listing = _git("show", "--name-only", "--format=", commit)
+        assert listing.returncode == 0, listing.stderr
+        touched = sorted(path for path in listing.stdout.split() if path)
+        assert touched == [SEASON_PARTITION_RULE_PATH], (
+            f"the rule commit {commit} touches {touched}, expected exactly "
+            f"[{SEASON_PARTITION_RULE_PATH!r}]. Anything else in that commit means "
+            "the anchor points at a commit that did more than freeze the rule."
+        )
+
+    def test_the_rule_commit_is_a_STRICT_ancestor_of_head(self) -> None:
+        """The ordering that makes this a rule rather than a description."""
+        if _git_history_is_unavailable():
+            pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+        rule = phase33_state.SEASON_PARTITION_RULE_COMMIT
+        head = _git("rev-parse", "HEAD").stdout.strip()
+
+        assert rule != head, (
+            f"the rule commit IS HEAD ({rule}). Nothing has been committed after "
+            "it, so it cannot yet be shown to have preceded anything."
+        )
+        ancestry = _git("merge-base", "--is-ancestor", rule, head)
+        assert ancestry.returncode == 0, (
+            f"the rule commit {rule} is NOT an ancestor of HEAD ({head})."
+        )
+
+    def test_the_witness_landed_after_the_rule_it_witnesses(self) -> None:
+        if _git_history_is_unavailable():
+            pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+        witness_commit = _git(
+            "log", "-1", "--format=%H", "--", "tests/phase33_state.py"
+        ).stdout.strip()
+        assert _SHA1_RE.match(witness_commit), witness_commit
+        rule = phase33_state.SEASON_PARTITION_RULE_COMMIT
+        assert witness_commit != rule, (
+            "the witness and the rule are the SAME commit. A file cannot record "
+            "the hash of a commit it is part of."
+        )
+        ancestry = _git("merge-base", "--is-ancestor", rule, witness_commit)
+        assert ancestry.returncode == 0, (
+            f"the rule commit {rule} is NOT an ancestor of the commit that records "
+            f"its anchor ({witness_commit}). The witness must be measured FROM a "
+            "committed rule, never before it."
+        )
+
+    def test_phase_31s_preregistration_paths_were_not_extended(self) -> None:
+        """Ruling L again, so a later 'tidy' cannot fold this rule into Phase 31's."""
+        assert SEASON_PARTITION_RULE_PATH not in PREREGISTRATION_PATHS
+        assert len(PREREGISTRATION_PATHS) == 2
+
+    def test_the_rule_is_deterministic_and_scores_nothing(self) -> None:
+        """Why the SPEC's third prohibition is satisfied VACUOUSLY, asserted.
+
+        Two calls with the same completed seasons must return the same partition,
+        and the rule module must import nothing that could fit or score a model.
+        A rule that reached for sklearn, xgboost or a gold frame would be ranking
+        candidate windows, which is the thing the prohibition forbids.
+        """
+        first = season_partition.derive_season_partition(range(2002, 2026))
+        second = season_partition.derive_season_partition(range(2002, 2026))
+        assert first == second
+
+        source = (REPO_ROOT / SEASON_PARTITION_RULE_PATH).read_text(encoding="utf-8")
+        import_lines = [
+            line
+            for line in source.splitlines()
+            if line.startswith(("import ", "from ")) and "__future__" not in line
+        ]
+        assert import_lines == [
+            "from collections.abc import Iterable",
+            "from dataclasses import dataclass",
+        ], (
+            "the rule module imports something beyond the two standard-library "
+            f"names it is allowed: {import_lines}. It must stay free of project "
+            "imports (no cycle from conf.settings) AND free of anything that could "
+            "fit or score a model (the prohibition is vacuous only while nothing "
+            "is scored)."
+        )

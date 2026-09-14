@@ -9404,3 +9404,94 @@ OU_WEATHER_CONDITIONS_BREAKDOWN: dict[str, object] = {
         "field is where the model should look best, and it does not.",
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# THE WITNESS FOR PHASE 33.1'S SEASON PARTITION RULE (SPEC R6, D33.1-03).
+#
+# APPENDED by Plan 33.1-09 Task 1 on 2026-09-14, in a SEPARATE, LATER commit than
+# the rule itself. THAT SEPARATION IS THE WHOLE POINT. Nothing above this line was
+# edited.
+#
+# WHY THE ANCHOR LIVES HERE AND NOT INSIDE THE FILE IT WITNESSES (REVIEW-CIRCULAR).
+# A file that must CONTAIN and exactly REPRODUCE its own whole-file hash is
+# self-referential: writing the hash changes the bytes the hash was computed over,
+# so no fixed point exists without a canonical exclusion rule nobody has defined.
+# This is the FOURTH use of the outside-witness pattern in this repository, not a
+# new idea: Phase 30 proved it on backtest/group_gate.py, Phase 31 reused it on the
+# EV-chain pre-registration, and Plan 33.1-05 used it on the weather cross-check.
+#
+# WHAT IT IS NOT. This does NOT extend Phase 31's pre-registration.
+# `backtest.ev_chain_constants.PREREGISTRATION_PATHS` names exactly two paths and a
+# test asserts that count; adding to it would redefine a PUBLISHED pre-registration
+# after the fact (Ruling L, applied again). Phase 33.1's rule gets its own class in
+# tests/unit/test_preregistration_ancestry.py reusing that module's helpers.
+#
+# THE RELATION ASSERTED: the commit below is a STRICT ancestor of HEAD and of the
+# commit that records it, and it touches the rule file and NOTHING ELSE. Task 1
+# commits the module alone and Task 2 rewires the eleven consumers afterwards,
+# precisely so that assertion can hold.
+#
+# THE PROHIBITION IS VACUOUS AND THE WITNESS EXISTS ANYWAY. Under D33.1-03 the rule
+# is deterministic and scores nothing, so the SPEC's third prohibition ("MUST NOT
+# select the training window after observing its scores") has nothing to bite on.
+# The anchor is recorded so the property stays CHECKABLE if a future phase ever
+# does score a window.
+#
+# THE DIGEST IS NEWLINE-NORMALIZED -- every CRLF folded to LF before hashing. This
+# repository has core.autocrlf=true and no .gitattributes, so the file is LF in the
+# git blob and CRLF in a fresh Windows working tree; a digest over raw working-tree
+# bytes would pin a value that holds only on the machine that measured it. Verified
+# equal by BOTH routes at append time: the normalized working-tree bytes and
+# `git cat-file blob <commit>:<path>` produce the same value, and the blob carries
+# zero CRLF pairs.
+# ---------------------------------------------------------------------------
+
+SEASON_PARTITION_RULE_COMMIT: str = "e7d0ca5b0997f7660acaa7e75420416c4b309dd7"
+
+SEASON_PARTITION_RULE_FILE_SHA256: dict[str, str] = {
+    "conf/season_partition.py": (
+        "edd580beb0f7df06d4cebbcf10bdf3252ec2747aa7eabe51efa3032899b76acb"
+    ),
+}
+
+SEASON_PARTITION_RULE_PROVENANCE: dict[str, str] = {
+    "plan": "33.1-09",
+    "task": "Task 1: write the rule and its evidence, then witness it from outside",
+    "date": "2026-09-14",
+    "resolved_by": "git log -1 --format=%H -- conf/season_partition.py",
+    "hash_basis": (
+        "newline-normalized file bytes (CRLF folded to LF); equals the git blob "
+        "sha256, verified by both routes at append time"
+    ),
+    "commit_contents": "exactly conf/season_partition.py and nothing else",
+    "does_not_extend": (
+        "backtest.ev_chain_constants.PREREGISTRATION_PATHS is UNTOUCHED -- that "
+        "tuple defines Phase 31's pre-registration and a test asserts it holds "
+        "exactly two paths (Ruling L)"
+    ),
+    "the_rule": (
+        "holdout = the HOLDOUT_SEASON_COUNT most recent completed seasons; hp_val "
+        "= the HP_VAL_SEASON_COUNT seasons immediately before those; selection = "
+        "SELECTION_WINDOW_FIRST_SEASON through the season before hp_val; final_fit "
+        "= every completed season from CORPUS_FIRST_SEASON (D33.1-02)"
+    ),
+    "on_todays_data": (
+        "selection 2018-2022, hp_val 2023, holdout 2024-2025, final fit 2002-2025"
+    ),
+    "why_it_is_vacuous": (
+        "the rule is DETERMINISTIC and scores nothing -- no candidate window is "
+        "fitted, ranked or compared -- so the SPEC's third prohibition is "
+        "satisfied vacuously rather than by discipline. The anchor exists so the "
+        "property stays checkable if a future phase ever does score a window."
+    ),
+    "the_one_remaining_literal": (
+        "LATEST_COMPLETED_SEASON = 2025. Import-time consumers (conf.settings, "
+        "TemporalSplitConfig.default, models/train.py argparse, "
+        "backtest.engine.BacktestConfig) hold no frame; reading gold at import "
+        "time would make the partition depend on whether a rebuild had run, and "
+        "deriving it from the calendar would let it move with no commit recording "
+        "that it moved. Bumping it is a deliberate one-line commit -- and it "
+        "invalidates the digest above, which is the point."
+    ),
+}
