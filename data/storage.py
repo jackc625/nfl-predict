@@ -1212,6 +1212,126 @@ def save_bronze_snapshot(
     return filepath
 
 
+class SilverMirrorSyncError(DataIngestionError):
+    """A silver upsert wrote its parquet but could not bring the reader's DuckDB copy along.
+
+    A subclass of :class:`DataIngestionError`, so every caller that already treats a failed
+    ingest as a failed ingest keeps doing so. It has its own name because the state it
+    reports is specific and dangerous: the parquet is AHEAD, and the message says whether the
+    stale DuckDB copy could at least be dropped (readers then fall back to the parquet) or is
+    still there (readers keep serving old rows).
+    """
+
+
+def _reader_parquet_root() -> Path:
+    """The parquet root ``load_dataframe`` reads -- WITHOUT creating the global manager.
+
+    ``get_parquet_manager()`` would instantiate the module global (and ``mkdir`` its root)
+    as a side effect of merely asking. Reading the existing global, or the configured root
+    when there is none yet, answers the same question with no side effect.
+    """
+    if _parquet_manager is not None:
+        return Path(_parquet_manager.base_path)
+    return Path(get_settings().config.data.root_path)
+
+
+def _duckdb_copy_exists(db: DuckDBConnection, table_name: str) -> bool:
+    """Whether *table_name* has a DuckDB copy, RAISING when that cannot be established.
+
+    Deliberately NOT ``DuckDBConnection.table_exists``, which answers ``False`` when the
+    database cannot be opened at all. Here that answer would be read as "no copy to keep in
+    step", and a locked database would silently skip the sync -- the exact split this seam
+    exists to close. So a connection or query failure propagates as ``DataIngestionError``.
+    """
+    sanitized = db._sanitize_table_name(table_name)
+    rows = db.execute(
+        "SELECT 1 FROM information_schema.tables WHERE LOWER(table_name) = LOWER(?)",
+        [sanitized],
+    ).fetchall()
+    return len(rows) > 0
+
+
+def _keep_duckdb_copy_in_step(
+    table_name: str, silver_path: Path, base_path: Path
+) -> None:
+    """Replace the reader's DuckDB copy of *table_name* from the parquet just written.
+
+    THE DEFECT (N-01, recurring). ``load_dataframe(source="auto")`` reads DuckDB FIRST
+    whenever the table exists there, and the silver upserts used to write the parquet ONLY
+    -- so every upsert into a table that also had a DuckDB copy was invisible to the whole
+    pipeline. Phase 30 measured it on ``games`` (6,499 parquet against 6,292 DuckDB) and
+    healed it by a one-off re-sync; Plan 33-18's live acceptance run reproduced it on
+    2026-09-15 (6,771 against 6,499, zero 2026 rows readable) and halted at ``data_qa``.
+    Fixed here, at the writer, on owner ruling R1 of 2026-09-15. The pattern is
+    ``scripts/build_elo.py::_upsert_row_table``'s: read the written parquet back and replace
+    the DuckDB copy from it, so the two stores cannot disagree.
+
+    THREE RULES, each pinned by ``tests/unit/test_upsert_silver_duckdb_sync.py``:
+
+    * ONLY THE READER'S ROOT. If *base_path* is not the root ``load_dataframe`` reads, the
+      parquet just written is one no reader resolves, so there is no reader copy to keep in
+      step -- and writing the process DuckDB from a foreign root would corrupt it. This is
+      also what keeps every sandboxed ``upsert_silver(base_path=tmp_path)`` off the
+      production database.
+    * ONLY AN EXISTING COPY. A table with no DuckDB copy is already read from its parquet,
+      so it is consistent as it stands; creating a mirror nobody reads would only widen what
+      a write can break.
+    * LOUD ON FAILURE. The parquet is already written, so a DuckDB failure leaves it ahead.
+      That is never swallowed: the stale copy is dropped if possible (readers then fall back
+      to the parquet), and :class:`SilverMirrorSyncError` is raised either way, saying which.
+
+    ORDERING. Parquet first (atomic, via ``_atomic_write_parquet``), DuckDB second. The
+    reverse would let a parquet failure leave DuckDB ahead of the file every direct parquet
+    reader uses; this order means the only possible half-state is a raised one.
+    """
+    if Path(base_path).resolve() != _reader_parquet_root().resolve():
+        return
+
+    db = get_db_connection()
+    try:
+        has_copy = _duckdb_copy_exists(db, table_name)
+    except DataIngestionError as unknown:
+        raise SilverMirrorSyncError(
+            f"silver.{table_name} was written to {silver_path.as_posix()}, but whether a "
+            f"DuckDB copy exists could not be established ({unknown}). If one exists it is "
+            "now STALE and load_dataframe(source='auto') serves it instead of the parquet. "
+            "Close whatever holds the database and re-run the ingest."
+        ) from unknown
+    if not has_copy:
+        return
+
+    written = pd.read_parquet(silver_path, engine="pyarrow")
+    try:
+        db.create_table_from_df(written, table_name, if_exists="replace")
+    except DataIngestionError as sync_failure:
+        try:
+            db.execute(
+                f"DROP TABLE IF EXISTS {db._sanitize_table_name(table_name)}",
+                write=True,
+            )
+            outcome = (
+                "The stale DuckDB copy was DROPPED, so readers now fall back to the "
+                "parquet and see the written rows."
+            )
+        except (DataIngestionError, ValueError) as drop_failure:
+            outcome = (
+                f"The stale DuckDB copy could NOT be dropped either ({drop_failure}), so "
+                "load_dataframe(source='auto') is STILL SERVING THE OLD ROWS."
+            )
+        raise SilverMirrorSyncError(
+            f"silver.{table_name} was written to {silver_path.as_posix()} "
+            f"({len(written)} rows), but its DuckDB copy could not be replaced: "
+            f"{sync_failure}. {outcome} Close whatever holds the database and re-run the "
+            "ingest."
+        ) from sync_failure
+
+    logger.info(
+        "Kept the DuckDB copy in step with the silver parquet",
+        table=table_name,
+        rows=len(written),
+    )
+
+
 def upsert_silver(
     new_df: pd.DataFrame,
     table_name: str,
@@ -1222,6 +1342,12 @@ def upsert_silver(
 
     If Silver file exists, removes rows with matching keys, then appends new data.
     If Silver file does not exist, creates it from new data.
+
+    If the table ALSO has a DuckDB copy under the root ``load_dataframe`` reads, that copy
+    is replaced from the written parquet, and a failure to do so RAISES
+    :class:`SilverMirrorSyncError` -- see :func:`_keep_duckdb_copy_in_step`. Until Plan
+    33-18 this wrote the parquet only, and ``load_dataframe(source="auto")``, which reads
+    DuckDB first, never saw the upsert.
 
     Args:
         new_df: Validated data to upsert
@@ -1252,6 +1378,7 @@ def upsert_silver(
     combined_normalized = pm._normalize_parquet_datetime_columns(combined)
     table = pa.Table.from_pandas(combined_normalized)
     _atomic_write_parquet(table, silver_path)
+    _keep_duckdb_copy_in_step(table_name, silver_path, base_path)
 
     logger.info(
         "Upserted Silver table",
@@ -1340,7 +1467,8 @@ def upsert_silver_composite(
        same pairs is idempotent.
 
     :func:`upsert_silver` and the ``odds_snapshot`` write path are untouched
-    (D-11).
+    (D-11). Both upserts now keep an existing DuckDB copy in step through
+    :func:`_keep_duckdb_copy_in_step` (Plan 33-18, owner ruling R1).
 
     Args:
         new_df: Validated trajectory rows to upsert.
@@ -1383,6 +1511,7 @@ def upsert_silver_composite(
     combined_normalized = pm._normalize_parquet_datetime_columns(combined)
     table = pa.Table.from_pandas(combined_normalized)
     _atomic_write_parquet(table, silver_path)
+    _keep_duckdb_copy_in_step(table_name, silver_path, base_path)
 
     logger.info(
         "Upserted Silver table (composite key)",
