@@ -348,6 +348,45 @@ class TestTheLabelMovementIsRecordedAsCountsAndNotOnlyAsShares:
         assert moving["ats"] <= eligible
         assert moving["ou"] <= eligible
 
+    def test_the_recorded_edge_tier_consumers_match_a_live_source_scan(self) -> None:
+        """The movement changes a PRINTED LABEL and changes NO BET -- scanned, not asserted.
+
+        This is the fact that made accepting 522 moved ATS labels a narrow decision rather
+        than a broad one, so it is guarded rather than left in a comment. The scan also
+        caught the first version of the record naming ONE consumer when there are TWO;
+        understating the reach of a published-label change is the direction an honest record
+        must not err in, which is why the correction is recorded beside the original.
+        """
+        recorded = set(
+            phase33_state.EDGE_TIER_DISPLAY_ONLY_CORRECTED["non_test_consumers"]
+        )
+        found = {
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in REPO_ROOT.rglob("*.py")
+            if ".venv" not in path.parts
+            and "tests" not in path.parts
+            and path.relative_to(REPO_ROOT).as_posix() != "utils/edge_tier.py"
+            and re.search(
+                r"^from utils\.edge_tier import", path.read_text(encoding="utf-8"), re.M
+            )
+        }
+        assert found == recorded, (
+            f"the recorded edge_tier consumers {sorted(recorded)} disagree with a live source "
+            f"scan {sorted(found)}. A NEW consumer means the band's reach has changed and the "
+            "display-only conclusion must be re-established, not inherited."
+        )
+
+    def test_no_bet_selection_path_reads_the_edge_band(self) -> None:
+        """The other half of the same claim: selection bands by ev_tier, never by edge_tier."""
+        for module in (
+            "backtest/weekly_bet_list.py",
+            "backtest/selector_strategies.py",
+            "scripts/generate_bet_list.py",
+        ):
+            source = (REPO_ROOT / module).read_text(encoding="utf-8")
+            assert "from utils.edge_tier import" not in source, module
+            assert "edge_tier_series(" not in source, module
+
     def test_every_band_count_sums_to_the_eligible_row_count(self) -> None:
         """The counts are a partition of the population, not a sample of it."""
         for target, row in cold_start_constants.ATS_BAND_COUNTS_AFTER.items():

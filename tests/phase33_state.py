@@ -13802,3 +13802,82 @@ READOUT_PENDING_SKIP_MESSAGE_PHASE33: str = (
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_16: int = 53
+
+
+# ---------------------------------------------------------------------------
+# A CORRECTION TO EDGE_TIER_IS_DISPLAY_ONLY, RECORDED BESIDE IT AND NOT INTO IT.
+#
+# APPENDED by Plan 33-16 Task 4 on 2026-09-14, minutes after the slot above.
+# EDGE_TIER_IS_DISPLAY_ONLY is NOT edited: the append-once protocol has no
+# re-measurement arm, and that slot records the claim as it was made. This is the
+# corrected record beside it, in the shape Plan 33-15 used for
+# WP_PREPROCESSING_DEFECT_CLOSED_AT_TASK_4.
+#
+# WHAT WAS WRONG. The slot above says the sole non-test consumer of utils.edge_tier
+# is api/cache.py. A source scan says there are TWO:
+#
+#     api/cache.py:25                            from utils.edge_tier import edge_tier_series
+#     scripts/generate_current_week_predictions.py:30   from utils.edge_tier import edge_tier
+#
+# The second writes wp_/ats_/ou_confidence into the current-week CSV under
+# outputs/predictions/, which api/cache.py never reads -- the two-homes-one-rule
+# split utils/edge_tier.py's own docstring describes. Recording one consumer when
+# there are two understates the reach of a published-label change, which is exactly
+# the direction an honest record must not err in.
+#
+# WHAT IS UNCHANGED, AND WHY THE CONCLUSION SURVIVES. The conclusion the owner
+# accepted -- that the band movement changes a printed label and changes NO BET --
+# is not weakened by the second consumer; it is confirmed on a wider scan:
+#
+#   * `_confidence` appears in NO first-party non-test module other than those two.
+#     Every other hit in the tree is third-party code under .venv/.
+#   * backtest/selector_strategies.py and scripts/generate_bet_list.py contain ZERO
+#     references to edge_tier or to a confidence tier.
+#   * backtest/weekly_bet_list.py:11 states in its own words that it REPLACES a
+#     legacy step body which filtered on a confidence tier, and it reads ev_tier via
+#     backtest.ev_chain_constants.assign_ev_tier instead.
+#
+# So both consumers are DISPLAY-AND-REPORT writers and neither feeds selection. The
+# scan is now guarded by a test rather than left as a claim in a comment.
+# ---------------------------------------------------------------------------
+
+EDGE_TIER_DISPLAY_ONLY_CORRECTED: dict[str, object] = {
+    "display_only": True,
+    "non_test_consumers": (
+        "api/cache.py",
+        "scripts/generate_current_week_predictions.py",
+    ),
+    "corrects": (
+        "EDGE_TIER_IS_DISPLAY_ONLY['sole_non_test_consumer'], which named only "
+        "api/cache.py and missed the current-week predictions writer"
+    ),
+    "what_each_writes": (
+        "api/cache.py bands the predictions TABLE that / and /betting render; "
+        "scripts/generate_current_week_predictions.py bands the current-week CSV under "
+        "outputs/predictions/, which the cache never reads"
+    ),
+    "bet_selection_reads_instead": (
+        "backtest.ev_chain_constants.assign_ev_tier (ev_tier, absolute per-bet expected "
+        "value, D31-24); backtest/weekly_bet_list.py:11 records that it REPLACED a legacy "
+        "confidence-tier filter"
+    ),
+    "consequence": (
+        "the band movement changes a printed label on two report surfaces and changes NO "
+        "BET -- confirmed on the wider scan, not weakened by it"
+    ),
+    "guarded_by": (
+        "tests/unit/test_phase33_preregistration.py::"
+        "TestTheLabelMovementIsRecordedAsCountsAndNotOnlyAsShares::"
+        "test_the_recorded_edge_tier_consumers_match_a_live_source_scan"
+    ),
+}
+
+# The per-plan node count, RE-MEASURED after the correction above added two guards.
+# TESTS_ADDED_33_16 is NOT edited -- append-once -- so the corrected total lives
+# here, beside it, with both added nodes named.
+#
+#     tests/unit/test_phase33_preregistration.py   33 -> 35   +2
+#         test_the_recorded_edge_tier_consumers_match_a_live_source_scan
+#         test_no_bet_selection_path_reads_the_edge_band
+#
+TESTS_ADDED_33_16_CORRECTED: int = 55
