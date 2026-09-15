@@ -11153,3 +11153,54 @@ ELO_ARTIFACT_DIGESTS: tuple[tuple[str, str], ...] = (
 # produced, which is an architectural decision and belongs to its own plan rather
 # than to a bracketed one-way data repair.
 ELO_LEGACY_STATE_PATH_MAX_DIVERGENCE: float = 2.0519
+
+
+# ---------------------------------------------------------------------------
+# THIS PLAN'S COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-13 at plan close on 2026-09-14, AFTER the re-derivation,
+# both new modules and the one deviation fix landed. Nothing above this line was
+# edited.
+#
+# APPENDED AT CLOSE, NOT IN TASK 2, for the reason Plans 33-02 through 33-12 each
+# recorded when they did the same: a value written before the last commit could
+# only be made right afterwards by EDITING it, which is the append-once violation
+# the protocol exists to prevent.
+#
+# MEASURED by whole-suite `--collect-only`, which runs no test and takes about
+# five and a half seconds, and counts the protocol's unit: COLLECTED NODES, a
+# parametrised case counting once per generated node.
+#
+#     uv run python -m pytest tests -q --collect-only            5648 collected
+#     ... --ignore both modules this plan created                5615 collected
+#     delta                                                        33
+#
+# INDEPENDENTLY CONFIRMED per module, which is the check that no test was quietly
+# deleted elsewhere to make the number look right:
+#
+#     module                                             base   now   delta
+#     tests/integration/test_elo_burn_in_canonical.py       0    15     +15
+#     tests/unit/test_phase33_elo_anchors.py                0    18     +18
+#     tests/unit/test_audit_trace_leakage_elo.py           11    11      +0
+#                                                                       ---
+#                                                                       +33
+#
+# The two instruments agree exactly. test_audit_trace_leakage_elo contributes
+# ZERO because its stale assertion was RESOLVED IN PLACE rather than removed or
+# doubled: one node renamed, its body inverted to the post-re-derivation truth
+# with the reason for the inversion written into its docstring. That node had
+# required elo_game_snapshots to START at 2018 -- an accurate pin of the defect
+# this plan was authorised to remove.
+#
+# NO WHOLE-SUITE RUN WAS TAKEN. What WAS run, all green, is this plan's own two
+# modules (33 nodes) plus a 16-module affected set: every test module that names
+# an Elo artifact. 29 passed across five Elo integration modules, and 172 passed
+# plus 2 failed across eleven Elo-touching unit modules -- one of those two being
+# the deviation fixed above and the other a PRE-EXISTING stale line pin that
+# predates this plan (DEF-33-13-A in the phase's deferred-items.md, a four-line
+# drift introduced by commit 48d7464 in Phase 33.1). Nothing this plan ran
+# touches a DELIBERATE_TRIPWIRE_NODE_IDS member. See this plan's SUMMARY for what
+# was not run and the residual risk.
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_13: int = 33
