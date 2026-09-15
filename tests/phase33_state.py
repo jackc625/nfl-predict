@@ -11231,3 +11231,162 @@ ELO_LEGACY_STATE_PATH_MAX_DIVERGENCE: float = 2.0519
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_13: int = 33
+
+
+# ---------------------------------------------------------------------------
+# THE PRECIPITATION PARTITION'S NO-GOLD-MOVEMENT PREMISE, MEASURED IN TWO HALVES.
+#
+# APPENDED by Plan 33-14 Task 1 on 2026-09-14, AFTER the partition fix landed
+# (commit 9af4dd9 RED, commit d776452 GREEN). Nothing above this line was edited.
+#
+# WHY A MEASUREMENT AND NOT A CLAIM. D33-35 rules that the precipitation fix
+# lands as source plus a test BEFORE the exemption rung, on the stated premise
+# that it moves no historical gold column -- and then says in as many words that
+# the premise is MEASURED, not assumed: "if the fix moves any gold column, it is
+# promoted to its own rung and the plan says so in those words. An empty-diff
+# rung is not run to prove a null." A rung is a one-way rebuild of a gitignored,
+# unbacked store, so whether one is owed is not a question to settle by
+# reasoning about the code.
+#
+# HALF ONE, THE VALUE HALF. The FULL builder
+# (`WeatherFeaturesCalculator.build_weather_features`) was driven READ-ONLY over
+# the whole historical corpus under the FIXED code, and its twelve
+# `features.weather.PRECIPITATION_FEATURE_COLUMNS` were compared against the same
+# twelve columns of the committed `data/silver/weather_features.parquet`, joined
+# on `game_id`. NaN-to-NaN counts as equal; anything else counts as moved.
+#
+# The comparison was run TWICE, which is what makes it isolate this change rather
+# than measure a generation gap: once on the PRE-fix tree and once on the
+# POST-fix tree. Both report 0 moved rows over 6,499 compared. The pre-fix run is
+# the control -- it establishes that the committed artifact and the builder are in
+# the same generation, so a post-fix zero means "this change moved nothing" rather
+# than "the artifact was stale in a way that swamps the signal".
+#
+# WHY IT IS ZERO, and the reason is NOT the one the plan predicted. The plan
+# expected zero because "the archive rows carry no forecast probability". That is
+# not what the table says. MEASURED on `data/silver/weather.parquet`: 1,652 of
+# 6,499 rows DO carry a `precip_prob`, every one of them the literal 0.0 -- and
+# they are EXACTLY the 1,652 indoor games. The cross-tabulation is complete and
+# has no off-diagonal cell: is_outdoor False with the probability present, 1,652;
+# is_outdoor True with it absent, 4,847; the other two cells empty. Indoor games
+# take `_indoor_precipitation_features` and never reach `_precipitation_bands` at
+# all, and all 4,847 OUTDOOR games take the mm-only branch this change leaves
+# byte-unchanged. So the fixed forecast branch is reached by ZERO rows of the
+# historical corpus -- a stronger statement than the plan's, and one that holds
+# whoever rebuilds silver.
+#
+# HALF TWO, THE STRUCTURAL HALF, AND A CORRECTION TO THE PLAN'S OWN CHECK.
+# `scripts/build_features.py` obtains weather features by loading the silver table
+# at `:483` (`load_dataframe("weather_features", "silver", "parquet")`). The plan
+# asked to assert that it "constructs no WeatherFeaturesCalculator", and that
+# assertion is FALSE AS WRITTEN: it constructs one at `:195`, as
+# `self.weather_calc`. Measured by AST, that attribute is a DEAD one -- line 195
+# is the ONLY line in the module carrying it, there are zero invocations of any
+# method on it, and zero calls to `build_weather_features`,
+# `calculate_precipitation_features` or `_precipitation_bands` anywhere in the
+# file. Construction is not reachability, and the plan's check confused the two.
+# The claim that actually matters -- no change inside `features/weather.py`'s band
+# helpers can reach gold through the gold build -- HOLDS, and holds on the
+# stronger evidence.
+#
+# A SECOND CORRECTION, recorded because it is only cheap to fix while somebody is
+# looking. The plan's read_first calls `scripts/build_weather.py` "the ONLY writer
+# of data/silver/weather_features.parquet, at :198". There are TWO writers: that
+# one, and `pipeline/steps.py:532` (`step_build_weather_features`), which builds
+# through the same calculator and saves to the same silver table. Neither is on
+# this plan's rebuild command path (`python -m scripts.build_features
+# --all-seasons`), so the premise is unaffected -- but "only writer" was wrong,
+# and a later plan reasoning from it would reason from a false inventory.
+#
+# THE VERDICT. Zero rows moved on the value half; unreachable on the structural
+# half. The premise HOLDS and the precipitation fix is NOT promoted to its own
+# rung. The ladder Task 2 puts to the owner is therefore TWO rungs, not three.
+# ---------------------------------------------------------------------------
+
+PRECIP_PARTITION_PREMISE: dict[str, object] = {
+    "measured_at": "2026-09-14",
+    "measured_by": "Plan 33-14 Task 1",
+    "instrument": (
+        "WeatherFeaturesCalculator.build_weather_features driven READ-ONLY over "
+        "data/silver/games.parquet restricted to the 6,499 game_ids present in "
+        "data/silver/weather.parquet, compared on game_id against the twelve "
+        "PRECIPITATION_FEATURE_COLUMNS of the committed "
+        "data/silver/weather_features.parquet. NaN-to-NaN counts as equal."
+    ),
+    # The scalar the plan's verify command reads: the total across all twelve
+    # columns.
+    "rows_compared": 6499,
+    "rows_moved": 0,
+    # The per-column breakdown the plan's acceptance criterion asks for. Both are
+    # recorded rather than one: the scalar is what a gate can compare, the
+    # mapping is what a reader can diagnose.
+    "rows_moved_by_column": {
+        "is_dry": 0,
+        "is_rain": 0,
+        "is_snow": 0,
+        "passing_efficiency": 0,
+        "precip_heavy": 0,
+        "precip_impact_score": 0,
+        "precip_light": 0,
+        "precip_mm": 0,
+        "precip_moderate": 0,
+        "precip_none": 0,
+        "precip_prob": 0,
+        "turnover_multiplier": 0,
+    },
+    "max_abs_delta_over_all_columns": 0.0,
+    # The same probe on the PRE-fix tree, as the generation control.
+    "rows_moved_prefix_control": 0,
+    "value_half_verdict": (
+        "ZERO of 6,499 rows moved in any of the twelve precipitation columns, "
+        "maximum absolute delta 0.0. The pre-fix control reports the same zero, "
+        "so the committed artifact and the builder are in one generation and the "
+        "post-fix zero is a statement about THIS change."
+    ),
+    "why_zero": (
+        "The fixed branch is reached by zero rows of the historical corpus. "
+        "MEASURED on data/silver/weather.parquet: precip_prob is present on "
+        "1,652 of 6,499 rows, every value the literal 0.0, and those 1,652 rows "
+        "are EXACTLY the indoor games -- the crosstab against is_outdoor has no "
+        "off-diagonal cell. Indoor games take _indoor_precipitation_features and "
+        "never reach _precipitation_bands; all 4,847 outdoor games carry no "
+        "probability and take the mm-only branch, which this change leaves "
+        "byte-unchanged in source. weather_source is 'archive' on all 6,499 rows."
+    ),
+    "structural_half_verdict": (
+        "scripts/build_features.py loads silver weather_features at :483 and "
+        "never invokes the weather calculator. It CONSTRUCTS one at :195 as "
+        "self.weather_calc -- so the plan's 'constructs no "
+        "WeatherFeaturesCalculator' check is false as written -- but AST "
+        "measurement finds :195 is the only line carrying that attribute, with "
+        "zero method invocations on it and zero calls to build_weather_features, "
+        "calculate_precipitation_features or _precipitation_bands anywhere in "
+        "the file. A dead attribute. No change inside features/weather.py's band "
+        "helpers can reach gold through the gold build."
+    ),
+    "silver_weather_features_writers": (
+        "scripts/build_weather.py:198",
+        "pipeline/steps.py:532",
+    ),
+    "corrections_to_the_plan": (
+        "The plan's structural verify command tests CONSTRUCTION and reads it as "
+        "reachability. build_features.py constructs an unused calculator, so the "
+        "command's fails_when would have failed a TRUE premise. Re-measured as "
+        "invocation rather than construction.",
+        "The plan's read_first calls scripts/build_weather.py the ONLY writer of "
+        "data/silver/weather_features.parquet. There are two: it and "
+        "pipeline/steps.py:532. Neither is on this plan's rebuild command path.",
+        "The plan expected zero moved rows because 'the archive rows carry no "
+        "forecast probability'. 1,652 rows DO carry one (a literal 0.0), but "
+        "they are exactly the indoor games, which never reach the band helper.",
+    ),
+    "verdict": "PREMISE HOLDS -- the fix moves no gold column",
+}
+
+# False ONLY when zero rows moved, and zero rows moved. The ladder Task 2 puts to
+# the owner is TWO rungs -- the normalization-exemption widening, then the Elo
+# re-derivation -- not three.
+#
+# D33-35 forbids the alternative by name: an empty-diff rung is not run to prove
+# a null.
+PRECIP_PARTITION_PROMOTED_TO_ITS_OWN_RUNG: bool = False
