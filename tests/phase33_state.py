@@ -12366,3 +12366,85 @@ PLAN_33_14_OWNER_RULINGS: tuple[dict[str, str], ...] = (
         ),
     },
 )
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-15 Task 1 -- THE GOLD GENERATION THE RE-FIT CONSUMES, AND THE WP
+# TRAINED-SCALED / SERVED-RAW DEFECT, RECORDED IN ONE PLACE.
+#
+# APPENDED by Plan 33-15 Task 1 on 2026-09-15. Nothing above this line was edited.
+#
+# WHY THE GENERATION IS A RECORDED CONSTANT RATHER THAN AN IMPORT. The ONE producer of a
+# gold generation key is `tests.gold_generation.gold_generation_key`, and it lives in the
+# tests package. `models/train.py` must not import from the tests package to reach it --
+# that is the wrong direction and would make a production module depend on the test tree.
+# So the operator MEASURES the key once, records it here, and passes it to
+# `models.train --gold-generation`. The test beside it asserts this constant equals BOTH
+# `GOLD_GENERATION_AFTER_ELO_REBUILD` (the ladder's own output) and the live
+# `gold_generation_key()`, so the marker every candidate carries is provably the
+# generation Plan 33-14 produced rather than a string somebody typed.
+# ---------------------------------------------------------------------------
+
+# MEASURED 2026-09-15 by Plan 33-15 Task 1 with
+# `uv run python -c "import tests.gold_generation as g; print(g.gold_generation_key())"`,
+# and equal to GOLD_GENERATION_AFTER_ELO_REBUILD, which Plan 33-14 appended after its
+# exemption rung rebuilt gold. Nothing rebuilt gold between the two measurements.
+GOLD_GENERATION_AT_REFIT: str = (
+    "2a6ad6de26efd1de6a0f4cedfb3108e5c590a29e94d0d8cbb76357039e912712"
+)
+
+# THE DEFECT, ITS AGE, AND HOW IT CLOSES -- in ONE place, so a readout can quote the
+# record rather than re-argue it.
+#
+# `.planning/` is gitignored in this repository, so `33-15-SUMMARY.md` does not survive a
+# clone. Without this slot the only committed statement of a LIVE production defect would
+# be a fail-closed assertion carrying an artifact id, with no prose saying what the id
+# means.
+#
+# THE DEFECT DOES NOT CLOSE BY RETAINING THE INCUMBENT. Retention is exactly what keeps it
+# in production. It closes by SHIPPING a replacement under the D33.1-R1 contract, at which
+# point the transform and the estimator travel as one inseparable Pipeline and cannot
+# drift apart -- and that is Task 4's act, conditional on the owner's Task-3 ruling, not
+# this task's.
+WP_PREPROCESSING_DEFECT_CLOSURE: dict[str, object] = {
+    "artifact": "wp_20260824_113325",
+    "defect": (
+        "The deployed WP estimator was fitted on SCALED features and is served on "
+        "UNSCALED ones. predict_games passes RAW selected columns straight into "
+        "predict_proba, and the artifact directory carries no preprocessing.pkl, so "
+        "there is nothing on disk from which the serving path could recover the fitted "
+        "scaler. It produces a plausible WRONG answer rather than an error: nothing "
+        "raises, nothing is logged, and the served probability is simply not the one the "
+        "model was fitted to give."
+    ),
+    "predates_phase_331": True,
+    "found_by": (
+        "the orchestrator reading live source during the cross-AI review of the Phase "
+        "33.1 plans. No reviewer lane raised it; the one lane that named the mechanism "
+        "framed it only as a risk for a future final fit, not as a fact about the "
+        "deployed artifact."
+    ),
+    "why_phase_331_did_not_fix_it": (
+        "Serving the existing artifact scaled would change live predictions with NO "
+        "re-fit, which breaks that phase's artifacts/latest.json-byte-identical fence "
+        "and its honesty rule alike: a data-correction phase that silently moved "
+        "production numbers would be committing the defect class it exists to detect."
+    ),
+    "closes_by": (
+        "SHIPPING a replacement WP artifact under the D33.1-R1 persisted-preprocessing "
+        "contract -- never by changing how the existing artifact is served. Retaining "
+        "the incumbent does not close it; retention is what keeps it in production."
+    ),
+    "closed_at_task_1": False,
+    "closed_by": (
+        "Plan 33-15 Task 4, conditional on the owner's Task-3 ruling. Task 1 only wires "
+        "the mechanism and proves it on a sandbox artifact."
+    ),
+    "disclosure_is_updated_never_deleted": (
+        "The fail-closed test carrying wp_20260824_113325 in an assertion is UPDATED "
+        "with a recorded reason when the replacement ships. Deleting it would erase the "
+        "disclosure instead of closing it, which that test's own docstring forbids by "
+        "name."
+    ),
+    "recorded": "2026-09-15",
+}
