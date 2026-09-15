@@ -706,11 +706,38 @@ ELO_GOLD_JOIN_SUBSET: tuple[str, ...] = (
 #
 # MEASURED 2026-09-12 against the four files as Plan 33-04 Task 2 leaves them. The
 # guard call is inserted BELOW each load, so these are also the pre-edit positions.
+#
+# RE-MEASURED 2026-09-14 (DEF-33-13-A, owner-authorised). THIS IS AN IN-PLACE EDIT
+# TO AN ENTRY PLAN 33-04 RECORDED, not an append -- named as such rather than
+# disguised, because the append-once protocol this module otherwise follows does
+# not have a re-measurement arm and pretending otherwise would be the worse lie.
+#
+# WHY THE EDIT IS THE RIGHT CALL HERE. These four integers are PROVENANCE (see the
+# ruling three paragraphs up), not a frozen measurement that later work is judged
+# against. An append would leave two contradictory tuples with no rule saying which
+# one the drift test reads. Nothing downstream consumes the OLD positions.
+#
+# BOTH DRIFTED POSITIONS WERE CORRECT WHEN RECORDED -- verified against
+# `git show ae92f62:models/train_wp.py` and `:models/train.py`, where lines 1144
+# and 632 each held their gold load. So this is drift from edits ABOVE the load,
+# exactly the brittleness the ruling above predicted; it is NOT a transcription
+# error, and the loose "reads like a gold load" assertion is doing its job.
+#
+#   models.train_wp  1144 -> 1148  (+4, commit 48d7464, "fix(33.1): WR-14 convert
+#                                   the surviving season literals")
+#   models.train      632 ->  646  (+14, commits 3a21be8 "feat(33-04)" and
+#                                   f08a517 "feat(33.1-09)")
+#
+# models.train_ats:1163 and models.train_ou:1423 were re-measured at the same time
+# and had NOT moved. The drift test asserts on the FIRST failing entry, so
+# models.train's staleness was hidden behind models.train_wp's; fixing only the
+# one DEF-33-13-A named ("THE FIX IS ONE NUMBER") would have traded one red for
+# another. Both are corrected here.
 TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
-    ("models.train_wp", "main", 1144),
+    ("models.train_wp", "main", 1148),
     ("models.train_ats", "main", 1163),
     ("models.train_ou", "main", 1423),
-    ("models.train", "main", 632),
+    ("models.train", "main", 646),
 )
 
 
