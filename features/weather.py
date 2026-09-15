@@ -1250,6 +1250,11 @@ class WeatherFeaturesCalculator:
         Both branches span the full 0.0 / 0.3 / 0.6 / 1.0 range, because the
         rainfall alone already separates all four levels; the probability only
         ever widened the LIGHT and MODERATE bands, never added a level.
+
+        THE SCORE IS THE LEVEL OF THE BAND THAT FIRED, on both branches. It is
+        the same quantity ``_precipitation_bands`` one-hots, read off
+        :data:`PRECIPITATION_IMPACT_BY_BAND` instead of re-derived, so the two
+        cannot disagree.
         """
         if precip_prob is None:
             if precip_mm <= 0.5:
@@ -1259,13 +1264,34 @@ class WeatherFeaturesCalculator:
             if precip_mm <= self.heavy_precip_threshold:
                 return 0.6
             return 1.0
-        if precip_prob <= 0.2 and precip_mm <= 0.5:
-            return 0.0
-        if precip_prob <= 0.5 or precip_mm <= 2.0:
-            return 0.3
-        if precip_prob <= 0.8 or precip_mm <= self.heavy_precip_threshold:
-            return 0.6
-        return 1.0
+        # THE FORECAST BRANCH FOLLOWS THE BAND RULE (Plan 33-14 closing fix,
+        # .planning/WINDOWS.md row 43, owner-ruled 2026-09-14). Same maximum of
+        # the two band indices `_precipitation_bands` takes, indexed into the
+        # level mapping rather than re-tested against the raw readings.
+        #
+        # WHAT IT USED TO DO. `prob <= 0.5 OR mm <= 2.0` returned 0.3, and
+        # `prob <= 0.8 OR mm <= heavy` returned 0.6 -- each returning early as
+        # soon as EITHER reading was low. That is a MINIMUM over the two
+        # readings, and the band rule directly above is a MAXIMUM, so ten of the
+        # sixteen grid points scored an intensity the same call's one-hot
+        # contradicted. The worst: 9.0 mm of rain, one-hot `precip_heavy`,
+        # scored 0.3 on a 0.1 probability -- a downpour given a drizzle's score
+        # because the forecast was not confident. The dominant direction was
+        # heavy RAINFALL understated by a low PROBABILITY, which is the
+        # direction that matters: the rainfall is the reading that is actually
+        # measured.
+        #
+        # THE MM-ONLY BRANCH ABOVE IS DELIBERATELY BYTE-UNCHANGED. It is the
+        # branch Phase 33.1 repaired and pinned, it is already the maximum over
+        # a single index, and `test_the_mm_only_impact_branch_is_unchanged` is
+        # what stops this fix reaching across into it -- the failure mode a
+        # targeted repair has.
+        return PRECIPITATION_IMPACT_BY_BAND[
+            max(
+                self._rainfall_band_index(precip_mm),
+                self._probability_band_index(precip_prob),
+            )
+        ]
 
     def _turnover_multiplier(
         self, precip_mm: float, precip_prob: float | None
