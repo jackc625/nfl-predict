@@ -141,6 +141,22 @@ _COPY_READ_FAILURES = (
 # COUNT is exact; the id list is a bounded sample for diagnosis.
 _CONSISTENCY_SAMPLE_LIMIT = 20
 
+# Tables produced by a pipeline step registered AFTER ``data_qa``, mapped to that step's name.
+#
+# WHY A TABLE-LEVEL CHECK ON THESE IS NOT APPLICABLE HERE (Plan 33-18, owner ruling R1 of
+# 2026-09-15). ``step_data_qa`` is the fourth DATA step; ``ingest_odds`` is the first
+# PREDICTIONS step. So at the instant this gate runs, the odds are ALWAYS last week's, and a
+# freshness or completeness demand on them refuses every correct Friday. Plan 33-18's live
+# acceptance run, attempt 1, counted exactly that as one of its five failures.
+#
+# NOT COUNTED IS NOT UNREPORTED. The freshness check still measures and records the age; it
+# only stops counting it toward the gate. The step name is pinned against the registry by
+# ``tests/unit/test_data_qa_live_friday_checks.py``, so if the registry ever moves the
+# producer ahead of ``data_qa``, that test fails and names this exemption for removal.
+_TABLES_PRODUCED_AFTER_DATA_QA: dict[str, str] = {
+    "odds_snapshot": "ingest_odds",
+}
+
 # Last season for which gold is considered fully ingested. Seasons beyond this are
 # treated as expected, documented trailing-coverage gaps (D-05), NOT failures.
 #
@@ -183,11 +199,24 @@ class DataQualityMonitor:
                 "business_rules": "odds",
                 "required_columns": ["game_id", "snapshot_ts", "sportsbook"],
             },
-            "weather_forecast": {
+            # silver ``weather`` -- the table ``scripts/ingest_weather.py`` actually writes.
+            #
+            # IT WAS ``weather_forecast`` UNTIL PLAN 33-18 (owner ruling R1, 2026-09-15): a
+            # 14-row legacy DuckDB-only table last written 2025-10-07, which the live
+            # ingest never touches. So the gate watched nothing the run does, and could not
+            # see that attempt 1's weather ingest logged "No games found", wrote NOTHING and
+            # reported success.
+            #
+            # ``freshness_column`` is declared because this table has no season/week and
+            # carries ``game_time`` -- a KICKOFF -- among its time-like columns. Maxing over
+            # all of them reads an upcoming kickoff as the moment the ingest wrote, so stale
+            # weather would read fresh forever. ``created_at`` is the write time.
+            "weather": {
                 "layer": "silver",
                 "validator": None,  # Use general validation
                 "business_rules": None,
                 "required_columns": ["game_id", "forecast_time", "is_outdoor"],
+                "freshness_column": "created_at",
             },
             "venues": {
                 "layer": "silver",
@@ -200,7 +229,27 @@ class DataQualityMonitor:
     def check_data_freshness(
         self, table_name: str, max_age_hours: int = 24
     ) -> dict[str, Any]:
-        """Check if data is fresh (recently updated)."""
+        """Check if data is fresh (recently updated).
+
+        A table produced by a step registered AFTER ``data_qa`` is still MEASURED, and its
+        result is marked ``not_applicable`` with the producing step named, so the age is on
+        the record without refusing a correct run. See ``_TABLES_PRODUCED_AFTER_DATA_QA``.
+        """
+        result = self._measure_data_freshness(table_name, max_age_hours)
+        producer = _TABLES_PRODUCED_AFTER_DATA_QA.get(table_name)
+        if producer is not None:
+            result["measured_status"] = result["status"]
+            result["status"] = "not_applicable"
+            result["not_applicable_reason"] = (
+                f"{table_name} is produced by {producer}, which is registered AFTER "
+                "data_qa, so at this boundary it is always the previous run's data"
+            )
+        return result
+
+    def _measure_data_freshness(
+        self, table_name: str, max_age_hours: int = 24
+    ) -> dict[str, Any]:
+        """Measure a table's age from its timestamp columns."""
         logger.info(
             "Checking data freshness", table=table_name, max_age_hours=max_age_hours
         )
@@ -221,15 +270,21 @@ class DataQualityMonitor:
                 result["status"] = "empty"
                 return result
 
-            # Look for timestamp columns
-            timestamp_cols = [
-                col
-                for col in df.columns
-                if any(
-                    ts in col.lower()
-                    for ts in ["timestamp", "time", "date", "created", "updated"]
-                )
-            ]
+            # Look for timestamp columns. A table that DECLARES its write-time column is
+            # judged on that column alone: a kickoff time is time-like by name and is in
+            # the future for every upcoming game, so it must not stand in for a write.
+            declared = self.monitored_tables.get(table_name, {}).get("freshness_column")
+            if declared is not None and declared in df.columns:
+                timestamp_cols = [declared]
+            else:
+                timestamp_cols = [
+                    col
+                    for col in df.columns
+                    if any(
+                        ts in col.lower()
+                        for ts in ["timestamp", "time", "date", "created", "updated"]
+                    )
+                ]
 
             if not timestamp_cols:
                 result["status"] = "no_timestamp"
@@ -299,6 +354,15 @@ class DataQualityMonitor:
             "status": "unknown",
         }
 
+        producer = _TABLES_PRODUCED_AFTER_DATA_QA.get(table_name)
+        if producer is not None:
+            result["status"] = "not_applicable"
+            result["not_applicable_reason"] = (
+                f"{table_name} is produced by {producer}, which is registered AFTER "
+                "data_qa, so its rows for this week cannot exist yet at this boundary"
+            )
+            return result
+
         try:
             df = load_dataframe(table_name, layer="silver")
 
@@ -306,9 +370,14 @@ class DataQualityMonitor:
                 result["status"] = "empty"
                 return result
 
-            # Filter for season/week if applicable
+            # Filter for season/week if applicable. A table keyed by game_id with NO
+            # season/week (silver weather) is filtered to the week's scheduled game ids.
+            # Before Plan 33-18 it fell through to the whole table, so a week the ingest
+            # wrote NOTHING for was "complete" on the strength of every other week's rows.
             if "season" in df.columns and "week" in df.columns:
                 filtered_df = df[(df["season"] == season) & (df["week"] == week)]
+            elif "game_id" in df.columns:
+                filtered_df = df[df["game_id"].isin(self._week_game_ids(season, week))]
             else:
                 filtered_df = df
 
@@ -324,8 +393,9 @@ class DataQualityMonitor:
                 expected_count = (
                     games_count * 3 if games_count else None
                 )  # Assume 3 sportsbooks avg
-            elif table_name == "weather_forecast":
-                # Expect weather for each outdoor game
+            elif table_name == "weather":
+                # The live forecast ingest covers EVERY scheduled game in the week (it
+                # refuses an incomplete payload), so the week's game count is the target.
                 games_count = self._get_games_count(season, week)
                 expected_count = games_count if games_count else None
             else:
@@ -353,6 +423,14 @@ class DataQualityMonitor:
             )
 
         return result
+
+    def _week_game_ids(self, season: int, week: int) -> set[str]:
+        """The game ids scheduled for ``(season, week)``, read the way the pipeline reads."""
+        games_df = load_dataframe("games", layer="silver")
+        week_games = games_df[
+            (games_df["season"] == season) & (games_df["week"] == week)
+        ]
+        return set(week_games["game_id"])
 
     def _get_games_count(self, season: int, week: int) -> int | None:
         """Get count of games for season/week."""
@@ -1029,7 +1107,11 @@ class DataQualityMonitor:
                         status = check_result.get("status", "unknown")
 
                         # Skip checks that are not applicable (e.g., no timestamps, unknown expected counts)
+                        # "not_applicable" joins the list for tables produced by a later
+                        # registered step (_TABLES_PRODUCED_AFTER_DATA_QA); the section
+                        # checks below already skip it.
                         not_applicable_statuses = [
+                            "not_applicable",
                             "no_timestamp",
                             "invalid_timestamps",
                             "unknown_expected",
@@ -1250,7 +1332,7 @@ def main():
     parser.add_argument(
         "--table",
         type=str,
-        choices=["games", "odds_snapshot", "weather_forecast", "venues"],
+        choices=["games", "odds_snapshot", "weather", "venues"],
         help="Check specific table only",
     )
     parser.add_argument(

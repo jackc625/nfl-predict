@@ -6,6 +6,11 @@ from typing import Any
 import pandas as pd
 from pydantic import BaseModel, ValidationError, validator
 
+# The zone the NFL season calendar is published in. Season bounds are calendar DATES, so a
+# tz-aware kickoff is compared against those dates in this zone rather than against naive
+# timestamps, which pandas refuses to compare with an aware one.
+_NFL_CALENDAR_TZ = "America/New_York"
+
 
 class GameData(BaseModel):
     """Game data validation schema."""
@@ -457,6 +462,15 @@ def validate_temporal_consistency(
         # NFL season runs from September of season to February of (season+1)
         season_start = pd.Timestamp(f"{season}-09-01")
         season_end = pd.Timestamp(f"{season + 1}-03-01")
+        # COMPARE LIKE WITH LIKE (Plan 33-18, owner ruling R1 of 2026-09-15). The bounds are
+        # calendar dates, and the stored ``kickoff_et`` is tz-AWARE, so comparing the two
+        # raised "Cannot compare tz-naive and tz-aware timestamps" and the games temporal
+        # check never ran at all. An aware kickoff is judged against the SAME calendar dates
+        # in Eastern time -- the zone the NFL calendar is published in. A naive kickoff keeps
+        # its naive bounds, exactly as before. The data is not touched; only the comparison.
+        if game_date.tzinfo is not None:
+            season_start = season_start.tz_localize(_NFL_CALENDAR_TZ)
+            season_end = season_end.tz_localize(_NFL_CALENDAR_TZ)
 
         if not (season_start <= game_date <= season_end):
             violations.append(
