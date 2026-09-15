@@ -12263,3 +12263,106 @@ PLAN_33_14_SUPERSESSIONS: tuple[dict[str, str], ...] = (
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_14: int = 59
+
+
+# ---------------------------------------------------------------------------
+# THE THREE OWNER RULINGS THIS PLAN WAS DECIDED BY.
+#
+# APPENDED by Plan 33-14 Task 6 at plan close on 2026-09-14, after the owner
+# ratified the ladder. Nothing above this line was edited.
+#
+# WHY IN COMMITTED SOURCE AT ALL. `.planning/` is gitignored in this repository,
+# so `33-14-SUMMARY.md` does not survive a clone. Without this slot the three
+# rulings that decided a ONE-WAY, unrecoverable rebuild of the production gold
+# store would exist only in commit messages and an untracked file. This is the
+# same reason `config/phase33_gold_rebuild_diff.toml` is committed, applied to
+# the decisions rather than to the measurements.
+# ---------------------------------------------------------------------------
+
+PLAN_33_14_OWNER_RULINGS: tuple[dict[str, str], ...] = (
+    {
+        "task": "2 (checkpoint:decision, gate=blocking-human)",
+        "date": "2026-09-14",
+        "ruling": "two-rung-ladder",
+        "shown": (
+            "Task 1's measured precipitation premise "
+            "(PRECIP_PARTITION_PROMOTED_TO_ITS_OWN_RUNG False, 6,499 rows "
+            "compared, 0 moved, max delta 0.0, pre-fix control also zero); the "
+            "stronger-than-predicted reason for that zero (the 1,652 rows "
+            "carrying precip_prob are exactly the 1,652 indoor games, which take "
+            "the dome branch, while all 4,847 outdoor games take the untouched "
+            "mm-only branch); the dead-attribute finding; both per-rung expected "
+            "change sets; the re-anchored widths (195, 196, 195); and the "
+            "tripwire-2 statement."
+        ),
+        "rejected": (
+            "three-rung-ladder, as the one option Task 1's evidence positively "
+            "rules out; merge-into-one-rung, with the Phase-33.1 "
+            "unattributable-45-columns precedent stated; exemption-only, because "
+            "it would leave Plan 33-15 re-fitting on 4,288 rows of fabricated "
+            "0.0 Elo."
+        ),
+        "also_accepted": (
+            "that rung 2's declared slice set is a PREDICTION and not a "
+            "guarantee, and that what was authorised is the two-rung ATTRIBUTION "
+            "plus the obligation to EXPLAIN every out-of-set slice."
+        ),
+    },
+    {
+        "task": "4 (checkpoint:decision, gate=blocking-human)",
+        "date": "2026-09-14",
+        "ruling": "skip-rung-2-as-already-landed",
+        "shown": (
+            "the exemption rung's attributed set (25 of the pinned 26, with "
+            "weather_coverage the declared-but-unchanged member because Phase "
+            "33.1 had already exempted it); the 18 explained out-of-family "
+            "columns; the widths at every point; the fabricated-zero fall from "
+            "4,288 to 16 rows and that the 16 are all 2002 week 1; and both "
+            "findings, including the five unregistered reds at WINDOWS row 44."
+        ),
+        "rejected": (
+            "run-rung-2-anyway, on the evidence, as an empty-diff rung run to "
+            "prove a null -- forbidden by D33-35 by name and read by the "
+            "attribution machinery as proof the rebuild did not do what it "
+            "claimed. rebuild-baseline-and-rerun-ladder was NOT AVAILABLE: "
+            "rung-0 gold is gone and was one-way."
+        ),
+        "also_accepted": (
+            "that what is lost is the ladder's MECHANISM and not its PURPOSE, "
+            "because the two causes' column families are disjoint; and that the "
+            "early landing is a CROSS-PLAN ORDERING finding rather than a rung "
+            "that misbehaved, since Wave 13 re-derived Elo into silver and rung "
+            "1 was simply the first gold build to consume it."
+        ),
+    },
+    {
+        "task": "6 (checkpoint:human-verify, gate=blocking-human)",
+        "date": "2026-09-14",
+        "ruling": "approved",
+        "shown": (
+            "the exemption rung's measured effect (is_snow 274 distinct values "
+            "-> 2, wind_moderate 5,667 -> 2, home_injury_coverage 45 -> 2); the "
+            "Elo re-derivation reaching gold with fabricated-zero rows falling "
+            "4,288 -> 16, all 16 at the 2002 week-1 burn-in boundary; that every "
+            "moved column traces to exactly one named cause; the widths at every "
+            "point and the retained superseded reference; and the tripwire-2 "
+            "SAME statement with its nine-day-old-inputs proof."
+        ),
+        "rejected": (
+            "holding until WINDOWS row 44's five unregistered reds are closed, "
+            "and holding to rule on WINDOWS row 43 (_precipitation_impact) "
+            "before ratifying the gold it will be fitted on. BOTH were offered "
+            "and BOTH were declined in favour of approval; both remain OPEN and "
+            "are carried forward, and neither is closed by this ratification."
+        ),
+        "also_accepted": (
+            "TWO REFUSALS, put to the owner as the correct calls and RATIFIED as "
+            "such rather than excused as omissions. (1) Tripwire 2 was not "
+            "allowed to go green: a rebuild that satisfied it would CLEAR an "
+            "owner-accepted disclosure rather than fix a defect. (2) "
+            "GOLD_WIDTHS_BEFORE_ELO_REBUILD was not edited to agree with today's "
+            "gold: that would DESTROY a historical record to make an assertion "
+            "pass. The reference the assertion reads was re-pointed instead."
+        ),
+    },
+)
