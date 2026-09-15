@@ -584,33 +584,93 @@ class OddsDataIngester:
         return game_id
 
     def _extract_market_odds(
-        self, bookmaker: dict[str, Any], market_key: str
+        self,
+        bookmaker: dict[str, Any],
+        market_key: str,
+        *,
+        home_team: str,
+        away_team: str,
     ) -> dict[str, Any]:
-        """Extract odds for a specific market from bookmaker data."""
-        market_data = {}
+        """Extract odds for a specific market, sided by TEAM NAME against the event.
+
+        SIDES COME FROM THE EVENT'S ``home_team`` / ``away_team``, NEVER FROM LIST
+        POSITION OR FROM WHICH SIDE IS FAVOURED (Plan 33-18, owner-authorised
+        2026-09-15). Two defects lived here:
+
+        * h2h prices were written under team-named keys (``ml_atl``) that
+          ``OddsSchema`` drops, so ``ml_home`` / ``ml_away`` were None on every live
+          row and WP could never be priced from a pull;
+        * the favourite's point was stored as ``spread`` and its price as
+          ``spread_ju_home`` whichever side was home, so the stored spread was always
+          negative.
+
+        THE STORED CONVENTION IS POSITIVE = HOME FAVOURED, i.e. ``spread`` is the
+        NEGATED home line (Atlanta -3.5 at home stores +3.5). Measured on
+        ``silver/odds_snapshot.parquet``: 2,130 of 2,140 rows follow it. This makes new
+        live rows match that history; whether the ATS code expects it is DEF-31-01 and
+        is not decided here.
+
+        The partition fix in ``ingest_odds`` made these values REACHABLE, which is why
+        this could not wait: before it a live pull landed where nothing read it, after
+        it the same pull would have written blank moneylines and wrong-sign spreads into
+        the file training reads.
+
+        An outcome whose name matches NEITHER side is skipped with a warning rather than
+        guessed onto one, because a mis-sided price is worse than a missing one.
+        """
+        market_data: dict[str, Any] = {}
+        home_abbrev = self._normalize_team_name(home_team)
+        away_abbrev = self._normalize_team_name(away_team)
+        if home_abbrev == away_abbrev:
+            logger.warning(
+                "Cannot side odds outcomes: home and away normalize to the same team",
+                home_team=home_team,
+                away_team=away_team,
+            )
+            return market_data
+
+        def side_of(outcome_name: str) -> str | None:
+            abbrev = self._normalize_team_name(outcome_name)
+            if abbrev == home_abbrev:
+                return "home"
+            if abbrev == away_abbrev:
+                return "away"
+            logger.warning(
+                "Odds outcome matches neither side; skipped",
+                outcome=outcome_name,
+                home_team=home_team,
+                away_team=away_team,
+            )
+            return None
 
         for market in bookmaker.get("markets", []):
             if market["key"] == market_key:
                 outcomes = market.get("outcomes", [])
 
                 if market_key == "h2h":
-                    # Moneyline odds
+                    # Moneyline odds, one per side.
                     for outcome in outcomes:
-                        team = self._normalize_team_name(outcome["name"])
-                        market_data[f"ml_{team.lower()}"] = outcome.get("price")
+                        side = side_of(outcome["name"])
+                        if side is not None:
+                            market_data[f"ml_{side}"] = outcome.get("price")
 
                 elif market_key == "spreads":
-                    # Spread odds
+                    # Spread juice per side; the line in the HOME-FAVOURED-POSITIVE
+                    # convention. The away point is the negated home point, so the
+                    # stored value is -(home point) == (away point). The home outcome
+                    # wins when both are present.
                     for outcome in outcomes:
-                        team = self._normalize_team_name(outcome["name"])
-                        point = outcome.get("point", 0)
-                        price = outcome.get("price", -110)
-
-                        if point < 0:  # This team is favored
-                            market_data["spread"] = point
-                            market_data["spread_ju_home"] = price
-                        else:  # This team is underdog
-                            market_data["spread_ju_away"] = price
+                        side = side_of(outcome["name"])
+                        if side is None:
+                            continue
+                        market_data[f"spread_ju_{side}"] = outcome.get("price", -110)
+                        point = outcome.get("point")
+                        if point is None:
+                            continue
+                        if side == "home":
+                            market_data["spread"] = -float(point)
+                        elif "spread" not in market_data:
+                            market_data["spread"] = float(point)
 
                 elif market_key == "totals":
                     # Over/Under odds
@@ -648,9 +708,13 @@ class OddsDataIngester:
                 last_update = snapshot_time
 
             # Extract all market types
-            h2h_odds = self._extract_market_odds(bookmaker, "h2h")
-            spread_odds = self._extract_market_odds(bookmaker, "spreads")
-            total_odds = self._extract_market_odds(bookmaker, "totals")
+            sides = {
+                "home_team": game_data["home_team"],
+                "away_team": game_data["away_team"],
+            }
+            h2h_odds = self._extract_market_odds(bookmaker, "h2h", **sides)
+            spread_odds = self._extract_market_odds(bookmaker, "spreads", **sides)
+            total_odds = self._extract_market_odds(bookmaker, "totals", **sides)
 
             # Combine all odds data
             odds_record = {
