@@ -821,11 +821,21 @@ class OddsDataIngester:
             )
 
             # Save to silver layer (processed) - skip DuckDB for now due to timezone issues
+            #
+            # ONE FILE, NEVER PARTITIONED (Plan 33-18, owner-authorised 2026-09-15). This
+            # write used to pass partition_cols=["snapshot_ts"] above 100 rows -- which is
+            # every real week -- routing it to pq.write_to_dataset in the SHARED silver
+            # root. That left silver/odds_snapshot.parquet untouched, so the week's lines
+            # reached none of its readers (models/train.py,
+            # scripts/generate_current_week_predictions.py, api/routes/health.py), and it
+            # rewrote the whole merged history as hash-named files under snapshot_ts=
+            # directories: the G-01 cross-table contamination. Same correction CR-01 /
+            # D-10 made for gold and 25c364f made for the silver builders. The default
+            # append merge is KEPT, so historical rows survive the write.
             save_dataframe(
                 validated_df,
                 "odds_snapshot",
                 layer="silver",
-                partition_cols=["snapshot_ts"] if len(validated_df) > 100 else None,
                 save_to_db=False,  # Skip DuckDB due to timestamp conversion issues
             )
 
