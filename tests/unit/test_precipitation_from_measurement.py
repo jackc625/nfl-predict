@@ -67,7 +67,9 @@ import math
 import pytest
 
 from features.weather import (
+    PRECIPITATION_BAND_COLUMNS,
     PRECIPITATION_FEATURE_COLUMNS,
+    PRECIPITATION_PARTITION_RULE,
     SEVERITY_FEATURE_COLUMNS,
     WeatherFeaturesCalculator,
 )
@@ -91,6 +93,33 @@ ERA5_OUTDOOR_PAYLOAD: dict[str, object] = {
 def _payload(**overrides: object) -> dict[str, object]:
     """A copy of the ERA5 payload with *overrides* applied."""
     return {**ERA5_OUTDOOR_PAYLOAD, **overrides}
+
+
+# One representative value inside each of the four FORECAST-PROBABILITY bands
+# (cut points 0.2, 0.5, 0.8) and each of the four RAINFALL bands (cut points
+# 0.5, 2.0, and the calculator's heavy_precip_threshold of 5.0 mm). Paired with
+# the ordinal index the module's rule assigns them, so the grid below is a
+# statement about BANDS rather than about four arbitrary decimals.
+PROBABILITY_BY_BAND_INDEX: tuple[tuple[float, int], ...] = (
+    (0.1, 0),
+    (0.4, 1),
+    (0.6, 2),
+    (0.9, 3),
+)
+
+RAINFALL_BY_BAND_INDEX: tuple[tuple[float, int], ...] = (
+    (0.2, 0),
+    (1.0, 1),
+    (3.0, 2),
+    (9.0, 3),
+)
+
+# The full sixteen-point cross product, flattened for parametrisation.
+PROBABILITY_BY_RAINFALL_GRID: tuple[tuple[float, int, float, int], ...] = tuple(
+    (probability, probability_index, millimetres, rainfall_index)
+    for probability, probability_index in PROBABILITY_BY_BAND_INDEX
+    for millimetres, rainfall_index in RAINFALL_BY_BAND_INDEX
+)
 
 
 @pytest.fixture
@@ -328,3 +357,211 @@ class TestTheGateNarrowsRatherThanDisappears:
         assert features["precip_impact_score"] == pytest.approx(0.6)
         assert features["turnover_multiplier"] == pytest.approx(1.384)
         assert features["passing_efficiency"] == pytest.approx(0.85)
+
+
+class TestTheForecastBandsAreAPartitionToo:
+    """The LIVE-FORECAST branch is a partition, not an overlapping disjunction.
+
+    KIND: unit, driven through the calculator's public
+    ``calculate_precipitation_features``. No I/O, no ``data/``.
+
+    WHAT THIS CLASS ADDS, AND WHY IT IS A DIFFERENT DEFECT FROM THE ONE ABOVE.
+    ``TestTheMeasuredRainfallReachesTheFeatureFrame`` is about the ARCHIVE
+    branch, which Phase 33.1 repaired: it asserts that measured rainfall is not
+    discarded, and its
+    ``test_the_mm_only_bands_are_mutually_exclusive_across_the_range`` already
+    pins the partition property THERE. This class asserts the same property on
+    the branch 33.1 deliberately left byte-unchanged -- the one a live
+    Open-Meteo forecast takes, and therefore the one serving 2026 predictions.
+
+    THE DEFECT, as ``.planning/WINDOWS.md`` row 39 registers it: the
+    dual-reading branch composed each band as a DISJUNCTION over two readings,
+    so ``precip_light`` fired on ``0.2 < prob <= 0.5 OR 0.5 < mm <= 2.0`` and
+    ``precip_moderate`` on ``0.5 < prob <= 0.8 OR 2.0 < mm <= 5.0``. A forecast
+    of probability 0.4 with 3.0 mm of rain therefore set BOTH to 1.0 -- one game
+    reported as two intensities at once, in a family whose whole contract is
+    that exactly one member is hot.
+
+    ROW 39 IS MARKED "OWNER DECISION DUE BEFORE ANY RE-FIT". This class is the
+    assertion half of taking that decision (D33-34(b)); Plan 33-14 Task 1's
+    two-half premise measurement is the other half.
+    """
+
+    def test_the_band_order_and_the_rule_are_stated_in_committed_source(self) -> None:
+        """The ORDER is a declaration, not an accident of dict literal order.
+
+        ``max(probability_index, rainfall_index)`` is meaningless unless the
+        four bands are ordered, so the order has to be something a reader can
+        quote and a test can check -- not something inferred from the sequence
+        in which a dict happens to be written.
+        """
+        assert PRECIPITATION_BAND_COLUMNS == (
+            "precip_none",
+            "precip_light",
+            "precip_moderate",
+            "precip_heavy",
+        ), (
+            "the four bands must be declared in ASCENDING intensity order; the "
+            "maximum-band-index rule reads this tuple. Got: "
+            f"{PRECIPITATION_BAND_COLUMNS}"
+        )
+        assert all(
+            band in PRECIPITATION_FEATURE_COLUMNS for band in PRECIPITATION_BAND_COLUMNS
+        ), "every declared band must be a member of the emitted family"
+        assert "LARGER" in PRECIPITATION_PARTITION_RULE, (
+            "the rule must state the maximum-index convention in words, because "
+            "a one-hot family that is not a partition reads as a modelling "
+            "choice unless the intended rule is written down. Got: "
+            f"{PRECIPITATION_PARTITION_RULE!r}"
+        )
+
+    @pytest.mark.parametrize(
+        ("probability", "probability_index", "millimetres", "rainfall_index"),
+        PROBABILITY_BY_RAINFALL_GRID,
+    )
+    def test_exactly_one_band_fires_at_every_point_of_the_forecast_grid(
+        self,
+        calculator: WeatherFeaturesCalculator,
+        probability: float,
+        probability_index: int,
+        millimetres: float,
+        rainfall_index: int,
+    ) -> None:
+        """Sixteen combinations, one band each, and it is the LARGER index.
+
+        Both halves matter. "Exactly one fires" alone would be satisfied by a
+        rule that silently DOWNGRADES a heavy forecast to a light one; naming
+        WHICH band must fire is what pins the widening direction.
+        """
+        features = calculator.calculate_precipitation_features(
+            _payload(precip_prob=probability, precip_mm=millimetres)
+        )
+        fired = [band for band in PRECIPITATION_BAND_COLUMNS if features[band] == 1.0]
+        expected = PRECIPITATION_BAND_COLUMNS[max(probability_index, rainfall_index)]
+
+        assert fired == [expected], (
+            f"probability {probability} (band index {probability_index}) with "
+            f"{millimetres} mm (band index {rainfall_index}) fired {fired}; "
+            f"exactly [{expected!r}] must fire. A disjunction over the two "
+            "readings fires one band per reading and reports a single game as "
+            "two intensities at once."
+        )
+
+    def test_the_windows_row_39_example_fires_exactly_one_band(
+        self, calculator: WeatherFeaturesCalculator
+    ) -> None:
+        """The measured example from the ledger row: probability 0.4, 3.0 mm.
+
+        Under the old disjunction this set ``precip_light`` AND
+        ``precip_moderate``. Under the maximum-band-index rule the rainfall's
+        index (2, moderate) wins over the probability's (1, light), so the band
+        is MODERATE -- the honest reading, because 3.0 mm of rain actually fell
+        and a 40 per cent chance of rain cannot make it lighter than that.
+        """
+        features = calculator.calculate_precipitation_features(
+            _payload(precip_prob=0.4, precip_mm=3.0)
+        )
+        fired = [band for band in PRECIPITATION_BAND_COLUMNS if features[band] == 1.0]
+
+        assert fired == ["precip_moderate"], (
+            "WINDOWS.md row 39's own example must resolve to exactly one band. "
+            f"Fired: {fired}"
+        )
+
+    @pytest.mark.parametrize(
+        ("probability", "probability_index", "millimetres", "rainfall_index"),
+        PROBABILITY_BY_RAINFALL_GRID,
+    )
+    def test_the_probability_widens_a_band_and_never_adds_a_level(
+        self,
+        calculator: WeatherFeaturesCalculator,
+        probability: float,
+        probability_index: int,
+        millimetres: float,
+        rainfall_index: int,
+    ) -> None:
+        """The module's own docstring claim, made checkable.
+
+        ``_precipitation_impact`` states the rule both branches were written to
+        follow: "the probability only ever widened the LIGHT and MODERATE bands,
+        never added a level". Widening means the forecast band index is never
+        BELOW the band the rainfall alone would have produced -- so adding a
+        probability can only ever move the answer UP the intensity order.
+        """
+        with_probability = calculator.calculate_precipitation_features(
+            _payload(precip_prob=probability, precip_mm=millimetres)
+        )
+        without_probability = calculator.calculate_precipitation_features(
+            _payload(precip_prob=None, precip_mm=millimetres)
+        )
+
+        fired_with = [
+            position
+            for position, band in enumerate(PRECIPITATION_BAND_COLUMNS)
+            if with_probability[band] == 1.0
+        ]
+        fired_without = [
+            position
+            for position, band in enumerate(PRECIPITATION_BAND_COLUMNS)
+            if without_probability[band] == 1.0
+        ]
+
+        assert len(fired_with) == 1, (
+            f"the forecast branch fired {fired_with} at probability "
+            f"{probability} with {millimetres} mm; exactly one band must fire"
+        )
+        assert len(fired_without) == 1, (
+            f"the mm-only branch fired {fired_without} at {millimetres} mm; "
+            "exactly one band must fire"
+        )
+        assert fired_with[0] >= fired_without[0], (
+            f"probability {probability} DOWNGRADED {millimetres} mm from band "
+            f"{fired_without[0]} to band {fired_with[0]}. The probability widens "
+            "a band; it never lowers one."
+        )
+        assert fired_without[0] == rainfall_index, (
+            f"{millimetres} mm must sit in rainfall band {rainfall_index} on the "
+            f"mm-only branch; it fired band {fired_without[0]}"
+        )
+        assert fired_with[0] == max(probability_index, rainfall_index), (
+            f"the fired band must be the LARGER of the two indices; expected "
+            f"{max(probability_index, rainfall_index)}, got {fired_with[0]}"
+        )
+
+    @pytest.mark.parametrize(
+        ("millimetres", "rainfall_index"),
+        RAINFALL_BY_BAND_INDEX,
+    )
+    def test_the_mm_only_branch_is_unchanged_across_the_same_grid(
+        self,
+        calculator: WeatherFeaturesCalculator,
+        millimetres: float,
+        rainfall_index: int,
+    ) -> None:
+        """THE CONTROL. The archive branch is the one 33.1 repaired; leave it be.
+
+        Pinned as an explicit four-value mapping rather than as "one band
+        fires", because the failure this guards against is the fix reaching
+        across into the branch it was not aiming at -- and a laxer assertion
+        would not notice a band that MOVED as long as the result stayed a
+        partition.
+
+        The cut points restated in the maximum-index helpers are the SAME cut
+        points the untouched mm-only literal carries. This test is what keeps
+        the two spellings honest: if either drifts, the expected one-hot below
+        stops matching.
+        """
+        features = calculator.calculate_precipitation_features(
+            _payload(precip_prob=None, precip_mm=millimetres)
+        )
+        observed = {band: features[band] for band in PRECIPITATION_BAND_COLUMNS}
+        expected = {
+            band: (1.0 if position == rainfall_index else 0.0)
+            for position, band in enumerate(PRECIPITATION_BAND_COLUMNS)
+        }
+
+        assert observed == expected, (
+            f"the mm-only branch moved at {millimetres} mm. Expected "
+            f"{expected}, got {observed}. That branch is byte-unchanged source; "
+            "a move here means the forecast fix reached into it."
+        )

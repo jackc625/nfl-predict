@@ -143,6 +143,40 @@ PRECIPITATION_FEATURE_COLUMNS: tuple[str, ...] = (
     "passing_efficiency",
 )
 
+# THE FOUR PRECIPITATION INTENSITY BANDS, IN ASCENDING ORDER, NAMED ONCE
+# (Plan 33-14 Task 1, D33-34(b), .planning/WINDOWS.md row 39).
+#
+# They already appear inside PRECIPITATION_FEATURE_COLUMNS above, but that tuple
+# is the family in EMISSION order and carries no statement about intensity. The
+# partition rule below is an ORDER claim -- "take the larger of the two band
+# indices" is meaningless without one -- so the order is stated here, once, and
+# `_precipitation_bands`' forecast branch reads it from here rather than
+# spelling the four strings a third time. A second hand-written list is the
+# D30-02 failure mode.
+PRECIPITATION_BAND_COLUMNS: tuple[str, ...] = (
+    "precip_none",
+    "precip_light",
+    "precip_moderate",
+    "precip_heavy",
+)
+
+# THE RULE THE FORECAST BRANCH FOLLOWS, IN ONE QUOTABLE SENTENCE.
+#
+# It is quotable on purpose: a one-hot family that is not a partition is a
+# defect that reads as a modelling choice unless the intended rule is written
+# down somewhere a reader can compare the code against.
+PRECIPITATION_PARTITION_RULE: str = (
+    "Give the measured rainfall and the forecast probability each an ordinal "
+    "band index over the cut points already in this module, then one-hot "
+    "EXACTLY the band named by the LARGER of the two indices; with no "
+    "probability the rainfall index stands alone. The probability WIDENS a "
+    "band and never adds a level, so wherever the pre-33-14 dual-reading "
+    "branch already fired exactly one band the rule fires the same one, and "
+    "the inputs where it fired TWO -- a forecast of probability 0.4 with "
+    "3.0 mm set both precip_light and precip_moderate -- are the defect "
+    "WINDOWS.md row 39 registers."
+)
+
 SEVERITY_FEATURE_COLUMNS: tuple[str, ...] = (
     "weather_severity_score",
     "home_weather_advantage",
@@ -246,6 +280,23 @@ def _validate_column_declarations() -> None:
             "member of WEATHER_FLAG_COLUMNS. The single-name constant exists so "
             "downstream modules can refer to THIS column rather than spelling "
             "the string; a name that is not in the family is a second spelling."
+        )
+        raise ValueError(msg)
+    if len(set(PRECIPITATION_BAND_COLUMNS)) != len(PRECIPITATION_BAND_COLUMNS):
+        msg = "PRECIPITATION_BAND_COLUMNS has duplicates"
+        raise ValueError(msg)
+    stray_bands = [
+        column
+        for column in PRECIPITATION_BAND_COLUMNS
+        if column not in PRECIPITATION_FEATURE_COLUMNS
+    ]
+    if stray_bands:
+        msg = (
+            f"PRECIPITATION_BAND_COLUMNS names {stray_bands}, which are not "
+            "members of PRECIPITATION_FEATURE_COLUMNS. The ordered band tuple "
+            "exists so the partition rule has an order to refer to; a band "
+            "that is not in the emitted family is a second spelling, which is "
+            "the D30-02 failure mode this declaration block exists to catch."
         )
         raise ValueError(msg)
     union = set(_FULL_BUILDER_COLUMNS) | set(_COMPRESSED_BUILDER_COLUMNS)
