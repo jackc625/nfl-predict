@@ -14413,3 +14413,116 @@ ACCEPTANCE_RUN_EXPECTED_CHANGED_FILES: tuple[str, ...] = (
     "outputs/predictions/predictions_2026_week2.csv",
     "outputs/predictions/game_context_2026_week2.csv",
 )
+
+
+# ---------------------------------------------------------------------------
+# AMENDMENT TO THE ACCEPTANCE-RUN DECLARATION: `ingest_odds` JOINS THE SLICE.
+#
+# APPENDED by Plan 33-18 Task 2 on 2026-09-15, BEFORE any snapshot was taken and
+# before any production byte moved. Nothing above this line was edited: the
+# Task-1 declaration committed in cb60677 stands exactly as written, and this slot
+# is the visible later addition that supersedes it FOR THE RUN.
+#
+# THREE OWNER RULINGS, ALL 2026-09-15, in the order they were made:
+#
+# 1. TASK 1 APPROVED WITH A CHANGE -- add `ingest_odds`. The stored odds file held
+#    ZERO rows for 2026 (2,140 rows, seasons through 2025), so without a pull every
+#    forward-eligible game would be rejected for having no market line and the
+#    prediction set would be unblended: not the path a real Friday run takes.
+#
+# 2. OPTION A -- fix the silver odds write before pulling. Reading the step showed
+#    `partition_cols=["snapshot_ts"] if len(validated_df) > 100` routed every real
+#    week (sixteen games times the US books) to `pq.write_to_dataset` in the shared
+#    silver root, leaving `silver/odds_snapshot.parquet` -- the one file every reader
+#    opens -- untouched. Measured in a sandbox: 128 rows left the file at 0 of 2,140
+#    for 2026 and added 31 files. Fixed in 91df505 (RED 40a44da).
+#
+# 3. OPTION A2 -- fix the market extractor before pulling. Reading the whole file
+#    showed moneylines were always blank (written as `ml_<team>` keys the schema
+#    drops) and the spread sign followed the favourite rather than the home team,
+#    inverting it for every home favourite against the stored history's positive =
+#    home favoured convention (2,130 of 2,140 rows). The partition fix had made those
+#    wrong values REACHABLE, which is why this could not wait. Fixed in ae5603a
+#    (RED 59e7694).
+#
+# BOTH FIXES TOUCHED `scripts/ingest_odds.py`, which is NOT in this plan's
+# `files_modified`. The owner authorised that file for those two fixes only.
+#
+# THE DRY RUN THAT PRECEDED THIS AMENDMENT, in memory and in a sandbox over a copy
+# of the production odds file, on all 16 real week-2 matchups in the documented v4
+# shape, nine books each: 144 validated rows (over the old partition threshold),
+# history kept 2,140 of 2,140, blank moneylines 0, spread sign agreeing with the
+# moneyline favourite 144 of 144, games matching their input exactly 16 of 16,
+# DraftKings chosen by the consumer dedupe for all 16, no partition directory, and
+# EXACTLY TWO FILES WRITTEN -- the two declared below. Production silver digest
+# unchanged across the dry run.
+# ---------------------------------------------------------------------------
+
+# The owner rulings this amendment rests on, as (date, ruling) pairs.
+ACCEPTANCE_RUN_OWNER_RULINGS: tuple[tuple[str, str], ...] = (
+    ("2026-09-15", "Task 1 approved with a change: add ingest_odds to the slice"),
+    ("2026-09-15", "Option A: fix the partitioned silver odds write, then run"),
+    ("2026-09-15", "Option A2: fix the market extractor, then run all three markets"),
+)
+
+# The amended slice: `cb60677`'s fifteen steps plus `ingest_odds`, IN REGISTRY ORDER.
+# `ingest_odds` is the first PREDICTIONS-phase step, immediately after
+# `verify_data_artifacts`, so it sits between the two phases exactly as the registry
+# places it. `build_market_anchors` stays OUT (its silver output is read by no
+# production code), and so does everything after `verify_prediction_currency`.
+#
+# EXECUTION NOTE, declared before the run: `ingest_odds` is registered
+# `retryable=True, max_retries=3`, and a retry is a second PAID call. The run calls
+# the step's callable ONCE, directly, with no orchestrator retry wrapper.
+ACCEPTANCE_RUN_PIPELINE_SLICE_AMENDED: tuple[str, ...] = (
+    "capture_live_season",
+    "ingest_games",
+    "ingest_weather",
+    "data_qa",
+    "build_elo",
+    "build_team_form",
+    "build_contextual",
+    "build_weather_features",
+    "verify_data_artifacts",
+    "ingest_odds",
+    "build_features",
+    "validate_features",
+    "verify_gold_currency",
+    "validate_models",
+    "generate_predictions",
+    "verify_prediction_currency",
+)
+
+# The two files `ingest_odds` writes, DERIVED BY READING `OddsDataIngester.ingest_odds`
+# after both fixes, and confirmed by the dry run writing exactly these two:
+#
+# * `save_dataframe(pd.DataFrame(raw_odds), f"odds_raw_bronze_{season}_W{week:02d}",
+#   layer="bronze", save_to_db=False)` -> ADDED. The file does not exist today. Its
+#   name carries NO timestamp, unlike every capture-path bronze file; that is a
+#   readout finding, not something this plan changes.
+# * `save_dataframe(validated_df, "odds_snapshot", layer="silver", save_to_db=False)`
+#   -> CHANGED, append-merged, single file.
+#
+# NO DuckDB WRITE: both calls pass `save_to_db=False`, and the ingester's
+# `get_db_connection()` handle opens READ-ONLY unless `write=True` is passed.
+# `data/nfl_predictions.duckdb` is already declared for the other writers and gains
+# no second reason here.
+#
+# NOT TOUCHED, AND EXPECTED UNCHANGED BY THE BRACKET: the 23 stray files under the
+# eight `data/silver/snapshot_ts=` directories (WINDOWS row 54).
+ACCEPTANCE_RUN_ODDS_ADDED_FILES: tuple[str, ...] = (
+    "data/bronze/odds_raw_bronze_2026_W02.parquet",
+    "data/silver/odds_snapshot.parquet",
+)
+
+# The amended expected set: `cb60677`'s 29 entries plus the two odds writes. Built by
+# REFERENCE to the Task-1 constant rather than by restating it, so the two can never
+# disagree about the 29 they share.
+ACCEPTANCE_RUN_EXPECTED_CHANGED_FILES_AMENDED: tuple[str, ...] = (
+    ACCEPTANCE_RUN_EXPECTED_CHANGED_FILES + ACCEPTANCE_RUN_ODDS_ADDED_FILES
+)
+
+# The documented cost of the one live pull: `markets x regions` = 3 x 1. The live
+# path reads no credit header, so the run records the balance before and after
+# itself, through the quota-free `/sports` endpoint.
+ACCEPTANCE_RUN_ODDS_EXPECTED_CREDIT_COST: int = 3
