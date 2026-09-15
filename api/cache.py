@@ -1662,9 +1662,18 @@ def _load_predictions(
     # The EDGE BAND from the ONE shared source (D31-23). The stored column names keep their
     # historical ``*_confidence`` spelling -- renaming them would move every export header, which
     # is a published figure -- but the value they carry is the edge band, not a confidence.
-    merged["wp_confidence"] = edge_tier_series(merged["wp_edge"])
-    merged["ats_confidence"] = edge_tier_series(merged["ats_edge"])
-    merged["ou_confidence"] = edge_tier_series(merged["ou_edge"])
+    #
+    # THE VALUES NOW COME FROM A PER-TARGET RULER (CLEAN-01, D33-22). The three columns above are
+    # in three INCOMPATIBLE UNITS -- wp a probability delta, ats POINTS since Plan 33-10, ou a
+    # fraction of the market total -- and until this plan one 0.05 / 0.02 pair was applied to all
+    # three alike, which put 98.80% of ATS games in "high". ``target`` is REQUIRED with no
+    # default, so the unit each column is in is stated at the call site rather than assumed; the
+    # pairs themselves are frozen in ``backtest.cold_start_constants``. The column NAMES are
+    # unchanged, deliberately: the band each carries moved, the header it is published under
+    # did not.
+    merged["wp_confidence"] = edge_tier_series(merged["wp_edge"], "wp")
+    merged["ats_confidence"] = edge_tier_series(merged["ats_edge"], "ats")
+    merged["ou_confidence"] = edge_tier_series(merged["ou_edge"], "ou")
 
     # Compute blended predictions from blend artifact JSON (UIAP-01: no model imports)
     merged["blended_wp"] = None

@@ -302,9 +302,15 @@ def compute_edges(
     # case is now answered inside the helper rather than by a guard at each call site, so the two
     # call sites cannot answer it differently. The column names keep their historical
     # ``*_confidence`` spelling: renaming them would change this CSV's header, which is published.
-    merged["wp_confidence"] = merged["wp_edge"].apply(edge_tier)
-    merged["ats_confidence"] = merged["ats_edge"].apply(edge_tier)
-    merged["ou_confidence"] = merged["ou_edge"].apply(edge_tier)
+    #
+    # THE TARGET IS REQUIRED (CLEAN-01, D33-22). Each of the three edges above is in a DIFFERENT
+    # unit -- a probability delta, POINTS, and a fraction of the total -- and the frozen
+    # ``(high, medium)`` pair differs accordingly. ``target`` rides pandas' forwarded keyword, so
+    # the unit is named at the call site; omitting it is a TypeError rather than a silent WP band
+    # applied to a point margin. The CSV header is unchanged: the band moved, the column did not.
+    merged["wp_confidence"] = merged["wp_edge"].apply(edge_tier, target="wp")
+    merged["ats_confidence"] = merged["ats_edge"].apply(edge_tier, target="ats")
+    merged["ou_confidence"] = merged["ou_edge"].apply(edge_tier, target="ou")
 
     return merged
 

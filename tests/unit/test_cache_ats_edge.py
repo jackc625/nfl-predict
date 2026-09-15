@@ -16,10 +16,18 @@ repair was still a RATIO::
     (ats_prediction - market_spread) / |market_spread|
 
 whose denominator is a point count that approaches zero. On a half-point line a three-point
-disagreement became an edge of 6.0, and ``utils.edge_tier`` applies the SAME ``0.05 / 0.02``
-threshold pair to it that it applies to a WP probability -- which is how the ATS band landed
+disagreement became an edge of 6.0, and ``utils.edge_tier`` applied the SAME ``0.05 / 0.02``
+threshold pair to it that it applied to a WP probability -- which is how the ATS band landed
 "high" on 92.64% of the 1,087 gate-holdout rows that carry a computable edge. The band is
 rendered and sorted on by ``/`` and ``/betting``, so it is a published figure.
+
+THE SECOND HALF OF THAT REPAIR LANDED IN PLAN 33-17 (CLEAN-01, D33-22). Putting ``ats_edge`` on a
+points scale fixed the NUMERATOR; the shared threshold pair was still WP's, so on the end-state
+artifacts the points-scale edge banded "high" on 98.80% of rows -- worse, not better, because a
+point margin exceeds 0.05 almost always. ``edge_tier`` now takes a REQUIRED ``target`` and reads
+a FROZEN pair per unit (ats ``1.9493 / 0.8359`` in POINTS), so this module's scale claim and the
+band's threshold claim are finally in the same unit. This module still asserts the SCALE only;
+the bands are ``tests/unit/test_edge_tier_per_target.py``'s.
 
 WHAT IT IS NOW
 --------------

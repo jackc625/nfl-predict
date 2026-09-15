@@ -621,6 +621,13 @@ def test_the_this_week_page_still_targets_the_games_grid(
 # is the one that makes that safe: the pages the SPEC says keep their job render exactly what they
 # rendered before. The stored column names (``*_confidence``) are deliberately unchanged -- see
 # ``utils/edge_tier.py`` for why renaming them was out of scope.
+#
+# STILL TRUE AFTER PLAN 33-17, and that is the point of asserting it this way. The band is now
+# computed from a REQUIRED per-target threshold pair (CLEAN-01, D33-22), so 522 ATS and 77 O/U
+# labels move -- but zero WP labels do, the VOCABULARY is unchanged, and the page still renders
+# the band it was SERVED rather than re-deriving one. These tests bind to ``EDGE_TIER_LABELS`` and
+# to the served rows, never to a threshold, so a threshold change is invisible here by design: if
+# it were not, the page would be re-banding, which is exactly what they exist to forbid.
 
 
 def test_the_landing_page_still_renders_all_three_edge_band_labels(

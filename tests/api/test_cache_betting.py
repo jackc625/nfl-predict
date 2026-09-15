@@ -315,9 +315,9 @@ def test_the_collapsed_edge_band_reproduces_the_pre_collapse_labels_value_by_val
     from utils.edge_tier import edge_tier
 
     for value, expected in _EDGE_TIER_SNAPSHOT:
-        assert edge_tier(value) == expected, (
-            f"edge {value!r} now bands as {edge_tier(value)!r}, was {expected!r} before the "
-            "collapse; a published label on / and /betting has moved"
+        assert edge_tier(value, "wp") == expected, (
+            f"edge {value!r} now bands as {edge_tier(value, 'wp')!r}, was {expected!r} before "
+            "the collapse; a published label on / and /betting has moved"
         )
 
 
@@ -327,7 +327,7 @@ def test_the_vectorized_form_agrees_with_the_scalar_one_on_the_same_snapshot() -
 
     values = [value for value, _label in _EDGE_TIER_SNAPSHOT]
     expected = [label for _value, label in _EDGE_TIER_SNAPSHOT]
-    assert list(edge_tier_series(pd.Series(values))) == expected
+    assert list(edge_tier_series(pd.Series(values), "wp")) == expected
 
 
 def test_an_absent_edge_bands_low_exactly_as_both_retired_helpers_did() -> None:
@@ -338,9 +338,9 @@ def test_an_absent_edge_bands_low_exactly_as_both_retired_helpers_did() -> None:
     """
     from utils.edge_tier import edge_tier, edge_tier_series
 
-    assert edge_tier(np.nan) == "low"
-    assert edge_tier(None) == "low"
-    assert list(edge_tier_series(pd.Series([np.nan, 0.09]))) == ["low", "high"]
+    assert edge_tier(np.nan, "wp") == "low"
+    assert edge_tier(None, "wp") == "low"
+    assert list(edge_tier_series(pd.Series([np.nan, 0.09]), "wp")) == ["low", "high"]
 
 
 def test_exactly_one_function_computes_the_edge_band() -> None:
@@ -384,16 +384,25 @@ def test_exactly_one_function_computes_the_edge_band() -> None:
         + "\n".join(definitions)
     )
 
-    # And the shared module itself defines EXACTLY ONE banding function -- the one reading both
-    # named thresholds. Asserted separately because the scan above deliberately cannot see it (it
-    # uses no literals), so without this the whole check would pass on an EMPTY tree.
+    # And the shared module itself defines EXACTLY ONE banding function. Asserted separately
+    # because the scan above deliberately cannot see it (it uses no literals), so without this the
+    # whole check would pass on an EMPTY tree.
+    #
+    # RE-IDENTIFIED for the per-target signature (Plan 33-17, D33-22). The old form looked for a
+    # function naming both module-level threshold constants; ``edge_tier`` now unpacks its pair
+    # from the FROZEN per-target mapping and names no such constant, so that form would find
+    # nothing and assert on an empty list. The structural property that actually matters is
+    # unchanged and is now stated directly: exactly one function in the module both HOLDS a
+    # ``(high, medium)`` pair and COMPARES against it. ``edge_tier_series`` must therefore stay a
+    # pure dispatch, which ``tests/unit/test_edge_tier_per_target.py`` asserts from the other side.
     shared = ast.parse(pathlib.Path("utils/edge_tier.py").read_text(encoding="utf-8"))
     banding = [
         node.name
         for node in ast.walk(shared)
         if isinstance(node, ast.FunctionDef)
-        and {"EDGE_TIER_HIGH_THRESHOLD", "EDGE_TIER_MEDIUM_THRESHOLD"}
+        and {"high", "medium"}
         <= {c.id for c in ast.walk(node) if isinstance(c, ast.Name)}
+        and any(isinstance(c, ast.Compare) for c in ast.walk(node))
     ]
     assert banding == ["edge_tier"], (
         f"utils/edge_tier.py must define exactly one banding function; found {banding}"

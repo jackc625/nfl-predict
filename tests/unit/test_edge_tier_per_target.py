@@ -144,16 +144,20 @@ def test_each_line_target_reproduces_its_own_recorded_grid(target: str) -> None:
 def test_the_three_grids_are_not_the_same_grid() -> None:
     """Anti-vacuity: a per-target ruler that answered identically everywhere would be one ruler.
 
-    Taken on the ATS grid, whose values are POINTS. Banded against WP's probability pair every
-    one of them would read "high"; banded against ATS's own pair they span all three labels.
+    Taken on the ATS grid, whose values are POINTS. Against ATS's own pair the 23 rows span all
+    three labels. Against WP's probability pair the MIDDLE BAND COLLAPSES ENTIRELY -- 22 of the
+    23 read "high" and the only survivor is the exact zero, because a point margin above 0.05
+    points is very nearly every margin there is. That collapse is the defect in miniature: it is
+    the same shape as the measured 98.80% "high" share over the pinned population.
     """
     under_ats = [edge_tier(value, "ats") for value, _label in ATS_EDGE_TIER_GRID]
     under_wp = [edge_tier(value, "wp") for value, _label in ATS_EDGE_TIER_GRID]
     assert under_ats != under_wp
-    assert set(under_wp) == {"high"}, (
-        "the ATS grid no longer demonstrates the defect it was chosen to demonstrate; "
-        f"under WP's pair it bands {sorted(set(under_wp))}"
+    assert "medium" not in under_wp, (
+        "the ATS grid no longer demonstrates the defect it was chosen to demonstrate; under "
+        f"WP's probability pair it still bands {sorted(set(under_wp))} with a middle band"
     )
+    assert under_wp.count("high") == 22, under_wp
     assert set(under_ats) == set(EDGE_TIER_LABELS)
 
 
