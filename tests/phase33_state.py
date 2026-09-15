@@ -11030,3 +11030,126 @@ ELO_FORENSIC_COPY_DIGESTS: tuple[tuple[str, str], ...] = (
         "78c5bc760f5f4faf2f29f2e12007009f9f61595f34591485225dea77a941fc66",
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# THE ELO RE-DERIVATION, MEASURED AFTER IT RAN.
+#
+# APPENDED by Plan 33-13 Task 2 on 2026-09-14, after the re-derivation. Nothing
+# above this line was edited -- in particular ELO_RATING_BAND_FROZEN was NOT
+# revisited, which is the whole point of having frozen it in a strictly earlier
+# commit.
+#
+# THE RUN, stated so it is repeatable:
+#
+#     uv run python -m tests.data_boundary snapshot data outputs/phase33_elo_before.json
+#     uv run python scripts/build_elo.py --all-seasons --full-rebuild --start-season 2002
+#     uv run python -m tests.data_boundary verify   data outputs/phase33_elo_before.json
+#
+# THE BRACKET'S VERDICT. 472 tracked files under data/ were digested before the
+# run. Twelve moved and every one of them matches the declaration above:
+#
+#     REWRITTEN   the five live Elo artifacts + nfl_predictions.duckdb   6 files
+#     ADDED       silver/elo_generation.json (the pointer)               1 file
+#     ADDED       silver/elo_generations/20260914T235426782597/*         5 files
+#     REMOVED     none
+#     MIXED       none  -- no UNDECIDED comparison anywhere, and the before side
+#                 carried ZERO stat signatures, so both sides are content hashes
+#     UNEXPLAINED none  -- and nothing declared failed to move
+#
+# No `git status --porcelain data/` was run or cited anywhere in this plan. The
+# content-digest bracket is the evidence.
+# ---------------------------------------------------------------------------
+
+# The generation this rebuild published. The FIRST generation ever published on
+# this store: silver/elo_generation.json did not exist before the run, which is
+# why the pointer appears as ADDED rather than REWRITTEN.
+ELO_REDERIVATION_GENERATION_ID: str = "20260914T235426782597"
+
+# The measured first and last season of the re-derived snapshot chain. Recorded as
+# the two BOUNDARY VALUES, not as a count and not as a range: a table starting at
+# 2003 and a table ending at 2024 are different defects and must fail differently.
+# 24 distinct seasons, contiguous.
+ELO_SEASON_COVERAGE: tuple[int, int] = (2002, 2025)
+
+# The post-run min and max of home_elo_pre / away_elo_pre over the whole chain,
+# RECORDED FOR THE RECORD AND ASSERTED AGAINST BY NOTHING.
+#
+# Read that second clause literally. This pair is the run describing itself, so an
+# assertion that the run's values fall inside it would hold for any output
+# whatever. ELO_RATING_BAND_FROZEN -- committed before the run, in an earlier
+# commit, from the PRE-run chain -- is the only band any test imports, and
+# tests/integration/test_elo_burn_in_canonical.py does not so much as name this
+# constant.
+#
+# It is here because it is worth knowing that the re-derived chain lands almost
+# exactly where the pre-run chain did: pooled pre-run (1132.4435, 1918.2884) vs
+# these, a drift of under two Elo points at each end over 24 seasons.
+ELO_RATING_BAND_OBSERVED: tuple[float, float] = (1133.1671, 1919.9557)
+
+# The two side tables, MEASURED. Recorded whether or not they equal 6,499 so that
+# a divergence would be on the record rather than absorbed into a loosened
+# assertion (D33-09, T-33-64). They do both equal it.
+ELO_SIDE_TABLE_ROW_COUNTS: tuple[tuple[str, int], ...] = (
+    ("games_with_elo", 6499),
+    ("elo_rating_history", 6499),
+)
+
+# The snapshot table itself, for completeness: 6,499 rows over 12 columns, one row
+# per completed game in data/silver/games.parquet, every is_provisional False. The
+# pre-run table held 2,227 rows over 11 columns covering 2018-2025 only.
+ELO_SNAPSHOT_ROWS_AFTER_REDERIVATION: int = 6499
+ELO_SNAPSHOT_COLUMNS_AFTER_REDERIVATION: int = 12
+
+# THE FIVE ANCHORS. Content sha256 of each live artifact after the run, taken
+# through tests.data_boundary.require_content_digest so no value here can be a
+# stat signature (D33-32). The witness lives OUTSIDE the witnessed files, which is
+# the arrangement tests/unit/test_preregistration_ancestry.py records the reason
+# for: a file that must contain its own hash has no fixed point.
+ELO_ARTIFACT_DIGESTS: tuple[tuple[str, str], ...] = (
+    (
+        "data/silver/elo_game_snapshots.parquet",
+        "35c8971fc0d01386e1d69e02c38696d528675f067c8b4257fa1d362a1dc08ee2",
+    ),
+    (
+        "data/silver/games_with_elo.parquet",
+        "b15a8a79fee8be19f25d139059cc0a9889dc05924b88b1339ceece6599274968",
+    ),
+    (
+        "data/silver/elo_rating_history.parquet",
+        "055c733ad684974c43cadf97bb1d0357edbedfc8193625c523658a1946b47e13",
+    ),
+    (
+        "data/silver/elo_ratings_current.parquet",
+        "3397dcc60d1bab1cc0d083d5c21db836e387aacf1a1c224e2c98569bbdde8fe6",
+    ),
+    (
+        "data/silver/elo_ratings.json",
+        "f9b6d2223be14d11fff3e300610edc7ffc8320b27472f85f2874373fd6cde10f",
+    ),
+)
+
+# A MEASURED FINDING, REPORTED RATHER THAN FIXED (Plan 33-13 Task 2).
+#
+# WHAT WAS MEASURED. EloBuilder.build_all_ratings runs the chain TWICE. The first
+# pass is build_elo_with_snapshots, which produces the snapshot table and learns
+# home-field advantage from the WIDE games frame, so its season-1 filter finds the
+# prior season. The second is the legacy process_seasons_chronologically pass,
+# which loads ONE SEASON AT A TIME (scripts/build_elo.py:334) -- so
+# learn_home_field_advantage's season-1 filter is empty every time and it returns
+# hfa_init. It is that SECOND pass whose terminal state becomes
+# elo_ratings_current.parquet and elo_ratings.json.
+#
+# THE SIZE OF IT, measured team by team on this run: the largest absolute
+# disagreement between the snapshot chain's 2025 terminal rating and the stored
+# elo_ratings_current rating is 2.0519 Elo points, over 32 teams.
+#
+# WHY IT IS RECORDED AND NOT REPAIRED HERE. It is pre-existing behaviour of
+# build_all_ratings, older than this phase, and it does not touch what this plan
+# was authorised to change: gold's Elo columns are a LEFT JOIN off
+# elo_game_snapshots, which comes from the FIRST pass, and every assertion in
+# tests/integration/test_elo_burn_in_canonical.py is against that chain.
+# Collapsing the two passes into one is a change to how the state artifacts are
+# produced, which is an architectural decision and belongs to its own plan rather
+# than to a bracketed one-way data repair.
+ELO_LEGACY_STATE_PATH_MAX_DIVERGENCE: float = 2.0519

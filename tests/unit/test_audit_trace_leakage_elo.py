@@ -21,6 +21,7 @@ import pytest
 from data.storage import load_dataframe
 from features.validation import LeakageGate, LeakageViolation
 from ratings.elo import EloRatingSystem, is_divisional_game
+from tests.phase33_state import ELO_SEASON_COVERAGE
 
 # ---------------------------------------------------------------------------
 # Shared helpers / fixtures
@@ -329,55 +330,61 @@ class TestArea4EloRealData:
         # KC at home, narrowly favored -> elo_prob_home in a sensible band
         assert 0.5 < r["elo_prob_home"] < 0.75
 
-    def test_pre_burn_in_games_have_no_spurious_elo_snapshot(self, elo_snapshots):
-        """Elo N/A handling: the elo_game_snapshots table begins at the first
-        season with market/odds context (2018), and no snapshot is invented for
-        a pre-2018 game even though gold carries inline burn-in Elo for it.
+    def test_every_gold_game_carries_an_elo_snapshot(self, elo_snapshots):
+        """Every gold game has a pre-game snapshot, back to the 2002 burn-in floor.
 
-        Two distinct spans, verified against the live data (do not conflate):
-        - GOLD features_wp spans 2002-2025 (6263 rows) because the Elo engine
-          burns in from 2002 and computes home_elo/away_elo INLINE for every
-          game (pre-2018 gold games have populated Elo features).
-        - elo_game_snapshots spans 2018-2025 (~1991 rows) -- the pre-game
-          snapshot record only exists from 2018 on, where snapshot/odds context
-          is available. Pre-2018 games are snapshot-less by design (N/A), as the
-          20-04 hand-trace (8 seasons / 3982 team-games) and the 260523-tp5
-          quick-task ("N/A for pre-2018 snapshot-less games") both established.
+        THIS TEST USED TO ASSERT THE OPPOSITE, and the inversion is the point.
+        Under the name ``test_pre_burn_in_games_have_no_spurious_elo_snapshot`` it
+        required ``elo_game_snapshots["season"].min() == 2018`` and required that NO
+        pre-2018 gold game carry a snapshot, on the reading that pre-2018 games were
+        "snapshot-less by design (N/A)". Per this module's own D-10 note, these
+        area-4 tests CATALOG as-found behaviour rather than fix it -- and the
+        as-found behaviour it catalogued was a defect, not a design.
 
-        The real N/A invariant is therefore "no pre-2018 gold game carries a
-        snapshot, and every snapshot-window (2018+) game does" -- NOT a 2002
-        snapshot floor (a 20-06 regression that conflated the 6263 gold count
-        with the snapshot count).
+        WHAT WAS ACTUALLY MEASURED (Phase 33, F-03). The 2,227-row 2018-2025
+        snapshot table was written by ``tests/integration/test_elo_integration.py``
+        running against production with no sandbox, at least four times during Phase
+        31 -- not by a deliberate market-context floor. Because gold's Elo columns
+        are a LEFT JOIN off that table, 4,288 of 6,499 gold rows carried a
+        FABRICATED 0.0 Elo (all of 2002-2017 plus week 1 of 2018), and the deployed
+        ATS model trained with 61.2% of its rows carrying that zero across six Elo
+        features. The claim in the old docstring that pre-2018 gold games "have
+        populated Elo features" was true only in the sense that 0.0 is a value.
+
+        Plan 33-13 re-derived the canonical 2002-2025 chain from
+        ``data/silver/games.parquet`` under an owner ruling, so the invariant is now
+        the one stated here. ``tests/integration/test_elo_burn_in_canonical.py``
+        holds the full set of canonical checks on that chain; this is the
+        gold-facing corroboration of it.
         """
-        SNAPSHOT_START = 2018
-        # Snapshots begin at the first market-context season -- not 2002 (that is
-        # the gold/Elo burn-in floor, a different span), and not earlier.
-        assert elo_snapshots["season"].min() == SNAPSHOT_START, (
-            f"elo_game_snapshots should start at the snapshot-context season "
-            f"{SNAPSHOT_START}; got {elo_snapshots['season'].min()}"
+        burn_in_floor = ELO_SEASON_COVERAGE[0]
+        assert elo_snapshots["season"].min() == burn_in_floor, (
+            f"elo_game_snapshots should start at the canonical burn-in floor "
+            f"{burn_in_floor}; got {elo_snapshots['season'].min()}. A floor of 2018 "
+            "specifically is the pre-Phase-33 defect: it is the span the "
+            "sandbox-less integration test happened to rebuild."
         )
         snap_ids = set(elo_snapshots["game_id"])
         gold = load_dataframe("features_wp", layer="gold")
 
-        # No pre-2018 gold game may carry a snapshot -- this is the real N/A
-        # invariant: gold has inline burn-in Elo back to 2002, but the snapshot
-        # table is deliberately empty before 2018 (no spurious pre-context Elo).
-        pre_snapshot = gold[gold["season"] < SNAPSHOT_START]
-        assert len(pre_snapshot) > 0, (
-            "expected pre-2018 (inline-Elo, snapshot-less) gold rows"
-        )
-        spurious = [gid for gid in pre_snapshot["game_id"] if gid in snap_ids]
-        assert spurious == [], (
-            f"pre-2018 gold games unexpectedly have Elo snapshots: {spurious}"
+        # The burn-in half: pre-2018 gold games now carry a REAL snapshot. Before
+        # the re-derivation every one of them joined to nothing and took a
+        # fabricated 0.0 Elo into training.
+        pre_2018 = gold[gold["season"] < 2018]
+        assert len(pre_2018) > 0, "expected pre-2018 gold rows"
+        unsnapshotted = [gid for gid in pre_2018["game_id"] if gid not in snap_ids]
+        assert unsnapshotted == [], (
+            f"{len(unsnapshotted)} pre-2018 gold game(s) still have no Elo "
+            f"snapshot, e.g. {unsnapshotted[:8]}. Each of those rows LEFT JOINs to "
+            "nothing and carries a fabricated Elo into every model trained on it."
         )
 
-        # Positive side of the invariant: gold games IN the snapshot window
-        # (2018+) DO have a snapshot -- a missing one would be the real defect.
-        in_window = gold[gold["season"] >= SNAPSHOT_START]
-        assert len(in_window) > 0, "expected snapshot-window rows in gold"
-        missing = [gid for gid in in_window["game_id"].head(50) if gid not in snap_ids]
+        # And the rest of gold, so the assertion covers the whole matrix rather
+        # than only the half that used to fail.
+        missing = [gid for gid in gold["game_id"] if gid not in snap_ids]
         assert missing == [], (
-            f"snapshot-window gold games missing an Elo snapshot: {missing}"
+            f"{len(missing)} gold game(s) are missing an Elo snapshot, e.g. "
+            f"{missing[:8]}"
         )
 
     def test_real_snapshots_are_chronologically_ordered(self, gate, elo_snapshots):
