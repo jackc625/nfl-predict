@@ -282,10 +282,39 @@ class TestTheSwitchPresenceIsRecorded:
         assert disposition["status"] == "satisfied"
         assert disposition["branch"] == "A"
 
-    def test_the_switch_holds_exactly_the_2026_season(self) -> None:
-        """The bridge is one season wide. A widened hold is a different decision."""
+    def test_the_held_season_set_is_now_EMPTY(self) -> None:
+        """INVERTED 2026-09-14 by Plan 33-15 Task 4, on the owner's `remove the bridge`.
+
+        WHAT IT ASSERTED: ``set(WEATHER_GOLD_DEFAULT_SEASONS) == {2026}`` -- "the bridge
+        is one season wide; a widened hold is a different decision". That was the right
+        assertion while the hold existed.
+
+        WHAT IT ASSERTS NOW: the set is EMPTY, so NO season is held. The flip condition
+        said the switch "must be REMOVED, not re-dated", and an empty held-season set is
+        that removal -- a narrower assertion than the old one, not a weaker one, because
+        ``{2026}`` and ``{2027}`` would both have satisfied "one season wide" and neither
+        satisfies this.
+
+        WHY THE SYMBOL SURVIVES the removal is recorded in ``features/weather.py``'s own
+        dated block: deleting the two names would take the record of the ruling with them
+        and would break the derivation :func:`defaulted_weather_columns` performs from the
+        module's own held-state producer.
+        """
         weather = _weather_module()
-        assert set(getattr(weather, SWITCH_SYMBOL)) == {2026}
+        assert set(getattr(weather, SWITCH_SYMBOL)) == set(), (
+            "the 2026 gold-weather hold is still in force. Plan 33-15 Task 4 removed it "
+            "on the owner's ruling of 2026-09-14, after all three targets were re-fit on "
+            "corrected-weather gold and promoted."
+        )
+
+    def test_no_season_is_held_at_the_gold_default_any_more(self) -> None:
+        """The BEHAVIOURAL half: an empty set is only a removal if the predicate agrees."""
+        weather = _weather_module()
+        for season in (2025, 2026, 2027):
+            held = weather._game_is_held_at_gold_default(
+                {"season": season}, f"{season}_W01_BUF@KC"
+            )
+            assert held is False, season
 
     def test_the_flip_condition_names_the_refit_rather_than_a_future_phase(
         self,
@@ -298,16 +327,69 @@ class TestTheSwitchPresenceIsRecorded:
 
 
 class TestTheSwitchIsBounded:
-    """BRANCH A ONLY. The live tree does NOT satisfy the flip condition -- yet."""
+    """THE BOUND HELD, THE CONDITION WAS MET, AND THE SWITCH WAS REMOVED.
 
-    def test_the_live_manifest_does_not_satisfy_the_flip_condition(self) -> None:
-        """Green today. Red once a deployed model has actually seen weather vary."""
+    INVERTED 2026-09-14 by Plan 33-15 Task 4, on the owner's ruling `remove the bridge`.
+
+    WHAT THIS CLASS ASSERTED, and it did its job: while the hold was in force, the live
+    manifest did NOT satisfy the flip condition, and the moment it did this class went RED
+    with a message naming the switch, its module, its flip-condition string, the pointer
+    that moved and which clause fired. It fired exactly once, on the promotion of
+    ``wp_20260914_221745`` / ``ats_20260914_221751`` / ``ou_20260914_221756``, which is the
+    event it was built for.
+
+    WHAT IT ASSERTS NOW: the condition IS met AND the switch is gone. Those two together
+    are the only end state the flip condition permits -- "REMOVED, not re-dated" -- so a
+    future edit that re-introduces a held season while the condition stands met fails here
+    again. The bounding proof itself is PRESERVED below as a historical assertion rather
+    than deleted, because a removed guard proves nothing about the removal it was meant to
+    force.
+
+    IT IS STILL NOT A TRIPWIRE. It is GREEN under a corrected assertion, not deliberately
+    red, so ``DELIBERATE_TRIPWIRE_NODE_IDS`` stays at FIVE -- ``TestThisModuleIsNotATripwire``
+    below asserts both halves of that.
+    """
+
+    def test_the_live_manifest_now_SATISFIES_the_flip_condition(self) -> None:
+        """The inversion. Three deployed artifacts declare the corrected generation."""
         manifest = _live_manifest()
-        met = flip_condition_is_met(manifest, LIVE_ARTIFACTS_ROOT)
-        assert not met, _bounding_failure_message(manifest, LIVE_ARTIFACTS_ROOT)
+        assert flip_condition_is_met(manifest, LIVE_ARTIFACTS_ROOT) is True, (
+            "the live manifest no longer satisfies the flip condition. If a rollback "
+            "restored the pre-Plan-33-15 pointers, the 2026 hold must be RESTORED with "
+            "its own dated ruling rather than this assertion being relaxed."
+        )
 
-    def test_the_bounding_failure_message_names_the_switch(self) -> None:
-        """The failure a later reader will actually see names the switch and what to do."""
+    def test_the_switch_was_removed_rather_than_re_dated(self) -> None:
+        """THE PAIR THAT MATTERS: condition met AND hold gone, asserted together."""
+        weather = _weather_module()
+        assert flip_condition_is_met(_live_manifest(), LIVE_ARTIFACTS_ROOT) is True
+        assert set(getattr(weather, SWITCH_SYMBOL)) == set(), (
+            "the flip condition is MET and a held season is still in force. That is the "
+            "one state the condition forbids by name: the switch must be REMOVED, not "
+            "re-dated, and a later date is the same hold wearing a new number."
+        )
+
+    def test_the_flip_condition_records_that_it_was_met(self) -> None:
+        """The removal is DATED and names what met it, or it is an unexplained deletion."""
+        condition = getattr(_weather_module(), FLIP_CONDITION_SYMBOL)
+        assert "MET AND REMOVED" in condition
+        assert "2026-09-14" in condition
+        for artifact in (
+            "wp_20260914_221745",
+            "ats_20260914_221751",
+            "ou_20260914_221756",
+        ):
+            assert artifact in condition, artifact
+
+    def test_the_bounding_failure_message_still_names_the_switch(self) -> None:
+        """PRESERVED AS A HISTORICAL ASSERTION, with its reason recorded here.
+
+        This message is what a reader WOULD have been shown when the bound fired, and it
+        is what they WILL be shown if a future phase re-introduces a hold and this module
+        has to bound one again. Deleting it once the guard had done its job would leave
+        the next bridge with no message at all, which is how the first one nearly became
+        permanent.
+        """
         message = _bounding_failure_message(_live_manifest(), LIVE_ARTIFACTS_ROOT)
         assert SWITCH_SYMBOL in message
         assert SWITCH_MODULE in message
@@ -360,9 +442,16 @@ class TestTheSwitchIsBounded:
         assert "not re-dated" in message
 
     def test_the_live_tree_is_untouched_by_the_planted_control(self) -> None:
-        """The control wrote only into ``tmp_path``; the live manifest still reads as before."""
+        """The control wrote only into ``tmp_path``.
+
+        INVERTED with the class above: the live answer is now True, and the claim this
+        test carries is unchanged -- that the planted control did not CHANGE it. The
+        control writes a synthetic artifact into ``tmp_path`` and a synthetic manifest
+        mapping in memory, so the live reading either side of it must be whatever the live
+        tree actually says, which since the Plan 33-15 promotion is True.
+        """
         manifest = _live_manifest()
-        assert flip_condition_is_met(manifest, LIVE_ARTIFACTS_ROOT) is False
+        assert flip_condition_is_met(manifest, LIVE_ARTIFACTS_ROOT) is True
 
 
 def _bounding_failure_message(
@@ -527,10 +616,34 @@ class TestThisModuleIsNotATripwire:
 
 
 class TestTheLiveManifestIsNeverWritten:
-    """The predicate takes a manifest MAPPING; the live file is read-only."""
+    """The predicate takes a manifest MAPPING; the live file is read-only.
 
-    def test_the_live_manifest_still_holds_the_recorded_pointers(self) -> None:
-        """Reading it changed nothing, and the recorded pointers ARE the live ones."""
+    RE-POINTED 2026-09-14 by Plan 33-15 Task 4. The claim is unchanged -- THIS MODULE
+    never writes the live manifest -- but its fixed reference had to move, because the
+    manifest itself moved for the first time since Phase 33.1's close.
+    """
+
+    def test_the_live_manifest_holds_the_POST_PROMOTION_pointers(self) -> None:
+        """Reading it changed nothing, and the recorded END STATE is what is live."""
         manifest = _live_manifest()
-        for target, artifact_id in phase33_state.DEPLOYED_POINTERS_AT_PHASE_331_CLOSE:
-            assert manifest[target] == artifact_id
+        for target, artifact_id in phase33_state.POST_GATE_ARTIFACT_MANIFEST.items():
+            assert manifest[target] == artifact_id, target
+
+    def test_the_phase_331_close_record_is_RETAINED_unedited(self) -> None:
+        """A superseded record is preserved, never rewritten to agree with today.
+
+        ``DEPLOYED_POINTERS_AT_PHASE_331_CLOSE`` is the fixed half of the flip predicate's
+        TRIGGER -- "a pointer differs from what Phase 33.1 left" -- and editing it to
+        match the post-promotion manifest would make the trigger permanently unable to
+        fire, which is the one edit the bridge machinery must never accept.
+        """
+        recorded = dict(phase33_state.DEPLOYED_POINTERS_AT_PHASE_331_CLOSE)
+
+        assert recorded == {
+            "wp": "wp_20260824_113325",
+            "ats": "ats_20260605_220128",
+            "ou": "ou_20260326_163930",
+        }
+        live = _live_manifest()
+        moved = [t for t, old in recorded.items() if live[t] != old]
+        assert sorted(moved) == ["ats", "ou", "wp"], moved

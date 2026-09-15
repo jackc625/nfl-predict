@@ -396,18 +396,67 @@ _validate_column_declarations()
 #   fixed the historical record, so that reason expires at the next re-fit
 #   rather than a future phase." The hold is a BRIDGE, not a season-long policy,
 #   and the flip condition below is written to expire it at the next re-fit.
+#
+# ---------------------------------------------------------------------------
+# THE CONDITION WAS MET, AND THE HOLD IS REMOVED (Plan 33-15 Task 4, 2026-09-14).
+#
+# EVERYTHING ABOVE THIS LINE IS THE RECORD OF THE RULING THAT CREATED THE
+# BRIDGE AND IS RETAINED UNEDITED. It is why the hold existed, and deleting it
+# would leave a removal nobody could account for. What follows is the record of
+# the hold ENDING.
+#
+# WHAT MET IT. Phase 33 Wave 15 re-fit all three targets on gold rebuilt from
+# the corrected historical weather record, and the owner promoted all three on
+# 2026-09-14:
+#
+#     wp   wp_20260824_113325  -> wp_20260914_221745
+#     ats  ats_20260605_220128 -> ats_20260914_221751
+#     ou   ou_20260326_163930  -> ou_20260914_221756
+#
+# Every one of those artifacts carries the
+# `trained_on_real_weather_generation` marker naming gold generation
+# `2a6ad6de...`, and each SELECTS real weather columns where the incumbent it
+# replaced selected none or selected from a fabricated constant: WP 0 -> 3,
+# ATS 0 -> 6, O/U 17 -> 6.
+#
+# RULED by the OWNER on 2026-09-14, in their own terms: the switch existed only
+# because the models had never seen weather vary, having been trained on a
+# record where every game was 65 F; the three models now promoted learned from
+# the corrected historical weather, so feeding them the real 2026 forecast is
+# what they expect. The owner's `promote-all-three` disposition also removed the
+# last argument for keeping it -- under a split promotion there would still have
+# been a production model fitted on fabricated weather, and there is not one now.
+#
+# WHY THE SET IS EMPTIED RATHER THAN THE SYMBOL DELETED. The flip condition says
+# the switch "must be REMOVED, not re-dated", and an EMPTY held-season set is
+# that removal: no season is held, `_game_is_held_at_gold_default` returns False
+# for every game, and gold consumes silver exactly as it did before the switch
+# was written. Deleting the two names instead would take the dated record above
+# with them and would break the derivation
+# `tests/unit/test_weather_bridge_expiry.defaulted_weather_columns` performs
+# from this module's own held-state producer -- trading a recorded removal for
+# an unrecorded one.
+#
+# THE CONSEQUENCE, PLAINLY: from the next gold build, season 2026 carries REAL
+# FORECAST WEATHER into the gold weather family. That is the live path Plan
+# 33-18 runs.
 # ---------------------------------------------------------------------------
 
-WEATHER_GOLD_DEFAULT_SEASONS: frozenset[int] = frozenset({2026})
+WEATHER_GOLD_DEFAULT_SEASONS: frozenset[int] = frozenset()
 
 WEATHER_GOLD_DEFAULT_FLIP_CONDITION: str = (
-    "Remove 2026 from the held-season set when Phase 33 Wave 15's re-fit has "
+    "MET AND REMOVED on 2026-09-14 by Phase 33 Wave 15. The condition was: "
+    "remove 2026 from the held-season set when Phase 33 Wave 15's re-fit has "
     "trained the deployed artifacts on gold rebuilt from the corrected "
     "historical weather record (Plan 33.1-07's weather rung), and not before. "
-    "Its input is the historical weather backfill plus the 2026 forecast rows "
-    "this switch deliberately keeps collecting. At that point the deployed "
-    "model HAS seen weather vary and the sole reason for the hold has expired; "
-    "until then it has not, whatever the calendar says."
+    "It was met by the owner-ruled promotion of wp_20260914_221745, "
+    "ats_20260914_221751 and ou_20260914_221756, each carrying the "
+    "trained_on_real_weather_generation marker for gold generation 2a6ad6de, "
+    "and each selecting real weather columns where its incumbent selected none "
+    "or selected from a fabricated constant. The deployed models HAVE now seen "
+    "weather vary, so the sole reason for the hold has expired and the "
+    "held-season set is EMPTY rather than re-dated. From the next gold build, "
+    "season 2026 carries real forecast weather."
 )
 
 

@@ -75,6 +75,7 @@ from tests.phase33_state import (
     GOLD_GENERATION_AFTER_ELO_REBUILD,
     GOLD_GENERATION_AT_REFIT,
     GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED,
+    POST_GATE_MANIFEST_DIGEST,
     WP_PREPROCESSING_DEFECT_CLOSURE,
 )
 from tests.unit.test_weather_bridge_expiry import WEATHER_GENERATION_MARKER_KEY
@@ -715,7 +716,25 @@ class TestPhase33Wave15IsTheCallerAndTheBoundaryMovedByOneModule:
             "changed the deployed-model manifest"
         )
 
-    def test_the_live_latest_json_digest_matches_the_record(self) -> None:
+    def test_the_live_latest_json_digest_has_MOVED_off_the_phase_331_record(
+        self,
+    ) -> None:
+        """RE-POINTED 2026-09-14 by Plan 33-15 Task 4, with the 33.1 record unedited.
+
+        WHAT IT ASSERTED: the live ``artifacts/latest.json`` digest still equalled
+        ``FINAL_FIT_NOT_RUN_IN_PHASE_331["latest_json_digest_after"]``, which was the whole
+        of Phase 33.1's claim -- that phase authored the final-fit mechanism and moved no
+        production pointer.
+
+        WHY IT MOVED: Plan 33-15 is the first thing in this phase PERMITTED to move that
+        digest, and on the owner's ruling of 2026-09-14 it moved all three target pointers
+        in one owner-authorised pass. The Phase-33.1 record is NOT edited to agree --
+        it is the record of what THAT phase left, and it is still true of that phase.
+
+        WHAT IT ASSERTS NOW: the live digest equals Plan 33-15's recorded end state and is
+        NOT the Phase-33.1 value. Both halves are asserted, because "it changed" alone
+        would be satisfied by any accident.
+        """
         latest = Path("artifacts") / "latest.json"
         if not latest.exists():
             pytest.skip(
@@ -725,7 +744,12 @@ class TestPhase33Wave15IsTheCallerAndTheBoundaryMovedByOneModule:
 
         live = digest_file(latest)
 
-        assert live == FINAL_FIT_NOT_RUN_IN_PHASE_331["latest_json_digest_after"]
+        assert live == POST_GATE_MANIFEST_DIGEST, (
+            "the live manifest digest is neither the Phase-33.1 value nor Plan 33-15's "
+            "recorded end state. Something moved the production swap surface outside the "
+            "one owner-authorised pass."
+        )
+        assert live != FINAL_FIT_NOT_RUN_IN_PHASE_331["latest_json_digest_after"]
 
     def test_the_entry_point_writes_nothing_under_production_artifacts(
         self, wp_trained: WPTrainer, frame: pd.DataFrame

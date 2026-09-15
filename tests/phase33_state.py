@@ -13020,3 +13020,483 @@ GATE_VERDICT_SAMPLE_LABEL: str = (
     "d source BEFORE any candidate was fitted, and into every verdict row b"
     "efore any verdict value was computed."
 )
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-15 Task 4 -- THE PRODUCTION END STATE, THE TWO OWNER RULINGS, AND THE
+# TWO OVERRIDES THEY AUTHORISED.
+#
+# APPENDED by Plan 33-15 Task 4 on 2026-09-15. Nothing above this line was edited.
+#
+# THIS IS THE FIRST TIME IN PHASE 33 THAT artifacts/latest.json HAS MOVED. Its digest
+# was byte-unchanged through the whole of Phase 33.1 at
+# 7ff78a506b1cb06e206705c5900438a5388be64e963bcc8a39c7ed6a8d0f66f1, asserted by a
+# committed test; this plan is the only thing in the phase permitted to move it, and it
+# moved it ONCE, in one owner-authorised pass, to POST_GATE_MANIFEST_DIGEST below.
+#
+# THE VERDICTS WERE NOT SOFTENED TO MATCH THE RULING, and that is the point of the
+# owner's decision rather than a caveat on it. ATS and O/U were promoted with their
+# verdicts standing as FAIL -- in GATE_VERDICTS, in config/phase33_gate_verdict.toml and
+# in the run log. The owner's authority to act against a measurement is recorded BESIDE
+# that measurement; a verdict re-read to look like a pass is the defect class this
+# milestone exists to detect.
+# ---------------------------------------------------------------------------
+
+# All three. Under the owner's promote-all-three ruling nothing was retained, so
+# GATE_RETAINED_TARGETS is EMPTY and SAYS so rather than being omitted -- an absent slot
+# and an empty one are different claims.
+GATE_PROMOTED_TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
+
+GATE_RETAINED_TARGETS: tuple[str, ...] = ()
+
+# KEPT SEPARATE FROM GATE_RETAINED_TARGETS on purpose: a refusal FOR LACK OF EVIDENCE and
+# a refusal ON THE EVIDENCE are different findings, and a readout that collapsed them
+# could not say which happened. Empty here: all three targets were testable, each on 557
+# paired games out of 570 eligible, with zero exclusions on either side.
+GATE_UNTESTABLE_TARGETS: tuple[str, ...] = ()
+
+# The owner's Task-3 disposition ruling, with the two overrides it authorised.
+GATE_NON_PASS_DISPOSITION_RULING: dict[str, object] = {
+    "ruling": "promote-all-three",
+    "ruled_on": "2026-09-14",
+    "reasoning": (
+        "The old baselines are fake models trained on fake data, and you cannot regress "
+        "against a false model. The binding point: the incumbents' line-CLV advantage is "
+        "ITSELF computed from models fitted on fabricated Elo, fabricated temperature and "
+        "an inverted coverage flag, so 'the incumbent has the larger line-CLV edge' is a "
+        "comparison against a number with no valid provenance -- and a comparator without "
+        "provenance cannot be the thing that refuses a correction. These three verdicts "
+        "ARE the baseline from here: in the owner's words, 'these new numbers are "
+        "effectively our only baseline now.'"
+    ),
+    "what_it_means_mechanically": (
+        "All three corrected re-fits are promoted regardless of verdict, and the gate "
+        "verdict becomes a recorded REPORT for this one wave. ATS and O/U are promoted "
+        "WITHOUT a PASS verdict, so each carries an explicit owner override recorded "
+        "BESIDE its verdict. No verdict was softened, restated or recomputed."
+    ),
+    "recommendation_overruled": (
+        "The orchestrator RECOMMENDED promote-passes-only, with the O/U line-CLV "
+        "objection stated in full -- that the candidate is significantly worse on line "
+        "CLV in both holdout seasons (pooled -1.202965, p 1.298e-12). The owner overruled "
+        "it and REAFFIRMED promote-all-three. Recorded as raised-and-overruled with its "
+        "date, not as an open concern, and not to be re-litigated."
+    ),
+    "what_the_owner_confirmed_reading": (
+        "All three verdicts with their paired statistics, p-values and n=557 eligible "
+        "pairs; the IN-SAMPLE label; the per-target selected-feature and weather-column "
+        "counts before and after; and the blend CLV before and after."
+    ),
+    "override": {
+        "ats": {
+            "ruling": "promote-all-three",
+            "ruled_on": "2026-09-14",
+            "verdict_overridden": "FAIL",
+            "verdict_left_standing": True,
+        },
+        "ou": {
+            "ruling": "promote-all-three",
+            "ruled_on": "2026-09-14",
+            "verdict_overridden": "FAIL",
+            "verdict_left_standing": True,
+        },
+    },
+}
+
+# THE IN-SAMPLE BIAS RUNS IN THE CANDIDATES' FAVOUR, AND BOTH HALVES OF THAT BELONG IN
+# THE RECORD. The candidates were fitted through the final-fit entry point on 2002-2025,
+# which INCLUDES the 557 holdout games they are then scored on. The incumbents were NOT:
+# the WP incumbent's own metadata records a 2021-2024 holdout and the ATS incumbent a
+# 2015-2019 train window. So the paired comparison is structurally biased TOWARD the
+# candidate, and therefore BOTH of the following hold at once:
+#
+#   * WP's PASS is INFLATED by the bias. It is not evidence of the size it appears to be.
+#   * ATS's and O/U's FAILs are a STRONGER negative signal than a clean out-of-sample
+#     failure would be: they lost on data they were fitted on and their opponent was not.
+#
+# Neither half changes the owner's ruling. Both are the honest reading of what these
+# numbers can and cannot support, and saying so is the phase's value.
+GATE_VERDICT_IN_SAMPLE_BIAS_DIRECTION: dict[str, str] = {
+    "direction": "toward the candidate",
+    "why": (
+        "The candidates are fitted on every completed season 2002-2025 through the "
+        "final-fit entry point, which includes the 2024-2025 holdout the gate re-scores "
+        "them on. The incumbents are not: wp_20260824_113325 records a 2021-2024 holdout "
+        "and ats_20260605_220128 a 2015-2019 train window."
+    ),
+    "consequence_for_wp": (
+        "WP's PASS (+0.067448, p 3.299e-55) is INFLATED by the bias and is not evidence "
+        "of the size it appears to be."
+    ),
+    "consequence_for_ats_and_ou": (
+        "ATS's and O/U's FAILs are a STRONGER negative signal than a clean out-of-sample "
+        "failure: they lost on data they were fitted on and their opponent was not."
+    ),
+}
+
+# The four entries of artifacts/latest.json AFTER the one owner-authorised pass.
+POST_GATE_ARTIFACT_MANIFEST: dict[str, str] = {
+    "wp": "wp_20260914_221745",
+    "ats": "ats_20260914_221751",
+    "ou": "ou_20260914_221756",
+    "blend": "blend_dynamic_20260606_020635",
+}
+
+# MEASURED with tests.data_boundary.digest_file immediately after the promotion, and the
+# pre-promotion value it replaced is recorded beside it rather than discarded. The blend
+# pointer is byte-identical across the move.
+POST_GATE_MANIFEST_DIGEST: str = (
+    "9115c8d76532820e6b77dfecc7903f10c911bfc30e02a15cb6c3a33dbc602cfb"
+)
+PRE_GATE_MANIFEST_DIGEST: str = (
+    "7ff78a506b1cb06e206705c5900438a5388be64e963bcc8a39c7ed6a8d0f66f1"
+)
+
+# The WP trained-scaled / served-raw defect, CLOSED -- and closed the only way it could
+# be. WP_PREPROCESSING_DEFECT_CLOSURE, appended by this plan's Task 1, is NOT edited: the
+# append-once protocol has no re-measurement arm, and that slot recorded the defect as it
+# stood. This is the closing record beside it.
+WP_PREPROCESSING_DEFECT_CLOSED_AT_TASK_4: dict[str, object] = {
+    "closed": True,
+    "closed_on": "2026-09-14",
+    "artifact": "wp_20260824_113325",
+    "replaced_by": "wp_20260914_221745",
+    "contract": (
+        "D33.1-R1, the persisted-preprocessing contract: the replacement carries "
+        "preprocessing.pkl and records preprocessing_is_model true, so the transform and "
+        "the estimator are ONE Pipeline whose final step is the estimator and cannot "
+        "drift apart."
+    ),
+    "repaired_the_old_artifact": False,
+    "how_it_closed": (
+        "By SHIPPING a replacement, never by changing how the existing artifact is "
+        "served. wp_20260824_113325 is untouched, still on disk, and still carries no "
+        "preprocessing.pkl -- a committed test still proves that. Retention would have "
+        "KEPT the defect in production, which is why retention could never have closed "
+        "it."
+    ),
+    "disclosure_updated_not_deleted": (
+        "tests/unit/test_legacy_artifact_serving_is_unchanged.py's "
+        "TestTheDeployedWPArtifactIsTrainedScaledAndServedRaw was UPDATED with the reason "
+        "above, and both halves are now asserted: the old artifact still carries the "
+        "defect, and the artifact that replaced it in production does not. Deleting the "
+        "class would have erased the disclosure instead of closing it, which that class's "
+        "own docstring forbids by name."
+    ),
+}
+
+# The 2026 gold-weather bridge: REMOVED, on the owner's ruling.
+WEATHER_BRIDGE_DISPOSITION_33_15: dict[str, object] = {
+    "branch": "remove",
+    "owner_ruling": (
+        "remove the bridge. The switch existed only because the models had never seen "
+        "weather vary, having been trained on a record where every game was 65 F. The "
+        "three models now promoted learned from the corrected historical weather, so "
+        "feeding them the real 2026 forecast is what they expect. The promote-all-three "
+        "disposition also removes the last argument for keeping it: under a split "
+        "promotion there would still have been a production model fitted on fabricated "
+        "weather, and there is not one now."
+    ),
+    "ruled_on": "2026-09-14",
+    "what_met_the_condition": (
+        "All three targets were re-fit on gold rebuilt from the corrected historical "
+        "weather record and promoted: wp_20260914_221745, ats_20260914_221751 and "
+        "ou_20260914_221756. Each carries the trained_on_real_weather_generation marker "
+        "naming gold generation 2a6ad6de, and each selects real weather columns where its "
+        "incumbent selected none or selected from a fabricated constant -- WP 0 -> 3, ATS "
+        "0 -> 6, O/U 17 -> 6."
+    ),
+    "how_it_was_removed": (
+        "features.weather.WEATHER_GOLD_DEFAULT_SEASONS is now an EMPTY frozenset, so no "
+        "season is held and _game_is_held_at_gold_default returns False for every game. "
+        "The SYMBOLS survive and the dated block comment recording the ruling that "
+        "created the bridge is retained unedited, with the removal recorded beneath it: "
+        "deleting the names would take that record with them and would break the "
+        "derivation tests/unit/test_weather_bridge_expiry.defaulted_weather_columns "
+        "performs from the module's own held-state producer."
+    ),
+    "tripwire_count": 5,
+    "tripwire_count_reason": (
+        "FIVE, unchanged. The KEEP branch would have taken DELIBERATE_TRIPWIRE_NODE_IDS "
+        "to six by registering the bridge-expiry node ids as owner-accepted deliberate "
+        "reds. The REMOVE branch leaves the tuple byte-unchanged, and "
+        "TestTheSwitchIsBounded is GREEN under an inverted assertion rather than red."
+    ),
+    "implication_for_plan_33_18": (
+        "From the next gold build, season 2026 carries REAL FORECAST WEATHER into the "
+        "gold weather family. That is the live path Plan 33-18 runs, and it now runs "
+        "against models that were fitted on real weather rather than on a constant."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-15 Task 4 -- THE NODE IDS THE PROMOTION TURNED RED, MEASURED IN BOTH
+# DIRECTIONS AND REGISTERED WITH THEIR CAUSES.
+#
+# APPENDED by Plan 33-15 Task 4 on 2026-09-15. Nothing above this line was edited.
+#
+# WHY THIS SLOT EXISTS AT ALL. Plan 33-14 found FIVE unregistered pre-existing reds and
+# recorded that "the phase's registered failure set UNDERCOUNTS by five" (WINDOWS row 44).
+# Moving the production swap surface for the first time in the phase was always going to
+# turn some number of manifest-pinned assertions red, and discovering that later would
+# have repeated exactly that failure. So it was MEASURED instead, in both directions,
+# BEFORE and AFTER the promotion, over the same 19 manifest-sensitive modules:
+#
+#   BEFORE  7 failed, 369 passed, 1 skipped   -- all 7 already registered: one deliberate
+#                                                tripwire plus the six
+#                                                test_temporal_display_columns::TestRealGold
+#                                                nodes in GOLD_REBUILD_NEWLY_RED
+#   AFTER   23 failed                          -- 16 newly red
+#   REPAIRED IN THIS PLAN  9 of the 16
+#   REGISTERED BELOW       7
+#
+# NONE OF THE SEVEN IS A DEFECT IN THE PROMOTION. Every one is an assertion that pinned
+# the artifacts deployed BEFORE it, and each is red because those artifacts are no longer
+# the deployed ones -- which is the change the owner ruled. They are registered rather
+# than repaired because each is a RECORD OWNED BY ANOTHER PLAN, and re-pointing another
+# plan's record is a decision the owner should take rather than something a later plan
+# does to its own convenience mid-run. The nine that WERE repaired are the ones this plan
+# owns by name or that its own tasks created.
+# ---------------------------------------------------------------------------
+
+PROMOTION_NEWLY_RED: tuple[tuple[str, str], ...] = (
+    (
+        "tests/integration/test_blend_revalidation_isolation.py"
+        "::test_live_production_manifest_is_the_recorded_post_promotion_manifest",
+        "Asserts the live artifacts/latest.json is byte-identical to the manifest PLAN "
+        "30-11 recorded after ITS promotion. Plan 33-15 moved all three target pointers "
+        "on the owner's ruling, so the Phase-30 record is superseded rather than wrong. "
+        "Re-pointing it is a decision about Phase 30's record.",
+    ),
+    (
+        "tests/integration/test_blend_revalidation_isolation.py"
+        "::test_live_revalidation_copy_carries_the_redirected_rewrite",
+        "Same family and same cause: it reaches the deployed artifacts through the live "
+        "manifest, which now names the Plan 33-15 re-fits.",
+    ),
+    (
+        "tests/integration/test_drift_tripwire_sees_frozen_seasons.py"
+        "::TestTheLiveFrameWouldAbort::test_passing_the_frozen_frame_does_NOT_raise",
+        "Drives scripts.promote_models._drift_tripwire against the DEPLOYED artifacts "
+        "re-scored over deploy_gate.FROZEN_BASELINE_SEASONS, asking whether "
+        "config/gate.toml's frozen [baseline.*] block still reproduces. That block was "
+        "frozen against the OLD incumbents, so re-scoring the NEW ones against it cannot "
+        "reproduce it. SAME FAMILY AS THE TWO GATE-BASELINE TRIPWIRES and as WINDOWS row "
+        "35: under the standing owner ruling of 2026-09-14 the frozen baseline is a "
+        "historical record and is NOT re-frozen, so this is the expected consequence of "
+        "the ruling rather than a new defect.",
+    ),
+    (
+        "tests/integration/test_drift_tripwire_sees_frozen_seasons.py"
+        "::TestTheLiveFrameWouldAbort::test_passing_the_live_frame_RAISES_naming_a_zero_sample_size",
+        "Same cause. Its companion asserts the frozen frame does NOT raise; with the new "
+        "artifacts both halves of the contrast move together.",
+    ),
+    (
+        "tests/unit/test_historical_weather_readout_md.py"
+        "::TestTheDeployedManifestIsByteIdentical"
+        "::test_latest_json_digests_to_the_value_recorded_at_phase_start",
+        "A DOC-DRIFT guard on HISTORICAL-WEATHER-READOUT.md, whose section 5 states that "
+        "artifacts/latest.json is byte-identical across Phase 33.1. THAT STATEMENT IS "
+        "STILL TRUE OF PHASE 33.1 and the readout must not be rewritten; what moved is "
+        "the LIVE digest, because Plan 33-15 is the first thing permitted to move it and "
+        "did. The equivalent assertion in tests/unit/test_final_fit_entry_point.py WAS "
+        "re-pointed by this plan, because Task 1 owns that file; this one guards another "
+        "phase's published readout and is left for its owner.",
+    ),
+    (
+        "tests/unit/test_temporal_display_columns.py"
+        "::TestDeployedArtifactResidue::test_the_deployed_residue_is_exactly_the_recorded_one",
+        "Pins the temporal-display-column residue of the DEPLOYED artifacts' feature "
+        "lists against a recorded set. The deployed feature lists changed with the "
+        "promotion -- each candidate RE-SELECTED rather than inheriting a list -- so the "
+        "recorded residue describes artifacts that no longer serve.",
+    ),
+    (
+        "tests/unit/test_temporal_display_columns.py"
+        "::TestDeployedArtifactResidue::test_the_two_re_fit_targets_carry_no_residue",
+        "Same cause. Its subject was the Phase-30 re-fit pair; all three targets are "
+        "re-fits now, so the two-of-three shape the assertion is built on has gone.",
+    ),
+)
+
+# The nine repaired here, each with the reason it was THIS plan's to repair. Recorded so
+# the split between repaired and registered is a stated rule rather than a judgement
+# nobody wrote down.
+PROMOTION_NEWLY_RED_REPAIRED: dict[str, str] = {
+    "tests/unit/test_weather_bridge_expiry.py (3 nodes)": (
+        "The bridge tripwire is the one this plan exists to answer: it fired on the "
+        "promotion exactly as designed, and Task 4's REMOVE branch is its disposition. "
+        "Inverted to assert the condition IS met AND the hold is gone -- the only end "
+        "state the flip condition permits."
+    ),
+    "tests/unit/test_final_fit_entry_point.py (1 node)": (
+        "Task 1 owns this file, and the assertion was the Phase-33.1 'we moved nothing' "
+        "digest that this plan is explicitly permitted to move. Re-pointed to "
+        "POST_GATE_MANIFEST_DIGEST with the 33.1 record left unedited."
+    ),
+    "tests/unit/test_legacy_artifact_serving_is_unchanged.py (5 nodes)": (
+        "Task 4(d) names its WP disclosure by function. The rest of the module reached "
+        "the Phase-33.1-close artifacts THROUGH the live manifest, so following it would "
+        "have compared the NEW models against a baseline captured from the OLD ones. The "
+        "artifacts are now named BY ID from DEPLOYED_POINTERS_AT_PHASE_331_CLOSE, which "
+        "is what the module always meant."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-15 close -- THE SUPERSEDED INSTRUCTIONS AND THIS PLAN'S OWN
+# COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-15 at plan close on 2026-09-15. Nothing above this line was edited.
+#
+# THIS PLAN IS A REPLAN. It was rewritten on 2026-09-14 against
+# HISTORICAL-WEATHER-READOUT.md, and every instruction it replaced is recorded here with
+# the item that falsified it -- never silently overwritten. Two of the five would have
+# wasted the phase outright.
+# ---------------------------------------------------------------------------
+
+PLAN_33_15_SUPERSESSIONS: tuple[dict[str, str], ...] = (
+    {
+        "readout_item": "section 0, first half -- 'same feature set'",
+        "old_wording": (
+            "D33-12: 'each target gets EXACTLY ONE candidate -- the SAME recipe as its "
+            "incumbent (same training window, same feature set, same hyperparameters), "
+            "re-fit on corrected gold.'"
+        ),
+        "replacement": (
+            "What each candidate carries forward is THE SAME SELECTION PROCEDURE, never a "
+            "pinned feature LIST. No feature list appears in the argv, the record or the "
+            "code path."
+        ),
+        "why_the_old_wording_was_false": (
+            "WP and ATS selected ZERO weather features, but they were selecting from "
+            "columns frozen at a fabricated constant, and a constant column has no "
+            "importance and cannot be selected by any procedure. THEY DID NOT REJECT "
+            "WEATHER, THEY WERE NEVER OFFERED ANY. Reading 'same feature set' as a pinned "
+            "list would have locked WP and ATS into weatherless models and wasted the "
+            "entire phase."
+        ),
+        "measured_outcome": (
+            "The re-selection was MEASURED rather than asserted. Weather columns "
+            "selected, before -> after: WP 0 -> 3, ATS 0 -> 6, O/U 17 -> 6. The before "
+            "half reproduces DEPLOYED_FEATURE_LISTS_AT_PHASE_331_CLOSE exactly."
+        ),
+    },
+    {
+        "readout_item": "section 0, second half / section 4 item 4 -- 'same training window'",
+        "old_wording": (
+            "The per-incumbent recipe list naming WP 2018-2019, ATS 2015-2019 and O/U "
+            "2018-2019 as the windows to hold constant."
+        ),
+        "replacement": (
+            "All three windows come from conf.season_partition.default_season_partition() "
+            "-- selection 2018-2022, hp_val 2023, holdout 2024-2025 -- read through "
+            "scripts.promote_models._incumbent_window, which since review CR-01 takes ALL "
+            "THREE from the rule."
+        ),
+        "why_the_old_wording_was_false": (
+            "It is not satisfiable by committed rule: under the season-partition rule "
+            "there is no such thing as a per-target training window to hold constant. "
+            "Deriving the next model's window from a VOID pre-correction artifact's "
+            "metadata is the defect, not the safeguard."
+        ),
+        "measured_outcome": (
+            "Every verdict row records all three windows equal to the rule, and every "
+            "target's window_report names all three fields as moved against its "
+            "incumbent's own record."
+        ),
+    },
+    {
+        "readout_item": "section 4 item 5 -- the re-fit mechanism was unstated",
+        "old_wording": (
+            "Wave 15's re-fit mechanism is unstated; the existing trainers keep the LAST "
+            "walk-forward fold."
+        ),
+        "replacement": (
+            "models/train.py calls trainer.final_fit(features_df, partition), then "
+            "apply_final_fit_to_trainer, then trainer.save -- in that source order, "
+            "asserted by an AST and index check."
+        ),
+        "why_the_old_wording_was_false": (
+            "WalkForwardSplitter.generate_splits builds every fold as "
+            "season < holdout_season and each trainer keeps the LAST fold's model, so "
+            "without the entry point the shipped model fits through 2023 and never sees "
+            "the newest two seasons, whatever the partition says."
+        ),
+        "measured_outcome": (
+            "Every promoted artifact records final_fit_seasons 2002-2025, 24 seasons, "
+            "equal to partition.final_fit."
+        ),
+    },
+    {
+        "readout_item": "section 4 item 6 -- the verdict presented as a clean pass",
+        "old_wording": "Wave 15's gate verdict is presented as a clean pass.",
+        "replacement": (
+            "Every verdict row and the record header carry IN_SAMPLE_VERDICT_LABEL, a "
+            "module constant in committed source, written before any candidate was fitted "
+            "and into every row before any verdict value was computed."
+        ),
+        "why_the_old_wording_was_false": (
+            "Once the shipped artifact is fitted on the holdout seasons, the gate's "
+            "re-score of that artifact on holdout gold is no longer an out-of-sample "
+            "generalisation estimate."
+        ),
+        "measured_outcome": (
+            "The bias direction is recorded in both directions in "
+            "GATE_VERDICT_IN_SAMPLE_BIAS_DIRECTION: it runs TOWARD the candidate, so "
+            "WP's PASS is inflated by it and ATS's and O/U's FAILs are a stronger "
+            "negative signal than a clean out-of-sample failure would be."
+        ),
+    },
+    {
+        "readout_item": "section 4 item 7 -- 'a failing target retains its incumbent'",
+        "old_wording": (
+            "'if ATS fails, production RETAINS ats_20260605_220128 ... and that is the "
+            "right outcome', and every framing in which a candidate must non-regress "
+            "against the frozen 2021-2024 baseline."
+        ),
+        "replacement": (
+            "VOID under the standing owner ruling of 2026-09-14. You cannot non-regress "
+            "against a lie. The disposition of every non-PASS target became an owner "
+            "RULING rather than a default, taken at this plan's Task-3 checkpoint."
+        ),
+        "why_the_old_wording_was_false": (
+            "The incumbent a refusal would leave in place is a model the owner has "
+            "declared void, fitted on gold carrying fabricated Elo, fabricated "
+            "temperature and an inverted coverage flag."
+        ),
+        "measured_outcome": (
+            "The owner ruled promote-all-three on 2026-09-14 and all three were promoted, "
+            "ATS and O/U each under an explicit recorded override with their FAIL verdicts "
+            "left standing."
+        ),
+    },
+)
+
+# ---------------------------------------------------------------------------
+# PLAN 33-15'S OWN COLLECTED-NODE COUNT.
+#
+# MEASURED per module with `pytest --collect-only -q`, against the pre-plan file contents
+# restored from commit bf93f93 -- never by a whole-suite run, under the standing owner
+# instruction of 2026-09-14 that forbids directory sweeps.
+#
+#     tests/unit/test_final_fit_entry_point.py                32 ->  44   +12
+#     tests/unit/test_weather_bridge_expiry.py                20 ->  24    +4
+#     tests/unit/test_legacy_artifact_serving_is_unchanged.py  11 ->  13    +2
+#     tests/integration/test_phase33_gate_run.py                0 ->  48   +48
+#                                                                        ----
+#                                                                          66
+#
+# ONE new test module was created: tests/integration/test_phase33_gate_run.py. The other
+# three are modules this plan's tasks name, extended beside the assertions they correct,
+# which is why the per-module sum and the total agree exactly and why a node added
+# elsewhere could not hide inside this number.
+#
+# TESTS_ADDED_BY_PHASE_33 is deliberately NOT touched -- Plan 33-18 appends that once, at
+# phase closure.
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_15: int = 66

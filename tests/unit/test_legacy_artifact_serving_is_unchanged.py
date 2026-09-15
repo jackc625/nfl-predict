@@ -45,14 +45,42 @@ from models.artifacts import (
 from models.prediction_pipeline import NFLPredictionPipeline
 from models.trainers.wp_trainer import WP_PIPELINE_STEP_NAMES
 from tests.phase33_state import (
+    DEPLOYED_POINTERS_AT_PHASE_331_CLOSE,
     INCUMBENT_ARTIFACTS,
     LEGACY_ARTIFACT_SERVING_BASELINE,
+    POST_GATE_ARTIFACT_MANIFEST,
+    WP_PREPROCESSING_DEFECT_CLOSED_AT_TASK_4,
     WP_TRAINED_SCALED_SERVED_RAW,
 )
 
 _ARTIFACTS_ROOT = Path("artifacts")
 _LATEST = _ARTIFACTS_ROOT / "latest.json"
 _TARGETS = ("wp", "ats", "ou")
+
+# ---------------------------------------------------------------------------
+# RE-PINNED 2026-09-14 by Plan 33-15 Task 4, and this is the load-bearing change
+# to this module.
+#
+# WHAT THIS MODULE IS ABOUT, and it never changed: the THREE ARTIFACTS THAT WERE
+# DEPLOYED AT PHASE 33.1's CLOSE, and the proof that Phase 33.1's contract change moved
+# none of their served numbers. It reached them through the LIVE MANIFEST, which was
+# correct while they were the deployed ones.
+#
+# Plan 33-15 promoted three re-fits on the owner's ruling of 2026-09-14, so the live
+# manifest no longer names them -- and following it would have silently re-pointed this
+# proof at artifacts it was never about, comparing the NEW models against a baseline
+# captured from the OLD ones. The three fixture ERRORs that produced are what made the
+# drift visible rather than silent.
+#
+# So the artifacts are now named BY ID. The ids come from
+# ``DEPLOYED_POINTERS_AT_PHASE_331_CLOSE``, which is the committed record of exactly this
+# set, and the directories are untouched on disk -- a promotion COPIES, it does not move.
+# Nothing about the proof is weakened: it is the same three artifacts, the same frame and
+# the same pinned values. What changed is that the module now says WHICH artifacts it
+# means instead of asking a manifest that has moved on.
+# ---------------------------------------------------------------------------
+
+_PHASE_331_CLOSE_VERSIONS: dict[str, str] = dict(DEPLOYED_POINTERS_AT_PHASE_331_CLOSE)
 
 _SKIP_REASON = (
     "artifacts/latest.json is absent. It is the deployed-model manifest, it is "
@@ -96,8 +124,16 @@ def _build_baseline_frame(feature_union: list[str]) -> pd.DataFrame:
 
 @pytest.fixture
 def deployed_artifacts() -> dict[str, dict]:
+    """The three artifacts deployed at PHASE 33.1's CLOSE, named by id, not by manifest.
+
+    See the re-pinning block above. The fixture name is kept because every test in this
+    module refers to it and renaming would be a refactor beyond this fix; what it returns
+    is unchanged in kind -- the same three artifacts it has always returned.
+    """
     return {
-        target: load_model_artifact(target, None, _ARTIFACTS_ROOT)
+        target: load_model_artifact(
+            target, _PHASE_331_CLOSE_VERSIONS[target], _ARTIFACTS_ROOT
+        )
         for target in _TARGETS
     }
 
@@ -120,21 +156,37 @@ def baseline_frame(deployed_artifacts: dict[str, dict]) -> pd.DataFrame:
 class TestALegacyArtifactIsServedExactlyAsBefore:
     """Zero change to current predictions, measured against a pre-change capture."""
 
-    def test_the_deployed_pointers_are_the_recorded_incumbents(self) -> None:
+    def test_the_pinned_artifacts_are_the_recorded_pre_promotion_incumbents(
+        self,
+    ) -> None:
+        """The three ids this module is about, cross-checked from three committed places."""
         recorded = dict(INCUMBENT_ARTIFACTS)
         pinned = LEGACY_ARTIFACT_SERVING_BASELINE["artifacts"]
 
         for target, artifact_id in zip(_TARGETS, pinned, strict=True):
             assert recorded[target] == artifact_id
+            assert _PHASE_331_CLOSE_VERSIONS[target] == artifact_id
 
-    def test_no_deployed_artifact_carries_persisted_preprocessing(
+    def test_those_three_are_no_longer_the_deployed_ones(self) -> None:
+        """RE-PINNING CONTROL, and it is why the fixture had to stop reading the manifest.
+
+        If this ever fails, the live manifest has come back to the Phase-33.1 set and the
+        fixture could go back to following it -- but silently following a manifest that
+        HAD moved is what would have compared the new models against the old ones'
+        baseline, so the pin stays and this test says why it is still needed.
+        """
+        live = dict(POST_GATE_ARTIFACT_MANIFEST)
+        moved = [t for t in _TARGETS if live[t] != _PHASE_331_CLOSE_VERSIONS[t]]
+        assert sorted(moved) == sorted(_TARGETS), moved
+
+    def test_none_of_the_three_carries_persisted_preprocessing(
         self, deployed_artifacts: dict[str, dict]
     ) -> None:
         """Asserted rather than assumed -- it is what puts all three on the legacy path."""
         for target in _TARGETS:
             assert deployed_artifacts[target]["preprocessing"] is None, target
 
-    def test_no_deployed_artifact_carries_converter_params(
+    def test_none_of_the_three_carries_converter_params(
         self, deployed_artifacts: dict[str, dict]
     ) -> None:
         for target in _TARGETS:
@@ -240,19 +292,58 @@ class TestTheDeployedWPArtifactIsTrainedScaledAndServedRaw:
 
     It is deliberately NOT in ``tests.phase33_state.DELIBERATE_TRIPWIRE_NODE_IDS``: it is
     GREEN and describes a fact, not RED encoding an accepted failure.
+
+    -----------------------------------------------------------------------------------
+    CLOSED 2026-09-14 BY PLAN 33-15 TASK 4. UPDATED, NOT DELETED, exactly as the paragraph
+    above requires -- and the paragraph above is left standing because it is the
+    instruction this update obeys.
+
+    WHAT CLOSED IT: Wave 15 re-fit WP through the final-fit entry point on corrected gold
+    and the owner promoted ``wp_20260914_221745``, which carries ``preprocessing.pkl``,
+    records ``preprocessing_is_model`` true, and is therefore ONE Pipeline whose final
+    step is the estimator. Transform and estimator cannot drift apart in it, deliberately.
+
+    IT DID NOT CLOSE BY REPAIRING ``wp_20260824_113325``. That artifact is untouched, is
+    still on disk, and still carries no ``preprocessing.pkl`` -- the assertion below still
+    proves it, and the defect it names was real for as long as that artifact served.
+    Retention would have KEPT the defect in production; only shipping a replacement closes
+    it, which is what the record in ``WP_PREPROCESSING_DEFECT_CLOSED_AT_TASK_4`` says.
+
+    WHAT IS ASSERTED NOW: both halves. The old artifact still has the defect (historical,
+    unchanged), AND the artifact that replaced it in production does not.
     """
 
-    def test_wp_20260824_113325_carries_no_persisted_preprocessing(self) -> None:
+    def test_wp_20260824_113325_still_carries_no_persisted_preprocessing(self) -> None:
+        """The HISTORICAL half, unchanged: the defect was real and the artifact is intact."""
         artifact_dir = _ARTIFACTS_ROOT / "wp_20260824_113325"
         if not artifact_dir.exists():
             pytest.skip(_SKIP_REASON)
 
         assert not (artifact_dir / PREPROCESSING_FILENAME).exists(), (
-            "wp_20260824_113325 grew a preprocessing.pkl. If Wave 15 shipped a "
-            "replacement under the new contract, UPDATE this class with a recorded "
-            "reason rather than deleting it."
+            "wp_20260824_113325 grew a preprocessing.pkl. The Plan 33-15 promotion "
+            "COPIED a replacement in beside it and did not repair it in place; a "
+            "preprocessing.pkl appearing here means something edited a historical "
+            "artifact, which D33.1-04 forbids."
         )
         assert WP_TRAINED_SCALED_SERVED_RAW["artifact_id"] == "wp_20260824_113325"
+
+    def test_the_wp_artifact_that_replaced_it_ships_under_the_new_contract(
+        self,
+    ) -> None:
+        """The CLOSING half. Retention could never have produced this."""
+        record = WP_PREPROCESSING_DEFECT_CLOSED_AT_TASK_4
+        replacement = str(record["replaced_by"])
+
+        assert dict(POST_GATE_ARTIFACT_MANIFEST)["wp"] == replacement
+        assert (_ARTIFACTS_ROOT / replacement / PREPROCESSING_FILENAME).is_file(), (
+            f"the deployed WP artifact {replacement} carries no preprocessing.pkl, so "
+            "the trained-scaled / served-raw defect is NOT closed and this record "
+            "overstates what shipped."
+        )
+        assert record["closed"] is True
+        assert record["closed_on"] == "2026-09-14"
+        assert "D33.1-R1" in str(record["contract"])
+        assert record["repaired_the_old_artifact"] is False
 
     def test_the_wp_trainer_fits_its_estimator_on_scaled_features(self) -> None:
         """Checked against CODE STRUCTURE, not against prose.
@@ -304,10 +395,17 @@ class TestTheDeployedWPArtifactIsTrainedScaledAndServedRaw:
         assert "if wp_preprocessing is not None:" in body
 
     @requires_deployed_artifacts
-    def test_the_deployed_wp_artifact_is_served_on_that_raw_path(
+    def test_wp_20260824_113325_IS_served_on_that_raw_path(
         self, deployed_artifacts: dict[str, dict], baseline_frame: pd.DataFrame
     ) -> None:
-        """The BEHAVIOURAL half: it is not merely that the branch exists, it is taken."""
+        """The BEHAVIOURAL half: it is not merely that the branch exists, it is taken.
+
+        RE-TITLED 2026-09-14 by Plan 33-15 Task 4. It used to say "the DEPLOYED WP
+        artifact", which stopped being true of this artifact the moment the owner promoted
+        its replacement. The behaviour it measures is unchanged and still worth measuring:
+        THIS artifact, served through THIS pipeline, takes the raw path -- which is what
+        the defect was, and what was true in production for as long as it served.
+        """
         wp_artifact = deployed_artifacts["wp"]
         assert wp_artifact["preprocessing"] is None
         assert wp_artifact["artifact_dir"].name == "wp_20260824_113325"
