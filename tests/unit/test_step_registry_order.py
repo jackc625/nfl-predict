@@ -334,7 +334,7 @@ def test_the_capture_step_is_critical_and_retryable() -> None:
     assert step.max_retries == 3
 
 
-def test_the_non_critical_set_is_exactly_the_declared_five() -> None:
+def test_the_non_critical_set_is_exactly_the_declared_four() -> None:
     """The non-critical registrations are pinned as a SET, so a sixth cannot appear unnoticed.
 
     ``critical=False`` is a licence to fail quietly. Three steps carried it before Plan 31-18
@@ -356,11 +356,16 @@ def test_the_non_critical_set_is_exactly_the_declared_five() -> None:
     Each one exists to STOP a run -- an unattributable upstream, a stale gold matrix, a
     prediction file whose rows are last week's -- and a gate registered non-critical is a
     gate that logs a warning while the run publishes anyway.
+
+    FOUR AFTER PLAN 33-18. ``build_weather_features`` LEFT the set on owner ruling W1 of
+    2026-09-15. As a non-critical step its refusal degraded the run and ``build_features``
+    rebuilt gold from a weather-features table that did not cover the week being predicted;
+    ``tests/integration/test_weather_features_refusal_stops_pipeline.py`` pins that the
+    refusal now stops the run before gold is built.
     """
     non_critical = {step.name for step in build_step_registry() if not step.critical}
     assert non_critical == {
         "ingest_weather",
-        "build_weather_features",
         "verify_output_files",
         "build_market_anchors",
         CACHE_STEP,

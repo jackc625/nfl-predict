@@ -521,13 +521,53 @@ def step_build_contextual() -> None:
 
 
 def step_build_weather_features() -> None:
-    """Build weather-based features for outdoor games."""
-    from data.storage import load_dataframe, save_dataframe
-    from features.weather import WeatherFeaturesCalculator
+    """Build weather features for the season TO DATE, refusing what cannot be accounted for.
 
+    THE DEFECT THIS BODY REPLACES (Plan 33-18, owner ruling W1 of 2026-09-15). It used to
+    hand the builder EVERY scheduled game in silver. The builder refuses any game with no
+    weather record -- correctly, since the old answer was a 65 F dome default that reached
+    6,485 of 6,499 gold rows -- so during a live season the step could never pass: the
+    current season's opening weeks are never ingested and its future weeks are beyond any
+    forecast. The live acceptance run's attempt 2 halted here on ``2026_W01_NE@SEA``.
+
+    THE SCOPE: every completed season, plus the current season THROUGH THE CURRENT WEEK,
+    with the week from the shared ``_resolve_current_week`` -- the same resolution the
+    capture, ingest and currency gates use -- so this step cannot scope to a different week
+    than the one the run ingested. Future weeks are never built and never demanded.
+
+    WHAT IS STILL REFUSED: any game in scope with no weather record, EXCEPT an
+    already-played week of the current season. Those are handed to the builder by name as
+    ``unobserved_game_ids`` and become explicit no-observation rows (coverage 0.0, every
+    measurement null). A completed season missing a record is still refused, and so is the
+    week being predicted: a missing forecast for the week the run exists to price stops it.
+    """
+    from data.storage import load_dataframe, save_dataframe
+    from features.weather import SILVER_WEATHER_TABLE, WeatherFeaturesCalculator
+
+    season, week = _resolve_current_week()
     games_df = load_dataframe("games", layer="silver")
+    in_scope = games_df.loc[
+        (games_df["season"] < season)
+        | ((games_df["season"] == season) & (games_df["week"] <= week))
+    ]
+
+    weather_df = load_dataframe(SILVER_WEATHER_TABLE, "silver", "parquet")
+    played_this_season_unrecorded = (
+        (in_scope["season"] == season)
+        & (in_scope["week"] < week)
+        & ~in_scope["game_id"].isin(weather_df["game_id"])
+    )
+    unobserved = frozenset(
+        str(game_id)
+        for game_id in in_scope.loc[played_this_season_unrecorded, "game_id"]
+    )
+
     calculator = WeatherFeaturesCalculator()
-    features_df = calculator.build_weather_features(games_df=games_df)
+    features_df = calculator.build_weather_features(
+        games_df=in_scope,
+        weather_df=weather_df,
+        unobserved_game_ids=unobserved,
+    )
     if len(features_df) > 0:
         save_dataframe(features_df, table_name="weather_features", layer="silver")
 
@@ -1008,9 +1048,13 @@ def build_step_registry() -> list[StepDefinition]:
             "build_weather_features",
             step_build_weather_features,
             PipelinePhase.DATA,
-            critical=False,
+            # CRITICAL since Plan 33-18 (owner ruling W1, 2026-09-15). As a non-critical
+            # step its refusal DEGRADED the run, and build_features then rebuilt gold from a
+            # weather-features table that did not cover the week being predicted -- a
+            # silent no-weather gold. A refusal here must stop the run.
+            critical=True,
             retryable=False,
-            description="Build weather features",
+            description="Build weather features for the season to date",
         ),
         StepDefinition(
             "verify_data_artifacts",

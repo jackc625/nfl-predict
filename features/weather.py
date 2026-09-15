@@ -1013,6 +1013,24 @@ class WeatherFeaturesCalculator:
         features["weather_coverage"] = 0.0
         return features
 
+    def _unrecorded_observation_features(self) -> dict[str, float | None]:
+        """The NO-OBSERVATION row for a played game that has no weather record at all.
+
+        Plan 33-18, owner ruling W1 of 2026-09-15. It is :meth:`_absent_observation_features`
+        with ONE difference, and the difference is the point. An absent-observation silver
+        row still knows whether weather APPLIES (its ``is_outdoor``), so it can say so. A
+        game with no record knows nothing, so ``weather_affects_game`` is NULL here rather
+        than 0.0 -- because 0.0 is the value that means INDOOR, and recording a dome for a
+        game nobody observed is exactly the defect ``weather_coverage`` was added to remove.
+
+        ``weather_coverage`` is 0.0 (uncovered) and every measurement is null, so gold's
+        missing-preserving set and level exemption carry the row through as uncovered
+        without imputing it.
+        """
+        features = self._absent_observation_features(is_outdoor=False)
+        features["weather_affects_game"] = NAN
+        return features
+
     def calculate_precipitation_features(
         self, weather_data: dict[str, Any]
     ) -> dict[str, float]:
@@ -1499,6 +1517,7 @@ class WeatherFeaturesCalculator:
         target_week: int | None = None,
         *,
         weather_df: pd.DataFrame | None = None,
+        unobserved_game_ids: frozenset[str] = frozenset(),
     ) -> pd.DataFrame:
         """
         Build weather features for all games.
@@ -1519,6 +1538,15 @@ class WeatherFeaturesCalculator:
                 the frame is the same discipline
                 ``backtest.ou_divergence.run_ou_divergence_diagnosis`` already uses
                 for ``preds`` and ``odds``.
+            unobserved_game_ids: Games the CALLER has established were played and
+                have no weather record at all, each of which is emitted as an
+                explicit NO-OBSERVATION row (see
+                :meth:`_unrecorded_observation_features`) instead of being refused.
+                Empty by default, so every existing caller keeps the refusal for
+                every game. The live step passes the current season's already-played
+                weeks that were never ingested (Plan 33-18, owner ruling W1 of
+                2026-09-15); a game NOT named here that has no record is still
+                refused by name -- including every game in the week being predicted.
 
         Returns:
             DataFrame with weather features added (full 38+ columns, uncompressed)
@@ -1571,7 +1599,12 @@ class WeatherFeaturesCalculator:
                 game_weather = weather_df[weather_df["game_id"] == game_id]
 
                 if len(game_weather) == 0:
-                    raise _no_weather_row(game_id)
+                    if game_id not in unobserved_game_ids:
+                        raise _no_weather_row(game_id)
+                    game_features = {"game_id": game_id, "season": season, "week": week}
+                    game_features.update(self._unrecorded_observation_features())
+                    weather_features.append(game_features)
+                    continue
 
                 # Use most recent weather forecast for this game
                 latest_weather = game_weather.sort_values("forecast_time").iloc[-1]
