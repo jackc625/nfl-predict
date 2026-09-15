@@ -45,6 +45,7 @@ from api.cache import (
     PROVENANCE_BACKTEST_REPLAY,
     PROVENANCE_FORWARD,
 )
+from backtest.cold_start_constants import CHAIN_FIT_BIAS_2026
 from backtest.weekly_bet_list import (
     BET_LIST_ARTIFACT_NAME,
     BET_TRACKER_ARTIFACT_NAME,
@@ -52,6 +53,7 @@ from backtest.weekly_bet_list import (
     FrozenChainFitError,
     WeeklyChainFit,
     build_strategies,
+    frozen_overlay_season,
     grade_pending_rows,
     grade_row,
     load_frozen_chain_fit,
@@ -643,7 +645,19 @@ def test_the_fit_is_read_verbatim_including_a_null_residual_sd(tmp_path: Path) -
     assert fits["wp"].frozen_sd is None
     assert fits["ats"].frozen_sd == pytest.approx(11.5)
     assert fits["ou"].ev_floor_t == pytest.approx(0.0)
-    assert fits["ats"].season_bias_by_season == {2025: pytest.approx(0.16)}
+    # MOVED PIN (Plan 33-17, D33-21). Old expected mapping ``{2025: 0.16}``; new expected mapping
+    # is that PLUS the overlay season. REASON: ``load_frozen_chain_fit`` now overlays the
+    # committed Phase-33 bias for the one season after the frozen strictly-prior pool, because
+    # the measurement that would have extended the record was a single-use split the ledger marks
+    # as spent. The CLAIM this test makes -- the record's OWN seasons are read verbatim, and a
+    # null SD survives as None rather than becoming 0.0 -- is unchanged, which is why the pin
+    # moved rather than being deleted. The overlay entry is asserted against the frozen constant
+    # rather than a literal, so it cannot drift away from the pre-registration.
+    overlay_season = frozen_overlay_season()
+    assert fits["ats"].season_bias_by_season == {
+        2025: pytest.approx(0.16),
+        overlay_season: pytest.approx(CHAIN_FIT_BIAS_2026["ats"]),
+    }
 
 
 # ---------------------------------------------------------------------------

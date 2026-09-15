@@ -133,13 +133,23 @@ def chain_fit_record(ev_floor_t: float) -> dict[str, Any]:
 
     Returned rather than written: a fixture module that wrote its own inputs would be the
     COLD-05 violation class, and the caller already has a ``tmp_path`` to write it into.
+
+    IT CARRIES NO BIAS FOR ``SEASON`` (Plan 33-17, D33-21), and that absence is the point. The
+    loader now OVERLAYS the committed Phase-33 bias for exactly this season, so a value written
+    here would be a SECOND source for it -- and since the fixture's ``-1.0`` is a round number
+    chosen for legibility rather than a measurement, the two would disagree and the load would
+    refuse by name, which is precisely what the disagreement guard is for. Letting the overlay
+    supply it keeps this fixture a record of what the RUN RECORD holds, which is what it is for.
+
+    ``fits_with_floor`` above is unaffected: it builds ``WeeklyChainFit`` objects directly, never
+    passing through the loader, so its ``-1.0`` stays the dial the pricing tests turn.
     """
     return {
         "tune_fit": {
             target: {
                 "ev_floor_t": ev_floor_t,
                 "frozen_sd": 13.0,
-                "season_bias_by_season": {str(SEASON): -1.0},
+                "season_bias_by_season": {},
             }
             for target in CANONICAL_TARGETS
         }

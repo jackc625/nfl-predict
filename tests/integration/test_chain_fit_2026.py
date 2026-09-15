@@ -178,11 +178,21 @@ def test_the_candidate_builder_never_consulted_the_fit_in_the_first_place(
     ``build_weekly_candidates`` reads the schedule, the odds snapshot and the gold matrices. It
     takes no ``chain_fit_path`` and raises no ``FrozenChainFitError``, for 2026 or for any other
     season -- which is why the refusal the plan attributed to it was really its caller's.
+
+    The two seasons fail for two DIFFERENT and equally fit-free reasons, and pinning each is what
+    makes this more than "it raised something": 2026 has a schedule in the injected tree and stops
+    on the absent odds snapshot, while 2027 has no scheduled games at all and stops on the empty
+    universe. Neither refusal has anything to do with a bias.
     """
-    for season in (SEASON, UNCOVERED_SEASON):
-        with pytest.raises(FileNotFoundError) as excinfo:
-            build_weekly_candidates(season, WEEK, **injected_stores)
-        assert not isinstance(excinfo.value, FrozenChainFitError)
+    with pytest.raises(FileNotFoundError) as absent_odds:
+        build_weekly_candidates(SEASON, WEEK, **injected_stores)
+    assert "odds_snapshot.parquet" in str(absent_odds.value)
+    assert not isinstance(absent_odds.value, FrozenChainFitError)
+
+    with pytest.raises(ValueError) as empty_week:
+        build_weekly_candidates(UNCOVERED_SEASON, WEEK, **injected_stores)
+    assert "no scheduled games" in str(empty_week.value)
+    assert not isinstance(empty_week.value, FrozenChainFitError)
 
 
 # ---------------------------------------------------------------------------

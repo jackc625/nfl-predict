@@ -64,7 +64,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -97,6 +97,10 @@ from backtest.bet_selector import BetSelector, SelectionResult
 # ``build_bet_week_schedule``'s import of ``scripts.ingest_historical_odds``, which IS deferred
 # and whose docstring names the real cycle it breaks.
 from backtest.bet_tracker import aggregate_all_blocks, to_tracker_frame
+from backtest.cold_start_constants import (
+    CHAIN_FIT_BIAS_2026,
+    CHAIN_FIT_BIAS_SEASONS,
+)
 from backtest.ev_chain_constants import assign_ev_tier
 from backtest.ou_divergence import (
     HIGH_TOTAL_BOUNDARY_PREHOLD,
@@ -117,7 +121,9 @@ __all__ = [
     "DEFAULT_BET_LIST_DIR",
     "AlreadyGradedError",
     "BetListCacheSources",
+    "ChainFitOverlayDisagreementError",
     "DecidedAfterFreezeError",
+    "EmptyPriorResidualPoolError",
     "FreezePassedError",
     "FrozenChainFitError",
     "MissingDecidedAtError",
@@ -127,6 +133,7 @@ __all__ = [
     "build_freeze_instant_candidates",
     "build_weekly_candidates",
     "build_weekly_decision_frame",
+    "frozen_overlay_season",
     "generate_weekly_bet_list",
     "grade_pending_rows",
     "grade_row",
@@ -247,6 +254,34 @@ class FrozenChainFitError(RuntimeError):
     """
 
 
+class ChainFitOverlayDisagreementError(RuntimeError):
+    """The frozen overlay and the run record both price one season, and they DISAGREE (D33-21).
+
+    Raised by name, carrying the season and BOTH values, rather than applying a precedence rule.
+    A precedence rule is how two sources of truth quietly become one answer: whichever side is
+    preferred wins silently, the losing value stays on disk looking authoritative, and nobody can
+    later say which one a published bet was struck under.
+
+    The AGREEING case is not an error. When the run record and the overlay carry the same value
+    for the same season there is one answer and nothing to attribute, so the load proceeds.
+    """
+
+
+class EmptyPriorResidualPoolError(RuntimeError):
+    """A bias was asked for over an EMPTY strictly-prior residual pool (R10 edge, T-33-88).
+
+    Raised rather than answered with zero. A pooled mean over no seasons is not a small bias --
+    it is no bias at all -- and the two ways of papering over that are both worse than refusing:
+    inventing a value gives every candidate a correction nobody measured, and falling back to the
+    TARGET season's own residuals debiases a season with the data it is being used to predict,
+    which is the leak the whole walk-forward construction exists to prevent (D27-08).
+
+    The estimator this rule was pre-registered under,
+    ``backtest.ou_ev_chain.estimate_prior_season_bias``, refuses the same case in the same
+    direction; this is that refusal named at the point the frozen pool is consumed.
+    """
+
+
 class FreezePassedError(RuntimeError):
     """A game whose OWN freeze is already past was offered for selection (R6, T-33-21).
 
@@ -338,8 +373,18 @@ def load_frozen_chain_fit(
         msg = (
             f"the pre-registered tune-only fit is not on disk at {fit_path.as_posix()}; the "
             "weekly bet list cannot be selected without the frozen per-target EV floor and "
-            "residual SD. Regenerate it with `python -m backtest.profitability_2025`. There is NO "
-            "fallback: a defaulted floor would admit bets at a threshold nobody swept for."
+            "residual SD. IT CANNOT BE REGENERATED: it is generator output from a SINGLE-USE "
+            "2025 hold split, and the committed one-shot run ledger under config/ records that "
+            'split as already spent -- state "completed", no force flag -- so the generator '
+            "would REFUSE rather than rebuild it. Naming that command here would send you to a "
+            "locked door, which is why this message does not. Find the ledger and the path this "
+            'record was written to with `uv run python -c "import pathlib, tomllib; '
+            "p = next(pathlib.Path('config').glob('*run_ledger.toml')); "
+            "print(p.as_posix()); "
+            "print(tomllib.loads(p.read_text(encoding='utf-8'))['verdict_run_record'])\"`, then "
+            "restore the file from there; a NEW measurement requires an owner ruling written "
+            "into that ledger first. There is NO fallback: a defaulted floor would admit bets at "
+            "a threshold nobody swept for."
         )
         raise FrozenChainFitError(msg)
 
@@ -390,7 +435,100 @@ def load_frozen_chain_fit(
             ),
             fallback_trigger=None if trigger is None else str(trigger),
         )
-    return fits
+    return _overlay_frozen_chain_fit(fits)
+
+
+def frozen_overlay_season() -> int:
+    """The season the committed Phase-33 bias debiases -- DERIVED, never re-typed.
+
+    The frozen bias is the pooled mean residual over the STRICTLY PRIOR seasons in
+    ``backtest.cold_start_constants.CHAIN_FIT_BIAS_SEASONS``, so the season it corrects is the one
+    immediately after that pool. Deriving it keeps "the season the bias is FOR" and "the seasons it
+    was pooled FROM" one fact instead of two that can be edited apart; a hard-coded 2026 here would
+    be the second copy, and this repository has been bitten by a second copy three times.
+    ``tests/unit/test_chain_fit_2026_overlay.py`` asserts the result agrees with the frozen
+    constant's own name.
+
+    Raises:
+        EmptyPriorResidualPoolError: when the pool is empty. ``max(())`` would otherwise raise a
+            bare ``ValueError`` saying nothing about biases, and the honest refusal is the named
+            one -- see the class docstring for why no value is invented in its place.
+    """
+    if not CHAIN_FIT_BIAS_SEASONS:
+        msg = (
+            "the frozen chain-fit bias records an EMPTY strictly-prior residual pool "
+            "(backtest.cold_start_constants.CHAIN_FIT_BIAS_SEASONS is empty), so there is no "
+            "season it could be the bias FOR and no pool it could have been estimated from. No "
+            "bias is invented here and there is NO fallback to the target season's own "
+            "residuals: debiasing a season with its own data is the leak the walk-forward "
+            "construction exists to prevent (D27-08). Check what the pre-registration actually "
+            'records with `uv run python -c "import backtest.cold_start_constants as c; '
+            'print(c.CHAIN_FIT_BIAS_SEASONS, c.CHAIN_FIT_BIAS_2026)"`.'
+        )
+        raise EmptyPriorResidualPoolError(msg)
+    return max(CHAIN_FIT_BIAS_SEASONS) + 1
+
+
+def _overlay_frozen_chain_fit(
+    fits: dict[str, WeeklyChainFit],
+) -> dict[str, WeeklyChainFit]:
+    """Overlay the committed Phase-33 bias for ONE season onto the run record's own (D33-21).
+
+    The run record REMAINS the source for the seasons it covers (2021-2025). This adds the single
+    season the record cannot cover, because the measurement that would have extended it was a
+    single-use hold split the ledger marks as spent.
+
+    REJECTED, recorded so neither is re-proposed: copying 2021-2025 into the frozen module (two
+    copies that can drift), and writing the new season into the run record (editing a spent
+    one-shot measurement, T-33-86).
+
+    THE INT-KEYING IS PRESERVED, NOT RE-DONE. :func:`load_frozen_chain_fit` already normalizes
+    JSON's string season keys at exactly one place -- ``{int(season): float(bias) ...}`` -- and
+    this merges into the mapping that call produced. A second ``int()`` pass here would be a
+    second place a future change could diverge, which is the defect being avoided rather than a
+    belt-and-braces improvement.
+
+    Args:
+        fits: The per-target fits exactly as read from the run record, TARGET-keyed.
+
+    Returns:
+        A new mapping, same keys, each fit's ``season_bias_by_season`` extended by the overlay
+        season. The inputs are frozen dataclasses and are not mutated.
+
+    Raises:
+        ChainFitOverlayDisagreementError: when the record already prices the overlay season with a
+            DIFFERENT value.
+        EmptyPriorResidualPoolError: when the frozen pool is empty.
+    """
+    season = frozen_overlay_season()
+    overlaid: dict[str, WeeklyChainFit] = {}
+    for target, fit in fits.items():
+        frozen_bias = CHAIN_FIT_BIAS_2026.get(target)
+        if frozen_bias is None:
+            # A target the pre-registration does not price is left exactly as read. Refusing here
+            # would make an unrelated fourth target impossible to load at all, and the season
+            # gate already refuses any season it genuinely has no bias for.
+            overlaid[target] = fit
+            continue
+
+        recorded = fit.season_bias_by_season.get(season)
+        if recorded is not None and recorded != frozen_bias:
+            msg = (
+                f"two sources price season {season} for target {target!r} and they DISAGREE: the "
+                f"run record carries {recorded!r} and the committed pre-registration carries "
+                f"{frozen_bias!r}. This load REFUSES rather than preferring one of them. There is "
+                "deliberately no precedence rule: whichever side a rule picked would win "
+                "silently, the other value would stay on disk looking authoritative, and no one "
+                "could later say which one a published bet was struck under. Decide which is "
+                "correct and remove the other. What the pre-registration holds: "
+                '`uv run python -c "import backtest.cold_start_constants as c; '
+                'print(c.CHAIN_FIT_BIAS_2026, c.CHAIN_FIT_BIAS_SEASONS)"`.'
+            )
+            raise ChainFitOverlayDisagreementError(msg)
+
+        merged = {**fit.season_bias_by_season, season: float(frozen_bias)}
+        overlaid[target] = replace(fit, season_bias_by_season=merged)
+    return overlaid
 
 
 def _require_season_covered(fits: dict[str, WeeklyChainFit], season: int) -> None:
@@ -417,10 +555,18 @@ def _require_season_covered(fits: dict[str, WeeklyChainFit], season: int) -> Non
         )
         msg = (
             f"the pre-registered walk-forward bias does not cover season {season} for target(s) "
-            f"{sorted(uncovered)}; the fitted seasons are {covered}. Re-run "
-            "`python -m backtest.profitability_2025` so the bias is estimated for this season "
-            "from STRICTLY PRIOR residuals. No bias is invented here: a raw biased total is "
-            "exactly what the walk-forward correction exists to remove (D27-07)."
+            f"{sorted(uncovered)}; the fitted seasons are {covered}. The measurement that "
+            "produced those seasons was a SINGLE-USE hold split and cannot be run again, so this "
+            "is NOT fixed by regenerating anything -- which is why this message does not tell "
+            "you to. For the FIRST season after that pool the bias is already committed: "
+            "backtest/cold_start_constants.py carries CHAIN_FIT_BIAS_2026 per target and "
+            "CHAIN_FIT_BIAS_SEASONS names the strictly-prior seasons it was pooled over, and "
+            "load_frozen_chain_fit OVERLAYS it automatically -- so seeing THAT season here means "
+            "the overlay did not reach this fit. Check what is committed with "
+            '`uv run python -c "import backtest.cold_start_constants as c; '
+            'print(c.CHAIN_FIT_BIAS_2026); print(c.CHAIN_FIT_BIAS_SEASONS)"`. A season BEYOND '
+            "that one has no pre-registered bias at all, and none is invented here: a raw biased "
+            "total is exactly what the walk-forward correction exists to remove (D27-07)."
         )
         raise FrozenChainFitError(msg)
 
@@ -790,8 +936,15 @@ def require_frozen_sd(fit: WeeklyChainFit) -> float:
             f"target {fit.target!r} has no usable frozen residual SD ({value!r}); a zero, "
             "absent or non-finite SD divides by zero in the calibrated-probability converter "
             "and clips every candidate to the probability bound, which Kelly then stakes at the "
-            "per-bet cap. Re-run `python -m backtest.profitability_2025` so the tune-only fit "
-            "carries one."
+            "per-bet cap. The SD is READ from the run record and cannot be re-fitted here: it "
+            "came from a single-use hold split the committed one-shot ledger under config/ "
+            "records as spent, so there is no command that would produce a new one and this "
+            "message names none. Inspect what the record actually carries for each target with "
+            '`uv run python -c "import json; from backtest.weekly_bet_list import '
+            "DEFAULT_CHAIN_FIT_PATH as p; "
+            "print({t: b.get('frozen_sd') for t, b in "
+            "json.loads(p.read_text(encoding='utf-8'))['tune_fit'].items()})\"`, then repair or "
+            "restore the record rather than defaulting the value."
         )
         raise FrozenChainFitError(msg)
     return float(value)

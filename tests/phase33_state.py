@@ -14139,3 +14139,40 @@ PROVENANCE_STAMP_DIGESTS: dict[str, str] = {
 # verdict alike. Recorded so the byte-identity claim above can be read as a
 # STATEMENT ABOUT SOMETHING rather than as three opaque hashes.
 PROVENANCE_STAMP_OPENING: str = "GENERATOR OUTPUT. Produced by"
+
+
+# ---------------------------------------------------------------------------
+# PLAN 33-17'S OWN COLLECTED-NODE COUNT.
+#
+# MEASURED per module with `pytest --collect-only -q`, against the pre-plan file
+# contents at commit 3cf2e9a -- never by a whole-suite run, under the standing
+# owner instruction of 2026-09-14 that forbids directory sweeps.
+#
+#     tests/unit/test_edge_tier_per_target.py           0 -> 34   +34
+#     tests/unit/test_edge_tier_call_sites.py           0 ->  8    +8
+#     tests/unit/test_chain_fit_2026_overlay.py         0 -> 12   +12
+#     tests/unit/test_chain_fit_error_text.py           0 -> 20   +20
+#     tests/unit/test_phase33_run_record_untouched.py   0 -> 11   +11
+#     tests/integration/test_chain_fit_2026.py          0 ->  8    +8
+#                                                                ----
+#                                                                  93
+#
+# SIX new test modules, and NO pre-existing module gained or lost a node. That
+# second half is checked rather than assumed. Test-function counts before and
+# after, identical on both sides:
+#
+#     tests/api/test_cache_betting.py       12 -> 12
+#     tests/unit/test_weekly_bet_list.py    37 -> 37
+#     tests/api/test_pages.py               47 -> 47
+#     tests/unit/test_cache_ats_edge.py     17 -> 17
+#
+# That is what stops a node added elsewhere from hiding inside this number. All
+# four WERE edited -- three call sites re-scoped, one structural assertion
+# re-identified, one moved pin and two stale prose blocks -- but no edit adds a
+# test.
+#
+# TESTS_ADDED_BY_PHASE_33 is deliberately NOT touched -- Plan 33-18 appends that
+# once, at phase closure.
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_17: int = 93
