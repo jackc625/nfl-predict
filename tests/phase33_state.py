@@ -13881,3 +13881,111 @@ EDGE_TIER_DISPLAY_ONLY_CORRECTED: dict[str, object] = {
 #         test_no_bet_selection_path_reads_the_edge_band
 #
 TESTS_ADDED_33_16_CORRECTED: int = 55
+
+
+# ---------------------------------------------------------------------------
+# PLAN 33-17 TASK 1 -- THE PER-TARGET EDGE BAND: THE SIX CALL SITES AND THE
+# TWO NEW RECORDED GRIDS.
+#
+# MEASURED 2026-09-15 by Plan 33-17 Task 1 on commit 3cf2e9a, by AST scan of the
+# two production consumers named in EDGE_TIER_DISPLAY_ONLY_CORRECTED above.
+#
+# WHY A COMMITTED SET RATHER THAN "WHATEVER THE SCAN FINDS". A scan that asserts
+# only "every site it found supplies a target" passes vacuously on a tree where a
+# site was deleted, and passes quietly on a tree where a SEVENTH site appeared. The
+# committed set turns both into failures: a site that vanished and a site that
+# arrived are equally a change in the band's reach, which is the property
+# EDGE_TIER_DISPLAY_ONLY_CORRECTED exists to keep current.
+#
+# The entries are (path, callee, target) and carry NO LINE NUMBERS on purpose. A
+# line number drifts on every unrelated edit above it, so pinning one would make
+# this constant fail for reasons that have nothing to do with the band.
+# ---------------------------------------------------------------------------
+
+EDGE_TIER_CALL_SITES: tuple[tuple[str, str, str], ...] = (
+    ("api/cache.py", "edge_tier_series", "wp"),
+    ("api/cache.py", "edge_tier_series", "ats"),
+    ("api/cache.py", "edge_tier_series", "ou"),
+    ("scripts/generate_current_week_predictions.py", "edge_tier", "wp"),
+    ("scripts/generate_current_week_predictions.py", "edge_tier", "ats"),
+    ("scripts/generate_current_week_predictions.py", "edge_tier", "ou"),
+)
+
+# ---------------------------------------------------------------------------
+# THE ATS AND O/U GRIDS, in the SHAPE of the 23-point WP _EDGE_TIER_SNAPSHOT in
+# tests/api/test_cache_betting.py and deliberately NOT in its place.
+#
+# WHAT THESE ARE AND ARE NOT. The WP snapshot is PRE-COLLAPSE EVIDENCE: it was
+# recorded by running the two retired helpers side by side BEFORE they were
+# collapsed, so it can witness that nothing moved. These two grids cannot be that
+# and do not claim to be -- before this plan there was no per-target ATS or O/U
+# band at all, so there is no earlier behaviour for them to preserve. They are the
+# BAND RULE ITSELF, written out at every boundary, so an accidental `>=`, a
+# transposed (high, medium) pair or a target silently banded on WP's thresholds
+# fails on a named row rather than on a summary count.
+#
+# DERIVED FROM THE FROZEN PAIRS, NOT FROM THE IMPLEMENTATION. Each label below was
+# computed from backtest.cold_start_constants.EDGE_TIER_THRESHOLDS_BY_TARGET with
+# a throwaway reference band written for the purpose, never by calling
+# utils.edge_tier -- a grid recorded from the function it checks would agree with
+# any bug that function has.
+#
+#   ats  (high, medium) = (1.9493, 0.8359)  POINTS
+#   ou   (high, medium) = (0.0546, 0.0220)  RATIO of the market total, floored at 30
+#
+# Both comparisons are STRICT, so a value exactly at a threshold falls in the LOWER
+# band -- the rows at -1.9493, -0.8359, 0.8359, 1.9493 and their O/U counterparts
+# are what pin that.
+# ---------------------------------------------------------------------------
+
+ATS_EDGE_TIER_GRID: tuple[tuple[float, str], ...] = (
+    (-10.0, "high"),
+    (-5.0, "high"),
+    (-2.5, "high"),
+    (-1.9493000001, "high"),
+    (-1.9493, "medium"),
+    (-1.9492999, "medium"),
+    (-1.5, "medium"),
+    (-0.8359000001, "medium"),
+    (-0.8359, "low"),
+    (-0.8358999, "low"),
+    (-0.1, "low"),
+    (0.0, "low"),
+    (0.1, "low"),
+    (0.8358999, "low"),
+    (0.8359, "low"),
+    (0.8359000001, "medium"),
+    (1.5, "medium"),
+    (1.9492999, "medium"),
+    (1.9493, "medium"),
+    (1.9493000001, "high"),
+    (2.5, "high"),
+    (5.0, "high"),
+    (10.0, "high"),
+)
+
+OU_EDGE_TIER_GRID: tuple[tuple[float, str], ...] = (
+    (-1.0, "high"),
+    (-0.5, "high"),
+    (-0.1, "high"),
+    (-0.0546000001, "high"),
+    (-0.0546, "medium"),
+    (-0.0545999, "medium"),
+    (-0.03, "medium"),
+    (-0.0220000001, "medium"),
+    (-0.022, "low"),
+    (-0.0219999, "low"),
+    (-0.001, "low"),
+    (0.0, "low"),
+    (0.001, "low"),
+    (0.0219999, "low"),
+    (0.022, "low"),
+    (0.0220000001, "medium"),
+    (0.03, "medium"),
+    (0.0545999, "medium"),
+    (0.0546, "medium"),
+    (0.0546000001, "high"),
+    (0.1, "high"),
+    (0.5, "high"),
+    (1.0, "high"),
+)
