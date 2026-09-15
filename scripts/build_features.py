@@ -130,6 +130,18 @@ _LINE_MOVEMENT_GROUP = "line_movement"
 # the two agree, so a third builder cannot appear on one side only.
 BUILDER_KEYS: tuple[str, ...] = ("full", "compressed")
 
+# THE NAME-BASED HALF OF THE LEVEL-PRESERVATION PREDICATE (Plan 33-14 Task 3,
+# D33-34(a), .planning/WINDOWS.md rows 33 and 40).
+#
+# A column whose name ends with this suffix answers "is there an observation
+# behind this row". Its LEVELS ARE ITS MEANING, constant or not, and that is
+# precisely why the suffix arm carries NO varying-levels requirement while the
+# weather arm does: `weather_coverage` is a CONSTANT 1.0 on the corrected corpus,
+# and the whole defect Phase 33.1 spent a rung on was that constant being
+# z-scored to 0.0 -- the value that means NO OBSERVATION. A rule that demanded
+# two levels here would re-break the exact column it was written to protect.
+LEVEL_PRESERVED_COLUMN_SUFFIX: str = "_coverage"
+
 
 def drop_feature_group(df: pd.DataFrame, group: str) -> pd.DataFrame:
     """Return *df* without any column belonging to *group*.
@@ -1368,8 +1380,29 @@ class FeatureMatrixBuilder:
                 "rather than silently rebuilding gold with the defect this phase removed."
             )
             raise ValueError(msg)
-        preserve_level_cols = tuple(
-            column for column in active_preserved if column == WEATHER_COVERAGE_COLUMN
+        # THE ONE-COLUMN FILTER BECAME A PREDICATE (Plan 33-14 Task 3, D33-34(a)).
+        #
+        # It read `tuple(c for c in active_preserved if c == WEATHER_COVERAGE_COLUMN)`
+        # -- correctly non-wideable, and one column wide. The owner ruled on
+        # 2026-09-14 that .planning/WINDOWS.md rows 33 and 40 are TAKEN before
+        # Wave 15's re-fit rather than carried past it, so the exemption now
+        # resolves the nineteen weather indicator flags and the six sibling
+        # `*_coverage` columns alongside the flag it already carried.
+        #
+        # THE REFUSAL ABOVE IS DELIBERATELY UNCHANGED. It fires on the PRESERVING
+        # SET losing the coverage flag, which is still a real defect and still
+        # worth refusing on, and it fires BEFORE this line.
+        #
+        # See `_level_preserved_columns` for why the two arms carry different
+        # rules, and why the value arm requires more than one level.
+        preserve_level_cols = self._level_preserved_columns(
+            processed_features, active_preserved
+        )
+        logger.info(
+            "Resolved the level-preserved columns",
+            builder=active_builder,
+            preserved_levels=len(preserve_level_cols),
+            columns=list(preserve_level_cols),
         )
 
         # Compute prior-season stats for bootstrap and normalize
@@ -1435,6 +1468,136 @@ class FeatureMatrixBuilder:
         """
         values = pd.unique(series.dropna())
         return len(values) > 0 and set(values.tolist()) <= {-1.0, 0.0, 1.0}
+
+    # ------------------------------------------------------------------
+    # THE LEVEL-PRESERVATION PREDICATE (Plan 33-14 Task 3, D33-34(a)).
+    #
+    # It replaces a filter that could only ever yield ONE column --
+    # `weather_coverage` -- with a predicate over the frame's own columns,
+    # closing .planning/WINDOWS.md rows 33 and 40 against this phase.
+    #
+    # WHAT ROWS 33 AND 40 REGISTER, measured rather than argued. Nineteen weather
+    # yes/no flags reach gold z-scored into many distinct decimals -- `is_snow`
+    # carries 274 distinct values, `wind_moderate` 5,667 -- so the same snowy game
+    # gets a different number in week 3 than in week 15, and the level that WAS
+    # the meaning is gone. Six sibling `*_coverage` flags carry the mirror defect:
+    # `home_injury_coverage` reads a constant 0.0 across 2002-2008, which are
+    # genuinely UNCOVERED, while 2009-2024 range -15.97 to +0.207 -- so an
+    # uncovered row reads a value far CLOSER to the covered level than to the
+    # uncovered one.
+    #
+    # A WIDENING PREDICATE IS THE DANGEROUS DIRECTION, and it is split into two
+    # arms with DIFFERENT rules for that reason. A predicate that widens a
+    # REFUSAL fails safe; this one widens an EXEMPTION, so a column it wrongly
+    # selects is a column that silently stops being normalized and reaches the
+    # re-fit as a raw level.
+    #
+    #   * The SUFFIX arm is NAME-based and has no varying-levels requirement. A
+    #     `*_coverage` column's levels are its meaning by construction, and the
+    #     canonical case is a CONSTANT one.
+    #   * The WEATHER arm is VALUE-based and DOES require at least two distinct
+    #     non-null levels. Without that clause the predicate selects three columns
+    #     nobody declared -- `precip_prob`, `raw_precip_prob` and
+    #     `extreme_weather` -- each of which carries exactly ONE non-null value on
+    #     today's corpus and is therefore "discrete" only by accident of the data.
+    #     Two of the three are continuous PROBABILITIES: exempting them would be
+    #     threat T-33-81 realised, and worse, the exemption would FLICKER between
+    #     generations, since a 2026 live forecast supplying real probabilities
+    #     makes the column continuous again and silently drops it back out.
+    #
+    # The resolved set is asserted EQUAL to
+    # `tests.phase33_state.GOLD_LEVEL_PRESERVED_COLUMNS_33_14` in BOTH directions
+    # against live gold -- an unexpected member and a missing member both fail --
+    # so a widening exemption cannot quietly exempt a column nobody declared.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _is_varying_discrete_indicator(cls, series: pd.Series) -> bool:
+        """True when *series* is a discrete indicator carrying MORE THAN ONE level.
+
+        COMPOSED on ``_is_discrete_indicator`` rather than restating its
+        ``{-1, 0, 1}`` rule, which would be the D30-02 second-list failure mode
+        inside a single class.
+
+        Args:
+            series: A pre-normalization numeric feature column.
+
+        Returns:
+            True iff every non-null value is an indicator level AND at least two
+            distinct non-null values are present.
+        """
+        return cls._is_discrete_indicator(series) and series.dropna().nunique() >= 2
+
+    @staticmethod
+    def _level_preserved_suffix_columns(columns) -> tuple[str, ...]:
+        """The NAME arm: every column whose name ends with the coverage suffix.
+
+        Args:
+            columns: Any iterable of column names.
+
+        Returns:
+            The matching names, sorted and de-duplicated.
+        """
+        return tuple(
+            sorted(
+                {
+                    str(column)
+                    for column in columns
+                    if str(column).endswith(LEVEL_PRESERVED_COLUMN_SUFFIX)
+                }
+            )
+        )
+
+    @classmethod
+    def _level_preserved_indicator_columns(
+        cls, frame: pd.DataFrame, active_preserved
+    ) -> tuple[str, ...]:
+        """The VALUE arm: the active builder's weather flags, judged on *frame*.
+
+        Args:
+            frame: The PRE-NORMALIZATION frame. Discreteness is a property of the
+                values as they enter normalization; judging it on gold would be
+                meaningless, because normalization is what destroys it.
+            active_preserved: The active builder's preserved weather column set.
+
+        Returns:
+            The matching names, sorted and de-duplicated.
+        """
+        return tuple(
+            sorted(
+                {
+                    column
+                    for column in active_preserved
+                    if column in frame.columns
+                    and cls._is_varying_discrete_indicator(frame[column])
+                }
+            )
+        )
+
+    @classmethod
+    def _level_preserved_columns(
+        cls, frame: pd.DataFrame, active_preserved
+    ) -> tuple[str, ...]:
+        """The columns returned at their RECORDED LEVEL rather than z-scored.
+
+        A ``classmethod`` rather than an instance method on purpose: it needs no
+        builder state, and ``scripts.fingerprint_gold.phase33_level_preserved_family``
+        resolves the rung's declared family through THESE SAME two arms rather
+        than through a second hand-written list.
+
+        Args:
+            frame: The pre-normalization frame.
+            active_preserved: The active builder's preserved weather column set.
+
+        Returns:
+            The union of the two arms, sorted and de-duplicated.
+        """
+        return tuple(
+            sorted(
+                set(cls._level_preserved_suffix_columns(frame.columns))
+                | set(cls._level_preserved_indicator_columns(frame, active_preserved))
+            )
+        )
 
     def _impute_team_features(self, df: pd.DataFrame, col: str) -> pd.Series:
         """Impute missing team features using team's season average.

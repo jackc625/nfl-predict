@@ -1100,6 +1100,310 @@ PHASE331_RUNG3_EXPECTED_SIGNATURE: dict[str, object] = {
 RUNG_CAUSES_BY_PREFIX[PHASE331_RUNG_PREFIX][PHASE331_RUNG3] = PHASE331_RUNG3_CAUSE
 
 
+# ---------------------------------------------------------------------------
+# PHASE 33'S WAVE-14 LADDER -- A SECOND PREFIX, FOR THE REASON RECORDED AT :398
+# (Plan 33-14 Task 3, D33-35, owner ruling of 2026-09-14).
+#
+# The prefix-aware block twelve screens up anticipated this exactly: "Plan 33-14
+# wants to extend the SAME closed dict for the Elo rung. Racing for an integer
+# now leaves the two phases colliding later; a prefix gives 33-14 the same seam
+# instead of a contested key." This is that extension. Phase 30's four
+# `RUNG_CAUSES` entries, `PHASE31_RUNG_PREFIX` and every `PHASE331_*` symbol are
+# BYTE-UNTOUCHED, and the negative control in
+# tests/integration/test_gold_rebuild_attribution.py -- rung 1 with NO prefix
+# still resolves to CR-02 -- keeps passing, which is what proves this addition
+# did not capture the old integer.
+#
+# TWO RUNGS, ONE CAUSE EACH, AND A RUNG 0 THAT IS NOT A REBUILD. Rung 0
+# fingerprints gold exactly as Phase 33.1 left it, taken BEFORE anything is
+# rebuilt: it is the control Phase 33.1 could not take in time, and the one
+# artifact that cannot be recovered once rung 1 has overwritten gold.
+# `require_rung_ladder(dir, 1, "p33_")` demands exactly `p33_rung0.json`.
+#
+# WHY TWO REBUILDS AND NOT ONE. Two separate causes sit between Phase 33.1's gold
+# and the gold Plan 33-15 re-fits on. Merging them would make every column both
+# can reach unattributable -- which is the failure Phase 33.1 spent a dedicated
+# diagnosis recovering from, where 45 columns came back unattributed and the
+# trigger for 40 of them is PERMANENTLY UNMEASURABLE because no copy of the prior
+# gold survives. The owner was shown that precedent and ruled for the ladder.
+#
+# THE CLI NEEDS NO CHANGE. `--attribute-rung`'s choices come from
+# `sorted(RUNG_CAUSES)`, which already accepts 1 and 2 under any prefix; adding a
+# second way to say the same thing would be the drift this module keeps refusing.
+# ---------------------------------------------------------------------------
+
+PHASE33_RUNG_PREFIX: str = "p33_"
+PHASE33_EXEMPTION_RUNG: int = 1
+PHASE33_ELO_RUNG: int = 2
+
+# DECLARED, AND DELIBERATELY NOT REGISTERED. Plan 33-14 provided for a third rung
+# only on the branch where Task 1's measurement showed the precipitation
+# partition fix moves a gold column. IT DOES NOT: the premise was measured in two
+# independent halves and recorded in `tests.phase33_state.PRECIP_PARTITION_PREMISE`
+# -- 0 of 6,499 rows moved across all twelve precipitation columns, maximum
+# absolute delta 0.0, with a pre-fix control reporting the same zero -- and
+# `PRECIP_PARTITION_PROMOTED_TO_ITS_OWN_RUNG` is False. The owner ruled
+# `two-rung-ladder` on 2026-09-14 on that evidence.
+#
+# The integer and its cause are recorded so a later reader can see that the third
+# rung was CONSIDERED and ruled out by measurement, rather than overlooked. It is
+# absent from `RUNG_CAUSES_BY_PREFIX` and has no attribution function, because
+# D33-35 forbids running an empty-diff rung to prove a null and shipping the
+# machinery for a rebuild that will never run is the code analogue of exactly
+# that. Registering it would also make `require_rung_ladder(dir, 3, "p33_")`
+# demand a document describing a rebuild nobody performed.
+PHASE33_PRECIP_RUNG: int = 3
+
+PHASE33_EXEMPTION_RUNG_CAUSE: str = (
+    "THE NORMALIZATION-EXEMPTION WIDENING (D33-34(a), .planning/WINDOWS.md rows "
+    "33 and 40), and NOTHING else: the level-preservation exemption in "
+    "scripts/build_features.normalize_combined_features widens from a filter "
+    "that could only ever yield the single column `weather_coverage` to a "
+    "PREDICATE resolving the nineteen weather indicator flags and the six "
+    "sibling `*_coverage` columns alongside it. Those twenty-five reached gold "
+    "z-scored into many distinct decimals -- `is_snow` carried 274 distinct "
+    "values and `wind_moderate` 5,667, so the same snowy game read differently "
+    "in week 3 than in week 15 -- and the six coverage siblings carried the "
+    "mirror defect, where an uncovered row read far CLOSER to the covered level "
+    "than to the uncovered one. No column is added, none removed, no row moves"
+)
+
+PHASE33_ELO_RUNG_CAUSE: str = (
+    "THE ELO RE-DERIVATION (Plan 33-13, D33-34(c)), and NOTHING else: gold is "
+    "rebuilt on the canonical 2002-2025 Elo chain re-derived in Wave 13, "
+    "replacing the fabricated 0.0 Elo that 4,288 of 6,499 gold rows carried. It "
+    "moves raw Elo, the derived differences and probabilities, the uncertainty "
+    "pair, the rank and percentile columns and the momentum columns. No column "
+    "is added, none removed, no row moves"
+)
+
+PHASE33_PRECIP_RUNG_CAUSE: str = (
+    "NOT RUN. The precipitation one-hot partition fix on the live-forecast path "
+    "(D33-34(b), WINDOWS.md row 39) would have taken this rung had it moved any "
+    "gold column. It does not: measured READ-ONLY over the whole historical "
+    "corpus under the fixed code, 0 of 6,499 rows moved in any of the twelve "
+    "precipitation columns, because the 1,652 rows carrying a precip_prob are "
+    "exactly the indoor games -- which take the dome branch and never reach the "
+    "band helper -- while all 4,847 outdoor games carry no probability and take "
+    "the mm-only branch the fix leaves byte-unchanged"
+)
+
+_PHASE33_LEVEL_PRESERVED_CACHE: tuple[str, ...] | None = None
+
+
+def _gold_column_names(base_path: Path | None = None) -> tuple[str, ...]:
+    """Every column name present in any gold matrix, read from the parquet SCHEMA.
+
+    The schema rather than the frame: this is a NAME question, and reading three
+    195-column frames to answer it would cost seconds for nothing. Strictly
+    read-only with respect to ``data/``.
+    """
+    import pyarrow.parquet as pq
+
+    root = (
+        Path(base_path)
+        if base_path is not None
+        else Path(get_settings().config.data.root_path)
+    )
+    names: set[str] = set()
+    for matrix in GOLD_MATRICES:
+        path = root / "gold" / f"{matrix}.parquet"
+        if path.exists():
+            names |= set(pq.read_schema(path).names)
+    return tuple(sorted(names))
+
+
+def phase33_level_preserved_family(base_path: Path | None = None) -> tuple[str, ...]:
+    """THE EXEMPTION RUNG'S DECLARED FAMILY, resolved through the BUILDER's predicate.
+
+    NOT A SECOND LIST. ``FeatureMatrixBuilder._level_preserved_columns`` is split
+    into its two arms precisely so this function can call the SAME two arms over
+    the same inputs the build sees, rather than re-expressing the rule here --
+    which is the D30-02 second-list failure mode, and which
+    ``_discrete_indicator_predicate`` twenty screens up already refuses for the
+    CR-02 predicate on identical grounds.
+
+    The two arms need different universes, and each gets the one it is about:
+
+    * The SUFFIX arm is a NAME question, so it runs over the gold column set.
+    * The INDICATOR arm is a VALUE question about the frame as it ENTERS
+      normalization, so it runs over silver ``weather_features`` -- the frame the
+      gold build merges. Judging discreteness on GOLD would be meaningless:
+      normalization is the very thing that destroys it, which is the defect this
+      rung exists to fix.
+
+    Raises:
+        ValueError: when the resolved family is empty, which would make the rung
+            refuse every move it exists to attribute.
+    """
+    global _PHASE33_LEVEL_PRESERVED_CACHE
+    if _PHASE33_LEVEL_PRESERVED_CACHE is not None:
+        return _PHASE33_LEVEL_PRESERVED_CACHE
+
+    from data.storage import load_dataframe
+    from features.weather import WEATHER_FEATURE_COLUMNS_BY_BUILDER
+    from scripts.build_features import FeatureMatrixBuilder
+
+    weather = load_dataframe("weather_features", "silver", "parquet")
+    declared = set(WEATHER_FEATURE_COLUMNS_BY_BUILDER["full"])
+    preserved = [
+        column
+        for column in weather.columns
+        if column != "game_id" and column in declared
+    ]
+
+    family = tuple(
+        sorted(
+            set(
+                FeatureMatrixBuilder._level_preserved_suffix_columns(
+                    _gold_column_names(base_path)
+                )
+            )
+            | set(
+                FeatureMatrixBuilder._level_preserved_indicator_columns(
+                    weather, preserved
+                )
+            )
+        )
+    )
+    if not family:
+        msg = (
+            "the level-preservation predicate resolved to NO column, so the "
+            "Phase-33 exemption rung would refuse every move it exists to "
+            "attribute. Refusing to derive an empty family rather than judging "
+            "against one."
+        )
+        raise ValueError(msg)
+    _PHASE33_LEVEL_PRESERVED_CACHE = family
+    return family
+
+
+def phase33_elo_family() -> tuple[str, ...]:
+    """THE ELO RUNG'S DECLARED FAMILY, from the ONE registry that owns it.
+
+    Derived from ``features.elo_features.ELO_FEATURE_COLUMNS`` -- the tuple
+    ``combine_features`` itself merges by -- rather than re-listed.
+
+    NO WIDENING IS NEEDED, and that is a CORRECTION to Plan 33-14's own
+    instruction, which said to derive this from the registry "and widen to the
+    rank, percentile and momentum columns that registry does not name". MEASURED:
+    the registry names all fourteen, ranks, percentiles and momentum included.
+    The widening the plan provided for would have been a second hand-written list
+    beside a registry that was already complete.
+
+    The claim is CHECKED rather than assumed, because it is the one that matters:
+    ``_add_rank_features`` (``features/elo_features.py:153-258``) computes ranks
+    over the same-week snapshot POPULATION, so one game's corrected Elo moves the
+    rank columns of EVERY OTHER GAME in that week. Rank, percentile and momentum
+    therefore propagate FURTHER than the two raw Elo columns, and a family that
+    omitted them would under-declare the rung's blast radius. If the registry
+    ever stops naming them this refuses rather than silently narrowing.
+
+    Raises:
+        ValueError: when the registry names no rank, percentile or momentum
+            column, so the declared family would under-state the blast radius.
+    """
+    from features.elo_features import ELO_FEATURE_COLUMNS
+
+    family = tuple(ELO_FEATURE_COLUMNS)
+    for marker in ("rank", "percentile", "momentum"):
+        if not any(marker in _canonical(column) for column in family):
+            msg = (
+                f"features.elo_features.ELO_FEATURE_COLUMNS names no {marker!r} "
+                "column, so the Phase-33 Elo rung's declared family would "
+                "under-state its blast radius. Same-week ranks are computed over "
+                "the whole snapshot population (features/elo_features.py:153-258), "
+                "so one game's corrected Elo moves the rank columns of every other "
+                "game that week. Refusing rather than declaring a family that "
+                "cannot cover what the rung moves."
+            )
+            raise ValueError(msg)
+    return family
+
+
+PHASE33_EXEMPTION_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE33_EXEMPTION_RUNG,
+    "prefix": PHASE33_RUNG_PREFIX,
+    "cause": PHASE33_EXEMPTION_RUNG_CAUSE,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to ONE declared family, resolved through the BUILDER's own "
+        "level-preservation predicate rather than a second list: the columns "
+        "phase33_level_preserved_family() names, pinned by name in "
+        "tests.phase33_state.GOLD_LEVEL_PRESERVED_COLUMNS_33_14 and asserted "
+        "equal in BOTH directions against live gold. ANY season, because a "
+        "normalization change moves every season the column was normalized in"
+    ),
+    "declared_families": ("level_preserved",),
+    "family_mechanisms": {
+        "level_preserved": "predicate shared with the builder, pinned by name",
+    },
+    "declared_before_the_rebuild": True,
+    "owner_ruling": (
+        "the owner ruled 'two-rung-ladder' on 2026-09-14, having been shown "
+        "Task 1's measured precipitation premise, both per-rung expected change "
+        "sets, the re-anchored widths (195, 196, 195) and the statement that "
+        "tripwire 2 stays red"
+    ),
+}
+
+PHASE33_ELO_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE33_ELO_RUNG,
+    "prefix": PHASE33_RUNG_PREFIX,
+    "cause": PHASE33_ELO_RUNG_CAUSE,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to ONE declared family, SOURCE-DERIVED from "
+        "features.elo_features.ELO_FEATURE_COLUMNS: raw Elo, the derived "
+        "differences and probabilities, the uncertainty pair, the rank and "
+        "percentile columns and the momentum columns"
+    ),
+    "declared_families": ("elo",),
+    "family_mechanisms": {"elo": "source-derived constant"},
+    "declared_before_the_rebuild": True,
+    # THE SLICE EXPECTATION IS A PREDICTION, NOT A GUARANTEE, and saying so in
+    # the signature is what stops a later reader treating it as a promise. The
+    # Elo builder RESETS at the start of its requested range and processes
+    # chronologically (scripts/build_elo.py:142-205), so a corrupted 2018-start
+    # chain can legitimately differ THROUGHOUT later seasons; and same-week ranks
+    # are computed over the whole snapshot population, so one game's corrected
+    # Elo moves the rank columns of every other game that week. Propagation past
+    # the declared slice set is REPORTED WITH A WRITTEN EXPLANATION, never
+    # hard-failed -- blocking on it would block a CORRECT rebuild for disagreeing
+    # with a guess. The owner accepted exactly this framing on 2026-09-14.
+    "expected_slices_are_a_prediction": True,
+    "slice_propagation_is_reported_not_fatal": True,
+}
+
+PHASE33_PRECIP_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE33_PRECIP_RUNG,
+    "prefix": PHASE33_RUNG_PREFIX,
+    "cause": PHASE33_PRECIP_RUNG_CAUSE,
+    "run": False,
+    "why_not_run": (
+        "Task 1 MEASURED the premise in two independent halves rather than "
+        "asserting it. VALUE HALF: the full weather builder driven read-only over "
+        "the whole historical corpus under the fixed code moved 0 of 6,499 rows "
+        "in all twelve precipitation columns, maximum absolute delta 0.0, with a "
+        "pre-fix control reporting the same zero. STRUCTURAL HALF: the gold build "
+        "loads silver weather_features and never invokes the weather calculator. "
+        "D33-35 forbids running an empty-diff rung to prove a null, and the owner "
+        "ruled 'two-rung-ladder' on that measurement"
+    ),
+}
+
+RUNG_CAUSES_BY_PREFIX[PHASE33_RUNG_PREFIX] = {
+    PHASE33_EXEMPTION_RUNG: PHASE33_EXEMPTION_RUNG_CAUSE,
+    PHASE33_ELO_RUNG: PHASE33_ELO_RUNG_CAUSE,
+}
+
+
 def _rung_causes(prefix: str = "") -> dict[int, str]:
     """The cause table *prefix* names.
 
@@ -1330,6 +1634,154 @@ def _per_season_digests(
     }
 
 
+def _per_slice_digests(frame: pd.DataFrame, columns) -> dict[str, str]:
+    """Return ONE digest per ``(season, week)`` slice over *columns*.
+
+    ``_per_season_digests``'s idiom EXTENDED TO A WEEK KEY, not a second hasher:
+    the same ``game_id`` ordering and the same ``_column_bytes`` encoding, so a
+    slice digest is comparable in kind with everything else this module writes.
+
+    WHY A WEEK KEY EXISTS AT ALL (Plan 33-14, cross-AI review finding). A
+    SEASON-only constant cannot express "2018 week 1". Phase 33's Elo rung
+    declares an expected change set of every season 2002-2017 PLUS the single
+    pair ``(2018, 1)``, and a per-season instrument can only either claim all of
+    2018 moved or claim none of it did. Both are false, and a declaration that
+    cannot be evaluated is not a declaration.
+
+    WHY ONE DIGEST PER SLICE RATHER THAN ONE PER COLUMN PER SLICE. The question a
+    slice set answers is "did this rung reach these rows", which is a ROW
+    question. WHICH columns moved is already answered per season by
+    ``compare_fingerprints``, and the two together say more than either alone.
+
+    Args:
+        frame: A gold matrix carrying ``game_id``, ``season`` and ``week``.
+        columns: The columns whose values the digest covers. Columns absent from
+            *frame* are skipped, so a family naming a column this matrix does not
+            carry degrades to the columns it does.
+
+    Returns:
+        A map from ``"{season}|{week}"`` to a 16-character digest.
+    """
+    present = [column for column in columns if column in frame.columns]
+    ordered = frame.sort_values("game_id")
+    digests: dict[str, str] = {}
+    keys = list(
+        zip(ordered["season"].to_numpy(), ordered["week"].to_numpy(), strict=True)
+    )
+    for season, week in sorted({(int(s), int(w)) for s, w in keys}):
+        mask = (ordered["season"] == season) & (ordered["week"] == week)
+        subset = ordered.loc[mask]
+        payload = b"".join(
+            _column_bytes(cast("pd.Series", subset[column])) for column in present
+        )
+        digests[f"{season}|{week}"] = hashlib.sha256(payload).hexdigest()[:16]
+    return digests
+
+
+def gold_slice_digests(columns, base_path: Path | None = None) -> dict[str, dict]:
+    """Per-matrix ``(season, week)`` slice digests over *columns*, read-only.
+
+    The companion to ``fingerprint_gold`` for a ladder that has to say WHICH
+    ``(season, week)`` slices a rung moved. Like rung 0, it can only be taken
+    while the gold it describes still stands.
+
+    Args:
+        columns: The causal column family to digest.
+        base_path: Data root override; defaults to the configured one.
+
+    Returns:
+        ``{matrix: {"season|week": digest}}``, with a ``{"missing": True}`` entry
+        for any matrix absent from disk.
+    """
+    root = (
+        Path(base_path)
+        if base_path is not None
+        else Path(get_settings().config.data.root_path)
+    )
+    result: dict[str, dict] = {}
+    for matrix in GOLD_MATRICES:
+        path = root / "gold" / f"{matrix}.parquet"
+        if not path.exists():
+            result[matrix] = {"missing": True}
+            continue
+        result[matrix] = _per_slice_digests(
+            pd.read_parquet(path, engine="pyarrow"), columns
+        )
+    return result
+
+
+def changed_slices(before: dict, after: dict) -> dict[str, list[tuple[int, int]]]:
+    """Return, per matrix, the ``(season, week)`` slices whose digest moved.
+
+    Args:
+        before: A ``gold_slice_digests`` document taken before the rebuild.
+        after: The same, taken after.
+
+    Returns:
+        ``{matrix: [(season, week), ...]}``, sorted.
+    """
+    moved: dict[str, list[tuple[int, int]]] = {}
+    for matrix in GOLD_MATRICES:
+        b = before.get(matrix) or {}
+        a = after.get(matrix) or {}
+        if b.get("missing") or a.get("missing"):
+            moved[matrix] = []
+            continue
+        keys = sorted(
+            {
+                (int(key.split("|")[0]), int(key.split("|")[1]))
+                for key in set(b) | set(a)
+            }
+        )
+        moved[matrix] = [
+            (season, week)
+            for season, week in keys
+            if b.get(f"{season}|{week}") != a.get(f"{season}|{week}")
+        ]
+    return moved
+
+
+def collapse_whole_seasons(
+    moved: list[tuple[int, int]], universe: list[tuple[int, int]]
+) -> list[tuple[int, int | None]]:
+    """Collapse a moved slice list to ``(season, None)`` where EVERY week moved.
+
+    The declared sets in ``tests.phase33_state`` use ``(season, None)`` to mean a
+    whole season, so an observed set recorded only as concrete pairs could never
+    be compared against them -- every pair would read as "outside the declared
+    set" and demand an explanation for a season that was declared in full. This
+    is what makes the two sets commensurable.
+
+    A season is collapsed ONLY when every ``(season, week)`` slice the matrix
+    carries for it moved. A season that moved in some weeks and not others keeps
+    its individual pairs, because "most of 2019 moved" is a different fact from
+    "2019 moved" and the difference is exactly what a partial move looks like.
+
+    Args:
+        moved: The observed moved slices.
+        universe: Every ``(season, week)`` slice present at all.
+
+    Returns:
+        The collapsed set, sorted, with ``(season, None)`` for a whole season.
+    """
+    moved_set = set(moved)
+    by_season: dict[int, set[int]] = {}
+    for season, week in universe:
+        by_season.setdefault(season, set()).add(week)
+
+    collapsed: list[tuple[int, int | None]] = []
+    for season in sorted(by_season):
+        weeks = by_season[season]
+        moved_weeks = {week for s, week in moved_set if s == season}
+        if not moved_weeks:
+            continue
+        if moved_weeks == weeks:
+            collapsed.append((season, None))
+        else:
+            collapsed.extend((season, week) for week in sorted(moved_weeks))
+    return collapsed
+
+
 def _gold_frame_loader(base_path: Path | None = None):
     """Return a lazy, cached ``matrix -> DataFrame | None`` reader over live gold.
 
@@ -1450,6 +1902,14 @@ def _expected_signature(
             f"{sorted(causes)}."
         )
         raise ValueError(msg)
+
+    if prefix == PHASE33_RUNG_PREFIX:
+        # Returned as a COPY, for the reason the Phase-33.1 branch below records:
+        # a caller must not be able to edit the prediction it is about to be
+        # judged against.
+        if rung == PHASE33_ELO_RUNG:
+            return dict(PHASE33_ELO_RUNG_EXPECTED_SIGNATURE)
+        return dict(PHASE33_EXEMPTION_RUNG_EXPECTED_SIGNATURE)
 
     if prefix == PHASE331_RUNG_PREFIX:
         # The PRE-DECLARED change set, returned as a copy so a caller cannot edit
@@ -1818,6 +2278,11 @@ def _attribute_one_matrix(
     rung, detail, diff, verdict, fail, expected_removed=None, rung_prefix: str = ""
 ) -> bool:
     """Apply *rung*'s predicted signature to one matrix. Returns whether it blocks."""
+    if rung_prefix == PHASE33_RUNG_PREFIX:
+        if rung == PHASE33_ELO_RUNG:
+            return _attribute_phase33_elo(detail, diff, verdict, fail)
+        return _attribute_phase33_exemption(detail, diff, verdict, fail)
+
     if rung_prefix == PHASE331_RUNG_PREFIX:
         if rung == PHASE331_RUNG3:
             return _attribute_phase331_rung3(detail, diff, verdict, fail)
@@ -2460,6 +2925,187 @@ def _attribute_phase331_rung3(detail: dict, diff: dict, verdict: dict, fail) -> 
             "unlike rung 1, where 207 rows genuinely arrived. `ok` must be True "
             "unconditionally (Ruling N2): the remedy is to understand the "
             "column, never to widen this declaration after the diff is seen"
+        )
+
+    return blocking
+
+
+def _phase33_structure(detail: dict, diff: dict, fail, label: str, what: str) -> bool:
+    """The STRUCTURAL half both Phase-33 rungs predict: the SHAPE does not move.
+
+    Shared by the two rungs because they make the SAME structural claim, unlike
+    Phase 33.1's rungs 1 and 3 -- which is exactly why that phase needed two
+    helpers and this one needs one. Neither Phase-33 rung adds a column, removes
+    one, changes a width or moves a row: one re-runs a normalization stage and
+    the other re-derives an existing family's values.
+
+    A structural surprise BLOCKS, while an out-of-family column move is a
+    FINDING. The asymmetry is deliberate and it is the plan's: a column arriving
+    or leaving is a change nobody declared and cannot be explained after the
+    fact, whereas a moved column outside the declared family is required to carry
+    a written explanation and is reported rather than gated.
+
+    Args:
+        detail: One matrix's ``compare_fingerprints`` entry.
+        diff: The normalized diff for that matrix.
+        fail: The per-matrix failure recorder.
+        label: How to name this rung in a message.
+        what: One clause saying what the rung must have moved, used by the
+            empty-diff refusal.
+
+    Returns:
+        Whether this matrix BLOCKS the phase on structure alone.
+    """
+    blocking = False
+    width_before = detail["width_before"]
+    width_after = detail["width_after"]
+    rows_before = detail.get("rows_before")
+    rows_after = detail.get("rows_after")
+
+    for column in diff["added"]:
+        blocking = True
+        fail(
+            f"column '{column}' was ADDED at {label}, which adds NO column. This "
+            "rung changes what an EXISTING family contains; an arriving column "
+            "is a structural change nobody declared"
+        )
+    for column in diff["removed"]:
+        blocking = True
+        fail(f"column '{column}' was REMOVED at {label}; this rung removes none")
+
+    if width_after != width_before:
+        fail(
+            f"width moved {width_before} -> {width_after} at {label}, which "
+            "predicts an UNCHANGED width"
+        )
+    if rows_before != rows_after:
+        fail(
+            f"rows moved {rows_before} -> {rows_after} at {label}. The rung "
+            "re-derives the SAME games from the SAME silver row population, so a "
+            "row-count move means the rebuild did something this rung did not "
+            "declare"
+        )
+
+    if (
+        not diff["changed"]
+        and not diff["added"]
+        and not diff["removed"]
+        and not diff["renames"]
+        and not diff["dtype_preserved"]
+    ):
+        fail(
+            f"{label} moved no column at all. {what} MUST move something, and an "
+            "empty diff means the rebuild did not do what it claimed"
+        )
+
+    return blocking
+
+
+def _attribute_phase33_exemption(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """The exemption rung: ONE declared family, resolved through the builder's predicate.
+
+    A moved column inside ``phase33_level_preserved_family()`` is attributed. A
+    moved column outside it is UNATTRIBUTED and fails, but does NOT block: the
+    plan's instruction is to PARTITION rather than gate, with every out-of-family
+    move carrying a written explanation in
+    ``tests.phase33_state.GOLD_REBUILD_UNEXPLAINED_CHANGES_EXEMPTION``. A rung
+    that hard-failed here would stop the ladder on the very observation it exists
+    to record.
+
+    NO SEASON RESTRICTION, and its absence is a declaration rather than an
+    oversight. A normalization change moves every season the column was
+    normalized in, so restricting the family to a season list would be a
+    prediction this rung has no basis for -- the same reasoning Phase 33.1's
+    rung 3 recorded for its own weather family.
+
+    Returns:
+        Whether this matrix BLOCKS the phase.
+    """
+    verdict["changed_by_family"] = {"level_preserved": []}
+    blocking = _phase33_structure(
+        detail,
+        diff,
+        fail,
+        "the Phase-33 exemption rung",
+        "Twenty-five level-bearing columns were z-scored into many distinct "
+        "decimals -- is_snow alone carried 274 -- and returning them to their "
+        "recorded levels",
+    )
+    family = {_canonical(name) for name in phase33_level_preserved_family()}
+
+    for column in sorted(diff["changed"]):
+        if column in family:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["level_preserved"].append(column)
+            continue
+        seasons = sorted(diff["changed"][column])
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at the Phase-33 exemption rung in "
+            f"season(s) {', '.join(seasons) or '(none attributed)'} but is NOT a "
+            "member of the level-preservation family the builder's own predicate "
+            "resolves. The rung's ONE cause is the level exemption widening, "
+            "which cannot reach a column it does not exempt. This is a FINDING "
+            "rather than a block: record it in "
+            "GOLD_REBUILD_UNEXPLAINED_CHANGES_EXEMPTION with a written "
+            "explanation naming the causal column and why the normalization "
+            "change could reach it. Do NOT construct a second rung to absorb "
+            "it -- inventing a rung for an unexpected change is the shape of "
+            "absorbing a disclosure"
+        )
+
+    return blocking
+
+
+def _attribute_phase33_elo(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """The Elo rung: ONE source-derived family, propagation REPORTED not gated.
+
+    The family is ``features.elo_features.ELO_FEATURE_COLUMNS``, which already
+    names the rank, percentile and momentum columns -- the ones that propagate
+    FURTHER than raw Elo, because same-week ranks are computed over the whole
+    snapshot population.
+
+    NO SEASON RESTRICTION HERE EITHER, and here the reason is load-bearing rather
+    than merely sufficient. The plan declares an expected slice set of 2002-2017
+    plus ``(2018, 1)`` -- but ``build_elo_with_snapshots`` RESETS the Elo system
+    at the start of its requested range and processes chronologically
+    (``scripts/build_elo.py:142-205``), so a corrupted 2018-start chain can
+    legitimately differ throughout later seasons. A season restriction would
+    therefore refuse a CORRECT rebuild for disagreeing with a guess, which is the
+    one failure this rung must not have. The slice comparison happens against the
+    DECLARED set in ``tests.phase33_state``, where an out-of-set slice is
+    reported with a written explanation; it is deliberately not a gate here.
+
+    Returns:
+        Whether this matrix BLOCKS the phase.
+    """
+    verdict["changed_by_family"] = {"elo": []}
+    blocking = _phase33_structure(
+        detail,
+        diff,
+        fail,
+        "the Phase-33 Elo rung",
+        "Replacing a fabricated 0.0 Elo on 4,288 of 6,499 rows with the "
+        "re-derived 2002-2025 chain",
+    )
+    family = {_canonical(name) for name in phase33_elo_family()}
+
+    for column in sorted(diff["changed"]):
+        if column in family:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["elo"].append(column)
+            continue
+        seasons = sorted(diff["changed"][column])
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at the Phase-33 Elo rung in season(s) "
+            f"{', '.join(seasons) or '(none attributed)'} but is NOT a member of "
+            "features.elo_features.ELO_FEATURE_COLUMNS. The rung's ONE cause is "
+            "the Elo re-derivation, which reaches the Elo family and the columns "
+            "derived from it. This is a FINDING rather than a block: record it in "
+            "GOLD_REBUILD_UNEXPLAINED_CHANGES_ELO with a written explanation "
+            "naming the causal column and why a chronological rebuild could "
+            "reach it. Do NOT construct a second rung to absorb it"
         )
 
     return blocking

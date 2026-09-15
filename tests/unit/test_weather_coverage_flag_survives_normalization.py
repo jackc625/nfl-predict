@@ -74,6 +74,7 @@ from features.weather import (
     WEATHER_FLAG_COLUMNS,
 )
 from scripts.build_features import FeatureMatrixBuilder
+from tests.phase33_state import GOLD_LEVEL_PRESERVED_COLUMNS_33_14
 
 # A constant weather column that is NOT the coverage flag. Control 4 rides on
 # it: it travels the identical path and must still be z-scored flat, or the
@@ -307,6 +308,193 @@ class TestTheColumnIsNamedOnce:
             WEATHER_COVERAGE_COLUMN
             not in WEATHER_FEATURE_COLUMNS_BY_BUILDER["compressed"]
         )
+
+
+class TestTheExemptionIsAPredicateWithAPinnedResolvedSet:
+    """The one-column filter became a PREDICATE (Plan 33-14 Task 3, D33-34(a)).
+
+    KIND: unit, through the REAL ``normalize_combined_features`` call site. No
+    I/O -- the live-gold both-directions check is a Task-3 ``<verify>`` command,
+    because this module reads no data store and that constraint is worth keeping.
+
+    WHAT CHANGED AND WHY. The owner ruled on 2026-09-14 that
+    ``.planning/WINDOWS.md`` rows 33 and 40 -- both marked "OWNER DECISION DUE
+    BEFORE ANY RE-FIT" -- are TAKEN before Wave 15's re-fit rather than carried
+    past it. Row 33: nineteen weather yes/no flags reach gold z-scored into many
+    distinct decimals, ``is_snow`` into 274 of them and ``wind_moderate`` into
+    5,667, so the same snowy game reads differently in week 3 than in week 15.
+    Row 40: six sibling ``*_coverage`` flags carry the mirror defect, where an
+    uncovered row reads far CLOSER to the covered level than to the uncovered
+    one.
+
+    THE TWO ARMS CARRY DIFFERENT RULES, AND THAT IS THE POINT.
+    A predicate that widens a REFUSAL fails safe. This one widens an EXEMPTION,
+    so a column it wrongly selects silently stops being normalized and reaches
+    the re-fit as a raw level -- threat T-33-81. So:
+
+    * the NAME arm (``*_coverage``) has NO varying-levels requirement, because a
+      coverage flag's canonical state is CONSTANT and that constant being
+      z-scored to 0.0 was the entire Phase-33.1 defect;
+    * the VALUE arm DOES require more than one level, because without it the
+      predicate selects ``precip_prob``, ``raw_precip_prob`` and
+      ``extreme_weather`` -- three columns nobody declared, two of them
+      continuous PROBABILITIES that are "discrete" only by accident of today's
+      corpus.
+    """
+
+    def test_the_pinned_set_is_twenty_six_names_with_no_duplicate(self) -> None:
+        """The declaration's own shape, checked before anything rests on it."""
+        pinned = list(GOLD_LEVEL_PRESERVED_COLUMNS_33_14)
+        assert len(pinned) == 26, f"expected 26 pinned names, got {len(pinned)}"
+        assert len(set(pinned)) == len(pinned), "the pinned set has a duplicate"
+
+        coverage = [name for name in pinned if name.endswith("_coverage")]
+        assert len(coverage) == 7, (
+            "weather_coverage plus the six siblings WINDOWS row 40 names. Got: "
+            f"{sorted(coverage)}"
+        )
+        assert WEATHER_COVERAGE_COLUMN in coverage
+        assert len(pinned) - len(coverage) == 19, (
+            "the nineteen weather indicator flags WINDOWS row 33 names"
+        )
+
+    def test_a_varying_weather_flag_comes_back_at_its_recorded_levels(self) -> None:
+        """ROW 33, the defect itself: a two-level flag must not become a decimal.
+
+        ``is_snow`` is the measured worst case in the ledger -- 274 distinct
+        values in gold for a column whose only honest answers are yes and no.
+        """
+        builder = _builder_with_merged_weather()
+        levels = [1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0]
+        frame = _combined_frame([1.0] * len(WEEKS))
+        frame["is_snow"] = levels
+
+        result = builder.normalize_combined_features(frame)
+
+        assert result["is_snow"].tolist() == levels, (
+            "a weather indicator flag's LEVELS are its meaning. Measured in gold "
+            "before this fix: is_snow carried 274 distinct values"
+        )
+
+    def test_a_sibling_coverage_column_comes_back_at_its_recorded_levels(self) -> None:
+        """ROW 40: the six siblings are caught by the NAME arm, not by their values.
+
+        ``home_injury_coverage`` read a constant 0.0 across 2002-2008 -- which
+        are genuinely UNCOVERED -- while 2009-2024 ranged -15.97 to +0.207, so an
+        uncovered row sat far closer to the covered level than to the uncovered
+        one.
+        """
+        builder = _builder_with_merged_weather()
+        levels = [1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0]
+        frame = _combined_frame([1.0] * len(WEEKS))
+        frame["home_injury_coverage"] = levels
+
+        result = builder.normalize_combined_features(frame)
+
+        assert result["home_injury_coverage"].tolist() == levels, (
+            "a *_coverage column is caught by the NAME arm. Its levels are its "
+            "meaning whatever its values happen to be"
+        )
+
+    def test_a_continuous_weather_measurement_is_still_z_scored(self) -> None:
+        """THE FALSE-POSITIVE CONTROL. The predicate must not swallow a measurement.
+
+        ``temp_f`` is a real continuous reading. A widening exemption that took
+        it would send an un-normalized temperature into the re-fit, which is the
+        direction that fails UNSAFE.
+        """
+        builder = _builder_with_merged_weather()
+        frame = _combined_frame([1.0] * len(WEEKS))
+        frame["temp_f"] = [31.0, 44.5, 58.2, 62.0, 70.1, 48.8, 35.4, 55.0]
+
+        result = builder.normalize_combined_features(frame)
+
+        assert result["temp_f"].tolist() != frame["temp_f"].tolist(), (
+            "a continuous weather measurement must still be normalized; the "
+            "exemption is for columns whose LEVELS are their meaning"
+        )
+
+    def test_a_single_level_indicator_is_still_z_scored(self) -> None:
+        """THE T-33-81 GUARD, and the clause that makes the predicate resolve to 26.
+
+        Without the varying-levels clause the value arm selects three columns
+        nobody declared. On today's corpus ``precip_prob`` and
+        ``raw_precip_prob`` each carry exactly ONE non-null value, so they
+        satisfy ``_is_discrete_indicator`` while being continuous PROBABILITIES
+        -- and the exemption would FLICKER between generations, because a 2026
+        live forecast supplying real probabilities makes them continuous again
+        and silently drops them back out.
+
+        ``extreme_weather`` is used here because it makes the clause OBSERVABLE:
+        a constant 1.0 that came back 1.0 would prove the column was preserved,
+        and a constant 1.0 that comes back 0.0 proves it was normalized.
+
+        THE COST IS RECORDED RATHER THAN HIDDEN: a genuinely level-bearing flag
+        that happens to be CONSTANT is not preserved by the value arm. On today's
+        corpus this is a no-op -- ``extreme_weather`` is a constant 0.0 in silver
+        and a constant 0.0 in gold -- and the coverage columns, where constancy
+        is the canonical case, are caught by the NAME arm instead. If such a flag
+        ever gained a second level the predicate would select it, the pinned-set
+        equality would fail loudly, and it would need a declaration. That is the
+        safe direction for a widening exemption.
+        """
+        builder = _builder_with_merged_weather()
+        frame = _combined_frame([1.0] * len(WEEKS))
+        frame["extreme_weather"] = [1.0] * len(WEEKS)
+
+        result = builder.normalize_combined_features(frame)
+
+        assert set(result["extreme_weather"].tolist()) == {0.0}, (
+            "a SINGLE-level indicator is not level-bearing; it is discrete only "
+            "by accident of the data, and exempting it is T-33-81"
+        )
+
+    def test_the_resolved_set_is_the_union_of_the_two_arms(self) -> None:
+        """The predicate is the two arms and nothing else, asserted directly."""
+        frame = _combined_frame([1.0] * len(WEEKS))
+        frame["is_snow"] = [1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0]
+        frame["home_injury_coverage"] = [1.0] * len(WEEKS)
+        frame["temp_f"] = [31.0, 44.5, 58.2, 62.0, 70.1, 48.8, 35.4, 55.0]
+        frame["extreme_weather"] = [1.0] * len(WEEKS)
+        preserved = WEATHER_FEATURE_COLUMNS_BY_BUILDER["full"]
+
+        resolved = FeatureMatrixBuilder._level_preserved_columns(frame, preserved)
+
+        assert set(resolved) == {
+            WEATHER_COVERAGE_COLUMN,
+            "home_injury_coverage",
+            "is_snow",
+        }, (
+            "the NAME arm takes both coverage columns whatever their values; the "
+            "VALUE arm takes the varying flag and refuses the constant one and "
+            f"the continuous measurement. Got: {sorted(resolved)}"
+        )
+
+    def test_the_narrow_to_nothing_refusal_still_fires_under_the_predicate(
+        self,
+    ) -> None:
+        """The widening must not have disarmed the refusal it sits beneath.
+
+        ``TestTheExemptionCannotNARROWToNothingInSilence`` pins this for the
+        pre-widening shape. It is re-asserted HERE because a predicate that can
+        find ``weather_coverage`` by NAME could plausibly have been read as
+        making the refusal redundant -- it is not. The refusal fires on the
+        PRESERVING SET losing the flag, which is a real defect in its own right,
+        and it fires BEFORE the predicate runs.
+        """
+        builder = _builder_with_merged_weather()
+        builder.missing_preserving_columns = {
+            "full": tuple(
+                column
+                for column in builder.missing_preserving_columns["full"]
+                if column != WEATHER_COVERAGE_COLUMN
+            )
+        }
+
+        with pytest.raises(ValueError) as excinfo:
+            builder.normalize_combined_features(_combined_frame([1.0] * len(WEEKS)))
+
+        assert "NO OBSERVATION" in str(excinfo.value)
 
 
 @pytest.mark.parametrize("coverage", [[1.0] * 8, [0.0] * 8])

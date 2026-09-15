@@ -11390,3 +11390,230 @@ PRECIP_PARTITION_PREMISE: dict[str, object] = {
 # D33-35 forbids the alternative by name: an empty-diff rung is not run to prove
 # a null.
 PRECIP_PARTITION_PROMOTED_TO_ITS_OWN_RUNG: bool = False
+
+
+# ---------------------------------------------------------------------------
+# THE WAVE-14 GOLD REBUILD LADDER, DECLARED BEFORE EITHER RUNG RAN.
+#
+# APPENDED by Plan 33-14 Task 3 on 2026-09-14, BEFORE anything was rebuilt.
+# Nothing above this line was edited.
+#
+# DECLARING BOTH RUNGS' EXPECTATIONS NOW -- not just the one about to run -- is
+# deliberate. A declaration written after a diff has been seen is a
+# transcription wearing a prediction's clothes, and Phase 33.1's Ruling N2
+# prohibition on widening a declaration after the fact is the precedent. The
+# Elo rung's set below is therefore in committed source BEFORE the exemption
+# rung runs, let alone the Elo rung itself.
+#
+# THE OWNER RULED `two-rung-ladder` ON 2026-09-14, at this plan's Task-2
+# blocking-human checkpoint, having been shown and having confirmed reading:
+# Task 1's measured precipitation premise (0 of 6,499 rows moved, promotion
+# flag False); the reason that premise holds being STRONGER than the plan
+# predicted; the dead-attribute finding; both per-rung expected change sets;
+# the re-anchored widths (195, 196, 195); and the statement that tripwire 2
+# stays red. `three-rung-ladder` was rejected as the one option Task 1's
+# evidence positively rules out. `merge-into-one-rung` was rejected with the
+# Phase-33.1 unattributable-45-columns precedent stated. `exemption-only` was
+# rejected because it would leave Plan 33-15 re-fitting on 4,288 rows of
+# fabricated 0.0 Elo.
+#
+# THE OWNER ALSO ACCEPTED, as part of the same ruling, that rung 2's declared
+# slice set is a PREDICTION and not a guarantee -- that chronological
+# reprocessing and whole-week rank populations can legitimately move slices
+# outside it, and that what was authorised is the two-rung ATTRIBUTION plus the
+# obligation to EXPLAIN every out-of-set slice, never a promise that either set
+# turns out as narrow as predicted.
+# ---------------------------------------------------------------------------
+
+GOLD_REBUILD_LADDER_33_14: tuple[tuple[int, str], ...] = (
+    (
+        0,
+        "BASELINE, NOT A REBUILD. A fingerprint of gold exactly as Phase 33.1 "
+        "left it, taken before anything was rebuilt. It is the control Phase "
+        "33.1 could not take in time, and the one artifact that cannot be "
+        "recovered once rung 1 has overwritten gold.",
+    ),
+    (
+        1,
+        "THE NORMALIZATION-EXEMPTION WIDENING (D33-34(a), WINDOWS rows 33 and "
+        "40). The level-preservation exemption widens from a filter that could "
+        "only ever yield `weather_coverage` to a predicate resolving the "
+        "nineteen weather indicator flags and the six sibling `*_coverage` "
+        "columns alongside it.",
+    ),
+    (
+        2,
+        "THE ELO RE-DERIVATION (Plan 33-13, D33-34(c)). Gold is rebuilt on the "
+        "canonical 2002-2025 chain, replacing the fabricated 0.0 Elo that 4,288 "
+        "of 6,499 rows carried.",
+    ),
+)
+
+# THE TWENTY-SIX LEVEL-BEARING COLUMNS, MEASURED AND PINNED BY NAME.
+#
+# RESOLVED, NOT TYPED. Every name below was produced by
+# `scripts.fingerprint_gold.phase33_level_preserved_family()`, which runs the
+# BUILDER's own two-arm predicate over the same inputs the build sees. All 26
+# were verified present in all three live gold matrices before this tuple was
+# committed: a declared column gold does not have is a declaration about
+# nothing.
+#
+# THE PLAN'S PREDICATE AS WRITTEN RESOLVED TO 29, NOT 26, and the three extras
+# are why the value arm carries a varying-levels clause. `precip_prob`,
+# `raw_precip_prob` and `extreme_weather` each carry exactly ONE non-null value
+# on today's corpus and are therefore "discrete" only by accident of the data.
+# Two of the three are continuous PROBABILITIES; exempting them would be threat
+# T-33-81 realised, and the exemption would FLICKER between generations, because
+# a 2026 live forecast supplying real probabilities makes the column continuous
+# again and silently drops it back out. The declaration was NOT widened to 29 to
+# match the predicate -- the predicate was corrected to match the declaration,
+# which is the direction Ruling N2 permits.
+GOLD_LEVEL_PRESERVED_COLUMNS_33_14: tuple[str, ...] = (
+    # The flag Phase 33.1 already exempted, and the six siblings WINDOWS row 40
+    # names. Caught by the NAME arm, which carries no varying-levels
+    # requirement: a coverage flag's canonical state is CONSTANT, and the whole
+    # 33.1 defect was a constant 1.0 being z-scored to 0.0.
+    "weather_coverage",
+    "home_availability_coverage",
+    "away_availability_coverage",
+    "home_injury_coverage",
+    "away_injury_coverage",
+    "home_date_modified_coverage",
+    "away_date_modified_coverage",
+    # The nineteen weather indicator flags WINDOWS row 33 names, caught by the
+    # VALUE arm. Every one carries exactly two levels in silver and reached gold
+    # as many distinct decimals -- `is_snow` 274, `wind_moderate` 5,667.
+    "is_snow",
+    "is_rain",
+    "is_dry",
+    "precip_none",
+    "precip_light",
+    "precip_moderate",
+    "precip_heavy",
+    "temp_hot",
+    "temp_warm",
+    "temp_mild",
+    "temp_cool",
+    "temp_cold",
+    "temp_very_cold",
+    "wind_calm",
+    "wind_moderate",
+    "wind_high",
+    "wind_severe",
+    "weather_affects_game",
+    "weather_game",
+)
+
+# THE EXEMPTION RUNG'S CAUSAL COLUMN MAP. REFERENCED, never re-spelled: a second
+# copy of twenty-six names is the D30-02 failure mode inside one file.
+GOLD_REBUILD_CAUSAL_COLUMNS_EXEMPTION: tuple[str, ...] = (
+    GOLD_LEVEL_PRESERVED_COLUMNS_33_14
+)
+
+# THE ELO RUNG'S CAUSAL COLUMN MAP, DERIVED from
+# `features.elo_features.ELO_FEATURE_COLUMNS` -- the tuple `combine_features`
+# itself merges by -- and verified present in all three live gold matrices.
+#
+# WHY RANKS PROPAGATE FURTHER THAN RAW ELO, which is the whole reason this map
+# is wider than the two `home_elo` / `away_elo` columns: `_add_rank_features`
+# (`features/elo_features.py:153-258`) computes ranks over the same-week
+# snapshot POPULATION, so one game's corrected Elo moves the rank and percentile
+# columns of EVERY OTHER GAME in that week. A map omitting them would
+# under-declare the rung's blast radius.
+#
+# NO WIDENING WAS NEEDED, and that CORRECTS the plan's own instruction, which
+# said to derive this from the registry "and widen to the rank, percentile and
+# momentum columns that registry does not name". MEASURED: the registry names
+# all fourteen, ranks, percentiles and momentum included. The widening the plan
+# provided for would have been a second hand-written list beside a registry that
+# was already complete. `phase33_elo_family()` REFUSES if the registry ever
+# stops naming them, so the claim stays checked rather than assumed.
+GOLD_REBUILD_CAUSAL_COLUMNS_ELO: tuple[str, ...] = (
+    "home_elo",
+    "away_elo",
+    "elo_diff",
+    "elo_prob_home",
+    "elo_prob_away",
+    "hfa_used",
+    "home_elo_uncertainty",
+    "away_elo_uncertainty",
+    "home_elo_momentum",
+    "away_elo_momentum",
+    "home_elo_rank",
+    "away_elo_rank",
+    "home_elo_percentile",
+    "away_elo_percentile",
+)
+
+# EVERY EXPECTED AND OBSERVED SET IN THIS PLAN IS A `(season, week)` TUPLE, with
+# `(season, None)` meaning a WHOLE season (cross-AI review finding, carried
+# forward). A season-only constant cannot express "2018 week 1": it can only
+# claim all of 2018 changed or claim none of it did, and both are false.
+#
+# THE EXEMPTION RUNG'S SET IS EVERY SEASON IN GOLD. A normalization change moves
+# every season the column was normalized in, so any narrower declaration would be
+# a prediction with no basis.
+GOLD_REBUILD_EXPECTED_CHANGED_SLICES_EXEMPTION: tuple[tuple[int, int | None], ...] = (
+    tuple((season, None) for season in range(2002, 2026))
+)
+
+# THE ELO RUNG'S SET IS A PREDICTION, AND IS LABELLED ONE.
+#
+# Seeded as 2002-2017 whole seasons plus the single pair `(2018, 1)` -- the
+# 4,288 rows that carried a fabricated 0.0 Elo. But
+# `build_elo_with_snapshots` RESETS the Elo system at the start of its requested
+# range and processes chronologically (`scripts/build_elo.py:142-205`), so a
+# corrupted 2018-start chain can legitimately differ THROUGHOUT later seasons;
+# and same-week ranks are computed over the whole snapshot population, so one
+# game's corrected Elo moves the rank columns of every other game that week.
+#
+# Propagation past this set is REPORTED WITH A WRITTEN EXPLANATION, never
+# hard-failed. Blocking on it would block a CORRECT rebuild for disagreeing with
+# a guess, and the owner accepted exactly this framing on 2026-09-14.
+GOLD_REBUILD_EXPECTED_CHANGED_SLICES_ELO: tuple[tuple[int, int | None], ...] = (
+    *((season, None) for season in range(2002, 2018)),
+    (2018, 1),
+)
+
+# THE DECLARED CHANGED-FILE SET, READ FROM THE WRITE PATH RATHER THAN ASSUMED.
+#
+# `save_feature_matrices` calls `save_dataframe(matrix_df, table_name=...,
+# layer="gold", replace_mode=full_rebuild)` and passes NO `save_to_db` override.
+# `save_dataframe`'s `save_to_db` defaults True (`data/storage.py:959`), so the
+# shared DuckDB moves with every gold write. A parquet-only staged write was NOT
+# used: the plan's own rebuild command is the ordinary `--all-seasons` full
+# rebuild, and inventing a staged write would be a second write path to keep in
+# step with the real one forever.
+#
+# LINE-PIN CORRECTION, recorded rather than silently used: the plan cites the
+# `save_dataframe` call at `scripts/build_features.py:2178`. It is at :2341 on
+# this tree. `data/storage.py:959` is correct as cited.
+GOLD_REBUILD_EXPECTED_CHANGED_FILES_33_14: tuple[str, ...] = (
+    "data/gold/features_wp.parquet",
+    "data/gold/features_ats.parquet",
+    "data/gold/features_ou.parquet",
+    "data/nfl_predictions.duckdb",
+)
+
+# THE WIDTH REFERENCE, MEASURED FROM LIVE GOLD BEFORE ANYTHING WAS REBUILT, and
+# asserted equal to `GOLD_WIDTHS_AFTER_WEATHER_RUNG`. They agree, so nothing
+# rebuilt gold between Phase 33.1's close and this ladder's baseline -- which
+# was worth checking rather than assuming, because a disagreement would have
+# been a finding before it was an obstacle.
+GOLD_WIDTHS_BEFORE_PHASE33_LADDER: tuple[int, int, int] = (195, 196, 195)
+
+# THE BASELINE CAPTURE PHASE 33.1 COULD NOT MAKE IN TIME.
+#
+# `tests.gold_generation.gold_generation_key()` measured BEFORE anything was
+# rebuilt. Phase 33.1 recorded its own absence as the sentinel
+# `GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED`, so every reading measured on
+# pre-rung gold there is permanently ungradeable against a real generation.
+# Making the capture here is the reuse HISTORICAL-WEATHER-READOUT.md item 8 asks
+# for, and it is what lets a later phase gate a reading measured on today's gold
+# against a REAL key rather than a sentinel.
+#
+# MEASURED equal to `GOLD_GENERATION_AFTER_WEATHER_RUNG`, confirming the same
+# no-drift fact the width check does, over CONTENT rather than shape.
+GOLD_GENERATION_BEFORE_PHASE33_LADDER: str = (
+    "eea0882f4410d22af6e4b54d1c0929a28072325fff9b556a91ca12de900290d1"
+)
