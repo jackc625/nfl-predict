@@ -1,0 +1,252 @@
+# ===========================================================================
+# config/phase33_gate_verdict.toml -- the Phase-33 per-target gate verdict
+# Phase 33 (live cold-start and forward temporal integrity) -- COLD-04.
+#
+# GENERATOR OUTPUT. Produced by `python -m scripts.run_phase33_gate` and written
+# in ONE operation (D24-07). Do NOT hand-edit any value below: re-running the
+# gate is not available either, because the pre-registered fix-cycle allowance
+# is 0. A hand-edited verdict is indistinguishable from a
+# tampered one.
+#
+# The committed half exists because outputs/ is gitignored and a fresh checkout
+# must still be able to say WHICH state a verdict was measured against.
+#
+# ASCII only, no emoji (CLAUDE.md hard constraint).
+# ===========================================================================
+
+judge_version = "phase33-live-secondary-rescore-1"
+judge_code_digest = "33a8778f944d529e03a87f83b1a473efff028699fe18b380601ffc55cd6a4614"
+rendered_at = "2026-09-15T02:17:58.719316+00:00"
+fix_cycle_allowance = 0
+verdict_states = ["PASS", "FAIL", "UNTESTABLE_REFUSAL"]
+in_sample_label = "IN-SAMPLE. The shipped artifact was fitted on the holdout seasons through the final-fit entry point (D33.1-01 / D33.1-02), and this gate re-scores that same artifact on holdout gold. The verdict is therefore NOT an out-of-sample generalisation estimate and MUST NEVER be presented as a clean gate pass. A confident-looking number here says the model reproduces rows it was fitted on. This label was written into committed source BEFORE any candidate was fitted, and into every verdict row before any verdict value was computed."
+
+[verdicts.wp]
+verdict = "PASS"
+reason = ""
+reasons = ["Pooled CLV non-regression floor PASS (not significantly worse than v1.0)", "Per-season CLV non-regression floor PASS (all holdout seasons)", "Accuracy delta +0.0087 (within 0.01)", "ece delta -0.0076 (within 0.0125)", "brier_score delta -0.0020 (within 0.003)"]
+candidate_artifact = "wp_20260914_221745"
+incumbent_artifact = "wp_20260824_113325"
+candidate_version = "wp_20260914_221745"
+incumbent_version = "wp_20260824_113325"
+paired_statistic = 17.552639373413513
+p_value = 3.299352715414077e-55
+paired_mean = 0.06744825121969737
+n_paired = 557
+eligible_pairs = 570
+n_eligible = 570
+excluded_incumbent_only = 0
+excluded_candidate_only = 0
+excluded_not_in_gold = 0
+comparator_provenance = "live_paired_rescore"
+judge_version = "phase33-live-secondary-rescore-1"
+judge_code_digest = "33a8778f944d529e03a87f83b1a473efff028699fe18b380601ffc55cd6a4614"
+scorer_code_digest = "1ea9d2412bde245589a62d8c219437fdd62c2b2d4477de19c54f1fc9195f462c"
+hyperparameter_search = "none"
+selected_feature_count = 20
+selected_feature_count_before = 20
+selected_weather_count_after = 3
+selected_weather_count_before = 0
+windows_source = "conf.season_partition.default_season_partition(), read through scripts.promote_models._incumbent_window (all three windows, since review CR-01)"
+window_report = "'wp' incumbent metadata ('artifacts\\wp_20260824_113325\\metadata.json') records windows that differ from the LIVE partition in conf/season_partition.py -- train: recorded [2018, 2019] -> live [2018, 2019, 2020, 2021, 2022]; hp_val: recorded [2020] -> live [2023]; holdout: recorded [2021, 2022, 2023, 2024] -> live [2024, 2025]. This is a REPORTED DIFFERENCE, not a refusal (D33.1-04): every window now comes from the committed rule, so the incumbent's recorded windows are historical facts about a past run rather than inputs to the next one. CONSEQUENCE, stated plainly: the candidate is trained over seasons the gate then re-scores it on, so that verdict is IN-SAMPLE and must be labelled in-sample rather than read as a clean gate pass. The metadata.json files are the record of past training runs and MUST NOT be edited to make this agree."
+in_sample_label = "IN-SAMPLE. The shipped artifact was fitted on the holdout seasons through the final-fit entry point (D33.1-01 / D33.1-02), and this gate re-scores that same artifact on holdout gold. The verdict is therefore NOT an out-of-sample generalisation estimate and MUST NEVER be presented as a clean gate pass. A confident-looking number here says the model reproduces rows it was fitted on. This label was written into committed source BEFORE any candidate was fitted, and into every verdict row before any verdict value was computed."
+
+[verdicts.wp.windows]
+train = [2018, 2019, 2020, 2021, 2022]
+hp_val = [2023]
+holdout = [2024, 2025]
+
+[verdicts.wp.incumbent_recorded_windows]
+train = [2018, 2019]
+hp_val = [2020]
+holdout = [2021, 2022, 2023, 2024]
+
+[verdicts.wp.secondary_scalars]
+"ats.mae" = nan
+"ou.mae" = nan
+"wp.accuracy" = 0.6912028725314183
+"wp.brier_score" = 0.20867778332337988
+"wp.ece" = 0.054707043910795755
+
+[verdicts.wp.comparator_secondary_scalars]
+"ats.mae" = nan
+"ou.mae" = nan
+"wp.accuracy" = 0.6824561403508772
+"wp.brier_score" = 0.210699707374939
+"wp.ece" = 0.06227358788706602
+
+[verdicts.wp.resolved_hyperparameters]
+"C" = 1.0
+"max_iter" = 1000
+"random_state" = 42
+"solver" = "lbfgs"
+
+[verdicts.ats]
+verdict = "FAIL"
+reason = "Pooled CLV non-regression floor PASS (not significantly worse than v1.0); Season 2024 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable); MAE delta -2.1617 (within 0.0)"
+reasons = ["Pooled CLV non-regression floor PASS (not significantly worse than v1.0)", "Season 2024 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable)", "MAE delta -2.1617 (within 0.0)"]
+candidate_artifact = "ats_20260914_221751"
+incumbent_artifact = "ats_20260605_220128"
+candidate_version = "ats_20260914_221751"
+incumbent_version = "ats_20260605_220128"
+paired_statistic = -0.29971555411771195
+p_value = 0.764506144614731
+paired_mean = -0.054483456458541926
+n_paired = 557
+eligible_pairs = 570
+n_eligible = 570
+excluded_incumbent_only = 0
+excluded_candidate_only = 0
+excluded_not_in_gold = 0
+comparator_provenance = "live_paired_rescore"
+judge_version = "phase33-live-secondary-rescore-1"
+judge_code_digest = "33a8778f944d529e03a87f83b1a473efff028699fe18b380601ffc55cd6a4614"
+scorer_code_digest = "1ea9d2412bde245589a62d8c219437fdd62c2b2d4477de19c54f1fc9195f462c"
+hyperparameter_search = "none"
+selected_feature_count = 25
+selected_feature_count_before = 25
+selected_weather_count_after = 6
+selected_weather_count_before = 0
+windows_source = "conf.season_partition.default_season_partition(), read through scripts.promote_models._incumbent_window (all three windows, since review CR-01)"
+window_report = "'ats' incumbent metadata ('artifacts\\ats_20260605_220128\\metadata.json') records windows that differ from the LIVE partition in conf/season_partition.py -- train: recorded [2015, 2016, 2017, 2018, 2019] -> live [2018, 2019, 2020, 2021, 2022]; hp_val: recorded [2020] -> live [2023]; holdout: recorded [2021, 2022, 2023, 2024] -> live [2024, 2025]. This is a REPORTED DIFFERENCE, not a refusal (D33.1-04): every window now comes from the committed rule, so the incumbent's recorded windows are historical facts about a past run rather than inputs to the next one. CONSEQUENCE, stated plainly: the candidate is trained over seasons the gate then re-scores it on, so that verdict is IN-SAMPLE and must be labelled in-sample rather than read as a clean gate pass. The metadata.json files are the record of past training runs and MUST NOT be edited to make this agree."
+in_sample_label = "IN-SAMPLE. The shipped artifact was fitted on the holdout seasons through the final-fit entry point (D33.1-01 / D33.1-02), and this gate re-scores that same artifact on holdout gold. The verdict is therefore NOT an out-of-sample generalisation estimate and MUST NEVER be presented as a clean gate pass. A confident-looking number here says the model reproduces rows it was fitted on. This label was written into committed source BEFORE any candidate was fitted, and into every verdict row before any verdict value was computed."
+
+[verdicts.ats.windows]
+train = [2018, 2019, 2020, 2021, 2022]
+hp_val = [2023]
+holdout = [2024, 2025]
+
+[verdicts.ats.incumbent_recorded_windows]
+train = [2015, 2016, 2017, 2018, 2019]
+hp_val = [2020]
+holdout = [2021, 2022, 2023, 2024]
+
+[verdicts.ats.secondary_scalars]
+"ats.mae" = 7.902090717374583
+"ou.mae" = nan
+"wp.accuracy" = nan
+"wp.brier_score" = nan
+"wp.ece" = nan
+
+[verdicts.ats.comparator_secondary_scalars]
+"ats.mae" = 10.06380649833172
+"ou.mae" = nan
+"wp.accuracy" = nan
+"wp.brier_score" = nan
+"wp.ece" = nan
+
+[verdicts.ats.resolved_hyperparameters]
+"colsample_bytree" = 0.8
+"learning_rate" = 0.05
+"max_depth" = 4
+"n_estimators" = 200
+"n_jobs" = -1
+"random_state" = 42
+"reg_alpha" = 0.1
+"reg_lambda" = 1.0
+"subsample" = 0.8
+"verbosity" = 0
+
+[verdicts.ou]
+verdict = "FAIL"
+reason = "Pooled CLV significantly WORSE than v1.0 baseline or untestable (paired candidate-minus-baseline delta significantly negative); Season 2024 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable); Season 2025 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable); MAE delta -2.0754 (within 0.0)"
+reasons = ["Pooled CLV significantly WORSE than v1.0 baseline or untestable (paired candidate-minus-baseline delta significantly negative)", "Season 2024 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable)", "Season 2025 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable)", "MAE delta -2.0754 (within 0.0)"]
+candidate_artifact = "ou_20260914_221756"
+incumbent_artifact = "ou_20260326_163930"
+candidate_version = "ou_20260914_221756"
+incumbent_version = "ou_20260326_163930"
+paired_statistic = -7.2615674705548345
+p_value = 1.2977450321535316e-12
+paired_mean = -1.2029649162634912
+n_paired = 557
+eligible_pairs = 570
+n_eligible = 570
+excluded_incumbent_only = 0
+excluded_candidate_only = 0
+excluded_not_in_gold = 0
+comparator_provenance = "live_paired_rescore"
+judge_version = "phase33-live-secondary-rescore-1"
+judge_code_digest = "33a8778f944d529e03a87f83b1a473efff028699fe18b380601ffc55cd6a4614"
+scorer_code_digest = "1ea9d2412bde245589a62d8c219437fdd62c2b2d4477de19c54f1fc9195f462c"
+hyperparameter_search = "none"
+selected_feature_count = 25
+selected_feature_count_before = 25
+selected_weather_count_after = 6
+selected_weather_count_before = 17
+windows_source = "conf.season_partition.default_season_partition(), read through scripts.promote_models._incumbent_window (all three windows, since review CR-01)"
+window_report = "'ou' incumbent metadata ('artifacts\\ou_20260326_163930\\metadata.json') records windows that differ from the LIVE partition in conf/season_partition.py -- train: recorded [2018, 2019] -> live [2018, 2019, 2020, 2021, 2022]; hp_val: recorded [2020] -> live [2023]; holdout: recorded [2021, 2022, 2023, 2024] -> live [2024, 2025]. This is a REPORTED DIFFERENCE, not a refusal (D33.1-04): every window now comes from the committed rule, so the incumbent's recorded windows are historical facts about a past run rather than inputs to the next one. CONSEQUENCE, stated plainly: the candidate is trained over seasons the gate then re-scores it on, so that verdict is IN-SAMPLE and must be labelled in-sample rather than read as a clean gate pass. The metadata.json files are the record of past training runs and MUST NOT be edited to make this agree."
+in_sample_label = "IN-SAMPLE. The shipped artifact was fitted on the holdout seasons through the final-fit entry point (D33.1-01 / D33.1-02), and this gate re-scores that same artifact on holdout gold. The verdict is therefore NOT an out-of-sample generalisation estimate and MUST NEVER be presented as a clean gate pass. A confident-looking number here says the model reproduces rows it was fitted on. This label was written into committed source BEFORE any candidate was fitted, and into every verdict row before any verdict value was computed."
+
+[verdicts.ou.windows]
+train = [2018, 2019, 2020, 2021, 2022]
+hp_val = [2023]
+holdout = [2024, 2025]
+
+[verdicts.ou.incumbent_recorded_windows]
+train = [2018, 2019]
+hp_val = [2020]
+holdout = [2021, 2022, 2023, 2024]
+
+[verdicts.ou.secondary_scalars]
+"ats.mae" = nan
+"ou.mae" = 8.267674858737035
+"wp.accuracy" = nan
+"wp.brier_score" = nan
+"wp.ece" = nan
+
+[verdicts.ou.comparator_secondary_scalars]
+"ats.mae" = nan
+"ou.mae" = 10.343087360315156
+"wp.accuracy" = nan
+"wp.brier_score" = nan
+"wp.ece" = nan
+
+[verdicts.ou.resolved_hyperparameters]
+"colsample_bytree" = 0.8
+"learning_rate" = 0.05
+"max_depth" = 4
+"n_estimators" = 200
+"n_jobs" = -1
+"random_state" = 42
+"reg_alpha" = 0.1
+"reg_lambda" = 1.0
+"subsample" = 0.8
+"verbosity" = 0
+
+[blend]
+artifact = "blend_dynamic_20260606_020635"
+retuned = false
+note = "NOT re-tuned: a weight_range 0.5-0.7 / weight_step 0.01 sweep is a SEARCH and search is out of scope for this phase (D33-14). clv_before and clv_after are BOTH measured on today's rebuilt gold over the live holdout, so they are commensurable with each other: before is the blend over the INCUMBENT ensemble, after is the blend over the virtual manifest. recorded_at_tuning is the artifact's own pre-rebuild reference and is NOT commensurable with either -- it was measured on different gold over a different season span. A materially worse post-rebuild value is a FINDING handed to Phase 37, not a licence to re-tune here."
+
+[blend.virtual_manifest]
+ats = "ats_20260605_220128"
+blend = "blend_dynamic_20260606_020635"
+ou = "ou_20260326_163930"
+wp = "wp_20260914_221745"
+
+[blend.virtual_manifest_source]
+ats = "artifacts"
+blend = "artifacts"
+ou = "artifacts"
+wp = "artifacts_staging"
+
+[blend.clv_before]
+"ats" = -0.13461368639632879
+"ou" = 1.728197065345502
+"wp" = -0.02375583991493844
+
+[blend.clv_after]
+"ats" = -0.13461368639632879
+"ou" = 1.728197065345502
+"wp" = 0.017803193951230655
+
+[blend.recorded_at_tuning]
+"ats" = -0.00038302376597345
+"ou" = 1.0218503453840921
+"wp" = -0.002066871711438431
+
+[blend.weights]
+"ats" = 0.545553756120263
+"ou" = 0.6040437178798241
+"wp" = 0.5916990436565903
+

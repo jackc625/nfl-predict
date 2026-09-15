@@ -76,8 +76,11 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import argparse
+import hashlib
+import inspect
 import json
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -132,6 +135,47 @@ MIN_FREE_DISK_BYTES: int = 5 * 1024**3
 _PROBE_NAME = ".phase33_preflight_probe"
 
 
+# ---------------------------------------------------------------------------
+# (1b) THE IN-SAMPLE LABEL, WRITTEN BEFORE ANY VERDICT VALUE EXISTS
+# ---------------------------------------------------------------------------
+
+#: The label every verdict row and the record header carry, in words a reader cannot skip.
+#:
+#: IT IS NOT A CAVEAT ADDED AFTERWARDS. It is a module CONSTANT, so it is in committed
+#: source before any candidate is fitted, and `render_target_verdict` writes it onto every
+#: row it builds -- including the refusal rows, which return early. The owner was told and
+#: ACCEPTED this twice, most recently on 2026-09-14 once it had become mechanical rather
+#: than hypothetical, and `conf/season_partition.py`'s own closing section records it.
+#:
+#: WHY IT IS TRUE, mechanically: under D33.1-01 the shipped artifact is fitted on EVERY
+#: completed season through `models/trainers/final_fit.py`, and
+#: `models.deploy_gate.HOLDOUT_SEASONS` is the same `partition.holdout` those seasons
+#: include. So the candidate is trained over exactly the window the gate then re-scores it
+#: on. `scripts.promote_models._incumbent_window`'s per-target window report is NOT
+#: switched off and no artifact metadata is edited to make a refusal pass.
+IN_SAMPLE_VERDICT_LABEL: str = (
+    "IN-SAMPLE. The shipped artifact was fitted on the holdout seasons through the "
+    "final-fit entry point (D33.1-01 / D33.1-02), and this gate re-scores that same "
+    "artifact on holdout gold. The verdict is therefore NOT an out-of-sample "
+    "generalisation estimate and MUST NEVER be presented as a clean gate pass. A "
+    "confident-looking number here says the model reproduces rows it was fitted on. "
+    "This label was written into committed source BEFORE any candidate was fitted, and "
+    "into every verdict row before any verdict value was computed."
+)
+
+#: WHY THIS PHASE BUILDS ITS OWN argv INSTEAD OF REUSING
+#: `scripts.promote_models._build_train_argv`. Recorded as a DELIBERATE, NAMED difference
+#: rather than left for a later reader to discover two argv builders that disagree.
+NO_TUNE_DIVERGENCE_REASON: str = (
+    "scripts.promote_models._build_train_argv deliberately OMITS --no-tune, under Phase "
+    "30's SPEC R5 which required a TUNED Stage-2 candidate. Phase 33's SPEC puts "
+    "hyperparameter search of ANY kind out of scope, so this phase builds its own argv "
+    "with --no-tune PRESENT. Everything else follows _build_train_argv's shape, "
+    "including --exclude-groups and --exclude-groups-provenance so the Phase-30 group "
+    "verdict travels with the artifact. The divergence is recorded, not discovered."
+)
+
+
 class UntestableRefusalReason(StrEnum):
     """Why a target could not be tested. An ``UNTESTABLE_REFUSAL`` must name one."""
 
@@ -154,6 +198,15 @@ class FixCycleAllowanceExceededError(RuntimeError):
 
 class MalformedVerdictRecordError(ValueError):
     """A verdict record violates the closed schema (state, statistics or reason)."""
+
+
+class VirtualManifestUnresolvableError(RuntimeError):
+    """A virtual-manifest entry names a version neither root can serve (Plan 33-15).
+
+    Named separately rather than reusing a stage-two error: this is a BLEND MEASUREMENT
+    failure at stage-one time, and mislabelling it as a missing verdict would send the
+    reader looking for the wrong thing.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +235,14 @@ class TargetScoring:
     # Carried as a FRAME rather than an array so the delta can be restricted to the
     # shared eligibility index instead of being trusted to already line up.
     paired_delta: Any = None
+    # EXTRA verdict-row fields the scorer measured and this module does not compute:
+    # the three windows and their source, the window report, the resolved
+    # hyperparameters, the selected-feature and weather-column counts before and after.
+    # Added by Plan 33-15 Task 2 and DEFAULTED, so every Plan 33-08 caller that omits it
+    # is byte-for-byte unaffected. `render_target_verdict` merges it into the row it
+    # builds -- a scorer that measured something is the only thing that can report it,
+    # and re-deriving it here would be a second derivation that could drift.
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -195,6 +256,14 @@ class GateVerdictRecord:
     verdict_states: tuple[str, ...]
     secondary_scalar_names: tuple[str, ...]
     targets: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # The blend's VIRTUAL-MANIFEST re-score (D33-14), added by Plan 33-15 Task 2 and
+    # DEFAULTED so every Plan 33-08 caller is unaffected. It rides on the SAME record as
+    # the three verdicts because it was measured against a manifest BUILT FROM THOSE
+    # VERDICTS: splitting them would let a later reader pair a blend measurement with a
+    # verdict set that never produced it.
+    blend: dict[str, Any] = field(default_factory=dict)
+    # The IN-SAMPLE label, at the record's head as well as on every row.
+    in_sample_label: str = IN_SAMPLE_VERDICT_LABEL
 
     def as_dict(self) -> dict[str, Any]:
         """The JSON-serializable view, with targets in canonical order."""
@@ -205,6 +274,8 @@ class GateVerdictRecord:
             "fix_cycle_allowance": self.fix_cycle_allowance,
             "verdict_states": list(self.verdict_states),
             "secondary_scalar_names": list(self.secondary_scalar_names),
+            "in_sample_label": self.in_sample_label,
+            "blend": dict(self.blend),
             "targets": {
                 target: self.targets[target]
                 for target in GATED_TARGETS
@@ -224,6 +295,10 @@ class GateVerdictRecord:
             verdict_states=tuple(payload["verdict_states"]),
             secondary_scalar_names=tuple(payload["secondary_scalar_names"]),
             targets=dict(payload["targets"]),
+            blend=dict(payload.get("blend") or {}),
+            in_sample_label=str(
+                payload.get("in_sample_label") or IN_SAMPLE_VERDICT_LABEL
+            ),
         )
 
     def passing_targets(self) -> tuple[str, ...]:
@@ -440,6 +515,45 @@ def _delta_on_index(
     return pooled, per_season
 
 
+def _secondary_scalar_table(
+    target: str,
+    bundle: Mapping[str, Any],
+    comparator: Mapping[str, Any],
+    side: str = "candidate",
+) -> dict[str, Any]:
+    """All FIVE `SECONDARY_SCALAR_NAMES`, with the ones this target does not own None.
+
+    THE COUNT IS READ FROM THE CONSTANT, NEVER FROM A LITERAL. An earlier draft of Plan
+    33-08 said four secondary scalars, and a completeness check written against four
+    would have PASSED with one scalar unchecked -- which is why every count assertion in
+    this phase reads `deploy_gate.SECONDARY_SCALAR_NAMES`.
+
+    A scalar this target does not own is None rather than 0.0. A zero MAE would read as a
+    perfect model, which is the same "absent is not zero" rule the eligibility index and
+    `live_secondary_metrics` already follow.
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        bundle: The side to read this target's own metrics from.
+        comparator: Unused for the candidate side; kept in the signature so both sides
+            call one function and no second flattening exists.
+        side: "candidate" or "comparator" -- recorded only, for the caller's clarity.
+
+    Returns:
+        ``{flat_name: value_or_None}`` with exactly ``len(SECONDARY_SCALAR_NAMES)`` keys.
+    """
+    del comparator, side  # See the docstring: one flattening, two callers.
+    owned = set(deploy_gate.SECONDARY_METRICS_FOR[target])
+    table: dict[str, Any] = {}
+    for flat_name in deploy_gate.SECONDARY_SCALAR_NAMES:
+        scalar_target, _, metric = flat_name.partition(".")
+        value = (
+            bundle.get(metric) if scalar_target == target and metric in owned else None
+        )
+        table[flat_name] = None if value is None else float(value)
+    return table
+
+
 def render_target_verdict(
     target: str,
     scoring: TargetScoring,
@@ -465,7 +579,15 @@ def render_target_verdict(
         "target": target,
         "candidate_version": scoring.candidate_version,
         "incumbent_version": scoring.incumbent_version,
+        # Plan 33-15 ALIASES of the two fields above, carried DELIBERATELY rather than
+        # renamed. `stage_two_promote` reads `candidate_version`; this plan's record,
+        # its committed TOML half and `tests.phase33_state.GATE_VERDICTS` speak of
+        # ARTIFACTS. Duplicating one string is cheaper than making either consumer
+        # translate, and a rename would have moved a field stage two depends on.
+        "candidate_artifact": scoring.candidate_version,
+        "incumbent_artifact": scoring.incumbent_version,
         "eligibility": index.as_record(),
+        "eligible_pairs": index.n,
         "comparator_metrics": {
             metric: comparator.get(metric)
             for metric in deploy_gate.SECONDARY_METRICS_FOR[target]
@@ -474,9 +596,28 @@ def render_target_verdict(
             metric: scoring.candidate_bundle.get(metric)
             for metric in deploy_gate.SECONDARY_METRICS_FOR[target]
         },
+        # ALL FIVE secondary scalars on EVERY row, keyed by
+        # `deploy_gate.SECONDARY_SCALAR_NAMES` verbatim. The count is read from that
+        # constant and never from a literal: an earlier draft of Plan 33-08 said FOUR,
+        # and a completeness check written against four would have PASSED with one
+        # scalar unchecked. A scalar this target does not own is None, never 0.0.
+        "secondary_scalars": _secondary_scalar_table(
+            target, scoring.candidate_bundle, comparator
+        ),
+        "comparator_secondary_scalars": _secondary_scalar_table(
+            target, comparator, comparator, side="comparator"
+        ),
         "comparator_provenance": deploy_gate.comparator_provenance(comparator),
         "judge_version": deploy_gate.JUDGE_VERSION,
         "judge_code_digest": deploy_gate.judge_code_digest(),
+        # WRITTEN BEFORE ANY VERDICT VALUE IS COMPUTED. Every return below spreads this
+        # dict, including the three refusal returns, so no row can reach the record
+        # without it.
+        "in_sample_label": IN_SAMPLE_VERDICT_LABEL,
+        # What the scorer MEASURED and this module cannot: the three windows and their
+        # source, the window report, the resolved hyperparameters and the
+        # selected-feature / weather-column counts before and after.
+        **dict(scoring.extra),
     }
 
     if index.n == 0:
@@ -592,23 +733,32 @@ def _render_committed_verdict_toml(record: GateVerdictRecord) -> str:
         "verdict_states = ["
         + ", ".join(f'"{state}"' for state in record.verdict_states)
         + "]",
+        f"in_sample_label = {_toml_string(record.in_sample_label)}",
         "",
     ]
     for target in GATED_TARGETS:
         row = record.targets.get(target)
         if row is None:
             continue
+        windows = dict(row.get("windows") or {})
         lines.extend(
             [
-                f"[verdict.{target}]",
+                f"[verdicts.{target}]",
                 f'verdict = "{row["verdict"]}"',
-                f'reason = "{str(row.get("reason", "")).replace(chr(34), chr(39))}"',
+                f"reason = {_toml_string(str(row.get('reason', '')))}",
+                f"reasons = {_toml_string_array(row.get('reasons') or [])}",
+                f'candidate_artifact = "{row["candidate_artifact"]}"',
+                f'incumbent_artifact = "{row["incumbent_artifact"]}"',
+                # Plan 33-08's own names kept beside the Plan 33-15 aliases, because
+                # stage two reads them and a committed record should not force a reader
+                # to know which plan named which field.
                 f'candidate_version = "{row["candidate_version"]}"',
                 f'incumbent_version = "{row["incumbent_version"]}"',
                 f"paired_statistic = {_toml_scalar(row['paired_statistic'])}",
                 f"p_value = {_toml_scalar(row['p_value'])}",
                 f"paired_mean = {_toml_scalar(row['paired_mean'])}",
                 f"n_paired = {int(row['n_paired'])}",
+                f"eligible_pairs = {int(row['eligibility']['n_eligible'])}",
                 f"n_eligible = {int(row['eligibility']['n_eligible'])}",
                 "excluded_incumbent_only = "
                 f"{int(row['eligibility']['excluded_incumbent_only'])}",
@@ -616,10 +766,145 @@ def _render_committed_verdict_toml(record: GateVerdictRecord) -> str:
                 f"{int(row['eligibility']['excluded_candidate_only'])}",
                 f"excluded_not_in_gold = {int(row['eligibility']['excluded_not_in_gold'])}",
                 f'comparator_provenance = "{row["comparator_provenance"]}"',
+                f'judge_version = "{row["judge_version"]}"',
+                f'judge_code_digest = "{row["judge_code_digest"]}"',
+                f"scorer_code_digest = {_toml_string(str(row.get('scorer_code_digest', '')))}",
+                f"hyperparameter_search = {_toml_string(str(row.get('hyperparameter_search', 'none')))}",
+                f"selected_feature_count = {_toml_int(row.get('selected_feature_count'))}",
+                "selected_feature_count_before = "
+                f"{_toml_int(row.get('selected_feature_count_before'))}",
+                "selected_weather_count_after = "
+                f"{_toml_int(row.get('selected_weather_count_after'))}",
+                "selected_weather_count_before = "
+                f"{_toml_int(row.get('selected_weather_count_before'))}",
+                f"windows_source = {_toml_string(str(row.get('windows_source', '')))}",
+                f"window_report = {_toml_string(str(row.get('window_report', '')))}",
+                f"in_sample_label = {_toml_string(str(row.get('in_sample_label', '')))}",
+                "",
+                f"[verdicts.{target}.windows]",
+                f"train = {_toml_int_array(windows.get('train') or [])}",
+                f"hp_val = {_toml_int_array(windows.get('hp_val') or [])}",
+                f"holdout = {_toml_int_array(windows.get('holdout') or [])}",
+                "",
+                f"[verdicts.{target}.incumbent_recorded_windows]",
+                f"train = {_toml_int_array(_recorded_window(row, 'train'))}",
+                f"hp_val = {_toml_int_array(_recorded_window(row, 'hp_val'))}",
+                f"holdout = {_toml_int_array(_recorded_window(row, 'holdout'))}",
+                "",
+                f"[verdicts.{target}.secondary_scalars]",
+                *_toml_table_lines(row.get("secondary_scalars") or {}),
+                "",
+                f"[verdicts.{target}.comparator_secondary_scalars]",
+                *_toml_table_lines(row.get("comparator_secondary_scalars") or {}),
+                "",
+                f"[verdicts.{target}.resolved_hyperparameters]",
+                *_toml_table_lines(row.get("resolved_hyperparameters") or {}),
                 "",
             ]
         )
+    lines.extend(_blend_toml_lines(record.blend))
     return "\n".join(lines)
+
+
+def _recorded_window(row: Mapping[str, Any], key: str) -> list[int]:
+    """The INCUMBENT's own recorded window for *key*, or an empty list."""
+    recorded = dict(row.get("incumbent_recorded_windows") or {})
+    return [int(season) for season in (recorded.get(key) or [])]
+
+
+def _blend_toml_lines(blend: Mapping[str, Any]) -> list[str]:
+    """The ``[blend]`` section: the virtual manifest FIRST, then before and after.
+
+    THE VIRTUAL MANIFEST IS EMITTED BEFORE THE MEASUREMENTS, in the same order it was
+    built: constructed from the verdicts, recorded, and only then scored against. A
+    manifest written after the numbers could have been reconstructed to match them.
+    """
+    if not blend:
+        return []
+    lines = [
+        "[blend]",
+        f"artifact = {_toml_string(str(blend.get('artifact', '')))}",
+        f"retuned = {'true' if blend.get('retuned') else 'false'}",
+        f"note = {_toml_string(str(blend.get('note', '')))}",
+        "",
+        "[blend.virtual_manifest]",
+        *[
+            f'{key} = "{value}"'
+            for key, value in sorted(dict(blend.get("virtual_manifest") or {}).items())
+        ],
+        "",
+        "[blend.virtual_manifest_source]",
+        *[
+            f'{key} = "{value}"'
+            for key, value in sorted(
+                dict(blend.get("virtual_manifest_source") or {}).items()
+            )
+        ],
+        "",
+        "[blend.clv_before]",
+        *_toml_table_lines(blend.get("clv_before") or {}),
+        "",
+        "[blend.clv_after]",
+        *_toml_table_lines(blend.get("clv_after") or {}),
+        "",
+        "[blend.recorded_at_tuning]",
+        *_toml_table_lines(blend.get("recorded_at_tuning") or {}),
+        "",
+        "[blend.weights]",
+        *_toml_table_lines(blend.get("weights") or {}),
+        "",
+    ]
+    return lines
+
+
+def _toml_table_lines(table: Mapping[str, Any]) -> list[str]:
+    """Render a flat mapping as TOML key/value lines, keys quoted so dots survive."""
+    return [
+        f"{_toml_string(str(key))} = {_toml_value(value)}"
+        for key, value in sorted(table.items(), key=lambda item: str(item[0]))
+    ]
+
+
+def _toml_value(value: Any) -> str:
+    """A TOML literal for a scalar of unknown type, with None emitted as ``nan``.
+
+    TOML HAS NO NULL. A numeric absence becomes ``nan`` -- never 0.0, which would read as
+    a measurement -- and a non-numeric absence becomes the empty string.
+    """
+    if value is None:
+        return "nan"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    return _toml_string(str(value))
+
+
+def _toml_string(value: str) -> str:
+    """A TOML basic string. ``json.dumps`` produces exactly TOML's escape set for ASCII."""
+    return json.dumps(str(value))
+
+
+def _toml_string_array(values: Sequence[Any]) -> str:
+    """A TOML array of basic strings."""
+    return "[" + ", ".join(_toml_string(str(value)) for value in values) + "]"
+
+
+def _toml_int_array(values: Sequence[Any]) -> str:
+    """A TOML array of integers."""
+    return "[" + ", ".join(str(int(value)) for value in values) + "]"
+
+
+def _toml_int(value: Any) -> str:
+    """A TOML integer, or ``-1`` for an absent count.
+
+    ``-1`` rather than ``nan``: TOML has no null and these are COUNTS, so a float NaN
+    would change the field's type between runs. A negative count is impossible by
+    construction, so it reads unambiguously as "not measured".
+    """
+    return "-1" if value is None else str(int(value))
 
 
 def _toml_scalar(value: Any) -> str:
@@ -666,6 +951,7 @@ def stage_one_judge(
     committed_verdict_path: Path = COMMITTED_VERDICT_PATH,
     min_free_bytes: int = MIN_FREE_DISK_BYTES,
     now: str | None = None,
+    blend_scorer: Callable[[dict[str, dict[str, Any]]], dict[str, Any]] | None = None,
 ) -> GateVerdictRecord:
     """Judge all three targets against ONE frozen pre-run state. Promotes NOTHING.
 
@@ -688,6 +974,13 @@ def stage_one_judge(
         committed_verdict_path: Where the committed generator-output half goes.
         min_free_bytes: The pre-flight's declared free-disk floor.
         now: Override the render timestamp (tests pin it to compare whole records).
+        blend_scorer: Optional ``{target: verdict_row} -> blend section`` (D33-14, Plan
+            33-15 Task 2). Called AFTER the three rows are rendered and BEFORE the record
+            is written, which is the only order that works: the blend is re-scored
+            against a VIRTUAL MANIFEST built FROM the verdicts, and both halves must land
+            in ONE write so a later reader cannot pair a blend measurement with a verdict
+            set that never produced it. It writes nothing into production and is passed
+            the rows rather than the record, because the record does not exist yet.
 
     Returns:
         The :class:`GateVerdictRecord` that was written.
@@ -717,6 +1010,14 @@ def stage_one_judge(
             verdict=rows[target]["verdict"],
         )
 
+    blend_section: dict[str, Any] = {}
+    if blend_scorer is not None:
+        blend_section = dict(blend_scorer(rows))
+        logger.info(
+            "Phase-33 blend re-scored against the virtual manifest",
+            virtual_manifest=blend_section.get("virtual_manifest"),
+        )
+
     record = GateVerdictRecord(
         judge_version=deploy_gate.JUDGE_VERSION,
         judge_code_digest=deploy_gate.judge_code_digest(),
@@ -725,10 +1026,593 @@ def stage_one_judge(
         verdict_states=VERDICT_STATES,
         secondary_scalar_names=deploy_gate.SECONDARY_SCALAR_NAMES,
         targets=rows,
+        blend=blend_section,
+        in_sample_label=IN_SAMPLE_VERDICT_LABEL,
     )
     validate_verdict_payload(record.as_dict())
     _write_verdict_record(record, verdict_record_path, committed_verdict_path)
     return record
+
+
+# ---------------------------------------------------------------------------
+# (5b) THE PLAN 33-15 SCORER -- the injected `scorer` stage one already expects
+#
+# `stage_one_judge` takes `(target, staging_dir, artifacts_dir) -> TargetScoring` so this
+# module does not own the training pipeline. This is that function. What it guarantees is
+# the part that matters: every candidate is fitted and scored under `staging_dir`, never
+# under production `artifacts/`.
+#
+# WHAT IS CARRIED FORWARD IS THE SELECTION PROCEDURE, NEVER A FEATURE LIST. This is the
+# instruction that would have wasted the phase if it were misread, so it is stated where
+# the code is rather than only in a plan. NO incumbent `feature_list.json` is read as an
+# INPUT to a fit, and no feature list is passed to anything:
+# `BaseTrainer.train_and_evaluate` calls `select_features` as its FIRST step on every run
+# and `models.train` exposes no feature-list flag, so a re-fit DOES re-select. WP and ATS
+# selected ZERO weather features before, not because they rejected weather but because
+# every weather column was frozen at a fabricated constant and a constant column has no
+# importance and cannot be selected by any procedure -- THEY WERE NEVER OFFERED ANY.
+# Pinning their old lists would ship two weatherless models out of the phase whose entire
+# purpose was to give them weather to see.
+#
+# The incumbent's feature list IS read, for exactly one thing: the BEFORE half of the
+# selected-feature / weather-column measurement, so the re-selection is a measured fact
+# rather than an assertion. It is read as the record of a past run and reaches no fit.
+# ---------------------------------------------------------------------------
+
+#: The functions whose source the SCORER digest covers. A change to how a candidate is
+#: built or paired is a change no verdict record could otherwise see. Mirrors
+#: `deploy_gate.JUDGE_DIGEST_FUNCTIONS`, which covers the JUDGE rather than the scorer.
+SCORER_DIGEST_FUNCTIONS: tuple[str, ...] = (
+    "_build_phase33_train_argv",
+    "phase33_scorer",
+    "build_virtual_manifest",
+    "score_blend_against_virtual_manifest",
+)
+
+#: Where the three windows come from, recorded in every verdict row so a reader never has
+#: to infer it. Since review CR-01 `scripts.promote_models._incumbent_window` takes ALL
+#: THREE from this rule rather than reading train and hp_val out of a VOID pre-correction
+#: artifact's metadata.
+WINDOWS_SOURCE: str = (
+    "conf.season_partition.default_season_partition(), read through "
+    "scripts.promote_models._incumbent_window (all three windows, since review CR-01)"
+)
+
+
+def scorer_code_digest(sources: list[str] | None = None) -> str:
+    """A newline-normalized sha256 over the source of every scoring function.
+
+    Newline normalization follows the idiom at
+    ``tests/unit/test_preregistration_ancestry.py:32-39``: this repository has
+    ``core.autocrlf=true`` and no ``.gitattributes``, so a digest over raw bytes would
+    pin a value that holds only on the machine that measured it.
+    """
+    if sources is None:
+        sources = [
+            inspect.getsource(globals()[name]) for name in SCORER_DIGEST_FUNCTIONS
+        ]
+    normalized = "\n".join(s.replace("\r\n", "\n").replace("\r", "\n") for s in sources)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _build_phase33_train_argv(
+    target: str,
+    staging_dir: Path,
+    window: Mapping[str, str],
+    exclude_groups: Sequence[str],
+    exclusion_provenance: str,
+    gold_generation: str,
+) -> list[str]:
+    """Build the ``models.train`` argv for ONE Phase-33 candidate. Pure.
+
+    TWO PROPERTIES ARE LOAD-BEARING, and the first is a DELIBERATE DIVERGENCE:
+
+      * ``--no-tune`` is PRESENT. See :data:`NO_TUNE_DIVERGENCE_REASON`:
+        ``promote_models._build_train_argv`` omits it on purpose under Phase 30's SPEC R5,
+        and this phase puts hyperparameter search of any kind out of scope. That is why
+        this function exists at all rather than reusing that one.
+      * the three ``--config-*-seasons`` values come from *window*, which
+        ``_incumbent_window`` fills from the committed partition rule. NO season list is
+        typed here and none is read from an artifact's metadata.
+
+    ``--gold-generation`` carries the measured generation key, so every candidate's own
+    metadata declares the gold it was fitted on rather than leaving it to be inferred.
+    """
+    return [
+        sys.executable,
+        "-m",
+        "models.train",
+        "--target",
+        target,
+        "--artifacts-dir",
+        str(staging_dir),
+        "--no-tune",
+        "--config-train-seasons",
+        window["train"],
+        "--config-hp-val-seasons",
+        window["hp_val"],
+        "--config-holdout-seasons",
+        window["holdout"],
+        "--exclude-groups",
+        ",".join(exclude_groups),
+        "--exclude-groups-provenance",
+        exclusion_provenance,
+        "--gold-generation",
+        gold_generation,
+    ]
+
+
+def _weather_column_count(feature_list: Sequence[str]) -> int:
+    """How many of *feature_list* are in the weather module's own declared family.
+
+    DERIVED from ``features.weather.WEATHER_FEATURE_COLUMNS`` rather than from a list
+    written here, so a column added to the family is counted without a second edit. The
+    SAME definition is applied to the incumbent's list and to the candidate's, which is
+    what makes the before/after pair commensurable.
+    """
+    from features.weather import WEATHER_FEATURE_COLUMNS
+
+    return len(set(feature_list) & set(WEATHER_FEATURE_COLUMNS))
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    """Read a JSON document, or an empty mapping when it is absent."""
+    if not path.is_file():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _read_feature_list(path: Path) -> list[str]:
+    """Read a ``feature_list.json``, or an empty list when it is absent."""
+    if not path.is_file():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, Mapping):
+        payload = payload.get("features", [])
+    return [str(name) for name in payload]
+
+
+def phase33_scorer(
+    target: str,
+    staging_dir: Path,
+    artifacts_dir: Path,
+    *,
+    cfg: dict[str, Any],
+    gold_generation: str,
+    exclude_groups: Sequence[str] = (),
+    exclusion_provenance: str = "none",
+    engine: Any = None,
+    odds_df: Any = None,
+) -> TargetScoring:
+    """Fit ONE candidate under *staging_dir* and hand stage one its frozen scoring inputs.
+
+    The signature ``stage_one_judge`` expects is the first three parameters; the rest are
+    keyword-only and are bound by the caller (see :func:`run_stage_one`), so the injected
+    scorer stays a plain ``(target, staging_dir, artifacts_dir) -> TargetScoring``.
+
+    Args:
+        target: One of "wp", "ats", "ou".
+        staging_dir: The staging artifacts root. EVERY write this function makes lands
+            here; production ``artifacts/`` is opened READ-ONLY.
+        artifacts_dir: The production artifacts root -- the incumbent side of the pair.
+        cfg: The loaded gate config.
+        gold_generation: The measured gold generation key, passed to the candidate's own
+            metadata through ``--gold-generation``.
+        exclude_groups: The Phase-30 group exclusion, passed through so the ratified
+            verdict travels with the artifact.
+        exclusion_provenance: "verdict", "override" or "none".
+        engine: A constructed ``BacktestEngine`` (loader-only). Built here when omitted.
+        odds_df: Normalized closing odds. Loaded from *engine* when omitted.
+
+    Returns:
+        The :class:`TargetScoring`, with the measured recipe in ``extra``.
+    """
+    from backtest.diagnose import CLV_COLUMN_FOR, score_deployed_artifacts
+    from backtest.engine import BacktestEngine
+
+    if engine is None:
+        engine = BacktestEngine()
+    if odds_df is None:
+        odds_df = engine._load_closing_odds()
+
+    # (1) THE WINDOW, from the committed rule, with the difference against the incumbent's
+    # own record reported rather than silently honoured.
+    window = promote_models._incumbent_window(target, Path(artifacts_dir))
+    incumbent_version = str(_read_json(Path(artifacts_dir) / "latest.json")[target])
+    incumbent_meta = _read_json(
+        Path(artifacts_dir) / incumbent_version / "metadata.json"
+    )
+    incumbent_config = dict(incumbent_meta.get("config") or {})
+    incumbent_features = _read_feature_list(
+        Path(artifacts_dir) / incumbent_version / "feature_list.json"
+    )
+
+    # (2) THE FIT, as a subprocess into staging. One target, one candidate.
+    argv = _build_phase33_train_argv(
+        target,
+        Path(staging_dir),
+        window,
+        exclude_groups,
+        exclusion_provenance,
+        gold_generation,
+    )
+    logger.info("Fitting Phase-33 candidate", target=target, argv=argv[2:])
+    subprocess.run(argv, check=True)
+
+    candidate_version = promote_models._resolve_staged_version(
+        target, Path(staging_dir), skip_train=False
+    )
+    if candidate_version is None:  # pragma: no cover - _resolve_staged_version raises
+        msg = f"no staged candidate dir for '{target}' under '{staging_dir}'"
+        raise RuntimeError(msg)
+
+    # The STAGING manifest, so `score_deployed_artifacts` can resolve the candidate.
+    # artifacts_dir=staging_dir: this never touches production (D24-08 / D24-09).
+    update_manifest(target, candidate_version, artifacts_dir=Path(staging_dir))
+    # The in-sample window report rides in the candidate's OWN metadata, written into
+    # STAGING before any promotion copy, so a consumer of a promoted artifact inherits it
+    # instead of relying on somebody having read the console (WR-12).
+    promote_models._record_window_report(
+        target, candidate_version, Path(staging_dir), window.get("window_report", "")
+    )
+
+    candidate_meta = _read_json(Path(staging_dir) / candidate_version / "metadata.json")
+    candidate_features = _read_feature_list(
+        Path(staging_dir) / candidate_version / "feature_list.json"
+    )
+
+    # (3) THE SCORE, both sides on the SAME gold frame.
+    gold = promote_models._load_gold_holdout(target, engine)
+    candidate_scored = score_deployed_artifacts(
+        target, gold_df=gold, artifacts_dir=Path(staging_dir)
+    )
+    incumbent_scored = score_deployed_artifacts(
+        target, gold_df=gold, artifacts_dir=Path(artifacts_dir)
+    )
+    candidate_bundle = deploy_gate.build_candidate_bundle(
+        target, candidate_scored, odds_df, cfg
+    )
+
+    # (4) THE PAIRED PER-GAME DELTA, through the SAME two helpers the legacy promotion
+    # path uses, so the pairing cannot drift into a third implementation.
+    candidate_valid = promote_models._candidate_clv_frame(
+        target, candidate_scored, odds_df
+    )
+    incumbent_valid = promote_models._score_baseline_clv(
+        target, gold, odds_df, Path(artifacts_dir)
+    )
+    clv_column = CLV_COLUMN_FOR[target]
+    paired = candidate_valid.merge(
+        incumbent_valid, on="game_id", how="inner", suffixes=("_cand", "_base")
+    )
+    paired_delta = paired[["game_id"]].copy()
+    paired_delta["season"] = paired["season_cand"]
+    paired_delta["clv_delta"] = (
+        paired[f"{clv_column}_cand"].to_numpy()
+        - paired[f"{clv_column}_base"].to_numpy()
+    )
+
+    extra: dict[str, Any] = {
+        "windows": {
+            key: [int(season) for season in window[key].split(",") if season]
+            for key in ("train", "hp_val", "holdout")
+        },
+        "windows_source": WINDOWS_SOURCE,
+        "incumbent_recorded_windows": {
+            "train": [int(s) for s in (incumbent_config.get("train_seasons") or [])],
+            "hp_val": [int(s) for s in (incumbent_config.get("hp_val_seasons") or [])],
+            "holdout": [
+                int(s) for s in (incumbent_config.get("holdout_seasons") or [])
+            ],
+        },
+        "window_report": window.get("window_report", ""),
+        # "none" rather than False: this field answers "which search ran", and the answer
+        # is that none did. Every candidate is trained with --no-tune and no Optuna study
+        # is created.
+        "hyperparameter_search": "none",
+        "no_tune_divergence": NO_TUNE_DIVERGENCE_REASON,
+        "resolved_hyperparameters": dict(candidate_meta.get("best_params") or {}),
+        "selected_feature_count": len(candidate_features),
+        "selected_feature_count_before": len(incumbent_features),
+        "selected_weather_count_after": _weather_column_count(candidate_features),
+        "selected_weather_count_before": _weather_column_count(incumbent_features),
+        "gold_generation": gold_generation,
+        "candidate_gold_generation_marker": candidate_meta.get(
+            "trained_on_real_weather_generation"
+        ),
+        "final_fit_seasons": candidate_meta.get("final_fit_seasons"),
+        "exclude_groups": list(exclude_groups),
+        "exclude_groups_provenance": exclusion_provenance,
+        "scorer_code_digest": scorer_code_digest(),
+        # DELIBERATELY ABSENT: no `feature_list` field. A pinned list in the record is the
+        # shape the selection-procedure rule forbids, and a verify command fails when one
+        # is present.
+    }
+
+    return TargetScoring(
+        target=target,
+        candidate_version=candidate_version,
+        incumbent_version=incumbent_version,
+        candidate_bundle=candidate_bundle,
+        incumbent_scored=incumbent_scored,
+        candidate_scored=candidate_scored,
+        gold=gold,
+        paired_delta=paired_delta,
+        extra=extra,
+    )
+
+
+# ---------------------------------------------------------------------------
+# (5c) THE BLEND, RE-SCORED AGAINST A VIRTUAL MANIFEST (D33-14)
+#
+# `blend_dynamic_20260606_020635` is NOT re-tuned -- a weight sweep is a SEARCH and search
+# is out of scope for this phase. It IS re-scored on the rebuilt gold against the
+# POST-GATE END STATE, which at stage-one time does not yet exist in
+# `artifacts/latest.json` because stage two has not run. Scoring against the unchanged
+# production manifest would measure the OLD ensemble and label it the new one.
+# ---------------------------------------------------------------------------
+
+
+def build_virtual_manifest(
+    rows: Mapping[str, Mapping[str, Any]],
+    incumbents: Mapping[str, str],
+) -> dict[str, str]:
+    """The manifest the post-gate end state WOULD have, built FROM the verdicts.
+
+    For each target: the candidate id where its verdict authorises a promotion, or the
+    incumbent id where it does not. Plus ``blend``, carried through unchanged.
+
+    IT IS BUILT FROM THE VERDICTS, NOT FROM A GUESS AT THE OWNER'S RULING. If the Task-3
+    ruling changes which targets ship, the blend is re-scored against the RULED manifest
+    and BOTH measurements are recorded with which manifest produced each -- never one
+    silently replaced by the other.
+
+    Args:
+        rows: ``{target: verdict_row}`` as stage one rendered them.
+        incumbents: ``{target: version}`` from the production manifest, including
+            ``blend``.
+
+    Returns:
+        ``{target: version}`` with four entries.
+    """
+    virtual = {
+        target: (
+            str(rows[target]["candidate_version"])
+            if str(rows.get(target, {}).get("verdict")) == "PASS"
+            else str(incumbents[target])
+        )
+        for target in GATED_TARGETS
+    }
+    virtual["blend"] = str(incumbents["blend"])
+    return virtual
+
+
+def _resolve_version_root(
+    target: str,
+    version: str,
+    artifacts_dir: Path,
+    staging_dir: Path,
+) -> Path:
+    """Which root holds *version* for *target*, ASSERTED rather than assumed.
+
+    ``score_deployed_artifacts`` resolves a target through the root's own ``latest.json``
+    and takes no version argument, so "score this version" has to be expressed as "score
+    from the root whose manifest names this version". That identity is CHECKED here
+    instead of being trusted, because trusting it is how a blend measurement ends up
+    describing an ensemble nobody selected.
+
+    PRODUCTION IS CHECKED FIRST, AND THE ORDER IS NOT ARBITRARY. During stage one an
+    INCUMBENT version is always present in production, and a CANDIDATE version is never
+    present there -- which is exactly what the content-digest bracket over the whole
+    production tree proves. So production-first resolves every incumbent unambiguously and
+    every candidate falls through to staging. A staging-first order was measured to be
+    wrong on this tree: a stale Phase-30 staging manifest still named
+    ``wp_20260824_113325``, the deployed WP incumbent, so the incumbent would have been
+    served out of staging. It was byte-identical there (a promotion is a copy) so nothing
+    was misreported, but "it happened to be the same bytes" is not a property to rely on.
+    """
+    for root in (Path(artifacts_dir), Path(staging_dir)):
+        manifest = _read_json(root / "latest.json")
+        if str(manifest.get(target) or "") == version and (root / version).is_dir():
+            return root
+    msg = (
+        f"the virtual manifest names '{version}' for target '{target}', and neither "
+        f"'{artifacts_dir}' nor '{staging_dir}' has a latest.json naming it with the "
+        "directory present. The blend cannot be scored against an ensemble that cannot "
+        "be resolved, and mutating a manifest to make it resolvable is exactly what this "
+        "function exists to avoid."
+    )
+    raise VirtualManifestUnresolvableError(msg)
+
+
+def score_blend_against_virtual_manifest(
+    virtual_manifest: Mapping[str, str],
+    *,
+    artifacts_dir: Path,
+    staging_dir: Path,
+    engine: Any = None,
+    odds_df: Any = None,
+) -> tuple[dict[str, float | None], dict[str, str]]:
+    """Per-target mean CLV of the BLENDED predictions under *virtual_manifest*.
+
+    Resolves each target's artifact through :func:`_resolve_version_root` and NEVER by
+    mutating ``artifacts/latest.json``. The blend itself is loaded from the production
+    root at the manifest's own ``blend`` id and is not re-tuned.
+
+    Returns:
+        ``({target: mean_clv_or_None}, {target: root_that_served_it})``.
+    """
+    from backtest.diagnose import CLV_COLUMN_FOR, score_deployed_artifacts
+    from backtest.engine import BacktestEngine
+    from models.blending import MarketBlender
+    from models.clv import compute_clv_for_predictions
+
+    if engine is None:
+        engine = BacktestEngine()
+    if odds_df is None:
+        odds_df = engine._load_closing_odds()
+
+    blender = MarketBlender.from_artifacts(
+        artifacts_dir=Path(artifacts_dir), version=str(virtual_manifest["blend"])
+    )
+
+    clv: dict[str, float | None] = {}
+    sources: dict[str, str] = {}
+    for target in GATED_TARGETS:
+        version = str(virtual_manifest[target])
+        root = _resolve_version_root(target, version, artifacts_dir, staging_dir)
+        sources[target] = str(root)
+        gold = promote_models._load_gold_holdout(target, engine)
+        scored = score_deployed_artifacts(target, gold_df=gold, artifacts_dir=root)
+        blended = blender.blend_predictions(scored, odds_df, target)
+        clv_df = compute_clv_for_predictions(blended, odds_df, target)
+        valid = clv_df.loc[clv_df["has_closing_odds"]]
+        column = CLV_COLUMN_FOR[target]
+        clv[target] = float(valid[column].mean()) if len(valid) else None
+    sources["blend"] = str(Path(artifacts_dir))
+    return clv, sources
+
+
+# ---------------------------------------------------------------------------
+# (5d) THE DRIVER -- what the operator actually runs for stage one
+# ---------------------------------------------------------------------------
+
+
+def run_stage_one(
+    *,
+    gold_generation: str,
+    artifacts_dir: Path = PRODUCTION_ARTIFACTS_DIR,
+    staging_dir: Path = STAGING_ARTIFACTS_DIR,
+    verdict_record_path: Path = VERDICT_RECORD_PATH,
+    committed_verdict_path: Path = COMMITTED_VERDICT_PATH,
+    targets: Sequence[str] = GATED_TARGETS,
+) -> dict[str, Any]:
+    """Wire the scorer and the blend re-score, and run stage one ONCE.
+
+    THE PRE-FLIGHT RUNS FIRST AND EXPLICITLY, and its result is returned so the operator
+    can record it. ``stage_one_judge`` runs it again as its own gate; running it twice is
+    free, because it probes and removes and asserts nothing about history. D33-33 is
+    unchanged by its presence: it creates NO retry state, the zero fix-cycle rule is
+    ABSOLUTE, and this is the ONLY point at which a re-run is available -- once scoring
+    starts, one run is the run, whatever kills it.
+
+    Args:
+        gold_generation: The measured gold generation key every candidate declares.
+        artifacts_dir: The production artifacts root. READ ONLY throughout stage one.
+        staging_dir: The staging root every candidate is fitted and scored under.
+        verdict_record_path: Where the full JSON record goes.
+        committed_verdict_path: Where the committed generator-output half goes.
+        targets: Which targets to judge. Order does not affect the outcome.
+
+    Returns:
+        ``{"preflight": ..., "record": GateVerdictRecord, "exclude_groups": ...}``.
+    """
+    from backtest.engine import BacktestEngine
+
+    preflight = preflight_health_check(
+        artifacts_dir=Path(artifacts_dir),
+        staging_dir=Path(staging_dir),
+        targets=targets,
+    )
+    print(f"PRE-FLIGHT PASSED: {sorted(preflight)}")
+
+    cfg = deploy_gate.load_gate_config()
+    deploy_gate.validate_gate_config(cfg)
+
+    # DERIVED from the ratified Stage-1 verdict, never transcribed (D24-07). `promote=True`
+    # selects the ARMED precedence: an absent verdict file is a STOP rather than a silent
+    # "train every group", because this run's candidates are the ones a promotion would
+    # ship.
+    exclude_groups, exclusion_provenance = promote_models._resolve_exclude_groups(
+        argparse.Namespace(exclude_groups=None, promote=True)
+    )
+
+    engine = BacktestEngine()
+    odds_df = engine._load_closing_odds()
+    incumbents = _read_json(Path(artifacts_dir) / "latest.json")
+
+    def _scorer(target: str, staging: Path, artifacts: Path) -> TargetScoring:
+        return phase33_scorer(
+            target,
+            staging,
+            artifacts,
+            cfg=cfg,
+            gold_generation=gold_generation,
+            exclude_groups=exclude_groups,
+            exclusion_provenance=exclusion_provenance,
+            engine=engine,
+            odds_df=odds_df,
+        )
+
+    def _blend_scorer(rows: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        virtual = build_virtual_manifest(rows, incumbents)
+        # RECORDED BEFORE IT IS SCORED AGAINST. Logged here and emitted FIRST in the
+        # committed record's [blend] section, so the manifest the measurement was taken
+        # against is on the record and cannot be reconstructed afterwards to match it.
+        logger.info("Phase-33 blend virtual manifest", virtual_manifest=virtual)
+        print(f"BLEND VIRTUAL MANIFEST (recorded before scoring): {virtual}")
+        incumbent_manifest = {
+            key: str(incumbents[key]) for key in (*GATED_TARGETS, "blend")
+        }
+        clv_before, _ = score_blend_against_virtual_manifest(
+            incumbent_manifest,
+            artifacts_dir=Path(artifacts_dir),
+            staging_dir=Path(staging_dir),
+            engine=engine,
+            odds_df=odds_df,
+        )
+        clv_after, sources = score_blend_against_virtual_manifest(
+            virtual,
+            artifacts_dir=Path(artifacts_dir),
+            staging_dir=Path(staging_dir),
+            engine=engine,
+            odds_df=odds_df,
+        )
+        weights_doc = _read_json(
+            Path(artifacts_dir) / str(incumbents["blend"]) / "blend_weights.json"
+        )
+        return {
+            "artifact": str(incumbents["blend"]),
+            "retuned": False,
+            "note": (
+                "NOT re-tuned: a weight_range 0.5-0.7 / weight_step 0.01 sweep is a "
+                "SEARCH and search is out of scope for this phase (D33-14). clv_before "
+                "and clv_after are BOTH measured on today's rebuilt gold over the live "
+                "holdout, so they are commensurable with each other: before is the blend "
+                "over the INCUMBENT ensemble, after is the blend over the virtual "
+                "manifest. recorded_at_tuning is the artifact's own pre-rebuild reference "
+                "and is NOT commensurable with either -- it was measured on different "
+                "gold over a different season span. A materially worse post-rebuild value "
+                "is a FINDING handed to Phase 37, not a licence to re-tune here."
+            ),
+            "virtual_manifest": virtual,
+            "virtual_manifest_source": sources,
+            "incumbent_manifest": incumbent_manifest,
+            "clv_before": clv_before,
+            "clv_after": clv_after,
+            "recorded_at_tuning": dict(weights_doc.get("per_target_clv") or {}),
+            "weights": dict(weights_doc.get("weights") or {}),
+            "recorded_at_tuning_n_games": dict(weights_doc.get("n_games") or {}),
+            "recorded_at_tuning_tuned_at": str(weights_doc.get("tuned_at") or ""),
+        }
+
+    record = stage_one_judge(
+        scorer=_scorer,
+        cfg=cfg,
+        targets=targets,
+        artifacts_dir=Path(artifacts_dir),
+        staging_dir=Path(staging_dir),
+        verdict_record_path=Path(verdict_record_path),
+        committed_verdict_path=Path(committed_verdict_path),
+        blend_scorer=_blend_scorer,
+    )
+    return {
+        "preflight": preflight,
+        "record": record,
+        "exclude_groups": list(exclude_groups),
+        "exclude_groups_provenance": exclusion_provenance,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -831,17 +1715,54 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--artifacts-dir", type=Path, default=PRODUCTION_ARTIFACTS_DIR)
     parser.add_argument("--staging-dir", type=Path, default=STAGING_ARTIFACTS_DIR)
     parser.add_argument("--verdict-record", type=Path, default=VERDICT_RECORD_PATH)
+    parser.add_argument(
+        "--gold-generation",
+        type=str,
+        default=None,
+        help=(
+            "RUN STAGE ONE, fitting one candidate per target under the staging root and "
+            "declaring this gold generation key in every candidate's metadata. Supplying "
+            "it is what arms stage one: a BARE invocation still runs the pre-flight only, "
+            "which is the posture Plan 33-08 shipped and the one the tests pin. The value "
+            "is measured with tests.gold_generation.gold_generation_key() and recorded in "
+            "tests.phase33_state.GOLD_GENERATION_AT_REFIT. THE FIX-CYCLE ALLOWANCE IS "
+            f"{PHASE33_FIX_CYCLE_ALLOWANCE}: a second invocation against an existing "
+            "verdict record raises FixCycleAllowanceExceededError."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Stage one has no wired scorer here -- Plan 33-15 supplies it."""
     args = parse_args(argv)
+    if not args.promote and args.gold_generation:
+        # STAGE ONE, ARMED. Plan 33-15 wires the scorer; this is the reproducible
+        # invocation, so the run that produced the committed verdict is a command in
+        # committed source rather than a shell history nobody kept.
+        result = run_stage_one(
+            gold_generation=args.gold_generation,
+            artifacts_dir=args.artifacts_dir,
+            staging_dir=args.staging_dir,
+            verdict_record_path=args.verdict_record,
+        )
+        record = result["record"]
+        for target in GATED_TARGETS:
+            row = record.targets.get(target)
+            if row is None:
+                continue
+            print(
+                f"  {target.upper():4s} {row['verdict']:<20s} "
+                f"t={row['paired_statistic']} p={row['p_value']} "
+                f"n_paired={row['n_paired']} eligible={row['eligible_pairs']}"
+            )
+        print(f"VERDICT RECORD: {args.verdict_record}")
+        return 0
     if not args.promote:
         print(
-            "Stage one needs a scorer. Plan 33-15 wires the staging re-fit and calls "
-            "stage_one_judge(scorer=..., cfg=...) directly; this CLI exposes stage two "
-            "and the pre-flight so the environment can be checked on its own."
+            "Stage one needs a scorer AND a measured gold generation key. Pass "
+            "--gold-generation to arm it (Plan 33-15). A bare invocation runs the "
+            "pre-flight only, so the environment can be checked on its own."
         )
         report = preflight_health_check(
             artifacts_dir=args.artifacts_dir, staging_dir=args.staging_dir

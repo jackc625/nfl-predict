@@ -12464,3 +12464,559 @@ WP_PREPROCESSING_DEFECT_CLOSURE: dict[str, object] = {
     ),
     "recorded": "2026-09-15",
 }
+
+
+# ---------------------------------------------------------------------------
+# Plan 33-15 Task 2 -- THE THREE VERDICTS, THE RECIPES THEY WERE MEASURED UNDER,
+# THE PRE-FLIGHT, AND THE BLEND'S VIRTUAL-MANIFEST RE-SCORE.
+#
+# APPENDED by Plan 33-15 Task 2 on 2026-09-15. Nothing above this line was edited.
+#
+# EVERY NUMBER BELOW IS GENERATOR OUTPUT, not a transcription. The block was emitted
+# from `outputs/phase33_gate_verdict.json`, `outputs/phase33_per_season_detail.json` and
+# `outputs/phase33_preflight.json` and appended verbatim. Sixty-odd floats copied by hand
+# is a transcription error waiting to happen, and D24-07's
+# generator-output-over-transcription rule exists for exactly this.
+#
+# EVERY VERDICT IS IN-SAMPLE, and it was labelled so BEFORE any of them existed:
+# `scripts.run_phase33_gate.IN_SAMPLE_VERDICT_LABEL` is a module constant in committed
+# source, written into every verdict row before any verdict value was computed. The
+# shipped artifact is fitted on every completed season 2002-2025 through the final-fit
+# entry point, which INCLUDES the 2024-2025 holdout this gate re-scores it on. See
+# `GATE_VERDICT_SAMPLE_LABEL` below for the label verbatim.
+#
+# WHERE THE PER-SEASON NUMBERS CAME FROM, stated because it matters. The committed
+# verdict record carries the POOLED paired statistic and p-value per target, and the
+# per-season floor as a REASON STRING. The per-season paired deltas in `GATE_VERDICTS`
+# were measured afterwards by RE-SCORING THE SAME ARTIFACTS from disk on the SAME
+# unchanged gold -- a read-only measurement, no fit, no second candidate, no second
+# verdict. The measurement asserts that the pooled `t` and `n` it recomputes reproduce
+# the committed record EXACTLY for all three targets, which is what makes it a
+# reading of the same run rather than a different one.
+#
+# THE FIX-CYCLE ALLOWANCE IS ZERO AND WAS NOT SPENT. One candidate per target, one run,
+# one record. `scripts.run_phase33_gate._refuse_second_candidate` now raises against
+# `outputs/phase33_gate_verdict.json` for every one of these targets.
+# ---------------------------------------------------------------------------
+
+GATE_VERDICTS: dict[str, dict[str, object]] = {
+    "wp": {
+        "verdict": "PASS",
+        "candidate_artifact": "wp_20260914_221745",
+        "incumbent_artifact": "wp_20260824_113325",
+        "paired_statistic": 17.552639373413513,
+        "p_value": 3.299352715414077e-55,
+        "paired_mean": 0.06744825121969737,
+        "n_paired": 557,
+        "eligible_pairs": 570,
+        "excluded_incumbent_only": 0,
+        "excluded_candidate_only": 0,
+        "excluded_not_in_gold": 0,
+        "reason": "",
+        "reasons": (
+            "Pooled CLV non-regression floor PASS (not significantly worse than v1.0)",
+            "Per-season CLV non-regression floor PASS (all holdout seasons)",
+            "Accuracy delta +0.0087 (within 0.01)",
+            "ece delta -0.0076 (within 0.0125)",
+            "brier_score delta -0.0020 (within 0.003)",
+        ),
+        "judge_version": "phase33-live-secondary-rescore-1",
+        "judge_code_digest": "33a8778f944d529e03a87f83b1a473efff028699fe18b380601ffc55cd6a4614",
+        "scorer_code_digest": "1ea9d2412bde245589a62d8c219437fdd62c2b2d4477de19c54f1fc9195f462c",
+        "comparator_provenance": "live_paired_rescore",
+        "hyperparameter_search": "none",
+        "selected_feature_count": 20,
+        "selected_feature_count_before": 20,
+        "selected_weather_count_after": 3,
+        "selected_weather_count_before": 0,
+        "candidate_metrics": {
+            "accuracy": 0.6912028725314183,
+            "ece": 0.054707043910795755,
+            "brier_score": 0.20867778332337988,
+        },
+        "comparator_metrics": {
+            "accuracy": 0.6824561403508772,
+            "ece": 0.06227358788706602,
+            "brier_score": 0.210699707374939,
+        },
+        "windows": {
+            "train": (
+                2018,
+                2019,
+                2020,
+                2021,
+                2022,
+            ),
+            "hp_val": (2023,),
+            "holdout": (
+                2024,
+                2025,
+            ),
+        },
+        "incumbent_recorded_windows": {
+            "train": (
+                2018,
+                2019,
+            ),
+            "hp_val": (2020,),
+            "holdout": (
+                2021,
+                2022,
+                2023,
+                2024,
+            ),
+        },
+        "final_fit_seasons_span": (
+            2002,
+            2025,
+        ),
+        "final_fit_season_count": 24,
+        "gold_generation_marker": "2a6ad6de26efd1de6a0f4cedfb3108e5c590a29e94d0d8cbb76357039e912712",
+        "in_sample": True,
+        "per_season_paired_delta": {
+            "2024": {
+                "n": 272,
+                "mean": 0.07207006607129027,
+                "t": 13.000307684202307,
+                "p": 2.3374806894938804e-30,
+            },
+            "2025": {
+                "n": 285,
+                "mean": 0.06303725599291397,
+                "t": 11.835385873045537,
+                "p": 1.5365943997766687e-26,
+            },
+        },
+        "absolute_candidate_clv": {
+            "n": 557,
+            "mean": 0.028856586440887875,
+            "t": 9.221994460969132,
+            "p": 6.006605391742196e-19,
+        },
+        "absolute_incumbent_clv": {
+            "n": 557,
+            "mean": -0.03859166477880951,
+            "t": -12.071287655664475,
+            "p": 5.828339119745994e-30,
+        },
+    },
+    "ats": {
+        "verdict": "FAIL",
+        "candidate_artifact": "ats_20260914_221751",
+        "incumbent_artifact": "ats_20260605_220128",
+        "paired_statistic": -0.29971555411771195,
+        "p_value": 0.764506144614731,
+        "paired_mean": -0.054483456458541926,
+        "n_paired": 557,
+        "eligible_pairs": 570,
+        "excluded_incumbent_only": 0,
+        "excluded_candidate_only": 0,
+        "excluded_not_in_gold": 0,
+        "reason": "Pooled CLV non-regression floor PASS (not significantly worse than v1.0); Season 2024 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable); MAE delta -2.1617 (within 0.0)",
+        "reasons": (
+            "Pooled CLV non-regression floor PASS (not significantly worse than v1.0)",
+            "Season 2024 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable)",
+            "MAE delta -2.1617 (within 0.0)",
+        ),
+        "judge_version": "phase33-live-secondary-rescore-1",
+        "judge_code_digest": "33a8778f944d529e03a87f83b1a473efff028699fe18b380601ffc55cd6a4614",
+        "scorer_code_digest": "1ea9d2412bde245589a62d8c219437fdd62c2b2d4477de19c54f1fc9195f462c",
+        "comparator_provenance": "live_paired_rescore",
+        "hyperparameter_search": "none",
+        "selected_feature_count": 25,
+        "selected_feature_count_before": 25,
+        "selected_weather_count_after": 6,
+        "selected_weather_count_before": 0,
+        "candidate_metrics": {
+            "mae": 7.902090717374583,
+        },
+        "comparator_metrics": {
+            "mae": 10.06380649833172,
+        },
+        "windows": {
+            "train": (
+                2018,
+                2019,
+                2020,
+                2021,
+                2022,
+            ),
+            "hp_val": (2023,),
+            "holdout": (
+                2024,
+                2025,
+            ),
+        },
+        "incumbent_recorded_windows": {
+            "train": (
+                2015,
+                2016,
+                2017,
+                2018,
+                2019,
+            ),
+            "hp_val": (2020,),
+            "holdout": (
+                2021,
+                2022,
+                2023,
+                2024,
+            ),
+        },
+        "final_fit_seasons_span": (
+            2002,
+            2025,
+        ),
+        "final_fit_season_count": 24,
+        "gold_generation_marker": "2a6ad6de26efd1de6a0f4cedfb3108e5c590a29e94d0d8cbb76357039e912712",
+        "in_sample": True,
+        "per_season_paired_delta": {
+            "2024": {
+                "n": 272,
+                "mean": -0.5710482414921417,
+                "t": -2.2646796093594865,
+                "p": 0.024322403978483446,
+            },
+            "2025": {
+                "n": 285,
+                "mean": 0.438518724345455,
+                "t": 1.696913040347457,
+                "p": 0.0908087089732066,
+            },
+        },
+        "absolute_candidate_clv": {
+            "n": 557,
+            "mean": -0.2936228404483713,
+            "t": -1.9030808691124017,
+            "p": 0.05754620407771685,
+        },
+        "absolute_incumbent_clv": {
+            "n": 557,
+            "mean": -0.23913938398982934,
+            "t": -1.5047148314119578,
+            "p": 0.1329652412413909,
+        },
+    },
+    "ou": {
+        "verdict": "FAIL",
+        "candidate_artifact": "ou_20260914_221756",
+        "incumbent_artifact": "ou_20260326_163930",
+        "paired_statistic": -7.2615674705548345,
+        "p_value": 1.2977450321535316e-12,
+        "paired_mean": -1.2029649162634912,
+        "n_paired": 557,
+        "eligible_pairs": 570,
+        "excluded_incumbent_only": 0,
+        "excluded_candidate_only": 0,
+        "excluded_not_in_gold": 0,
+        "reason": "Pooled CLV significantly WORSE than v1.0 baseline or untestable (paired candidate-minus-baseline delta significantly negative); Season 2024 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable); Season 2025 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable); MAE delta -2.0754 (within 0.0)",
+        "reasons": (
+            "Pooled CLV significantly WORSE than v1.0 baseline or untestable (paired candidate-minus-baseline delta significantly negative)",
+            "Season 2024 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable)",
+            "Season 2025 CLV non-regression floor FAIL (paired delta significantly worse than v1.0 or untestable)",
+            "MAE delta -2.0754 (within 0.0)",
+        ),
+        "judge_version": "phase33-live-secondary-rescore-1",
+        "judge_code_digest": "33a8778f944d529e03a87f83b1a473efff028699fe18b380601ffc55cd6a4614",
+        "scorer_code_digest": "1ea9d2412bde245589a62d8c219437fdd62c2b2d4477de19c54f1fc9195f462c",
+        "comparator_provenance": "live_paired_rescore",
+        "hyperparameter_search": "none",
+        "selected_feature_count": 25,
+        "selected_feature_count_before": 25,
+        "selected_weather_count_after": 6,
+        "selected_weather_count_before": 17,
+        "candidate_metrics": {
+            "mae": 8.267674858737035,
+        },
+        "comparator_metrics": {
+            "mae": 10.343087360315156,
+        },
+        "windows": {
+            "train": (
+                2018,
+                2019,
+                2020,
+                2021,
+                2022,
+            ),
+            "hp_val": (2023,),
+            "holdout": (
+                2024,
+                2025,
+            ),
+        },
+        "incumbent_recorded_windows": {
+            "train": (
+                2018,
+                2019,
+            ),
+            "hp_val": (2020,),
+            "holdout": (
+                2021,
+                2022,
+                2023,
+                2024,
+            ),
+        },
+        "final_fit_seasons_span": (
+            2002,
+            2025,
+        ),
+        "final_fit_season_count": 24,
+        "gold_generation_marker": "2a6ad6de26efd1de6a0f4cedfb3108e5c590a29e94d0d8cbb76357039e912712",
+        "in_sample": True,
+        "per_season_paired_delta": {
+            "2024": {
+                "n": 272,
+                "mean": -1.4020888244404512,
+                "t": -6.120024776203626,
+                "p": 3.2656159304196585e-09,
+            },
+            "2025": {
+                "n": 285,
+                "mean": -1.012923853020919,
+                "t": -4.244683450367261,
+                "p": 2.967817938026124e-05,
+            },
+        },
+        "absolute_candidate_clv": {
+            "n": 557,
+            "mean": 1.6129731327241799,
+            "t": 10.25895945725558,
+            "p": 9.864683844249777e-23,
+        },
+        "absolute_incumbent_clv": {
+            "n": 557,
+            "mean": 2.8159380489876713,
+            "t": 32.387472472755384,
+            "p": 4.302934708366536e-130,
+        },
+    },
+}
+
+GATE_CANDIDATE_RECIPES: dict[str, dict[str, object]] = {
+    "wp": {
+        "incumbent_artifact": "wp_20260824_113325",
+        "incumbent_recorded_windows": {
+            "train": (
+                2018,
+                2019,
+            ),
+            "hp_val": (2020,),
+            "holdout": (
+                2021,
+                2022,
+                2023,
+                2024,
+            ),
+        },
+        "live_windows": {
+            "train": (
+                2018,
+                2019,
+                2020,
+                2021,
+                2022,
+            ),
+            "hp_val": (2023,),
+            "holdout": (
+                2024,
+                2025,
+            ),
+        },
+        "windows_source": "conf.season_partition.default_season_partition(), read through scripts.promote_models._incumbent_window (all three windows, since review CR-01)",
+        "window_report": "'wp' incumbent metadata ('artifacts\\wp_20260824_113325\\metadata.json') records windows that differ from the LIVE partition in conf/season_partition.py -- train: recorded [2018, 2019] -> live [2018, 2019, 2020, 2021, 2022]; hp_val: recorded [2020] -> live [2023]; holdout: recorded [2021, 2022, 2023, 2024] -> live [2024, 2025]. This is a REPORTED DIFFERENCE, not a refusal (D33.1-04): every window now comes from the committed rule, so the incumbent's recorded windows are historical facts about a past run rather than inputs to the next one. CONSEQUENCE, stated plainly: the candidate is trained over seasons the gate then re-scores it on, so that verdict is IN-SAMPLE and must be labelled in-sample rather than read as a clean gate pass. The metadata.json files are the record of past training runs and MUST NOT be edited to make this agree.",
+        "hyperparameter_search": "none",
+        "resolved_hyperparameters": {
+            "max_iter": 1000,
+            "solver": "lbfgs",
+            "C": 1.0,
+            "random_state": 42,
+        },
+        "exclude_groups": ("injury",),
+        "exclude_groups_provenance": "verdict",
+        "gold_generation": "2a6ad6de26efd1de6a0f4cedfb3108e5c590a29e94d0d8cbb76357039e912712",
+        "feature_list_pinned": False,
+        "selected_feature_count_before": 20,
+        "selected_feature_count_after": 20,
+        "selected_weather_count_before": 0,
+        "selected_weather_count_after": 3,
+    },
+    "ats": {
+        "incumbent_artifact": "ats_20260605_220128",
+        "incumbent_recorded_windows": {
+            "train": (
+                2015,
+                2016,
+                2017,
+                2018,
+                2019,
+            ),
+            "hp_val": (2020,),
+            "holdout": (
+                2021,
+                2022,
+                2023,
+                2024,
+            ),
+        },
+        "live_windows": {
+            "train": (
+                2018,
+                2019,
+                2020,
+                2021,
+                2022,
+            ),
+            "hp_val": (2023,),
+            "holdout": (
+                2024,
+                2025,
+            ),
+        },
+        "windows_source": "conf.season_partition.default_season_partition(), read through scripts.promote_models._incumbent_window (all three windows, since review CR-01)",
+        "window_report": "'ats' incumbent metadata ('artifacts\\ats_20260605_220128\\metadata.json') records windows that differ from the LIVE partition in conf/season_partition.py -- train: recorded [2015, 2016, 2017, 2018, 2019] -> live [2018, 2019, 2020, 2021, 2022]; hp_val: recorded [2020] -> live [2023]; holdout: recorded [2021, 2022, 2023, 2024] -> live [2024, 2025]. This is a REPORTED DIFFERENCE, not a refusal (D33.1-04): every window now comes from the committed rule, so the incumbent's recorded windows are historical facts about a past run rather than inputs to the next one. CONSEQUENCE, stated plainly: the candidate is trained over seasons the gate then re-scores it on, so that verdict is IN-SAMPLE and must be labelled in-sample rather than read as a clean gate pass. The metadata.json files are the record of past training runs and MUST NOT be edited to make this agree.",
+        "hyperparameter_search": "none",
+        "resolved_hyperparameters": {
+            "n_estimators": 200,
+            "max_depth": 4,
+            "learning_rate": 0.05,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "reg_alpha": 0.1,
+            "reg_lambda": 1.0,
+            "random_state": 42,
+            "verbosity": 0,
+            "n_jobs": -1,
+        },
+        "exclude_groups": ("injury",),
+        "exclude_groups_provenance": "verdict",
+        "gold_generation": "2a6ad6de26efd1de6a0f4cedfb3108e5c590a29e94d0d8cbb76357039e912712",
+        "feature_list_pinned": False,
+        "selected_feature_count_before": 25,
+        "selected_feature_count_after": 25,
+        "selected_weather_count_before": 0,
+        "selected_weather_count_after": 6,
+    },
+    "ou": {
+        "incumbent_artifact": "ou_20260326_163930",
+        "incumbent_recorded_windows": {
+            "train": (
+                2018,
+                2019,
+            ),
+            "hp_val": (2020,),
+            "holdout": (
+                2021,
+                2022,
+                2023,
+                2024,
+            ),
+        },
+        "live_windows": {
+            "train": (
+                2018,
+                2019,
+                2020,
+                2021,
+                2022,
+            ),
+            "hp_val": (2023,),
+            "holdout": (
+                2024,
+                2025,
+            ),
+        },
+        "windows_source": "conf.season_partition.default_season_partition(), read through scripts.promote_models._incumbent_window (all three windows, since review CR-01)",
+        "window_report": "'ou' incumbent metadata ('artifacts\\ou_20260326_163930\\metadata.json') records windows that differ from the LIVE partition in conf/season_partition.py -- train: recorded [2018, 2019] -> live [2018, 2019, 2020, 2021, 2022]; hp_val: recorded [2020] -> live [2023]; holdout: recorded [2021, 2022, 2023, 2024] -> live [2024, 2025]. This is a REPORTED DIFFERENCE, not a refusal (D33.1-04): every window now comes from the committed rule, so the incumbent's recorded windows are historical facts about a past run rather than inputs to the next one. CONSEQUENCE, stated plainly: the candidate is trained over seasons the gate then re-scores it on, so that verdict is IN-SAMPLE and must be labelled in-sample rather than read as a clean gate pass. The metadata.json files are the record of past training runs and MUST NOT be edited to make this agree.",
+        "hyperparameter_search": "none",
+        "resolved_hyperparameters": {
+            "n_estimators": 200,
+            "max_depth": 4,
+            "learning_rate": 0.05,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "reg_alpha": 0.1,
+            "reg_lambda": 1.0,
+            "random_state": 42,
+            "verbosity": 0,
+            "n_jobs": -1,
+        },
+        "exclude_groups": ("injury",),
+        "exclude_groups_provenance": "verdict",
+        "gold_generation": "2a6ad6de26efd1de6a0f4cedfb3108e5c590a29e94d0d8cbb76357039e912712",
+        "feature_list_pinned": False,
+        "selected_feature_count_before": 25,
+        "selected_feature_count_after": 25,
+        "selected_weather_count_before": 17,
+        "selected_weather_count_after": 6,
+    },
+}
+
+GATE_PREFLIGHT_RESULT: dict[str, object] = {
+    "staging_writable": "artifacts_staging",
+    "staging_clear": True,
+    "artifacts_writable": "artifacts",
+    "incumbents_resolve": {
+        "wp": "wp_20260824_113325",
+        "ats": "ats_20260605_220128",
+        "ou": "ou_20260326_163930",
+    },
+    "free_disk": 56672894976,
+}
+
+BLEND_VIRTUAL_MANIFEST: dict[str, str] = {
+    "wp": "wp_20260914_221745",
+    "ats": "ats_20260605_220128",
+    "ou": "ou_20260326_163930",
+    "blend": "blend_dynamic_20260606_020635",
+}
+
+BLEND_VIRTUAL_MANIFEST_SOURCE: dict[str, str] = {
+    "wp": "artifacts_staging",
+    "ats": "artifacts",
+    "ou": "artifacts",
+    "blend": "artifacts",
+}
+
+BLEND_CLV_BEFORE: dict[str, float] = {
+    "wp": -0.02375583991493844,
+    "ats": -0.13461368639632879,
+    "ou": 1.728197065345502,
+}
+
+BLEND_CLV_AFTER: dict[str, float] = {
+    "wp": 0.017803193951230655,
+    "ats": -0.13461368639632879,
+    "ou": 1.728197065345502,
+}
+
+BLEND_CLV_RECORDED_AT_TUNING: dict[str, float] = {
+    "wp": -0.002066871711438431,
+    "ats": -0.00038302376597345,
+    "ou": 1.0218503453840921,
+}
+
+BLEND_WEIGHTS: dict[str, float] = {
+    "wp": 0.5916990436565903,
+    "ats": 0.545553756120263,
+    "ou": 0.6040437178798241,
+}
+
+GATE_RENDERED_AT: str = "2026-09-15T02:17:58.719316+00:00"
+# The IN-SAMPLE label VERBATIM, as it stands in every verdict row and in the
+# committed record header. Copied rather than imported because this module takes NO
+# project imports by design; a test asserts it equals
+# scripts.run_phase33_gate.IN_SAMPLE_VERDICT_LABEL, so the copy cannot drift from the
+# constant it mirrors. Chunked at a fixed width rather than re-wrapped: a textwrap
+# pass drops and inserts spaces, and a copy that is not byte-identical is not a copy.
+GATE_VERDICT_SAMPLE_LABEL: str = (
+    "IN-SAMPLE. The shipped artifact was fitted on the holdout seasons thro"
+    "ugh the final-fit entry point (D33.1-01 / D33.1-02), and this gate re-"
+    "scores that same artifact on holdout gold. The verdict is therefore NO"
+    "T an out-of-sample generalisation estimate and MUST NEVER be presented"
+    " as a clean gate pass. A confident-looking number here says the model "
+    "reproduces rows it was fitted on. This label was written into committe"
+    "d source BEFORE any candidate was fitted, and into every verdict row b"
+    "efore any verdict value was computed."
+)
