@@ -14526,3 +14526,128 @@ ACCEPTANCE_RUN_EXPECTED_CHANGED_FILES_AMENDED: tuple[str, ...] = (
 # path reads no credit header, so the run records the balance before and after
 # itself, through the quota-free `/sports` endpoint.
 ACCEPTANCE_RUN_ODDS_EXPECTED_CREDIT_COST: int = 3
+
+
+# ---------------------------------------------------------------------------
+# SECOND AMENDMENT: THE ACCEPTANCE RUN, ATTEMPT 2.
+#
+# APPENDED by Plan 33-18 Task 2 on 2026-09-15, BEFORE the attempt-2 snapshots and before
+# any attempt-2 byte moved. Nothing above this line was edited: cb60677's declaration and
+# 74673df's amendment stand exactly as written, and this slot supersedes them FOR ATTEMPT 2.
+#
+# ATTEMPT 1, RECORDED RATHER THAN OVERWRITTEN. Run on 2026-09-15 against 74673df's
+# declaration. It executed capture_live_season (6.0 s), ingest_games (0.29 s) and
+# ingest_weather (0.39 s), then HALTED at data_qa, step 4 of 16, with "Data QA failed: 5
+# checks failed". Its bracket reported, per root:
+#   data/                  REWRITTEN silver/games.parquet; ADDED four bronze files
+#                          (depth_charts, pbp, schedules for W02; games for W00)
+#   config/upstream_live/  REWRITTEN 2026.json
+#   outputs/, artifacts/   UNCHANGED (769 and 173 files)
+# Every moved file was declared. DECLARED BUT UNMOVED -- a finding -- were the weather
+# bronze and data/silver/weather.parquet: the weather ingest logged "No games found season=
+# 2026 week=2", wrote nothing and reported success. Odds credits were untouched (20,000
+# remaining, 0 used). The capture records it produced were committed in d3da5df.
+#
+# THE CAUSE, MEASURED READ-ONLY AFTER THE HALT: the parquet/DuckDB split (N-01, recurring).
+# ingest_games wrote the 2026 schedule to the parquet only (6,771 rows) while DuckDB kept
+# 6,499 with zero 2026 rows, and load_dataframe(source="auto") reads DuckDB first. Of the
+# five counted QA failures, two were TRUE refusals caused by that split (games completeness
+# 0 of 16; the DuckDB-vs-parquet guard, 272 rows only in parquet) and three were the gate
+# (games freshness, which reads the stale DuckDB copy; odds freshness, demanded before
+# ingest_odds runs; weather_forecast freshness, a legacy table the live ingest never writes).
+#
+# THE OWNER RULINGS FOR ATTEMPT 2, all 2026-09-15. The fixes landed before this slot:
+# storage sync RED 6921680 / GREEN 91fa4ff; data_qa RED 93fac72 and 28e73d6 / GREEN 37c25e9.
+#
+# A READ-ONLY DRY EVALUATION OF THE FIXED GATE on the production state just before this
+# slot: 19 counted checks, 4 failed, and exactly the four the run's own earlier steps clear
+# -- games freshness and completeness (healed by ingest_games' sync), weather freshness
+# (cleared when ingest_weather writes), and the DuckDB-vs-parquet guard (healed by the sync).
+# Nothing else fails.
+# ---------------------------------------------------------------------------
+
+ACCEPTANCE_RUN_OWNER_RULINGS_ATTEMPT_2: tuple[tuple[str, str], ...] = (
+    (
+        "2026-09-15",
+        "R1: fix the silver upsert's DuckDB sync at the root, then re-run",
+    ),
+    (
+        "2026-09-15",
+        "data_qa option (a): fix the tz comparison, the odds ordering, the weather "
+        "table and report the extreme-total row as a data judgment",
+    ),
+    (
+        "2026-09-15",
+        "commit the attempt-1 capture records before any fix (orchestrator routine call)",
+    ),
+)
+
+# The slice is UNCHANGED from 74673df's amendment: sixteen steps, `build_elo` composed with
+# the provisional week, `ingest_odds` called once directly. Referenced, not restated.
+ACCEPTANCE_RUN_PIPELINE_SLICE_ATTEMPT_2: tuple[str, ...] = (
+    ACCEPTANCE_RUN_PIPELINE_SLICE_AMENDED
+)
+
+# The expected changed-file set is UNCHANGED BY PATH from 74673df's 31 entries, and that is
+# stated rather than left to inference. What the storage fix changes is WHY one already
+# declared path moves: `data/nfl_predictions.duckdb` now ALSO moves because ingest_games'
+# upsert replaces the stale `games` DuckDB copy. It was already declared for the save_dataframe
+# writers and the Elo sync, so it gains a reason, not an entry.
+#
+# NOTE ON THE BRONZE ENTRIES. Attempt 1's bronze files are already on disk and are in the
+# attempt-2 BEFORE snapshot, so attempt 2's own captures are new, differently-stamped files
+# matching the same patterns. The games bronze pattern keeps its week wildcard: attempt 1
+# wrote `W00`, because ingest_games passes weeks[0] off the fetched schedule.
+ACCEPTANCE_RUN_EXPECTED_CHANGED_FILES_ATTEMPT_2: tuple[str, ...] = (
+    ACCEPTANCE_RUN_EXPECTED_CHANGED_FILES_AMENDED
+)
+
+# The weather writes attempt 1 declared and did not make. Expected to MOVE this time; if
+# either does not, attempt 2 has reproduced attempt 1's silent weather success.
+ACCEPTANCE_RUN_WEATHER_FILES_EXPECTED_TO_MOVE_ATTEMPT_2: tuple[str, ...] = (
+    "data/bronze/weather_raw_bronze_2026_W02_<UTC_STAMP>.parquet",
+    "data/silver/weather.parquet",
+)
+
+# The DuckDB tables inside `data/nfl_predictions.duckdb` expected to move, with the writer.
+# A digest can only say the database file changed; the post-run check compares parquet and
+# DuckDB ROW COUNTS table by table, and every table here must end with the two equal.
+ACCEPTANCE_RUN_DUCKDB_TABLES_EXPECTED_TO_MOVE_ATTEMPT_2: tuple[tuple[str, str], ...] = (
+    ("games", "ingest_games via upsert_silver's sync -- the HEAL of attempt 1's split"),
+    ("elo_game_snapshots", "build_elo, composed"),
+    ("games_with_elo", "build_elo, composed"),
+    ("elo_rating_history", "build_elo, composed"),
+    ("elo_ratings_current", "build_elo, composed"),
+    ("team_form_features", "build_team_form via save_dataframe"),
+    ("contextual_features", "build_contextual via save_dataframe"),
+    ("weather_features", "build_weather_features via save_dataframe"),
+    ("features_wp", "build_features via save_dataframe"),
+    ("features_ats", "build_features via save_dataframe"),
+    ("features_ou", "build_features via save_dataframe"),
+)
+
+# Fresh before-documents for attempt 2. The stores moved in attempt 1, so its documents
+# cannot be reused; they are KEPT, unrenamed, as attempt 1's record. Same four roots, same
+# rule: every document lives under .planning/, outside all four roots.
+ACCEPTANCE_RUN_BRACKETED_ROOTS_ATTEMPT_2: tuple[tuple[str, str], ...] = (
+    (
+        "data",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/attempt2_data_before.json",
+    ),
+    (
+        "outputs",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/attempt2_outputs_before.json",
+    ),
+    (
+        "artifacts",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/attempt2_artifacts_before.json",
+    ),
+    (
+        "config/upstream_live",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/attempt2_config_upstream_live_before.json",
+    ),
+)
