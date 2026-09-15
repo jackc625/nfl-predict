@@ -13989,3 +13989,153 @@ OU_EDGE_TIER_GRID: tuple[tuple[float, str], ...] = (
     (0.5, "high"),
     (1.0, "high"),
 )
+
+
+# ---------------------------------------------------------------------------
+# PLAN 33-17 TASK 2 -- THE THREE MISLEADING REFUSALS, AND THE RUN RECORD THEY
+# MUST STOP PRESCRIBING.
+#
+# MEASURED 2026-09-15 by Plan 33-17 Task 2 on commit 67967e8.
+#
+# THE DEFECT. All three refusals below told the operator to re-run the
+# measurement module that produced the frozen fit. The committed one-shot run
+# ledger records that measurement as state = "completed" over a SINGLE-USE 2025
+# hold split, under an exclusive file creation with NO force flag -- so the
+# prescribed command does not rebuild anything, it REFUSES. A refusal naming an
+# unavailable command is worse than no text at all: it sends the reader to a
+# locked door and costs them the time it takes to find out.
+#
+# WHY THE CRITERION IS PROVEN BY RAISING AND NOT BY GREP. Both surviving v3.0
+# audit warnings exist because a test grepped a file instead of checking written
+# output, and the milestone invariant is that a criterion asserts the EFFECT. So
+# tests/unit/test_chain_fit_error_text.py drives each site into its refusal
+# branch and READS the message it actually raised.
+# ---------------------------------------------------------------------------
+
+CHAIN_FIT_ERROR_SITES: tuple[str, str, str] = (
+    "load_frozen_chain_fit",
+    "_require_season_covered",
+    "require_frozen_sd",
+)
+
+# The minimal inputs that drive each site into its refusal branch, AS PLAIN DATA.
+#
+# WHY A SPEC AND NOT A READY-MADE ARGUMENT TUPLE. This module's own constraint
+# is "constants only, NO project imports", and two of the three sites take
+# `backtest.weekly_bet_list.WeeklyChainFit` INSTANCES. A probe holding those
+# objects would require importing the module under test into the manifest, which
+# is exactly what the constraint forbids. So each probe is a plain-data block and
+# tests/unit/test_chain_fit_error_text.build_chain_fit_error_probe turns it into
+# the argument tuple -- one materializer, public, so a probe is still re-usable
+# from a command line.
+#
+# Each block's `kind` says which shape it is; `expect` names the exception the
+# site must raise, so a probe that stopped reaching its refusal branch fails
+# loudly instead of passing for want of an assertion.
+CHAIN_FIT_ERROR_PROBES: dict[str, dict[str, object]] = {
+    # A path that does not exist and -- deliberately -- does not CONTAIN the spent
+    # measurement module's name either. The raised message interpolates the path it
+    # was handed, so a probe path carrying that name would make the assertion below
+    # test the CALLER'S data rather than the module's own words.
+    "load_frozen_chain_fit": {
+        "kind": "absent_path",
+        "expect": "FrozenChainFitError",
+        "path": "outputs/p31/__absent_tune_only_fit__.json",
+    },
+    # A season no fit covers. WP carries an explicitly FAILED calibration gate so it
+    # is NOT exempt from the check (WR-12), which is what makes all three targets
+    # appear in the refusal rather than only the two line targets.
+    "_require_season_covered": {
+        "kind": "fits_and_season",
+        "expect": "FrozenChainFitError",
+        "season": 2099,
+        "fit_blocks": {
+            "wp": {
+                "ev_floor_t": 0.05,
+                "frozen_sd": None,
+                "season_bias_by_season": {2021: 0.0},
+                "calibration_gate_passed": False,
+            },
+            "ats": {
+                "ev_floor_t": 0.05,
+                "frozen_sd": 11.5,
+                "season_bias_by_season": {2021: 0.0},
+                "calibration_gate_passed": None,
+            },
+            "ou": {
+                "ev_floor_t": 0.0,
+                "frozen_sd": 13.0,
+                "season_bias_by_season": {2021: 0.0},
+                "calibration_gate_passed": None,
+            },
+        },
+    },
+    # An absent residual SD, which WR-05 refuses rather than substituting 0.0.
+    "require_frozen_sd": {
+        "kind": "fit",
+        "expect": "FrozenChainFitError",
+        "fit_block": {
+            "target": "ou",
+            "ev_floor_t": 0.0,
+            "frozen_sd": None,
+            "season_bias_by_season": {2021: 0.0},
+            "calibration_gate_passed": None,
+        },
+    },
+}
+
+# The substring no RAISED refusal may contain. Held here rather than written into
+# the test so the forbidden token and the sites it is checked against travel
+# together, and so a reader meets the rule at the same place as the evidence.
+SPENT_MEASUREMENT_TOKEN: str = "profitability_2025"
+
+# ---------------------------------------------------------------------------
+# THE SPENT RUN RECORD AND ITS TWO PROVENANCE STAMPS, DIGEST-ANCHORED.
+#
+# MEASURED 2026-09-15 by Plan 33-17 Task 2 on commit 67967e8. Each value is
+# sha256 over NEWLINE-NORMALIZED bytes -- this repository has core.autocrlf=true
+# and no .gitattributes, so a digest over raw working-tree bytes would hold only
+# on the machine that measured it. Normalized, each equals the sha256 of
+# `git cat-file blob HEAD:<path>`, VERIFIED against exactly that at measurement
+# time, and reproduces on any checkout.
+#
+# ONE REPRESENTATION, NOT TWO (Codex HIGH, folded into the plan). These are
+# WHOLE-FILE digests for all three paths, never region digests over the stamp
+# lines. The property being kept is that the spent run record is BYTE-UNTOUCHED,
+# which is a whole-file property; a region digest would let the rest of
+# backtest/profitability_2025.py change while the stamp stayed put, which is
+# precisely the state nobody wants to discover later. A future phase that
+# genuinely needs region anchors changes the representation deliberately, with
+# its own migration -- it does not mix the two.
+#
+# WHAT EACH ONE IS, AND WHY IT MUST NOT MOVE:
+#
+#   backtest/profitability_2025.py            the generator. Its emitted header
+#     (three lines beginning "GENERATOR OUTPUT. Produced by") is an ACCURATE
+#     PROVENANCE STAMP, not a remedy -- it records what produced the artifact. A
+#     repo-wide search-and-replace correcting the three REFUSALS would destroy it
+#     and with it the provenance record, which is why this plan corrected three
+#     named sites by hand instead.
+#   config/profitability_2025_verdict.toml    the committed verdict carrying the
+#     same stamp.
+#   config/profitability_2025_run_ledger.toml the one-shot ledger. It is the
+#     evidence that the 2025 split was spent, and it is the reason the prescribed
+#     command was unavailable in the first place.
+# ---------------------------------------------------------------------------
+
+PROVENANCE_STAMP_DIGESTS: dict[str, str] = {
+    "backtest/profitability_2025.py": (
+        "2f79158655c9e36fb2e9c0ffb6a504c56ac9a58077af071bde1a2fa3e5c1a119"
+    ),
+    "config/profitability_2025_run_ledger.toml": (
+        "60dc62675809b982471aca5da59e4a11901d1e053db77ccddf4250c4bf32aad4"
+    ),
+    "config/profitability_2025_verdict.toml": (
+        "4befbcb73dd5697e75052f49d4d97091d1085dac74af794e1a4ec9916c9ead2e"
+    ),
+}
+
+# The three lines that open the generator's emitted header and the committed
+# verdict alike. Recorded so the byte-identity claim above can be read as a
+# STATEMENT ABOUT SOMETHING rather than as three opaque hashes.
+PROVENANCE_STAMP_OPENING: str = "GENERATOR OUTPUT. Produced by"
