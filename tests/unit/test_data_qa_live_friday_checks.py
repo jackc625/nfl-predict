@@ -201,13 +201,23 @@ class TestOddsFreshnessIsNotDemandedBeforeTheOddsStep:
 # ---------------------------------------------------------------------------
 
 
-def _weather(ids: list[str]) -> pd.DataFrame:
+def _weather(ids: list[str], *, created_at: datetime = NOW) -> pd.DataFrame:
+    """Silver ``weather`` in its REAL shape: keyed by ``game_id``, NO season or week.
+
+    Measured on the production parquet on 2026-09-15. The earlier fixture carried season and
+    week columns the real table does not have, which let two vacuous checks look sound: a
+    completeness count that filters on season/week counts EVERY row of a table without them,
+    and a freshness check that maxes over every time-like column reads a FUTURE ``game_time``
+    as "fresh" forever. Both are pinned below against the real shape.
+    """
+    kickoff = pd.Timestamp("2026-09-20 17:00", tz="UTC")
     return pd.DataFrame(
         {
             "game_id": ids,
-            "season": [SEASON] * len(ids),
-            "week": [WEEK] * len(ids),
-            "created_at": [NOW] * len(ids),
+            "forecast_time": [created_at] * len(ids),
+            "game_time": [kickoff] * len(ids),
+            "is_outdoor": [True] * len(ids),
+            "created_at": [created_at] * len(ids),
         }
     )
 
@@ -218,6 +228,17 @@ class TestWeatherIsWatchedWhereTheLiveIngestWrites:
     def test_the_monitor_watches_weather_not_weather_forecast(self):
         tables = DataQualityMonitor().monitored_tables
         assert "weather" in tables and "weather_forecast" not in tables
+
+    def test_weather_written_days_ago_reads_stale_despite_future_kickoffs(self, lake):
+        """``game_time`` is a KICKOFF, not a write time; it must not make stale data fresh."""
+        old = NOW - timedelta(days=10)
+        _save_parquet(lake, _weather(WEEK_2_IDS, created_at=old), "weather")
+        result = DataQualityMonitor().check_data_freshness("weather")
+        assert result["status"] == "stale", (
+            f"weather written 10 days ago reads {result['status']!r} "
+            f"(last_update {result['last_update']}); a future kickoff time is being read as "
+            "the moment the ingest wrote"
+        )
 
     def test_fresh_weather_reads_fresh(self, lake):
         _save_parquet(lake, _weather(WEEK_2_IDS), "weather")
