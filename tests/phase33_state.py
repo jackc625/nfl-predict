@@ -11617,3 +11617,181 @@ GOLD_WIDTHS_BEFORE_PHASE33_LADDER: tuple[int, int, int] = (195, 196, 195)
 GOLD_GENERATION_BEFORE_PHASE33_LADDER: str = (
     "eea0882f4410d22af6e4b54d1c0929a28072325fff9b556a91ca12de900290d1"
 )
+
+
+# ---------------------------------------------------------------------------
+# WHAT THE EXEMPTION RUNG ACTUALLY MOVED, MEASURED.
+#
+# APPENDED by Plan 33-14 Task 3 on 2026-09-14, AFTER the rung 1 rebuild and its
+# attribution. Nothing above this line was edited. The expectations this is
+# judged against were committed in the PREVIOUS commit, before the rebuild ran.
+# ---------------------------------------------------------------------------
+
+GOLD_WIDTHS_AFTER_EXEMPTION_RUNG: tuple[int, int, int] = (195, 196, 195)
+
+# THE OBSERVED SET MATCHES THE DECLARED SET EXACTLY.
+#
+# Derived EMPIRICALLY at `(season, week)` granularity from row-level slice
+# digests over the 26 causal columns, taken before and after the rebuild
+# (`scripts.fingerprint_gold._per_slice_digests`, the `_per_season_digests`
+# idiom extended to a week key). All 509 `(season, week)` slices moved, in all
+# three matrices identically, so every one of the 24 seasons collapses to
+# `(season, None)` -- and a season is collapsed ONLY when every week of it
+# moved, so this is the strong reading rather than a rounding of it.
+#
+# That is exactly `GOLD_REBUILD_EXPECTED_CHANGED_SLICES_EXEMPTION`: zero
+# out-of-set slices, zero declared-but-unchanged slices. A normalization change
+# moves every season the column was normalized in, and it did.
+GOLD_REBUILD_OBSERVED_CHANGED_SLICES_EXEMPTION: tuple[tuple[int, int | None], ...] = (
+    tuple((season, None) for season in range(2002, 2026))
+)
+
+# THE 25-OF-26 COLUMNS THAT MOVED, AND THE ONE THAT DID NOT.
+#
+# `weather_coverage` is the declared-but-UNCHANGED member, and its silence is
+# correct rather than a miss: Phase 33.1's rung 3 already exempted it, so it was
+# ALREADY returning at its recorded level 1.0 and this rung had nothing to
+# change about it. A declared change that failed to materialise is reported
+# rather than passed over, which is why it is named here.
+#
+# THE OTHER 25 MOVED IN EVERY SEASON THEY APPEAR IN, and the effect is the one
+# WINDOWS rows 33 and 40 asked for. MEASURED on data/gold/features_ou.parquet
+# before and after:
+#
+#     column                   distinct values BEFORE -> AFTER
+#     is_snow                                     274 -> 2
+#     wind_moderate                             5,667 -> 2
+#     home_injury_coverage                         45 -> 2
+#     weather_coverage                              1 -> 1  (already exempt)
+#
+# Every one of the 25 now carries its recorded levels instead of a
+# window-dependent decimal.
+GOLD_REBUILD_EXEMPTION_DECLARED_BUT_UNCHANGED: tuple[str, ...] = ("weather_coverage",)
+
+# THE FINDING. THE ELO RE-DERIVATION REACHED GOLD AT RUNG 1, NOT RUNG 2.
+#
+# Eighteen columns moved OUTSIDE the exemption rung's declared family, identical
+# in all three matrices. Every one is explained, and they share ONE cause.
+#
+# WHY. Plan 33-13 re-derived the canonical Elo chain into SILVER during Wave 13
+# -- `elo_game_snapshots` went from 2,227 rows over 2018-2025 to 6,499 over
+# 2002-2025. Gold was not rebuilt between that re-derivation and this rung, so
+# THIS rebuild is the first gold build to consume the corrected chain. The Elo
+# cause was already resident in silver before the ladder started.
+#
+# THE LADDER SEPARATES CAUSES BY ORDER OF CODE CHANGE; THIS CAUSE WAS A DATA
+# CHANGE THAT HAD ALREADY LANDED. That is the mechanism, stated plainly, and it
+# is a real limitation of the instrument rather than an execution mistake. No
+# ordering of the two rungs could have prevented it: any gold rebuild run after
+# Wave 13 carries the re-derived chain.
+#
+# MEASURED CONFIRMATION, not inference. Before this rung 4,288 of 6,499 gold
+# rows carried a fabricated 0.0 Elo; after it, 16 rows carry both Elo columns at
+# exactly 0.0 and `home_elo` spans 2002-2025 with 252 to 285 distinct values per
+# season -- the shape of a real chain, in the seasons that previously had none.
+#
+# WHAT IS AND IS NOT DAMAGED. The two causes' column families are DISJOINT: 25
+# level-preserved columns against 14 Elo columns and 4 Elo-DERIVED situational
+# ones. So although the two causes landed in ONE rebuild, every moved column is
+# still attributable to exactly one named cause by family membership. This is
+# NOT the Phase-33.1 residual, where 45 columns came back unattributed and the
+# trigger for 40 of them is permanently unmeasurable. Nothing here is
+# unexplained. What was lost is the ladder's MECHANISM -- two rebuilds, one
+# cause each -- not its PURPOSE, which is per-column attribution.
+#
+# THE CONSEQUENCE FOR RUNG 2 IS THE OWNER'S CALL, NOT THIS PLAN'S. Running
+# `--all-seasons` again would now move nothing but the build clock, and both
+# D33-35 and the attribution machinery refuse an empty-diff rung by name. That
+# is put to the owner at this plan's Task-4 blocking-human checkpoint rather
+# than decided here.
+GOLD_REBUILD_ELO_CAUSE_LANDED_AT_EXEMPTION_RUNG: dict[str, object] = {
+    "measured_at": "2026-09-14",
+    "measured_by": "Plan 33-14 Task 3, after the rung 1 rebuild",
+    "out_of_family_columns": 18,
+    "identical_in_all_three_matrices": True,
+    "elo_family_members_that_moved": 14,
+    "elo_family_members_that_did_not_move": 0,
+    "elo_derived_situational_columns": (
+        "away_letdown_spot",
+        "away_look_ahead_spot",
+        "home_letdown_spot",
+        "home_look_ahead_spot",
+    ),
+    "gold_rows_with_both_elo_exactly_zero_before": 4288,
+    "gold_rows_with_both_elo_exactly_zero_after": 16,
+    "home_elo_distinct_per_season_after": "252 to 285 across 2002-2025",
+    "elo_family_observed_slices": (
+        "all 509 (season, week) slices, i.e. all 24 seasons whole, identical in "
+        "all three matrices"
+    ),
+    "elo_family_declared_slices_for_rung_2": (
+        "2002-2017 whole plus (2018, 1) -- 17 entries. The observed set is FAR "
+        "wider, which is the propagation the cross-AI review predicted and the "
+        "owner accepted as possible on 2026-09-14: build_elo_with_snapshots "
+        "resets at the start of its range and processes chronologically, and "
+        "same-week ranks are computed over the whole snapshot population"
+    ),
+    "verdict": (
+        "EXPLAINED, NOT UNATTRIBUTED. One cause, measured, reaching a family "
+        "disjoint from the exemption rung's. The ladder's mechanism was defeated "
+        "by a data change that had already landed; its purpose -- per-column "
+        "attribution -- survives intact."
+    ),
+}
+
+# THE WRITTEN EXPLANATION FOR EVERY OUT-OF-SET CHANGE.
+#
+# KEYED BY BOTH SLICE AND COLUMN, deliberately. The plan's gate reads this as
+# `un.get(slice_tuple)` for every observed slice outside the declared set, and
+# this rung produced ZERO of those -- the slice sets match exactly. What it DID
+# produce is eighteen out-of-FAMILY columns, and an explanation record that
+# carried only the (empty) slice half would be a record that says nothing about
+# the only thing that needed explaining.
+#
+# Do NOT construct a second rung to absorb these. An unexpected change is a
+# FINDING, and inventing a rung for it is the shape of absorbing a disclosure.
+GOLD_REBUILD_UNEXPLAINED_CHANGES_EXEMPTION: dict[object, str] = {
+    **dict.fromkeys(
+        (
+            "home_elo",
+            "away_elo",
+            "elo_diff",
+            "elo_prob_home",
+            "elo_prob_away",
+            "hfa_used",
+            "home_elo_uncertainty",
+            "away_elo_uncertainty",
+            "home_elo_momentum",
+            "away_elo_momentum",
+            "home_elo_rank",
+            "away_elo_rank",
+            "home_elo_percentile",
+            "away_elo_percentile",
+        ),
+        "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived "
+        "the canonical chain into silver elo_game_snapshots (2,227 rows over "
+        "2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not "
+        "rebuilt in between -- so this rebuild, not rung 2, is the first gold "
+        "build to consume it. Confirmed by measurement rather than inferred: "
+        "rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo "
+        "now spans 2002-2025 with 252-285 distinct values per season. The "
+        "normalization-exemption widening cannot reach these columns -- none is "
+        "level-preserved -- so the cause is not ambiguous between the two rungs.",
+    ),
+    **dict.fromkeys(
+        (
+            "home_look_ahead_spot",
+            "away_look_ahead_spot",
+            "home_letdown_spot",
+            "away_letdown_spot",
+        ),
+        "ELO-DERIVED, so the SAME cause one step downstream. "
+        "features.contextual._look_ahead_flag and _letdown_flag both decide "
+        "their flag from OPPONENT ELO -- the current opponent's strength via "
+        "_team_elo_in_game, the next opponent's via _freeze_known_elo, each "
+        "compared against ELO_SPOT_STEP. A changed Elo chain therefore moves "
+        "which games count as a trap or a letdown spot. They are not weather "
+        "columns and not coverage columns, so the exemption cannot reach them; "
+        "they move for the Elo re-derivation, exactly as the fourteen above.",
+    ),
+}
