@@ -1404,6 +1404,143 @@ RUNG_CAUSES_BY_PREFIX[PHASE33_RUNG_PREFIX] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# RUNG 2 BECAME A DECLARATION-ONLY RUNG (owner ruling `skip-rung-2-as-already-
+# landed`, 2026-09-14, at Plan 33-14's Task-4 blocking-human checkpoint).
+#
+# WHAT HAPPENED, MEASURED. Rung 1 was declared to carry ONE cause -- the
+# normalization-exemption widening -- and it did move exactly the 25 of 26
+# level-preserved columns it was supposed to. It ALSO moved eighteen columns
+# outside that family: all fourteen `ELO_FEATURE_COLUMNS` members, plus the four
+# situational spot flags that `features.contextual._look_ahead_flag` and
+# `_letdown_flag` derive from opponent Elo. Rows carrying a fabricated 0.0 Elo
+# fell from 4,288 to 16 -- and those 16 are ALL `(2002, 1)`, the burn-in
+# boundary where no prior game exists, which is structurally explicable rather
+# than fabricated.
+#
+# WHY, AND IT IS A PLANNING-ORDER FINDING RATHER THAN A RUNG THAT MISBEHAVED.
+# Plan 33-13 re-derived the canonical Elo chain into SILVER during Wave 13.
+# Gold was not rebuilt between that re-derivation and rung 1, so rung 1 was
+# simply the FIRST gold build to consume it. The ladder separates causes by
+# ORDER OF CODE CHANGE; this cause was a DATA change that had already landed.
+# No ordering WITHIN this plan could have separated them -- only a gold rebuild
+# taken BEFORE Wave 13 could have, which is a cross-plan ordering call nobody
+# made.
+#
+# SO THERE IS NO SECOND REBUILD, AND CONSTRUCTING ONE WOULD BE DISHONEST TWICE
+# OVER. A re-run of `--all-seasons` would now move nothing but the build clock:
+# D33-35 forbids running an empty-diff rung to prove a null BY NAME, and
+# `_phase33_structure`'s empty-diff refusal would read it as proof the rebuild
+# did not do what it claimed. Constructing a synthetic rebuild to absorb the
+# eighteen columns has the shape of absorbing a disclosure, which this phase
+# prohibits.
+#
+# THE PRECEDENT IS PHASE 33.1'S FOLLOW-UP RUNG, and this reuses its shape
+# exactly: a real ladder entry with its own cause that RE-JUDGES the SAME
+# transition and rebuilds nothing. `p33_rung0.json -> p33_rung1.json` is
+# re-judged under a SECOND declaration adding the two families rung 1 did not
+# carry. That is why there is no `p33_rung2.json` fingerprint document --
+# writing one would assert a rebuild that did not occur --- and
+# `require_rung_ladder(dir, 2, "p33_")` demands rungs 0 and 1, which is exactly
+# right: both exist and the chain is intact.
+#
+# WHAT IS AND IS NOT LOST. The two causes' column families are DISJOINT: 25
+# level-preserved against 14 Elo plus 4 Elo-derived. Every moved column is still
+# attributable to exactly ONE named cause, and nothing is unexplained. What was
+# lost is the ladder's MECHANISM (two rebuilds, one cause each), not its PURPOSE
+# (per-column attribution). This is NOT the Phase-33.1 residual, where 45
+# columns came back unattributed and the trigger for 40 is PERMANENTLY
+# UNMEASURABLE.
+#
+# NOTHING PRE-DECLARED IS EDITED. `PHASE33_ELO_RUNG_CAUSE` and
+# `PHASE33_ELO_RUNG_EXPECTED_SIGNATURE` above stay BYTE-UNCHANGED as the record
+# of what was predicted before either rebuild ran. The follow-up declaration
+# below is ADDITIVE and says in its own fields that it was authored AFTER the
+# diff -- which is precisely the distinction between a follow-up rung and a
+# retroactive edit (Ruling N2, T-33.1-43).
+# ---------------------------------------------------------------------------
+
+# THE FOUR ELO-DERIVED SITUATIONAL COLUMNS, enumerated with the source that
+# makes them attributable to the Elo cause rather than asserted to be.
+#
+# `features/contextual.py` computes both flags from OPPONENT ELO:
+# `_look_ahead_flag` reads the next opponent's freeze-known Elo via
+# `_freeze_known_elo` and compares it against this week's opponent Elo with
+# `ELO_SPOT_STEP`; `_letdown_flag` does the same over the previous game. A
+# changed Elo chain therefore changes WHICH games count as a trap or a letdown
+# spot. They are neither weather nor coverage columns, so rung 1's exemption
+# cannot reach them, and they are not in `ELO_FEATURE_COLUMNS`, so the Elo
+# family cannot either -- which is why they need naming rather than inferring.
+PHASE33_ELO_DERIVED_SITUATIONAL_COLUMNS: tuple[str, ...] = (
+    "home_look_ahead_spot",
+    "away_look_ahead_spot",
+    "home_letdown_spot",
+    "away_letdown_spot",
+)
+
+PHASE33_ELO_RUNG_FOLLOWUP_SIGNATURE: dict[str, object] = {
+    "rung": PHASE33_ELO_RUNG,
+    "prefix": PHASE33_RUNG_PREFIX,
+    "cause": PHASE33_ELO_RUNG_CAUSE,
+    "judges": (
+        "the SAME p33_rung0 -> p33_rung1 transition, re-judged under a second "
+        "declaration. No second rebuild happened and none will, which is why "
+        "there is no p33_rung2.json fingerprint document"
+    ),
+    "no_new_rebuild": True,
+    "authored_after_the_diff": True,
+    "supersedes": (
+        "PHASE33_ELO_RUNG_EXPECTED_SIGNATURE, which predicted rung 2 would be "
+        "its own rebuild. That prediction is kept BYTE-UNCHANGED in source as "
+        "the record of what was declared before either rebuild ran; only the "
+        "framing is superseded, and the Elo causal family it named is unchanged "
+        "and correct"
+    ),
+    "owner_ruling": (
+        "the owner ruled `skip-rung-2-as-already-landed` on 2026-09-14, having "
+        "been shown the exemption rung's attributed set (25 of 26), the 18 "
+        "explained out-of-family columns, the widths (195, 196, 195) at every "
+        "point, the fabricated-zero fall from 4,288 to 16 rows (all of them "
+        "2002 week 1), and both findings. `run-rung-2-anyway` was rejected on "
+        "the evidence as an empty-diff rung run to prove a null"
+    ),
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "rung 1's declared family, PLUS two declared families rung 1 did not "
+        "carry: (1) `elo` -- features.elo_features.ELO_FEATURE_COLUMNS, "
+        "source-derived, covering raw Elo, the derived differences and "
+        "probabilities, the uncertainty pair, the rank and percentile columns "
+        "and the momentum columns; and (2) `elo_derived_situational` -- the "
+        "four spot flags features.contextual derives from opponent Elo against "
+        "ELO_SPOT_STEP. Everything else is refused exactly as at rung 1"
+    ),
+    "declared_families": (
+        "carried_at_rung_1",
+        "elo",
+        "elo_derived_situational",
+    ),
+    "family_mechanisms": {
+        "carried_at_rung_1": "predicate shared with the builder, pinned by name",
+        "elo": "source-derived constant",
+        "elo_derived_situational": "enumerated names with a source justification",
+    },
+    # NO SEASON RESTRICTION ON THE ELO FAMILIES, and its absence is a
+    # declaration. `build_elo_with_snapshots` resets at the start of its range
+    # and processes chronologically, and same-week ranks are computed over the
+    # whole snapshot population, so a season restriction would refuse a CORRECT
+    # rebuild for disagreeing with a guess. The OBSERVED slice set was all 24
+    # seasons against a declared 2002-2017 plus (2018, 1); that propagation is
+    # REPORTED and explained in tests.phase33_state, never gated here. The owner
+    # accepted this framing on 2026-09-14.
+    "expected_slices_are_a_prediction": True,
+    "slice_propagation_is_reported_not_fatal": True,
+    "ok_required_unconditionally": True,
+}
+
+
 def _rung_causes(prefix: str = "") -> dict[int, str]:
     """The cause table *prefix* names.
 
@@ -1908,7 +2045,10 @@ def _expected_signature(
         # a caller must not be able to edit the prediction it is about to be
         # judged against.
         if rung == PHASE33_ELO_RUNG:
-            return dict(PHASE33_ELO_RUNG_EXPECTED_SIGNATURE)
+            # The FOLLOW-UP signature, not the pre-declared one. Rung 2 became a
+            # declaration-only rung by owner ruling; the pre-declared signature
+            # stays byte-unchanged in source as the record of what was predicted.
+            return dict(PHASE33_ELO_RUNG_FOLLOWUP_SIGNATURE)
         return dict(PHASE33_EXEMPTION_RUNG_EXPECTED_SIGNATURE)
 
     if prefix == PHASE331_RUNG_PREFIX:
@@ -3058,28 +3198,55 @@ def _attribute_phase33_exemption(detail: dict, diff: dict, verdict: dict, fail) 
 
 
 def _attribute_phase33_elo(detail: dict, diff: dict, verdict: dict, fail) -> bool:
-    """The Elo rung: ONE source-derived family, propagation REPORTED not gated.
+    """The Elo rung, as a DECLARATION-ONLY follow-up over the rung-1 transition.
 
-    The family is ``features.elo_features.ELO_FEATURE_COLUMNS``, which already
-    names the rank, percentile and momentum columns -- the ones that propagate
-    FURTHER than raw Elo, because same-week ranks are computed over the whole
-    snapshot population.
+    WHAT THIS RUNG IS. It re-judges the SAME ``p33_rung0 -> p33_rung1``
+    transition under a second declaration, and rebuilds nothing. Rung 1's own
+    declaration and its verdict are BYTE-UNTOUCHED by it --
+    ``attribute_rung(report, PHASE33_EXEMPTION_RUNG, ...)`` still returns
+    ``ok=False`` on this diff with the same eighteen unattributed columns. That
+    is the whole difference between a follow-up rung and a retroactive edit, and
+    it is Phase 33.1's precedent applied unchanged.
 
-    NO SEASON RESTRICTION HERE EITHER, and here the reason is load-bearing rather
-    than merely sufficient. The plan declares an expected slice set of 2002-2017
-    plus ``(2018, 1)`` -- but ``build_elo_with_snapshots`` RESETS the Elo system
-    at the start of its requested range and processes chronologically
+    THE THREE FAMILIES:
+
+    1. ``elo`` -- ``features.elo_features.ELO_FEATURE_COLUMNS``, source-derived,
+       which already names the rank, percentile and momentum columns. Those are
+       the ones that propagate FURTHER than raw Elo, because ``_add_rank_features``
+       computes ranks over the same-week snapshot POPULATION, so one game's
+       corrected Elo moves the rank columns of every other game that week.
+    2. ``elo_derived_situational`` -- the four spot flags
+       ``features.contextual`` derives from opponent Elo against
+       ``ELO_SPOT_STEP``. The SAME cause, one step downstream. They are in
+       neither the Elo registry nor the exemption family, which is exactly why
+       they must be named rather than inferred.
+    3. ``carried_at_rung_1`` -- the level-preservation family, recorded under its
+       own label rather than re-derived into a new bucket, so a reader can see at
+       a glance which columns this rung EXPLAINS and which it merely INHERITS.
+
+    Everything else is UNATTRIBUTED and fails, exactly as at rung 1. A follow-up
+    rung declares a BOUNDED residual measured off a diagnosis; it is not an open
+    bucket.
+
+    NO SEASON RESTRICTION ON EITHER ELO FAMILY, and the reason is load-bearing.
+    ``build_elo_with_snapshots`` RESETS the Elo system at the start of its
+    requested range and processes chronologically
     (``scripts/build_elo.py:142-205``), so a corrupted 2018-start chain can
-    legitimately differ throughout later seasons. A season restriction would
-    therefore refuse a CORRECT rebuild for disagreeing with a guess, which is the
-    one failure this rung must not have. The slice comparison happens against the
-    DECLARED set in ``tests.phase33_state``, where an out-of-set slice is
-    reported with a written explanation; it is deliberately not a gate here.
+    legitimately differ throughout later seasons -- and it did: the observed
+    slice set is all 24 seasons against a declared 2002-2017 plus ``(2018, 1)``.
+    A season restriction would refuse a CORRECT rebuild for disagreeing with a
+    guess. The slice comparison happens against the DECLARED set in
+    ``tests.phase33_state``, where every out-of-set slice carries a written
+    explanation; it is deliberately not a gate here.
 
     Returns:
         Whether this matrix BLOCKS the phase.
     """
-    verdict["changed_by_family"] = {"elo": []}
+    verdict["changed_by_family"] = {
+        "carried_at_rung_1": [],
+        "elo": [],
+        "elo_derived_situational": [],
+    }
     blocking = _phase33_structure(
         detail,
         diff,
@@ -3088,24 +3255,36 @@ def _attribute_phase33_elo(detail: dict, diff: dict, verdict: dict, fail) -> boo
         "Replacing a fabricated 0.0 Elo on 4,288 of 6,499 rows with the "
         "re-derived 2002-2025 chain",
     )
-    family = {_canonical(name) for name in phase33_elo_family()}
+    elo = {_canonical(name) for name in phase33_elo_family()}
+    situational = {_canonical(name) for name in PHASE33_ELO_DERIVED_SITUATIONAL_COLUMNS}
+    carried = {_canonical(name) for name in phase33_level_preserved_family()}
 
     for column in sorted(diff["changed"]):
-        if column in family:
+        if column in elo:
             verdict["attributed"].append(column)
             verdict["changed_by_family"]["elo"].append(column)
+            continue
+        if column in situational:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["elo_derived_situational"].append(column)
+            continue
+        if column in carried:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["carried_at_rung_1"].append(column)
             continue
         seasons = sorted(diff["changed"][column])
         verdict["unattributed"].append(column)
         fail(
-            f"column '{column}' moved at the Phase-33 Elo rung in season(s) "
-            f"{', '.join(seasons) or '(none attributed)'} but is NOT a member of "
-            "features.elo_features.ELO_FEATURE_COLUMNS. The rung's ONE cause is "
-            "the Elo re-derivation, which reaches the Elo family and the columns "
-            "derived from it. This is a FINDING rather than a block: record it in "
-            "GOLD_REBUILD_UNEXPLAINED_CHANGES_ELO with a written explanation "
-            "naming the causal column and why a chronological rebuild could "
-            "reach it. Do NOT construct a second rung to absorb it"
+            f"column '{column}' moved across the p33_rung0 -> p33_rung1 "
+            f"transition in season(s) {', '.join(seasons) or '(none attributed)'} "
+            "and belongs to NEITHER rung 1's level-preservation family NOR "
+            "either of the two this follow-up rung declares. A follow-up rung "
+            "declares a BOUNDED residual measured off a diagnosis; it is not an "
+            "open bucket, and an undeclared column is refused here exactly as it "
+            "was at rung 1. Record it in GOLD_REBUILD_UNEXPLAINED_CHANGES_ELO "
+            "with a written explanation. Do NOT construct another rung to absorb "
+            "it -- inventing a rung for an unexpected change is the shape of "
+            "absorbing a disclosure"
         )
 
     return blocking
@@ -3314,6 +3493,277 @@ def _attribute_rung4(detail: dict, diff: dict, verdict: dict, fail) -> bool:
             verdict["attributed"].append(column)
 
     return blocking
+
+
+def _platform_record() -> dict[str, str]:
+    """The facts that make a cross-machine digest disagreement DIAGNOSABLE.
+
+    Recorded instead of introducing an epsilon. ``scripts/fingerprint_gold.py``
+    already has a comparison convention -- EXACT bytes, via ``_column_bytes``'s
+    IEEE-754 encoding -- and every prior phase's committed diff was produced
+    under it. A second convention here would make this diff incomparable with
+    Phase 30's, Phase 31's and Phase 33.1's, which is a worse failure than the
+    one rounding would prevent. Rounding would also mask exactly the small
+    systematic shift a bad derivation produces.
+    """
+    import platform
+
+    import numpy as np
+
+    blas = "unknown"
+    try:
+        config = np.__config__.get_info("blas_opt")  # type: ignore[attr-defined]
+        blas = str(config.get("libraries", config)) if config else "unknown"
+    except (AttributeError, KeyError, TypeError):
+        try:
+            blas = str(
+                np.__config__.CONFIG["Build Dependencies"]["blas"]["name"]  # type: ignore[attr-defined]
+            )
+        except (AttributeError, KeyError, TypeError):
+            blas = "unknown"
+
+    return {
+        "os": f"{platform.system()} {platform.release()}",
+        "machine": platform.machine(),
+        "python": platform.python_version(),
+        "numpy": np.__version__,
+        "pandas": pd.__version__,
+        "blas": blas,
+    }
+
+
+def _toml_escape(value: str) -> str:
+    """Escape *value* for a TOML basic string."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+def _toml_array(values) -> str:
+    """Render *values* as a single-line TOML array of basic strings."""
+    return "[" + ", ".join(f'"{_toml_escape(str(v))}"' for v in values) + "]"
+
+
+def _slice_label(entry) -> str:
+    """Render a ``(season, week)`` slice as a lossless string.
+
+    TOML has no null, so ``(2018, None)`` cannot round-trip as an array. A whole
+    season is rendered as ``"2018"`` and a single week as ``"2018|1"`` -- which
+    reads correctly and, unlike a sentinel integer, cannot be mistaken for week
+    zero.
+    """
+    season, week = entry
+    return str(season) if week is None else f"{season}|{week}"
+
+
+def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
+    """Emit the COMMITTED per-rung record of what this phase's ladder moved.
+
+    ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
+    way a fresh checkout can say WHAT each rung moved. That is the whole reason
+    it is committed and the fingerprint documents are not.
+
+    THE DECLARATIONS ARE READ FROM ``tests.phase33_state``, not restated here.
+    That module is this repository's WITNESS pattern -- constants only, no
+    project imports, no I/O, importable from any tier -- and it is where the
+    expected and observed sets were recorded before and after the rebuild. The
+    alternative is a second spelling of every declaration inside the generator,
+    which is the D30-02 failure mode. The import is deferred so this module can
+    still be used as a plain fingerprint reader.
+
+    Args:
+        out_path: Where to write the TOML. Refused if it points under ``data/``.
+
+    Returns:
+        The path written.
+    """
+    import tests.phase33_state as state
+
+    out_path = reject_data_path(
+        Path(out_path), what="the rebuild diff", suggestion="config/"
+    )
+
+    before = json.loads(
+        rung_document_path(FINGERPRINT_DIR, 0, PHASE33_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    after = json.loads(
+        rung_document_path(FINGERPRINT_DIR, 1, PHASE33_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+
+    added: set[str] = set()
+    removed: set[str] = set()
+    for matrix in GOLD_MATRICES:
+        added |= set(report[matrix]["columns_added"])
+        removed |= set(report[matrix]["columns_removed"])
+    seasons_before = set(before["features_ou"]["seasons"])
+    seasons_after = set(after["features_ou"]["seasons"])
+
+    platform_record = _platform_record()
+    baseline_widths = tuple(state.GOLD_WIDTHS_BEFORE_PHASE33_LADDER)
+    after_widths = tuple(state.GOLD_WIDTHS_AFTER_EXEMPTION_RUNG)
+
+    rungs: list[dict] = [
+        {
+            "rung": 0,
+            "cause": (
+                "BASELINE, NOT A REBUILD. A fingerprint of gold exactly as Phase "
+                "33.1 left it, taken BEFORE anything was rebuilt. It is the "
+                "control Phase 33.1 could not take in time, and the one artifact "
+                "that cannot be recovered once rung 1 has overwritten gold."
+            ),
+            "rebuilt": False,
+            "added_columns": [],
+            "removed_columns": [],
+            "added_seasons": [],
+            "removed_seasons": [],
+            "expected_slices": [],
+            "observed_slices": [],
+            "causal_columns": [],
+            "widths_before": baseline_widths,
+            "widths_after": baseline_widths,
+            "attribution": "n/a -- a baseline is not attributed; it is what the rungs are attributed AGAINST",
+            "unexplained": {},
+        },
+        {
+            "rung": 1,
+            "cause": PHASE33_EXEMPTION_RUNG_CAUSE,
+            "rebuilt": True,
+            "added_columns": sorted(added),
+            "removed_columns": sorted(removed),
+            "added_seasons": sorted(seasons_after - seasons_before),
+            "removed_seasons": sorted(seasons_before - seasons_after),
+            "expected_slices": [
+                _slice_label(s)
+                for s in state.GOLD_REBUILD_EXPECTED_CHANGED_SLICES_EXEMPTION
+            ],
+            "observed_slices": [
+                _slice_label(s)
+                for s in state.GOLD_REBUILD_OBSERVED_CHANGED_SLICES_EXEMPTION
+            ],
+            "causal_columns": sorted(state.GOLD_REBUILD_CAUSAL_COLUMNS_EXEMPTION),
+            "widths_before": baseline_widths,
+            "widths_after": after_widths,
+            "attribution": (
+                "FINDING, not BLOCKED. 25 of the pinned 26 level-preserved "
+                "columns attributed; weather_coverage is the declared-but-"
+                "UNCHANGED member because Phase 33.1 already exempted it. 18 "
+                "columns moved outside the family and every one carries a "
+                "written explanation below."
+            ),
+            "unexplained": {
+                k: v
+                for k, v in state.GOLD_REBUILD_UNEXPLAINED_CHANGES_EXEMPTION.items()
+                if isinstance(k, str)
+            },
+        },
+        {
+            "rung": 2,
+            "cause": PHASE33_ELO_RUNG_CAUSE,
+            "rebuilt": False,
+            "added_columns": [],
+            "removed_columns": [],
+            "added_seasons": [],
+            "removed_seasons": [],
+            "expected_slices": [
+                _slice_label(s) for s in state.GOLD_REBUILD_EXPECTED_CHANGED_SLICES_ELO
+            ],
+            "observed_slices": [
+                _slice_label(s) for s in state.GOLD_REBUILD_OBSERVED_CHANGED_SLICES_ELO
+            ],
+            "causal_columns": sorted(
+                set(state.GOLD_REBUILD_CAUSAL_COLUMNS_ELO)
+                | set(PHASE33_ELO_DERIVED_SITUATIONAL_COLUMNS)
+            ),
+            "widths_before": baseline_widths,
+            "widths_after": after_widths,
+            "attribution": (
+                "OK, 0 unattributed. A DECLARATION-ONLY rung: it re-judges the "
+                "SAME p33_rung0 -> p33_rung1 transition under a second "
+                "declaration and rebuilds nothing, so there is no p33_rung2.json "
+                "fingerprint document. 14 Elo columns, 4 Elo-derived situational "
+                "columns, 25 carried from rung 1."
+            ),
+            "unexplained": {
+                k: v
+                for k, v in state.GOLD_REBUILD_UNEXPLAINED_CHANGES_ELO.items()
+                if isinstance(k, str)
+            },
+        },
+    ]
+
+    lines: list[str] = [
+        "# " + "=" * 75,
+        "# config/phase33_gold_rebuild_diff.toml -- the per-rung record of the",
+        "# Phase-33 Wave-14 gold rebuild ladder (prefix p33_). Plan 33-14, R4.",
+        "#",
+        "# GENERATOR OUTPUT. Produced by",
+        '#   python -c "import scripts.fingerprint_gold as f;'
+        " f.write_phase33_rebuild_diff('config/phase33_gold_rebuild_diff.toml')\"",
+        "# Do NOT hand-edit any value below: re-run the generator. A hand-edited",
+        "# value is indistinguishable from a tampered one.",
+        "#",
+        "# WHY THIS FILE IS COMMITTED WHEN THE FINGERPRINTS ARE NOT. data/gold/ and",
+        "# outputs/ are both gitignored, so a fresh checkout cannot read either the",
+        "# gold this ladder moved or the documents that measured it. This file is the",
+        "# only place the measurement survives a clone.",
+        "#",
+        "# NO EPSILON AND NO ROUNDING. The comparison convention is EXACT bytes, via",
+        "# _column_bytes' IEEE-754 encoding, and every prior phase's committed diff was",
+        "# produced under it. A second convention here would make this diff",
+        "# incomparable with Phase 30's, Phase 31's and Phase 33.1's. The platform is",
+        "# recorded instead, so a cross-machine disagreement is diagnosable rather than",
+        "# mysterious.",
+        "#",
+        "# AN OMITTED LIST IS NOT AN EMPTY LIST. Every added/removed column and season",
+        "# list is PRESENT below, empty where nothing moved, because 'absent' and 'we",
+        "# measured nothing' must not read the same.",
+        "#",
+        "# ASCII only, no emoji (CLAUDE.md hard constraint).",
+        "# " + "=" * 75,
+        "",
+        f'generated_at = "{datetime.now(UTC).isoformat()}"',
+        f'rung_prefix = "{PHASE33_RUNG_PREFIX}"',
+        'float_tolerance = "none -- EXACT byte comparison of the IEEE-754 encoding'
+        " produced by scripts.fingerprint_gold._column_bytes. No epsilon and no"
+        ' rounding step is applied anywhere in this ladder."',
+        "",
+        "[platform]",
+    ]
+    for key, value in sorted(platform_record.items()):
+        lines.append(f'{key} = "{_toml_escape(value)}"')
+
+    for entry in rungs:
+        lines.extend(
+            [
+                "",
+                f"[rung.{entry['rung']}]",
+                f"rung = {entry['rung']}",
+                f'prefix = "{PHASE33_RUNG_PREFIX}"',
+                f"rebuilt = {'true' if entry['rebuilt'] else 'false'}",
+                f'cause = "{_toml_escape(str(entry["cause"]))}"',
+                f"added_columns = {_toml_array(entry['added_columns'])}",
+                f"removed_columns = {_toml_array(entry['removed_columns'])}",
+                f"added_seasons = {_toml_array(entry['added_seasons'])}",
+                f"removed_seasons = {_toml_array(entry['removed_seasons'])}",
+                f"expected_slices = {_toml_array(entry['expected_slices'])}",
+                f"observed_slices = {_toml_array(entry['observed_slices'])}",
+                f"causal_columns = {_toml_array(entry['causal_columns'])}",
+                f"widths_before = {_toml_array(entry['widths_before'])}",
+                f"widths_after = {_toml_array(entry['widths_after'])}",
+                f'attribution = "{_toml_escape(str(entry["attribution"]))}"',
+                "",
+                f"[rung.{entry['rung']}.unexplained]",
+            ]
+        )
+        for column, why in sorted(entry["unexplained"].items()):
+            lines.append(f'{column} = "{_toml_escape(why)}"')
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out_path
 
 
 def _print_attribution(verdict: dict) -> None:

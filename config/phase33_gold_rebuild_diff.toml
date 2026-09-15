@@ -1,0 +1,129 @@
+# ===========================================================================
+# config/phase33_gold_rebuild_diff.toml -- the per-rung record of the
+# Phase-33 Wave-14 gold rebuild ladder (prefix p33_). Plan 33-14, R4.
+#
+# GENERATOR OUTPUT. Produced by
+#   python -c "import scripts.fingerprint_gold as f; f.write_phase33_rebuild_diff('config/phase33_gold_rebuild_diff.toml')"
+# Do NOT hand-edit any value below: re-run the generator. A hand-edited
+# value is indistinguishable from a tampered one.
+#
+# WHY THIS FILE IS COMMITTED WHEN THE FINGERPRINTS ARE NOT. data/gold/ and
+# outputs/ are both gitignored, so a fresh checkout cannot read either the
+# gold this ladder moved or the documents that measured it. This file is the
+# only place the measurement survives a clone.
+#
+# NO EPSILON AND NO ROUNDING. The comparison convention is EXACT bytes, via
+# _column_bytes' IEEE-754 encoding, and every prior phase's committed diff was
+# produced under it. A second convention here would make this diff
+# incomparable with Phase 30's, Phase 31's and Phase 33.1's. The platform is
+# recorded instead, so a cross-machine disagreement is diagnosable rather than
+# mysterious.
+#
+# AN OMITTED LIST IS NOT AN EMPTY LIST. Every added/removed column and season
+# list is PRESENT below, empty where nothing moved, because 'absent' and 'we
+# measured nothing' must not read the same.
+#
+# ASCII only, no emoji (CLAUDE.md hard constraint).
+# ===========================================================================
+
+generated_at = "2026-09-15T01:24:51.637868+00:00"
+rung_prefix = "p33_"
+float_tolerance = "none -- EXACT byte comparison of the IEEE-754 encoding produced by scripts.fingerprint_gold._column_bytes. No epsilon and no rounding step is applied anywhere in this ladder."
+
+[platform]
+blas = "auto"
+machine = "AMD64"
+numpy = "1.26.4"
+os = "Windows 11"
+pandas = "2.3.3"
+python = "3.13.3"
+
+[rung.0]
+rung = 0
+prefix = "p33_"
+rebuilt = false
+cause = "BASELINE, NOT A REBUILD. A fingerprint of gold exactly as Phase 33.1 left it, taken BEFORE anything was rebuilt. It is the control Phase 33.1 could not take in time, and the one artifact that cannot be recovered once rung 1 has overwritten gold."
+added_columns = []
+removed_columns = []
+added_seasons = []
+removed_seasons = []
+expected_slices = []
+observed_slices = []
+causal_columns = []
+widths_before = ["195", "196", "195"]
+widths_after = ["195", "196", "195"]
+attribution = "n/a -- a baseline is not attributed; it is what the rungs are attributed AGAINST"
+
+[rung.0.unexplained]
+
+[rung.1]
+rung = 1
+prefix = "p33_"
+rebuilt = true
+cause = "THE NORMALIZATION-EXEMPTION WIDENING (D33-34(a), .planning/WINDOWS.md rows 33 and 40), and NOTHING else: the level-preservation exemption in scripts/build_features.normalize_combined_features widens from a filter that could only ever yield the single column `weather_coverage` to a PREDICATE resolving the nineteen weather indicator flags and the six sibling `*_coverage` columns alongside it. Those twenty-five reached gold z-scored into many distinct decimals -- `is_snow` carried 274 distinct values and `wind_moderate` 5,667, so the same snowy game read differently in week 3 than in week 15 -- and the six coverage siblings carried the mirror defect, where an uncovered row read far CLOSER to the covered level than to the uncovered one. No column is added, none removed, no row moves"
+added_columns = []
+removed_columns = []
+added_seasons = []
+removed_seasons = []
+expected_slices = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+observed_slices = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+causal_columns = ["away_availability_coverage", "away_date_modified_coverage", "away_injury_coverage", "home_availability_coverage", "home_date_modified_coverage", "home_injury_coverage", "is_dry", "is_rain", "is_snow", "precip_heavy", "precip_light", "precip_moderate", "precip_none", "temp_cold", "temp_cool", "temp_hot", "temp_mild", "temp_very_cold", "temp_warm", "weather_affects_game", "weather_coverage", "weather_game", "wind_calm", "wind_high", "wind_moderate", "wind_severe"]
+widths_before = ["195", "196", "195"]
+widths_after = ["195", "196", "195"]
+attribution = "FINDING, not BLOCKED. 25 of the pinned 26 level-preserved columns attributed; weather_coverage is the declared-but-UNCHANGED member because Phase 33.1 already exempted it. 18 columns moved outside the family and every one carries a written explanation below."
+
+[rung.1.unexplained]
+away_elo = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+away_elo_momentum = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+away_elo_percentile = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+away_elo_rank = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+away_elo_uncertainty = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+away_letdown_spot = "ELO-DERIVED, so the SAME cause one step downstream. features.contextual._look_ahead_flag and _letdown_flag both decide their flag from OPPONENT ELO -- the current opponent's strength via _team_elo_in_game, the next opponent's via _freeze_known_elo, each compared against ELO_SPOT_STEP. A changed Elo chain therefore moves which games count as a trap or a letdown spot. They are not weather columns and not coverage columns, so the exemption cannot reach them; they move for the Elo re-derivation, exactly as the fourteen above."
+away_look_ahead_spot = "ELO-DERIVED, so the SAME cause one step downstream. features.contextual._look_ahead_flag and _letdown_flag both decide their flag from OPPONENT ELO -- the current opponent's strength via _team_elo_in_game, the next opponent's via _freeze_known_elo, each compared against ELO_SPOT_STEP. A changed Elo chain therefore moves which games count as a trap or a letdown spot. They are not weather columns and not coverage columns, so the exemption cannot reach them; they move for the Elo re-derivation, exactly as the fourteen above."
+elo_diff = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+elo_prob_away = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+elo_prob_home = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+hfa_used = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+home_elo = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+home_elo_momentum = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+home_elo_percentile = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+home_elo_rank = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+home_elo_uncertainty = "THE ELO RE-DERIVATION, arriving one rung early. Plan 33-13 re-derived the canonical chain into silver elo_game_snapshots (2,227 rows over 2018-2025 -> 6,499 over 2002-2025) during Wave 13, and gold was not rebuilt in between -- so this rebuild, not rung 2, is the first gold build to consume it. Confirmed by measurement rather than inferred: rows carrying a fabricated 0.0 Elo fell from 4,288 to 16, and home_elo now spans 2002-2025 with 252-285 distinct values per season. The normalization-exemption widening cannot reach these columns -- none is level-preserved -- so the cause is not ambiguous between the two rungs."
+home_letdown_spot = "ELO-DERIVED, so the SAME cause one step downstream. features.contextual._look_ahead_flag and _letdown_flag both decide their flag from OPPONENT ELO -- the current opponent's strength via _team_elo_in_game, the next opponent's via _freeze_known_elo, each compared against ELO_SPOT_STEP. A changed Elo chain therefore moves which games count as a trap or a letdown spot. They are not weather columns and not coverage columns, so the exemption cannot reach them; they move for the Elo re-derivation, exactly as the fourteen above."
+home_look_ahead_spot = "ELO-DERIVED, so the SAME cause one step downstream. features.contextual._look_ahead_flag and _letdown_flag both decide their flag from OPPONENT ELO -- the current opponent's strength via _team_elo_in_game, the next opponent's via _freeze_known_elo, each compared against ELO_SPOT_STEP. A changed Elo chain therefore moves which games count as a trap or a letdown spot. They are not weather columns and not coverage columns, so the exemption cannot reach them; they move for the Elo re-derivation, exactly as the fourteen above."
+
+[rung.2]
+rung = 2
+prefix = "p33_"
+rebuilt = false
+cause = "THE ELO RE-DERIVATION (Plan 33-13, D33-34(c)), and NOTHING else: gold is rebuilt on the canonical 2002-2025 Elo chain re-derived in Wave 13, replacing the fabricated 0.0 Elo that 4,288 of 6,499 gold rows carried. It moves raw Elo, the derived differences and probabilities, the uncertainty pair, the rank and percentile columns and the momentum columns. No column is added, none removed, no row moves"
+added_columns = []
+removed_columns = []
+added_seasons = []
+removed_seasons = []
+expected_slices = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018|1"]
+observed_slices = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+causal_columns = ["away_elo", "away_elo_momentum", "away_elo_percentile", "away_elo_rank", "away_elo_uncertainty", "away_letdown_spot", "away_look_ahead_spot", "elo_diff", "elo_prob_away", "elo_prob_home", "hfa_used", "home_elo", "home_elo_momentum", "home_elo_percentile", "home_elo_rank", "home_elo_uncertainty", "home_letdown_spot", "home_look_ahead_spot"]
+widths_before = ["195", "196", "195"]
+widths_after = ["195", "196", "195"]
+attribution = "OK, 0 unattributed. A DECLARATION-ONLY rung: it re-judges the SAME p33_rung0 -> p33_rung1 transition under a second declaration and rebuilds nothing, so there is no p33_rung2.json fingerprint document. 14 Elo columns, 4 Elo-derived situational columns, 25 carried from rung 1."
+
+[rung.2.unexplained]
+away_elo = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+away_elo_momentum = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+away_elo_percentile = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+away_elo_rank = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+away_elo_uncertainty = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+away_letdown_spot = "ELO-DERIVED, the same cause one step downstream. features.contextual._look_ahead_flag reads the next opponent's freeze-known Elo via _freeze_known_elo and compares it against this week's opponent Elo with ELO_SPOT_STEP; _letdown_flag does the same over the previous game. A changed chain changes WHICH games count as a trap or a letdown spot. They are in neither the weather family nor ELO_FEATURE_COLUMNS, so they are named explicitly rather than inferred."
+away_look_ahead_spot = "ELO-DERIVED, the same cause one step downstream. features.contextual._look_ahead_flag reads the next opponent's freeze-known Elo via _freeze_known_elo and compares it against this week's opponent Elo with ELO_SPOT_STEP; _letdown_flag does the same over the previous game. A changed chain changes WHICH games count as a trap or a letdown spot. They are in neither the weather family nor ELO_FEATURE_COLUMNS, so they are named explicitly rather than inferred."
+elo_diff = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+elo_prob_away = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+elo_prob_home = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+hfa_used = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+home_elo = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+home_elo_momentum = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+home_elo_percentile = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+home_elo_rank = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+home_elo_uncertainty = "THE DECLARED ELO FAMILY, source-derived from features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, unattributed at rung 1 -- which is the whole point of a follow-up rung: rung 1's verdict is byte-untouched and still reports these as outside ITS one declared cause."
+home_letdown_spot = "ELO-DERIVED, the same cause one step downstream. features.contextual._look_ahead_flag reads the next opponent's freeze-known Elo via _freeze_known_elo and compares it against this week's opponent Elo with ELO_SPOT_STEP; _letdown_flag does the same over the previous game. A changed chain changes WHICH games count as a trap or a letdown spot. They are in neither the weather family nor ELO_FEATURE_COLUMNS, so they are named explicitly rather than inferred."
+home_look_ahead_spot = "ELO-DERIVED, the same cause one step downstream. features.contextual._look_ahead_flag reads the next opponent's freeze-known Elo via _freeze_known_elo and compares it against this week's opponent Elo with ELO_SPOT_STEP; _letdown_flag does the same over the previous game. A changed chain changes WHICH games count as a trap or a letdown spot. They are in neither the weather family nor ELO_FEATURE_COLUMNS, so they are named explicitly rather than inferred."

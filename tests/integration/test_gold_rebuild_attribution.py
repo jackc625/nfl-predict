@@ -3341,3 +3341,255 @@ class TestPhase331Rung3InputCorrections:
         assert set(signature["family_mechanisms"].values()) <= allowed
         assert signature["ok_required_unconditionally"] is True
         assert signature["declared_before_the_rebuild"] is True
+
+
+# ---------------------------------------------------------------------------
+# PHASE 33'S WAVE-14 LADDER (Plan 33-14 Task 5).
+#
+# KIND: plain unit tests over committed constants and over the two fingerprint
+# documents the ladder wrote, plus several that read the committed diff
+# artifact. Nothing here rebuilds anything.
+# ---------------------------------------------------------------------------
+
+_P33_DIFF_PATH = REPO_ROOT / "config" / "phase33_gold_rebuild_diff.toml"
+
+
+def _p33_diff() -> dict:
+    """The committed per-rung diff, parsed.
+
+    A TRACKED artifact, so its absence is a broken checkout rather than a
+    legitimately-absent runtime file -- this fails, it does not skip. That is
+    the whole reason it is committed while the fingerprint documents are not:
+    ``data/gold/`` and ``outputs/`` are both gitignored, so a fresh clone can
+    read neither the gold the ladder moved nor the documents that measured it.
+    """
+    import tomllib
+
+    assert _P33_DIFF_PATH.is_file(), (
+        f"{_P33_DIFF_PATH} is absent. It is a COMMITTED generator output and the "
+        "only record of what each Phase-33 rung moved that survives a clone."
+    )
+    return tomllib.loads(_P33_DIFF_PATH.read_text(encoding="utf-8"))
+
+
+class TestThePhase33LadderIsAttributed:
+    """The p33_ ladder: one declared cause per rung, and a committed record of both."""
+
+    def test_the_new_prefix_did_not_capture_the_old_rung_integer(self) -> None:
+        """THE NEGATIVE CONTROL, restated for this phase's prefix.
+
+        A new phase takes a new PREFIX and never a wider integer
+        (``scripts/fingerprint_gold.py:398``). If registering ``p33_`` had
+        reached the unprefixed table, rung 1 would stop resolving to CR-02 and
+        Phase 30's four-rung record would be judged against Phase 33's
+        prediction.
+        """
+        f = _p331_module()
+        assert f.RUNG_CAUSES[1] == "CR-02"
+        assert f._expected_signature(1)["cause"] == "CR-02"
+        assert sorted(f.RUNG_CAUSES) == [1, 2, 3, 4]
+        assert sorted(f.RUNG_CAUSES_BY_PREFIX[f.PHASE331_RUNG_PREFIX]) == [1, 2, 3]
+        assert sorted(f.RUNG_CAUSES_BY_PREFIX[f.PHASE33_RUNG_PREFIX]) == [1, 2]
+
+    def test_the_level_preservation_family_is_the_builders_own_predicate(self) -> None:
+        """SOURCE-DERIVED, and equal to the pinned set in BOTH directions.
+
+        A widening exemption is the dangerous direction: a column it wrongly
+        selects silently stops being normalized and reaches the re-fit as a raw
+        level. So the resolved set must equal the declaration exactly -- an
+        unexpected member and a missing member both fail.
+        """
+        from tests.phase33_state import GOLD_LEVEL_PRESERVED_COLUMNS_33_14
+
+        f = _p331_module()
+        resolved = set(f.phase33_level_preserved_family())
+        pinned = set(GOLD_LEVEL_PRESERVED_COLUMNS_33_14)
+        assert resolved == pinned, (
+            f"unexpected members {sorted(resolved - pinned)}; missing members "
+            f"{sorted(pinned - resolved)}"
+        )
+        assert len(pinned) == 26
+
+    def test_the_elo_family_covers_ranks_percentiles_and_momentum(self) -> None:
+        """A family omitting them would UNDER-declare the blast radius.
+
+        Same-week ranks are computed over the whole snapshot population
+        (``features/elo_features.py:153-258``), so one game's corrected Elo moves
+        the rank columns of every other game in that week.
+        """
+        f = _p331_module()
+        family = [c.lower() for c in f.phase33_elo_family()]
+        for marker in ("rank", "percentile", "momentum"):
+            assert any(marker in c for c in family), f"no {marker} column declared"
+
+    def test_every_rung_section_carries_all_four_presence_lists(self) -> None:
+        """AN OMITTED LIST IS NOT AN EMPTY LIST.
+
+        "No column was added" and "we did not measure whether a column was
+        added" must not read the same in the one record that survives a clone.
+        """
+        from tests.phase33_state import GOLD_REBUILD_LADDER_33_14
+
+        diff = _p33_diff()
+        rungs = diff.get("rung") or {}
+        declared = [str(rung) for rung, _cause in GOLD_REBUILD_LADDER_33_14]
+        assert sorted(rungs) == sorted(declared), (
+            f"the diff names rungs {sorted(rungs)} but the ladder declares "
+            f"{sorted(declared)}"
+        )
+        required = (
+            "added_columns",
+            "removed_columns",
+            "added_seasons",
+            "removed_seasons",
+            "expected_slices",
+            "observed_slices",
+            "causal_columns",
+            "widths_before",
+            "widths_after",
+            "cause",
+        )
+        missing = [
+            (rung, field)
+            for rung, body in sorted(rungs.items())
+            for field in required
+            if body.get(field) is None
+        ]
+        assert missing == [], f"fields absent rather than empty: {missing}"
+
+    def test_the_diff_records_its_tolerance_and_its_platform(self) -> None:
+        """No new epsilon, and a cross-machine disagreement stays diagnosable.
+
+        The comparison convention is EXACT bytes and every prior phase's diff was
+        produced under it, so a second convention here would make this one
+        incomparable with Phase 30's, Phase 31's and Phase 33.1's. Recording the
+        platform buys the diagnostic value without breaking comparability.
+        """
+        diff = _p33_diff()
+        tolerance = diff.get("float_tolerance")
+        assert tolerance is not None
+        assert "none" in tolerance.lower() and "exact" in tolerance.lower(), (
+            f"the tolerance field reads {tolerance}; this ladder introduced no "
+            "epsilon and no rounding step, and the record must say so"
+        )
+        platform = diff.get("platform") or {}
+        for key in ("os", "python", "numpy", "pandas", "blas"):
+            assert platform.get(key), f"platform.{key} is absent from the diff"
+
+    def test_every_observed_slice_is_declared_or_explained(self) -> None:
+        """PARTITION, DO NOT GATE.
+
+        Propagation past a declared set is REPORTED with a written explanation
+        rather than hard-failed -- blocking on it would block a CORRECT rebuild
+        for disagreeing with a guess. What is NOT tolerated is an out-of-set
+        slice with no explanation beside it.
+        """
+        from tests import phase33_state as state
+
+        pairs = (
+            (
+                state.GOLD_REBUILD_EXPECTED_CHANGED_SLICES_EXEMPTION,
+                state.GOLD_REBUILD_OBSERVED_CHANGED_SLICES_EXEMPTION,
+                state.GOLD_REBUILD_UNEXPLAINED_CHANGES_EXEMPTION,
+            ),
+            (
+                state.GOLD_REBUILD_EXPECTED_CHANGED_SLICES_ELO,
+                state.GOLD_REBUILD_OBSERVED_CHANGED_SLICES_ELO,
+                state.GOLD_REBUILD_UNEXPLAINED_CHANGES_ELO,
+            ),
+        )
+        for expected, observed, unexplained in pairs:
+            declared = {tuple(entry) for entry in expected}
+            seen = {tuple(entry) for entry in observed}
+            assert seen, "an empty observed set means nothing was measured"
+            outside = [entry for entry in seen if entry not in declared]
+            unexplained_outside = [
+                entry for entry in outside if not dict(unexplained).get(entry)
+            ]
+            assert unexplained_outside == [], (
+                "slices outside the declared set with no written explanation: "
+                f"{sorted(unexplained_outside)}"
+            )
+
+    def test_the_elo_rung_rebuilt_nothing_and_says_so(self) -> None:
+        """A DECLARATION-ONLY rung must not be readable as a second rebuild.
+
+        It re-judges the SAME p33_rung0 to p33_rung1 transition, which is why
+        there is no p33_rung2.json fingerprint document: writing one would assert
+        a rebuild that did not occur.
+        """
+        f = _p331_module()
+        diff = _p33_diff()
+        assert diff["rung"]["1"]["rebuilt"] is True
+        assert diff["rung"]["2"]["rebuilt"] is False
+        assert diff["rung"]["0"]["rebuilt"] is False
+        document = f.rung_document_path(
+            f.FINGERPRINT_DIR, f.PHASE33_ELO_RUNG, f.PHASE33_RUNG_PREFIX
+        )
+        assert not document.exists(), (
+            f"{document} exists, which asserts a second rebuild. The Elo rung is "
+            "declaration-only by owner ruling of 2026-09-14"
+        )
+
+    def test_the_predeclared_elo_signature_was_not_edited_after_the_diff(self) -> None:
+        """The follow-up declaration is ADDITIVE, never a retroactive edit.
+
+        That distinction is the whole difference between a follow-up rung and
+        widening a declaration after the observation (Ruling N2, T-33.1-43). The
+        pre-declared signature stays in source saying it was declared before the
+        rebuild; the follow-up says it was authored after the diff.
+        """
+        f = _p331_module()
+        predeclared = f.PHASE33_ELO_RUNG_EXPECTED_SIGNATURE
+        followup = f.PHASE33_ELO_RUNG_FOLLOWUP_SIGNATURE
+        assert predeclared["declared_before_the_rebuild"] is True
+        assert followup["authored_after_the_diff"] is True
+        assert followup["no_new_rebuild"] is True
+        assert predeclared is not followup
+        assert "PHASE33_ELO_RUNG_EXPECTED_SIGNATURE" in str(followup["supersedes"])
+
+    def test_the_followup_rung_does_not_weaken_the_rung_it_follows(self) -> None:
+        """Rung 1's verdict must be BYTE-UNTOUCHED by rung 2's declaration.
+
+        A follow-up rung that quietly made its predecessor pass would be the
+        footnote Ruling N2 forbids, wearing a rung's clothes. Rung 1 still
+        reports the eighteen Elo and Elo-derived columns as outside ITS one
+        declared cause; rung 2 attributes them under a second declaration.
+        """
+        f = _p331_module()
+        before_path = f.rung_document_path(f.FINGERPRINT_DIR, 0, f.PHASE33_RUNG_PREFIX)
+        after_path = f.rung_document_path(f.FINGERPRINT_DIR, 1, f.PHASE33_RUNG_PREFIX)
+        if not (before_path.is_file() and after_path.is_file()):
+            pytest.skip(
+                "the p33_ rung documents are not present -- outputs/ is gitignored "
+                "runtime state, and the committed record of this ladder is "
+                "config/phase33_gold_rebuild_diff.toml"
+            )
+        before = json.loads(before_path.read_text(encoding="utf-8"))
+        after = json.loads(after_path.read_text(encoding="utf-8"))
+        report = compare_fingerprints(before, after)
+
+        rung1 = attribute_rung(
+            report,
+            f.PHASE33_EXEMPTION_RUNG,
+            before=before,
+            after=after,
+            rung_prefix=f.PHASE33_RUNG_PREFIX,
+        )
+        rung2 = attribute_rung(
+            report,
+            f.PHASE33_ELO_RUNG,
+            before=before,
+            after=after,
+            rung_prefix=f.PHASE33_RUNG_PREFIX,
+        )
+        assert rung1["ok"] is False, (
+            "rung 1 must STILL report the out-of-family columns; a follow-up rung "
+            "that made it pass would have widened its declaration"
+        )
+        assert rung1["blocking"] is False
+        assert rung2["ok"] is True, (
+            "rung 2 second declaration must account for every moved column: "
+            f"{rung2['failures'][:3]}"
+        )
+        assert rung2["blocking"] is False

@@ -685,20 +685,60 @@ class TestTheIdentityMigrationMovesNoGoldColumn:
     def test_the_recorded_reference_matches_todays_production_gold(self) -> None:
         """The committed reference and the live store must not drift apart silently.
 
-        ``GOLD_WIDTHS_BEFORE_ELO_REBUILD`` is what Plan 33-14 will compare its
-        rebuild against. A reference that no longer describes the store it is a
-        reference FOR is worse than no reference, because it will be trusted.
+        RE-ANCHORED by Plan 33-14 Task 5, which is the plan
+        ``GOLD_REBUILD_NEWLY_RED_REASONS`` assigns this reconciliation to by
+        name. This test was left DELIBERATELY RED by Plan 33.1-08, and its own
+        message said not to adjust one number to match the other without
+        deciding which is wrong.
+
+        THE DECISION: the REFERENCE was stale, not gold.
+        ``GOLD_WIDTHS_BEFORE_ELO_REBUILD`` records (194, 195, 194), which was
+        true when Plan 33-12 measured it and stopped being true when Phase
+        33.1's rung 1 added ``weather_coverage``. The one-column delta IS that
+        flag. So the constant is a PRE-33.1 HISTORICAL RECORD rather than a
+        mistake, and it is left BYTE-UNCHANGED; what moves is the reference this
+        ASSERTION reads.
+
+        Editing the constant to agree with today's gold would have destroyed a
+        historical record to make an assertion pass -- the mirror of clearing a
+        disclosure by making it green, and the second thing this phase asks the
+        owner to confirm was not done.
+
+        The full decision, with both references and the rationale, is recorded in
+        ``tests.phase33_state.GOLD_WIDTH_REFERENCE_RECONCILIATION_33_14``.
         """
         measured = _production_gold_widths()
-        recorded = tuple(phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD)
+        recorded = tuple(phase33_state.GOLD_WIDTHS_AFTER_WEATHER_RUNG)
+        superseded = tuple(phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD)
         assert measured == recorded, (
             f"production gold is {measured} wide but "
-            f"GOLD_WIDTHS_BEFORE_ELO_REBUILD records {recorded}. Either gold was "
-            "rebuilt with a schema change that nobody attributed, or the recorded "
-            "pre-Elo-rebuild reference is stale. Plan 33-14's expected change set "
-            "is anchored on this number; do not adjust one to match the other "
+            f"GOLD_WIDTHS_AFTER_WEATHER_RUNG records {recorded}. Either gold was "
+            "rebuilt with a schema change that nobody attributed, or this "
+            "reference is stale in its turn. The superseded pre-33.1 reference "
+            f"GOLD_WIDTHS_BEFORE_ELO_REBUILD reads {superseded} and is retained "
+            "as a historical record; do not adjust one to match the other "
             "without deciding which is wrong."
         )
+
+    def test_the_superseded_reference_is_retained_unedited(self) -> None:
+        """The record was RE-POINTED, not rewritten.
+
+        The failure mode this guards is the opposite of the one above: making
+        the assertion pass by editing ``GOLD_WIDTHS_BEFORE_ELO_REBUILD`` to
+        agree with today's gold. That would destroy the only committed statement
+        of what gold was before Phase 33.1's rung 1, to save re-pointing one
+        reference.
+        """
+        assert tuple(phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD) == (194, 195, 194), (
+            "GOLD_WIDTHS_BEFORE_ELO_REBUILD is the PRE-33.1 record and must stay "
+            f"(194, 195, 194). It reads "
+            f"{tuple(phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD)!r}, which means "
+            "somebody edited a historical record instead of re-pointing the "
+            "assertion that reads it."
+        )
+        reconciliation = phase33_state.GOLD_WIDTH_REFERENCE_RECONCILIATION_33_14
+        assert reconciliation["old_constant_left_byte_unchanged"] is True
+        assert "REFERENCE" in str(reconciliation["which_was_wrong"])
 
     def test_no_identity_column_is_in_any_production_matrix(self) -> None:
         """The migration added a column to silver; none of the three reached gold."""

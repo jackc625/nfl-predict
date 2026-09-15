@@ -39,6 +39,7 @@ import pytest
 from backtest.signal_lift import group_columns
 from features.weather import WEATHER_COVERAGE_COLUMN
 from scripts.data_qa import GOLD_FEATURE_MATRICES
+from tests import phase33_state
 
 GOLD_DIR = Path(__file__).resolve().parents[2] / "data" / "gold"
 
@@ -245,4 +246,63 @@ def test_the_market_survivors_are_not_taken_with_the_family(table_name: str) -> 
     assert not missing, (
         f"{table_name} lost market columns {missing} to the line-movement drop. "
         f"These are pre-existing baseline features, not Phase-29 columns."
+    )
+
+
+# ---------------------------------------------------------------------------
+# THE PHASE-33 WAVE-14 LADDER'S WIDTH CLAIM (Plan 33-14 Task 5).
+#
+# ONE HOME FOR THE WIDTH NUMBERS, not a second. `GOLD_FEATURE_MATRICES` in
+# scripts/data_qa.py already reads 195/196/195 and needs no edit: neither rung
+# added or removed a column, which is itself the claim being asserted here.
+# `PHASE_28_WIDTHS` and `PHASE_30_REMOVED_LINE_MOVEMENT_COLUMNS` above are
+# historical records and stay exactly as they are.
+# ---------------------------------------------------------------------------
+
+
+def test_the_phase33_ladder_moved_no_width() -> None:
+    """Both ends of the ladder read the same triple, and it is the live one.
+
+    The exemption rung re-runs a normalization stage and the Elo rung is a
+    declaration over the same transition -- neither adds or removes a column. A
+    width move at either end would be a structural change nobody declared, and
+    it is the one thing the per-rung diff cannot explain after the fact because
+    `data/gold/` is gitignored and one-way.
+    """
+    before = tuple(phase33_state.GOLD_WIDTHS_BEFORE_PHASE33_LADDER)
+    after_exemption = tuple(phase33_state.GOLD_WIDTHS_AFTER_EXEMPTION_RUNG)
+    after_elo = tuple(phase33_state.GOLD_WIDTHS_AFTER_ELO_REBUILD)
+
+    assert before == after_exemption == after_elo, (
+        f"the ladder's width triples disagree: before {before}, after the "
+        f"exemption rung {after_exemption}, after the Elo rung {after_elo}. "
+        "Neither rung declared a width change."
+    )
+    assert before == tuple(phase33_state.GOLD_WIDTHS_AFTER_WEATHER_RUNG), (
+        f"the ladder's baseline {before} is not Phase 33.1's close "
+        f"{tuple(phase33_state.GOLD_WIDTHS_AFTER_WEATHER_RUNG)}, so something "
+        "rebuilt gold between the two phases without attributing it."
+    )
+
+
+@pytest.mark.parametrize("table_name", list(GOLD_FEATURE_MATRICES))
+def test_the_live_matrix_width_matches_the_ladder_record(table_name: str) -> None:
+    """The recorded triple describes the store it is a record FOR.
+
+    Asserted against LIVE gold rather than against another constant, because two
+    constants agreeing with each other says nothing about the artifact.
+    """
+    path = GOLD_DIR / f"{table_name}.parquet"
+    if not path.exists():
+        pytest.skip(f"{path} not built yet -- run scripts.build_features first")
+
+    order = ("features_wp", "features_ats", "features_ou")
+    recorded = dict(
+        zip(order, phase33_state.GOLD_WIDTHS_AFTER_ELO_REBUILD, strict=True)
+    )
+    actual = pd.read_parquet(path).shape[1]
+    assert actual == recorded[table_name], (
+        f"{table_name} is {actual} columns wide but the ladder records "
+        f"{recorded[table_name]}. Either a rung moved a width nobody declared, "
+        "or gold has been rebuilt since the ladder closed."
     )

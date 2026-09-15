@@ -11795,3 +11795,471 @@ GOLD_REBUILD_UNEXPLAINED_CHANGES_EXEMPTION: dict[object, str] = {
         "they move for the Elo re-derivation, exactly as the fourteen above.",
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# RUNG 2, THE DECLARATION-ONLY RUNG, AND WHAT THE LADDER LEAVES BEHIND.
+#
+# APPENDED by Plan 33-14 Task 5 on 2026-09-14. Nothing above this line was
+# edited -- including `PHASE33_ELO_RUNG_EXPECTED_SIGNATURE` in
+# scripts/fingerprint_gold.py, which stays byte-unchanged as the record of what
+# was predicted before either rebuild ran.
+#
+# OWNER RULING `skip-rung-2-as-already-landed`, 2026-09-14, at this plan's
+# Task-4 blocking-human checkpoint. The owner was shown, and confirmed reading:
+# the exemption rung's attributed set (25 of the pinned 26, with
+# `weather_coverage` the declared-but-unchanged member because Phase 33.1 had
+# already exempted it); the 18 explained out-of-family columns; the widths
+# (195, 196, 195) at every point; the fabricated-zero fall from 4,288 to 16 rows
+# and that the 16 are all 2002 week 1; and both findings, including the five
+# unregistered reds at WINDOWS row 44.
+#
+# The owner accepted that what is lost is the ladder's MECHANISM -- two
+# rebuilds, one cause each -- and NOT its PURPOSE, per-column attribution,
+# because the two causes' column families are disjoint. The owner was
+# explicitly told this is NOT the Phase-33.1 residual, where 45 columns came
+# back unattributed and the trigger for 40 is permanently unmeasurable.
+#
+# The owner also accepted that the early landing was a CROSS-PLAN ORDERING
+# finding rather than a rung that misbehaved: Wave 13 re-derived Elo into
+# SILVER, and rung 1 was simply the first gold build to consume it. No ordering
+# WITHIN this plan could have separated the causes; only a gold rebuild taken
+# BEFORE Wave 13 could have, and nobody made that call.
+#
+# `run-rung-2-anyway` was rejected on the evidence, for the same reason
+# `three-rung-ladder` was rejected at Task 2: an empty-diff rung run to prove a
+# null, which D33-35 forbids by name and which the attribution machinery reads
+# as proof the rebuild did not do what it claimed.
+# `rebuild-baseline-and-rerun-ladder` was NOT AVAILABLE -- rung-0 gold is gone
+# and was one-way.
+# ---------------------------------------------------------------------------
+
+# NO SECOND REBUILD HAPPENED, so these are rung 1's values, recorded under the
+# rung-2 name because that is the name the plan's checks read. Stated here
+# rather than left to inference: a reader must not be able to mistake these for
+# the output of a rebuild that did not occur.
+GOLD_WIDTHS_AFTER_ELO_REBUILD: tuple[int, int, int] = (195, 196, 195)
+
+GOLD_GENERATION_AFTER_ELO_REBUILD: str = (
+    "2a6ad6de26efd1de6a0f4cedfb3108e5c590a29e94d0d8cbb76357039e912712"
+)
+
+# THE ELO FAMILY'S OBSERVED SLICE SET, measured over the SAME rung0 -> rung1
+# transition at `(season, week)` granularity. All 509 slices moved, so all 24
+# seasons collapse to whole seasons.
+GOLD_REBUILD_OBSERVED_CHANGED_SLICES_ELO: tuple[tuple[int, int | None], ...] = tuple(
+    (season, None) for season in range(2002, 2026)
+)
+
+# EVERY OUT-OF-SET SLICE, WITH A WRITTEN EXPLANATION, AND EVERY OUT-OF-FAMILY
+# COLUMN BESIDE IT.
+#
+# KEYED BY BOTH SLICE AND COLUMN, as at the exemption rung and for the same
+# reason: the plan's gate reads `un.get(slice_tuple)`, and a record carrying
+# only that half would say nothing about the columns.
+#
+# THE DECLARED SET WAS 2002-2017 PLUS `(2018, 1)`. The observed set is all 24
+# seasons, so eight whole seasons -- 2018 through 2025 -- sit outside it. That
+# is the propagation the cross-AI review predicted and the owner accepted as
+# possible on 2026-09-14, and it is REPORTED rather than hard-failed, because
+# hard-failing would block a correct rebuild for disagreeing with a guess.
+#
+# ON `(2018, 1)` READING AS "EXPECTED BUT UNCHANGED": it is not. All 21 weeks of
+# 2018 moved, including week 1 -- MEASURED, slice digest a33c66648b800a72 ->
+# 424cc847fe0692ce -- so 2018 collapses to `(2018, None)` and the literal tuple
+# `(2018, 1)` is absent from the observed set as an artifact of the whole-season
+# collapse, not as a fact about week 1. Recorded explicitly so nobody reads the
+# collapse as a silence.
+GOLD_REBUILD_UNEXPLAINED_CHANGES_ELO: dict[object, str] = {
+    **dict.fromkeys(
+        ((season, None) for season in range(2018, 2026)),
+        "CHRONOLOGICAL PROPAGATION PAST THE DECLARED SET, exactly as predicted "
+        "and accepted before the run. build_elo_with_snapshots RESETS the Elo "
+        "system at the start of its requested range and processes "
+        "chronologically (scripts/build_elo.py:142-205), so a chain whose "
+        "2002-2017 history changed from a fabricated 0.0 to a real derivation "
+        "carries different ratings into 2018 and every season after it. The "
+        "declared set named the seasons that carried the FABRICATION; the "
+        "observed set is the seasons the CORRECTION reaches, which is "
+        "necessarily wider. Same-week ranks and percentiles are additionally "
+        "computed over the whole snapshot population "
+        "(features/elo_features.py:153-258), so one game's corrected Elo moves "
+        "the rank columns of every other game that week. Reported, not gated: "
+        "blocking here would refuse a CORRECT rebuild for disagreeing with a "
+        "prediction the plan itself labelled a prediction.",
+    ),
+    **dict.fromkeys(
+        (
+            "home_elo",
+            "away_elo",
+            "elo_diff",
+            "elo_prob_home",
+            "elo_prob_away",
+            "hfa_used",
+            "home_elo_uncertainty",
+            "away_elo_uncertainty",
+            "home_elo_momentum",
+            "away_elo_momentum",
+            "home_elo_rank",
+            "away_elo_rank",
+            "home_elo_percentile",
+            "away_elo_percentile",
+        ),
+        "THE DECLARED ELO FAMILY, source-derived from "
+        "features.elo_features.ELO_FEATURE_COLUMNS. Attributed at rung 2, "
+        "unattributed at rung 1 -- which is the whole point of a follow-up "
+        "rung: rung 1's verdict is byte-untouched and still reports these as "
+        "outside ITS one declared cause.",
+    ),
+    **dict.fromkeys(
+        (
+            "home_look_ahead_spot",
+            "away_look_ahead_spot",
+            "home_letdown_spot",
+            "away_letdown_spot",
+        ),
+        "ELO-DERIVED, the same cause one step downstream. "
+        "features.contextual._look_ahead_flag reads the next opponent's "
+        "freeze-known Elo via _freeze_known_elo and compares it against this "
+        "week's opponent Elo with ELO_SPOT_STEP; _letdown_flag does the same "
+        "over the previous game. A changed chain changes WHICH games count as a "
+        "trap or a letdown spot. They are in neither the weather family nor "
+        "ELO_FEATURE_COLUMNS, so they are named explicitly rather than inferred.",
+    ),
+}
+
+# THE SIXTEEN ROWS THAT STILL READ 0.0, RESOLVED RATHER THAN LEFT HANGING.
+#
+# The fabricated-Elo population fell from 4,288 rows to 16. Leaving "16 rows
+# still carry 0.0" unexplained would hand the next reader a remainder that looks
+# like a residue of the defect. It is not one.
+#
+# MEASURED: all 16 are `(2002, 1)` -- the first week of the burn-in season --
+# and silver DOES carry snapshots for them. `elo_game_snapshots` holds 16 rows
+# for 2002 week 1 with `home_elo_pre` and `away_elo_pre` both EXACTLY 1500.0,
+# the initialisation rating, identical across every team because no game has
+# been played yet.
+#
+# SO THE 0.0 IN GOLD IS A Z-SCORE, NOT AN ABSENCE. A slice whose values are
+# constant has an expanding standard deviation of zero, `safe_std` clips it to
+# 1e-8, and `(1500 - 1500) / 1e-8` is 0.0. That is the CORRECT normalization of
+# a genuinely uniform prior, and it is categorically different from the defect
+# COLD-04 removed, where gold read 0.0 because the snapshot was ABSENT.
+#
+# EXISTING COVERAGE, cited rather than duplicated: Plan 33-13's
+# `tests/integration/test_elo_burn_in_canonical.py::test_the_chain_starts_in_2002`
+# pins that the chain starts in 2002, and
+# `::test_every_rating_falls_inside_the_frozen_band` pins the ratings. Neither
+# asserts the GOLD-side consequence for these 16 rows specifically, which is why
+# it is measured and recorded here.
+ELO_ZERO_ROWS_AFTER_LADDER: dict[str, object] = {
+    "count": 16,
+    "slices": ((2002, 1),),
+    "silver_snapshot_rows_for_2002_week_1": 16,
+    "silver_home_elo_pre": 1500.0,
+    "silver_away_elo_pre": 1500.0,
+    "why": (
+        "the burn-in boundary. Every team enters at the identical 1500.0 "
+        "initialisation, so the slice is CONSTANT and its z-score is 0.0 by "
+        "construction. Not a fabricated value and not a missing one."
+    ),
+    "not_the_defect": (
+        "COLD-04's defect was gold reading 0.0 because the snapshot was ABSENT, "
+        "across 4,288 rows of 2002-2017. Here the snapshot is PRESENT and real."
+    ),
+    "existing_coverage": (
+        "tests/integration/test_elo_burn_in_canonical.py::test_the_chain_starts_in_2002",
+        "tests/integration/test_elo_burn_in_canonical.py::test_every_rating_falls_inside_the_frozen_band",
+    ),
+}
+
+# THE WIDTH-REFERENCE RECONCILIATION, AND WHICH NUMBER WAS DECIDED TO BE WRONG.
+#
+# `test_gold_write_scope.py::TestTheIdentityMigrationMovesNoGoldColumn::
+# test_the_recorded_reference_matches_todays_production_gold` was left
+# DELIBERATELY RED by Plan 33.1-08, and `GOLD_REBUILD_NEWLY_RED_REASONS` assigns
+# the reconciliation to this plan by name. Its own message says not to adjust
+# one number to match the other without deciding which is wrong.
+#
+# THE DECISION: the REFERENCE was stale, not gold. `GOLD_WIDTHS_BEFORE_ELO_REBUILD`
+# records (194, 195, 194), which was true when Plan 33-12 measured it and
+# stopped being true when Phase 33.1's rung 1 added `weather_coverage`. It is a
+# PRE-33.1 HISTORICAL RECORD, not a mistake, and it is left BYTE-UNCHANGED. What
+# moved is the reference the ASSERTION reads, now
+# `GOLD_WIDTHS_AFTER_WEATHER_RUNG` = (195, 196, 195).
+#
+# Editing the constant to agree with today's gold would have destroyed a
+# historical record to make an assertion pass -- the mirror of the error the
+# tripwire guards against, and the second thing Task 6 asks the owner to confirm
+# was not done.
+GOLD_WIDTH_REFERENCE_RECONCILIATION_33_14: dict[str, object] = {
+    "decided_at": "2026-09-14",
+    "decided_by": "Plan 33-14 Task 5, under GOLD_REBUILD_NEWLY_RED_REASONS' assignment",
+    "old_reference": "tests.phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD = (194, 195, 194)",
+    "new_reference": "tests.phase33_state.GOLD_WIDTHS_AFTER_WEATHER_RUNG = (195, 196, 195)",
+    "which_was_wrong": (
+        "the REFERENCE, not gold. The one-column delta is `weather_coverage`, "
+        "added by Phase 33.1's rung 1 after Plan 33-12 recorded the old triple."
+    ),
+    "old_constant_left_byte_unchanged": True,
+    "why_not_edited": (
+        "it is the PRE-33.1 record it always was. Editing it to agree with "
+        "today's gold would destroy a historical record to make an assertion "
+        "pass, which is the mirror of clearing a disclosure by making it green."
+    ),
+    "disposition": (
+        "DISCHARGED, not absorbed. The row leaves GOLD_REBUILD_NEWLY_RED's "
+        "EXPECTED-BY-DESIGN disposition because the reconciliation this plan was "
+        "assigned has now been made."
+    ),
+    "not_repointed": (
+        "test_the_recorded_widths_are_three_plausible_integers and the two "
+        "sandbox-digest controls in the same class still read "
+        "GOLD_WIDTHS_BEFORE_ELO_REBUILD and SANDBOX_GOLD_DIGESTS_33_12. They are "
+        "about Plan 33-12's measurement and are deliberately untouched."
+    ),
+}
+
+# WHICH PUBLISHED READINGS THIS LADDER MOVED OUT FROM UNDER, AND WHAT WAS FOUND
+# WHEN THE LIVE GUARDS WERE READ.
+#
+# NOTHING PUBLISHED EARLIER IS REWRITTEN. A superseded reading stays where it
+# was written, with its date and its reason; the seam SKIPS rather than fails,
+# because a reading measured on other gold is not a wrong reading.
+#
+# WHAT WAS FOUND, recorded either way as the plan asks. Exactly TWO live guards
+# re-run a harness against gold and compare a pinned point estimate, and BOTH
+# ARE ALREADY GATED -- `tests/integration/test_diag_diagnosis.py:452` and
+# `tests/integration/test_ou_divergence.py:189`. NO NEW `require_gold_generation`
+# CALL IS OWED, and adding one would be a second gate on an already-gated test.
+#
+# Every other module that reads gold asserts STRUCTURE -- column presence, a
+# width, the absence of a family -- rather than a point estimate, and structure
+# is unmoved by a rebuild that added and removed nothing. Gating those would be
+# the bookkeeping the plan forbids by name.
+#
+# ONE THING IS NOW POSSIBLE THAT WAS NOT, and it is left for a later phase
+# because it is a decision about Phase 33.1's record rather than this plan's:
+# both existing gates pass `GOLD_GENERATION_BEFORE_WEATHER_RUNG_UNCAPTURED`, a
+# SENTINEL string, because Phase 33.1 could not capture a real key in time. They
+# therefore skip unconditionally. This ladder captured real keys at both ends,
+# so a later phase could tighten them from a sentinel to a measured generation.
+# Re-pointing them here would change which generation those readings claim to
+# belong to, which is not this plan's call.
+GOLD_DERIVED_READINGS_33_14: tuple[tuple[str, str], ...] = (
+    (
+        "tests.phase33_state.OU_WEATHER_CONDITIONS_BREAKDOWN, whose own "
+        "gold_generation_key field records "
+        "eea0882f4410d22af6e4b54d1c0929a28072325fff9b556a91ca12de900290d1 -- "
+        "the generation this ladder superseded. It is consumed by no live guard "
+        "(it is a recorded measurement, not an asserted anchor), so no gate is "
+        "owed; the field it already carries is what makes the supersession "
+        "readable.",
+        "superseded by the Phase-33 Wave-14 ladder; recorded, not rewritten",
+    ),
+    (
+        "AUDIT-REPORT.md's WP pooled accuracy anchor, re-asserted by "
+        "tests/integration/test_diag_diagnosis.py::TestDiagDiagnosis::"
+        "test_backtest_numbers_match_audit_report. ALREADY GATED at :452 on the "
+        "Phase-33.1 sentinel, so it already skips. No new call added.",
+        "already gated; no new call owed",
+    ),
+    (
+        "OU-DIVERGENCE-DIAGNOSIS.md's pooled model-over share anchor, "
+        "re-asserted by tests/integration/test_ou_divergence.py::TestOuDivergence::"
+        "test_bias_over_share. ALREADY GATED at :189 on the Phase-33.1 sentinel, "
+        "so it already skips. No new call added.",
+        "already gated; no new call owed",
+    ),
+)
+
+# HOW TRIPWIRE 2 FAILS AFTER BOTH RUNGS, AND WHY THAT IS PROVABLY THE SAME.
+#
+# `test_gold_rebuild_attribution.py::TestThePhase31Rung3IsTheFullRebuildOfThe
+# VerdictPopulation::test_no_NON_CLOCK_column_moved_in_a_protected_season` is a
+# DELIBERATE tripwire and MUST stay red: it encodes an owner-accepted
+# disclosure, and a rebuild that happened to satisfy it would CLEAR that
+# disclosure rather than fix a defect.
+#
+# IT IS STILL RED, AND ITS FAILURE SHAPE IS UNCHANGED. The reason is structural
+# rather than lucky: the test compares `p31_rung2.json` against `p31_rung3.json`
+# -- PHASE 31's fingerprint documents -- and reads NO live gold at all. Both
+# files are dated 2026-09-05, nine days before this plan, and nothing in this
+# plan writes under `outputs/fingerprints/p31_*`. The comparison it performs is
+# therefore bit-identical to the one it performed before the ladder, so the
+# SAME-or-DIFFERENT question has a proof rather than an observation behind it.
+#
+# SAME. Eleven non-clock column-slots, the same eleven columns, the same
+# seasons.
+TRIPWIRE_2_POST_REBUILD_ATTRIBUTION: dict[str, object] = {
+    "node_id": (
+        "tests/integration/test_gold_rebuild_attribution.py::"
+        "TestThePhase31Rung3IsTheFullRebuildOfTheVerdictPopulation::"
+        "test_no_NON_CLOCK_column_moved_in_a_protected_season"
+    ),
+    "still_red": True,
+    "same_shape_as_before_the_ladder": True,
+    "why_provably_same": (
+        "it compares outputs/fingerprints/p31_rung2.json against p31_rung3.json "
+        "and reads no live gold. Both are dated 2026-09-05, nine days before "
+        "this plan, and nothing in this plan writes under "
+        "outputs/fingerprints/p31_*. The comparison is bit-identical to the one "
+        "it performed before the ladder."
+    ),
+    "offender_count": 11,
+    "protected_window": "2021-2024",
+    "offenders": (
+        ("features_wp", "snapshot_ml_prob_home_fair"),
+        ("features_wp", "snapshot_spread"),
+        ("features_wp", "snapshot_total"),
+        ("features_ats", "snapshot_ml_prob_home_fair"),
+        ("features_ats", "snapshot_spread"),
+        ("features_ats", "snapshot_total"),
+        ("features_ats", "target_ats"),
+        ("features_ou", "snapshot_ml_prob_home_fair"),
+        ("features_ou", "snapshot_spread"),
+        ("features_ou", "snapshot_total"),
+        ("features_ou", "target_ou"),
+    ),
+    "offender_seasons": "2018,2019,2020,2021,2022,2023,2024,2025 on every offender",
+    "move_kind": "values",
+    "failure_text": (
+        "the FULL rebuild moved 11 non-clock column-slot(s) in the PROTECTED "
+        "2021-2024 window. ... The 2021-2024 slice is the deploy gate's holdout "
+        "AND the Phase-31 tune window, and the pre-registration binds its "
+        "values. HARD STOP -- take the attribution to the owner rather than "
+        "relaxing this."
+    ),
+    "what_would_have_been_wrong": (
+        "the tripwire turning GREEN. That would have cleared an owner-accepted "
+        "disclosure by making it pass, which this phase prohibits by name."
+    ),
+}
+
+# WHAT THIS REPLAN REPLACED, AND WHAT FALSIFIED EACH ONE.
+#
+# Recording supersession rather than overwriting is this repository's
+# discipline, and this slot is where it lands for Wave 14. Each entry names the
+# OLD wording, the NEW one, and the readout item that falsified it.
+PLAN_33_14_SUPERSESSIONS: tuple[dict[str, str], ...] = (
+    {
+        "old": (
+            "ONE rung, named for the Elo re-derivation, because there is ONE "
+            "cause and R4 names one expected change set"
+        ),
+        "new": (
+            "D33-35's ladder: rung 0 baseline, rung 1 the normalization-exemption "
+            "widening, rung 2 the Elo re-derivation -- which the owner then ruled "
+            "into a DECLARATION-ONLY rung on 2026-09-14, because the Elo cause "
+            "had already landed in silver at Wave 13 and reached gold at rung 1."
+        ),
+        "falsified_by": (
+            "HISTORICAL-WEATHER-READOUT.md section 4 item 1: Phase 33.1 rebuilt "
+            "gold TWICE before Wave 14 runs, for a COMPOUND cause, so this "
+            "rebuild is no longer the first rung after 33-12."
+        ),
+    },
+    {
+        "old": (
+            "the GOLD_WIDTHS_BEFORE_ELO_REBUILD width comparison, pinned at 194/195/194"
+        ),
+        "new": (
+            "re-anchored to tests.phase33_state.GOLD_WIDTHS_AFTER_WEATHER_RUNG = "
+            "(195, 196, 195). The stale constant is left BYTE-UNCHANGED as the "
+            "pre-33.1 record it is; the REFERENCE the assertion reads is what "
+            "moved."
+        ),
+        "falsified_by": (
+            "HISTORICAL-WEATHER-READOUT.md section 4 item 2: the pinned widths "
+            "moved before Wave 14 runs, and the mismatch was already live as a "
+            "registered red."
+        ),
+    },
+    {
+        "old": (
+            "the owner authorisation's pre-declared expected change set -- every "
+            "season 2002-2017, plus (2018, 1), exactly the 4,288 rows that "
+            "carried a fabricated 0.0 Elo; column widths stay 194/195/194"
+        ),
+        "new": (
+            "VOID and re-declared PER RUNG before either ran: the exemption rung "
+            "expects every season in gold; the Elo rung expects 2002-2017 plus "
+            "(2018, 1) and says in its own signature that this is a PREDICTION, "
+            "not a guarantee. Widths are (195, 196, 195) throughout. The Elo "
+            "prediction was then measured wider -- all 24 seasons -- and that "
+            "propagation is REPORTED with a written explanation rather than "
+            "hard-failed."
+        ),
+        "falsified_by": (
+            "HISTORICAL-WEATHER-READOUT.md section 4 item 3: it was computed "
+            "against a gold in which 45 of 46 weather columns were constant and "
+            "2025's team-strength family was never built. The owner cannot "
+            "meaningfully authorise a change set computed against inputs that no "
+            "longer exist."
+        ),
+    },
+    {
+        "old": (
+            "a failing target retains its incumbent, and every framing in which "
+            "a candidate must non-regress against the frozen baseline"
+        ),
+        "new": (
+            "VOID under the standing owner ruling of 2026-09-14. Nothing in this "
+            "plan re-raises the frozen 2021-2024 gate baseline; config/gate.toml's "
+            "[baseline.*] block is byte-untouched and both gate-baseline "
+            "tripwires stay red. That disposition is Plan 33-15's owner ruling, "
+            "not a promise this plan makes."
+        ),
+        "falsified_by": (
+            "HISTORICAL-WEATHER-READOUT.md section 4 item 7: the standing owner "
+            "ruling voids the frozen baseline and every Phase-30/31 verdict "
+            "resting on it. You cannot non-regress against a lie."
+        ),
+    },
+)
+
+
+# ---------------------------------------------------------------------------
+# THIS PLAN'S COLLECTED-NODE COUNT.
+#
+# APPENDED by Plan 33-14 at plan close on 2026-09-14, AFTER both rungs, the
+# committed diff, the width re-anchor and every test landed. Nothing above this
+# line was edited.
+#
+# APPENDED AT CLOSE, NOT EARLIER, for the reason Plans 33-02 through 33-13 each
+# recorded when they did the same: a value written before the last commit could
+# only be made right afterwards by EDITING it, which is the append-once
+# violation the protocol exists to prevent.
+#
+# MEASURED BY PER-MODULE `--collect-only`, NOT BY A WHOLE-SUITE RUN, under the
+# standing owner instruction of 2026-09-14 against full-suite runs. The
+# pre-plan content of each of the five modified modules was restored from commit
+# 16dd802 into a sibling file, collected, and deleted; the current module was
+# collected the same way. Collection runs no test. The two ends therefore differ
+# ONLY in this plan's additions, which is a tighter instrument than a whole-suite
+# delta because nothing else in the repository can move it.
+#
+#     module                                                  base  now  delta
+#     tests/unit/test_precipitation_from_measurement.py         14   52    +38
+#     tests/unit/test_weather_coverage_flag_survives_norm...    13   20     +7
+#     tests/unit/test_data_qa_gold_width.py                     13   17     +4
+#     tests/integration/test_gold_write_scope.py                26   27     +1
+#     tests/integration/test_gold_rebuild_attribution.py       187  196     +9
+#                                                                          ---
+#                                                                          +59
+#
+#     totals: 253 -> 312 collected across the five modules
+#
+# NO NEW TEST MODULE WAS CREATED. Every node landed in a module the plan named,
+# beside the assertions it extends -- which is why the per-module sum and the
+# five-module total agree exactly, and why a node added elsewhere could not hide
+# inside this number.
+#
+# WHAT WAS RUN, AND WHAT WAS NOT. No bare `pytest` and no whole-tier sweep. The
+# modules exercised were this plan's own five plus the affected set:
+# test_missing_preserving_seam, test_gold_snap_injury_columns and
+# test_phase33_expected_failure_set. The plan-level verification asked for
+# nothing wider. See this plan's SUMMARY for the residual risk.
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_14: int = 59
