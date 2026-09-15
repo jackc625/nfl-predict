@@ -35,6 +35,7 @@ from backtest.signal_lift import ALL_REGISTERED_GROUPS, select_group_columns
 from conf.season_partition import default_season_partition
 from models.temporal import TemporalSplitConfig
 from models.trainers.ats_trainer import ATSTrainer
+from models.trainers.final_fit import apply_final_fit_to_trainer
 from models.trainers.ou_trainer import OUTrainer
 from models.trainers.wp_trainer import WPTrainer
 from utils import get_logger
@@ -44,6 +45,29 @@ logger = get_logger(__name__)
 
 # Valid target choices
 _VALID_TARGETS = ("wp", "ats", "ou", "all")
+
+# ---------------------------------------------------------------------------
+# THE GOLD-GENERATION MARKER (Phase 33 Wave 15, D33-25 / R7).
+#
+# The metadata key a re-fit writes to DECLARE, explicitly, that its training distribution
+# included the corrected historical weather record. It is DEFINED and TESTED by
+# `tests/unit/test_weather_bridge_expiry.py`, which deliberately does NOT write it --
+# writing it in Phase 33.1 would have been claiming a re-fit happened. This module writes
+# it, and only when `--gold-generation` is supplied.
+#
+# THE VALUE COMES FROM THE COMMAND LINE, NOT FROM AN IMPORT, and the reason is worth
+# recording: the ONE producer of the key is `tests.gold_generation.gold_generation_key`,
+# and a production module importing from the tests package to reach it would be the wrong
+# direction. The operator measures it once, records it in
+# `tests.phase33_state.GOLD_GENERATION_AT_REFIT`, and passes it in; a test then asserts
+# that record equals the ladder's own generation AND the live key, so the marker is
+# provably the generation the gold rebuild produced rather than a string somebody typed.
+#
+# ABSENT, NEVER EMPTY. Omitting the flag leaves the key out of metadata entirely. An
+# ordinary training run claims nothing about a weather generation, and an empty-string
+# marker would be a claim that reads as a non-claim.
+# ---------------------------------------------------------------------------
+GOLD_GENERATION_METADATA_KEY = "trained_on_real_weather_generation"
 
 
 def parse_exclude_groups(raw: str) -> tuple[str, ...]:
@@ -264,11 +288,13 @@ def train_target(
     tune: bool = True,
     exclude_groups: tuple[str, ...] = (),
     exclude_groups_provenance: str = "none",
+    gold_generation: str | None = None,
 ) -> dict[str, Any]:
     """Train a single model target and optionally compute market baseline.
 
-    Instantiates the appropriate trainer, runs training with walk-forward
-    evaluation, saves artifacts, and computes market baseline if odds available.
+    Instantiates the appropriate trainer, runs the walk-forward evaluation, THEN runs the
+    explicit FINAL FIT over every completed season in the committed partition rule, saves
+    artifacts, and computes the market baseline if odds are available.
 
     Args:
         target: One of "wp", "ats", "ou".
@@ -283,6 +309,9 @@ def train_target(
             caller. Recorded in the artifact's metadata, not applied here.
         exclude_groups_provenance: Where that list came from -- ``"verdict"`` (the ratified
             Stage-1 verdict), ``"override"`` (hand-typed on the command line) or ``"none"``.
+        gold_generation: The gold generation key this run's features were read from, or
+            None. When supplied it is written into the artifact's metadata under
+            :data:`GOLD_GENERATION_METADATA_KEY`; when omitted the key is ABSENT.
 
     Returns:
         Dict with keys: model_metrics, market_baseline, artifact_path.
@@ -332,6 +361,45 @@ def train_target(
     # self.metadata wholesale) and before save, so it lands in the saved metadata.json.
     trainer.metadata["exclude_groups"] = list(exclude_groups)
     trainer.metadata["exclude_groups_provenance"] = exclude_groups_provenance
+
+    # ------------------------------------------------------------------
+    # THE FINAL FIT (D33.1-01 / D33.1-02, Phase 33 Wave 15). THE ORDER IS LOAD-BEARING.
+    #
+    # WHY IT IS HERE AT ALL. `WalkForwardSplitter.generate_splits` builds every fold as
+    # `season < holdout_season` and each concrete trainer keeps the LAST fold's model, so
+    # without this call the shipped artifact stops one holdout season short of the corpus
+    # WHATEVER the partition says -- and no choice of the three `--config-*-seasons`
+    # lists can change that, because widening `train_seasons` does not touch the fold mask.
+    #
+    # WHY THIS ORDER AND NOT ANOTHER. `apply_final_fit_to_trainer` assigns
+    # `trainer.model`, `trainer.preprocessing` and the two final-fit metadata keys, and
+    # `BaseTrainer.save` reads exactly those three. Producing a `FinalFitResult` and NOT
+    # applying it would leave the save path persisting the LAST FOLD's object while the
+    # record described the final fit -- threat T-33.1-65d, named in that module's own
+    # docstring.
+    #
+    # WHY THE PARTITION COMES FROM THE RULE AND NOT FROM THE FLAGS. The three
+    # `--config-*-seasons` arguments describe the WALK-FORWARD FOLDS.
+    # `partition.final_fit` is a FOURTH set that deliberately overlaps them, so
+    # constructing a `SeasonPartition` out of the flags would silently fit the shipped
+    # model on the selection window. Reading `conf.season_partition` directly is what
+    # keeps one rule, read once.
+    #
+    # THE RECORDED COST, stated rather than hidden: the calibration component is carried
+    # across BY REFERENCE and is never refitted, so the shipped model's calibrator was
+    # fitted against a NARROWER model than the one that ships. That biases mildly toward
+    # UNDER-confidence -- a conservative and statable error.
+    # ------------------------------------------------------------------
+    partition = default_season_partition()
+    final_fit_result = trainer.final_fit(features_df, partition)
+    apply_final_fit_to_trainer(trainer, final_fit_result)
+
+    # The weather-generation marker (D33-25 / R7). Written AFTER the final fit, because
+    # `apply_final_fit_to_trainer` writes into the same metadata dict, and BEFORE the
+    # save, because that is where it has to land to reach metadata.json. Absent when the
+    # caller supplied nothing -- see GOLD_GENERATION_METADATA_KEY.
+    if gold_generation:
+        trainer.metadata[GOLD_GENERATION_METADATA_KEY] = gold_generation
 
     # Save artifacts
     artifact_path = trainer.save(artifacts_dir)
@@ -570,6 +638,22 @@ def build_parser() -> argparse.ArgumentParser:
             "typed one without reconstructing which commit was current."
         ),
     )
+    parser.add_argument(
+        "--gold-generation",
+        type=str,
+        default=None,
+        help=(
+            "The gold GENERATION KEY this run's features were read from, recorded "
+            f"verbatim in the artifact's metadata under '{GOLD_GENERATION_METADATA_KEY}' "
+            "(D33-25 / R7). Measure it with `tests.gold_generation.gold_generation_key()` "
+            "and record it in tests.phase33_state.GOLD_GENERATION_AT_REFIT rather than "
+            "typing it; a test asserts that record equals both the gold-rebuild ladder's "
+            "own generation and the live key. OMITTING THE FLAG LEAVES THE KEY ABSENT, "
+            "not empty -- an ordinary training run claims nothing about a weather "
+            "generation, and the 2026 gold-weather bridge's flip predicate reads the "
+            "marker as an explicit declaration of INTENT."
+        ),
+    )
     return parser
 
 
@@ -703,6 +787,7 @@ def main() -> None:
             tune=not args.no_tune,
             exclude_groups=exclude_groups,
             exclude_groups_provenance=args.exclude_groups_provenance,
+            gold_generation=args.gold_generation,
         )
         all_results[target] = result
 

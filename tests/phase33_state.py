@@ -733,11 +733,27 @@ ELO_GOLD_JOIN_SUBSET: tuple[str, ...] = (
 # models.train's staleness was hidden behind models.train_wp's; fixing only the
 # one DEF-33-13-A named ("THE FIX IS ONE NUMBER") would have traded one red for
 # another. Both are corrected here.
+#
+# RE-MEASURED AGAIN 2026-09-15 by Plan 33-15 Task 1. SECOND IN-PLACE EDIT to the same
+# Plan 33-04 entry, named as such for the same reason as the first.
+#
+# WHY. Task 1 inserted the final-fit call site, the GOLD_GENERATION_METADATA_KEY block
+# and the --gold-generation argparse entry into `models/train.py`, all ABOVE the gold
+# load in `main`. This is exactly the drift the ruling above predicts and exactly what
+# the loose "reads like a gold load" assertion exists to catch -- it is NOT a
+# transcription error, and 646 was still correct at `bf93f93`, the commit immediately
+# before this plan (verified with `git show bf93f93:models/train.py | sed -n '646p'`,
+# which prints the load).
+#
+#   models.train      646 -> 730  (+84, this plan's Task 1)
+#
+# The other three were re-measured at the same time and had NOT moved, verified by
+# reading each recorded line: 1148, 1163 and 1423 each still print their load.
 TRAINER_GOLD_LOAD_SITES: tuple[tuple[str, str, int], ...] = (
     ("models.train_wp", "main", 1148),
     ("models.train_ats", "main", 1163),
     ("models.train_ou", "main", 1423),
-    ("models.train", "main", 646),
+    ("models.train", "main", 730),
 )
 
 
