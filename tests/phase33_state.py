@@ -13500,3 +13500,305 @@ PLAN_33_15_SUPERSESSIONS: tuple[dict[str, str], ...] = (
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_15: int = 66
+
+
+# ---------------------------------------------------------------------------
+# THE COLD-START PRE-REGISTRATION'S WITNESS.
+#
+# APPENDED by Plan 33-16 Task 4 on 2026-09-14. Nothing above this line was edited.
+#
+# THE WITNESS LIVES OUTSIDE THE FILES IT WITNESSES, AND LANDS IN A LATER COMMIT.
+# A file that must CONTAIN and exactly REPRODUCE its own whole-file hash is
+# self-referential: writing the hash changes the bytes the hash was computed over,
+# so no fixed point exists without a canonical exclusion rule nobody has defined.
+# And a commit cannot contain its own id. So the two frozen files
+# (COLD-START-PREREGISTRATION.md and backtest/cold_start_constants.py) record
+# neither, and this module records both -- in a commit that is a strict DESCENDANT
+# of the one it describes. That ordering IS the evidence; a future tidy-up that
+# squashed the two commits into one would collapse the anchor into a claim about
+# itself, and tests/unit/test_phase33_preregistration_ancestry.py fails if it does.
+#
+# THE DIGESTS ARE NEWLINE-NORMALIZED. This repository has core.autocrlf=true and no
+# .gitattributes, so a tracked text file is LF in the git blob and CRLF in a fresh
+# Windows working tree. A digest over RAW working-tree bytes would pin a value that
+# holds only on the machine that measured it. Normalized, each digest below equals
+# sha256(git cat-file blob <commit>:<path>) -- asserted directly, not assumed.
+# ---------------------------------------------------------------------------
+
+# The anchor. RESOLVED from git rather than chosen: it is the last commit to touch
+# either path in backtest.cold_start_constants.PREREGISTRATION_PATHS, and it carries
+# ONLY those two files.
+PRE_REGISTRATION_COMMIT: str = "11761c7ece83ab9cab8ce73ffd6d7b58158ee703"
+
+PRE_REGISTRATION_FILE_SHA256: dict[str, str] = {
+    "COLD-START-PREREGISTRATION.md": (
+        "9f411440e33f7790fe10b38d0573536221e214a93187a2305975979295fbbff7"
+    ),
+    "backtest/cold_start_constants.py": (
+        "f91528c5d6719c09485ebe28f824c8b1cca33b2fa6612461a3708483397812ec"
+    ),
+}
+
+# The AUTHOR date (`git show -s --format=%aI`), NEVER the committer date: a rebase or
+# an amend moves the committer date and leaves the author date alone, so the two
+# answer different questions and only one of them is the claim.
+#
+# CORROBORATION, NOT PROOF. GIT_AUTHOR_DATE and `git commit --date` both set an
+# author date, so this cannot establish pre-kickoff existence on its own. It is
+# recorded and asserted because a recorded date disagreeing with git would still be
+# a finding -- not because it carries the claim. Nothing here was backdated; the
+# value below is the genuine commit time, 2 days 20:50:08 inside the deadline.
+PRE_REGISTRATION_AUTHOR_DATE: str = "2026-09-14T23:24:52-04:00"
+
+# Week 2 kickoff. The instant the pre-registration had to precede.
+PRE_REGISTRATION_DEADLINE: str = "2026-09-17T20:15:00-04:00"
+
+# ---------------------------------------------------------------------------
+# THE EXTERNAL TIME ANCHOR: DEFERRED ON AN OWNER RULING, NOT UNAVAILABLE.
+#
+# Only something produced by a system OTHER than this working tree can establish
+# that the rule existed before kickoff -- a signed tag pushed to the remote, a
+# remote push receipt, or a CI attestation. Git ancestry cannot reach wall-clock
+# time (data/, outputs/ and artifacts/ are ALL gitignored, so ancestry can only
+# anchor the rule to a readout we write ourselves), and an author date is locally
+# settable.
+#
+# The owner ruled on 2026-09-14 that the push happens ONCE at phase end, still
+# before the deadline, rather than mid-flight. They were shown and accepted the
+# reasons: this local branch is hundreds of commits ahead of a stale origin/master
+# whose real remote state the tracking ref has lost, and a mid-phase push would
+# publish an entire half-finished phase onto a public remote to settle a timestamp.
+#
+# THEY EXPLICITLY REFUSED "NONE_AVAILABLE". An anchor deliberately deferred to a
+# dated point still inside the deadline is a DIFFERENT FACT from one that could not
+# be obtained, and collapsing the two would misreport the record in the
+# safer-sounding direction. The orchestrator owns the push and raises it after Plan
+# 33-18 closes; it was not this plan's action to take.
+# ---------------------------------------------------------------------------
+
+PRE_REGISTRATION_EXTERNAL_ANCHOR: str = ""
+
+PRE_REGISTRATION_EXTERNAL_ANCHOR_KIND: str = "PENDING_DEFERRED_TO_PHASE_END"
+
+PRE_REGISTRATION_EXTERNAL_ANCHOR_DEFERRAL: dict[str, str] = {
+    "ruled_on": "2026-09-14",
+    "ruling": "push once at phase end, before the deadline; do NOT record NONE_AVAILABLE",
+    "deadline": "2026-09-17T20:15:00-04:00",
+    "reason": (
+        "a mid-phase push would publish 354 commits of in-progress work onto a public "
+        "remote whose state the local tracking ref has lost -- origin/master reads "
+        "91f70b7 locally while the remote's own master is at d68777b -- purely to settle "
+        "a timestamp. Deferring to phase end obtains the same third-party receipt time "
+        "with the phase finished and still comfortably inside the deadline."
+    ),
+    "until_it_lands": (
+        "the pre-registration rests on git ancestry plus a corroborating author date "
+        "ONLY. GIT_AUTHOR_DATE and `git commit --date` both set an author date, so that "
+        "date corroborates and does not prove. COLD-START-PREREGISTRATION.md says so in "
+        "its own words and was deliberately NOT upgraded on the strength of an anchor "
+        "that has not been taken."
+    ),
+    "owned_by": "the orchestrator, after Plan 33-18 closes",
+}
+
+# ---------------------------------------------------------------------------
+# THE TWO FROZEN QUANTITIES, MIRRORED FOR CROSS-CHECKING.
+#
+# Recorded HERE as well as in the frozen module so a drift between the two fails a
+# test rather than passing silently. The module is the rule; this is the witness
+# that the rule still says what it said.
+# ---------------------------------------------------------------------------
+
+# (high, medium) per target, on each target's own unit. ats POINTS, ou a RATIO of the
+# market total floored at 30, wp a PROBABILITY. WP is unchanged at 0.05 / 0.02 by
+# design, which is what keeps the 23-point _EDGE_TIER_SNAPSHOT valid as pre-collapse
+# regression evidence instead of a rewrite with a new expectation.
+EDGE_THRESHOLDS_FROZEN: dict[str, tuple[float, float]] = {
+    "ats": (1.9493, 0.8359),
+    "ou": (0.0546, 0.0220),
+    "wp": (0.0500, 0.0200),
+}
+
+# Pooled mean residual (actual - predicted) over the strictly-prior seasons
+# 2021-2025, per target, through the EXISTING
+# backtest.ou_ev_chain.estimate_prior_season_bias. 1,424 games per target.
+#
+# ALL THREE COME FROM PROMOTED RE-FITS, and two of those three carry a standing FAIL
+# verdict shipped under the owner's 2026-09-14 promote-all-three override. Under
+# GATE_RETAINED_TARGETS being empty there is no retained incumbent to source a bias
+# from, so the plan's "for any target the gate REFUSED, use the incumbent's
+# residuals" branch has no applicable target. The frozen module records the verdict
+# beside the disposition rather than smoothing the two into one.
+CHAIN_FIT_BIAS_2026_FROZEN: dict[str, float] = {
+    "ats": 0.257407648096468,
+    "ou": -0.35080281804116925,
+    "wp": -0.03377244391544111,
+}
+
+# ---------------------------------------------------------------------------
+# THE LABEL MOVEMENT, MEASURED AT ONE MODEL AND ONE EDGE DEFINITION.
+#
+# The "before" half recorded by Plan 33-10 (ATS_BAND_SHARES_BEFORE, above) is NOT
+# the comparator for these. It was measured on the PRE-rebuild artifacts under the
+# PRE-repair ratio-scale ATS edge, so a difference against it mixes three changes:
+# the unit repair, the re-fit and the thresholds. The rows below hold the model and
+# the edge definition FIXED at the end state and vary only the thresholds, which is
+# the only comparison that isolates what this plan actually changed.
+#
+# Both instruments are kept. Neither overwrites the other.
+# ---------------------------------------------------------------------------
+
+# Today's 0.05 / 0.02 pair applied to the END-STATE edges. This is the honest
+# "before" for the threshold change, and it is WORSE than Plan 33-10's recorded
+# 92.64% -- ATS high is 98.80% here. That is expected: the points-scale repair made
+# almost every ATS disagreement exceed 0.05. The plan anticipated an "after" of
+# 43.2%; the re-derived figure is 51.79%.
+BAND_SHARES_UNDER_CURRENT_THRESHOLDS_AT_FREEZE: dict[str, dict[str, float]] = {
+    "ats": {"low": 0.0018, "medium": 0.0101, "high": 0.988},
+    "ou": {"low": 0.195, "medium": 0.2374, "high": 0.5676},
+    "wp": {"low": 0.2171, "medium": 0.2649, "high": 0.5179},
+}
+
+BAND_COUNTS_UNDER_CURRENT_THRESHOLDS_AT_FREEZE: dict[str, dict[str, int]] = {
+    "ats": {"low": 2, "medium": 11, "high": 1074},
+    "ou": {"low": 212, "medium": 258, "high": 617},
+    "wp": {"low": 236, "medium": 288, "high": 563},
+}
+
+# The same end-state edges under the FROZEN thresholds. The "after" half.
+ATS_BAND_SHARES_AFTER: dict[str, dict[str, float]] = {
+    "ats": {"low": 0.2171, "medium": 0.2649, "high": 0.5179},
+    "ou": {"low": 0.2144, "medium": 0.2695, "high": 0.5161},
+    "wp": {"low": 0.2171, "medium": 0.2649, "high": 0.5179},
+}
+
+ATS_BAND_COUNTS_AFTER: dict[str, dict[str, int]] = {
+    "ats": {"low": 236, "medium": 288, "high": 563},
+    "ou": {"low": 233, "medium": 293, "high": 561},
+    "wp": {"low": 236, "medium": 288, "high": 563},
+}
+
+# A SHARE ROUNDS; A COUNT DOES NOT. 1,087 of the 1,139 games in seasons 2021-2024
+# carry a computable edge (52 have no stored market line at all, so all three edges
+# are NULL on them). WP's zero is by construction: its thresholds do not move.
+GAMES_CHANGING_BAND_AT_FREEZE: dict[str, int] = {"ats": 522, "ou": 77, "wp": 0}
+
+THRESHOLD_ELIGIBLE_ROWS_AT_FREEZE: int = 1087
+THRESHOLD_POPULATION_ROWS_AT_FREEZE: int = 1139
+
+# ---------------------------------------------------------------------------
+# WHAT THE LABEL MOVEMENT DOES AND DOES NOT REACH -- the finding that made the
+# owner's acceptance a narrow decision rather than a broad one.
+#
+# MEASURED, not assumed: utils.edge_tier is DISPLAY-ONLY. Its own module docstring
+# records that /bets owns a different and incompatible concept (ev_tier, absolute
+# per-bet expected value, D31-24), that selector-produced rows live in the bet_list
+# table and are banded by backtest.ev_chain_constants.assign_ev_tier, and that the
+# risk of a per-bet EV reaching this helper is CLOSED. The only non-test consumer of
+# edge_tier / edge_tier_series is api/cache.py.
+#
+# So the 522 ATS and 77 O/U band changes move a PRINTED LABEL on / and /betting and
+# change NO BET. That sentence is what the owner accepted, and it belongs in the
+# record with its evidence rather than left implicit.
+# ---------------------------------------------------------------------------
+
+EDGE_TIER_IS_DISPLAY_ONLY: dict[str, object] = {
+    "display_only": True,
+    "sole_non_test_consumer": "api/cache.py",
+    "bet_selection_reads_instead": "backtest.ev_chain_constants.assign_ev_tier (ev_tier)",
+    "evidence": (
+        "utils/edge_tier.py's module docstring states that /bets owns a different and "
+        "incompatible concept and records the per-bet-EV leak risk as CLOSED, asserted "
+        "structurally by tests/api/test_cache_betting.py"
+    ),
+    "consequence": "the band movement changes a printed label and changes no bet",
+}
+
+# ---------------------------------------------------------------------------
+# THE PLAN'S INDICATIVE PRE-REBUILD THRESHOLDS, AND THE DIVERGENCE FROM THEM.
+#
+# AN ACCEPTANCE CRITERION MET HERE RATHER THAN WHERE IT WAS ASKED FOR, and said
+# plainly rather than dropped. Plan 33-16 Task 2 asked that both the indicative
+# pre-rebuild ATS/OU values and the re-derived end-state values be recorded "with
+# any divergence noted", in the frozen module. The frozen module records the
+# re-derived values and the pre-rebuild WP share reference with its divergence, but
+# not these two indicative pairs -- and by the time that was noticed the module was
+# FROZEN. Editing it in is precisely the act every header in this pre-registration
+# forbids: it would destroy the evidence rather than complete the record. So the
+# criterion is discharged HERE, in the witness, which is the designed home for facts
+# ABOUT the pre-registration. Owner-accepted 2026-09-14.
+#
+# The indicative values came from the plan text and were measured on the PRE-rebuild
+# artifacts. They were never candidates for freezing; they are recorded so the size
+# of the move is checkable rather than a matter of recollection.
+# ---------------------------------------------------------------------------
+
+PRE_REBUILD_INDICATIVE_THRESHOLDS: dict[str, tuple[float, float]] = {
+    "ats": (1.6814, 0.7096),
+    "ou": (0.0558, 0.0252),
+}
+
+# (indicative, frozen, absolute delta, percent delta) per target and band.
+INDICATIVE_TO_FROZEN_DIVERGENCE: dict[
+    str, dict[str, tuple[float, float, float, float]]
+] = {
+    "ats": {
+        "medium": (0.7096, 0.8359, 0.1263, 17.8),
+        "high": (1.6814, 1.9493, 0.2679, 15.9),
+    },
+    "ou": {
+        "medium": (0.0252, 0.0220, -0.0032, -12.7),
+        "high": (0.0558, 0.0546, -0.0012, -2.2),
+    },
+}
+
+# WP's own band shares moved too, and by more than the ATS/OU thresholds did. The
+# recorded pre-rebuild reference is in ATS_BAND_SHARES_BEFORE above; this is the
+# re-derivation on the end-state artifacts. The divergence is REAL and is the
+# re-fit's doing, not a measurement error -- the new WP model disagrees with the
+# market more often, so more games land in "high".
+WP_ANCHOR_SHARE_MOVEMENT: dict[str, dict[str, float]] = {
+    "pre_rebuild": {"low": 0.2677, "medium": 0.2999, "high": 0.4324},
+    "end_state": {"low": 0.2171, "medium": 0.2649, "high": 0.5179},
+}
+
+# ---------------------------------------------------------------------------
+# THE PINNED SKIP MESSAGES, so each fail-closed control asserts the SAME text its
+# guard emits rather than a paraphrase that can drift away from it.
+# ---------------------------------------------------------------------------
+
+SHALLOW_SKIP_MESSAGE_PHASE33: str = (
+    "git history is unavailable (shallow clone or not a git checkout), so "
+    "`git merge-base --is-ancestor` would fail for want of history rather than for want of "
+    "ancestry -- and the two are indistinguishable from the exit code alone. Skipping BEFORE "
+    "any ancestry call rather than reporting a false ancestry violation."
+)
+
+READOUT_PENDING_SKIP_MESSAGE_PHASE33: str = (
+    "tests.phase33_state.READOUT_COMMIT does not exist yet -- Plan 33-18 appends it when the "
+    "Phase-33 readout lands. The readout-ancestry arm SKIPS rather than passing, because an "
+    "arm that quietly passes for want of an input is an arm nobody knows is not running."
+)
+
+# ---------------------------------------------------------------------------
+# PLAN 33-16'S OWN COLLECTED-NODE COUNT.
+#
+# MEASURED per module with `pytest --collect-only -q`, against the pre-plan file
+# contents at commit d569374 -- never by a whole-suite run, under the standing owner
+# instruction of 2026-09-14 that forbids directory sweeps.
+#
+#     tests/unit/test_cold_start_derivation_cli.py            0 ->  9    +9
+#     tests/unit/test_phase33_preregistration_ancestry.py     0 -> 22   +22
+#     tests/unit/test_phase33_preregistration.py             11 -> 33   +22
+#                                                                      ----
+#                                                                        53
+#
+# TWO new test modules were created; the third is Plan 33-08's module, extended
+# below its own append line. The per-module sum and the total agree exactly, which
+# is what stops a node added elsewhere from hiding inside this number.
+#
+# TESTS_ADDED_BY_PHASE_33 is deliberately NOT touched -- Plan 33-18 appends that
+# once, at phase closure.
+# ---------------------------------------------------------------------------
+
+TESTS_ADDED_33_16: int = 53
