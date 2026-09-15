@@ -200,6 +200,15 @@ class MalformedVerdictRecordError(ValueError):
     """A verdict record violates the closed schema (state, statistics or reason)."""
 
 
+class NonPassPromotionWithoutOverrideError(RuntimeError):
+    """A promotion was requested for a target whose verdict is not PASS, with no override.
+
+    Raised BEFORE anything is copied or swapped, so a refusal leaves the production swap
+    surface untouched. The override it demands carries the owner's ruling AND the date;
+    an undated ruling is an assertion nobody can place in time.
+    """
+
+
 class VirtualManifestUnresolvableError(RuntimeError):
     """A virtual-manifest entry names a version neither root can serve (Plan 33-15).
 
@@ -1635,13 +1644,98 @@ def read_verdict_record(
     return GateVerdictRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
+def _authorised_promotions(
+    record: GateVerdictRecord,
+    authorised_targets: Sequence[str] | None,
+    overrides: Mapping[str, Mapping[str, str]] | None,
+) -> list[tuple[str, str]]:
+    """Resolve which targets ship, refusing any non-PASS promotion with no override.
+
+    THE DEFAULT IS UNCHANGED. ``authorised_targets is None`` means exactly
+    ``record.passing_targets()``, which is what Plan 33-08 shipped and what every caller
+    written against it still gets.
+
+    WHY AN OVERRIDE EXISTS AT ALL. The owner's standing ruling of 2026-09-14 voids the
+    pre-correction incumbents, so RETAINING one is not a safe default; the anti-p-hacking
+    prohibition still forbids PROMOTING a target with no PASS verdict. Those two cannot
+    both be satisfied by a default, so the disposition of a non-PASS target is an owner
+    RULING, and a ruling that is not recorded beside the verdict it overrides is
+    indistinguishable from a verdict somebody re-read.
+
+    THE VERDICT IS NEVER TOUCHED. An override rides BESIDE the row and changes no field of
+    it: a FAIL stays a FAIL in the record, in the committed TOML and in the state manifest,
+    whatever was done about it. An override recorded beside a verdict is a disclosure; a
+    verdict rewritten to look like a pass is the defect class this milestone exists to
+    detect.
+
+    Args:
+        record: Stage one's record.
+        authorised_targets: The targets the owner authorised, or None for PASS-only.
+        overrides: ``{target: {"ruling": ..., "ruled_on": ...}}``. Required for every
+            authorised target whose verdict is not PASS.
+
+    Returns:
+        ``[(target, candidate_version), ...]`` in canonical order.
+
+    Raises:
+        NonPassPromotionWithoutOverrideError: An authorised target is not PASS and carries
+            no override with BOTH a ruling and a date, or names a target absent from the
+            record.
+    """
+    if authorised_targets is None:
+        return [
+            (target, record.targets[target]["candidate_version"])
+            for target in record.passing_targets()
+        ]
+
+    requested = [
+        target for target in GATED_TARGETS if target in set(authorised_targets)
+    ]
+    unknown = sorted(set(authorised_targets) - set(record.targets))
+    if unknown:
+        msg = (
+            f"authorised targets {unknown} carry no verdict in this record, whose targets "
+            f"are {sorted(record.targets)}. A promotion for a target the gate never judged "
+            "is a production change with no measurement behind it at all."
+        )
+        raise NonPassPromotionWithoutOverrideError(msg)
+
+    supplied = dict(overrides or {})
+    unbacked = []
+    for target in requested:
+        if record.targets[target].get("verdict") == "PASS":
+            continue
+        override = dict(supplied.get(target) or {})
+        if not str(override.get("ruling") or "").strip():
+            unbacked.append(f"{target} (no ruling)")
+        elif not str(override.get("ruled_on") or "").strip():
+            unbacked.append(f"{target} (ruling with no date)")
+    if unbacked:
+        msg = (
+            f"refusing to promote {unbacked}: each carries a verdict that is not PASS and "
+            "no complete owner override. A non-PASS promotion is possible ONLY through an "
+            "explicit override recorded BESIDE that target's verdict, carrying the owner's "
+            "words AND the date they ruled. Without both, the promotion is a production "
+            "change with no recorded authority, which is the shape the anti-p-hacking "
+            "prohibition exists to prevent. The verdict itself is never edited to make "
+            "this pass."
+        )
+        raise NonPassPromotionWithoutOverrideError(msg)
+
+    return [
+        (target, record.targets[target]["candidate_version"]) for target in requested
+    ]
+
+
 def stage_two_promote(
     *,
     verdict_record_path: Path = VERDICT_RECORD_PATH,
     artifacts_dir: Path = PRODUCTION_ARTIFACTS_DIR,
     staging_dir: Path = STAGING_ARTIFACTS_DIR,
+    authorised_targets: Sequence[str] | None = None,
+    overrides: Mapping[str, Mapping[str, str]] | None = None,
 ) -> tuple[str, ...]:
-    """Apply ONLY the PASS promotions from stage one's record. Recomputes no verdict.
+    """Apply the AUTHORISED promotions from stage one's record. Recomputes no verdict.
 
     COPY BEFORE SWAP, and the order is load-bearing. Every PASS target's staged artifact
     directory is copied into production with
@@ -1665,6 +1759,13 @@ def stage_two_promote(
         verdict_record_path: Stage one's record. Its absence is a refusal, not a no-op.
         artifacts_dir: The production artifacts root.
         staging_dir: The staging root the gate-scored candidates live under.
+        authorised_targets: The targets the OWNER authorised. ``None`` -- the default, and
+            Plan 33-08's behaviour byte for byte -- promotes the PASS targets and nothing
+            else.
+        overrides: ``{target: {"ruling": ..., "ruled_on": ...}}``, required for every
+            authorised target whose verdict is not PASS. See
+            :func:`_authorised_promotions` for why this exists and what it deliberately
+            does NOT do, which is touch the verdict.
 
     Returns:
         The promoted targets, in canonical order.
@@ -1672,12 +1773,12 @@ def stage_two_promote(
     Raises:
         MissingStageOneVerdictError: No stage-one record is present.
         MalformedVerdictRecordError: The record violates the closed schema.
+        NonPassPromotionWithoutOverrideError: An authorised target is not PASS and carries
+            no complete override. Raised BEFORE anything is copied or swapped, so a
+            refusal leaves the production swap surface untouched rather than half-moved.
     """
     record = read_verdict_record(verdict_record_path)
-    promoted = [
-        (target, record.targets[target]["candidate_version"])
-        for target in record.passing_targets()
-    ]
+    promoted = _authorised_promotions(record, authorised_targets, overrides)
 
     for target, version in promoted:
         promote_models._promote_artifact_dir(

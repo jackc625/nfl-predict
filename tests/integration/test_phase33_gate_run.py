@@ -517,7 +517,9 @@ class TestTheManifestIsWrittenPerTargetAndNeverWholesale:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         roots = fx.sandbox_roots(tmp_path)
-        _stage_one(tmp_path, roots, {"wp": 0.4, "ats": -0.4, "ou": 0.4})
+        # ONE passing target and two failing ones, so "once per PROMOTED target" is a
+        # real count rather than a count that happens to equal the number of targets.
+        _stage_one(tmp_path, roots, {"wp": 0.4, "ats": -0.4, "ou": -0.4})
 
         seen: list[str] = []
         real_update = runner.update_manifest
