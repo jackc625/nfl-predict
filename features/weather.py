@@ -160,6 +160,32 @@ PRECIPITATION_BAND_COLUMNS: tuple[str, ...] = (
     "precip_heavy",
 )
 
+# THE 0-1 IMPACT SCORE OF EACH BAND, in the same order.
+#
+# These four values are NOT new. They are the levels `_precipitation_impact`'s
+# mm-only branch has always returned -- 0.0, 0.3, 0.6, 1.0 -- lifted out of that
+# branch's if-ladder so the forecast branch can return the level of the band it
+# actually fired instead of re-deriving one from the raw readings.
+#
+# WHY IT EXISTS (.planning/WINDOWS.md row 43). Plan 33-14 Task 1 made
+# `_precipitation_bands` a partition under PRECIPITATION_PARTITION_RULE -- one
+# hot band, chosen by the LARGER of the two band indices. `_precipitation_impact`
+# was left carrying the pre-33-14 disjunction, which returned early whenever
+# EITHER reading was low: a MINIMUM over the two readings, against the band
+# rule's MAXIMUM. Two reducers pulling opposite ways in one call, so the score
+# and the one-hot could not agree. Measured over the sixteen-point
+# probability-by-rainfall grid, TEN points scored an impact contradicting the
+# band the same call assigned; the worst was 9.0 mm of rain -- `precip_heavy`
+# -- scoring 0.3, the level a 1.0 mm drizzle gets, because the forecast
+# probability was 0.1. Heavy rainfall understated by a low probability was the
+# dominant direction.
+#
+# A LOOKUP RATHER THAN A SECOND IF-LADDER, deliberately. Re-spelling the cut
+# points a third time is the D30-02 failure mode; indexing the band the call
+# already computed makes disagreement between score and one-hot unrepresentable
+# rather than merely tested for.
+PRECIPITATION_IMPACT_BY_BAND: tuple[float, ...] = (0.0, 0.3, 0.6, 1.0)
+
 # THE RULE THE FORECAST BRANCH FOLLOWS, IN ONE QUOTABLE SENTENCE.
 #
 # It is quotable on purpose: a one-hot family that is not a partition is a

@@ -69,6 +69,7 @@ import pytest
 from features.weather import (
     PRECIPITATION_BAND_COLUMNS,
     PRECIPITATION_FEATURE_COLUMNS,
+    PRECIPITATION_IMPACT_BY_BAND,
     PRECIPITATION_PARTITION_RULE,
     SEVERITY_FEATURE_COLUMNS,
     WeatherFeaturesCalculator,
@@ -564,4 +565,142 @@ class TestTheForecastBandsAreAPartitionToo:
             f"the mm-only branch moved at {millimetres} mm. Expected "
             f"{expected}, got {observed}. That branch is byte-unchanged source; "
             "a move here means the forecast fix reached into it."
+        )
+
+
+class TestTheImpactScoreAgreesWithItsOwnBand:
+    """`.planning/WINDOWS.md` row 43, the last member of the same defect family.
+
+    `_precipitation_bands` was made a partition by Plan 33-14 Task 1.
+    `_precipitation_impact` was left carrying the SAME disjunction shape, and
+    the two then disagreed: measured over `PROBABILITY_BY_RAINFALL_GRID`, ten
+    of the sixteen points scored an impact that contradicted the band the very
+    same call assigned. The worst case is 9.0 mm of rain -- band
+    `precip_heavy` -- scoring 0.3 because the forecast probability was 0.1.
+
+    WHY `or` PRODUCED IT. The forecast branch returned early whenever EITHER
+    reading was low, which is a MINIMUM over the two readings. The band rule is
+    a MAXIMUM. Two readings, opposite reducers, one call: the family could not
+    have been consistent.
+
+    WHY THIS MATTERS ON THE LIVE PATH AND NOT IN GOLD. Only an Open-Meteo
+    FORECAST carries a probability, so no row of the 2002-2025 corpus reaches
+    this branch -- Plan 33-14 Task 1 measured that and recorded it in
+    `PRECIP_PARTITION_PREMISE`. The score feeds all seven
+    `SEVERITY_FEATURE_COLUMNS`, so it is a model input on the 2026 serving path
+    while the training path never saw it.
+    """
+
+    @pytest.mark.parametrize(
+        ("probability", "probability_index", "millimetres", "rainfall_index"),
+        PROBABILITY_BY_RAINFALL_GRID,
+    )
+    def test_the_impact_score_matches_the_band_that_fired(
+        self,
+        calculator: WeatherFeaturesCalculator,
+        probability: float,
+        probability_index: int,
+        millimetres: float,
+        rainfall_index: int,
+    ) -> None:
+        """One call, one intensity -- the score and the one-hot must agree.
+
+        Asserted against the FIRED band rather than against
+        `max(probability_index, rainfall_index)` directly, so this test states
+        the INTERNAL-CONSISTENCY claim and nothing else. Which band is correct
+        is already
+        `test_the_probability_widens_a_band_and_never_adds_a_level`'s job; if
+        the band rule ever changes, that test fails and this one keeps holding,
+        which is the separation of concerns the two are worth having.
+        """
+        features = calculator.calculate_precipitation_features(
+            _payload(precip_prob=probability, precip_mm=millimetres)
+        )
+
+        fired = [
+            position
+            for position, band in enumerate(PRECIPITATION_BAND_COLUMNS)
+            if features[band] == 1.0
+        ]
+        assert len(fired) == 1, (
+            f"expected exactly one band at probability {probability} with "
+            f"{millimetres} mm; got {fired}"
+        )
+
+        assert features["precip_impact_score"] == pytest.approx(
+            PRECIPITATION_IMPACT_BY_BAND[fired[0]]
+        ), (
+            f"at probability {probability} with {millimetres} mm the call fired "
+            f"band {PRECIPITATION_BAND_COLUMNS[fired[0]]} (index {fired[0]}, "
+            f"impact {PRECIPITATION_IMPACT_BY_BAND[fired[0]]}) but scored "
+            f"{features['precip_impact_score']}. One call cannot report two "
+            "intensities -- WINDOWS.md row 43."
+        )
+
+    @pytest.mark.parametrize(
+        ("millimetres", "rainfall_index"),
+        RAINFALL_BY_BAND_INDEX,
+    )
+    def test_the_mm_only_impact_branch_is_unchanged(
+        self,
+        calculator: WeatherFeaturesCalculator,
+        millimetres: float,
+        rainfall_index: int,
+    ) -> None:
+        """The archive branch is byte-unchanged source and must not move.
+
+        Same guard Task 1 put on the mm-only BAND branch, for the same reason:
+        the failure mode of a targeted fix is reaching across into the branch it
+        was not aiming at. Phase 33.1 repaired and pinned this one.
+        """
+        features = calculator.calculate_precipitation_features(
+            _payload(precip_prob=None, precip_mm=millimetres)
+        )
+
+        assert features["precip_impact_score"] == pytest.approx(
+            PRECIPITATION_IMPACT_BY_BAND[rainfall_index]
+        ), (
+            f"the mm-only impact branch moved at {millimetres} mm: expected "
+            f"{PRECIPITATION_IMPACT_BY_BAND[rainfall_index]}, got "
+            f"{features['precip_impact_score']}. That branch is untouched "
+            "source; a move here means the forecast fix reached into it."
+        )
+
+    def test_the_row_43_worst_case_no_longer_understates_a_downpour(
+        self,
+        calculator: WeatherFeaturesCalculator,
+    ) -> None:
+        """The named case, pinned by value rather than left to the grid.
+
+        WINDOWS row 43's worst measured point: 9.0 mm of rain on a 10 percent
+        forecast. The band rule calls that `precip_heavy`; the old score called
+        it 0.3, the same number it gives a 1.0 mm drizzle. Pinned explicitly so
+        the regression has a name, not only a parametrised id.
+        """
+        features = calculator.calculate_precipitation_features(
+            _payload(precip_prob=0.1, precip_mm=9.0)
+        )
+
+        assert features["precip_heavy"] == 1.0
+        assert features["precip_impact_score"] == pytest.approx(1.0), (
+            "9.0 mm of rain is a downpour whichever way the forecast leaned; a "
+            "0.1 probability must not reduce its impact score below its band"
+        )
+
+    def test_the_impact_mapping_is_the_band_family_in_order(self) -> None:
+        """The mapping is a per-band lookup, not a fifth spelling of the rule.
+
+        One entry per band, in band order, so a band added to
+        `PRECIPITATION_BAND_COLUMNS` without a matching impact level fails here
+        rather than silently indexing out of range at serving time.
+        """
+        assert len(PRECIPITATION_IMPACT_BY_BAND) == len(PRECIPITATION_BAND_COLUMNS), (
+            f"{len(PRECIPITATION_IMPACT_BY_BAND)} impact levels for "
+            f"{len(PRECIPITATION_BAND_COLUMNS)} bands"
+        )
+        assert list(PRECIPITATION_IMPACT_BY_BAND) == sorted(
+            PRECIPITATION_IMPACT_BY_BAND
+        ), (
+            "the impact levels must ascend with the band order; a non-monotonic "
+            "mapping would let a heavier band score lower than a lighter one"
         )
