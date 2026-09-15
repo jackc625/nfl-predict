@@ -1131,19 +1131,90 @@ class WeatherFeaturesCalculator:
                 else 0.0,
                 "precip_heavy": 1.0 if precip_mm > self.heavy_precip_threshold else 0.0,
             }
+        # THE FORECAST BRANCH IS A PARTITION (Plan 33-14 Task 1, D33-34(b),
+        # .planning/WINDOWS.md row 39). See PRECIPITATION_PARTITION_RULE.
+        #
+        # WHAT IT USED TO DO. Each band was a DISJUNCTION over the two readings
+        # -- `precip_light` on `0.2 < prob <= 0.5 OR 0.5 < mm <= 2.0`,
+        # `precip_moderate` on `0.5 < prob <= 0.8 OR 2.0 < mm <= 5.0`. A
+        # forecast of probability 0.4 with 3.0 mm of rain set BOTH to 1.0: one
+        # game reported as two intensities at once, in a family whose entire
+        # contract is that exactly one member is hot. Only a live Open-Meteo
+        # FORECAST carries a probability, so the overlapping branch is the one
+        # serving 2026 while the repaired archive branch above is the historical
+        # one -- the defect sat on the path that matters most.
+        #
+        # WHY THE MAXIMUM AND NOT SOMETHING ELSE. `_precipitation_impact` below
+        # already states the rule both branches were written to follow: "the
+        # probability only ever widened the LIGHT and MODERATE bands, never
+        # added a level". Taking the LARGER of the two band indices is that
+        # sentence made exact. It reproduces the old output on every input where
+        # the old branch already fired exactly one band -- which is every input
+        # where the two indices agree, or where either is zero -- and differs
+        # ONLY where the old branch fired two, which is the defect itself. The
+        # existing regression control at
+        # `tests/unit/test_precipitation_from_measurement.py::TestTheGateNarrowsRatherThanDisappears::test_a_payload_carrying_both_readings_is_byte_preserved`
+        # (probability 0.6, 3.2 mm) therefore passes unchanged: both readings
+        # sit in band 2, so it resolves to the same single band it always did.
+        #
+        # THE CUT POINTS ARE NOT NEW and are not chosen here. The two index
+        # helpers restate the SAME thresholds the branches already used -- and
+        # in particular the same ones the mm-only literal above carries, which
+        # this change deliberately leaves byte-unchanged because it is the
+        # branch Phase 33.1 repaired and pinned.
+        # `test_the_mm_only_branch_is_unchanged_across_the_same_grid` is what
+        # keeps the two spellings of the rainfall cut points honest.
+        band = max(
+            self._rainfall_band_index(precip_mm),
+            self._probability_band_index(precip_prob),
+        )
         return {
-            "precip_none": 1.0 if precip_prob <= 0.2 and precip_mm <= 0.5 else 0.0,
-            "precip_light": 1.0
-            if 0.2 < precip_prob <= 0.5 or 0.5 < precip_mm <= 2.0
-            else 0.0,
-            "precip_moderate": 1.0
-            if 0.5 < precip_prob <= 0.8
-            or 2.0 < precip_mm <= self.heavy_precip_threshold
-            else 0.0,
-            "precip_heavy": 1.0
-            if precip_prob > 0.8 or precip_mm > self.heavy_precip_threshold
-            else 0.0,
+            column: 1.0 if position == band else 0.0
+            for position, column in enumerate(PRECIPITATION_BAND_COLUMNS)
         }
+
+    def _rainfall_band_index(self, precip_mm: float) -> int:
+        """The ordinal intensity band of a MEASURED rainfall, 0 through 3.
+
+        The caller reaches this only after
+        ``calculate_precipitation_features``' measurement gate has established
+        that the rainfall is present, so ``precip_mm`` is always a real float
+        here and the index is always defined.
+
+        Args:
+            precip_mm: The measured rainfall in millimetres.
+
+        Returns:
+            0 for none, 1 for light, 2 for moderate, 3 for heavy -- positions
+            into :data:`PRECIPITATION_BAND_COLUMNS`.
+        """
+        if precip_mm <= 0.5:
+            return 0
+        if precip_mm <= 2.0:
+            return 1
+        if precip_mm <= self.heavy_precip_threshold:
+            return 2
+        return 3
+
+    def _probability_band_index(self, precip_prob: float) -> int:
+        """The ordinal intensity band of a FORECAST probability, 0 through 3.
+
+        Args:
+            precip_prob: The forecast probability, already known to be present.
+                ``None`` never reaches here -- the mm-only branch above owns
+                the absent case, and ``precip_prob=None`` is this module's ONE
+                spelling of "the probability is absent".
+
+        Returns:
+            0 through 3, positions into :data:`PRECIPITATION_BAND_COLUMNS`.
+        """
+        if precip_prob <= 0.2:
+            return 0
+        if precip_prob <= 0.5:
+            return 1
+        if precip_prob <= 0.8:
+            return 2
+        return 3
 
     def _precipitation_impact(
         self, precip_mm: float, precip_prob: float | None
