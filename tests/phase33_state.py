@@ -14176,3 +14176,240 @@ PROVENANCE_STAMP_OPENING: str = "GENERATOR OUTPUT. Produced by"
 # ---------------------------------------------------------------------------
 
 TESTS_ADDED_33_17: int = 93
+
+
+# ---------------------------------------------------------------------------
+# THE ACCEPTANCE RUN, DECLARED BEFORE IT RUNS.
+#
+# APPENDED by Plan 33-18 Task 1 on 2026-09-15. Nothing above this line was edited.
+#
+# DERIVED BY READING THE CODE, never copied from the plan text. A declaration
+# copied from a plan is not a declaration: it restates an intention, where the
+# point of this slot is to state a PREDICTION the bracket can falsify. Each entry
+# below names the reading that produced it.
+#
+# THE ORDER OF DERIVATION IS SLICE -> WRITES -> ROOTS. The step set is read off
+# `pipeline.steps.build_step_registry`; the file set is read off what each step in
+# that set actually writes; the roots are read off where those files live. An
+# unexpected file after the run is therefore either an unexpected step or an
+# unexpected write, and the two are distinguishable.
+# ---------------------------------------------------------------------------
+
+# The EXACT registry step names, in registry order, that the acceptance run
+# executes -- 15 of the 22 `build_step_registry()` entries.
+#
+# WHY IT STOPS WHERE IT STOPS. The run's purpose is a week-2 prediction set whose
+# Elo is verifiable, plus a NON-PERSISTING decision frame. Everything after
+# `verify_prediction_currency` either writes a bet row (`generate_recommendations`
+# reaches `upsert_bet_list_rows`), or publishes derived copies of a prediction set
+# the run is not publishing (`export_artifacts`, `validate_predictions`,
+# `verify_output_files`), or rebuilds the served dashboard (`populate_web_cache`).
+#
+# THE SEVEN EXCLUDED STEPS, each with the reason it is out:
+#   ingest_odds               - a paid upstream call; the run does not re-price the
+#                               week. `build_weekly_candidates` LEFT-merges the
+#                               stored `odds_snapshot.parquet`, so an unpriced game
+#                               becomes a candidate carrying a `rejection_reason`
+#                               rather than an error, which is still a populated
+#                               decision frame.
+#   build_market_anchors      - its silver output is read by no production code
+#                               (its own docstring, WR-13); the gold build calls
+#                               `MarketAnchorFeaturesCalculator` directly.
+#   generate_recommendations  - THE BET-ROW WRITE. This is the line the run stops
+#                               at. D33-29.
+#   export_artifacts          - writes a JSON copy of a prediction set the run is
+#                               not publishing.
+#   validate_predictions      - reads that copy's producer's output; excluded with
+#                               its siblings so the stopping point is one line
+#                               rather than three.
+#   verify_output_files       - expects the excluded JSON; would warn, not fail.
+#   populate_web_cache        - the owner ruled on 2026-09-14 that the web cache is
+#                               refreshed at phase end, not here.
+#
+# THE CACHE CONSEQUENCE, STATED SO IT CANNOT BE READ AS AN OVERSIGHT: because
+# `populate_web_cache` is NOT in this slice, `data/web_cache.duckdb` is NOT in
+# ACCEPTANCE_RUN_EXPECTED_CHANGED_FILES. A declaration predicting a write the run
+# will not make is as wrong as one missing a write it does.
+ACCEPTANCE_RUN_PIPELINE_SLICE: tuple[str, ...] = (
+    # DATA phase -- all nine, in registry order.
+    "capture_live_season",
+    "ingest_games",
+    "ingest_weather",
+    "data_qa",
+    # EXECUTED IN ITS COMPOSED FORM -- see
+    # ACCEPTANCE_RUN_OUT_OF_REGISTRY_OPERATIONS. `step_build_elo`'s body is run
+    # with ONE widened snapshot frame rather than run twice, so the run publishes
+    # ONE Elo generation rather than two.
+    "build_elo",
+    "build_team_form",
+    "build_contextual",
+    "build_weather_features",
+    "verify_data_artifacts",
+    # PREDICTIONS phase -- the first six, stopping before the bet-row write.
+    "build_features",
+    "validate_features",
+    "verify_gold_currency",
+    "validate_models",
+    "generate_predictions",
+    "verify_prediction_currency",
+)
+
+# The operations the run performs that are NOT registry steps, each with the
+# reading that shows why the registry alone cannot serve.
+#
+# THIS SLOT EXISTS BECAUSE WITHOUT IT THE FILE SET DOES NOT FOLLOW FROM THE STEP
+# SET. `ACCEPTANCE_RUN_PIPELINE_SLICE` is checked against `build_step_registry()`
+# and must therefore contain only registry names; two of the run's operations are
+# not registry names, and leaving them undeclared would make their writes look
+# like undeclared writes.
+#
+# 1. THE PROVISIONAL WEEK. `EloBuilder.snapshot_upcoming_week` has NO production
+#    caller anywhere in the tree -- verified by grep over every non-test module:
+#    `step_build_elo` passes only `update.snapshots`, and `scripts/build_elo.py`'s
+#    CLI does the same. `_process_chain` skips any game with a null score, so the
+#    canonical builder CANNOT emit a row for an unplayed game. Week 2 of 2026 is
+#    entirely unplayed. Without this operation the gold LEFT JOIN finds nothing for
+#    all 16 games, the imputer fills them, and COLD-01's value-by-value comparison
+#    has no left side to compare -- which is the exact defect this phase exists to
+#    close, reproduced by the acceptance run itself.
+#    `tests/integration/test_elo_burn_in_canonical.py` states the same thing from
+#    the other side: provisional 2026 rows "arrive only through
+#    EloBuilder.snapshot_upcoming_week on the live path, which Plan 33-18
+#    exercises".
+#
+# 2. THE DECISION FRAME. `backtest.weekly_bet_list.build_weekly_decision_frame`
+#    (Plan 33-07's pure seam) is a library function, not a step.
+#    `build_weekly_candidates` carries no `status`; `records_to_bet_list_frame`
+#    creates it; `generate_weekly_bet_list` persists it. The run needs the middle
+#    one alone, and it writes nothing -- asserted, not assumed, by a `digest_tree`
+#    bracket over `outputs/`.
+ACCEPTANCE_RUN_OUT_OF_REGISTRY_OPERATIONS: tuple[tuple[str, str], ...] = (
+    (
+        "EloBuilder.snapshot_upcoming_week(2026, 2) -> save_live_append(2026)",
+        "extends build_elo; persists one FLAGGED provisional snapshot per "
+        "scheduled-but-unplayed week-2 game through the SAME save_live_append "
+        "verb, in ONE composed call, so exactly one Elo generation is published",
+    ),
+    (
+        "backtest.weekly_bet_list.build_weekly_decision_frame(2026, 2)",
+        "the pure status-bearing seam; persists nothing, asserted by a "
+        "digest_tree bracket over outputs/",
+    ),
+)
+
+# Every root the bracket covers, paired with the digest document taken before the
+# run. FOUR roots, not one: a `data/`-only snapshot cannot establish the blast
+# radius, because the capture mutates its own manifest under
+# `config/upstream_live/`, prediction generation writes under `outputs/`, and model
+# code can touch `artifacts/`.
+#
+# THE DOCUMENTS LIVE OUTSIDE ALL FOUR ROOTS, AND THAT IS LOAD-BEARING (derived, not
+# inherited from the plan's example paths). `TRACKED_SUFFIXES` includes `.json`,
+# and `digest_tree` runs BEFORE the document is written. A document written into
+# `outputs/` would therefore be absent from the `outputs/` before-side and present
+# at verify time, and the bracket would report its own instrument as an ADDED file
+# -- a self-inflicted finding that says nothing about the run. They are written
+# under `.planning/`, which is gitignored, is not committed, and is under none of
+# the four roots.
+ACCEPTANCE_RUN_BRACKETED_ROOTS: tuple[tuple[str, str], ...] = (
+    (
+        "data",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/data_before.json",
+    ),
+    (
+        "outputs",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/outputs_before.json",
+    ),
+    (
+        "artifacts",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/artifacts_before.json",
+    ),
+    (
+        "config/upstream_live",
+        ".planning/phases/33-live-cold-start-forward-temporal-integrity/"
+        "acceptance-bracket/config_upstream_live_before.json",
+    ),
+)
+
+# The files the run is expected to change, REPO-ROOT-RELATIVE and POSIX.
+#
+# HOW TO JOIN A REPORT TO THIS LIST: `tests.data_boundary` reports keys RELATIVE TO
+# ITS ROOT, so a key K reported under root R is the declared path f"{R}/{K}". The
+# list is repo-relative rather than root-relative so one entry cannot be read as
+# belonging to two roots.
+#
+# ENTRIES CARRYING AN ANGLE-BRACKET SEGMENT ARE PATTERNS, not literals.
+# `save_bronze_snapshot` builds its filename as
+# `{table}_raw_bronze_{season}_W{week:02d}_{stamp}.parquet` with a
+# second-resolution UTC stamp, so the exact name cannot be known before the run.
+# The pattern is what is declared and what is matched; a bronze file matching no
+# pattern is a finding exactly as any other undeclared file is.
+#
+# `artifacts/` CARRIES NO ENTRY, AND THAT IS THE CLAIM. Nothing in the slice writes
+# a model artifact: `validate_models` loads, and `build_weekly_decision_frame`
+# scores through `score_deployed_artifacts` and returns frames. An empty
+# declaration over a bracketed root is a stronger statement than an unbracketed
+# root, because it can fail.
+#
+# `config/upstream_probe_log.jsonl` IS WRITTEN AND IS NOT BRACKET-COVERED. The
+# capture appends exactly one probe-log line per run (`record_probe_run`), and
+# `.jsonl` is not in `TRACKED_SUFFIXES` -- the suffix of a `.jsonl` path is
+# `".jsonl"`, which `".json"` does not match. It is declared anyway, so the record
+# of what the run wrote is complete even where the instrument cannot see it.
+ACCEPTANCE_RUN_EXPECTED_CHANGED_FILES: tuple[str, ...] = (
+    # -- capture_live_season: three live datasets, one bronze file each ---------
+    "data/bronze/schedules_raw_bronze_2026_W02_<UTC_STAMP>.parquet",
+    "data/bronze/pbp_raw_bronze_2026_W02_<UTC_STAMP>.parquet",
+    "data/bronze/depth_charts_raw_bronze_2026_W02_<UTC_STAMP>.parquet",
+    "config/upstream_live/2026.json",
+    # NOT bracket-covered: `.jsonl` is outside TRACKED_SUFFIXES. Declared so the
+    # record is complete.
+    "config/upstream_probe_log.jsonl",
+    # -- ingest_games ----------------------------------------------------------
+    # The week segment is a wildcard: `ingest_games` passes `weeks[0]` off the
+    # fetched schedule, not the resolved current week.
+    "data/bronze/games_raw_bronze_2026_W<NN>_<UTC_STAMP>.parquet",
+    "data/silver/games.parquet",
+    # -- ingest_weather: the FIRST 2026 gold build with real forecast weather ---
+    "data/bronze/weather_raw_bronze_2026_W02_<UTC_STAMP>.parquet",
+    "data/silver/weather.parquet",
+    # -- build_elo, composed with the provisional week -------------------------
+    # Three row tables upserted, two state artifacts replaced, one pointer moved,
+    # and one generation staged. `data_qa` writes nothing: `step_data_qa` calls
+    # `generate_qa_report`, which RETURNS a dict; `save_report` is a separate
+    # method no step calls.
+    "data/silver/elo_game_snapshots.parquet",
+    "data/silver/games_with_elo.parquet",
+    "data/silver/elo_rating_history.parquet",
+    "data/silver/elo_ratings_current.parquet",
+    "data/silver/elo_ratings.json",
+    "data/silver/elo_generation.json",
+    "data/silver/elo_generations/<GENERATION_ID>/elo_game_snapshots.parquet",
+    "data/silver/elo_generations/<GENERATION_ID>/games_with_elo.parquet",
+    "data/silver/elo_generations/<GENERATION_ID>/elo_rating_history.parquet",
+    "data/silver/elo_generations/<GENERATION_ID>/elo_ratings_current.parquet",
+    "data/silver/elo_generations/<GENERATION_ID>/elo_ratings.json",
+    # -- build_team_form / build_contextual / build_weather_features -----------
+    "data/silver/team_form_features.parquet",
+    "data/silver/contextual_features.parquet",
+    "data/silver/weather_features.parquet",
+    # -- build_features: a FULL rebuild ----------------------------------------
+    # `step_build_features` calls `generate_feature_matrices()` with no arguments,
+    # so `full_rebuild = target_season is None and target_week is None` is True and
+    # all three matrices are written in `replace_mode`. They are rewritten whole,
+    # not appended to.
+    "data/gold/features_wp.parquet",
+    "data/gold/features_ats.parquet",
+    "data/gold/features_ou.parquet",
+    # -- the shared store every `save_dataframe` writer touches ----------------
+    # `save_dataframe` defaults to `save_to_db=True`, so team form, contextual,
+    # weather features, the gold matrices and the Elo DuckDB sync all land here.
+    # `upsert_silver` is parquet-only and does NOT reach it.
+    "data/nfl_predictions.duckdb",
+    # -- generate_predictions: the only `outputs/` writes in the slice ---------
+    "outputs/predictions/predictions_2026_week2.csv",
+    "outputs/predictions/game_context_2026_week2.csv",
+)
