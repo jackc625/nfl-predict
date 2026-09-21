@@ -185,3 +185,51 @@ class TestEachLabelledReadout:
     def test_is_ascii(self, name: str) -> None:
         """Content is ASCII-only (CLAUDE.md)."""
         assert _read(name).isascii(), f"{name} contains non-ASCII characters"
+
+
+def _addendum(name: str) -> str:
+    """The text AFTER the addendum sentinel -- the part of the file this phase wrote."""
+    text = _read(name)
+    assert ADDENDUM_SENTINEL in text, f"{name} carries no old-rule addendum sentinel"
+    return text.split(ADDENDUM_SENTINEL, 1)[1]
+
+
+@pytest.mark.parametrize("name", LABELLED_READOUTS)
+class TestEachAddendum:
+    """The appended addendum itself: located by its sentinel, checked on its own text only."""
+
+    def test_opens_with_exactly_one_sentinel(self, name: str) -> None:
+        assert _read(name).count(ADDENDUM_SENTINEL) == 1
+
+    def test_the_addendum_carries_the_label(self, name: str) -> None:
+        assert LABEL_PHRASE in _addendum(name).lower()
+
+    def test_the_addendum_heading_is_dated(self, name: str) -> None:
+        """The first level-2 heading after the sentinel carries the date, so the label is dated."""
+        headings = [
+            line for line in _addendum(name).splitlines() if line.startswith("## ")
+        ]
+        assert headings, f"{name}'s addendum has no level-2 heading"
+        assert ADDENDUM_DATE in headings[0], headings[0]
+
+    def test_the_addendum_carries_no_over_claim_word(self, name: str) -> None:
+        """Scoped to the addendum: several originals use these words in preserved content."""
+        from backtest.ev_chain_constants import READOUT_FORBIDDEN_WORDS
+
+        assert READOUT_FORBIDDEN_WORDS, "the imported over-claim dictionary is empty"
+        suffix = _addendum(name).lower()
+        present = [word for word in READOUT_FORBIDDEN_WORDS if word in suffix]
+        assert not present, f"{name}'s addendum uses over-claim words {present}"
+
+    def test_the_addendum_says_deployed_nowhere(self, name: str) -> None:
+        """The per-readout guards forbid ``deployed`` in scoped sections; the addendum avoids it."""
+        assert "deployed" not in _addendum(name).lower()
+
+    def test_the_addendum_is_the_end_of_the_file(self, name: str) -> None:
+        """Appended, never inserted: no original heading follows the addendum's own."""
+        headings = [
+            line for line in _addendum(name).splitlines() if line.startswith("## ")
+        ]
+        assert len(headings) == 1, (
+            f"{name} has content headings after its addendum: {headings}"
+        )

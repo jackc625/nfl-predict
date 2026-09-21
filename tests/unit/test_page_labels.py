@@ -507,3 +507,84 @@ class TestTheSeasonSpanStamp:
         from api.cache import parse_season_range
 
         assert parse_season_range(value) is None
+
+
+# ---------------------------------------------------------------------------
+# Two-way rendering: 2026-only, unwired, and the non-vacuity control
+# ---------------------------------------------------------------------------
+
+# A string each page renders only when the page itself rendered, so a template error that yields an
+# empty or truncated string cannot satisfy a zero-count assertion.
+PAGE_MARKERS: dict[str, str] = {
+    "backtest.html": "Backtest Results",
+    "bets.html": "Weekly Bet List",
+    "betting.html": "Betting Dashboard",
+    "game_detail.html": "BUF @ KC",
+    "insights.html": "Model Insights",
+    "performance.html": "Historical Performance",
+    "season.html": "Season Tracking",
+    "this_week.html": "This Week's Predictions",
+}
+
+
+def _without_scopes(context: dict[str, Any]) -> dict[str, Any]:
+    """The same context with every block scope removed -- the page as if nobody wired it."""
+    return {
+        key: value
+        for key, value in context.items()
+        if not key.endswith("old_rule_scope")
+    }
+
+
+class TestTwoWayRendering:
+    """The label appears exactly where a pre-fix number does, and nowhere else."""
+
+    def test_page_markers_cover_every_page(self) -> None:
+        assert sorted(PAGE_MARKERS) == sorted(EXPECTED_PREFIX_BLOCKS)
+
+    @pytest.mark.parametrize("page", sorted(EXPECTED_PREFIX_BLOCKS))
+    def test_past_season_render_is_the_page_itself(self, page: str) -> None:
+        html = render_page(page, page_context(page, PAST_SEASON))
+        assert PAGE_MARKERS[page] in html
+
+    @pytest.mark.parametrize("page", sorted(EXPECTED_PREFIX_BLOCKS))
+    def test_a_2026_only_page_renders_no_label(self, page: str) -> None:
+        html = render_page(page, page_context(page, NEW_RULE_SEASON))
+        assert html.strip(), f"{page} rendered an empty string"
+        assert PAGE_MARKERS[page] in html, f"{page} did not render its page"
+        assert label_count(html) == 0, f"{page} labelled a 2026-only render"
+
+    @pytest.mark.parametrize("page", sorted(EXPECTED_PREFIX_BLOCKS))
+    def test_an_unwired_page_labels_every_block(self, page: str) -> None:
+        """Strip every scope from a 2026 context: each block must then label, not go bare."""
+        html = render_page(page, _without_scopes(page_context(page, NEW_RULE_SEASON)))
+        assert PAGE_MARKERS[page] in html
+        assert label_count(html) == EXPECTED_PREFIX_BLOCKS[page]
+
+    def test_the_partial_with_an_empty_context_labels_once(self) -> None:
+        """The unknown-scope fail-safe: no context at all is the un-wired case, and it labels."""
+        html = templates.env.get_template("components/_old_rule_label.html").render({})
+        assert label_count(html) == 1
+        assert LABEL_PHRASE in html.lower()
+
+    def test_the_partial_with_a_none_scope_labels_once(self) -> None:
+        html = templates.env.get_template("components/_old_rule_label.html").render(
+            {"scope": None}
+        )
+        assert label_count(html) == 1
+
+    def test_the_partial_with_a_known_empty_scope_renders_nothing(self) -> None:
+        html = templates.env.get_template("components/_old_rule_label.html").render(
+            {"scope": scope_for(None)}
+        )
+        assert html.strip() == ""
+
+    def test_a_page_with_an_empty_context_labels_its_block_once(self) -> None:
+        """The backtest page with no scope at all: its one block labels once, never zero times."""
+        context = _without_scopes(page_context("backtest.html", NEW_RULE_SEASON))
+        html = render_page("backtest.html", context)
+        assert label_count(html) == 1
+
+    def test_the_rendered_label_is_dated(self) -> None:
+        html = render_page("backtest.html", page_context("backtest.html", PAST_SEASON))
+        assert "2026-09-15" in html
