@@ -16,6 +16,9 @@ the defects; D33.2-23 rules how each is settled:
 3. **The stray ``snapshot_ts=`` partition folders** under ``data/silver/``: every row is examined,
    anything legitimate and missing is recovered by an insert that CANNOT overwrite, and the folders
    are then removed.
+4. **The 1970 ``created_at`` family** (Task 3): one mechanical cause, detected by mechanism and by
+   symptom over EVERY row, recorded ONCE as a ``[[family]]`` entry with its full membership, each
+   value repaired from a defensible source or set to NULL. No row is dropped.
 
 EVERY COUNT IS EMITTED, NEVER CARRIED
 -------------------------------------
@@ -246,6 +249,9 @@ class RepairPlan:
     corrections: list[Correction] = field(default_factory=list)
     unresolved_without_reason: int = 0
     strays: StrayReport | None = None
+    epoch_1970_found: int = 0
+    legacy_integer_found: int = 0
+    created_at_member_ids: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +296,81 @@ def sign_conflict_mask(odds: pd.DataFrame, *, inverted: bool = False) -> pd.Seri
         else (contradicts_home | contradicts_away)
     )
     return _comparable(odds) & conflict
+
+
+# ---------------------------------------------------------------------------
+# The 1970 created_at family (Task 3): one cause, detected by mechanism AND by symptom.
+# ---------------------------------------------------------------------------
+
+CREATED_AT_FAMILY_NAME = "odds_snapshot_created_at_legacy_integer_seconds"
+EARLIEST_PLAUSIBLE_CREATED_AT = pd.Timestamp("2000-01-01", tz="UTC")
+_NANOSECONDS_PER_SECOND = 1_000_000_000
+
+CREATED_AT_FAMILY_CAUSE = (
+    "The first historical odds ingest (scripts/ingest_historical_odds.py as added in 7c70abf, "
+    'line 71) wrote "created_at": game.get("season") -- the season integer -- and a later '
+    "append read that integer column through data/storage.py::_migrate_schema_for_append's "
+    'pd.to_datetime(..., unit="s"), so season 2018 became 2,018 seconds after the epoch '
+    "(1970-01-01 00:33:38) and 2024 became 00:33:44."
+)
+CREATED_AT_FAMILY_DETECTOR = (
+    "MECHANISM: created_at is non-null, has no sub-second part, and its epoch-seconds value "
+    "either equals the season in the row's own game_id or decodes before 2000-01-01 UTC (a real "
+    "capture instant from datetime.now carries microseconds and post-dates the project). "
+    "SYMPTOM: created_at parses to calendar year 1970. A row is a member when either holds; "
+    "both counts are reported separately."
+)
+CREATED_AT_FAMILY_REASON = (
+    "The true write time of these rows is not recoverable. The stored value is the season, not "
+    "a time, and no other source records when each row was written: the owned odds_timeline's "
+    "timestamps are the instants its own snapshots were taken and ingested (2020-2024 and "
+    "2026-08-16), not the instant an odds_snapshot row was created. So each value is set to "
+    "NULL -- an honest unknown -- and the row is kept for grading and CLV (D33.2-23). "
+    "created_at is lineage only; no feature, grade or model reads it."
+)
+
+
+def epoch_1970_mask(odds: pd.DataFrame) -> pd.Series:
+    """SYMPTOM: ``created_at`` values that parse to calendar year 1970."""
+    created = pd.to_datetime(odds["created_at"], utc=True, errors="coerce")
+    return (created.dt.year == 1970).fillna(False).astype(bool)
+
+
+def legacy_integer_created_at_mask(odds: pd.DataFrame) -> pd.Series:
+    """MECHANISM: ``created_at`` values that are an integer read as seconds since the epoch.
+
+    Tests EVERY row, not only the year-1970 ones: an integer that happens to decode to a later
+    date is the same defect in a better disguise, and a year filter cannot see it.
+    """
+    created = pd.to_datetime(odds["created_at"], utc=True, errors="coerce")
+    present = created.notna()
+    nanoseconds = created.astype("int64").where(present, 0)
+    whole_second = present & (nanoseconds % _NANOSECONDS_PER_SECOND == 0)
+    seconds = nanoseconds // _NANOSECONDS_PER_SECOND
+    season = pd.to_numeric(odds["game_id"].astype(str).str[:4], errors="coerce")
+    is_season = seconds == season
+    too_early = created < EARLIEST_PLAUSIBLE_CREATED_AT
+    return (whole_second & (is_season | too_early)).fillna(False).astype(bool)
+
+
+def created_at_family_members(odds: pd.DataFrame) -> pd.Series:
+    return epoch_1970_mask(odds) | legacy_integer_created_at_mask(odds)
+
+
+def build_created_at_family(member_ids: Sequence[str]) -> dict[str, Any]:
+    """The single ``[[family]]`` entry: cause, detector, disposition, reason, full membership."""
+    ids = sorted(member_ids)
+    return {
+        "name": CREATED_AT_FAMILY_NAME,
+        "cause": CREATED_AT_FAMILY_CAUSE,
+        "detector": CREATED_AT_FAMILY_DETECTOR,
+        "disposition": "nulled",
+        "disposition_counts": f"repaired 0, nulled {len(ids)}",
+        "column": "created_at",
+        "reason": CREATED_AT_FAMILY_REASON,
+        "affected_count": len(ids),
+        "affected_game_ids": ids,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -809,7 +890,20 @@ def plan_repair(data_root: Path) -> tuple[pd.DataFrame, RepairPlan]:
     unreasoned = sum(1 for c in plan.corrections if not c.reason.strip())
     plan.unresolved_without_reason = int(sign_conflict_mask(after).sum()) + unreasoned
     plan.strays = build_stray_report(data_root / "silver", odds, set(games["game_id"]))
+
+    plan.epoch_1970_found = int(epoch_1970_mask(odds).sum())
+    plan.legacy_integer_found = int(legacy_integer_created_at_mask(odds).sum())
+    plan.created_at_member_ids = odds.loc[
+        created_at_family_members(odds), "game_id"
+    ].tolist()
     return odds, plan
+
+
+def null_created_at(odds: pd.DataFrame, member_ids: Sequence[str]) -> pd.DataFrame:
+    """Set each family member's ``created_at`` to NULL. Never drops a row."""
+    repaired = odds.copy()
+    repaired.loc[repaired["game_id"].isin(set(member_ids)), "created_at"] = pd.NaT
+    return repaired
 
 
 def emit(plan: RepairPlan, *, recovered: int, stray_dirs_removed: int) -> list[str]:
@@ -826,6 +920,10 @@ def emit(plan: RepairPlan, *, recovered: int, stray_dirs_removed: int) -> list[s
         f"CONFIRMED_WITH_CITATION= {len(confirmed)}",
         f"NULLED_WITH_REASON= {len(nulled)}",
         f"UNRESOLVED_WITHOUT_REASON= {plan.unresolved_without_reason}",
+        f"EPOCH_1970_FOUND= {plan.epoch_1970_found}",
+        f"LEGACY_INTEGER_FOUND= {plan.legacy_integer_found}",
+        "CREATED_AT_REPAIRED= 0",
+        f"CREATED_AT_NULLED= {len(plan.created_at_member_ids)}",
     ]
     if strays is not None:
         lines += [
@@ -842,6 +940,9 @@ def emit(plan: RepairPlan, *, recovered: int, stray_dirs_removed: int) -> list[s
     return lines
 
 
+_INLINE_ARRAY_LIMIT = 8
+
+
 def _toml_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -850,7 +951,9 @@ def _toml_value(value: Any) -> str:
     if isinstance(value, float):
         return repr(value)
     if isinstance(value, (list, tuple)):
-        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+        if len(value) <= _INLINE_ARRAY_LIMIT:
+            return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+        return "[\n" + "".join(f"    {_toml_value(v)},\n" for v in value) + "]"
     return json.dumps(str(value))
 
 
@@ -1079,10 +1182,11 @@ def run(argv: Sequence[str] | None = None) -> int:
     before_insert = len(repaired)
     repaired, recovered = insert_if_absent(repaired, candidates)
     assert len(repaired) == before_insert + recovered
+    repaired = null_created_at(repaired, plan.created_at_member_ids)
 
     existing_record = load_record(args.record)
     new_corrections = unrecorded_corrections(existing_record, plan.corrections)
-    if new_corrections or recovered:
+    if new_corrections or recovered or plan.created_at_member_ids:
         write_odds_table(args.data_root, repaired)
 
     removed: list[str] = []
@@ -1094,12 +1198,29 @@ def run(argv: Sequence[str] | None = None) -> int:
     measured_at = datetime.now(UTC).isoformat()
     ruling = {"answer": args.ruling, "date": args.ruling_date}
     measurements = _measurements_for(plan, measured_at, recovered, removed)
+    families = []
+    if plan.created_at_member_ids:
+        families.append(build_created_at_family(plan.created_at_member_ids))
+        measurements["created_at_family"] = {
+            "measured_at": measured_at,
+            "epoch_1970_found": plan.epoch_1970_found,
+            "legacy_integer_found": plan.legacy_integer_found,
+            "created_at_repaired": 0,
+            "created_at_nulled": len(plan.created_at_member_ids),
+            "table_rows_before": len(odds),
+            "table_rows_after": len(repaired),
+            "context_figure_not_reproduced": (
+                '33.2-CONTEXT.md D33.2-08 item 4 says "some" created_at values read 1970; the '
+                "detector measured the counts above"
+            ),
+        }
     if new_corrections or measurements:
         record = merge_record(
             existing_record,
             ruling=ruling,
             measurements=measurements,
             corrections=new_corrections,
+            families=families,
         )
         args.record.parent.mkdir(parents=True, exist_ok=True)
         args.record.write_text(render_record(record), encoding="utf-8")

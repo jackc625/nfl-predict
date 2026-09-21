@@ -877,6 +877,34 @@ def execute_query(query: str, parameters: dict | None = None, *, write: bool = F
     return conn.execute(query, parameters, write=write)
 
 
+# The earliest instant any row in this lake could have been written. Nothing was ingested before
+# the project existed, so a legacy integer that decodes earlier than this is not a timestamp --
+# it is some other integer (a season, a week) read as seconds since the epoch (Plan 33.2-08).
+_EARLIEST_PLAUSIBLE_CREATED_AT = pd.Timestamp("2000-01-01", tz="UTC")
+
+
+def _refuse_unparseable_created_at(raw: pd.Series, converted: pd.Series) -> None:
+    """Raise when a non-null stored ``created_at`` did not convert to a plausible instant.
+
+    Until Plan 33.2-08 a parse failure here replaced the WHOLE column with ``datetime.now(UTC)``
+    and logged a warning, so one ordinary append could turn every honest NULL and every real
+    capture instant into the time of that append. Values that parse are kept; a NULL stays a
+    NULL (it is not a failure); anything else is an integrity problem surfaced by name.
+
+    Raises:
+        DataIngestionError: naming the column, the number of offending values and a sample.
+    """
+    failed = raw.notna() & converted.isna()
+    if failed.any():
+        sample = [repr(v) for v in raw[failed].head(5).tolist()]
+        raise DataIngestionError(
+            f"created_at: {int(failed.sum())} value(s) in the stored table do not convert to a "
+            f"timestamp on or after {_EARLIEST_PLAUSIBLE_CREATED_AT.date()} (first few: "
+            f"{', '.join(sample)}). Refusing the append rather than overwriting them; repair "
+            "the stored column first."
+        )
+
+
 def _migrate_schema_for_append(
     existing_df: pd.DataFrame, new_df: pd.DataFrame
 ) -> pd.DataFrame:
@@ -900,43 +928,38 @@ def _migrate_schema_for_append(
     # Handle created_at column migration
     if "created_at" in new_df.columns:
         if "created_at" not in migrated_df.columns:
-            # Missing created_at column - add with default timestamp
+            # Missing created_at column - add with default timestamp.
+            #
+            # DELIBERATELY ASYMMETRIC with the two conversion branches below (Plan 33.2-08). A
+            # column that never existed has no true value to preserve, so stamping the
+            # migration instant is honest here. An EXISTING column that fails to parse is the
+            # opposite case: its values are real records, and replacing them would destroy them.
             logger.info("Adding missing created_at column to existing data")
             migrated_df["created_at"] = datetime.now(UTC)
 
         elif migrated_df["created_at"].dtype in ["int64", "float64"]:
-            # Convert legacy int64/float64 timestamps to datetime
+            # Legacy integer seconds. This read is how silver odds_snapshot got 1,855 values in
+            # 1970: the first historical ingest stored the SEASON (2018) as created_at, and
+            # unit="s" turned it into 2,018 seconds after the epoch. A value that decodes before
+            # the earliest plausible capture is therefore refused, never kept as a time.
             logger.info(
                 "Converting legacy timestamp format in created_at column",
                 existing_dtype=str(migrated_df["created_at"].dtype),
             )
-            try:
-                # Assume timestamps are Unix timestamps (seconds since epoch)
-                migrated_df["created_at"] = pd.to_datetime(
-                    migrated_df["created_at"], unit="s", utc=True
-                )
-            except (ValueError, TypeError, OverflowError) as e:
-                logger.warning(
-                    "Failed to convert legacy timestamps, using current time",
-                    error=str(e),
-                    exception_type=type(e).__name__,
-                )
-                migrated_df["created_at"] = datetime.now(UTC)
+            converted = pd.to_datetime(
+                migrated_df["created_at"], unit="s", utc=True, errors="coerce"
+            )
+            converted = converted.where(converted >= _EARLIEST_PLAUSIBLE_CREATED_AT)
+            _refuse_unparseable_created_at(migrated_df["created_at"], converted)
+            migrated_df["created_at"] = converted
 
         elif migrated_df["created_at"].dtype == "object":
-            # Handle mixed object types in created_at
             logger.info("Converting object type created_at column to datetime")
-            try:
-                migrated_df["created_at"] = pd.to_datetime(
-                    migrated_df["created_at"], utc=True
-                )
-            except (ValueError, TypeError) as e:
-                logger.warning(
-                    "Failed to convert object timestamps, using current time",
-                    error=str(e),
-                    exception_type=type(e).__name__,
-                )
-                migrated_df["created_at"] = datetime.now(UTC)
+            converted = pd.to_datetime(
+                migrated_df["created_at"], utc=True, errors="coerce", format="mixed"
+            )
+            _refuse_unparseable_created_at(migrated_df["created_at"], converted)
+            migrated_df["created_at"] = converted
 
     # Handle other missing columns by adding them with NaN/None values
     for col in new_df.columns:
@@ -1003,36 +1026,17 @@ def save_dataframe(
         append_mode = False
 
     if append_mode and save_to_parquet:
-        # Check if existing data exists and merge
+        # Check if existing data exists and merge.
+        #
+        # ONLY THE LOAD is inside the "no existing data" catch (Plan 33.2-08). The migration
+        # below used to sit inside it too, so a DataIngestionError raised while reconciling a
+        # stored column was read as "there is no table" and the new rows were written ALONE,
+        # replacing the whole stored table. A refusal from the migration now propagates.
+        existing_df = None
         try:
             pm = get_parquet_manager()
             parquet_path = f"{layer}/{table_name}.parquet"
             existing_df = pm.load(parquet_path)
-
-            if not existing_df.empty:
-                # Handle schema migration for created_at column
-                existing_df = _migrate_schema_for_append(existing_df, df)
-
-                # Identify unique key for deduplication (assume game_id if exists)
-                if "game_id" in df.columns:
-                    # Remove any existing rows with same game_id to avoid duplicates
-                    existing_df = existing_df[
-                        ~existing_df["game_id"].isin(df["game_id"])
-                    ]
-
-                # Combine existing and new data
-                combined_df = pd.concat([existing_df, df], ignore_index=True)
-                logger.info(
-                    "Appended to existing data",
-                    existing_rows=len(existing_df),
-                    new_rows=len(df),
-                    total_rows=len(combined_df),
-                )
-            else:
-                logger.info(
-                    "No existing data found, creating new dataset", rows=len(df)
-                )
-
         except (DataIngestionError, FileNotFoundError, OSError, ValueError) as e:
             # These are expected "no existing data" signals -- the ParquetManager
             # raises DataIngestionError when the file is missing, and OSError /
@@ -1044,6 +1048,26 @@ def save_dataframe(
                 exception_type=type(e).__name__,
                 rows=len(df),
             )
+
+        if existing_df is not None and not existing_df.empty:
+            # Handle schema migration for created_at column
+            existing_df = _migrate_schema_for_append(existing_df, df)
+
+            # Identify unique key for deduplication (assume game_id if exists)
+            if "game_id" in df.columns:
+                # Remove any existing rows with same game_id to avoid duplicates
+                existing_df = existing_df[~existing_df["game_id"].isin(df["game_id"])]
+
+            # Combine existing and new data
+            combined_df = pd.concat([existing_df, df], ignore_index=True)
+            logger.info(
+                "Appended to existing data",
+                existing_rows=len(existing_df),
+                new_rows=len(df),
+                total_rows=len(combined_df),
+            )
+        elif existing_df is not None:
+            logger.info("No existing data found, creating new dataset", rows=len(df))
 
     if save_to_db:
         db = get_db_connection()
