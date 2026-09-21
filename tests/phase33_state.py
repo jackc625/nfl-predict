@@ -14651,3 +14651,72 @@ ACCEPTANCE_RUN_BRACKETED_ROOTS_ATTEMPT_2: tuple[tuple[str, str], ...] = (
         "acceptance-bracket/attempt2_config_upstream_live_before.json",
     ),
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-04 Task 3 -- THE INDEPENDENT ELO REPLAY, MEASURED AGAINST PRODUCTION
+# SILVER.
+#
+# APPENDED by Plan 33.2-04 Task 3 on 2026-09-21. Nothing above this line was edited.
+#
+# MEASURED 2026-09-21 on commit 6166fbf, read-only, with
+# `python -m audit.elo_replay --seasons 2002-2026 --duration-hours 4` and
+# tests/integration/test_elo_information_time_replay.py, against
+# data/silver/games.parquet (6,771 rows) and data/silver/elo_game_snapshots.parquet
+# (6,531 rows: 2002-2025 plus 32 rows of 2026, 15 of them provisional). The data/
+# (502 files) and artifacts/ (173 files) content digests were UNCHANGED across the run.
+#
+# The replay recomputes every pre-game rating from ONLY results whose kickoff plus the
+# assumed duration is at or before the game's day-before lock, and compares with exact
+# `==` on the six COMPARED_COLUMNS. Zero mismatches. The 15 provisional 2026 rows match by
+# VALUE; their physical row order (the 2026 week-2-before-week-1 defect routed to Plan
+# 33.2-05) does not affect the comparison, which joins on game_id.
+# ---------------------------------------------------------------------------
+
+PLAN_33_2_04_ELO_REPLAY_MEASUREMENT: dict[str, int] = {
+    "snapshot_rows_2002_2026": 6531,
+    "compared_rows": 6515,
+    "vacuous_rows": 16,
+    "compared_cells": 38839,
+    "vacuous_cells": 251,
+    "mismatches": 0,
+    "missing_snapshot_rows": 0,
+    "orphan_snapshot_rows": 0,
+    "provisional_2026_rows_matched_by_value": 15,
+}
+
+# Which rows and cells are vacuous: the 16 rows of 2002 week 1 (every team at the 1500 /
+# 350 initial state) and the 251 `hfa_used` cells in the remaining 2002 rows (the 48-point
+# initial value, times 0.54 on divisional games). Compared, reported, and excluded from the
+# evidence count, so 6,515 is the number of rows that could have disagreed.
+PLAN_33_2_04_VACUOUS_POLICY: str = (
+    "2002 week-1 rows excluded whole; 2002 hfa_used excluded as cells"
+)
+
+# The duration band, MEASURED under the day-before lock rather than inherited from the
+# retired Friday freeze. Identical replayed values at 0 h, 4 h and 8 h, and at the
+# schedule-derived edge of 69.5 hours (the tightest gap from a team's previous kickoff to
+# its next game's lock, 2 days 21:30). One second past the edge, 14 cells change.
+PLAN_33_2_04_DURATION_BAND: dict[str, float] = {
+    "identical_at_hours_0": 0.0,
+    "identical_at_hours_4": 4.0,
+    "identical_at_hours_8": 8.0,
+    "measured_edge_hours": 69.5,
+    "cells_changed_one_second_past_edge": 14.0,
+}
+
+# The tied-kickoff permutation: 975 kickoff instants shared by more than one game, holding
+# 4,736 games. Reversing the processing order inside every tied group left every replayed
+# value unchanged, which is what licenses reading the exact equality above as evidence.
+PLAN_33_2_04_TIED_KICKOFF_PERMUTATION: dict[str, int | str] = {
+    "tied_kickoff_groups": 975,
+    "games_in_tied_groups": 4736,
+    "result": "unchanged",
+}
+
+PLAN_33_2_04_ORDERING_NOTE: str = (
+    "The replay orders games sharing a kickoff instant by (kickoff, game_id); the "
+    "canonical chain sorts on kickoff_et alone (scripts/build_elo.py:411), which fixes no "
+    "order among ties. Exact equality between the two is evidence only because tied games "
+    "involve disjoint team pairs whose updates commute -- a claim the tied-kickoff "
+    "permutation test measures rather than assumes."
+)
