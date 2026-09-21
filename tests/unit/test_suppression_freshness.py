@@ -8,10 +8,11 @@ are deliberately in one module, because they are one seam:
    selector rather than a reconciliation pass that can disagree with it. Every non-live record
    carries exactly one reason drawn from ``REJECTION_REASONS`` and never a free-form string.
 
-2. **Staleness is measured once, per game, in Eastern.** The freeze instant comes from the ONE
-   shared helper the ingest uses to STAMP ``snapshot_ts``
-   (``scripts.ingest_historical_odds.get_synthetic_snapshot_ts``), so the value written and the
-   value compared come from one rule. At-freeze is FRESH; strictly before is stale.
+2. **Admissibility is measured once, per game, in Eastern.** Each game's lock comes from the ONE
+   rule, ``utils.game_lock`` -- the same rule the ingest uses to STAMP ``snapshot_ts`` -- so the
+   value written and the value compared come from one rule. At-lock is ADMISSIBLE; one second
+   after the lock is not (D33.2-01). Plan 33.2-02 reversed this module's former staleness
+   direction on purpose; see the section header above ``TestAdmissibilityBoundary``.
 
 WHY THE REGISTRY LENGTH IS READ AT RUNTIME (REVIEW-REGISTRY).
 
@@ -67,9 +68,9 @@ _FROZEN_SD = 13.0
 _SEASON_BIAS = {_SEASON: -1.0}
 _BANKROLL = 10_000.0
 
-# A Sunday kickoff and its own preceding Friday 6 PM Eastern freeze. The snapshot value below sits
-# EXACTLY at that freeze, which SPEC R6 defines as fresh -- so every fixture week here is fresh
-# unless a test deliberately moves the snapshot earlier.
+# A Sunday kickoff and a snapshot on the Friday evening before it. The game locks on the Saturday
+# (18:00 ET), so this snapshot is a day BEFORE the lock and admissible -- every fixture week here
+# is admissible unless a test deliberately moves the snapshot past the lock.
 _SUNDAY_GAMEDAY = "2023-09-10"
 _FREEZE_AT_SUNDAY = "2023-09-08T18:00:00-04:00"
 
@@ -498,14 +499,14 @@ class TestPerTargetSuppression:
         """Set containment over the WHOLE result: no free-form string ever reaches a reason."""
         schedule = _schedule(6)
         rows = [
-            # A complete winner row, a market gap, a model gap and a stale line, mixed.
+            # A complete winner row, a market gap, a model gap and a post-lock line, mixed.
             _candidate(schedule[0]["game_id"], "winner"),
             _candidate(schedule[1]["game_id"], "winner", ml_home=None),
             _candidate(schedule[2]["game_id"], "winner", model_win_prob=None),
             _candidate(
                 schedule[3]["game_id"],
                 "winner",
-                snapshot_ts="2023-09-01T18:00:00-04:00",
+                snapshot_ts="2023-09-09T19:00:00-04:00",
             ),
             _candidate(schedule[4]["game_id"], "winner", winner_side=None),
             _candidate(schedule[5]["game_id"], "winner"),
@@ -695,22 +696,29 @@ def test_python_executable_is_available_for_subprocess_tests() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Per-game freshness (D31-18, T-31-40/41)
+# Per-game admissibility (D31-18, T-31-40/41; D33.2-01, Plan 33.2-02)
 # ---------------------------------------------------------------------------
+#
+# THE DIRECTION OF THIS FENCE WAS REVERSED DELIBERATELY. It used to be a STALENESS test on a
+# market quote -- at-freeze fresh, strictly BEFORE the freeze stale. It is now the lock rule's
+# ADMISSIBILITY test on information time -- at-lock admissible, one second AFTER the lock not
+# admissible, and a quote well before the lock admissible because it is old information rather
+# than future information (RESEARCH 2.4). Two intents died with the old rule and are deleted by
+# ruling rather than rewritten: "a quote strictly before the freeze is stale", and the
+# per-week-freeze counterfactual that only existed to defend the Friday rule's Thursday case.
 
-# The two kickoffs the per-game rule turns on. 2023-09-14 is a THURSDAY whose own preceding Friday
-# is 2023-09-08; the Sunday games of that same week kick off 2023-09-17, whose preceding Friday is
-# 2023-09-15. A per-WEEK freeze would judge the Thursday game against 2023-09-15 and suppress a
-# perfectly correct snapshot as a pure calendar artifact -- every Thursday, every week.
+# The kickoffs the per-game rule turns on. 2023-09-14 is a THURSDAY that locks Wednesday
+# 2023-09-13; the Sunday games of that same week kick off 2023-09-17 and lock Saturday
+# 2023-09-16. A single per-week instant would stamp both with one value.
 _THURSDAY_GAMEDAY = "2023-09-14"
 _LATER_SUNDAY_GAMEDAY = "2023-09-17"
 
 
-def _freeze_for(gameday: str):
-    """That game's own freeze instant, read from the SHARED helper (never re-derived here)."""
-    from scripts.ingest_historical_odds import EASTERN, get_synthetic_snapshot_ts
+def _lock_for(gameday: str):
+    """That game's own lock, read from the SHARED rule (never re-derived here)."""
+    from scripts.ingest_historical_odds import EASTERN, gameday_lock
 
-    return get_synthetic_snapshot_ts(gameday).astimezone(EASTERN)
+    return gameday_lock(gameday).astimezone(EASTERN)
 
 
 def _totals_verdict(
@@ -723,117 +731,138 @@ def _totals_verdict(
     return [r["rejection_reason"] for r in result.rejected], result.unfiltered[0]
 
 
-class TestFreshnessBoundary:
-    """SPEC R6: at-freeze is FRESH; stale is STRICTLY before, measured in Eastern."""
+class TestAdmissibilityBoundary:
+    """D33.2-01: at-lock is ADMISSIBLE; one second after is not, measured in Eastern."""
 
-    def test_a_snapshot_exactly_at_the_freeze_is_fresh(self) -> None:
-        """The boundary is asserted DIRECTLY, on the freeze instant itself."""
-        freeze = _freeze_for(_SUNDAY_GAMEDAY)
-        reasons, record = _totals_verdict(freeze)
+    def test_a_snapshot_exactly_at_the_lock_is_admissible(self) -> None:
+        """The boundary is asserted DIRECTLY, on the lock instant itself."""
+        lock = _lock_for(_SUNDAY_GAMEDAY)
+        reasons, record = _totals_verdict(lock)
 
         assert "stale_line" not in reasons
-        assert record["snapshot_ts"] == freeze
-        assert record["freeze_ts"] == freeze
+        assert record["snapshot_ts"] == lock
+        assert record["freeze_ts"] == lock
 
-    def test_a_snapshot_one_second_before_the_freeze_is_stale(self) -> None:
-        """One second earlier flips the verdict, so the assertion above sits ON the boundary."""
-        one_second_early = _freeze_for(_SUNDAY_GAMEDAY) - timedelta(seconds=1)
-        reasons, record = _totals_verdict(one_second_early)
+    def test_a_snapshot_one_second_after_the_lock_is_suppressed(self) -> None:
+        """One second later flips the verdict, so the assertion above sits ON the boundary."""
+        one_second_late = _lock_for(_SUNDAY_GAMEDAY) + timedelta(seconds=1)
+        reasons, record = _totals_verdict(one_second_late)
 
         assert reasons == ["stale_line"]
-        assert record["snapshot_ts"] == one_second_early
+        assert record["snapshot_ts"] == one_second_late
 
-    def test_a_snapshot_after_the_freeze_is_fresh(self) -> None:
-        """A line taken after the freeze is current, not stale."""
-        later = _freeze_for(_SUNDAY_GAMEDAY) + timedelta(hours=6)
-        reasons, _record = _totals_verdict(later)
+    def test_a_snapshot_well_before_the_lock_is_admissible_not_stale(self) -> None:
+        """Old information is not future information: the retired staleness rule is gone.
+
+        Seventy-two hours before the lock would have been STALE under the retired fence. It
+        is admissible now; picking the freshest admissible quote is Plan 33.2-13's subject,
+        not a suppression.
+        """
+        early = _lock_for(_SUNDAY_GAMEDAY) - timedelta(hours=72)
+        reasons, _record = _totals_verdict(early)
         assert "stale_line" not in reasons
 
-    def test_the_freeze_on_the_record_is_the_shared_helper_value(self) -> None:
-        """The published freeze is the SAME instant the ingest stamps snapshot_ts from."""
-        _reasons, record = _totals_verdict(_freeze_for(_SUNDAY_GAMEDAY))
-        assert record["freeze_ts"] == _freeze_for(_SUNDAY_GAMEDAY)
+    def test_the_lock_on_the_record_is_the_shared_rule_value(self) -> None:
+        """The published ``freeze_ts`` is the SAME instant the ingest stamps snapshot_ts from.
+
+        The column keeps its published name (HOST-07 owns any rename); its value is the lock.
+        """
+        _reasons, record = _totals_verdict(_lock_for(_SUNDAY_GAMEDAY))
+        assert record["freeze_ts"] == _lock_for(_SUNDAY_GAMEDAY)
 
 
-class TestPerGameFreezeIsLoadBearing:
-    """T-31-40: the Thursday calendar artifact provably cannot fire."""
+class TestPerGameLockIsLoadBearing:
+    """T-31-40: each game is judged against its OWN lock, not the week's."""
 
-    def test_a_thursday_game_at_its_own_preceding_friday_is_fresh(self) -> None:
-        """The per-game rule admits it..."""
-        thursday_freeze = _freeze_for(_THURSDAY_GAMEDAY)
-        reasons, record = _totals_verdict(thursday_freeze, gameday=_THURSDAY_GAMEDAY)
+    def test_a_thursday_game_at_its_own_wednesday_lock_is_admissible(self) -> None:
+        thursday_lock = _lock_for(_THURSDAY_GAMEDAY)
+        reasons, record = _totals_verdict(thursday_lock, gameday=_THURSDAY_GAMEDAY)
 
         assert "stale_line" not in reasons
-        assert record["freeze_ts"] == thursday_freeze
+        assert record["freeze_ts"] == thursday_lock
 
-    def test_the_same_snapshot_would_be_suppressed_by_that_weeks_sunday_freeze(
+    def test_a_quote_after_the_thursday_lock_is_suppressed_for_that_game_only(
         self,
     ) -> None:
-        """...and a per-WEEK freeze would suppress the very same correct snapshot.
+        """The same Saturday quote is post-lock for the Thursday game and pre-lock for Sunday.
 
-        Both halves are asserted so the per-game rule is shown to be LOAD-BEARING rather than
-        merely present: without it this row is stale every Thursday of every season.
+        Both halves are asserted so the per-game rule is shown to be LOAD-BEARING: a single
+        week-level instant would give these two games the same verdict.
         """
-        from scripts.ingest_historical_odds import is_fresh_at_freeze
+        from scripts.ingest_historical_odds import is_admissible_at_lock
 
-        thursday_freeze = _freeze_for(_THURSDAY_GAMEDAY)
-        assert _freeze_for(_LATER_SUNDAY_GAMEDAY) > thursday_freeze
-        assert is_fresh_at_freeze(thursday_freeze, _LATER_SUNDAY_GAMEDAY) is False
-        assert is_fresh_at_freeze(thursday_freeze, _THURSDAY_GAMEDAY) is True
+        saturday_quote = _lock_for(_LATER_SUNDAY_GAMEDAY) - timedelta(hours=1)
+        assert saturday_quote > _lock_for(_THURSDAY_GAMEDAY)
+
+        thursday_reasons, _ = _totals_verdict(saturday_quote, gameday=_THURSDAY_GAMEDAY)
+        sunday_reasons, _ = _totals_verdict(
+            saturday_quote, gameday=_LATER_SUNDAY_GAMEDAY
+        )
+        assert thursday_reasons == ["stale_line"]
+        assert "stale_line" not in sunday_reasons
+        assert is_admissible_at_lock(saturday_quote, _THURSDAY_GAMEDAY) is False
+        assert is_admissible_at_lock(saturday_quote, _LATER_SUNDAY_GAMEDAY) is True
 
 
 class TestSnapshotValueShapes:
     """T-31-41: every stored shape parses to the same instant, and none is string-compared."""
 
-    def test_a_legacy_string_and_a_tz_aware_datetime_agree(self) -> None:
+    def test_every_aware_shape_at_the_lock_agrees(self) -> None:
         """The four shapes the live column is known to hold all resolve to one verdict."""
         from scripts.ingest_historical_odds import EASTERN
 
-        at_freeze = datetime(2023, 9, 8, 18, 0, tzinfo=EASTERN)
+        at_lock = datetime(2023, 9, 9, 18, 0, tzinfo=EASTERN)
         shapes: list[Any] = [
-            at_freeze,  # a tz-aware datetime, what the ingest now writes
-            pd.Timestamp(at_freeze),  # a pandas Timestamp off a DataFrame
-            "2023-09-08T18:00:00-04:00",  # the legacy per-season string
-            "2023-09-08 22:00:00+00:00",  # the non-consensus row's space-separated UTC form
+            at_lock,  # a tz-aware datetime, what the ingest now writes
+            pd.Timestamp(at_lock),  # a pandas Timestamp off a DataFrame
+            "2023-09-09T18:00:00-04:00",  # the legacy per-season string shape
+            "2023-09-09 22:00:00+00:00",  # the non-consensus row's space-separated UTC form
         ]
         for shape in shapes:
             reasons, record = _totals_verdict(shape)
-            assert "stale_line" not in reasons, f"{shape!r} was read as stale"
-            assert record["snapshot_ts"] == at_freeze, (
+            assert "stale_line" not in reasons, f"{shape!r} was read as inadmissible"
+            assert record["snapshot_ts"] == at_lock, (
                 f"{shape!r} parsed to another instant"
             )
 
-    def test_every_shape_one_second_early_is_stale(self) -> None:
-        """The mirror: the same four shapes one second earlier are all stale.
+    def test_every_shape_one_second_late_is_suppressed(self) -> None:
+        """The mirror: the same four shapes one second after the lock are all suppressed.
 
         Without this, a parse that silently returned a constant would pass the test above.
         """
         from scripts.ingest_historical_odds import EASTERN
 
-        early = datetime(2023, 9, 8, 17, 59, 59, tzinfo=EASTERN)
+        late = datetime(2023, 9, 9, 18, 0, 1, tzinfo=EASTERN)
         shapes: list[Any] = [
-            early,
-            pd.Timestamp(early),
-            "2023-09-08T17:59:59-04:00",
-            "2023-09-08 21:59:59+00:00",
+            late,
+            pd.Timestamp(late),
+            "2023-09-09T18:00:01-04:00",
+            "2023-09-09 22:00:01+00:00",
         ]
         for shape in shapes:
             reasons, _record = _totals_verdict(shape)
-            assert reasons == ["stale_line"], f"{shape!r} was read as fresh"
+            assert reasons == ["stale_line"], f"{shape!r} was read as admissible"
 
-    def test_a_complete_row_with_no_snapshot_refuses_rather_than_assuming_fresh(
+    def test_a_naive_snapshot_raises_rather_than_being_anchored(self) -> None:
+        """A snapshot with no timezone is refused by the strict parser, never relabelled."""
+        from scripts.ingest_historical_odds import NaiveTimestampError
+
+        with pytest.raises(NaiveTimestampError):
+            _totals_verdict("2023-09-09T18:00:00")
+
+    def test_a_complete_row_with_no_snapshot_refuses_rather_than_assuming_admissible(
         self,
     ) -> None:
         """A row with market data and a kickoff date but no timestamp is a pipeline bug.
 
-        Treating it as fresh would make the fence unable to fire on exactly the rows a broken
-        cache builder produces; treating it as stale would hide the bug behind a data label.
+        Treating it as admissible would make the fence unable to fire on exactly the rows a
+        broken cache builder produces; suppressing it would hide the bug behind a data label.
         """
         with pytest.raises(ValueError, match="snapshot_ts"):
             _totals_verdict(None)
 
 
-class TestFreshnessIsTimezoneIndependent:
+class TestAdmissibilityIsTimezoneIndependent:
     """T-31-41: the verdict is identical under a non-Eastern PROCESS timezone.
 
     Run in a SUBPROCESS on purpose. ``time.tzset`` does not exist on Windows and
@@ -881,7 +910,7 @@ def verdict(snapshot):
     result = SELECTOR.select(rows, scheduled_games=SCHEDULE)
     return {
         "reasons": [r["rejection_reason"] for r in result.rejected],
-        "freeze": result.unfiltered[0]["freeze_ts"].isoformat(),
+        "lock": result.unfiltered[0]["freeze_ts"].isoformat(),
         "snapshot": result.unfiltered[0]["snapshot_ts"].isoformat(),
     }
 
@@ -891,8 +920,8 @@ print(
         {
             "tz_differs": local != eastern,
             "local_offset": str(local),
-            "at_freeze": verdict("2023-09-08T18:00:00-04:00"),
-            "one_second_early": verdict("2023-09-08T17:59:59-04:00"),
+            "at_lock": verdict("2023-09-09T18:00:00-04:00"),
+            "one_second_late": verdict("2023-09-09T18:00:01-04:00"),
         }
     )
 )
@@ -919,51 +948,76 @@ print(
             f"(offset {payload['local_offset']}), so this test would pass vacuously"
         )
 
-        assert "stale_line" not in payload["at_freeze"]["reasons"]
-        assert payload["one_second_early"]["reasons"] == ["stale_line"]
+        assert "stale_line" not in payload["at_lock"]["reasons"]
+        assert payload["one_second_late"]["reasons"] == ["stale_line"]
 
         # The instants themselves match what this process computes, not merely the verdicts.
-        expected_freeze = _freeze_for(_SUNDAY_GAMEDAY)
-        assert payload["at_freeze"]["freeze"] == expected_freeze.isoformat()
-        assert payload["at_freeze"]["snapshot"] == expected_freeze.isoformat()
+        expected_lock = _lock_for(_SUNDAY_GAMEDAY)
+        assert payload["at_lock"]["lock"] == expected_lock.isoformat()
+        assert payload["at_lock"]["snapshot"] == expected_lock.isoformat()
 
 
-class TestOneFreezeDerivation:
-    """D31-17: the selector derives a freeze in exactly ONE place, and it is the shared helper."""
+def _calls_to(tree: ast.AST, attribute: str) -> list[ast.Call]:
+    """Every ``<module>.<attribute>(...)`` call in *tree* -- the ATTRIBUTE form.
 
-    def test_the_freeze_helper_is_called_exactly_once(self) -> None:
-        """An AST count, so a second derivation cannot hide behind a differently named local."""
+    The selector reaches the lock rule as ``lock_rule.game_lock(...)`` /
+    ``lock_rule.is_admissible(...)`` so the phase's identity delegate can see each call at call
+    time (Plan 33.2-02). That parses as an ``ast.Attribute``, not an ``ast.Name``, so a guard
+    matching ``node.func.id`` would count ZERO calls on a correct implementation.
+    """
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == attribute
+    ]
+
+
+_PLANTED_SECOND_CALL_SITE = """
+import utils.game_lock as lock_rule
+
+def first(day):
+    return lock_rule.game_lock(day), lock_rule.is_admissible(day, day)
+
+def second(day):
+    return lock_rule.game_lock(day), lock_rule.is_admissible(day, day)
+"""
+
+
+class TestOneLockDerivation:
+    """D31-17: the selector derives a lock in exactly ONE place, and it is the shared rule."""
+
+    def test_the_lock_rule_is_called_exactly_once(self) -> None:
+        """An AST count over the attribute form, so a second derivation cannot hide."""
         tree = ast.parse(SELECTOR_PATH.read_text(encoding="utf-8"))
-        calls = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "get_synthetic_snapshot_ts"
-        ]
+        calls = _calls_to(tree, "game_lock")
         assert len(calls) == 1, (
-            f"the selector derives a freeze instant at {len(calls)} call sites; D31-18 requires "
-            "exactly one, and it must be the shared helper"
+            f"the selector derives a lock at {len(calls)} call sites; D31-18 requires "
+            "exactly one, and it must be the shared rule"
         )
 
     def test_the_comparison_is_the_shared_one(self) -> None:
-        """The at-freeze-is-fresh comparison is not restated here either."""
+        """The at-lock-is-admissible comparison is not restated here either."""
         tree = ast.parse(SELECTOR_PATH.read_text(encoding="utf-8"))
-        calls = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "is_fresh_at_freeze"
-        ]
-        assert len(calls) == 1
+        assert len(_calls_to(tree, "is_admissible")) == 1
 
-    def test_the_selector_contains_no_second_freeze_derivation(self) -> None:
+    def test_both_guards_flag_a_planted_second_call_site(self) -> None:
+        """NON-VACUITY: the same counters see TWO sites when two exist.
+
+        Without this, a guard that counted nothing at all would still be asserting ``== 1``
+        against whatever the helper happened to return.
+        """
+        planted = ast.parse(_PLANTED_SECOND_CALL_SITE)
+        assert len(_calls_to(planted, "game_lock")) == 2
+        assert len(_calls_to(planted, "is_admissible")) == 2
+
+    def test_the_selector_contains_no_second_lock_derivation(self) -> None:
         """No zone literal, no weekday arithmetic, no bare local-zone read.
 
-        Each forbidden token is a way a second freeze rule has actually been written before: a
-        hard-coded zone, a hand-rolled preceding-Friday walk, or a bare ``astimezone()`` that
-        silently anchors on whatever zone the process happens to run in.
+        Each forbidden token is a way a second rule has actually been written before: a
+        hard-coded zone, a hand-rolled weekday walk, or a bare ``astimezone()`` that silently
+        anchors on whatever zone the process happens to run in.
         """
         source = SELECTOR_PATH.read_text(encoding="utf-8")
         for token in (
@@ -972,11 +1026,12 @@ class TestOneFreezeDerivation:
             "timedelta(",
             "weekday()",
             "FREEZE_HOUR",
+            "LOCK_HOUR",
             "tz_localize",
             "fromisoformat",
             ".astimezone()",
         ):
             assert token not in source, (
-                f"backtest/bet_selector.py contains {token!r}, which is how a SECOND freeze "
-                "derivation gets written; the freeze comes from one shared helper (D31-18)"
+                f"backtest/bet_selector.py contains {token!r}, which is how a SECOND lock "
+                "derivation gets written; the lock comes from one shared rule (D31-18)"
             )

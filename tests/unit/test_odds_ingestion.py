@@ -1,7 +1,9 @@
 """Unit tests for odds ingestion and snapshot timing.
 
 Tests validate that:
-- get_synthetic_snapshot_ts generates correct Friday 6 PM ET timestamps
+- each historical odds row is stamped with its game's day-before-kickoff lock: 18:00 ET on the
+  ET calendar day before the game (D33.2-01; Plan 33.2-02 retired the preceding-Friday stamp
+  these tests used to pin)
 - Historical odds transform produces correct sportsbook, game_ids, and team abbreviations
 - Historical odds are validated through OddsSchema
 - Missing spread_line for regular season games raises DataValidationError
@@ -61,70 +63,51 @@ def _make_schedule_row(
     }
 
 
-class TestGetSyntheticSnapshotTs:
-    """Tests for get_synthetic_snapshot_ts()."""
+class TestGamedayLock:
+    """The ingest's per-game stamp is the day-before-kickoff lock, through the one rule."""
 
-    def test_sunday_game_returns_preceding_friday_6pm_et(self):
-        """A Sunday game's snapshot is the preceding Friday at 6 PM ET."""
-        from scripts.ingest_historical_odds import get_synthetic_snapshot_ts
+    @staticmethod
+    def _lock(gameday: str) -> datetime:
+        from scripts.ingest_historical_odds import gameday_lock
 
-        # 2024-09-08 is a Sunday
-        result = get_synthetic_snapshot_ts("2024-09-08")
+        return gameday_lock(gameday)
 
-        # The preceding Friday is 2024-09-06
-        expected_et = datetime(2024, 9, 6, 18, 0, tzinfo=ET)
-        expected_utc = expected_et.astimezone(UTC)
+    def test_sunday_game_locks_saturday_6pm_et(self):
+        """2024-09-08 is a Sunday; its lock is Saturday 2024-09-07 18:00 ET (22:00 UTC)."""
+        result = self._lock("2024-09-08")
 
-        assert result.year == expected_utc.year
-        assert result.month == expected_utc.month
-        assert result.day == expected_utc.day
-        assert result.hour == expected_utc.hour
-        assert result.minute == 0
+        assert result == datetime(2024, 9, 7, 18, 0, tzinfo=ET)
+        assert result.astimezone(UTC) == datetime(2024, 9, 7, 22, 0, tzinfo=UTC)
 
-    def test_thursday_night_game_returns_preceding_friday(self):
-        """A Thursday game's snapshot is the Friday BEFORE the Thursday (i.e., 6 days prior)."""
-        from scripts.ingest_historical_odds import get_synthetic_snapshot_ts
+    def test_thursday_night_game_locks_wednesday(self):
+        """2024-09-05 is a Thursday; its lock is Wednesday 2024-09-04 18:00 ET."""
+        assert self._lock("2024-09-05") == datetime(2024, 9, 4, 18, 0, tzinfo=ET)
 
-        # 2024-09-05 is a Thursday
-        result = get_synthetic_snapshot_ts("2024-09-05")
+    def test_monday_night_game_locks_sunday(self):
+        """2024-09-09 is a Monday; its lock is Sunday 2024-09-08 18:00 ET."""
+        assert self._lock("2024-09-09") == datetime(2024, 9, 8, 18, 0, tzinfo=ET)
 
-        # The preceding Friday is 2024-08-30 (6 days before)
-        expected_et = datetime(2024, 8, 30, 18, 0, tzinfo=ET)
-        expected_utc = expected_et.astimezone(UTC)
+    def test_friday_game_locks_thursday_not_the_prior_friday(self):
+        """2024-12-20 is a Friday; its lock is Thursday 2024-12-19 18:00 ET.
 
-        assert result.year == expected_utc.year
-        assert result.month == expected_utc.month
-        assert result.day == expected_utc.day
+        The retired rule gave the PRIOR Friday (2024-12-13) for a Friday game -- one of the
+        disagreements that made two rules on disk dangerous.
+        """
+        assert self._lock("2024-12-20") == datetime(2024, 12, 19, 18, 0, tzinfo=ET)
 
-    def test_monday_night_game_returns_preceding_friday(self):
-        """A Monday game's snapshot is the preceding Friday at 6 PM ET."""
-        from scripts.ingest_historical_odds import get_synthetic_snapshot_ts
+    def test_the_stamp_is_the_one_rules_answer(self):
+        """The ingest delegates: its value equals utils.game_lock.game_lock of a kickoff that day."""
+        from utils.game_lock import game_lock
 
-        # 2024-09-09 is a Monday
-        result = get_synthetic_snapshot_ts("2024-09-09")
+        kickoff = datetime(2024, 9, 8, 13, 0, tzinfo=ET)
+        assert self._lock("2024-09-08") == game_lock(kickoff)
 
-        # The preceding Friday is 2024-09-06
-        expected_et = datetime(2024, 9, 6, 18, 0, tzinfo=ET)
-        expected_utc = expected_et.astimezone(UTC)
+    def test_an_instant_is_refused_rather_than_read_as_a_date(self):
+        """A naive instant with a time of day raises: its ET date cannot be guessed."""
+        import pytest
 
-        assert result.year == expected_utc.year
-        assert result.month == expected_utc.month
-        assert result.day == expected_utc.day
-
-    def test_friday_game_returns_prior_friday(self):
-        """If the gameday IS a Friday, use the PRIOR Friday (7 days earlier)."""
-        from scripts.ingest_historical_odds import get_synthetic_snapshot_ts
-
-        # 2024-12-20 is a Friday
-        result = get_synthetic_snapshot_ts("2024-12-20")
-
-        # The preceding Friday is 2024-12-13 (7 days before)
-        expected_et = datetime(2024, 12, 13, 18, 0, tzinfo=ET)
-        expected_utc = expected_et.astimezone(UTC)
-
-        assert result.year == expected_utc.year
-        assert result.month == expected_utc.month
-        assert result.day == expected_utc.day
+        with pytest.raises(ValueError, match="instant"):
+            self._lock("2024-09-08 20:20:00")
 
 
 class TestHistoricalOddsTransform:
@@ -216,16 +199,17 @@ class TestHistoricalOddsTransform:
         assert len(result) == 1
         assert "BUF" in result.iloc[0]["game_id"]
 
-    def test_has_synthetic_snapshot_ts(self):
-        """Historical odds records have a synthetic snapshot_ts derived from gameday."""
+    def test_has_the_games_own_lock_as_snapshot_ts(self):
+        """Historical odds records carry their game's lock -- a manufactured stamp, said so."""
         from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
 
         df = pd.DataFrame([_make_schedule_row(gameday="2024-09-08")])
         result = transform_nfl_odds_to_standard_format(df)
 
         snapshot_ts = result.iloc[0]["snapshot_ts"]
-        # Should be a datetime, not a static string
+        # A datetime, not a static string, and exactly the Sunday game's Saturday lock.
         assert isinstance(snapshot_ts, datetime)
+        assert snapshot_ts == datetime(2024, 9, 7, 18, 0, tzinfo=ET)
 
     def test_is_live_is_false(self):
         """Historical odds always have is_live=False."""

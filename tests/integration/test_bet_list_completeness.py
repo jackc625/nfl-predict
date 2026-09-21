@@ -449,22 +449,21 @@ class TestTheInvariantOnTheRealSchedule:
 # The R6 refusal is a TRIPWIRE, not a weekly guillotine
 # ---------------------------------------------------------------------------
 #
-# Phase 33, Plan 33-05 Task 1 (COLD-03, R6, D33-28, T-33-25). A binding refusal that fires in
-# normal operation is not a guard, it is an outage. So the whole real 2026 regular season is
-# driven forward through the freeze-instant selection and the refusal is asserted to fire not
-# once.
+# Phase 33, Plan 33-05 Task 1 (COLD-03, R6, D33-28, T-33-25); re-expressed on the day-before
+# lock by Plan 33.2-02 (D33.2-01). A binding refusal that fires in normal operation is not a
+# guard, it is an outage. So the whole real 2026 regular season is driven forward through the
+# lock-instant selection and the refusal is asserted to fire not once.
 #
-# THE CLOCK IS ONE SECOND BEFORE EACH INSTANT, AND THAT IS THE POINT RATHER THAN A DODGE.
-# The fence is ``>=`` (R6), so a run AT its own freeze instant is REFUSED by design -- at that
-# instant the market has frozen and any pick made now is made with the frozen line in hand.
-# The last instant at which a Friday run is legitimate is therefore strictly before its own
-# freeze, and that is the clock a real Friday run has. Driving the clock AT the instant would
-# assert the refusal fires for every game, which is the equality edge
-# ``tests/unit/test_freeze_fence_binding.py`` already covers on a constructed input.
+# THE DECISION INSTANT IS EACH LOCK ITSELF, AND THAT IS THE POINT RATHER THAN A DODGE. At-lock
+# information is admissible (``decided_at <= lock``), so the LATEST legitimate decision for a
+# game is exactly at its lock -- the hardest ordinary case the daily run can produce. Driving
+# every instant at that edge and seeing no refusal is a stronger claim than driving it a second
+# early; the one-second-AFTER refusal is covered on a constructed input in
+# ``tests/unit/test_freeze_fence_binding.py``.
 
 
-class TestTheFreezeRefusalDoesNotFireInNormalWeeklyOperation:
-    """T-33-25: eighteen Thursday games a season must survive the fence, not be refused by it."""
+class TestTheLockRefusalDoesNotFireInNormalWeeklyOperation:
+    """T-33-25: every game a season -- Thursday games included -- survives the fence."""
 
     def _schedule_2026(self) -> pd.DataFrame:
         from tests.fixtures.season_2026 import (
@@ -479,23 +478,21 @@ class TestTheFreezeRefusalDoesNotFireInNormalWeeklyOperation:
         return feed[["game_id", "season", "week", "gameday", "weekday"]].copy()
 
     def test_driven_across_the_whole_2026_season_the_refusal_never_fires(self) -> None:
-        from datetime import timedelta
-
         from backtest.weekly_bet_list import (
-            FreezePassedError,
-            select_games_for_freeze_instant,
+            LockPassedError,
+            select_games_for_decision_instant,
         )
-        from scripts.ingest_historical_odds import get_synthetic_snapshot_ts
+        from scripts.ingest_historical_odds import gameday_lock
 
         schedule = self._schedule_2026()
         instants = sorted(
             {
-                get_synthetic_snapshot_ts(str(gameday))
+                gameday_lock(str(gameday))
                 for gameday in schedule["gameday"].dropna().unique()
             }
         )
         assert len(instants) >= 18, (
-            f"only {len(instants)} freeze instants resolved from the 2026 capture; a short "
+            f"only {len(instants)} lock instants resolved from the 2026 capture; a short "
             "list would make the tripwire assertion below cheap"
         )
 
@@ -503,10 +500,10 @@ class TestTheFreezeRefusalDoesNotFireInNormalWeeklyOperation:
         covered: set[str] = set()
         for instant in instants:
             try:
-                selected = select_games_for_freeze_instant(
-                    schedule, instant, now=instant - timedelta(seconds=1)
+                selected = select_games_for_decision_instant(
+                    schedule, instant, decided_at=instant
                 )
-            except FreezePassedError as exc:
+            except LockPassedError as exc:
                 refusals.append(f"{instant.isoformat()}: {exc}")
                 continue
             covered.update(str(game_id) for game_id in selected["game_id"])
@@ -521,10 +518,8 @@ class TestTheFreezeRefusalDoesNotFireInNormalWeeklyOperation:
 
     def test_every_thursday_game_is_carried_by_some_instant(self) -> None:
         """The games a WEEK-scoped fence would have lost, counted rather than described."""
-        from datetime import timedelta
-
-        from backtest.weekly_bet_list import select_games_for_freeze_instant
-        from scripts.ingest_historical_odds import get_synthetic_snapshot_ts
+        from backtest.weekly_bet_list import select_games_for_decision_instant
+        from scripts.ingest_historical_odds import gameday_lock
 
         schedule = self._schedule_2026()
         thursdays = schedule[schedule["weekday"] == "Thursday"]
@@ -532,9 +527,9 @@ class TestTheFreezeRefusalDoesNotFireInNormalWeeklyOperation:
 
         carried: set[str] = set()
         for gameday in sorted(schedule["gameday"].dropna().unique()):
-            instant = get_synthetic_snapshot_ts(str(gameday))
-            selected = select_games_for_freeze_instant(
-                schedule, instant, now=instant - timedelta(seconds=1)
+            instant = gameday_lock(str(gameday))
+            selected = select_games_for_decision_instant(
+                schedule, instant, decided_at=instant
             )
             carried.update(str(game_id) for game_id in selected["game_id"])
 

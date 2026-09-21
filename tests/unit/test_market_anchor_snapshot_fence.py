@@ -205,8 +205,12 @@ class TestBothSpellingsReachTheBuiltFeatures:
         )
 
 
-class TestTheDeprecatedFridayPathUsesTheSameOneParse:
-    """WR-01: ``identify_opening_lines`` / ``identify_snapshot_lines`` kept the bare parse.
+class TestTheDeprecatedPathUsesTheSameOneParse:
+    """WR-01: ``identify_opening_lines`` and the snapshot selection kept the bare parse.
+
+    The snapshot method was renamed ``select_snapshot_lines_at_lock`` by Plan 33.2-02, which
+    also deleted its one-global-Friday cutoff: each game is now cut at its own day-before lock
+    (D33.2-01). The parse property below is unchanged.
 
     ``build_features`` was fixed above, but the two DEPRECATED methods were not -- and they
     are the ones the scheduled run reaches. ``pipeline/steps.py::step_build_market_anchors``
@@ -255,16 +259,21 @@ class TestTheDeprecatedFridayPathUsesTheSameOneParse:
             "the game silently fell through to the neutral market default."
         )
 
-    def test_both_spellings_survive_identify_snapshot_lines(
+    def test_both_spellings_survive_select_snapshot_lines_at_lock(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Both games keep their pre-lock snapshot, each judged at its OWN lock.
+
+        Stronger than the check it replaces, which asserted only the legacy-spelled game:
+        under a per-game lock both rows are before their games' locks, so both must survive.
+        """
         self._patch(monkeypatch)
 
-        snapshots = MarketAnchorFeaturesCalculator().identify_snapshot_lines(
-            _odds_frame(), target_date=None
+        snapshots = MarketAnchorFeaturesCalculator().select_snapshot_lines_at_lock(
+            _odds_frame(), self._GAMES
         )
 
-        assert "2018_W03_LAC@LA" in set(snapshots["game_id"])
+        assert set(snapshots["game_id"]) == {"2018_W03_LAC@LA", "2025_W01_DAL@PHI"}
 
     def test_an_unparseable_snapshot_is_refused_rather_than_silently_dropped(
         self, monkeypatch: pytest.MonkeyPatch

@@ -1013,7 +1013,11 @@ class TestAStoredNullNeverErasesARealIncomingLine:
 
 
 class TestThePerGameSnapshotInstant:
-    """Write-contract clause 3: every row carries its OWN preceding-Friday freeze (D31-37)."""
+    """Write-contract clause 3: every row carries its OWN day-before-kickoff lock (D31-37).
+
+    Plan 33.2-02 retired the preceding-Friday freeze this clause was written against; the
+    per-game property it protects is unchanged, only the instant moved (D33.2-01).
+    """
 
     def test_snapshot_ts_is_a_tz_aware_datetime_not_an_object_column(self) -> None:
         from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
@@ -1034,7 +1038,7 @@ class TestThePerGameSnapshotInstant:
         )
         assert out["snapshot_ts"].dt.tz is not None
 
-    def test_a_thursday_and_a_sunday_in_one_week_are_seven_days_apart(self) -> None:
+    def test_a_thursday_and_a_sunday_in_one_week_are_three_days_apart(self) -> None:
         """The per-game rule, not a per-week one -- D31-18's stated failure mode."""
         from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
 
@@ -1050,50 +1054,65 @@ class TestThePerGameSnapshotInstant:
         thursday = out.loc["2024_W01_BAL@KC", "snapshot_ts"]
         sunday = out.loc["2024_W01_BUF@KC", "snapshot_ts"]
 
-        assert (sunday - thursday) == pd.Timedelta(days=7), (
-            f"the Thursday game's freeze is {thursday} and the Sunday game's is {sunday}. Under "
-            "a PER-WEEK freeze the Thursday snapshot would be strictly earlier than the week's "
-            "instant and would be suppressed every week as a pure calendar artifact."
+        assert (sunday - thursday) == pd.Timedelta(days=3), (
+            f"the Thursday game's lock is {thursday} and the Sunday game's is {sunday}. Each "
+            "game locks on the ET day before its OWN kickoff (Wednesday and Saturday); a "
+            "PER-WEEK instant would stamp both games with one value."
         )
 
-    def test_a_friday_kickoff_takes_the_prior_friday(self) -> None:
+    def test_a_friday_kickoff_locks_the_thursday_before(self) -> None:
         from scripts.ingest_historical_odds import transform_nfl_odds_to_standard_format
 
-        # 2024-12-20 is a Friday; the freeze is 2024-12-13 at 18:00 Eastern.
+        # 2024-12-20 is a Friday; the lock is Thursday 2024-12-19 at 18:00 Eastern. The retired
+        # rule gave the PRIOR Friday here, which is one of the disagreements D33.2-01 removed.
         out = transform_nfl_odds_to_standard_format(
             pd.DataFrame([_schedule_row(week=16, gameday="2024-12-20")])
         )
-        freeze = out.iloc[0]["snapshot_ts"].tz_convert("America/New_York")
+        lock = out.iloc[0]["snapshot_ts"].tz_convert("America/New_York")
 
-        assert (freeze.year, freeze.month, freeze.day) == (2024, 12, 13)
-        assert (freeze.hour, freeze.minute) == (18, 0)
+        assert (lock.year, lock.month, lock.day) == (2024, 12, 19)
+        assert (lock.hour, lock.minute) == (18, 0)
 
-    def test_every_replay_row_is_exactly_at_its_own_freeze_and_therefore_fresh(
+    def test_every_replay_row_is_exactly_at_its_own_lock_and_therefore_admissible(
         self,
     ) -> None:
-        """Clause 3's whole point: re-derivation makes the replay population fresh by fact."""
+        """Clause 3's whole point: re-derivation makes the replay population admissible by fact.
+
+        The stamp is MANUFACTURED (nflreadpy gives a closing line with no capture time) and the
+        code says so; what this proves is only that the stamp and the fence agree.
+        """
         from scripts.ingest_historical_odds import (
-            is_fresh_at_freeze,
+            gameday_lock,
+            is_admissible_at_lock,
             transform_nfl_odds_with_counts,
         )
+        from utils.game_id_utils import create_standard_game_id
+        from utils.team_data import normalize_team_abbreviation
 
         schedule = _load_live_schedule(2025)
         out = transform_nfl_odds_with_counts(schedule).odds
-        gamedays = schedule.assign(
-            key=schedule["season"].astype(int).astype(str)
-            + "_W"
-            + schedule["week"].astype(int).map("{:02d}".format)
-        )[["key", "gameday"]].set_index("key")["gameday"]
+        # Keyed by the GAME, not by its week: under the day-before lock the games of one week
+        # carry different stamps (a Thursday game locks on the Wednesday, the Sunday slate on
+        # the Saturday), so a per-week lookup would compare a row against another game's day.
+        gameday_by_game = {
+            create_standard_game_id(
+                season=int(game["season"]),
+                week=int(game["week"]),
+                away_team=normalize_team_abbreviation(game["away_team"]),
+                home_team=normalize_team_abbreviation(game["home_team"]),
+            ): game["gameday"]
+            for _, game in schedule.iterrows()
+        }
 
         checked = 0
         for _, row in out.iterrows():
-            key = row["game_id"].rsplit("_", 1)[0]
-            gameday = gamedays.loc[key]
-            gameday = gameday.iloc[0] if hasattr(gameday, "iloc") else gameday
-            assert is_fresh_at_freeze(row["snapshot_ts"], gameday)
+            gameday = gameday_by_game[row["game_id"]]
+            assert row["snapshot_ts"] == gameday_lock(gameday)
+            assert is_admissible_at_lock(row["snapshot_ts"], gameday)
             checked += 1
 
         assert checked == len(out)
+        assert checked > 0, "no replay row was checked, so this proves nothing"
 
 
 class TestTheSharedSnapshotNormalization:
@@ -1116,14 +1135,11 @@ class TestTheSharedSnapshotNormalization:
         assert parsed == pd.Timestamp(_NON_CONSENSUS_UTC_STRING).to_pydatetime()
 
     def test_a_tz_aware_datetime_round_trips_to_the_same_instant(self) -> None:
-        from scripts.ingest_historical_odds import (
-            get_synthetic_snapshot_ts,
-            normalize_snapshot_ts,
-        )
+        from scripts.ingest_historical_odds import gameday_lock, normalize_snapshot_ts
 
-        freeze = get_synthetic_snapshot_ts("2024-09-08")
+        lock = gameday_lock("2024-09-08")
 
-        assert normalize_snapshot_ts(freeze) == freeze
+        assert normalize_snapshot_ts(lock) == lock
 
     def test_a_naive_value_is_anchored_in_eastern_and_not_in_utc(self) -> None:
         """The anchor is a STATED choice: an unqualified odds wall clock is market-local."""
@@ -1144,39 +1160,40 @@ class TestTheSharedSnapshotNormalization:
             with pytest.raises(ValueError):
                 normalize_snapshot_ts(value)
 
-    def test_at_freeze_is_fresh_and_one_second_before_is_stale(self) -> None:
-        from scripts.ingest_historical_odds import (
-            get_synthetic_snapshot_ts,
-            is_fresh_at_freeze,
-        )
+    def test_at_lock_is_admissible_and_one_second_after_is_not(self) -> None:
+        """THE DIRECTION IS REVERSED ON PURPOSE (Plan 33.2-02, RESEARCH 2.4).
 
-        freeze = get_synthetic_snapshot_ts("2024-09-08")
+        The retired test here asserted a STALENESS rule: at-freeze fresh, one second BEFORE
+        stale. The lock rule is an ADMISSIBILITY rule over information time: at-lock
+        admissible, one second AFTER inadmissible, and a quote well before the lock is old
+        information -- admissible, not stale. The staleness intent dies with the rule
+        (D33.2-01); choosing the freshest admissible quote is Plan 33.2-13's subject.
+        """
+        from scripts.ingest_historical_odds import gameday_lock, is_admissible_at_lock
 
-        assert is_fresh_at_freeze(freeze, "2024-09-08") is True
-        assert is_fresh_at_freeze(freeze - timedelta(seconds=1), "2024-09-08") is False
-        assert is_fresh_at_freeze(freeze + timedelta(seconds=1), "2024-09-08") is True
+        lock = gameday_lock("2024-09-08")
+
+        assert is_admissible_at_lock(lock, "2024-09-08") is True
+        assert is_admissible_at_lock(lock + timedelta(seconds=1), "2024-09-08") is False
+        assert is_admissible_at_lock(lock - timedelta(seconds=1), "2024-09-08") is True
+        assert is_admissible_at_lock(lock - timedelta(hours=72), "2024-09-08") is True
 
     def test_one_instant_in_three_encodings_gives_one_verdict(self) -> None:
         """A string comparison would call these three different; a parse calls them one."""
-        from scripts.ingest_historical_odds import (
-            get_synthetic_snapshot_ts,
-            is_fresh_at_freeze,
-        )
+        from scripts.ingest_historical_odds import gameday_lock, is_admissible_at_lock
 
-        freeze = get_synthetic_snapshot_ts("2024-09-08")
+        lock = gameday_lock("2024-09-08").astimezone(UTC)
         string_encodings = [
-            freeze.isoformat(),  # ISO, UTC offset, T separator
-            str(freeze),  # the space-separated UTC shape the odd row uses
-            freeze.astimezone(
-                ZoneInfo("America/New_York")
-            ).isoformat(),  # Eastern offset
+            lock.isoformat(),  # ISO, UTC offset, T separator
+            str(lock),  # the space-separated UTC shape the odd row uses
+            lock.astimezone(ZoneInfo("America/New_York")).isoformat(),  # Eastern offset
         ]
         encodings = [
-            freeze,
+            lock,
             *string_encodings,
         ]  # plus the datetime this ingest now writes
 
-        verdicts = {is_fresh_at_freeze(value, "2024-09-08") for value in encodings}
+        verdicts = {is_admissible_at_lock(value, "2024-09-08") for value in encodings}
 
         assert verdicts == {True}
         assert len(set(string_encodings)) == len(string_encodings), (
@@ -1206,7 +1223,7 @@ class TestTheSharedSnapshotNormalization:
 
         assert offenders == [], (
             f"the ingest module reaches for the PROCESS local timezone at {offenders}. A bare "
-            "astimezone() or now() anchors the freeze wherever the run happens to execute, so "
+            "astimezone() or now() anchors the lock wherever the run happens to execute, so "
             "the same data yields different staleness verdicts on two machines (T-31-37)."
         )
 
@@ -1229,13 +1246,14 @@ class TestTheSharedSnapshotNormalization:
             "import json\n"
             "from datetime import datetime, timedelta\n"
             "from scripts.ingest_historical_odds import ("
-            "get_synthetic_snapshot_ts, is_fresh_at_freeze, normalize_snapshot_ts)\n"
-            "freeze = get_synthetic_snapshot_ts('2024-09-08')\n"
+            "gameday_lock, is_admissible_at_lock, normalize_snapshot_ts)\n"
+            "lock = gameday_lock('2024-09-08')\n"
             "print(json.dumps({\n"
             "  'offset_hours': datetime.now().astimezone().utcoffset().total_seconds()/3600,\n"
-            "  'at_freeze': is_fresh_at_freeze(freeze, '2024-09-08'),\n"
-            "  'one_second_before': is_fresh_at_freeze("
-            "freeze - timedelta(seconds=1), '2024-09-08'),\n"
+            "  'lock': lock.isoformat(),\n"
+            "  'at_lock': is_admissible_at_lock(lock, '2024-09-08'),\n"
+            "  'one_second_after': is_admissible_at_lock("
+            "lock + timedelta(seconds=1), '2024-09-08'),\n"
             "  'legacy_string': normalize_snapshot_ts("
             f"{_LEGACY_PER_SEASON_STRING!r}).isoformat(),\n"
             "  'naive_string': normalize_snapshot_ts('2021-09-19 18:00:00').isoformat(),\n"
@@ -1261,15 +1279,18 @@ class TestTheSharedSnapshotNormalization:
         )
 
         from scripts.ingest_historical_odds import (
-            get_synthetic_snapshot_ts,
-            is_fresh_at_freeze,
+            gameday_lock,
+            is_admissible_at_lock,
             normalize_snapshot_ts,
         )
 
-        freeze = get_synthetic_snapshot_ts("2024-09-08")
-        assert remote["at_freeze"] is is_fresh_at_freeze(freeze, "2024-09-08")
-        assert remote["one_second_before"] is is_fresh_at_freeze(
-            freeze - timedelta(seconds=1), "2024-09-08"
+        lock = gameday_lock("2024-09-08")
+        assert pd.Timestamp(remote["lock"]) == pd.Timestamp(lock)
+        assert remote["at_lock"] is is_admissible_at_lock(lock, "2024-09-08") is True
+        assert (
+            remote["one_second_after"]
+            is is_admissible_at_lock(lock + timedelta(seconds=1), "2024-09-08")
+            is False
         )
         assert pd.Timestamp(remote["legacy_string"]) == pd.Timestamp(
             normalize_snapshot_ts(_LEGACY_PER_SEASON_STRING)

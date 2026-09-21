@@ -1,25 +1,22 @@
-"""G-03: market-anchor snapshot cutoff is localized to ET, not UTC (Phase 20, WR-02).
+"""G-03: market-anchor snapshot cutoff is an ET instant, not a UTC-localized 18:00 (WR-02).
 
-The project's load-bearing reproducibility invariant: odds/data freeze at "Friday 6 PM ET".
+The project's load-bearing reproducibility invariant is now each game's LOCK: 18:00 ET on the
+ET calendar day before its kickoff (D33.2-01). Plan 33.2-02 renamed the method under test to
+``select_snapshot_lines_at_lock`` and deleted its one-global-Friday derivation by ruling; the
+ET-not-UTC property these tests were written for survives unchanged, retargeted at the lock.
 
-Bug (pre-fix): identify_snapshot_lines localized the cutoff to UTC, producing
-Friday 18:00 UTC = Friday 14:00 ET (4 hours early), which silently dropped the
-legitimate 18:00 ET (= 22:00 UTC) snapshots -- emptying the snapshot set on the
-orchestrator path.
+Bug (pre-fix, Phase 20): the cutoff was localized to UTC, producing 18:00 UTC = 14:00 ET (4
+hours early), which silently dropped the legitimate 18:00 ET (= 22:00 UTC) snapshots --
+emptying the snapshot set on the orchestrator path.
 
-Fix (commit dcc7883): cutoff_time.replace(tzinfo=ET) -- the cutoff is now an ET-aware
-datetime that compares correctly against the tz-aware (UTC) snapshot_ts column.
+These tests construct snapshot timestamps that straddle a game's 6 PM ET lock in a way where
+ET-vs-UTC selection DIFFERS:
 
-This test constructs snapshot timestamps that straddle the Friday 6 PM boundary in a
-way where ET-vs-UTC selection DIFFERS:
+    snapshot at 18:00 UTC = 14:00 ET  (before 6 PM ET, after 6 PM UTC)
+    snapshot at 22:00 UTC = 18:00 ET  (exactly at the lock, in EDT)
 
-    snapshot at Friday 18:00 UTC = Friday 14:00 ET  (before 6 PM ET, after 6 PM UTC)
-    snapshot at Friday 22:00 UTC = Friday 18:00 ET  (at exactly 6 PM ET, the real cutoff)
-
-Under the old UTC cutoff (<=18:00 UTC), the 22:00 UTC snapshot is EXCLUDED.
-Under the correct ET cutoff (<=18:00 ET = <=22:00 UTC), the 22:00 UTC snapshot is INCLUDED.
-
-The test asserts the ET-correct behavior: the 22:00 UTC snapshot IS included.
+Under a UTC-localized cutoff (<=18:00 UTC), the 22:00 UTC snapshot is EXCLUDED.
+Under the correct ET lock (<=18:00 ET = <=22:00 UTC), the 22:00 UTC snapshot is INCLUDED.
 """
 
 from __future__ import annotations
@@ -27,6 +24,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
+import pytest
 
 from features.market_anchors import MarketAnchorFeaturesCalculator
 from utils.date_utils import ET
@@ -34,6 +32,16 @@ from utils.date_utils import ET
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _games(*rows: tuple[str, datetime]) -> pd.DataFrame:
+    """The games frame the per-game lock is derived from (``game_id``, aware ``kickoff_et``)."""
+    return pd.DataFrame(
+        {
+            "game_id": [game_id for game_id, _ in rows],
+            "kickoff_et": [pd.Timestamp(kickoff) for _, kickoff in rows],
+        }
+    )
 
 
 def _make_odds_row(
@@ -45,7 +53,7 @@ def _make_odds_row(
     home_ml: int = -150,
     away_ml: int = 130,
 ) -> dict:
-    """Build a minimal odds-snapshot row with all columns identify_snapshot_lines needs."""
+    """Build a minimal odds-snapshot row with the columns the lock selection needs."""
     return {
         "game_id": game_id,
         "sportsbook": sportsbook,
@@ -69,28 +77,27 @@ def _make_odds_row(
 
 
 class TestSnapshotCutoffIsET:
-    """identify_snapshot_lines selects the Friday 6 PM ET cutoff, not UTC (G-03)."""
+    """select_snapshot_lines_at_lock cuts each game at its own 6 PM ET lock, not UTC (G-03)."""
 
     def test_snapshot_at_6pm_et_is_included(self):
-        """A snapshot taken at exactly Friday 18:00 ET (22:00 UTC in EDT / 23:00 UTC in EST)
-        must be INCLUDED in the snapshot set -- it is at the cutoff, not after it.
+        """A snapshot taken exactly AT the lock (18:00 ET = 23:00 UTC in EST) is INCLUDED.
 
-        This is the critical boundary the UTC bug broke: 22:00 UTC > 18:00 UTC, so the
-        UTC cutoff incorrectly excluded it.  The ET cutoff (18:00 ET = 22:00 UTC in EDT
-        or 23:00 UTC in EST) includes it.
+        At-lock is admissible (D33.2-01). This is also the boundary the UTC bug broke:
+        23:00 UTC > 18:00 UTC, so a UTC-localized cutoff excluded it.
         """
-        # Use a November (EST = UTC-5) Friday so the math is simple:
-        # Friday Nov 15 2024 18:00 ET = Friday Nov 15 2024 23:00 UTC
-        friday = datetime(2024, 11, 15, 18, 0, 0, tzinfo=ET)
-        at_cutoff_utc = friday.astimezone(UTC)
+        # A November (EST = UTC-5) Sunday game, Nov 17 2024 1 PM ET. Its lock is Saturday
+        # Nov 16 2024 18:00 ET = 23:00 UTC.
+        kickoff = datetime(2024, 11, 17, 13, 0, 0, tzinfo=ET)
+        at_cutoff_utc = datetime(2024, 11, 16, 18, 0, 0, tzinfo=ET).astimezone(UTC)
+        assert at_cutoff_utc.hour == 23
 
-        # One snapshot at exactly 18:00 ET (the cutoff boundary)
+        # One snapshot at exactly 18:00 ET (the lock)
         cutoff_snap = _make_odds_row(
             game_id="2024_W11_KC@BUF",
             sportsbook="DraftKings",
             snapshot_utc=at_cutoff_utc,
         )
-        # One snapshot AFTER the cutoff (should be excluded)
+        # One snapshot AFTER the lock (should be excluded)
         after_cutoff_utc = at_cutoff_utc + timedelta(hours=2)
         after_snap = _make_odds_row(
             game_id="2024_W11_KC@BUF",
@@ -100,16 +107,15 @@ class TestSnapshotCutoffIsET:
 
         odds_df = pd.DataFrame([cutoff_snap, after_snap])
 
-        # Provide the target_date as the same Friday (naive -- function localizes it)
-        target_date = datetime(2024, 11, 15, 18, 0, 0)
-
         calc = MarketAnchorFeaturesCalculator()
-        result = calc.identify_snapshot_lines(odds_df, target_date=target_date)
+        result = calc.select_snapshot_lines_at_lock(
+            odds_df, _games(("2024_W11_KC@BUF", kickoff))
+        )
 
         assert len(result) == 1, (
-            f"Expected exactly 1 snapshot line (the at-cutoff 18:00 ET snapshot); "
-            f"got {len(result)}. If 0: the ET cutoff is still treating 18:00 ET as "
-            f"too late (UTC bug regression). If 2: the post-cutoff snapshot leaked in."
+            f"Expected exactly 1 snapshot line (the at-lock 18:00 ET snapshot); "
+            f"got {len(result)}. If 0: the cutoff is treating 18:00 ET as "
+            f"too late (UTC bug regression). If 2: the post-lock snapshot leaked in."
         )
         # The returned snapshot must be the 18:00 ET one, not the later one
         returned_ts = pd.to_datetime(result.iloc[0]["snapshot_ts"], utc=True)
@@ -130,7 +136,8 @@ class TestSnapshotCutoffIsET:
         Uses a September (EDT = UTC-4) Friday to produce this discriminating case.
         """
         # September 20 2024 is a real Friday. EDT = UTC-4, so 18:00 ET = 22:00 UTC.
-        # Snapshot at 19:00 UTC (= 15:00 EDT) -- before the ET cutoff, after 18:00 UTC
+        # The game kicks off Saturday Sep 21 2024, so its lock is Friday Sep 20 18:00 EDT.
+        # Snapshot at 19:00 UTC (= 15:00 EDT) -- before the ET lock, after 18:00 UTC
         discriminating_utc = datetime(2024, 9, 20, 19, 0, 0, tzinfo=UTC)
         # 19:00 UTC < 22:00 UTC -> ET cutoff INCLUDES it
         # 19:00 UTC > 18:00 UTC -> UTC cutoff EXCLUDES it (the old bug)
@@ -142,10 +149,11 @@ class TestSnapshotCutoffIsET:
         )
         odds_df = pd.DataFrame([discriminating_snap])
 
-        target_date = datetime(2024, 9, 20, 18, 0, 0)  # naive Friday
-
         calc = MarketAnchorFeaturesCalculator()
-        result = calc.identify_snapshot_lines(odds_df, target_date=target_date)
+        result = calc.select_snapshot_lines_at_lock(
+            odds_df,
+            _games(("2024_W03_DAL@NYG", datetime(2024, 9, 21, 16, 30, tzinfo=ET))),
+        )
 
         assert len(result) == 1, (
             f"ET cutoff regression: a snapshot at 19:00 UTC (= 15:00 EDT) on a Friday "
@@ -179,10 +187,11 @@ class TestSnapshotCutoffIsET:
         )
         odds_df = pd.DataFrame([pre_snap, post_snap])
 
-        target_date = datetime(2024, 9, 20, 18, 0, 0)
-
         calc = MarketAnchorFeaturesCalculator()
-        result = calc.identify_snapshot_lines(odds_df, target_date=target_date)
+        result = calc.select_snapshot_lines_at_lock(
+            odds_df,
+            _games(("2024_W03_DAL@NYG", datetime(2024, 9, 21, 16, 30, tzinfo=ET))),
+        )
 
         assert len(result) == 1, (
             f"Post-ET-cutoff snapshot included: expected 1 row (pre-cutoff only), "
@@ -195,3 +204,75 @@ class TestSnapshotCutoffIsET:
             f"Expected the pre-cutoff BetMGM snapshot to be selected; "
             f"got sportsbook '{returned_sportsbook}' -- wrong snapshot selected"
         )
+
+
+class TestTheCutoffIsPerGame:
+    """Each game is cut at its OWN lock; one frame-wide cutoff could not satisfy both games."""
+
+    def test_a_thursday_game_and_a_sunday_game_are_cut_at_different_locks(self):
+        """The retired selection derived ONE Friday for the whole frame. Deleted by ruling.
+
+        A Saturday-afternoon snapshot is after the Thursday game's Wednesday lock and before
+        the Sunday game's Saturday lock, so it must be dropped for one and kept for the other.
+        """
+        thursday_game = "2024_W03_NE@NYJ"
+        sunday_game = "2024_W03_DAL@BAL"
+        saturday_snapshot = datetime(2024, 9, 21, 20, 0, 0, tzinfo=UTC)  # 16:00 EDT
+        wednesday_snapshot = datetime(2024, 9, 18, 16, 0, 0, tzinfo=UTC)  # noon EDT
+
+        odds_df = pd.DataFrame(
+            [
+                _make_odds_row(
+                    thursday_game, "DraftKings", wednesday_snapshot, total=38.5
+                ),
+                _make_odds_row(
+                    thursday_game, "DraftKings", saturday_snapshot, total=99.0
+                ),
+                _make_odds_row(
+                    sunday_game, "DraftKings", wednesday_snapshot, total=47.0
+                ),
+                _make_odds_row(
+                    sunday_game, "DraftKings", saturday_snapshot, total=48.5
+                ),
+            ]
+        )
+        games = _games(
+            (thursday_game, datetime(2024, 9, 19, 20, 15, tzinfo=ET)),
+            (sunday_game, datetime(2024, 9, 22, 16, 25, tzinfo=ET)),
+        )
+
+        result = (
+            MarketAnchorFeaturesCalculator()
+            .select_snapshot_lines_at_lock(odds_df, games)
+            .set_index("game_id")
+        )
+
+        assert pd.to_datetime(result.loc[thursday_game, "snapshot_ts"], utc=True) == (
+            pd.Timestamp(wednesday_snapshot)
+        ), "the Thursday game took a snapshot captured after its own Wednesday lock"
+        assert pd.to_datetime(result.loc[sunday_game, "snapshot_ts"], utc=True) == (
+            pd.Timestamp(saturday_snapshot)
+        ), "the Sunday game lost a snapshot captured before its own Saturday lock"
+        assert (
+            result.loc[thursday_game, "cutoff_time"]
+            != result.loc[sunday_game, "cutoff_time"]
+        )
+
+    def test_a_wanted_game_with_no_kickoff_is_refused_by_name(self):
+        from utils.game_lock import MissingKickoffError
+
+        odds_df = pd.DataFrame(
+            [
+                _make_odds_row(
+                    "2024_W03_DAL@BAL",
+                    "DraftKings",
+                    datetime(2024, 9, 18, 16, 0, 0, tzinfo=UTC),
+                )
+            ]
+        )
+        games = pd.DataFrame({"game_id": ["2024_W03_DAL@BAL"], "kickoff_et": [pd.NaT]})
+
+        with pytest.raises(MissingKickoffError, match="2024_W03_DAL@BAL"):
+            MarketAnchorFeaturesCalculator().select_snapshot_lines_at_lock(
+                odds_df, games
+            )

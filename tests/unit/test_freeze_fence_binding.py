@@ -1,22 +1,24 @@
-"""The per-game freeze is a BINDING REFUSAL at selection time, not a descriptive value.
+"""The per-game lock is a BINDING REFUSAL at selection time, not a descriptive value.
 
-Phase 33, Plan 33-05 Task 1 (COLD-03, R6, D33-27/28).
+Phase 33, Plan 33-05 Task 1 (COLD-03, R6, D33-27/28); re-expressed on the day-before lock by
+Plan 33.2-02 (D33.2-01, D33.2-18).
 
 WHAT WAS MISSING AND WHY IT MATTERS
 -----------------------------------
 ``backtest.weekly_bet_list._is_frozen`` only protects an ALREADY-STORED row from being
-overwritten during an upsert. Nothing refused to EMIT a row whose game freeze was already
-past. The Friday 6 PM freeze lands roughly 26 hours AFTER that week's Thursday kickoff, so a
-Thursday-night row selected on the Friday would carry a post-hoc pick wearing a pre-game
-timestamp -- the repudiation failure COLD-03 exists to prevent (T-33-21).
+overwritten during an upsert. Nothing refused to EMIT a row decided after its game's lock, so a
+row selected late would carry a post-hoc pick wearing a pre-game timestamp -- the repudiation
+failure COLD-03 exists to prevent (T-33-21).
 
-THE FENCE IS ``>=`` AND THAT IS DELIBERATE
-------------------------------------------
-``_is_frozen`` has returned ``now >= freeze_dt`` since Plan 31-17 and this plan KEEPS IT.
-A game whose freeze equals the run instant TO THE SECOND is REFUSED, because at that instant
-the market has frozen and any pick made now is made with the frozen line in hand. The three
-clock positions below -- one second after, exactly at, one second before -- are the whole
-content of that claim.
+THE REFUSAL'S SUBJECT AND DIRECTION BOTH CHANGED, DELIBERATELY (Plan 33.2-02)
+----------------------------------------------------------------------------
+The fence used to refuse when the RUN started at or after the freeze (``now >= freeze``). Under
+D33.2-18 the daily run captures before the lock and builds after it, so a run STARTING after a
+lock is normal; what is refused now is a DECISION whose inputs were captured after the lock,
+``decided_at > lock``. At-lock information is admissible under D33.2-01, so a decision exactly
+AT the lock now yields a row. The three clock positions below -- one second after, exactly at,
+one second before -- are the whole content of that claim, and the at-lock case is the one whose
+verdict flipped.
 
 WHY A STRICT PARSE WRAPPER RATHER THAN A WIDENED PARSER (D33-27, T-33-23)
 ------------------------------------------------------------------------
@@ -50,23 +52,25 @@ import pandas as pd
 import pytest
 
 from backtest.weekly_bet_list import (
-    FreezePassedError,
-    select_games_for_freeze_instant,
+    LockPassedError,
+    select_games_for_decision_instant,
 )
 from scripts.ingest_historical_odds import (
     NaiveTimestampError,
-    get_synthetic_snapshot_ts,
+    gameday_lock,
     normalize_snapshot_ts,
     require_aware_snapshot_ts,
 )
 
 EASTERN = ZoneInfo("America/New_York")
 
-# Week 2's own Friday instant in the real 2026 season, MEASURED rather than assumed:
-# get_synthetic_snapshot_ts("2026-09-20") is 2026-09-18T22:00:00+00:00.
+# Week 2's Sunday slate locks at Saturday 2026-09-19 18:00 ET = 22:00 UTC, MEASURED through the
+# one rule rather than assumed. The Monday game (Sunday lock) and the week-3 Thursday game
+# (Wednesday lock) each lock at a DIFFERENT instant, which is what makes them scoping controls.
 _WEEK_2_SUNDAY = "2026-09-20"
 _WEEK_2_MONDAY = "2026-09-21"
 _WEEK_3_THURSDAY = "2026-09-24"
+_WEEK_2_SUNDAY_LOCK_UTC = "2026-09-19T22:00:00+00:00"
 
 # One second, the granularity the three clock positions are separated by. A whole second
 # rather than a microsecond here because the claim is about the OPERATOR (>= against >), and a
@@ -75,16 +79,22 @@ _ONE_SECOND = timedelta(seconds=1)
 
 
 def _schedule() -> pd.DataFrame:
-    """A constructed two-week slate whose games SHARE one freeze instant.
+    """A constructed slate: two Sunday games sharing one lock, plus two other-lock controls.
 
-    Week 2's Sunday and Monday games and week 3's Thursday game all take the Friday
-    2026-09-18 18:00 ET freeze -- that sharing is D33-28's whole point and is asserted from
-    the one freeze rule rather than hand-typed.
+    Week 2's two Sunday games both take the Saturday 2026-09-19 18:00 ET lock; the Monday game
+    and the week-3 Thursday game lock on other days. The sharing is asserted from the one rule
+    rather than hand-typed.
     """
     return pd.DataFrame(
         [
             {
                 "game_id": "2026_02_CAR_ATL",
+                "season": 2026,
+                "week": 2,
+                "gameday": _WEEK_2_SUNDAY,
+            },
+            {
+                "game_id": "2026_02_SEA_KC",
                 "season": 2026,
                 "week": 2,
                 "gameday": _WEEK_2_SUNDAY,
@@ -105,8 +115,11 @@ def _schedule() -> pd.DataFrame:
     )
 
 
-def _week_2_friday_instant() -> datetime:
-    return get_synthetic_snapshot_ts(_WEEK_2_SUNDAY)
+def _week_2_sunday_lock() -> datetime:
+    return gameday_lock(_WEEK_2_SUNDAY)
+
+
+_SUNDAY_GAMES = {"2026_02_CAR_ATL", "2026_02_SEA_KC"}
 
 
 # ---------------------------------------------------------------------------
@@ -203,105 +216,179 @@ class TestEveryAwareShapeTheParserDocumentsStillResolves:
 # ---------------------------------------------------------------------------
 
 
-class TestSelectionRefusesAGameWhoseFreezeHasPassed:
-    """R6: a past-freeze game is refused BY NAME -- never emitted, never silently dropped."""
+class TestSelectionRefusesADecisionAfterTheLock:
+    """R6: a post-lock decision is refused BY NAME -- never emitted, never silently dropped."""
 
-    def test_one_second_after_the_freeze_selection_raises_naming_the_game(self) -> None:
-        instant = _week_2_friday_instant()
-        with pytest.raises(FreezePassedError) as excinfo:
-            select_games_for_freeze_instant(
-                _schedule(), instant, now=instant + _ONE_SECOND
+    def test_the_measured_lock_is_saturday_evening_eastern(self) -> None:
+        assert _week_2_sunday_lock().isoformat() == "2026-09-19T18:00:00-04:00"
+        assert require_aware_snapshot_ts(_week_2_sunday_lock()).isoformat() == (
+            _WEEK_2_SUNDAY_LOCK_UTC
+        )
+
+    def test_one_second_after_the_lock_selection_raises_naming_the_game(self) -> None:
+        instant = _week_2_sunday_lock()
+        with pytest.raises(LockPassedError) as excinfo:
+            select_games_for_decision_instant(
+                _schedule(), instant, decided_at=instant + _ONE_SECOND
             )
 
         message = str(excinfo.value)
         assert "2026_02_CAR_ATL" in message
         # BOTH instants are named, so the reader can see which side of the fence it is on.
-        assert instant.isoformat() in message
-        assert (instant + _ONE_SECOND).isoformat() in message
+        assert require_aware_snapshot_ts(instant).isoformat() in message
+        assert require_aware_snapshot_ts(instant + _ONE_SECOND).isoformat() in message
 
-    def test_exactly_at_the_freeze_instant_selection_raises_because_the_fence_is_ge(
-        self,
-    ) -> None:
-        """The equality edge, stated explicitly: ``>=`` refuses, ``>`` would admit.
+    def test_exactly_at_the_lock_the_row_is_emitted(self) -> None:
+        """The equality edge, stated explicitly, and it is the verdict that FLIPPED.
 
-        This is the operator ``_is_frozen`` has carried since Plan 31-17 and that this plan
-        keeps unchanged. A test that only covered one-second-after would pass under either
-        operator and would therefore assert nothing about the edge.
+        At-lock information is admissible (D33.2-01), so a decision whose inputs were captured
+        exactly at the lock is a legitimate decision. The retired fence refused this instant;
+        a test that only covered one-second-after would pass under either operator and would
+        therefore assert nothing about the edge.
         """
-        instant = _week_2_friday_instant()
-        with pytest.raises(FreezePassedError):
-            select_games_for_freeze_instant(_schedule(), instant, now=instant)
-
-    def test_one_second_before_the_freeze_the_row_is_emitted(self) -> None:
-        instant = _week_2_friday_instant()
-        selected = select_games_for_freeze_instant(
-            _schedule(), instant, now=instant - _ONE_SECOND
+        instant = _week_2_sunday_lock()
+        selected = select_games_for_decision_instant(
+            _schedule(), instant, decided_at=instant
         )
+        assert set(selected["game_id"]) == _SUNDAY_GAMES
 
-        assert set(selected["game_id"]) == {
-            "2026_02_CAR_ATL",
-            "2026_02_LV_NYJ",
-            "2026_03_ATL_GB",
-        }
+    def test_one_second_before_the_lock_the_row_is_emitted(self) -> None:
+        instant = _week_2_sunday_lock()
+        selected = select_games_for_decision_instant(
+            _schedule(), instant, decided_at=instant - _ONE_SECOND
+        )
+        assert set(selected["game_id"]) == _SUNDAY_GAMES
+
+    def test_the_run_start_is_not_an_input_only_the_decision_instant_is(self) -> None:
+        """A run that STARTS after the lock but decided on pre-lock inputs still emits.
+
+        The daily run captures before the lock and builds after it (D33.2-18), so its start
+        is routinely past the lock. The fence takes no run clock at all -- only the explicit
+        decision instant -- so a late start cannot turn a clean decision into a refusal.
+        """
+        import inspect
+
+        params = set(inspect.signature(select_games_for_decision_instant).parameters)
+        assert "decided_at" in params
+        assert "now" not in params, "the fence must not read the run's own clock"
+
+        instant = _week_2_sunday_lock()
+        captured_before_lock = instant - timedelta(minutes=30)
+        selected = select_games_for_decision_instant(
+            _schedule(), instant, decided_at=captured_before_lock
+        )
+        assert set(selected["game_id"]) == _SUNDAY_GAMES
+
+    def test_the_refusal_is_not_catchable_as_a_value_error(self) -> None:
+        """LockPassedError stays a RuntimeError, outside the absent-input ValueError tuple."""
+        instant = _week_2_sunday_lock()
+        assert issubclass(LockPassedError, RuntimeError)
+        assert not issubclass(LockPassedError, ValueError)
+
+        caught_as_value_error = False
+        with pytest.raises(LockPassedError):
+            try:
+                select_games_for_decision_instant(
+                    _schedule(), instant, decided_at=instant + _ONE_SECOND
+                )
+            except ValueError:
+                caught_as_value_error = True
+        assert caught_as_value_error is False
 
     def test_a_game_belonging_to_a_different_instant_is_simply_not_selected(
         self,
     ) -> None:
-        """Scoping is not refusing. A week-1 game is OUT OF SCOPE for week 2's instant.
+        """Scoping is not refusing. Monday and Thursday games are OUT OF SCOPE here.
 
-        It is absent because its freeze is a DIFFERENT instant, not because the fence
-        refused it -- so nothing raises. Keeping those two outcomes distinct is what makes
-        ``FreezePassedError`` a tripwire rather than an ordinary control-flow signal.
+        They are absent because their locks are DIFFERENT instants, not because the fence
+        refused them -- so nothing raises. Keeping the two outcomes distinct is what makes
+        ``LockPassedError`` a tripwire rather than an ordinary control-flow signal.
         """
-        schedule = pd.concat(
-            [
-                _schedule(),
-                pd.DataFrame(
-                    [
-                        {
-                            "game_id": "2026_01_NE_SEA",
-                            "season": 2026,
-                            "week": 1,
-                            "gameday": "2026-09-13",
-                        }
-                    ]
-                ),
-            ],
-            ignore_index=True,
+        instant = _week_2_sunday_lock()
+        selected = select_games_for_decision_instant(
+            _schedule(), instant, decided_at=instant
         )
-        instant = _week_2_friday_instant()
-        selected = select_games_for_freeze_instant(
-            schedule, instant, now=instant - _ONE_SECOND
-        )
-        assert "2026_01_NE_SEA" not in set(selected["game_id"])
+        assert "2026_02_LV_NYJ" not in set(selected["game_id"])
+        assert "2026_03_ATL_GB" not in set(selected["game_id"])
 
-    def test_a_naive_run_clock_raises_rather_than_being_assumed_utc(self) -> None:
+    def test_a_naive_decision_instant_raises_rather_than_being_assumed_utc(
+        self,
+    ) -> None:
         """Both sides of the comparison go through the strict wrapper (R6 timezone edge)."""
-        naive_now = datetime(2026, 9, 18, 17, 59)
+        naive_decision = datetime(2026, 9, 19, 17, 59)
         with pytest.raises(NaiveTimestampError):
-            select_games_for_freeze_instant(
-                _schedule(), _week_2_friday_instant(), now=naive_now
+            select_games_for_decision_instant(
+                _schedule(), _week_2_sunday_lock(), decided_at=naive_decision
             )
 
-    def test_the_per_game_freeze_is_never_re_derived_here(self) -> None:
-        """The selected set is exactly the set the ONE freeze rule assigns to this instant.
+    def test_the_per_game_lock_is_never_re_derived_here(self) -> None:
+        """The selected set is exactly the set the ONE lock rule assigns to this instant.
 
-        Asserted against ``get_synthetic_snapshot_ts`` per row rather than against a
-        hand-written date arithmetic, so a second "the prior Friday" implementation inside
-        the selection would show up as a disagreement.
+        Asserted against ``gameday_lock`` (which hands the date to ``utils.game_lock``) per row,
+        rather than against hand-written date arithmetic, so a second rule inside the selection
+        would show up as a disagreement.
         """
         schedule = _schedule()
-        instant = _week_2_friday_instant()
+        instant = _week_2_sunday_lock()
         expected = {
             str(row.game_id)
             for row in schedule.itertuples()
-            if get_synthetic_snapshot_ts(str(row.gameday)) == instant
+            if gameday_lock(str(row.gameday)) == instant
         }
-        selected = select_games_for_freeze_instant(
-            schedule, instant, now=instant - _ONE_SECOND
+        selected = select_games_for_decision_instant(
+            schedule, instant, decided_at=instant
         )
         assert set(selected["game_id"]) == expected
-        assert expected, "the fixture shares no freeze instant -- the check is vacuous"
+        assert expected == _SUNDAY_GAMES, (
+            "the fixture's lock sharing is not what it claims"
+        )
+
+
+class TestExcludedGamesAreDroppedBeforeTheCheck:
+    """D33.2-05: a game the run chose to skip is removed from scope BEFORE the refusal."""
+
+    def test_an_excluded_game_is_absent_and_the_clean_game_is_kept(self) -> None:
+        instant = _week_2_sunday_lock()
+        selected = select_games_for_decision_instant(
+            _schedule(),
+            instant,
+            decided_at=instant,
+            excluded_game_ids=frozenset({"2026_02_CAR_ATL"}),
+        )
+        assert set(selected["game_id"]) == {"2026_02_SEA_KC"}
+
+    def test_an_excluded_game_past_its_lock_does_not_raise(self) -> None:
+        """A game skipped for a post-lock input is usually a game whose lock has passed.
+
+        Checking before excluding would raise for a game the run had already decided not to
+        bet, turning one clean skip into a failure that costs the day's clean games too.
+        """
+        instant = _week_2_sunday_lock()
+        selected = select_games_for_decision_instant(
+            _schedule(),
+            instant,
+            decided_at=instant + _ONE_SECOND,
+            excluded_game_ids=frozenset(_SUNDAY_GAMES),
+        )
+        assert selected.empty
+
+    def test_the_default_is_an_empty_frozenset_and_changes_nothing(self) -> None:
+        import inspect
+
+        param = inspect.signature(select_games_for_decision_instant).parameters[
+            "excluded_game_ids"
+        ]
+        assert param.default == frozenset()
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+
+        instant = _week_2_sunday_lock()
+        with_default = select_games_for_decision_instant(
+            _schedule(), instant, decided_at=instant
+        )
+        explicit_empty = select_games_for_decision_instant(
+            _schedule(), instant, decided_at=instant, excluded_game_ids=frozenset()
+        )
+        pd.testing.assert_frame_equal(with_default, explicit_empty)
 
 
 # ---------------------------------------------------------------------------

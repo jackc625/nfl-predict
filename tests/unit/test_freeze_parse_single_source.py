@@ -1,6 +1,10 @@
-"""ONE strict parse helper serves all three freeze comparisons, proven BY IDENTITY.
+"""ONE strict parse helper serves all three lock comparisons, proven BY IDENTITY.
 
-Phase 33, Plan 33-05 Task 1 (COLD-03, D33-27, T-33-23).
+Phase 33, Plan 33-05 Task 1 (COLD-03, D33-27, T-33-23); retargeted by Plan 33.2-02 at the
+successors of the retired freeze functions -- ``select_games_for_decision_instant`` and each
+game's lock read through ``utils.game_lock`` -- with all four structural controls kept. This
+module is the direct ancestor of ``tests/unit/test_one_lock_rule_source_scan.py``, which makes
+the same identity argument about the lock rule itself.
 
 WHY IDENTITY AND NOT A SOURCE GREP
 ----------------------------------
@@ -16,15 +20,23 @@ planted-violation companions -- it answers a different question (is the helper n
 function's own body, so a future reader can see the single source without running anything)
 and it is the check that fails if somebody re-introduces the silent UTC assumption.
 
+WHY THE DELEGATE CAN SEE THE CALLS AT ALL
+-----------------------------------------
+Every reader of ``require_aware_snapshot_ts`` imports it INSIDE the function body, so the import
+re-executes per call and ``monkeypatch.setattr(odds_module, ...)`` is seen. A module-level
+``from ... import name`` would bind once and the counter would miss that reader entirely --
+which is why the lock-rule scan asserts the same discipline for ``utils.game_lock``.
+
 THE THREE CALL SITES
 --------------------
 1. ``_is_frozen`` -- the upsert-time fence protecting an already-stored row.
-2. ``select_games_for_freeze_instant`` -- the EMISSION-time fence this plan adds (R6).
+2. ``select_games_for_decision_instant`` -- the EMISSION-time fence (R6), refusing a decision
+   after the game's lock.
 3. ``assert_decided_at_before_freeze`` -- the WRITE-time assertion that a row's own
-   observation time is at or before its own game freeze (R7).
+   observation time is at or before its own game's lock (R7).
 
-They sit on OPPOSITE SIDES of the same boundary and both go through one parse, which is the
-only way the two fences can be reasoned about together at all.
+The emission and write fences use the SAME operator (``<=``, at-lock admissible) and both go
+through one parse, which is the only way the two can be reasoned about together at all.
 
 Run this module:  uv run pytest tests/unit/test_freeze_parse_single_source.py -q
 
@@ -47,14 +59,15 @@ from backtest import weekly_bet_list
 from backtest.weekly_bet_list import (
     DECIDED_AT_COLUMN,
     assert_decided_at_before_freeze,
-    select_games_for_freeze_instant,
+    select_games_for_decision_instant,
 )
 
 _STRICT_PARSER_NAME = "require_aware_snapshot_ts"
 
-# Week 3's Thursday game and the instant it shares with week 2's Sunday slate.
+# Week 3's Thursday game and its own Wednesday lock, as a stored row would carry it.
 _THURSDAY_GAMEDAY = "2026-09-24"
-_FREEZE_TEXT = "2026-09-18T18:00:00-04:00"
+_FREEZE_TEXT = "2026-09-23T18:00:00-04:00"
+_DECIDED_BEFORE_LOCK = "2026-09-23T17:59:59-04:00"
 
 
 class _CountingParser:
@@ -122,18 +135,16 @@ class TestAllThreeCallSitesReachTheSameHelperObject:
     def test_the_selection_fence_reaches_the_shared_parser(
         self, counting_parser: _CountingParser
     ) -> None:
-        instant = odds_module.get_synthetic_snapshot_ts(_THURSDAY_GAMEDAY)
-        select_games_for_freeze_instant(
-            _schedule(), instant, now=instant - timedelta(seconds=1)
+        instant = odds_module.gameday_lock(_THURSDAY_GAMEDAY)
+        select_games_for_decision_instant(
+            _schedule(), instant, decided_at=instant - timedelta(seconds=1)
         )
         assert len(counting_parser.calls) >= 1
 
     def test_the_write_time_assertion_reaches_the_shared_parser(
         self, counting_parser: _CountingParser
     ) -> None:
-        assert_decided_at_before_freeze(
-            _forward_row(decided_at="2026-09-18T17:59:59-04:00")
-        )
+        assert_decided_at_before_freeze(_forward_row(decided_at=_DECIDED_BEFORE_LOCK))
         assert len(counting_parser.calls) >= 1
 
     def test_all_three_increment_ONE_counter_in_a_single_run(
@@ -145,7 +156,7 @@ class TestAllThreeCallSitesReachTheSameHelperObject:
         contribution to this single counter would be zero and the deltas below would not all
         be positive.
         """
-        instant = odds_module.get_synthetic_snapshot_ts(_THURSDAY_GAMEDAY)
+        instant = odds_module.gameday_lock(_THURSDAY_GAMEDAY)
 
         before_fence = len(counting_parser.calls)
         weekly_bet_list._is_frozen(
@@ -154,14 +165,12 @@ class TestAllThreeCallSitesReachTheSameHelperObject:
         )
         after_fence = len(counting_parser.calls)
 
-        select_games_for_freeze_instant(
-            _schedule(), instant, now=instant - timedelta(seconds=1)
+        select_games_for_decision_instant(
+            _schedule(), instant, decided_at=instant - timedelta(seconds=1)
         )
         after_selection = len(counting_parser.calls)
 
-        assert_decided_at_before_freeze(
-            _forward_row(decided_at="2026-09-18T17:59:59-04:00")
-        )
+        assert_decided_at_before_freeze(_forward_row(decided_at=_DECIDED_BEFORE_LOCK))
         after_write = len(counting_parser.calls)
 
         assert after_fence > before_fence, "_is_frozen did not reach the shared parser"
@@ -189,7 +198,7 @@ def names_the_strict_parser(function: Callable[..., Any]) -> bool:
 
 _SCANNED_FUNCTIONS: tuple[Callable[..., Any], ...] = (
     weekly_bet_list._is_frozen,
-    select_games_for_freeze_instant,
+    select_games_for_decision_instant,
     assert_decided_at_before_freeze,
 )
 

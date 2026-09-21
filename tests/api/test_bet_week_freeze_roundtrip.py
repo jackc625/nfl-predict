@@ -28,12 +28,13 @@ import pytest
 from api.cache import CACHE_SCHEMA, materialize_bet_week_freeze
 from api.routes.pages import _as_utc, _is_bet_cache_stale
 from api.services import DataService, clear_cache
-from scripts.ingest_historical_odds import get_synthetic_snapshot_ts
+from scripts.ingest_historical_odds import gameday_lock
 
 _SEASON = 2025
 _WEEK = 2
-# A Friday-night gameday, so its own freeze is the PRIOR Friday 6 PM ET -- the real rule, taken
-# from the one source, not a hand-authored instant.
+# A Sunday gameday, so its own lock is Saturday 18:00 ET -- the real rule (D33.2-01), taken from
+# the one source, not a hand-authored instant. The cache column keeps its published name
+# ``latest_game_freeze_ts`` (a rename is HOST-07's schema change); only the instant changed.
 _GAMEDAY = "2025-09-14"
 
 # Every zone the shift would be a different size in. America/New_York is the machine this was
@@ -79,7 +80,7 @@ def test_the_freeze_instant_survives_storage_unshifted(
     tmp_path: Path, session_tz: str
 ) -> None:
     """materialize -> close -> reopen -> get_bet_week_freeze -> _as_utc is the IDENTITY (CR-01)."""
-    expected = get_synthetic_snapshot_ts(_GAMEDAY)
+    expected = gameday_lock(_GAMEDAY)
     db_path = tmp_path / f"freeze_{session_tz.replace('/', '_')}.duckdb"
 
     _write_freeze(db_path, session_tz, pd.Timestamp(expected))
