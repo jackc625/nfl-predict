@@ -520,13 +520,16 @@ class TestThePostseasonIsPresentInTheLiveStore:
 
 
 @pytest.mark.integration
-class TestTheSeasonTypeConsumerNowReadsARealValue:
-    """`utils/similar_games.py` read season_type with a game_type fallback.
+class TestAFallbackReadOfSeasonTypeSeesARealPartition:
+    """A season_type read with a game_type fallback resolves to a real partition.
 
-    It has always had the fallback; what it has never had is a season_type worth
-    reading. Resolving is not the same as MATTERING, so both are asserted: the
-    fallback resolves to more than one distinct value across the store, and the
-    term it feeds changes the similarity score.
+    RETARGETED by Plan 33.2-05. This class used to name ``utils/similar_games.py``,
+    the one reader of season_type with a game_type fallback, and asserted both that the
+    fallback resolves to more than one value and that the engine's similarity term
+    MATTERED. D33.2-22 deleted that module; no surviving production module reads
+    season_type. The resolving half is about the stored GAMES table and is kept, for
+    any reader of that shape. The engine-weight half is deleted BY NAMED RULING
+    (D33.2-22): the engine it measured no longer exists.
     """
 
     def test_the_fallback_resolves_to_more_than_one_distinct_value(self) -> None:
@@ -536,33 +539,12 @@ class TestTheSeasonTypeConsumerNowReadsARealValue:
             for row in frame.to_dict("records")
         }
         assert len(resolved) > 1, (
-            f"the consumer's `target.get('season_type', target.get('game_type'))` "
-            f"resolves to {sorted(resolved)} across the whole store. A single value "
-            "means the season-type term contributes the same constant to every "
-            "comparison, which is what it did before this migration."
+            f"`row.get('season_type', row.get('game_type'))` resolves to "
+            f"{sorted(resolved)} across the whole store. A single value means any "
+            "reader partitioning on it receives a constant, which is what it did "
+            "before this migration."
         )
         assert resolved == {"Regular", "Postseason"}
-
-    def test_the_season_type_term_changes_the_similarity_score(self) -> None:
-        """It must MATTER, not merely resolve. Isolated by holding week fixed."""
-        from utils.similar_games import SimilarGamesEngine
-
-        frame = _live_games()
-        regular = frame[frame["season_type"] == "Regular"].iloc[0].copy()
-        postseason = frame[frame["season_type"] == "Postseason"].iloc[0].copy()
-        # Hold the week term constant so the only moving part is season_type.
-        postseason["week"] = regular["week"]
-        twin = regular.copy()
-
-        engine = SimilarGamesEngine()
-        same = engine._calculate_context_similarity(regular, twin)
-        different = engine._calculate_context_similarity(regular, postseason)
-        assert same - different == pytest.approx(0.4), (
-            "the season_type term is worth exactly 0.4 in "
-            "_calculate_context_similarity; measured "
-            f"{same} vs {different}. If it is now 0.0 the consumer is reading a "
-            "constant again."
-        )
 
 
 # ---------------------------------------------------------------------------

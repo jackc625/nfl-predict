@@ -42,7 +42,6 @@ import pytest
 
 from scripts.ingest_games import GameDataIngester, _derive_season_type
 from tests.fixtures.season_2026 import WEEK_19_POSTSEASON_FIXTURE
-from utils.similar_games import SimilarGamesEngine
 
 POSTSEASON = "Postseason"
 REGULAR = "Regular"
@@ -208,21 +207,29 @@ def test_a_frame_with_no_postseason_rows_yields_an_empty_bucket_and_raises_nothi
 
 
 # ---------------------------------------------------------------------------
-# The live consumer: utils/similar_games.py's fallback read.
+# A season_type read with a game_type fallback.
+#
+# RETARGETED by Plan 33.2-05. This section used to exercise utils/similar_games.py,
+# the one module that read season_type with a game_type fallback. D33.2-22 deleted that
+# module (it read Elo side tables that were deleted with it), and no surviving
+# production module reads season_type at all -- scripts/ingest_games.py WRITES it. The
+# intent was always about the GAMES table: that a reader falling back to game_type gets
+# the derived partition value, not the feed's raw code. That is kept below, stated for
+# any such reader. The engine's 0.4 similarity weight is deleted BY NAMED RULING
+# (D33.2-22): its subject no longer exists.
 # ---------------------------------------------------------------------------
 
 
-def test_the_similar_games_fallback_read_resolves_to_the_real_value(
+def test_a_fallback_read_of_season_type_resolves_to_the_derived_value(
     postseason_silver: pd.DataFrame,
     regular_season_silver: pd.DataFrame,
 ) -> None:
-    """``target.get("season_type", target.get("game_type"))`` returns the stored value.
+    """``row.get("season_type", row.get("game_type"))`` returns the DERIVED value.
 
-    ``utils/similar_games.py`` reads ``season_type`` with ``game_type`` as a fallback.
     The fallback exists for frames predating the derivation, and the risk is that it is
-    silently ALWAYS taken -- in which case the similarity engine would be comparing
-    ``WC`` against ``REG`` rather than ``Postseason`` against ``Regular``, and would
-    still look like it worked.
+    silently ALWAYS taken -- in which case a reader would be comparing ``WC`` against
+    ``REG`` rather than ``Postseason`` against ``Regular``, and would still look like it
+    worked.
     """
     postseason_row = postseason_silver.iloc[0]
     regular_row = regular_season_silver.iloc[0]
@@ -231,34 +238,6 @@ def test_the_similar_games_fallback_read_resolves_to_the_real_value(
         POSTSEASON
     ), "the postseason row's fallback read resolved to the feed's game_type."
     assert regular_row.get("season_type", regular_row.get("game_type")) == REGULAR
-
-
-def test_the_season_type_term_is_worth_exactly_its_documented_weight(
-    tmp_path, postseason_silver: pd.DataFrame
-) -> None:
-    """The read is not merely resolvable -- it CHANGES the engine's score.
-
-    Two pairs identical in every other respect (same week, same day-of-week flags) so
-    the only moving part is ``season_type``. The engine adds 0.4 when the types match,
-    which is the whole contribution the partition buys.
-
-    The engine is constructed against a path under ``tmp_path``; it opens no connection
-    at construction and this test calls no method that would.
-    """
-    engine = SimilarGamesEngine(db_path=str(tmp_path / "unused.duckdb"))
-
-    target = postseason_silver.iloc[0]
-    same_type = postseason_silver.iloc[1]
-    other_type = postseason_silver.iloc[1].copy()
-    other_type["season_type"] = REGULAR
-
-    matched = engine._calculate_context_similarity(target, same_type)
-    mismatched = engine._calculate_context_similarity(target, other_type)
-
-    assert matched - mismatched == pytest.approx(0.4), (
-        f"the season_type term contributed {matched - mismatched} rather than 0.4 "
-        f"(matched={matched}, mismatched={mismatched})."
-    )
 
 
 # ---------------------------------------------------------------------------

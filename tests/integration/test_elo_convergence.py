@@ -143,9 +143,10 @@ class TestEloConvergence:
 # result is a pure function of (prior terminal state, this season's completed games),
 # so a rerun is idempotent BY CONSTRUCTION rather than by bookkeeping. A persisted
 # watermark was considered and rejected: it is a second piece of state that can drift
-# from the ratings it describes, and `load_ratings` already repopulates `hfa_by_season`
-# from JSON (ratings/elo.py:638-639) -- adding a second JSON-backed guard beside a
-# fragile one is not an improvement.
+# from the ratings it describes, and `load_ratings` already repopulated `hfa_by_season`
+# from JSON -- adding a second JSON-backed guard beside a fragile one was not an
+# improvement. (`load_ratings` and its JSON file were deleted with the legacy Elo pass
+# by D33.2-22, Plan 33.2-05; nothing reads Elo state back from disk any more.)
 #
 # CARRYOVER-ONCE HAS A STATIC HALF AND A DYNAMIC HALF. R2's 4-decimal carryover
 # criterion is the STATIC half: it checks the 75/25 formula on one application. This
@@ -176,7 +177,9 @@ from tests.fixtures.elo_sandbox import (
 
 PRIOR_SEASON = 2025
 LIVE_SEASON = 2026
-ROW_TABLES = ("elo_game_snapshots", "games_with_elo", "elo_rating_history")
+# Read from the module that DEFINES the set. D33.2-22 narrowed it to the snapshot
+# table; the rerun-identity arms below assert over whatever the set is.
+from scripts.elo_generation import ELO_ROW_TABLES as ROW_TABLES
 
 
 def _two_season_frame(live_weeks: int = 2) -> pd.DataFrame:
@@ -192,12 +195,7 @@ def _two_season_frame(live_weeks: int = 2) -> pd.DataFrame:
 def _weekly_run(builder):
     """One whole weekly Elo run: re-derive the live season and persist it."""
     update = builder.update_current_season(season=LIVE_SEASON)
-    builder.save_live_append(
-        update.season,
-        snapshots=update.snapshots,
-        games_with_elo=update.games_with_elo,
-        rating_history=update.rating_history,
-    )
+    builder.save_live_append(update.season, snapshots=update.snapshots)
     return update
 
 

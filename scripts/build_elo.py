@@ -769,6 +769,11 @@ class EloBuilder:
             snapshots = order_snapshots_canonically(snapshots, self.load_games_data())
 
         def _publish_live() -> None:
+            # A single self-replacing file, never partition_cols (FIX-01, D-13). The
+            # partitioned form wrote into the SHARED data/silver/season=YYYY/ root,
+            # mixing Elo files with the weather/contextual/market feature tables and
+            # appending a new file on every run -- the ~30.7x bloat of a side table
+            # this module no longer writes.
             if len(snapshots) > 0:
                 save_dataframe(
                     snapshots,

@@ -44,7 +44,6 @@ instead of the singletons).
 
 from __future__ import annotations
 
-import pandas as pd
 import pytest
 
 from tests.fixtures.elo_sandbox import (
@@ -259,8 +258,6 @@ class TestTheRealResultReplacesTheProvisionalRowInPlace:
         builder.save_live_append(
             LIVE_SEASON,
             snapshots=update.snapshots,
-            games_with_elo=update.games_with_elo,
-            rating_history=update.rating_history,
         )
 
         # Friday: week 2 is scheduled and unplayed. Persist the provisional rows.
@@ -268,8 +265,6 @@ class TestTheRealResultReplacesTheProvisionalRowInPlace:
         builder.save_live_append(
             LIVE_SEASON,
             snapshots=provisional,
-            games_with_elo=pd.DataFrame(),
-            rating_history=pd.DataFrame(),
         )
 
         friday = read_sandbox_table(sandbox, "elo_game_snapshots")
@@ -291,8 +286,6 @@ class TestTheRealResultReplacesTheProvisionalRowInPlace:
         monday_builder.save_live_append(
             LIVE_SEASON,
             snapshots=monday.snapshots,
-            games_with_elo=monday.games_with_elo,
-            rating_history=monday.rating_history,
         )
 
         after = read_sandbox_table(sandbox, "elo_game_snapshots")

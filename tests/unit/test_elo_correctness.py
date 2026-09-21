@@ -318,6 +318,55 @@ class TestChronologicalOrdering:
         assert result.iloc[0]["game_id"] == "EARLY_GAME"
         assert result.iloc[1]["game_id"] == "LATE_GAME"
 
+    def test_the_canonical_chain_processes_games_in_date_order(self):
+        """The SURVIVING canonical entry point processes games in date order too.
+
+        Plan 33.2-05 (D33.2-22) deleted the builder's legacy per-season pass, the only
+        production caller of ``process_season_chronologically``. The per-season
+        primitive is kept and still tested above; this is the same intent -- games are
+        processed in date order -- asserted on the chain every Elo artifact now comes
+        from, fed the same out-of-order frame.
+        """
+        from scripts.build_elo import EloBuilder
+
+        games = pd.DataFrame(
+            [
+                {
+                    "game_id": "LATE_GAME",
+                    "season": 2024,
+                    "week": 2,
+                    "home_team": "KC",
+                    "away_team": "BUF",
+                    "home_score": 28,
+                    "away_score": 17,
+                    "kickoff_et": datetime(2024, 9, 14, 13, 0),
+                },
+                {
+                    "game_id": "EARLY_GAME",
+                    "season": 2024,
+                    "week": 1,
+                    "home_team": "BUF",
+                    "away_team": "KC",
+                    "home_score": 24,
+                    "away_score": 21,
+                    "kickoff_et": datetime(2024, 9, 7, 13, 0),
+                },
+            ]
+        )
+
+        rows = EloBuilder()._process_chain([2024], games=games, learn_from=games)
+
+        assert [row["game_id"] for row in rows] == ["EARLY_GAME", "LATE_GAME"]
+        # The two games share both teams, so order is observable in the VALUES too:
+        # the late game's pre-game rating must already reflect the early result.
+        early, late = rows
+        assert early["home_elo_pre"] == early["away_elo_pre"]
+        assert late["away_elo_pre"] > late["home_elo_pre"], (
+            "BUF won the early game, so going into the late game BUF (away) must be "
+            "rated above KC (home). Equal or reversed ratings mean the late game was "
+            "processed first."
+        )
+
 
 class TestUpdateRatingsDivisional:
     """Tests for divisional flag in update_ratings."""

@@ -20,10 +20,14 @@ different, nameable reason.
     4. Each team's 2026 week-1 pre-rating is its 2025 final with the season
        carryover applied EXACTLY ONCE, to four decimal places, for all 32 teams.
 
-D33-09 adds a fifth: ``games_with_elo`` and ``elo_rating_history`` each reconcile
-to 6,499 rows. A side table that did not reconcile would mean a SECOND unexplained
-divergence, so the number here stays at 6,499 and a failure is reported rather
-than absorbed by relaxing it.
+D33-09 added a fifth: ``games_with_elo`` and ``elo_rating_history`` each reconciled
+to the completed-game count, because a side table that did not would mean a SECOND
+unexplained divergence. D33.2-22 (Plan 33.2-05, owner ratified 2026-09-21) DELETED
+both side tables -- they were written by a legacy per-season pass that learned no
+home-field advantage and differed from the chain by up to 9.7 rating points. The
+intent survives as a stronger check: there is no second copy left to diverge, and
+the fifth check now asserts that none of the four deleted artifacts exists anywhere
+under ``data/silver/``, at the root or inside any staged generation.
 
 WHY THE BAND IS IMPORTED AND NEVER MEASURED HERE
 ------------------------------------------------
@@ -66,7 +70,6 @@ import pytest
 from tests.phase33_state import (
     ELO_RATING_BAND_FROZEN,
     ELO_SEASON_COVERAGE,
-    ELO_SIDE_TABLE_ROW_COUNTS,
     ELO_SNAPSHOT_COLUMNS_AFTER_REDERIVATION,
     ELO_SNAPSHOT_ROWS_AFTER_REDERIVATION,
 )
@@ -74,8 +77,15 @@ from tests.phase33_state import (
 SILVER = Path("data") / "silver"
 SNAPSHOTS_PATH = SILVER / "elo_game_snapshots.parquet"
 GAMES_PATH = SILVER / "games.parquet"
-GAMES_WITH_ELO_PATH = SILVER / "games_with_elo.parquet"
-RATING_HISTORY_PATH = SILVER / "elo_rating_history.parquet"
+
+# The four Elo artifacts D33.2-22 deleted, by FILENAME, so the absence check covers the
+# silver root and every staged generation directory with one walk.
+DELETED_ELO_ARTIFACT_FILENAMES: tuple[str, ...] = (
+    "games_with_elo.parquet",
+    "elo_rating_history.parquet",
+    "elo_ratings_current.parquet",
+    "elo_ratings.json",
+)
 
 # The first season of the canonical burn-in and the season the chain must end on.
 FIRST_SEASON, LAST_SEASON = ELO_SEASON_COVERAGE
@@ -441,52 +451,33 @@ def test_the_provisional_week_one_snapshot_reads_the_carried_forward_rating(
 
 
 # ---------------------------------------------------------------------------
-# D33-09 -- the two side tables reconcile to 6,499 rows. The number does not move.
+# D33-09, re-expressed under D33.2-22: no second copy of the chain survives.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("table", "expected_rows"),
-    ELO_SIDE_TABLE_ROW_COUNTS,
-    ids=[name for name, _rows in ELO_SIDE_TABLE_ROW_COUNTS],
-)
-def test_the_side_tables_reconcile_to_the_completed_game_count(
-    table, expected_rows, completed_games
-):
-    """``games_with_elo`` and ``elo_rating_history`` each hold one row per completed game.
+def test_no_deleted_elo_artifact_survives_anywhere_under_silver():
+    """The four deleted side stores are absent at the root AND in every generation.
 
-    IF EITHER DOES NOT, that is a finding to report -- a second unexplained
-    divergence beside the one this phase already exists to fix -- and the
-    assertion stays where it is. Relaxing the number to match whatever was
-    produced would hide exactly the thing worth seeing.
+    D33-09 reconciled two of them against the chain because a side table that
+    disagreed would be a second, unexplained answer. D33.2-22 removed the pass that
+    wrote them, so the right check is that no copy is left at all -- including the
+    staged copies inside ``elo_generations/<id>/``, which a root-only check would miss.
     """
-    path = SILVER / f"{table}.parquet"
-    frame = pd.read_parquet(path, engine="pyarrow")
-
-    assert len(frame) == expected_rows, (
-        f"{path.as_posix()} holds {len(frame)} rows against an expected "
-        f"{expected_rows}. Do not relax this number to match the output: the two "
-        "side tables are derived from the same 6,499 completed games as the "
-        "snapshot chain, so a disagreement means a second unexplained divergence."
+    survivors = sorted(
+        path.as_posix()
+        for path in SILVER.rglob("*")
+        if path.name in DELETED_ELO_ARTIFACT_FILENAMES
     )
-    assert len(frame) == len(completed_games), (
-        f"{path.as_posix()} holds {len(frame)} rows against "
-        f"{len(completed_games)} completed games in {GAMES_PATH.as_posix()}."
+    assert survivors == [], (
+        f"deleted Elo side stores are still on disk: {survivors}. D33.2-22 removed "
+        "the legacy pass and its four stores together; a surviving copy is a second "
+        "answer that nothing keeps in step with elo_game_snapshots."
     )
 
 
-@pytest.mark.parametrize(
-    "path",
-    [GAMES_WITH_ELO_PATH, RATING_HISTORY_PATH],
-    ids=["games_with_elo", "elo_rating_history"],
-)
-def test_the_side_tables_span_the_same_seasons_as_the_chain(path):
-    """A side table that ends early is a mixed generation wearing a full one's clothes."""
-    frame = pd.read_parquet(path, engine="pyarrow")
-    first, last = int(frame["season"].min()), int(frame["season"].max())
-    assert (first, last) == ELO_SEASON_COVERAGE, (
-        f"{path.as_posix()} spans {first}-{last}, not "
-        f"{FIRST_SEASON}-{LAST_SEASON}. The generation publisher validates that "
-        "the row tables end on the same terminal season, so a disagreement here "
-        "means something wrote outside it."
+def test_the_absence_check_walked_a_real_silver_layer(snapshots):
+    """Non-vacuity: the walk above found the snapshot table, so it looked somewhere."""
+    assert SNAPSHOTS_PATH.is_file() and len(snapshots) > 0, (
+        "the snapshot table is missing or empty, so an absence check over silver "
+        "would pass for the wrong reason."
     )

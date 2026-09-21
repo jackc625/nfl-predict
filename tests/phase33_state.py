@@ -14764,3 +14764,77 @@ PLAN_33_2_06_RESEAL_REASON: str = (
     "c2257ea removed only the dead gate wiring from the generator (stamp untouched). "
     "Owner ruling 2026-09-21, Option 1: keep the change and re-seal properly."
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-05 Task 3 -- ONE ELO COMPUTATION: THE NARROWED PUBLISH SET AND THE
+# DELETION OF THE FOUR LEGACY SIDE STORES (D33.2-22).
+#
+# APPENDED by Plan 33.2-05 on 2026-09-21. Nothing above this line was edited: the
+# Plan 33-03 slot (ELO_ROW_TABLE_NAMES, ELO_STATE_ARTIFACT_NAMES,
+# ELO_WRITE_SET_INCLUDING_DUCKDB) and the Plan 33-13 anchors stay as the record of the
+# five-artifact set that was true before this plan.
+#
+# OWNER RULING 2026-09-21, VERBATIM: "Delete + both writes" -- ratify-delete, AND yes
+# to both small production writes (re-sort elo_game_snapshots into canonical order,
+# value-preserving; narrow the live elo_generation.json pointer's artifacts map).
+#
+# WHAT CHANGED. The legacy per-season pass (EloBuilder.process_seasons_chronologically)
+# reset the rating system and re-ran each season alone, so home-field advantage fell
+# back to 48 every year, and it fed four side stores that differed from the snapshot
+# chain by up to 9.7 rating points. The pass, its writers, the four stores (at the
+# silver root, inside every staged generation, and as three DuckDB tables) and their
+# one reader, utils/similar_games.py, were deleted together. The generation publisher's
+# GUARANTEE is unchanged; only the SET it ranges over narrowed, to the one table below.
+# ---------------------------------------------------------------------------
+
+PLAN_33_2_05_ELO_ROW_TABLE_NAMES: tuple[str, ...] = ("elo_game_snapshots",)
+
+PLAN_33_2_05_ELO_STATE_ARTIFACT_NAMES: tuple[str, ...] = ()
+
+# Every path the two narrowed Elo write verbs touch, INCLUDING THE SHARED DUCKDB.
+PLAN_33_2_05_ELO_WRITE_SET_INCLUDING_DUCKDB: tuple[str, ...] = (
+    "data/silver/elo_game_snapshots.parquet",
+    "data/silver/elo_generation.json",
+    "data/silver/elo_generations/",
+    "data/nfl_predictions.duckdb",
+)
+
+# The deleted stores, by path relative to data/. The same four FILENAMES were also
+# deleted inside every data/silver/elo_generations/<id>/ directory, enumerated at run
+# time (a generation id is minted per run, so it is never transcribed here).
+PLAN_33_2_05_ELO_DELETED_ARTIFACTS: tuple[str, ...] = (
+    "silver/games_with_elo.parquet",
+    "silver/elo_rating_history.parquet",
+    "silver/elo_ratings_current.parquet",
+    "silver/elo_ratings.json",
+)
+
+PLAN_33_2_05_ELO_DELETED_DUCKDB_TABLES: tuple[str, ...] = (
+    "games_with_elo",
+    "elo_rating_history",
+    "elo_ratings_current",
+)
+
+# The one physical row order every elo_game_snapshots write now persists, in parquet
+# and DuckDB alike (orchestrator-assigned fix for the 30 per-team inversions measured
+# in 2026 by tests/unit/test_audit_trace_leakage_elo.py).
+PLAN_33_2_05_SNAPSHOT_ROW_ORDER: tuple[str, ...] = ("season", "kickoff_et", "game_id")
+
+# MEASURED 2026-09-21 by the Task 3 production run, inside the content-digest bracket
+# outputs/p332_elo_delete_before.json -> after: UNDECLARED [], DECLARED_NOT_MOVED [],
+# MIXED []. Three generation directories were enumerated at run time; each kept its
+# elo_game_snapshots.parquet. The re-sort compared every row keyed on game_id, dtypes
+# included, in BOTH stores before and after: identical. 3,784 of 6,531 positions moved
+# (the canonical chain never broke kickoff ties); the per-team inversions
+# LeakageGate.check_elo_ordering reads went from 30 (all 2026) to 0.
+PLAN_33_2_05_DELETION_MEASUREMENT: dict[str, int] = {
+    "generation_directories": 3,
+    "files_deleted": 16,
+    "duckdb_tables_dropped": 3,
+    "duckdb_tables_after": 12,
+    "snapshot_rows_before": 6531,
+    "snapshot_rows_after": 6531,
+    "snapshot_positions_moved": 3784,
+    "per_team_inversions_before": 30,
+    "per_team_inversions_after": 0,
+}

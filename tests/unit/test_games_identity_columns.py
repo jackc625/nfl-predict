@@ -22,9 +22,9 @@ THE DERIVATIONS
   defaulting again would rebuild it one layer up.
 * ``season_type`` is a TOTAL map over the five ``game_type`` values, raising by name
   on an unknown sixth. It is a COARSENING (two values against five), not a duplicate:
-  the season-close readout partitions regular-versus-post, and
-  ``utils/similar_games.py`` already reads ``season_type`` with a ``game_type``
-  fallback and today receives a constant.
+  the season-close readout partitions regular-versus-post. (The one reader that used
+  to consume it with a ``game_type`` fallback, ``utils/similar_games.py``, was deleted
+  by D33.2-22 in Plan 33.2-05.)
 * ``stadium_id`` passes through UNCHANGED -- no normalization, no casefolding --
   because R11's matching is exact and case-sensitive.
 
@@ -253,15 +253,16 @@ class TestTheColumnsSurviveSchemaValidation:
         ) == phase33_state.SILVER_GAMES_COLUMNS_AFTER
 
 
-class TestTheLiveConsumerStillWorks:
-    """`utils/similar_games.py` reads season_type today and gets a constant."""
+class TestBothHalvesOfThePartitionAreReachable:
+    """A reader of season_type sees both values, not a constant.
 
-    def test_the_consumer_now_sees_a_real_partition(self) -> None:
-        from utils.similar_games import SimilarGamesEngine
+    RETARGETED by Plan 33.2-05: this control used to first check that
+    ``utils/similar_games.SimilarGamesEngine`` still existed. D33.2-22 deleted it, and
+    the intent was never about the engine -- it is that the partition a reader of
+    ``season_type`` receives has both halves. That is what is asserted.
+    """
 
-        assert hasattr(SimilarGamesEngine, "_calculate_context_similarity"), (
-            "the consumer that reads season_type has moved; re-point this control."
-        )
+    def test_a_reader_now_sees_a_real_partition(self) -> None:
         ingester = ingest_games.GameDataIngester()
         postseason = ingester.transform_schedule_data(
             season_2026.WEEK_19_POSTSEASON_FIXTURE

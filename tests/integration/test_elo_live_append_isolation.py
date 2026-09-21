@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from scripts.elo_generation import ELO_ROW_TABLES
 from tests.fixtures.elo_sandbox import (
     make_season_games,
     per_season_row_digests,
@@ -55,23 +56,13 @@ def _seed_two_prior_seasons(sandbox):
     builder = sandbox_builder(sandbox, games)
     for season in PRIOR_SEASONS:
         update = builder.build_season_frames(season)
-        builder.save_live_append(
-            season,
-            snapshots=update.snapshots,
-            games_with_elo=update.games_with_elo,
-            rating_history=update.rating_history,
-        )
+        builder.save_live_append(season, snapshots=update.snapshots)
     return builder
 
 
 def _append_third_season(builder):
     update = builder.build_season_frames(APPENDED_SEASON)
-    builder.save_live_append(
-        APPENDED_SEASON,
-        snapshots=update.snapshots,
-        games_with_elo=update.games_with_elo,
-        rating_history=update.rating_history,
-    )
+    builder.save_live_append(APPENDED_SEASON, snapshots=update.snapshots)
 
 
 class TestAPriorSeasonIsUntouchedByALiveAppend:
@@ -156,21 +147,26 @@ class TestAPriorSeasonIsUntouchedByALiveAppend:
             "and the assertion cannot attribute a change to a season."
         )
 
-    def test_the_other_two_row_tables_are_isolated_as_well(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """The property is about ROW TABLES, not about the snapshot table alone."""
+    def test_every_published_row_table_is_isolated(self, tmp_path, monkeypatch) -> None:
+        """The property is about ROW TABLES, asserted over the set the publisher uses.
+
+        Until Plan 33.2-05 this arm named ``games_with_elo`` and ``elo_rating_history``.
+        D33.2-22 deleted both, so the arm now ranges over ``ELO_ROW_TABLES`` as defined
+        -- today the snapshot table alone -- and regains its reach automatically if a
+        second row table ever returns.
+        """
+        assert ELO_ROW_TABLES, "the published row-table set is empty"
         sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
         builder = _seed_two_prior_seasons(sandbox)
 
         before = {
             table: per_season_row_digests(read_sandbox_table(sandbox, table))
-            for table in ("games_with_elo", "elo_rating_history")
+            for table in ELO_ROW_TABLES
         }
         _append_third_season(builder)
         after = {
             table: per_season_row_digests(read_sandbox_table(sandbox, table))
-            for table in ("games_with_elo", "elo_rating_history")
+            for table in ELO_ROW_TABLES
         }
 
         for table, prior_digests in before.items():

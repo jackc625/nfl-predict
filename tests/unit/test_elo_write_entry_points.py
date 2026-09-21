@@ -13,17 +13,21 @@ fires.
 So ``save_results`` is RETIRED, and the two behaviours it conflated are now two verbs
 that say which one they are:
 
-* ``save_full_rebuild(processed_games, start_season)`` -- replace everything, loudly
+* ``save_full_rebuild(snapshots, start_season)`` -- replace the snapshot table, loudly
   and attributably, behind its own CLI flag.
-* ``save_live_append(season, *, snapshots, games_with_elo, rating_history)`` -- upsert
-  the three ROW tables on ``game_id``, replace the two STATE artifacts.
+* ``save_live_append(season, *, snapshots)`` -- upsert the snapshot table on
+  ``game_id``.
 
-THE THREE FRAMES ARE NOT ONE FRAME. The three row artifacts come from three different
-sources at three different grains -- snapshots from the per-game pre-game capture,
-``games_with_elo`` from the merged season frame, ``elo_rating_history`` from the Elo
-system's own game history. A ``save_live_append(frame, season)`` that upserted one
-frame into all three would silently write the wrong rows into two of them, which is
-why the signature assertion below is a first-class test rather than a style check.
+ONE ELO ARTIFACT (Plan 33.2-05, D33.2-22, owner ratified 2026-09-21). Until that plan
+both verbs also wrote ``games_with_elo``, ``elo_rating_history``, ``elo_ratings_current``
+and ``elo_ratings.json`` -- four side stores of a legacy per-season pass that learned
+no home-field advantage. The pass and the stores were deleted together, and this
+module's intent -- "every Elo write goes through a declared entry point" -- is now
+asserted over the one surviving artifact. Two things went BY NAMED RULING rather than by
+re-expression: the ``save_ratings`` write (``EloRatingSystem.save_ratings`` no longer
+exists, so there is no JSON write to route), and the three-frame signature (there is
+one grain and one destination, so the keyword-only snapshot frame is the whole
+signature, and a test below refuses the two deleted frame names coming back).
 """
 
 from __future__ import annotations
@@ -54,15 +58,32 @@ _PRODUCTION_MODULES: tuple[str, ...] = (
 )
 
 
-def _live_frames(builder, season: int):
-    """Build one season's three ROW frames, at the three grains they really have.
+# The four artifacts D33.2-22 deleted. No write verb may produce any of them again.
+DELETED_ELO_ARTIFACT_FILENAMES: tuple[str, ...] = (
+    "games_with_elo.parquet",
+    "elo_rating_history.parquet",
+    "elo_ratings_current.parquet",
+    "elo_ratings.json",
+)
+
+
+def _live_snapshots(builder, season: int):
+    """Build one season's snapshot frame.
 
     Deliberately ``build_season_frames`` and NOT ``update_current_season``: this module
     is about the WRITE verbs, and coupling it to the live update path would make it
-    fail for reasons that belong to Tasks 2 and 3 of this plan.
+    fail for reasons that belong to the update path.
     """
-    update = builder.build_season_frames(season)
-    return update.snapshots, update.games_with_elo, update.rating_history
+    return builder.build_season_frames(season).snapshots
+
+
+def _deleted_artifacts_on_disk(sandbox: Path) -> list[str]:
+    """Every deleted-by-ruling artifact anywhere under the sandbox silver layer."""
+    return sorted(
+        path.relative_to(sandbox).as_posix()
+        for path in (sandbox / "silver").rglob("*")
+        if path.name in DELETED_ELO_ARTIFACT_FILENAMES
+    )
 
 
 class TestTheTwoNamedVerbs:
@@ -87,56 +108,70 @@ class TestTheTwoNamedVerbs:
             "about."
         )
 
-    def test_save_live_append_takes_three_separately_named_frames(self) -> None:
-        """A single-frame signature cannot serve three different grains."""
+    def test_save_live_append_takes_one_keyword_only_snapshot_frame(self) -> None:
+        """One grain, one destination, one frame -- and it cannot be passed by position."""
         from scripts.build_elo import EloBuilder
 
         parameters = inspect.signature(EloBuilder.save_live_append).parameters
-        for name in ("snapshots", "games_with_elo", "rating_history"):
-            assert name in parameters, (
-                f"save_live_append is missing the '{name}' frame. The three row tables "
-                "come from three different source frames at three different grains; a "
-                "generic single-frame signature would upsert one of them into all "
-                "three."
-            )
-        for name in ("snapshots", "games_with_elo", "rating_history"):
-            assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY, (
-                f"'{name}' must be KEYWORD-ONLY. Three positional frames of the same "
-                "type are three frames a caller can silently transpose."
-            )
+        assert list(parameters) == ["self", "season", "snapshots"], (
+            f"save_live_append takes {list(parameters)}. D33.2-22 left one row table, "
+            "so the verb takes the season and the snapshot frame and nothing else."
+        )
+        assert parameters["snapshots"].kind is inspect.Parameter.KEYWORD_ONLY, (
+            "'snapshots' must be KEYWORD-ONLY, so a caller cannot hand the frame and "
+            "the season in the wrong order."
+        )
+
+    def test_neither_deleted_frame_is_accepted(self) -> None:
+        """The two frames D33.2-22 deleted cannot come back as parameters."""
+        from scripts.build_elo import EloBuilder
+
+        for verb in ("save_live_append", "save_full_rebuild"):
+            parameters = inspect.signature(getattr(EloBuilder, verb)).parameters
+            for name in ("games_with_elo", "rating_history", "processed_games"):
+                assert name not in parameters, (
+                    f"{verb} accepts '{name}', a frame for a side table D33.2-22 "
+                    "deleted. A frame with nowhere to go is how a deleted table "
+                    "quietly comes back."
+                )
 
     def test_the_row_and_state_constants_state_the_split_rule(self) -> None:
-        from scripts.build_elo import ELO_ROW_TABLES, ELO_STATE_ARTIFACTS
+        """Asserted on the DEFINING module, never only through the re-export."""
+        from scripts.elo_generation import ELO_ROW_TABLES, ELO_STATE_ARTIFACTS
 
-        assert ELO_ROW_TABLES == (
-            "elo_game_snapshots",
-            "games_with_elo",
-            "elo_rating_history",
-        )
-        assert ELO_STATE_ARTIFACTS == ("elo_ratings_current", "elo_ratings")
+        assert ELO_ROW_TABLES == ("elo_game_snapshots",)
+        assert ELO_STATE_ARTIFACTS == ()
         assert not set(ELO_ROW_TABLES) & set(ELO_STATE_ARTIFACTS), (
             "an artifact cannot be both accumulated history and current state"
         )
 
     def test_the_constants_agree_with_the_phase33_manifest(self) -> None:
-        """The split rule has ONE committed home the tests import, not two."""
-        from scripts.build_elo import ELO_ROW_TABLES, ELO_STATE_ARTIFACTS
-        from tests.phase33_state import ELO_ROW_TABLE_NAMES, ELO_STATE_ARTIFACT_NAMES
+        """The split rule has ONE committed home the tests import, not two.
 
-        assert tuple(ELO_ROW_TABLE_NAMES) == ELO_ROW_TABLES
-        assert tuple(ELO_STATE_ARTIFACT_NAMES) == ELO_STATE_ARTIFACTS
+        Compared against Plan 33.2-05's appended slot; the Plan 33-03 slot above it
+        stays as the record of the five-artifact set that was true before D33.2-22.
+        """
+        from scripts.elo_generation import ELO_ROW_TABLES, ELO_STATE_ARTIFACTS
+        from tests.phase33_state import (
+            PLAN_33_2_05_ELO_ROW_TABLE_NAMES,
+            PLAN_33_2_05_ELO_STATE_ARTIFACT_NAMES,
+        )
+
+        assert tuple(PLAN_33_2_05_ELO_ROW_TABLE_NAMES) == ELO_ROW_TABLES
+        assert tuple(PLAN_33_2_05_ELO_STATE_ARTIFACT_NAMES) == ELO_STATE_ARTIFACTS
 
 
 class TestTheWriteSetIsDeclaredHonestly:
     """``save_dataframe`` writes BOTH stores; a write-set that omits one is a lie."""
 
     def test_the_write_set_names_the_shared_duckdb(self) -> None:
-        from tests.phase33_state import ELO_WRITE_SET_INCLUDING_DUCKDB
+        from tests.phase33_state import PLAN_33_2_05_ELO_WRITE_SET_INCLUDING_DUCKDB
 
-        entries = list(ELO_WRITE_SET_INCLUDING_DUCKDB)
-        assert len(entries) >= 5, (
-            "the Elo write set has at least five members: three row tables, two state "
-            f"artifacts. Got {entries}."
+        entries = list(PLAN_33_2_05_ELO_WRITE_SET_INCLUDING_DUCKDB)
+        assert len(entries) >= 4, (
+            "the Elo write set has at least four members: the snapshot table, the "
+            f"generation pointer, the staged generation tree and the DuckDB. Got "
+            f"{entries}."
         )
         assert any("nfl_predictions.duckdb" in entry for entry in entries), (
             "data/storage.save_dataframe defaults save_to_db=True, so every Elo write "
@@ -146,35 +181,52 @@ class TestTheWriteSetIsDeclaredHonestly:
         )
 
     def test_the_write_set_names_every_row_table_and_state_artifact(self) -> None:
-        from scripts.build_elo import ELO_ROW_TABLES, ELO_STATE_ARTIFACTS
-        from tests.phase33_state import ELO_WRITE_SET_INCLUDING_DUCKDB
+        from scripts.elo_generation import ELO_ROW_TABLES, ELO_STATE_ARTIFACTS
+        from tests.phase33_state import PLAN_33_2_05_ELO_WRITE_SET_INCLUDING_DUCKDB
 
-        joined = "\n".join(ELO_WRITE_SET_INCLUDING_DUCKDB)
+        joined = "\n".join(PLAN_33_2_05_ELO_WRITE_SET_INCLUDING_DUCKDB)
         for name in (*ELO_ROW_TABLES, *ELO_STATE_ARTIFACTS):
             assert name in joined, (
                 f"'{name}' is written by the Elo verbs but is absent from "
-                "ELO_WRITE_SET_INCLUDING_DUCKDB."
+                "PLAN_33_2_05_ELO_WRITE_SET_INCLUDING_DUCKDB."
             )
+
+    def test_the_write_set_names_no_deleted_artifact(self) -> None:
+        from tests.phase33_state import PLAN_33_2_05_ELO_WRITE_SET_INCLUDING_DUCKDB
+
+        joined = "\n".join(PLAN_33_2_05_ELO_WRITE_SET_INCLUDING_DUCKDB)
+        declared_deleted = [
+            name for name in DELETED_ELO_ARTIFACT_FILENAMES if name in joined
+        ]
+        assert not declared_deleted, (
+            f"the write set still declares {declared_deleted}, which no verb writes "
+            "since D33.2-22. A write set that over-declares hides the real blast "
+            "radius as surely as one that under-declares."
+        )
 
 
 class TestSaveFullRebuild:
     """Replace-everything, but only through the verb that says so."""
 
-    def test_a_full_rebuild_writes_all_five_artifacts(
+    def test_a_full_rebuild_writes_the_snapshot_table_and_nothing_deleted(
         self, tmp_path, monkeypatch
     ) -> None:
         sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
         games = make_season_games(2024, weeks=2)
         builder = sandbox_builder(sandbox, games)
 
-        processed = builder.build_all_ratings(start_season=2024)
-        builder.save_full_rebuild(processed, start_season=2024)
+        snapshots = builder.build_all_ratings(start_season=2024)
+        builder.save_full_rebuild(snapshots, start_season=2024)
 
-        silver = sandbox / "silver"
-        for table in ("elo_game_snapshots", "games_with_elo", "elo_rating_history"):
-            assert (silver / f"{table}.parquet").exists(), f"{table} was not written"
-        assert (silver / "elo_ratings_current.parquet").exists()
-        assert (silver / "elo_ratings.json").exists()
+        written = read_sandbox_table(sandbox, "elo_game_snapshots")
+        assert len(written) == len(snapshots) > 0, (
+            f"the full rebuild wrote {len(written)} snapshot rows for "
+            f"{len(snapshots)} computed."
+        )
+        assert _deleted_artifacts_on_disk(sandbox) == [], (
+            "the full rebuild wrote an artifact D33.2-22 deleted: "
+            f"{_deleted_artifacts_on_disk(sandbox)}"
+        )
 
     def test_a_full_rebuild_logs_an_attributed_line(
         self, tmp_path, monkeypatch
@@ -190,7 +242,7 @@ class TestSaveFullRebuild:
         sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
         games = make_season_games(2024, weeks=2)
         builder = sandbox_builder(sandbox, games)
-        processed = builder.build_all_ratings(start_season=2024)
+        snapshots = builder.build_all_ratings(start_season=2024)
 
         recorded: list[tuple[str, dict]] = []
         real_logger = build_elo_mod.logger
@@ -204,7 +256,7 @@ class TestSaveFullRebuild:
                 return getattr(real_logger, name)
 
         monkeypatch.setattr(build_elo_mod, "logger", _Recorder())
-        builder.save_full_rebuild(processed, start_season=2024)
+        builder.save_full_rebuild(snapshots, start_season=2024)
 
         attributed = [
             (event, kwargs) for event, kwargs in recorded if "FULL REBUILD" in event
@@ -218,84 +270,70 @@ class TestSaveFullRebuild:
         assert fields.get("start_season") == 2024, (
             f"the attributed line must name the start season, got {fields}"
         )
+        assert fields.get("elo_game_snapshots_rows") == len(snapshots), (
+            "the attributed line must name the snapshot row count; a rebuild that "
+            f"reports no row count cannot be reconciled afterwards. Got {fields}"
+        )
         for name in (
-            "elo_game_snapshots_rows",
             "games_with_elo_rows",
             "elo_rating_history_rows",
             "elo_ratings_current_rows",
         ):
-            assert name in fields, (
-                f"the attributed line must name {name}; a rebuild that reports no row "
-                f"counts cannot be reconciled afterwards. Got {sorted(fields)}"
+            assert name not in fields, (
+                f"the attributed line still reports {name}, for a side table "
+                "D33.2-22 deleted. A row count for a table that is not written is a "
+                "false record."
             )
 
 
 class TestSaveLiveAppend:
-    """The weekly verb: three frames, three tables, upserted on game_id."""
+    """The weekly verb: one frame, one table, upserted on game_id."""
 
-    def test_each_frame_lands_in_its_own_table(self, tmp_path, monkeypatch) -> None:
-        sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
-        games = make_season_games(2025, weeks=2)
-        builder = sandbox_builder(sandbox, games)
-
-        snapshots, games_with_elo, rating_history = _live_frames(builder, 2025)
-        builder.save_live_append(
-            2025,
-            snapshots=snapshots,
-            games_with_elo=games_with_elo,
-            rating_history=rating_history,
-        )
-
-        written_snapshots = read_sandbox_table(sandbox, "elo_game_snapshots")
-        written_games = read_sandbox_table(sandbox, "games_with_elo")
-        written_history = read_sandbox_table(sandbox, "elo_rating_history")
-
-        assert "home_elo_pre" in written_snapshots.columns, (
-            "elo_game_snapshots must carry the PRE-GAME snapshot grain"
-        )
-        assert "home_rating_post" in written_games.columns, (
-            "games_with_elo must carry the merged per-game rating updates"
-        )
-        assert "home_change" in written_history.columns, (
-            "elo_rating_history must carry the Elo system's own game history grain"
-        )
-        assert len(written_snapshots) == len(snapshots)
-        assert len(written_history) == len(rating_history)
-
-    def test_a_second_live_append_does_not_grow_any_row_table(
+    def test_the_snapshot_frame_lands_in_its_table_and_nothing_else_is_written(
         self, tmp_path, monkeypatch
     ) -> None:
         sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
         games = make_season_games(2025, weeks=2)
         builder = sandbox_builder(sandbox, games)
 
-        snapshots, games_with_elo, rating_history = _live_frames(builder, 2025)
-        for _ in range(2):
-            builder.save_live_append(
-                2025,
-                snapshots=snapshots,
-                games_with_elo=games_with_elo,
-                rating_history=rating_history,
-            )
+        snapshots = _live_snapshots(builder, 2025)
+        builder.save_live_append(2025, snapshots=snapshots)
 
-        for table in ("elo_game_snapshots", "games_with_elo", "elo_rating_history"):
-            written = read_sandbox_table(sandbox, table)
-            assert len(written) == len(written.drop_duplicates(subset=["game_id"])), (
-                f"{table} gained duplicate game_id rows on the second append -- the "
-                "upsert is behaving like an append."
-            )
+        written = read_sandbox_table(sandbox, "elo_game_snapshots")
+        assert "home_elo_pre" in written.columns, (
+            "elo_game_snapshots must carry the PRE-GAME snapshot grain"
+        )
+        assert len(written) == len(snapshots) > 0
+        assert _deleted_artifacts_on_disk(sandbox) == [], (
+            "the live append wrote an artifact D33.2-22 deleted: "
+            f"{_deleted_artifacts_on_disk(sandbox)}"
+        )
 
-        assert per_season_row_digests(
-            read_sandbox_table(sandbox, "elo_game_snapshots")
-        ) == per_season_row_digests(read_sandbox_table(sandbox, "elo_game_snapshots"))
-
-    @pytest.mark.parametrize(
-        "frame_name", ["snapshots", "games_with_elo", "rating_history"]
-    )
-    def test_a_foreign_season_in_any_frame_is_refused_by_name(
-        self, tmp_path, monkeypatch, frame_name
+    def test_a_second_live_append_does_not_grow_the_row_table(
+        self, tmp_path, monkeypatch
     ) -> None:
-        """Asserted once per frame: a live append cannot rewrite another season."""
+        sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
+        games = make_season_games(2025, weeks=2)
+        builder = sandbox_builder(sandbox, games)
+
+        snapshots = _live_snapshots(builder, 2025)
+        builder.save_live_append(2025, snapshots=snapshots)
+        first = read_sandbox_table(sandbox, "elo_game_snapshots")
+        builder.save_live_append(2025, snapshots=snapshots)
+        second = read_sandbox_table(sandbox, "elo_game_snapshots")
+
+        assert len(second) == len(second.drop_duplicates(subset=["game_id"])), (
+            "elo_game_snapshots gained duplicate game_id rows on the second append -- "
+            "the upsert is behaving like an append."
+        )
+        assert per_season_row_digests(second) == per_season_row_digests(first), (
+            "a repeat append of the same frame moved the table's rows."
+        )
+
+    def test_a_foreign_season_in_the_frame_is_refused_by_name(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A live append cannot rewrite another season."""
         import pandas as pd
 
         from scripts.build_elo import EloForeignSeasonRowsError
@@ -307,22 +345,32 @@ class TestSaveLiveAppend:
         )
         builder = sandbox_builder(sandbox, games)
 
-        snapshots, games_with_elo, rating_history = _live_frames(builder, 2025)
-        frames = {
-            "snapshots": snapshots,
-            "games_with_elo": games_with_elo,
-            "rating_history": rating_history,
-        }
-        poisoned = frames[frame_name].copy()
+        poisoned = _live_snapshots(builder, 2025).copy()
         poisoned.loc[poisoned.index[0], "season"] = 2024
-        frames[frame_name] = poisoned
 
         with pytest.raises(EloForeignSeasonRowsError) as excinfo:
-            builder.save_live_append(2025, **frames)
+            builder.save_live_append(2025, snapshots=poisoned)
 
         message = str(excinfo.value)
         assert "2024" in message, message
         assert "2025" in message, message
+        assert read_sandbox_table(sandbox, "elo_game_snapshots").empty, (
+            "the refusal half-applied: rows were written before it raised."
+        )
+
+
+class TestTheJsonStateWriteIsDeletedByRuling:
+    """``save_ratings`` is not re-expressed: D33.2-22 deleted it, and that is asserted."""
+
+    def test_the_rating_system_has_no_json_write_or_read(self) -> None:
+        from ratings.elo import EloRatingSystem
+
+        for name in ("save_ratings", "load_ratings", "ratings_state"):
+            assert not hasattr(EloRatingSystem, name), (
+                f"EloRatingSystem.{name} is back. It served elo_ratings.json, a store "
+                "D33.2-22 deleted; a write path to it is a production write reachable "
+                "from anything that builds ratings, including a read-only audit."
+            )
 
 
 class TestTheRetiredVerbIsGoneFromProduction:

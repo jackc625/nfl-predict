@@ -48,6 +48,7 @@ from tests.phase33_state import (
     ELO_RATING_BAND_OBSERVED,
     ELO_RATING_BAND_PRE_RUN_POOLED,
     ELO_REDERIVATION_EXPECTED_CHANGED_FILES,
+    PLAN_33_2_05_ELO_DELETED_ARTIFACTS,
 )
 
 # The Elo generation is five artifacts, and the anchor set is judged as a SET:
@@ -73,8 +74,22 @@ def _skip_if_absent(path: Path) -> None:
     ids=[Path(name).name for name, _digest in ELO_ARTIFACT_DIGESTS],
 )
 def test_each_elo_artifact_matches_its_committed_anchor(relative_path, expected_digest):
-    """The artifact on disk hashes to the value committed after the re-derivation."""
+    """The artifact on disk hashes to the value committed after the re-derivation.
+
+    Four of the five anchored artifacts were DELETED by D33.2-22 (Plan 33.2-05, owner
+    ratified 2026-09-21). For those the anchor's question has a different honest answer:
+    not "the bytes still match" and not "the lake was never built" (the skip reason
+    below), but "the file is gone, by ruling" -- which is asserted.
+    """
     path = Path(relative_path)
+    if Path(relative_path).relative_to("data").as_posix() in (
+        PLAN_33_2_05_ELO_DELETED_ARTIFACTS
+    ):
+        assert not path.exists(), (
+            f"{relative_path} was deleted by D33.2-22 and is back on disk. Nothing "
+            "writes it any more, so whatever put it there is outside the Elo verbs."
+        )
+        return
     _skip_if_absent(path)
 
     actual = digest_file(path)

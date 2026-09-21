@@ -1,4 +1,4 @@
-"""Five independently-atomic files are NOT one atomic Elo state (T-33-16d).
+"""An Elo generation is published atomically, or not at all (T-33-16d).
 
 THE FAILURE THIS MODULE EXISTS FOR
 ----------------------------------
@@ -8,24 +8,31 @@ snapshots from the new build sitting beside a rating history from the old one --
 nothing on disk said so. Every consumer downstream would have read that mixture as a
 single coherent Elo state, because from the outside it is indistinguishable from one.
 
-``publish_elo_generation`` closes that by making the five atomic TOGETHER: all five are
-STAGED under one generation id, VALIDATED together, published, and only then does a
-single generation pointer move in one ``os.replace``. A crash before the pointer moves
-leaves the previous generation intact and named; a crash between two staged writes
-leaves the live artifacts untouched, because nothing live was written at all.
+``publish_elo_generation`` closes that by STAGING every artifact under one generation
+id, VALIDATING them together, publishing, and only then moving a single generation
+pointer in one ``os.replace``. A crash before the pointer moves leaves the previous
+generation intact and named; a crash during staging leaves the live artifacts
+untouched, because nothing live was written at all.
 
-WHY THE INTERRUPTION IS PARAMETERISED OVER ALL FIVE POINTS
-----------------------------------------------------------
-Testing one interruption point proves one interruption point. The claim being made is
-about the SET, so the failure is planted between every pair in turn. A publisher that
-happened to be safe at point 3 and unsafe at point 4 would pass a single-point test and
-ship the defect.
+DELIBERATE RE-PIN (Plan 33.2-05, D33.2-22, owner ratified 2026-09-21)
+---------------------------------------------------------------------
+Until Plan 33.2-05 this module pinned FIVE-artifact atomicity. Four of those artifacts
+-- ``games_with_elo``, ``elo_rating_history``, ``elo_ratings_current`` and the JSON Elo
+state -- were side stores of a legacy per-season pass that learned no home-field
+advantage, and D33.2-22 deleted the pass and the stores together. WHY this module
+changed: the SET the guarantee ranges over narrowed to ``elo_game_snapshots``. WHAT did
+not change: the GUARANTEE -- stage, validate, publish, one pointer move -- is asserted
+exactly as before, over the set that exists. This is a re-pin, not a dropped test: the
+interruption is still planted at EVERY staged write (today there is one), the set is
+read from the module that defines it, and a test below refuses a generation that tries
+to smuggle a deleted name back in.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from scripts.elo_generation import ELO_ROW_TABLES, ELO_STATE_ARTIFACTS
 from tests.fixtures.elo_sandbox import (
     make_season_games,
     per_season_row_digests,
@@ -34,14 +41,24 @@ from tests.fixtures.elo_sandbox import (
     sandbox_builder,
 )
 
-ROW_TABLES = ("elo_game_snapshots", "games_with_elo", "elo_rating_history")
+# The published set, read from the DEFINING module rather than re-declared here, so this
+# module cannot pin a set the publisher no longer uses.
+PUBLISHED_SET: tuple[str, ...] = (*ELO_ROW_TABLES, *ELO_STATE_ARTIFACTS)
+
+# The four names D33.2-22 deleted. A generation must never stage any of them again.
+DELETED_BY_RULING: tuple[str, ...] = (
+    "games_with_elo",
+    "elo_rating_history",
+    "elo_ratings_current",
+    "elo_ratings",
+)
 
 
 def _live_digests(sandbox) -> dict[str, dict[str, str]]:
     """Per-season row digests of every live row table, as one comparable mapping."""
     return {
         table: per_season_row_digests(read_sandbox_table(sandbox, table))
-        for table in ROW_TABLES
+        for table in ELO_ROW_TABLES
     }
 
 
@@ -49,12 +66,7 @@ def _seed_first_generation(sandbox, season: int = 2025, weeks: int = 2):
     """Publish generation ONE through the real live-append verb."""
     builder = sandbox_builder(sandbox, make_season_games(season, weeks=weeks))
     update = builder.build_season_frames(season)
-    builder.save_live_append(
-        season,
-        snapshots=update.snapshots,
-        games_with_elo=update.games_with_elo,
-        rating_history=update.rating_history,
-    )
+    builder.save_live_append(season, snapshots=update.snapshots)
     return builder
 
 
@@ -75,8 +87,21 @@ def _failing_stage_writer(fail_on_call: int):
     return writer
 
 
+class TestThePublishedSetIsExactlyTheSnapshotTable:
+    """The re-pin itself, stated where a reader of this module will see it first."""
+
+    def test_the_set_is_one_row_table_and_no_state_artifact(self) -> None:
+        assert PUBLISHED_SET == ("elo_game_snapshots",), (
+            f"the Elo generation now ranges over {PUBLISHED_SET}. D33.2-22 narrowed it "
+            "to the snapshot table; widening it again is a decision, not a drift."
+        )
+
+    def test_no_deleted_name_is_in_the_set(self) -> None:
+        assert not set(PUBLISHED_SET) & set(DELETED_BY_RULING)
+
+
 class TestAnInterruptedPublishLeavesThePreviousGenerationIntact:
-    """The five interruption points, each asserted on live content and on the pointer."""
+    """Every interruption point, each asserted on live content and on the pointer."""
 
     def test_the_seeded_generation_is_readable(self, tmp_path, monkeypatch) -> None:
         """Anti-vacuity: every assertion below compares against THIS state."""
@@ -93,7 +118,7 @@ class TestAnInterruptedPublishLeavesThePreviousGenerationIntact:
         pointer = read_elo_generation_pointer(sandbox / "silver")
         assert pointer is not None and pointer["generation_id"]
 
-    @pytest.mark.parametrize("fail_on_call", [1, 2, 3, 4, 5])
+    @pytest.mark.parametrize("fail_on_call", range(1, len(PUBLISHED_SET) + 1))
     def test_a_staging_failure_never_touches_the_live_artifacts(
         self, tmp_path, monkeypatch, fail_on_call
     ) -> None:
@@ -110,15 +135,9 @@ class TestAnInterruptedPublishLeavesThePreviousGenerationIntact:
         before_digests = _live_digests(sandbox)
         before_pointer = read_elo_generation_pointer(silver)
 
-        # A SECOND generation's worth of content, materially different from the first.
+        # A SECOND generation's worth of content.
         wider = builder.build_season_frames(2025)
-        staged = {
-            "elo_game_snapshots": wider.snapshots,
-            "games_with_elo": wider.games_with_elo,
-            "elo_rating_history": wider.rating_history,
-            "elo_ratings_current": builder.elo_system.get_current_ratings(),
-            "elo_ratings": builder.elo_system.ratings_state(),
-        }
+        staged = {"elo_game_snapshots": wider.snapshots}
 
         published_live = {"called": False}
 
@@ -170,12 +189,7 @@ class TestACompletingPublishMovesThePointer:
         seed_sandbox_games(make_season_games(2025, weeks=3))
         builder.elo_system = builder.elo_system.__class__()
         update = builder.build_season_frames(2025)
-        builder.save_live_append(
-            2025,
-            snapshots=update.snapshots,
-            games_with_elo=update.games_with_elo,
-            rating_history=update.rating_history,
-        )
+        builder.save_live_append(2025, snapshots=update.snapshots)
 
         second_pointer = read_elo_generation_pointer(silver)
         assert second_pointer is not None
@@ -190,15 +204,55 @@ class TestACompletingPublishMovesThePointer:
         )
 
         staged_dir = silver / "elo_generations" / second_pointer["generation_id"]
-        for name in (*ROW_TABLES, "elo_ratings_current"):
-            assert (staged_dir / f"{name}.parquet").exists(), (
-                f"{name} is missing from the published generation's staging directory"
-            )
-        assert (staged_dir / "elo_ratings.json").exists()
+        staged_files = sorted(path.name for path in staged_dir.iterdir())
+        assert staged_files == [f"{name}.parquet" for name in PUBLISHED_SET], (
+            f"the published generation staged {staged_files}; it must stage exactly "
+            "the published set and nothing a deleted writer used to put there."
+        )
+        assert set(second_pointer["artifacts"]) == set(PUBLISHED_SET), (
+            f"the pointer names {sorted(second_pointer['artifacts'])}, not the "
+            "published set."
+        )
+
+    def test_a_deleted_name_offered_to_the_publisher_is_not_staged(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The publisher stages the SET, not whatever a caller hands it.
+
+        A stale caller that still builds a ``games_with_elo`` frame must not get it
+        into a generation directory, where a reader would find a table D33.2-22 says
+        does not exist.
+        """
+        from scripts.build_elo import (
+            new_generation_id,
+            publish_elo_generation,
+            read_elo_generation_pointer,
+        )
+
+        sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
+        builder = _seed_first_generation(sandbox)
+        silver = sandbox / "silver"
+        update = builder.build_season_frames(2025)
+
+        publish_elo_generation(
+            {
+                "elo_game_snapshots": update.snapshots,
+                "games_with_elo": update.snapshots.copy(),
+            },
+            new_generation_id(),
+            silver_root=silver,
+            publish_live=lambda: None,
+        )
+
+        pointer = read_elo_generation_pointer(silver)
+        assert pointer is not None
+        staged_dir = silver / "elo_generations" / pointer["generation_id"]
+        assert not (staged_dir / "games_with_elo.parquet").exists()
+        assert "games_with_elo" not in pointer["artifacts"]
 
 
 class TestAnIncompleteGenerationIsNeverPublished:
-    """Four of five is not a generation, and the pointer must say so by not moving."""
+    """A generation missing a member is not a generation, and the pointer says so."""
 
     def test_a_missing_artifact_is_named_and_the_pointer_does_not_move(
         self, tmp_path, monkeypatch
@@ -211,17 +265,11 @@ class TestAnIncompleteGenerationIsNeverPublished:
         )
 
         sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
-        builder = _seed_first_generation(sandbox)
+        _seed_first_generation(sandbox)
         silver = sandbox / "silver"
         before_pointer = read_elo_generation_pointer(silver)
 
-        update = builder.build_season_frames(2025)
-        staged = {
-            "elo_game_snapshots": update.snapshots,
-            "games_with_elo": update.games_with_elo,
-            "elo_ratings_current": builder.elo_system.get_current_ratings(),
-            "elo_ratings": builder.elo_system.ratings_state(),
-        }  # elo_rating_history deliberately withheld
+        staged: dict[str, object] = {}  # elo_game_snapshots deliberately withheld
 
         with pytest.raises(EloGenerationIncompleteError) as excinfo:
             publish_elo_generation(
@@ -231,7 +279,7 @@ class TestAnIncompleteGenerationIsNeverPublished:
                 publish_live=lambda: None,
             )
 
-        assert "elo_rating_history" in str(excinfo.value), (
+        assert "elo_game_snapshots" in str(excinfo.value), (
             "EloGenerationIncompleteError must NAME the missing artifact; 'incomplete' "
             f"alone does not tell an operator what to do. Got: {excinfo.value}"
         )

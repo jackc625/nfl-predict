@@ -15,6 +15,8 @@ computation that has not been persisted, zero after one that has.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -31,12 +33,7 @@ LIVE_SEASON = 2026
 def _append(builder, season: int):
     """Compute the season and persist it through the live verb."""
     update = builder.build_season_frames(season)
-    builder.save_live_append(
-        season,
-        snapshots=update.snapshots,
-        games_with_elo=update.games_with_elo,
-        rating_history=update.rating_history,
-    )
+    builder.save_live_append(season, snapshots=update.snapshots)
     return update
 
 
@@ -101,7 +98,7 @@ class TestASeasonWithNoCompletedGames:
         pointer = read_elo_generation_pointer(sandbox / "silver")
         assert pointer is not None, (
             "an empty season must still publish: the generation is complete, it simply "
-            "has no rows in two of its members."
+            "has no rows."
         )
         assert pointer["season"] == LIVE_SEASON
         assert pointer["mode"] == "live_append"
@@ -130,12 +127,7 @@ class TestThePendingSnapshotCounter:
         builder = sandbox_builder(sandbox, make_season_games(LIVE_SEASON, weeks=2))
 
         update = builder.update_current_season(season=LIVE_SEASON)
-        builder.save_live_append(
-            update.season,
-            snapshots=update.snapshots,
-            games_with_elo=update.games_with_elo,
-            rating_history=update.rating_history,
-        )
+        builder.save_live_append(update.season, snapshots=update.snapshots)
 
         assert builder.pending_snapshot_rows == 0
 
@@ -158,36 +150,47 @@ class TestThePendingSnapshotCounter:
 class TestTheLiveAppendReadsItsOwnDataRoot:
     """The builder's data root must bind every read AND every write it performs.
 
-    ``EloRatingSystem.load_ratings`` defaults to the PRODUCTION silver path regardless
-    of the builder's root, so a sandboxed builder would silently seed itself from the
-    live ``elo_ratings.json``. That is a read, not a write, so the boundary guard would
-    never see it -- and the test would quietly depend on production state.
+    This used to guard ``EloRatingSystem.load_ratings``, which defaulted to the
+    PRODUCTION silver path regardless of the builder's root, so a sandboxed builder
+    could silently seed itself from the live ``elo_ratings.json``. D33.2-22 deleted
+    that loader and its file (Plan 33.2-05). The intent is kept in two parts: the
+    loader is gone, and a live update opens no file under the production silver root.
     """
 
-    def test_the_live_update_does_not_read_the_production_ratings_file(
+    def test_the_rating_system_has_no_state_loader_left(self) -> None:
+        from ratings.elo import EloRatingSystem
+
+        assert not hasattr(EloRatingSystem, "load_ratings"), (
+            "EloRatingSystem.load_ratings is back. It read production Elo state "
+            "regardless of the builder's data root; D33.2-22 deleted it."
+        )
+
+    def test_the_live_update_opens_no_production_silver_file(
         self, tmp_path, monkeypatch
     ) -> None:
-        import ratings.elo as elo_mod
+        import builtins
 
         sandbox = redirect_storage_to_sandbox(monkeypatch, tmp_path)
         builder = sandbox_builder(sandbox, make_season_games(LIVE_SEASON, weeks=1))
+        production_silver = (Path.cwd() / "data" / "silver").resolve()
 
-        seen: list[str] = []
-        real_load = elo_mod.EloRatingSystem.load_ratings
+        opened: list[Path] = []
+        real_open = builtins.open
 
-        def _recording_load(self, filepath=None):
-            seen.append(str(filepath))
-            return real_load(self, filepath)
+        def _recording_open(file, *args, **kwargs):
+            if isinstance(file, (str, Path)):
+                opened.append(Path(file).resolve())
+            return real_open(file, *args, **kwargs)
 
-        monkeypatch.setattr(elo_mod.EloRatingSystem, "load_ratings", _recording_load)
+        monkeypatch.setattr(builtins, "open", _recording_open)
         builder.update_current_season(season=LIVE_SEASON)
 
-        for path in seen:
-            assert str(sandbox) in path, (
-                "the live update read an Elo ratings file outside its own data root "
-                f"({path}). A sandboxed builder that seeds from production state is "
-                "not sandboxed."
-            )
+        leaked = [path for path in opened if production_silver in path.parents]
+        assert not leaked, (
+            "the live update opened files under the production silver root "
+            f"({leaked}). A sandboxed builder that reads production state is not "
+            "sandboxed."
+        )
 
 
 @pytest.mark.parametrize("season", [2024, 2025, 2026])

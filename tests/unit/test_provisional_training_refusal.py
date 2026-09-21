@@ -55,6 +55,7 @@ from tests.fixtures.elo_sandbox import (
     read_sandbox_table,
     redirect_storage_to_sandbox,
     sandbox_builder,
+    seed_sandbox_games,
 )
 from tests.phase33_state import TRAINER_GOLD_LOAD_SITES
 
@@ -408,8 +409,6 @@ class TestPrecedenceInBothDirections:
         builder.save_live_append(
             LIVE_SEASON,
             snapshots=update.snapshots,
-            games_with_elo=update.games_with_elo,
-            rating_history=update.rating_history,
         )
         return sandbox, games, builder
 
@@ -425,8 +424,6 @@ class TestPrecedenceInBothDirections:
         builder.save_live_append(
             LIVE_SEASON,
             snapshots=provisional,
-            games_with_elo=pd.DataFrame(),
-            rating_history=pd.DataFrame(),
         )
 
         graded = games.copy()
@@ -436,8 +433,6 @@ class TestPrecedenceInBothDirections:
         monday.save_live_append(
             LIVE_SEASON,
             snapshots=landed.snapshots,
-            games_with_elo=landed.games_with_elo,
-            rating_history=landed.rating_history,
         )
 
         stored = read_sandbox_table(sandbox, "elo_game_snapshots")
@@ -464,8 +459,6 @@ class TestPrecedenceInBothDirections:
             builder.save_live_append(
                 LIVE_SEASON,
                 snapshots=stale,
-                games_with_elo=pd.DataFrame(),
-                rating_history=pd.DataFrame(),
             )
 
         message = str(excinfo.value)
@@ -492,8 +485,6 @@ class TestPrecedenceInBothDirections:
         monday.save_live_append(
             LIVE_SEASON,
             snapshots=landed.snapshots,
-            games_with_elo=landed.games_with_elo,
-            rating_history=landed.rating_history,
         )
         before = per_season_row_digests(
             read_sandbox_table(sandbox, "elo_game_snapshots")
@@ -503,8 +494,6 @@ class TestPrecedenceInBothDirections:
             monday.save_live_append(
                 LIVE_SEASON,
                 snapshots=friday,
-                games_with_elo=pd.DataFrame(),
-                rating_history=pd.DataFrame(),
             )
 
         after_frame = read_sandbox_table(sandbox, "elo_game_snapshots")
@@ -532,8 +521,6 @@ class TestPrecedenceInBothDirections:
         builder.save_live_append(
             LIVE_SEASON,
             snapshots=provisional,
-            games_with_elo=pd.DataFrame(),
-            rating_history=pd.DataFrame(),
         )
 
         stored = read_sandbox_table(sandbox, "elo_game_snapshots")
@@ -616,14 +603,28 @@ class TestAPreFlagParquetReadsBackAsFalse:
         )
         surviving = set(seeded["game_id"])
         assert not surviving & set(games["game_id"]), "the fixture must not collide"
+
+        # Every stored snapshot names a SCHEDULED game: the writer stores the table in
+        # (season, kickoff_et, game_id) order, joining kickoff from games, and refuses a
+        # row whose game has no kickoff (Plan 33.2-05). So the two seeded games join the
+        # sandbox schedule as UNPLAYED week-9 games -- unplayed, so the re-derivation
+        # computes no row for them and they still survive the upsert.
+        week_nine = games.head(2).assign(
+            game_id=seeded["game_id"].to_numpy(),
+            home_team=seeded["home_team"].to_numpy(),
+            away_team=seeded["away_team"].to_numpy(),
+            week=9,
+            home_score=float("nan"),
+            away_score=float("nan"),
+            kickoff_et=games["kickoff_et"].max() + pd.Timedelta(weeks=7),
+        )
+        seed_sandbox_games(pd.concat([games, week_nine], ignore_index=True))
         save_dataframe(seeded, "elo_game_snapshots", layer="silver", replace_mode=True)
 
         update = builder.update_current_season(season=LIVE_SEASON)
         builder.save_live_append(
             LIVE_SEASON,
             snapshots=update.snapshots,
-            games_with_elo=update.games_with_elo,
-            rating_history=update.rating_history,
         )
 
         stored = read_sandbox_table(sandbox, "elo_game_snapshots")
