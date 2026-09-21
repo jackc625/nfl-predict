@@ -331,6 +331,8 @@ class WeatherSchema(BaseModel):
         "snowfall_cm",
         "wind_gusts_mph",
         "cloud_cover_pct",
+        "mos_qpf_category",
+        "mos_precip_level",
     )
 
     game_id: str = Field(..., description="Foreign key to games table")
@@ -438,6 +440,65 @@ class WeatherSchema(BaseModel):
         ),
     )
 
+    # THE ARCHIVED DAY-BEFORE FORECAST'S OWN COLUMNS (Plan 33.2-11, D33.2-12/13). Emitted by
+    # scripts.mos_decode.build_weather_record for every game the NWS MOS bulletins cover, and
+    # NULL on every other row (the ERA5 archive rows and the live forecast rows carry none).
+    #
+    # DECLARED IN THE SAME TASK THAT EMITS THEM, deliberately (RESEARCH P-6): the same reason
+    # weather_coverage above gives. `validate_bronze_to_silver` rebuilds every row as
+    # `schema_class(**row).model_dump()` and Pydantic v2 defaults to extra='ignore', so an
+    # emitted-but-undeclared column disappears between bronze and silver with no error at all
+    # -- and the comment eleven lines above `weather_coverage` records that this already
+    # happened once, to the five Open-Meteo fields.
+    # scripts.backfill_mos_forecasts.assert_mos_columns_survived is the per-column round-trip
+    # assertion, copied from assert_weather_coverage_survived.
+    forecast_issue_time: datetime | None = Field(
+        None,
+        description=(
+            "The MOS model-CYCLE instant, decoded from the IEM archive's `runtime` field: the "
+            "12 UTC cycle of the ET calendar day before kickoff. It is NOT a recorded "
+            "publication or transmission time -- the archive stores none. The cycle is "
+            "admissible at the 18:00 ET lock on the committed argument in "
+            "config/mos_tolerance.py (its bulletin is public long before the lock; the 18 UTC "
+            "cycle is never used). Always timezone-aware UTC; a naive value is refused."
+        ),
+    )
+    mos_model: str | None = Field(
+        None,
+        description=(
+            "The MOS guidance the bulletin came from: 'AVN' for runs before 2003-12-16, "
+            "'GFS' (MAV) from 2003-12-16 -- chosen by RUN DATE, not season"
+        ),
+    )
+    mos_station: str | None = Field(
+        None,
+        description=(
+            "The ICAO airport whose bulletin stands in for the venue "
+            "(config/mos_stations.VENUE_STATIONS)"
+        ),
+    )
+    mos_qpf_category: int | None = Field(
+        None,
+        ge=0,
+        le=9,
+        description=(
+            "The bulletin's ordinal 6-hour QPF CATEGORY, verbatim (NWS TPB 482: 0 none, "
+            "1 0.01-0.09 in, 2 0.10-0.24 in, 3 0.25-0.49 in, 4 0.50-0.99 in, 5 >1.00 in, "
+            "9 missing). An ordinal, NEVER a millimetre amount"
+        ),
+    )
+    mos_precip_level: int | None = Field(
+        None,
+        ge=0,
+        le=3,
+        description=(
+            "The QPF category's precipitation LEVEL (0 none, 1 light, 2 moderate, 3 heavy), "
+            "anchored at each category's midpoint against the existing 0.5 / 2.0 / 5.0 mm "
+            "boundaries (config/mos_tolerance.QPF_CATEGORY_TO_PRECIP_LEVEL). NULL when the "
+            "category is 9 (missing) or absent"
+        ),
+    )
+
     @field_validator("weather_source")
     @classmethod
     def validate_weather_source_value(cls, v):
@@ -486,6 +547,48 @@ class WeatherSchema(BaseModel):
         except (ValueError, TypeError):
             # pd.isna raises on non-scalar inputs; defensive fallthrough matches GameSchema.
             pass
+        return v
+
+    @field_validator("forecast_issue_time", mode="before")
+    @classmethod
+    def refuse_naive_forecast_issue_time(cls, v):
+        """A naive cycle instant is REFUSED, never relabelled as UTC.
+
+        Unlike ``validate_timestamps`` below (whose relabel is a known, deferred defect), the
+        new column starts strict: the MOS decoder localizes the archive's naive ``runtime``
+        explicitly at its parse boundary, so a naive value arriving here means that step was
+        skipped.
+        """
+        if v is None:
+            return None
+        try:
+            if pd.isna(v):
+                return None
+        except (ValueError, TypeError):
+            pass
+        parsed = pd.Timestamp(v)
+        if parsed.tzinfo is None:
+            raise ValueError(
+                f"forecast_issue_time {v!r} carries no time zone. The MOS runtime must be "
+                "localized to UTC at the decoder's parse boundary; a naive value is refused, "
+                "never relabelled."
+            )
+        return parsed.to_pydatetime()
+
+    @field_validator("mos_model")
+    @classmethod
+    def validate_mos_model(cls, v):
+        """Only the two guidance lineages the backfill reads."""
+        if v is not None and v not in ("AVN", "GFS"):
+            raise ValueError(f"mos_model {v!r} is not 'AVN' or 'GFS'")
+        return v
+
+    @field_validator("mos_qpf_category")
+    @classmethod
+    def validate_mos_qpf_category(cls, v):
+        """0-5 or the bulletin's missing code 9; 6-8 do not exist."""
+        if v is not None and v not in (0, 1, 2, 3, 4, 5, 9):
+            raise ValueError(f"mos_qpf_category {v!r} is not a TPB 482 category")
         return v
 
     @field_validator("forecast_time", "game_time", "created_at", mode="before")
