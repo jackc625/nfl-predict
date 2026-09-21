@@ -90,12 +90,15 @@ HIGH_ALTITUDE_BOUNDARY_FT = 3000
 # coordinate, a capacity has no tolerance: it crosses a BAND edge.
 LARGE_STADIUM_BOUNDARY = 75000
 
-# `_is_grass_surface` (features/contextual.py:369) is a membership test against exactly
-# these two tokens. Printed beside every surface cell so the ratifier can see which side
-# of the grass/synthetic split each of the 22 lands on.
-GRASS_SURFACE_TOKENS: frozenset[str] = frozenset(
-    {"Bermuda Grass", "Kentucky Bluegrass"}
-)
+# The grass side of the grass/synthetic split `surface_mismatch` reads. It USED to be a
+# local copy of the two spellings `_is_grass_surface` then tested (Bermuda Grass and
+# Kentucky Bluegrass), and that rule misread every natural or hybrid pitch spelled any
+# other way as synthetic. Plan 33.2-10 step 3b made the classification complete in
+# features.contextual.SURFACE_CLASS_BY_SPELLING; this printout now reads the grass set
+# from there, so it cannot describe a rule the feature no longer applies. Printed beside
+# every surface cell so the ratifier can see which side each record lands on.
+sys.path.insert(0, str(REPO_ROOT))
+from features.contextual import GRASS_SURFACES as GRASS_SURFACE_TOKENS
 
 METRES_PER_FOOT = 0.3048
 

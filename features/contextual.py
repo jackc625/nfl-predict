@@ -34,9 +34,91 @@ from utils.date_utils import kickoff_wall_clock_et
 
 logger = get_logger(__name__)
 
-# Surface categories for mismatch detection (FEAT-18)
-# Grass surfaces vs synthetic -- categories that differ cause a mismatch
-GRASS_SURFACES: set[str] = {"Bermuda Grass", "Kentucky Bluegrass"}
+# ---------------------------------------------------------------------------
+# PLAYING-SURFACE CLASSES FOR THE MISMATCH FEATURE (FEAT-18), made COMPLETE by Plan 33.2-10
+# extra step 3b. `surface_mismatch` is 1.0 when the away team's home surface class differs
+# from the game venue's.
+#
+# THE DEFECT THIS REPLACES. The grass set held two spellings, "Bermuda Grass" and "Kentucky
+# Bluegrass", and every OTHER string was classified synthetic by default -- so Wembley,
+# Tottenham, Frankfurt, Mexico City, Croke Park and the Olympiastadion ("Grass"), Twickenham
+# and Arena Corinthians ("Desso GrassMaster") and the Allianz Arena ("Hybrid Grass") were all
+# artificial turf to the feature.
+#
+# THE RULE NOW. Every distinct `surface` string in data/venues.json is listed here with its
+# class, and a string that is not listed RAISES by name (UnknownSurfaceError) instead of
+# defaulting. HYBRID GRASS IS GRASS: a Desso GrassMaster or other hybrid pitch is natural
+# grass reinforced with a small share of synthetic fibres, and it plays as grass.
+# "RealGrass" is NOT grass despite its name: it is an infilled artificial-turf product, and
+# Texas Stadium, its only record, never had a natural pitch. "Sport Turf" is classified by
+# what the spelling says (a synthetic surface), not by any guess about the venue.
+# ---------------------------------------------------------------------------
+SURFACE_CLASS_BY_SPELLING: dict[str, str] = {
+    "AstroPlay": "synthetic",
+    "AstroTurf": "synthetic",
+    "Bermuda Grass": "grass",
+    "Desso GrassMaster": "grass",
+    "FieldTurf": "synthetic",
+    "Grass": "grass",
+    "Hybrid Grass": "grass",
+    "Kentucky Bluegrass": "grass",
+    "Matrix Turf": "synthetic",
+    "NexTurf": "synthetic",
+    "RealGrass": "synthetic",
+    "Sport Turf": "synthetic",
+}
+
+# The grass spellings, DERIVED from the one mapping above (kept under its historical name
+# for the readers that import it).
+GRASS_SURFACES: frozenset[str] = frozenset(
+    spelling for spelling, cls in SURFACE_CLASS_BY_SPELLING.items() if cls == "grass"
+)
+
+
+class UnknownSurfaceError(LookupError):
+    """A playing-surface spelling ``SURFACE_CLASS_BY_SPELLING`` does not classify.
+
+    Deliberately NOT a ``ValueError``: the gold build downgrades a ``ValueError`` from an
+    optional source to an EMPTY frame (``scripts.build_features._SOURCE_LOAD_ERRORS``), and
+    an unclassified surface must stop the build, not quietly remove the contextual family.
+    """
+
+
+def surface_is_grass(surface: object) -> bool:
+    """True for a grass (natural or hybrid) surface, False for a synthetic one.
+
+    Raises:
+        UnknownSurfaceError: *surface* is not a spelling ``SURFACE_CLASS_BY_SPELLING``
+            lists. It is never defaulted to either class.
+    """
+    cls = SURFACE_CLASS_BY_SPELLING.get(surface) if isinstance(surface, str) else None
+    if cls is None:
+        raise UnknownSurfaceError(
+            f"surface {surface!r} is not classified in "
+            "features.contextual.SURFACE_CLASS_BY_SPELLING. Add it there as 'grass' "
+            "(natural or hybrid) or 'synthetic'; it is never defaulted to either class."
+        )
+    return cls == "grass"
+
+
+def validate_surface_vocabulary(venues: list[dict[str, Any]] | None = None) -> None:
+    """Every venue record's ``surface`` is classified, or refuse naming each offender.
+
+    Raises:
+        UnknownSurfaceError: one or more records carry an unclassified spelling.
+    """
+    offenders = [
+        f"{venue.get('stadium_id') or venue.get('venue_id')}: {venue.get('surface')!r}"
+        for venue in _load_venue_records(venues)
+        if venue.get("surface") not in SURFACE_CLASS_BY_SPELLING
+    ]
+    if offenders:
+        raise UnknownSurfaceError(
+            "data/venues.json carries surface spelling(s) that "
+            "features.contextual.SURFACE_CLASS_BY_SPELLING does not classify: "
+            f"{'; '.join(offenders)}. Classify each spelling there; none is defaulted."
+        )
+
 
 # Look-ahead / letdown spot threshold (D-16), grounded in the RAW silver Elo
 # scale (data/silver/elo_game_snapshots.parquet, home_elo_pre/away_elo_pre,
@@ -444,6 +526,9 @@ class ContextualFeaturesCalculator:
 
         # Load venue data
         self.venues_data = self._load_venues_data()
+        # Every surface spelling must be classified BEFORE any game is built: an
+        # unclassified one refuses here, outside the build's optional-source handler.
+        validate_surface_vocabulary(self.venues_data["venues"])
 
         # Time zone mappings
         self.timezone_map = self._build_timezone_map()
@@ -571,9 +656,13 @@ class ContextualFeaturesCalculator:
         Returns:
             True if the surface is a grass type, False otherwise.
         """
+        # Delegates to surface_is_grass, the one classification: an unlisted spelling
+        # RAISES rather than defaulting to synthetic (Plan 33.2-10 step 3b). None (no
+        # surface recorded) is never reached from _compute_surface_mismatch, which
+        # returns 0.0 first; it is still answered False here for other callers.
         if surface is None:
             return False
-        return surface in GRASS_SURFACES
+        return surface_is_grass(surface)
 
     def _compute_surface_mismatch(self, away_team: str, game_venue_id: str) -> float:
         """Compute surface mismatch for the away team.

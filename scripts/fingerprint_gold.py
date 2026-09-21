@@ -1728,11 +1728,71 @@ PHASE332_RUNG0_CARRY_IN_CAUSE: str = (
 )
 
 
-def phase332_baseline_document_path(directory: Path | str, rung: int) -> Path:
+# ---------------------------------------------------------------------------
+# EXTRA STEPS: a separately-attributed rebuild that is NOT one of a ladder's numbered rungs
+# (first used by Plan 33.2-10's orchestrator-assigned surface-classification fix, step
+# "3b"). The numbered rungs are allocated once for the whole phase, so a fix that must run
+# between two of them cannot take a number without colliding with a later plan's rung.
+#
+# An extra step has a STRING id (never an int, so it can never equal a numbered rung) and
+# names the numbered rung it FOLLOWS. The ladder order is then: every numbered rung k, and
+# directly after it every extra step that follows k. So the step is judged against the rung
+# it follows, and the next numbered rung is judged against the step. Its cause lives in its
+# own table rather than in RUNG_CAUSES_BY_PREFIX, whose integer keys the numbered-rung
+# tooling sorts, takes the max of, and ranges over.
+#
+# Keyed by prefix, so the ladder helpers read them without an `if prefix ==` branch.
+# ---------------------------------------------------------------------------
+
+EXTRA_STEPS_BY_PREFIX: dict[str, dict[str, int]] = {}
+EXTRA_STEP_CAUSES_BY_PREFIX: dict[str, dict[str, str]] = {}
+
+
+def _is_extra_step(rung: int | str, prefix: str) -> bool:
+    return isinstance(rung, str) and rung in EXTRA_STEPS_BY_PREFIX.get(prefix, {})
+
+
+def _ladder_predecessors(rung: int | str, prefix: str = "") -> list[int | str]:
+    """Every ladder entry that must exist before *rung*, in ladder order.
+
+    A numbered rung N needs rungs 0 .. N-1 and every extra step following one of them. An
+    extra step following F needs rungs 0 .. F and every extra step following an earlier
+    rung.
+
+    Raises:
+        ValueError: *rung* is a string that names no registered extra step.
+    """
+    steps = EXTRA_STEPS_BY_PREFIX.get(prefix, {})
+    if isinstance(rung, str):
+        if rung not in steps:
+            msg = (
+                f"Unknown extra step {rung!r} under rung prefix {prefix!r}. "
+                f"Registered: {sorted(steps)}."
+            )
+            raise ValueError(msg)
+        numbered = list(range(steps[rung] + 1))
+        earlier = [s for s, follows in steps.items() if follows < steps[rung]]
+    else:
+        numbered = list(range(rung))
+        earlier = [s for s, follows in steps.items() if follows < rung]
+    order = {k: (k, 0) for k in numbered} | {s: (steps[s], 1) for s in earlier}
+    return sorted(order, key=order.__getitem__)
+
+
+def _step_cause(rung: int | str, prefix: str = "") -> str:
+    """The cause of a numbered rung or of an extra step under *prefix*."""
+    if _is_extra_step(rung, prefix):
+        return EXTRA_STEP_CAUSES_BY_PREFIX[prefix][rung]
+    return _rung_causes(prefix)[rung]
+
+
+def phase332_baseline_document_path(directory: Path | str, rung: int | str) -> Path:
     """The document *rung* of the `p332_` ladder is judged AGAINST.
 
     The retaken baseline when the rung registered one in ``PHASE332_RETAKEN_BASELINES``,
-    otherwise its ladder predecessor. A registered baseline that is absent is REFUSED
+    otherwise its ladder predecessor -- the last entry of ``_ladder_predecessors``, so a
+    numbered rung that follows an extra step is judged against that step, and an extra
+    step against the rung it follows. A registered baseline that is absent is REFUSED
     rather than silently replaced by the predecessor: falling back would judge the rung
     against the stale document the retake exists to replace.
 
@@ -1741,7 +1801,8 @@ def phase332_baseline_document_path(directory: Path | str, rung: int) -> Path:
     """
     name = PHASE332_RETAKEN_BASELINES.get(rung)
     if name is None:
-        return rung_document_path(directory, rung - 1, PHASE332_RUNG_PREFIX)
+        predecessor = _ladder_predecessors(rung, PHASE332_RUNG_PREFIX)[-1]
+        return rung_document_path(directory, predecessor, PHASE332_RUNG_PREFIX)
     path = Path(directory) / name
     if not path.exists():
         msg = (
@@ -1754,7 +1815,23 @@ def phase332_baseline_document_path(directory: Path | str, rung: int) -> Path:
     return path
 
 
-def _phase332_table_entry(table: dict, rung: int, table_name: str):
+def _phase332_table(kind: str, rung: int | str) -> tuple[dict, str]:
+    """The `p332_` dispatch table of *kind* ("signatures" or "attributors") for *rung*.
+
+    A numbered rung reads PHASE332_RUNG_*; a registered extra step reads
+    PHASE332_EXTRA_STEP_*. ``_phase332_table_entry`` then refuses an unregistered entry.
+    """
+    extra = _is_extra_step(rung, PHASE332_RUNG_PREFIX)
+    if kind == "signatures":
+        if extra:
+            return PHASE332_EXTRA_STEP_SIGNATURES, "PHASE332_EXTRA_STEP_SIGNATURES"
+        return PHASE332_RUNG_SIGNATURES, "PHASE332_RUNG_SIGNATURES"
+    if extra:
+        return PHASE332_EXTRA_STEP_ATTRIBUTORS, "PHASE332_EXTRA_STEP_ATTRIBUTORS"
+    return PHASE332_RUNG_ATTRIBUTORS, "PHASE332_RUNG_ATTRIBUTORS"
+
+
+def _phase332_table_entry(table: dict, rung: int | str, table_name: str):
     """Read *rung* from a `p332_` dispatch table, REFUSING by name when it is absent.
 
     A rung that silently fell through to a default would be judged against another
@@ -1838,7 +1915,9 @@ class MissingPredecessorFingerprintError(RuntimeError):
     """
 
 
-def rung_document_path(directory: Path | str, rung: int, prefix: str = "") -> Path:
+def rung_document_path(
+    directory: Path | str, rung: int | str, prefix: str = ""
+) -> Path:
     """Return the fingerprint document path for *rung* under *directory*.
 
     The *prefix* is what keeps two phases' ladders apart in one gitignored directory:
@@ -1867,7 +1946,7 @@ def require_rung_ladder(
         MissingPredecessorFingerprintError: naming the first absent document.
     """
     verified: list[Path] = []
-    for predecessor in range(rung):
+    for predecessor in _ladder_predecessors(rung, prefix):
         path = rung_document_path(directory, predecessor, prefix)
         if not path.exists():
             msg = (
@@ -1909,7 +1988,7 @@ def assert_ladder_is_recoverable(
             carrying the command that rewrites it.
     """
     recovery = f"`--rung 0 --rung-prefix {prefix}`" if prefix else "`--rung 0`"
-    for predecessor in range(rung):
+    for predecessor in _ladder_predecessors(rung, prefix):
         path = rung_document_path(directory, predecessor, prefix)
         preamble = (
             f"Refusing to REBUILD under rung prefix {prefix!r}: its ladder "
@@ -2291,10 +2370,11 @@ def _expected_signature(
     is still CR-02, so the new table cannot have captured the old integer.
     """
     causes = _rung_causes(prefix)
-    if rung not in causes:
+    if rung not in causes and not _is_extra_step(rung, prefix):
         msg = (
             f"Unknown rung {rung!r} under rung prefix {prefix!r}. Must be one of "
-            f"{sorted(causes)}."
+            f"{sorted(causes)} or a registered extra step "
+            f"{sorted(EXTRA_STEPS_BY_PREFIX.get(prefix, {}))}."
         )
         raise ValueError(msg)
 
@@ -2303,11 +2383,8 @@ def _expected_signature(
         # from the dispatch table and returned as a COPY so a caller cannot edit
         # the prediction it is about to be judged against. Never the generic
         # Phase-30 path below, which keys rung semantics by NUMBER.
-        return dict(
-            _phase332_table_entry(
-                PHASE332_RUNG_SIGNATURES, rung, "PHASE332_RUNG_SIGNATURES"
-            )
-        )
+        table, name = _phase332_table("signatures", rung)
+        return dict(_phase332_table_entry(table, rung, name))
 
     if prefix == PHASE33_RUNG_PREFIX:
         # Returned as a COPY, for the reason the Phase-33.1 branch below records:
@@ -2581,7 +2658,7 @@ def attribute_rung(
         require_rung_ladder(ladder_directory, rung, rung_prefix)
 
     signature = _expected_signature(rung, before=before, prefix=rung_prefix)
-    cause = _rung_causes(rung_prefix)[rung]
+    cause = _step_cause(rung, rung_prefix)
     # THE PHASE-33.1 RUNG GETS NO UPSTREAM-DRIFT ESCAPE, and the suppression is
     # scoped to the PREFIX rather than expressed by editing `_UPSTREAM_ESCAPE_RUNGS`
     # -- that tuple is Phase 30's record and rung 1 legitimately carries the escape
@@ -2689,9 +2766,8 @@ def _attribute_one_matrix(
 ) -> bool:
     """Apply *rung*'s predicted signature to one matrix. Returns whether it blocks."""
     if rung_prefix == PHASE332_RUNG_PREFIX:
-        attributor = _phase332_table_entry(
-            PHASE332_RUNG_ATTRIBUTORS, rung, "PHASE332_RUNG_ATTRIBUTORS"
-        )
+        table, name = _phase332_table("attributors", rung)
+        attributor = _phase332_table_entry(table, rung, name)
         return attributor(detail, diff, verdict, fail)
 
     if rung_prefix == PHASE33_RUNG_PREFIX:
@@ -4135,6 +4211,207 @@ PHASE332_RUNG_SIGNATURES[PHASE332_SCHEDULE_MOVE_RUNG] = (
 PHASE332_RUNG_ATTRIBUTORS[PHASE332_SCHEDULE_MOVE_RUNG] = _attribute_p332_schedule_move
 
 
+# ---------------------------------------------------------------------------
+# p332_ EXTRA STEP 3b -- SURFACE CLASSIFICATION (Plan 33.2-10, orchestrator-assigned; the
+# deferred-items entry "surface_mismatch treats natural and hybrid grass ... as synthetic").
+#
+# NOT A NUMBERED RUNG. Rungs 4-9 are allocated to later plans, so this fix -- one cause,
+# its own rebuild, its own attribution (D33.2-20) -- is registered as the EXTRA STEP "3b",
+# which follows rung 3: it is judged against p332_rung3.json, and rung 4 will be judged
+# against p332_rung3b.json (see EXTRA_STEPS_BY_PREFIX).
+#
+# DECLARED BEFORE THE REBUILD RAN. The only gold column the surface class reaches is
+# `surface_mismatch` (features.contextual._compute_surface_mismatch). The games whose value
+# changes are DERIVED, not listed: every silver game is classified under the retired
+# two-spelling rule and under features.contextual.SURFACE_CLASS_BY_SPELLING, and the games
+# whose mismatch differs are the reclassified set. No team's home venue uses a reclassified
+# spelling, so every reclassified game is played at a venue spelled "Grass", "Hybrid Grass"
+# or "Desso GrassMaster" (London, Mexico City, Frankfurt, Munich, Sao Paulo, Dublin,
+# Berlin); "RealGrass" (Texas Stadium) is artificial turf and does not change.
+# ---------------------------------------------------------------------------
+
+PHASE332_SURFACE_STEP: str = "3b"
+
+PHASE332_SURFACE_STEP_FOLLOWS: int = PHASE332_SCHEDULE_MOVE_RUNG
+
+# The rule this step retires, kept so the reclassified set can be recomputed from source.
+PHASE332_SURFACE_STEP_RETIRED_GRASS_SPELLINGS: frozenset[str] = frozenset(
+    {"Bermuda Grass", "Kentucky Bluegrass"}
+)
+
+PHASE332_SURFACE_STEP_COLUMNS: tuple[str, ...] = ("surface_mismatch",)
+
+PHASE332_SURFACE_STEP_CAUSE: str = (
+    "THE SURFACE-CLASSIFICATION FIX of Plan 33.2-10 extra step 3b (orchestrator-assigned, "
+    "deferred-items entry of Plan 33.2-09), and NOTHING else: "
+    "features.contextual.SURFACE_CLASS_BY_SPELLING now classifies every distinct surface "
+    "spelling in data/venues.json -- Grass, Hybrid Grass and Desso GrassMaster as grass "
+    "(natural or hybrid), RealGrass and the other turf products as synthetic -- and an "
+    "unlisted spelling raises instead of defaulting to synthetic, so surface_mismatch is "
+    "recomputed at the international and hybrid-pitch venues the two-spelling rule misread. "
+    "Only surface_mismatch can move, only in seasons on or after the earliest season "
+    "holding a reclassified game. No column is added, none removed, no row moves"
+)
+
+_PHASE332_SURFACE_RECLASSIFIED_CACHE: dict[str, int] | None = None
+
+
+def phase332_surface_reclassified_games() -> dict[str, int]:
+    """``game_id -> season`` for every silver game whose surface_mismatch the fix changes.
+
+    Each game is classified twice with the builder's own inputs -- its venue at the lock
+    (features.schedule_moves.facts_at_lock, the same accessor the builder reads) and the
+    away team's home venue (the calculator's team-to-venue map) -- once under the retired
+    two-spelling rule and once under features.contextual.surface_is_grass. Reads silver
+    ``games`` READ-ONLY and is computed once per process.
+    """
+    global _PHASE332_SURFACE_RECLASSIFIED_CACHE
+    if _PHASE332_SURFACE_RECLASSIFIED_CACHE is None:
+        from data.storage import load_dataframe
+        from features.contextual import ContextualFeaturesCalculator, surface_is_grass
+
+        calculator = ContextualFeaturesCalculator()
+        surfaces = {
+            venue["venue_id"]: venue["surface"]
+            for venue in calculator.venues_data["venues"]
+        }
+        games = load_dataframe("games", layer="silver")
+        changed: dict[str, int] = {}
+        for _, game in games.iterrows():
+            away_home = calculator.team_venues.get(game["away_team"])
+            if not away_home:
+                continue
+            venue_id = calculator._resolve_venue_id_for_game(game)
+            away_surface, game_surface = surfaces[away_home], surfaces[venue_id]
+            retired = PHASE332_SURFACE_STEP_RETIRED_GRASS_SPELLINGS
+            old = (away_surface in retired) != (game_surface in retired)
+            new = surface_is_grass(away_surface) != surface_is_grass(game_surface)
+            if old != new:
+                changed[str(game["game_id"])] = int(game["season"])
+        _PHASE332_SURFACE_RECLASSIFIED_CACHE = changed
+    return dict(_PHASE332_SURFACE_RECLASSIFIED_CACHE)
+
+
+def phase332_surface_step_earliest_season(through_season: int = 2025) -> int | None:
+    """The earliest season (at most *through_season*) holding a reclassified game."""
+    seasons = [
+        season
+        for season in phase332_surface_reclassified_games().values()
+        if season <= through_season
+    ]
+    return min(seasons, default=None)
+
+
+PHASE332_SURFACE_STEP_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_SURFACE_STEP,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_SURFACE_STEP_CAUSE,
+    "follows_rung": PHASE332_SURFACE_STEP_FOLLOWS,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to surface_mismatch, the one gold column the surface class reaches, "
+        "and only in seasons ON OR AFTER the earliest season holding a reclassified game "
+        "(derived by phase332_surface_reclassified_games from silver games and the two "
+        "rules): a changed value moves its own season and, through the prior-season "
+        "bootstrap and the strictly-prior fits, later seasons, never an earlier one"
+    ),
+    "rows_changed": (
+        "before normalization only the reclassified games can differ. surface_mismatch is "
+        "a varying binary flag, so gold z-scores it: after normalization it can also move "
+        "on other rows of a reclassified game's season sorted at or after that game, and "
+        "on the next season's early rows. Measured row by row at run time against a copy "
+        "of the before-gold"
+    ),
+    "weather": "NOT expected to move: the surface class feeds no weather column",
+    "declared_families": ("surface_class",),
+    "family_mechanisms": {
+        "surface_class": (
+            "source-derived: every silver game classified under the retired two-spelling "
+            "rule and under features.contextual.SURFACE_CLASS_BY_SPELLING"
+        ),
+    },
+    "declared_before_the_rebuild": True,
+}
+
+EXTRA_STEPS_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[PHASE332_SURFACE_STEP] = (
+    PHASE332_SURFACE_STEP_FOLLOWS
+)
+EXTRA_STEP_CAUSES_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_SURFACE_STEP
+] = PHASE332_SURFACE_STEP_CAUSE
+
+# THE BASELINE WAS CONFIRMED, NOT ASSUMED (owner ruling 2026-09-21). Step 3b registers NO
+# retaken baseline: it is judged against rung 3, the rung it follows.
+PHASE332_SURFACE_STEP_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-21 before step 3b ran. p332_rung3.json IS gold rebuilt from today's "
+    "inputs minus exactly this step's cause: the rung-3 rebuild ran on the same inputs "
+    "with the code at commit 0757605, which differs from this step's code only by the "
+    "surface classification. Between that rebuild and this step the production data/ tree "
+    "did not change (463 files, digest-identical to the state rung 3 left), and production "
+    "gold fingerprinted identical to p332_rung3.json. No carry-in, no retake"
+)
+
+
+def _attribute_p332_surface(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Extra step 3b of the `p332_` ladder: the surface-classification fix's OWN judge.
+
+    A changed column is attributed ONLY when it is surface_mismatch AND every season it
+    moved in is on or after the earliest season holding a reclassified game. Anything
+    else is UNATTRIBUTED and fails; the cause is never widened to fit it.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    verdict["changed_by_family"] = {"surface_class": []}
+    blocking = _phase33_structure(
+        detail,
+        diff,
+        fail,
+        "p332_ step 3b (the surface classification)",
+        "Reclassifying natural and hybrid grass pitches",
+    )
+    explainable = {_canonical(column) for column in PHASE332_SURFACE_STEP_COLUMNS}
+    floor = phase332_surface_step_earliest_season()
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        in_range = (
+            floor is not None
+            and bool(seasons)
+            and all(int(s) >= floor for s in seasons)
+        )
+        if column in explainable and in_range:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["surface_class"].append(column)
+            continue
+        verdict["unattributed"].append(column)
+        why = (
+            f"it moved in season(s) before {floor}, the earliest season holding a "
+            "reclassified game"
+            if column in explainable
+            else "the surface class reaches no column but surface_mismatch"
+        )
+        fail(
+            f"column '{column}' moved at p332_ step 3b in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The step's ONE cause is the "
+            "surface classification; do NOT widen it to fit this diff"
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+# The `p332_` extra-step dispatch tables: one entry per registered step, read by
+# _phase332_table exactly as PHASE332_RUNG_SIGNATURES / _ATTRIBUTORS are for numbered rungs.
+PHASE332_EXTRA_STEP_SIGNATURES: dict[str, dict[str, object]] = {
+    PHASE332_SURFACE_STEP: PHASE332_SURFACE_STEP_EXPECTED_SIGNATURE
+}
+PHASE332_EXTRA_STEP_ATTRIBUTORS: dict[str, Callable[..., bool]] = {
+    PHASE332_SURFACE_STEP: _attribute_p332_surface
+}
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -4614,7 +4891,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 3).
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 3, step 3b).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -4786,6 +5063,12 @@ def write_phase332_rebuild_diff(
     if schedule_document.exists():
         lines.extend(_phase332_schedule_move_rung_lines(fingerprint_dir))
 
+    surface_document = rung_document_path(
+        fingerprint_dir, PHASE332_SURFACE_STEP, PHASE332_RUNG_PREFIX
+    )
+    if surface_document.exists():
+        lines.extend(_phase332_surface_step_lines(fingerprint_dir))
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out_path
@@ -4930,6 +5213,72 @@ def _phase332_schedule_move_rung_lines(fingerprint_dir: Path | str) -> list[str]
             'recorded as declared-but-not-run rather than as a rung that ran"'
         )
     lines.extend(["", f"[rung.{rung}.moved_seasons]"])
+    for column, seasons in sorted(_phase332_moved_seasons(report).items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_surface_step_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` extra step 3b (Plan 33.2-10), recomputed.
+
+    Judged by the same `attribute_rung` call the CLI makes, against the rung the step
+    follows (PHASE332_SURFACE_STEP_BASELINE_CONFIRMATION records why no retake was needed).
+    """
+    step = PHASE332_SURFACE_STEP
+    require_rung_ladder(fingerprint_dir, step, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, step)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, step, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, step, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    signature = PHASE332_SURFACE_STEP_EXPECTED_SIGNATURE
+    floor = phase332_surface_step_earliest_season()
+    reclassified = sorted(
+        game
+        for game, season in phase332_surface_reclassified_games().items()
+        if season <= 2025
+    )
+    lines = [
+        "",
+        f'[rung."{step}"]',
+        f'rung = "{step}"',
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        "extra_step = true",
+        f"follows_rung = {PHASE332_SURFACE_STEP_FOLLOWS}",
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_SURFACE_STEP_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_SURFACE_STEP_CAUSE)}"',
+        f"declared_columns = {_toml_array(list(PHASE332_SURFACE_STEP_COLUMNS))}",
+        f"declared_season_floor = {floor if floor is not None else 0}",
+        f"reclassified_games_through_2025 = {_toml_array(reclassified)}",
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_EXTRA_STEP_ATTRIBUTORS[step].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the step is '
+            'recorded as declared-but-not-run rather than as a step that ran"'
+        )
+    lines.extend(["", f'[rung."{step}".moved_seasons]'])
     for column, seasons in sorted(_phase332_moved_seasons(report).items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
     return lines

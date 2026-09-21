@@ -39,7 +39,11 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from data.storage import load_dataframe, save_dataframe
-from features.contextual import ContextualFeaturesCalculator, UnknownStadiumError
+from features.contextual import (
+    ContextualFeaturesCalculator,
+    UnknownStadiumError,
+    UnknownSurfaceError,
+)
 from features.elo_features import EloFeatureBuilder
 from features.injury import InjuryBuilder
 from features.market_anchors import MarketAnchorFeaturesCalculator
@@ -585,7 +589,11 @@ class FeatureMatrixBuilder:
                 )
                 feature_sources["contextual"] = contextual_df
                 logger.info("Built contextual features", records=len(contextual_df))
-            except UnknownStadiumError:
+            except (UnknownStadiumError, UnknownSurfaceError):
+                # UnknownSurfaceError (Plan 33.2-10 step 3b) is a LookupError, which the
+                # handler below does not catch either; it is named here so its route to
+                # the caller is stated rather than incidental.
+                #
                 # A STADIUM-RESOLUTION REFUSAL IS NOT A SOURCE-LOAD FAILURE, and
                 # this handler exists only because the type system cannot say so
                 # (owner ruling 2026-09-13, found by Plan 33.1-03).
