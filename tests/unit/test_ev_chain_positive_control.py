@@ -42,7 +42,6 @@ from backtest.ats_ev_chain import (
     price_ats_candidates,
 )
 from backtest.bet_selector import BetSelector
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from backtest.ou_ev_chain import EV_FLOOR_GRID, MIN_BIN_OBS, N_BINS
 from backtest.selector_strategies import OUStrategy
 from backtest.wp_ev_chain import (
@@ -111,12 +110,10 @@ def _ou_selector(ev_floor_t: float = 0.0) -> BetSelector:
         season_bias_by_season=_OU_SEASON_BIAS,
         ev_floor_t=ev_floor_t,
         bankroll=10_000.0,
-        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
         strategies=[
             OUStrategy(
                 frozen_sd=_OU_FROZEN_SD,
                 season_bias_by_season=_OU_SEASON_BIAS,
-                high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
             )
         ],
     )
@@ -515,10 +512,9 @@ class TestOuPositiveControl:
     def test_ou_positive_control_emits_at_least_one_bet(self) -> None:
         """SPEC R1 / D31-08, through the single bet-decision source (LOCKED-2).
 
-        A model total 15 points under a 45-point market line is an UNDER pick, which
-        satisfies the frozen Phase-26/27 eligibility UNION on its under arm alone -- so the
-        control does not depend on the high-total boundary and therefore cannot be quietly
-        weakened by a boundary that failed to resolve.
+        A model total 15 points under a 45-point market line is an UNDER pick. Since D33.2-24
+        the O/U target has no eligibility gate, so the control reaches the EV floor on its side
+        alone -- it depends on no totals boundary, and none exists to fail to resolve.
         """
         rows = [
             {

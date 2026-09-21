@@ -10,12 +10,12 @@ Covers the OUM-03/05 acceptance for ``backtest/ou_monetization.py``:
     assertion); the BH-FDR adjusted p-values are >= raw and in [0,1]; the COMPLETE trial registry
     carries the TRIAL_REGISTRY_FIELDS schema incl. calibration_method (#4);
   - a PHASE-LEVEL LEAKAGE TEST (#5): the hold seasons (2023/2024) do NOT appear in the SD fit input,
-    the threshold-tuning input, any season's self-bias estimation, the high-total boundary
-    derivation, or the trial-selection set;
+    the threshold-tuning input, any season's self-bias estimation, or the trial-selection set;
   - the block-by-week bootstrap CI resamples WEEKS WITHIN the holdout seasons only (#6);
   - robustness cuts run; coverage/exclusion counts accompany the ROI (OUM-06);
-  - the high-total OVER empirical report exists (surviving over count + union vs under-only ROI) and
-    a large 8-point-gap O/U bet yields kelly_model_prob <= 1.0 (#7);
+  - NO eligibility gate survives in the runner (D33.2-24): no frozen high-total boundary, no
+    boundary fence, and a registry that names no sub-population rule; a large 8-point-gap O/U
+    bet yields kelly_model_prob <= 1.0 (#7, BET-02);
   - the contaminated vocabulary appears and "validated" / "proven profitable" does NOT (#6);
   - CLV is report-only (no selection-gate path; #11);
   - EDGE CASES (#8): empty selected bets, missing odds rows, no-prior-season bias (asserts it
@@ -27,13 +27,14 @@ Load-bearing number anchors (reproduced this session against the DEPLOYED v1.0 O
 ``ou_20260326_163930`` over 2021-2024 canonical gold; the ROI VERDICT itself is the owner
 checkpoint, NOT a hard assert -- D27-01/02):
   - frozen residual SD ~13.15 (fit on bias-corrected TUNE 2021-2022 residuals only)
-  - pre-hold high-total boundary 48.0 (LOCKED-1)
+  - (the pre-hold high-total boundary 48.0 anchor is DELETED BY RULING -- D33.2-24 removed the
+    boundary; ``no_eligibility_gate`` asserts it is gone instead)
   - odds coverage 0.9543 (n_with_line 1087 / n_total 1139; 52 excluded)
   - the EV-floor sweep logs 5 trials (EV_FLOOR_GRID) all with a testable BH-FDR p
   - the chosen EV-floor t is selected by tune ROI (not significance)
 
 Selectors (``-k``): tune_only_fit, bh_fdr_monotone, complete_registry_schema,
-phase_level_leakage, within_holdout_bootstrap, coverage_counts, high_total_over_report,
+phase_level_leakage, within_holdout_bootstrap, coverage_counts, no_eligibility_gate,
 eight_point_gap_prob, contaminated_vocabulary, clv_report_only, edge_empty_bets,
 edge_missing_odds, edge_no_prior_bias, edge_all_one_week, no_preview_import,
 production_files_untouched, no_data_write, negative_roi_does_not_raise, determinism.
@@ -60,16 +61,19 @@ from backtest.ou_ev_chain import EV_FLOOR_GRID, TRIAL_REGISTRY_FIELDS
 # Gold presence skip-guard: the integration tests need the Phase-20 rebuilt canonical gold.
 _GOLD_OU_PATH = Path("data/gold/features_ou.parquet")
 
-# Number anchors (reproduced this session; see module docstring). Tolerances: tight for the boundary
-# and coverage, looser for the SD; the ROI itself is an owner checkpoint, not a hard assert.
+# Number anchors (reproduced this session; see module docstring). Tolerances: tight for coverage,
+# looser for the SD; the ROI itself is an owner checkpoint, not a hard assert.
 ANCHOR_FROZEN_SD = 13.15
-ANCHOR_HIGH_TOTAL_BOUNDARY = 48.0
 ANCHOR_COVERAGE = 0.9543
 ANCHOR_N_WITH_LINE = 1087
 ANCHOR_N_TRIALS = 5
 
+# The registry's subpopulation_rule since D33.2-24 (was "union(under OR high_total)").
+ANCHOR_SUBPOPULATION_RULE = (
+    "none (D33.2-24: no eligibility gate; the EV floor alone decides)"
+)
+
 _TOL_SD = 5e-2
-_TOL_BOUNDARY = 1e-6
 _TOL_COVERAGE = 5e-3
 
 # Production files the runner must NOT edit (the self-judging boundary).
@@ -103,7 +107,7 @@ class TestOuMonetizationRoi:
     # -- tune_only_fit: SD / bias / t fit on tune-only -----------------------------------
 
     def test_tune_only_fit(self, monetization_result) -> None:
-        """The frozen SD is fit on the TUNE split (2021-2022) ONLY; the boundary is the pre-hold 48.0.
+        """The frozen SD is fit on the TUNE split (2021-2022) ONLY.
 
         The fit-window assertion proves the SD fit consumed exactly the tune seasons and the chosen
         EV-floor t was tuned on the tune window string.
@@ -115,10 +119,6 @@ class TestOuMonetizationRoi:
 
         frozen = monetization_result["frozen"]
         assert abs(frozen["frozen_sd"] - ANCHOR_FROZEN_SD) < _TOL_SD
-        assert (
-            abs(frozen["high_total_boundary"] - ANCHOR_HIGH_TOTAL_BOUNDARY)
-            < _TOL_BOUNDARY
-        )
         # t is one of the pre-registered grid values (chosen by ROI, not invented).
         assert frozen["ev_floor_t"] in set(EV_FLOOR_GRID)
 
@@ -151,7 +151,7 @@ class TestOuMonetizationRoi:
             for field in TRIAL_REGISTRY_FIELDS:
                 assert field in entry, f"registry entry missing field '{field}'"
             assert entry["calibration_method"] == "prior_season_mean_bias_subtraction"
-            assert entry["subpopulation_rule"] == "union(under OR high_total)"
+            assert entry["subpopulation_rule"] == ANCHOR_SUBPOPULATION_RULE
             assert entry["sample_window"] == "tune_2021_2022"
 
     # -- phase_level_leakage: hold absent from every fit / derivation / selection ---------
@@ -160,8 +160,8 @@ class TestOuMonetizationRoi:
         """Hold seasons (2023/2024) appear in NO fit / derivation / selection input (#5, T-27-12).
 
         Proves the walk-forward fence at the PHASE level: the SD fit, the threshold-tuning window,
-        each season's self-bias inputs, the boundary derivation, and the trial sample windows are all
-        free of the hold seasons.
+        each season's self-bias inputs, and the trial sample windows are all free of the hold
+        seasons. (The boundary-derivation leg is gone with the boundary, D33.2-24.)
         """
         hold = {2023, 2024}
         fence = monetization_result["fit_window_assertion"]
@@ -173,12 +173,6 @@ class TestOuMonetizationRoi:
 
         # The bias seasons reported (the tune fit) are hold-free.
         assert not (set(fence["bias_seasons"]) & hold)
-
-        # The boundary is the leakage-clean pre-hold derivation (re-derived value matches).
-        assert (
-            abs(fence["high_total_boundary"] - fence["pre_hold_boundary_rederived"])
-            < 1e-9
-        )
 
         # Every trial's sample window is the tune split (no hold-season trial selection).
         for entry in monetization_result["trial_registry"]:
@@ -209,23 +203,22 @@ class TestOuMonetizationRoi:
         # The hold ROI block carries the same coverage (no ROI without its provenance).
         assert monetization_result["hold_roi"]["coverage"] == coverage
 
-    # -- high_total_over_report: surviving over count + union vs under-only ROI ------------
+    # -- no_eligibility_gate: the runner carries no boundary, no fence leg, no union report --------
 
-    def test_high_total_over_report(self, monetization_result) -> None:
-        """The high-total OVER empirical report exists with the surviving count + union/under ROIs (#7).
+    def test_no_eligibility_gate(self, monetization_result) -> None:
+        """No trace of the deleted O/U eligibility gate survives in the result (D33.2-24).
 
-        The union-vs-under-only comparison is EMPIRICALLY reported (it is a flag the owner weighs at
-        the checkpoint, not a hard pass/fail -- a union that underperforms under-only is a real,
-        load-bearing finding about the over pocket).
+        Replaces ``test_high_total_over_report``. That test's intent -- report the surviving
+        high-total OVER count and the union-vs-under-only ROI -- is DELETED BY RULING: both
+        measured the eligibility UNION, and the ``totals_regime`` field the slice read died with
+        it. What is asserted instead is that the runner froze no boundary, fenced none, and
+        reported no union comparison.
         """
-        hto = monetization_result["high_total_over_report"]
-        assert "surviving_high_total_over_count" in hto
-        assert "surviving_under_count" in hto
-        assert "union_roi" in hto
-        assert "under_only_roi" in hto
-        assert isinstance(hto["union_not_below_under_only"], bool)
-        assert hto["surviving_high_total_over_count"] >= 0
-        assert hto["surviving_under_count"] >= 0
+        assert "high_total_boundary" not in monetization_result["frozen"]
+        fence = monetization_result["fit_window_assertion"]
+        assert "high_total_boundary" not in fence
+        assert "pre_hold_boundary_rederived" not in fence
+        assert "high_total_over_report" not in monetization_result
 
     # -- eight_point_gap_prob: kelly_model_prob <= 1.0 (BET-02) ---------------------------
 
@@ -235,11 +228,11 @@ class TestOuMonetizationRoi:
         The calibrated P(side) is a probability, NEVER the legacy points distance
         ``implied + 8.0 = 8.524``.
         """
-        hto = monetization_result["high_total_over_report"]
-        prob = hto["eight_point_gap_kelly_model_prob"]
+        bet02 = monetization_result["bet02_probability_check"]
+        prob = bet02["eight_point_gap_kelly_model_prob"]
         assert prob is not None
         assert 0.0 <= prob <= 1.0
-        assert hto["eight_point_gap_prob_is_probability"] is True
+        assert bet02["eight_point_gap_prob_is_probability"] is True
 
     # -- contaminated_vocabulary: fixed vocab present; "validated" absent ------------------
 
@@ -394,7 +387,7 @@ class TestOuMonetizationRoi:
     # -- determinism: a second run reproduces the frozen fit + registry -------------------
 
     def test_determinism(self, monetization_result) -> None:
-        """A second runner pass reproduces the frozen t / SD / boundary and the registry (anchors)."""
+        """A second runner pass reproduces the frozen t / SD and the registry (anchors)."""
         if not _GOLD_OU_PATH.exists():
             pytest.skip(f"Canonical gold not present at {_GOLD_OU_PATH}")
         second = ou_monetization.run_ou_monetization()

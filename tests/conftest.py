@@ -901,17 +901,13 @@ def p31_rehearsal_run(tmp_path_factory):
         ``{"result", "verdict_toml_path", "verdict_json_path", "ledger_path"}``.
     """
     from backtest.ats_ev_chain import FENCE_WINDOW_REHEARSAL
-    from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
     from backtest.profitability_2025 import run_profitability_2025
     from tests.p31_synthetic_candidates import build_synthetic_candidates
 
-    if not np.isfinite(HIGH_TOTAL_BOUNDARY_PREHOLD):
-        pytest.skip(
-            "the leakage-clean pre-hold high-total boundary is not derivable on this "
-            "checkout (it is derived at import from the gitignored silver odds lake), so "
-            "the O/U eligibility gate cannot be constructed and the runner cannot run."
-        )
-
+    # No skip guard. One used to skip this fixture when the O/U high-total eligibility boundary
+    # could not be derived (it was derived at import from the gitignored silver odds lake). That
+    # boundary and the gate it served were deleted under D33.2-24, so the runner no longer needs
+    # the lake to construct its O/U strategy and there is nothing left to skip on.
     tmp_path = tmp_path_factory.mktemp("p31_rehearsal_run")
     paths = {
         "verdict_toml_path": tmp_path / "verdict.toml",

@@ -48,7 +48,6 @@ from api.cache import (
     stamp_bet_list_provenance,
 )
 from backtest.bet_selector import REJECTION_REASONS, BetSelector
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from backtest.selector_strategies import TargetStrategy
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -156,7 +155,6 @@ def _selector(strategies: list[Any]) -> BetSelector:
         season_bias_by_season=_SEASON_BIAS,
         ev_floor_t=0.0,
         bankroll=_BANKROLL,
-        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
         strategies=strategies,
     )
 

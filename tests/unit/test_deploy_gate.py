@@ -1468,13 +1468,23 @@ _P31_CLEAN_SPLIT_SEASON: int = 2025
 
 # The O/U selection thresholds Phase 31 must not lower. These are the concrete objects behind
 # "MUST NOT lower the O/U edge threshold to improve a result": the pre-registered EV-floor grid a
-# per-target floor t is selected FROM, the flat -110 breakeven the EV math is anchored to, and the
-# leakage-clean high-total eligibility boundary together with the derivation that produced it.
+# per-target floor t is selected FROM and the flat -110 breakeven the EV math is anchored to.
+#
+# Three more phase-start readings used to sit here -- the high-total eligibility boundary (48.0)
+# and the two inputs of its derivation (the 2/3 upper-tertile quantile and the 2018-2022 pre-hold
+# window). D33.2-24 DELETED the boundary, its derivation and both inputs together with the O/U
+# eligibility gate they served, so those pins lost their subject and were deleted with it. Their
+# guard below became a DELETED guard: it now fails if any of the three reappears.
 _P31_EV_FLOOR_GRID: tuple[float, ...] = (0.00, 0.01, 0.02, 0.03, 0.05)
 _P31_OU_BREAKEVEN: float = 110.0 / 210.0
-_P31_HIGH_TOTAL_QUANTILE: float = 2.0 / 3.0
-_P31_PRE_HOLD_SEASONS: tuple[int, ...] = (2018, 2019, 2020, 2021, 2022)
-_P31_HIGH_TOTAL_BOUNDARY: float = 48.0
+
+# The three retired module attributes the DELETED guard below refuses (D33.2-24). Named as
+# strings, never imported: an import of a deleted name is an ImportError, not an assertion.
+_RETIRED_HIGH_TOTAL_SYMBOLS: tuple[str, ...] = (
+    "HIGH_TOTAL_BOUNDARY_PREHOLD",
+    "_HIGH_TOTAL_QUANTILE",
+    "PRE_HOLD_SEASONS",
+)
 
 # The phase-start reading of the gate-time freshness tolerance, recorded under THIS phase's name.
 # Not a third declaration: nothing compares against it except the assertion below, and the two live
@@ -1574,7 +1584,8 @@ def test_the_phase_start_snapshot_holdout_was_re_read_to_the_live_partition() ->
 def test_phase31_protected_thresholds_have_not_moved() -> None:
     """31-SPEC: the O/U edge threshold is not lowered and the freshness tolerance is not widened.
 
-    Four objects are pinned, because "the O/U edge threshold" is not one scalar in this codebase:
+    Three objects are pinned and one is refused, because "the O/U edge threshold" is not one
+    scalar in this codebase:
 
       1. ``EV_FLOOR_GRID`` -- the pre-registered ascending grid the per-target EV floor ``t`` is
          SELECTED FROM. Lowering a grid entry is the most direct way to admit bets the
@@ -1582,27 +1593,19 @@ def test_phase31_protected_thresholds_have_not_moved() -> None:
          loosening.
       2. ``OU_BREAKEVEN`` -- the flat -110 breakeven the EV math is anchored to. Moving it shifts
          every per-bet EV without touching a single threshold by name.
-      3. The high-total eligibility boundary AND its derivation inputs (the 2/3 upper-tertile
-         quantile and the pre-hold 2018-2022 window). D31-06 consumes the boundary UNCHANGED so
-         its pre-registration is provable by git ancestry alone -- but only if the constant and
-         the derivation that produced it both stay put.
+      3. The high-total eligibility boundary AND its derivation inputs -- REFUSED, not pinned.
+         This guard used to fail if the boundary (48.0), its 2/3 quantile or its 2018-2022
+         pre-hold window MOVED. D33.2-24 did not move them; it DELETED them, together with the
+         O/U eligibility UNION they served, because the rule was derived from models trained on
+         corrupted data and D31-05 had already rejected per-target sub-population rules. A
+         moved-guard whose subject is gone would either fail forever or be skipped forever, so
+         it became a DELETED guard: it fails if any of the three names comes back. D31-06's
+         "consumed unchanged" claim about the 2025 run stays true in the record -- it is the
+         frozen ``backtest/ev_chain_constants.py`` prose, which is not edited.
       4. ``_FRESHNESS_TOL`` -- pinned again under this phase's name. D30-DEFER-04 remains
          DEFERRED: the tolerance stays at 5e-3 and stays absolute.
-
-    The boundary VALUE is asserted only when it resolved. ``derive_high_total_boundary`` runs at
-    import over the silver odds parquet and lands at NaN on a bare checkout where ``data/`` is
-    absent, so asserting it unconditionally would fail on a checkout that simply has no data lake
-    -- a false alarm, and a guard that reddens for the wrong reason gets ignored. The derivation
-    INPUTS are asserted unconditionally, so the rule that produces the boundary is pinned even
-    where the boundary itself cannot be computed.
     """
-    import math
-
-    from backtest.ou_divergence import (
-        _HIGH_TOTAL_QUANTILE,
-        HIGH_TOTAL_BOUNDARY_PREHOLD,
-        PRE_HOLD_SEASONS,
-    )
+    from backtest import ou_divergence
     from backtest.ou_ev_chain import EV_FLOOR_GRID, OU_BREAKEVEN
     from scripts.promote_models import _FRESHNESS_TOL as promote_tol
 
@@ -1623,19 +1626,16 @@ def test_phase31_protected_thresholds_have_not_moved() -> None:
         f"OU_BREAKEVEN MOVED: phase-start {_P31_OU_BREAKEVEN} -> current {OU_BREAKEVEN}. "
         + remediation
     )
-    assert _HIGH_TOTAL_QUANTILE == _P31_HIGH_TOTAL_QUANTILE, (
-        f"the high-total upper-tertile quantile MOVED: {_P31_HIGH_TOTAL_QUANTILE} -> "
-        f"{_HIGH_TOTAL_QUANTILE}. " + remediation
+    revived = [
+        name for name in _RETIRED_HIGH_TOTAL_SYMBOLS if hasattr(ou_divergence, name)
+    ]
+    assert revived == [], (
+        f"backtest.ou_divergence defines {revived} again. D33.2-24 DELETED the O/U high-total "
+        "eligibility boundary, its derivation and its inputs together with the eligibility gate "
+        "they served; nothing replaces them. Restoring one means re-deriving a sub-population "
+        "rule on seasons D33.2-07 declared are not clean evidence."
     )
-    assert tuple(PRE_HOLD_SEASONS) == _P31_PRE_HOLD_SEASONS, (
-        f"the pre-hold boundary derivation window MOVED: {_P31_PRE_HOLD_SEASONS} -> "
-        f"{tuple(PRE_HOLD_SEASONS)}. " + remediation
-    )
-    if math.isfinite(HIGH_TOTAL_BOUNDARY_PREHOLD):
-        assert HIGH_TOTAL_BOUNDARY_PREHOLD == _P31_HIGH_TOTAL_BOUNDARY, (
-            f"HIGH_TOTAL_BOUNDARY_PREHOLD MOVED: phase-start {_P31_HIGH_TOTAL_BOUNDARY} -> "
-            f"current {HIGH_TOTAL_BOUNDARY_PREHOLD}. " + remediation
-        )
+    assert "PRE_HOLD_SEASONS" not in ou_divergence.__all__
 
     assert promote_tol == _P31_FRESHNESS_TOL_EXPECTED, (
         f"the gate freshness tolerance MOVED: phase-start {_P31_FRESHNESS_TOL_EXPECTED} -> "

@@ -1042,14 +1042,12 @@ _FIXTURE_BIAS = {2025: -1.0}
 def _make_ou_selector(ev_floor_t: float = 0.0):
     """Build the O/U BetSelector with the fixture SD/bias (import deferred)."""
     from backtest.bet_selector import BetSelector
-    from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 
     return BetSelector(
         frozen_sd=_FIXTURE_SD,
         season_bias_by_season=_FIXTURE_BIAS,
         ev_floor_t=ev_floor_t,
         bankroll=10_000.0,
-        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
     )
 
 

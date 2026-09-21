@@ -34,7 +34,6 @@ from backtest.ats_ev_chain import (
     price_ats_candidates,
 )
 from backtest.bet_selector import BetSelector
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from backtest.selector_strategies import OUStrategy
 from backtest.wp_ev_chain import price_wp_candidates
 
@@ -117,12 +116,10 @@ def _ou_selector() -> BetSelector:
         season_bias_by_season=_OU_SEASON_BIAS,
         ev_floor_t=0.0,
         bankroll=10_000.0,
-        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
         strategies=[
             OUStrategy(
                 frozen_sd=_OU_FROZEN_SD,
                 season_bias_by_season=_OU_SEASON_BIAS,
-                high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
             )
         ],
     )

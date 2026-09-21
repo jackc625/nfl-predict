@@ -66,7 +66,6 @@ from api.services import DataService, clear_cache
 from backtest.bet_selector import REJECTION_REASONS, BetSelector
 from backtest.bet_tracker import EmptyTrackerBlock, TrackerBlock, to_tracker_frame
 from backtest.ev_chain_constants import assign_ev_tier
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from tests.api.week_selector_snapshot import (
     COMPONENTS_DIR,
     FAILURE_EVENTS,
@@ -92,8 +91,9 @@ _SNAPSHOT_TS = "2023-09-07T18:00:00-04:00"
 _FREEZE_TS = "2023-09-08T18:00:00-04:00"
 _MINUS_110 = -110.0
 
-# One historical O/U week. Three of the four candidates clear the sub-pop UNION and the EV floor;
-# the fourth (a low-total over) is rejected as ``not_subpop``.
+# One historical O/U week. Three of the four candidates clear the EV floor. The fourth, a low-total
+# over, is the case the deleted sub-pop UNION used to refuse as ``not_subpop``; since D33.2-24 it
+# is a candidate like the rest, reaches the EV floor, and is rejected there (``ev_below_floor``).
 _CANDIDATES: list[dict[str, Any]] = [
     {
         "game_id": "2023_W01_DET@KC",
@@ -145,7 +145,6 @@ def _selector() -> BetSelector:
         season_bias_by_season=_SEASON_BIAS,
         ev_floor_t=_EV_FLOOR_T,
         bankroll=_BANKROLL,
-        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
     )
 
 

@@ -34,7 +34,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pytest
 
 from backtest.ats_ev_chain import (
@@ -50,7 +49,6 @@ from backtest.ev_chain_constants import (
     TRIAL_ENTRY_KIND_INFERENCE,
     VERDICT_TOKENS,
 )
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from backtest.profitability_2025 import (
     CANONICAL_TARGETS,
     UNDISCHARGEABLE_NO_BETS,
@@ -84,11 +82,6 @@ def _require_inputs() -> None:
             "the real gold, silver odds and deployed artifacts are not present at "
             f"{[str(path) for path in missing]}; the three-target end-to-end run is not "
             "derivable on this checkout (see PIPELINE.md)."
-        )
-    if not np.isfinite(HIGH_TOTAL_BOUNDARY_PREHOLD):
-        pytest.skip(
-            "the leakage-clean pre-hold high-total boundary is not derivable on this "
-            "checkout, so the O/U eligibility gate cannot be constructed."
         )
 
 

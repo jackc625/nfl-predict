@@ -1,12 +1,14 @@
-"""Unit tests for the Phase-27 O/U BetSelector (BET-01/02, OUM-04/06) and the LOCKED-1
-pre-hold high-total boundary derivation.
+"""Unit tests for the Phase-27 O/U BetSelector (BET-01/02, OUM-04/06).
 
 Covers:
-- Task 1 (LOCKED-1): the high-total boundary RE-DERIVED on PRE-HOLD (2018-2022) closing totals,
-  the hold-season leakage assertion, and the legacy-46.5 comparison
-  (``backtest.ou_divergence.derive_high_total_boundary`` / ``HIGH_TOTAL_BOUNDARY_PREHOLD``).
-- Task 2/3 (BET-01/02, OUM-04/06, D27-04/05/06/14): the single-source ``BetSelector.select()``
-  decision engine -- sub-pop UNION filter, EV-floor admission, high-total-OVER pocket drop, the
+- (DELETED BY RULING, D33.2-24) Task 1 (LOCKED-1) used to pin the pre-hold high-total boundary
+  derivation, its hold-season leakage assertion and the legacy-46.5 comparison. The boundary, its
+  derivation and the O/U eligibility UNION it served were deleted together, so those four tests
+  went with their subject; ``tests/unit/test_ou_eligibility_gate_removed.py`` now guards that no
+  gate returns.
+- Task 2/3 (BET-01/02, OUM-04/06, D27-06/14): the single-source ``BetSelector.select()``
+  decision engine -- universal O/U candidacy (every sided candidate reaches the EV floor, which
+  replaced the sub-pop UNION filter under D33.2-24), EV-floor admission, high-total-OVER pocket drop, the
   BET-02 calibrated-P Kelly sizing fix (model_prob <= 1 on an 8-point gap), the mock/synthetic-odds
   hard-fail, push handling, report-only CLV with the wording distinction, the unfiltered
   cross-check, and selected+rejected-with-reasons output.
@@ -31,7 +33,6 @@ A TRAP FOR THE NEXT GUARD AUTHOR -- key on the MODULE PATH, never on the class n
   no import edge to find and an import-graph test alone cannot prove the production path routes
   through the real selector. Plan 31-17 owns the one-path guard that rests on both halves of this.
 
-Run the boundary group only:  pytest tests/unit/test_bet_selector.py -q -k boundary
 Run the full module:          pytest tests/unit/test_bet_selector.py -x -q
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -46,21 +47,16 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from backtest.ou_divergence import (
-    HIGH_TOTAL_BOUNDARY_PREHOLD,
-    HOLD_SEASONS,
-    PRE_HOLD_SEASONS,
-    TOTALS_REGIME_BOUNDARIES,
-    HoldSeasonLeakageError,
-    derive_high_total_boundary,
-)
-
 # ---------------------------------------------------------------------------
 # Number anchors (kept explicit so a silent drift is caught).
 # ---------------------------------------------------------------------------
 
-_LEGACY_HIGH_BOUNDARY = 46.5  # the hold-informed TOTALS_REGIME_BOUNDARIES["high_min"]
 _OU_BREAKEVEN = 110.0 / 210.0  # 0.52380952... (flat -110 cover breakeven)
+
+# The closing totals the retired high-total boundary (~48.0) used to split. The universal-candidacy
+# test below walks candidates across it on BOTH sides, so a boundary reappearing anywhere in the
+# O/U decision path would change the answer for some of them.
+_TOTALS_STRADDLING_THE_RETIRED_BOUNDARY = (38.0, 44.5, 48.0, 51.5)
 
 
 def _ou_row(
@@ -88,87 +84,18 @@ def _ou_row(
 
 
 # ---------------------------------------------------------------------------
-# Task 1 (LOCKED-1): pre-hold high-total boundary derivation + leakage assertion
+# Task 1 (LOCKED-1) -- DELETED BY RULING (D33.2-24).
+#
+# Four tests used to live here: the pre-hold high-total boundary excluded hold-season rows, a
+# derivation window naming a hold season raised, the boundary sat in a sane band beside the legacy
+# 46.5, and the pre-hold window was disjoint from the hold window. All four pinned the derivation
+# of a constant that D33.2-24 deleted together with the O/U eligibility UNION it served; the
+# derivation window, the leakage error and the constant have no reader left. They are not
+# re-expressed, because their subject no longer exists -- re-deriving the boundary on re-measured
+# past seasons is the exact step D33.2-24 rejects. What replaces their protective intent is the
+# standing guard ``tests/unit/test_ou_eligibility_gate_removed.py``, which fails if any gate
+# returns to the O/U path.
 # ---------------------------------------------------------------------------
-
-
-class TestHighTotalBoundaryDerivation:
-    """The high-total boundary is re-derived on PRE-HOLD data only (LOCKED-1, T-27-22)."""
-
-    def test_high_total_boundary_excludes_hold(self) -> None:
-        """The derivation reads only pre-hold rows; a hold-season row raises (leakage assertion).
-
-        Feeding a frame that contains a 2023/2024 (HOLD) row must raise HoldSeasonLeakageError --
-        the eligibility boundary may never be informed by the burned holdout. A clean pre-hold
-        frame derives the boundary from its rows only.
-        """
-        # (a) A frame carrying a hold-season row is rejected (the leakage assertion fires).
-        leaky = pd.DataFrame(
-            {
-                "game_id": [
-                    "2019_W01_DAL@NYG",
-                    "2023_W05_KC@BUF",  # HOLD season -> must trip the assertion
-                ],
-                "total": [44.0, 49.0],
-            }
-        )
-        with pytest.raises(HoldSeasonLeakageError) as exc:
-            derive_high_total_boundary(odds_df=leaky)
-        assert "2023" in str(exc.value)
-
-        # (b) A clean pre-hold-only frame derives from its rows only (no hold contamination).
-        clean = pd.DataFrame(
-            {
-                "game_id": [
-                    "2018_W01_DAL@NYG",
-                    "2019_W02_KC@BUF",
-                    "2020_W03_SF@SEA",
-                    "2021_W04_GB@CHI",
-                    "2022_W05_NE@MIA",
-                    "2022_W06_LA@ARI",
-                ],
-                "total": [40.0, 42.0, 45.0, 48.0, 50.0, 52.0],
-            }
-        )
-        derived = derive_high_total_boundary(odds_df=clean)
-        # Upper-tertile (q=2/3) of the six pre-hold totals -- a value drawn ONLY from these rows.
-        expected = float(
-            pd.Series([40.0, 42.0, 45.0, 48.0, 50.0, 52.0]).quantile(2.0 / 3.0)
-        )
-        assert derived == pytest.approx(expected)
-
-    def test_high_total_boundary_rejects_hold_window_request(self) -> None:
-        """Requesting a derivation window that intersects HOLD_SEASONS is itself a leakage error."""
-        with pytest.raises(HoldSeasonLeakageError):
-            derive_high_total_boundary(pre_hold_seasons=(2022, 2023))
-
-    def test_high_total_boundary_value_reported_vs_legacy(self) -> None:
-        """HIGH_TOTAL_BOUNDARY_PREHOLD is a sane totals value, surfaced alongside the legacy 46.5.
-
-        The new pre-hold boundary need NOT equal the legacy 46.5 (it is re-derived on a different,
-        leakage-clean window); the test records both values so the readout can compare them, and
-        asserts the new value sits in a sane NFL-totals range.
-        """
-        new_value = HIGH_TOTAL_BOUNDARY_PREHOLD
-        legacy_value = TOTALS_REGIME_BOUNDARIES["high_min"]
-
-        assert legacy_value == _LEGACY_HIGH_BOUNDARY
-        # The constant must have resolved on the populated data lake (not the NaN bare-checkout
-        # fallback) for the unit suite, and sit in a sane totals band.
-        assert not math.isnan(new_value), (
-            "HIGH_TOTAL_BOUNDARY_PREHOLD did not resolve -- the silver odds lake is required for "
-            "the pre-hold derivation (LOCKED-1)."
-        )
-        assert 40.0 <= new_value <= 50.0
-        # Both values are surfaced together (the readout comparison); the pre-hold derivation is a
-        # leakage-clean replacement for the hold-informed legacy boundary, not necessarily equal.
-        reported = {"pre_hold": new_value, "legacy_hold_informed": legacy_value}
-        assert set(reported) == {"pre_hold", "legacy_hold_informed"}
-
-    def test_pre_hold_window_excludes_hold_seasons(self) -> None:
-        """The pre-hold derivation window and the hold window are disjoint (LOCKED-1 invariant)."""
-        assert set(PRE_HOLD_SEASONS).isdisjoint(set(HOLD_SEASONS))
-        assert set(HOLD_SEASONS) == {2023, 2024}
 
 
 # ---------------------------------------------------------------------------
@@ -177,11 +104,11 @@ class TestHighTotalBoundaryDerivation:
 # These tests target the not-yet-built ``backtest.bet_selector`` module (RED until Task 3).
 # Synthetic, unit-fast frames only (never the real artifact). The selector API under test is a
 # BetSelector constructed with frozen_sd, season_bias_by_season (prior-season walk-forward bias,
-# negative for an over-biased model), ev_floor_t (the EV-floor scalar t Plan 04 tunes), bankroll,
-# and high_total_boundary (the pre-hold value). Its select(candidates, raw_odds_df=None) returns a
+# negative for an over-biased model), ev_floor_t (the EV-floor scalar t Plan 04 tunes) and
+# bankroll. Its select(candidates, raw_odds_df=None) returns a
 # result that exposes: selected, rejected (each with a rejection_reason), filtered (the eligible
 # acceptance basis), unfiltered (the whole-population cross-check), and clv_report. Each per-bet
-# record carries at least the game id, season, week, bet side, totals regime, model and closing
+# record carries at least the game id, season, week, bet side, model and closing
 # totals, the calibrated P(side), the per-bet EV, the Kelly stake, the sub-pop label, the
 # push-aware outcome, and the report-only CLV. The _make_selector helper below builds the selector
 # with the fixture SD and per-season bias.
@@ -202,49 +129,73 @@ def _make_selector(ev_floor_t: float = 0.0, **kwargs):
         season_bias_by_season=_FIXTURE_BIAS,
         ev_floor_t=ev_floor_t,
         bankroll=10_000.0,
-        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
         **kwargs,
     )
 
 
-class TestBetSelectorSubpopFilter:
-    """The HARD eligibility gate is the UNION {under picks} OR {high-total} (D27-04/05)."""
+class TestBetSelectorUniversalCandidacy:
+    """Every sided O/U candidate reaches the EV floor; no sub-population gate (D33.2-24).
 
-    def test_subpop_filter_admits_only_under_or_high_total(self) -> None:
-        """Eligible set = exactly {bet_side==under} OR {totals_regime==high}; low-total over out.
+    Re-expresses the Phase-27 sub-pop UNION test (D27-04/05). Its "an under pick is eligible" and
+    "a high-total over is eligible" intents fold into ONE universal-candidacy assertion, asserted
+    for both sides across totals that straddle the retired ~48.0 boundary. Its third intent -- "a
+    low-total over is INELIGIBLE" -- is DELETED BY RULING: D33.2-24 removed the rule that made it
+    so, and the low-total over below is now asserted to be a candidate like the rest.
+    """
 
-        A low-total OVER row (model predicts more points than a low line) is NOT in the union and
-        must be rejected with reason ``not_subpop``. An under pick and a high-total over are both
-        eligible (the high-total over may still be dropped later by the EV floor -- that is a
-        different reason).
+    def test_every_sided_candidate_reaches_the_ev_floor(self) -> None:
+        """Both sides, at totals below, at and above the retired boundary, are all eligible.
+
+        Eligible means "in ``filtered``" -- the set the EV floor then judges. No candidate may be
+        rejected as ``not_subpop``, and the only reason any of them can fail is the floor.
         """
-        candidates = [
-            # under pick (model below line) -- eligible via the UNDER arm of the union.
-            _ou_row(
-                "2021_W01_A@B", model_total=38.0, closing_total=45.0, actual_total=40.0
-            ),
-            # high-total over (line above the pre-hold boundary) -- eligible via the HIGH arm.
-            _ou_row(
-                "2021_W02_C@D", model_total=58.0, closing_total=50.0, actual_total=55.0
-            ),
-            # low-total over (model above a LOW line) -- NOT in the union -> not_subpop.
-            _ou_row(
-                "2021_W03_E@F", model_total=42.0, closing_total=38.0, actual_total=41.0
-            ),
-        ]
+        candidates = []
+        for index, closing_total in enumerate(_TOTALS_STRADDLING_THE_RETIRED_BOUNDARY):
+            candidates.append(
+                _ou_row(
+                    f"2021_W{index + 1:02d}_UND@ER",
+                    model_total=closing_total - 6.0,
+                    closing_total=closing_total,
+                    actual_total=closing_total - 3.0,
+                    week=index + 1,
+                )
+            )
+            candidates.append(
+                _ou_row(
+                    f"2021_W{index + 1:02d}_OVE@R",
+                    model_total=closing_total + 6.0,
+                    closing_total=closing_total,
+                    actual_total=closing_total + 3.0,
+                    week=index + 1,
+                )
+            )
         result = _make_selector().select(candidates)
 
         eligible_ids = {r["game_id"] for r in result.filtered}
-        assert "2021_W01_A@B" in eligible_ids  # under pick
-        assert "2021_W02_C@D" in eligible_ids  # high-total over
-        assert "2021_W03_E@F" not in eligible_ids  # low-total over excluded
+        assert eligible_ids == {row["game_id"] for row in candidates}
+        assert {r["bet_side"] for r in result.filtered} == {"over", "under"}
+        assert all(r["subpop_label"] == "no_subpopulation" for r in result.unfiltered)
+        assert {r["rejection_reason"] for r in result.rejected} <= {"ev_below_floor"}
 
-        not_subpop = {
-            r["game_id"]
-            for r in result.rejected
-            if r["rejection_reason"] == "not_subpop"
-        }
-        assert "2021_W03_E@F" in not_subpop
+    def test_the_low_total_over_is_a_candidate_decided_by_the_ev_floor(self) -> None:
+        """The case the deleted UNION refused is now judged by the EV floor alone.
+
+        ``2021_W03_E@F`` (model 42 over a 38 line) was the canonical ``not_subpop`` row. It is now
+        eligible, and whether it is BET depends only on the floor: selected at t=0, rejected as
+        ``ev_below_floor`` under a punishing floor -- never as outside a sub-population.
+        """
+        row = _ou_row(
+            "2021_W03_E@F", model_total=42.0, closing_total=38.0, actual_total=41.0
+        )
+        permissive = _make_selector(ev_floor_t=0.0).select([row])
+        assert [r["game_id"] for r in permissive.filtered] == ["2021_W03_E@F"]
+        assert [r["game_id"] for r in permissive.selected] == ["2021_W03_E@F"]
+
+        punishing = _make_selector(ev_floor_t=0.9).select([row])
+        assert punishing.selected == []
+        assert [(r["game_id"], r["rejection_reason"]) for r in punishing.rejected] == [
+            ("2021_W03_E@F", "ev_below_floor")
+        ]
 
 
 class TestBetSelectorEvFloor:
@@ -272,7 +223,13 @@ class TestBetSelectorEvFloor:
 
 
 class TestBetSelectorHighTotalOverPocket:
-    """The high-total OVER over-bias pocket is dropped by the calibrated EV chain (D27-05)."""
+    """The high-total OVER over-bias pocket is dropped by the calibrated EV chain (D27-05).
+
+    KEPT AND RE-EXPRESSED (D33.2-24). The intent never depended on the eligibility UNION: it is the
+    EV chain -- bias correction plus the half-point slippage -- that prices these overs below
+    breakeven. The assertion used to select them by the record's ``totals_regime`` field, which
+    died with the union; it now names the rows by game id, so the claim is unchanged.
+    """
 
     def test_high_total_over_pocket_dropped(self) -> None:
         """High-total OVER picks with a low bias-corrected P(over) are REJECTED; UNDERs survive.
@@ -280,7 +237,6 @@ class TestBetSelectorHighTotalOverPocket:
         RESEARCH Finding 4 / D27-05: the high-total OVER pocket grades below breakeven. After
         bias-correction and the half-point slippage against the OVER side, those picks have
         per-bet EV < 0 and are rejected by the EV floor (t=0). A high-total UNDER pick survives.
-        Asserts the surviving high-total OVER count is 0 while high-total UNDER survive.
         """
         candidates = [
             # high-total OVER trap picks: model barely over a high line; correction + slippage
@@ -298,18 +254,13 @@ class TestBetSelectorHighTotalOverPocket:
         ]
         result = _make_selector(ev_floor_t=0.0).select(candidates)
 
-        selected_over_high = [
-            r
-            for r in result.selected
-            if r["bet_side"] == "over" and r["totals_regime"] == "high"
-        ]
-        selected_under_high = [
-            r
-            for r in result.selected
-            if r["bet_side"] == "under" and r["totals_regime"] == "high"
-        ]
-        assert len(selected_over_high) == 0  # the over-bias pocket is dropped
-        assert len(selected_under_high) >= 1  # high-total UNDER survive
+        selected_ids = {r["game_id"] for r in result.selected}
+        rejected = {r["game_id"]: r["rejection_reason"] for r in result.rejected}
+        # The over-bias pocket is dropped -- by the EV floor, not by any eligibility rule.
+        for trap in ("2022_W01_A@B", "2022_W02_C@D"):
+            assert trap not in selected_ids
+            assert rejected[trap] == "ev_below_floor"
+        assert "2022_W03_E@F" in selected_ids  # high-total UNDER survives
 
 
 class TestBetSelectorBet02SizingFix:
@@ -332,8 +283,8 @@ class TestBetSelectorBet02SizingFix:
         ]
         result = _make_selector(ev_floor_t=0.0).select(candidates)
 
-        # The candidate is eligible (high-total) and present in the filtered set with a calibrated
-        # probability handed to Kelly.
+        # The candidate is eligible (every sided candidate is, D33.2-24) and present in the
+        # filtered set with a calibrated probability handed to Kelly.
         rec = next(r for r in result.filtered if r["game_id"] == "2022_W01_A@B")
         p_side = rec["calibrated_p_side"]
         assert 0.0 < p_side <= 1.0
@@ -476,7 +427,9 @@ class TestBetSelectorCrossCheck:
         """select() reports BOTH the filtered (acceptance basis) and unfiltered population.
 
         Both ``filtered`` and ``unfiltered`` are present; the filtered set excludes the ineligible
-        (low-total OVER) rows that the unfiltered set includes.
+        rows that the unfiltered set includes. Since D33.2-24 the only ineligible O/U shape is a
+        SIDELESS candidate (the model agrees with the market inside the LOCKED no-bet band); the
+        low-total over this test used to exclude is now in both sets.
         """
         candidates = [
             _ou_row(
@@ -485,31 +438,36 @@ class TestBetSelectorCrossCheck:
             _ou_row(
                 "2021_W03_E@F", model_total=42.0, closing_total=38.0, actual_total=41.0
             ),
+            # model == line: no side, so nothing to price.
+            _ou_row(
+                "2021_W04_G@H", model_total=45.0, closing_total=45.0, actual_total=41.0
+            ),
         ]
         result = _make_selector(ev_floor_t=0.0).select(candidates)
 
         filtered_ids = {r["game_id"] for r in result.filtered}
         unfiltered_ids = {r["game_id"] for r in result.unfiltered}
-        # The low-total OVER is in the unfiltered cross-check but NOT in the filtered basis.
-        assert "2021_W03_E@F" in unfiltered_ids
-        assert "2021_W03_E@F" not in filtered_ids
-        assert "2021_W01_A@B" in filtered_ids
+        # The sideless row is in the unfiltered cross-check but NOT in the filtered basis.
+        assert "2021_W04_G@H" in unfiltered_ids
+        assert "2021_W04_G@H" not in filtered_ids
+        assert {"2021_W01_A@B", "2021_W03_E@F"} <= filtered_ids
 
 
 class TestBetSelectorSelectedAndRejected:
     """select() returns selected AND rejected eligible candidates with rejection reasons."""
 
     def test_select_returns_selected_and_rejected_with_reasons(self) -> None:
-        """Rejection reasons cover {not_subpop, ev_below_floor, real_odds_failed} as applicable.
+        """Rejection reasons cover {no_bet_side, ev_below_floor, real_odds_failed} as applicable.
 
         Construct one offender per reason and assert each reason appears:
-        - not_subpop: a low-total OVER (outside the union).
+        - no_bet_side: a sideless candidate (model == line). This replaces the ``not_subpop``
+          offender (a low-total over), which D33.2-24 made a candidate -- the O/U selector can no
+          longer produce ``not_subpop`` at all, and that is asserted too.
         - ev_below_floor: an eligible pick with EV under a high floor.
         - real_odds_failed: an offender row in the raw odds frame (named per-game).
         """
-        # not_subpop offender + an eligible-but-floored offender. Use a high floor so the eligible
-        # under pick is rejected by the floor (ev_below_floor) while the low-total over is
-        # rejected as not_subpop.
+        # A sideless offender + two eligible-but-floored offenders (the second is the low-total
+        # over the deleted UNION used to reject). A high floor rejects every eligible pick.
         candidates = [
             _ou_row(
                 "2021_W01_A@B", model_total=44.0, closing_total=45.0, actual_total=43.0
@@ -517,19 +475,31 @@ class TestBetSelectorSelectedAndRejected:
             _ou_row(
                 "2021_W03_E@F", model_total=42.0, closing_total=38.0, actual_total=41.0
             ),
+            _ou_row(
+                "2021_W04_G@H", model_total=45.0, closing_total=45.0, actual_total=41.0
+            ),
         ]
         result = _make_selector(ev_floor_t=0.9).select(candidates)
-        reasons = {r["rejection_reason"] for r in result.rejected}
-        assert "not_subpop" in reasons
-        assert "ev_below_floor" in reasons
+        reasons = {r["game_id"]: r["rejection_reason"] for r in result.rejected}
+        assert reasons == {
+            "2021_W01_A@B": "ev_below_floor",
+            "2021_W03_E@F": "ev_below_floor",
+            "2021_W04_G@H": "no_bet_side",
+        }
+        assert "not_subpop" not in reasons.values()
 
         # real_odds_failed: a per-game offender surfaced as a named rejection (or a raised
         # ValueError naming the offender). The selector exposes the reason taxonomy explicitly.
+        # ``not_subpop`` stays IN the taxonomy: published pre-33.2 records carry it and the page
+        # must still label them, even though no production strategy emits it any more.
         from backtest.bet_selector import REJECTION_REASONS
 
-        assert {"not_subpop", "ev_below_floor", "real_odds_failed"} <= set(
-            REJECTION_REASONS
-        )
+        assert {
+            "not_subpop",
+            "no_bet_side",
+            "ev_below_floor",
+            "real_odds_failed",
+        } <= set(REJECTION_REASONS)
 
 
 # ---------------------------------------------------------------------------
@@ -538,21 +508,34 @@ class TestBetSelectorSelectedAndRejected:
 
 
 class TestPhase27ReviewFixes:
-    """Regression coverage for the WR-03/05/07 review fixes."""
+    """Regression coverage for the WR-05/07 review fixes.
 
-    def test_nan_high_total_boundary_rejected(self) -> None:
-        """WR-03: a non-finite high_total_boundary hard-fails construction.
+    The WR-03 test (a non-finite high-total boundary hard-fails construction) is DELETED BY RULING
+    (D33.2-24): the selector no longer takes a boundary, so there is nothing to be non-finite.
+    What WR-03 protected -- the UNION silently collapsing to under-only -- cannot happen to a rule
+    that does not exist. Passing the retired keyword is now a ``TypeError``, asserted below.
+    """
 
-        Without the guard, ``closing_total > NaN`` is always False, silently collapsing the
-        under-OR-high UNION to under-only. The selector must refuse to construct.
+    def test_the_retired_boundary_keyword_is_refused(self) -> None:
+        """``BetSelector`` and ``OUStrategy`` refuse ``high_total_boundary`` by name (D33.2-24).
+
+        A parameter with no reader is a second answer waiting to be revived, so it is gone from
+        both signatures rather than accepted and ignored.
         """
         from backtest.bet_selector import BetSelector
+        from backtest.selector_strategies import OUStrategy
 
-        with pytest.raises(ValueError, match="finite"):
+        with pytest.raises(TypeError, match="high_total_boundary"):
             BetSelector(
                 frozen_sd=_FIXTURE_SD,
                 season_bias_by_season=_FIXTURE_BIAS,
-                high_total_boundary=float("nan"),
+                high_total_boundary=48.0,  # type: ignore[call-arg]
+            )
+        with pytest.raises(TypeError, match="high_total_boundary"):
+            OUStrategy(
+                frozen_sd=_FIXTURE_SD,
+                season_bias_by_season=_FIXTURE_BIAS,
+                high_total_boundary=48.0,  # type: ignore[call-arg]
             )
 
     def test_assert_real_odds_missing_game_id_raises_valueerror(self) -> None:
@@ -625,8 +608,9 @@ class TestPhase27ReviewFixes:
 
 # The fixed O/U week the recorded-output comparison runs on. Chosen to exercise every branch of the
 # decision path in one frame: an under pick, a high-total OVER trap (eligible, EV below the floor),
-# a low-total OVER (outside the union), an under+high-total pick, a PUSH, and a second (season,
-# week) group so the per-week sizing loop runs more than once.
+# a low-total OVER (outside the retired union -- a candidate since D33.2-24), an under pick on a
+# high total, a PUSH, and a second (season, week) group so the per-week sizing loop runs more than
+# once.
 _GOLDEN_WEEK = [
     _ou_row("2021_W01_A@B", model_total=38.0, closing_total=45.0, actual_total=40.0),
     _ou_row("2021_W01_C@D", model_total=52.0, closing_total=50.0, actual_total=49.0),
@@ -654,6 +638,20 @@ _GOLDEN_WEEK = [
 # RECORDED from the PRE-REFACTOR selector at commit 6190f92 (the parent of the D31-01 refactor),
 # one entry per candidate, keyed by game_id. The values are exact reprs -- no rounding, no
 # tolerance -- so a one-ulp drift in the calibrated chain fails here.
+#
+# DELIBERATELY RE-PINNED under D33.2-24 (Plan 33.2-06), in the same commit as the rule change, in
+# the shape ``tests/unit/test_scheduler_xml_unchanged.py`` declares a re-pin. What moved, and only
+# this:
+#   * ``2021_W01_E@F`` (the low-total over) is no longer refused as ``not_subpop``. It is priced
+#     and SELECTED (calibrated P(over) 0.5762..., EV +0.1001...), so its record is re-recorded.
+#   * Week 1 now carries FOUR staked bets instead of three, so the pooled 10% weekly cap scales
+#     each of ``A@B`` / ``G@H`` / ``I@J`` to 265.748... (was 288.675...). The week-3 stakes are
+#     untouched.
+#   * ``subpop_label`` is ``no_subpopulation`` on every record, and ``totals_regime`` is gone from
+#     every record (the field died with the union).
+# EVERY OTHER recorded value -- each calibrated P(side), per-bet EV, slipped line, CLV and outcome
+# of the six rows the gate never touched -- is still exactly the 6190f92 recording, which is the
+# evidence that the calibrated chain itself did not move.
 _GOLDEN_RECORDS: dict[str, dict] = {
     "2021_W01_A@B": {
         "_actual_total": 40.0,
@@ -663,14 +661,13 @@ _GOLDEN_RECORDS: dict[str, dict] = {
         "clv": -7.0,
         "eligible": True,
         "game_id": "2021_W01_A@B",
-        "kelly_stake": 288.6751345948129,
+        "kelly_stake": 265.74826192127836,
         "model_total": 38.0,
         "outcome": True,
         "per_bet_ev": 0.3707354621373925,
         "season": 2021,
         "slipped_line": 44.5,
-        "subpop_label": "under",
-        "totals_regime": "not_high",
+        "subpop_label": "no_subpopulation",
         "week": 1,
     },
     "2021_W01_C@D": {
@@ -687,26 +684,24 @@ _GOLDEN_RECORDS: dict[str, dict] = {
         "per_bet_ev": -0.016168801338745986,
         "season": 2021,
         "slipped_line": 50.5,
-        "subpop_label": "high_total",
-        "totals_regime": "high",
+        "subpop_label": "no_subpopulation",
         "week": 1,
     },
     "2021_W01_E@F": {
         "_actual_total": 41.0,
         "bet_side": "over",
-        "calibrated_p_side": None,
+        "calibrated_p_side": 0.5762494033659527,
         "closing_total": 38.0,
         "clv": 4.0,
-        "eligible": False,
+        "eligible": True,
         "game_id": "2021_W01_E@F",
-        "kelly_stake": 0.0,
+        "kelly_stake": 202.75521423616496,
         "model_total": 42.0,
-        "outcome": None,
-        "per_bet_ev": None,
+        "outcome": True,
+        "per_bet_ev": 0.1001124973350005,
         "season": 2021,
-        "slipped_line": None,
-        "subpop_label": "none",
-        "totals_regime": "not_high",
+        "slipped_line": 38.5,
+        "subpop_label": "no_subpopulation",
         "week": 1,
     },
     "2021_W01_G@H": {
@@ -717,14 +712,13 @@ _GOLDEN_RECORDS: dict[str, dict] = {
         "clv": -7.0,
         "eligible": True,
         "game_id": "2021_W01_G@H",
-        "kelly_stake": 288.6751345948129,
+        "kelly_stake": 265.74826192127836,
         "model_total": 44.0,
         "outcome": True,
         "per_bet_ev": 0.3707354621373925,
         "season": 2021,
         "slipped_line": 50.5,
-        "subpop_label": "under+high_total",
-        "totals_regime": "high",
+        "subpop_label": "no_subpopulation",
         "week": 1,
     },
     "2021_W01_I@J": {
@@ -735,14 +729,13 @@ _GOLDEN_RECORDS: dict[str, dict] = {
         "clv": -5.0,
         "eligible": True,
         "game_id": "2021_W01_I@J",
-        "kelly_stake": 288.6751345948129,
+        "kelly_stake": 265.74826192127836,
         "model_total": 40.0,
         "outcome": None,
         "per_bet_ev": 0.26740809485174144,
         "season": 2021,
         "slipped_line": 44.5,
-        "subpop_label": "under",
-        "totals_regime": "not_high",
+        "subpop_label": "no_subpopulation",
         "week": 1,
     },
     "2022_W03_K@L": {
@@ -759,8 +752,7 @@ _GOLDEN_RECORDS: dict[str, dict] = {
         "per_bet_ev": 0.588094935196626,
         "season": 2022,
         "slipped_line": 46.5,
-        "subpop_label": "under",
-        "totals_regime": "not_high",
+        "subpop_label": "no_subpopulation",
         "week": 3,
     },
     "2022_W03_M@N": {
@@ -777,14 +769,14 @@ _GOLDEN_RECORDS: dict[str, dict] = {
         "per_bet_ev": 0.46530352122199103,
         "season": 2022,
         "slipped_line": 48.5,
-        "subpop_label": "under+high_total",
-        "totals_regime": "high",
+        "subpop_label": "no_subpopulation",
         "week": 3,
     },
 }
 
 _GOLDEN_SELECTED_IDS = [
     "2021_W01_A@B",
+    "2021_W01_E@F",
     "2021_W01_G@H",
     "2021_W01_I@J",
     "2022_W03_K@L",
@@ -793,6 +785,7 @@ _GOLDEN_SELECTED_IDS = [
 _GOLDEN_FILTERED_IDS = [
     "2021_W01_A@B",
     "2021_W01_C@D",
+    "2021_W01_E@F",
     "2021_W01_G@H",
     "2021_W01_I@J",
     "2022_W03_K@L",
@@ -808,12 +801,11 @@ _GOLDEN_UNFILTERED_IDS = [
     "2022_W03_M@N",
 ]
 _GOLDEN_REJECTED = [
-    ("2021_W01_E@F", "not_subpop"),
     ("2021_W01_C@D", "ev_below_floor"),
 ]
 _GOLDEN_CLV_REPORT = {
-    "n": 5,
-    "mean": -7.6,
+    "n": 6,
+    "mean": -5.666666666666667,
     "t": None,
     "p": None,
     "ci95": None,
@@ -962,7 +954,6 @@ class TestOUStrategyMovedVerbatim:
         strategy = OUStrategy(
             frozen_sd=_FIXTURE_SD,
             season_bias_by_season=_FIXTURE_BIAS,
-            high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
             simulator=sim,
         )
         row = {"model_total": 38.0, "closing_total": 45.0, "season": 2021}
@@ -1130,12 +1121,10 @@ def _pooled_selector(ev_floor_t: float = 0.0):
         season_bias_by_season=_FIXTURE_BIAS,
         ev_floor_t=ev_floor_t,
         bankroll=_BANKROLL,
-        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
         strategies=[
             OUStrategy(
                 frozen_sd=_FIXTURE_SD,
                 season_bias_by_season=_FIXTURE_BIAS,
-                high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
             ),
             _ProbeStrategy(),
         ],
@@ -1546,7 +1535,6 @@ class TestStrategyRegistryContract:
             return OUStrategy(
                 frozen_sd=_FIXTURE_SD,
                 season_bias_by_season=_FIXTURE_BIAS,
-                high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
             )
 
         with pytest.raises(ValueError, match="duplicate strategy"):
@@ -1659,6 +1647,7 @@ class TestNameCollisionTrapIsDocumented:
 #      Every assertion below is paired with a control proving the OLD reading gives a DIFFERENT
 #      answer on the same row -- a test that passes under both conventions would pin nothing.
 #   2. Neither new strategy has an eligibility gate (D31-05), and neither can emit ``not_subpop``.
+#      Since D33.2-24 the same holds for the O/U strategy, and the test below asserts all three.
 #   3. The winner strategy is priced and sized at its OWN moneyline, never at the flat -110 the
 #      other two targets are quoted at.
 # ---------------------------------------------------------------------------
@@ -1736,7 +1725,6 @@ def _three_target_strategies(**overrides):
         "ats_frozen_sd": _ATS_FIXTURE_SD,
         "ats_season_bias_by_season": _ATS_FIXTURE_BIAS,
         "wp_season_bias_by_season": _WP_FIXTURE_BIAS,
-        "high_total_boundary": HIGH_TOTAL_BOUNDARY_PREHOLD,
     }
     kwargs.update(overrides)
     return default_strategies(**kwargs)
@@ -2287,23 +2275,33 @@ class TestTheLineTargetsPriceOnTheStoredTwoSidedJuice:
 
 
 class TestNoEligibilityGateOnTheTwoNewTargets:
-    """D31-05: only the totals target has a sub-population, and only it can say ``not_subpop``."""
+    """D31-05 gave ATS and WP no sub-population; D33.2-24 took O/U's away. No target says ``not_subpop``.
+
+    The class name is kept (it is how this contract has been cited since Plan 31-10); its scope
+    widened to the O/U strategy when D33.2-24 deleted the O/U eligibility UNION.
+    """
 
     def test_neither_new_strategy_can_emit_not_subpop(self) -> None:
         """Behavioural AND structural: the reason never appears, and the string is not in scope.
 
         The behavioural half drives a grid of sided and sideless rows; the structural half reads
-        the two class bodies, because a strategy that only happened not to reach the branch on
+        the three class bodies, because a strategy that only happened not to reach the branch on
         this fixture would pass the behavioural half alone.
         """
         import inspect
 
-        from backtest.selector_strategies import ATSStrategy, WPStrategy
+        from backtest.selector_strategies import ATSStrategy, OUStrategy, WPStrategy
 
         ats = ATSStrategy(
             frozen_sd=_ATS_FIXTURE_SD, season_bias_by_season=_ATS_FIXTURE_BIAS
         )
         wp = WPStrategy(season_bias_by_season=_WP_FIXTURE_BIAS)
+        ou = OUStrategy(frozen_sd=_FIXTURE_SD, season_bias_by_season=_FIXTURE_BIAS)
+        ou_rows = [
+            _ou_row("g7", model_total=42.0, closing_total=38.0, actual_total=41.0),
+            _ou_row("g8", model_total=38.0, closing_total=45.0, actual_total=40.0),
+            _ou_row("g9", model_total=45.0, closing_total=45.0, actual_total=40.0),
+        ]
 
         ats_rows = [
             _ats_row("g1", model_spread=7.0, closing_spread=-3.0, actual_margin=1.0),
@@ -2321,12 +2319,15 @@ class TestNoEligibilityGateOnTheTwoNewTargets:
                 "g6", model_prob=0.50, ml_home=-110.0, ml_away=-110.0, actual_home_win=1
             ),
         ]
-        reasons = {
-            ats.eligibility(row, ats.resolve_bet_side(row)) for row in ats_rows
-        } | {wp.eligibility(row, wp.resolve_bet_side(row)) for row in wp_rows}
+        reasons = (
+            {ats.eligibility(row, ats.resolve_bet_side(row)) for row in ats_rows}
+            | {wp.eligibility(row, wp.resolve_bet_side(row)) for row in wp_rows}
+            | {ou.eligibility(row, ou.resolve_bet_side(row)) for row in ou_rows}
+        )
         assert "not_subpop" not in reasons
+        assert reasons == {None, "no_bet_side"}
 
-        for cls in (ATSStrategy, WPStrategy):
+        for cls in (ATSStrategy, WPStrategy, OUStrategy):
             assert "not_subpop" not in inspect.getsource(cls)
 
     def test_a_sideless_candidate_is_suppressed_as_no_bet_side(self) -> None:

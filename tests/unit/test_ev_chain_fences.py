@@ -118,7 +118,8 @@ def _fit_with(target: str, **overrides: object) -> ChainFit:
         "tune_fit_seasons": base.tune_fit_seasons,
         "threshold_window": base.threshold_window,
         "bias_pool_by_season": base.bias_pool_by_season,
-        "high_total_boundary": base.high_total_boundary,
+        # No eligibility-boundary field: ChainFit lost it when D33.2-24 deleted the O/U
+        # high-total boundary, so a fit carries exactly the fields the three checks read.
     }
     fields.update(overrides)
     return ChainFit(**fields)  # type: ignore[arg-type]

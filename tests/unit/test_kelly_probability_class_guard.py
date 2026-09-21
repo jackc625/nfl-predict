@@ -47,7 +47,6 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from backtest.simulation import BettingSimulator, SimulationConfig
 from utils import kelly_criterion as kelly_module
 from utils.kelly_criterion import KellyCalculator
@@ -222,7 +221,6 @@ def _ou_selector():
         season_bias_by_season=_FIXTURE_OU_BIAS,
         ev_floor_t=0.0,
         bankroll=_BANKROLL,
-        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
     )
 
 

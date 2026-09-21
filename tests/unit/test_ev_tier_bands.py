@@ -38,7 +38,6 @@ from backtest.ev_chain_constants import (
     EV_TIER_MEDIUM,
     assign_ev_tier,
 )
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from backtest.ou_ev_chain import EV_FLOOR_GRID, MINUS_110_PAYOUT, per_bet_ev
 
 # The one test-local strategy in this suite, reused rather than re-declared: a second stub could
@@ -100,7 +99,6 @@ def _selector(strategies: list[Any], ev_floor_t: float = 0.0) -> BetSelector:
         season_bias_by_season=_SEASON_BIAS,
         ev_floor_t=ev_floor_t,
         bankroll=_BANKROLL,
-        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
         strategies=strategies,
     )
 

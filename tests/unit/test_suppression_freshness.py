@@ -52,7 +52,6 @@ import pandas as pd
 import pytest
 
 from backtest.bet_selector import REJECTION_REASONS, BetSelector
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from backtest.selector_strategies import OUStrategy, TargetStrategy
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -196,7 +195,6 @@ def _selector(
         season_bias_by_season=_SEASON_BIAS,
         ev_floor_t=ev_floor_t,
         bankroll=_BANKROLL,
-        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
         strategies=strategies,
     )
 
@@ -666,7 +664,6 @@ class TestLegacyPathUnchanged:
         selector = BetSelector(
             frozen_sd=_FROZEN_SD,
             season_bias_by_season=_SEASON_BIAS,
-            high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
         )
         result = selector.select(rows)
         assert len(result.unfiltered) == 1
@@ -880,7 +877,6 @@ local = datetime.now().astimezone().utcoffset()
 eastern = datetime.now(ZoneInfo("America/New_York")).utcoffset()
 
 from backtest.bet_selector import BetSelector
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 
 GAME_ID = "2023_W01_T00@H00"
 SCHEDULE = [
@@ -889,7 +885,6 @@ SCHEDULE = [
 SELECTOR = BetSelector(
     frozen_sd=13.0,
     season_bias_by_season={2023: -1.0},
-    high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
 )
 
 

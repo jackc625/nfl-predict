@@ -43,11 +43,15 @@ _SEASON_BIAS = {2021: -1.0, 2022: -2.0}
 def _ou_predictions_frame() -> pd.DataFrame:
     """A small O/U predictions frame spanning under picks, high-total overs, and a low-total over.
 
+    Since D33.2-24 every one of the four is an O/U CANDIDATE: no eligibility gate separates them,
+    so each is decided by the EV floor alone. The low-total over is kept precisely because it USED
+    to be the case the deleted UNION refused.
+
     Carries the merged-odds columns (ml_home, ml_away, spread, total) + has_closing_odds so the
     simulator takes the already-merged path, plus model_total and the actual label.
     """
     rows = [
-        # under pick (eligible): model below line.
+        # under pick: model below line.
         {
             "game_id": "2021_W01_AAA@BBB",
             "season": 2021,
@@ -56,7 +60,7 @@ def _ou_predictions_frame() -> pd.DataFrame:
             "actual": 40.0,
             "total": 45.0,
         },
-        # high-total OVER trap (eligible via high, but EV-floor should drop it).
+        # high-total OVER (a candidate; the EV floor decides).
         {
             "game_id": "2022_W02_CCC@DDD",
             "season": 2022,
@@ -65,7 +69,7 @@ def _ou_predictions_frame() -> pd.DataFrame:
             "actual": 49.0,
             "total": 50.0,
         },
-        # high-total UNDER (eligible, strong EV -> selected).
+        # high-total UNDER (a candidate, strong EV -> selected).
         {
             "game_id": "2022_W03_EEE@FFF",
             "season": 2022,
@@ -74,7 +78,8 @@ def _ou_predictions_frame() -> pd.DataFrame:
             "actual": 43.0,
             "total": 51.0,
         },
-        # low-total OVER (NOT in the union -> never bet).
+        # low-total OVER: refused by the deleted UNION before D33.2-24; now a candidate like the
+        # rest, decided by the EV floor alone.
         {
             "game_id": "2021_W04_GGG@HHH",
             "season": 2021,
@@ -101,14 +106,11 @@ class _ResultsLike:
 
 
 def _make_selector(ev_floor_t: float = 0.0) -> BetSelector:
-    from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
-
     return BetSelector(
         frozen_sd=_FROZEN_SD,
         season_bias_by_season=_SEASON_BIAS,
         ev_floor_t=ev_floor_t,
         bankroll=10_000.0,
-        high_total_boundary=HIGH_TOTAL_BOUNDARY_PREHOLD,
     )
 
 
@@ -139,11 +141,17 @@ class TestRoutingInvariant:
         selector = _make_selector(ev_floor_t=0.0)
 
         selected_ids: set[str] = set()
+        eligible_ids: set[str] = set()
+        rejection_by_id: dict[str, str] = {}
         original_select = selector.select
 
         def _spy(candidates, raw_odds_df=None):
             result = original_select(candidates, raw_odds_df=raw_odds_df)
             selected_ids.update(r["game_id"] for r in result.selected)
+            eligible_ids.update(r["game_id"] for r in result.filtered)
+            rejection_by_id.update(
+                {r["game_id"]: r["rejection_reason"] for r in result.rejected}
+            )
             return result
 
         selector.select = _spy  # type: ignore[method-assign]
@@ -159,8 +167,16 @@ class TestRoutingInvariant:
         assert ou_bet_ids <= selected_ids, (
             "an O/U sim bet was placed that BetSelector.select() did not return (LOCKED-2 broken)"
         )
-        # The low-total OVER (not in the union) is never bet.
-        assert "2021_W04_GGG@HHH" not in ou_bet_ids
+        # The low-total OVER is a CANDIDATE now (D33.2-24): it reaches the EV floor instead of
+        # being refused as outside a sub-population, and the simulator bets it exactly when the
+        # selector selected it -- the EV floor, not a totals rule, decides.
+        low_total_over = "2021_W04_GGG@HHH"
+        assert low_total_over in eligible_ids, (
+            "the low-total over never reached the EV floor -- an eligibility gate is still "
+            f"filtering O/U candidates (rejection: {rejection_by_id.get(low_total_over)!r})"
+        )
+        assert rejection_by_id.get(low_total_over) != "not_subpop"
+        assert (low_total_over in ou_bet_ids) == (low_total_over in selected_ids)
 
 
 # ---------------------------------------------------------------------------
