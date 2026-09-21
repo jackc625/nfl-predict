@@ -11,10 +11,10 @@ Why the seam exists, and why here:
     and the correlated de-weight groups by same-GAME across targets (D31-03). Neither has a natural
     home in three sibling selectors, so a shared core is not a stylistic preference -- it is the
     only place those two rules can be applied once.
-  * The O/U numeric path moves here VERBATIM as ``OUStrategy``. Phase-27 reproduction is therefore
-    STRUCTURAL -- a property of where the code sits -- rather than a test result that has to stay
-    green through a rewrite. ``_bet_side``, ``_totals_regime``, ``_season_bias``,
-    ``_calibrated_p_side`` and ``_subpop_label`` below are the Phase-27 bodies unchanged.
+  * The O/U numeric path moved here VERBATIM as ``OUStrategy``. ``_bet_side``, ``_season_bias``
+    and ``_calibrated_p_side`` below are still the Phase-27 bodies unchanged. The Phase-27
+    ELIGIBILITY rule that moved with them -- the under-OR-high-total UNION and the regime helper
+    it read -- was DELETED under D33.2-24; ``OUStrategy``'s docstring records why.
 
 ``TargetStrategy`` is a STRUCTURAL-SUBTYPING Protocol, following the ``FeatureBuilder`` precedent in
 ``features/protocol.py``: implementers declare conformance in their DOCSTRING and are checked
@@ -70,7 +70,6 @@ from typing import Any, Protocol, runtime_checkable
 
 import pandas as pd
 
-from backtest.ou_divergence import HIGH_TOTAL_BOUNDARY_PREHOLD
 from backtest.ou_ev_chain import calibrated_p_over, devig
 from backtest.simulation import (
     SLIPPAGE_POINTS,
@@ -93,12 +92,12 @@ __all__ = [
     "WPStrategy",
     "default_strategies",
     "is_absent",
-    "require_finite_high_total_boundary",
 ]
 
-# The eligibility label the two targets WITHOUT a sub-population report (D31-05). It is a constant
-# rather than an empty string or None so the page renders a definite statement -- "this target has
-# no sub-population" -- instead of a blank cell a reader would have to interpret.
+# The eligibility label every target reports, because no target has a sub-population: D31-05 gave
+# WP and ATS none, and D33.2-24 deleted O/U's. It is a constant rather than an empty string or None
+# so the page renders a definite statement -- "this target has no sub-population" -- instead of a
+# blank cell a reader would have to interpret.
 NO_SUBPOPULATION_LABEL: str = "no_subpopulation"
 
 # The LOCKED O/U side vocabulary, from ``BettingSimulator._determine_bet_side_ou``. Stated in the
@@ -242,28 +241,6 @@ class UnregisteredTargetError(LookupError):
     """
 
 
-def require_finite_high_total_boundary(value: float) -> float:
-    """Return ``value`` as a float, hard-failing on a non-finite high-total boundary (WR-03).
-
-    Without this guard ``closing_total > NaN`` is always False, which silently collapses the O/U
-    under-OR-high UNION to under-only. Kept as ONE implementation consumed by both ``OUStrategy``
-    (which uses the boundary) and ``BetSelector`` (which publishes it as an attribute), so the
-    check can never be stated two ways.
-
-    Raises:
-        ValueError: when ``value`` is not finite.
-    """
-    boundary = float(value)
-    if not math.isfinite(boundary):
-        msg = (
-            "high_total_boundary must be finite; got a non-finite value (the pre-hold "
-            "boundary did not resolve -- the silver odds lake is required, LOCKED-1). A NaN "
-            "boundary would silently collapse the under-OR-high UNION to under-only (WR-03)."
-        )
-        raise ValueError(msg)
-    return boundary
-
-
 @runtime_checkable
 class TargetStrategy(Protocol):
     """The per-target seam the target-agnostic selector core dispatches through (D31-01).
@@ -282,19 +259,20 @@ class TargetStrategy(Protocol):
             ``BettingSimulator._determine_bet_side_*`` method for the target (D-18). A strategy
             NEVER re-implements the side convention.
         eligibility: ``None`` when the candidate is eligible, otherwise the rejection reason
-            (a member of ``bet_selector.REJECTION_REASONS``). D31-05 gives WP and ATS no
-            eligibility GATE; they still refuse a candidate with no bet side, because there is no
-            bet to price, and they report that with ``"no_bet_side"`` rather than with the O/U
-            sub-population reason.
+            (a member of ``bet_selector.REJECTION_REASONS``). NO production target has an
+            eligibility GATE: D31-05 gave WP and ATS none and D33.2-24 deleted O/U's. Every
+            target still refuses a candidate with no bet side, because there is no bet to price,
+            and reports that with ``"no_bet_side"``.
         eligibility_label: A human-readable label naming WHICH eligibility arm(s) the candidate
-            satisfies. Only O/U has a sub-population concept (D27-04/05); targets without one
-            report the constant :data:`NO_SUBPOPULATION_LABEL`.
+            satisfies. No production target has a sub-population any more, so all three report
+            the constant :data:`NO_SUBPOPULATION_LABEL`; the member stays on the Protocol because
+            the record schema and the page carry the label.
         side_probability: The calibrated ``P(side)`` and the slipped line, as a pair. This is the
             number Kelly consumes (BET-02) -- never a points distance. The line is ``None`` for a
             target that has no line to slip: WP is a moneyline bet, and returning 0.0 there would
             be a made-up line rather than an absent one.
         decision_extras: Target-specific REPORTING fields merged into the decision record (for O/U:
-            the totals regime and the model-edge CLV). They keep target vocabulary out of the core.
+            the model-edge CLV and the devig method). They keep target vocabulary out of the core.
         grade: The push-aware outcome, delegating to the LOCKED ``_resolve_*_outcome`` resolver.
 
     TWO OPTIONAL MEMBERS, DELIBERATELY OUTSIDE THIS PROTOCOL. Both are read by the core through
@@ -346,32 +324,65 @@ class TargetStrategy(Protocol):
         ...
 
 
+# ---------------------------------------------------------------------------
+# BOTH SEAMS of the O/U eligibility gate are DELIBERATELY ABSENT (D33.2-24).
+#
+# The gate had two halves that only worked together: the under-OR-high-total UNION rule, which
+# lived in ``OUStrategy`` (its regime helper, its two-arm helper and the constructor's boundary
+# parameter), and the high-total BOUNDARY constant the rule compared against, which lived in
+# ``backtest.ou_divergence`` together with its derivation function, its legacy literal and the
+# two derivation-only inputs it was computed from. BOTH were removed in one change. Removing only
+# the rule would leave an orphaned constant for a later reader to wire back in; removing only the
+# constant would leave a rule comparing against nothing. A later reader restoring one half must
+# restore both, or leave neither -- and restoring either means re-deriving a boundary on past
+# seasons that D33.2-07 has declared are not clean evidence, which D33.2-24 rejects by name.
+# ``tests/unit/test_ou_eligibility_gate_removed.py`` fails if a gate returns in either place.
+# ---------------------------------------------------------------------------
+
+
 class OUStrategy:
-    """The Phase-27 O/U selection path, MOVED VERBATIM behind the D31-01 seam.
+    """The O/U target's selection path, behind the D31-01 seam (Phase 27, re-shaped by D33.2-24).
 
     Satisfies the ``TargetStrategy`` Protocol via structural subtyping (the ``FeatureBuilder``
     precedent in ``features/protocol.py``): conformance is declared here, in the docstring, and
     checked structurally -- there is no base class.
 
-    The five private helpers below are the Phase-27 ``BetSelector`` methods with their bodies
-    UNCHANGED: ``_bet_side`` (the LOCKED ``_determine_bet_side_ou`` delegation), ``_totals_regime``
-    (the leakage-clean PRE-HOLD boundary, LOCKED-1), ``_season_bias`` (the no-silent-fallback
-    prior-season walk-forward bias, D27-07), ``_calibrated_p_side`` (the half-point-slipped
-    calibrated P(side), BET-02) and ``_subpop_label``. Moving rather than rewriting them is what
-    makes the Phase-27 reproduction structural.
+    NO ELIGIBILITY GATE (D33.2-24). The calibrated chain runs on every candidate and the EV floor
+    alone decides -- identically to ``ATSStrategy`` and ``WPStrategy``, so all three targets are
+    now EV-only. A candidate with no side (the model agrees with the market inside the LOCKED
+    no-bet band) is refused as ``"no_bet_side"``, exactly as the other two targets refuse it.
 
-    Eligibility is the sub-pop UNION (D27-04/05): a candidate is eligible iff its side is ``under``
-    OR its totals regime is ``high``. A None side (the model agrees with the market inside the side
-    threshold) is not a bet of either side and is therefore not eligible.
+    WHY THE UNION WAS REMOVED, NOT MERELY THAT IT WAS. Until D33.2-24 an O/U candidate was eligible
+    only if its side was ``under`` OR its closing total sat above a high-total boundary (~48.0)
+    re-derived on pre-hold 2018-2022 closing totals (D27-04/05, LOCKED-1). Three things retired it:
+
+      * The project's own later ruling. D31-05 REJECTED a per-target sub-population search as an
+        unscoped diagnosis that would discover a rule on contaminated, partly-burned data (the
+        wording ``ATSStrategy`` and ``WPStrategy`` carry below). O/U carried a gate only because
+        Phase 26 earned it BEFORE that ruling existed; nobody applied the refusal retroactively.
+        This change does.
+      * The gate has no subject left. It described ONE defect in ONE model: that O/U model
+        predicted about +1.11 points hot, so its OVER picks were mostly that bias. Removing
+        ``snapshot_total`` (its rank-1 input of 25) and re-fitting destroys the model the property
+        belonged to.
+      * The inputs it was derived from were false. The old models were trained on corrupted data,
+        so a rule derived from them is dead too -- not just the number inside it.
+
+    NOTHING REPLACES IT, AND THE PHASE-26 SWEEP IS NOT RE-RUN ON CORRECTED GOLD. Re-deriving a gate
+    from re-measured past seasons that D33.2-07 has declared are not clean evidence would be the
+    same error in a new coat. If the corrected model has its own bias, 2026 is what shows it. The
+    accepted consequence is that 2026 gets more O/U bets with no slice protection.
+
+    ``_bet_side`` (the LOCKED ``_determine_bet_side_ou`` delegation), ``_season_bias`` (the
+    no-silent-fallback prior-season walk-forward bias, D27-07) and ``_calibrated_p_side`` (the
+    half-point-slipped calibrated P(side), BET-02) are still the Phase-27 bodies unchanged.
 
     THE PRICE IS THE STORED TWO-SIDED TOTAL PRICE (DEF-31-13, ruled 2026-09-05). ``bet_odds`` reads
     ``total_over_ju`` / ``total_under_ju`` through the EXISTING ``devig`` and returns the side's own
     price, so the per-bet EV, the Kelly stake and the flat payout are all struck at a price a book
     actually offered. A row carrying no two-sided price falls back to the selector's reference
     juice, and ``decision_extras`` stamps ``devig_method`` so that fallback is legible on the record
-    rather than indistinguishable from a genuine -110. This is a PRICE change only: the eligibility
-    rule, the side rule, the bias correction, the frozen SD and the slippage are all untouched, and
-    a row whose stored price IS -110 reproduces the pre-ruling numbers exactly.
+    rather than indistinguishable from a genuine -110.
     """
 
     target = "ou"
@@ -383,15 +394,11 @@ class OUStrategy:
         self,
         frozen_sd: float,
         season_bias_by_season: dict[int, float],
-        high_total_boundary: float = HIGH_TOTAL_BOUNDARY_PREHOLD,
         slippage_points: float = SLIPPAGE_POINTS,
         simulator: BettingSimulator | None = None,
     ) -> None:
         self.frozen_sd = float(frozen_sd)
         self.season_bias_by_season = dict(season_bias_by_season)
-        self.high_total_boundary = require_finite_high_total_boundary(
-            high_total_boundary
-        )
         self.slippage_points = float(slippage_points)
         # Wrap -- never re-implement -- the LOCKED side/slippage/outcome convention (D-18). The
         # facade injects its own simulator so exactly one exists per selector.
@@ -399,15 +406,11 @@ class OUStrategy:
             simulator if simulator is not None else BettingSimulator(SimulationConfig())
         )
 
-    # -- side / regime / EV helpers (Phase-27 bodies, moved verbatim) ----------
+    # -- side / EV helpers (Phase-27 bodies, moved verbatim) -------------------
 
     def _bet_side(self, model_total: float, closing_total: float) -> str | None:
         """Determine the O/U bet side via the LOCKED ``_determine_bet_side_ou`` (D-18)."""
         return self._sim._determine_bet_side_ou(model_total, closing_total)
-
-    def _totals_regime(self, closing_total: float) -> str:
-        """High iff the closing total exceeds the leakage-clean PRE-HOLD boundary (LOCKED-1)."""
-        return "high" if closing_total > self.high_total_boundary else "not_high"
 
     def _season_bias(self, season: int) -> float:
         """Prior-season walk-forward bias for ``season`` (NEGATIVE for an over-biased model)."""
@@ -426,8 +429,8 @@ class OUStrategy:
         """Calibrated P(side) and the slipped line for one candidate (BET-02 input).
 
         The P(side) is evaluated against the HALF-POINT-SLIPPED line (the line moves against the
-        bettor, the LOCKED ``apply_slippage_total``), so a high-total OVER's over-bias is not
-        rewarded: the slipped line + the bias correction pull the calibrated P(over) down. Returns
+        bettor, the LOCKED ``apply_slippage_total``), and the prior-season bias correction is
+        applied to the model total before the frozen-SD normal CDF. Returns
         ``(p_side, slipped_line)``.
         """
         slipped_line = apply_slippage_total(
@@ -440,17 +443,6 @@ class OUStrategy:
         p_side = p_over if bet_side == "over" else (1.0 - p_over)
         return p_side, slipped_line
 
-    @staticmethod
-    def _subpop_label(is_under: bool, is_high: bool) -> str:
-        """A human-readable sub-pop label for the UNION arms a candidate satisfies."""
-        if is_under and is_high:
-            return "under+high_total"
-        if is_under:
-            return "under"
-        if is_high:
-            return "high_total"
-        return "none"
-
     # -- TargetStrategy Protocol surface --------------------------------------
 
     def resolve_bet_side(self, row: dict[str, Any]) -> str | None:
@@ -458,20 +450,18 @@ class OUStrategy:
         return self._bet_side(float(row["model_total"]), float(row["closing_total"]))
 
     def eligibility(self, row: dict[str, Any], bet_side: str | None) -> str | None:
-        """The sub-pop UNION gate (D27-04/05): eligible iff under-pick OR high-total.
+        """No eligibility gate (D33.2-24); a candidate with no side has no bet to price.
 
-        Returns None when eligible and ``"not_subpop"`` otherwise. A None side is not a bet of
-        either side, so it never satisfies the union.
+        The same body as ``ATSStrategy.eligibility`` and ``WPStrategy.eligibility``, on purpose:
+        the side and the closing total play no part in whether an O/U candidate reaches the EV
+        floor. The sideless case is ``"no_bet_side"`` -- nothing was priced, so no expected value
+        was measured, and there is no sub-population for it to have fallen outside of.
         """
-        is_under, is_high = self._union_arms(row, bet_side)
-        if bet_side is not None and (is_under or is_high):
-            return None
-        return "not_subpop"
+        return None if bet_side is not None else "no_bet_side"
 
     def eligibility_label(self, row: dict[str, Any], bet_side: str | None) -> str:
-        """The sub-pop label naming which UNION arm(s) the candidate satisfies."""
-        is_under, is_high = self._union_arms(row, bet_side)
-        return self._subpop_label(is_under, is_high)
+        """The constant label for a target with no sub-population (D33.2-24)."""
+        return NO_SUBPOPULATION_LABEL
 
     def side_probability(
         self, row: dict[str, Any], bet_side: str
@@ -535,7 +525,7 @@ class OUStrategy:
     def decision_extras(
         self, row: dict[str, Any], bet_side: str | None
     ) -> dict[str, Any]:
-        """The O/U reporting fields: the totals regime, the model-edge CLV and the devig method.
+        """The O/U reporting fields: the model-edge CLV and the devig method.
 
         The CLV here is ``compute_line_clv(model_total, closing_total, direction="total")`` -- the
         MODEL EDGE vs the line, DISTINCT from the freeze-vs-close forward metric (structurally ~0
@@ -545,13 +535,16 @@ class OUStrategy:
         record (DEF-31-13). Without it the two are the same number with two different meanings,
         and a reader could not tell a bet a book actually quoted at -110 from one nobody quoted.
         It is a statement about the STORED MARKET DATA on this row, so it is stamped whether or
-        not a side was found -- the same treatment ``totals_regime`` already gets.
+        not a side was found.
+
+        No ``totals_regime`` field is emitted. It named the high-total arm of the deleted
+        eligibility UNION (D33.2-24), and a regime label with no rule behind it would invite a
+        reader to slice on it -- the sub-population search D31-05 rejected.
         """
         model_total = float(row["model_total"])
         closing_total = float(row["closing_total"])
         _over, _under, method = self._two_sided_juice(row)
         return {
-            "totals_regime": self._totals_regime(closing_total),
             "clv": compute_line_clv(model_total, closing_total, direction="total"),
             "devig_method": method,
         }
@@ -574,16 +567,6 @@ class OUStrategy:
             record["bet_side"], float(actual), record["slipped_line"]
         )
 
-    # -- internals ------------------------------------------------------------
-
-    def _union_arms(
-        self, row: dict[str, Any], bet_side: str | None
-    ) -> tuple[bool, bool]:
-        """The two UNION arms for ``row``: (is_under_pick, is_high_total)."""
-        is_under = bet_side == "under"
-        is_high = self._totals_regime(float(row["closing_total"])) == "high"
-        return is_under, is_high
-
 
 class ATSStrategy:
     """The spread target's selection path (Phase 31, plan 31-10; D31-04/05, SPEC R1).
@@ -593,9 +576,11 @@ class ATSStrategy:
     checked structurally -- there is no base class.
 
     NO ELIGIBILITY GATE (D31-05). The calibrated chain runs on every candidate and the EV floor
-    alone decides. O/U's under-OR-high-total UNION was earned by an entire phase of pre-registered
-    sub-population sweeping with multiplicity correction; ATS (pooled CLV -0.0015, p 0.990) has had
-    no such diagnosis, and a zero-bet chain is an explicitly defined PASS. A pre-registered
+    alone decides. When D31-05 was ruled, O/U still carried an under-OR-high-total UNION earned by
+    an entire phase of pre-registered sub-population sweeping with multiplicity correction; that
+    UNION was deleted by D33.2-24 on this ruling's own reasoning, so no target has a gate now.
+    ATS (pooled CLV -0.0015, p 0.990) has had no such diagnosis, and a zero-bet chain is an
+    explicitly defined PASS. A pre-registered
     sub-population search per target was REJECTED as an unscoped diagnosis that would discover a
     rule on contaminated, partly-burned data and then spend the single clean 2025 split validating
     it; declaring the target report-only by construction was REJECTED because it pre-decides the
@@ -989,7 +974,6 @@ def default_strategies(
     ats_season_bias_by_season: Mapping[int, float],
     wp_season_bias_by_season: Mapping[int, float] | None = None,
     wp_gate: Any | None = None,
-    high_total_boundary: float = HIGH_TOTAL_BOUNDARY_PREHOLD,
     slippage_points: float = SLIPPAGE_POINTS,
     simulator: BettingSimulator | None = None,
 ) -> list[Any]:
@@ -1018,7 +1002,6 @@ def default_strategies(
         wp_season_bias_by_season: The WP probability-scale bias per season; consulted only when
             ``wp_gate`` reports a failed calibration gate.
         wp_gate: The WP TUNE-split ``WPGateResult``, or None for the default path.
-        high_total_boundary: The leakage-clean PRE-HOLD O/U eligibility boundary (LOCKED-1).
         slippage_points: The half-point slippage applied to the two line targets.
         simulator: One injected simulator shared by all three strategies.
 
@@ -1041,7 +1024,6 @@ def default_strategies(
         OUStrategy(
             frozen_sd=ou_frozen_sd,
             season_bias_by_season=dict(ou_season_bias_by_season),
-            high_total_boundary=high_total_boundary,
             slippage_points=slippage_points,
             simulator=simulator,
         ),

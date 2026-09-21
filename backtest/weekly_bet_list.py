@@ -102,10 +102,7 @@ from backtest.cold_start_constants import (
     CHAIN_FIT_BIAS_SEASONS,
 )
 from backtest.ev_chain_constants import assign_ev_tier
-from backtest.ou_divergence import (
-    HIGH_TOTAL_BOUNDARY_PREHOLD,
-    dedupe_odds_by_book_preference,
-)
+from backtest.ou_divergence import dedupe_odds_by_book_preference
 from backtest.ou_ev_chain import american_to_payout
 from backtest.selector_strategies import default_strategies
 from utils import get_logger
@@ -1105,7 +1102,6 @@ def build_strategies(fits: dict[str, WeeklyChainFit]) -> list[Any]:
         # ``fallback_fired = False`` -- a registered fallback that could not fire at all, silently,
         # which is the inverse of the D31-07 guarantee.
         wp_gate=_wp_gate_from_fit(fits["wp"]),
-        high_total_boundary=float(HIGH_TOTAL_BOUNDARY_PREHOLD),
     )
 
 
@@ -1130,7 +1126,6 @@ def select_weekly_bets(
         season_bias_by_season={},
         ev_floor_t={target: fit.ev_floor_t for target, fit in fits.items()},
         bankroll=bankroll,
-        high_total_boundary=float(HIGH_TOTAL_BOUNDARY_PREHOLD),
         strategies=strategies,
     )
     return selector.select(candidates, scheduled_games=schedule)

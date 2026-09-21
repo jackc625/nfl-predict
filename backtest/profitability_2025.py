@@ -102,10 +102,7 @@ from backtest.ev_chain_constants import (
     VERDICT_TOKEN_MEANINGS,
     VERDICT_TOKENS,
 )
-from backtest.ou_divergence import (
-    HIGH_TOTAL_BOUNDARY_PREHOLD,
-    dedupe_odds_by_book_preference,
-)
+from backtest.ou_divergence import dedupe_odds_by_book_preference
 from backtest.ou_ev_chain import (
     EV_FLOOR_GRID,
     american_to_payout,
@@ -1204,7 +1201,8 @@ def _fit_target_on_tune(
         frozen_sd = fit_frozen_residual_sd(np.asarray(corrected, dtype=float))
         tune_fit_seasons = tuple(sorted(consumed))
 
-    boundary = float(HIGH_TOTAL_BOUNDARY_PREHOLD) if target == "ou" else None
+    # No per-target eligibility boundary: the O/U one was deleted with its gate (D33.2-24), so
+    # every target's fit is built the same way.
     chain_fit = ChainFit(
         target=target,
         frozen_sd=frozen_sd,
@@ -1212,7 +1210,6 @@ def _fit_target_on_tune(
         tune_fit_seasons=tune_fit_seasons,
         threshold_window=window.threshold_window,
         bias_pool_by_season=bias_pool_by_season,
-        high_total_boundary=boundary,
     )
     return chain_fit, gate
 
@@ -1254,7 +1251,6 @@ def _strategy_for_target(target: str, fit: ChainFit, gate: WPGateResult | None) 
     return OUStrategy(
         frozen_sd=_require_frozen_sd(target, fit),
         season_bias_by_season=dict(fit.season_bias_by_season),
-        high_total_boundary=float(fit.high_total_boundary or 0.0),
     )
 
 
@@ -1276,7 +1272,6 @@ def _select(
         frozen_sd=frozen_sd,
         season_bias_by_season={},
         ev_floor_t=ev_floor_t,
-        high_total_boundary=float(HIGH_TOTAL_BOUNDARY_PREHOLD),
         strategies=list(strategies),
     )
     return selector.select(frame)
@@ -1454,7 +1449,10 @@ def _registry_entry(
 _SUBPOP_RULE: Mapping[str, str] = {
     "wp": "none (D31-05: no eligibility gate; the EV floor alone decides)",
     "ats": "none (D31-05: no eligibility gate; the EV floor alone decides)",
-    "ou": "union(under OR high_total) (D31-06, consumed unchanged)",
+    # The frozen 2025 run's registry named the Phase-26/27 UNION here (D31-06). That UNION was
+    # deleted by D33.2-24, so a run of this code applies no O/U gate and its registry says so; the
+    # published 2025 O/U verdict stays in the record labelled old-rule (R16).
+    "ou": "none (D33.2-24: no eligibility gate; the EV floor alone decides)",
 }
 _CALIBRATION_METHOD: Mapping[str, str] = {
     "wp": "deployed_isotonic_used_unchanged (D31-07 default)",

@@ -7,18 +7,16 @@ CALLS the LOCKED scorers and never re-derives a metric. Responsibilities, in ord
   1. Provenance hard-fail (OUM-06, T-27-07): ``assert_real_odds`` rejects any odds row whose
      sportsbook is outside {consensus, draftkings} or whose ``is_live`` is True, raising a
      ValueError naming the offending game_ids. Called BEFORE any selection.
-  2. Sub-pop UNION filter (D27-04/05): for O/U, a candidate is eligible iff its bet_side is "under"
-     OR its totals_regime is "high". The bet_side comes from the LOCKED
-     ``BettingSimulator._determine_bet_side_ou``; the totals_regime comes from the leakage-clean
-     PRE-HOLD boundary ``ou_divergence.HIGH_TOTAL_BOUNDARY_PREHOLD`` (LOCKED-1), NOT the legacy
-     hold-informed 46.5. The rule itself lives in ``OUStrategy`` (D31-01).
+  2. Eligibility: NO target has an eligibility gate. D31-05 gave WP and ATS none, and D33.2-24
+     DELETED the O/U under-OR-high-total UNION (and the pre-hold high-total boundary it compared
+     against) that used to sit here. A candidate is eligible iff its strategy resolves a bet side;
+     a sideless candidate is rejected as ``no_bet_side``. The EV floor alone decides the rest.
   3. EV admission (D27-14): within the eligible set, a bet is admitted iff its per-bet EV is at or
      above the EV-floor scalar ``t``. The comparison REJECTS strictly below the floor, so EV
      EXACTLY EQUAL to the floor is ADMITTED (the SPEC R1 adjacency edge). The EV uses the
      calibrated P(side) from the Plan-01 EV chain (``ou_ev_chain.calibrated_p_over``) evaluated
      against the half-point-slipped line (the line moves against the bettor, via the LOCKED
-     ``apply_slippage_total``), so the high-total OVER over-bias pocket (graded below breakeven) is
-     dropped (T-27-08 / D27-05).
+     ``apply_slippage_total``).
   4. Sizing (BET-02 fix, T-27-08): Kelly consumes the CALIBRATED P(side) -- never the points
      distance ``implied + abs(model_total - closing_total)`` -- through
      ``KellyCalculator.calculate_optimal_bet_size(model_prob=p_side, ...)``, then the Plan-02
@@ -95,10 +93,7 @@ from typing import Any
 import pandas as pd
 
 from backtest.diagnose import clv_significance
-from backtest.ou_divergence import (
-    _ALLOWED_SPORTSBOOKS,
-    HIGH_TOTAL_BOUNDARY_PREHOLD,
-)
+from backtest.ou_divergence import _ALLOWED_SPORTSBOOKS
 from backtest.ou_ev_chain import (
     american_to_payout,
     per_bet_ev,
@@ -108,7 +103,6 @@ from backtest.selector_strategies import (
     TargetStrategy,
     UnregisteredTargetError,
     is_absent,
-    require_finite_high_total_boundary,
 )
 from backtest.simulation import (
     SLIPPAGE_POINTS,
@@ -130,7 +124,11 @@ logger = get_logger(__name__)
 # is not bet is tagged with exactly one of these; the taxonomy is exported so callers/tests do not
 # redefine the strings.
 REJECTION_REASONS: tuple[str, ...] = (
-    "not_subpop",  # outside the UNION {under} OR {high-total} (D27-04/05)
+    # outside the retired O/U UNION {under} OR {high-total} (D27-04/05). NO production strategy
+    # emits it since D33.2-24 deleted that gate; it stays in the vocabulary because published
+    # pre-33.2 records carry it and the page must still be able to label them (R16: the old-rule
+    # record is kept and labelled, not erased).
+    "not_subpop",
     "ev_below_floor",  # eligible but per-bet EV < the EV-floor t (D27-14)
     "real_odds_failed",  # provenance hard-fail (OUM-06) -- raised before selection
     "zero_kelly_stake",  # admitted by EV but the Kelly calculator zeroed the stake (WR-07)
@@ -144,8 +142,9 @@ REJECTION_REASONS: tuple[str, ...] = (
     "no_bet_side",  # the model agrees with the market inside the LOCKED no-bet band (D31-05)
 )
 # ``no_bet_side`` is plan 31-10's addition, and it is a NINTH reason rather than a reuse of one of
-# the eight. D31-05 gives the WP and ATS targets NO eligibility gate, so ``not_subpop`` would assert
-# a sub-population that does not exist for them; and nothing is priced for a candidate with no side,
+# the eight. D31-05 gives the WP and ATS targets NO eligibility gate (and D33.2-24 took O/U's away),
+# so ``not_subpop`` would assert a sub-population that does not exist; and nothing is priced for a
+# candidate with no side,
 # so ``ev_below_floor`` would claim an expected value that was never measured. The taxonomy is
 # designed to grow -- it is the ONE exported list the page maps to labels, and the tests that
 # enumerate it are what make an undeclared reason fail.
@@ -355,8 +354,8 @@ class SelectionResult:
     Attributes:
         selected: Per-bet records the selector BET (eligible AND EV >= floor).
         rejected: Per-candidate records NOT bet, each carrying a ``rejection_reason`` in
-            ``REJECTION_REASONS`` (not_subpop / ev_below_floor).
-        filtered: The eligible acceptance-basis records (the sub-pop UNION; both selected and
+            ``REJECTION_REASONS`` (for example no_bet_side / ev_below_floor).
+        filtered: The eligible acceptance-basis records (every sided candidate; both selected and
             EV-floor-rejected eligible candidates carry their decision metadata here).
         unfiltered: The whole-population cross-check (every candidate, eligible or not) -- a
             REPORTED cross-check only (D27-04), never the acceptance basis.
@@ -376,12 +375,13 @@ class BetSelector:
 
     Construct with the frozen residual SD and the per-season prior-season-walk-forward bias (both
     fit on tune-only data by the caller -- the no-leak fence is the caller's responsibility, per the
-    Plan-01 EV-chain contract), the EV-floor scalar ``ev_floor_t`` (Plan 04 tunes it), the bankroll,
-    and the leakage-clean pre-hold high-total boundary. ``select()`` is the ONE source of bet
-    decisions (LOCKED-2).
+    Plan-01 EV-chain contract), the EV-floor scalar ``ev_floor_t`` (Plan 04 tunes it) and the
+    bankroll. ``select()`` is the ONE source of bet decisions (LOCKED-2). There is no high-total
+    boundary argument: it fed only the O/U eligibility gate D33.2-24 deleted, and a parameter with
+    no reader is a second answer waiting to be revived.
 
     ``strategies`` is the D31-01 seam. It defaults to the O/U strategy ALONE, built from the
-    frozen-SD / bias / boundary / slippage arguments above, so every pre-D31-01 call site is
+    frozen-SD / bias / slippage arguments above, so every pre-D31-01 call site is
     unaffected. Supplying it registers additional targets; the weekly exposure cap is then POOLED
     over the union of a week's bets across them (D31-02), which is the concrete reason this core
     exists rather than three sibling selectors.
@@ -393,7 +393,6 @@ class BetSelector:
         season_bias_by_season: dict[int, float],
         ev_floor_t: float | Mapping[str, float] = 0.0,
         bankroll: float = 10_000.0,
-        high_total_boundary: float = HIGH_TOTAL_BOUNDARY_PREHOLD,
         slippage_points: float = SLIPPAGE_POINTS,
         odds: int = STANDARD_VIG_ODDS,
         strategies: list[TargetStrategy] | None = None,
@@ -414,10 +413,6 @@ class BetSelector:
             self.ev_floor_by_target = None
             self.ev_floor_t = float(ev_floor_t)
         self.bankroll = float(bankroll)
-        # The finite-boundary guard (WR-03) lives in ONE place, shared with OUStrategy.
-        self.high_total_boundary = require_finite_high_total_boundary(
-            high_total_boundary
-        )
         self.slippage_points = float(slippage_points)
         self.odds = int(odds)
 
@@ -431,7 +426,6 @@ class BetSelector:
                 OUStrategy(
                     frozen_sd=self.frozen_sd,
                     season_bias_by_season=self.season_bias_by_season,
-                    high_total_boundary=self.high_total_boundary,
                     slippage_points=self.slippage_points,
                     simulator=self._sim,
                 )
@@ -783,8 +777,8 @@ class BetSelector:
             "week": week,
             "target": strategy.target,
             "bet_side": None,
-            # None means NOT ASKED -- distinct from a strategy's own "none" label, which means
-            # asked and satisfying no eligibility arm.
+            # None means NOT ASKED -- distinct from the label a strategy reports once asked
+            # (``NO_SUBPOPULATION_LABEL`` for every production target since D33.2-24).
             "subpop_label": None,
             **market,
             "eligible": False,
@@ -848,8 +842,8 @@ class BetSelector:
                 "bet_side": bet_side,
                 "subpop_label": strategy.eligibility_label(row, bet_side),
                 "eligible": eligible,
-                # The strategy's reporting extras (for O/U: the totals regime and the REPORT-ONLY
-                # model-edge CLV, which never gates -- D27-06).
+                # The strategy's reporting extras (for O/U: the REPORT-ONLY model-edge CLV, which
+                # never gates -- D27-06, and the devig method).
                 **strategy.decision_extras(row, bet_side),
             }
         )

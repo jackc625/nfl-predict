@@ -109,10 +109,6 @@ from backtest.ev_chain_constants import (
     ATS_RESIDUAL_CONTRACT as _FROZEN_ATS_RESIDUAL_CONTRACT,
 )
 
-# The leakage-clean PRE-HOLD high-total boundary derivation, re-run by fence check (d) so a
-# drifted or hold-informed O/U eligibility boundary is caught rather than trusted (LOCKED-1).
-from backtest.ou_divergence import derive_high_total_boundary
-
 # The five numeric primitives, CONSUMED from the Phase-27 chain and re-exported so callers
 # reach exactly one implementation of each (T-31-31). Importing them does NOT import the
 # Phase-27 WINDOW -- TUNE_SEASONS / HOLD_SEASONS are deliberately not read anywhere in
@@ -148,7 +144,6 @@ __all__ = [
     "ATS_RESIDUAL_CONTRACT",
     "ATS_SIDES",
     "FENCE_STAGE_BIAS",
-    "FENCE_STAGE_BOUNDARY",
     "FENCE_STAGE_THRESHOLD",
     "FENCE_STAGE_TUNE_FIT",
     "FENCE_WINDOW_P31",
@@ -321,8 +316,10 @@ class ChainFit:
             :data:`THRESHOLD_WINDOW_P31`.
         bias_pool_by_season: Target season -> the seasons its bias estimate actually
             consumed. The fence asserts each pool is STRICTLY PRIOR and hold-free.
-        high_total_boundary: O/U's eligibility boundary, or None for a target that has no
-            eligibility gate (D31-05 gives WP and ATS none).
+
+    There is no eligibility-boundary field. One used to carry O/U's high-total boundary for
+    fence check (d); the boundary and the O/U eligibility gate it served were deleted together
+    (D33.2-24), so no target has a boundary to carry or a derivation to fence.
     """
 
     target: str
@@ -331,7 +328,6 @@ class ChainFit:
     tune_fit_seasons: tuple[int, ...]
     threshold_window: str
     bias_pool_by_season: Mapping[int, tuple[int, ...]]
-    high_total_boundary: float | None = None
 
 
 @dataclass(frozen=True)
@@ -434,7 +430,8 @@ def season_bias_for(
 # nothing would raise at run time, and its report would name the wrong hold seasons. A
 # passing suite is exactly what that failure produces, which is why D31-14 forbids reading
 # the Phase-27 window at all and tests/unit/test_p31_constants_isolation.py enforces it by
-# AST scan. The four checks below MIRROR that helper's four; only the constants differ.
+# AST scan. The three checks below MIRROR that helper's three (both lost their boundary check
+# when D33.2-24 deleted the O/U eligibility boundary); only the constants differ.
 #
 # The EXCEPTION TYPE is reused: LeakageError already means "the fit-window fence was
 # violated" in this repository, and a second exception class for the same condition would be
@@ -446,7 +443,6 @@ def season_bias_for(
 FENCE_STAGE_TUNE_FIT: str = "tune-only fit input"
 FENCE_STAGE_THRESHOLD: str = "EV-floor threshold tuning"
 FENCE_STAGE_BIAS: str = "prior-season bias estimate"
-FENCE_STAGE_BOUNDARY: str = "high-total boundary derivation"
 
 _SEASON_IN_LABEL = re.compile(r"\d{4}")
 
@@ -456,7 +452,7 @@ def assert_fit_window_p31(
 ) -> dict[str, Any]:
     """Prove NO hold season fed any fitted parameter on ``fit`` (T-31-28, SPEC R1).
 
-    Mirrors the four checks the Phase-27 fence performs, parameterised on the FROZEN
+    Mirrors the checks the Phase-27 fence performs, parameterised on the FROZEN
     Phase-31 constants (``TUNE_SEASONS_P31`` 2021-2024, ``HOLD_SEASONS_P31`` 2025,
     ``PRIOR_RESIDUAL_SEASONS_P31`` 2018-2020):
 
@@ -464,9 +460,11 @@ def assert_fit_window_p31(
           tune split for WP -- must be disjoint from the hold and inside the tune window;
       (b) the EV-floor sweep must have been tuned on the Phase-31 window label;
       (c) every per-season bias pool must be STRICTLY PRIOR to the season it debiases, must
-          be hold-free, and must lie inside the tune window plus the 2018-2020 seed;
-      (d) when a high-total boundary is supplied (O/U only), it must equal the leakage-clean
-          PRE-HOLD derivation, so a drifted or hold-informed boundary is caught.
+          be hold-free, and must lie inside the tune window plus the 2018-2020 seed.
+
+    A fourth check, (d), fenced O/U's high-total eligibility boundary against its leakage-clean
+    PRE-HOLD re-derivation. It was deleted with the boundary itself (D33.2-24): with no
+    eligibility gate on any target there is no boundary left to drift.
 
     Check (c) asserts STRICT PRIORITY as well as hold-freeness. The Phase-27 helper checked
     only the latter, which is sufficient when tune strictly precedes hold; here the hold is a
@@ -575,26 +573,6 @@ def assert_fit_window_p31(
             )
             raise LeakageError(msg)
 
-    # (d) The O/U high-total eligibility boundary, when one is supplied.
-    pre_hold_boundary: float | None = None
-    if fit.high_total_boundary is not None:
-        boundary = float(fit.high_total_boundary)
-        if not np.isfinite(boundary):
-            msg = (
-                f"[{target}] {FENCE_STAGE_BOUNDARY} produced a non-finite boundary; the "
-                "leakage-clean PRE-HOLD derivation is unavailable, and a NaN boundary would "
-                "silently collapse the under-OR-high UNION to under-only (T-31-28, WR-03)."
-            )
-            raise LeakageError(msg)
-        pre_hold_boundary = float(derive_high_total_boundary())
-        if abs(boundary - pre_hold_boundary) > 1e-9:
-            msg = (
-                f"[{target}] {FENCE_STAGE_BOUNDARY}: the supplied boundary {boundary} "
-                f"drifted from the leakage-clean pre-hold derivation {pre_hold_boundary} "
-                "(LOCKED-1, T-31-28)."
-            )
-            raise LeakageError(msg)
-
     return {
         "target": target,
         "tune_fit_seasons": sorted(tune_fit),
@@ -605,8 +583,6 @@ def assert_fit_window_p31(
         "prior_residual_seed_seasons": list(window.prior_residual_seasons),
         "window_label": window.label,
         "window_is_the_preregistered_rule": window.is_the_preregistered_rule,
-        "high_total_boundary": fit.high_total_boundary,
-        "pre_hold_boundary_rederived": pre_hold_boundary,
         "fence_held": True,
     }
 

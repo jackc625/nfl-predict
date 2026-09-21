@@ -2,7 +2,7 @@
 
 The thin tune/hold runner that closes the O/U monetization chain. It tunes the single EV-floor
 scalar ``t`` ONCE on the PRE-REGISTERED tune split (2021-2022), FREEZES the residual SD + the
-prior-season walk-forward bias + the pre-hold high-total boundary + ``t`` BEFORE touching the
+prior-season walk-forward bias + ``t`` BEFORE touching the
 2023-2024 hold split, then grades the BetSelector's selected bets THROUGH the LOCKED
 ``BettingSimulator`` to produce the provisional held-out ROI with block-by-week bootstrap CIs
 (resampling WEEKS WITHIN the holdout seasons only) and robustness cuts (OUM-03/05).
@@ -24,10 +24,15 @@ Phase 30. The materialized bet table (api/cache.py, written by a separate Plan-0
 WALK-FORWARD FENCES (non-negotiable, #5):
   - the EV-floor ``t``, the frozen residual SD, and the prior-season bias are fit on the TUNE split
     ONLY; a fit-window / leakage assertion proves NO hold season (2023/2024) feeds the SD fit, the
-    threshold tuning, any season's self-bias estimation, the high-total boundary derivation, or the
-    trial-selection set. ``LeakageError`` is raised if the fence is violated.
-  - the high-total boundary is the Plan-03 PRE-HOLD value (``HIGH_TOTAL_BOUNDARY_PREHOLD``), already
-    leakage-asserted at derivation time (LOCKED-1).
+    threshold tuning, any season's self-bias estimation, or the trial-selection set.
+    ``LeakageError`` is raised if the fence is violated.
+
+NO ELIGIBILITY GATE (D33.2-24). This runner used to freeze a fourth input, the pre-hold high-total
+boundary behind the O/U under-OR-high-total UNION, and fence its derivation. The UNION and the
+boundary were deleted together, so every O/U candidate reaches the EV floor and the floor alone
+decides. The union-versus-under-only comparison this runner reported dies with the union, by
+ruling. Its Phase-27 numbers stay in the record labelled old-rule (R16); a run of this module today
+measures the EV-only rule, not the one those numbers were produced under.
 
 MULTIPLE-COMPARISONS CONTROL (#4, OUM-03): the EV-floor sweep logs EVERY effective fork to a
 COMPLETE trial registry using the Plan-01 ``TRIAL_REGISTRY_FIELDS`` schema, and BH-FDR
@@ -42,8 +47,8 @@ chain via the BetSelector. ``models/clv.py`` and ``config/gate.toml`` are CONSUM
 
 PRE-REGISTERED (frozen as module constants BEFORE any tuning run; the D26-08 / D24-07 discipline).
 The EV chain (Plan 01) already froze TUNE_SEASONS / HOLD_SEASONS / EV_FLOOR_GRID / the calibration
-method / the SD fit + TRIAL_REGISTRY_FIELDS; the high-total boundary was frozen pre-hold in Plan 03.
-This module REUSES those constants and adds ONLY the runner-specific pre-registered constants below
+method / the SD fit + TRIAL_REGISTRY_FIELDS. This module REUSES those constants and adds ONLY the
+runner-specific pre-registered constants below
 (bootstrap B / seed / CI type, the robustness cuts, the significance alpha, and the fixed
 contaminated vocabulary) with a forking-paths comment.
 
@@ -63,10 +68,6 @@ from backtest.diagnose import (
     SIGNIFICANCE_ALPHA,
     clv_significance,
     score_deployed_artifacts,
-)
-from backtest.ou_divergence import (
-    HIGH_TOTAL_BOUNDARY_PREHOLD,
-    derive_high_total_boundary,
 )
 from backtest.ou_ev_chain import (
     EV_FLOOR_GRID,
@@ -101,8 +102,8 @@ __all__ = [
 # FORKING-PATHS GUARD: these are frozen here and are NOT adjusted after seeing results (the
 # D26-08 / D24-07 pre-registration discipline, mirroring backtest/ou_divergence.py and
 # backtest/ou_ev_chain.py). The EV chain owns TUNE_SEASONS / HOLD_SEASONS / EV_FLOOR_GRID /
-# TRIAL_REGISTRY_FIELDS; Plan 03 owns HIGH_TOTAL_BOUNDARY_PREHOLD. This module reuses those and
-# adds only the runner-specific constants below.
+# TRIAL_REGISTRY_FIELDS. This module reuses those and adds only the runner-specific constants
+# below.
 # ---------------------------------------------------------------------------
 
 # Block-by-week bootstrap (D27 discretion, Pitfall 4 + #6): resample WEEKS WITHIN the holdout
@@ -150,9 +151,8 @@ class LeakageError(ValueError):
 
     The frozen SD, the EV-floor ``t``, and each season's self-bias estimate must be fit on
     TUNE / strictly-prior seasons only; NO hold season (2023/2024) may feed the SD fit, the
-    threshold tuning, any self-bias estimation, the high-total boundary derivation, or the
-    trial-selection set. This hard error forbids a fence violation rather than silently leaking
-    future information into the eligibility/sizing/threshold.
+    threshold tuning, any self-bias estimation, or the trial-selection set. This hard error forbids
+    a fence violation rather than silently leaking future information into the sizing/threshold.
     """
 
 
@@ -411,9 +411,8 @@ def _make_selector(
     frozen_sd: float,
     season_bias_by_season: dict[int, float],
     ev_floor_t: float,
-    high_total_boundary: float,
 ) -> BetSelector:
-    """Construct a BetSelector with the FROZEN SD / bias / boundary and a given EV-floor t.
+    """Construct a BetSelector with the FROZEN SD / bias and a given EV-floor t.
 
     The BetSelector is the SINGLE O/U decision source (BET-01); the runner only supplies the frozen
     inputs and the EV-floor scalar. The bias map MUST carry every candidate season (the selector
@@ -423,15 +422,21 @@ def _make_selector(
         frozen_sd=frozen_sd,
         season_bias_by_season=season_bias_by_season,
         ev_floor_t=ev_floor_t,
-        high_total_boundary=high_total_boundary,
     )
+
+
+# The ``subpopulation_rule`` every registry entry now carries (D33.2-24). It used to read
+# ``union(under OR high_total)``; the union was deleted, so the entry says what the rule IS rather
+# than leaving a field that names a gate no code applies.
+_SUBPOPULATION_RULE: str = (
+    "none (D33.2-24: no eligibility gate; the EV floor alone decides)"
+)
 
 
 def _sweep_ev_floor_on_tune(
     tune_candidates: pd.DataFrame,
     frozen_sd: float,
     bias_all_seasons: dict[int, float],
-    high_total_boundary: float,
 ) -> dict[str, Any]:
     """Sweep the EV-floor scalar t over EV_FLOOR_GRID on TUNE only + build the COMPLETE registry (#4).
 
@@ -443,12 +448,10 @@ def _sweep_ev_floor_on_tune(
     deflates the non-None raw p-values (the ou_divergence:1199-1206 pattern; setdefault adjusted_p
     None). ROI -- not significance -- chooses the frozen t (the highest tune flat-stake ROI with a
     non-degenerate bet count); significance is supporting context (Pitfall 3).
-
-    The under-only-vs-union split is a DIAGNOSTIC comparison here (it is not a registered trial; #4).
     """
     registry: list[dict[str, Any]] = []
     for t in EV_FLOOR_GRID:
-        selector = _make_selector(frozen_sd, bias_all_seasons, t, high_total_boundary)
+        selector = _make_selector(frozen_sd, bias_all_seasons, t)
         graded = _grade_selector_roi(selector, tune_candidates)
 
         # Per-trial CLV significance is the registry's testable p (CLV is REPORT-ONLY -- it is the
@@ -460,7 +463,7 @@ def _sweep_ev_floor_on_tune(
         entry.update(
             {
                 "threshold": float(t),
-                "subpopulation_rule": "union(under OR high_total)",
+                "subpopulation_rule": _SUBPOPULATION_RULE,
                 "calibration_method": "prior_season_mean_bias_subtraction",
                 "sd_source": "frozen_tune_corrected_sd",
                 "devig_method": "flat_-110",
@@ -525,7 +528,6 @@ def _per_bet_clv(selector: BetSelector, candidates: pd.DataFrame) -> list[float]
 def _assert_fit_window(
     fit: dict[str, Any],
     chosen_t_window: str,
-    high_total_boundary: float,
 ) -> dict[str, Any]:
     """Prove NO hold season fed the SD fit, the threshold tuning, or the TUNE-season self-bias (#5).
 
@@ -535,11 +537,13 @@ def _assert_fit_window(
       - any TUNE-season self-bias estimate input (check (c) iterates ``fit["bias_seasons"]`` = the
         tune seasons; each is fit on STRICTLY-PRIOR seasons, asserted here). The HOLD seasons'
         walk-forward bias may, BY DESIGN, include the strictly-prior 2023 outcomes (correct
-        walk-forward: 2023 is known before betting 2024); that does NOT feed the frozen t / SD /
-        boundary decision and is therefore out of this fence's scope (WR-04 -- the fence asserts the
-        inputs to the FROZEN decision are hold-free, not every per-season walk-forward bias pool),
-      - the high-total boundary derivation input (the boundary is the Plan-03 pre-hold value;
-        re-derive it leakage-clean and assert it matches, so a drifted boundary is caught).
+        walk-forward: 2023 is known before betting 2024); that does NOT feed the frozen t / SD
+        decision and is therefore out of this fence's scope (WR-04 -- the fence asserts the
+        inputs to the FROZEN decision are hold-free, not every per-season walk-forward bias pool).
+
+    A fourth check -- that the high-total eligibility boundary matched its leakage-clean pre-hold
+    re-derivation -- was deleted with the boundary itself (D33.2-24). There is no boundary left to
+    drift, so there is nothing for that check to guard.
 
     Returns a structured fence report (the seasons each fit actually consumed) for the SUMMARY.
     """
@@ -581,26 +585,10 @@ def _assert_fit_window(
             )
             raise LeakageError(msg)
 
-    # (d) The high-total boundary must be the leakage-clean pre-hold value (LOCKED-1). Re-derive it
-    # on pre-hold data only and assert it matches the boundary the selector will use (a drifted /
-    # hold-informed boundary is a fence violation).
-    pre_hold_boundary = derive_high_total_boundary()
-    if not np.isfinite(high_total_boundary):
-        msg = "high-total boundary is not finite (LOCKED-1 pre-hold derivation unavailable; #5)."
-        raise LeakageError(msg)
-    if abs(float(high_total_boundary) - float(pre_hold_boundary)) > 1e-9:
-        msg = (
-            f"high-total boundary {high_total_boundary} drifted from the leakage-clean pre-hold "
-            f"derivation {pre_hold_boundary} (LOCKED-1, T-27-22 / #5)."
-        )
-        raise LeakageError(msg)
-
     return {
         "sd_fit_seasons": sorted(sd_seasons),
         "bias_seasons": sorted(fit["bias_seasons"]),
         "threshold_window": chosen_t_window,
-        "high_total_boundary": float(high_total_boundary),
-        "pre_hold_boundary_rederived": float(pre_hold_boundary),
         "hold_seasons": sorted(hold),
         "fence_held": True,
     }
@@ -726,64 +714,31 @@ def _robustness_cuts(
 
 
 # ---------------------------------------------------------------------------
-# High-total OVER empirical report (#7, RESEARCH Finding 4 / D27-05)
+# BET-02 probability check (#7)
+#
+# This section used to be the "high-total OVER empirical report": the surviving high-total OVER
+# count read off each selected record's ``totals_regime`` field, and the union-versus-under-only
+# ROI comparison. Both measured the O/U eligibility UNION, which D33.2-24 deleted -- along with the
+# ``totals_regime`` field the slice read -- so that over/under split dies with the union, by ruling.
+# The one part that measured something else survives: the 8-point-gap check that Kelly consumes a
+# PROBABILITY rather than a points distance (BET-02).
 # ---------------------------------------------------------------------------
 
 
-def _high_total_over_report(
+def _bet02_probability_report(
     selector: BetSelector,
     hold_candidates: pd.DataFrame,
 ) -> dict[str, Any]:
-    """Empirical high-total-OVER report on the GRADED hold bets (#7, RESEARCH Finding 4 / D27-05).
+    """The 8-point-gap ``kelly_model_prob <= 1.0`` check on the hold candidates (BET-02, #7).
 
-    Reports the surviving high-total OVER count AFTER EV filtering and the union ROI vs under-only
-    ROI; asserts/flags that the union ROI is NOT below the under-only ROI (the over pocket must not
-    drag the union down). This is an EMPIRICAL report on the graded hold bets, not a unit fixture.
-
-    The under-only and union ROIs are each graded through the LOCKED simulator on the SELECTED bets
-    (proof == production). The 8-point-gap ``kelly_model_prob <= 1.0`` check confirms the BET-02 fix
-    (Kelly consumes the calibrated P(side), a probability, NOT the legacy points distance
-    ``implied + 8.0``).
+    Confirms the BET-02 fix: Kelly consumes the calibrated P(side), a probability, NOT the legacy
+    points distance ``implied + 8.0``.
     """
-    result = selector.select(
-        hold_candidates.rename(columns={"closing_total": "closing_total"})
-    )
-    selected = result.selected
-
-    high_over = [
-        r for r in selected if r["bet_side"] == "over" and r["totals_regime"] == "high"
-    ]
-    under = [r for r in selected if r["bet_side"] == "under"]
-
-    union_per_bet = _records_to_per_bet(selected)
-    under_per_bet = _records_to_per_bet(under)
-    union_roi = _flat_roi_from_records(union_per_bet)
-    under_only_roi = _flat_roi_from_records(under_per_bet)
-
-    union_not_below_under = bool(
-        union_roi is not None
-        and under_only_roi is not None
-        and union_roi >= under_only_roi - 1e-9
-    )
-
-    # 8-point-gap kelly_model_prob <= 1.0 (#7): the calibrated P(side) is a probability, never the
-    # legacy points distance. Score a synthetic 8-point-gap over candidate through the EV chain.
     eight_pt_p = _eight_point_gap_p_side(selector, hold_candidates)
-
     return {
-        "surviving_high_total_over_count": len(high_over),
-        "surviving_under_count": len(under),
-        "union_roi": union_roi,
-        "under_only_roi": under_only_roi,
-        "union_not_below_under_only": union_not_below_under,
         "eight_point_gap_kelly_model_prob": eight_pt_p,
         "eight_point_gap_prob_is_probability": bool(
-            eight_pt_p is not None and eight_pt_p <= 1.0
-        ),
-        "note": (
-            "high-total OVER is dropped empirically: bias-correction + slippage push the calibrated "
-            "P(over) below breakeven (negative EV). The union must not underperform under-only "
-            "(D27-05 / RESEARCH Finding 4)."
+            eight_pt_p is not None and 0.0 <= eight_pt_p <= 1.0
         ),
     }
 
@@ -794,48 +749,26 @@ def _eight_point_gap_p_side(
 ) -> float | None:
     """Calibrated P(over) for a synthetic 8-point-gap OVER candidate (the BET-02 #7 check).
 
-    Builds a model_total 8 points ABOVE a representative high closing total and reads the calibrated
-    P(over) the EV chain produces. The result is a probability in [0,1] -- NOT the legacy points
-    distance ``implied + 8.0 = 8.524`` -- confirming Kelly consumes a probability (BET-02).
+    Builds a model_total 8 points ABOVE a representative closing total -- the MEDIAN closing total
+    of the hold candidates -- and reads the calibrated P(over) the EV chain produces. The result is
+    a probability in [0,1] -- NOT the legacy points distance ``implied + 8.0 = 8.524`` --
+    confirming Kelly consumes a probability (BET-02).
+
+    The representative line used to be the high-total eligibility boundary plus two points. That
+    boundary was deleted under D33.2-24, and the check never depended on which line it used: a
+    normal CDF is a probability at every line, so the median of the candidates' own lines is a
+    representative choice that needs no constant of its own.
     """
     if hold_candidates.empty:
         return None
     season = int(hold_candidates["season"].iloc[0])
     if season not in selector.season_bias_by_season:
         return None
-    closing = float(selector.high_total_boundary) + 2.0
+    closing = float(hold_candidates["closing_total"].median())
     model_total = closing + 8.0
     bias = selector.season_bias_by_season[season]
     p_over = float(calibrated_p_over(model_total, closing, selector.frozen_sd, bias))
     return p_over
-
-
-def _records_to_per_bet(records: list[dict[str, Any]]) -> pd.DataFrame:
-    """Convert selected BetSelector records to a flat-ROI per-bet frame (flat-stake graded).
-
-    Each selected record carries an ``outcome`` (True win / False loss / None push). A flat-stake
-    payout at -110 is reconstructed for the union-vs-under-only ROI comparison: win -> +100/110,
-    loss -> -1, push -> 0 (the LOCKED -110 payout convention).
-    """
-    rows: list[dict[str, Any]] = []
-    payout_win = 100.0 / 110.0
-    for r in records:
-        outcome = r.get("outcome")
-        if outcome is True:
-            payout = payout_win
-        elif outcome is False:
-            payout = -1.0
-        else:
-            payout = 0.0  # push (or ungraded) -> stake returned, net zero
-        rows.append(
-            {
-                "season": r["season"],
-                "week": r["week"],
-                "flat_stake": 1.0,
-                "payout_flat": payout,
-            }
-        )
-    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -854,14 +787,14 @@ def run_ou_monetization(
          from SILVER, run the OUM-06 provenance hard-fail FIRST, capture coverage/exclusion counts.
       2. FIT on TUNE (2021-2022) ONLY: the prior-season walk-forward bias, the single frozen residual
          SD on bias-corrected tune residuals, and SWEEP the EV-floor t over EV_FLOOR_GRID. Each
-         (sub-pop x t) evaluation logs ONE COMPLETE trial-registry entry (TRIAL_REGISTRY_FIELDS).
-         FREEZE the chosen t (and SD, bias, boundary) before touching hold.
-      3. FIT-WINDOW / LEAKAGE ASSERTION: prove no hold season fed the SD/threshold/self-bias/boundary.
+         t evaluation logs ONE COMPLETE trial-registry entry (TRIAL_REGISTRY_FIELDS).
+         FREEZE the chosen t (and SD, bias) before touching hold.
+      3. FIT-WINDOW / LEAKAGE ASSERTION: prove no hold season fed the SD/threshold/self-bias.
       4. BH-FDR over the COMPLETE registry; ROI (not significance) is the acceptance bar.
       5. GRADE the frozen-t BetSelector on HOLD (2023-2024) through the LOCKED BettingSimulator:
          the provisional ROI point estimate, a within-holdout block-by-week bootstrap CI, and the
          robustness cuts. Report the FILTERED (acceptance) and UNFILTERED whole-population cross-check.
-      6. HIGH-TOTAL OVER empirical report (surviving over count + union vs under-only ROI).
+      6. The BET-02 probability check (the 8-point-gap calibrated P(over) is a probability).
       7. Attach coverage/exclusion counts to every ROI; LABEL every 2023-2024 number with the FIXED
          contaminated vocabulary; CLV is report-only; a NEGATIVE provisional ROI is an honest
          redirect (does NOT raise).
@@ -876,9 +809,9 @@ def run_ou_monetization(
 
     Returns:
         A structured result dict (deterministic given the scored artifact + silver odds): the tune
-        fit, the frozen t / SD / bias / boundary, the COMPLETE registry + BH-FDR, the hold ROI +
+        fit, the frozen t / SD / bias, the COMPLETE registry + BH-FDR, the hold ROI +
         within-holdout block-by-week CI + robustness cuts + cross-check + coverage, the
-        high-total-OVER report, and the fixed contaminated-vocab labels.
+        BET-02 probability check, and the fixed contaminated-vocab labels.
     """
     # (1) Score + join + provenance hard-fail FIRST.
     candidates, coverage = _build_scored_candidates(gold_df, odds_df)
@@ -902,25 +835,15 @@ def run_ou_monetization(
     candidate_seasons = tuple(sorted(int(s) for s in candidates["season"].unique()))
     bias_all_seasons = _fit_season_bias(fit["resid_by_season"], candidate_seasons)
 
-    high_total_boundary = float(HIGH_TOTAL_BOUNDARY_PREHOLD)
-    if not np.isfinite(high_total_boundary):
-        high_total_boundary = float(derive_high_total_boundary())
-
     # (2 cont.) Sweep the EV-floor t on TUNE only + COMPLETE registry + BH-FDR.
-    sweep = _sweep_ev_floor_on_tune(
-        tune_candidates, frozen_sd, bias_all_seasons, high_total_boundary
-    )
+    sweep = _sweep_ev_floor_on_tune(tune_candidates, frozen_sd, bias_all_seasons)
     chosen_t = sweep["chosen_t"]
 
     # (3) FIT-WINDOW / LEAKAGE ASSERTION (raises on a fence violation).
-    fence = _assert_fit_window(
-        fit, f"tune_{TUNE_SEASONS[0]}_{TUNE_SEASONS[1]}", high_total_boundary
-    )
+    fence = _assert_fit_window(fit, f"tune_{TUNE_SEASONS[0]}_{TUNE_SEASONS[1]}")
 
     # (5) GRADE the frozen-t BetSelector on HOLD through the LOCKED simulator.
-    hold_selector = _make_selector(
-        frozen_sd, bias_all_seasons, chosen_t, high_total_boundary
-    )
+    hold_selector = _make_selector(frozen_sd, bias_all_seasons, chosen_t)
     hold_graded = _grade_selector_roi(hold_selector, hold_candidates)
     hold_per_bet = hold_graded["per_bet"]
     headline_roi = _flat_roi_from_records(hold_per_bet)
@@ -929,16 +852,17 @@ def run_ou_monetization(
     robustness = _robustness_cuts(hold_per_bet, headline_roi)
 
     # FILTERED (acceptance) vs UNFILTERED whole-population cross-check (D27-04). The unfiltered
-    # cross-check grades EVERY hold game at the EV floor t=0 through the simulator (the broad,
-    # non-sub-pop-restricted population) -- a reported cross-check only, never the acceptance basis.
+    # cross-check grades EVERY hold game at the lowest EV floor on the grid through the simulator
+    # -- a reported cross-check only, never the acceptance basis. With the eligibility UNION
+    # deleted (D33.2-24) the two differ only by the EV floor, not by a sub-population.
     unfiltered_selector = _make_selector(
-        frozen_sd, bias_all_seasons, float(EV_FLOOR_GRID[0]), high_total_boundary
+        frozen_sd, bias_all_seasons, float(EV_FLOOR_GRID[0])
     )
     unfiltered_graded = _grade_selector_roi(unfiltered_selector, hold_candidates)
     unfiltered_roi = _flat_roi_from_records(unfiltered_graded["per_bet"])
 
-    # (6) HIGH-TOTAL OVER empirical report on the graded hold bets.
-    high_total_over = _high_total_over_report(hold_selector, hold_candidates)
+    # (6) The BET-02 probability check on the hold candidates.
+    bet02_check = _bet02_probability_report(hold_selector, hold_candidates)
 
     # (7) Report-only CLV on the SELECTED hold bets (D27-06 / D27-12, #11 -- never a gate).
     hold_clv_values = _per_bet_clv(hold_selector, hold_candidates)
@@ -959,7 +883,6 @@ def run_ou_monetization(
         "frozen": {
             "ev_floor_t": chosen_t,
             "frozen_sd": frozen_sd,
-            "high_total_boundary": high_total_boundary,
             "bias_by_season": bias_all_seasons,
         },
         "trial_registry": sweep["trial_registry"],
@@ -982,12 +905,13 @@ def run_ou_monetization(
                 "unfiltered_cross_check_roi": unfiltered_roi,
                 "unfiltered_n_bets": unfiltered_graded["n_bets"],
                 "note": (
-                    "filtered = the sub-pop UNION acceptance basis (the bar); unfiltered = the "
-                    "whole-population cross-check (reported only, D27-04)."
+                    "filtered = the frozen-t acceptance basis (the bar); unfiltered = the "
+                    "lowest-grid-floor cross-check (reported only, D27-04). No eligibility "
+                    "sub-population separates them (D33.2-24)."
                 ),
             },
         },
-        "high_total_over_report": high_total_over,
+        "bet02_probability_check": bet02_check,
         "clv_report_only": {
             "metric": "model_edge_line_clv (model_total - closing_total); REPORT-ONLY (D27-06)",
             "is_selection_gate": False,
@@ -1023,12 +947,12 @@ def _format_readout(result: dict[str, Any]) -> str:
     Uses ONLY the FIXED contaminated vocabulary for the 2023-2024 numbers; NEVER emits "validated" /
     "proven profitable". Presents the headline provisional held-out ROI point estimate, its
     within-holdout block-by-week bootstrap CI, the robustness-cut table, the filtered-vs-unfiltered
-    cross-check, the high-total-OVER empirical report, and the coverage/exclusion counts.
+    cross-check, the BET-02 probability check, and the coverage/exclusion counts.
     """
     hold = result["hold_roi"]
     ci = hold["block_by_week_ci"]
     cov = result["coverage"]
-    hto = result["high_total_over_report"]
+    bet02 = result["bet02_probability_check"]
     frozen = result["frozen"]
 
     lines = [
@@ -1037,7 +961,7 @@ def _format_readout(result: dict[str, Any]) -> str:
         "=" * 78,
         f"  label: {hold['label']} (validation_type={hold['validation_type']})",
         f"  frozen EV-floor t: {frozen['ev_floor_t']}  frozen SD: {frozen['frozen_sd']:.4f}",
-        f"  high-total boundary (pre-hold, LOCKED-1): {frozen['high_total_boundary']:.2f}",
+        "  eligibility: none -- every candidate reaches the EV floor (D33.2-24)",
         f"  BH-FDR trial registry: {result['n_trials']} tested of "
         f"{len(result['trial_registry'])} forks",
         "-" * 78,
@@ -1060,13 +984,9 @@ def _format_readout(result: dict[str, Any]) -> str:
         f"    unfiltered cross-check ROI: {_fmt(hold['filtered_unfiltered_cross_check']['unfiltered_cross_check_roi'])} "
         f"(n={hold['filtered_unfiltered_cross_check']['unfiltered_n_bets']})",
         "-" * 78,
-        "  HIGH-TOTAL OVER empirical report (#7, RESEARCH Finding 4 / D27-05):",
-        f"    surviving high-total OVER count: {hto['surviving_high_total_over_count']}",
-        f"    surviving UNDER count:           {hto['surviving_under_count']}",
-        f"    union ROI: {_fmt(hto['union_roi'])}   under-only ROI: {_fmt(hto['under_only_roi'])}",
-        f"    union NOT below under-only: {hto['union_not_below_under_only']}",
-        f"    8-pt-gap kelly_model_prob: {_fmt(hto['eight_point_gap_kelly_model_prob'])} "
-        f"(is a probability <= 1: {hto['eight_point_gap_prob_is_probability']})",
+        "  BET-02 probability check (#7):",
+        f"    8-pt-gap kelly_model_prob: {_fmt(bet02['eight_point_gap_kelly_model_prob'])} "
+        f"(is a probability in [0, 1]: {bet02['eight_point_gap_prob_is_probability']})",
         "-" * 78,
         "  ODDS COVERAGE (OUM-06; reported with every ROI):",
         f"    n_total: {cov['n_total']}   n_with_line: {cov['n_with_line']}   "
