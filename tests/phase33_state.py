@@ -14899,3 +14899,103 @@ P332_08_RUNG0_CARRY_IN_COLUMNS: tuple[str, ...] = (
 )
 
 P332_08_RUNG0_CARRY_IN_SEASONS: tuple[int, ...] = (2002, 2003)
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-09 Task 3 -- THE 2025 INTERNATIONAL VENUES AND p332_ RUNG 2 (D33.2-20, SPEC R8).
+#
+# APPENDED ONCE by Plan 33.2-09 on 2026-09-21, in ONE block. Nothing above this line was
+# edited.
+#
+# WHAT WAS CORRECTED. The feed records all seven 2025 games played outside the United States
+# at the US home team's own stadium. Silver games now carries the venue each was played at
+# (config/international_venue_corrections.toml, cited), written by the SAME
+# scripts.ingest_games.resolve_venue_override the ingest applies on every run, and
+# data/venues.json gained Croke Park (DUB00) and the Olympiastadion (BER00).
+#
+# RUNG 2. Declared in commit 57271da BEFORE the rebuild ran. Its baseline is p332_rung1.json,
+# CONFIRMED rather than assumed: a scratch-root rebuild from today's inputs minus this cause
+# fingerprints identical to it on every non-clock column, so no retake and no carry-in.
+# MEASURED 2026-09-21: attribution_ok true, zero unattributed, every moved column in the
+# derived stadium-dependent set and moved in 2025 only; the digest bracket
+# outputs/p332_rung2_before.json -> after named exactly the five declared paths.
+# venue_high_altitude is in the derived set and did NOT move: no corrected venue is at or
+# above 3,000 ft.
+#
+# THE ROW RULE, measured row by row against a copy of the before-gold: the same 283 rows
+# moved in each matrix, all 2025; all 7 corrected games among them; the other 276 moved only
+# in columns expanding normalization rescales (the 2025 within-season statistics now include
+# a corrected game), and no level-preserved indicator column moved at all.
+# ---------------------------------------------------------------------------
+
+P332_09_VENUE_RECORDS_BEFORE: int = 60
+
+P332_09_VENUE_RECORDS_AFTER: int = 62
+
+P332_09_ADDED_STADIUM_IDS: tuple[str, ...] = ("DUB00", "BER00")
+
+P332_09_SILVER_REPAIR_CORRECTED: int = 7
+
+P332_09_SILVER_REPAIR_ALREADY_CORRECTED: int = 0
+
+# Neutral-site games at the home team's modal stadium, before and after the repair.
+P332_09_NEUTRAL_AT_USUAL_BEFORE: tuple[str, ...] = (
+    "2020_W21_KC@TB",
+    "2025_W01_KC@LAC",
+    "2025_W04_MIN@PIT",
+    "2025_W05_MIN@CLE",
+    "2025_W06_DEN@NYJ",
+    "2025_W07_LA@JAX",
+    "2025_W10_ATL@IND",
+    "2025_W11_WAS@MIA",
+)
+
+P332_09_NEUTRAL_AT_USUAL_AFTER: tuple[str, ...] = ("2020_W21_KC@TB",)
+
+P332_09_NON_US_VENUE_ROWS_2025_AFTER: int = 7
+
+# sha256 of scripts.fingerprint_gold.PHASE332_VENUE_RUNG_CAUSE (UTF-8), declared in commit
+# 57271da before the rebuild ran.
+P332_09_RUNG2_CAUSE_DIGEST: str = (
+    "c780b218cf3a39ecdc6aa70a569d9560885fa24f0ba88fa8c554ce1950a0af98"
+)
+
+P332_09_RUNG2_DECLARED_IN_COMMIT: str = "57271da47ec603f2ad2dfafe178b9529b1bfff27"
+
+P332_09_RUNG2_BASELINE_DOCUMENT: str = "p332_rung1.json"
+
+# Non-clock columns rung 2 moved (feature_timestamp is the build clock).
+P332_09_RUNG2_MOVED_COLUMNS: tuple[str, ...] = (
+    "away_abs_timezone_diff_hours",
+    "away_cross_country_travel",
+    "away_eastward_travel",
+    "away_timezone_diff_hours",
+    "away_travel_distance_miles",
+    "away_travel_fatigue_score",
+    "away_westward_travel",
+    "surface_mismatch",
+    "venue_capacity",
+    "venue_cold_climate",
+    "venue_elevation_ft",
+    "venue_indoor",
+    "venue_large_stadium",
+    "venue_outdoor",
+    "venue_retractable",
+    "venue_warm_climate",
+)
+
+P332_09_RUNG2_MOVED_SEASONS: tuple[int, ...] = (2025,)
+
+# The row rule, identical in all three matrices.
+P332_09_RUNG2_ROWS_MOVED_PER_MATRIX: int = 283
+
+P332_09_RUNG2_CORRECTED_ROWS_MOVED: int = 7
+
+P332_09_RUNG2_OTHER_2025_ROWS_MOVED: int = 276
+
+P332_09_RUNG2_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "gold/features_wp.parquet",
+    "nfl_predictions.duckdb",
+    "silver/games.parquet",
+)
