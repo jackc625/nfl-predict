@@ -55,7 +55,6 @@ __all__ = [
     "MosDecodeError",
     "MosModelMismatchError",
     "MosRecord",
-    "MosRunMissingError",
     "build_weather_record",
     "decode_record",
     "model_for_run_date",
@@ -104,10 +103,6 @@ class EmptyMosResponseError(RuntimeError):
     Raised by name, never written as "no weather". IEM returns an empty 200 both for a
     comma-separated station list and for a run that does not exist.
     """
-
-
-class MosRunMissingError(RuntimeError):
-    """A non-empty response lacks the 12 UTC run of a lock date (a per-(station, run) refusal)."""
 
 
 class MosModelMismatchError(RuntimeError):

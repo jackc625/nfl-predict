@@ -18,15 +18,23 @@ date range clipped at the changeover. Every season but 2003 is one segment; a 20
 whose lock dates straddle the changeover is two requests, AVN then GFS. The count is computed and
 printed (``SEGMENTS_PLANNED=`` / ``SPLIT_SEASON_REQUESTS=``), never asserted as a literal.
 
-THE THREE REFUSALS
-------------------
+THE TWO REFUSALS, AND ONE RECORDED ABSENCE
+------------------------------------------
 * An HTTP 200 with ZERO rows raises :class:`EmptyMosResponseError` by name (pitfall P4). It is
   never written as "no weather".
-* A row whose ``model`` or ``station`` is not the one requested raises
+* A row whose ``model``, ``station`` or ``runtime`` is not the one requested raises
   :class:`MosModelMismatchError`: the archive labels pre-changeover rows AVN even under a GFS
   request, and storing them under GFS would mislabel a lineage.
-* A non-empty response that lacks the 12 UTC run of any lock date raises
-  :class:`MosRunMissingError`, naming the (station, run).
+* A NON-EMPTY, correctly labelled response that lacks the 12 UTC run of a lock date is a gap in
+  the archive, not the silent-empty trap -- the same response carries that station's other runs.
+  Found on the first real run: the GFS 12 UTC cycle of 2020-01-03 is missing for KHOU, KIAH and
+  KDFW while their 06 and 18 UTC cycles are present. The run is re-asked ONCE through the
+  single-run endpoint (``MOS_RUN_ENDPOINT_URL``). If it answers, those rows are used. If it too
+  holds nothing for the station, the run is recorded in bronze as ABSENT FROM THE ARCHIVE (a row
+  with ``absent_in_archive=True`` and no bulletin); the game it serves is UNRESOLVED, takes SPEC
+  R6's NULL-plus-flag path, and counts against the pre-registered 99-in-100 coverage bound. No
+  other run (the earlier 06 UTC cycle, NAM) is ever substituted: D33.2-13 admits exactly one run
+  per game.
 
 VALIDATE BEFORE THE BRONZE WRITE; RESUME ON COVERAGE
 ----------------------------------------------------
@@ -90,7 +98,6 @@ from scripts.mos_decode import (
     EmptyMosResponseError,
     MosModelMismatchError,
     MosRecord,
-    MosRunMissingError,
     build_weather_record,
     decode_record,
     model_for_run_date,
@@ -107,6 +114,7 @@ __all__ = [
     "MOS_BRONZE_TABLE",
     "MOS_COLUMNS",
     "MOS_ENDPOINT_URL",
+    "MOS_RUN_ENDPOINT_URL",
     "BackfillReport",
     "CoveredGame",
     "MosSegment",
@@ -121,6 +129,9 @@ __all__ = [
 
 #: Endpoint A: date-range download, ONE station per request (a comma list returns an empty 200).
 MOS_ENDPOINT_URL: str = "https://mesonet.agron.iastate.edu/cgi-bin/request/mos.py"
+
+#: Endpoint B: single-run lookup. Used only to re-ask for a run endpoint A's response lacked.
+MOS_RUN_ENDPOINT_URL: str = "https://mesonet.agron.iastate.edu/api/1/mos.json"
 
 #: The bronze landing zone, RELATIVE to ``<data root>/bronze``. A subdirectory no other writer
 #: uses, so this backfill's files cannot collide with any existing bronze table.
@@ -237,6 +248,8 @@ class BackfillReport:
     requests_made: int = 0
     segments_missing: int = 0
     empty_responses: int = 0
+    absent_runs: int = 0
+    absent_runs_in_bronze: tuple[str, ...] = ()
     covered_games: int = 0
     resolved_games: int = 0
     uncoverable_games: int = 0
@@ -258,6 +271,8 @@ class BackfillReport:
             f"SEGMENTS_MISSING= {self.segments_missing}",
             f"EMPTY_RESPONSES= {self.empty_responses}",
             f"RESOLVED_SHARE= {self.resolved_share:.4f}",
+            f"ABSENT_RUNS_RECORDED_THIS_RUN= {self.absent_runs}",
+            f"ABSENT_RUNS_IN_BRONZE= {list(self.absent_runs_in_bronze)}",
             f"COVERED_GAMES= {self.covered_games}",
             f"RESOLVED_GAMES= {self.resolved_games}",
             f"UNCOVERABLE_GAMES= {self.uncoverable_games}",
@@ -392,10 +407,22 @@ def load_bronze_run_records(
     runs: dict[tuple[str, datetime], dict[datetime, MosRecord]] = defaultdict(dict)
     for path in sorted(_bronze_dir(base_path).glob(MOS_BRONZE_GLOB)):
         frame = pd.read_parquet(path, columns=["raw_json"], engine="pyarrow")
-        for text in frame["raw_json"]:
+        for text in frame["raw_json"].dropna():  # an absent-run marker has no bulletin
             record = decode_record(json.loads(text))
             runs[(record.station, record.runtime)][record.ftime] = record
     return {key: sorted(v.values(), key=lambda r: r.ftime) for key, v in runs.items()}
+
+
+def absent_runs_in_bronze(base_path: Path | str | None = None) -> tuple[str, ...]:
+    """Every run recorded ABSENT FROM THE ARCHIVE, as ``STATION MODEL RUNTIME``, sorted."""
+    found: set[str] = set()
+    for path in sorted(_bronze_dir(base_path).glob(MOS_BRONZE_GLOB)):
+        frame = pd.read_parquet(path, engine="pyarrow")
+        if "absent_in_archive" not in frame.columns:
+            continue
+        for row in frame[frame["absent_in_archive"].astype(bool)].itertuples():
+            found.add(f"{row.station} {row.model} {row.runtime_raw}")
+    return tuple(sorted(found))
 
 
 def _write_bronze_atomically(frame: pd.DataFrame, target: Path) -> None:
@@ -469,9 +496,14 @@ def _is_retryable(error: BaseException) -> bool:
     retry=retry_if_exception(_is_retryable),
     reraise=True,
 )
-def _get(client: httpx.Client, params: Mapping[str, str]) -> httpx.Response:
+def _get(
+    client: httpx.Client,
+    params: Mapping[str, str] | Sequence[tuple[str, str]],
+    url: str = MOS_ENDPOINT_URL,
+) -> httpx.Response:
     """One GET, retried on transport errors, 429 and 5xx -- never on content."""
-    response = client.get(MOS_ENDPOINT_URL, params=dict(params))
+    query = list(params) if isinstance(params, Sequence) else list(params.items())
+    response = client.get(url, params=query)
     _raise_for_status(response)
     return response
 
@@ -488,18 +520,22 @@ def _segment_params(segment: MosSegment) -> dict[str, str]:
 
 def select_lock_runs(
     rows: Sequence[Mapping[str, Any]], segment: MosSegment
-) -> list[dict[str, Any]]:
-    """The rows of the segment's 12 UTC lock-date runs, after the three content checks.
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """The segment's 12 UTC lock-date rows, and the lock runs this response lacks.
+
+    Returns:
+        ``(kept, missing)``: the kept rows, and the archive ``runtime`` strings of the lock-date
+        12 UTC runs absent from this non-empty, correctly labelled response.
 
     Raises:
         EmptyMosResponseError: *rows* is empty (a 200 with zero rows).
         MosModelMismatchError: a row names another station or model.
-        MosRunMissingError: a lock date's 12 UTC run is absent.
     """
     if not rows:
         raise EmptyMosResponseError(
-            f"EMPTY MOS response for {segment.station} {segment.model} {segment.sts}..{segment.ets}: "
-            "HTTP 200 with zero rows. Refusing; this is never written as 'no weather'."
+            f"EMPTY MOS response for {segment.station} {segment.model} "
+            f"{segment.sts}..{segment.ets}: HTTP 200 with zero rows. Refusing; this is never "
+            "written as 'no weather'."
         )
     wrong = sorted(
         {(str(r.get("station")), str(r.get("model"))) for r in rows}
@@ -507,17 +543,48 @@ def select_lock_runs(
     )
     if wrong:
         raise MosModelMismatchError(
-            f"{segment.station} {segment.model} {segment.season}: the response carries rows for "
-            f"{wrong}. A request never carries a model its whole range is not served by."
+            f"{segment.station} {segment.model} {segment.season}: the response carries rows "
+            f"for {wrong}. A request never carries a model its whole range is not served by."
         )
     wanted = {_runtime_raw(r) for r in segment.run_instants}
     kept = [dict(r) for r in rows if str(r.get("runtime")) in wanted]
     missing = sorted(wanted - {str(r["runtime"]) for r in kept})
-    if missing:
-        raise MosRunMissingError(
-            f"{segment.station} {segment.model}: the response lacks the 12 UTC run(s) {missing}"
+    return kept, missing
+
+
+def confirm_run(
+    client: httpx.Client, segment: MosSegment, runtime_raw: str
+) -> tuple[list[dict[str, Any]], str]:
+    """Re-ask ONE missing run through the single-run endpoint.
+
+    Returns:
+        ``(rows, url)``: the run's rows for the segment's station -- empty when the archive holds
+        none for it, a CONFIRMED absence -- and the URL asked.
+
+    Raises:
+        MosModelMismatchError: a returned row names another station, model or runtime.
+    """
+    runtime_param = runtime_raw.replace("T", " ")[:16] + "Z"
+    params = [
+        ("station", segment.station),
+        ("model", segment.model),
+        ("runtime", runtime_param),
+    ]
+    response = _get(client, params, MOS_RUN_ENDPOINT_URL)
+    rows = [dict(r) for r in response.json().get("data", [])]
+    wrong = sorted(
+        {
+            (str(r.get("station")), str(r.get("model")), str(r.get("runtime")))
+            for r in rows
+        }
+        - {(segment.station, segment.model, runtime_raw)}
+    )
+    if wrong:
+        raise MosModelMismatchError(
+            f"{segment.station} {segment.model} {runtime_raw}: the single-run lookup "
+            f"returned rows for {wrong}"
         )
-    return kept
+    return rows, str(response.request.url)
 
 
 def assert_mos_columns_survived(frame: pd.DataFrame, source: pd.DataFrame) -> None:
@@ -573,21 +640,44 @@ def _bronze_frame(
     segment: MosSegment,
     response: httpx.Response,
     fetched_at: datetime,
+    *,
+    confirmed: Mapping[str, str] | None = None,
+    absent: Mapping[str, str] | None = None,
 ) -> pd.DataFrame:
-    digest = hashlib.sha256(response.content).hexdigest()
-    return pd.DataFrame(
+    """The bronze rows: every kept bulletin row verbatim, plus one marker per absent run.
+
+    *confirmed* maps a runtime recovered through the single-run endpoint to the URL that
+    answered; *absent* maps a runtime the archive holds nothing for to the URL that confirmed it.
+    """
+    confirmed = confirmed or {}
+    absent = absent or {}
+    records: list[dict[str, Any]] = [
         {
-            "station": [segment.station] * len(kept),
-            "season": [segment.season] * len(kept),
-            "model": [segment.model] * len(kept),
-            "runtime_raw": [str(r["runtime"]) for r in kept],
-            "ftime_raw": [str(r["ftime"]) for r in kept],
-            "raw_json": [json.dumps(r, sort_keys=True) for r in kept],
-            "request_url": [str(response.request.url)] * len(kept),
-            "response_sha256": [digest] * len(kept),
-            "fetched_at_utc": [pd.Timestamp(fetched_at)] * len(kept),
+            "runtime_raw": str(r["runtime"]),
+            "ftime_raw": str(r["ftime"]),
+            "raw_json": json.dumps(r, sort_keys=True),
+            "absent_in_archive": False,
+            "request_url": confirmed.get(str(r["runtime"]), str(response.request.url)),
         }
-    )
+        for r in kept
+    ]
+    records += [
+        {
+            "runtime_raw": runtime_raw,
+            "ftime_raw": None,
+            "raw_json": None,
+            "absent_in_archive": True,
+            "request_url": url,
+        }
+        for runtime_raw, url in sorted(absent.items())
+    ]
+    frame = pd.DataFrame(records)
+    frame.insert(0, "station", segment.station)
+    frame.insert(1, "season", segment.season)
+    frame.insert(2, "model", segment.model)
+    frame["response_sha256"] = hashlib.sha256(response.content).hexdigest()
+    frame["fetched_at_utc"] = pd.Timestamp(fetched_at)
+    return frame
 
 
 # ---------------------------------------------------------------------------
@@ -665,15 +755,27 @@ def run_backfill(
                     report.requests_made += 1
                     response = _get(http, _segment_params(segment))
                     fetched_at = datetime.now(UTC)
+                    confirmed: dict[str, str] = {}
+                    absent: dict[str, str] = {}
                     try:
-                        kept = select_lock_runs(response.json(), segment)
+                        kept, missing = select_lock_runs(response.json(), segment)
+                        for runtime_raw in missing:
+                            sleep(REQUEST_INTERVAL_SECONDS)
+                            report.requests_made += 1
+                            rows, url = confirm_run(http, segment, runtime_raw)
+                            if rows:
+                                kept += rows
+                                confirmed[runtime_raw] = url
+                            else:
+                                absent[runtime_raw] = url
                     except EmptyMosResponseError as error:
                         report.empty_responses += 1
                         report.refusal = str(error)
                         break
-                    except (MosModelMismatchError, MosRunMissingError) as error:
+                    except MosModelMismatchError as error:
                         report.refusal = str(error)
                         break
+                    report.absent_runs += len(absent)
                     _validate_segment(
                         kept,
                         games_by_segment[
@@ -684,9 +786,15 @@ def run_backfill(
                     target = (
                         _bronze_dir(base_path) / f"{segment.file_stem}_{stamp}.parquet"
                     )
-                    _write_bronze_atomically(
-                        _bronze_frame(kept, segment, response, fetched_at), target
+                    frame = _bronze_frame(
+                        kept,
+                        segment,
+                        response,
+                        fetched_at,
+                        confirmed=confirmed,
+                        absent=absent,
                     )
+                    _write_bronze_atomically(frame, target)
                     report.written.append(str(target))
                     report.segments_fetched += 1
         finally:
@@ -697,6 +805,7 @@ def run_backfill(
         not segment_is_complete(s, base_path) for s in segments
     )
     report.resolved_games = _count_resolved(covered, load_bronze_run_records(base_path))
+    report.absent_runs_in_bronze = absent_runs_in_bronze(base_path)
     return report
 
 

@@ -28,7 +28,6 @@ from scripts.mos_decode import (
     EmptyMosResponseError,
     MosDecodeError,
     MosModelMismatchError,
-    MosRunMissingError,
     build_weather_record,
     decode_record,
     model_for_run_date,
@@ -211,16 +210,20 @@ class TestContentRefusals:
         with pytest.raises(MosModelMismatchError):
             backfill.select_lock_runs([_row(model="GFS")], _segment())
 
-    def test_a_missing_lock_run_raises_naming_it(self) -> None:
-        with pytest.raises(MosRunMissingError, match="2002-09-07T12"):
-            backfill.select_lock_runs(
-                [_row(runtime="2002-09-07T00:00:00.000")], _segment()
-            )
+    def test_a_lock_run_missing_from_a_non_empty_response_is_named_not_filled(
+        self,
+    ) -> None:
+        kept, missing = backfill.select_lock_runs(
+            [_row(runtime="2002-09-07T00:00:00.000")], _segment()
+        )
+        assert kept == []
+        assert missing == ["2002-09-07T12:00:00.000"]
 
     def test_only_the_lock_date_12_utc_run_is_kept(self) -> None:
         rows = [_row(), _row(runtime="2002-09-07T18:00:00.000")]
-        kept = backfill.select_lock_runs(rows, _segment())
+        kept, missing = backfill.select_lock_runs(rows, _segment())
         assert [r["runtime"] for r in kept] == ["2002-09-07T12:00:00.000"]
+        assert missing == []
 
 
 # ---------------------------------------------------------------------------
@@ -342,37 +345,56 @@ def _covered(
     ]
 
 
+def _run_rows(station: str, model: str, run: datetime) -> list[dict]:
+    return [
+        _row(
+            station=station,
+            model=model,
+            runtime=run.strftime("%Y-%m-%dT%H:%M:%S.000"),
+            ftime=(run + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S.000"),
+            tmp=50,
+            dpt=40,
+            wsp=8,
+            wdr=200,
+        )
+        for hours in range(6, 75, 3)
+    ]
+
+
 def _fake_archive(
-    requests: list[httpx.Request], *, empty: bool = False
+    requests: list[httpx.Request],
+    *,
+    empty: bool = False,
+    range_drops: frozenset[str] = frozenset(),
+    archive_lacks: frozenset[str] = frozenset(),
 ) -> httpx.MockTransport:
-    """An archive serving a 12-hourly set of runs, three-hourly hours out to +72 h."""
+    """An archive serving six-hourly runs, three-hourly hours out to +72 h.
+
+    *range_drops*: runtimes the date-range endpoint omits (the single-run endpoint still has them).
+    *archive_lacks*: runtimes absent from BOTH endpoints -- a genuine archive gap.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if empty:
-            return httpx.Response(200, text="[]")
         params = request.url.params
         station, model = params["station"], params["model"]
+        if request.url.path.endswith("/api/1/mos.json"):
+            run = datetime.strptime(params["runtime"], "%Y-%m-%d %H:%MZ").replace(
+                tzinfo=UTC
+            )
+            key = run.strftime("%Y-%m-%dT%H:%M:%S.000")
+            data = [] if key in archive_lacks else _run_rows(station, model, run)
+            return httpx.Response(200, text=json.dumps({"data": data}))
+        if empty:
+            return httpx.Response(200, text="[]")
         start = datetime.strptime(params["sts"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=UTC)
         end = datetime.strptime(params["ets"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=UTC)
         rows = []
         run = start
         while run <= end:
-            for hours in range(6, 75, 3):
-                rows.append(
-                    _row(
-                        station=station,
-                        model=model,
-                        runtime=run.strftime("%Y-%m-%dT%H:%M:%S.000"),
-                        ftime=(run + timedelta(hours=hours)).strftime(
-                            "%Y-%m-%dT%H:%M:%S.000"
-                        ),
-                        tmp=50,
-                        dpt=40,
-                        wsp=8,
-                        wdr=200,
-                    )
-                )
+            key = run.strftime("%Y-%m-%dT%H:%M:%S.000")
+            if key not in range_drops and key not in archive_lacks:
+                rows += _run_rows(station, model, run)
             run += timedelta(hours=6)
         return httpx.Response(200, text=json.dumps(rows))
 
@@ -484,6 +506,72 @@ class TestTheBackfillEndToEnd:
         assert report.segments_fetched == 0
         assert report.segments_missing == 2
         assert list((tmp_path / "bronze" / "mos").glob("*.parquet")) == []
+
+    def test_a_confirmed_archive_gap_is_recorded_unresolved_and_never_filled(
+        self, tmp_path: Path
+    ) -> None:
+        # The 2003-12-13 12 UTC run (lock date of 2003_W15_B@GB) is absent everywhere.
+        gap = "2003-12-13T12:00:00.000"
+        requests: list[httpx.Request] = []
+        client = httpx.Client(
+            transport=_fake_archive(requests, archive_lacks=frozenset({gap}))
+        )
+        first = backfill.run_backfill(
+            [2003],
+            apply=True,
+            base_path=tmp_path,
+            client=client,
+            sleep=lambda _: None,
+            games=_games_for_backfill(),
+        )
+        assert first.refusal is None
+        assert first.empty_responses == 0
+        assert first.absent_runs == 1
+        assert first.requests_made == 3  # two segments plus one single-run re-ask
+        assert first.segments_missing == 0
+        assert first.resolved_games == 2 and first.covered_games == 3
+
+        frames = [
+            pd.read_parquet(p) for p in (tmp_path / "bronze" / "mos").glob("*.parquet")
+        ]
+        bronze = pd.concat(frames, ignore_index=True)
+        marker = bronze[bronze["absent_in_archive"]]
+        assert marker["runtime_raw"].tolist() == [gap]
+        assert marker["raw_json"].isna().all()
+        assert "api/1/mos.json" in marker["request_url"].iloc[0]
+
+        before = _files(tmp_path)
+        second = backfill.run_backfill(
+            [2003],
+            apply=True,
+            base_path=tmp_path,
+            client=client,
+            sleep=lambda _: None,
+            games=_games_for_backfill(),
+        )
+        assert second.requests_made == 0
+        assert second.resolved_games == 2
+        assert _files(tmp_path) == before
+
+    def test_a_run_the_range_endpoint_dropped_is_recovered_from_the_single_run_lookup(
+        self, tmp_path: Path
+    ) -> None:
+        dropped = "2003-12-13T12:00:00.000"
+        requests: list[httpx.Request] = []
+        client = httpx.Client(
+            transport=_fake_archive(requests, range_drops=frozenset({dropped}))
+        )
+        report = backfill.run_backfill(
+            [2003],
+            apply=True,
+            base_path=tmp_path,
+            client=client,
+            sleep=lambda _: None,
+            games=_games_for_backfill(),
+        )
+        assert report.absent_runs == 0
+        assert report.resolved_share == 1.0
+        assert report.segments_missing == 0
 
     def test_without_apply_nothing_is_requested_or_written(
         self, tmp_path: Path
