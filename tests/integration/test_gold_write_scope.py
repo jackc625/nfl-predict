@@ -100,6 +100,15 @@ def gold_lake(tmp_path, monkeypatch):
 
     monkeypatch.setattr(bf_mod, "load_dataframe", _parquet_load)
 
+    # The Elo provenance supplier reads silver `games` and `elo_game_snapshots` through
+    # features.elo_features' OWN `load_dataframe` binding. Left on "auto" it tries DuckDB
+    # first and reads the developer's REAL database, so a sandbox build would date its
+    # synthetic games against production snapshots (Plan 33.2-04: that is exactly how the
+    # identity-column tests came to see "provenance matches ZERO game ids").
+    import features.elo_features as elo_features_mod
+
+    monkeypatch.setattr(elo_features_mod, "load_dataframe", _parquet_load)
+
     return tmp_path
 
 
@@ -345,28 +354,32 @@ MINIMUM_MATRIX_COLUMNS = 20
 MINIMUM_MATRIX_ROWS = 24
 
 
-def _sandbox_sources(*, identity: bool = True, plant: str | None = None):
-    """Feature sources in the real shape, with the identity columns on `games`.
+# The first Sunday of each sandbox season. Every sandbox game kicks off at 13:00 ET on
+# its week's Sunday, so week order IS time order -- which the information-time gate
+# requires of any honest schedule (a week-1 game dated after a week-2 game would make
+# the Elo rank columns read a result from after the week-1 lock).
+_SANDBOX_FIRST_SUNDAY: dict[int, str] = {2023: "2023-09-10", 2024: "2024-09-08"}
 
-    Two seasons of games so the expanding normalization has a prior season to
-    bootstrap from, and one source per REQUIRED feature group so the LeakageGate's
-    combined-matrix check passes on its own terms rather than being bypassed.
-    """
+
+def _sandbox_games() -> pd.DataFrame:
+    """Two seasons, twelve weeks, two games a week between two disjoint team pairs."""
     rows = []
     for season in (2023, 2024):
+        first_sunday = pd.Timestamp(
+            f"{_SANDBOX_FIRST_SUNDAY[season]} 13:00", tz="America/New_York"
+        )
         for i in range(24):
-            week = (i % 12) + 1
+            week = i // 2 + 1
+            pair = ("BUF", "KC") if i % 2 == 0 else ("MIA", "NYJ")
+            home, away = pair if week % 2 else pair[::-1]
             rows.append(
                 {
                     "game_id": f"{season}_W{week:02d}_G{i:02d}",
                     "season": season,
                     "week": week,
-                    "home_team": "KC" if i % 2 else "BUF",
-                    "away_team": "BUF" if i % 2 else "KC",
-                    "kickoff_et": pd.Timestamp(
-                        f"{season}-09-{(i % 27) + 1:02d} 13:00",
-                        tz="America/New_York",
-                    ),
+                    "home_team": home,
+                    "away_team": away,
+                    "kickoff_et": first_sunday + pd.Timedelta(weeks=week - 1),
                     "home_score": 20 + (i % 14),
                     "away_score": 17 + (i % 11),
                     "venue": "Arrowhead Stadium",
@@ -376,22 +389,61 @@ def _sandbox_sources(*, identity: bool = True, plant: str | None = None):
                     "season_type": "Regular",
                 }
             )
-    games = pd.DataFrame(rows)
+    return pd.DataFrame(rows)
+
+
+def _honest_elo_snapshots(games: pd.DataFrame) -> pd.DataFrame:
+    """The sandbox games' Elo snapshots, produced by the REAL canonical chain.
+
+    Not invented numbers: ``EloBuilder._process_chain`` walks the sandbox games exactly as
+    it walks production silver, so every row is a pre-game capture of real sandbox
+    results. That is what lets the information-time gate date each row (Plan 33.2-01) and
+    value-check the undatable first-week rows against the start state -- the coverage
+    rule is satisfied, never relaxed.
+    """
+    from scripts.build_elo import EloBuilder, build_snapshot_frame
+
+    rows, _ = EloBuilder()._process_chain(
+        sorted(int(s) for s in games["season"].unique()),
+        games=games,
+        learn_from=games,
+    )
+    return build_snapshot_frame(rows)
+
+
+def _elo_source_from(snapshots: pd.DataFrame) -> pd.DataFrame:
+    """The Elo feature source, carrying the snapshot values the gold join carries."""
+    return pd.DataFrame(
+        {
+            "game_id": snapshots["game_id"],
+            "home_elo": snapshots["home_elo_pre"],
+            "away_elo": snapshots["away_elo_pre"],
+            "home_elo_uncertainty": snapshots["home_elo_uncertainty"],
+            "away_elo_uncertainty": snapshots["away_elo_uncertainty"],
+            "elo_diff": snapshots["home_elo_pre"] - snapshots["away_elo_pre"],
+            "elo_prob_home": snapshots["elo_prob_home"],
+            "elo_prob_away": 1.0 - snapshots["elo_prob_home"],
+            "hfa_used": snapshots["hfa_used"],
+        }
+    )
+
+
+def _sandbox_sources(*, identity: bool = True, plant: str | None = None):
+    """Feature sources in the real shape, with the identity columns on `games`.
+
+    Two seasons of games so the expanding normalization has a prior season to
+    bootstrap from, and one source per REQUIRED feature group so the LeakageGate's
+    combined-matrix check passes on its own terms rather than being bypassed. The Elo
+    source is built from honest snapshots of these games (``_honest_elo_snapshots``);
+    ``_build_into_sandbox`` seeds the same snapshots into the sandbox silver layer so the
+    information-time gate can date every Elo row.
+    """
+    games = _sandbox_games()
+    elo = _elo_source_from(_honest_elo_snapshots(games))
     if not identity:
         games = games.drop(columns=list(IDENTITY_COLUMNS))
 
     n = len(games)
-    elo = pd.DataFrame(
-        {
-            "game_id": games["game_id"],
-            "home_elo": [1500.0 + i for i in range(n)],
-            "away_elo": [1500.0 - i for i in range(n)],
-            "elo_diff": [2.0 * i for i in range(n)],
-            "elo_prob_home": 0.55,
-            "elo_prob_away": 0.45,
-            "hfa_used": 55.0,
-        }
-    )
     team_form = pd.DataFrame(
         [
             {
@@ -414,6 +466,11 @@ def _sandbox_sources(*, identity: bool = True, plant: str | None = None):
             "precip_mm": 0.0,
             "is_outdoor": True,
             "weather_severity_score": [0.1 + (i % 5) / 10 for i in range(n)],
+            # Every sandbox game carries an OBSERVED reading (the values above), so its
+            # coverage flag is 1.0. The full builder's gold path refuses a merged
+            # weather frame without this flag (Phase 33.1 WR-10) -- which is what had
+            # these tests red BEFORE Phase 33.2's Elo gate ever ran.
+            "weather_coverage": 1.0,
         }
     )
     market = pd.DataFrame(
@@ -478,6 +535,15 @@ def _build_into_sandbox(
         f"REFUSING to build: the parquet manager still points at {base}, which is "
         "the PRODUCTION lake. This helper WRITES three gold matrices. Request the "
         "`gold_lake` fixture."
+    )
+
+    # Seed the sandbox SILVER layer with the games and their honest Elo snapshots: the
+    # Elo information-time supplier dates each Elo row from these two tables, and a
+    # sandbox with neither has nothing to date the Elo source by.
+    seeded_games = _sandbox_games()
+    storage_mod._parquet_manager.save(seeded_games, "silver/games.parquet")
+    storage_mod._parquet_manager.save(
+        _honest_elo_snapshots(seeded_games), "silver/elo_game_snapshots.parquet"
     )
 
     builder = FeatureMatrixBuilder()
