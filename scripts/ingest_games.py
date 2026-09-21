@@ -1,10 +1,15 @@
 """Game data ingestion using nflreadpy."""
 
 import argparse
+import functools
 import json
 import sys
+import tomllib
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pandas as pd
@@ -135,6 +140,225 @@ def _derive_neutral_site(row: Any) -> bool:
     return str(location) == _NEUTRAL_LOCATION
 
 
+# ---------------------------------------------------------------------------
+# GAME-SPECIFIC VENUE OVERRIDES (Plan 33.2-09, SPEC R8 venue half, T-33.2-09-03).
+#
+# The feed records all seven 2025 international games at the US home team's own
+# stadium: the Sao Paulo opener at SoFi (indoor, so it would get no weather at all),
+# the Dublin game at Pittsburgh, three London games at Cleveland, New York and
+# Jacksonville, Berlin at Indianapolis and Madrid at Miami. `stadium_id` is copied from
+# the feed verbatim, so correcting only the store would be undone by the next ingest.
+#
+# The correction lives in ONE committed, cited record, and ONE function resolves it.
+# This ingest calls that function for every row, and the one-shot store repair
+# (scripts/repair_international_venues.py) calls the same function -- so a re-ingest of
+# 2025 writes exactly the rows the repair wrote.
+# ---------------------------------------------------------------------------
+
+VENUE_OVERRIDE_RECORD_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "config"
+    / "international_venue_corrections.toml"
+)
+
+_VENUES_JSON_PATH = Path(__file__).resolve().parent.parent / "data" / "venues.json"
+
+# The fields every [[correction]] entry must carry, all non-empty strings.
+_VENUE_OVERRIDE_FIELDS: tuple[str, ...] = (
+    "game_id",
+    "old_stadium_id",
+    "new_stadium_id",
+    "venue_name",
+    "city",
+    "country",
+    "source_url",
+    "source_date",
+)
+
+
+class VenueOverrideRecordError(ValueError):
+    """The venue correction record is malformed, and nothing is loaded from it.
+
+    Raised for an entry with no source, a duplicated game, a target stadium that
+    ``data/venues.json`` does not carry, or a name/city/country that disagrees with the
+    venue record it points at. A correction with no source is not a correction.
+    """
+
+
+class VenueOverrideDriftError(ValueError):
+    """A recorded game arrived from the feed with a stadium_id nobody has looked at.
+
+    The record names the wrong value the feed carries (``old_stadium_id``) and the
+    correction (``new_stadium_id``). Any THIRD value means the feed changed underneath
+    the record, and silently overriding a value nobody has examined is the same class
+    of defect the override exists to remove. It is re-raised past the broad skip handler
+    in ``transform_schedule_data``, on the same reasoning as ``IdentityColumnError``.
+    """
+
+
+@dataclass(frozen=True)
+class VenueOverride:
+    """One cited correction: the game, the feed's wrong venue, and the real one."""
+
+    game_id: str
+    old_stadium_id: str
+    new_stadium_id: str
+    venue_name: str
+    city: str
+    country: str
+    source_url: str
+    source_date: str
+
+
+def _venue_records_by_stadium_id() -> dict[str, dict[str, Any]]:
+    with open(_VENUES_JSON_PATH, encoding="utf-8") as f:
+        venues = json.load(f)["venues"]
+    return {str(venue["stadium_id"]): venue for venue in venues}
+
+
+def _parse_venue_override(
+    entry: dict[str, Any], venues: dict[str, dict[str, Any]], path: Path
+) -> VenueOverride:
+    """One [[correction]] entry, checked field by field against data/venues.json."""
+    label = entry.get("game_id") or "<entry with no game_id>"
+    for field in _VENUE_OVERRIDE_FIELDS:
+        value = entry.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise VenueOverrideRecordError(
+                f"{path}: correction {label!r} has no {field} (got {value!r}). Every "
+                "correction names its game, both venues and a source; one without is "
+                "not written."
+            )
+    override = VenueOverride(
+        **{field: entry[field] for field in _VENUE_OVERRIDE_FIELDS}
+    )
+    target = venues.get(override.new_stadium_id)
+    if target is None:
+        raise VenueOverrideRecordError(
+            f"{path}: correction {label!r} points at new_stadium_id "
+            f"{override.new_stadium_id!r}, which data/venues.json does not carry. Add "
+            "the venue record first; a correction cannot point at nothing."
+        )
+    if override.old_stadium_id == override.new_stadium_id:
+        raise VenueOverrideRecordError(
+            f"{path}: correction {label!r} moves {override.old_stadium_id!r} to itself."
+        )
+    for field, venue_field in (
+        ("venue_name", "venue_name"),
+        ("city", "city"),
+        ("country", "country"),
+    ):
+        recorded = getattr(override, field)
+        if recorded != target.get(venue_field):
+            raise VenueOverrideRecordError(
+                f"{path}: correction {label!r} says {field} {recorded!r} but "
+                f"data/venues.json says {target.get(venue_field)!r} for "
+                f"{override.new_stadium_id}. Two answers for one venue fact; make them "
+                "agree."
+            )
+    return override
+
+
+@functools.cache
+def _load_venue_overrides_from(path_text: str) -> Mapping[str, VenueOverride]:
+    path = Path(path_text)
+    record = tomllib.loads(path.read_text(encoding="utf-8"))
+    venues = _venue_records_by_stadium_id()
+    overrides: dict[str, VenueOverride] = {}
+    for entry in record.get("correction", []):
+        override = _parse_venue_override(entry, venues, path)
+        if override.game_id in overrides:
+            raise VenueOverrideRecordError(
+                f"{path}: game {override.game_id!r} has more than one correction. The "
+                "resolver would have to pick one, silently; refusing instead."
+            )
+        overrides[override.game_id] = override
+    return MappingProxyType(overrides)
+
+
+def load_venue_overrides(
+    path: Path | str = VENUE_OVERRIDE_RECORD_PATH,
+) -> Mapping[str, VenueOverride]:
+    """The committed venue corrections, parsed ONCE per process per path.
+
+    Args:
+        path: The correction record. Defaults to
+            ``config/international_venue_corrections.toml``.
+
+    Returns:
+        An immutable mapping ``game_id -> VenueOverride``.
+
+    Raises:
+        VenueOverrideRecordError: an entry has an empty ``source_url`` (or any other
+            field), a ``game_id`` appears twice, the ``new_stadium_id`` is absent from
+            ``data/venues.json``, or its name/city/country disagree with that record.
+        FileNotFoundError: the record is absent. Not defaulted to "no overrides": a
+            missing record would silently restore all seven defects on the next ingest.
+    """
+    return _load_venue_overrides_from(str(Path(path).resolve()))
+
+
+RoofResolver = Callable[..., str]
+
+
+def resolve_venue_override(
+    game_id: str,
+    upstream_stadium_id: Any,
+    upstream_stadium: Any,
+    upstream_roof: Any,
+    *,
+    roof_resolver: RoofResolver,
+    overrides: Mapping[str, VenueOverride] | None = None,
+) -> tuple[Any, Any, str]:
+    """The ONE decision behind a game's ``(stadium_id, venue, venue_roof)``.
+
+    Called by ``transform_schedule_data`` for every row and by the one-shot store repair
+    for the recorded games, so the store and the next ingest cannot disagree.
+
+    Args:
+        game_id: The project game id (``2025_W04_MIN@PIT``).
+        upstream_stadium_id: The feed's ``stadium_id`` (may be None or NaN).
+        upstream_stadium: The feed's ``stadium`` name, or None when the column is absent.
+        upstream_roof: The feed's ``roof`` value.
+        roof_resolver: ``GameDataIngester._get_venue_roof_type`` -- the existing roof
+            resolver, never a second roof table.
+        overrides: The loaded corrections; ``load_venue_overrides()`` when None.
+
+    Returns:
+        For an UNRECORDED game, the feed-derived values exactly as the ingest always
+        wrote them. For a RECORDED game, the corrected id, the corrected venue record's
+        ``venue_name``, and the roof the corrected id resolves to.
+
+    Raises:
+        VenueOverrideDriftError: a recorded game's feed id is neither the recorded wrong
+            value nor the recorded correction.
+    """
+    if overrides is None:
+        overrides = load_venue_overrides()
+    override = overrides.get(game_id)
+    if override is None:
+        venue = upstream_stadium if upstream_stadium is not None else "Unknown Stadium"
+        roof = roof_resolver(
+            upstream_stadium if upstream_stadium is not None else "",
+            upstream_roof,
+            stadium_id=upstream_stadium_id,
+        )
+        return upstream_stadium_id, venue, roof
+
+    if upstream_stadium_id not in (override.old_stadium_id, override.new_stadium_id):
+        raise VenueOverrideDriftError(
+            f"game {game_id!r}: the feed carries stadium_id {upstream_stadium_id!r}, "
+            f"but config/international_venue_corrections.toml records the feed's value "
+            f"as {override.old_stadium_id!r} and the correction as "
+            f"{override.new_stadium_id!r}. The feed moved underneath the record; look "
+            "at the new value and update the record rather than override it blind."
+        )
+    roof = roof_resolver(
+        override.venue_name, upstream_roof, stadium_id=override.new_stadium_id
+    )
+    return override.new_stadium_id, override.venue_name, roof
+
+
 def _load_venue_lookup() -> dict[str, str]:
     """Load venue roof types from data/venues.json.
 
@@ -186,6 +410,7 @@ class GameDataIngester:
         self.settings = get_settings()
         self._venue_lookup = _load_venue_lookup()
         self._stadium_id_roof_lookup = _load_stadium_id_roof_lookup()
+        self._venue_overrides = load_venue_overrides()
 
     def _get_venue_roof_type(
         self,
@@ -372,9 +597,24 @@ class GameDataIngester:
                 home_team = normalize_team_abbreviation(row["home_team"])
                 away_team = normalize_team_abbreviation(row["away_team"])
 
+                game_id = self._create_game_id(row)
+
+                # ONE decision for all three venue columns, AFTER the game id exists
+                # and BEFORE anything is derived from the venue: a recorded 2025
+                # international game gets the venue it was played at, every other
+                # game gets the feed's values exactly as before.
+                stadium_id, venue, venue_roof = resolve_venue_override(
+                    game_id,
+                    row.get("stadium_id"),
+                    row.get("stadium"),
+                    row.get("roof"),
+                    roof_resolver=self._get_venue_roof_type,
+                    overrides=self._venue_overrides,
+                )
+
                 # Create game record
                 game_record = {
-                    "game_id": self._create_game_id(row),
+                    "game_id": game_id,
                     "season": int(row["season"]),
                     "week": int(row["week"]),
                     "kickoff_et": pd.to_datetime(
@@ -382,12 +622,8 @@ class GameDataIngester:
                     ),
                     "home_team": home_team,
                     "away_team": away_team,
-                    "venue": row.get("stadium", "Unknown Stadium"),
-                    "venue_roof": self._get_venue_roof_type(
-                        row.get("stadium", ""),
-                        row.get("roof"),
-                        stadium_id=row.get("stadium_id"),
-                    ),
+                    "venue": venue,
+                    "venue_roof": venue_roof,
                     "home_score": row.get("home_score")
                     if pd.notna(row.get("home_score"))
                     else None,
@@ -403,7 +639,9 @@ class GameDataIngester:
                     "neutral_site": _derive_neutral_site(row),
                     # Carried through UNCHANGED: no normalization and no casefolding,
                     # because R11's stadium_id matching is exact and case-sensitive.
-                    "stadium_id": row.get("stadium_id"),
+                    # The only exception is a game with a cited, committed correction
+                    # (resolve_venue_override above).
+                    "stadium_id": stadium_id,
                 }
 
                 transformed_data.append(game_record)
@@ -416,6 +654,12 @@ class GameDataIngester:
                 # not exist in silver". Losing a game is strictly worse than failing
                 # an ingest, and the whole point of raising instead of defaulting is
                 # that somebody sees it.
+                raise
+            except VenueOverrideDriftError:
+                # SAME REASONING AS THE IdentityColumnError ARM ABOVE. The broad handler
+                # below SKIPS the row with a warning, which would turn "the feed moved
+                # underneath a recorded venue correction" into "this 2025 game silently
+                # does not exist in silver". A drift is surfaced, never swallowed.
                 raise
             except Exception as e:
                 logger.warning(

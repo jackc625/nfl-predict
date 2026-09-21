@@ -1,0 +1,100 @@
+# The seven 2025 games played outside the United States, which the nflverse schedule feed
+# records at the US home team's own stadium (Plan 33.2-09, SPEC R8 venue half).
+#
+# READ BY TWO CONSUMERS THROUGH ONE FUNCTION (scripts.ingest_games.resolve_venue_override):
+#   * scripts/ingest_games.py applies it to every ingested row, so the next ingest of 2025
+#     cannot restore the wrong venue;
+#   * scripts/repair_international_venues.py applied it ONCE to silver `games`.
+#
+# Measured 2026-09-21: the pinned 2025 schedule AND the live nflverse games.csv
+# (github.com/nflverse/nfldata, data/games.csv) both still carry the home team's id for
+# all seven, so the override is live, not a no-op.
+#
+# Every entry carries a source. `old_stadium_id` is the value the feed sends; any OTHER
+# feed value raises VenueOverrideDriftError rather than being overridden unexamined.
+# `venue_name`, `city` and `country` must equal the data/venues.json record of
+# `new_stadium_id` (the loader refuses a disagreement).
+#
+# `source_url` is the league or broadcaster announcement naming the venue; `source_date`
+# is its publication date. For the three London games the announcement names each
+# designated home team's stadium (Browns and Jets at Tottenham Hotspur Stadium, Jaguars at
+# Wembley); each of those teams hosted exactly one neutral-site game in 2025, which is the
+# row named here. `corroboration_url` is the results table of a PINNED Wikipedia revision
+# (oldid 1375744239, 2026-09-19), which lists venue, date and score for all seven.
+
+[[correction]]
+game_id = "2025_W01_KC@LAC"
+old_stadium_id = "LAX01"
+new_stadium_id = "SAO00"
+venue_name = "Arena Corinthians"
+city = "Sao Paulo"
+country = "Brazil"
+source_url = "https://www.nfl.com/news/nfl-return-sao-paulo-brazil-week-1-2025-season-chargers-designated-team"
+source_date = "2025-02-19"
+corroboration_url = "https://en.wikipedia.org/w/index.php?title=NFL_International_Series&oldid=1375744239"
+
+[[correction]]
+game_id = "2025_W04_MIN@PIT"
+old_stadium_id = "PIT00"
+new_stadium_id = "DUB00"
+venue_name = "Croke Park"
+city = "Dublin"
+country = "Ireland"
+source_url = "https://www.nfl.com/news/historic-first-regular-season-nfl-game-ireland-dublin-2025-steelers-designated-team"
+source_date = "2025-02-07"
+corroboration_url = "https://en.wikipedia.org/w/index.php?title=NFL_International_Series&oldid=1375744239"
+
+[[correction]]
+game_id = "2025_W05_MIN@CLE"
+old_stadium_id = "CLE00"
+new_stadium_id = "LON02"
+venue_name = "Tottenham Hotspur Stadium"
+city = "London"
+country = "United Kingdom"
+source_url = "https://www.skysports.com/nfl/news/12118/13286101/nfl-2025-london-games-new-york-jets-cleveland-browns-and-jacksonville-jaguars-confirmed-as-home-teams-at-tottenham-hotspur-stadium-and-wembley"
+source_date = "2025-01-10"
+corroboration_url = "https://en.wikipedia.org/w/index.php?title=NFL_International_Series&oldid=1375744239"
+
+[[correction]]
+game_id = "2025_W06_DEN@NYJ"
+old_stadium_id = "NYC01"
+new_stadium_id = "LON02"
+venue_name = "Tottenham Hotspur Stadium"
+city = "London"
+country = "United Kingdom"
+source_url = "https://www.skysports.com/nfl/news/12118/13286101/nfl-2025-london-games-new-york-jets-cleveland-browns-and-jacksonville-jaguars-confirmed-as-home-teams-at-tottenham-hotspur-stadium-and-wembley"
+source_date = "2025-01-10"
+corroboration_url = "https://en.wikipedia.org/w/index.php?title=NFL_International_Series&oldid=1375744239"
+
+[[correction]]
+game_id = "2025_W07_LA@JAX"
+old_stadium_id = "JAX00"
+new_stadium_id = "LON00"
+venue_name = "Wembley Stadium"
+city = "London"
+country = "United Kingdom"
+source_url = "https://www.skysports.com/nfl/news/12118/13286101/nfl-2025-london-games-new-york-jets-cleveland-browns-and-jacksonville-jaguars-confirmed-as-home-teams-at-tottenham-hotspur-stadium-and-wembley"
+source_date = "2025-01-10"
+corroboration_url = "https://en.wikipedia.org/w/index.php?title=NFL_International_Series&oldid=1375744239"
+
+[[correction]]
+game_id = "2025_W10_ATL@IND"
+old_stadium_id = "IND00"
+new_stadium_id = "BER00"
+venue_name = "Olympiastadion"
+city = "Berlin"
+country = "Germany"
+source_url = "https://www.nfl.com/news/indianapolis-colts-announced-as-designated-team-for-2025-nfl-berlin-game"
+source_date = "2025-01-15"
+corroboration_url = "https://en.wikipedia.org/w/index.php?title=NFL_International_Series&oldid=1375744239"
+
+[[correction]]
+game_id = "2025_W11_WAS@MIA"
+old_stadium_id = "MIA00"
+new_stadium_id = "MAD01"
+venue_name = "Bernabeu"
+city = "Madrid"
+country = "Spain"
+source_url = "https://www.nfl.com/news/miami-dolphins-announced-as-designated-team-for-2025-nfl-madrid-game"
+source_date = "2025-01-17"
+corroboration_url = "https://en.wikipedia.org/w/index.php?title=NFL_International_Series&oldid=1375744239"

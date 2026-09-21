@@ -1019,6 +1019,40 @@
       "climate_zone": "tropical",
       "timezone": "America/Sao_Paulo",
       "home_teams": []
+    },
+    {
+      "venue_id": "croke_park",
+      "stadium_id": "DUB00",
+      "venue_name": "Croke Park",
+      "city": "Dublin",
+      "state": "",
+      "country": "Ireland",
+      "latitude": 53.3608,
+      "longitude": -6.2511,
+      "elevation_ft": 10,
+      "roof_type": "outdoor",
+      "surface": "Grass",
+      "capacity": 82300,
+      "climate_zone": "oceanic",
+      "timezone": "Europe/Dublin",
+      "home_teams": []
+    },
+    {
+      "venue_id": "olympiastadion_berlin",
+      "stadium_id": "BER00",
+      "venue_name": "Olympiastadion",
+      "city": "Berlin",
+      "state": "",
+      "country": "Germany",
+      "latitude": 52.5147,
+      "longitude": 13.2394,
+      "elevation_ft": 308,
+      "roof_type": "outdoor",
+      "surface": "Grass",
+      "capacity": 74475,
+      "climate_zone": "oceanic",
+      "timezone": "Europe/Berlin",
+      "home_teams": []
     }
   ]
 }
