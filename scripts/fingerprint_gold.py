@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -1541,6 +1542,164 @@ PHASE33_ELO_RUNG_FOLLOWUP_SIGNATURE: dict[str, object] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# PHASE 33.2'S LADDER -- THE `p332_` PREFIX (Plan 33.2-08 Task 4, D33.2-20).
+#
+# NINE rungs, one cause each, numbered once for the whole phase in
+# 33.2-08-PLAN.md <rung_allocation>: 1 odds correction (33.2-08), 2 international
+# venues (33.2-09), 3 schedule moves (33.2-10), 4 day-before weather (33.2-12),
+# 5 builder cutoffs (33.2-14), 6 snap/injury feeds (33.2-15), 7 opponent adjustment
+# (33.2-16), 8 placeholders and the widened window (33.2-18), 9 market columns out
+# of gold (33.2-19).
+#
+# THE REGISTRATION SHAPE, owned by this plan and consumed by every later rung:
+#
+# * Each rung declares exactly three names: PHASE332_{SUBJECT}_RUNG,
+#   PHASE332_{SUBJECT}_RUNG_CAUSE and PHASE332_{SUBJECT}_RUNG_EXPECTED_SIGNATURE.
+# * Registration is INCREMENTAL. This block assigns the cause table ONCE as a
+#   single-key dict; every later rung adds ONE key to that dict in its own block,
+#   its rung constant mapped to its cause constant (the :1100 precedent),
+#   plus one entry in each of the two dispatch tables. Nothing pre-declares all
+#   nine: a pre-declared cause that later changes is a cause table that lies.
+# * TWO DISPATCH TABLES, PHASE332_RUNG_SIGNATURES and PHASE332_RUNG_ATTRIBUTORS
+#   (the second is declared beside its first attributor, further down, because a
+#   table cannot name a function before it exists). Both REFUSE an unregistered
+#   rung by name.
+# * ONE `p332_` branch at each of the two dispatch sites (`_expected_signature`,
+#   `_attribute_one_matrix`), reading those tables. THE BRANCH IS LOAD-BEARING,
+#   measured 2026-09-20: a registered prefix with no branch does NOT refuse -- it
+#   falls through to the generic path, whose rung semantics are PHASE 30's keyed by
+#   rung NUMBER. Rung 1 there attributes a changed column only when it was already
+#   a discrete indicator (`_attribute_rung1`), and the market columns this rung
+#   moves are continuous, so a CORRECT rebuild would report every one of them
+#   unattributed. An unregistered prefix refuses in `_rung_causes`; an undispatched
+#   one prints a verdict. Only the second is dangerous.
+# ---------------------------------------------------------------------------
+
+PHASE332_RUNG_PREFIX: str = "p332_"
+
+PHASE332_ODDS_RUNG: int = 1
+
+# THE COUNTS BELOW WERE EMITTED BY scripts/repair_odds_snapshot.py ON THE TABLE AS
+# FOUND (2026-09-21, the Task-2 and Task-3 --apply runs), never carried from the plan
+# or the CONTEXT. 33.2-CONTEXT.md D33.2-08 item 4 says "10" sign conflicts and "some"
+# 1970 timestamps; the detectors printed SIGN_CONFLICTS_FOUND= 6 and
+# EPOCH_1970_FOUND= 1855, and the CONTEXT is deliberately left unedited.
+PHASE332_ODDS_RUNG_CAUSE: str = (
+    "THE SILVER odds_snapshot CORRECTION of Plan 33.2-08 (SPEC R12, D33.2-08 item 4, "
+    "D33.2-23), and NOTHING else: the 6 spread-sign conflicts its detector found "
+    "(SIGN_CONFLICTS_FOUND= 6) settled against the owned odds_timeline first and "
+    "ESPN's public odds archive second -- 7 values corrected with a citation "
+    "(RESOLVED= 7), 5 set to unknown with a recorded reason (NULLED_WITH_REASON= 5), "
+    "no row dropped; the disputed 28.5 total on 2023_W18_NYJ@NE confirmed against "
+    "the archived DraftKings close; the 1970 created_at family (EPOCH_1970_FOUND= "
+    "1855, CREATED_AT_REPAIRED= 0, CREATED_AT_NULLED= 1855) set to NULL; and the "
+    "stray partition folders removed (STRAY_DIRS_REMOVED= 8) after nothing "
+    "legitimate and missing was found to recover (RECOVERED= 0). Only the market "
+    "columns of the games whose spread or moneyline changed can move. No column is "
+    "added, none removed, no row moves"
+)
+
+# Where a corrected VALUE lands in gold. Keyed by gold column, valued by the
+# odds_snapshot columns it is computed from (features.market_anchors.
+# MarketAnchorFeaturesCalculator.build_features). created_at reaches no gold column.
+PHASE332_ODDS_MARKET_SOURCES: dict[str, tuple[str, ...]] = {
+    "snapshot_spread": ("spread",),
+    "snapshot_total": ("total",),
+    "snapshot_ml_prob_home_fair": ("ml_home", "ml_away"),
+}
+
+# The committed correction record the attribution reads its corrected games from --
+# ONE source for which values changed, never a second list here.
+PHASE332_ODDS_CORRECTION_RECORD: Path = Path("config/odds_corrections.toml")
+
+PHASE332_ODDS_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_ODDS_RUNG,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_ODDS_RUNG_CAUSE,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to the three market columns snapshot_spread, snapshot_total and "
+        "snapshot_ml_prob_home_fair, each only when a value of its own odds_snapshot "
+        "source was CORRECTED OR NULLED in config/odds_corrections.toml (a confirmed "
+        "value changes nothing), and only in seasons ON OR AFTER the earliest season "
+        "holding such a value. The season rule is mechanical, not a guess: gold's "
+        "normalization is expanding (compute_prior_season_stats over prior seasons, "
+        "expanding_normalize over earlier weeks), so a corrected value moves its own "
+        "season and feeds every later season's statistics, and can reach no earlier one"
+    ),
+    "declared_families": ("market",),
+    "family_mechanisms": {
+        "market": (
+            "gold column -> odds_snapshot source columns, read against the committed "
+            "correction record"
+        ),
+    },
+    "declared_before_the_rebuild": True,
+    "owner_ruling": (
+        "the owner ratified both locked rulings on 2026-09-21 ('Confirm both' = "
+        "ratify-locked): delete the stray folders, recovering zero rows; null an "
+        "unsettleable price with a recorded reason and keep the game"
+    ),
+}
+
+RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX] = {
+    PHASE332_ODDS_RUNG: PHASE332_ODDS_RUNG_CAUSE
+}
+
+PHASE332_RUNG_SIGNATURES: dict[int, dict[str, object]] = {
+    PHASE332_ODDS_RUNG: PHASE332_ODDS_RUNG_EXPECTED_SIGNATURE
+}
+
+
+def _phase332_table_entry(table: dict, rung: int, table_name: str):
+    """Read *rung* from a `p332_` dispatch table, REFUSING by name when it is absent.
+
+    A rung that silently fell through to a default would be judged against another
+    phase's semantics -- the failure the per-site branch exists to prevent.
+    """
+    try:
+        return table[rung]
+    except KeyError:
+        msg = (
+            f"p332_ rung {rung} is not registered in {table_name}. Every p332_ rung "
+            "registers ONE entry in PHASE332_RUNG_SIGNATURES AND one in "
+            "PHASE332_RUNG_ATTRIBUTORS (Plan 33.2-08 <owned_protocol_rung_registration>); "
+            "a rung missing from either is refused rather than judged by a default."
+        )
+        raise ValueError(msg) from None
+
+
+def phase332_odds_corrected_seasons(
+    record_path: Path | str = PHASE332_ODDS_CORRECTION_RECORD,
+) -> dict[str, int]:
+    """Earliest season holding a changed value of each market column's source.
+
+    Read from the committed correction record, so the attribution and the record
+    cannot disagree about which games were corrected. A ``confirmed`` entry changed
+    nothing and is excluded; a ``corrected`` or ``nulled`` one moved a stored value.
+
+    Returns:
+        ``gold column -> earliest season``, for the market columns that have at least
+        one changed source value. A column absent here had NOTHING corrected.
+    """
+    import tomllib
+
+    record = tomllib.loads(Path(record_path).read_text(encoding="utf-8"))
+    earliest: dict[str, int] = {}
+    for entry in record.get("correction", []):
+        if entry.get("disposition") not in ("corrected", "nulled"):
+            continue
+        season = int(str(entry["game_id"])[:4])
+        for gold_column, sources in PHASE332_ODDS_MARKET_SOURCES.items():
+            if entry["column"] in sources:
+                earliest[gold_column] = min(season, earliest.get(gold_column, season))
+    return earliest
+
+
 def _rung_causes(prefix: str = "") -> dict[int, str]:
     """The cause table *prefix* names.
 
@@ -2040,6 +2199,17 @@ def _expected_signature(
         )
         raise ValueError(msg)
 
+    if prefix == PHASE332_RUNG_PREFIX:
+        # Phase 33.2's rungs are judged against their OWN declared signature, read
+        # from the dispatch table and returned as a COPY so a caller cannot edit
+        # the prediction it is about to be judged against. Never the generic
+        # Phase-30 path below, which keys rung semantics by NUMBER.
+        return dict(
+            _phase332_table_entry(
+                PHASE332_RUNG_SIGNATURES, rung, "PHASE332_RUNG_SIGNATURES"
+            )
+        )
+
     if prefix == PHASE33_RUNG_PREFIX:
         # Returned as a COPY, for the reason the Phase-33.1 branch below records:
         # a caller must not be able to edit the prediction it is about to be
@@ -2321,7 +2491,8 @@ def attribute_rung(
     # that cannot be the explanation.
     upstream = (
         " " + _UPSTREAM_DRIFT_NOTE.format(cause=cause)
-        if rung in _UPSTREAM_ESCAPE_RUNGS and rung_prefix != PHASE331_RUNG_PREFIX
+        if rung in _UPSTREAM_ESCAPE_RUNGS
+        and rung_prefix not in (PHASE331_RUNG_PREFIX, PHASE332_RUNG_PREFIX)
         else ""
     )
 
@@ -2418,6 +2589,12 @@ def _attribute_one_matrix(
     rung, detail, diff, verdict, fail, expected_removed=None, rung_prefix: str = ""
 ) -> bool:
     """Apply *rung*'s predicted signature to one matrix. Returns whether it blocks."""
+    if rung_prefix == PHASE332_RUNG_PREFIX:
+        attributor = _phase332_table_entry(
+            PHASE332_RUNG_ATTRIBUTORS, rung, "PHASE332_RUNG_ATTRIBUTORS"
+        )
+        return attributor(detail, diff, verdict, fail)
+
     if rung_prefix == PHASE33_RUNG_PREFIX:
         if rung == PHASE33_ELO_RUNG:
             return _attribute_phase33_elo(detail, diff, verdict, fail)
@@ -3290,6 +3467,67 @@ def _attribute_phase33_elo(detail: dict, diff: dict, verdict: dict, fail) -> boo
     return blocking
 
 
+def _attribute_p332_odds(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Rung 1 of the `p332_` ladder: the silver odds correction's OWN attribution.
+
+    A changed column is attributed ONLY when it is one of the market columns whose
+    odds_snapshot source had a value corrected or nulled in the committed record,
+    AND every season it moved in is on or after the earliest season holding such a
+    value (gold normalization is expanding, so a corrected value can reach its own
+    and later seasons and no earlier one). Anything else is UNATTRIBUTED and fails:
+    it is never absorbed, and the cause is never widened to fit it.
+
+    NOT `_attribute_rung1`, deliberately. Phase 30's rung 1 attributes a column only
+    when it was already a discrete indicator; these market columns are continuous,
+    so that judge would report a correct rebuild as entirely unattributed.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    verdict["changed_by_family"] = {"market": []}
+    blocking = _phase33_structure(
+        detail,
+        diff,
+        fail,
+        "p332_ rung 1 (the odds correction)",
+        "Correcting and nulling spread and moneyline values in silver odds_snapshot",
+    )
+    earliest = {
+        _canonical(column): season
+        for column, season in phase332_odds_corrected_seasons().items()
+    }
+
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        floor = earliest.get(column)
+        if floor is not None and seasons and all(int(s) >= floor for s in seasons):
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["market"].append(column)
+            continue
+        verdict["unattributed"].append(column)
+        if floor is None:
+            why = (
+                "it is not a market column whose odds_snapshot source was corrected "
+                "or nulled in config/odds_corrections.toml"
+            )
+        else:
+            why = (
+                f"it moved in season(s) before {floor}, the earliest season holding a "
+                "corrected value of its source, which expanding normalization cannot reach"
+            )
+        fail(
+            f"column '{column}' moved at p332_ rung 1 in season(s) "
+            f"{', '.join(seasons) or '(none attributed)'}, but {why}. The rung's ONE "
+            "cause is the silver odds correction; do NOT widen it to fit this diff"
+        )
+    return blocking
+
+
+PHASE332_RUNG_ATTRIBUTORS: dict[int, Callable[..., bool]] = {
+    PHASE332_ODDS_RUNG: _attribute_p332_odds
+}
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -3760,6 +3998,130 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
         )
         for column, why in sorted(entry["unexplained"].items()):
             lines.append(f'{column} = "{_toml_escape(why)}"')
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out_path
+
+
+def write_phase332_rebuild_diff(
+    out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
+) -> Path:
+    """Emit the COMMITTED per-rung record of the `p332_` ladder, rungs 0 and 1.
+
+    ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
+    place a fresh checkout can read what the ladder moved. Unlike
+    ``write_phase33_rebuild_diff`` it reads nothing from ``tests.phase33_state``:
+    this ladder's witnesses are appended AFTER this file is generated, so the
+    attribution is recomputed here from the two fingerprint documents and the
+    declared signature -- the same judge ``attribute_rung`` applies.
+
+    A rung whose diff is EMPTY is recorded as declared-but-not-run (the Phase-33
+    precip precedent), never as a rung that ran.
+
+    Later `p332_` rungs extend this writer with one entry each.
+
+    Args:
+        out_path: Where to write the TOML. Refused if it points under ``data/``.
+        fingerprint_dir: The directory holding the ``p332_rung*.json`` ladder.
+
+    Returns:
+        The path written.
+    """
+    out_path = reject_data_path(
+        Path(out_path), what="the rebuild diff", suggestion="config/"
+    )
+    require_rung_ladder(fingerprint_dir, PHASE332_ODDS_RUNG + 1, PHASE332_RUNG_PREFIX)
+    before = json.loads(
+        rung_document_path(fingerprint_dir, 0, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    after = json.loads(
+        rung_document_path(
+            fingerprint_dir, PHASE332_ODDS_RUNG, PHASE332_RUNG_PREFIX
+        ).read_text(encoding="utf-8")
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report,
+        PHASE332_ODDS_RUNG,
+        before=before,
+        after=after,
+        rung_prefix=PHASE332_RUNG_PREFIX,
+    )
+
+    widths_before = [before[m]["width"] for m in GOLD_MATRICES]
+    widths_after = [after[m]["width"] for m in GOLD_MATRICES]
+    moved = verdict["non_clock_moves"]
+    ran = bool(moved)
+    seasons_by_column: dict[str, list[str]] = {}
+    for matrix in GOLD_MATRICES:
+        for column, seasons in report[matrix]["columns_changed"].items():
+            if not _is_build_clock(column):
+                merged = set(seasons_by_column.get(column, [])) | set(seasons)
+                seasons_by_column[column] = sorted(merged)
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+
+    lines: list[str] = [
+        "# " + "=" * 75,
+        "# config/phase332_gold_rebuild_diff.toml -- the per-rung record of the",
+        "# Phase-33.2 gold rebuild ladder (prefix p332_). Plan 33.2-08 opens it.",
+        "#",
+        "# GENERATOR OUTPUT. Produced by",
+        '#   python -c "import scripts.fingerprint_gold as f;'
+        " f.write_phase332_rebuild_diff('config/phase332_gold_rebuild_diff.toml')\"",
+        "# Do NOT hand-edit any value below: re-run the generator.",
+        "#",
+        "# NO EPSILON AND NO ROUNDING: EXACT bytes of the IEEE-754 encoding produced by",
+        "# scripts.fingerprint_gold._column_bytes, as every prior ladder. ASCII only.",
+        "# " + "=" * 75,
+        "",
+        f'generated_at = "{datetime.now(UTC).isoformat()}"',
+        f'rung_prefix = "{PHASE332_RUNG_PREFIX}"',
+        'float_tolerance = "none -- EXACT byte comparison"',
+        "",
+        "[platform]",
+    ]
+    for key, value in sorted(_platform_record().items()):
+        lines.append(f'{key} = "{_toml_escape(value)}"')
+    lines.extend(
+        [
+            "",
+            "[rung.0]",
+            "rung = 0",
+            f'prefix = "{PHASE332_RUNG_PREFIX}"',
+            "rebuilt = false",
+            'cause = "BASELINE, NOT A REBUILD. Gold as it stood after BOTH silver '
+            "odds corrections (Tasks 2 and 3) landed and before the rung-1 rebuild "
+            'overwrote it."',
+            f"widths = {_toml_array(widths_before)}",
+            "",
+            f"[rung.{PHASE332_ODDS_RUNG}]",
+            f"rung = {PHASE332_ODDS_RUNG}",
+            f'prefix = "{PHASE332_RUNG_PREFIX}"',
+            f"rebuilt = {'true' if ran else 'false'}",
+            f'cause = "{_toml_escape(PHASE332_ODDS_RUNG_CAUSE)}"',
+            f"widths_before = {_toml_array(widths_before)}",
+            f"widths_after = {_toml_array(widths_after)}",
+            f"moved_columns = {_toml_array(moved)}",
+            f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+            f"unattributed_columns = {_toml_array(unattributed)}",
+            f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+            f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+            f'attributor = "{PHASE332_RUNG_ATTRIBUTORS[PHASE332_ODDS_RUNG].__name__}"',
+        ]
+    )
+    if not ran:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the rung is '
+            'recorded as declared-but-not-run rather than as a rung that ran"'
+        )
+    lines.extend(["", f"[rung.{PHASE332_ODDS_RUNG}.moved_seasons]"])
+    for column, seasons in sorted(seasons_by_column.items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
