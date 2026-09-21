@@ -122,7 +122,8 @@ def canonical_snapshots(games: pd.DataFrame) -> pd.DataFrame:
     real = pd.DataFrame(rows)
     unplayed = games[games["home_score"].isna() | games["away_score"].isna()]
     frames = [real]
-    for (season, week), _group in unplayed.groupby(["season", "week"]):
+    weeks = pd.DataFrame(unplayed[["season", "week"]]).drop_duplicates()
+    for season, week in zip(weeks["season"], weeks["week"], strict=True):
         frames.append(
             builder.snapshot_upcoming_week(int(season), int(week), games=games)
         )

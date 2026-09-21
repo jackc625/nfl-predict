@@ -38,6 +38,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pandas as pd
 import pytest
@@ -208,9 +209,9 @@ class TestThePositiveControl:
         moved (in memory) to end one minute before the target's lock. If the replay ignored
         results, or selected them by anything but the lock, the target would not move.
         """
-        season_2025 = games[
-            (games["season"] == 2025) & games["home_score"].notna()
-        ].sort_values(["kickoff_et", "game_id"])
+        season_2025 = cast(
+            pd.DataFrame, games[(games["season"] == 2025) & games["home_score"].notna()]
+        ).sort_values(by=["kickoff_et", "game_id"])
         target = season_2025[season_2025["week"] == 10].iloc[0]
         team = str(target["home_team"])
         later = season_2025[
@@ -273,11 +274,11 @@ class TestTheMissingProvisionalRow:
         self, games: pd.DataFrame, snapshots: pd.DataFrame, as_of: datetime
     ) -> None:
         """Item 7: a locked 2026 game without an Elo row is reported by name, never skipped."""
-        provisional = snapshots[snapshots["is_provisional"]]
+        provisional = cast(pd.DataFrame, snapshots[snapshots["is_provisional"]])
         dropped = str(provisional["game_id"].iloc[0])
         lock = game_lock(games.loc[games["game_id"] == dropped, "kickoff_et"].iloc[0])
         judged_at = max(as_of, lock)
-        thinned = snapshots[snapshots["game_id"] != dropped]
+        thinned = cast(pd.DataFrame, snapshots[snapshots["game_id"] != dropped])
 
         result = replay(SEASONS, 4.0, games, thinned, as_of=judged_at)
 
