@@ -33,6 +33,7 @@ from pipeline.staleness import StalenessGate
 from pipeline.steps import (
     TRANSIENT_EXCEPTIONS,
     PipelinePhase,
+    RunStatus,
     StepDefinition,
     StepResult,
     StepStatus,
@@ -239,7 +240,7 @@ class FridayPipeline:
                 staleness_result.warnings, self.season, self.week
             )
         if not staleness_result.passed:
-            self._log.status = "failed"
+            self._log.status = RunStatus.FAILED.value
             self._log.error = (
                 f"Pre-flight staleness checks failed: "
                 f"{'; '.join(staleness_result.errors)}"
@@ -260,7 +261,7 @@ class FridayPipeline:
                 )
                 self._log.warnings.append("Pre-flight health: unhealthy (forced)")
             else:
-                self._log.status = "failed"
+                self._log.status = RunStatus.FAILED.value
                 self._log.error = "Pre-flight health check failed"
                 self._finalize_log()
                 self.alert_manager.alert_pipeline_failure(
@@ -302,7 +303,7 @@ class FridayPipeline:
 
             if result.status == StepStatus.FAILED:
                 if step.critical:
-                    self._log.status = "failed"
+                    self._log.status = RunStatus.FAILED.value
                     self._log.error = result.error
                     self._finalize_log()
                     # Exactly ONE alert: failure
@@ -334,11 +335,20 @@ class FridayPipeline:
                     f"Non-critical step '{step.name}' failed: {result.error}"
                 )
 
-        # Final step status
-        if has_non_critical_failure:
+        # Final run status -- a THREE-way decision after the critical-failure path above
+        # (which has already set RunStatus.FAILED and raised). Plan 33.2-03, D33.2-05.
+        #
+        # FINISHED_WITH_SKIPS WINS OVER DEGRADED, and nothing is lost by the precedence. A
+        # dropped game is the fact the operator must act on: a game they expected to see has
+        # no prediction and no bet. A non-critical step failure is still recorded in
+        # ``warnings`` either way (above), so a run that did both says both -- the status
+        # names the one that changes what was published.
+        if self._log.skipped_games:
+            self._log.status = RunStatus.FINISHED_WITH_SKIPS.value
+        elif has_non_critical_failure:
             self._log.status = "degraded"
         else:
-            self._log.status = "success"
+            self._log.status = RunStatus.SUCCESS.value
 
         # ---------------------------------------------------------------
         # Phase D: Post-run health check (comprehensive, advisory only)
@@ -358,7 +368,7 @@ class FridayPipeline:
         failed_steps = [
             s.name for s in self._log.steps if s.status == StepStatus.FAILED.value
         ]
-        if self._log.status == "failed":
+        if self._log.status == RunStatus.FAILED.value:
             # Already alerted above during critical failure, but this branch
             # handles the theoretical case of a non-raise failure path.
             self.alert_manager.alert_pipeline_failure(
@@ -370,7 +380,20 @@ class FridayPipeline:
                 self.season,
                 self.week,
             )
+        elif self._log.status == RunStatus.FINISHED_WITH_SKIPS.value:
+            # ITS OWN BRANCH, and it must precede the terminal else (T-33.2-03-05). Falling
+            # into that else would alert a CLEAN SUCCESS for a run that left games out.
+            self.alert_manager.alert_finished_with_skips(
+                list(self._log.skipped_games),
+                len(
+                    [s for s in self._log.steps if s.status == StepStatus.SUCCESS.value]
+                ),
+                self.season,
+                self.week,
+            )
         elif self._log.status == "degraded":
+            # Audited (Plan 33.2-03): unchanged. "degraded" is not a RunStatus member and is
+            # only reachable when no game was skipped -- the skip branch above takes precedence.
             self.alert_manager.alert_degraded_completion(
                 failed_steps,
                 len(

@@ -38,6 +38,11 @@ router = APIRouter(tags=["health"])
 # Absolute path to pipeline execution log (per D-18)
 PIPELINE_LOG_PATH = Path("logs/friday_pipeline.json").resolve()
 
+# The run status a live run ends in when it DROPPED games for a post-lock input (D33.2-05,
+# Plan 33.2-03). The wire value of ``pipeline.steps.RunStatus.FINISHED_WITH_SKIPS``, spelled here
+# as a literal because this layer stays stdlib-only (UIAP-01); a test asserts the two agree.
+PIPELINE_STATUS_FINISHED_WITH_SKIPS = "finished_with_skips"
+
 # Silver layer data file paths
 SILVER_GAMES_PATH = Path("data/silver/games.parquet").resolve()
 SILVER_ODDS_PATH = Path("data/silver/odds_snapshot.parquet").resolve()
@@ -309,6 +314,7 @@ async def health_check(request: Request) -> HealthResponse:
       - Not all models exist
     Priority 2: degraded conditions
       - Pipeline last_run_status == "degraded"
+      - Pipeline last_run_status == "finished_with_skips"
       - Corrupt pipeline log
       - Stale pipeline log (>7 days old)
       - Not cache_ready
@@ -340,8 +346,16 @@ async def health_check(request: Request) -> HealthResponse:
         pipeline is not None and pipeline.last_run_status == "failed"
     ) or not model_status.all_models_exist
     # Priority 2: degraded conditions
+    # A run that FINISHED WITH SKIPS is DEGRADED here, decided explicitly (Plan 33.2-03 audit):
+    # it completed, so it is not unhealthy, but at least one game the owner expected has no
+    # prediction and no bet. Reporting it "ok" would repeat, on this endpoint, the clean-success
+    # misreport the orchestrator's own alert branch exists to prevent (T-33.2-03-05).
     has_degraded = (
         (pipeline is not None and pipeline.last_run_status == "degraded")
+        or (
+            pipeline is not None
+            and pipeline.last_run_status == PIPELINE_STATUS_FINISHED_WITH_SKIPS
+        )
         or log_corrupt
         or log_stale
         or not cache_ready

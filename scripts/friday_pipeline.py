@@ -127,6 +127,7 @@ def main() -> int:
 
     try:
         from pipeline.orchestrator import FridayPipeline
+        from pipeline.steps import RunStatus
 
         pipeline = FridayPipeline(force=args.force, mode=mode)
 
@@ -140,7 +141,21 @@ def main() -> int:
 
         log = pipeline.run()
 
-        if log.status in ("success", "degraded"):
+        # THE COMPLETED-RUN SET. A run that FINISHED WITH SKIPS completed: every clean game was
+        # predicted and the dropped ones are recorded durably (config/skip_records.jsonl), which
+        # is exactly the outcome D33.2-05's live half defines as correct -- so it exits 0, and
+        # the scheduled task does not report a failure for it. It is NOT reported in the words of
+        # a clean run: its own line names the games it left out.
+        if log.status == RunStatus.FINISHED_WITH_SKIPS.value:
+            logger.warning(
+                "Pipeline finished with skipped games",
+                status=log.status,
+                skipped_games=list(log.skipped_games),
+                duration_ms=round(log.total_duration_ms, 1),
+            )
+            return 0
+
+        if log.status in (RunStatus.SUCCESS.value, "degraded"):
             logger.info(
                 "Pipeline finished",
                 status=log.status,

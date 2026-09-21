@@ -1,4 +1,4 @@
-"""Pipeline-specific alert manager with four non-overlapping alert methods.
+"""Pipeline-specific alert manager with five non-overlapping alert methods.
 
 Wraps the existing utils.alert_manager.AlertManager with pipeline-specific
 convenience methods. Each method maps to exactly ONE event type to prevent
@@ -9,6 +9,12 @@ Alert routing:
 - Success     -> alert_pipeline_success (INFO)
 - Staleness   -> alert_staleness_warning (WARNING, pre-flight only)
 - Degraded    -> alert_degraded_completion (WARNING, replaces success for degraded)
+- Skipped     -> alert_finished_with_skips (WARNING, replaces success when the run completed
+                 but dropped games for post-lock inputs; D33.2-05, Plan 33.2-03)
+
+The fifth method is a BRANCH on this existing log-only manager, not a new channel. It adds no
+email, webhook or push call; Phase 35 owns notifications and reads the durable skip record
+(config/skip_records.jsonl) rather than this alert.
 
 Alerts default to log-only (console channel). Email/Slack channels are only used
 if configured in .env. This is already handled by the existing AlertManager's
@@ -26,13 +32,14 @@ logger = get_logger(__name__)
 
 
 class PipelineAlertManager:
-    """Pipeline-specific alert wrapper with four non-overlapping methods.
+    """Pipeline-specific alert wrapper with five non-overlapping methods.
 
     The orchestrator calls exactly one alert method per pipeline outcome:
     - Failure -> alert_pipeline_failure (only)
     - Success -> alert_pipeline_success (only)
     - Staleness warnings -> alert_staleness_warning (only, before run starts)
     - Degraded completion -> alert_degraded_completion (only)
+    - Finished with skips -> alert_finished_with_skips (only)
     """
 
     def __init__(self) -> None:
@@ -163,6 +170,44 @@ class PipelineAlertManager:
             details={
                 "failed_steps": failed_steps,
                 "completed_steps": completed_steps,
+            },
+            source="friday_pipeline",
+        )
+        self._am.send_alert(alert)
+
+    def alert_finished_with_skips(
+        self,
+        skipped_games: list[str],
+        completed_steps: int,
+        season: int,
+        week: int,
+    ) -> None:
+        """Alert for a run that completed but DROPPED games. Creates a WARNING alert.
+
+        Called when the live-skip rule (D33.2-05) left at least one game out because an input
+        post-dated its lock. Replaces ``alert_pipeline_success`` for such a run: reporting it
+        as a clean success would tell the owner a game was predicted when it was not
+        (T-33.2-03-05). Modelled on :meth:`alert_degraded_completion`, and like it, log-only
+        by default -- the durable record of each skip is ``config/skip_records.jsonl``.
+
+        Args:
+            skipped_games: The game ids the run dropped.
+            completed_steps: Number of steps that completed successfully.
+            season: NFL season year.
+            week: NFL week number.
+        """
+        alert = self._am.create_alert(
+            level=AlertLevel.WARNING,
+            alert_type=AlertType.SYSTEM_HEALTH,
+            title="Pipeline Completed with Skipped Games",
+            message=(
+                f"S{season}W{week}: {len(skipped_games)} game(s) left out for a post-lock "
+                f"input: {', '.join(skipped_games)}. Clean games were predicted."
+            ),
+            details={
+                "skipped_games": skipped_games,
+                "completed_steps": completed_steps,
+                "skip_record": "config/skip_records.jsonl",
             },
             source="friday_pipeline",
         )

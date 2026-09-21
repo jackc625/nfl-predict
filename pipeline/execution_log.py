@@ -29,7 +29,12 @@ class ExecutionLog(BaseModel):
     needed for monitoring and debugging.
     """
 
-    status: str  # "running", "success", "failed", "degraded"
+    # "running" while in flight; then one terminal value: "success", "failed",
+    # "finished_with_skips" (pipeline.steps.RunStatus -- the run completed and dropped at
+    # least one game for a post-lock input, D33.2-05), or "degraded" (a non-critical step
+    # failed). The RunStatus members' VALUES are these strings, so the enum and the log
+    # share one vocabulary.
+    status: str
     start_time: str  # ISO format
     end_time: str | None = None
     season: int
@@ -41,6 +46,11 @@ class ExecutionLog(BaseModel):
     steps: list[StepLogEntry] = []
     warnings: list[str] = []
     error: str | None = None
+    # WHICH games this run dropped under the live-skip rule (D33.2-05), sorted. This file is
+    # OVERWRITTEN by every run, so it is the cross-reference, not the record: the durable,
+    # append-only record is config/skip_records.jsonl (pipeline/skip_log.py), and this field
+    # is what lets an operator reading one file find the other.
+    skipped_games: list[str] = []
 
 
 def write_execution_log_atomic(log: ExecutionLog, path: Path) -> None:

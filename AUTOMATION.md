@@ -91,12 +91,16 @@ flow:
   mode, run in order. The log is written atomically after each step (incremental
   snapshot). A **critical** step failure sets `status="failed"`, fires
   `alert_pipeline_failure` (CRITICAL) and raises immediately. A **non-critical** step
-  failure appends a warning and continues; the run ends `degraded`.
+  failure appends a warning and continues; the run ends `degraded`. A **per-game
+  information-time refusal** on a live run (Plan 33.2-03, D33.2-05) is neither: the caught
+  games are dropped, recorded in the append-only `config/skip_records.jsonl`, and the step
+  is re-run on the rest; the run ends `finished_with_skips` (it wins over `degraded`).
 - **D. Post-run health check** (6 checks; ADVISORY ONLY): never changes `status` or the
   exit code. An `unhealthy` post-run result only appends `"Post-run health check:
   unhealthy"` to warnings.
 - **E. Completion alerting** (exactly ONE alert per outcome): `failed` ->
-  `alert_pipeline_failure` (CRITICAL); `degraded` -> `alert_degraded_completion`
+  `alert_pipeline_failure` (CRITICAL); `finished_with_skips` ->
+  `alert_finished_with_skips` (WARNING); `degraded` -> `alert_degraded_completion`
   (WARNING); `success` -> `alert_pipeline_success` (INFO).
 
 ### Offseason no-op short-circuit (D-06)
@@ -249,6 +253,7 @@ durable AUTO-01 test added in Plan 21-04).
 |---------|--------------|----------------------|-----------|------------------|
 | success | `success` | `alert_pipeline_success` (INFO) | 0 | present |
 | degraded | `degraded` | `alert_degraded_completion` (WARNING) | 0 | present (a non-critical step failed) |
+| finished with skips | `finished_with_skips` | `alert_finished_with_skips` (WARNING) | 0 | present, with NO row for each dropped game (`skipped_games` in the log; the durable record is `config/skip_records.jsonl`) |
 | failed | `failed` | `alert_pipeline_failure` (CRITICAL) | 1 | may be absent |
 
 Stated plainly:
@@ -286,9 +291,9 @@ no email or Slack message would be sent. The D-05 verification (empirical, read-
 recorded in Section 9; the alert-wiring gap is captured (NOT fixed) in Section 10 with the
 3-part remedy.
 
-The orchestrator's four alert methods (`pipeline/alert.py`) each map to exactly ONE event
+The orchestrator's five alert methods (`pipeline/alert.py`) each map to exactly ONE event
 and level: failure -> CRITICAL, success -> INFO, staleness -> WARNING, degraded ->
-WARNING. They wrap `utils.alert_manager.AlertManager`, whose `send_alert` is supposed to
+WARNING, finished with skips -> WARNING. They wrap `utils.alert_manager.AlertManager`, whose `send_alert` is supposed to
 route each alert to the channels configured for its severity, gated on the enable flags.
 
 ### Why email/Slack are inert (the verified root cause)

@@ -36,6 +36,31 @@ class StepStatus(Enum):
     RETRIED = "retried"
 
 
+class RunStatus(Enum):
+    """The TERMINAL outcome of a whole pipeline RUN (Plan 33.2-03, SPEC R3, D33.2-05).
+
+    A RUN-LEVEL vocabulary, deliberately separate from :class:`StepStatus`, which is per-STEP.
+    ``StepStatus.SKIPPED`` is NOT overloaded to mean "the run dropped games": one symbol with two
+    subjects -- a step that did not run, and a run that ran and left some games out -- would make
+    every reader of the log guess which one was meant.
+
+    ``FINISHED_WITH_SKIPS`` is the live half of D33.2-05: the run COMPLETED, and at least one game
+    was left out because an input post-dated its lock. It is neither a success (a game the owner
+    expected has no prediction) nor a failure (every clean game was predicted, which is the
+    outcome the rule exists to protect). It is its own alert and its own log line.
+
+    THE VALUES ARE THE WIRE STRINGS. ``ExecutionLog.status`` is a bare ``str`` in
+    ``logs/friday_pipeline.json``, and it carries ``RunStatus.<member>.value`` -- one vocabulary
+    with two representations, never two vocabularies that agree today. The two non-terminal or
+    legacy strings the log also carries (``"running"``, ``"degraded"``) are not terminal RUN
+    verdicts introduced here and are documented beside ``ExecutionLog.status``.
+    """
+
+    SUCCESS = "success"
+    FAILED = "failed"
+    FINISHED_WITH_SKIPS = "finished_with_skips"
+
+
 @dataclass
 class StepDefinition:
     """Definition for a single pipeline step.

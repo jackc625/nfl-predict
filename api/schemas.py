@@ -91,7 +91,10 @@ class PipelineStatusResponse(BaseModel):
 
     last_run_status: str | None = Field(
         default=None,
-        description="Last pipeline run status: success, failed, degraded, or None",
+        description=(
+            "Last pipeline run status: success, failed, degraded, finished_with_skips, "
+            "or None"
+        ),
     )
     last_run_time: datetime | None = Field(
         default=None, description="Last pipeline run start time"

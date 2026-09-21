@@ -43,7 +43,7 @@ import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -190,7 +190,7 @@ def history_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[HistoryRun
         planted_game = str(
             games.loc[games["week"] >= 2, "game_id"].sort_values().iloc[0]
         )
-        planted_lock = pd.Timestamp(locks[planted_game])
+        planted_lock = pd.Timestamp(cast(Any, locks[planted_game]))
 
         gold_before = content_digest_tree(sandbox / "gold")
         planted_error, writes_when_refused = _run_history_cli(
@@ -301,6 +301,15 @@ class TestTheRunStatusVocabulary:
         # the string "success" must not be taken for it.
         assert skipped.value != "success"
         assert skipped.value == "finished_with_skips"
+
+    def test_the_health_endpoint_spells_the_same_wire_value(self) -> None:
+        """api/ stays stdlib-only, so it spells the value; the spelling must not drift."""
+        from api.routes import health
+
+        assert (
+            RunStatus.FINISHED_WITH_SKIPS.value
+            == health.PIPELINE_STATUS_FINISHED_WITH_SKIPS
+        )
 
 
 class TestTheExecutionLogCarriesTheSkippedGames:
