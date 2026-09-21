@@ -87,6 +87,12 @@ NO_PREFIX_NUMBERS_REASONS: dict[str, str] = {
         "A sealed pre-registration. SPEC R14 forbids editing it in place; Plan 33.2-26 supersedes "
         "it by a later corrective commit that names its anchor instead."
     ),
+    "MOS-DECODE-COMPARISON.md": (
+        "Plan 33.2-11's decode check of the archived day-before forecast bulletins against the "
+        "on-disk observations, written under the day-before lock. Its figures are detection "
+        "bounds on data decoding, not a model accuracy or betting result, and it rests on no "
+        "pre-fix model."
+    ),
     "PIPELINE.md": (
         "Canonical run-sequence instructions (commands, entry points, expected outputs). It "
         "reports no model or betting result."

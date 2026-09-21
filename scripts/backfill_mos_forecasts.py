@@ -83,6 +83,7 @@ from tenacity import (
     wait_exponential,
 )
 
+import utils.game_lock as lock_rule
 from config.mos_stations import (
     COVERED_ROOF_TYPES,
     UNCOVERABLE_NON_US_STADIUM_IDS,
@@ -104,7 +105,6 @@ from scripts.mos_decode import (
     run_instant,
 )
 from utils import DataIngestionError
-from utils.game_lock import game_lock
 
 __all__ = [
     "CORPUS_FIRST_SEASON",
@@ -349,7 +349,9 @@ def load_corpus(
                 stadium_id=stadium_id,
                 station=station_for_venue(stadium_id),
                 kickoff_utc=kickoff,
-                lock_date=game_lock(row["kickoff_et"], game_id=game_id).date(),
+                lock_date=lock_rule.game_lock(
+                    row["kickoff_et"], game_id=game_id
+                ).date(),
             )
         )
     return covered, uncoverable
