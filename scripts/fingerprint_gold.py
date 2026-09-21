@@ -3658,6 +3658,231 @@ PHASE332_RUNG_ATTRIBUTORS: dict[int, Callable[..., bool]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# p332_ RUNG 2 -- THE 2025 INTERNATIONAL VENUES (Plan 33.2-09 Task 3, SPEC R8 venue half).
+#
+# Registered per Plan 33.2-08's <owned_protocol_rung_registration>: three names, one
+# incremental cause line, one entry in each dispatch table, and NO new `if prefix ==`
+# branch -- the `p332_` branch at each dispatch site reads the tables. Without the table
+# entries the registered prefix would fall through to Phase 30's `_attribute_rung2`,
+# which still prints a verdict.
+#
+# DECLARED BEFORE THE REBUILD RAN. The explainable set is DERIVED from source rather than
+# listed by hand (see `phase332_stadium_dependent_columns`): the contextual builder is the
+# only gold builder that reads `stadium_id`, and the columns that are a function of it are
+# found by running that builder over one synthetic game placed at every venue in
+# data/venues.json and keeping the columns whose value differs between venues.
+#
+# WEATHER IS NOT IN THE SET, AND THAT IS THE PREDICTION. Gold's weather columns are read
+# from silver `weather_features` by game_id; the gold build never reads `stadium_id` for
+# them, and this rung changes no silver weather row. So the weather family must NOT move
+# here. The seven games' silver weather rows still describe the US stadiums the feed
+# named (the Sao Paulo and Berlin games are marked indoor and carry no weather at all);
+# that is replaced at rung 4 by the day-before forecast backfill, which reads the
+# corrected `stadium_id` -- and keeping the two causes apart is why this rung runs first.
+# ---------------------------------------------------------------------------
+
+PHASE332_VENUE_RUNG: int = 2
+
+PHASE332_VENUE_CORRECTION_RECORD: Path = Path(
+    "config/international_venue_corrections.toml"
+)
+
+# The one season the correction touches. Gold normalization is expanding within a
+# season and bootstraps from the prior season only, and 2025 is the last season a
+# ladder rung builds (--through-season 2025), so a 2025 venue change can reach no other
+# season.
+PHASE332_VENUE_CORRECTED_SEASON: int = 2025
+
+PHASE332_VENUE_RUNG_CAUSE: str = (
+    "THE 2025 INTERNATIONAL VENUE CORRECTION of Plan 33.2-09 (SPEC R8 venue half), and "
+    "NOTHING else: the seven 2025 games played outside the United States "
+    "(2025_W01_KC@LAC, 2025_W04_MIN@PIT, 2025_W05_MIN@CLE, 2025_W06_DEN@NYJ, "
+    "2025_W07_LA@JAX, 2025_W10_ATL@IND, 2025_W11_WAS@MIA), which silver games recorded "
+    "at the US home team's own stadium, corrected in silver to the venue each was played "
+    "at (Sao Paulo, Dublin, London x3, Berlin, Madrid) against the cited record "
+    "config/international_venue_corrections.toml -- stadium_id, venue and venue_roof "
+    "moved together, neutral_site unchanged -- plus the two venue records that "
+    "correction needed, Croke Park (DUB00) and the Olympiastadion (BER00), added to "
+    "data/venues.json. Only the stadium-dependent contextual columns can move, only in "
+    "season 2025. No column is added, none removed, no row moves"
+)
+
+_PHASE332_STADIUM_DEPENDENT_CACHE: tuple[str, ...] | None = None
+
+
+def _derive_phase332_stadium_dependent_columns() -> tuple[str, ...]:
+    """The gold columns that are a FUNCTION OF ``stadium_id``, found by running the builder.
+
+    One synthetic game -- fixed teams, fixed kickoff -- is placed at EVERY venue in
+    ``data/venues.json`` and built in one frame. A column whose value differs between two
+    of those rows can only differ because the venue did, so it reads ``stadium_id``; a
+    column constant across all of them does not. Deriving rather than listing is the
+    Phase-33.1 precedent (``_derive_phase331_venue_family``): a hand list and the code
+    that does the work drift apart.
+    """
+    from features.contextual import ContextualFeaturesCalculator
+
+    calculator = ContextualFeaturesCalculator()
+    venues = [v for v in calculator.venues_data["venues"] if v.get("stadium_id")]
+    home_team, away_team = "KC", "BUF"
+    probe = pd.DataFrame(
+        [
+            {
+                "game_id": f"2024_W01_PROBE_{venue['stadium_id']}",
+                "season": 2024,
+                "week": 1,
+                "home_team": home_team,
+                "away_team": away_team,
+                "kickoff_et": pd.Timestamp(
+                    "2024-09-08 13:00:00", tz="America/New_York"
+                ),
+                "stadium_id": venue["stadium_id"],
+                "home_score": 0.0,
+                "away_score": 0.0,
+            }
+            for venue in venues
+        ]
+    )
+    emitted = calculator.build_features(probe, datetime(2024, 9, 9, tzinfo=UTC))
+    merge_keys = set(PHASE331_CONTEXTUAL_MERGE_KEYS)
+    dependent = tuple(
+        sorted(
+            column
+            for column in emitted.columns
+            if column not in merge_keys and emitted[column].nunique(dropna=False) > 1
+        )
+    )
+    if not dependent:
+        msg = (
+            "no contextual column varied across the venue probe, so the stadium-dependent "
+            "set would be empty and p332_ rung 2 would refuse every move it exists to "
+            "attribute. Refusing to derive an empty set."
+        )
+        raise ValueError(msg)
+    return dependent
+
+
+def phase332_stadium_dependent_columns() -> tuple[str, ...]:
+    """The derived stadium-dependent set, computed once per process."""
+    global _PHASE332_STADIUM_DEPENDENT_CACHE
+    if _PHASE332_STADIUM_DEPENDENT_CACHE is None:
+        _PHASE332_STADIUM_DEPENDENT_CACHE = _derive_phase332_stadium_dependent_columns()
+    return _PHASE332_STADIUM_DEPENDENT_CACHE
+
+
+PHASE332_VENUE_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_VENUE_RUNG,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_VENUE_RUNG_CAUSE,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to the STADIUM-DEPENDENT columns -- derived by "
+        "phase332_stadium_dependent_columns(), which places one synthetic game at every "
+        "venue in data/venues.json, runs features.contextual.ContextualFeaturesCalculator."
+        "build_features, and keeps each emitted column whose value differs between venues "
+        "-- and each only in season 2025 and in no other season"
+    ),
+    "rows_changed": (
+        "before normalization only the seven corrected games can differ; after it, a "
+        "stadium-dependent column that expanding_normalize rescales can also move on OTHER "
+        "2025 rows, because the within-season expanding mean and standard deviation for "
+        "2025 then include a corrected game (the earliest is week 1, so any 2025 row may "
+        "move in such a column). A column normalization leaves at its level (the discrete "
+        "indicators) can move on the seven games only. Measured row by row at run time "
+        "against a copy of the before-gold, never inferred from the per-season digests"
+    ),
+    "weather": (
+        "NOT expected to move: gold weather is read from silver weather_features by "
+        "game_id and this rung changes no silver weather row. The seven games' weather is "
+        "replaced at rung 4 (day-before forecasts), which reads the corrected stadium_id"
+    ),
+    "declared_families": ("stadium_dependent",),
+    "family_mechanisms": {
+        "stadium_dependent": (
+            "source-derived: the contextual builder's emitted columns that vary across "
+            "one probe game placed at every venue in data/venues.json"
+        ),
+    },
+    "declared_before_the_rebuild": True,
+}
+
+RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX][PHASE332_VENUE_RUNG] = (
+    PHASE332_VENUE_RUNG_CAUSE
+)
+
+# THE BASELINE WAS CONFIRMED, NOT ASSUMED (owner ruling 2026-09-21, "retake a stale
+# baseline, never widen a rung's cause"). Rung 2 registers NO retaken baseline because the
+# check below found nothing to retake: it is judged against its ladder predecessor.
+PHASE332_VENUE_RUNG_BASELINE_CONFIRMATION_DOCUMENT: str = (
+    f"{PHASE332_RUNG_PREFIX}rung2_baseline_confirm.json"
+)
+
+PHASE332_VENUE_RUNG_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-21 before rung 2 ran. Gold was rebuilt with `scripts/build_features.py "
+    "--through-season 2025` in a SCRATCH data root (DATA_ROOT_PATH and DUCKDB_PATH pointed at "
+    "a copy of today's production data/) from today's inputs minus exactly rung 2's cause -- "
+    "the silver games repair not yet applied and data/venues.json still at 60 records -- and "
+    "its fingerprint equals p332_rung1.json on EVERY non-clock column of all three matrices "
+    "(only feature_timestamp, the build clock, differs). The production data/ tree was "
+    "digest-identical (463 files) before and after that build, and to the digest taken just "
+    "after rung 1's rebuild. So nothing moved between rungs 1 and 2: no carry-in, no retake"
+)
+
+
+def _attribute_p332_venue(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Rung 2 of the `p332_` ladder: the 2025 international venue correction's OWN judge.
+
+    A changed column is attributed ONLY when it is in the derived stadium-dependent set
+    AND the seasons it moved in are exactly {2025}. Anything else is UNATTRIBUTED and
+    fails; it is never absorbed and the cause is never widened to fit it.
+
+    NOT `_attribute_rung2`, deliberately: that is Phase 30's WR-06 judge, a blanket
+    attribution whose own comment records that it cannot fail on a moved column.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    verdict["changed_by_family"] = {"stadium_dependent": []}
+    blocking = _phase33_structure(
+        detail,
+        diff,
+        fail,
+        "p332_ rung 2 (the 2025 international venues)",
+        "Moving seven 2025 games to the venues they were played at",
+    )
+    dependent = {_canonical(column) for column in phase332_stadium_dependent_columns()}
+    corrected = {str(PHASE332_VENUE_CORRECTED_SEASON)}
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        if column in dependent and set(seasons) == corrected:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["stadium_dependent"].append(column)
+            continue
+        verdict["unattributed"].append(column)
+        why = (
+            f"it moved in season(s) other than {PHASE332_VENUE_CORRECTED_SEASON}, which a "
+            "2025 venue correction cannot reach"
+            if column in dependent
+            else "it is not a stadium-dependent column (it does not vary with the venue "
+            "in the derived probe)"
+        )
+        fail(
+            f"column '{column}' moved at p332_ rung 2 in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The rung's ONE cause is the "
+            "2025 international venue correction; do NOT widen it to fit this diff"
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_RUNG_SIGNATURES[PHASE332_VENUE_RUNG] = PHASE332_VENUE_RUNG_EXPECTED_SIGNATURE
+PHASE332_RUNG_ATTRIBUTORS[PHASE332_VENUE_RUNG] = _attribute_p332_venue
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -4137,7 +4362,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder, rungs 0 and 1.
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0, 1 and 2).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -4149,7 +4374,8 @@ def write_phase332_rebuild_diff(
     A rung whose diff is EMPTY is recorded as declared-but-not-run (the Phase-33
     precip precedent), never as a rung that ran.
 
-    Later `p332_` rungs extend this writer with one entry each.
+    Later `p332_` rungs extend this writer with one entry each. Rung 2 (Plan 33.2-09) is
+    appended by ``_phase332_venue_rung_lines`` when its document exists.
 
     Args:
         out_path: Where to write the TOML. Refused if it points under ``data/``.
@@ -4296,9 +4522,94 @@ def write_phase332_rebuild_diff(
     for column, seasons in sorted(seasons_by_column.items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
 
+    venue_document = rung_document_path(
+        fingerprint_dir, PHASE332_VENUE_RUNG, PHASE332_RUNG_PREFIX
+    )
+    if venue_document.exists():
+        lines.extend(_phase332_venue_rung_lines(fingerprint_dir))
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out_path
+
+
+def _phase332_moved_seasons(report: dict) -> dict[str, list[str]]:
+    """Non-clock column -> the seasons it moved in, unioned over the three matrices."""
+    seasons_by_column: dict[str, list[str]] = {}
+    for matrix in GOLD_MATRICES:
+        for column, seasons in report[matrix]["columns_changed"].items():
+            if not _is_build_clock(column):
+                merged = set(seasons_by_column.get(column, [])) | set(seasons)
+                seasons_by_column[column] = sorted(merged)
+    return seasons_by_column
+
+
+def _phase332_venue_rung_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` rung 2 (Plan 33.2-09), recomputed from the ladder.
+
+    Judged by the same `attribute_rung` call the CLI makes, against the rung's baseline
+    document (its ladder predecessor: PHASE332_VENUE_RUNG_BASELINE_CONFIRMATION records
+    why no retake was needed).
+    """
+    require_rung_ladder(fingerprint_dir, PHASE332_VENUE_RUNG + 1, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(
+        fingerprint_dir, PHASE332_VENUE_RUNG
+    )
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(
+            fingerprint_dir, PHASE332_VENUE_RUNG, PHASE332_RUNG_PREFIX
+        ).read_text(encoding="utf-8")
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report,
+        PHASE332_VENUE_RUNG,
+        before=before,
+        after=after,
+        rung_prefix=PHASE332_RUNG_PREFIX,
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    signature = PHASE332_VENUE_RUNG_EXPECTED_SIGNATURE
+    rung = PHASE332_VENUE_RUNG
+    lines = [
+        "",
+        f"[rung.{rung}]",
+        f"rung = {rung}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        f'baseline_confirmation = "{_toml_escape(PHASE332_VENUE_RUNG_BASELINE_CONFIRMATION)}"',
+        "baseline_confirmation_document = "
+        f'"{PHASE332_VENUE_RUNG_BASELINE_CONFIRMATION_DOCUMENT}"',
+        f'cause = "{_toml_escape(PHASE332_VENUE_RUNG_CAUSE)}"',
+        f'correction_record = "{PHASE332_VENUE_CORRECTION_RECORD.as_posix()}"',
+        "declared_columns = "
+        f"{_toml_array(sorted(phase332_stadium_dependent_columns()))}",
+        f"declared_seasons = {_toml_array([str(PHASE332_VENUE_CORRECTED_SEASON)])}",
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        f'weather = "{_toml_escape(str(signature["weather"]))}"',
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_RUNG_ATTRIBUTORS[rung].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the rung is '
+            'recorded as declared-but-not-run rather than as a rung that ran"'
+        )
+    lines.extend(["", f"[rung.{rung}.moved_seasons]"])
+    for column, seasons in sorted(_phase332_moved_seasons(report).items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
 
 
 def _print_attribution(verdict: dict) -> None:

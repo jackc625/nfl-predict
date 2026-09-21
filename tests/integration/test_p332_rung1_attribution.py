@@ -142,13 +142,17 @@ class TestTheRungIsDispatchedNotMerelyRegistered:
         assert "snapshot_spread" in verdict["matrices"]["features_wp"]["unattributed"]
 
     def test_an_unregistered_rung_is_refused_by_name_at_both_tables(self) -> None:
+        # The first rung number NOBODY has registered yet. It was a literal 2 until Plan
+        # 33.2-09 registered rung 2; deriving it keeps this control meaningful as the
+        # ladder grows.
+        unregistered = max(fg.PHASE332_RUNG_SIGNATURES) + 1
         with pytest.raises(ValueError, match="PHASE332_RUNG_SIGNATURES"):
             fg._phase332_table_entry(
-                fg.PHASE332_RUNG_SIGNATURES, 2, "PHASE332_RUNG_SIGNATURES"
+                fg.PHASE332_RUNG_SIGNATURES, unregistered, "PHASE332_RUNG_SIGNATURES"
             )
         with pytest.raises(ValueError, match="PHASE332_RUNG_ATTRIBUTORS"):
             fg._attribute_one_matrix(
-                2,
+                unregistered,
                 _matrix({}),
                 {},
                 {},
@@ -160,10 +164,17 @@ class TestTheRungIsDispatchedNotMerelyRegistered:
         with pytest.raises(ValueError, match="Unknown rung prefix"):
             fg._rung_causes("p999_")
 
-    def test_only_rung_one_is_declared(self) -> None:
-        assert sorted(fg.RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX]) == [1]
-        assert sorted(fg.PHASE332_RUNG_SIGNATURES) == [1]
-        assert sorted(fg.PHASE332_RUNG_ATTRIBUTORS) == [1]
+    def test_the_three_tables_register_the_same_rungs(self) -> None:
+        """Was `test_only_rung_one_is_declared`; Plan 33.2-09 registered rung 2.
+
+        What must hold as the ladder grows is that no rung is half-registered: the cause
+        table and BOTH dispatch tables carry exactly the same rung numbers, and rung 1 is
+        one of them.
+        """
+        causes = sorted(fg.RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX])
+        assert causes == sorted(fg.PHASE332_RUNG_SIGNATURES)
+        assert causes == sorted(fg.PHASE332_RUNG_ATTRIBUTORS)
+        assert PHASE332_ODDS_RUNG in causes
 
 
 class TestTheRunTimeDisclosedChild:
@@ -220,6 +231,8 @@ class TestTheRetakenBaselineIsRegisteredAndRequired:
             phase332_baseline_document_path(tmp_path, PHASE332_ODDS_RUNG)
 
     def test_an_unregistered_rung_falls_back_to_its_predecessor(self, tmp_path) -> None:
+        # A rung with NO retaken baseline registered (rung 2 judges against rung 1).
+        assert 2 not in PHASE332_RETAKEN_BASELINES
         assert phase332_baseline_document_path(tmp_path, 2) == rung_document_path(
             tmp_path, 1, PHASE332_RUNG_PREFIX
         )
