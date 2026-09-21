@@ -14838,3 +14838,64 @@ PLAN_33_2_05_DELETION_MEASUREMENT: dict[str, int] = {
     "per_team_inversions_before": 30,
     "per_team_inversions_after": 0,
 }
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-08 Task 4 -- THE ODDS CORRECTION WITNESS AND p332_ RUNG 1 (D33.2-20, SPEC R12).
+#
+# APPENDED ONCE by Plan 33.2-08 on 2026-09-21, in ONE block, in a commit STRICTLY LATER than
+# the witnessed one (33.2-08-PLAN.md <owned_protocol_witness> W1-W5). Nothing above this line
+# was edited.
+#
+# THE WITNESS. config/odds_corrections.toml was committed exactly once, ALONE, in the commit
+# below, after both record shapes (13 [[correction]] entries and one [[family]] entry) were
+# final. The sha256 is over NEWLINE-NORMALIZED bytes (core.autocrlf is true, no
+# .gitattributes). tests/unit/test_odds_correction_ancestry.py asserts all four W6 parts.
+#
+# RUNG 1. Owner ruling 2026-09-21 ("retake a stale baseline, never widen a rung's cause"):
+# rung 1 is judged against p332_rung0_retaken.json -- gold rebuilt with
+# `scripts/build_features.py --through-season 2025` in a SCRATCH data root from today's inputs
+# with only the 12 corrected/nulled odds values put back -- not against the original
+# p332_rung0.json, which was gold last built 2026-09-14 and stale against Plan 33.2-05's
+# elo_game_snapshots re-sort. The original -> retaken difference is the MEASURED pre-ladder
+# carry-in below, caused by Plan 33.2-05 (commit bfe3b24), and is not part of rung 1.
+# target_ats was DISCLOSED AT RUN TIME (owner said yes), as the arithmetic child of the gold
+# snapshot_spread column. MEASURED 2026-09-21: attribution_ok true, zero unattributed, the
+# production data/ tree UNCHANGED across the scratch build (463 files).
+# ---------------------------------------------------------------------------
+
+P332_08_ODDS_CORRECTIONS_COMMIT: str = "df5f5a3cf52aa8d752c0c3d30a61b5d8c733f943"
+
+P332_08_ODDS_CORRECTIONS_FILE_SHA256: str = (
+    "87973047de238131e1d349abe689ca644e21a6235e7af86fed97b7d10327a0c1"
+)
+
+P332_08_ODDS_CORRECTIONS_MEASURED_AT: str = "2026-09-21T18:10:41Z"
+
+# sha256 of scripts.fingerprint_gold.PHASE332_ODDS_RUNG_CAUSE (UTF-8), declared in commit
+# b0e8300 before any rebuild ran and unchanged since.
+P332_08_RUNG1_CAUSE_DIGEST: str = (
+    "e9008ef8574698c630d0f5ee341053c36e86a606610fcd36cdf1557568150075"
+)
+
+# Non-clock columns rung 1 moved against the retaken baseline (feature_timestamp is the build
+# clock and moved as it does on every rebuild).
+P332_08_RUNG1_MOVED_COLUMNS: tuple[str, ...] = (
+    "snapshot_ml_prob_home_fair",
+    "snapshot_spread",
+    "target_ats",
+)
+
+P332_08_RUNG1_BASELINE_DOCUMENT: str = "p332_rung0_retaken.json"
+
+P332_08_RUNG1_DISCLOSED_AT_RUN_TIME: tuple[str, ...] = ("target_ats",)
+
+# The pre-ladder carry-in (original p332_rung0.json -> p332_rung0_retaken.json): exactly these
+# columns, in seasons 2002 and 2003 only, in all three matrices.
+P332_08_RUNG0_CARRY_IN_COLUMNS: tuple[str, ...] = (
+    "away_elo_percentile",
+    "away_elo_rank",
+    "home_elo_percentile",
+    "home_elo_rank",
+)
+
+P332_08_RUNG0_CARRY_IN_SEASONS: tuple[int, ...] = (2002, 2003)
