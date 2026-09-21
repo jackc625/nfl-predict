@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from pipeline import skip_log
 from pipeline.skip_log import (
     REQUIRED_ENTRY_KEYS,
     SKIP_REASONS,
@@ -34,8 +36,6 @@ from pipeline.skip_log import (
     read_skip_records,
     skip_records_for_run_date,
 )
-
-from pipeline import skip_log
 
 
 def _entry(**overrides: Any) -> dict[str, Any]:
