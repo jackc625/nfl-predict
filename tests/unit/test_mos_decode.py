@@ -219,6 +219,14 @@ class TestContentRefusals:
         assert kept == []
         assert missing == ["2002-09-07T12:00:00.000"]
 
+    def test_only_the_endpoints_own_no_results_404_confirms_an_absence(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, text='{"detail":"Not Found"}')
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        with pytest.raises(httpx.HTTPStatusError):
+            backfill.confirm_run(client, _segment(), "2002-09-07T12:00:00.000")
+
     def test_only_the_lock_date_12_utc_run_is_kept(self) -> None:
         rows = [_row(), _row(runtime="2002-09-07T18:00:00.000")]
         kept, missing = backfill.select_lock_runs(rows, _segment())
@@ -383,7 +391,13 @@ def _fake_archive(
                 tzinfo=UTC
             )
             key = run.strftime("%Y-%m-%dT%H:%M:%S.000")
-            data = [] if key in archive_lacks else _run_rows(station, model, run)
+            if key in archive_lacks:  # the real endpoint's answer, probed 2026-09-21
+                detail = (
+                    "Database query found no results for the provided station(s) , "
+                    "model, and runtime."
+                )
+                return httpx.Response(404, text=json.dumps({"detail": detail}))
+            data = _run_rows(station, model, run)
             return httpx.Response(200, text=json.dumps({"data": data}))
         if empty:
             return httpx.Response(200, text="[]")

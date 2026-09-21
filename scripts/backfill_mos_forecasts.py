@@ -119,7 +119,9 @@ __all__ = [
     "CoveredGame",
     "MosSegment",
     "UncoverableGame",
+    "absent_runs_in_bronze",
     "assert_mos_columns_survived",
+    "confirm_run",
     "load_bronze_run_records",
     "load_corpus",
     "plan_segments",
@@ -132,6 +134,9 @@ MOS_ENDPOINT_URL: str = "https://mesonet.agron.iastate.edu/cgi-bin/request/mos.p
 
 #: Endpoint B: single-run lookup. Used only to re-ask for a run endpoint A's response lacked.
 MOS_RUN_ENDPOINT_URL: str = "https://mesonet.agron.iastate.edu/api/1/mos.json"
+
+#: Endpoint B's answer for a run it holds nothing for: HTTP 404 with this detail (2026-09-21).
+RUN_ENDPOINT_NO_RESULTS_DETAIL: str = "Database query found no results"
 
 #: The bronze landing zone, RELATIVE to ``<data root>/bronze``. A subdirectory no other writer
 #: uses, so this backfill's files cannot collide with any existing bronze table.
@@ -501,9 +506,20 @@ def _get(
     params: Mapping[str, str] | Sequence[tuple[str, str]],
     url: str = MOS_ENDPOINT_URL,
 ) -> httpx.Response:
-    """One GET, retried on transport errors, 429 and 5xx -- never on content."""
+    """One GET, retried on transport errors, 429 and 5xx -- never on content.
+
+    The single-run endpoint answers a run it holds nothing for with HTTP 404 and the detail
+    :data:`RUN_ENDPOINT_NO_RESULTS_DETAIL` (probed 2026-09-21). That exact answer is returned,
+    not raised: it IS the confirmation that the run is absent. Any other 404 still raises.
+    """
     query = list(params) if isinstance(params, Sequence) else list(params.items())
     response = client.get(url, params=query)
+    if (
+        url == MOS_RUN_ENDPOINT_URL
+        and response.status_code == 404
+        and RUN_ENDPOINT_NO_RESULTS_DETAIL in response.text
+    ):
+        return response
     _raise_for_status(response)
     return response
 
@@ -571,6 +587,8 @@ def confirm_run(
         ("runtime", runtime_param),
     ]
     response = _get(client, params, MOS_RUN_ENDPOINT_URL)
+    if response.status_code == 404:  # the endpoint's own "no results" answer
+        return [], str(response.request.url)
     rows = [dict(r) for r in response.json().get("data", [])]
     wrong = sorted(
         {
