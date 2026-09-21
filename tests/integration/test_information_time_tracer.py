@@ -160,7 +160,7 @@ def _gold_digest(sandbox: Path) -> dict[str, str]:
 def _provenance_patch(
     original: Callable[..., pd.DataFrame],
     sink: list[pd.DataFrame],
-    move: tuple[str, pd.Timestamp] | None,
+    move: tuple[str, object] | None,
 ) -> Callable[..., pd.DataFrame]:
     """Wrap the REAL ``information_times``: record its output, optionally move ONE row.
 
@@ -186,7 +186,7 @@ def _provenance_patch(
 def _build(
     monkeypatch: pytest.MonkeyPatch,
     sink: list[pd.DataFrame],
-    move: tuple[str, pd.Timestamp] | None = None,
+    move: tuple[str, object] | None = None,
     *,
     save: bool,
 ) -> tuple[dict[str, pd.DataFrame], CoverageReport | None]:
