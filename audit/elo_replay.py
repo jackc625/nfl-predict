@@ -286,9 +286,9 @@ def duration_insensitivity_bound(games_df: pd.DataFrame) -> timedelta:
     by_team = pd.concat(sides, ignore_index=True).sort_values(["team", "kickoff_et"])
     previous_kickoff = by_team.groupby("team")["kickoff_et"].shift(1)
     previous_completed = by_team.groupby("team")["completed"].shift(1)
-    gaps = (by_team["lock"] - previous_kickoff)[
-        previous_completed.fillna(False).astype(bool)
-    ]
+    # ``eq(True)`` reads a team's first game (no previous game, NaN) as False without the
+    # object-dtype downcast ``fillna(False)`` would warn about.
+    gaps = (by_team["lock"] - previous_kickoff)[previous_completed.eq(True)]
     return gaps.min().to_pytimedelta()
 
 
