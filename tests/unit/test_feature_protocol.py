@@ -5,11 +5,12 @@ structural subtyping works as expected at runtime via isinstance checks
 with runtime_checkable.
 """
 
+from collections.abc import Mapping
 from datetime import datetime
 
 import pandas as pd
 
-from features.protocol import FeatureBuilder
+from features.protocol import FeatureBuilder, InformationTimeProvider
 
 
 class ConformingBuilder:
@@ -133,3 +134,96 @@ class TestFeatureBuilderProtocol:
 
         sig = inspect.signature(FeatureBuilder.build_features)
         assert sig.return_annotation is pd.DataFrame
+
+
+# ---------------------------------------------------------------------------
+# Phase 33.2, Plan 33.2-01 Task 2: the SEPARATE InformationTimeProvider Protocol.
+#
+# `information_times` lives on its own runtime-checkable Protocol, NOT on
+# FeatureBuilder. FeatureBuilder is @runtime_checkable and runtime isinstance
+# checks METHOD PRESENCE, so a new required member would flip every existing
+# isinstance(_, FeatureBuilder) assertion -- the one above on ConformingBuilder,
+# and the two in test_contextual_extensions.py and test_qb_tracking.py, which
+# this plan deliberately does NOT edit. The member-set assertion below is the
+# cheap guard that fails HERE, by name, if anybody re-expands FeatureBuilder.
+# ---------------------------------------------------------------------------
+
+
+def _public_members(protocol: type) -> set[str]:
+    return {name for name in dir(protocol) if not name.startswith("_")}
+
+
+class ConformingProvider:
+    """A provenance supplier that implements ONLY the InformationTimeProvider members."""
+
+    def information_times(
+        self,
+        games_df: pd.DataFrame,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        return pd.DataFrame(columns=["game_id", "basis", "information_time"])
+
+    def no_information_signature(self) -> Mapping[str, float | None]:
+        return {"feature": 0.0}
+
+
+class BuilderAndProvider(ConformingBuilder):
+    """Both Protocols by structural subtyping -- no Protocol appears in its bases."""
+
+    def information_times(
+        self,
+        games_df: pd.DataFrame,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        return pd.DataFrame(columns=["game_id", "basis", "information_time"])
+
+    def no_information_signature(self) -> Mapping[str, float | None]:
+        return {"feature": 0.0}
+
+
+class TestInformationTimeProviderProtocol:
+    """The provenance contract composes with FeatureBuilder; it does not extend it."""
+
+    def test_feature_builder_member_set_is_unchanged(self):
+        assert _public_members(FeatureBuilder) == {
+            "build_features",
+            "get_features_for_game",
+        }
+
+    def test_provider_member_set_is_exactly_two(self):
+        assert _public_members(InformationTimeProvider) == {
+            "information_times",
+            "no_information_signature",
+        }
+
+    def test_provider_is_runtime_checkable(self):
+        assert getattr(InformationTimeProvider, "_is_runtime_protocol", False)
+
+    def test_the_two_method_builder_satisfies_only_feature_builder(self):
+        builder = ConformingBuilder()
+        assert isinstance(builder, FeatureBuilder)
+        assert not isinstance(builder, InformationTimeProvider)
+
+    def test_a_two_method_provider_satisfies_only_the_provider(self):
+        provider = ConformingProvider()
+        assert isinstance(provider, InformationTimeProvider)
+        assert not isinstance(provider, FeatureBuilder)
+
+    def test_one_class_satisfies_both_with_no_protocol_base(self):
+        both = BuilderAndProvider()
+        assert isinstance(both, FeatureBuilder)
+        assert isinstance(both, InformationTimeProvider)
+        assert FeatureBuilder not in type(both).__mro__
+        assert InformationTimeProvider not in type(both).__mro__
+
+    def test_information_times_signature(self):
+        import inspect
+
+        params = inspect.signature(InformationTimeProvider.information_times).parameters
+        assert list(params) == ["self", "games_df", "target_season", "target_week"]
+        assert params["target_season"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["target_week"].kind is inspect.Parameter.KEYWORD_ONLY
