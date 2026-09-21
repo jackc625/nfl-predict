@@ -69,9 +69,9 @@ from typing import cast
 
 import pandas as pd
 
+import utils.game_lock as lock_rule
 from scripts.repair_international_venues import usual_home_stadium
 from utils.date_utils import kickoff_wall_clock_et
-from utils.game_lock import game_lock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_ROOT = REPO_ROOT / "data"
@@ -272,7 +272,7 @@ def utc_iso(value: datetime) -> str:
 
 def lock_utc_for(kickoff_value: object, game_id: str) -> str:
     """The game's lock (``utils.game_lock.game_lock``) as a UTC ISO string."""
-    return utc_iso(game_lock(kickoff_value, game_id=game_id))
+    return utc_iso(lock_rule.game_lock(kickoff_value, game_id=game_id))
 
 
 def load_international_game_ids(
