@@ -38,10 +38,11 @@ A TYPE TRAP TRAVELS WITH CLAUSE 3
 ---------------------------------
 The stored ``snapshot_ts`` column is a STRING today, holding one fixed calendar date per season,
 and its single non-consensus row uses a different, space-separated UTC format. Any comparison
-against a freeze instant must PARSE and must never string-compare, and it must be
-Eastern-anchored rather than UTC-anchored. :func:`normalize_snapshot_ts` is the ONE parse path;
-:func:`is_fresh_at_freeze` is the ONE comparison built on it. Plan 31-09's selector calls the
-same two functions, so the value written and the value compared come from one rule.
+against a lock instant must PARSE and must never string-compare, and it must be
+Eastern-anchored rather than UTC-anchored. :func:`normalize_snapshot_ts` is the ONE lenient parse
+path and :func:`require_aware_snapshot_ts` the strict one; :func:`is_admissible_at_lock` is the
+ONE comparison, and it delegates to ``utils.game_lock.is_admissible``. Plan 31-09's selector calls
+the same functions, so the value written and the value compared come from one rule.
 
 WHAT THIS MODULE WILL NOT DO
 ----------------------------
@@ -188,26 +189,21 @@ def admitted_game_types(season: int) -> frozenset[str]:
 # ---------------------------------------------------------------------------
 
 
-def gameday_lock(gameday: Any) -> datetime:
-    """The lock of a game played on the EASTERN calendar date *gameday*, through the one rule.
+def eastern_gameday_start(gameday: Any) -> datetime:
+    """The first instant (00:00 Eastern) of the Eastern calendar date *gameday*.
 
-    Every value comes from ``utils.game_lock.game_lock`` (D33.2-01): 18:00 America/New_York on
-    the Eastern calendar day before kickoff. This function derives nothing itself. It exists
-    because the odds rows and the weekly schedule carry the game's Eastern ``gameday`` DATE
-    rather than its kickoff instant, and ``game_lock`` reads ONLY the Eastern calendar date of
-    the kickoff it is handed -- so that date, expressed as its Eastern-midnight instant, yields
-    exactly the lock the real kickoff would. The midnight instant is the date written as an
-    instant, never a claim about when the game starts, and it never leaves this function.
-
-    The lock rule is reached as a MODULE ATTRIBUTE at call time (``lock_rule.game_lock``), so a
-    counting delegate installed over ``utils.game_lock.game_lock`` sees every call made here.
+    The odds rows and the weekly schedule carry a game's Eastern ``gameday`` DATE rather than
+    its kickoff instant, and ``utils.game_lock.game_lock`` reads ONLY the Eastern calendar date
+    of the instant it is handed. So the start of that date yields exactly the lock the real
+    kickoff would. It is the date written as an instant -- the true start of the game's day --
+    and never a claim about when the game kicks off; nothing may store it as a kickoff.
 
     Args:
         gameday: The game's Eastern calendar date -- a ``YYYY-MM-DD`` string, a ``date``, or a
             naive midnight timestamp of that date.
 
     Returns:
-        The lock as a tz-aware datetime in Eastern.
+        00:00 on that date, tz-aware in Eastern.
 
     Raises:
         utils.game_lock.MissingKickoffError: when *gameday* is null.
@@ -234,8 +230,26 @@ def gameday_lock(gameday: Any) -> datetime:
         )
         raise ValueError(msg)
 
-    eastern_date = datetime.combine(parsed.date(), time(0, 0), tzinfo=EASTERN)
-    return lock_rule.game_lock(eastern_date)
+    return datetime.combine(parsed.date(), time(0, 0), tzinfo=EASTERN)
+
+
+def gameday_lock(gameday: Any) -> datetime:
+    """The lock of a game played on the EASTERN calendar date *gameday*, through the one rule.
+
+    Every value is ``utils.game_lock.game_lock`` (D33.2-01) -- 18:00 America/New_York on the
+    Eastern calendar day before kickoff -- of :func:`eastern_gameday_start`. This function
+    derives nothing itself. The rule is reached as a MODULE ATTRIBUTE at call time
+    (``lock_rule.game_lock``), so a counting delegate installed over
+    ``utils.game_lock.game_lock`` sees every call made here.
+
+    Raises:
+        utils.game_lock.MissingKickoffError: when *gameday* is null.
+        ValueError: when *gameday* is an instant rather than a date (see
+            :func:`eastern_gameday_start`).
+    """
+    import utils.game_lock as lock_rule
+
+    return lock_rule.game_lock(eastern_gameday_start(gameday))
 
 
 def _is_null_scalar(value: Any) -> bool:
@@ -377,22 +391,51 @@ def _naive_parse_or_none(value: Any) -> pd.Timestamp | None:
     return parsed if parsed.tzinfo is None else None
 
 
-def is_fresh_at_freeze(snapshot_value: Any, gameday: str) -> bool:
-    """True when *snapshot_value* is AT or AFTER that game's own lock.
+def _lock_of(kickoff: Any) -> datetime:
+    """The lock of the game identified by *kickoff*: an aware kickoff, or an Eastern gameday.
 
-    TRANSITIONAL (Plan 33.2-02 Task 1): the instant is now the game's day-before lock from
-    :func:`gameday_lock`; the staleness DIRECTION is reversed into an admissibility test by the
-    function that replaces this one in the same plan. Both sides of the comparison come from
-    this module, so no caller can string-compare.
+    An aware kickoff instant goes straight to ``utils.game_lock.game_lock``; a date-only Eastern
+    ``gameday`` goes through :func:`gameday_lock`, which hands the same rule that date. A NAIVE
+    instant with a time of day is refused by :func:`gameday_lock` rather than relabelled.
+    """
+    import utils.game_lock as lock_rule
+
+    if isinstance(kickoff, datetime) and kickoff.tzinfo is not None:
+        return lock_rule.game_lock(kickoff)
+    if isinstance(kickoff, str):
+        parsed = pd.Timestamp(kickoff)
+        if parsed.tzinfo is not None:
+            return lock_rule.game_lock(parsed)
+    return gameday_lock(kickoff)
+
+
+def is_admissible_at_lock(snapshot_value: Any, kickoff: Any) -> bool:
+    """True when *snapshot_value* was captured AT or BEFORE that game's own lock.
+
+    THE DIRECTION CHANGED ON PURPOSE (Plan 33.2-02, RESEARCH 2.4). The function this replaces
+    answered "is this quote stale?" -- ``snapshot_ts >= freeze``, at-freeze fresh and strictly
+    before it stale. This one answers "could we have known this?" -- ``information_time <=
+    lock``, the lock rule's own admissibility test. They are OPPOSITE inequalities over the
+    same instant, and picking one silently is the failure mode, so it is said here: a quote from
+    three days before the lock is now ADMISSIBLE (it is old information, not future
+    information), a quote exactly AT the lock is admissible, and a quote one second after it is
+    not. Choosing the FRESHEST admissible quote -- the latest at or before the lock -- is a
+    separate concern and belongs to the odds-selection change in Plan 33.2-13.
+
+    The comparison is ``utils.game_lock.is_admissible``, reached as a module attribute at call
+    time; both sides go through the strict parser, so a NAIVE snapshot raises rather than being
+    anchored in any zone.
 
     Args:
-        snapshot_value: The stored or derived ``snapshot_ts`` in any supported shape.
-        gameday: That game's own kickoff date.
+        snapshot_value: The stored or derived ``snapshot_ts``; it must carry a timezone.
+        kickoff: That game's aware kickoff instant, or its Eastern calendar ``gameday``.
 
     Returns:
-        True when the snapshot is fresh.
+        True when the quote was known at or before the game's lock.
     """
-    return normalize_snapshot_ts(snapshot_value) >= gameday_lock(gameday)
+    import utils.game_lock as lock_rule
+
+    return lock_rule.is_admissible(snapshot_value, _lock_of(kickoff))
 
 
 # ---------------------------------------------------------------------------

@@ -65,11 +65,12 @@ taxonomy" is therefore literal identity rather than two lists kept in sync, whic
 mode this repo has already had once. Its precedent is ``assert_real_odds``: a pure data-provenance
 check that already lived here and already ran before any selection.
 
-The freshness fence takes its freeze instant, its parse path and its comparison from
-``scripts.ingest_historical_odds`` -- the module that STAMPS ``snapshot_ts`` at ingest (plan 31-08,
-D31-37) -- so the value written and the value compared come from ONE rule. Those imports are
-DEFERRED into ``_freshness_context`` because that module reaches back to this one through
-``backtest.ev_chain_constants`` -> ``backtest.ou_monetization``; see that function's docstring.
+The admissibility fence takes its lock instant and its comparison from ``utils.game_lock``,
+through ``scripts.ingest_historical_odds`` -- the module that STAMPS ``snapshot_ts`` at ingest
+(plan 31-08, D31-37) -- so the value written and the value compared come from ONE rule
+(D33.2-01). Those imports are DEFERRED into ``_freshness_context`` because that module reaches
+back to this one through ``backtest.ev_chain_constants`` -> ``backtest.ou_monetization``; see that
+function's docstring.
 
 ``select()`` returns BOTH the FILTERED decision set (the acceptance basis) and the UNFILTERED
 whole-population cross-check (D27-04), plus the REJECTED candidates with rejection reasons drawn
@@ -89,7 +90,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 
@@ -133,7 +134,10 @@ REJECTION_REASONS: tuple[str, ...] = (
     "ev_below_floor",  # eligible but per-bet EV < the EV-floor t (D27-14)
     "real_odds_failed",  # provenance hard-fail (OUM-06) -- raised before selection
     "zero_kelly_stake",  # admitted by EV but the Kelly calculator zeroed the stake (WR-07)
-    "stale_line",  # snapshot strictly before that game's OWN freeze (D31-17/18)
+    # snapshot NOT ADMISSIBLE at that game's OWN lock -- captured AFTER it (D33.2-01, Plan
+    # 33.2-02). The token is kept because it is a published rejection_reason value; its meaning
+    # moved from "before the freeze" (a staleness test) to "after the lock" (admissibility).
+    "stale_line",
     "missing_snapshot",  # no market data for THAT target on that game (D31-19)
     "missing_prediction",  # no model output for that game -- a pipeline gap (D31-19)
     "ev_not_finite",  # a non-finite per-bet EV: suppressed, never tiered (SPEC R7, D31-24)
@@ -230,26 +234,30 @@ def _strategy_bet_odds(
 def _freshness_context(
     row: dict[str, Any],
 ) -> tuple[datetime | None, datetime | None, bool | None]:
-    """The candidate's snapshot instant, the freeze it is judged against, and the verdict.
+    """The candidate's snapshot instant, the lock it is judged against, and the verdict.
 
     Both instants are returned as tz-aware datetimes expressed in EASTERN, because the market's
-    own zone is the one the freeze is defined in and re-expressing a freeze for display is where a
-    UTC-anchored reading gets reintroduced (the WR-02 lesson).
+    own zone is the one the lock is defined in and re-expressing it for display is where a
+    UTC-anchored reading gets reintroduced (the WR-02 lesson). The second element is still
+    carried on the record as ``freeze_ts`` -- a published column name kept by ruling (HOST-07) --
+    but its VALUE is the game's day-before-kickoff lock (D33.2-01).
 
-    The freeze is PER-GAME (D31-18), taken from that game's own kickoff date. A per-WEEK freeze
-    would suppress every Thursday night game every week: a Thursday game's preceding Friday is
-    seven days before the Friday preceding that week's Sunday games, so its snapshot is strictly
-    earlier and the rule would fire on correct data as a pure calendar artifact.
+    The lock is PER-GAME (D31-18), taken from that game's own Eastern gameday: a Thursday game
+    locks on the Wednesday and that week's Sunday games on the Saturday.
 
-    The verdict comes from ``is_fresh_at_freeze``, never from a comparison restated here. At-freeze
-    is FRESH; strictly before is stale. Both sides of that comparison are parsed -- the stored
-    column held a string until plan 31-08 re-derived it, and its single non-consensus row uses a
-    different, space-separated UTC format, so a string comparison would be wrong in two ways.
+    The lock is ``utils.game_lock.game_lock`` and the verdict is ``utils.game_lock.is_admissible``
+    -- the same comparison ``scripts.ingest_historical_odds.is_admissible_at_lock`` delegates to --
+    each called exactly ONCE here and never restated. Both are reached as module attributes at
+    call time, so the phase's identity scan sees them. It is an ADMISSIBILITY verdict, not a
+    staleness one (Plan 33.2-02): a snapshot captured AT or BEFORE the lock is admissible, one
+    captured after it is not. Both sides are parsed strictly -- the stored column holds
+    offset-carrying strings in two spellings, so a string comparison would be wrong, and a naive
+    value raises rather than being anchored.
 
-    A row with no ``gameday`` has no per-game freeze and the verdict is None (not evaluated): that
-    is a historical backtest frame, which makes no forward freshness claim. The universe path
-    refuses a schedule without kickoff dates, so the forward path cannot reach this branch and
-    quietly skip the fence.
+    A row with no ``gameday`` has no per-game lock and the verdict is None (not evaluated): that
+    is a historical backtest frame, which makes no forward claim. The universe path refuses a
+    schedule without kickoff dates, so the forward path cannot reach this branch and quietly
+    skip the fence.
 
     The helpers are imported HERE rather than at module scope to break a REAL import cycle:
     ``scripts.ingest_historical_odds`` imports ``backtest.ev_chain_constants``, which imports
@@ -258,12 +266,12 @@ def _freshness_context(
     break and not an attempt to soften the dependency, which the module docstring states plainly.
 
     Returns:
-        ``(snapshot_instant, freeze_instant, is_fresh)``; any of the three may be None.
+        ``(snapshot_instant, lock_instant, is_admissible)``; any of the three may be None.
     """
+    import utils.game_lock as lock_rule
     from scripts.ingest_historical_odds import (
         EASTERN,
-        get_synthetic_snapshot_ts,
-        is_fresh_at_freeze,
+        eastern_gameday_start,
         normalize_snapshot_ts,
     )
 
@@ -276,17 +284,13 @@ def _freshness_context(
     if _is_absent(gameday):
         return snapshot, None, None
 
-    # Both helpers annotate ``gameday`` as ``str`` while their docstrings accept anything
-    # ``pd.to_datetime`` parses, which is what a schedule column actually holds. The cast WIDENS
-    # the annotation and does not convert the value: converting would be a second parse of a
-    # field this module does not own.
-    kickoff = cast("str", gameday)
-    # THE ONE CALL SITE deriving a freeze instant in this module (D31-18). Every other freshness
-    # question routes through the helpers imported above.
-    freeze = get_synthetic_snapshot_ts(kickoff).astimezone(EASTERN)
+    # THE ONE CALL SITE resolving a lock in this module (D31-18, D33.2-01), and the one
+    # comparison. The start of the game's Eastern day is handed to the rule because the rule
+    # reads only the Eastern date.
+    lock = lock_rule.game_lock(eastern_gameday_start(gameday)).astimezone(EASTERN)
     if snapshot is None:
-        return None, freeze, None
-    return snapshot, freeze, is_fresh_at_freeze(snapshot_value, kickoff)
+        return None, lock, None
+    return snapshot, lock, lock_rule.is_admissible(snapshot_value, lock)
 
 
 def assert_real_odds(raw_odds_df: pd.DataFrame) -> None:
@@ -831,8 +835,9 @@ class BetSelector:
             )
             raise ValueError(msg)
         if is_fresh is False:
-            # Suppressed BEFORE pricing: a stale line is a refusal to form an opinion, and an EV
-            # computed from one would be exactly the number suppression exists to withhold.
+            # Suppressed BEFORE pricing: a line captured after the game's lock is information the
+            # decision could not have had, and an EV computed from it would be exactly the number
+            # suppression exists to withhold.
             return record, "stale_line"
 
         bet_side = strategy.resolve_bet_side(row)

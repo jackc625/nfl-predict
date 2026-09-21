@@ -124,8 +124,8 @@ __all__ = [
     "ChainFitOverlayDisagreementError",
     "DecidedAfterFreezeError",
     "EmptyPriorResidualPoolError",
-    "FreezePassedError",
     "FrozenChainFitError",
+    "LockPassedError",
     "MissingDecidedAtError",
     "WeeklyChainFit",
     "assert_decided_at_before_freeze",
@@ -143,7 +143,7 @@ __all__ = [
     "read_bet_list_with_schema_shim",
     "read_bet_tracker_artifact",
     "records_to_bet_list_frame",
-    "select_games_for_freeze_instant",
+    "select_games_for_decision_instant",
     "select_weekly_bets",
     "upsert_bet_list_rows",
     "write_bet_list_artifact",
@@ -282,13 +282,19 @@ class EmptyPriorResidualPoolError(RuntimeError):
     """
 
 
-class FreezePassedError(RuntimeError):
-    """A game whose OWN freeze is already past was offered for selection (R6, T-33-21).
+class LockPassedError(RuntimeError):
+    """A game was offered for selection with a DECISION instant after its own lock (R6, R1).
 
-    Raised by name rather than skipped or dropped. Emitting a row for a game whose freeze has
-    passed would publish a post-hoc pick wearing a pre-game timestamp -- the repudiation
-    failure COLD-03 exists to prevent -- and dropping it silently would hide the same fact
-    behind a shorter list nobody could audit.
+    The successor of the former freeze-passed refusal (Plan 33.2-02). Its subject changed from
+    the instant the RUN started to the instant the DECISION's inputs were captured: under
+    D33.2-18 the daily run captures before the lock and builds after it, so a run that starts
+    at or after a lock is normal, and only a decision whose inputs were captured after the lock
+    is refused.
+
+    Raised by name rather than skipped or dropped. Emitting a row whose decision post-dates
+    its game's lock would publish a post-hoc pick wearing a pre-game timestamp -- the
+    repudiation failure COLD-03 exists to prevent -- and dropping it silently would hide the
+    same fact behind a shorter list nobody could audit.
 
     A ``RuntimeError`` subclass, deliberately OUTSIDE ``ValueError``: the selection path's
     callers catch ``ValueError`` for absent inputs (a missing schedule, an empty week), and a
@@ -580,16 +586,24 @@ SCHEDULE_COLUMNS: tuple[str, ...] = ("game_id", "season", "week", "gameday")
 
 
 def _with_gameday(games: pd.DataFrame) -> pd.DataFrame:
-    """Add the EASTERN calendar ``gameday`` the per-game freeze is measured from.
+    """Add the EASTERN calendar ``gameday`` each game's lock is measured from.
 
-    One derivation shared by the week-scoped and full-season loaders. The date is taken in
-    EASTERN, never in UTC: a 8:15 PM Eastern Monday kickoff is 00:15 UTC on TUESDAY, so a
-    UTC-dated gameday would hand ``get_synthetic_snapshot_ts`` the wrong weekday and move that
-    game's freeze by a whole week.
+    One derivation shared by the week-scoped and full-season loaders, and no longer a private
+    one: the date is read through ``utils.date_utils.kickoff_wall_clock_et`` -- the SAME
+    accessor ``utils.game_lock.game_lock`` reads the kickoff's ET date through -- so this
+    module and the lock rule cannot disagree about which calendar day a game is on. The date
+    is taken in EASTERN, never in UTC: an 8:15 PM Eastern Monday kickoff is 00:15 UTC on
+    TUESDAY, and a UTC-dated gameday would move that game's lock by a whole day.
     """
-    kickoff = pd.to_datetime(games["kickoff_et"], utc=True)
+    from utils.date_utils import kickoff_wall_clock_et
+
     dated = games.copy()
-    dated["gameday"] = kickoff.dt.tz_convert("US/Eastern").dt.strftime("%Y-%m-%d")
+    # A null kickoff yields a null gameday -- no date, and therefore no lock -- rather than a
+    # manufactured one; the lock helper refuses it by name if anything asks for its lock.
+    dated["gameday"] = [
+        None if pd.isna(kickoff) else kickoff_wall_clock_et(kickoff).date().isoformat()
+        for kickoff in games["kickoff_et"]
+    ]
     subset = cast("pd.DataFrame", dated[list(SCHEDULE_COLUMNS)])
     return subset.reset_index(drop=True)
 
@@ -627,10 +641,21 @@ def _load_week_schedule(season: int, week: int, silver_dir: Path) -> pd.DataFram
 def _load_full_schedule(silver_dir: Path) -> pd.DataFrame:
     """Every scheduled game with its ``gameday``. READ ONLY.
 
-    The full season rather than one week, because a freeze instant spans TWO weeks by design
-    (D33-28) and a week-scoped read cannot see the second one.
+    The full season rather than one week, because one lock instant can span TWO weeks (a
+    Saturday lock covers week N's Sunday slate; a Wednesday lock covers week N+1's Thursday
+    game) and a week-scoped read cannot see the second one.
     """
     return _with_gameday(_read_silver_games(silver_dir))
+
+
+def _drop_excluded(
+    schedule: pd.DataFrame, excluded_game_ids: frozenset[str]
+) -> pd.DataFrame:
+    """*schedule* without the games the run has decided not to bet (D33.2-05)."""
+    if not excluded_game_ids:
+        return schedule
+    keep = ~schedule["game_id"].astype(str).isin(excluded_game_ids)
+    return cast("pd.DataFrame", schedule[keep]).reset_index(drop=True)
 
 
 def build_weekly_candidates(
@@ -640,22 +665,54 @@ def build_weekly_candidates(
     artifacts_dir: Path = Path("artifacts"),
     gold_dir: Path = Path("data/gold"),
     silver_dir: Path = Path("data/silver"),
+    excluded_game_ids: frozenset[str] = frozenset(),
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Score the deployed artifacts over one week and join the stored odds snapshot. READ ONLY.
 
     Mirrors ``backtest.profitability_2025._load_candidate_frames`` one week at a time, with one
-    deliberate difference: the market side comes from ``data/silver/odds_snapshot.parquet`` -- the
-    FREEZE-time snapshot the Friday run captures -- carrying its ``snapshot_ts`` and its
-    provenance columns, so the selector's freshness fence and its OUM-06 provenance hard-fail both
-    have something real to judge.
+    deliberate difference: the market side comes from ``data/silver/odds_snapshot.parquet``,
+    carrying its ``snapshot_ts`` and its provenance columns, so the selector's admissibility
+    fence and its OUM-06 provenance hard-fail both have something real to judge.
+
+    Args:
+        season: The season to build.
+        week: The week to build.
+        artifacts_dir: Where the deployed model artifacts live.
+        gold_dir: Where the per-target gold matrices live.
+        silver_dir: Where the schedule and the odds snapshot live.
+        excluded_game_ids: Games the run has decided not to bet (D33.2-05's live skip). They
+            are removed from the schedule SPINE before anything else reads it, so an excluded
+            game is never scored, never priced and never written -- not even as a suppressed
+            row. Empty by default, so every existing caller is unchanged.
 
     Returns:
         ``(candidates, schedule)``. ``candidates`` carries one row per (game, target) for which a
-        model output exists; ``schedule`` is the week's spine for the universe build.
+        model output exists; ``schedule`` is the week's spine for the universe build. Both are
+        EMPTY, and nothing raises, when every scheduled game is excluded: that day is honestly
+        all-skipped, which is a different fact from a week with no scheduled games (still
+        refused by ``_load_week_schedule``).
     """
     from backtest.diagnose import score_deployed_artifacts
 
     schedule = _load_week_schedule(season, week, silver_dir)
+    # THE EXCLUSION LANDS ON THE SPINE, HERE, AND NOWHERE LATER (D33.2-05, T-33.2-02-14). The
+    # schedule -- not the odds join -- is the universe's spine (D31-19, `_load_week_schedule`):
+    # a game absent from it cannot be reported as suppressed at all. Dropping it any later
+    # would still produce a SUPPRESSED row with a rejection_reason, because
+    # `records_to_bet_list_frame` stamps one row per (game, target) including suppressed ones,
+    # and a suppressed row is still a row and still a write. Dropping it before `game_ids` is
+    # taken means the odds join and the returned spine never see it; the gold rows handed to
+    # the scorer are narrowed by the same set below, because the scorer reads gold by WEEK, not
+    # by the spine's game ids.
+    schedule = _drop_excluded(schedule, excluded_game_ids)
+    if schedule.empty:
+        logger.info(
+            "Every scheduled game was excluded; the week is all-skipped, not unscheduled",
+            season=season,
+            week=week,
+            n_excluded=len(excluded_game_ids),
+        )
+        return pd.DataFrame(columns=pd.Index(["game_id", "target"])), schedule
     game_ids = set(schedule["game_id"])
 
     odds_path = silver_dir / "odds_snapshot.parquet"
@@ -683,6 +740,11 @@ def build_weekly_candidates(
                 "week cannot be selected for target " + repr(target)
             )
             raise ValueError(msg)
+        # An excluded game is never SCORED either (D33.2-05). Gold is read by week, so without
+        # this the scorer would still see the game and emit a candidate the selector would then
+        # refuse as outside the schedule. Applied after the week-emptiness check, so that check
+        # keeps meaning "gold carries this week at all".
+        gold = _drop_excluded(gold, excluded_game_ids)
 
         scored = score_deployed_artifacts(
             target, gold_df=gold, artifacts_dir=artifacts_dir
@@ -718,93 +780,109 @@ def build_weekly_candidates(
     return candidates, schedule
 
 
-def select_games_for_freeze_instant(
-    schedule: pd.DataFrame, instant: datetime, *, now: datetime
+def _game_locks(schedule: pd.DataFrame) -> list[datetime]:
+    """Each game's lock, in *schedule* order, from the ONE rule. Never re-derived here.
+
+    Every value is ``scripts.ingest_historical_odds.gameday_lock`` of the game's Eastern
+    ``gameday``, which hands that date to ``utils.game_lock.game_lock`` at call time. The import
+    is deferred for the cycle ``build_bet_week_schedule``'s docstring names.
+    """
+    from scripts.ingest_historical_odds import gameday_lock, require_aware_snapshot_ts
+
+    return [
+        require_aware_snapshot_ts(gameday_lock(str(gameday)))
+        for gameday in schedule["gameday"]
+    ]
+
+
+def _games_at_lock(schedule: pd.DataFrame, instant: datetime) -> pd.DataFrame:
+    """The rows of *schedule* whose own lock IS *instant* -- scoping only, never refusing."""
+    from scripts.ingest_historical_odds import require_aware_snapshot_ts
+
+    if schedule.empty:
+        return schedule.iloc[0:0].copy()
+    target = require_aware_snapshot_ts(instant)
+    in_scope = pd.Series(
+        [lock == target for lock in _game_locks(schedule)], index=schedule.index
+    )
+    return cast("pd.DataFrame", schedule[in_scope]).copy()
+
+
+def select_games_for_decision_instant(
+    schedule: pd.DataFrame,
+    instant: datetime,
+    *,
+    decided_at: datetime,
+    excluded_game_ids: frozenset[str] = frozenset(),
 ) -> pd.DataFrame:
-    """The games belonging to ONE freeze instant, refusing any whose freeze has passed.
+    """The games belonging to ONE lock instant, refusing any decided AFTER its own lock.
 
-    THE SELECTION UNIT IS THE INSTANT, NOT THE WEEK (D33-28). A game's freeze is the Friday
-    6 PM Eastern instant preceding ITS OWN kickoff, so one instant covers week N's Sunday and
-    Monday games TOGETHER WITH week N+1's Thursday game. A week-scoped run would meet that
-    Thursday game already past its freeze and refuse it -- roughly EIGHTEEN games a season
-    removed from a forward measurement D40-08 defines as weeks 2-22 (T-33-25).
+    THE SELECTION UNIT IS THE LOCK INSTANT, NOT THE WEEK (D33-28, D33.2-01). A game locks at
+    18:00 Eastern on the Eastern day before its kickoff, so one instant covers every game on
+    one calendar day -- the Saturday lock covers the whole Sunday slate, the Wednesday lock a
+    Thursday game -- and games of two different NFL weeks can share a run.
 
-    THE FENCE IS ``>=`` AND IT MATCHES ``_is_frozen``'s (R6). A game whose freeze equals *now*
-    TO THE SECOND is REFUSED: at that instant the market has frozen and any pick made now is
-    made with the frozen line in hand. Both sides of every comparison go through
-    :func:`scripts.ingest_historical_odds.require_aware_snapshot_ts`, so a NAIVE run clock or a
-    naive freeze raises rather than being assumed UTC.
+    THE REFUSAL'S SUBJECT IS THE DECISION INSTANT, NOT THE RUN'S START (D33.2-18). The daily
+    run captures its inputs BEFORE the lock and builds AFTER it, so a run that STARTS at or
+    after a lock is normal. What is refused is a decision whose inputs were captured after the
+    lock: ``decided_at > lock`` raises :class:`LockPassedError`. AT-LOCK IS ADMISSIBLE
+    (``decided_at <= lock``), the same operator as ``utils.game_lock.is_admissible``, which
+    makes the comparison here. *decided_at* is passed in explicitly and is never the clock.
 
-    THE PER-GAME FREEZE IS NEVER RE-DERIVED HERE. Every value comes from
-    ``scripts.ingest_historical_odds.get_synthetic_snapshot_ts``, the ONE source of the rule
-    (D31-18); a second "the prior Friday" implementation would be wrong for every Thursday game.
+    EXCLUSION PRECEDES THE REFUSAL (D33.2-05). A game skipped for a post-lock input is usually
+    exactly a game whose lock has passed; checking before excluding would raise for a game the
+    run had already decided not to bet, turning one clean skip into a failure that denies that
+    day's clean games their predictions.
 
-    SCOPING IS NOT REFUSING. A game whose freeze is a DIFFERENT instant is simply absent from
-    the result and nothing raises -- it belongs to another run. Only a game IN SCOPE whose
-    freeze has already passed raises, which is what keeps :class:`FreezePassedError` a tripwire
-    rather than ordinary control flow.
-
-    The import is deferred for the cycle ``build_bet_week_schedule``'s docstring names.
+    SCOPING IS NOT REFUSING. A game whose lock is a DIFFERENT instant is simply absent from the
+    result and nothing raises -- it belongs to another run.
 
     Args:
         schedule: Any frame carrying ``game_id`` and ``gameday``. Rows are FILTERED, never
             reshaped, so a caller's extra columns survive.
-        instant: The freeze instant this run is scoped to.
-        now: The run clock, injected rather than read so both sides of the fence are testable.
+        instant: The lock instant this run is scoped to.
+        decided_at: The instant the decision's inputs were captured. Must be timezone-aware.
+        excluded_game_ids: Games the run has decided not to bet. Removed before the check.
 
     Returns:
-        The subset of *schedule* whose per-game freeze equals *instant*.
+        The subset of *schedule* whose lock equals *instant*, minus the excluded games.
 
     Raises:
-        FreezePassedError: when a selected game's freeze is at or before *now*.
-        NaiveTimestampError: when *now* or a derived freeze carries no timezone.
+        LockPassedError: when an in-scope game's lock is before *decided_at*.
+        NaiveTimestampError: when *decided_at* or *instant* carries no timezone.
     """
-    from scripts.ingest_historical_odds import (
-        get_synthetic_snapshot_ts,
-        require_aware_snapshot_ts,
-    )
+    import utils.game_lock as lock_rule
+    from scripts.ingest_historical_odds import require_aware_snapshot_ts
 
-    run_instant = require_aware_snapshot_ts(now)
+    decision_instant = require_aware_snapshot_ts(decided_at)
     target = require_aware_snapshot_ts(instant)
 
-    if schedule.empty:
-        return schedule.iloc[0:0].copy()
-
-    freezes = [
-        require_aware_snapshot_ts(get_synthetic_snapshot_ts(str(gameday)))
-        for gameday in schedule["gameday"]
-    ]
-    in_scope = pd.Series([freeze == target for freeze in freezes], index=schedule.index)
-    selected = cast("pd.DataFrame", schedule[in_scope]).copy()
+    selected = _drop_excluded(_games_at_lock(schedule, target), excluded_game_ids)
+    if selected.empty:
+        return selected
 
     passed = [
-        (str(game_id), freeze)
-        for game_id, freeze, scoped in zip(
-            schedule["game_id"], freezes, in_scope, strict=True
-        )
-        if scoped and run_instant >= freeze
+        str(game_id)
+        for game_id in selected["game_id"]
+        if not lock_rule.is_admissible(decision_instant, target)
     ]
     if passed:
-        named = ", ".join(
-            f"{game_id} (freeze {freeze.isoformat()})" for game_id, freeze in passed
-        )
         msg = (
-            f"refusing to emit a bet row at {run_instant.isoformat()} for {len(passed)} "
-            f"game(s) whose own freeze has already passed: {named}. The run instant is "
-            f"{run_instant.isoformat()} and the fence is `>=`, so a freeze equal to the run "
-            "instant is refused too -- at that instant the market has frozen and a pick made "
-            "now is made with the frozen line in hand. A row emitted here would be a post-hoc "
-            "pick wearing a pre-game timestamp. The honest outcome is a MISSING row with a "
-            "dated reason, never a present one with a fabricated observation time."
+            f"refusing to emit a bet row decided at {decision_instant.isoformat()} for "
+            f"{len(passed)} game(s) whose own lock {target.isoformat()} is BEFORE that "
+            f"decision: {', '.join(passed)}. At-lock is admissible and one second later is "
+            "not. A row emitted here would be a post-hoc pick wearing a pre-game timestamp; "
+            "the honest outcome is a MISSING row with a dated reason."
         )
-        raise FreezePassedError(msg)
+        raise LockPassedError(msg)
 
     logger.info(
-        "Selected games for freeze instant",
+        "Selected games for lock instant",
         instant=target.isoformat(),
-        now=run_instant.isoformat(),
+        decided_at=decision_instant.isoformat(),
         n_scheduled=len(schedule),
         n_selected=len(selected),
+        n_excluded=len(excluded_game_ids),
     )
     return selected
 
@@ -812,51 +890,72 @@ def select_games_for_freeze_instant(
 def build_freeze_instant_candidates(
     instant: datetime,
     *,
-    now: datetime,
+    decided_at: datetime,
     schedule: pd.DataFrame | None = None,
     artifacts_dir: Path = Path("artifacts"),
     gold_dir: Path = Path("data/gold"),
     silver_dir: Path = Path("data/silver"),
+    excluded_game_ids: frozenset[str] = frozenset(),
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Candidates for every game sharing ONE freeze instant, across the weeks it spans.
+    """Candidates for every game sharing ONE lock instant, across the weeks it spans.
 
     A WRAPPER OVER THE WEEK-SCOPED BUILDER, NOT A SECOND IMPLEMENTATION.
     :func:`build_weekly_candidates` takes one ``(season, week)`` and returns a 2-tuple, and a
-    freeze instant spans two of them by design (D33-28), so the week-scoped function cannot
-    serve an instant with one call. This groups the instant's games by ``(season, week)``, calls
-    the EXISTING builder once per group, RESTRICTS each group's result to the ``game_id``s the
-    instant actually selected, and concatenates. Candidate construction is not duplicated and
-    ``build_weekly_candidates``'s signature is not touched.
+    lock instant can span two of them, so the week-scoped function cannot serve an instant with
+    one call. This groups the instant's games by ``(season, week)``, calls the EXISTING builder
+    once per group, RESTRICTS each group's result to the ``game_id``s the instant actually
+    selected, and concatenates. Candidate construction is not duplicated.
 
     THE RESTRICTION IS LOAD-BEARING. A week-scoped call returns the WHOLE week, which includes
-    that week's Thursday game -- a game belonging to the PREVIOUS instant. Concatenating without
-    restricting would publish it under this run and restate a decision made six days earlier.
+    games belonging to OTHER lock instants. Concatenating without restricting would publish them
+    under this run and restate a decision made on another day.
 
     Args:
-        instant: The freeze instant this run is scoped to.
-        now: The run clock the fence is judged against.
+        instant: The lock instant this run is scoped to.
+        decided_at: The instant the decision's inputs were captured; the fence judges it.
         schedule: An explicit schedule to select from; read from *silver_dir* when omitted.
         artifacts_dir: Passed through to the week-scoped builder.
         gold_dir: Passed through to the week-scoped builder.
         silver_dir: Passed through to the week-scoped builder, and the schedule source.
+        excluded_game_ids: Games the run has decided not to bet, passed to BOTH the selection
+            fence (removed before its check) and the week-scoped builder (removed from its
+            spine), so no row of any kind is produced for them.
 
     Returns:
         ``(candidates, schedule)`` -- the same 2-tuple shape :func:`build_weekly_candidates`
-        returns, so every downstream consumer is unchanged.
+        returns. Both are EMPTY, and nothing raises, when every game at the instant is
+        excluded.
 
     Raises:
-        ValueError: when the instant covers no scheduled game at all.
-        FreezePassedError: propagated from the selection fence.
+        ValueError: when the instant covers no scheduled game at all -- a different fact from
+            every covered game being excluded, and still refused.
+        LockPassedError: propagated from the selection fence.
     """
     universe = _load_full_schedule(silver_dir) if schedule is None else schedule
-    selected = select_games_for_freeze_instant(universe, instant, now=now)
-    if selected.empty:
+    scheduled_at_instant = _games_at_lock(universe, instant)
+    if scheduled_at_instant.empty:
         msg = (
-            f"no scheduled game freezes at {instant.isoformat()}; an empty universe is refused "
+            f"no scheduled game locks at {instant.isoformat()}; an empty universe is refused "
             "rather than published as a run in which nothing was recommended. Check the "
-            "instant against `get_synthetic_snapshot_ts` for the weeks it should cover."
+            "instant against utils.game_lock.game_lock for the games it should cover."
         )
         raise ValueError(msg)
+
+    selected = select_games_for_decision_instant(
+        universe,
+        instant,
+        decided_at=decided_at,
+        excluded_game_ids=excluded_game_ids,
+    )
+    if selected.empty:
+        # Every game at this instant was excluded: an honestly all-skipped day (SPEC R3), not
+        # an unscheduled one, so it returns empty rather than refusing.
+        logger.info(
+            "Every game at the lock instant was excluded; the run is all-skipped",
+            instant=instant.isoformat(),
+            n_scheduled=len(scheduled_at_instant),
+        )
+        return pd.DataFrame(columns=pd.Index(["game_id", "target"])), selected
 
     # Grouped by an EXPLICIT distinct-pair pass rather than ``groupby``: the loop needs the
     # (season, week) pair as two plain ints to hand to the week-scoped builder, and a groupby key
@@ -877,6 +976,7 @@ def build_freeze_instant_candidates(
             artifacts_dir=artifacts_dir,
             gold_dir=gold_dir,
             silver_dir=silver_dir,
+            excluded_game_ids=excluded_game_ids,
         )
         candidate_frames.append(
             cast(
@@ -894,7 +994,7 @@ def build_freeze_instant_candidates(
     merged_candidates = pd.concat(candidate_frames, ignore_index=True)
     merged_schedule = pd.concat(schedule_frames, ignore_index=True)
     logger.info(
-        "Built freeze-instant candidates",
+        "Built lock-instant candidates",
         instant=instant.isoformat(),
         n_groups=len(candidate_frames),
         n_games=len(selected),
@@ -1233,6 +1333,7 @@ def build_weekly_decision_frame(
     now: datetime | None = None,
     fits: dict[str, WeeklyChainFit] | None = None,
     strategies: list[Any] | None = None,
+    excluded_game_ids: frozenset[str] = frozenset(),
 ) -> pd.DataFrame:
     """One week's decisions -- every ``status`` and ``rejection_reason`` -- and NO write.
 
@@ -1270,10 +1371,15 @@ def build_weekly_decision_frame(
         strategies: A pre-built strategy registry, for the same reason: selection and
             grading must share one registry or a bet can be graded under a rule it was not
             selected under.
+        excluded_game_ids: Games the run has decided not to bet (D33.2-05). Passed straight
+            to :func:`build_weekly_candidates`, which drops them from the schedule spine, so
+            they produce NO row of any kind. This pass-through is load-bearing: the weekly
+            entry point reaches the candidates ONLY through this function.
 
     Returns:
         The stamped ``BET_LIST_COLUMNS`` frame -- one row per (game, target), live or
-        suppressed, with every suppression carrying its own reason.
+        suppressed, with every suppression carrying its own reason. Empty when every
+        scheduled game is excluded.
 
     Raises:
         ValueError: for a run mode outside the vocabulary, a week with no scheduled games,
@@ -1292,7 +1398,13 @@ def build_weekly_decision_frame(
         artifacts_dir=artifacts_dir,
         gold_dir=gold_dir,
         silver_dir=silver_dir,
+        excluded_game_ids=excluded_game_ids,
     )
+    if schedule.empty:
+        # Every scheduled game was excluded: the week is all-skipped (SPEC R3). There is no
+        # universe to select over, so the honest frame is empty -- not a refusal, and not a
+        # suppressed row for a game the run chose not to bet.
+        return pd.DataFrame(columns=pd.Index(BET_LIST_COLUMNS))
     result = select_weekly_bets(
         candidates, schedule, resolved_fits, strategies=registry, bankroll=bankroll
     )
@@ -1421,7 +1533,7 @@ def read_bet_tracker_artifact(
 
 
 def build_bet_week_schedule(silver_dir: Path = Path("data/silver")) -> pd.DataFrame:
-    """The full schedule with each game's OWN Friday-6PM-ET freeze instant. READ ONLY.
+    """The full schedule with each game's OWN day-before-kickoff lock instant. READ ONLY.
 
     The source of BOTH schedule-derived cache tables: ``available_bet_weeks`` (navigation) and
     ``bet_week_freeze`` (the threshold the stale-cache hard-block compares the populated-at marker
@@ -1434,11 +1546,12 @@ def build_bet_week_schedule(silver_dir: Path = Path("data/silver")) -> pd.DataFr
       for (REVIEW-STALE). A guard reading its own threshold from the data it is checking could not
       fire in that case.
 
-    THE FREEZE IS PER-GAME, NOT PER-WEEK (D31-18), and it is not re-derived here: every value comes
-    from ``scripts.ingest_historical_odds.get_synthetic_snapshot_ts``, the ONE source of the rule.
-    A Thursday game's preceding Friday is seven days before the Friday preceding that week's Sunday
-    games, so a second implementation that rounded to a week would be wrong for every Thursday
-    game. ``api.cache.materialize_bet_week_freeze`` takes the per-week MAXIMUM of these values.
+    THE LOCK IS PER-GAME, NOT PER-WEEK (D31-18, D33.2-01), and it is not re-derived here: every
+    value comes from ``utils.game_lock`` through ``scripts.ingest_historical_odds.gameday_lock``.
+    A Thursday game locks on the Wednesday and that week's Sunday games on the Saturday, so a
+    second implementation that rounded to a week would be wrong for every Thursday game. The
+    column keeps its published name ``game_freeze_ts`` (renaming it is HOST-07's schema change);
+    ``api.cache.materialize_bet_week_freeze`` takes the per-week MAXIMUM of these values.
 
     The import is deferred because ``scripts.ingest_historical_odds`` imports
     ``backtest.ev_chain_constants``, which imports ``backtest.ou_monetization``, which imports
@@ -1455,7 +1568,7 @@ def build_bet_week_schedule(silver_dir: Path = Path("data/silver")) -> pd.DataFr
         a silver layer still builds a cache whose ``/bets`` renders its no-current-week state
         rather than failing the population step.
     """
-    from scripts.ingest_historical_odds import get_synthetic_snapshot_ts
+    from scripts.ingest_historical_odds import gameday_lock
 
     games_path = Path(silver_dir) / "games.parquet"
     columns = ["game_id", "season", "week", "game_freeze_ts"]
@@ -1472,17 +1585,20 @@ def build_bet_week_schedule(silver_dir: Path = Path("data/silver")) -> pd.DataFr
     if games.empty:
         return pd.DataFrame(columns=pd.Index(columns))
 
-    kickoff = pd.to_datetime(games["kickoff_et"], utc=True)
-    gameday = kickoff.dt.tz_convert("US/Eastern").dt.strftime("%Y-%m-%d")
+    # The Eastern gameday through the ONE date accessor, exactly as `_with_gameday` reads it.
+    gameday = _with_gameday(games)["gameday"]
+    gameday.index = games.index
 
-    # One derivation per DISTINCT gameday rather than per game (about 1,300 against 6,500), then
+    # One lock per DISTINCT gameday rather than per game (about 1,300 against 6,500), then
     # mapped back. Same values, and it keeps the single-source rule affordable over full history.
-    freeze_by_gameday = {
-        day: get_synthetic_snapshot_ts(day) for day in sorted(gameday.dropna().unique())
+    # Stored as UTC, the representation this column has always carried.
+    lock_by_gameday = {
+        day: gameday_lock(day).astimezone(UTC)
+        for day in sorted(gameday.dropna().unique())
     }
 
     schedule = games[["game_id", "season", "week"]].copy()
-    schedule["game_freeze_ts"] = gameday.map(freeze_by_gameday)
+    schedule["game_freeze_ts"] = gameday.map(lock_by_gameday)
     return schedule.dropna(subset=["game_freeze_ts"]).reset_index(drop=True)[columns]
 
 
@@ -1649,13 +1765,13 @@ def _is_frozen(row: pd.Series, now: datetime) -> bool:
 def assert_decided_at_before_freeze(row: Mapping[str, Any] | pd.Series) -> None:
     """A FORWARD row's own observation time must be AT OR BEFORE its own game freeze (R7).
 
-    THE ASSERTION IS ``<=``, NOT ``<``, and the equality case is a BOUNDARY-ONLY one. The
-    selection fence refuses ``now >= freeze``, so every row selection admits carries
-    ``decided_at_utc`` STRICTLY before its freeze; a row sitting exactly ON the freeze is
-    therefore unreachable in production and is proven on a constructed row. The two fences sit
-    on OPPOSITE SIDES of the same boundary and are jointly satisfiable -- a peer reviewer read
-    them as contradictory, and ``tests/unit/test_selection_scoped_by_freeze_instant.py`` proves
-    the conjunction rather than arguing it.
+    THE ASSERTION IS ``<=``, NOT ``<``, and it is the SAME operator as the selection fence.
+    Since Plan 33.2-02 the ``freeze_ts`` value is the game's day-before-kickoff LOCK, and the
+    selection fence (:func:`select_games_for_decision_instant`) refuses only a decision AFTER
+    the lock, so a row decided exactly AT its lock is admitted there and accepted here. The two
+    fences agree on the boundary rather than sitting on opposite sides of it, and
+    ``tests/unit/test_selection_scoped_by_freeze_instant.py`` proves the conjunction rather than
+    arguing it.
 
     SCOPED TO ``provenance == forward``. A replay row is derived and fully regenerable, so it
     carries no observation time and needs none; the 234 stored ``backtest_replay`` rows take
@@ -2037,8 +2153,14 @@ def generate_weekly_bet_list(
     run_mode: str = RUN_MODE_FORWARD,
     bankroll: float = DEFAULT_BANKROLL,
     now: datetime | None = None,
+    excluded_game_ids: frozenset[str] = frozenset(),
 ) -> pd.DataFrame:
     """Select one week, merge it into the durable artifacts, grade what is settled, and persist.
+
+    *excluded_game_ids* (keyword-only, empty by default) names games the run has decided not
+    to bet (D33.2-05's live skip, wired by Plan 33.2-03). They are passed through
+    :func:`build_weekly_decision_frame` to :func:`build_weekly_candidates`, which drops them
+    from the schedule spine, so neither artifact of the pair gains a row of any kind for them.
 
     THE single weekly selection entry point (SPEC R4, D31-31). It writes NOTHING under ``data/``
     and opens NO connection to the live cache: the write is the PAIR of artifacts under
@@ -2117,6 +2239,7 @@ def generate_weekly_bet_list(
         now=run_instant,
         fits=fits,
         strategies=strategies,
+        excluded_game_ids=excluded_game_ids,
     )
 
     stored = read_bet_list_artifact(output_dir)
