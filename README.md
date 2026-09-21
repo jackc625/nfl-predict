@@ -48,7 +48,7 @@ reproducible, auditable, and honest about where it fails.
 - Market blend weights are tuned strictly on pre-2018 seasons, so the
   2021-2024 backtest window is never seen during weight selection (weights
   are tuned on pre-2018 seasons; even the 2018-2020 training window
-  post-dates them) — a harder constraint than the backtest itself.
+  post-dates them) -- a harder constraint than the backtest itself.
 
 ---
 
@@ -148,23 +148,23 @@ per-target record, together with every disclosure the owner accepted, is
 ## Key Features
 
 ### Prediction outputs
-- **Win Probability (WP)** — calibrated home-team win probability from a
+- **Win Probability (WP)** -- calibrated home-team win probability from a
   `LogisticRegression` + `StandardScaler` + `IsotonicRegression` pipeline.
   Calibration is fit on the HP-validation fold, never on training data.
-- **Against the Spread (ATS)** — predicted home margin from an `XGBRegressor`,
+- **Against the Spread (ATS)** -- predicted home margin from an `XGBRegressor`,
   converted to cover probabilities via an empirical `ResidualDistributionConverter`.
-- **Over/Under (O/U)** — predicted total points from an `XGBRegressor`,
+- **Over/Under (O/U)** -- predicted total points from an `XGBRegressor`,
   converted to over/under probabilities via a `TotalDistributionConverter`.
 
 ### Data lakehouse
-- **Bronze** — append-only timestamped Parquet snapshots from every ingestion.
-- **Silver** — cleaned, schema-validated, latest-wins tables, Hive-partitioned
-  by `season=YYYY/` and `snapshot_ts=…` (URL-encoded ET ISO-8601), so the
+- **Bronze** -- append-only timestamped Parquet snapshots from every ingestion.
+- **Silver** -- cleaned, schema-validated, latest-wins tables, Hive-partitioned
+  by `season=YYYY/` and `snapshot_ts=...` (URL-encoded ET ISO-8601), so the
   Friday 18:00 ET snapshot is a first-class storage attribute.
-- **Gold** — one feature matrix per target: `features_wp.parquet`,
+- **Gold** -- one feature matrix per target: `features_wp.parquet`,
   `features_ats.parquet`, `features_ou.parquet`.
 - **Pydantic v2 quality gates** at every layer boundary. One bad row fails
-  the whole batch (intentional — silent row-skipping causes downstream
+  the whole batch (intentional -- silent row-skipping causes downstream
   corruption that is harder to debug than a hard failure).
 
 ### Feature engineering
@@ -172,7 +172,7 @@ Elo, rolling team form (EPA / success / pace / red zone / third-down),
 market anchors (opening + Friday-snapshot lines; closing lines *never* read
 into features), weather (indoor games zeroed), contextual (rest, travel,
 divisional, surface mismatch), composite QB quality
-(`0.7·z(rolling_qb_epa) + 0.3·z(rolling_cpoe)`), and opponent-adjusted
+(`0.7*z(rolling_qb_epa) + 0.3*z(rolling_cpoe)`), and opponent-adjusted
 EPA. Normalization is **expanding-window** grouped by season with
 `min_periods=4` and prior-season bootstrap, explicitly replacing the
 leakier within-season Z-score approach.
@@ -181,7 +181,7 @@ leakier within-season Z-score approach.
 Three independent layers: `features/protocol.py::FeatureBuilder`
 (`@runtime_checkable` Protocol with mandatory `as_of_datetime`);
 `features/validation.py::LeakageGate` (per-builder time-fence,
-combined-matrix keyword scan, Elo chronological ordering — violations
+combined-matrix keyword scan, Elo chronological ordering -- violations
 raise `LeakageViolation` and emit a JSON diagnostic); and
 `models/temporal.py::TemporalSplitConfig.validate()` which raises if
 train / HP-validation / holdout seasons overlap or violate ordering.
@@ -189,7 +189,7 @@ train / HP-validation / holdout seasons overlap or violate ordering.
 ### Market blending
 WP blended in log-odds space via `scipy.special.logit` / `expit`;
 ATS / O/U blended linearly in point space. Weights tuned strictly on
-**pre-2018 seasons** (`TUNING_SEASONS` in `models/blending_data.py`) —
+**pre-2018 seasons** (`TUNING_SEASONS` in `models/blending_data.py`) --
 temporally disjoint from the 2021-2024 backtest window.
 `DynamicBlendWeights` (Phase 13) adds a per-target sigmoid schedule in
 week-of-season with per-target gating; it is live for all three targets
@@ -206,7 +206,7 @@ Expanding-window walk-forward over 2021-2024, per-season retraining.
 reliability / resolution / uncertainty by hand.
 `backtest/simulation.py::BettingSimulator` runs flat-stake *and*
 quarter-Kelly side by side, with `SLIPPAGE_POINTS = 0.5` and -110 vig on
-ATS / O/U. CLV (`models/clv.py`) — probability and line — is the
+ATS / O/U. CLV (`models/clv.py`) -- probability and line -- is the
 primary quality metric.
 
 ### Web dashboard
@@ -229,12 +229,12 @@ partials, CSV + JSON exports, and a `/health` endpoint.
             |                      |                       |                     |
             v                      v                       v                     v
    +---------------------------------------------------------------------------------------+
-   | data/bronze/  (append-only, timestamped parquet — raw source snapshots)               |
+   | data/bronze/  (append-only, timestamped parquet -- raw source snapshots)               |
    +---------------------------------------------------------------------------------------+
               |  validate_bronze_to_silver (Pydantic v2; 1 bad row fails the batch)
               v
    +---------------------------------------------------------------------------------------+
-   | data/silver/  (Hive-partitioned: season=YYYY/, snapshot_ts=YYYY-MM-DDT18%3A00…)       |
+   | data/silver/  (Hive-partitioned: season=YYYY/, snapshot_ts=YYYY-MM-DDT18%3A00...)       |
    |   tables: games, odds_snapshot, weather, contextual, elo_game_snapshots               |
    +---------------------------------------------------------------------------------------+
               |  FeatureBuilder Protocol + LeakageGate + expanding-window normalization
@@ -348,7 +348,7 @@ any prediction is reproducible given the same input snapshot.
         +-----------------------------------+
 ```
 
-`models/prediction_pipeline.py` imports *only* `load_model_artifact` — no
+`models/prediction_pipeline.py` imports *only* `load_model_artifact` -- no
 trainer classes on the prediction path. The manifest at `artifacts/latest.json`
 points at the production versions. After the Phase-25 gated activation those were
 `wp_20260605_215552` (re-fit, activated), `ats_20260605_220128` (re-fit, activated
@@ -379,9 +379,9 @@ retained. The per-target before/after and both pre-swap mappings are in
 | Web framework | FastAPI | `>=0.115, <1` |
 | ASGI server | uvicorn (single-worker envelope) | uvicorn `>=0.34, <1` |
 | Templating | Jinja2 + `jinja2-fragments` (`Jinja2Blocks`) | `jinja2-fragments>=1.11` |
-| Frontend interactivity | HTMX 2.0.4 (CDN) | — |
+| Frontend interactivity | HTMX 2.0.4 (CDN) | -- |
 | Charts | Plotly (Python pre-render + JS CDN) | `plotly>=6.0, <7` |
-| Styling | Tailwind CSS v4 (vendored CLI at `tools/tailwindcss.exe`) | — |
+| Styling | Tailwind CSS v4 (vendored CLI at `tools/tailwindcss.exe`) | -- |
 | Data sources | nflreadpy, The Odds API, Open-Meteo | `nflreadpy>=0.1.5` |
 | HTTP client / retries | httpx + tenacity | `httpx>=0.28`, `tenacity>=9.0` |
 | Config | Pydantic v2 + pydantic-settings + YAML | `pydantic>=2.10` |
@@ -417,15 +417,15 @@ the analytics DB is for exploration and never touches the request path.
 |--------|------|----------------|
 | `GameSchema` | Silver-layer games | `game_id` (e.g. `2024_W06_KC@BUF`), `season` (2000-2030), `week` (1-22), `kickoff_et`, `venue_roof: VenueRoof`, `result: GameResult` |
 | `OddsSchema` | Silver-layer odds snapshot | per-book spread / total / moneylines + `snapshot_ts` |
-| `WeatherSchema` | Silver-layer weather | Open-Meteo shape + `wind_direction` float + NaN→None coercion |
-| `VenueRoof` (StrEnum) | `indoor` / `outdoor` / `retractable` | nflverse `"dome"/"closed" → indoor`, `"outdoors" → outdoor`, `"open" → retractable` |
+| `WeatherSchema` | Silver-layer weather | Open-Meteo shape + `wind_direction` float + NaN->None coercion |
+| `VenueRoof` (StrEnum) | `indoor` / `outdoor` / `retractable` | nflverse `"dome"/"closed" -> indoor`, `"outdoors" -> outdoor`, `"open" -> retractable` |
 | `GameResult` (IntEnum) | -1 away win, 0 tie, 1 home win | |
 
 ### Canonical team data (`utils/team_data.py`)
 
 Full metadata for all 32 teams plus `normalize_team_abbreviation(abbr)`,
 which **hard-fails** on unknown abbreviations with a closest-match suggestion
-via `difflib.get_close_matches`. `LA` is the Rams; `LAC` is the Chargers —
+via `difflib.get_close_matches`. `LA` is the Rams; `LAC` is the Chargers --
 matching nflreadpy. No silent pass-through anywhere.
 
 ### Web cache tables (`api/cache.py::CACHE_SCHEMA`)
@@ -462,7 +462,7 @@ Temporal correctness is the whole project. Three independent systems cooperate:
 `expit`) and ATS / O/U linearly in point space. The non-obvious decision is
 *where* weights are tuned: strictly pre-2018 seasons, stored as
 `TUNING_SEASONS` in `models/blending_data.py`. The 2021-2024 backtest
-window is therefore temporally disjoint from the weight-tuning window —
+window is therefore temporally disjoint from the weight-tuning window --
 a stricter guarantee than the backtest alone. `DynamicBlendWeights`
 extends this with a per-target sigmoid schedule in week-of-season and
 per-target gating that falls back to static weights where dynamic does
@@ -472,8 +472,8 @@ not empirically beat static.
 
 The `api/` package must never import from `models/`, `features/`, or
 `ratings/`. Enforced by `tests/api/test_import_guard.py`, which walks
-every Python file under `api/` as an AST and flags imports —
-including function-scoped lazy imports — from any forbidden package.
+every Python file under `api/` as an AST and flags imports --
+including function-scoped lazy imports -- from any forbidden package.
 The test fails CI the moment the boundary is violated, preserving the
 API's clean startup envelope (milliseconds, no heavy imports) as a hard
 invariant.
@@ -482,7 +482,7 @@ invariant.
 
 `pipeline/orchestrator.py::FridayPipeline` runs 18 sequential steps
 (8 data, 10 predictions) each wired through `pipeline/steps.py` with a
-**deferred-import adapter pattern** — every `step_*()` imports its
+**deferred-import adapter pattern** -- every `step_*()` imports its
 script inside the function body, which avoids argparse collisions at
 module load. Three gate concepts are deliberately kept apart:
 `StalenessGate` (season + data freshness, bypassed by `--force`),
@@ -516,7 +516,7 @@ nfl-predict/
     main.py                #   Lifespan: shared read-only DuckDB connection
     dependencies.py        #   get_db() DI, RLock reconnect, Jinja2Blocks loader
     services.py            #   DataService: TTLCache(maxsize=128, ttl=300) + RLock
-    cache.py               #   CACHE_SCHEMA + populate_cache() — builds web_cache.duckdb
+    cache.py               #   CACHE_SCHEMA + populate_cache() -- builds web_cache.duckdb
     charts/                #   Plotly chart generators (pure render layer)
     routes/{pages,fragments,api_export,health}.py  # HTML, HTMX, CSV/JSON, /health
 
@@ -530,7 +530,7 @@ nfl-predict/
 
   data/
     storage.py             # DuckDB + Parquet IO; tz normalization at write boundaries
-    schemas.py             # Pydantic v2 — GameSchema, OddsSchema, WeatherSchema
+    schemas.py             # Pydantic v2 -- GameSchema, OddsSchema, WeatherSchema
     quality_gates.py       # validate_bronze_to_silver / validate_silver_to_gold
     bronze/, silver/, gold/            # Layered lakehouse
     optuna/                # SQLite stores for resumable Optuna studies
@@ -551,7 +551,7 @@ nfl-predict/
     temporal.py, tuning.py # WalkForwardSplitter + OptunaTuner (TPE + Hyperband)
     calibrate.py           # IsotonicRegression primary, Platt fallback, ECE
     blending.py            # BlendWeights + DynamicBlendWeights + MarketBlender
-    blending_data.py       # TUNING_SEASONS (pre-2018) — strict temporal isolation
+    blending_data.py       # TUNING_SEASONS (pre-2018) -- strict temporal isolation
     clv.py                 # Probability CLV + line CLV (primary quality metric)
     prediction_pipeline.py # Artifact-based loading; no trainer imports
     artifacts.py, train.py
