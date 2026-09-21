@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS bet_list (
     rejection_reason VARCHAR,
     eligibility_label VARCHAR,
     snapshot_ts VARCHAR,
-    -- VALUE is each game's day-before-kickoff lock (D33.2-01); the NAME keeps the retired
+    -- VALUE is each game's day-before-kickoff lock (D33.2-01), and the NAME keeps the retired
     -- 'freeze' wording by ruling: renaming a published cache column is HOST-07's schema change.
     freeze_ts VARCHAR,
     selected_odds DOUBLE,
@@ -208,7 +208,7 @@ CREATE TABLE IF NOT EXISTS available_bet_weeks (
 CREATE TABLE IF NOT EXISTS bet_week_freeze (
     season INTEGER,
     week INTEGER,
-    -- VALUE is each game's day-before-kickoff lock (D33.2-01); the NAME keeps the retired
+    -- VALUE is each game's day-before-kickoff lock (D33.2-01), and the NAME keeps the retired
     -- 'freeze' wording by ruling: renaming a published cache column is HOST-07's schema change.
     latest_game_freeze_ts TIMESTAMP WITH TIME ZONE
     -- SCHEDULE-derived freshness source (REVIEW-STALE). The failure the stale-cache
@@ -771,7 +771,7 @@ CREATE TABLE IF NOT EXISTS bet_list (
     rejection_reason VARCHAR,
     eligibility_label VARCHAR,
     snapshot_ts VARCHAR,
-    -- VALUE is each game's day-before-kickoff lock (D33.2-01); the NAME keeps the retired
+    -- VALUE is each game's day-before-kickoff lock (D33.2-01), and the NAME keeps the retired
     -- 'freeze' wording by ruling: renaming a published cache column is HOST-07's schema change.
     freeze_ts VARCHAR,
     selected_odds DOUBLE,
@@ -806,7 +806,7 @@ BET_WEEK_FREEZE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS bet_week_freeze (
     season INTEGER,
     week INTEGER,
-    -- VALUE is each game's day-before-kickoff lock (D33.2-01); the NAME keeps the retired
+    -- VALUE is each game's day-before-kickoff lock (D33.2-01), and the NAME keeps the retired
     -- 'freeze' wording by ruling: renaming a published cache column is HOST-07's schema change.
     latest_game_freeze_ts TIMESTAMP WITH TIME ZONE
 )
