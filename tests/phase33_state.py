@@ -14999,3 +14999,74 @@ P332_09_RUNG2_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
     "nfl_predictions.duckdb",
     "silver/games.parquet",
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-10 Task 4 -- THE EMERGENCY SCHEDULE MOVES AND p332_ RUNG 3 (D33.2-20, SPEC R8).
+#
+# APPENDED ONCE by Plan 33.2-10 on 2026-09-21, in ONE block. Nothing above this line was
+# edited.
+#
+# OWNER RULING 2026-09-21 ("Approve as written" = ratify-all): config/schedule_moves.toml
+# stands as committed in 64abce6. 52 before-lock moves keep their real facts; exactly one
+# REAL move is post-lock -- 2003_W08_MIA@LAC, moved by the Cedar fire from Qualcomm Stadium
+# (SDG00) to Sun Devil Stadium (PHO99) with no dated report before its lock -- and it is
+# rebuilt at SDG00 through features.schedule_moves.facts_at_lock. The 33 scheduled games
+# carry the post-lock default and change nothing (from_value == to_value).
+#
+# RUNG 3. Declared in commit 0757605 BEFORE the rebuild ran. Its baseline is p332_rung2.json,
+# CONFIRMED rather than assumed: a scratch-root rebuild from today's inputs minus this cause
+# fingerprints identical to it on every non-clock column, so no retake and no carry-in.
+# MEASURED 2026-09-21: attribution_ok true, zero unattributed; 7 of the 17 derived
+# stadium-dependent columns moved, in 2003 and 2004 only; the digest bracket
+# outputs/p332_rung3_before.json -> after named exactly the four declared paths. No weather
+# column moved, as predicted. The other 10 derived columns did not move because the two
+# venues give them the same value (e.g. both are outdoor Bermuda Grass below 3,000 ft, and
+# Miami's trip is cross-country and westward to either).
+#
+# THE ROW RULE, measured row by row against a copy of the before-gold: the same 155 rows
+# moved in each matrix -- the neutralised game, 151 other 2003 rows sorted after it (the
+# within-season expanding statistics), and 3 early 2004 rows (the prior-season bootstrap).
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_SCHEDULE_MOVE_RUNG_CAUSE (UTF-8), declared in
+# commit 0757605 before the rebuild ran.
+P332_10_RUNG3_CAUSE_DIGEST: str = (
+    "3e7a11b130f4e84a361a44ec4e925479752186ff437a4a9baeac04b431282b20"
+)
+
+P332_10_RUNG3_DECLARED_IN_COMMIT: str = "0757605676955b323bd5ed4cfbac3dd01a44a2f2"
+
+P332_10_RUNG3_BASELINE_DOCUMENT: str = "p332_rung2.json"
+
+P332_10_POSTLOCK_REAL_MOVES: tuple[str, ...] = ("2003_W08_MIA@LAC",)
+
+P332_10_POSTLOCK_SCHEDULED_ROWS: int = 33
+
+P332_10_PRELOCK_REAL_MOVES: int = 52
+
+# Non-clock columns rung 3 moved (feature_timestamp is the build clock).
+P332_10_RUNG3_MOVED_COLUMNS: tuple[str, ...] = (
+    "away_abs_timezone_diff_hours",
+    "away_timezone_diff_hours",
+    "away_travel_distance_miles",
+    "away_travel_fatigue_score",
+    "venue_capacity",
+    "venue_elevation_ft",
+    "venue_warm_climate",
+)
+
+P332_10_RUNG3_MOVED_SEASONS: tuple[int, ...] = (2003, 2004)
+
+# The row rule, identical in all three matrices.
+P332_10_RUNG3_ROWS_MOVED_PER_MATRIX: int = 155
+
+P332_10_RUNG3_ROWS_MOVED_2003: int = 152
+
+P332_10_RUNG3_ROWS_MOVED_2004: int = 3
+
+P332_10_RUNG3_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "gold/features_wp.parquet",
+    "nfl_predictions.duckdb",
+)

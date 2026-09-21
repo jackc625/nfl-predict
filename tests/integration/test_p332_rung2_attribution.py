@@ -316,6 +316,15 @@ class TestTheLiveRung:
         )
 
 
+def _value_digests(document: dict) -> dict:
+    """Per-column per-season value digests, without the build clock."""
+    return {
+        column: digests
+        for column, digests in document["columns"].items()
+        if not fg._is_build_clock(column)
+    }
+
+
 needs_gold_copy = pytest.mark.skipif(
     not all((GOLD_BEFORE_DIR / f"{m}.parquet").is_file() for m in fg.GOLD_MATRICES),
     reason=(
@@ -340,7 +349,9 @@ class TestTheRowRule:
         )
         after_digest = fg.fingerprint_matrix(after.reset_index())
         rung2 = json.loads(RUNG2.read_text(encoding="utf-8"))[matrix]
-        if after_digest["column_meta"] != rung2["column_meta"]:
+        # The VALUE digests, not only column_meta (dtype and null counts): a later rung
+        # that moves values without changing any dtype must still read as "moved on".
+        if _value_digests(after_digest) != _value_digests(rung2):
             pytest.skip("live gold has moved on since the rung-2 document was written")
         assert list(before.index) == list(after.index)
         moved: dict[str, set[str]] = {}

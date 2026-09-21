@@ -544,12 +544,12 @@ class TestGoldCarriesThePreMoveFacts:
             )
             raw_now = _contextual_row(calculator, season_games, game_id)
             raw_played = _contextual_row(calculator, as_played, f"PLAYED_{game_id}")
+            # Only the schedule-fact columns are compared raw: renaming the game to build
+            # it as played also detaches it from the Elo schedule the spot flags read.
             raw_changed = {
                 column
-                for column in raw_now.index
-                if column not in ID_COLUMNS
-                and column in before.columns
-                and raw_now[column] != raw_played[column]
+                for column in SCHEDULE_FACT_COLUMNS
+                if column in before.columns and raw_now[column] != raw_played[column]
             }
             gold_changed = {
                 column

@@ -330,10 +330,12 @@ def _gold_moves(matrix: str) -> tuple[pd.DataFrame, dict[str, set[str]]]:
     before = pd.read_parquet(GOLD_BEFORE_DIR / f"{matrix}.parquet").set_index("game_id")
     after = pd.read_parquet(GOLD_AFTER_DIR / f"{matrix}.parquet").set_index("game_id")
     rung3 = json.loads(RUNG3.read_text(encoding="utf-8"))[matrix]
-    if (
-        fg.fingerprint_matrix(after.reset_index())["column_meta"]
-        != rung3["column_meta"]
-    ):
+    # The VALUE digests (not only column_meta): a later rung that moves values without
+    # changing a dtype must read as "moved on", or this would judge the wrong rebuild.
+    live = fg.fingerprint_matrix(after.reset_index())["columns"]
+    if {c: v for c, v in live.items() if not fg._is_build_clock(c)} != {
+        c: v for c, v in rung3["columns"].items() if not fg._is_build_clock(c)
+    }:
         pytest.skip("live gold has moved on since the rung-3 document was written")
     assert list(before.index) == list(after.index)
     moved: dict[str, set[str]] = {}

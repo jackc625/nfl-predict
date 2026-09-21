@@ -10,7 +10,7 @@
 # scripts.fingerprint_gold._column_bytes, as every prior ladder. ASCII only.
 # ===========================================================================
 
-generated_at = "2026-09-21T20:09:16.417035+00:00"
+generated_at = "2026-09-21T21:41:56.960853+00:00"
 rung_prefix = "p332_"
 float_tolerance = "none -- EXACT byte comparison"
 
@@ -111,3 +111,35 @@ venue_large_stadium = ["2025"]
 venue_outdoor = ["2025"]
 venue_retractable = ["2025"]
 venue_warm_climate = ["2025"]
+
+[rung.3]
+rung = 3
+prefix = "p332_"
+rebuilt = true
+baseline_document = "p332_rung2.json"
+baseline_confirmation = "CONFIRMED 2026-09-21 before rung 3 ran. Gold was rebuilt with `scripts/build_features.py --through-season 2025` in a SCRATCH data root (DATA_ROOT_PATH and DUCKDB_PATH pointed at a copy of today's production data/) from today's inputs minus exactly rung 3's cause -- the code at commit 64abce6, before features.schedule_moves was wired into the contextual builder -- and its fingerprint equals p332_rung2.json on EVERY non-clock column of all three matrices (only feature_timestamp, the build clock, differs). The production data/ tree was digest-identical (463 files) before and after that build, and production gold fingerprinted identical to p332_rung2.json. So nothing moved between rungs 2 and 3: no carry-in, no retake"
+baseline_confirmation_document = "p332_rung3_baseline_confirm.json"
+cause = "THE EMERGENCY SCHEDULE-MOVE NEUTRALISATION of Plan 33.2-10 (SPEC R8, D33.2-04, D33.2-21), and NOTHING else: every game whose emergency move was announced after its lock is rebuilt with the facts as they stood before the move, read through the one accessor features.schedule_moves.facts_at_lock from the owner-ratified evidence table config/schedule_moves.toml -- today exactly one game, 2003_W08_MIA@LAC, moved by the Cedar fire from Qualcomm Stadium (SDG00) to Sun Devil Stadium (PHO99) with no dated report before its lock, so its contextual features return to SDG00. Only the schedule-fact columns of the reverted moves' kinds can move, only in seasons on or after the earliest season holding such a move. No column is added, none removed, no row moves"
+move_table = "config/schedule_moves.toml"
+post_lock_real_moves = ["2003_W08_MIA@LAC"]
+declared_columns = ["away_abs_timezone_diff_hours", "away_cross_country_travel", "away_eastward_travel", "away_timezone_diff_hours", "away_travel_distance_miles", "away_travel_fatigue_score", "away_westward_travel", "surface_mismatch", "venue_capacity", "venue_cold_climate", "venue_elevation_ft", "venue_high_altitude", "venue_indoor", "venue_large_stadium", "venue_outdoor", "venue_retractable", "venue_warm_climate"]
+declared_season_floor = 2003
+rows_changed = "before normalization only the neutralised game can differ. After it: a rescaled column can also move on other rows of the same season sorted at or after that game (expanding within-season statistics), on the next season's early rows (the prior-season bootstrap), and on any later season's rows through the strictly-prior imputation and winsorization fits. A level-preserved indicator can move on the neutralised game only. Measured row by row at run time against a copy of the before-gold, never inferred from the per-season digests"
+weather = "NOT expected to move: gold weather is read from silver weather_features by game_id and this rung writes no silver row. The neutralised game's weather LOCATION is served by facts_at_lock to scripts.ingest_weather's venue resolution; rung 4 (Plan 33.2-12) regenerates silver weather through it"
+widths_before = ["195", "196", "195"]
+widths_after = ["195", "196", "195"]
+moved_columns = ["away_abs_timezone_diff_hours", "away_timezone_diff_hours", "away_travel_distance_miles", "away_travel_fatigue_score", "venue_capacity", "venue_elevation_ft", "venue_warm_climate"]
+build_clock_moves = ["feature_timestamp"]
+unattributed_columns = []
+attribution_ok = true
+attribution_blocking = false
+attributor = "_attribute_p332_schedule_move"
+
+[rung.3.moved_seasons]
+away_abs_timezone_diff_hours = ["2003", "2004"]
+away_timezone_diff_hours = ["2003", "2004"]
+away_travel_distance_miles = ["2003", "2004"]
+away_travel_fatigue_score = ["2003", "2004"]
+venue_capacity = ["2003", "2004"]
+venue_elevation_ft = ["2003", "2004"]
+venue_warm_climate = ["2003", "2004"]
