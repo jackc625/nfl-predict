@@ -54,9 +54,7 @@ class IdentityColumnError(ValueError):
 # either bucket.
 #
 # THIS IS A COARSENING, NOT A DUPLICATE OF game_type. Two values against five is
-# deliberate -- the season-close readout partitions regular-versus-post, and
-# utils/similar_games.py:444 already reads season_type with a game_type fallback and
-# today receives a constant.
+# deliberate -- the season-close readout partitions regular-versus-post.
 _GAME_TYPE_TO_SEASON_TYPE = {
     "REG": "Regular",
     "WC": "Postseason",

@@ -14,11 +14,24 @@ verbs that say which one they are:
 
 * :meth:`EloBuilder.save_full_rebuild` -- replace everything, loudly attributed, and
   reachable from the CLI only behind its own ``--full-rebuild`` flag.
-* :meth:`EloBuilder.save_live_append` -- upsert the three ROW tables on ``game_id``,
-  replace the two STATE artifacts, refuse any frame carrying another season's rows.
+* :meth:`EloBuilder.save_live_append` -- upsert the snapshot table on ``game_id`` and
+  refuse any frame carrying another season's rows.
 
-Both publish through :func:`publish_elo_generation`, so the FIVE artifacts are atomic
-together rather than five separately-atomic files that can crash into a mixed state.
+Both publish through :func:`publish_elo_generation`, so the snapshot table is staged,
+validated and published under one generation pointer move.
+
+ONE ELO COMPUTATION, ONE ANSWER ON DISK (Plan 33.2-05, D33.2-22)
+----------------------------------------------------------------
+``elo_game_snapshots`` is the only Elo artifact this module writes. There used to be a
+second, per-season pass (``process_seasons_chronologically``) that re-ran every season
+from a reset rating system -- so ``learn_home_field_advantage`` found no prior season and
+fell back to 48 every year -- and four side stores it fed. BOTH seams were removed
+together: the legacy pass AND its writers. A later reader restoring one of them must
+restore both or leave neither, because a writer with no pass has nothing honest to write
+and a pass with no writer is a second answer waiting for somewhere to go.
+
+EVERY SNAPSHOT WRITE LANDS IN ONE ROW ORDER: ``(season, kickoff_et, game_id)``. See
+:func:`order_snapshots_canonically`.
 
 AN UNPLAYED GAME GETS A ROW THAT SAYS SO (Plan 33-04, D33-07)
 -------------------------------------------------------------
@@ -31,8 +44,6 @@ serving-time convenience out of TRAINING: ``features.elo_features`` refuses a pr
 row by name at every trainer's gold-loading boundary.
 
 Usage:
-    python scripts/build_elo.py --season 2024              # Process single season
-    python scripts/build_elo.py --seasons 2020 2021 2022  # Process multiple seasons
     python scripts/build_elo.py --all-seasons              # Process all available seasons
     python scripts/build_elo.py --current                  # Process current season only
     python scripts/build_elo.py --all-seasons --full-rebuild   # REPLACE the Elo tables
@@ -41,8 +52,10 @@ Usage:
 import argparse
 import copy
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -72,7 +85,6 @@ from scripts.elo_generation import (
     ELO_GENERATION_POINTER_PATH,
     ELO_ROW_TABLE_KEY_COLUMN,
     ELO_ROW_TABLES,
-    ELO_STATE_ARTIFACTS,
     EloGenerationIncompleteError,
     EloGenerationPublisher,
     default_stage_writer,
@@ -91,14 +103,13 @@ __all__ = [
     "ELO_GENERATION_DIRNAME",
     "ELO_GENERATION_POINTER_NAME",
     "ELO_GENERATION_POINTER_PATH",
-    "ELO_RATING_UPDATE_COLUMNS",
     "ELO_ROW_TABLES",
     "ELO_ROW_TABLE_KEY_COLUMN",
     "ELO_SNAPSHOT_COLUMNS",
     "ELO_SNAPSHOT_TABLE",
-    "ELO_STATE_ARTIFACTS",
     "PROVISIONAL_COLUMN",
     "SNAPSHOT_COLUMNS",
+    "SNAPSHOT_ROW_ORDER",
     "EloBuilder",
     "EloForeignSeasonRowsError",
     "EloGenerationIncompleteError",
@@ -106,6 +117,7 @@ __all__ = [
     "EloProvisionalPrecedenceError",
     "EloSeasonReapplicationError",
     "EloSnapshotNotPersistedError",
+    "EloSnapshotOrderError",
     "LiveSeasonUpdate",
     "assert_starting_state_excludes_season",
     "build_snapshot_frame",
@@ -114,6 +126,7 @@ __all__ = [
     "elo_generation_pointer_path",
     "ensure_provisional_flag",
     "new_generation_id",
+    "order_snapshots_canonically",
     "publish_elo_generation",
     "read_elo_generation_pointer",
     "staged_artifact_filename",
@@ -159,16 +172,11 @@ SNAPSHOT_COLUMNS: tuple[str, ...] = (*ELO_SNAPSHOT_COLUMNS, PROVISIONAL_COLUMN)
 # alignment and the read seam cannot disagree about which table they mean.
 ELO_SNAPSHOT_TABLE: str = "elo_game_snapshots"
 
-# The per-game rating-update columns merged into ``games_with_elo``.
-ELO_RATING_UPDATE_COLUMNS: tuple[str, ...] = (
-    "game_id",
-    "home_rating_pre",
-    "away_rating_pre",
-    "home_rating_post",
-    "away_rating_post",
-    "home_change",
-    "away_change",
-)
+# The ONE physical row order every snapshot write persists, in parquet and DuckDB alike.
+# ``kickoff_et`` is not a snapshot column, so it is joined from silver ``games``; the
+# ``game_id`` tie-break makes two games sharing a kickoff land in one order every time
+# rather than whichever order an unstable sort produced on the day.
+SNAPSHOT_ROW_ORDER: tuple[str, ...] = ("season", "kickoff_et", "game_id")
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +216,17 @@ class EloSnapshotNotPersistedError(RuntimeError):
         )
 
 
+class EloSnapshotOrderError(RuntimeError):
+    """A snapshot row names a game the silver ``games`` table does not have.
+
+    The canonical row order is ``(season, kickoff_et, game_id)`` and the snapshot table
+    carries no kickoff, so every row's kickoff is joined from ``games``. A row whose game
+    is missing there has no place in that order. Parking it at the end (or the start)
+    would store a table that LOOKS ordered and is not, which is the defect the ordering
+    exists to remove, so the write is refused by name instead.
+    """
+
+
 class EloProvisionalPrecedenceError(RuntimeError):
     """A PROVISIONAL snapshot row was offered for a game that already has a REAL one.
 
@@ -237,18 +256,16 @@ class EloSeasonReapplicationError(RuntimeError):
 
 @dataclass
 class LiveSeasonUpdate:
-    """The three ROW frames for ONE season, at the three grains they really have.
+    """ONE season's Elo snapshots: one grain, one destination.
 
-    They are NOT one frame. ``snapshots`` is the per-game PRE-game capture,
-    ``games_with_elo`` is the season's games merged with their rating updates, and
-    ``rating_history`` is the Elo system's own per-update history. A single-frame
-    hand-off would upsert one grain into all three tables.
+    ``snapshots`` is the per-game PRE-game capture, and ``elo_game_snapshots`` is the
+    only table it is written to. This object used to carry two more frames at two other
+    grains, for two side tables that D33.2-22 deleted; with one table left there is one
+    grain, and a hand-off that carried anything else would be carrying it nowhere.
     """
 
     season: int
     snapshots: pd.DataFrame
-    games_with_elo: pd.DataFrame
-    rating_history: pd.DataFrame
 
 
 class EloBuilder:
@@ -313,62 +330,6 @@ class EloBuilder:
             logger.error("Failed to load games data", error=str(e))
             raise
 
-    def process_seasons_chronologically(self, seasons: list[int]) -> pd.DataFrame:
-        """
-        Process multiple seasons chronologically to build Elo ratings.
-
-        Args:
-            seasons: List of seasons to process in order
-
-        Returns:
-            DataFrame with all processed games and rating updates
-        """
-        logger.info("Starting chronological Elo processing", seasons=seasons)
-
-        all_processed_games = []
-
-        for season in sorted(seasons):
-            logger.info(f"Processing season {season}")
-
-            # Load games for this season
-            season_games = self.load_games_data([season])
-
-            if len(season_games) == 0:
-                logger.warning(f"No games found for season {season}")
-                continue
-
-            # Process season chronologically
-            processed_games = self.elo_system.process_season_chronologically(
-                season_games, season
-            )
-
-            all_processed_games.append(processed_games)
-
-            # Log season summary
-            current_ratings = self.elo_system.get_current_ratings(season)
-            logger.info(
-                f"Completed season {season}",
-                games_processed=len(processed_games),
-                teams_rated=len(current_ratings),
-                top_team=current_ratings.iloc[0]["team"]
-                if len(current_ratings) > 0
-                else None,
-                top_rating=current_ratings.iloc[0]["rating"]
-                if len(current_ratings) > 0
-                else None,
-            )
-
-        # Combine all processed games
-        if all_processed_games:
-            result_df = pd.concat(all_processed_games, ignore_index=True)
-            logger.info(
-                "Chronological processing completed",
-                total_games=len(result_df),
-                seasons_processed=len(seasons),
-            )
-            return result_df
-        return pd.DataFrame()
-
     # -- the one chronological chain both the canonical builder and the live path use
 
     def _process_chain(
@@ -378,7 +339,7 @@ class EloBuilder:
         games: pd.DataFrame,
         learn_from: pd.DataFrame,
         system: EloRatingSystem | None = None,
-    ) -> tuple[list[dict], list[dict]]:
+    ) -> list[dict]:
         """Process *seasons* in order against an Elo state.
 
         For each game, in chronological order: capture the PRE-game ratings, record
@@ -402,11 +363,10 @@ class EloBuilder:
                 SEPARATE state without disturbing the builder current one.
 
         Returns:
-            ``(snapshot_rows, rating_update_rows)``.
+            One snapshot row per completed game, in processing order.
         """
         elo = self.elo_system if system is None else system
         snapshot_rows: list[dict] = []
-        update_rows: list[dict] = []
 
         for season in sorted(seasons):
             elo.apply_season_carryover(season)
@@ -458,7 +418,7 @@ class EloBuilder:
                 )
 
                 # Step 3: THEN process game result (updates ratings)
-                home_change, away_change = elo.update_ratings(
+                elo.update_ratings(
                     home_team=home,
                     away_team=away,
                     home_score=int(game["home_score"]),
@@ -468,18 +428,6 @@ class EloBuilder:
                     game_id=game["game_id"],
                     is_divisional=divisional,
                 )
-
-                update_rows.append(
-                    {
-                        "game_id": game["game_id"],
-                        "home_rating_pre": home_pre,
-                        "away_rating_pre": away_pre,
-                        "home_rating_post": elo.ratings[home].rating,
-                        "away_rating_post": elo.ratings[away].rating,
-                        "home_change": home_change,
-                        "away_change": away_change,
-                    }
-                )
                 games_processed += 1
 
             logger.info(
@@ -487,7 +435,7 @@ class EloBuilder:
                 games_processed=games_processed,
             )
 
-        return snapshot_rows, update_rows
+        return snapshot_rows
 
     def build_season_frames(
         self,
@@ -496,7 +444,7 @@ class EloBuilder:
         games: pd.DataFrame | None = None,
         learn_from: pd.DataFrame | None = None,
     ) -> LiveSeasonUpdate:
-        """Process ONE season against the current Elo state and return its three frames.
+        """Process ONE season against the current Elo state and return its snapshots.
 
         Does NOT reset the Elo system: the caller decides what state the season starts
         from, which is the whole subject of the re-derivation in
@@ -508,39 +456,16 @@ class EloBuilder:
             learn_from: Frame HFA is learned from (default: *games*).
 
         Returns:
-            The season's snapshots, ``games_with_elo`` rows and rating history.
+            The season's snapshots (see :class:`LiveSeasonUpdate`).
         """
         all_games = self.load_games_data() if games is None else games
         learning_frame = all_games if learn_from is None else learn_from
 
-        history_before = len(self.elo_system.game_history)
-        snapshot_rows, update_rows = self._process_chain(
+        snapshot_rows = self._process_chain(
             [season], games=all_games, learn_from=learning_frame
         )
-
-        snapshots = build_snapshot_frame(snapshot_rows)
-
-        season_games = all_games[all_games["season"] == season].sort_values(
-            "kickoff_et"
-        )
-        games_with_elo = season_games.copy()
-        if update_rows:
-            games_with_elo = games_with_elo.merge(
-                pd.DataFrame(update_rows), on="game_id", how="left"
-            )
-
-        history = self.elo_system.get_rating_history()
-        rating_history = (
-            history.iloc[history_before:].reset_index(drop=True)
-            if len(history) > history_before
-            else pd.DataFrame(columns=history.columns)
-        )
-
         return LiveSeasonUpdate(
-            season=season,
-            snapshots=snapshots,
-            games_with_elo=games_with_elo,
-            rating_history=rating_history,
+            season=season, snapshots=build_snapshot_frame(snapshot_rows)
         )
 
     def build_prior_terminal_state(
@@ -554,10 +479,9 @@ class EloBuilder:
 
         This is the seed the current season is rebuilt from, and it is DERIVED rather
         than read back. The alternative -- a persisted terminal snapshot -- is a second
-        piece of state that can drift from the ratings it claims to describe, and
-        ``load_ratings`` already repopulates ``hfa_by_season`` from JSON
-        (``ratings/elo.py``), so adding a second JSON-backed guard beside a fragile one
-        is not an improvement.
+        piece of state that can drift from the ratings it claims to describe. The JSON
+        state file that once played that role was deleted with the legacy pass
+        (D33.2-22); nothing reads Elo state back from disk.
 
         Measured: the full 2002-2025 chain over 6,499 games takes about one second, so
         re-deriving rather than reading back costs the weekly run essentially nothing.
@@ -604,8 +528,8 @@ class EloBuilder:
     ) -> LiveSeasonUpdate:
         """Re-derive the current season from the prior season terminal state.
 
-        WHY THIS IS A REBUILD AND NOT AN UPDATE (T-33-16b). This method used to call
-        ``self.elo_system.load_ratings()`` -- FINAL ratings that already contain this
+        WHY THIS IS A REBUILD AND NOT AN UPDATE (T-33-16b). This method used to load the
+        persisted JSON Elo state -- FINAL ratings that already contain this
         season completed games from any previous run -- and then reprocess every
         completed game in the season. There is no processed-game watermark anywhere, so
         a weekly RERUN applied every completed game a SECOND time, silently inflating
@@ -629,7 +553,7 @@ class EloBuilder:
                 from.
 
         Returns:
-            The season three ROW frames (see :class:`LiveSeasonUpdate`).
+            The season's snapshots (see :class:`LiveSeasonUpdate`).
 
         Raises:
             EloSeasonReapplicationError: If the seed state already contains results
@@ -697,7 +621,7 @@ class EloBuilder:
             total_seasons=len(seasons_to_process),
         )
 
-        snapshot_rows, _ = self._process_chain(
+        snapshot_rows = self._process_chain(
             seasons_to_process, games=all_games, learn_from=all_games
         )
 
@@ -803,126 +727,58 @@ class EloBuilder:
         return frame
 
     def build_all_ratings(self, start_season: int = 2002) -> pd.DataFrame:
-        """Build Elo ratings from scratch with per-game snapshots.
-
-        Uses build_elo_with_snapshots to process all seasons chronologically
-        and produce per-game pre-game snapshots. Also processes seasons
-        through the legacy path for backward compatibility of games_with_elo.
+        """Build Elo ratings from scratch: ONE pass, the canonical chain.
 
         Args:
             start_season: First season to include (default: 2002 for burn-in)
 
         Returns:
-            DataFrame with all processed games (from legacy path)
+            The canonical chain's per-game pre-game snapshots. ``self.elo_system`` is
+            left at the chain's terminal state, so the ratings validated and printed
+            after a rebuild are the canonical ones.
         """
-        # Build snapshots (the primary output)
+        # D33.2-22 -- BOTH SEAMS WERE REMOVED TOGETHER. A second, legacy per-season pass
+        # used to run here after the canonical chain: it reset the rating system and
+        # re-processed each season alone, so home-field advantage fell back to 48 every
+        # year, and it fed four side stores that differed from the snapshots by up to
+        # 9.7 rating points. The pass AND its writers are gone; ``elo_game_snapshots``
+        # is the one answer on disk. Restoring either seam means restoring both, or
+        # neither -- the absence is deliberate, not an oversight.
         self._snapshots_df = self.build_elo_with_snapshots(start_season)
         self._pending_snapshot_rows = len(self._snapshots_df)
-
-        # Also run the legacy processing path for games_with_elo compatibility
-        # Reset Elo system for clean processing
-        self.elo_system = EloRatingSystem()
-
-        all_games = self.load_games_data()
-        available_seasons = sorted(all_games["season"].unique())
-        seasons_to_process = [s for s in available_seasons if s >= start_season]
-
-        logger.info(
-            "Building all Elo ratings from scratch",
-            start_season=start_season,
-            seasons_to_process=seasons_to_process,
-        )
-
-        return self.process_seasons_chronologically(seasons_to_process)
+        return self._snapshots_df
 
     # -- the two write verbs ------------------------------------------------
 
-    def save_full_rebuild(
-        self, processed_games: pd.DataFrame, start_season: int
-    ) -> None:
-        """REPLACE every Elo artifact. Reachable only through ``--full-rebuild``.
+    def save_full_rebuild(self, snapshots: pd.DataFrame, start_season: int) -> None:
+        """REPLACE the snapshot table. Reachable only through ``--full-rebuild``.
 
-        Saves, with today's replace-everything semantics unchanged:
-        - elo_game_snapshots: Per-game pre-game Elo snapshots (primary artifact)
-        - games_with_elo: Games with Elo rating updates (legacy)
-        - elo_ratings_current: Current team ratings
-        - elo_rating_history: Full rating history
-        - elo_ratings.json: Elo system state
-
-        All five are staged under one generation id and validated together before any
-        of them is published, so a crash mid-write cannot leave a mixed generation.
+        The snapshots are staged under one generation id and validated before they are
+        published, so a crash mid-write cannot leave a half-published generation. They
+        are written in :data:`SNAPSHOT_ROW_ORDER`, the same order a live append leaves.
 
         Args:
-            processed_games: DataFrame with games and rating updates.
+            snapshots: The canonical chain's per-game pre-game snapshots, as returned by
+                :meth:`build_all_ratings`.
             start_season: The first season this rebuild covers -- named in the log so a
                 full rebuild can never be mistaken for a weekly run in a log file.
         """
-        snapshots = getattr(self, "_snapshots_df", None)
         if not isinstance(snapshots, pd.DataFrame):
-            snapshots = pd.DataFrame()
-        current_ratings = self.elo_system.get_current_ratings()
-        rating_history = self.elo_system.get_rating_history()
-
-        staged = {
-            "elo_game_snapshots": snapshots,
-            "games_with_elo": processed_games,
-            "elo_rating_history": rating_history,
-            "elo_ratings_current": current_ratings,
-            "elo_ratings": self.elo_system.ratings_state(),
-        }
+            snapshots = build_snapshot_frame([])
+        if len(snapshots) > 0:
+            snapshots = order_snapshots_canonically(snapshots, self.load_games_data())
 
         def _publish_live() -> None:
-            # Save per-game pre-game snapshots (primary artifact for EloFeatureBuilder)
             if len(snapshots) > 0:
                 save_dataframe(
                     snapshots,
-                    "elo_game_snapshots",
+                    ELO_SNAPSHOT_TABLE,
                     layer="silver",
                     append_mode=False,  # Always replace, full rebuild
                 )
 
-            # Save updated games with Elo ratings.
-            # replace_mode: processed_games is the complete games-with-Elo table for
-            # this build; write a single self-replacing file so a full rebuild is
-            # idempotent. The prior partition_cols=["season"] wrote into the shared
-            # data/silver/season=YYYY/ root, mixing this table's files with the
-            # weather/contextual/market feature tables and appending a new file on
-            # every run (the ~30.7x games_with_elo bloat). (FIX-01, D-13)
-            if len(processed_games) > 0:
-                save_dataframe(
-                    processed_games,
-                    "games_with_elo",
-                    layer="silver",
-                    replace_mode=True,
-                )
-
-            # Save current ratings
-            if len(current_ratings) > 0:
-                save_dataframe(
-                    current_ratings,
-                    "elo_ratings_current",
-                    layer="silver",
-                    append_mode=False,  # Always replace current ratings, don't append
-                )
-
-            # Save rating history.
-            # replace_mode: rating_history is the complete history for this build;
-            # single self-replacing file keeps the rebuild idempotent (no shared-root
-            # season-partition append bloat). (FIX-01, D-13)
-            if len(rating_history) > 0:
-                save_dataframe(
-                    rating_history,
-                    "elo_rating_history",
-                    layer="silver",
-                    replace_mode=True,
-                )
-
-            # Save Elo system state to JSON
-            self.silver_root.mkdir(parents=True, exist_ok=True)
-            self.elo_system.save_ratings(str(self.silver_root / "elo_ratings.json"))
-
         publish_elo_generation(
-            staged,
+            {ELO_SNAPSHOT_TABLE: snapshots},
             new_generation_id(),
             silver_root=self.silver_root,
             publish_live=_publish_live,
@@ -932,94 +788,50 @@ class EloBuilder:
         self._pending_snapshot_rows = 0
 
         logger.info(
-            "FULL REBUILD published -- every Elo artifact was REPLACED",
+            "FULL REBUILD published -- the Elo snapshot table was REPLACED",
             start_season=int(start_season),
             elo_game_snapshots_rows=len(snapshots),
-            games_with_elo_rows=len(processed_games),
-            elo_rating_history_rows=len(rating_history),
-            elo_ratings_current_rows=len(current_ratings),
         )
 
-    def save_live_append(
-        self,
-        season: int,
-        *,
-        snapshots: pd.DataFrame,
-        games_with_elo: pd.DataFrame,
-        rating_history: pd.DataFrame,
-    ) -> None:
-        """UPSERT one season's rows; replace only the two state artifacts.
-
-        THREE EXPLICIT FRAMES, one per row table, because the three tables have three
-        different grains and three different sources. A generic single-frame form would
-        upsert one grain into all three and silently corrupt two of them.
+    def save_live_append(self, season: int, *, snapshots: pd.DataFrame) -> None:
+        """UPSERT one season's snapshot rows on ``game_id``.
 
         A season with ZERO completed games writes zero new rows and returns normally --
         R3's explicit edge case. The refusal in this phase is about snapshots that were
         COMPUTED and not written, never about a season that had nothing to compute.
 
         Args:
-            season: The ONLY season these frames may touch.
+            season: The ONLY season these rows may touch.
             snapshots: Per-game pre-game snapshots for *season*.
-            games_with_elo: The season's games merged with their rating updates.
-            rating_history: The Elo system's per-update history for *season*.
 
         Raises:
-            EloForeignSeasonRowsError: If any frame carries a row from another season.
+            EloForeignSeasonRowsError: If the frame carries a row from another season.
             EloProvisionalPrecedenceError: If a provisional row is offered for a
                 ``game_id`` that already has a REAL stored row.
+            EloSnapshotOrderError: If a stored or offered row names a game the silver
+                ``games`` table does not have, so it has no place in the row order.
         """
-        supplied = {
-            ELO_SNAPSHOT_TABLE: snapshots,
-            "games_with_elo": games_with_elo,
-            "elo_rating_history": rating_history,
-        }
-        for name, frame in supplied.items():
-            _refuse_foreign_season_rows(name, frame, season)
+        # With one row table this refusal guards one frame. It is kept, not inlined
+        # away, because it regains its teeth the day a second row table returns.
+        _refuse_foreign_season_rows(ELO_SNAPSHOT_TABLE, snapshots, season)
 
         # BEFORE anything is staged or written. A refusal that half-applied would be
         # worse than no refusal: the caller would have a named error AND a table that
         # had already moved.
         self._refuse_provisional_over_real(snapshots)
 
-        scoped = {
-            name: canonicalize_datetime_columns(_rows_for_season(frame, season))
-            for name, frame in supplied.items()
-        }
         # The snapshot frame is flag-aligned on the way in, so a caller handing an
         # eleven-column frame cannot reintroduce the null third state through the back
         # door of the write path.
-        scoped[ELO_SNAPSHOT_TABLE] = ensure_provisional_flag(scoped[ELO_SNAPSHOT_TABLE])
-        current_ratings = self.elo_system.get_current_ratings()
-
-        staged = {
-            **scoped,
-            "elo_ratings_current": current_ratings,
-            "elo_ratings": self.elo_system.ratings_state(),
-        }
+        scoped = ensure_provisional_flag(
+            canonicalize_datetime_columns(_rows_for_season(snapshots, season))
+        )
 
         def _publish_live() -> None:
-            for name in ELO_ROW_TABLES:
-                self._upsert_row_table(scoped[name], name)
-
-            # STATE artifacts are current-state by definition, so they are replaced.
-            # replace_mode (not append_mode=False) on purpose: it writes one
-            # self-contained file and never reaches the partitioned form, and it keeps
-            # every replace-shaped keyword in this module inside save_full_rebuild,
-            # where an AST assertion pins them (T-33-12).
-            if len(current_ratings) > 0:
-                save_dataframe(
-                    current_ratings,
-                    "elo_ratings_current",
-                    layer="silver",
-                    replace_mode=True,
-                )
-
-            self.silver_root.mkdir(parents=True, exist_ok=True)
-            self.elo_system.save_ratings(str(self.silver_root / "elo_ratings.json"))
+            self._upsert_row_table(scoped, ELO_SNAPSHOT_TABLE)
 
         publish_elo_generation(
-            staged,
+            {ELO_SNAPSHOT_TABLE: scoped},
             new_generation_id(),
             silver_root=self.silver_root,
             publish_live=_publish_live,
@@ -1031,9 +843,7 @@ class EloBuilder:
         logger.info(
             "Live append published",
             season=int(season),
-            elo_game_snapshots_rows=len(scoped["elo_game_snapshots"]),
-            games_with_elo_rows=len(scoped["games_with_elo"]),
-            elo_rating_history_rows=len(scoped["elo_rating_history"]),
+            elo_game_snapshots_rows=len(scoped),
         )
 
     def _upsert_row_table(self, frame: pd.DataFrame, table_name: str) -> int:
@@ -1045,19 +855,32 @@ class EloBuilder:
         the stale copy -- the same "the write did not land" failure this plan exists to
         remove, merely relocated. The combined table is therefore read back and the
         DuckDB copy replaced from it, so the two stores cannot disagree.
+
+        THE SNAPSHOT TABLE IS WRITTEN IN :data:`SNAPSHOT_ROW_ORDER`. Latest-wins removes
+        a replaced row and appends its successor at the END, so without an explicit
+        order a real result landing over its provisional placeholder is stored after
+        rows for later weeks -- measured in 2026 as 30 per-team inversions, which
+        ``LeakageGate.check_elo_ordering`` reads as out-of-order Elo. The whole combined
+        table is re-ordered inside the one atomic write, and DuckDB is replaced from
+        that parquet, so both stores carry the same order.
         """
         if frame is None or len(frame) == 0:
             logger.info("Live append wrote zero rows", table=table_name)
             return 0
 
+        order_rows: Callable[[pd.DataFrame], pd.DataFrame] | None = None
         if table_name == ELO_SNAPSHOT_TABLE:
             self._align_stored_snapshot_flag()
+            order_rows = partial(
+                order_snapshots_canonically, games=self.load_games_data()
+            )
 
         path = upsert_silver(
             frame,
             table_name,
             key_column=ELO_ROW_TABLE_KEY_COLUMN,
             base_path=self.data_root,
+            order_rows=order_rows,
         )
         combined = pd.read_parquet(path, engine="pyarrow")
         get_db_connection().create_table_from_df(
@@ -1250,6 +1073,63 @@ def ensure_provisional_flag(frame: pd.DataFrame) -> pd.DataFrame:
     return aligned
 
 
+def order_snapshots_canonically(
+    snapshots: pd.DataFrame, games: pd.DataFrame
+) -> pd.DataFrame:
+    """Return *snapshots* in :data:`SNAPSHOT_ROW_ORDER`, values untouched.
+
+    THE ONE ORDERING RULE both write verbs use, so a full rebuild and a live append
+    cannot leave the table in two different orders. The snapshot table has no kickoff
+    column, so each row's ``kickoff_et`` is looked up from *games* by ``game_id``, used
+    as a sort key, and dropped again: the returned frame has exactly the input columns
+    and dtypes, only its rows are reordered.
+
+    ``kind="stable"`` with ``game_id`` as the last key means the order is a function of
+    the data alone. The canonical chain sorts each season on ``kickoff_et`` only, with
+    an unstable sort, so two games sharing a kickoff could come out either way round.
+
+    Args:
+        snapshots: Snapshot rows (any subset of seasons).
+        games: A frame with ``game_id`` and ``kickoff_et`` covering every snapshot game.
+
+    Returns:
+        The same rows in ``(season, kickoff_et, game_id)`` order.
+
+    Raises:
+        EloSnapshotOrderError: If any snapshot's game is missing from *games* or has
+            no kickoff there.
+    """
+    if snapshots is None or len(snapshots) == 0:
+        return snapshots
+
+    lookup = games.drop_duplicates(subset=["game_id"])
+    kickoff_by_game = dict(zip(lookup["game_id"], lookup["kickoff_et"], strict=True))
+    kickoff = pd.to_datetime(
+        pd.Series(
+            [kickoff_by_game.get(game_id) for game_id in snapshots["game_id"]],
+            index=snapshots.index,
+            dtype="object",
+        ),
+        utc=True,
+    )
+    unplaced = sorted(snapshots.loc[kickoff.isna(), "game_id"].astype(str).unique())
+    if unplaced:
+        shown = unplaced[:12]
+        raise EloSnapshotOrderError(
+            f"{len(unplaced)} Elo snapshot game(s) have no kickoff in the silver games "
+            f"table: {shown}. The snapshot table is stored in (season, kickoff_et, "
+            "game_id) order and a row with no kickoff has no place in it. Re-ingest the "
+            "schedule (python -m scripts.ingest_games) before writing Elo."
+        )
+
+    key = "__snapshot_order_kickoff__"
+    keyed = snapshots.assign(**{key: kickoff.to_numpy()})
+    ordered = keyed.sort_values(["season", key, "game_id"], kind="stable").drop(
+        columns=[key]
+    )
+    return cast("pd.DataFrame", ordered)
+
+
 def _scheduled_unplayed_games(
     schedule: pd.DataFrame, season: int, week: int
 ) -> pd.DataFrame:
@@ -1309,12 +1189,15 @@ def canonicalize_datetime_columns(frame: pd.DataFrame) -> pd.DataFrame:
     same weekly append twice produced IDENTICAL in-memory frames and two DIFFERENT
     on-disk representations:
 
-    * ``games_with_elo.kickoff_et`` came back ``datetime64[us, UTC]`` after the first
-      write and ``datetime64[us, America/New_York]`` after the second -- the same
-      INSTANTS, a different stored offset;
-    * ``elo_rating_history.game_date`` came back ``datetime64[ns, UTC]`` after the first
-      write and ``object``-dtype STRINGS (``2026-09-07 18:00:00.000000Z``) after the
-      second.
+    * a ``kickoff_et`` column came back ``datetime64[us, UTC]`` after the first write
+      and ``datetime64[us, America/New_York]`` after the second -- the same INSTANTS, a
+      different stored offset;
+    * a ``game_date`` column came back ``datetime64[ns, UTC]`` after the first write and
+      ``object``-dtype STRINGS (``2026-09-07 18:00:00.000000Z``) after the second.
+
+    (Both were measured on side tables D33.2-22 later deleted. The snapshot table that
+    survives carries no timestamp today; the canonicalisation stays so that a timestamp
+    column added to it later cannot reintroduce the defect.)
 
     The cause is that ``upsert_silver`` concatenates the surviving rows with the new
     ones, and ``ParquetManager._normalize_parquet_datetime_columns`` takes a DIFFERENT
@@ -1436,10 +1319,9 @@ def _refuse_foreign_season_rows(
 def main():
     """CLI entry point for Elo rating builder."""
     parser = argparse.ArgumentParser(description="Build NFL Elo ratings")
-    parser.add_argument("--season", type=int, help="Process single season")
-    parser.add_argument(
-        "--seasons", nargs="+", type=int, help="Process multiple seasons"
-    )
+    # There is no --season / --seasons: those flags ran the legacy per-season pass
+    # (D33.2-22). A season cannot be rebuilt alone without losing the prior season's
+    # home-field advantage, which is exactly the defect that pass had.
     parser.add_argument(
         "--all-seasons", action="store_true", help="Process all available seasons"
     )
@@ -1456,10 +1338,10 @@ def main():
         "--full-rebuild",
         action="store_true",
         help=(
-            "REPLACE every Elo artifact rather than upserting. Required for the "
-            "--all-seasons / --seasons / --season write paths, and never reachable by "
-            "default: replace-all against a table holding 24 seasons of burn-in is a "
-            "destructive operation and has to be asked for."
+            "REPLACE the Elo snapshot table rather than upserting. Required for the "
+            "--all-seasons write path, and never reachable by default: replace-all "
+            "against a table holding 24 seasons of burn-in is a destructive operation "
+            "and has to be asked for."
         ),
     )
     parser.add_argument(
@@ -1478,8 +1360,10 @@ def main():
         builder = EloBuilder()
 
         if args.validate_only:
-            # Load existing ratings and validate
-            builder.elo_system.load_ratings()
+            # Re-derive the canonical chain in memory (about a second) and validate
+            # THAT. There is no persisted rating state to read back any more: the JSON
+            # file this used to load was deleted with the legacy pass (D33.2-22).
+            builder.build_elo_with_snapshots(args.start_season)
             success = builder.validate_ratings()
             if success:
                 print("Elo rating validation passed")
@@ -1489,29 +1373,20 @@ def main():
             return
 
         live_update: LiveSeasonUpdate | None = None
-        processed_games = pd.DataFrame()
+        rebuilt_snapshots = pd.DataFrame()
 
-        if args.current:
-            live_update = builder.update_current_season()
-        elif args.all_seasons:
-            processed_games = builder.build_all_ratings(args.start_season)
-        elif args.seasons:
-            processed_games = builder.process_seasons_chronologically(args.seasons)
-        elif args.season:
-            processed_games = builder.process_seasons_chronologically([args.season])
+        if args.all_seasons:
+            rebuilt_snapshots = builder.build_all_ratings(args.start_season)
         else:
-            # Default: update current season
+            # --current, and the default: update the current season.
             live_update = builder.update_current_season()
 
         if not args.no_save:
             if live_update is not None:
                 builder.save_live_append(
-                    live_update.season,
-                    snapshots=live_update.snapshots,
-                    games_with_elo=live_update.games_with_elo,
-                    rating_history=live_update.rating_history,
+                    live_update.season, snapshots=live_update.snapshots
                 )
-            elif len(processed_games) > 0:
+            elif len(rebuilt_snapshots) > 0:
                 if not args.full_rebuild:
                     print(
                         "Refusing to write: a historical build REPLACES the Elo "
@@ -1519,7 +1394,7 @@ def main():
                         "for a dry run."
                     )
                     sys.exit(1)
-                builder.save_full_rebuild(processed_games, args.start_season)
+                builder.save_full_rebuild(rebuilt_snapshots, args.start_season)
 
         # Validate results
         builder.validate_ratings()
@@ -1528,9 +1403,9 @@ def main():
         current_ratings = builder.elo_system.get_current_ratings()
         if len(current_ratings) > 0:
             games_seen = (
-                len(live_update.games_with_elo)
+                len(live_update.snapshots)
                 if live_update is not None
-                else len(processed_games)
+                else len(rebuilt_snapshots)
             )
             print("\nElo ratings built successfully!")
             print(f"Teams rated: {len(current_ratings)}")

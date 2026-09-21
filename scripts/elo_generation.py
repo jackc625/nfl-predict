@@ -1,4 +1,12 @@
-"""Publish an Elo GENERATION: five artifacts staged together, one pointer move.
+"""Publish an Elo GENERATION: staged, validated, then one pointer move.
+
+THE SET IS ONE ARTIFACT TODAY (Plan 33.2-05, D33.2-22)
+------------------------------------------------------
+A generation used to range over five artifacts. Four of them were side stores fed by a
+legacy per-season Elo pass that learned no home-field advantage, and D33.2-22 deleted
+the pass and the stores together. The GUARANTEE is unchanged -- what is published is
+published under one pointer move, after validation -- and only the SET it ranges over
+narrowed, to ``elo_game_snapshots``.
 
 WHY THIS IS ITS OWN MODULE
 --------------------------
@@ -16,8 +24,9 @@ building ratings and this module stays about publishing them atomically.
 
 THE SPLIT RULE LIVES HERE TOO, because validation is what enforces it: a ROW table
 accumulates history and is UPSERTED, a STATE artifact is current-state by definition and
-is REPLACED. ``scripts/build_elo`` re-exports both tuples, so callers and tests have one
-name to import either way.
+is REPLACED. There is no state artifact today (``ELO_STATE_ARTIFACTS`` is empty); the
+split is kept so a future one has a rule to land in. ``scripts/build_elo`` re-exports
+the row-table tuple, so callers and tests have one name to import either way.
 """
 
 from __future__ import annotations
@@ -44,18 +53,16 @@ import pandas as pd
 # destroy the chain the deployed WP model reads.
 # ---------------------------------------------------------------------------
 
-ELO_ROW_TABLES: tuple[str, ...] = (
-    "elo_game_snapshots",
-    "games_with_elo",
-    "elo_rating_history",
-)
+ELO_ROW_TABLES: tuple[str, ...] = ("elo_game_snapshots",)
 
-ELO_STATE_ARTIFACTS: tuple[str, ...] = ("elo_ratings_current", "elo_ratings")
+# EMPTY BY RULING (D33.2-22): the two state artifacts were side stores of the deleted
+# legacy pass. Kept as a name so the split rule above still has both halves.
+ELO_STATE_ARTIFACTS: tuple[str, ...] = ()
 
 # Every row table is ONE ROW PER GAME, so ``game_id`` alone is its identity and
-# ``upsert_silver`` (latest-wins on a single key) is the right verb for all three.
+# ``upsert_silver`` (latest-wins on a single key) is the right verb.
 # ``upsert_silver_composite`` exists for the ``odds_timeline`` trajectory grain, where
-# a game legitimately carries many rows; none of these three does.
+# a game legitimately carries many rows; the snapshot table does not.
 ELO_ROW_TABLE_KEY_COLUMN: str = "game_id"
 
 # Elo burn-in starts in 2002: 16 seasons before the first backtest season (2018).
@@ -78,7 +85,7 @@ class EloGenerationIncompleteError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# The generation publisher: five artifacts, staged together, one pointer move.
+# The generation publisher: staged together, validated, one pointer move.
 # ---------------------------------------------------------------------------
 
 
@@ -93,17 +100,14 @@ def new_generation_id() -> str:
 
 
 def staged_artifact_filename(name: str) -> str:
-    """The on-disk filename a staged artifact takes.
-
-    ``elo_ratings`` is the Elo system's JSON state; the other four are tables.
-    """
-    return f"{name}.json" if name == "elo_ratings" else f"{name}.parquet"
+    """The on-disk filename a staged artifact takes: every member is a table."""
+    return f"{name}.parquet"
 
 
 def default_stage_writer(path: Path, payload: Any) -> None:
     """Write one staged artifact.
 
-    PARQUET AND JSON ONLY -- deliberately NOT ``save_dataframe``. Staging must not
+    PARQUET (and JSON for a non-frame payload) ONLY -- deliberately NOT ``save_dataframe``. Staging must not
     touch the shared DuckDB store or the live parquet paths: the whole guarantee is
     that a failure during staging leaves the live artifacts untouched, and a stage
     writer that routed through ``save_dataframe`` (``save_to_db=True`` by default)
@@ -131,7 +135,7 @@ def read_elo_generation_pointer(silver_root: Path) -> dict[str, Any] | None:
 
 @dataclass
 class EloGenerationPublisher:
-    """Stage five Elo artifacts, validate them together, then move ONE pointer.
+    """Stage the Elo artifacts, validate them together, then move ONE pointer.
 
     FIVE INDEPENDENTLY-ATOMIC FILES ARE NOT ONE ATOMIC STATE. Each individual write in
     the old ``save_results`` was atomic; the SET was not, so a crash between any two of
@@ -162,11 +166,17 @@ class EloGenerationPublisher:
 
         Two checks, both about the SET rather than about any one file:
 
-        1. All five artifacts are staged and present on disk.
-        2. Every NON-EMPTY row table ends on the same terminal season, and
-           ``elo_ratings_current`` names that same terminal season. A season with zero
-           completed games legitimately produces empty row tables (R3's explicit edge
-           case), so empty members are skipped rather than treated as disagreement.
+        1. Every artifact in the set (``ELO_ROW_TABLES`` + ``ELO_STATE_ARTIFACTS``,
+           today just ``elo_game_snapshots``) is staged and present on disk.
+        2. Every NON-EMPTY row table ends on the same terminal season. A season with
+           zero completed games legitimately produces empty row tables (R3's explicit
+           edge case), so empty members are skipped rather than treated as
+           disagreement. With one row table this is trivially satisfied; it is kept
+           because it regains its teeth the day a second row table returns.
+
+        The terminal-season cross-check against the current-ratings state artifact was
+        DELETED with that artifact (D33.2-22): a check whose subject is gone is not a
+        weaker check, it is a KeyError.
         """
         expected = (*ELO_ROW_TABLES, *ELO_STATE_ARTIFACTS)
         missing = [
@@ -202,18 +212,6 @@ class EloGenerationPublisher:
                 f"end on different terminal seasons ({terminal_by_table}). A generation "
                 "whose members describe different points in time is a mixed state."
             )
-
-        terminal = terminals.pop()
-        current = pd.read_parquet(self.staged["elo_ratings_current"], engine="pyarrow")
-        if len(current) > 0 and "season" in current.columns:
-            current_seasons = current["season"].dropna()
-            if len(current_seasons) > 0 and int(current_seasons.max()) != terminal:
-                raise EloGenerationIncompleteError(
-                    f"Elo generation {self.generation_id} is inconsistent: "
-                    f"elo_ratings_current names terminal season "
-                    f"{int(current_seasons.max())} while the row tables end on "
-                    f"{terminal}."
-                )
 
     def move_pointer(self, **extra: Any) -> Path:
         """Publish this generation with ONE atomic pointer write.
@@ -252,8 +250,7 @@ def publish_elo_generation(
     """Stage, validate, publish and point -- in that order, with no shortcuts.
 
     Args:
-        staged: Artifact name -> payload. DataFrames for the four tables, a dict for
-            ``elo_ratings``.
+        staged: Artifact name -> payload (a DataFrame per table).
         generation_id: This generation's id (see :func:`new_generation_id`).
         silver_root: The silver layer this generation belongs to.
         publish_live: Callable that performs the LIVE writes. It differs between the

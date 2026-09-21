@@ -14,11 +14,9 @@ References:
 - Glicko rating system (Mark Glickman, 1995)
 """
 
-import json
 import math
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -86,10 +84,10 @@ class EloRating:
         """Convert to dictionary for serialization.
 
         EVERY NUMERIC FIELD IS CAST TO A NATIVE PYTHON TYPE HERE, and that is load
-        bearing rather than tidy. ``save_ratings`` serialises with
-        ``json.dump(..., default=str)``, so a numpy scalar that reaches the encoder is
-        silently STRINGIFIED. That is how the live ``data/silver/elo_ratings.json``
-        came to carry ``"season": "2025"``, and a string season makes
+        bearing rather than tidy. A JSON encoder called with ``default=str`` silently
+        STRINGIFIES a numpy scalar. That is how the persisted Elo state file (deleted
+        with the legacy pass, D33.2-22) came to carry ``"season": "2025"``, and a
+        string season makes
         ``apply_season_carryover``'s ``rating.season < season`` raise ``TypeError: '<'
         not supported between instances of 'str' and 'int'`` the moment the current
         season is carried forward (Plan 33-03).
@@ -614,74 +612,3 @@ class EloRatingSystem:
         if len(df) > 0:
             return df.sort_values("rating", ascending=False)
         return df
-
-    def ratings_state(self) -> dict[str, Any]:
-        """Return the serializable Elo state ``save_ratings`` writes.
-
-        Factored OUT of :meth:`save_ratings` so the state can be STAGED as a value
-        before it is published (Plan 33-03). ``elo_ratings.json`` is one of the five
-        artifacts ``publish_elo_generation`` stages under a generation id, and staging
-        needs the payload, not a side effect on a path. ``save_ratings`` now serializes
-        exactly this dict, so the staged copy and the live file cannot diverge.
-
-        Returns:
-            Dict with ``ratings``, ``hfa_by_season`` and ``parameters``, already
-            converted from numpy scalars to native Python types.
-        """
-        # Convert numpy types to native Python types for JSON serialization
-        hfa_by_season_clean = {str(k): float(v) for k, v in self.hfa_by_season.items()}
-
-        return {
-            "ratings": {
-                team: rating.to_dict() for team, rating in self.ratings.items()
-            },
-            "hfa_by_season": hfa_by_season_clean,
-            "parameters": {
-                "base_k": float(self.base_k),
-                "hfa_init": float(self.hfa_init),
-                "mov_multiplier": float(self.mov_multiplier),
-                "season_carryover": float(self.season_carryover),
-            },
-        }
-
-    def save_ratings(self, filepath: str | None = None) -> None:
-        """Save current ratings to JSON file."""
-        if filepath is None:
-            filepath = self.settings.get_data_path("silver") / "elo_ratings.json"
-
-        data = self.ratings_state()
-
-        with open(filepath, "w") as f:
-            json.dump(data, f, indent=2, default=str)
-
-        logger.info(f"Saved Elo ratings to {filepath}")
-
-    def load_ratings(self, filepath: str | None = None) -> None:
-        """Load ratings from JSON file."""
-        if filepath is None:
-            filepath = self.settings.get_data_path("silver") / "elo_ratings.json"
-
-        if not Path(filepath).exists():
-            logger.warning(f"Ratings file not found: {filepath}")
-            return
-
-        with open(filepath) as f:
-            data = json.load(f)
-
-        # Load ratings
-        self.ratings = {}
-        for team, rating_data in data.get("ratings", {}).items():
-            self.ratings[team] = EloRating.from_dict(rating_data)
-
-        # Load HFA by season
-        self.hfa_by_season = {
-            int(season): hfa for season, hfa in data.get("hfa_by_season", {}).items()
-        }
-
-        logger.info(
-            f"Loaded Elo ratings from {filepath}", teams_loaded=len(self.ratings)
-        )
-
-    def get_rating_history(self) -> pd.DataFrame:
-        """Get complete rating history from all processed games."""
-        return pd.DataFrame(self.game_history)

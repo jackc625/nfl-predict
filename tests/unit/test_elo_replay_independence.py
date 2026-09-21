@@ -118,7 +118,7 @@ def canonical_snapshots(games: pd.DataFrame) -> pd.DataFrame:
 
     builder = EloBuilder()
     seasons = sorted(int(s) for s in games["season"].unique())
-    rows, _ = builder._process_chain(seasons, games=games, learn_from=games)
+    rows = builder._process_chain(seasons, games=games, learn_from=games)
     real = pd.DataFrame(rows)
     unplayed = games[games["home_score"].isna() | games["away_score"].isna()]
     frames = [real]

@@ -1,10 +1,11 @@
 """Data storage utilities using DuckDB and Parquet."""
 
 import re
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 import pandas as pd
@@ -1337,6 +1338,8 @@ def upsert_silver(
     table_name: str,
     key_column: str = "game_id",
     base_path: Path | None = None,
+    *,
+    order_rows: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> Path:
     """Upsert new data into Silver layer (latest wins by key_column).
 
@@ -1354,6 +1357,14 @@ def upsert_silver(
         table_name: e.g. "games", "odds_snapshot", "weather"
         key_column: Column to match on for upsert (default: game_id)
         base_path: Base data directory (default from settings)
+        order_rows: Optional function returning the COMBINED table in the physical row
+            order it must be stored in. Latest-wins removes a replaced row and appends
+            its successor at the END, so without this a table whose readers depend on
+            row order drifts out of it on every upsert that rewrites an earlier row --
+            measured on ``elo_game_snapshots`` in 2026, where a real week-1 result landed
+            after the provisional week-2 row it preceded. The order is applied before
+            the one atomic parquet write, so the DuckDB copy (replaced from that parquet)
+            carries the same order and the two stores cannot disagree about it.
 
     Returns:
         Path to the Silver file
@@ -1372,6 +1383,9 @@ def upsert_silver(
         combined = pd.concat([existing, new_df], ignore_index=True)
     else:
         combined = new_df
+
+    if order_rows is not None:
+        combined = order_rows(cast("pd.DataFrame", combined)).reset_index(drop=True)
 
     # Normalize datetime columns before writing
     pm = ParquetManager(str(base_path))

@@ -403,7 +403,7 @@ def _honest_elo_snapshots(games: pd.DataFrame) -> pd.DataFrame:
     """
     from scripts.build_elo import EloBuilder, build_snapshot_frame
 
-    rows, _ = EloBuilder()._process_chain(
+    rows = EloBuilder()._process_chain(
         sorted(int(s) for s in games["season"].unique()),
         games=games,
         learn_from=games,

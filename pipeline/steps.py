@@ -571,12 +571,7 @@ def step_build_elo() -> None:
 
     builder = EloBuilder()
     update = builder.update_current_season()
-    builder.save_live_append(
-        update.season,
-        snapshots=update.snapshots,
-        games_with_elo=update.games_with_elo,
-        rating_history=update.rating_history,
-    )
+    builder.save_live_append(update.season, snapshots=update.snapshots)
 
     if builder.pending_snapshot_rows:
         raise EloSnapshotNotPersistedError(
