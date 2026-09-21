@@ -27,7 +27,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pandas as pd
@@ -116,7 +116,7 @@ def load_schedule_slice(season: int, week: int) -> pd.DataFrame:
             "ingest refuses to run without a schedule to derive per-game locks from"
         )
         raise DataIngestionError(msg)
-    return slate[list(SCHEDULE_COLUMNS)].reset_index(drop=True)
+    return cast("pd.DataFrame", slate[list(SCHEDULE_COLUMNS)]).reset_index(drop=True)
 
 
 @dataclass(frozen=True)
@@ -873,7 +873,9 @@ class OddsDataIngester:
         lock = locks[game_id]
 
         commence = _parse_commence_time(game_data.get("commence_time"))
-        scheduled = pd.Timestamp(matched["kickoff_et"]).to_pydatetime()
+        scheduled = cast(
+            "datetime", pd.Timestamp(cast("Any", matched["kickoff_et"])).to_pydatetime()
+        )
         if commence is not None and abs(commence - scheduled) > COMMENCE_TIME_TOLERANCE:
             self._kickoff_disagreements.append(game_id)
             logger.warning(
@@ -1075,9 +1077,11 @@ class OddsDataIngester:
         # KICKOFF, so this chooses which games to ask about -- it is not a time fence.
         kickoffs = pd.to_datetime(schedule["kickoff_et"], utc=True)
         if commence_from is None:
-            commence_from = kickoffs.min().to_pydatetime() - COMMENCE_WINDOW_MARGIN
+            earliest = cast("pd.Timestamp", kickoffs.min())
+            commence_from = earliest.to_pydatetime() - COMMENCE_WINDOW_MARGIN
         if commence_to is None:
-            commence_to = kickoffs.max().to_pydatetime() + COMMENCE_WINDOW_MARGIN
+            latest = cast("pd.Timestamp", kickoffs.max())
+            commence_to = latest.to_pydatetime() + COMMENCE_WINDOW_MARGIN
 
         if markets is None:
             markets = ["h2h", "spreads", "totals"]

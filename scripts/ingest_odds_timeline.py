@@ -52,7 +52,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import median
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -257,7 +257,9 @@ def _week_request_instants(
     games: pd.DataFrame, season: int, week: int
 ) -> list[tuple[str, datetime]]:
     """The union a backfill requests for one week: cadence samples, then locks."""
-    week_games = games[(games["season"] == season) & (games["week"] == week)]
+    week_games = cast(
+        "pd.DataFrame", games[(games["season"] == season) & (games["week"] == week)]
+    )
     cadence = weekly_cadence_timestamps(season, week)
     locks = [(label, lock) for label, _ids, lock in game_lock_instants(week_games)]
     return [*cadence, *locks]

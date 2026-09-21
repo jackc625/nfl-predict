@@ -207,8 +207,11 @@ class MarketAnchorFeaturesCalculator:
             # Through the ONE parse path for the same reason spelled out in
             # identify_opening_lines: a bare pd.to_datetime NaT'd 1,855 of 2,140 live
             # rows, and here a NaT also drops out of the <= cutoff comparison (WR-01).
-            wanted_ids = set(games_df["game_id"].astype(str))
-            odds_df = odds_df[odds_df["game_id"].astype(str).isin(wanted_ids)].copy()
+            wanted_ids = sorted(set(games_df["game_id"].astype(str)))
+            odds_df = cast(
+                "pd.DataFrame",
+                odds_df[odds_df["game_id"].astype(str).isin(wanted_ids)],
+            ).copy()
             odds_df["snapshot_ts"] = self._parse_snapshot_column(odds_df["snapshot_ts"])
 
             # One lock per game, from the ONE rule. The lock is an ET instant, so
@@ -218,12 +221,14 @@ class MarketAnchorFeaturesCalculator:
             present = games_df[
                 games_df["game_id"]
                 .astype(str)
-                .isin(set(odds_df["game_id"].astype(str)))
+                .isin(sorted(set(odds_df["game_id"].astype(str))))
             ]
             locks = lock_rule.lock_frame(
                 cast("pd.DataFrame", present[["game_id", "kickoff_et"]])
             )
-            odds_df["cutoff_time"] = odds_df["game_id"].astype(str).map(locks)
+            odds_df["cutoff_time"] = (
+                odds_df["game_id"].astype(str).map(cast("Any", locks))
+            )
 
             # At-lock is admissible (<=); one second later is not.
             pre_cutoff_odds = odds_df[odds_df["snapshot_ts"] <= odds_df["cutoff_time"]]

@@ -654,7 +654,7 @@ def _drop_excluded(
     """*schedule* without the games the run has decided not to bet (D33.2-05)."""
     if not excluded_game_ids:
         return schedule
-    keep = ~schedule["game_id"].astype(str).isin(excluded_game_ids)
+    keep = ~schedule["game_id"].astype(str).isin(sorted(excluded_game_ids))
     return cast("pd.DataFrame", schedule[keep]).reset_index(drop=True)
 
 
@@ -744,7 +744,7 @@ def build_weekly_candidates(
         # this the scorer would still see the game and emit a candidate the selector would then
         # refuse as outside the schedule. Applied after the week-emptiness check, so that check
         # keeps meaning "gold carries this week at all".
-        gold = _drop_excluded(gold, excluded_game_ids)
+        gold = _drop_excluded(cast("pd.DataFrame", gold), excluded_game_ids)
 
         scored = score_deployed_artifacts(
             target, gold_df=gold, artifacts_dir=artifacts_dir

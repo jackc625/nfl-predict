@@ -61,7 +61,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -221,7 +221,11 @@ def eastern_gameday_start(gameday: Any) -> datetime:
         )
         raise lock_rule.MissingKickoffError(msg)
 
-    parsed = pd.Timestamp(gameday)
+    raw = pd.Timestamp(gameday)
+    if pd.isna(raw):
+        msg = f"gameday {gameday!r} parses to no date, so the game has no lock."
+        raise lock_rule.MissingKickoffError(msg)
+    parsed = cast("pd.Timestamp", raw)
     if parsed.tzinfo is not None or parsed != parsed.normalize():
         msg = (
             f"gameday {gameday!r} is an instant, not an Eastern calendar date. Its date cannot "
