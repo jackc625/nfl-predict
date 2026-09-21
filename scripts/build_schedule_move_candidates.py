@@ -105,17 +105,27 @@ MECHANICAL_CRITERIA: tuple[str, ...] = (
 
 #: Every event D33.2-04 names, mapped to the game id(s) it affected. Seeds MEASURED
 #: 2026-09-20 in silver ``games``. Unioned UNCONDITIONALLY. A further game belonging to
-#: one of these events, found against a dated source, joins its event here.
+#: one of these events, found against a dated source, joins its event here: Task 2's
+#: research (2026-09-21) added the four Baton Rouge Katrina games, the Bengals game Ike
+#: displaced, and eleven more 2020 COVID reschedules. Each added game's source is its row
+#: in ``config/schedule_moves.toml``.
 NAMED_EVENT_GAME_IDS: dict[str, tuple[str, ...]] = {
-    # Hurricane Katrina: the Saints' 2005 home games away from the Superdome.
+    # Hurricane Katrina: all eight of the Saints' 2005 home games, played away from the
+    # Superdome. The four at Tiger Stadium (BRG00) are invisible to the scans because
+    # BRG00 is the Saints' modal 2005 stadium.
     "katrina_2005": (
         "2005_W02_NYG@NO",
         "2005_W04_BUF@NO",
         "2005_W06_ATL@NO",
+        "2005_W08_MIA@NO",
+        "2005_W09_CHI@NO",
+        "2005_W13_TB@NO",
+        "2005_W15_CAR@NO",
         "2005_W16_DET@NO",
     ),
-    # Hurricane Ike: Ravens at Texans moved from week 2 to week 10 (a WEEK move).
-    "ike_2008": ("2008_W10_BAL@HOU",),
+    # Hurricane Ike: Ravens at Texans moved from week 2 to week 10, and the Bengals game
+    # it displaced moved from week 10 to week 8 (both WEEK moves).
+    "ike_2008": ("2008_W10_BAL@HOU", "2008_W08_CIN@HOU"),
     # Metrodome 2010, first time: roof collapse, Giants game moved to Detroit, Monday.
     "metrodome_2010_roof_collapse": ("2010_W14_NYG@MIN",),
     # Metrodome 2010, second time: Bears game moved to TCF Bank Stadium.
@@ -131,12 +141,24 @@ NAMED_EVENT_GAME_IDS: dict[str, tuple[str, ...]] = {
         "2020_W17_SEA@SF",
     ),
     # COVID reschedules 2020-2021, including the Sunday-to-Monday moves the weekday
-    # alone does not reveal (2020_W04_NE@KC, 2021_W15_LV@CLE).
+    # alone does not reveal (2020_W04_NE@KC, 2021_W15_LV@CLE) and the October 2020
+    # week swaps, which no scan can see without the original schedule.
     "covid_2020_2021": (
         "2020_W04_NE@KC",
         "2020_W05_BUF@TEN",
+        "2020_W06_DEN@NE",
+        "2020_W06_KC@BUF",
+        "2020_W06_NYJ@MIA",
+        "2020_W07_JAX@LAC",
+        "2020_W07_PIT@TEN",
+        "2020_W08_LAC@DEN",
+        "2020_W08_PIT@BAL",
+        "2020_W10_LAC@MIA",
+        "2020_W11_MIA@DEN",
+        "2020_W11_NYJ@LAC",
         "2020_W12_BAL@PIT",
         "2020_W13_DAL@BAL",
+        "2020_W13_WAS@PIT",
         "2021_W15_LV@CLE",
         "2021_W15_SEA@LA",
         "2021_W15_WAS@PHI",
@@ -147,14 +169,60 @@ NAMED_EVENT_GAME_IDS: dict[str, tuple[str, ...]] = {
     "buffalo_snow_2022": ("2022_W11_CLE@BUF",),
 }
 
-#: Named events that moved a game to a later WEEK. No mechanical criterion can see
-#: those without the original schedule, which this repository does not hold.
+#: Named events whose every game moved to another WEEK. No mechanical criterion can see
+#: those without the original schedule, which this repository does not hold. (The
+#: October 2020 COVID week swaps have the same shape; they sit inside an event that also
+#: holds scan-visible games, so they are counted by ``NAMED_ONLY=`` instead.)
 WEEK_MOVE_EVENTS: frozenset[str] = frozenset({"ike_2008", "irma_2017"})
 
 #: A game Task 2's research surfaced that no criterion above names: game id -> the reason
-#: and the dated source that surfaced it. EMPTY until research adds to it; adding an
-#: entry and re-running with ``--write`` is the documented entry path.
-RESEARCH_DISCOVERED_GAME_IDS: dict[str, dict[str, str]] = {}
+#: and the dated source that surfaced it. Adding an entry and re-running with ``--write``
+#: is the documented entry path. Task 2 (2026-09-21) surfaced these five with a
+#: read-only weekday scan of silver (September-November Saturdays, Fridays, a second
+#: Monday game in a week) cross-checked against Wikipedia's "List of canceled and
+#: rescheduled NFL games" and each season's scheduling-changes section.
+RESEARCH_DISCOVERED_GAME_IDS: dict[str, dict[str, str]] = {
+    "2004_W01_TEN@MIA": {
+        "reason": "Hurricane Ivan: moved from Sunday 2004-09-12 to Saturday 2004-09-11",
+        "source_url": (
+            "http://usatoday30.usatoday.com/sports/football/nfl/"
+            "2004-09-09-week1-game-caps_x.htm"
+        ),
+    },
+    "2005_W07_KC@MIA": {
+        "reason": "Hurricane Wilma: moved from Sunday 2005-10-23 to Friday 2005-10-21",
+        "source_url": (
+            "http://usatoday30.usatoday.com/sports/football/nfl/"
+            "2005-10-20-chiefs-dolphins-moved_x.htm"
+        ),
+    },
+    "2018_W06_SEA@LV": {
+        "reason": (
+            "London venue moved from Tottenham Hotspur Stadium to Wembley (stadium "
+            "construction delay)"
+        ),
+        "source_url": (
+            "https://www.tottenhamhotspur.com/news/2018/august/urgent-stadium-update/"
+        ),
+    },
+    "2018_W11_KC@LA": {
+        "reason": (
+            "Moved from Estadio Azteca, Mexico City, to the Los Angeles Memorial Coliseum "
+            "(field conditions)"
+        ),
+        "source_url": (
+            "http://www.espn.com/nfl/story/_/id/25268527/"
+            "nfl-cancels-mexico-city-trip-moves-chiefs-rams-game-la-monday-night-football"
+        ),
+    },
+    "2023_W19_PIT@BUF": {
+        "reason": "Buffalo snow: wild card game moved from Sunday 2024-01-14 to Monday",
+        "source_url": (
+            "https://www.wivb.com/sports/buffalo-bills/"
+            "bills-steelers-playoff-game-postponed-to-monday/"
+        ),
+    },
+}
 
 
 class CandidateInputError(ValueError):

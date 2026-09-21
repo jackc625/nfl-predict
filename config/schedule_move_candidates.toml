@@ -26,7 +26,7 @@
 # ASCII only, no emoji (CLAUDE.md hard constraint).
 
 first_season = 2002
-candidate_count = 57
+candidate_count = 78
 
 [[candidates]]
 game_id = "2002_W21_LV@TB"
@@ -63,6 +63,18 @@ kickoff_utc = "2004-02-01T23:25:00Z"
 kickoff_weekday_et = "Sunday"
 lock_utc = "2004-01-31T23:00:00Z"
 criteria = ["neutral_domestic"]
+
+[[candidates]]
+game_id = "2004_W01_TEN@MIA"
+season = 2004
+week = 1
+game_type = "REG"
+stadium_id = "MIA00"
+neutral_site = false
+kickoff_utc = "2004-09-11T17:00:00Z"
+kickoff_weekday_et = "Saturday"
+lock_utc = "2004-09-10T22:00:00Z"
+criteria = ["research_discovered"]
 
 [[candidates]]
 game_id = "2004_W21_NE@PHI"
@@ -113,6 +125,66 @@ lock_utc = "2005-10-15T22:00:00Z"
 criteria = ["away_unflagged", "named_event:katrina_2005"]
 
 [[candidates]]
+game_id = "2005_W07_KC@MIA"
+season = 2005
+week = 7
+game_type = "REG"
+stadium_id = "MIA00"
+neutral_site = false
+kickoff_utc = "2005-10-21T23:00:00Z"
+kickoff_weekday_et = "Friday"
+lock_utc = "2005-10-20T22:00:00Z"
+criteria = ["research_discovered"]
+
+[[candidates]]
+game_id = "2005_W08_MIA@NO"
+season = 2005
+week = 8
+game_type = "REG"
+stadium_id = "BRG00"
+neutral_site = false
+kickoff_utc = "2005-10-30T21:05:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2005-10-29T22:00:00Z"
+criteria = ["named_event:katrina_2005"]
+
+[[candidates]]
+game_id = "2005_W09_CHI@NO"
+season = 2005
+week = 9
+game_type = "REG"
+stadium_id = "BRG00"
+neutral_site = false
+kickoff_utc = "2005-11-06T21:05:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2005-11-05T23:00:00Z"
+criteria = ["named_event:katrina_2005"]
+
+[[candidates]]
+game_id = "2005_W13_TB@NO"
+season = 2005
+week = 13
+game_type = "REG"
+stadium_id = "BRG00"
+neutral_site = false
+kickoff_utc = "2005-12-04T18:00:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2005-12-03T23:00:00Z"
+criteria = ["named_event:katrina_2005"]
+
+[[candidates]]
+game_id = "2005_W15_CAR@NO"
+season = 2005
+week = 15
+game_type = "REG"
+stadium_id = "BRG00"
+neutral_site = false
+kickoff_utc = "2005-12-18T18:00:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2005-12-17T23:00:00Z"
+criteria = ["named_event:katrina_2005"]
+
+[[candidates]]
 game_id = "2005_W16_DET@NO"
 season = 2005
 week = 16
@@ -159,6 +231,18 @@ kickoff_utc = "2008-02-03T23:30:00Z"
 kickoff_weekday_et = "Sunday"
 lock_utc = "2008-02-02T23:00:00Z"
 criteria = ["neutral_domestic"]
+
+[[candidates]]
+game_id = "2008_W08_CIN@HOU"
+season = 2008
+week = 8
+game_type = "REG"
+stadium_id = "HOU00"
+neutral_site = false
+kickoff_utc = "2008-10-26T20:05:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2008-10-25T22:00:00Z"
+criteria = ["named_event:ike_2008"]
 
 [[candidates]]
 game_id = "2008_W10_BAL@HOU"
@@ -413,6 +497,30 @@ lock_utc = "2018-02-03T23:00:00Z"
 criteria = ["neutral_domestic"]
 
 [[candidates]]
+game_id = "2018_W06_SEA@LV"
+season = 2018
+week = 6
+game_type = "REG"
+stadium_id = "LON00"
+neutral_site = true
+kickoff_utc = "2018-10-14T17:00:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2018-10-13T22:00:00Z"
+criteria = ["research_discovered"]
+
+[[candidates]]
+game_id = "2018_W11_KC@LA"
+season = 2018
+week = 11
+game_type = "REG"
+stadium_id = "LAX99"
+neutral_site = false
+kickoff_utc = "2018-11-20T01:15:00Z"
+kickoff_weekday_et = "Monday"
+lock_utc = "2018-11-18T23:00:00Z"
+criteria = ["research_discovered"]
+
+[[candidates]]
 game_id = "2018_W21_NE@LA"
 season = 2018
 week = 21
@@ -461,6 +569,126 @@ lock_utc = "2020-10-12T22:00:00Z"
 criteria = ["named_event:covid_2020_2021", "tue_wed"]
 
 [[candidates]]
+game_id = "2020_W06_DEN@NE"
+season = 2020
+week = 6
+game_type = "REG"
+stadium_id = "BOS00"
+neutral_site = false
+kickoff_utc = "2020-10-18T17:00:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2020-10-17T22:00:00Z"
+criteria = ["named_event:covid_2020_2021"]
+
+[[candidates]]
+game_id = "2020_W06_NYJ@MIA"
+season = 2020
+week = 6
+game_type = "REG"
+stadium_id = "MIA00"
+neutral_site = false
+kickoff_utc = "2020-10-18T20:05:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2020-10-17T22:00:00Z"
+criteria = ["named_event:covid_2020_2021"]
+
+[[candidates]]
+game_id = "2020_W06_KC@BUF"
+season = 2020
+week = 6
+game_type = "REG"
+stadium_id = "BUF00"
+neutral_site = false
+kickoff_utc = "2020-10-19T21:00:00Z"
+kickoff_weekday_et = "Monday"
+lock_utc = "2020-10-18T22:00:00Z"
+criteria = ["named_event:covid_2020_2021"]
+
+[[candidates]]
+game_id = "2020_W07_PIT@TEN"
+season = 2020
+week = 7
+game_type = "REG"
+stadium_id = "NAS00"
+neutral_site = false
+kickoff_utc = "2020-10-25T17:00:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2020-10-24T22:00:00Z"
+criteria = ["named_event:covid_2020_2021"]
+
+[[candidates]]
+game_id = "2020_W07_JAX@LAC"
+season = 2020
+week = 7
+game_type = "REG"
+stadium_id = "LAX01"
+neutral_site = false
+kickoff_utc = "2020-10-25T20:25:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2020-10-24T22:00:00Z"
+criteria = ["named_event:covid_2020_2021"]
+
+[[candidates]]
+game_id = "2020_W08_PIT@BAL"
+season = 2020
+week = 8
+game_type = "REG"
+stadium_id = "BAL00"
+neutral_site = false
+kickoff_utc = "2020-11-01T18:00:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2020-10-31T22:00:00Z"
+criteria = ["named_event:covid_2020_2021"]
+
+[[candidates]]
+game_id = "2020_W08_LAC@DEN"
+season = 2020
+week = 8
+game_type = "REG"
+stadium_id = "DEN00"
+neutral_site = false
+kickoff_utc = "2020-11-01T21:05:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2020-10-31T22:00:00Z"
+criteria = ["named_event:covid_2020_2021"]
+
+[[candidates]]
+game_id = "2020_W10_LAC@MIA"
+season = 2020
+week = 10
+game_type = "REG"
+stadium_id = "MIA00"
+neutral_site = false
+kickoff_utc = "2020-11-15T21:05:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2020-11-14T23:00:00Z"
+criteria = ["named_event:covid_2020_2021"]
+
+[[candidates]]
+game_id = "2020_W11_MIA@DEN"
+season = 2020
+week = 11
+game_type = "REG"
+stadium_id = "DEN00"
+neutral_site = false
+kickoff_utc = "2020-11-22T21:05:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2020-11-21T23:00:00Z"
+criteria = ["named_event:covid_2020_2021"]
+
+[[candidates]]
+game_id = "2020_W11_NYJ@LAC"
+season = 2020
+week = 11
+game_type = "REG"
+stadium_id = "LAX01"
+neutral_site = false
+kickoff_utc = "2020-11-22T21:05:00Z"
+kickoff_weekday_et = "Sunday"
+lock_utc = "2020-11-21T23:00:00Z"
+criteria = ["named_event:covid_2020_2021"]
+
+[[candidates]]
 game_id = "2020_W12_BAL@PIT"
 season = 2020
 week = 12
@@ -471,6 +699,18 @@ kickoff_utc = "2020-12-02T20:40:00Z"
 kickoff_weekday_et = "Wednesday"
 lock_utc = "2020-12-01T23:00:00Z"
 criteria = ["named_event:covid_2020_2021", "tue_wed"]
+
+[[candidates]]
+game_id = "2020_W13_WAS@PIT"
+season = 2020
+week = 13
+game_type = "REG"
+stadium_id = "PIT00"
+neutral_site = false
+kickoff_utc = "2020-12-07T22:00:00Z"
+kickoff_weekday_et = "Monday"
+lock_utc = "2020-12-06T23:00:00Z"
+criteria = ["named_event:covid_2020_2021"]
 
 [[candidates]]
 game_id = "2020_W13_BUF@SF"
@@ -615,6 +855,18 @@ kickoff_utc = "2023-02-12T23:30:00Z"
 kickoff_weekday_et = "Sunday"
 lock_utc = "2023-02-11T23:00:00Z"
 criteria = ["neutral_domestic"]
+
+[[candidates]]
+game_id = "2023_W19_PIT@BUF"
+season = 2023
+week = 19
+game_type = "WC"
+stadium_id = "BUF00"
+neutral_site = false
+kickoff_utc = "2024-01-15T21:30:00Z"
+kickoff_weekday_et = "Monday"
+lock_utc = "2024-01-14T23:00:00Z"
+criteria = ["research_discovered"]
 
 [[candidates]]
 game_id = "2023_W22_SF@KC"

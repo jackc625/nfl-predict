@@ -1,0 +1,1257 @@
+# The emergency-schedule-move evidence table (Plan 33.2-10 Task 2, SPEC R8, D33.2-04, D33.2-21).
+#
+# ONE ROW PER MOVE, not per game: a game moved twice has two rows, ordered by move_index.
+# Every game in config/schedule_move_candidates.toml has at least one row, and no row names
+# a game outside it (tests/unit/test_schedule_move_table.py asserts both directions).
+#
+# D33.2-21 BOUNDS THE EVIDENCE: one dated contemporaneous source per move, no second source,
+# no exhaustive hunt. A publication time is an UPPER BOUND on the announcement time, which
+# is the direction the proof needs: if the report existed by then, so did the announcement.
+#
+# FIELDS
+#   what_moved   closed vocabulary: venue | date | week | scheduled_not_moved
+#   from_value / to_value, by what_moved:
+#     venue                the data/venues.json stadium_id
+#     date                 the kickoff's calendar date in America/New_York, YYYY-MM-DD
+#     week                 "W<nn> YYYY-MM-DD": week number and ET kickoff date
+#     scheduled_not_moved  "<stadium_id> YYYY-MM-DD", the scheduled facts; from == to
+#   announced_at_utc     the upper bound, in UTC, taken from the source:
+#     - a source with a time: that time, converted to UTC;
+#     - a source with only a date: 23:59:59 that day in America/Los_Angeles, the latest
+#       instant the date can denote for a US publisher.
+#     A revision ("Updated") time or a Wayback Machine capture time is also a valid upper
+#     bound: the text reporting the move existed then. Each row's notes say which it is.
+#   source_published_at  the timestamp exactly as the source states it (or its date)
+#   lock_utc             utils.game_lock.game_lock of the game's kickoff: 18:00
+#                        America/New_York on the ET day before kickoff, in UTC
+#   verdict              pre_lock  -- needs a non-empty source_url AND
+#                                     announced_at_utc <= lock_utc (AT the lock is known)
+#                        post_lock -- the default; needs no source. The game is rebuilt with
+#                                     the facts as they stood before the move.
+#
+# A game's facts at its lock come from the LAST move, in move_index order, whose verdict is
+# pre_lock; with none, the facts before its first move. features/schedule_moves.py is the
+# one place that selection is made.
+#
+# SCHEDULED GAMES (Super Bowls, the Bills Toronto Series, the Wednesday and Christmas games
+# of the published schedule) are candidates the scans surface but were never moved. Each has
+# one scheduled_not_moved row with from_value == to_value. Their verdict follows the ordinary
+# rule; no announcement source was sought, so they carry the post_lock default, which
+# changes nothing because the facts before and after are the same.
+#
+# THE LIMITATION: this repository holds no ORIGINAL schedule. A game moved to another WEEK
+# (Hurricane Ike 2008, Hurricane Irma 2017, the October 2020 COVID week swaps) is invisible
+# to every mechanical scan; those games are rows here only because the enumerator's
+# committed inputs name them. Without a citation they would take the post_lock default.
+#
+# Research surfaced five games no criterion named (the committed entry path,
+# RESEARCH_DISCOVERED_GAME_IDS): 2004_W01_TEN@MIA, 2005_W07_KC@MIA, 2018_W06_SEA@LV,
+# 2018_W11_KC@LA and 2023_W19_PIT@BUF. It also extended three named events: Katrina (the
+# four Baton Rouge games), Ike (the displaced Bengals game) and COVID (eleven more 2020
+# reschedules).
+#
+# Researched 2026-09-21. ASCII only, no emoji (CLAUDE.md hard constraint).
+
+[[moves]]
+game_id = "2002_W21_LV@TB"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "SDG00 2003-01-26"
+to_value = "SDG00 2003-01-26"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2003-01-25T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2003_W08_MIA@LAC"
+move_index = 1
+what_moved = "venue"
+from_value = "SDG00"
+to_value = "PHO99"
+announced_at_utc = "2003-10-27T07:59:59Z"
+source_url = "http://www.nfl.com/news/story/6782880"
+source_title = "NFL.com wire: Fires move Monday night game to Tempe"
+source_published_at = "2003-10-26"
+lock_utc = "2003-10-26T23:00:00Z"
+verdict = "post_lock"
+notes = "Cedar Fire. The only source found carries a date and no time, and the date is the lock day itself (lock 18:00 ET Oct 26); the San Diego Union-Tribune report the season article cites is also date-only. A quick check of the NFL.com, ESPN and USA TODAY archives found no time-stamped report, so D33.2-21's default applies: treated as announced after the lock. Announcement time: date-only: dateline '(Oct. 26, 2003)', no time; first Wayback capture 2003-10-27T13:33:41Z; this upper bound falls 9.0 h after the lock."
+
+[[moves]]
+game_id = "2003_W21_CAR@NE"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "HOU00 2004-02-01"
+to_value = "HOU00 2004-02-01"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2004-01-31T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2004_W01_TEN@MIA"
+move_index = 1
+what_moved = "date"
+from_value = "2004-09-12"
+to_value = "2004-09-11"
+announced_at_utc = "2004-09-10T03:59:00Z"
+source_url = "http://usatoday30.usatoday.com/sports/football/nfl/2004-09-09-week1-game-caps_x.htm"
+source_title = "USA TODAY: NFL Week 1 preview (\"This game was moved from Sunday because of the threat of Hurricane Ivan\")"
+source_published_at = "2004-09-09T23:59:00-04:00"
+lock_utc = "2004-09-10T22:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Ivan: moved from Sunday to Saturday. Announcement time: page stamp 'Posted 9/9/2004 11:59 PM' (ET); this upper bound falls 18.0 h before the lock."
+
+[[moves]]
+game_id = "2004_W21_NE@PHI"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "JAX00 2005-02-06"
+to_value = "JAX00 2005-02-06"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2005-02-05T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2005_W02_NYG@NO"
+move_index = 1
+what_moved = "venue"
+from_value = "NOR00"
+to_value = "NYC00"
+announced_at_utc = "2005-09-02T22:09:00Z"
+source_url = "http://usatoday30.usatoday.com/sports/football/nfl/2005-09-02-saints-giants-relocated_x.htm"
+source_title = "USA TODAY: Saints to play home opener in Giants Stadium"
+source_published_at = "2005-09-02T18:09:00-04:00"
+lock_utc = "2005-09-18T22:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Katrina: home opener moved from the Superdome to Giants Stadium; the same announcement moved it from Sunday to Monday (move 2). Announcement time: page stamp 'Posted 9/2/2005 6:09 PM' (ET); this upper bound falls 383.9 h before the lock."
+
+[[moves]]
+game_id = "2005_W02_NYG@NO"
+move_index = 2
+what_moved = "date"
+from_value = "2005-09-18"
+to_value = "2005-09-19"
+announced_at_utc = "2005-09-02T22:09:00Z"
+source_url = "http://usatoday30.usatoday.com/sports/football/nfl/2005-09-02-saints-giants-relocated_x.htm"
+source_title = "USA TODAY: Saints to play home opener in Giants Stadium"
+source_published_at = "2005-09-02T18:09:00-04:00"
+lock_utc = "2005-09-18T22:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Katrina: Sunday to Monday, same announcement as move 1. Announcement time: page stamp 'Posted 9/2/2005 6:09 PM' (ET); this upper bound falls 383.9 h before the lock."
+
+[[moves]]
+game_id = "2005_W04_BUF@NO"
+move_index = 1
+what_moved = "venue"
+from_value = "NOR00"
+to_value = "SAN00"
+announced_at_utc = "2005-09-12T20:42:00Z"
+source_url = "http://usatoday30.usatoday.com/sports/football/nfl/saints/2005-09-12-saints-home-schedule_x.htm"
+source_title = "USA TODAY: Saints' 'home' schedule finally split between San Antonio and LSU"
+source_published_at = "2005-09-12T16:42:00-04:00"
+lock_utc = "2005-10-01T22:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Katrina: the source names the Alamodome date 'Oct. 2 against the Buffalo Bills'. Announcement time: page stamp 'Posted 9/12/2005 4:42 PM' (ET); this upper bound falls 457.3 h before the lock."
+
+[[moves]]
+game_id = "2005_W06_ATL@NO"
+move_index = 1
+what_moved = "venue"
+from_value = "NOR00"
+to_value = "SAN00"
+announced_at_utc = "2005-09-12T20:42:00Z"
+source_url = "http://usatoday30.usatoday.com/sports/football/nfl/saints/2005-09-12-saints-home-schedule_x.htm"
+source_title = "USA TODAY: Saints' 'home' schedule finally split between San Antonio and LSU"
+source_published_at = "2005-09-12T16:42:00-04:00"
+lock_utc = "2005-10-15T22:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Katrina: the source names the Alamodome date 'Oct. 16 against the Atlanta Falcons'. Announcement time: page stamp 'Posted 9/12/2005 4:42 PM' (ET); this upper bound falls 793.3 h before the lock."
+
+[[moves]]
+game_id = "2005_W07_KC@MIA"
+move_index = 1
+what_moved = "date"
+from_value = "2005-10-23"
+to_value = "2005-10-21"
+announced_at_utc = "2005-10-20T16:23:00Z"
+source_url = "http://usatoday30.usatoday.com/sports/football/nfl/2005-10-20-chiefs-dolphins-moved_x.htm"
+source_title = "USA TODAY: To avoid Wilma, NFL moves Chiefs-Dolphins game to Friday"
+source_published_at = "2005-10-20T12:23:00-04:00"
+lock_utc = "2005-10-20T22:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Wilma: Sunday to Friday. Close call (lock 18:00 ET Oct 20). ESPN's report of the same move shows only 'Updated: October 20, 2005, 6:19 PM ET', a revision time 19 minutes after the lock; the USA TODAY posting time is the earlier upper bound. Announcement time: page stamp 'Posted 10/20/2005 12:23 PM' (ET); this upper bound falls 5.6 h before the lock."
+
+[[moves]]
+game_id = "2005_W08_MIA@NO"
+move_index = 1
+what_moved = "venue"
+from_value = "NOR00"
+to_value = "BRG00"
+announced_at_utc = "2005-09-12T20:42:00Z"
+source_url = "http://usatoday30.usatoday.com/sports/football/nfl/saints/2005-09-12-saints-home-schedule_x.htm"
+source_title = "USA TODAY: Saints' 'home' schedule finally split between San Antonio and LSU"
+source_published_at = "2005-09-12T16:42:00-04:00"
+lock_utc = "2005-10-29T22:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Katrina: the source names the three San Antonio dates and puts the other four home games at LSU's Tiger Stadium (the first, Oct. 30 against Miami). Announcement time: page stamp 'Posted 9/12/2005 4:42 PM' (ET); this upper bound falls 1129.3 h before the lock."
+
+[[moves]]
+game_id = "2005_W09_CHI@NO"
+move_index = 1
+what_moved = "venue"
+from_value = "NOR00"
+to_value = "BRG00"
+announced_at_utc = "2005-09-12T20:42:00Z"
+source_url = "http://usatoday30.usatoday.com/sports/football/nfl/saints/2005-09-12-saints-home-schedule_x.htm"
+source_title = "USA TODAY: Saints' 'home' schedule finally split between San Antonio and LSU"
+source_published_at = "2005-09-12T16:42:00-04:00"
+lock_utc = "2005-11-05T23:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Katrina: the source names the three San Antonio dates and puts the other four home games at LSU's Tiger Stadium (the first, Oct. 30 against Miami). Announcement time: page stamp 'Posted 9/12/2005 4:42 PM' (ET); this upper bound falls 1298.3 h before the lock."
+
+[[moves]]
+game_id = "2005_W13_TB@NO"
+move_index = 1
+what_moved = "venue"
+from_value = "NOR00"
+to_value = "BRG00"
+announced_at_utc = "2005-09-12T20:42:00Z"
+source_url = "http://usatoday30.usatoday.com/sports/football/nfl/saints/2005-09-12-saints-home-schedule_x.htm"
+source_title = "USA TODAY: Saints' 'home' schedule finally split between San Antonio and LSU"
+source_published_at = "2005-09-12T16:42:00-04:00"
+lock_utc = "2005-12-03T23:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Katrina: the source names the three San Antonio dates and puts the other four home games at LSU's Tiger Stadium (the first, Oct. 30 against Miami). Announcement time: page stamp 'Posted 9/12/2005 4:42 PM' (ET); this upper bound falls 1970.3 h before the lock."
+
+[[moves]]
+game_id = "2005_W15_CAR@NO"
+move_index = 1
+what_moved = "venue"
+from_value = "NOR00"
+to_value = "BRG00"
+announced_at_utc = "2005-09-12T20:42:00Z"
+source_url = "http://usatoday30.usatoday.com/sports/football/nfl/saints/2005-09-12-saints-home-schedule_x.htm"
+source_title = "USA TODAY: Saints' 'home' schedule finally split between San Antonio and LSU"
+source_published_at = "2005-09-12T16:42:00-04:00"
+lock_utc = "2005-12-17T23:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Katrina: the source names the three San Antonio dates and puts the other four home games at LSU's Tiger Stadium (the first, Oct. 30 against Miami). Announcement time: page stamp 'Posted 9/12/2005 4:42 PM' (ET); this upper bound falls 2306.3 h before the lock."
+
+[[moves]]
+game_id = "2005_W16_DET@NO"
+move_index = 1
+what_moved = "venue"
+from_value = "NOR00"
+to_value = "SAN00"
+announced_at_utc = "2005-09-12T20:42:00Z"
+source_url = "http://usatoday30.usatoday.com/sports/football/nfl/saints/2005-09-12-saints-home-schedule_x.htm"
+source_title = "USA TODAY: Saints' 'home' schedule finally split between San Antonio and LSU"
+source_published_at = "2005-09-12T16:42:00-04:00"
+lock_utc = "2005-12-23T23:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Katrina: the source names the Alamodome date 'Dec. 24 against the Detroit Lions'. Announcement time: page stamp 'Posted 9/12/2005 4:42 PM' (ET); this upper bound falls 2450.3 h before the lock."
+
+[[moves]]
+game_id = "2005_W21_SEA@PIT"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "DET00 2006-02-05"
+to_value = "DET00 2006-02-05"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2006-02-04T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2006_W21_IND@CHI"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "MIA00 2007-02-04"
+to_value = "MIA00 2007-02-04"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2007-02-03T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2007_W21_NYG@NE"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "PHO00 2008-02-03"
+to_value = "PHO00 2008-02-03"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2008-02-02T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2008_W08_CIN@HOU"
+move_index = 1
+what_moved = "week"
+from_value = "W10 2008-11-09"
+to_value = "W08 2008-10-26"
+announced_at_utc = "2008-09-14T08:20:00Z"
+source_url = "http://sports.espn.go.com/nfl/news/story?id=3585348"
+source_title = "ESPN: Damage to Reliant Stadium forces rescheduling of Texans-Ravens"
+source_published_at = "2008-09-14T04:20:00-04:00"
+lock_utc = "2008-10-25T22:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Ike: moved to make room for Ravens-Texans; the cited story names this move. Announcement time: page stamp 'Updated: September 14, 2008, 4:20 AM ET' (a revision time; the text existed then); this upper bound falls 997.7 h before the lock."
+
+[[moves]]
+game_id = "2008_W10_BAL@HOU"
+move_index = 1
+what_moved = "date"
+from_value = "2008-09-14"
+to_value = "2008-09-15"
+announced_at_utc = "2008-09-14T08:20:00Z"
+source_url = "http://sports.espn.go.com/nfl/news/story?id=3585348"
+source_title = "ESPN: Damage to Reliant Stadium forces rescheduling of Texans-Ravens"
+source_published_at = "2008-09-14T04:20:00-04:00"
+lock_utc = "2008-11-08T23:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Ike, move 1: Sunday to Monday before landfall. The cited story states the game was 'previously scheduled for Monday night', so its time bounds this move too. Announcement time: page stamp 'Updated: September 14, 2008, 4:20 AM ET' (a revision time; the text existed then); this upper bound falls 1334.7 h before the lock."
+
+[[moves]]
+game_id = "2008_W10_BAL@HOU"
+move_index = 2
+what_moved = "week"
+from_value = "W02 2008-09-15"
+to_value = "W10 2008-11-09"
+announced_at_utc = "2008-09-14T08:20:00Z"
+source_url = "http://sports.espn.go.com/nfl/news/story?id=3585348"
+source_title = "ESPN: Damage to Reliant Stadium forces rescheduling of Texans-Ravens"
+source_published_at = "2008-09-14T04:20:00-04:00"
+lock_utc = "2008-11-08T23:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Ike, move 2: stadium damage; postponed to week 10. Announcement time: page stamp 'Updated: September 14, 2008, 4:20 AM ET' (a revision time; the text existed then); this upper bound falls 1334.7 h before the lock."
+
+[[moves]]
+game_id = "2008_W21_PIT@ARI"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "TAM00 2009-02-01"
+to_value = "TAM00 2009-02-01"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2009-01-31T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2009_W13_NYJ@BUF"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "BUF01 2009-12-03"
+to_value = "BUF01 2009-12-03"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2009-12-02T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Bills Toronto Series game, scheduled when the series was agreed. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2009_W21_NO@IND"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "MIA00 2010-02-07"
+to_value = "MIA00 2010-02-07"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2010-02-06T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2010_W09_CHI@BUF"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "BUF01 2010-11-07"
+to_value = "BUF01 2010-11-07"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2010-11-06T22:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Bills Toronto Series game, scheduled when the series was agreed. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2010_W14_NYG@MIN"
+move_index = 1
+what_moved = "date"
+from_value = "2010-12-12"
+to_value = "2010-12-13"
+announced_at_utc = "2010-12-12T07:59:59Z"
+source_url = "https://www.nfl.com/news/giants-vikings-game-moved-to-monday-because-of-snowstorm-09000d5d81cd0f5d"
+source_title = "NFL.com: Giants-Vikings game moved to Monday because of snowstorm"
+source_published_at = "2010-12-11"
+lock_utc = "2010-12-12T23:00:00Z"
+verdict = "pre_lock"
+notes = "Metrodome 2010, move 1: snowstorm; Sunday to Monday, announced Saturday. Announcement time: date-only bound (NFL.com's migrated-archive stamp 2010-12-11T18:17Z is not relied on); this upper bound falls 15.0 h before the lock."
+
+[[moves]]
+game_id = "2010_W14_NYG@MIN"
+move_index = 2
+what_moved = "venue"
+from_value = "MIN00"
+to_value = "DET00"
+announced_at_utc = "2010-12-12T17:00:00Z"
+source_url = "http://content.usatoday.com/communities/thehuddle/post/2010/12/nfl-moves-giants-vikings-game-to-detroit-on-monday-night/1"
+source_title = "USA TODAY The Huddle: NFL moves Giants-Vikings game to Detroit; tickets to be free"
+source_published_at = "2010-12-12T12:00:00-05:00"
+lock_utc = "2010-12-12T23:00:00Z"
+verdict = "pre_lock"
+notes = "Metrodome 2010, move 2: roof collapse; moved to Ford Field. THE CLOSEST CALL (D33.2-04): the lock is 18:00 ET Sunday Dec 12 and the move was announced that day, about six hours before it. ESPN's copy shows only a later revision (Dec 13, 12:51 PM ET). Announcement time: post stamp 'Dec 12, 2010 ... 12:00 PM' read as ET; read as Pacific it is 20:00 UTC, still before the 23:00 UTC lock; this upper bound falls 6.0 h before the lock."
+
+[[moves]]
+game_id = "2010_W15_CHI@MIN"
+move_index = 1
+what_moved = "venue"
+from_value = "MIN00"
+to_value = "MIN98"
+announced_at_utc = "2010-12-15T17:36:00Z"
+source_url = "http://sports.espn.go.com/nfl/news/story?id=5919792"
+source_title = "ESPN: Minnesota Vikings game moved to TCF Bank Stadium; Metrodome won't be ready"
+source_published_at = "2010-12-15T12:36:00-05:00"
+lock_utc = "2010-12-19T23:00:00Z"
+verdict = "pre_lock"
+notes = "Metrodome 2010, second time: moved to TCF Bank Stadium. Announcement time: page stamp 'Updated: December 15, 2010, 12:36 PM ET'; this upper bound falls 101.4 h before the lock."
+
+[[moves]]
+game_id = "2010_W16_MIN@PHI"
+move_index = 1
+what_moved = "date"
+from_value = "2010-12-26"
+to_value = "2010-12-28"
+announced_at_utc = "2010-12-26T17:30:00Z"
+source_url = "http://content.usatoday.com/communities/thehuddle/post/2010/12/blizzard-pushes-vikings-and-eagles-to-tuesday-night/1"
+source_title = "USA TODAY The Huddle: NFL postpones Vikings-Eagles to Tuesday because of snow"
+source_published_at = "2010-12-26T12:30:00-05:00"
+lock_utc = "2010-12-27T23:00:00Z"
+verdict = "pre_lock"
+notes = "Philadelphia blizzard: Sunday to Tuesday. Announcement time: post stamp 'Dec 26, 2010 ... 12:30 PM' (ET); this upper bound falls 29.5 h before the lock."
+
+[[moves]]
+game_id = "2010_W21_PIT@GB"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "DAL00 2011-02-06"
+to_value = "DAL00 2011-02-06"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2011-02-05T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2011_W08_WAS@BUF"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "BUF01 2011-10-30"
+to_value = "BUF01 2011-10-30"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2011-10-29T22:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Bills Toronto Series game, scheduled when the series was agreed. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2011_W21_NYG@NE"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "IND00 2012-02-05"
+to_value = "IND00 2012-02-05"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2012-02-04T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2012_W01_DAL@NYG"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "NYC01 2012-09-05"
+to_value = "NYC01 2012-09-05"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2012-09-04T22:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: the 2012 opener, placed on a Wednesday in the published schedule to avoid the Democratic National Convention. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2012_W15_SEA@BUF"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "BUF01 2012-12-16"
+to_value = "BUF01 2012-12-16"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2012-12-15T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Bills Toronto Series game, scheduled when the series was agreed. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2012_W21_BAL@SF"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "NOR00 2013-02-03"
+to_value = "NOR00 2013-02-03"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2013-02-02T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2013_W21_SEA@DEN"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "NYC01 2014-02-02"
+to_value = "NYC01 2014-02-02"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2014-02-01T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2014_W12_NYJ@BUF"
+move_index = 1
+what_moved = "venue"
+from_value = "BUF00"
+to_value = "DET00"
+announced_at_utc = "2014-11-20T18:02:00Z"
+source_url = "https://www.nfl.com/news/jets-bills-game-moved-to-detroit-on-monday-night-0ap3000000431579"
+source_title = "NFL.com: Jets-Bills game moved to Detroit on Monday night"
+source_published_at = "2014-11-20T18:02:00Z"
+lock_utc = "2014-11-23T23:00:00Z"
+verdict = "pre_lock"
+notes = "Buffalo snow 2014: moved to Ford Field; the same announcement moved it from Sunday to Monday (move 2). Announcement time: article datePublished; this upper bound falls 77.0 h before the lock."
+
+[[moves]]
+game_id = "2014_W12_NYJ@BUF"
+move_index = 2
+what_moved = "date"
+from_value = "2014-11-23"
+to_value = "2014-11-24"
+announced_at_utc = "2014-11-20T18:02:00Z"
+source_url = "https://www.nfl.com/news/jets-bills-game-moved-to-detroit-on-monday-night-0ap3000000431579"
+source_title = "NFL.com: Jets-Bills game moved to Detroit on Monday night"
+source_published_at = "2014-11-20T18:02:00Z"
+lock_utc = "2014-11-23T23:00:00Z"
+verdict = "pre_lock"
+notes = "Buffalo snow 2014: Sunday to Monday, same announcement as move 1. Announcement time: article datePublished; this upper bound falls 77.0 h before the lock."
+
+[[moves]]
+game_id = "2014_W21_NE@SEA"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "PHO00 2015-02-01"
+to_value = "PHO00 2015-02-01"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2015-01-31T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2015_W21_CAR@DEN"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "SFO01 2016-02-07"
+to_value = "SFO01 2016-02-07"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2016-02-06T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2016_W21_NE@ATL"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "HOU00 2017-02-05"
+to_value = "HOU00 2017-02-05"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2017-02-04T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2017_W11_TB@MIA"
+move_index = 1
+what_moved = "week"
+from_value = "W01 2017-09-10"
+to_value = "W11 2017-11-19"
+announced_at_utc = "2017-09-08T19:23:00Z"
+source_url = "https://www.usatoday.com/story/sports/2017/09/08/how-hurricane-irma-affecting-sports-florida-weekend/646564001/"
+source_title = "USA TODAY: Hurricane Irma: How the storm is affecting sports (\"Tampa Bay Buccaneers at Miami Dolphins (postponed until Nov. 19)\")"
+source_published_at = "2017-09-08T19:23:00Z"
+lock_utc = "2017-11-18T23:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Irma: moved to week 11, both teams' original bye. Announcement time: article datePublished; this upper bound falls 1707.6 h before the lock."
+
+[[moves]]
+game_id = "2017_W21_PHI@NE"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "MIN01 2018-02-04"
+to_value = "MIN01 2018-02-04"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2018-02-03T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2018_W06_SEA@LV"
+move_index = 1
+what_moved = "venue"
+from_value = "LON02"
+to_value = "LON00"
+announced_at_utc = "2018-08-13T19:38:00Z"
+source_url = "https://www.tottenhamhotspur.com/news/2018/august/urgent-stadium-update/"
+source_title = "Tottenham Hotspur: Urgent stadium update (\"the NFL match scheduled for 14 October\" switched to Wembley)"
+source_published_at = "2018-08-13T19:38:00Z"
+lock_utc = "2018-10-13T22:00:00Z"
+verdict = "pre_lock"
+notes = "London game moved from Tottenham Hotspur Stadium to Wembley (construction delay). Announcement time: article datePublished; this upper bound falls 1466.4 h before the lock."
+
+[[moves]]
+game_id = "2018_W11_KC@LA"
+move_index = 1
+what_moved = "venue"
+from_value = "MEX00"
+to_value = "LAX99"
+announced_at_utc = "2018-11-13T21:41:36Z"
+source_url = "http://www.espn.com/nfl/story/_/id/25268527/nfl-cancels-mexico-city-trip-moves-chiefs-rams-game-la-monday-night-football"
+source_title = "ESPN: NFL cancels Mexico City trip, moves Chiefs-Rams game to Los Angeles"
+source_published_at = "2018-11-13T21:41:36Z"
+lock_utc = "2018-11-18T23:00:00Z"
+verdict = "pre_lock"
+notes = "Moved from Estadio Azteca to the Los Angeles Memorial Coliseum (field conditions). Announcement time: article datePublished in the Wayback capture of 2018-11-13T23:29:53Z; this upper bound falls 121.3 h before the lock."
+
+[[moves]]
+game_id = "2018_W21_NE@LA"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "ATL97 2019-02-03"
+to_value = "ATL97 2019-02-03"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2019-02-02T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2019_W21_SF@KC"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "MIA00 2020-02-02"
+to_value = "MIA00 2020-02-02"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2020-02-01T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2020_W04_NE@KC"
+move_index = 1
+what_moved = "date"
+from_value = "2020-10-04"
+to_value = "2020-10-05"
+announced_at_utc = "2020-10-04T14:19:20Z"
+source_url = "https://www.nfl.com/news/postponed-patriots-chiefs-game-being-planned-for-monday-night-pending-results-of"
+source_title = "NFL.com: Patriots-Chiefs game rescheduled for Monday night; Falcons-Packers now at 8:50 p.m. ET"
+source_published_at = "2020-10-04T14:19:20Z"
+lock_utc = "2020-10-04T22:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: Sunday to Monday; postponed Saturday, the Monday date announced Sunday morning ET (lock 18:00 ET Sunday). Announcement time: article datePublished; this upper bound falls 7.7 h before the lock."
+
+[[moves]]
+game_id = "2020_W05_BUF@TEN"
+move_index = 1
+what_moved = "date"
+from_value = "2020-10-11"
+to_value = "2020-10-13"
+announced_at_utc = "2020-10-09T00:48:28Z"
+source_url = "https://sports.yahoo.com/two-week-5-games-pushed-004828947.html"
+source_title = "Yahoo Sports (Reuters): Two Week 5 games pushed back after positive COVID-19 tests"
+source_published_at = "2020-10-09T00:48:28Z"
+lock_utc = "2020-10-12T22:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: Sunday to Tuesday. Announcement time: article datePublished; this upper bound falls 93.2 h before the lock."
+
+[[moves]]
+game_id = "2020_W06_DEN@NE"
+move_index = 1
+what_moved = "date"
+from_value = "2020-10-11"
+to_value = "2020-10-12"
+announced_at_utc = "2020-10-09T00:48:28Z"
+source_url = "https://sports.yahoo.com/two-week-5-games-pushed-004828947.html"
+source_title = "Yahoo Sports (Reuters): Two Week 5 games pushed back after positive COVID-19 tests"
+source_published_at = "2020-10-09T00:48:28Z"
+lock_utc = "2020-10-17T22:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19, move 1: Sunday to Monday. Announcement time: article datePublished; this upper bound falls 213.2 h before the lock."
+
+[[moves]]
+game_id = "2020_W06_DEN@NE"
+move_index = 2
+what_moved = "week"
+from_value = "W05 2020-10-12"
+to_value = "W06 2020-10-18"
+announced_at_utc = "2020-10-11T18:56:05Z"
+source_url = "https://www.nfl.com/news/nfl-announces-multiple-schedule-changes-moves-broncos-patriots-to-week-6"
+source_title = "NFL.com: NFL announces multiple schedule changes, moves Broncos-Patriots to Week 6"
+source_published_at = "2020-10-11T18:56:05Z"
+lock_utc = "2020-10-17T22:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19, move 2: postponed again, to week 6. Announcement time: article datePublished; this upper bound falls 147.1 h before the lock."
+
+[[moves]]
+game_id = "2020_W06_NYJ@MIA"
+move_index = 1
+what_moved = "week"
+from_value = "W10 2020-11-15"
+to_value = "W06 2020-10-18"
+announced_at_utc = "2020-10-11T18:56:05Z"
+source_url = "https://www.nfl.com/news/nfl-announces-multiple-schedule-changes-moves-broncos-patriots-to-week-6"
+source_title = "NFL.com: NFL announces multiple schedule changes, moves Broncos-Patriots to Week 6"
+source_published_at = "2020-10-11T18:56:05Z"
+lock_utc = "2020-10-17T22:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: week swap to make room for Broncos-Patriots. Announcement time: article datePublished; this upper bound falls 147.1 h before the lock."
+
+[[moves]]
+game_id = "2020_W06_KC@BUF"
+move_index = 1
+what_moved = "date"
+from_value = "2020-10-15"
+to_value = "2020-10-19"
+announced_at_utc = "2020-10-11T18:56:05Z"
+source_url = "https://www.nfl.com/news/nfl-announces-multiple-schedule-changes-moves-broncos-patriots-to-week-6"
+source_title = "NFL.com: NFL announces multiple schedule changes, moves Broncos-Patriots to Week 6"
+source_published_at = "2020-10-11T18:56:05Z"
+lock_utc = "2020-10-18T22:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: Thursday to Monday. Announcement time: article datePublished; this upper bound falls 171.1 h before the lock."
+
+[[moves]]
+game_id = "2020_W07_PIT@TEN"
+move_index = 1
+what_moved = "week"
+from_value = "W04 2020-10-04"
+to_value = "W07 2020-10-25"
+announced_at_utc = "2020-10-02T12:32:43Z"
+source_url = "https://bleacherreport.com/articles/2911728-steelers-vs-titans-moved-to-week-7-after-covid-outbreak-pit-vs-ravens-week-8"
+source_title = "Bleacher Report: Steelers vs. Titans Moved to Week 7 After COVID Outbreak; PIT vs. Ravens Week 8"
+source_published_at = "2020-10-02T12:32:43Z"
+lock_utc = "2020-10-24T22:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: Titans outbreak; moved to week 7. Announcement time: article datePublished; this upper bound falls 537.5 h before the lock."
+
+[[moves]]
+game_id = "2020_W07_JAX@LAC"
+move_index = 1
+what_moved = "week"
+from_value = "W08 2020-11-01"
+to_value = "W07 2020-10-25"
+announced_at_utc = "2020-10-11T18:56:05Z"
+source_url = "https://www.nfl.com/news/nfl-announces-multiple-schedule-changes-moves-broncos-patriots-to-week-6"
+source_title = "NFL.com: NFL announces multiple schedule changes, moves Broncos-Patriots to Week 6"
+source_published_at = "2020-10-11T18:56:05Z"
+lock_utc = "2020-10-24T22:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: week swap to make room for Broncos-Patriots. Announcement time: article datePublished; this upper bound falls 315.1 h before the lock."
+
+[[moves]]
+game_id = "2020_W08_PIT@BAL"
+move_index = 1
+what_moved = "week"
+from_value = "W07 2020-10-25"
+to_value = "W08 2020-11-01"
+announced_at_utc = "2020-10-02T12:32:43Z"
+source_url = "https://bleacherreport.com/articles/2911728-steelers-vs-titans-moved-to-week-7-after-covid-outbreak-pit-vs-ravens-week-8"
+source_title = "Bleacher Report: Steelers vs. Titans Moved to Week 7 After COVID Outbreak; PIT vs. Ravens Week 8"
+source_published_at = "2020-10-02T12:32:43Z"
+lock_utc = "2020-10-31T22:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: moved to make room for Steelers-Titans. Announcement time: article datePublished; this upper bound falls 705.5 h before the lock."
+
+[[moves]]
+game_id = "2020_W08_LAC@DEN"
+move_index = 1
+what_moved = "week"
+from_value = "W11 2020-11-22"
+to_value = "W08 2020-11-01"
+announced_at_utc = "2020-10-11T18:56:05Z"
+source_url = "https://www.nfl.com/news/nfl-announces-multiple-schedule-changes-moves-broncos-patriots-to-week-6"
+source_title = "NFL.com: NFL announces multiple schedule changes, moves Broncos-Patriots to Week 6"
+source_published_at = "2020-10-11T18:56:05Z"
+lock_utc = "2020-10-31T22:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: week swap to make room for Broncos-Patriots. Announcement time: article datePublished; this upper bound falls 483.1 h before the lock."
+
+[[moves]]
+game_id = "2020_W10_LAC@MIA"
+move_index = 1
+what_moved = "week"
+from_value = "W07 2020-10-25"
+to_value = "W10 2020-11-15"
+announced_at_utc = "2020-10-11T18:56:05Z"
+source_url = "https://www.nfl.com/news/nfl-announces-multiple-schedule-changes-moves-broncos-patriots-to-week-6"
+source_title = "NFL.com: NFL announces multiple schedule changes, moves Broncos-Patriots to Week 6"
+source_published_at = "2020-10-11T18:56:05Z"
+lock_utc = "2020-11-14T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: week swap to make room for Broncos-Patriots. Announcement time: article datePublished; this upper bound falls 820.1 h before the lock."
+
+[[moves]]
+game_id = "2020_W11_MIA@DEN"
+move_index = 1
+what_moved = "week"
+from_value = "W06 2020-10-18"
+to_value = "W11 2020-11-22"
+announced_at_utc = "2020-10-11T18:56:05Z"
+source_url = "https://www.nfl.com/news/nfl-announces-multiple-schedule-changes-moves-broncos-patriots-to-week-6"
+source_title = "NFL.com: NFL announces multiple schedule changes, moves Broncos-Patriots to Week 6"
+source_published_at = "2020-10-11T18:56:05Z"
+lock_utc = "2020-11-21T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: week swap to make room for Broncos-Patriots. Announcement time: article datePublished; this upper bound falls 988.1 h before the lock."
+
+[[moves]]
+game_id = "2020_W11_NYJ@LAC"
+move_index = 1
+what_moved = "week"
+from_value = "W06 2020-10-18"
+to_value = "W11 2020-11-22"
+announced_at_utc = "2020-10-11T18:56:05Z"
+source_url = "https://www.nfl.com/news/nfl-announces-multiple-schedule-changes-moves-broncos-patriots-to-week-6"
+source_title = "NFL.com: NFL announces multiple schedule changes, moves Broncos-Patriots to Week 6"
+source_published_at = "2020-10-11T18:56:05Z"
+lock_utc = "2020-11-21T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: week swap to make room for Broncos-Patriots. Announcement time: article datePublished; this upper bound falls 988.1 h before the lock."
+
+[[moves]]
+game_id = "2020_W12_BAL@PIT"
+move_index = 1
+what_moved = "date"
+from_value = "2020-11-26"
+to_value = "2020-11-29"
+announced_at_utc = "2020-11-25T17:57:58Z"
+source_url = "https://www.nfl.com/news/ravens-steelers-game-moved-from-thursday-to-sunday"
+source_title = "NFL.com: Ravens-Steelers game moved from Thanksgiving to Sunday at 1:15 p.m. ET on NBC"
+source_published_at = "2020-11-25T17:57:58Z"
+lock_utc = "2020-12-01T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19, move 1: Thursday to Sunday. Announcement time: article datePublished; this upper bound falls 149.0 h before the lock."
+
+[[moves]]
+game_id = "2020_W12_BAL@PIT"
+move_index = 2
+what_moved = "date"
+from_value = "2020-11-29"
+to_value = "2020-12-01"
+announced_at_utc = "2020-11-30T18:36:16Z"
+source_url = "https://profootballtalk.nbcsports.com/2020/11/30/ravens-steelers-will-kickoff-at-340-p-m-et-wednesday/"
+source_title = "ProFootballTalk: Ravens-Steelers will kickoff at 3:40 p.m. ET Wednesday"
+source_published_at = "2020-11-30T18:36:16Z"
+lock_utc = "2020-12-01T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19, move 2: Sunday to Tuesday (league release 2020-11-27, 'Week 12 Ravens-Steelers game moved to Tuesday at 8:00 PM ET on NBC'); the cited story reports this move, so its time bounds it. Announcement time: article datePublished; this upper bound falls 28.4 h before the lock."
+
+[[moves]]
+game_id = "2020_W12_BAL@PIT"
+move_index = 3
+what_moved = "date"
+from_value = "2020-12-01"
+to_value = "2020-12-02"
+announced_at_utc = "2020-11-30T18:36:16Z"
+source_url = "https://profootballtalk.nbcsports.com/2020/11/30/ravens-steelers-will-kickoff-at-340-p-m-et-wednesday/"
+source_title = "ProFootballTalk: Ravens-Steelers will kickoff at 3:40 p.m. ET Wednesday"
+source_published_at = "2020-11-30T18:36:16Z"
+lock_utc = "2020-12-01T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19, move 3: Tuesday to Wednesday. Announcement time: article datePublished; this upper bound falls 28.4 h before the lock."
+
+[[moves]]
+game_id = "2020_W13_WAS@PIT"
+move_index = 1
+what_moved = "date"
+from_value = "2020-12-06"
+to_value = "2020-12-07"
+announced_at_utc = "2020-11-30T18:56:17Z"
+source_url = "https://profootballtalk.nbcsports.com/2020/11/30/cowboys-ravens-moves-to-tuesday-dec-8-with-steelers-washington-a-day-earlier/"
+source_title = "ProFootballTalk: Cowboys-Ravens moves to Tuesday, Dec. 8, with Steelers-Washington a day earlier"
+source_published_at = "2020-11-30T18:56:17Z"
+lock_utc = "2020-12-06T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: Sunday to Monday, to make room for Ravens-Steelers. Announcement time: article datePublished; this upper bound falls 148.1 h before the lock."
+
+[[moves]]
+game_id = "2020_W13_BUF@SF"
+move_index = 1
+what_moved = "venue"
+from_value = "SFO01"
+to_value = "PHO00"
+announced_at_utc = "2020-11-30T20:03:00Z"
+source_url = "https://www.cbssports.com/nfl/news/49ers-will-play-december-home-games-in-cardinals-stadium-after-santa-clara-county-halts-all-sports/"
+source_title = "CBS Sports: 49ers will play December home games in Cardinals' stadium after Santa Clara County halts all sports"
+source_published_at = "2020-11-30T20:03:00Z"
+lock_utc = "2020-12-06T23:00:00Z"
+verdict = "pre_lock"
+notes = "Santa Clara County order: moved from Levi's Stadium to State Farm Stadium. Announcement time: article datePublished; this upper bound falls 146.9 h before the lock."
+
+[[moves]]
+game_id = "2020_W13_DAL@BAL"
+move_index = 1
+what_moved = "date"
+from_value = "2020-12-03"
+to_value = "2020-12-07"
+announced_at_utc = "2020-11-30T18:56:17Z"
+source_url = "https://profootballtalk.nbcsports.com/2020/11/30/cowboys-ravens-moves-to-tuesday-dec-8-with-steelers-washington-a-day-earlier/"
+source_title = "ProFootballTalk: Cowboys-Ravens moves to Tuesday, Dec. 8, with Steelers-Washington a day earlier"
+source_published_at = "2020-11-30T18:56:17Z"
+lock_utc = "2020-12-07T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19, move 1: Thursday to Monday (league release 2020-11-27 names Monday Dec 7); the cited story reports the game 'has changed a second time', so its time bounds this move too. Announcement time: article datePublished; this upper bound falls 172.1 h before the lock."
+
+[[moves]]
+game_id = "2020_W13_DAL@BAL"
+move_index = 2
+what_moved = "date"
+from_value = "2020-12-07"
+to_value = "2020-12-08"
+announced_at_utc = "2020-11-30T18:56:17Z"
+source_url = "https://profootballtalk.nbcsports.com/2020/11/30/cowboys-ravens-moves-to-tuesday-dec-8-with-steelers-washington-a-day-earlier/"
+source_title = "ProFootballTalk: Cowboys-Ravens moves to Tuesday, Dec. 8, with Steelers-Washington a day earlier"
+source_published_at = "2020-11-30T18:56:17Z"
+lock_utc = "2020-12-07T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19, move 2: Monday to Tuesday. Announcement time: article datePublished; this upper bound falls 172.1 h before the lock."
+
+[[moves]]
+game_id = "2020_W14_WAS@SF"
+move_index = 1
+what_moved = "venue"
+from_value = "SFO01"
+to_value = "PHO00"
+announced_at_utc = "2020-11-30T20:03:00Z"
+source_url = "https://www.cbssports.com/nfl/news/49ers-will-play-december-home-games-in-cardinals-stadium-after-santa-clara-county-halts-all-sports/"
+source_title = "CBS Sports: 49ers will play December home games in Cardinals' stadium after Santa Clara County halts all sports"
+source_published_at = "2020-11-30T20:03:00Z"
+lock_utc = "2020-12-12T23:00:00Z"
+verdict = "pre_lock"
+notes = "Santa Clara County order: moved from Levi's Stadium to State Farm Stadium. Announcement time: article datePublished; this upper bound falls 290.9 h before the lock."
+
+[[moves]]
+game_id = "2020_W17_SEA@SF"
+move_index = 1
+what_moved = "venue"
+from_value = "SFO01"
+to_value = "PHO00"
+announced_at_utc = "2020-12-18T22:08:15Z"
+source_url = "https://www.espn.com/nfl/story/_/id/30546008/san-francisco-49ers-finish-season-phoenix-santa-clara-county-extends-covid-19-restrictions"
+source_title = "ESPN: San Francisco 49ers to finish season in Arizona after Santa Clara County extends COVID-19 restrictions"
+source_published_at = "2020-12-18T22:08:15Z"
+lock_utc = "2021-01-02T23:00:00Z"
+verdict = "pre_lock"
+notes = "Santa Clara County order extended: moved from Levi's Stadium to State Farm Stadium. Announcement time: ESPN content API 'published' (the last revision time; the text existed then); this upper bound falls 360.9 h before the lock."
+
+[[moves]]
+game_id = "2020_W21_KC@TB"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "TAM00 2021-02-07"
+to_value = "TAM00 2021-02-07"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2021-02-06T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2021_W01_GB@NO"
+move_index = 1
+what_moved = "venue"
+from_value = "NOR00"
+to_value = "JAX00"
+announced_at_utc = "2021-09-01T16:21:10Z"
+source_url = "https://www.nfl.com/news/packers-saints-to-play-at-jacksonville-s-tiaa-bank-field-week-1"
+source_title = "NFL.com: Packers-Saints to be played at Jacksonville's TIAA Bank Field in Week 1"
+source_published_at = "2021-09-01T16:21:10Z"
+lock_utc = "2021-09-11T22:00:00Z"
+verdict = "pre_lock"
+notes = "Hurricane Ida: moved from the Superdome to TIAA Bank Field. Announcement time: article datePublished; this upper bound falls 245.6 h before the lock."
+
+[[moves]]
+game_id = "2021_W15_LV@CLE"
+move_index = 1
+what_moved = "date"
+from_value = "2021-12-18"
+to_value = "2021-12-20"
+announced_at_utc = "2021-12-17T20:17:09Z"
+source_url = "https://www.nfl.com/news/nfl-covid-week-15-game-postponement"
+source_title = "NFL.com: NFL postpones three Week 15 games due to COVID-19 surge"
+source_published_at = "2021-12-17T20:17:09Z"
+lock_utc = "2021-12-19T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: Saturday (its Nov 23 late-season Saturday slot) to Monday. Announcement time: article datePublished (first Wayback capture 2021-12-17T20:29:00Z); this upper bound falls 50.7 h before the lock."
+
+[[moves]]
+game_id = "2021_W15_SEA@LA"
+move_index = 1
+what_moved = "date"
+from_value = "2021-12-19"
+to_value = "2021-12-21"
+announced_at_utc = "2021-12-17T20:17:09Z"
+source_url = "https://www.nfl.com/news/nfl-covid-week-15-game-postponement"
+source_title = "NFL.com: NFL postpones three Week 15 games due to COVID-19 surge"
+source_published_at = "2021-12-17T20:17:09Z"
+lock_utc = "2021-12-20T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: Sunday to Tuesday. Announcement time: article datePublished (first Wayback capture 2021-12-17T20:29:00Z); this upper bound falls 74.7 h before the lock."
+
+[[moves]]
+game_id = "2021_W15_WAS@PHI"
+move_index = 1
+what_moved = "date"
+from_value = "2021-12-19"
+to_value = "2021-12-21"
+announced_at_utc = "2021-12-17T20:17:09Z"
+source_url = "https://www.nfl.com/news/nfl-covid-week-15-game-postponement"
+source_title = "NFL.com: NFL postpones three Week 15 games due to COVID-19 surge"
+source_published_at = "2021-12-17T20:17:09Z"
+lock_utc = "2021-12-20T23:00:00Z"
+verdict = "pre_lock"
+notes = "COVID-19: Sunday to Tuesday. Announcement time: article datePublished (first Wayback capture 2021-12-17T20:29:00Z); this upper bound falls 74.7 h before the lock."
+
+[[moves]]
+game_id = "2021_W22_LA@CIN"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "LAX01 2022-02-13"
+to_value = "LAX01 2022-02-13"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2022-02-12T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2022_W11_CLE@BUF"
+move_index = 1
+what_moved = "venue"
+from_value = "BUF00"
+to_value = "DET00"
+announced_at_utc = "2022-11-17T21:15:03Z"
+source_url = "https://www.nfl.com/news/browns-bills-week-11-game-moved-to-detroit-s-ford-field-due-to-snowstorm"
+source_title = "NFL.com: Browns-Bills Week 11 game moved to Detroit's Ford Field due to snowstorm"
+source_published_at = "2022-11-17T21:15:03Z"
+lock_utc = "2022-11-19T23:00:00Z"
+verdict = "pre_lock"
+notes = "Buffalo snow 2022: moved to Ford Field. Announcement time: article datePublished; this upper bound falls 49.7 h before the lock."
+
+[[moves]]
+game_id = "2022_W22_KC@PHI"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "PHO00 2023-02-12"
+to_value = "PHO00 2023-02-12"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2023-02-11T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2023_W19_PIT@BUF"
+move_index = 1
+what_moved = "date"
+from_value = "2024-01-14"
+to_value = "2024-01-15"
+announced_at_utc = "2024-01-13T17:00:00Z"
+source_url = "https://www.wivb.com/sports/buffalo-bills/bills-steelers-playoff-game-postponed-to-monday/"
+source_title = "WIVB News 4 Buffalo: Bills-Steelers playoff game postponed to Monday"
+source_published_at = "2024-01-13T17:00:00Z"
+lock_utc = "2024-01-14T23:00:00Z"
+verdict = "pre_lock"
+notes = "Buffalo snow: wild card game Sunday to Monday. Announcement time: article datePublished in the Wayback capture of 2024-01-13T17:16:52Z; this upper bound falls 30.0 h before the lock."
+
+[[moves]]
+game_id = "2023_W22_SF@KC"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "VEG00 2024-02-11"
+to_value = "VEG00 2024-02-11"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2024-02-10T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2024_W17_KC@PIT"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "PIT00 2024-12-25"
+to_value = "PIT00 2024-12-25"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2024-12-24T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: a Christmas Day game in the published 2024 schedule. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2024_W17_BAL@HOU"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "HOU00 2024-12-25"
+to_value = "HOU00 2024-12-25"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2024-12-24T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: a Christmas Day game in the published 2024 schedule. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2024_W19_MIN@LA"
+move_index = 1
+what_moved = "venue"
+from_value = "LAX01"
+to_value = "PHO00"
+announced_at_utc = "2025-01-10T07:59:59Z"
+source_url = "https://media.nfl.com/news-and-releases/corporate-communications/vikings-rams-wild-card-game-moved-to-arizona"
+source_title = "NFL Communications: Vikings-Rams Wild Card Game Moved to Arizona"
+source_published_at = "2025-01-09"
+lock_utc = "2025-01-12T23:00:00Z"
+verdict = "pre_lock"
+notes = "Los Angeles wildfires: wild card game moved from SoFi Stadium to State Farm Stadium. Announcement time: date-only bound (the release is dated 'Jan. 9, 2025', no time); this upper bound falls 63.0 h before the lock."
+
+[[moves]]
+game_id = "2024_W22_KC@PHI"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "NOR00 2025-02-09"
+to_value = "NOR00 2025-02-09"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2025-02-08T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2025_W22_SEA@NE"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "SFO01 2026-02-08"
+to_value = "SFO01 2026-02-08"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2026-02-07T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: Super Bowl: the site is awarded years ahead. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2026_W01_NE@SEA"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "SEA00 2026-09-09"
+to_value = "SEA00 2026-09-09"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2026-09-08T22:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: the 2026 opener, placed on a Wednesday in the published 2026 schedule. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+[[moves]]
+game_id = "2026_W12_GB@LA"
+move_index = 1
+what_moved = "scheduled_not_moved"
+from_value = "LAX01 2026-11-25"
+to_value = "LAX01 2026-11-25"
+announced_at_utc = ""
+source_url = ""
+source_title = ""
+source_published_at = ""
+lock_utc = "2026-11-24T23:00:00Z"
+verdict = "post_lock"
+notes = "Scheduled, not moved: the night before Thanksgiving in the published 2026 schedule. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
