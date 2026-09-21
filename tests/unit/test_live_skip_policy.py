@@ -42,6 +42,10 @@ from typing import Any
 
 import pandas as pd
 import pytest
+
+from backtest import weekly_bet_list
+from features import provenance
+from pipeline import live_skip, skip_log
 from pipeline.live_skip import (
     LIVE_SKIP_EXCEPTIONS,
     GamesLockPassedError,
@@ -56,10 +60,6 @@ from pipeline.live_skip import (
     skip_reason_for,
     skip_records_from,
 )
-
-from backtest import weekly_bet_list
-from features import provenance
-from pipeline import live_skip, skip_log
 from pipeline.steps import PipelinePhase, StepDefinition, StepStatus
 
 _RUN_ID = "2026-09-19T17:30:00-04:00"

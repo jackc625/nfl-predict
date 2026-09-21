@@ -22,6 +22,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from pipeline import live_skip
 from pipeline.alert import PipelineAlertManager
 from pipeline.execution_log import (
     ExecutionLog,
@@ -60,16 +61,25 @@ class FridayPipeline:
     - PipelineAlertManager: exactly one alert per pipeline outcome
     """
 
-    def __init__(self, force: bool = False, mode: str = "full") -> None:
+    def __init__(
+        self, force: bool = False, mode: str = "full", history_mode: bool = False
+    ) -> None:
         """Initialize the pipeline.
 
         Args:
             force: Bypass pre-flight staleness/season checks.
                    Health checks still run in advisory mode when forced.
             mode: One of 'full', 'data-only', 'predictions-only'.
+            history_mode: True for a HISTORY (training/gold) run, which must stop and save
+                nothing on an information-time refusal (D33.2-05, first half). STATED
+                EXPLICITLY, never inferred from ``mode``: ``mode`` selects which PHASES run,
+                and a predictions-only live night and a full live night are both LIVE. The
+                default is the live run this orchestrator exists for; a caller building
+                history must say so.
         """
         self.force = force
         self.mode = mode
+        self.history_mode = history_mode
 
         season, week = get_current_nfl_week()
 
@@ -81,6 +91,11 @@ class FridayPipeline:
             forced=force,
             mode=mode,
             pid=os.getpid(),
+        )
+        # The skip record's identity for this run: the run id is its ISO start instant, and
+        # the natural key's day is its EASTERN calendar date (start_time is an ET instant).
+        self._run_date_et = (
+            datetime.fromisoformat(self._log.start_time).date().isoformat()
         )
 
         # Integration components from Plan 02
@@ -146,18 +161,7 @@ class FridayPipeline:
         retry_count = 0
 
         try:
-            if step.retryable and step.max_retries > 1:
-                for attempt in Retrying(
-                    stop=stop_after_attempt(step.max_retries),
-                    wait=wait_exponential(multiplier=2, min=2, max=60),
-                    retry=retry_if_exception_type(TRANSIENT_EXCEPTIONS),
-                    reraise=True,
-                ):
-                    with attempt:
-                        step.callable()
-                        retry_count = attempt.retry_state.attempt_number - 1
-            else:
-                step.callable()
+            retry_count = self._invoke_with_live_skip(step)
 
             elapsed_ms = (time.perf_counter() - start) * 1000
             logger.info(
@@ -188,6 +192,82 @@ class FridayPipeline:
                 retry_count=retry_count,
                 error=str(exc),
             )
+
+    def _invoke(self, step: StepDefinition) -> int:
+        """Call the step once (with transient-error retries); return the retry count."""
+        if step.retryable and step.max_retries > 1:
+            retry_count = 0
+            for attempt in Retrying(
+                stop=stop_after_attempt(step.max_retries),
+                wait=wait_exponential(multiplier=2, min=2, max=60),
+                retry=retry_if_exception_type(TRANSIENT_EXCEPTIONS),
+                reraise=True,
+            ):
+                with attempt:
+                    step.callable()
+                    retry_count = attempt.retry_state.attempt_number - 1
+            return retry_count
+        step.callable()
+        return 0
+
+    def _invoke_with_live_skip(self, step: StepDefinition) -> int:
+        """Run the step; on a per-game refusal in a LIVE run, drop the games and re-run.
+
+        THE STEP SEAM D33.2-05'S LIVE HALF NEEDS (Plan 33.2-03). ``_execute_step`` turns
+        every exception into a FAILED step, and a critical step's failure ends the run -- so,
+        before this, one post-lock value denied the whole night's clean games their
+        predictions (RESEARCH P10). A refusal from ``live_skip.LIVE_SKIP_EXCEPTIONS`` is now
+        caught HERE: its games are recorded durably and excluded
+        (``live_skip.apply_skip_policy``) and the step runs again on the remainder. Anything
+        outside that closed set falls through untouched to today's handling.
+
+        BOUNDED. At most ``live_skip.max_skip_rounds()`` skip rounds (the feature-source count
+        plus one, derived from the registry); a refusal naming an already-excluded game raises
+        ``SkipNotConvergingError`` on the first repeat. Either way the step FAILS, loudly.
+
+        THE COST, STATED RATHER THAN DISCOVERED IN PRODUCTION. At this wave
+        ``step_build_features`` rebuilds ALL seasons (measured 591.5 s), so a skip round inside
+        it repeats that whole build. D33.2-19 scopes the nightly build to the current season
+        plus tomorrow's games and Plan 33.2-27 implements it, after which a round costs
+        seconds. The POLICY belongs here because Plan 33.2-05 depends on it; the SCOPING belongs
+        there and is deliberately not pre-empted. Until then a refusal from a HISTORICAL row
+        drops that historical game (named in the skip record) rather than tonight's slate.
+
+        Returns:
+            The transient-retry count of the final, successful call.
+        """
+        # HISTORY MODE FIRST, and it never consults the policy: a training/gold build must stop
+        # and save nothing (D33.2-05, first half), so the refusal propagates to _execute_step's
+        # ordinary handler exactly as it did before this seam existed.
+        if self.history_mode:
+            return self._invoke(step)
+
+        cap: int | None = None
+        rounds = 0
+        while True:
+            try:
+                return self._invoke(step)
+            except live_skip.LIVE_SKIP_EXCEPTIONS as refusal:
+                if cap is None:
+                    cap = live_skip.max_skip_rounds()
+                rounds += 1
+                if rounds > cap:
+                    msg = (
+                        f"the live skip did not converge in step {step.name!r}: {cap} skip "
+                        "round(s) were taken and it refused again. Excluded so far: "
+                        f"{sorted(live_skip.excluded_games())}. Refusal: {refusal}"
+                    )
+                    raise live_skip.SkipNotConvergingError(msg) from refusal
+                dropped = live_skip.apply_skip_policy(
+                    refusal, run_id=self._log.start_time, run_date_et=self._run_date_et
+                )
+                self._log.skipped_games = sorted(live_skip.excluded_games())
+                logger.warning(
+                    "Per-game refusal: games dropped, re-running step on the rest",
+                    step=step.name,
+                    dropped=sorted(dropped),
+                    skip_round=rounds,
+                )
 
     # -- Finalization helpers ------------------------------------------------
 
@@ -279,6 +359,11 @@ class FridayPipeline:
         all_steps = build_step_registry()
         steps = self._filter_steps(all_steps)
 
+        # A FRESH exclusion register for every run (T-33.2-03-10): games dropped by an earlier
+        # in-process run must never suppress tonight's. Reset before the first step, always.
+        live_skip.reset_excluded_games()
+        self._log.skipped_games = []
+
         # Write initial log snapshot
         write_execution_log_atomic(self._log, LOG_PATH)
 
@@ -343,7 +428,11 @@ class FridayPipeline:
         # no prediction and no bet. A non-critical step failure is still recorded in
         # ``warnings`` either way (above), so a run that did both says both -- the status
         # names the one that changes what was published.
-        if self._log.skipped_games:
+        # The decision reads the REGISTER, the one home of the excluded games; the log field
+        # is its serialised mirror.
+        skipped = live_skip.excluded_games()
+        self._log.skipped_games = sorted(skipped)
+        if skipped:
             self._log.status = RunStatus.FINISHED_WITH_SKIPS.value
         elif has_non_critical_failure:
             self._log.status = "degraded"

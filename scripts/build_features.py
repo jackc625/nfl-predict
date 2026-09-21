@@ -136,6 +136,54 @@ _LINE_MOVEMENT_GROUP = "line_movement"
 # removes it from this tuple.
 POST_STAGE1_SOURCES: tuple[str, ...] = ("opponent_adj",)
 
+# THE FEATURE-SOURCE REGISTRY the Stage-1 information-time loop walks: each
+# ``feature_sources`` key mapped to the ``FeatureMatrixBuilder`` attribute that BUILDS it.
+# Module-level (Plan 33.2-03) so a caller can COUNT the sources without constructing the
+# builder, whose constructor instantiates every calculator: ``pipeline.live_skip`` derives its
+# round cap from ``FEATURE_SOURCE_KEYS`` rather than from a literal, because plans
+# 33.2-12 .. 33.2-17 grow this set. Add a source HERE and ``_information_time_suppliers`` and
+# the cap both follow.
+SUPPLIER_ATTRIBUTES: dict[str, str] = {
+    "team_form": "team_form_calc",
+    "elo": "elo_calc",
+    "contextual": "contextual_calc",
+    "weather": "weather_calc",
+    "market": "market_calc",
+    "qb_tracking": "qb_tracker",
+    "snaps": "snap_builder",
+    "injury": "injury_builder",
+}
+FEATURE_SOURCE_KEYS: tuple[str, ...] = tuple(SUPPLIER_ATTRIBUTES)
+
+
+def drop_excluded_games(
+    feature_sources: dict[str, pd.DataFrame], excluded_game_ids: frozenset[str]
+) -> dict[str, pd.DataFrame]:
+    """*feature_sources* without the games a LIVE run has already dropped (D33.2-05).
+
+    Every frame carrying a ``game_id`` column loses the excluded games' rows, so the base
+    ``games`` frame, the lock frame built from it and every provenance frame a supplier derives
+    from it agree on the narrowed set, and the information-time gate never re-reads a game the
+    live-skip policy has already recorded and excluded. A frame with no ``game_id`` (a team-keyed
+    source) is returned as-is: it cannot name a game, and its rows reach gold only through a merge
+    onto the narrowed ``games`` frame.
+
+    An EMPTY set returns the SAME frame objects -- a history build, which never excludes
+    anything, is byte-for-byte the build it was.
+    """
+    if not excluded_game_ids:
+        return feature_sources
+    wanted = sorted(excluded_game_ids)
+    return {
+        name: (
+            frame.loc[~frame["game_id"].astype(str).isin(wanted)].reset_index(drop=True)
+            if "game_id" in frame.columns
+            else frame
+        )
+        for name, frame in feature_sources.items()
+    }
+
+
 # THE TWO WEATHER BUILDER IDENTITIES (Ruling K1, Plan 33.1-04).
 #
 # `features.weather` exposes two builders that do NOT emit the same weather
@@ -816,14 +864,8 @@ class FeatureMatrixBuilder:
         with no edit here.
         """
         return {
-            "team_form": self.team_form_calc,
-            "elo": self.elo_calc,
-            "contextual": self.contextual_calc,
-            "weather": self.weather_calc,
-            "market": self.market_calc,
-            "qb_tracking": self.qb_tracker,
-            "snaps": self.snap_builder,
-            "injury": self.injury_builder,
+            key: getattr(self, attribute)
+            for key, attribute in SUPPLIER_ATTRIBUTES.items()
         }
 
     def _check_information_times(
@@ -2005,6 +2047,8 @@ class FeatureMatrixBuilder:
         target_season: int | None = None,
         target_week: int | None = None,
         as_of_datetime: datetime | None = None,
+        *,
+        excluded_game_ids: frozenset[str] = frozenset(),
     ) -> dict[str, pd.DataFrame]:
         """Generate complete feature matrices for all prediction targets.
 
@@ -2026,6 +2070,11 @@ class FeatureMatrixBuilder:
                 ``as_of_datetime`` parameter. It is NOT the fence: the fence is
                 the per-game lock frame. Defaults to ``datetime.now(ET)`` --
                 tz-AWARE, see the CR-01 note on ``load_all_feature_sources``.
+            excluded_game_ids: Games a LIVE run has already dropped under the live-skip rule
+                (D33.2-05, Plan 33.2-03). Removed from every source BEFORE the lock frame and
+                the information-time gate, so a re-run after a skip does not re-refuse a game
+                that is already recorded and excluded. Empty by default, and a HISTORY build
+                never passes it: history must stop on any violation, not skip.
 
         Returns:
             Dictionary with feature matrices for each target.
@@ -2051,6 +2100,7 @@ class FeatureMatrixBuilder:
             feature_sources = self.load_all_feature_sources(
                 target_season, target_week, as_of_datetime=as_of_datetime
             )
+            feature_sources = drop_excluded_games(feature_sources, excluded_game_ids)
 
             # -- ONE lock frame (game_id -> tz-aware lock), before any per-source
             #    work (RESEARCH 3.3). A game with no kickoff has no lock and the

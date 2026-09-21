@@ -10,8 +10,13 @@ step Plan 31-18 added (SPEC R9, D31-29).
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 # ---------------------------------------------------------------------------
 # Enums and data classes
@@ -164,6 +169,60 @@ def _resolve_current_week() -> tuple[int, int]:
     from utils.date_utils import get_current_nfl_week
 
     return get_current_nfl_week()
+
+
+def _decision_instant() -> datetime:
+    """The instant a LIVE run decides the games it is about to predict or bet. Tz-aware UTC.
+
+    ONE function so the prediction step and the bet-list step read the decision instant the same
+    way (Plan 33.2-03), and so a test can pin it instead of the wall clock. It is the instant the
+    passed-lock refusal judges -- ``pipeline.live_skip.refuse_passed_locks`` -- and the instant
+    the bet list stamps as each row's ``decided_at_utc``, so the refusal and the stamp cannot
+    disagree about when the decision happened. Plan 33.2-27 separates the capture instant from
+    the compute instant for the daily path; until then the run clock is the only honest value.
+    """
+    return datetime.now(tz=UTC)
+
+
+def _week_schedule(season: int, week: int) -> "pd.DataFrame":
+    """The week's scheduled games (``game_id``, ``kickoff_et``) from silver ``games``. READ ONLY.
+
+    The same relative store ``generate_current_week_predictions`` and the bet list read, so the
+    passed-lock refusal judges exactly the games those two go on to score.
+
+    Raises:
+        FileNotFoundError: when the silver schedule is absent -- without it no game's lock can be
+            established, and predicting a game whose lock cannot be checked is refused.
+    """
+    import pandas as pd
+
+    games_path = Path("data/silver/games.parquet")
+    if not games_path.exists():
+        msg = (
+            f"cannot check the week's locks -- schedule missing: {games_path.as_posix()}. A game "
+            "whose lock cannot be established is not predicted."
+        )
+        raise FileNotFoundError(msg)
+    games = pd.read_parquet(
+        games_path, columns=["game_id", "season", "week", "kickoff_et"]
+    )
+    in_week = games.loc[(games["season"] == season) & (games["week"] == week)]
+    return in_week[["game_id", "kickoff_et"]].reset_index(drop=True)
+
+
+def _every_scheduled_game_excluded(
+    season: int, week: int, excluded: frozenset[str]
+) -> bool:
+    """True when the week HAS scheduled games and every one of them was dropped this run.
+
+    The discriminator SPEC R3 needs: an empty prediction file is the honest output of an
+    all-skipped day, and a refusal-worthy defect on any other day. Read only when the register
+    is non-empty, so a clean run's checks are exactly what they were.
+    """
+    if not excluded:
+        return False
+    scheduled = {str(game_id) for game_id in _week_schedule(season, week)["game_id"]}
+    return bool(scheduled) and scheduled <= excluded
 
 
 class StaleDataArtifactError(RuntimeError):
@@ -667,11 +726,18 @@ def step_build_market_anchors() -> None:
 
 
 def step_build_features() -> None:
-    """Create unified feature matrices for all model targets."""
+    """Create unified feature matrices for all model targets.
+
+    Passes the live-skip register (Plan 33.2-03, D33.2-05): the games this run has already
+    dropped are removed from every source before the information-time gate, so a re-run after a
+    skip checks the REMAINING games rather than re-refusing a game already recorded. The register
+    is empty on a clean run, and the call is then the one it always was.
+    """
+    from pipeline import live_skip
     from scripts.build_features import FeatureMatrixBuilder
 
     builder = FeatureMatrixBuilder()
-    builder.generate_feature_matrices()
+    builder.generate_feature_matrices(excluded_game_ids=live_skip.excluded_games())
 
 
 _GOLD_FEATURE_TABLES = ("features_wp", "features_ats", "features_ou")
@@ -780,17 +846,36 @@ def step_verify_prediction_currency() -> None:
 
     import pandas as pd
 
+    from pipeline import live_skip
+
     pred_path = _predictions_output_dir() / f"predictions_{season}_week{week}.csv"
     if not pred_path.exists():
         raise RuntimeError(f"Missing data artifacts: {pred_path.as_posix()}")
 
     frame = pd.read_csv(pred_path)
+
+    # A GAME THIS RUN DROPPED MUST HAVE NO PREDICTION ROW (D33.2-05). The writer drops excluded
+    # games before scoring; this is the independent check on the file actually written, and it
+    # stops the run before the row can become a bet, an export or a served page.
+    excluded = live_skip.excluded_games()
+    if excluded and "game_id" in frame.columns:
+        leaked = sorted(excluded & {str(game_id) for game_id in frame["game_id"]})
+        if leaked:
+            raise RuntimeError(
+                f"{pred_path.as_posix()} carries prediction rows for game(s) this run DROPPED "
+                f"under the live-skip rule: {leaked}. A dropped game must have no prediction."
+            )
+
     covered = (
         not frame.empty
         and {"season", "week"} <= set(frame.columns)
         and bool(((frame["season"] == season) & (frame["week"] == week)).any())
     )
-    if not covered:
+    # An EMPTY file is current only on an all-skipped day (SPEC R3): every scheduled game was
+    # dropped, so zero rows is the honest output. A week with no scheduled games is not that
+    # day and still refuses below.
+    all_skipped = frame.empty and _every_scheduled_game_excluded(season, week, excluded)
+    if not covered and not all_skipped:
         raise StaleDataArtifactError(
             f"Stale {ARTIFACT_BOUNDARY_PREDICTIONS} artifact for {season} week {week}: "
             f"{pred_path.as_posix()}. The file EXISTS and carries no row for "
@@ -824,12 +909,30 @@ def step_generate_predictions() -> None:
     blend artifact when present), and writes ``predictions_<season>_week<week>.csv``
     plus the game-context CSV. Raises if the gold matrix lacks the current week
     so the orchestrator records a clean step failure.
+
+    THE LIVE-SKIP REGISTER IS READ HERE, NEVER WRITTEN (Plan 33.2-03, D33.2-05). First, every
+    game whose lock is before this decision instant is refused by name
+    (``live_skip.refuse_passed_locks``) -- the standing prohibition that no prediction exists for
+    a game whose lock had passed, including after a missed day. That refusal is a per-game one,
+    so the orchestrator's seam records and drops those games and re-runs this step. Then the
+    register's games are handed to ``generate_and_write``, which drops them BEFORE scoring.
     """
+    from pipeline import live_skip
     from scripts.generate_current_week_predictions import generate_and_write
     from utils.date_utils import get_current_nfl_week
 
     season, week = get_current_nfl_week()
-    generate_and_write(season=season, week=week, output_dir=_predictions_output_dir())
+    live_skip.refuse_passed_locks(
+        _week_schedule(season, week),
+        decided_at=_decision_instant(),
+        excluded_game_ids=live_skip.excluded_games(),
+    )
+    generate_and_write(
+        season=season,
+        week=week,
+        output_dir=_predictions_output_dir(),
+        excluded_game_ids=live_skip.excluded_games(),
+    )
 
 
 def step_generate_recommendations() -> None:
@@ -866,16 +969,35 @@ def step_generate_recommendations() -> None:
     already described -- resolve the week, resolve the output directory, call the one selection
     facade.
 
+    THE LIVE-SKIP REGISTER IS READ HERE, NEVER WRITTEN (Plan 33.2-03, D33.2-05). Games whose lock
+    is before this decision instant are refused by name first, exactly as in
+    ``step_generate_predictions``; then the register is passed as ``excluded_game_ids``, which
+    ``backtest.weekly_bet_list`` drops from the week's schedule SPINE before scoring or pricing
+    (Plan 33.2-02's thread), so a dropped game has no bet row of any kind -- not even a
+    suppressed one. The decision instant is passed as ``now`` so the refusal here and the
+    ``decided_at_utc`` stamp there are one instant.
+
     Raises:
         Whatever the delegate raises. Nothing is swallowed: a week that cannot be selected must
         record a clean step failure rather than publish a silently empty bet list.
     """
     from backtest.weekly_bet_list import generate_weekly_bet_list
+    from pipeline import live_skip
     from utils.date_utils import get_current_nfl_week
 
     season, week = get_current_nfl_week()
+    decided_at = _decision_instant()
+    live_skip.refuse_passed_locks(
+        _week_schedule(season, week),
+        decided_at=decided_at,
+        excluded_game_ids=live_skip.excluded_games(),
+    )
     generate_weekly_bet_list(
-        season=season, week=week, output_dir=_bet_list_output_dir()
+        season=season,
+        week=week,
+        output_dir=_bet_list_output_dir(),
+        now=decided_at,
+        excluded_game_ids=live_skip.excluded_games(),
     )
 
 
@@ -909,8 +1031,14 @@ def step_validate_predictions() -> None:
     if not pred_path.exists():
         raise RuntimeError(f"Prediction validation failed -- missing file: {pred_path}")
 
+    from pipeline import live_skip
+
     df = pd.read_csv(pred_path)
-    if df.empty:
+    # Zero rows is valid ONLY on an all-skipped day (SPEC R3, D33.2-05): every scheduled game was
+    # dropped under the live-skip rule. Any other empty file is still a failed prediction run.
+    if df.empty and not _every_scheduled_game_excluded(
+        season, week, live_skip.excluded_games()
+    ):
         raise RuntimeError(f"Prediction validation failed -- no rows in {pred_path}")
 
     required = ["game_id", "wp_prob", "ats_prediction", "ou_prediction"]

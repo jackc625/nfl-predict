@@ -146,13 +146,68 @@ def load_market_data(game_ids: list[str]) -> pd.DataFrame:
 # Prediction logic
 # ---------------------------------------------------------------------------
 
+# The prediction column each target's model writes, in ``run_predictions`` order.
+_PREDICTION_COLUMN: dict[str, str] = {
+    "wp": "wp_prob",
+    "ats": "ats_prediction",
+    "ou": "ou_prediction",
+}
+
+# The published prediction CSV's columns, in order. An all-skipped day writes exactly this
+# header with no rows, so downstream readers see a well-formed empty week, not a malformed file.
+PREDICTION_OUTPUT_COLUMNS: list[str] = [
+    "game_id",
+    "season",
+    "week",
+    "home_team",
+    "away_team",
+    "wp_prob",
+    "ats_prediction",
+    "ou_prediction",
+    "wp_confidence",
+    "ats_confidence",
+    "ou_confidence",
+    "market_spread",
+    "market_total",
+    "market_ml_home",
+    "market_ml_away",
+    "wp_edge",
+    "ats_edge",
+    "ou_edge",
+    "blended_wp",
+    "blended_ats",
+    "blended_ou",
+]
+
+
+def _without_excluded(
+    gold_df: pd.DataFrame, excluded_game_ids: frozenset[str]
+) -> pd.DataFrame:
+    """*gold_df* without the games a live run dropped (D33.2-05). Same object when none."""
+    if not excluded_game_ids:
+        return gold_df
+    keep = ~gold_df["game_id"].astype(str).isin(sorted(excluded_game_ids))
+    return gold_df.loc[keep].copy()
+
 
 def run_predictions(
     artifacts_dir: Path,
     season: int,
     week: int,
+    *,
+    excluded_game_ids: frozenset[str] = frozenset(),
 ) -> dict[str, pd.DataFrame]:
     """Run model predictions for all three targets.
+
+    Args:
+        artifacts_dir: Root directory for model artifacts.
+        season: NFL season year.
+        week: NFL week number.
+        excluded_game_ids: Games a live run dropped under the live-skip rule (D33.2-05). Their
+            gold rows are removed BEFORE any model scores anything, so no prediction is ever
+            COMPUTED for them -- not computed and then filtered. The week-emptiness refusal in
+            ``load_gold_features`` still runs first, so "no game scheduled" keeps refusing while
+            "every game excluded" returns empty frames.
 
     Returns:
         Dict mapping target -> DataFrame with game_id and prediction columns.
@@ -166,8 +221,18 @@ def run_predictions(
         feature_list = artifact["feature_list"]
         calibrator = artifact["calibrator"]
 
-        # Load gold features
-        gold_df = load_gold_features(target, season, week)
+        # Load gold features, then drop the excluded games before anything is scored.
+        gold_df = _without_excluded(
+            load_gold_features(target, season, week), excluded_game_ids
+        )
+        if gold_df.empty:
+            # Every game of the week was excluded: an honestly all-skipped day, not an
+            # unscheduled one (that refused above). Nothing is handed to the model.
+            results[target] = pd.DataFrame(
+                columns=pd.Index(["game_id", _PREDICTION_COLUMN[target]])
+            )
+            logger.info("Every game excluded; nothing scored", target=target)
+            continue
 
         # Ensure all required features exist in the gold DataFrame
         missing_features = [f for f in feature_list if f not in gold_df.columns]
@@ -495,32 +560,8 @@ def write_predictions(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_cols = [
-        "game_id",
-        "season",
-        "week",
-        "home_team",
-        "away_team",
-        "wp_prob",
-        "ats_prediction",
-        "ou_prediction",
-        "wp_confidence",
-        "ats_confidence",
-        "ou_confidence",
-        "market_spread",
-        "market_total",
-        "market_ml_home",
-        "market_ml_away",
-        "wp_edge",
-        "ats_edge",
-        "ou_edge",
-        "blended_wp",
-        "blended_ats",
-        "blended_ou",
-    ]
-
     # Only include columns that exist
-    available_cols = [c for c in output_cols if c in predictions.columns]
+    available_cols = [c for c in PREDICTION_OUTPUT_COLUMNS if c in predictions.columns]
     out_df = predictions[available_cols]
 
     out_path = output_dir / f"predictions_{season}_week{week}.csv"
@@ -554,6 +595,8 @@ def generate_and_write(
     output_dir: Path = Path("outputs/predictions"),
     artifacts_dir: Path = Path("artifacts"),
     no_blend: bool = False,
+    *,
+    excluded_game_ids: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Generate predictions for a season/week and write the output files.
 
@@ -568,10 +611,14 @@ def generate_and_write(
         output_dir: Directory for the prediction/context CSV files.
         artifacts_dir: Root directory for model and blend artifacts.
         no_blend: Skip market blending even if a blend artifact exists.
+        excluded_game_ids: Games the live run dropped under the live-skip rule (D33.2-05,
+            Plan 33.2-03). They are removed BEFORE scoring, so no prediction row is ever
+            computed for them. Keyword-only and EMPTY by default, so the CLI and every existing
+            caller produce exactly the output they did before.
 
     Returns:
-        Summary dict with ``n_games``, ``n_blended``, ``predictions_path``,
-        and ``context_path``.
+        Summary dict with ``n_games``, ``n_excluded`` (how many of the week's games were
+        dropped), ``n_blended``, ``predictions_path``, and ``context_path``.
 
     Raises:
         FileNotFoundError: A gold feature matrix is missing for a target.
@@ -586,8 +633,11 @@ def generate_and_write(
         output_dir=str(output_dir),
     )
 
-    # 1. Run model predictions for all three targets
-    prediction_results = run_predictions(artifacts_dir, season, week)
+    # 1. Run model predictions for all three targets, excluded games dropped before scoring
+    n_excluded = _count_excluded_in_week(season, week, excluded_game_ids)
+    prediction_results = run_predictions(
+        artifacts_dir, season, week, excluded_game_ids=excluded_game_ids
+    )
 
     # 2. Merge predictions into a single DataFrame
     wp_df = prediction_results["wp"]  # game_id, wp_prob
@@ -598,6 +648,9 @@ def generate_and_write(
     combined = combined.merge(ou_df, on="game_id", how="outer")
     combined["season"] = season
     combined["week"] = week
+
+    if combined.empty:
+        return _write_all_skipped_week(season, week, output_dir, n_excluded)
 
     # 3. Load market data
     game_ids = combined["game_id"].tolist()
@@ -644,7 +697,52 @@ def generate_and_write(
     )
     return {
         "n_games": len(combined),
+        "n_excluded": n_excluded,
         "n_blended": n_blended,
+        "predictions_path": pred_path,
+        "context_path": context_path,
+    }
+
+
+def _count_excluded_in_week(
+    season: int, week: int, excluded_game_ids: frozenset[str]
+) -> int:
+    """How many of the week's WP gold games are in *excluded_game_ids*. 0 when none excluded."""
+    if not excluded_game_ids:
+        return 0
+    path = Path("data/gold/features_wp.parquet")
+    if not path.exists():
+        return 0
+    week_ids = pd.read_parquet(path, columns=["game_id", "season", "week"])
+    in_week = week_ids.loc[(week_ids["season"] == season) & (week_ids["week"] == week)]
+    return int(in_week["game_id"].astype(str).isin(sorted(excluded_game_ids)).sum())
+
+
+def _write_all_skipped_week(
+    season: int, week: int, output_dir: Path, n_excluded: int
+) -> dict[str, Any]:
+    """Write the well-formed EMPTY outputs of a day on which every game was excluded.
+
+    SPEC R3: an all-caught day finishes with skips and ZERO predictions -- never "no games".
+    The prediction CSV carries the full published header and no rows, so the currency and
+    validation steps read a well-formed empty week rather than a malformed file, and the
+    game-context CSV likewise carries its key column only.
+    """
+    empty = pd.DataFrame(columns=pd.Index(PREDICTION_OUTPUT_COLUMNS))
+    pred_path = write_predictions(empty, season, week, output_dir)
+    context_path = write_game_context(
+        pd.DataFrame(columns=pd.Index(["game_id"])), season, week, output_dir
+    )
+    logger.info(
+        "Every game excluded; wrote an empty prediction set",
+        season=season,
+        week=week,
+        n_excluded=n_excluded,
+    )
+    return {
+        "n_games": 0,
+        "n_excluded": n_excluded,
+        "n_blended": 0,
         "predictions_path": pred_path,
         "context_path": context_path,
     }

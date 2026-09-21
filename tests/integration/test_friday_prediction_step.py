@@ -41,19 +41,21 @@ def _pin_bet_list_run_instant(monkeypatch) -> None:
     In PRODUCTION nothing here applies: ``get_current_nfl_week`` returns the current week, so the
     run clock is naturally before that week's freeze.
 
-    The instant is one second before the EARLIEST 2024 week-1 freeze (Thursday 2024-09-05's
-    kickoff freezes on Friday 2024-08-30 at 18:00 ET = 22:00 UTC), so every game in the week
-    satisfies ``decided_at <= freeze``. The real function is called -- only its ``now`` is bound.
+    The instant is one second before 2024-08-30 22:00 UTC, which is before EVERY 2024 week-1
+    lock (the earliest, Thursday 2024-09-05's kickoff, locks on Wednesday 2024-09-04 at 18:00
+    ET), so every game in the week satisfies ``decided_at <= lock``.
+
+    PINNED AT THE ONE DECISION-INSTANT SEAM (Plan 33.2-03). The prediction and bet-list steps
+    both read ``pipeline.steps._decision_instant``: the passed-lock refusal judges it, and the
+    bet-list step hands it to ``generate_weekly_bet_list`` as ``now``. Pinning it here therefore
+    pins the refusal and the ``decided_at_utc`` stamp to the same instant. (This helper used to
+    wrap ``generate_weekly_bet_list`` and bind ``now`` itself; the step now passes ``now``
+    explicitly, and the old wrapper would have passed it twice.)
     """
-    import backtest.weekly_bet_list as wbl
+    from pipeline import steps
 
     run_instant = datetime(2024, 8, 30, 21, 59, 59, tzinfo=UTC)
-    real = wbl.generate_weekly_bet_list
-    monkeypatch.setattr(
-        wbl,
-        "generate_weekly_bet_list",
-        lambda **kwargs: real(now=run_instant, **kwargs),
-    )
+    monkeypatch.setattr(steps, "_decision_instant", lambda: run_instant)
 
 
 def _gold_has_season_week(season: int, week: int) -> bool:
