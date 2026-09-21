@@ -1,0 +1,498 @@
+"""Permanent rendering guard for the dated old-rule label on the website (Phase 33.2, R16).
+
+D33.2-07: only the 2026 season, recorded live under the day-before-kickoff lock, is evidence. Every
+website block that renders a pre-fix past-season number carries the shared label partial
+``web/templates/components/_old_rule_label.html``; a block showing only 2026 numbers, or no numbers
+at all, carries none.
+
+This is a PERMANENT committed test, not a throwaway ``scripts/check_*.py``. It certifies the
+TEMPLATES: each page is rendered directly with a context shaped like the one its route builds, and
+the label is COUNTED in the output. ``tests/api/test_page_labels_routes.py`` certifies the PAGES
+through the real routes, because a template test cannot prove that production ever builds the
+context it was fed.
+
+Three properties are held together here:
+
+  - COVERAGE IS ENUMERATED, NOT REMEMBERED. ``EXPECTED_PREFIX_BLOCKS`` is keyed by every file in
+    ``web/templates/pages/`` and its key set is asserted EQUAL to the directory listing at
+    collection time, so a page added later fails here instead of going uncovered.
+  - THE INCLUDE IS UNIVERSAL AND THE PARTIAL DECIDES. Every page includes the partial, and the
+    partial reads the block's season scope itself. That is what makes a declared count MEASURED: a
+    page whose count is wrong renders a different number of labels, whatever its markup says.
+  - AN UNWIRED BLOCK LABELS. The partial emits when its scope is missing, so forgetting to wire a
+    block produces a visible label rather than a silent omission.
+
+ASCII only, no emoji (CLAUDE.md).
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from api.dependencies import templates
+from api.services import DataService
+from backtest.ev_chain_constants import READOUT_FORBIDDEN_WORDS
+from tests.unit.test_old_rule_labels import LABEL_PHRASE
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PAGES_DIR = REPO_ROOT / "web" / "templates" / "pages"
+PARTIAL_PATH = REPO_ROOT / "web" / "templates" / "components" / "_old_rule_label.html"
+COMPILED_CSS = REPO_ROOT / "web" / "static" / "css" / "tailwind-compiled.css"
+
+# The attribute every rendered label carries. Counting it is how a test measures labels.
+LABEL_MARKER = "data-old-rule-label"
+
+# The newest season whose numbers are pre-fix (D33.2-07); 2026 is the first new-rule season.
+PAST_SEASON = 2024
+NEW_RULE_SEASON = 2026
+
+# How many pre-fix blocks each page renders when it shows past-season numbers. Every page in
+# web/templates/pages/ is a key; a page inspected and found to render no pre-fix number would be
+# declared 0 with its reason in DELIBERATELY_UNLABELLED_REASONS.
+EXPECTED_PREFIX_BLOCKS: dict[str, int] = {
+    # The four pre-rendered charts over the whole backtest corpus, as one block.
+    "backtest.html": 1,
+    # The selected week's live list (a past week is a replay), and the replay tracker sections.
+    "bets.html": 2,
+    # KPI strip, equity, ROI and edge charts: one simulation over the backtest window.
+    "betting.html": 1,
+    # The game header: its season line and the completed-game result overlay (score, badge, CLV).
+    "game_detail.html": 1,
+    # Calibration, feature importance and model-vs-market sections: one backtest corpus.
+    "insights.html": 1,
+    # The all-history summary strip, and the season-scoped metrics table.
+    "performance.html": 2,
+    # The selected season's KPI strip and its cumulative and weekly charts.
+    "season.html": 1,
+    # The selected week's summary banner and game grid.
+    "this_week.html": 1,
+}
+
+# Pages inspected and deliberately left with no labelled block, each with its reason. Every page
+# renders at least one pre-fix block when a past season is on display, so none is here today.
+DELIBERATELY_UNLABELLED_REASONS: dict[str, str] = {}
+
+
+def _page_listing() -> list[str]:
+    """Every page template on disk, by filename."""
+    return sorted(path.name for path in PAGES_DIR.glob("*.html"))
+
+
+if sorted(EXPECTED_PREFIX_BLOCKS) != _page_listing():
+    raise AssertionError(
+        "EXPECTED_PREFIX_BLOCKS must be keyed by exactly the files in web/templates/pages/: "
+        f"declared {sorted(EXPECTED_PREFIX_BLOCKS)}, on disk {_page_listing()}"
+    )
+
+
+class _StubRequest:
+    """The one attribute the base template needs from a request: ``url_for`` for static files."""
+
+    def url_for(self, name: str, **path_params: Any) -> str:
+        return f"/{name}/{path_params.get('path', '')}"
+
+
+def scope_for(season: int | None) -> dict[str, Any]:
+    """The provenance scope a route supplies for a block showing *season* (None: no numbers)."""
+    return DataService.old_rule_scope([] if season is None else [season])
+
+
+def _game(season: int) -> dict[str, Any]:
+    """One completed game, shaped like a DataService prediction row."""
+    return {
+        "game_id": f"{season}_W01_BUF@KC",
+        "season": season,
+        "week": 1,
+        "game_date": f"{season}-09-10",
+        "home_team": "KC",
+        "away_team": "BUF",
+        "status": "completed",
+        "home_score": 27,
+        "away_score": 20,
+        "wp_prob": 0.62,
+        "wp_confidence": "medium",
+        "ats_prediction": -3.5,
+        "ats_confidence": "high",
+        "ou_prediction": 48.5,
+        "ou_confidence": "medium",
+        "market_spread": -3.0,
+        "market_total": 47.5,
+        "market_ml_home": -155,
+        "market_ml_away": 135,
+        "wp_edge": 0.05,
+        "ats_edge": 0.5,
+        "ou_edge": 0.01,
+        "blended_wp": 0.60,
+        "blended_ats": -3.2,
+        "blended_ou": 48.0,
+        "wp_correct": True,
+        "wp_clv": 1.5,
+        "context": None,
+        "feature_importances": {},
+    }
+
+
+def _block(provenance: str, validation_type: str) -> dict[str, Any]:
+    """One precomputed tracker block with graded bets."""
+    return {
+        "provenance": provenance,
+        "validation_type": validation_type,
+        "bets_graded": 12,
+        "wins": 7,
+        "losses": 5,
+        "pushes": 0,
+        "hit_rate": 0.583,
+        "flat_return_units": 0.41,
+    }
+
+
+def page_context(page: str, season: int) -> dict[str, Any]:
+    """A context shaped like the one *page*'s route builds, every block showing *season*."""
+    scope = scope_for(season)
+    common: dict[str, Any] = {"request": _StubRequest(), "cache_meta": {}}
+    if page == "backtest.html":
+        charts = {
+            cid: f"<div>{cid}</div>"
+            for cid in ("calibration", "clv", "heatmap", "equity")
+        }
+        return {
+            **common,
+            "charts": charts,
+            "current_path": "/backtest",
+            "old_rule_scope": scope,
+        }
+    if page == "insights.html":
+        return {
+            **common,
+            "charts": {"calibration": "<div>calibration</div>"},
+            "aggregate_table": [
+                {
+                    "target": "wp",
+                    "metric": "Brier",
+                    "model_fmt": "0.220",
+                    "market_fmt": "0.210",
+                    "gap_fmt": "+0.010",
+                    "gap_favorable": False,
+                }
+            ],
+            "current_path": "/insights",
+            "old_rule_scope": scope,
+        }
+    if page == "betting.html":
+        return {
+            **common,
+            "charts": {},
+            "kpis": {"total_bets": 5, "win_rate": 60.0, "roi_flat": 1.2},
+            "roi_table": [],
+            "current_scope": "recommended",
+            "current_path": "/betting",
+            "old_rule_scope": scope,
+        }
+    if page == "performance.html":
+        metrics = [
+            {"season": season, "target": "wp", "games": 256, "accuracy": 64.0}
+            | {"mae": None, "rmse": None, "r2": None}
+        ]
+        return {
+            **common,
+            "available_seasons": [season],
+            "current_season": None,
+            "season_metrics": metrics,
+            "summary": {"total_games": 256, "overall_clv": -1.2, "wp_accuracy": 64.0},
+            "current_path": "/performance",
+            "summary_old_rule_scope": scope,
+            "season_metrics_old_rule_scope": scope,
+        }
+    if page == "season.html":
+        return {
+            **common,
+            "charts": {f"season_cumulative_{season}": "<div>cumulative</div>"},
+            "kpis": {"wp_hit_rate": 61.0, "ats_hit_rate": 50.0, "ou_hit_rate": 49.0},
+            "available_seasons": [season],
+            "current_season": season,
+            "current_path": "/season",
+            "old_rule_scope": scope,
+        }
+    if page == "this_week.html":
+        return {
+            **common,
+            "games": [_game(season)],
+            "available_weeks": [{"season": season, "week": 1}],
+            "available_seasons": [season],
+            "current_week": 1,
+            "current_season": season,
+            "current_sort": "time",
+            "current_path": "/",
+            "week_summary": {
+                "total_games": 1,
+                "wp_correct": 1,
+                "wp_total": 1,
+                "wp_pct": 100,
+            }
+            | {"ats_correct": 0, "ats_total": 0, "ou_correct": 0, "ou_total": 0},
+            "old_rule_scope": scope,
+        }
+    if page == "game_detail.html":
+        return {
+            **common,
+            "game": _game(season),
+            "current_path": "",
+            "old_rule_scope": scope,
+        }
+    if page == "bets.html":
+        replay = season <= DataService.LAST_OLD_RULE_SEASON
+        return {
+            **common,
+            "bets": [],
+            "suppressed_bets": [],
+            "available_bet_weeks": [{"season": season, "week": 1, "game_count": 1}],
+            "bet_seasons": [season],
+            "current_season": season,
+            "current_week": 1,
+            "bet_week_freeze": None,
+            "current_path": "/bets",
+            "bet_list_available": True,
+            "bet_list_populated_at": "2026-09-18T22:00:00+00:00",
+            "bets_blocked": False,
+            "tracker_blocks": (
+                [_block("backtest_replay", "contaminated")]
+                if replay
+                else [_block("forward", "forward_realized")]
+            ),
+            "week_old_rule_scope": scope,
+            "replay_old_rule_scope": scope if replay else scope_for(None),
+        }
+    raise AssertionError(f"no context builder for {page}")
+
+
+def render_page(page: str, context: dict[str, Any]) -> str:
+    """Render one page template with *context*, exactly as the route's TemplateResponse would."""
+    return templates.env.get_template(f"pages/{page}").render(context)
+
+
+def label_count(html: str) -> int:
+    """How many labels a rendered page carries."""
+    return html.count(LABEL_MARKER)
+
+
+# ---------------------------------------------------------------------------
+# The provenance accessor (api/services.py)
+# ---------------------------------------------------------------------------
+
+
+class TestTheProvenanceAccessor:
+    """``DataService.old_rule_scope`` turns a block's season span into the label decision."""
+
+    def test_an_unknown_span_labels(self) -> None:
+        """No span at all is the unwired case, and it must label."""
+        scope = DataService.old_rule_scope(None)
+        assert scope == {
+            "min_season": None,
+            "max_season": None,
+            "contains_old_rule_results": True,
+        }
+
+    def test_a_known_empty_span_does_not_label(self) -> None:
+        """A block that renders no numbers has an empty span, and a number-free block is bare."""
+        assert DataService.old_rule_scope([])["contains_old_rule_results"] is False
+
+    def test_a_pre_fix_season_labels(self) -> None:
+        scope = DataService.old_rule_scope([2025])
+        assert scope["contains_old_rule_results"] is True
+        assert (scope["min_season"], scope["max_season"]) == (2025, 2025)
+
+    def test_a_2026_only_span_does_not_label(self) -> None:
+        scope = DataService.old_rule_scope([2026, 2026])
+        assert scope["contains_old_rule_results"] is False
+        assert (scope["min_season"], scope["max_season"]) == (2026, 2026)
+
+    def test_a_mixed_span_labels(self) -> None:
+        """A block spanning the boundary carries pre-fix numbers, so it labels."""
+        scope = DataService.old_rule_scope([2026, 2021])
+        assert scope["contains_old_rule_results"] is True
+        assert (scope["min_season"], scope["max_season"]) == (2021, 2026)
+
+    def test_the_boundary_is_2025(self) -> None:
+        """D33.2-07: 2026 is the first season recorded under the new rule."""
+        assert DataService.LAST_OLD_RULE_SEASON == 2025
+
+
+# ---------------------------------------------------------------------------
+# The partial
+# ---------------------------------------------------------------------------
+
+
+class TestThePartial:
+    """The shared partial carries the label sentence and its own condition."""
+
+    def test_the_partial_is_ascii_and_carries_the_label_sentence(self) -> None:
+        text = PARTIAL_PATH.read_text(encoding="utf-8")
+        assert text.isascii()
+        assert LABEL_PHRASE in text.lower()
+
+    def test_the_partial_carries_no_over_claim_word(self) -> None:
+        text = PARTIAL_PATH.read_text(encoding="utf-8").lower()
+        present = [word for word in READOUT_FORBIDDEN_WORDS if word in text]
+        assert not present, present
+
+    def test_every_class_the_partial_uses_exists_in_the_compiled_stylesheet(
+        self,
+    ) -> None:
+        """Tailwind v4 emits only classes it saw at build time; an absent class renders unstyled."""
+        text = PARTIAL_PATH.read_text(encoding="utf-8")
+        css = COMPILED_CSS.read_text(encoding="utf-8")
+        classes = {
+            name
+            for attr in re.findall(r'class="([^"]+)"', text)
+            for name in attr.split()
+        }
+        assert classes, "the partial declares no classes"
+        missing = sorted(name for name in classes if f".{name}" not in css)
+        assert not missing, f"classes absent from tailwind-compiled.css: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# Coverage: every page, rendered with past-season numbers
+# ---------------------------------------------------------------------------
+
+
+class TestCoverage:
+    """Each page renders exactly its declared number of labels when it shows pre-fix numbers."""
+
+    def test_every_page_includes_the_partial(self) -> None:
+        """The include is universal, so every page's count is decided by the partial."""
+        without = [
+            page
+            for page in _page_listing()
+            if "_old_rule_label.html"
+            not in (PAGES_DIR / page).read_text(encoding="utf-8")
+        ]
+        assert without == []
+
+    def test_every_zero_page_carries_a_reason(self) -> None:
+        zero = [page for page, count in EXPECTED_PREFIX_BLOCKS.items() if count == 0]
+        assert [
+            page for page in zero if page not in DELIBERATELY_UNLABELLED_REASONS
+        ] == []
+
+    @pytest.mark.parametrize("page", sorted(EXPECTED_PREFIX_BLOCKS))
+    def test_past_season_label_count_matches_the_declaration(self, page: str) -> None:
+        html = render_page(page, page_context(page, PAST_SEASON))
+        assert label_count(html) == EXPECTED_PREFIX_BLOCKS[page], (
+            f"{page} rendered {label_count(html)} labels, declared "
+            f"{EXPECTED_PREFIX_BLOCKS[page]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# The population-time season span (api/cache.py), read back through get_cache_meta
+# ---------------------------------------------------------------------------
+
+
+def _cache_with(rows: dict[str, list[tuple]]) -> Any:
+    """An in-memory cache built from CACHE_SCHEMA, carrying *rows* per table."""
+    import duckdb
+
+    from api.cache import CACHE_SCHEMA
+
+    conn = duckdb.connect(":memory:")
+    for statement in CACHE_SCHEMA.strip().split(";"):
+        if statement.strip():
+            conn.execute(statement.strip())
+    for table, values in rows.items():
+        width = len(values[0])
+        conn.executemany(
+            f"INSERT INTO {table} VALUES ({', '.join('?' * width)})",
+            values,
+        )
+    return conn
+
+
+_BACKTEST_PREDICTION = ("{s}_W01_BUF@KC", None, 1, "wp", 0.6, 1.0, 0.01, True)
+# game_id, season, week, target, bet_side, model_value, market_value, edge, slipped_line, odds,
+# flat_stake, kelly_stake, outcome, payout_flat, payout_kelly
+_BETTING_BET = ("g", None, 1, "wp", "home", 0.6, 0.5, 0.1, None, -110.0)
+_BETTING_BET_TAIL = (100.0, 10.0, True, 90.9, 9.1)
+
+
+def _prediction_row(season: int) -> tuple:
+    row = list(_BACKTEST_PREDICTION)
+    row[0] = row[0].format(s=season)
+    row[1] = season
+    return tuple(row)
+
+
+def _betting_row(season: int) -> tuple:
+    row = [*_BETTING_BET, *_BETTING_BET_TAIL]
+    row[1] = season
+    return tuple(row)
+
+
+class TestTheSeasonSpanStamp:
+    """Pre-rendered chart blobs carry no season column, so population stamps their span."""
+
+    def test_the_backtest_and_betting_spans_are_stamped_from_the_data(self) -> None:
+        from datetime import UTC, datetime
+
+        from api.cache import (
+            BACKTEST_SEASON_RANGE_KEY,
+            BETTING_SEASON_RANGE_KEY,
+            stamp_old_rule_season_ranges,
+        )
+
+        conn = _cache_with(
+            {
+                "backtest_predictions": [_prediction_row(2021), _prediction_row(2024)],
+                "backtest_metrics": [(0, "overall", "total_games", 9.0)],
+                "betting_bets": [_betting_row(2022), _betting_row(2023)],
+            }
+        )
+        stamp_old_rule_season_ranges(conn, datetime.now(tz=UTC))
+        service = DataService(conn)
+        meta = service.get_cache_meta()
+        assert meta[BACKTEST_SEASON_RANGE_KEY] == "2021-2024"
+        assert meta[BETTING_SEASON_RANGE_KEY] == "2022-2023"
+        backtest = service.cached_span_old_rule_scope(BACKTEST_SEASON_RANGE_KEY)
+        assert backtest == {
+            "min_season": 2021,
+            "max_season": 2024,
+            "contains_old_rule_results": True,
+        }
+
+    def test_a_2026_only_corpus_stamps_a_span_that_does_not_label(self) -> None:
+        from datetime import UTC, datetime
+
+        from api.cache import BACKTEST_SEASON_RANGE_KEY, stamp_old_rule_season_ranges
+
+        conn = _cache_with({"backtest_predictions": [_prediction_row(2026)]})
+        stamp_old_rule_season_ranges(conn, datetime.now(tz=UTC))
+        scope = DataService(conn).cached_span_old_rule_scope(BACKTEST_SEASON_RANGE_KEY)
+        assert scope["contains_old_rule_results"] is False
+
+    def test_an_empty_corpus_stamps_none_which_does_not_label(self) -> None:
+        from datetime import UTC, datetime
+
+        from api.cache import BETTING_SEASON_RANGE_KEY, stamp_old_rule_season_ranges
+
+        conn = _cache_with({"backtest_metrics": [(0, "overall", "total_games", 0.0)]})
+        stamp_old_rule_season_ranges(conn, datetime.now(tz=UTC))
+        service = DataService(conn)
+        assert service.get_cache_meta()[BETTING_SEASON_RANGE_KEY] == "none"
+        scope = service.cached_span_old_rule_scope(BETTING_SEASON_RANGE_KEY)
+        assert scope["contains_old_rule_results"] is False
+
+    def test_an_absent_key_is_an_unknown_span_which_labels(self) -> None:
+        """A cache built before the stamp existed cannot say what its charts cover."""
+        conn = _cache_with({"backtest_metrics": [(0, "overall", "total_games", 0.0)]})
+        scope = DataService(conn).cached_span_old_rule_scope("backtest_season_range")
+        assert scope["contains_old_rule_results"] is True
+
+    @pytest.mark.parametrize("value", ["garbage", "2021", "2021-x", ""])
+    def test_an_unreadable_span_labels(self, value: str) -> None:
+        from api.cache import parse_season_range
+
+        assert parse_season_range(value) is None
