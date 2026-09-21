@@ -239,9 +239,9 @@ class TestLockFrame:
         assert locks.index.name == "game_id"
         assert locks.dt.tz is not None
         # 2023-12-15 01:15 UTC is Thursday 20:15 ET -> Wednesday 18:00 ET.
-        assert locks["2023_W15_LAC@LV"].isoformat() == "2023-12-13T18:00:00-05:00"
+        assert str(locks.loc["2023_W15_LAC@LV"]) == "2023-12-13 18:00:00-05:00"
         # 2023-12-16 21:30 UTC is Saturday 16:30 ET -> Friday 18:00 ET.
-        assert locks["2023_W15_MIN@CIN"].isoformat() == "2023-12-15T18:00:00-05:00"
+        assert str(locks.loc["2023_W15_MIN@CIN"]) == "2023-12-15 18:00:00-05:00"
 
     def test_every_value_agrees_with_game_lock(self) -> None:
         """ONE rule: the frame is game_lock applied per game, not a second derivation."""
@@ -287,8 +287,8 @@ class TestTheLeafImportProperty:
             "snap = list(sys.modules)\n"
             "bad = sorted({m.split('.')[0] for m in snap} & "
             "{'backtest', 'models', 'features', 'scripts'})\n"
-            "print(len(snap))\n"
-            "print(','.join(bad))\n"
+            "print('MODULES_AT_IMPORT=' + str(len(snap)))\n"
+            "print('FORBIDDEN=' + ','.join(bad))\n"
         )
         result = subprocess.run(
             [sys.executable, "-c", probe],
@@ -297,9 +297,15 @@ class TestTheLeafImportProperty:
             text=True,
             check=True,
         )
-        count_line, bad_line = result.stdout.strip().splitlines()[-2:]
-        assert int(count_line) > 0, "empty sys.modules snapshot would pass vacuously"
-        assert bad_line == "", f"importing utils.game_lock pulled in: {bad_line}"
+        lines = dict(
+            line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+        )
+        assert int(lines["MODULES_AT_IMPORT"]) > 0, (
+            "an empty sys.modules snapshot would pass vacuously"
+        )
+        assert lines["FORBIDDEN"] == "", (
+            f"importing utils.game_lock pulled in: {lines['FORBIDDEN']}"
+        )
 
 
 class TestTheNamedConstantAndEvidence:
