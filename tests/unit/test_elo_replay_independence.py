@@ -33,7 +33,11 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import ast
+import subprocess
+import sys
 from datetime import UTC, datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -330,3 +334,325 @@ class TestTheDeclaredConstantsAreNotLoadBearing:
             backward.replayed.sort_values("game_id").reset_index(drop=True),
             check_exact=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# The independence source scan (Plan 33.2-04 Task 2)
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# DECLARED, never globbed: a future audit module can neither join this scan by accident
+# nor slip out of it silently. test_the_scanned_module_list_is_declared_not_globbed
+# asserts both the value and the literal-tuple shape of this assignment.
+SCANNED_MODULES: tuple[str, ...] = ("audit/elo_replay.py",)
+
+# Family 1: imports, matched on ast.Import / ast.ImportFrom anywhere in the module,
+# including a lazy import inside a function body.
+FORBIDDEN_IMPORTS: tuple[str, ...] = ("scripts.build_elo",)
+
+# Family 2: the legacy-pass tables, matched on ast.Constant string VALUES by EQUALITY.
+FORBIDDEN_TABLE_NAMES: tuple[str, ...] = (
+    "games_with_elo",
+    "elo_rating_history",
+    "elo_ratings_current",
+    "elo_ratings.json",
+)
+
+# Family 3: the ratings.elo members that hand ordering back to the library, write a
+# production file, or read the legacy state file -- matched on ast.Call by attribute or
+# name.
+FORBIDDEN_CALLS: tuple[str, ...] = (
+    "process_season_chronologically",
+    "save_ratings",
+    "load_ratings",
+)
+
+ALL_FORBIDDEN: tuple[str, ...] = (
+    *FORBIDDEN_IMPORTS,
+    *FORBIDDEN_TABLE_NAMES,
+    *FORBIDDEN_CALLS,
+)
+
+# One planted violation per forbidden name, written by hand. A name added to a family
+# without a control here fails test_every_forbidden_name_has_a_planted_control.
+PLANTED_FRAGMENTS: dict[str, str] = {
+    "scripts.build_elo": (
+        "def lazy():\n    from scripts.build_elo import EloBuilder\n    return EloBuilder\n"
+    ),
+    "games_with_elo": 'TABLE = "games_with_elo"\n',
+    "elo_rating_history": 'TABLE = "elo_rating_history"\n',
+    "elo_ratings_current": 'TABLE = "elo_ratings_current"\n',
+    "elo_ratings.json": 'PATH = "elo_ratings.json"\n',
+    "process_season_chronologically": (
+        "def run(system, games):\n"
+        "    return system.process_season_chronologically(games, 2002)\n"
+    ),
+    "save_ratings": "def run(system):\n    system.save_ratings()\n",
+    "load_ratings": "def run(system):\n    system.load_ratings()\n",
+}
+
+PERMITTED_FORMULAS: tuple[str, ...] = (
+    "get_or_create_rating",
+    "apply_season_carryover",
+    "update_ratings",
+    "learn_home_field_advantage",
+    "predict_game",
+)
+
+
+def _dotted_imports(node: ast.AST) -> list[str]:
+    """Every fully dotted module name an import node can bind."""
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    if isinstance(node, ast.ImportFrom) and node.module:
+        return [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
+    return []
+
+
+def _called_name(node: ast.Call) -> str:
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    return ""
+
+
+def scan_source(source: str) -> list[str]:
+    """Every forbidden reference in *source*, as ``family:name:line`` strings.
+
+    Read off the PARSED tree, never the text: comments are absent from the AST, so the
+    replay's mandated comment naming ``scripts.build_elo`` cannot trip the scan.
+
+    MATCH MODE:
+    * imports -- an ``ast.Import`` / ``ast.ImportFrom`` whose dotted name equals, or is a
+      submodule of, a forbidden module (``from scripts import build_elo`` included);
+    * table names -- an ``ast.Constant`` string whose VALUE EQUALS a forbidden table name.
+      EQUALITY, NEVER SUBSTRING: a module docstring is one ``ast.Constant`` whose value is
+      the whole docstring, so the docstring the replay is REQUIRED to carry, naming every
+      forbidden table, is not flagged -- and a bare ``"games_with_elo"`` literal is;
+    * calls -- an ``ast.Call`` whose function attribute or name equals a forbidden call.
+
+    A string constant EQUAL to a forbidden module or call name is also flagged, so the
+    indirections ``importlib.import_module("scripts.build_elo")`` and
+    ``getattr(system, "save_ratings")`` are caught by the same equality rule.
+    """
+    hits: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        line = getattr(node, "lineno", 0)
+        for dotted in _dotted_imports(node):
+            for forbidden in FORBIDDEN_IMPORTS:
+                if dotted == forbidden or dotted.startswith(f"{forbidden}."):
+                    hits.append(f"import:{forbidden}:{line}")
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            hits.extend(
+                f"constant:{forbidden}:{line}"
+                for forbidden in ALL_FORBIDDEN
+                if node.value == forbidden
+            )
+        if isinstance(node, ast.Call):
+            called = _called_name(node)
+            if called in FORBIDDEN_CALLS:
+                hits.append(f"call:{called}:{line}")
+    return sorted(set(hits))
+
+
+def scan_module(relative_path: str) -> list[str]:
+    return scan_source((REPO_ROOT / relative_path).read_text(encoding="utf-8"))
+
+
+class TestTheIndependenceScan:
+    """Four controls: non-vacuity, the assertion, a planted violation, no false positive."""
+
+    def test_the_forbidden_families_are_non_empty_and_complete(self) -> None:
+        """NON-VACUITY: a truncated list would pass the module while checking less."""
+        assert len(FORBIDDEN_IMPORTS) == 1
+        assert len(FORBIDDEN_TABLE_NAMES) == 4
+        assert len(FORBIDDEN_CALLS) == 3
+        total = (
+            len(FORBIDDEN_IMPORTS) + len(FORBIDDEN_TABLE_NAMES) + len(FORBIDDEN_CALLS)
+        )
+        assert total == 8
+        for relative in SCANNED_MODULES:
+            source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+            assert sum(1 for _ in ast.walk(ast.parse(source))) > 100, relative
+
+    @pytest.mark.parametrize("relative", SCANNED_MODULES)
+    def test_the_replay_is_clean_on_all_three_families(self, relative: str) -> None:
+        """THE ASSERTION."""
+        assert scan_module(relative) == []
+
+    def test_every_forbidden_name_has_a_planted_control(self) -> None:
+        assert set(PLANTED_FRAGMENTS) == set(ALL_FORBIDDEN)
+        assert len(PLANTED_FRAGMENTS) == len(ALL_FORBIDDEN) == 8
+
+    @pytest.mark.parametrize("name", ALL_FORBIDDEN)
+    def test_a_planted_violation_is_flagged(self, name: str) -> None:
+        """PLANTED VIOLATION: the scan fires on each forbidden name, not only finds none."""
+        hits = scan_source(PLANTED_FRAGMENTS[name])
+        assert any(f":{name}:" in hit for hit in hits), (name, hits)
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "import scripts.build_elo\n",
+            "from scripts.build_elo import ELO_SNAPSHOT_COLUMNS\n",
+            "from scripts import build_elo\n",
+            'import importlib\nimportlib.import_module("scripts.build_elo")\n',
+        ],
+    )
+    def test_every_spelling_of_the_builder_import_is_flagged(self, source: str) -> None:
+        assert any("scripts.build_elo" in hit for hit in scan_source(source)), source
+
+    def test_the_permitted_per_game_formulas_are_not_flagged(self) -> None:
+        """NO FALSE POSITIVE (a): the legitimate shape the replay actually uses."""
+        source = (
+            "from ratings.elo import EloRatingSystem\n"
+            "def run(games):\n"
+            "    system = EloRatingSystem()\n"
+            "    system.apply_season_carryover(2003)\n"
+            "    system.learn_home_field_advantage(games, 2003)\n"
+            '    system.get_or_create_rating("BUF", 2003)\n'
+            '    system.update_ratings("BUF", "MIA", 24, 17, 2003, None)\n'
+            '    return system.predict_game("BUF", "MIA", 2003)\n'
+        )
+        assert scan_source(source) == []
+
+    def test_a_docstring_naming_every_forbidden_symbol_is_not_flagged_by_equality(
+        self,
+    ) -> None:
+        """NO FALSE POSITIVE (b): the exact shape the replay's own docstring must take.
+
+        Under substring matching this module would be flagged; under equality it is not.
+        A later switch to substring matching fails HERE rather than silently flagging the
+        module the scan exists to clear.
+        """
+        names = ", ".join(ALL_FORBIDDEN)
+        source = f'"""This module may not touch any of: {names}."""\nVALUE = 1\n'
+        for name in ALL_FORBIDDEN:
+            assert name in source
+        assert scan_source(source) == []
+
+    def test_the_scanned_module_list_is_declared_not_globbed(self) -> None:
+        assert SCANNED_MODULES == ("audit/elo_replay.py",)
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        declared = [
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "SCANNED_MODULES"
+        ]
+        assert len(declared) == 1
+        literal = declared[0]
+        assert isinstance(literal, ast.Tuple)
+        assert all(isinstance(element, ast.Constant) for element in literal.elts)
+
+
+class TestTheReplayCallsTheRealFormulas:
+    """A structural scan proves a call site EXISTS; this proves each one RUNS."""
+
+    @staticmethod
+    def unfired(counters: dict[str, int]) -> list[str]:
+        """The permitted formulas a run never called, in declaration order."""
+        return [name for name in PERMITTED_FORMULAS if counters.get(name, 0) == 0]
+
+    @staticmethod
+    def _spy_on(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+        """Wrap each permitted method with a counter that delegates to the original."""
+        from ratings.elo import EloRatingSystem
+
+        counters = dict.fromkeys(PERMITTED_FORMULAS, 0)
+
+        def counting(name: str, original):
+            def wrapper(self, *args, **kwargs):
+                counters[name] += 1
+                return original(self, *args, **kwargs)
+
+            return wrapper
+
+        for name in PERMITTED_FORMULAS:
+            original = getattr(EloRatingSystem, name)
+            monkeypatch.setattr(EloRatingSystem, name, counting(name, original))
+        return counters
+
+    def test_replay_invokes_every_permitted_formula(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        games = synthetic_games()
+        snapshots = canonical_snapshots(games)  # built BEFORE the spies go on
+        counters = self._spy_on(monkeypatch)
+
+        result = _replay(seasons=[2002, 2003], games_df=games, snapshots_df=snapshots)
+
+        assert result.ok
+        assert self.unfired(counters) == [], counters
+
+    def test_a_planted_local_arithmetic_replay_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PLANTED CONTROL: computing one update by hand leaves ``update_ratings`` unfired."""
+        from ratings.elo import EloRatingSystem
+
+        counters = self._spy_on(monkeypatch)
+
+        def stand_in_replay(games: pd.DataFrame) -> float:
+            system = EloRatingSystem()
+            system.apply_season_carryover(2002)
+            system.learn_home_field_advantage(games, 2002)
+            home = system.get_or_create_rating("BUF", 2002)
+            away = system.get_or_create_rating("MIA", 2002)
+            expected = system.predict_game("BUF", "MIA", 2002)["home_win_prob"]
+            home.rating += 20.0 * (1.0 - expected)  # the update, done locally
+            away.rating -= 20.0 * (1.0 - expected)
+            return home.rating
+
+        stand_in_replay(synthetic_games())
+
+        assert self.unfired(counters) == ["update_ratings"]
+
+
+def test_compared_columns_match_the_gold_join_subset() -> None:
+    """The TEST owns the link to the test-owned constant; the audit module imports none."""
+    from audit.elo_replay import COMPARED_COLUMNS
+    from tests.phase33_state import ELO_GOLD_JOIN_SUBSET
+
+    assert tuple(c for c in ELO_GOLD_JOIN_SUBSET if c != "game_id") == COMPARED_COLUMNS
+    assert len(COMPARED_COLUMNS) == 6
+
+
+_SUBPROCESS_REPLAY = """
+import sys
+import pandas as pd
+from audit.elo_replay import replay
+games = pd.DataFrame({
+    "game_id": ["2002_W01_MIA@BUF"], "season": [2002], "week": [1],
+    "kickoff_et": pd.to_datetime(["2002-09-08T17:00:00Z"]),
+    "home_team": ["BUF"], "away_team": ["MIA"],
+    "home_score": [24.0], "away_score": [17.0],
+})
+snapshots = pd.DataFrame({
+    "game_id": ["2002_W01_MIA@BUF"], "season": [2002], "week": [1],
+    "home_elo_pre": [1500.0], "away_elo_pre": [1500.0],
+    "home_elo_uncertainty": [350.0], "away_elo_uncertainty": [350.0],
+    "elo_prob_home": [0.5], "hfa_used": [48.0],
+})
+replay([2002], games_df=games, snapshots_df=snapshots)
+print("LOADED=", sorted(m for m in sys.modules if "build_elo" in m))
+"""
+
+
+def test_running_the_replay_never_loads_the_builder_module() -> None:
+    """RUNTIME half of the import family: a real replay leaves scripts.build_elo unloaded.
+
+    Run in a fresh interpreter, because this test process has already imported the builder
+    to produce the canonical fixture.
+    """
+    completed = subprocess.run(
+        [sys.executable, "-c", _SUBPROCESS_REPLAY],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "LOADED= []" in completed.stdout, completed.stdout + completed.stderr
