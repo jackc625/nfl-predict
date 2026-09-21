@@ -35,7 +35,6 @@ from .betting_utils import (
 from .date_utils import (
     get_current_nfl_season,
     get_current_nfl_week,
-    get_snapshot_time,
     is_game_time,
     parse_nfl_date,
 )
@@ -146,7 +145,6 @@ __all__ = [
     "get_current_season_weeks",
     "get_ingestion_summary",
     "get_logger",
-    "get_snapshot_time",
     "implied_probability",
     "is_game_time",
     "log_data_operation",

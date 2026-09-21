@@ -174,6 +174,8 @@ CREATE TABLE IF NOT EXISTS bet_list (
     rejection_reason VARCHAR,
     eligibility_label VARCHAR,
     snapshot_ts VARCHAR,
+    -- VALUE is each game's day-before-kickoff lock (D33.2-01); the NAME keeps the retired
+    -- 'freeze' wording by ruling: renaming a published cache column is HOST-07's schema change.
     freeze_ts VARCHAR,
     selected_odds DOUBLE,
     flat_stake DOUBLE,
@@ -206,6 +208,8 @@ CREATE TABLE IF NOT EXISTS available_bet_weeks (
 CREATE TABLE IF NOT EXISTS bet_week_freeze (
     season INTEGER,
     week INTEGER,
+    -- VALUE is each game's day-before-kickoff lock (D33.2-01); the NAME keeps the retired
+    -- 'freeze' wording by ruling: renaming a published cache column is HOST-07's schema change.
     latest_game_freeze_ts TIMESTAMP WITH TIME ZONE
     -- SCHEDULE-derived freshness source (REVIEW-STALE). The failure the stale-cache
     -- block guards is a MISSING bet-list insertion, in which state there may be no
@@ -654,6 +658,8 @@ BET_LIST_IMMUTABLE_COLUMNS: list[str] = [
     "rejection_reason",
     "eligibility_label",
     "snapshot_ts",
+    # VALUE is each game's day-before-kickoff lock (D33.2-01); the NAME keeps the retired
+    # 'freeze' wording by ruling: renaming a published cache column is HOST-07's schema change.
     "freeze_ts",
     "selected_odds",
     "flat_stake",
@@ -765,6 +771,8 @@ CREATE TABLE IF NOT EXISTS bet_list (
     rejection_reason VARCHAR,
     eligibility_label VARCHAR,
     snapshot_ts VARCHAR,
+    -- VALUE is each game's day-before-kickoff lock (D33.2-01); the NAME keeps the retired
+    -- 'freeze' wording by ruling: renaming a published cache column is HOST-07's schema change.
     freeze_ts VARCHAR,
     selected_odds DOUBLE,
     flat_stake DOUBLE,
@@ -791,11 +799,15 @@ CREATE TABLE IF NOT EXISTS available_bet_weeks (
 )
 """
 
+# latest_game_freeze_ts: VALUE is the week's latest per-game day-before-kickoff lock (D33.2-01);
+# the NAME keeps the retired 'freeze' wording by ruling -- a rename is HOST-07's schema change.
 BET_WEEK_FREEZE_COLUMNS: list[str] = ["season", "week", "latest_game_freeze_ts"]
 BET_WEEK_FREEZE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS bet_week_freeze (
     season INTEGER,
     week INTEGER,
+    -- VALUE is each game's day-before-kickoff lock (D33.2-01); the NAME keeps the retired
+    -- 'freeze' wording by ruling: renaming a published cache column is HOST-07's schema change.
     latest_game_freeze_ts TIMESTAMP WITH TIME ZONE
 )
 """
@@ -1335,8 +1347,11 @@ def materialize_bet_week_freeze(
     """Materialize the SCHEDULE-derived ``bet_week_freeze`` freshness table (REVIEW-STALE).
 
     The per-week freeze is the LATEST per-game freeze instant in that week -- a Thursday game
-    freezes a week earlier than that week's Sunday games (D31-18), so a single week-level freeze
-    claim would be false for every Thursday game. The per-game ``game_freeze_ts`` is computed
+    locks days earlier than that week's Sunday games (D31-18), so a single week-level freeze
+    claim would be false for every Thursday game. Since Plan 33.2-02 each per-game value is that
+    game's day-before-kickoff LOCK (D33.2-01); the ``game_freeze_ts`` / ``latest_game_freeze_ts``
+    NAMES keep the retired wording by ruling, because renaming a published cache column is a
+    schema change owned by HOST-07, not a tidy-up. The per-game ``game_freeze_ts`` is computed
     UPSTREAM (Plan 31-18) and passed in; this writer only persists the per-week maximum, so
     ``api/cache.py`` stays a pure persistence layer.
 
@@ -2334,7 +2349,9 @@ def populate_cache(
         bet_tracker_df: The PRECOMPUTED tracker blocks (``BET_TRACKER_BLOCK_COLUMNS``). Aggregated
             upstream; no arithmetic happens here.
         bet_schedule_df: The schedule frame carrying ``game_id``, ``season``, ``week`` and the
-            per-game ``game_freeze_ts``. Both schedule-derived tables are built from it, and the
+            per-game ``game_freeze_ts`` (since Plan 33.2-02 each game's day-before-kickoff lock; the
+            name is kept by ruling -- a rename is HOST-07's schema change). Both schedule-derived
+            tables are built from it, and the
             freeze table deliberately reads NO bet row -- the failure the stale-cache block guards
             is a MISSING bet-list insertion, in which state there may be no rows to read a freeze
             from (REVIEW-STALE).

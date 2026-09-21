@@ -203,67 +203,6 @@ def is_game_time(kickoff_time: datetime, check_time: datetime | None = None) -> 
     return time_diff <= 4
 
 
-def get_snapshot_time(
-    date: datetime | None = None, time_str: str = "Friday 18:00"
-) -> datetime:
-    """
-    Get the snapshot time for a given week.
-
-    Args:
-        date: Reference date (defaults to now)
-        time_str: Snapshot time specification (e.g., "Friday 18:00")
-
-    Returns:
-        Snapshot datetime in ET timezone
-    """
-    if date is None:
-        date = datetime.now(ET)
-
-    # Ensure date is in ET
-    if date.tzinfo != ET:
-        date = date.astimezone(ET)
-
-    # Parse time specification
-    day_time_pattern = r"(\w+day)\s+(\d{1,2}):(\d{2})"
-    match = re.match(day_time_pattern, time_str)
-
-    if not match:
-        raise ValueError(f"Invalid time specification: {time_str}")
-
-    day_name, hour_str, minute_str = match.groups()
-    hour, minute = int(hour_str), int(minute_str)
-
-    # Map day names to weekday numbers (Monday=0)
-    day_map = {
-        "monday": 0,
-        "tuesday": 1,
-        "wednesday": 2,
-        "thursday": 3,
-        "friday": 4,
-        "saturday": 5,
-        "sunday": 6,
-    }
-
-    target_weekday = day_map.get(day_name.lower())
-    if target_weekday is None:
-        raise ValueError(f"Invalid day name: {day_name}")
-
-    # Find the target day in the current week
-    current_weekday = date.weekday()
-    days_ahead = target_weekday - current_weekday
-
-    # If the target day has passed this week, get next week's
-    if days_ahead < 0:
-        days_ahead += 7
-
-    target_date = date + timedelta(days=days_ahead)
-    snapshot_time = target_date.replace(
-        hour=hour, minute=minute, second=0, microsecond=0
-    )
-
-    return snapshot_time
-
-
 def get_week_start_end(season: int, week: int) -> tuple[datetime, datetime]:
     """
     Get start and end times for a given NFL week.

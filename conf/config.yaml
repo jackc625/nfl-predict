@@ -4,7 +4,7 @@
 # Data Pipeline Settings
 data:
   root_path: "./data"
-  snapshot_time_et: "Friday 18:00"  # Friday 6:00 PM ET
+  # No lock setting: each game's lock is utils/game_lock.py (D33.2-01).
   
   # Data sources
   sources:

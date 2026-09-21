@@ -38,7 +38,7 @@ class DataConfig(BaseModel):
     """Data pipeline configuration."""
 
     root_path: str = "./data"
-    snapshot_time_et: str = "Friday 18:00"
+    # No lock setting: the per-game lock rule IS utils/game_lock.py (D33.2-01).
     sources: DataSources = DataSources()
     paths: DataPaths = DataPaths()
     retention_days: int = 365

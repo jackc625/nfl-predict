@@ -3,9 +3,11 @@
 Following the `tests/unit/test_situational_no_leakage.py` /
 `tests/unit/test_elo_no_leakage.py` convention. `LineMovementBuilder` (Plan
 29-04) derives the four D-09 line-movement families from the `odds_timeline`
-trajectory, fenced strictly to snapshots at/before EACH game's OWN Friday-6PM-ET
-freeze. This module makes the D-15 3-part standard LIVE for the line-movement
-group.
+trajectory, fenced strictly to snapshots at/before EACH game's OWN lock -- 18:00
+ET on the ET calendar day before kickoff, from ``utils.game_lock`` (D33.2-01; Plan
+33.2-02 retired the preceding-Friday freeze these fixtures were first written
+against, and "freeze" below means the lock). This module makes the D-15 3-part
+standard LIVE for the line-movement group.
 
 Leakage contract (D-15): only snapshots strictly `<= freeze` (ET, not UTC) may
 enter a feature; the true closing line is reserved for CLV grading and is NEVER
@@ -14,14 +16,14 @@ proof must use >=2 games with DIFFERENT kickoffs to show the fence is per-game,
 not one global Friday (review 29-04 HIGH).
 
 Parts:
-  1. TestTimeFence -- each game fences to its OWN Friday-6PM-ET freeze; an
+  1. TestTimeFence -- each game fences to its OWN day-before lock; an
      ET-evening (22:00 UTC = 18:00 ET) snapshot a UTC-localized cutoff would drop
      IS included (WR-02 positive control); a naive-local `datetime.now()` default
      does NOT raise TypeError (review 29-04 HIGH).
-  2. TestWithholdFuture -- appending GENUINELY post-freeze (Sat/Sun/post-close)
+  2. TestWithholdFuture -- appending GENUINELY post-lock (Sat-evening/Sun)
      timeline rows + game results does NOT change the emitted features
-     (byte-identical); a positive control proves that moving a game's freeze PAST
-     a Saturday row DOES change them (the fence is load-bearing).
+     (byte-identical); a positive control proves that moving a game's lock PAST
+     a Saturday-evening row DOES change them (the fence is load-bearing).
   3. TestKeywordGuard -- no emitted column carries a closing/post-freeze spelling,
      and the emitted columns do not collide with the LeakageGate keywords.
 """
@@ -38,9 +40,9 @@ from features.validation import LeakageGate
 _WEEK_MONDAY = datetime(2023, 11, 20)
 _WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-# Two games on DIFFERENT kickoff dates -> DIFFERENT per-game Friday freezes
-# (review 29-04 HIGH). Game A: Sun 2023-09-10 -> freeze Fri 2023-09-08 18:00 ET
-# (= 22:00 UTC). Game B: Sun 2023-09-17 -> freeze Fri 2023-09-15 18:00 ET.
+# Two games on DIFFERENT kickoff dates -> DIFFERENT per-game locks (review 29-04
+# HIGH). Game A: Sun 2023-09-10 -> lock Sat 2023-09-09 18:00 ET (= 22:00 UTC).
+# Game B: Sun 2023-09-17 -> lock Sat 2023-09-16 18:00 ET (= 22:00 UTC).
 _GAME_A = "2023_01_DET_KC"
 _GAME_B = "2023_02_LV_BUF"
 
@@ -50,8 +52,8 @@ def _make_games(*, move_game_a: bool = False, reveal_results: bool = False):
 
     Args:
         move_game_a: When True, Game A's kickoff slips one week later so its
-            Friday freeze (2023-09-15) lands PAST the Saturday 2023-09-09 row --
-            the withhold-future positive control.
+            lock (Sat 2023-09-16 18:00 ET) lands PAST the Saturday-evening
+            2023-09-09 row -- the withhold-future positive control.
         reveal_results: When True, attach future game RESULTS (scores) -- the
             leakage-sensitive future information the builder must ignore.
     """
@@ -89,12 +91,12 @@ def _ts(spec: str) -> pd.Timestamp:
 
 
 def _pre_freeze_timeline() -> pd.DataFrame:
-    """Only snapshots strictly at/before each game's own Friday-6PM-ET freeze.
+    """Only snapshots strictly at/before each game's own day-before lock.
 
-    Game A (freeze Fri 2023-09-08 22:00 UTC): open 44.0 (Tue) -> 44.5 (Wed) ->
-    45.0 at the Fri 22:00 UTC (= 18:00 ET) freeze. The 45.0 is the WR-02
+    Game A (lock Sat 2023-09-09 22:00 UTC): open 44.0 (Tue) -> 44.5 (Wed) ->
+    45.0 at the Sat 22:00 UTC (= 18:00 ET) lock. The 45.0 is the WR-02
     positive control: a UTC-localized 18:00 cutoff would drop a 22:00 UTC row.
-    Game B (freeze Fri 2023-09-15 22:00 UTC): open 48.0 (Tue) -> 47.0 at freeze.
+    Game B (lock Sat 2023-09-16 22:00 UTC): open 48.0 (Tue) -> 47.0 at the lock.
     """
     return pd.DataFrame(
         {
@@ -102,9 +104,9 @@ def _pre_freeze_timeline() -> pd.DataFrame:
             "snapshot_ts": [
                 _ts("2023-09-05 16:00"),
                 _ts("2023-09-06 16:00"),
-                _ts("2023-09-08 22:00"),  # 18:00 ET == freeze (ET-evening control)
+                _ts("2023-09-09 22:00"),  # 18:00 ET == lock (ET-evening control)
                 _ts("2023-09-12 16:00"),
-                _ts("2023-09-15 22:00"),  # 18:00 ET == freeze
+                _ts("2023-09-16 22:00"),  # 18:00 ET == lock
             ],
             "total": [44.0, 44.5, 45.0, 48.0, 47.0],
         }
@@ -112,19 +114,20 @@ def _pre_freeze_timeline() -> pd.DataFrame:
 
 
 def _post_freeze_rows() -> pd.DataFrame:
-    """Genuinely POST-freeze rows (Sat/Sun/post-close), AFTER each game's freeze.
+    """Genuinely POST-lock rows (Sat evening / Sun), AFTER each game's lock.
 
-    For Game A (freeze 2023-09-08): a Sat 2023-09-09 (46.0) and Sun 2023-09-10
-    (47.5) row -- both strictly after the freeze, so the per-game fence MUST drop
-    them. For Game B (freeze 2023-09-15): a Sat 2023-09-16 (50.0) row.
+    For Game A (lock Sat 2023-09-09 18:00 ET): a Sat 19:00 ET (46.0) and a Sun
+    2023-09-10 (47.5) row -- both strictly after the lock, so the per-game fence
+    MUST drop them. For Game B (lock Sat 2023-09-16 18:00 ET): a Sunday
+    2023-09-17 morning (50.0) row -- before kickoff but after the lock.
     """
     return pd.DataFrame(
         {
             "game_id": [_GAME_A, _GAME_A, _GAME_B],
             "snapshot_ts": [
-                _ts("2023-09-09 18:00"),
+                _ts("2023-09-09 23:00"),  # 19:00 ET, one hour after the lock
                 _ts("2023-09-10 17:00"),
-                _ts("2023-09-16 18:00"),
+                _ts("2023-09-17 15:00"),  # 11:00 ET Sunday, after the Sat lock
             ],
             "total": [46.0, 47.5, 50.0],
         }
@@ -136,21 +139,21 @@ def _full_timeline() -> pd.DataFrame:
     return pd.concat([_pre_freeze_timeline(), _post_freeze_rows()], ignore_index=True)
 
 
-# A freeze cutoff after BOTH games' Friday freezes (so the as_of cap never binds;
+# A cutoff after BOTH games' locks (so the as_of cap never binds;
 # the PER-GAME freeze is what excludes the post-freeze rows).
 _AS_OF_AFTER_BOTH = datetime(2023, 9, 20, 18, 0)
 
 
 class TestTimeFence:
-    """Part 1: each game fences to its OWN Friday-6PM-ET freeze (ET, not UTC)."""
+    """Part 1: each game fences to its OWN day-before lock (ET, not UTC)."""
 
     def test_per_game_freeze_excludes_post_freeze_rows(self):
-        """Game A and Game B each use only snapshots <= their OWN Friday freeze.
+        """Game A and Game B each use only snapshots <= their OWN lock.
 
         With the full timeline (pre- + post-freeze rows), the per-game fence keeps
         Game A's drift at +1.0 (open 44.0 -> freeze 45.0) and Game B's at -1.0
-        (open 48.0 -> freeze 47.0). A single GLOBAL Friday (e.g. the later
-        2023-09-15) would wrongly admit Game A's Sat/Sun rows and inflate its
+        (open 48.0 -> freeze 47.0). A single GLOBAL cutoff (e.g. the later
+        2023-09-16 lock) would wrongly admit Game A's Sat/Sun rows and inflate its
         drift to +3.5 -- so drift == +1.0 proves the fence is per-game (review
         29-04 HIGH).
         """
@@ -165,9 +168,9 @@ class TestTimeFence:
         assert out.loc[_GAME_B, "total_drift"] == -1.0
 
     def test_et_evening_snapshot_is_included(self):
-        """WR-02: the Fri 22:00 UTC (= 18:00 ET) freeze snapshot IS included.
+        """WR-02: the Sat 22:00 UTC (= 18:00 ET) at-lock snapshot IS included.
 
-        A UTC-localized Friday-18:00 cutoff would compare 22:00 UTC > 18:00 UTC
+        A UTC-localized 18:00 cutoff would compare 22:00 UTC > 18:00 UTC
         and DROP the legitimate ET-evening snapshot, collapsing Game A's freeze
         total to 44.5 and its range to 0.5. The ET cutoff keeps the 45.0 row, so
         opening->freeze range == 1.0 proves the ET fence is load-bearing.
@@ -214,7 +217,7 @@ class TestWithholdFuture:
         GENUINELY post-freeze (Sat/Sun/post-close) timeline rows AND game results;
         the emitted features must be BYTE-IDENTICAL.
 
-        The appended rows are strictly after each game's own Friday freeze (review
+        The appended rows are strictly after each game's own lock (review
         29-04 HIGH), so the per-game fence drops them -- the test exercises the
         fence rather than passing vacuously.
         """
@@ -231,12 +234,12 @@ class TestWithholdFuture:
         )
 
     def test_moving_freeze_past_saturday_row_changes_features(self):
-        """Positive control: moving Game A's freeze PAST a Saturday row DOES move
-        the features (the fence is load-bearing, mirroring the Phase-28 control).
+        """Positive control: moving Game A's lock PAST a Saturday-evening row DOES
+        move the features (the fence is load-bearing, mirroring the Phase-28 control).
 
-        Baseline Game A (kickoff 2023-09-10 -> freeze 2023-09-08) has drift +1.0.
-        Slipping its kickoff one week (freeze 2023-09-15) admits the Sat 46.0 and
-        Sun 47.5 rows -> open 44.0, freeze 47.5, drift +3.5 != +1.0.
+        Baseline Game A (kickoff 2023-09-10 -> lock Sat 2023-09-09) has drift +1.0.
+        Slipping its kickoff one week (lock Sat 2023-09-16) admits the Sat 46.0 and
+        Sun 47.5 rows -> open 44.0, last 47.5, drift +3.5 != +1.0.
         """
         full = _full_timeline()
         base = LineMovementBuilder(timeline_df=full).build_features(

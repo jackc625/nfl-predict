@@ -3,7 +3,9 @@
 This module turns the additive ``odds_timeline`` trajectory silver table (Plan
 29-02 storage, keyed ``(game_id, snapshot_ts)``) into leakage-safe, game-level
 line-movement features, all fenced strictly to snapshots at/before EACH game's
-OWN Friday 6 PM ET freeze:
+OWN lock -- 18:00 ET on the ET calendar day before its kickoff, from the one rule
+in ``utils.game_lock`` (D33.2-01; Plan 33.2-02 retired the preceding-Friday
+freeze this module used to derive for itself). "Freeze" below means that lock:
 
 - ``opening_total`` -- the totals line in the earliest captured pre-freeze
   snapshot (the genuinely-new information; the freeze line is already a model
@@ -20,14 +22,13 @@ OWN Friday 6 PM ET freeze:
 - ``line_movement_coverage`` -- 1.0 when >=2 pre-freeze snapshots exist
   (2020-06-06+ coverage), else 0.0 with neutral defaults (D-10).
 
-The load-bearing temporal control is a PER-GAME Friday-6PM-ET freeze (D-15):
+The load-bearing temporal control is a PER-GAME lock (D-15, D33.2-01):
 ``odds_timeline`` spans many game-weeks across 2020-2024, so there is no single
-Friday. Each game's freeze is derived from its own kickoff date and the builder
-fences to ``snapshot_ts <= min(as_of_datetime, that_game_freeze)``. The cutoff
-is localized to ``America/New_York`` (ET), NEVER UTC -- a UTC-localized Friday
-18:00 cutoff would be 14:00 ET and wrongly drop the legitimate ET-evening
-snapshots (the WR-02 lesson, borrowed from
-``market_anchors.identify_snapshot_lines`` but NOT its global-max cutoff).
+cutoff. Each game's lock comes from ``utils.game_lock.game_lock`` of its own
+kickoff and the builder fences to ``snapshot_ts <= min(as_of_datetime,
+that_game_lock)``. The lock is an ``America/New_York`` (ET) instant, NEVER a
+UTC-localized 18:00 -- a UTC-localized 18:00 cutoff would be 14:00 ET and
+wrongly drop the legitimate ET-evening snapshots (the WR-02 lesson).
 
 ``as_of_datetime`` is canonicalized to tz-aware UTC FIRST (review 29-04 HIGH),
 because comparing a naive datetime against the tz-aware UTC ``snapshot_ts``
@@ -51,12 +52,12 @@ what a naive ``as_of`` must mean here.
 CRITICAL (D-15): the TRUE closing line is NEVER emitted -- only snapshots
 strictly ``<= freeze`` are used; the closing total is reserved for CLV grading.
 
-CRITICAL (CR-01): the fence is ``min(as_of, that game's Friday freeze, one second
-before kickoff)``. The kickoff term is not redundant. The freeze is derived from the
-kickoff DATE, so for a Friday-afternoon kickoff it lands AFTER kickoff and admits an
-IN-PLAY line -- which is how three archive games carried post-kickoff values into
-gold. For every weekday except Friday the freeze already falls on a prior calendar
-day, so the cap does not bind.
+CRITICAL (CR-01): the fence is ``min(as_of, that game's lock, one second before
+kickoff)``. Under the retired preceding-Friday freeze the kickoff term was
+load-bearing: a Friday-afternoon kickoff froze AFTER it started, which is how three
+archive games carried post-kickoff values into gold. The day-before lock always
+falls on the prior ET calendar day, so the cap no longer binds for any weekday; it
+is kept as a defence in depth that costs nothing and cannot admit a later row.
 
 DEGRADED-INPUT EDGE, stated rather than hidden: ``_resolve_game_date`` walks
 ``_KICKOFF_COLUMNS`` in order, so a games frame carrying only a date-only ``gameday``
@@ -157,7 +158,7 @@ def _as_of_to_utc(as_of_datetime: datetime | None) -> datetime:
     CR-01. ``ensure_utc_aware`` reinterprets a naive datetime as UTC without
     shifting the wall clock, which is correct only when the caller knows the
     source was already UTC. Nothing in this module's world is UTC: kickoffs, the
-    Friday 18:00 freeze and ``kickoff_wall_clock_et`` are all ET wall clocks, and
+    per-game 18:00 ET lock and ``kickoff_wall_clock_et`` are all ET wall clocks, and
     the historical naive default was a LOCAL ``datetime.now()``. So a naive value
     is localized to ET and then CONVERTED, exactly as the ``ensure_utc_aware``
     docstring instructs callers whose source is a different timezone to do.
@@ -184,15 +185,16 @@ class LineMovementBuilder:
     """Build leakage-safe game-level line-movement features from odds_timeline.
 
     Conforms to the FeatureBuilder Protocol (``build_features`` with the
-    ``as_of_datetime`` Friday-freeze fence + ``get_features_for_game``). Emits one
+    ``as_of_datetime`` per-game-lock fence + ``get_features_for_game``). Emits one
     row per game with the four D-09 totals families + ``line_movement_coverage``
     (and ``spread_*`` siblings only when the trajectory carries spreads).
 
-    The binding temporal control is a PER-GAME Friday-6PM-ET freeze (D-15): each
-    game's freeze is derived from its own kickoff date and localized to ET (NOT
-    UTC, WR-02); the fence is ``snapshot_ts <= min(as_of_datetime, game_freeze)``
-    with ``as_of_datetime`` canonicalized to tz-aware UTC first (review 29-04
-    HIGH). The true closing line is never emitted -- only snapshots ``<= freeze``.
+    The binding temporal control is a PER-GAME lock (D-15, D33.2-01): each game's
+    lock comes from ``utils.game_lock.game_lock`` of its own kickoff and is an ET
+    instant (NOT a UTC-localized 18:00, WR-02); the fence is
+    ``snapshot_ts <= min(as_of_datetime, game_lock)`` with ``as_of_datetime``
+    canonicalized to tz-aware UTC first (review 29-04 HIGH). The true closing line
+    is never emitted -- only snapshots ``<= lock``.
     """
 
     def __init__(self, *, timeline_df: pd.DataFrame | None = None) -> None:
@@ -259,44 +261,22 @@ class LineMovementBuilder:
         return timeline
 
     # ------------------------------------------------------------------
-    # Per-game Friday 6 PM ET freeze (NOT a global cutoff, review 29-04 HIGH)
+    # Per-game lock (NOT a global cutoff, review 29-04 HIGH; D33.2-01)
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _game_friday_freeze(game_date: datetime) -> datetime:
-        """Return THAT game's own Friday-6PM-ET freeze from its kickoff date.
+    def _game_lock(game_date: datetime) -> datetime:
+        """Return THAT game's own lock, from the one rule in ``utils.game_lock``.
 
-        The freeze is the most recent Friday at/before the game's kickoff date,
-        at 18:00 ET. This is a PER-GAME freeze -- it does NOT derive one global
-        Friday from ``odds_df['snapshot_ts'].max()`` the way
-        ``identify_snapshot_lines`` does (correct for a single game-week, WRONG
-        across a multi-season odds_timeline, review 29-04 HIGH).
-
-        The Friday 18:00 cutoff is localized to ``America/New_York`` (ET), NEVER
-        UTC (WR-02), then returned -- callers convert to UTC for the comparison so
-        the wall-clock instant is preserved (18:00 ET == 22:00/23:00 UTC).
-
-        THIS FUNCTION IS NOT THE WHOLE FENCE. For a Friday kickoff
-        ``(4 - 4) % 7 == 0``, so the freeze is that SAME day at 18:00 ET -- after any
-        Friday kickoff earlier than 6 PM. ``_compute_game_features`` caps the fence at
-        one second before kickoff for exactly that reason (CR-01).
-
-        The Friday derivation here is deliberately UNCHANGED. Shifting it to the
-        PRIOR Friday would also close the leak, but it would discard the entire game
-        week of legitimate movement for those games, and if both landed the
-        prior-Friday shift would dominate and make the kickoff cap dead code for
-        precisely the games it was written for.
+        Nothing is derived here. The kickoff is read through
+        ``kickoff_wall_clock_et`` -- the ONE accessor for a kickoff value, which
+        CONVERTS an aware value and ET-localizes a naive one exactly as the games
+        writer does (WR-06) -- and handed to ``utils.game_lock.game_lock``, reached as
+        a module attribute at call time so the phase's identity scan sees this call.
         """
-        # WR-06: the ET wall clock comes from the ONE documented accessor, so this
-        # module and every other kickoff reader share a single contract instead of
-        # each re-deriving one (the two Phase-29 readers assumed OPPOSITE contracts
-        # and agreed only by luck).
-        et_date = kickoff_wall_clock_et(game_date)
+        import utils.game_lock as lock_rule
 
-        # Most recent Friday (weekday 4) at/before the kickoff date.
-        days_since_friday = (et_date.weekday() - 4) % 7
-        friday = et_date.date() - timedelta(days=days_since_friday)
-        return datetime(friday.year, friday.month, friday.day, 18, 0, 0, tzinfo=ET)
+        return lock_rule.game_lock(kickoff_wall_clock_et(game_date))
 
     @staticmethod
     def _resolve_game_date(row: pd.Series) -> datetime | None:
@@ -411,15 +391,13 @@ class LineMovementBuilder:
         if game_date is None:
             return self._neutral_features(emit_spread)
 
-        freeze_utc = self._game_friday_freeze(game_date).astimezone(UTC)
+        freeze_utc = self._game_lock(game_date).astimezone(UTC)
 
-        # CR-01: cap the fence at KICKOFF. The Friday freeze is "the most recent
-        # Friday 18:00 ET at/before the kickoff DATE", so for a Friday-afternoon
-        # kickoff -- Black Friday, Christmas -- that freeze is AFTER kickoff and the
-        # Friday-18:00 cadence snapshot it admits is an IN-PLAY line. Three games in
-        # the archive carried one; 2023_W12_MIA@NYJ's spread moved 9.5 -> 20.5 DURING
-        # the game. For every other weekday the freeze already lands on a prior
-        # calendar day, so this term simply does not bind.
+        # CR-01: cap the fence at KICKOFF. Under the retired preceding-Friday freeze
+        # a Friday-afternoon kickoff -- Black Friday, Christmas -- froze AFTER it
+        # started and admitted an IN-PLAY line (2023_W12_MIA@NYJ's spread moved
+        # 9.5 -> 20.5 DURING the game). The day-before lock always lands on the prior
+        # ET calendar day, so this term no longer binds; it stays as defence in depth.
         #
         # The one-second offset is deliberate: _pairs_for filters with <=, and D-15
         # says no snapshot AT OR AFTER kickoff may enter a feature, so the strict form
@@ -469,13 +447,13 @@ class LineMovementBuilder:
 
         Conforms to the FeatureBuilder Protocol. ``as_of_datetime`` is
         canonicalized to tz-aware UTC FIRST (review 29-04 HIGH); each game is
-        fenced to ``snapshot_ts <= min(as_of_utc, that_game's_Friday_6PM_ET
-        freeze)`` (D-15). The closing line is never emitted.
+        fenced to ``snapshot_ts <= min(as_of_utc, that_game's_lock)`` (D-15,
+        D33.2-01). The closing line is never emitted.
 
         Args:
             games_df: DataFrame of games to build features for.
-            as_of_datetime: Time-fence cutoff (capped per-game by the Friday
-                freeze). A naive datetime is interpreted as ET and CONVERTED
+            as_of_datetime: Time-fence cutoff (capped per-game by the game's
+                lock). A naive datetime is interpreted as ET and CONVERTED
                 (CR-01); ``None`` defaults to ``datetime.now(UTC)``.
             target_season: Optional season to filter games for.
             target_week: Optional week to filter games for.
@@ -526,8 +504,8 @@ class LineMovementBuilder:
 
         Args:
             game_id: Unique game identifier.
-            as_of_datetime: Time-fence cutoff (capped by the game's Friday
-                freeze). A naive value is interpreted as ET (CR-01).
+            as_of_datetime: Time-fence cutoff (capped by the game's lock). A
+                naive value is interpreted as ET (CR-01).
 
         Returns:
             Dict of line-movement feature values (neutral defaults when the game

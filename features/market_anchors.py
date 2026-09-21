@@ -3,7 +3,7 @@ Market Anchor Features Calculator
 
 This module calculates market-based features from betting odds:
 - Opening line capture and storage (earliest available odds)
-- Current line at Friday 6 PM ET snapshot time
+- Current line at each game's own day-before-kickoff lock (D33.2-01)
 - Moneyline to probability conversions with devig
 - Line movement tracking (opening vs snapshot)
 - Market efficiency indicators
@@ -17,7 +17,7 @@ Market anchors provide:
 """
 
 import warnings
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, cast
 
 import pandas as pd
@@ -25,7 +25,6 @@ import pandas as pd
 from conf.settings import get_settings
 from data.storage import load_dataframe
 from utils import get_logger
-from utils.date_utils import ET
 from utils.probability_utils import (
     devig_probabilities,
     moneyline_to_probability,
@@ -40,7 +39,7 @@ class MarketAnchorFeaturesCalculator:
 
     Features calculated:
     - Opening line features (earliest available odds)
-    - Snapshot line features (Friday 6 PM ET cutoff)
+    - Snapshot line features (each game's own day-before-kickoff lock)
     - Line movement indicators (opening to snapshot)
     - Devigged probability calculations
     - Market efficiency metrics
@@ -164,23 +163,40 @@ class MarketAnchorFeaturesCalculator:
             logger.error("Failed to identify opening lines", error=str(e))
             raise
 
-    def identify_snapshot_lines(
-        self, odds_df: pd.DataFrame, target_date: datetime | None = None
+    def select_snapshot_lines_at_lock(
+        self, odds_df: pd.DataFrame, games_df: pd.DataFrame
     ) -> pd.DataFrame:
         """
-        Identify snapshot lines at the cutoff time (Friday 6 PM ET).
+        Select each game's latest odds at or before THAT game's own lock.
 
-        Snapshot lines are the latest available odds before the
-        Friday 6 PM ET cutoff for the upcoming week's games.
+        The lock is ``utils.game_lock.lock_frame`` over the games' own kickoffs:
+        18:00 ET on the ET calendar day before kickoff, at-lock admissible
+        (D33.2-01). It is PER GAME. This replaces a selection that derived ONE
+        Friday for the whole frame from the latest snapshot in it -- right for a
+        single game-week and wrong for any frame spanning two, because a Thursday
+        game and the following Sunday's games do not lock at the same instant.
+
+        Odds rows for games absent from *games_df* are not selected: a game with no
+        schedule row has no kickoff and therefore no lock, and this method builds
+        lines only for the games it was asked about. Finishing the per-game odds
+        selection (the freshest admissible quote) is Plan 33.2-13's subject.
 
         Args:
-            odds_df: DataFrame with odds data
-            target_date: Target Friday date (default: determine from odds)
+            odds_df: DataFrame with odds data (``game_id``, ``sportsbook``,
+                ``snapshot_ts`` and the line columns).
+            games_df: The games whose lines are wanted, carrying ``game_id`` and a
+                tz-aware ``kickoff_et`` (silver ``games`` shape).
 
         Returns:
-            DataFrame with snapshot line data
+            DataFrame with one snapshot line per (game, sportsbook); its
+            ``cutoff_time`` column is that game's own lock.
+
+        Raises:
+            utils.game_lock.MissingKickoffError: when a wanted game has no kickoff.
         """
-        logger.info("Identifying snapshot lines", total_records=len(odds_df))
+        import utils.game_lock as lock_rule
+
+        logger.info("Selecting snapshot lines at lock", total_records=len(odds_df))
 
         try:
             # Coerce snapshot_ts to a tz-aware (UTC) datetime -- on-disk
@@ -191,45 +207,26 @@ class MarketAnchorFeaturesCalculator:
             # Through the ONE parse path for the same reason spelled out in
             # identify_opening_lines: a bare pd.to_datetime NaT'd 1,855 of 2,140 live
             # rows, and here a NaT also drops out of the <= cutoff comparison (WR-01).
-            odds_df = odds_df.copy()
+            wanted_ids = set(games_df["game_id"].astype(str))
+            odds_df = odds_df[odds_df["game_id"].astype(str).isin(wanted_ids)].copy()
             odds_df["snapshot_ts"] = self._parse_snapshot_column(odds_df["snapshot_ts"])
 
-            # If no target date provided, find the most recent Friday 6 PM ET.
-            if target_date is None:
-                # Find the latest snapshot (tz-aware UTC) and view it in ET so
-                # the Friday we pick is the ET calendar Friday, not the UTC one.
-                # On-disk snapshots are 18:00 ET = 22:00 UTC; choosing the
-                # Friday from the UTC date would shift late-night ET snapshots
-                # into the wrong calendar day.
-                latest_date = odds_df["snapshot_ts"].max().tz_convert(ET)
-
-                # Find the Friday before/on this date
-                days_since_friday = (latest_date.weekday() - 4) % 7
-                target_friday = latest_date.date() - timedelta(days=days_since_friday)
-                target_date = datetime.combine(
-                    target_friday, datetime.min.time().replace(hour=18)
-                )
-
-            # Convert to snapshot cutoff time (Friday 6 PM ET). The module
-            # contract is "Friday 6 PM ET"; localize the naive cutoff to ET
-            # (America/New_York), NOT UTC. Localizing to UTC produced
-            # Friday 18:00 UTC = Friday 14:00 ET (2 PM ET), which is 4 hours
-            # too early and dropped the legitimate 18:00 ET (= 22:00 UTC)
-            # snapshots, emptying the snapshot set on the orchestrator path.
-            # The comparison below is against the tz-aware (UTC) snapshot_ts;
-            # an ET-aware cutoff compares correctly across timezones. (WR-02)
-            cutoff_time = target_date.replace(
-                hour=18, minute=0, second=0, microsecond=0
+            # One lock per game, from the ONE rule. The lock is an ET instant, so
+            # comparing it with the tz-aware (UTC) snapshot_ts compares instants:
+            # an 18:00 ET lock is 22:00/23:00 UTC, never a UTC-localized 18:00
+            # (the WR-02 lesson this method has carried since Phase 20).
+            present = games_df[
+                games_df["game_id"]
+                .astype(str)
+                .isin(set(odds_df["game_id"].astype(str)))
+            ]
+            locks = lock_rule.lock_frame(
+                cast("pd.DataFrame", present[["game_id", "kickoff_et"]])
             )
-            if cutoff_time.tzinfo is None:
-                cutoff_time = cutoff_time.replace(tzinfo=ET)
+            odds_df["cutoff_time"] = odds_df["game_id"].astype(str).map(locks)
 
-            logger.info(
-                "Using snapshot cutoff time", cutoff_time=cutoff_time.isoformat()
-            )
-
-            # Filter odds to before cutoff time
-            pre_cutoff_odds = odds_df[odds_df["snapshot_ts"] <= cutoff_time].copy()
+            # At-lock is admissible (<=); one second later is not.
+            pre_cutoff_odds = odds_df[odds_df["snapshot_ts"] <= odds_df["cutoff_time"]]
 
             if len(pre_cutoff_odds) == 0:
                 logger.warning("No odds found before cutoff time")
@@ -250,7 +247,7 @@ class MarketAnchorFeaturesCalculator:
                         "game_id": game_id,
                         "sportsbook": sportsbook,
                         "snapshot_ts": snapshot_line["snapshot_ts"],
-                        "cutoff_time": cutoff_time,
+                        "cutoff_time": snapshot_line["cutoff_time"],
                         # Snapshot odds
                         "snapshot_ml_home": snapshot_line.get("ml_home"),
                         "snapshot_ml_away": snapshot_line.get("ml_away"),
@@ -266,7 +263,7 @@ class MarketAnchorFeaturesCalculator:
             snapshot_df = pd.DataFrame(snapshot_lines)
 
             logger.info(
-                "Identified snapshot lines",
+                "Selected snapshot lines at lock",
                 games=snapshot_df["game_id"].nunique(),
                 sportsbooks=snapshot_df["sportsbook"].nunique(),
                 total_records=len(snapshot_df),
@@ -275,7 +272,7 @@ class MarketAnchorFeaturesCalculator:
             return snapshot_df
 
         except (ValueError, KeyError, TypeError, ZeroDivisionError) as e:
-            logger.error("Failed to identify snapshot lines", error=str(e))
+            logger.error("Failed to select snapshot lines at lock", error=str(e))
             raise
 
     def calculate_devigged_probabilities(
@@ -532,7 +529,7 @@ class MarketAnchorFeaturesCalculator:
             consensus_lines = []
 
             # The lines frame is the output of identify_opening_lines /
-            # identify_snapshot_lines, which prefix every odds column with
+            # select_snapshot_lines_at_lock, which prefix every odds column with
             # ``opening_`` or ``snapshot_`` (e.g. ``opening_ml_home``,
             # ``snapshot_spread``). The original code read the bare ``ml_home`` /
             # ``ml_away`` / ``spread`` / ``total`` names that no longer exist after
@@ -652,7 +649,7 @@ class MarketAnchorFeaturesCalculator:
 
             # Identify opening and snapshot lines
             opening_lines_df = self.identify_opening_lines(odds_df)
-            snapshot_lines_df = self.identify_snapshot_lines(odds_df)
+            snapshot_lines_df = self.select_snapshot_lines_at_lock(odds_df, games_df)
 
             # Create consensus lines
             if len(opening_lines_df) > 0:

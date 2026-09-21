@@ -1,8 +1,8 @@
 """Ingest historical NFL betting odds data from nflreadpy.
 
 Transforms nflreadpy schedule data (which includes closing lines) into standardized
-``OddsSchema`` records with per-game Friday 6 PM Eastern freeze timestamps. Stores as timestamped
-Bronze snapshots and merges into Silver.
+``OddsSchema`` records stamped with each game's own day-before-kickoff lock (D33.2-01). Stores as
+timestamped Bronze snapshots and merges into Silver.
 
 THE WRITE CONTRACT IS PRE-REGISTERED (Plan 31-08)
 -------------------------------------------------
@@ -20,11 +20,16 @@ Phase-31 pre-registration (``PROFITABILITY-PREREGISTRATION.md`` section 4.3 plus
    and the stored ``spread``, ``total``, ``ml_home`` and ``ml_away`` are NEVER overwritten
    (D31-15). A missing juice value is a FAILURE TO INVESTIGATE, never a -110 default to fill:
    nflreadpy carries all four on every admitted game for every season this project ingests.
-3. **``snapshot_ts`` is RE-DERIVED per game** through :func:`get_synthetic_snapshot_ts`, from that
-   game's OWN preceding Friday 6 PM Eastern instant, and stored as a tz-aware datetime (D31-37).
-   Every replay row then sits exactly AT its freeze and is FRESH under the rule that at-freeze is
-   fresh. The alternative -- exempting replay rows from the freshness check -- was REJECTED
-   because it creates a SECOND freshness rule.
+3. **``snapshot_ts`` is RE-DERIVED per game** through :func:`gameday_lock`, which is that game's
+   OWN lock from ``utils.game_lock`` -- 18:00 Eastern on the Eastern calendar day before kickoff
+   (D33.2-01, which retired the preceding-Friday freeze this clause originally named) -- and is
+   stored as a tz-aware datetime (D31-37). Every replay row then sits exactly AT its lock and is
+   admissible under the rule that at-lock information is admissible. The alternative --
+   exempting replay rows from the check -- was REJECTED because it creates a SECOND rule.
+   THE STAMP IS MANUFACTURED and says so: nflreadpy carries a closing line with no capture time,
+   so the lock is our label for when the value is treated as known, not an upstream time
+   (RESEARCH pitfall P1, threat T-33.2-02-02). Plan 33.2-27 replaces it with the source's own
+   upstream time; no fence in this phase treats it as evidence of when the line was observed.
 4. **Game-type scope.** The admitted set is READ from the frozen constants
    (:func:`admitted_game_types`), never declared here. Playoffs are admitted EVERYWHERE, in both
    the tune window and the hold (D31-38); preseason is excluded.
@@ -53,7 +58,7 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -90,13 +95,14 @@ logger = get_logger(__name__)
 # The freeze instant, and the columns the write contract names.
 # ---------------------------------------------------------------------------
 
-# The market's own timezone. EVERY freeze instant and every parsed snapshot value is anchored
+# The market's own timezone. EVERY lock instant and every parsed snapshot value is anchored
 # here, never in the process's local zone: a UTC-anchored or local-anchored comparison silently
-# moves the freeze by the offset and suppresses or admits the wrong rows (T-31-37).
+# moves the lock by the offset and suppresses or admits the wrong rows (T-31-37).
 EASTERN = ZoneInfo("America/New_York")
 
-# 6 PM Eastern on the preceding Friday. This is the project's data-freeze convention.
-FREEZE_HOUR_ET = 18
+# The lock HOUR is not restated here: the one rule is ``utils.game_lock`` (D33.2-01), and a
+# second hour constant in this module is exactly the kind of rival derivation Plan 33.2-02
+# retired. The former preceding-Friday freeze constant and function are deleted, not aliased.
 
 # The four juice columns clause 2 adds. Derived from the schema rather than restated by hand
 # would be better still, but these four are named individually in the pre-registration, so they
@@ -178,37 +184,58 @@ def admitted_game_types(season: int) -> frozenset[str]:
 
 
 # ---------------------------------------------------------------------------
-# Clause 3: the per-game freeze instant, and the ONE parse path.
+# Clause 3: the per-game lock instant, and the ONE parse path.
 # ---------------------------------------------------------------------------
 
 
-def get_synthetic_snapshot_ts(gameday: str) -> datetime:
-    """The Friday 6 PM Eastern freeze instant preceding *gameday*.
+def gameday_lock(gameday: Any) -> datetime:
+    """The lock of a game played on the EASTERN calendar date *gameday*, through the one rule.
 
-    This is the ONE source of the per-game freeze (D31-18). The rule is PER-GAME, not per-week:
-    a Thursday game's preceding Friday is seven days before the Friday preceding that week's
-    Sunday games, so a per-week freeze would suppress a correct Thursday snapshot every week as a
-    pure calendar artifact.
+    Every value comes from ``utils.game_lock.game_lock`` (D33.2-01): 18:00 America/New_York on
+    the Eastern calendar day before kickoff. This function derives nothing itself. It exists
+    because the odds rows and the weekly schedule carry the game's Eastern ``gameday`` DATE
+    rather than its kickoff instant, and ``game_lock`` reads ONLY the Eastern calendar date of
+    the kickoff it is handed -- so that date, expressed as its Eastern-midnight instant, yields
+    exactly the lock the real kickoff would. The midnight instant is the date written as an
+    instant, never a claim about when the game starts, and it never leaves this function.
+
+    The lock rule is reached as a MODULE ATTRIBUTE at call time (``lock_rule.game_lock``), so a
+    counting delegate installed over ``utils.game_lock.game_lock`` sees every call made here.
 
     Args:
-        gameday: Game date as a string (YYYY-MM-DD) or anything ``pd.to_datetime`` accepts.
+        gameday: The game's Eastern calendar date -- a ``YYYY-MM-DD`` string, a ``date``, or a
+            naive midnight timestamp of that date.
 
     Returns:
-        The freeze instant as a tz-aware UTC datetime. UTC is a storage convention only; the
-        instant is COMPUTED in Eastern, so it survives daylight-saving transitions.
+        The lock as a tz-aware datetime in Eastern.
+
+    Raises:
+        utils.game_lock.MissingKickoffError: when *gameday* is null.
+        ValueError: when *gameday* is timezone-aware or carries a time of day. Either one means
+            the caller holds an INSTANT, whose Eastern date this function must not guess -- a UTC
+            instant's calendar date is the next day for every night game. Hand the instant to
+            ``utils.game_lock.game_lock`` instead.
     """
-    game_date = pd.to_datetime(gameday)
+    import utils.game_lock as lock_rule
 
-    # Find the preceding Friday (weekday 4 = Friday).
-    days_since_friday = (game_date.weekday() - 4) % 7
-    if days_since_friday == 0:
-        days_since_friday = 7  # If gameday IS Friday, use the PRIOR Friday.
-    friday = game_date - timedelta(days=days_since_friday)
+    if gameday is None or _is_null_scalar(gameday):
+        msg = (
+            "no gameday: a game with no Eastern calendar date has no lock. Refusing rather "
+            "than substituting a manufactured instant."
+        )
+        raise lock_rule.MissingKickoffError(msg)
 
-    snapshot = datetime(
-        friday.year, friday.month, friday.day, FREEZE_HOUR_ET, 0, tzinfo=EASTERN
-    )
-    return snapshot.astimezone(UTC)
+    parsed = pd.Timestamp(gameday)
+    if parsed.tzinfo is not None or parsed != parsed.normalize():
+        msg = (
+            f"gameday {gameday!r} is an instant, not an Eastern calendar date. Its date cannot "
+            "be read without converting it, and reading it the wrong way moves every night "
+            "game's lock by a day. Pass the kickoff instant to utils.game_lock.game_lock."
+        )
+        raise ValueError(msg)
+
+    eastern_date = datetime.combine(parsed.date(), time(0, 0), tzinfo=EASTERN)
+    return lock_rule.game_lock(eastern_date)
 
 
 def _is_null_scalar(value: Any) -> bool:
@@ -351,12 +378,12 @@ def _naive_parse_or_none(value: Any) -> pd.Timestamp | None:
 
 
 def is_fresh_at_freeze(snapshot_value: Any, gameday: str) -> bool:
-    """True when *snapshot_value* is AT or AFTER that game's own preceding-Friday freeze.
+    """True when *snapshot_value* is AT or AFTER that game's own lock.
 
-    At-freeze is FRESH (SPEC R6); strictly before the freeze is stale. Both sides of the
-    comparison come from this module -- the freeze from :func:`get_synthetic_snapshot_ts` and the
-    snapshot from :func:`normalize_snapshot_ts` -- so no caller can compare a parsed value against
-    a re-derived freeze, and no caller can string-compare.
+    TRANSITIONAL (Plan 33.2-02 Task 1): the instant is now the game's day-before lock from
+    :func:`gameday_lock`; the staleness DIRECTION is reversed into an admissibility test by the
+    function that replaces this one in the same plan. Both sides of the comparison come from
+    this module, so no caller can string-compare.
 
     Args:
         snapshot_value: The stored or derived ``snapshot_ts`` in any supported shape.
@@ -365,7 +392,7 @@ def is_fresh_at_freeze(snapshot_value: Any, gameday: str) -> bool:
     Returns:
         True when the snapshot is fresh.
     """
-    return normalize_snapshot_ts(snapshot_value) >= get_synthetic_snapshot_ts(gameday)
+    return normalize_snapshot_ts(snapshot_value) >= gameday_lock(gameday)
 
 
 # ---------------------------------------------------------------------------
@@ -608,8 +635,11 @@ def transform_nfl_odds_with_counts(schedules_df: pd.DataFrame) -> OddsTransformR
                 home_team=home_team,
             )
 
-            # Clause 3: this game's OWN preceding-Friday freeze, as a tz-aware instant.
-            snapshot_ts = get_synthetic_snapshot_ts(game["gameday"])
+            # Clause 3: this game's OWN day-before lock, as a tz-aware instant. MANUFACTURED:
+            # nflreadpy gives a closing line with no capture time, so this is the instant we
+            # treat the value as known, not an upstream time (RESEARCH P1, T-33.2-02-02). Plan
+            # 33.2-27 replaces it with the source's own time; nothing here treats it as evidence.
+            snapshot_ts = gameday_lock(game["gameday"])
 
             ml_home = (
                 int(game["home_moneyline"])
