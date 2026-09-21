@@ -33,6 +33,7 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -44,12 +45,169 @@ from tests.fixtures import season_2026
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VENUES_PATH = REPO_ROOT / "data" / "venues.json"
 
-# 38 -> 60: Plan 33.1-01 added the 22 historical venue records (R1), so that the 1,082
-# games at stadiums this file could not describe stop resolving by today's home team.
-# UPDATED here rather than forked -- a new module asserting 60 while this one asserts 38
-# is two answers to one question.
-EXPECTED_TOTAL_RECORDS = 60
 EXPECTED_EXISTING_RECORDS = 30
+
+# ---------------------------------------------------------------------------
+# THE TWO 2025 INTERNATIONAL VENUES (Plan 33.2-09 Task 1, SPEC R8 venue half).
+#
+# Seven 2025 games were played outside the United States, and the feed records every one
+# of them at the US home team's own stadium (33.2-RESEARCH.md section 8.3). Five of the
+# seven real venues already had records; Croke Park (Dublin) and the Olympiastadion
+# (Berlin) did not, so no correction could point at them. These are the two records
+# added, stated field for field so the file is checked against a table rather than
+# against itself.
+#
+# IDs FOLLOW THE nflverse CONVENTION the other international records use (city code plus
+# a two-digit serial: LON00, MUN01, SAO00). The feed has never carried a code for either
+# venue -- it records both games at PIT00 and IND00 -- so there is no feed value to derive
+# from, and the two ids are ASSIGNED here, once.
+#
+# `country` IS WRITTEN IN THE FILE'S OWN VOCABULARY. The field holds full country names,
+# and Germany already appears three times under that spelling; an ISO code would put a
+# second spelling of one country into the file (the D30-02 two-answers failure).
+# ---------------------------------------------------------------------------
+
+ADDED_2025_VENUE_RECORDS: dict[str, dict[str, object]] = {
+    "DUB00": {
+        "venue_id": "croke_park",
+        "stadium_id": "DUB00",
+        "venue_name": "Croke Park",
+        "city": "Dublin",
+        "state": "",
+        "country": "Ireland",
+        "latitude": 53.3608,
+        "longitude": -6.2511,
+        "elevation_ft": 10,
+        "roof_type": "outdoor",
+        "surface": "Grass",
+        "capacity": 82300,
+        "climate_zone": "oceanic",
+        "timezone": "Europe/Dublin",
+        "home_teams": [],
+    },
+    "BER00": {
+        "venue_id": "olympiastadion_berlin",
+        "stadium_id": "BER00",
+        "venue_name": "Olympiastadion",
+        "city": "Berlin",
+        "state": "",
+        "country": "Germany",
+        "latitude": 52.5147,
+        "longitude": 13.2394,
+        "elevation_ft": 308,
+        "roof_type": "outdoor",
+        "surface": "Grass",
+        "capacity": 74475,
+        "climate_zone": "oceanic",
+        "timezone": "Europe/Berlin",
+        "home_teams": [],
+    },
+}
+
+ADDED_2025_STADIUM_IDS: tuple[str, ...] = tuple(ADDED_2025_VENUE_RECORDS)
+
+# Where each non-identity value came from, fetched 2026-09-21. Elevation uses the SAME
+# instrument the historical records used (tests.phase33_state.HISTORICAL_VENUE_FIELD_
+# SOURCES cites open-meteo /v1/elevation for SAO00), checked against two existing records
+# first: Allianz Arena (491 m -> 1611 ft, the file says 1611) and Wembley (47 m -> 154 ft,
+# the file says 154).
+ADDED_2025_VENUE_FIELD_SOURCES: tuple[tuple[str, str, str], ...] = (
+    (
+        "DUB00",
+        "latitude/longitude",
+        "Wikidata Q478225 P625 (53.360833, -6.251111), rounded to 4 dp",
+    ),
+    (
+        "DUB00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (53.3608, -6.2511) -> 3.0 m -> 10 ft",
+    ),
+    ("DUB00", "capacity", "Wikidata Q478225 P1083 = 82300"),
+    ("DUB00", "surface", "en.wikipedia Croke_Park infobox: natural soil/grass pitch"),
+    ("DUB00", "climate_zone", "Dublin is Koppen Cfb (temperate oceanic)"),
+    ("DUB00", "timezone", "IANA Europe/Dublin"),
+    (
+        "BER00",
+        "latitude/longitude",
+        "Wikidata Q151374 P625 (52.514722, 13.239444), rounded to 4 dp",
+    ),
+    (
+        "BER00",
+        "elevation_ft",
+        "open-meteo /v1/elevation @ (52.5147, 13.2394) -> 94.0 m -> 308 ft",
+    ),
+    ("BER00", "capacity", "Wikidata Q151374 P1083 = 74475"),
+    ("BER00", "surface", "en.wikipedia Olympiastadion_(Berlin) infobox: Grass"),
+    (
+        "BER00",
+        "climate_zone",
+        "Berlin is Koppen Cfb (temperate oceanic), bordering Dfb",
+    ),
+    ("BER00", "timezone", "IANA Europe/Berlin"),
+)
+
+# 38 -> 60 (Plan 33.1-01, the 22 historical records) -> 62 (this plan).
+# The Plan-33.1-01 count plus the two added above. DERIVED, so the three modules that
+# assert the record count (this one, test_venues_json_historical and
+# test_venue_feature_fields_are_valid) import ONE answer rather than each carrying 62.
+EXPECTED_TOTAL_RECORDS = phase33_state.VENUE_RECORD_COUNT_AFTER + len(
+    ADDED_2025_VENUE_RECORDS
+)
+
+# `country` over the 60 records BEFORE this plan, measured 2026-09-16 and again
+# 2026-09-21: USA 47, United Kingdom 3, Germany 3, Brazil 2, and one each of Australia,
+# France, Spain, Mexico and Canada.
+PRE_EDIT_COUNTRY_VOCABULARY: frozenset[str] = frozenset(
+    {
+        "USA",
+        "United Kingdom",
+        "Germany",
+        "Brazil",
+        "Australia",
+        "France",
+        "Spain",
+        "Mexico",
+        "Canada",
+    }
+)
+
+# The ONE value this plan adds to that vocabulary. The Olympiastadion joins the three
+# German venues under their spelling, so Ireland is the only new string.
+PERMITTED_COUNTRY_VOCABULARY: frozenset[str] = PRE_EDIT_COUNTRY_VOCABULARY | {"Ireland"}
+
+# The values that mean "in the United States". Every record carries `country`, so this
+# field IS the is-US marker; no second marker exists and none may be added.
+US_COUNTRY_VALUES: frozenset[str] = frozenset({"US", "USA", "UNITED STATES"})
+
+# The non-US membership, asserted as a SET so a venue silently joining or leaving it
+# fails. Plan 33.2-12's weather backfill decides "outside MOS coverage" from this field.
+EXPECTED_NON_US_STADIUM_IDS: frozenset[str] = frozenset(
+    {
+        "BUF01",
+        "FRA00",
+        "GER00",
+        "LON00",
+        "LON01",
+        "LON02",
+        "MAD01",
+        "MEL00",
+        "MEX00",
+        "MUN01",
+        "PAR00",
+        "RIO00",
+        "SAO00",
+        "DUB00",
+        "BER00",
+    }
+)
+
+# sha256 of the 60 PRE-EDIT records, canonicalised (sorted by stadium_id, keys sorted,
+# compact separators, ASCII), taken 2026-09-21 on commit 65cf31c before either record was
+# added. "No existing record changed" is checked against this digest.
+PRE_EDIT_RECORDS_SHA256 = (
+    "d836816d0349ae6adc84efa2507e2eb2ce082356982863f54169cbf1878b3a76"
+)
+PRE_EDIT_RECORD_COUNT = 60
 
 # The field order INTERNATIONAL_VENUE_FACTS is stated in, named here so the unpacking
 # below is checkable rather than positional folklore.
@@ -168,7 +326,8 @@ class TestTheThirtyExistingCodesWereDerivedNotTyped:
         FINDING to report by name -- never a value to guess. A team that relocated
         between the venue record's era and 2026 is exactly the case this surfaces.
 
-        TWO SETS ARE EXCLUDED, AND FOR THE SAME REASON. The eight international venues
+        THREE SETS ARE EXCLUDED, AND FOR THE SAME REASON. (The third, the two 2025
+        international venues Plan 33.2-09 added, host only neutral-site games too.) The eight international venues
         host only neutral-site games, so a non-neutral join cannot reach them. The 22
         HISTORICAL venues Plan 33.1-01 added (2026-09-12) carry `home_teams == []` by
         ratified design -- a demolished stadium must never win a home-team lookup and
@@ -184,9 +343,11 @@ class TestTheThirtyExistingCodesWereDerivedNotTyped:
         _require_capture()
         feed = season_2026.load_captured_schedule()
         home_games = feed[feed["location"] != "Neutral"]
-        not_in_service = {
-            row[0] for row in phase33_state.INTERNATIONAL_VENUE_FACTS
-        } | set(phase33_state.HISTORICAL_STADIUM_IDS)
+        not_in_service = (
+            {row[0] for row in phase33_state.INTERNATIONAL_VENUE_FACTS}
+            | set(phase33_state.HISTORICAL_STADIUM_IDS)
+            | set(ADDED_2025_STADIUM_IDS)
+        )
 
         unresolved: list[str] = []
         mismatched: list[str] = []
@@ -385,3 +546,174 @@ class TestTheRatifiedValuesStayInsideTheFeatureEncoding:
         assert "subtropical_highland" not in cold | warm
         facts = _facts_by_stadium_id()
         assert facts["MEX00"]["climate_zone"] == "subtropical_highland"
+
+
+def _canonical_digest(records: list[dict[str, object]]) -> str:
+    canon = json.dumps(
+        sorted(records, key=lambda record: str(record["stadium_id"])),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(canon.encode("ascii")).hexdigest()
+
+
+def _country_values_outside_vocabulary(records: list[dict[str, object]]) -> set[str]:
+    return {str(record["country"]) for record in records} - PERMITTED_COUNTRY_VOCABULARY
+
+
+def _pre_existing_records() -> list[dict[str, object]]:
+    return [
+        record
+        for record in _load_venue_records()
+        if record["stadium_id"] not in ADDED_2025_STADIUM_IDS
+    ]
+
+
+class TestTheTwo2025InternationalVenues:
+    """Croke Park and the Olympiastadion, added by Plan 33.2-09 Task 1."""
+
+    def test_the_file_is_a_dict_with_one_venues_key(self) -> None:
+        """Every reader must unwrap `venues`; iterating the top level sees ONE key."""
+        document = json.loads(VENUES_PATH.read_text(encoding="utf-8"))
+        assert isinstance(document, dict)
+        assert list(document) == ["venues"]
+
+    @pytest.mark.parametrize("stadium_id", ADDED_2025_STADIUM_IDS)
+    def test_each_added_record_matches_its_table_row(self, stadium_id: str) -> None:
+        record = _records_by_stadium_id().get(stadium_id)
+        assert record is not None, f"{stadium_id} is not in data/venues.json"
+        assert record == ADDED_2025_VENUE_RECORDS[stadium_id], (
+            f"{stadium_id} in data/venues.json does not equal the table row "
+            "ADDED_2025_VENUE_RECORDS states. The table is the source; the file follows."
+        )
+
+    @pytest.mark.parametrize("stadium_id", ADDED_2025_STADIUM_IDS)
+    def test_each_added_record_carries_exactly_the_shared_field_set(
+        self, stadium_id: str
+    ) -> None:
+        """No extra field and no missing one -- a missing field is what a default hides."""
+        shared = {frozenset(record) for record in _pre_existing_records()}
+        assert len(shared) == 1, (
+            f"the pre-existing records disagree on fields: {shared}"
+        )
+        record = _records_by_stadium_id()[stadium_id]
+        assert frozenset(record) == next(iter(shared))
+        assert len(record) == 15
+        assert {"stadium_id", "venue_id", "roof_type"} <= set(record)
+        assert "roof" not in record
+
+    @pytest.mark.parametrize("stadium_id", ADDED_2025_STADIUM_IDS)
+    def test_each_added_record_is_outdoor_and_outside_the_united_states(
+        self, stadium_id: str
+    ) -> None:
+        record = _records_by_stadium_id()[stadium_id]
+        assert record["roof_type"] == "outdoor"
+        assert str(record["country"]).upper() not in US_COUNTRY_VALUES
+        assert record["home_teams"] == [], (
+            "a non-empty home_teams would route that team's ordinary home games here"
+        )
+
+    def test_every_added_record_has_recorded_sources(self) -> None:
+        covered = {stadium_id for stadium_id, _, _ in ADDED_2025_VENUE_FIELD_SOURCES}
+        assert covered == set(ADDED_2025_STADIUM_IDS)
+        assert all(source for _, _, source in ADDED_2025_VENUE_FIELD_SOURCES)
+
+    def test_the_file_holds_the_expected_number_of_records(self) -> None:
+        assert len(_load_venue_records()) == EXPECTED_TOTAL_RECORDS == 62
+
+    def test_no_pre_existing_record_changed(self) -> None:
+        pre_existing = _pre_existing_records()
+        assert len(pre_existing) == PRE_EDIT_RECORD_COUNT
+        assert _canonical_digest(pre_existing) == PRE_EDIT_RECORDS_SHA256, (
+            "a record that existed before Plan 33.2-09 changed. The plan adds two "
+            "records and revises none (D33.2-04: static venue data is time-invariant)."
+        )
+
+    def test_the_added_ids_are_new_codes(self) -> None:
+        pre_existing = {record["stadium_id"] for record in _pre_existing_records()}
+        assert not set(ADDED_2025_STADIUM_IDS) & pre_existing
+
+
+class TestTheCountryFieldIsOneVocabulary:
+    """The value guard the key-set scan cannot give: one spelling per country."""
+
+    def test_every_country_value_is_in_the_permitted_vocabulary(self) -> None:
+        outside = _country_values_outside_vocabulary(_load_venue_records())
+        assert not outside, (
+            f"country value(s) {sorted(outside)!r} are outside the permitted "
+            f"vocabulary {sorted(PERMITTED_COUNTRY_VOCABULARY)!r}."
+        )
+
+    def test_ireland_is_the_only_value_added(self) -> None:
+        assert {"Ireland"} == PERMITTED_COUNTRY_VOCABULARY - PRE_EDIT_COUNTRY_VOCABULARY
+        seen = {str(record["country"]) for record in _load_venue_records()}
+        assert seen == PERMITTED_COUNTRY_VOCABULARY
+
+    def test_germany_is_spelled_once_and_now_carries_four_records(self) -> None:
+        germany = [r for r in _load_venue_records() if r["country"] == "Germany"]
+        assert sorted(str(r["stadium_id"]) for r in germany) == [
+            "BER00",
+            "FRA00",
+            "GER00",
+            "MUN01",
+        ]
+
+    def test_a_planted_iso_code_is_refused(self) -> None:
+        """Non-vacuity: the guard must fail on the exact mistake it exists for."""
+        planted = [
+            *_load_venue_records(),
+            {**ADDED_2025_VENUE_RECORDS["BER00"], "country": "DEU"},
+        ]
+        assert _country_values_outside_vocabulary(planted) == {"DEU"}
+
+    def test_the_non_us_set_has_exactly_the_expected_membership(self) -> None:
+        non_us = {
+            str(record["stadium_id"])
+            for record in _load_venue_records()
+            if str(record["country"]).upper() not in US_COUNTRY_VALUES
+        }
+        assert non_us == EXPECTED_NON_US_STADIUM_IDS, (
+            f"joined: {sorted(non_us - EXPECTED_NON_US_STADIUM_IDS)!r}; "
+            f"left: {sorted(EXPECTED_NON_US_STADIUM_IDS - non_us)!r}"
+        )
+
+
+class TestEverySilverGameResolvesToAVenue:
+    """Silver `games` 2002-2026 against the file, in both directions.
+
+    Games -> venues: every stored `stadium_id` resolves, so a game pointing at a missing
+    venue fails HERE rather than inside the weather backfill. Venues -> games: every
+    record is either used by a stored game or named as a correction target in
+    config/international_venue_corrections.toml -- a record nothing points at and nothing
+    is recorded to point at is dead reference data.
+    """
+
+    @staticmethod
+    def _silver_games():
+        import pandas as pd
+
+        path = REPO_ROOT / "data" / "silver" / "games.parquet"
+        if not path.exists():
+            pytest.skip("silver games is not built on this checkout")
+        games = pd.read_parquet(path, columns=["game_id", "season", "stadium_id"])
+        return games[games["season"].between(2002, 2026)]
+
+    def test_every_stored_stadium_id_resolves(self) -> None:
+        games = self._silver_games()
+        assert len(games) > 0
+        assert games["stadium_id"].notna().all()
+        unresolved = sorted(set(games["stadium_id"]) - set(_records_by_stadium_id()))
+        assert not unresolved, f"stadium_id(s) {unresolved!r} have no venue record"
+
+    def test_every_record_is_used_or_is_a_recorded_correction_target(self) -> None:
+        import tomllib
+
+        games = self._silver_games()
+        record_path = REPO_ROOT / "config" / "international_venue_corrections.toml"
+        record = tomllib.loads(record_path.read_text(encoding="utf-8"))
+        targets = {entry["new_stadium_id"] for entry in record["correction"]}
+        unused = sorted(
+            set(_records_by_stadium_id()) - set(games["stadium_id"]) - targets
+        )
+        assert not unused, f"venue record(s) {unused!r} are referenced by nothing"

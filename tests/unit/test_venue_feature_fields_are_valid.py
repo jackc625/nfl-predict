@@ -66,6 +66,7 @@ import pytest
 
 from features import contextual
 from tests import phase33_state
+from tests.unit.test_venues_json_international import EXPECTED_TOTAL_RECORDS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VENUES_PATH = REPO_ROOT / "data" / "venues.json"
@@ -156,7 +157,7 @@ class TestTheScanVisitsEveryCommittedRecord:
     """CONTROL 1 -- non-vacuity. A validator over nothing passes over nothing."""
 
     def test_the_file_holds_the_recorded_number_of_records(self) -> None:
-        assert len(_venue_records()) == phase33_state.VENUE_RECORD_COUNT_AFTER
+        assert len(_venue_records()) == EXPECTED_TOTAL_RECORDS
 
     def test_the_validator_reads_the_file_when_handed_nothing(self) -> None:
         """The default path is the one Plan 33.1-07's precondition invokes."""

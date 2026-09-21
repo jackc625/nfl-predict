@@ -40,6 +40,7 @@ from pathlib import Path
 import pytest
 
 from tests import phase33_state
+from tests.unit.test_venues_json_international import EXPECTED_TOTAL_RECORDS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VENUES_PATH = REPO_ROOT / "data" / "venues.json"
@@ -184,18 +185,24 @@ def _carries_revision_pin(source: str) -> bool:
 
 
 class TestTheFileHoldsOneRecordPerStadiumId:
-    """R1's uniqueness requirement, over ALL 60 records rather than only the 22 added.
+    """R1's uniqueness requirement, over EVERY record rather than only the 22 added.
 
     Uniqueness is asserted on ``stadium_id`` and NEVER on coordinates: GER00 and MUN01
     legitimately carry identical geography, because they are the same building.
     """
 
-    def test_the_file_holds_sixty_records(self) -> None:
+    def test_the_file_holds_the_expected_number_of_records(self) -> None:
+        """Renamed from `test_the_file_holds_sixty_records` by Plan 33.2-09.
+
+        The count is imported from test_venues_json_international, the ONE place it is
+        derived (the 60 recorded here plus Plan 33.2-09's two 2025 venues).
+        """
         records = _load_venue_records()
-        assert len(records) == phase33_state.VENUE_RECORD_COUNT_AFTER, (
+        assert len(records) == EXPECTED_TOTAL_RECORDS, (
             f"data/venues.json holds {len(records)} records, expected "
-            f"{phase33_state.VENUE_RECORD_COUNT_AFTER} -- the 38 that were present before "
-            "Plan 33.1-01 plus the 22 historical venues ratified on 2026-09-12."
+            f"{EXPECTED_TOTAL_RECORDS} -- the 38 that were present before Plan 33.1-01, "
+            "the 22 historical venues ratified on 2026-09-12, and the two 2025 "
+            "international venues Plan 33.2-09 added."
         )
 
     def test_stadium_ids_are_unique_across_the_file(self) -> None:
