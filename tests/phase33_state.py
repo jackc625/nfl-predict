@@ -14720,3 +14720,47 @@ PLAN_33_2_04_ORDERING_NOTE: str = (
     "involve disjoint team pairs whose updates commute -- a claim the tied-kickoff "
     "permutation test measures rather than assumes."
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-06 Task 1 (re-seal) -- THE 2025 GENERATOR'S DIGEST, RE-SEALED AFTER THE
+# D33.2-24 GATE REMOVAL.
+#
+# APPENDED by Plan 33.2-06 on 2026-09-21, at the owner's ruling of that date. Nothing
+# above this line was edited: PROVENANCE_STAMP_DIGESTS (Plan 33-17 Task 2) keeps its
+# ORIGINAL three values, and this slot supersedes exactly ONE of them.
+#
+# WHY IT MOVED. D33.2-24 deletes the O/U eligibility gate and the 48.0 high-total
+# boundary constant. backtest/profitability_2025.py imported that constant at module
+# level and passed it to the O/U strategy, so the deletion had to edit it -- commit
+# c2257ea, +7/-9, only the dead gate wiring. Its "GENERATOR OUTPUT. Produced by" stamp
+# is untouched, and config/profitability_2025_verdict.toml and
+# config/profitability_2025_run_ledger.toml are BYTE-UNCHANGED (both still match their
+# original Plan 33-17 digests). The owner ruled (2026-09-21, Option 1): keep the change
+# and re-seal the generator properly, rather than revert it or edit the old slot.
+#
+# MEASURED 2026-09-21 on commit 1bdd3f9, never typed by hand: sha256 over the
+# NEWLINE-NORMALIZED working-tree bytes, the same instrument Plan 33-17 used, and
+# VERIFIED equal to the sha256 of `git cat-file blob HEAD:backtest/profitability_2025.py`.
+# The superseded value is recorded beside it, and was VERIFIED equal to the blob at
+# c2257ea's parent -- so c2257ea is the only commit that moved the file since the pin.
+# ---------------------------------------------------------------------------
+
+PLAN_33_2_06_RESEALED_PROVENANCE_DIGESTS: dict[str, str] = {
+    "backtest/profitability_2025.py": (
+        "1e0bd3e1215771f1e02dfe86933202f0265079b89d94a28fdb395fc812c6ea1c"
+    ),
+}
+
+# The value the re-seal supersedes -- PROVENANCE_STAMP_DIGESTS' original entry for the
+# generator, restated so the chain old -> new is readable in one place.
+PLAN_33_2_06_RESEAL_SUPERSEDED_DIGEST: str = (
+    "2f79158655c9e36fb2e9c0ffb6a504c56ac9a58077af071bde1a2fa3e5c1a119"
+)
+
+# The one commit that moved the generator, and the ruling that authorised re-sealing it.
+PLAN_33_2_06_RESEAL_COMMIT: str = "c2257ea"
+PLAN_33_2_06_RESEAL_REASON: str = (
+    "D33.2-24 deleted the O/U eligibility gate and its 48.0 boundary constant; commit "
+    "c2257ea removed only the dead gate wiring from the generator (stamp untouched). "
+    "Owner ruling 2026-09-21, Option 1: keep the change and re-seal properly."
+)

@@ -40,6 +40,20 @@ opposite of what a committed constant is for. Normalized, each digest equals the
 ``git cat-file blob <commit>:<path>``, and that equality is ASSERTED below rather than assumed.
 This is the idiom ``tests/unit/test_preregistration_ancestry.py`` established.
 
+THE GENERATOR WAS RE-SEALED ONCE, DELIBERATELY (Plan 33.2-06, owner ruling 2026-09-21)
+---------------------------------------------------------------------------------------
+D33.2-24 deleted the O/U eligibility gate and its 48.0 boundary constant. The generator imported
+that constant at module level, so commit ``c2257ea`` had to remove the dead gate wiring from it
+(+7/-9; the stamp lines untouched). The owner ruled to keep that change and re-seal. The re-seal is
+NOT an edit of ``PROVENANCE_STAMP_DIGESTS`` -- that slot is append-once and keeps its original three
+values. It is a new slot, ``PLAN_33_2_06_RESEALED_PROVENANCE_DIGESTS``, which supersedes the
+generator's entry and NOTHING ELSE:
+
+* the generator is compared against its re-sealed digest, so a further one-byte change still fails;
+* the verdict file and the ledger are compared against their ORIGINAL Plan 33-17 digests, and the
+  re-seal slot is asserted to name the generator alone, so it cannot quietly absorb either of them;
+* the superseded value is asserted to be the original pin, so the chain old -> new is checked.
+
 Run this module:  uv run pytest tests/unit/test_phase33_run_record_untouched.py -q
 
 ASCII only, no emoji (CLAUDE.md hard constraint).
@@ -54,6 +68,9 @@ from pathlib import Path
 import pytest
 
 from tests.phase33_state import (
+    PLAN_33_2_06_RESEAL_COMMIT,
+    PLAN_33_2_06_RESEAL_SUPERSEDED_DIGEST,
+    PLAN_33_2_06_RESEALED_PROVENANCE_DIGESTS,
     PROVENANCE_STAMP_DIGESTS,
     PROVENANCE_STAMP_OPENING,
     SPENT_MEASUREMENT_TOKEN,
@@ -70,14 +87,31 @@ _STAMPED_PATHS: tuple[str, str] = (
 
 _LEDGER_PATH: str = "config/profitability_2025_run_ledger.toml"
 
+_GENERATOR_PATH: str = "backtest/profitability_2025.py"
+
+_VERDICT_PATH: str = "config/profitability_2025_verdict.toml"
+
+# The digest each anchored file must have TODAY: the original Plan 33-17 pins, with the generator's
+# entry superseded by the Plan 33.2-06 re-seal. Built from the two slots rather than restated, so
+# neither value can drift from the manifest that records it.
+EXPECTED_DIGESTS: dict[str, str] = {
+    **PROVENANCE_STAMP_DIGESTS,
+    **PLAN_33_2_06_RESEALED_PROVENANCE_DIGESTS,
+}
+
 
 def normalized_digest(data: bytes) -> str:
     """sha256 over newline-normalized bytes -- the ONE instrument this module uses."""
     return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 
 
-def _worktree_digest(relative_path: str) -> str:
-    return normalized_digest((REPO_ROOT / relative_path).read_bytes())
+def anchor_matches(relative_path: str, data: bytes) -> bool:
+    """THE comparison: do *data* hash to the digest *relative_path* must have today?
+
+    The real-file assertion and the planted controls both go through this one function, so a
+    control that bites proves the assertion bites.
+    """
+    return normalized_digest(data) == EXPECTED_DIGESTS[relative_path]
 
 
 # ---------------------------------------------------------------------------
@@ -93,15 +127,61 @@ def test_all_three_provenance_paths_are_anchored_and_present() -> None:
         assert (REPO_ROOT / relative_path).is_file(), relative_path
 
 
+def test_the_reseal_supersedes_the_generator_and_nothing_else() -> None:
+    """The re-seal slot may move ONE pin. The verdict and the ledger stay on their originals.
+
+    If the re-seal slot ever named the verdict or the ledger, a tampered spent record could be
+    "re-sealed" into passing; this is what refuses that.
+    """
+    assert set(PLAN_33_2_06_RESEALED_PROVENANCE_DIGESTS) == {_GENERATOR_PATH}
+    assert sorted(EXPECTED_DIGESTS) == sorted(PROVENANCE_STAMP_DIGESTS)
+    for relative_path in (_LEDGER_PATH, _VERDICT_PATH):
+        assert (
+            EXPECTED_DIGESTS[relative_path] == PROVENANCE_STAMP_DIGESTS[relative_path]
+        )
+    assert (
+        PROVENANCE_STAMP_DIGESTS[_GENERATOR_PATH]
+        == PLAN_33_2_06_RESEAL_SUPERSEDED_DIGEST
+    )
+    assert EXPECTED_DIGESTS[_GENERATOR_PATH] != PLAN_33_2_06_RESEAL_SUPERSEDED_DIGEST
+
+
+def test_the_superseded_digest_is_the_generator_just_before_the_reseal_commit() -> None:
+    """The chain is checked against history: the old pin is the file at c2257ea's parent.
+
+    That is what makes c2257ea the ONLY commit that moved the generator since Plan 33-17 pinned it,
+    rather than a claim in a comment.
+    """
+    blob = subprocess.run(
+        [
+            "git",
+            "cat-file",
+            "blob",
+            f"{PLAN_33_2_06_RESEAL_COMMIT}~1:{_GENERATOR_PATH}",
+        ],
+        capture_output=True,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    if blob.returncode != 0:
+        pytest.skip(
+            "git history is unavailable (shallow clone or not a git checkout), so the pre-reseal "
+            "blob cannot be read."
+        )
+    assert (
+        hashlib.sha256(blob.stdout).hexdigest() == PLAN_33_2_06_RESEAL_SUPERSEDED_DIGEST
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. The assertion
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("relative_path", sorted(PROVENANCE_STAMP_DIGESTS))
+@pytest.mark.parametrize("relative_path", sorted(EXPECTED_DIGESTS))
 def test_each_anchored_file_is_byte_unchanged(relative_path: str) -> None:
     """T-33-86 / T-33-87. The primary evidence; the git diff is the corroborating one."""
-    assert _worktree_digest(relative_path) == PROVENANCE_STAMP_DIGESTS[relative_path], (
+    assert anchor_matches(relative_path, (REPO_ROOT / relative_path).read_bytes()), (
         f"{relative_path} has MOVED. If this was a search-and-replace over the spent "
         "measurement's name, it has destroyed a provenance stamp or the one-shot ledger rather "
         "than correcting a refusal -- the three refusals live in backtest/weekly_bet_list.py and "
@@ -109,7 +189,7 @@ def test_each_anchored_file_is_byte_unchanged(relative_path: str) -> None:
     )
 
 
-@pytest.mark.parametrize("relative_path", sorted(PROVENANCE_STAMP_DIGESTS))
+@pytest.mark.parametrize("relative_path", sorted(EXPECTED_DIGESTS))
 def test_each_anchor_equals_the_committed_git_blob(relative_path: str) -> None:
     """The normalization claim, asserted rather than asserted-about.
 
@@ -128,10 +208,7 @@ def test_each_anchor_equals_the_committed_git_blob(relative_path: str) -> None:
             "git history is unavailable (shallow clone or not a git checkout), so the blob "
             "comparison would fail for want of history rather than for want of identity."
         )
-    assert (
-        hashlib.sha256(blob.stdout).hexdigest()
-        == (PROVENANCE_STAMP_DIGESTS[relative_path])
-    )
+    assert hashlib.sha256(blob.stdout).hexdigest() == EXPECTED_DIGESTS[relative_path]
 
 
 def test_the_two_provenance_stamps_still_say_what_produced_the_artifact() -> None:
@@ -166,7 +243,7 @@ def test_a_one_byte_edit_moves_the_digest(tmp_path: Path) -> None:
     """
     original = (REPO_ROOT / _LEDGER_PATH).read_bytes()
     before = normalized_digest(original)
-    assert before == PROVENANCE_STAMP_DIGESTS[_LEDGER_PATH]
+    assert before == EXPECTED_DIGESTS[_LEDGER_PATH]
 
     copy = tmp_path / "ledger.toml"
     copy.write_bytes(original.replace(b'state = "completed"', b'state = "armed"', 1))
@@ -175,6 +252,46 @@ def test_a_one_byte_edit_moves_the_digest(tmp_path: Path) -> None:
     assert after != before, (
         "a one-byte edit did not move the digest; the anchor would not detect a re-armed ledger"
     )
+
+
+def test_a_one_byte_edit_to_the_resealed_generator_is_still_caught() -> None:
+    """PLANTED CONTROL for the re-seal: the generator's new pin bites exactly as the old one did.
+
+    The real bytes pass; the same bytes with one character added are fed through the SAME
+    ``anchor_matches`` the real assertion uses and must fail. In memory -- the real generator is
+    never mutated.
+    """
+    original = (REPO_ROOT / _GENERATOR_PATH).read_bytes()
+    assert anchor_matches(_GENERATOR_PATH, original)
+
+    marker = PROVENANCE_STAMP_OPENING.encode("ascii")
+    assert marker in original
+    tampered = original.replace(marker, marker.replace(b"Produced", b"Produced "), 1)
+    assert tampered != original
+    assert not anchor_matches(_GENERATOR_PATH, tampered), (
+        "a one-byte edit to the generator passed the re-sealed pin; the re-seal has disarmed it"
+    )
+
+
+def test_the_superseded_generator_pin_no_longer_passes() -> None:
+    """PLANTED CONTROL: the generator is compared against the RE-SEAL, not the old value.
+
+    A digest mismatch fed through the same comparison: the real generator's bytes, judged against
+    the superseded pin, must NOT match -- so the guard cannot be silently reading the old slot.
+    """
+    real = (REPO_ROOT / _GENERATOR_PATH).read_bytes()
+    assert anchor_matches(_GENERATOR_PATH, real)
+    assert normalized_digest(real) != PLAN_33_2_06_RESEAL_SUPERSEDED_DIGEST
+
+
+@pytest.mark.parametrize("relative_path", [_LEDGER_PATH, _VERDICT_PATH])
+def test_a_one_byte_edit_to_the_verdict_or_ledger_is_still_caught(
+    relative_path: str,
+) -> None:
+    """PLANTED CONTROL: the re-seal did not loosen the two files it was not allowed to touch."""
+    original = (REPO_ROOT / relative_path).read_bytes()
+    assert anchor_matches(relative_path, original)
+    assert not anchor_matches(relative_path, original + b"#")
 
 
 def test_the_normalization_makes_crlf_and_lf_agree(tmp_path: Path) -> None:
