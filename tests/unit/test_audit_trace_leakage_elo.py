@@ -14,11 +14,19 @@ the internal snapshot-then-update invariant, NOT bit-exact (A5).
 """
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
 
 from data.storage import load_dataframe
+from features.elo_features import EloFeatureBuilder
+from features.provenance import (
+    InformationTimeGate,
+    InformationTimeViolation,
+    SourceCheckState,
+    build_lock_frame,
+)
 from features.validation import LeakageGate, LeakageViolation
 from ratings.elo import EloRatingSystem, is_divisional_game
 from tests.phase33_state import ELO_SEASON_COVERAGE
@@ -48,87 +56,118 @@ def elo_snapshots() -> pd.DataFrame:
     return load_dataframe("elo_game_snapshots", layer="silver")
 
 
-def _real_2024_source_frame() -> pd.DataFrame:
-    """Build a small per-builder-style source frame from real 2024 wk1 games.
+ET_ZONE = ZoneInfo("America/New_York")
 
-    check_time_fence inspects game_date / kickoff_et / snapshot_ts; gold strips
-    those, so we reconstruct a builder-style frame from silver games (which DO
-    carry kickoff_et) for the time-fence trace.
-    """
+
+def _real_2024_week1_games() -> pd.DataFrame:
+    """Real 2024 wk1 games from silver, which carry the kickoff every lock derives from."""
     games = load_dataframe("games", layer="silver")
-    g = games[(games["season"] == 2024) & (games["week"] == 1)].copy()
-    return g[["game_id", "season", "week", "home_team", "away_team", "kickoff_et"]]
+    return games[(games["season"] == 2024) & (games["week"] == 1)].copy()
 
 
 # ===========================================================================
-# AREA 1 -- LeakageGate + temporal fence
+# AREA 1 -- the information-time gate (retargeted from check_time_fence)
 # ===========================================================================
 
 
 class TestArea1TemporalFence:
-    """check_time_fence holds on a real 2024 row and catches injected future."""
+    """The information-time gate holds on real 2024 rows and catches a planted leak.
 
-    def test_time_fence_passes_on_real_2024_rows(self, gate):
-        """A real 2024 wk1 builder frame with an as_of AFTER the games passes."""
-        src = _real_2024_source_frame()
-        assert len(src) > 0, "expected real 2024 wk1 games in silver"
+    RETARGETED in Phase 33.2 (D33.2-01). These used to exercise
+    ``LeakageGate.check_time_fence``, which compared each row's kickoff to an as-of clock.
+    The positive and negative controls are kept, re-asked as the question the gate now
+    answers: is every Elo value's information time at or before its OWN game's lock?
+    """
 
-        # as_of well after the latest 2024 wk1 kickoff -- nothing is in the future
-        latest_kickoff = pd.to_datetime(src["kickoff_et"]).max()
-        as_of = pd.Timestamp(latest_kickoff) + pd.Timedelta(days=1)
+    def test_information_time_gate_passes_on_real_2024_rows(self):
+        """POSITIVE CONTROL: real 2024 wk1 Elo rows, real provenance, real locks."""
+        games = _real_2024_week1_games()
+        assert len(games) > 0, "expected real 2024 wk1 games in silver"
 
-        # Should NOT raise
-        gate.check_time_fence(src, as_of.to_pydatetime(), "team_form_real_2024")
+        builder = EloFeatureBuilder()
+        source = builder.build_features(games, datetime(2026, 1, 1, tzinfo=ET_ZONE))
+        provenance = builder.information_times(games)
 
-    def test_time_fence_raises_on_injected_future_kickoff(self, gate):
-        """Injecting a kickoff_et AFTER as_of makes check_time_fence RAISE.
+        state = InformationTimeGate().check(
+            "elo",
+            source,
+            provenance,
+            build_lock_frame(games),
+            no_information_signature=builder.no_information_signature(),
+        )
+        assert state is SourceCheckState.CHECKED
+        assert set(provenance["basis"]) == {"per_row"}
 
-        This is the core leakage guard: a builder must never emit a row whose
-        timestamp is later than the time-fence cutoff.
+    def test_information_time_gate_raises_on_a_planted_post_lock_value(self):
+        """NEGATIVE CONTROL: one real row's information moved to its lock + 1 s RAISES.
+
+        This is the core leakage guard: a value built from information known after its
+        game's lock must never reach gold, and the refusal must name the game.
         """
-        src = _real_2024_source_frame().copy()
-        kickoffs = pd.to_datetime(src["kickoff_et"])
-        # Cutoff just before the earliest real kickoff so the real rows are fine,
-        as_of = (kickoffs.min() - pd.Timedelta(hours=1)).to_pydatetime()
+        games = _real_2024_week1_games()
+        builder = EloFeatureBuilder()
+        source = builder.build_features(games, datetime(2026, 1, 1, tzinfo=ET_ZONE))
+        provenance = builder.information_times(games)
+        locks = build_lock_frame(games)
 
-        # ...then inject one clearly-future row (a full week after the cutoff).
-        future_row = src.iloc[0].copy()
-        future_row["game_id"] = "INJECTED_FUTURE"
-        future_row["kickoff_et"] = kickoffs.min() + pd.Timedelta(days=7)
-        injected = pd.concat([src, future_row.to_frame().T], ignore_index=True)
+        planted_game = provenance["game_id"].iloc[0]
+        provenance.loc[provenance.index[0], "information_time"] = locks[
+            planted_game
+        ] + pd.Timedelta(seconds=1)
 
-        with pytest.raises(LeakageViolation) as exc_info:
-            gate.check_time_fence(injected, as_of, "team_form_injected")
+        with pytest.raises(InformationTimeViolation) as exc_info:
+            InformationTimeGate().check(
+                "elo",
+                source,
+                provenance,
+                locks,
+                no_information_signature=builder.no_information_signature(),
+            )
 
         details = exc_info.value.details
-        assert details["violation_type"] == "time_fence"
-        assert details["affected_rows"] >= 1
-        assert details["column"] in {"kickoff_et", "game_date"}
+        assert details["violation_type"] == "information_time"
+        assert details["game_ids"] == [planted_game]
+        assert planted_game in str(exc_info.value)
 
-    def test_synthetic_clean_vs_leaked(self, gate):
-        """Known-answer synthetic: clean frame passes, future-dated frame raises."""
-        as_of = datetime(2024, 10, 4, 18, 0, 0)
-        clean = pd.DataFrame(
+    def test_synthetic_clean_vs_leaked(self):
+        """Known-answer synthetic: at-lock passes, one second after the lock raises."""
+        games = pd.DataFrame(
             {
                 "game_id": ["G1", "G2"],
                 "kickoff_et": [
-                    as_of - timedelta(days=7),
-                    as_of - timedelta(days=1),
+                    pd.Timestamp("2024-10-06 13:00", tz=ET_ZONE),
+                    pd.Timestamp("2024-10-07 20:15", tz=ET_ZONE),
                 ],
             }
         )
-        leaked = pd.DataFrame(
-            {
-                "game_id": ["G1", "G2"],
-                "kickoff_et": [
-                    as_of - timedelta(days=1),
-                    as_of + timedelta(days=6),  # FUTURE
-                ],
-            }
+        locks = build_lock_frame(games)
+        source = pd.DataFrame({"game_id": ["G1", "G2"], "elo_home": [1510.0, 1490.0]})
+
+        def _provenance(offset: timedelta) -> pd.DataFrame:
+            return pd.DataFrame(
+                {
+                    "game_id": ["G1", "G2"],
+                    "basis": ["per_row", "per_row"],
+                    "information_time": [locks["G1"], locks["G2"] + offset],
+                }
+            )
+
+        clean = InformationTimeGate().check(
+            "synthetic_clean",
+            source,
+            _provenance(timedelta(0)),
+            locks,
+            no_information_signature={"elo_home": 1500.0},
         )
-        gate.check_time_fence(clean, as_of, "synthetic_clean")  # no raise
-        with pytest.raises(LeakageViolation):
-            gate.check_time_fence(leaked, as_of, "synthetic_leaked")
+        assert clean is SourceCheckState.CHECKED
+        with pytest.raises(InformationTimeViolation, match="G2"):
+            InformationTimeGate().check(
+                "synthetic_leaked",
+                source,
+                _provenance(timedelta(seconds=1)),
+                locks,
+                no_information_signature={"elo_home": 1500.0},
+            )
 
 
 class TestArea1LeakageKeywords:

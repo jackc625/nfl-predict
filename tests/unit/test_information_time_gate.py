@@ -36,6 +36,9 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
+
+from features.elo_features import EloFeatureBuilder, ensure_provisional_flag
+from features.protocol import FeatureBuilder, InformationTimeProvider
 from features.provenance import (
     DECLARED_GAME_DURATION,
     PROVENANCE_COLUMNS,
@@ -49,9 +52,6 @@ from features.provenance import (
     build_lock_frame,
     refuse_provenance_columns,
 )
-
-from features.elo_features import EloFeatureBuilder, ensure_provisional_flag
-from features.protocol import FeatureBuilder, InformationTimeProvider
 from scripts.build_features import _SOURCE_LOAD_ERRORS
 from utils import game_lock
 
@@ -352,7 +352,7 @@ class TestTheEmptySource:
         state = gate.check(
             "snaps",
             pd.DataFrame(),
-            pd.DataFrame(columns=list(PROVENANCE_COLUMNS)),
+            pd.DataFrame({column: [] for column in PROVENANCE_COLUMNS}),
             build_lock_frame(_games()),
             no_information_signature={},
         )
@@ -366,7 +366,7 @@ class TestTheEmptySource:
         gate.check(
             "injury",
             pd.DataFrame(),
-            pd.DataFrame(columns=list(PROVENANCE_COLUMNS)),
+            pd.DataFrame({column: [] for column in PROVENANCE_COLUMNS}),
             build_lock_frame(_games()),
             no_information_signature={},
         )
@@ -454,7 +454,7 @@ def _elo_builder(games: pd.DataFrame, snapshots: pd.DataFrame) -> EloFeatureBuil
 
 
 def _slice_2002(games: pd.DataFrame, weeks: tuple[int, ...]) -> pd.DataFrame:
-    return games[(games["season"] == 2002) & (games["week"].isin(weeks))].copy()
+    return games.loc[(games["season"] == 2002) & (games["week"].isin(weeks))].copy()
 
 
 _AS_OF = datetime(2026, 9, 21, 12, 0, tzinfo=ET)
@@ -502,7 +502,8 @@ class TestTheEloSupplierOnReal2002:
         assert set(prov["basis"]) == {"no_information"}
         assert prov["information_time"].isna().all()
         monday = games.sort_values("kickoff_et").iloc[-1]["game_id"]
-        assert prov.set_index("game_id").loc[monday, "basis"] == "no_information"
+        basis_by_game = dict(zip(prov["game_id"], prov["basis"], strict=True))
+        assert basis_by_game[monday] == "no_information"
 
     def test_the_week_1_values_satisfy_the_declared_signature(
         self, silver_games: pd.DataFrame, silver_snapshots: pd.DataFrame
@@ -551,7 +552,7 @@ class TestTheEloSupplierOnReal2002:
         games = _slice_2002(silver_games, (1, 2))
         dropped = games[games["week"] == 2].iloc[0]["game_id"]
         builder = _elo_builder(
-            silver_games, silver_snapshots[silver_snapshots["game_id"] != dropped]
+            silver_games, silver_snapshots.loc[silver_snapshots["game_id"] != dropped]
         )
         source = builder.build_features(games, _AS_OF)
         prov = builder.information_times(games)

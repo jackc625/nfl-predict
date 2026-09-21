@@ -3,10 +3,16 @@
 The Phase-29 review found that both ``as_of_datetime`` defaults in
 ``scripts/build_features.py`` were a bare ``datetime.now()`` -- a naive LOCAL wall
 clock -- and that every downstream consumer RE-LABELS a naive value as UTC rather
-than converting it (``ensure_utc_aware`` reinterprets, and
+than converting it (``ensure_utc_aware`` reinterprets, and the since-retired
 ``LeakageGate.check_time_fence`` used to ``tz_localize`` the column's zone onto
 it). ``pipeline/steps.py:235`` calls ``generate_feature_matrices()`` with no
-arguments, so that default IS the live orchestrator fence.
+arguments, so that default was the live orchestrator fence.
+
+PHASE 33.2 UPDATE (D33.2-01). The fence is now the per-game LOCK, checked by
+``features.provenance.InformationTimeGate``; the ``as_of`` default survives only as
+the cutoff handed to builders that still take one, and it must still be tz-aware.
+The convert-never-relabel controls below are kept against the new gate, and the
+naive branch -- which the old fence ALIGNED -- is now a raise.
 
 The magnitude of the resulting error is exactly the host machine's UTC offset, and
 nothing in the repo pins the host timezone:
@@ -30,7 +36,12 @@ import pandas as pd
 import pytest
 
 from features.line_movement import _as_of_to_utc
-from features.validation import LeakageGate, LeakageViolation
+from features.provenance import (
+    InformationTimeGate,
+    InformationTimeViolation,
+    SourceCheckState,
+    build_lock_frame,
+)
 from scripts.build_features import FeatureMatrixBuilder
 from utils.date_utils import ET, UTC
 
@@ -245,67 +256,68 @@ class TestTheFridayFreezeSnapshotSurvivesTheFence:
         assert out.loc["2026_W02_DET@KC", "line_movement_coverage"] == 0.0
 
 
-class TestLeakageGateAlignsTimezonesByConverting:
-    """``check_time_fence`` must convert a naive cutoff from ET, not stamp it."""
+class TestTheInformationTimeGateConvertsNeverRelabels:
+    """The CR-01 discipline, kept against the gate that replaced ``check_time_fence``.
 
-    @staticmethod
-    def _snapshot_frame(when: str) -> pd.DataFrame:
-        return pd.DataFrame(
+    The old fence ALIGNED a naive value to ET. The discipline it carried -- an instant is
+    converted, never relabelled -- is kept; the silent alignment branch is removed, so a
+    naive value now RAISES (D33.2-01).
+    """
+
+    _GAME = "2026_W02_DET@KC"
+
+    @classmethod
+    def _check(cls, information_time: object) -> SourceCheckState:
+        # Sunday 2026-09-13 13:00 ET kickoff -> lock Saturday 2026-09-12 18:00 ET
+        # == 22:00 UTC (EDT).
+        games = pd.DataFrame(
             {
-                "game_id": ["G1"],
-                "snapshot_ts": [pd.Timestamp(when, tz="UTC")],
-                "opening_total": [44.0],
+                "game_id": [cls._GAME],
+                "kickoff_et": [pd.Timestamp("2026-09-13 13:00", tz=ET)],
             }
         )
-
-    def test_a_naive_cutoff_admits_the_et_evening_snapshot_it_covers(self) -> None:
-        """Fri 18:00 ET (22:00 UTC) is BEFORE a naive Fri 18:05 ET cutoff.
-
-        Pre-fix, the naive cutoff was ``tz_localize('UTC')``-ed to 18:05Z, so a
-        legitimate 22:00 UTC snapshot read as four hours in the FUTURE and the
-        gate hard-failed the whole build (or, on a host east of UTC, silently let
-        genuinely-future rows through).
-        """
-        gate = LeakageGate()
-
-        gate.check_time_fence(
-            self._snapshot_frame("2026-09-11 22:00"),
-            datetime(2026, 9, 11, 18, 5),
+        return InformationTimeGate().check(
             "line_movement",
+            pd.DataFrame({"game_id": [cls._GAME], "opening_total": [44.0]}),
+            pd.DataFrame(
+                {
+                    "game_id": [cls._GAME],
+                    "basis": ["per_row"],
+                    "information_time": pd.Series([information_time], dtype="object"),
+                }
+            ),
+            build_lock_frame(games),
+            no_information_signature={"opening_total": 0.0},
         )
 
-    def test_a_naive_cutoff_still_rejects_a_genuinely_future_snapshot(self) -> None:
-        """Positive control: a snapshot after the ET cutoff must still raise."""
-        gate = LeakageGate()
+    def test_a_utc_stored_instant_at_the_et_lock_is_admitted(self) -> None:
+        """22:00 UTC IS 18:00 EDT -- the same instant, so it is AT the lock, not after.
 
-        with pytest.raises(LeakageViolation):
-            gate.check_time_fence(
-                self._snapshot_frame("2026-09-12 22:00"),
-                datetime(2026, 9, 11, 18, 5),
-                "line_movement",
-            )
-
-    def test_an_aware_cutoff_is_compared_in_et_against_naive_columns(self) -> None:
-        """Naive ``kickoff_et`` columns carry an ET wall clock, so compare in ET.
-
-        A UTC-aware cutoff previously had its tz simply dropped, leaving a UTC
-        wall clock to be compared against ET wall clocks -- four hours too
-        permissive.
+        Pre-CR-01 the relabelling direction read a 22:00 UTC value as four hours in the
+        FUTURE of an 18:05 ET cutoff and hard-failed the build.
         """
-        gate = LeakageGate()
-        frame = pd.DataFrame(
-            {
-                "game_id": ["G1"],
-                "kickoff_et": [datetime(2026, 9, 11, 20, 0)],  # 20:00 ET
-                "elo_home": [1500.0],
-            }
+        assert (
+            self._check(pd.Timestamp("2026-09-12 22:00", tz="UTC"))
+            is SourceCheckState.CHECKED
         )
 
-        # 18:05 ET == 22:05 UTC. The 20:00 ET kickoff is in the FUTURE of it.
-        with pytest.raises(LeakageViolation):
-            gate.check_time_fence(
-                frame, datetime(2026, 9, 11, 22, 5, tzinfo=UTC), "elo"
-            )
+    def test_a_genuinely_post_lock_instant_is_still_refused(self) -> None:
+        """Positive control: one second after the lock, in UTC, must raise."""
+        with pytest.raises(InformationTimeViolation, match=self._GAME):
+            self._check(pd.Timestamp("2026-09-12 22:00:01", tz="UTC"))
+
+    def test_an_aware_et_instant_is_compared_as_the_same_instant(self) -> None:
+        """An ET-labelled instant one second late is refused exactly like its UTC twin."""
+        with pytest.raises(InformationTimeViolation):
+            self._check(datetime(2026, 9, 12, 18, 0, 1, tzinfo=ET))
+        assert self._check(datetime(2026, 9, 12, 18, 0, tzinfo=ET)) is (
+            SourceCheckState.CHECKED
+        )
+
+    def test_a_naive_information_time_raises_instead_of_being_aligned(self) -> None:
+        """THE BRANCH THAT CHANGED: the old fence aligned a naive value to ET."""
+        with pytest.raises(InformationTimeViolation, match="timezone"):
+            self._check(datetime(2026, 9, 12, 17, 0))
 
 
 class TestCliAsOfIsInterpretedAsEastern:

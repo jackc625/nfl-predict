@@ -9,16 +9,31 @@ game result is applied. This eliminates batch leakage where end-of-season
 ratings were previously assigned to every game.
 
 Conforms to the FeatureBuilder Protocol with mandatory as_of_datetime
-parameter for time-fence enforcement.
+parameter, and -- since Phase 33.2 -- to the separate InformationTimeProvider
+Protocol: it supplies each game's per-row information time (the END of the latest
+game whose result the row's values rest on) so the gold build can check it against
+that game's own lock (D33.2-01).
 """
 
+from collections.abc import Mapping
 from datetime import datetime
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
 from data.storage import load_dataframe
-from features.protocol import FeatureBuilder  # noqa: F401 (documents conformance)
+from features.protocol import (  # noqa: F401 (documents conformance)
+    FeatureBuilder,
+    InformationTimeProvider,
+)
+from features.provenance import (
+    DECLARED_GAME_DURATION,
+    PROVENANCE_COLUMNS,
+    InformationBasis,
+    ProvenanceCoverageError,
+)
+from ratings.elo import EloRatingSystem
 
 # IMPORTED, never re-declared. ``scripts/build_elo`` owns the snapshot schema because it
 # WRITES it; the flag's name, the table's name and the back-compat fill therefore have one
@@ -263,10 +278,161 @@ def assert_no_provisional_training_rows(
     )
 
 
+# ---------------------------------------------------------------------------
+# Provenance: WHEN each Elo row's information was known (Phase 33.2, SPEC R2).
+#
+# A row's information is the set of games whose RESULTS its values rest on, and its
+# information time is the END (kickoff + DECLARED_GAME_DURATION) of the latest one --
+# never kickoff_et, never a build clock (RESEARCH P1). Every column the Elo frame
+# carries into gold is accounted for:
+#
+#   * home_elo / away_elo / uncertainties -- each team's rating going into the game,
+#     whose latest contributor is that team's own most recent SCORED game (an
+#     opponent's rating at that game is itself pre-game, so it adds nothing later).
+#     Season carryover transforms the prior rating, so the contributor persists across
+#     the season boundary. A team never seen before sits at the synthetic 1500 start
+#     state (``ratings.elo.EloRatingSystem.get_or_create_rating``) with NO contributor;
+#   * hfa_used / elo_prob_home -- the season's home-field advantage is LEARNED from every
+#     scored, non-tied game of the PRIOR season (``learn_home_field_advantage``), so its
+#     latest contributor is that season's last such game. The first season has none;
+#   * the four rank / percentile columns -- read EVERY team's latest pre-game rating at
+#     week <= this week, so their contributors are all of those teams' prior games;
+#   * the two momentum columns -- read the oldest and newest of the team's last four
+#     prior-week pre-game ratings, so their contributors are those two rows' own.
+#
+# THIS IS A RULE-DERIVED PROVENANCE (RESEARCH P3): it mirrors the chain's ORDER, so it
+# proves the rule rather than the content. Plan 33.2-04's independent replay is the
+# content evidence it pairs with.
+# ---------------------------------------------------------------------------
+
+_Contributor = pd.Timestamp | None
+_PreGame = dict[str, tuple[_Contributor, _Contributor]]
+
+
+def _latest(ends: list[_Contributor]) -> _Contributor:
+    """The latest non-null contributor end, or None when every entry is None."""
+    present = [e for e in ends if e is not None]
+    return max(present) if present else None
+
+
+def _chain_contributors(
+    history: pd.DataFrame,
+) -> tuple[_PreGame, dict[int, _Contributor]]:
+    """Walk the canonical chain's ORDER and record each game's pre-game contributors.
+
+    Mirrors ``scripts.build_elo.EloBuilder._process_chain``: seasons in order, games in
+    kickoff order within a season, a game's result applied only if it is scored. It
+    applies no rating arithmetic -- it records, per game, the END of each team's latest
+    contributing game before it.
+
+    Args:
+        history: Silver ``games`` covering every season the chain has seen.
+
+    Returns:
+        ``(pre, hfa)`` -- ``pre[game_id] = (home_contributor, away_contributor)`` and
+        ``hfa[season]`` = the end of the last scored, non-tied game of ``season - 1``.
+    """
+    frame = history[
+        ["game_id", "season", "home_team", "away_team", "kickoff_et"]
+    ].copy()
+    frame["scored"] = history["home_score"].notna() & history["away_score"].notna()
+    frame["decided"] = frame["scored"] & (
+        history["home_score"] != history["away_score"]
+    )
+    frame["end"] = history["kickoff_et"] + DECLARED_GAME_DURATION
+
+    last_end: dict[str, pd.Timestamp] = {}
+    pre: _PreGame = {}
+    hfa: dict[int, _Contributor] = {}
+
+    for season in sorted({int(s) for s in frame["season"].tolist()}):
+        learned_from = frame.loc[(frame["season"] == season - 1) & frame["decided"]]
+        hfa[season] = (
+            cast(pd.Timestamp, learned_from["end"].max())
+            if len(learned_from) > 0
+            else None
+        )
+
+        order = frame.loc[frame["season"] == season].sort_values(
+            ["kickoff_et", "game_id"], kind="stable"
+        )
+        for game_id, home, away, scored, end in zip(
+            order["game_id"],
+            order["home_team"],
+            order["away_team"],
+            order["scored"],
+            order["end"],
+            strict=True,
+        ):
+            pre[str(game_id)] = (last_end.get(home), last_end.get(away))
+            if bool(scored):
+                last_end[home] = end
+                last_end[away] = end
+    return pre, hfa
+
+
+def _team_contributor(pre: _PreGame, game_id: str, side: str) -> _Contributor:
+    """The contributor behind one team's pre-game rating at one snapshot row."""
+    if game_id not in pre:
+        msg = (
+            f"Elo snapshot row {game_id} is read by a rank or momentum column but has no "
+            "game in the silver games history, so the information behind it cannot be "
+            "dated"
+        )
+        raise ProvenanceCoverageError(msg, {"source": "elo", "game_ids": [game_id]})
+    home_end, away_end = pre[game_id]
+    return home_end if side == "home" else away_end
+
+
+def _rank_contributor(
+    season_snaps: pd.DataFrame, week: int, pre: _PreGame
+) -> _Contributor:
+    """Contributors behind ``_add_rank_features`` at ``(season, week)``.
+
+    Mirrors that method's selection exactly: snapshot rows at ``week <= week`` in table
+    order, keeping for each team the row whose week is ``>=`` the one already held.
+    """
+    chosen: dict[str, tuple[int, str, str]] = {}
+    week_snaps = season_snaps[season_snaps["week"] <= week]
+    for game_id, snap_week, home, away in zip(
+        week_snaps["game_id"],
+        week_snaps["week"],
+        week_snaps["home_team"],
+        week_snaps["away_team"],
+        strict=True,
+    ):
+        for team, side in ((home, "home"), (away, "away")):
+            if team not in chosen or snap_week >= chosen[team][0]:
+                chosen[team] = (int(snap_week), str(game_id), side)
+    return _latest(
+        [_team_contributor(pre, gid, side) for _, gid, side in chosen.values()]
+    )
+
+
+def _momentum_contributor(
+    team_rows: list[tuple[int, str, str]],
+    week: int,
+    pre: _PreGame,
+    lookback: int = 4,
+) -> _Contributor:
+    """Contributors behind ``_add_momentum_features`` for one team at one week.
+
+    That method reads the OLDEST and NEWEST of the team's last ``lookback`` prior-week
+    pre-game ratings, so exactly those two rows are the contributors.
+    """
+    prior = sorted((r for r in team_rows if r[0] < week), key=lambda r: r[0])
+    if not prior:
+        return None
+    window = prior[-lookback:]
+    used = {window[0], window[-1]}
+    return _latest([_team_contributor(pre, gid, side) for _, gid, side in used])
+
+
 class EloFeatureBuilder:
     """Build Elo-based features from pre-computed snapshots.
 
-    Satisfies the FeatureBuilder Protocol via structural subtyping.
+    Satisfies the FeatureBuilder Protocol AND the separate InformationTimeProvider
+    Protocol via structural subtyping -- no base class, no inheritance change.
     Features are derived from per-game Elo snapshots stored in the silver
     layer (elo_game_snapshots), NOT recomputed on the fly.
 
@@ -276,8 +442,20 @@ class EloFeatureBuilder:
     """
 
     def __init__(self) -> None:
-        """Initialize Elo feature builder with empty snapshot cache."""
+        """Initialize Elo feature builder with empty snapshot and history caches."""
         self._snapshots_df: pd.DataFrame | None = None
+        self._history_df: pd.DataFrame | None = None
+
+    def _load_history(self) -> pd.DataFrame:
+        """Silver ``games`` for EVERY season: the chain's contributors span seasons.
+
+        Deliberately not the (possibly season-filtered) frame handed to
+        ``information_times``: a season-S row's carryover and learned home-field
+        advantage rest on season S-1 games that a season-scoped build never loads.
+        """
+        if self._history_df is None:
+            self._history_df = load_dataframe("games", layer="silver")
+        return self._history_df
 
     def _load_snapshots(self) -> pd.DataFrame:
         """Load per-game Elo snapshots from silver layer.
@@ -699,3 +877,145 @@ class EloFeatureBuilder:
             features[f"{prefix}_elo_percentile"] = float((n_teams - rank + 1) / n_teams)
 
         return features
+
+    # ---- InformationTimeProvider (Phase 33.2, SPEC R2) ----
+
+    def information_times(
+        self,
+        games_df: pd.DataFrame,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """The per-row provenance frame for the games ``build_features`` emits.
+
+        A game whose contributing set is EMPTY -- both teams still at the synthetic start
+        state, no prior-season home-field advantage, nothing the rank or momentum columns
+        read -- is ``no_information`` with a NULL time. In the canonical chain that is
+        2002 week 1 and nothing else. THE SET IS PER-TEAM, NOT GLOBAL: the Monday night
+        game of 2002 week 1 locks on the Sunday, by which time other week-1 games have
+        finished, but neither of ITS teams has played and every team's week-1 rating is
+        still the start state, so it carries no information. Every other game is
+        ``per_row`` with its latest contributor's end.
+
+        A game with NO ``elo_game_snapshots`` row gets NO provenance row. "We have no
+        snapshot" is a coverage defect, not a statement that the game carried no
+        information, so the gate's two-way coverage refuses it by name.
+
+        Args:
+            games_df: The games frame ``build_features`` was given.
+            target_season: Filter applied exactly as ``build_features`` applies it.
+            target_week: Likewise.
+
+        Returns:
+            A frame of exactly ``PROVENANCE_COLUMNS``.
+        """
+        filtered = games_df
+        if target_season is not None:
+            filtered = filtered[filtered["season"] == target_season]
+        if target_week is not None:
+            filtered = filtered[filtered["week"] == target_week]
+
+        snapshots = self._load_snapshots()
+        pre, hfa = _chain_contributors(self._load_history())
+
+        snap_ids = {str(g) for g in snapshots["game_id"]}
+        team_rows: dict[tuple[int, str], list[tuple[int, str, str]]] = {}
+        for game_id, season, week, home, away in zip(
+            snapshots["game_id"],
+            snapshots["season"],
+            snapshots["week"],
+            snapshots["home_team"],
+            snapshots["away_team"],
+            strict=True,
+        ):
+            team_rows.setdefault((int(season), home), []).append(
+                (int(week), str(game_id), "home")
+            )
+            team_rows.setdefault((int(season), away), []).append(
+                (int(week), str(game_id), "away")
+            )
+
+        season_snaps: dict[int, pd.DataFrame] = {
+            season: snapshots.loc[snapshots["season"] == season]
+            for season in {int(s) for s in snapshots["season"].tolist()}
+        }
+        no_snaps: pd.DataFrame = snapshots.iloc[0:0]
+        rank_cache: dict[tuple[int, int], _Contributor] = {}
+
+        rows: list[tuple[str, str, _Contributor]] = []
+        for game_id, season, week, home, away in zip(
+            filtered["game_id"],
+            filtered["season"],
+            filtered["week"],
+            filtered["home_team"],
+            filtered["away_team"],
+            strict=True,
+        ):
+            gid = str(game_id)
+            if gid not in snap_ids:
+                continue
+            if gid not in pre:
+                msg = (
+                    f"Elo game {gid} is not in the silver games history, so the games "
+                    "behind its ratings cannot be dated"
+                )
+                raise ProvenanceCoverageError(msg, {"source": "elo", "game_ids": [gid]})
+
+            key = (int(season), int(week))
+            if key not in rank_cache:
+                rank_cache[key] = _rank_contributor(
+                    season_snaps.get(key[0], no_snaps), key[1], pre
+                )
+
+            when = _latest(
+                [
+                    pre[gid][0],
+                    pre[gid][1],
+                    hfa.get(key[0]),
+                    rank_cache[key],
+                    _momentum_contributor(
+                        team_rows.get((key[0], home), []), key[1], pre
+                    ),
+                    _momentum_contributor(
+                        team_rows.get((key[0], away), []), key[1], pre
+                    ),
+                ]
+            )
+            basis = (
+                InformationBasis.NO_INFORMATION
+                if when is None
+                else InformationBasis.PER_ROW
+            )
+            rows.append((gid, basis.value, when))
+
+        return pd.DataFrame(
+            {
+                PROVENANCE_COLUMNS[0]: [r[0] for r in rows],
+                PROVENANCE_COLUMNS[1]: [r[1] for r in rows],
+                PROVENANCE_COLUMNS[2]: pd.to_datetime([r[2] for r in rows], utc=True),
+            }
+        )
+
+    def no_information_signature(self) -> Mapping[str, float | None]:
+        """What an undatable Elo row must look like, read off the START STATE.
+
+        ``home_elo`` / ``away_elo`` equal the synthetic start rating and both uncertainty
+        columns equal the start uncertainty, both taken from
+        ``EloRatingSystem.get_or_create_rating`` rather than hardcoded a second time.
+
+        ``elo_prob_home`` is NOT pinned: it is DERIVED from those four plus ``hfa_used``,
+        and pinning it would restate the formula in a second place. ``hfa_used`` is NOT
+        pinned: 2002's is the 48 init for the WHOLE season (D33.2-06), a rule-derived
+        constant spanning dated and undated rows alike, so it marks nothing.
+
+        Returns:
+            Source-frame column -> declared start-state value.
+        """
+        start = EloRatingSystem().get_or_create_rating("__start_state__", 0)
+        return {
+            "home_elo": float(start.rating),
+            "away_elo": float(start.rating),
+            "home_elo_uncertainty": float(start.uncertainty),
+            "away_elo_uncertainty": float(start.uncertainty),
+        }

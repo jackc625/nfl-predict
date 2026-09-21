@@ -163,7 +163,7 @@ class ConformingProvider:
         target_season: int | None = None,
         target_week: int | None = None,
     ) -> pd.DataFrame:
-        return pd.DataFrame(columns=["game_id", "basis", "information_time"])
+        return pd.DataFrame({"game_id": [], "basis": [], "information_time": []})
 
     def no_information_signature(self) -> Mapping[str, float | None]:
         return {"feature": 0.0}
@@ -179,7 +179,7 @@ class BuilderAndProvider(ConformingBuilder):
         target_season: int | None = None,
         target_week: int | None = None,
     ) -> pd.DataFrame:
-        return pd.DataFrame(columns=["game_id", "basis", "information_time"])
+        return pd.DataFrame({"game_id": [], "basis": [], "information_time": []})
 
     def no_information_signature(self) -> Mapping[str, float | None]:
         return {"feature": 0.0}

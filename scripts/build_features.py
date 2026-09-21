@@ -12,7 +12,9 @@ This script combines all feature sources into complete feature matrices:
 Feature processing includes:
 - Missing data imputation and outlier handling (winsorization)
 - Expanding-window normalization (per-season, with prior-season bootstrap)
-- LeakageGate hard-fail validation (per-builder + combined matrix)
+- Information-time gate: each source's per-game information time against that
+  game's own lock (features.provenance, D33.2-01), plus the combined-matrix
+  LeakageGate
 - Separate feature matrices for WP, ATS, and O/U targets
 - Storage in gold layer for model consumption
 
@@ -43,6 +45,14 @@ from features.injury import InjuryBuilder
 from features.market_anchors import MarketAnchorFeaturesCalculator
 from features.normalization import compute_prior_season_stats, expanding_normalize
 from features.opponent_adj import OpponentAdjuster
+from features.protocol import InformationTimeProvider
+from features.provenance import (
+    PROVENANCE_COLUMNS,
+    CoverageReport,
+    InformationTimeGate,
+    build_lock_frame,
+    refuse_provenance_columns,
+)
 from features.qb_tracking import QBTracker
 from features.snaps import SnapCountBuilder
 from features.team_form import TeamFormCalculator
@@ -52,6 +62,7 @@ from features.weather import (
     WEATHER_FEATURE_COLUMNS_BY_BUILDER,
     WeatherFeaturesCalculator,
 )
+from scripts.fingerprint_gold import BUILD_CLOCK_COLUMNS
 from utils import get_logger
 from utils.date_utils import ET
 from utils.exceptions import DataIngestionError
@@ -115,6 +126,15 @@ _SOURCE_LOAD_ERRORS = (
 #      EMPTY list, ``excluded_columns`` adds nothing, and the family is excluded
 #      again AUTOMATICALLY if it ever returns.
 _LINE_MOVEMENT_GROUP = "line_movement"
+
+# Families merged AFTER the Stage-1 information-time loop, so they are not
+# ``feature_sources`` registry keys at all and cannot be reached by registering a
+# provenance supplier. Reported in their OWN set of the CoverageReport rather than
+# folded into the unregistered keys, so a structural gap is not hidden inside a
+# bookkeeping one. The opponent-adjusted family is merged in
+# ``generate_feature_matrices`` after Stage 1; Plan 33.2-16 registers it and
+# removes it from this tuple.
+POST_STAGE1_SOURCES: tuple[str, ...] = ("opponent_adj",)
 
 # THE TWO WEATHER BUILDER IDENTITIES (Ruling K1, Plan 33.1-04).
 #
@@ -218,8 +238,12 @@ class FeatureMatrixBuilder:
         self.snap_builder = SnapCountBuilder()
         self.injury_builder = InjuryBuilder(snap_builder=self.snap_builder)
 
-        # Leakage gate for hard-fail validation
+        # Leakage gate for hard-fail validation of the COMBINED matrix
         self.leakage_gate = LeakageGate()
+
+        # The last build's information-time coverage (four named sets). Set by
+        # ``_check_information_times``; None until a build has run Stage 1.
+        self.information_time_coverage: CoverageReport | None = None
 
         # Feature processing parameters
         self.outlier_percentiles = (1, 99)  # Winsorization bounds
@@ -376,8 +400,8 @@ class FeatureMatrixBuilder:
         """
         # CR-01: the default MUST be tz-aware. A naive ``datetime.now()`` is a LOCAL
         # wall clock, and every downstream consumer re-labels it as UTC without
-        # shifting it (``ensure_utc_aware`` reinterprets, and
-        # ``LeakageGate.check_time_fence`` tz_localizes). On the owner's ET machine
+        # shifting it (``ensure_utc_aware`` reinterprets, and the since-retired
+        # kickoff-versus-now fence tz_localized). On the owner's ET machine
         # the Friday 18:05 ET orchestrator slot became 18:05Z == 14:05 ET, silently
         # fencing OUT the Friday-6PM-ET freeze snapshot that the whole D-12 cadence
         # exists to capture; east of UTC the same bug points the other way and LEAKS.
@@ -781,6 +805,104 @@ class FeatureMatrixBuilder:
         )
 
         return combined_features
+
+    def _information_time_suppliers(self) -> dict[str, object]:
+        """The builder behind each ``feature_sources`` registry key.
+
+        This maps a key to the object that BUILDS it; it does not decide which keys are
+        checked. Admission to the gate is ``isinstance(builder,
+        InformationTimeProvider)`` -- a structural fact about the builder, not a
+        hand-kept list -- so a builder that gains the two provenance members is checked
+        with no edit here.
+        """
+        return {
+            "team_form": self.team_form_calc,
+            "elo": self.elo_calc,
+            "contextual": self.contextual_calc,
+            "weather": self.weather_calc,
+            "market": self.market_calc,
+            "qb_tracking": self.qb_tracker,
+            "snaps": self.snap_builder,
+            "injury": self.injury_builder,
+        }
+
+    def _check_information_times(
+        self,
+        feature_sources: dict[str, pd.DataFrame],
+        lock_frame: pd.Series,
+        target_season: int | None,
+        target_week: int | None,
+    ) -> CoverageReport:
+        """Stage 1: every registered source's per-game information time vs its lock.
+
+        A STAGED ROLLOUT, NEVER AN EXEMPTION. At Plan 33.2-01 only ``elo`` satisfies
+        ``InformationTimeProvider``. The remaining keys gain suppliers in the plans that
+        make them lock-honest (33.2-12 .. 33.2-17); Plan 33.2-16 brings the
+        opponent-adjusted family into the loop; and Plan 33.2-20 arms the refusal of any
+        key with no provenance once every source has one. Until then the unchecked keys
+        are NAMED in the CoverageReport, which is logged at every build -- no source is
+        allow-listed, excepted or run in a report-only mode, and nothing here downgrades
+        a refusal to a warning.
+
+        Returns:
+            The four-set CoverageReport, also stored on
+            ``self.information_time_coverage``.
+
+        Raises:
+            features.provenance.InformationTimeViolation: from the gate, naming the
+                source and game(s). Deliberately outside ``_SOURCE_LOAD_ERRORS``.
+        """
+        gate = InformationTimeGate()
+        suppliers = self._information_time_suppliers()
+        games_df = feature_sources["games"]
+        empty_unregistered: list[str] = []
+        unregistered: list[str] = []
+
+        for source_name, source_df in feature_sources.items():
+            if source_name == "games":
+                continue  # the base frame, not a builder output
+
+            supplier = suppliers.get(source_name)
+            if isinstance(supplier, InformationTimeProvider):
+                # An empty frame is reported by the gate BEFORE it reads provenance, so
+                # the supplier is not asked to date a source that failed to load.
+                provenance = (
+                    supplier.information_times(
+                        games_df, target_season=target_season, target_week=target_week
+                    )
+                    if len(source_df) > 0
+                    else pd.DataFrame({column: [] for column in PROVENANCE_COLUMNS})
+                )
+                gate.check(
+                    source_name,
+                    source_df,
+                    provenance,
+                    lock_frame,
+                    no_information_signature=supplier.no_information_signature(),
+                )
+            elif len(source_df) == 0:
+                empty_unregistered.append(source_name)
+            else:
+                unregistered.append(source_name)
+
+        report = CoverageReport(
+            checked_sources=gate.checked_sources,
+            empty_unchecked_sources=tuple(
+                sorted({*gate.empty_unchecked_sources, *empty_unregistered})
+            ),
+            unregistered_sources=tuple(sorted(unregistered)),
+            post_stage1_sources=POST_STAGE1_SOURCES,
+        )
+        self.information_time_coverage = report
+        logger.info(
+            "Information-time gate coverage (Stage 1). ONLY checked_sources were "
+            "checked against each game's lock; this is not whole-build coverage.",
+            checked_sources=list(report.checked_sources),
+            empty_unchecked_sources=list(report.empty_unchecked_sources),
+            unregistered_sources=list(report.unregistered_sources),
+            post_stage1_sources=list(report.post_stage1_sources),
+        )
+        return report
 
     def _enforce_line_movement_dropped(
         self, combined_features: pd.DataFrame
@@ -1887,9 +2009,10 @@ class FeatureMatrixBuilder:
         """Generate complete feature matrices for all prediction targets.
 
         Pipeline flow:
-        1. Load feature sources
-        2. Stage 1: Per-source LeakageGate.check_time_fence
-        3. Combine features
+        1. Load feature sources, then build ONE per-game lock frame
+        2. Stage 1: the information-time gate -- each registered source's
+           per-game information time against that game's own lock
+        3. Combine features (then the gold dtype guard)
         4. Stage 2: LeakageGate.validate_combined_matrix
         5. Handle missing data and outliers
         6. Expanding-window normalization (replaces within-season Z-scores)
@@ -1899,16 +2022,20 @@ class FeatureMatrixBuilder:
         Args:
             target_season: Specific season to process.
             target_week: Specific week to process.
-            as_of_datetime: Time-fence cutoff for leakage validation.
-                Defaults to ``datetime.now(ET)`` if not provided -- tz-AWARE, see
-                the CR-01 note on ``load_all_feature_sources``.
+            as_of_datetime: The cutoff handed to the builders that still take an
+                ``as_of_datetime`` parameter. It is NOT the fence: the fence is
+                the per-game lock frame. Defaults to ``datetime.now(ET)`` --
+                tz-AWARE, see the CR-01 note on ``load_all_feature_sources``.
 
         Returns:
             Dictionary with feature matrices for each target.
         """
-        # CR-01: tz-aware ET, never a naive local clock. ``pipeline/steps.py:235``
-        # calls this with no arguments, so this default IS the live orchestrator
-        # fence.
+        # THIS DEFAULT IS NO LONGER A FENCE (Phase 33.2, D33.2-01). The fence is the
+        # per-game lock frame built below; nothing in Stage 1 reads this value. It
+        # survives ONLY as the ``as_of_datetime`` argument the builders still take
+        # (QBTracker, OpponentAdjuster, ...), whose cutoffs move onto the lock in
+        # Plans 33.2-12 / 33.2-13. CR-01 still applies to it: tz-aware ET, never a
+        # naive local clock.
         if as_of_datetime is None:
             as_of_datetime = datetime.now(ET)
 
@@ -1925,23 +2052,25 @@ class FeatureMatrixBuilder:
                 target_season, target_week, as_of_datetime=as_of_datetime
             )
 
-            # -- Stage 1: Per-source time-fence check --
-            for source_name, source_df in feature_sources.items():
-                if source_name == "games":
-                    continue  # Games are the base, not a builder output
-                if len(source_df) == 0:
-                    continue
+            # -- ONE lock frame (game_id -> tz-aware lock), before any per-source
+            #    work (RESEARCH 3.3). A game with no kickoff has no lock and the
+            #    whole build refuses, naming it.
+            lock_frame = build_lock_frame(feature_sources["games"])
 
-                try:
-                    self.leakage_gate.check_time_fence(
-                        source_df, as_of_datetime, source_name
-                    )
-                except LeakageViolation as e:
-                    self.leakage_gate.write_diagnostic_report(e)
-                    raise
+            # -- Stage 1: the information-time gate (SPEC R2, D33.2-01) --
+            # The kickoff-versus-now loop that stood here is DELETED, not disabled.
+            self._check_information_times(
+                feature_sources, lock_frame, target_season, target_week
+            )
 
             # Combine features
             combined_features = self.combine_features(feature_sources)
+
+            # -- The sidecar is never a column: no datetime-typed or
+            #    provenance-named column may enter a gold matrix.
+            refuse_provenance_columns(
+                combined_features, build_clock_columns=BUILD_CLOCK_COLUMNS
+            )
 
             if len(combined_features) == 0:
                 logger.error("No features to process")
@@ -2135,6 +2264,13 @@ class FeatureMatrixBuilder:
                     [*meta_cols, *score_cols, *ou_target_cols, *feature_cols],
                 ].copy()
                 feature_matrices["ou"] = ou_matrix
+
+            # The opponent-adjusted family and the targets join AFTER the guard
+            # above, so each final matrix is guarded again before it is returned.
+            for matrix in feature_matrices.values():
+                refuse_provenance_columns(
+                    matrix, build_clock_columns=BUILD_CLOCK_COLUMNS
+                )
 
             logger.info(
                 "Generated feature matrices",

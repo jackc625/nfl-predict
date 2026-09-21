@@ -33,7 +33,6 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from utils import get_logger
-from utils.date_utils import ET
 
 logger = get_logger(__name__)
 
@@ -63,9 +62,9 @@ class LeakageViolation(Exception):
 class LeakageGate:
     """Hard-fail validation gate for the feature pipeline.
 
-    Two stages:
-    1. Per-builder time-fence check (fast, runs after each builder)
-    2. Full matrix validation (runs on combined features)
+    Runs on the COMBINED matrix: leakage-keyword columns, required feature
+    groups and Elo ordering. The per-source information-time check is NOT here;
+    it is ``features.provenance.InformationTimeGate`` (Phase 33.2, D33.2-01).
 
     Hard failures: leakage violations, missing required feature groups,
                    Elo ordering violations
@@ -140,108 +139,17 @@ class LeakageGate:
     def __init__(self) -> None:
         self.logger = get_logger(f"{__name__}.LeakageGate")
 
-    # -- Stage 1: Per-builder time-fence check --------------------------------
-
-    def check_time_fence(
-        self,
-        features_df: pd.DataFrame,
-        as_of_datetime: datetime,
-        builder_name: str,
-    ) -> None:
-        """Check that no row in features_df has a timestamp after as_of_datetime.
-
-        Inspects columns: game_date, kickoff_et, snapshot_ts.
-
-        Args:
-            features_df: Output DataFrame from a single feature builder.
-            as_of_datetime: The time-fence cutoff.
-            builder_name: Name of the builder (for diagnostics).
-
-        Raises:
-            LeakageViolation: If any row violates the time-fence.
-        """
-        timestamp_cols = ["game_date", "kickoff_et", "snapshot_ts"]
-
-        # WR-01: make an inert check VISIBLE rather than indistinguishable from a
-        # pass. A builder emitting no timestamp column at all -- LineMovementBuilder
-        # emits game_id plus fifteen floats -- never enters the loop body below, so
-        # this check is a guaranteed pass, while build_features.py states that
-        # registration "routes the source through the LeakageGate". It routes it
-        # through a no-op, and that no-op is one of the two seams CR-01 crossed.
-        #
-        # The alternative (emitting the per-game fence as a snapshot_ts column) is
-        # more invasive and adds a column that would then have to be suppressed in
-        # exactly the right place in combine_features. An explicit warning records
-        # the absence instead of letting it read as evidence of safety.
-        inspected = [col for col in timestamp_cols if col in features_df.columns]
-        if not inspected:
-            self.logger.warning(
-                "Time-fence check inspected NOTHING -- this builder emits no "
-                "timestamp column, so the check is a structural no-op, not a pass",
-                builder=builder_name,
-                expected_any_of=timestamp_cols,
-                columns_present=len(features_df.columns),
-            )
-
-        for col in timestamp_cols:
-            if col not in features_df.columns:
-                continue
-
-            col_values = pd.to_datetime(features_df[col], errors="coerce")
-            as_of_ts = pd.Timestamp(as_of_datetime)
-
-            # Align timezone awareness. CR-01: every wall clock in this project is
-            # ET -- kickoff_et, game_date and the Friday 6 PM freeze -- so ET is the
-            # ONE zone a naive value on either side denotes.
-            #
-            # This previously read `as_of_ts.tz_localize(col_values.dt.tz)`, which
-            # STAMPS the cutoff's wall clock with the column's zone (UTC for
-            # snapshot_ts) instead of converting it. A naive 18:05 ET cutoff became
-            # 18:05Z == 14:05 ET, four hours early, silently fencing out the
-            # Friday-freeze snapshot; on a host east of UTC the same mislabelling
-            # points the other way and ADMITS post-cutoff rows, i.e. it leaks. The
-            # error was exactly the host's UTC offset, and nothing pins the host
-            # timezone. Localize to ET first, then convert, so the instant is
-            # preserved whatever the host.
-            if col_values.dt.tz is not None and as_of_ts.tz is None:
-                as_of_ts = as_of_ts.tz_localize(ET).tz_convert(col_values.dt.tz)
-            elif col_values.dt.tz is None and as_of_ts.tz is not None:
-                # Naive columns carry an ET wall clock, so compare in ET.
-                as_of_ts = as_of_ts.tz_convert(ET).tz_localize(None)
-
-            # WR-14: EVERY inspected column is fenced with a strict ``>``, so a
-            # value landing exactly AT the cutoff is admissible.
-            #
-            # This used to be an if/else whose two branches were character-for-
-            # character identical, under a comment asserting that ``snapshot_ts``
-            # was fenced differently ("use <="). A reader auditing the gate -- which
-            # is what this file exists for -- was told the two column classes have
-            # different semantics when they do not. In an audit surface, a comment
-            # that documents behaviour the code does not implement is worse than no
-            # comment: it is read as evidence.
-            future_mask = col_values > as_of_ts
-
-            future_count = future_mask.sum()
-            if future_count > 0:
-                latest = col_values[future_mask].max()
-                raise LeakageViolation(
-                    f"Time-fence violation in {builder_name}: "
-                    f"{future_count} rows have {col} after {as_of_datetime}",
-                    details={
-                        "builder": builder_name,
-                        "violation_type": "time_fence",
-                        "column": col,
-                        "affected_rows": int(future_count),
-                        "latest_timestamp": str(latest),
-                        "cutoff": str(as_of_datetime),
-                    },
-                )
-
-        self.logger.debug(
-            "Time-fence check passed",
-            builder=builder_name,
-            rows=len(features_df),
-        )
+    # -- The per-builder time fence is GONE, not disabled ----------------------
+    #
+    # ``check_time_fence`` used to live here. It compared each row's
+    # game_date / kickoff_et / snapshot_ts to the build clock -- i.e. it asked
+    # whether a GAME was in the future, not whether any INFORMATION post-dated
+    # that game's lock. It blocked every unplayed game and could never catch a
+    # real leak. D33.2-01 retires it rather than reusing it, and no shim is left
+    # behind, because a shim is a second answer on disk. Its replacement is
+    # ``features.provenance.InformationTimeGate``, which checks each source's
+    # per-game information time against that game's own lock (18:00 ET the
+    # calendar day before kickoff).
 
     # -- Stage 2: Full combined-matrix validation -----------------------------
 
