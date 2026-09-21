@@ -55,7 +55,7 @@ External Sources -> Ingestion (ETL) -> Data Lake (Parquet/DuckDB) -> Feature Bui
 
 **Key constraints:**
 - Walk-forward validation only -- no random CV, no future data leakage
-- Friday 6 PM ET snapshot timing for odds/data freeze
+- Day-before-kickoff lock (D33.2-01): each game's information locks at 18:00 America/New_York on the ET calendar day before its kickoff, and information timed at the lock is admissible (at-lock counts, one second after does not). The one rule is `utils/game_lock.py`. The live run is a daily lock-time cycle, not a weekly Friday one
 - Reproducibility: any prediction must be reproducible given the same input data snapshot
 - Canonical team abbreviation mapping with hard-fail on unknowns
 
