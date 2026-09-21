@@ -31,12 +31,21 @@ be satisfied by position is also run with its outcomes reversed.
 Sandboxed throughout except ``TestTheConventionIsTheStoredHistorys``, which READS the
 production odds file (never writes it) and skips with a pinned message when absent.
 
+THE PER-GAME INTERFACE (Plan 33.2-02 Task 2). The ingest used to take ONE
+``snapshot_time`` for a whole multi-game request and use it as the API's game window,
+as every row's ``snapshot_ts`` and as the fallback for a missing bookmaker time. It now
+takes the slate's ``schedule`` and keeps four values apart: the kickoff SELECTION
+window, the OBSERVED capture instant (``created_at``), each row's UPSTREAM bookmaker
+time (``last_update``, NULL when absent) and each game's own LOCK (``snapshot_ts``),
+derived only after the payload game is matched to its schedule row. Every
+market-extraction property below is unchanged; the classes at the end pin the split.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -44,12 +53,27 @@ import pandas as pd
 import pytest
 
 import data.storage as storage_mod
+import scripts.ingest_odds as ingest_odds_module
+import utils.game_lock as lock_rule
 from backtest.ou_divergence import dedupe_odds_by_book_preference
 from data.storage import ParquetManager
 from scripts.ingest_odds import OddsDataIngester
 
 ET = ZoneInfo("America/New_York")
-SNAPSHOT_TIME = datetime(2026, 9, 18, 18, 0, tzinfo=ET)
+
+# The instant the stand-in response is "observed". Tests fix the capture instant by
+# patching the clock the ingest reads, never by passing a value: a caller-supplied
+# capture time is a manufactured timestamp (RESEARCH P1).
+CAPTURED_AT = datetime(2026, 9, 18, 16, 4, 11, tzinfo=UTC)
+
+# The Sunday 1 PM ET kickoff both week-2 fixtures carry, and its day-before lock.
+WEEK2_SUNDAY_KICKOFF = pd.Timestamp("2026-09-20 17:00:00", tz="UTC")
+WEEK2_SUNDAY_LOCK = datetime(2026, 9, 19, 18, 0, tzinfo=ET)
+
+# A week-3 Thursday night game, 8:15 PM ET = 00:15 UTC on FRIDAY. Its lock is the
+# Wednesday before -- the ET date, not the UTC one, decides it.
+WEEK3_THURSDAY_KICKOFF = pd.Timestamp("2026-09-25 00:15:00", tz="UTC")
+WEEK3_THURSDAY_LOCK = datetime(2026, 9, 23, 18, 0, tzinfo=ET)
 
 PRODUCTION_ODDS_PATH = Path("data/silver/odds_snapshot.parquet")
 PRODUCTION_ODDS_ABSENT_SKIP = (
@@ -93,21 +117,78 @@ AWAY_FAV = {
 }
 
 
-def _event(fixture: dict, *, reverse_outcomes: bool = False, book: str = "draftkings"):
+# A week-3 Thursday game, so one payload can span two NFL weeks (T-33.2-02-13).
+WEEK3_THURSDAY = {
+    "home": "Miami Dolphins",
+    "away": "Buffalo Bills",
+    "home_ml": 110,
+    "away_ml": -130,
+    "home_point": 1.5,
+    "home_spread_price": -110,
+    "away_spread_price": -110,
+    "total": 49.5,
+    "over_price": -110,
+    "under_price": -110,
+    "game_id": "2026_W03_BUF@MIA",
+}
+
+
+def _schedule_row(game_id: str, home: str, away: str, kickoff: pd.Timestamp) -> dict:
+    season, week = game_id.split("_", maxsplit=1)[0], game_id.split("_")[1]
+    return {
+        "game_id": game_id,
+        "season": int(season),
+        "week": int(week.lstrip("W")),
+        "home_team": home,
+        "away_team": away,
+        "kickoff_et": kickoff,
+    }
+
+
+def _schedule(*, with_week3: bool = False) -> pd.DataFrame:
+    """The silver ``games`` slice the ingest matches payload games against."""
+    rows = [
+        _schedule_row("2026_W02_CAR@ATL", "ATL", "CAR", WEEK2_SUNDAY_KICKOFF),
+        _schedule_row("2026_W02_JAX@DEN", "DEN", "JAX", WEEK2_SUNDAY_KICKOFF),
+    ]
+    if with_week3:
+        rows.append(
+            _schedule_row("2026_W03_BUF@MIA", "MIA", "BUF", WEEK3_THURSDAY_KICKOFF)
+        )
+    return pd.DataFrame(rows)
+
+
+def _locks(schedule: pd.DataFrame) -> dict[str, datetime]:
+    """The lock map the ingest derives inside, rebuilt here through the ONE rule."""
+    return {
+        str(game_id): lock.to_pydatetime()
+        for game_id, lock in lock_rule.lock_frame(schedule).items()
+    }
+
+
+def _event(
+    fixture: dict,
+    *,
+    reverse_outcomes: bool = False,
+    book: str = "draftkings",
+    commence_time: str = "2026-09-20T17:00:00Z",
+    last_update: str | None = "2026-09-15T04:00:00Z",
+):
     """One event in the documented v4 shape. ``reverse_outcomes`` lists away first."""
 
     def ordered(pair: list[dict]) -> list[dict]:
         return list(reversed(pair)) if reverse_outcomes else pair
 
+    bookmaker_times = {} if last_update is None else {"last_update": last_update}
     return {
         "id": fixture["game_id"],
-        "commence_time": "2026-09-20T17:00:00Z",
+        "commence_time": commence_time,
         "home_team": fixture["home"],
         "away_team": fixture["away"],
         "bookmakers": [
             {
                 "key": book,
-                "last_update": "2026-09-15T04:00:00Z",
+                **bookmaker_times,
                 "markets": [
                     {
                         "key": "h2h",
@@ -163,11 +244,17 @@ def _bare_ingester() -> OddsDataIngester:
     return ingester
 
 
+def _transform(ingester: OddsDataIngester, raw: list[dict], schedule: pd.DataFrame):
+    return ingester.transform_odds_data(
+        raw, schedule=schedule, locks=_locks(schedule), captured_at=CAPTURED_AT
+    )
+
+
 def _validated_row(fixture: dict, *, reverse_outcomes: bool = False) -> pd.Series:
     """Drive one event through transform_odds_data AND validate_odds_data (OddsSchema)."""
     ingester = _bare_ingester()
     raw = [_event(fixture, reverse_outcomes=reverse_outcomes)]
-    transformed = ingester.transform_odds_data(raw, SNAPSHOT_TIME, 2026, 2)
+    transformed = _transform(ingester, raw, _schedule())
     validated = ingester.validate_odds_data(transformed)
     assert len(validated) == 1, f"expected one validated row, got {len(validated)}"
     return validated.iloc[0]
@@ -270,7 +357,7 @@ def stored_through_the_real_step(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(storage_mod, "_parquet_manager", ParquetManager(str(tmp_path)))
     ingester = _bare_ingester()
     ingester.api_client = _StandIn()
-    ingester.ingest_odds(season=2026, week=2, snapshot_time=SNAPSHOT_TIME)
+    ingester.ingest_odds(season=2026, week=2, schedule=_schedule())
     stored = pd.read_parquet(tmp_path / "silver" / "odds_snapshot.parquet")
     return dedupe_odds_by_book_preference(stored).set_index("game_id")
 
@@ -353,3 +440,252 @@ class TestTheConventionIsTheStoredHistorys:
             f"{fixture['game_id']}: ml_home {row['ml_home']!r}, ml_away "
             f"{row['ml_away']!r}, spread {row['spread']!r} breaks the stored rule"
         )
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-02 Task 2: the ONE snapshot_time is split into four named values.
+# ---------------------------------------------------------------------------
+
+
+def _row_for(frame: pd.DataFrame, game_id: str) -> pd.Series:
+    rows = frame[frame["game_id"] == game_id]
+    assert len(rows) == 1, f"expected one row for {game_id}, got {len(rows)}"
+    return rows.iloc[0]
+
+
+class TestEachRowCarriesItsOwnGamesLock:
+    """``snapshot_ts`` is the game's own lock, matched through the schedule."""
+
+    def test_a_two_week_payload_yields_two_weeks_and_two_locks_from_one_request(self):
+        """T-33.2-02-13: the game id's week is the game's OWN week, not the request's.
+
+        The request window spans eight days and so two NFL weeks. Before this plan every
+        game in the payload was stamped with the requesting week and one instant.
+        """
+        ingester = _bare_ingester()
+        raw = [
+            _event(HOME_FAV),
+            _event(WEEK3_THURSDAY, commence_time="2026-09-25T00:15:00Z"),
+        ]
+        transformed = _transform(ingester, raw, _schedule(with_week3=True))
+
+        weeks = sorted({gid.split("_")[1] for gid in transformed["game_id"]})
+        assert weeks == ["W02", "W03"], (
+            f"a payload spanning two NFL weeks produced game-id weeks {weeks}; each game "
+            "must carry its own schedule week, not the requesting week"
+        )
+        sunday = _row_for(transformed, HOME_FAV["game_id"])["snapshot_ts"]
+        thursday = _row_for(transformed, WEEK3_THURSDAY["game_id"])["snapshot_ts"]
+        assert sunday == WEEK2_SUNDAY_LOCK
+        assert thursday == WEEK3_THURSDAY_LOCK
+        assert sunday != thursday
+
+    def test_the_same_two_week_split_survives_the_real_ingest_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """One ``ingest_odds`` call, one request, two locks stored."""
+
+        class _StandIn:
+            def get_nfl_odds(self, **_kwargs):
+                return [
+                    _event(HOME_FAV),
+                    _event(WEEK3_THURSDAY, commence_time="2026-09-25T00:15:00Z"),
+                ]
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(
+            storage_mod, "_parquet_manager", ParquetManager(str(tmp_path))
+        )
+        ingester = _bare_ingester()
+        ingester.api_client = _StandIn()
+        validated = ingester.ingest_odds(
+            season=2026, week=2, schedule=_schedule(with_week3=True)
+        )
+
+        assert validated["snapshot_ts"].nunique() == 2
+        assert set(validated["game_id"]) == {
+            HOME_FAV["game_id"],
+            WEEK3_THURSDAY["game_id"],
+        }
+
+    def test_the_lock_is_the_one_rules_answer_for_that_kickoff(self):
+        ingester = _bare_ingester()
+        transformed = _transform(ingester, [_event(AWAY_FAV)], _schedule())
+
+        row = _row_for(transformed, AWAY_FAV["game_id"])
+        assert row["snapshot_ts"] == lock_rule.game_lock(WEEK2_SUNDAY_KICKOFF)
+
+
+class TestAnAbsentBookmakerTimeIsNull:
+    """T-33.2-02-12: an unknown upstream time is NULL, never our own instant."""
+
+    @pytest.mark.parametrize(
+        "last_update", [None, "not-a-timestamp"], ids=["absent", "unparseable"]
+    )
+    def test_last_update_is_null_and_differs_from_capture_and_lock(self, last_update):
+        ingester = _bare_ingester()
+        transformed = _transform(
+            ingester, [_event(HOME_FAV, last_update=last_update)], _schedule()
+        )
+        validated = ingester.validate_odds_data(transformed)
+        row = validated.iloc[0]
+
+        assert row["last_update"] is None or pd.isna(row["last_update"]), (
+            f"an {last_update!r} bookmaker time was stored as {row['last_update']!r}. "
+            "Filling an unknown upstream time with our own instant makes a manufactured "
+            "stamp read as the bookmaker's (RESEARCH P1)."
+        )
+        assert row["last_update"] != row["created_at"]
+        assert row["last_update"] != row["snapshot_ts"]
+
+    def test_a_present_bookmaker_time_is_kept_as_the_upstream_time(self):
+        ingester = _bare_ingester()
+        transformed = _transform(ingester, [_event(HOME_FAV)], _schedule())
+
+        assert _row_for(transformed, HOME_FAV["game_id"])["last_update"] == datetime(
+            2026, 9, 15, 4, 0, tzinfo=UTC
+        )
+
+
+class TestTheCaptureInstantIsObservedNotSupplied:
+    """``created_at`` is the instant the response was OBSERVED inside the ingest."""
+
+    def test_every_row_of_one_response_shares_the_observed_instant(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        class _StandIn:
+            def get_nfl_odds(self, **_kwargs):
+                return [_event(HOME_FAV), _event(AWAY_FAV, book="fanduel")]
+
+            def close(self):
+                return None
+
+        observed: list[datetime] = []
+
+        def _clock() -> datetime:
+            observed.append(CAPTURED_AT)
+            return CAPTURED_AT
+
+        monkeypatch.setattr(ingest_odds_module, "_observe_capture_instant", _clock)
+        monkeypatch.setattr(
+            storage_mod, "_parquet_manager", ParquetManager(str(tmp_path))
+        )
+        ingester = _bare_ingester()
+        ingester.api_client = _StandIn()
+        validated = ingester.ingest_odds(season=2026, week=2, schedule=_schedule())
+
+        assert len(observed) == 1, (
+            f"the capture clock was read {len(observed)} times; one response has ONE "
+            "capture instant, read once when it returns"
+        )
+        assert len(validated) == 2
+        assert set(validated["created_at"]) == {CAPTURED_AT}, (
+            "created_at is not the observed capture instant -- a second clock read at "
+            "the write would stamp a different time from the one the data was captured at"
+        )
+
+    def test_the_public_surface_takes_no_capture_instant_or_lock_map(self):
+        import inspect
+
+        params = set(inspect.signature(OddsDataIngester.ingest_odds).parameters)
+        assert {"schedule", "commence_from", "commence_to"} <= params
+        assert not ({"captured_at", "locks", "snapshot_time"} & params)
+
+
+class TestPayloadGamesAreMatchedToTheSchedule:
+    """T-33.2-02-11: the schedule, not the payload, says when a game starts."""
+
+    def test_an_unmatched_payload_game_is_skipped_and_named(self):
+        ingester = _bare_ingester()
+        stray = dict(WEEK3_THURSDAY)
+        transformed = _transform(
+            ingester,
+            [_event(HOME_FAV), _event(stray, commence_time="2026-09-25T00:15:00Z")],
+            _schedule(),  # no week-3 row
+        )
+
+        assert set(transformed["game_id"]) == {HOME_FAV["game_id"]}
+        report = ingester.last_match_report
+        assert any(
+            "Buffalo Bills" in name and "Miami Dolphins" in name
+            for name in report.unmatched_games
+        ), f"the unmatched game is not named in {report.unmatched_games}"
+
+    def test_a_commence_time_disagreement_is_reported_and_the_schedule_wins(self):
+        ingester = _bare_ingester()
+        moved = "2026-09-20T20:25:00Z"  # 3h25m after the scheduled 1 PM ET kickoff
+        transformed = _transform(
+            ingester, [_event(HOME_FAV, commence_time=moved)], _schedule()
+        )
+
+        assert ingester.last_match_report.kickoff_disagreements == (
+            HOME_FAV["game_id"],
+        )
+        assert _row_for(transformed, HOME_FAV["game_id"])[
+            "snapshot_ts"
+        ] == lock_rule.game_lock(WEEK2_SUNDAY_KICKOFF)
+
+    def test_an_agreeing_commence_time_reports_nothing(self):
+        ingester = _bare_ingester()
+        _transform(ingester, [_event(HOME_FAV)], _schedule())
+
+        assert ingester.last_match_report.kickoff_disagreements == ()
+        assert ingester.last_match_report.unmatched_games == ()
+
+
+class TestEveryTimestampHandedToTheSchemaIsAware:
+    """The schema's naive-relabel branch (data/schemas.py) is unreachable from here."""
+
+    def test_no_naive_timestamp_reaches_odds_schema(self):
+        ingester = _bare_ingester()
+        transformed = _transform(
+            ingester,
+            [_event(HOME_FAV), _event(AWAY_FAV, last_update=None)],
+            _schedule(),
+        )
+
+        for column in ("snapshot_ts", "created_at", "last_update"):
+            for value in transformed[column]:
+                if value is None or pd.isna(value):
+                    continue
+                assert pd.Timestamp(value).tzinfo is not None, (
+                    f"{column} value {value!r} is naive; OddsSchema would RELABEL it as "
+                    "UTC rather than refuse it"
+                )
+
+
+class TestThePipelineStepPassesTheScheduleExplicitly:
+    """``step_ingest_odds`` still takes no arguments and hands the ingest its slate."""
+
+    def test_the_step_loads_the_slate_and_passes_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from pipeline import steps
+
+        calls: dict[str, object] = {}
+        slate = _schedule()
+
+        class _Recorder:
+            def ingest_odds(self, **kwargs):
+                calls.update(kwargs)
+                return pd.DataFrame()
+
+        monkeypatch.setattr(steps, "_resolve_current_week", lambda: (2026, 2))
+        monkeypatch.setattr(ingest_odds_module, "OddsDataIngester", _Recorder)
+        monkeypatch.setattr(
+            ingest_odds_module,
+            "load_schedule_slice",
+            lambda season, week: slate if (season, week) == (2026, 2) else None,
+        )
+
+        steps.step_ingest_odds()
+
+        assert calls.get("season") == 2026
+        assert calls.get("week") == 2
+        assert calls.get("schedule") is slate, (
+            "the step did not pass the loaded slate as `schedule`; the ingest would have "
+            "no schedule to derive its per-game locks from"
+        )
+        assert "locks" not in calls, "the step must not derive a second lock map"

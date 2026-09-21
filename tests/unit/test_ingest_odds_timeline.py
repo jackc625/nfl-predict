@@ -6,8 +6,11 @@ Plan 29-05 under a paid key. They prove:
 1. The backfill loop stamps ``snapshot_ts`` from the ENVELOPE timestamp, NOT the
    requested date T, and the composite-key write is idempotent on a double run
    (review 29-03 HIGH).
-2. The Friday-18:00 freeze fence resolves to an ET-evening instant (22:00/23:00
-   UTC), never a UTC-localized 18:00 (WR-02).
+2. A per-game LOCK instant resolves to an ET-evening instant (22:00/23:00 UTC),
+   never a UTC-localized 18:00 (WR-02) -- retargeted by Plan 33.2-02 from the single
+   week-level Friday freeze the cadence used to carry to each game's own day-before
+   lock. The collection CADENCE stays week-level (three samples); ADMISSIBILITY is
+   per game, so the backfill requests the cadence plus the week's distinct locks.
 3. The backfill path HARD-FAILS on a mock-mode client (OUM-06).
 4. The dedicated raw-envelope normalizer turns a raw API game envelope into
    consensus ``OddsTimelineSchema`` rows (review 29-03 MED).
@@ -43,15 +46,43 @@ from scripts.ingest_odds_timeline import (
     _load_stored_snapshot_timestamps,
     _snapshot_already_stored,
     backfill_timeline,
+    game_lock_instants,
     normalize_envelope_to_timeline_rows,
-    weekly_snapshot_timestamps,
+    weekly_cadence_timestamps,
 )
+from utils import DataIngestionError
+from utils.game_lock import MissingKickoffError, game_lock
 
 ET = ZoneInfo("America/New_York")
 
 # The envelope's actual snapshot timestamp -- deliberately distinct from any of
 # the requested weekly cadence timestamps T (review 29-03 HIGH).
 ENVELOPE_TS = "2021-10-15T21:57:00Z"
+
+# The one game of the 2021 week-6 fixture: Sunday 2021-10-17 1 PM ET. Its lock is
+# Saturday 2021-10-16 18:00 ET = 22:00 UTC, so the week's requests are the three
+# cadence samples (Tue/Wed/Thu noon ET) plus that one lock instant: FOUR.
+WEEK6_GAMES = pd.DataFrame(
+    {
+        "game_id": ["2021_W06_KC@BUF"],
+        "season": [2021],
+        "week": [6],
+        "kickoff_et": [pd.Timestamp("2021-10-17T17:00:00Z")],
+    }
+)
+WEEK6_LOCK_UTC = datetime(2021, 10, 16, 22, 0, tzinfo=UTC)
+
+
+def _week_games(season: int, week: int, *kickoffs_utc: str) -> pd.DataFrame:
+    """A schedule slice with one game per kickoff (ids are placeholders)."""
+    return pd.DataFrame(
+        {
+            "game_id": [f"{season}_W{week:02d}_G{i}" for i in range(len(kickoffs_utc))],
+            "season": [season] * len(kickoffs_utc),
+            "week": [week] * len(kickoffs_utc),
+            "kickoff_et": [pd.Timestamp(k) for k in kickoffs_utc],
+        }
+    )
 
 
 def _fake_envelope(timestamp: str = ENVELOPE_TS) -> dict:
@@ -127,19 +158,22 @@ def test_backfill_stamps_envelope_timestamp_and_is_idempotent(tmp_path):
 
     client.get_historical_nfl_odds = fake_hist
 
-    written = backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+    written = backfill_timeline(
+        [2021], client, weeks=[6], base_path=tmp_path, games=WEEK6_GAMES
+    )
     assert written > 0
 
     silver = pd.read_parquet(tmp_path / "silver" / "odds_timeline.parquet")
 
-    # Three of the four cadence timestamps were requested; the fourth (the Fri
-    # 18:00 ET freeze) is SKIPPED by the spend-safety guard, because this fake
-    # returns one CONSTANT envelope timestamp (21:57Z) that already covers the
-    # freeze request once stored. NONE of the requested T's equals the envelope
-    # timestamp -- proving provenance is taken from the envelope (review 29-03
-    # HIGH).
-    assert len(requested_ts) == 3
+    # The week's union is three cadence samples plus the Sunday game's Saturday
+    # 18:00 ET lock, and all four are requested: the fake's CONSTANT envelope
+    # timestamp (Fri 21:57Z) lies outside every request's lookback window, the
+    # lock's included (it is 24h earlier). NONE of the requested T's equals the
+    # envelope timestamp -- proving provenance is taken from the envelope
+    # (review 29-03 HIGH).
+    assert len(requested_ts) == 4
     assert ENVELOPE_TS not in requested_ts
+    assert WEEK6_LOCK_UTC.strftime("%Y-%m-%dT%H:%M:%SZ") in requested_ts
 
     # Exactly one consensus row at the (game_id, snapshot_ts) grain, stamped on
     # the envelope timestamp.
@@ -151,30 +185,70 @@ def test_backfill_stamps_envelope_timestamp_and_is_idempotent(tmp_path):
     assert stored_ts == pd.Timestamp("2021-10-15T21:57:00+00:00")
 
     # Double-run idempotency on the composite key.
-    backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+    backfill_timeline([2021], client, weeks=[6], base_path=tmp_path, games=WEEK6_GAMES)
     silver_again = pd.read_parquet(tmp_path / "silver" / "odds_timeline.parquet")
     assert len(silver_again) == 1
 
 
-def test_freeze_fence_resolves_to_et_evening_instant():
-    """The Fri-18:00-ET freeze is an ET-evening UTC instant, never UTC 18:00."""
-    cadence = dict(weekly_snapshot_timestamps(2021, 6))
-    freeze_utc = cadence["freeze"]
+def test_a_per_game_lock_resolves_to_an_et_evening_instant():
+    """A game's lock is an ET-evening UTC instant, never UTC 18:00 (WR-02).
 
-    assert freeze_utc.tzinfo is not None
-    # Friday 18:00 ET in October is EDT (UTC-4) -> 22:00 UTC; never 18:00 UTC.
-    assert freeze_utc.hour in (22, 23)
-    assert freeze_utc.hour != 18
+    October (EDT, UTC-4) resolves to 22:00 UTC and January (EST, UTC-5) to 23:00 UTC;
+    both round-trip to exactly 18:00 ET on the ET day before kickoff.
+    """
+    october = game_lock_instants(WEEK6_GAMES)
+    assert len(october) == 1
+    label, game_ids, lock_utc = october[0]
+    assert label == "lock"
+    assert game_ids == "2021_W06_KC@BUF"
+    assert lock_utc.tzinfo is not None
+    assert lock_utc.hour == 22
+    assert lock_utc.hour != 18
+    lock_et = lock_utc.astimezone(ET)
+    assert (lock_et.hour, lock_et.minute, lock_et.weekday()) == (18, 0, 5)  # Saturday
 
-    # Round-tripping back to ET yields exactly Friday 18:00.
-    freeze_et = freeze_utc.astimezone(ET)
-    assert freeze_et.hour == 18
-    assert freeze_et.minute == 0
-    assert freeze_et.weekday() == 4  # Friday
+    january = game_lock_instants(_week_games(2021, 18, "2022-01-09T18:00:00Z"))
+    (_label, _ids, winter_utc) = january[0]
+    assert winter_utc.hour == 23
+    assert winter_utc.astimezone(ET).hour == 18
 
-    # A January (winter / EST) week resolves to 23:00 UTC.
-    winter = dict(weekly_snapshot_timestamps(2021, 18))
-    assert winter["freeze"].astimezone(ET).hour == 18
+
+def test_the_cadence_is_three_week_level_samples_with_no_freeze():
+    cadence = weekly_cadence_timestamps(2021, 6)
+
+    assert sorted(label for label, _ in cadence) == ["intraweek", "late", "open"]
+    for _label, instant in cadence:
+        assert instant.tzinfo is not None
+        assert instant.astimezone(ET).hour == 12
+
+
+def test_lock_instants_are_the_one_rule_and_collapse_by_instant():
+    """A week's Sunday games share ONE lock, so they cost ONE request, not one each."""
+    games = _week_games(
+        2021,
+        6,
+        "2021-10-15T00:20:00Z",  # Thursday night 8:20 PM ET -> Wed lock
+        "2021-10-17T17:00:00Z",  # Sunday 1 PM ET -> Sat lock
+        "2021-10-17T20:25:00Z",  # Sunday 4:25 PM ET -> the SAME Sat lock
+        "2021-10-19T00:15:00Z",  # Monday night 8:15 PM ET -> Sun lock
+    )
+
+    instants = game_lock_instants(games)
+
+    assert len(instants) == 3, "the two Sunday games must collapse into one lock"
+    kickoff_by_id = dict(zip(games["game_id"], games["kickoff_et"], strict=True))
+    for _label, game_ids, lock_utc in instants:
+        for game_id in game_ids.split(","):
+            assert lock_utc == game_lock(kickoff_by_id[game_id])
+    assert [lock for _, _, lock in instants] == sorted(lock for _, _, lock in instants)
+
+
+def test_lock_instants_refuse_a_game_with_no_kickoff():
+    games = _week_games(2021, 6, "2021-10-17T17:00:00Z", "2021-10-17T20:25:00Z")
+    games.loc[1, "kickoff_et"] = pd.NaT
+
+    with pytest.raises(MissingKickoffError, match="2021_W06_G1"):
+        game_lock_instants(games)
 
 
 def test_backfill_hard_fails_on_mock_mode():
@@ -184,7 +258,7 @@ def test_backfill_hard_fails_on_mock_mode():
     client.get_historical_nfl_odds = sentinel
 
     with pytest.raises(MockModeBackfillError):
-        backfill_timeline([2021], client, weeks=[6])
+        backfill_timeline([2021], client, weeks=[6], games=WEEK6_GAMES)
 
     sentinel.assert_not_called()
 
@@ -237,11 +311,11 @@ def test_backfill_skips_already_stored_snapshots_on_rerun(tmp_path):
 
     client.get_historical_nfl_odds = fake_hist_first
 
-    backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+    backfill_timeline([2021], client, weeks=[6], base_path=tmp_path, games=WEEK6_GAMES)
 
     silver_path = tmp_path / "silver" / "odds_timeline.parquet"
     silver = pd.read_parquet(silver_path)
-    assert len(first_calls) == 4  # the four D-12 cadence timestamps
+    assert len(first_calls) == 4  # three cadence samples + the game's lock
     assert len(silver) == 4
     assert silver["snapshot_ts"].nunique() == 4
 
@@ -261,7 +335,9 @@ def test_backfill_skips_already_stored_snapshots_on_rerun(tmp_path):
 
     client.get_historical_nfl_odds = fake_hist_second
 
-    written = backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+    written = backfill_timeline(
+        [2021], client, weeks=[6], base_path=tmp_path, games=WEEK6_GAMES
+    )
 
     # ZERO additional API calls -> zero additional credits burned.
     assert second_calls == []
@@ -351,14 +427,31 @@ def test_snapshot_guard_window_matches_earlier_envelope_not_prior_cadence():
     )
     assert not _snapshot_already_stored(requested, set())
 
-    # No FALSE skip: the previous cadence point is >= 24h earlier, so it can
-    # never satisfy the next cadence point's request.
-    cadence = dict(weekly_snapshot_timestamps(2021, 6))
-    assert not _snapshot_already_stored(
-        cadence["freeze"], {pd.Timestamp(cadence["late"])}
-    )
+    # No FALSE skip between cadence samples: consecutive ones are 24h apart.
+    cadence = dict(weekly_cadence_timestamps(2021, 6))
     assert not _snapshot_already_stored(
         cadence["late"], {pd.Timestamp(cadence["intraweek"])}
+    )
+
+    # No FALSE skip between a cadence sample and a LOCK. The closest pairs in the
+    # union are only SIX hours apart: a Thursday game locks Wednesday 18:00 ET,
+    # six hours after the Wednesday-noon sample, and a Friday game locks Thursday
+    # 18:00 ET, six hours after the Thursday-noon sample. A lookback of six hours
+    # or more would treat the noon snapshot as covering the lock and never buy it.
+    thursday_game_lock = game_lock_instants(
+        _week_games(2021, 6, "2021-10-15T00:20:00Z")
+    )[0][2]
+    friday_game_lock = game_lock_instants(_week_games(2021, 6, "2021-10-16T00:20:00Z"))[
+        0
+    ][2]
+    assert thursday_game_lock - cadence["intraweek"] == timedelta(hours=6)
+    assert friday_game_lock - cadence["late"] == timedelta(hours=6)
+    assert not _snapshot_already_stored(
+        thursday_game_lock,
+        {pd.Timestamp(cadence["intraweek"]) - pd.Timedelta(minutes=5)},
+    )
+    assert not _snapshot_already_stored(
+        friday_game_lock, {pd.Timestamp(cadence["late"]) - pd.Timedelta(minutes=5)}
     )
 
 
@@ -480,7 +573,7 @@ def test_backfill_reads_the_credit_headers_on_every_paid_call(tmp_path):
 
     client.get_historical_nfl_odds = fake_hist
 
-    backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+    backfill_timeline([2021], client, weeks=[6], base_path=tmp_path, games=WEEK6_GAMES)
 
     assert seen_return_headers, "no paid call was made"
     assert all(seen_return_headers), (
@@ -497,7 +590,12 @@ def test_backfill_aborts_when_credits_fall_below_the_floor(tmp_path):
 
     with pytest.raises(SpendGuardError, match="credits"):
         backfill_timeline(
-            [2021], client, weeks=[6], base_path=tmp_path, min_credits_remaining=100
+            [2021],
+            client,
+            weeks=[6],
+            base_path=tmp_path,
+            min_credits_remaining=100,
+            games=WEEK6_GAMES,
         )
 
     # Stopped ON the offending call, not after burning the rest of the cadence.
@@ -510,7 +608,12 @@ def test_backfill_aborts_at_the_paid_call_ceiling(tmp_path):
 
     with pytest.raises(SpendGuardError, match="ceiling"):
         backfill_timeline(
-            [2021], client, weeks=[6, 7, 8], base_path=tmp_path, max_paid_calls=3
+            [2021],
+            client,
+            weeks=[6, 7, 8],
+            base_path=tmp_path,
+            max_paid_calls=3,
+            games=WEEK6_GAMES,
         )
 
     assert len(calls) == 3
@@ -526,7 +629,12 @@ def test_rows_bought_before_an_abort_are_kept(tmp_path):
 
     with pytest.raises(SpendGuardError):
         backfill_timeline(
-            [2021], client, weeks=[6], base_path=tmp_path, max_paid_calls=2
+            [2021],
+            client,
+            weeks=[6],
+            base_path=tmp_path,
+            max_paid_calls=2,
+            games=WEEK6_GAMES,
         )
 
     silver = pd.read_parquet(tmp_path / "silver" / "odds_timeline.parquet")
@@ -541,7 +649,7 @@ def test_a_missing_credit_header_does_not_abort_a_legitimate_backfill(tmp_path):
     """
     client, calls = _counting_client(lambda _n: {})
 
-    backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+    backfill_timeline([2021], client, weeks=[6], base_path=tmp_path, games=WEEK6_GAMES)
 
     assert len(calls) == 4
 
@@ -565,11 +673,12 @@ def test_an_empty_envelope_still_records_coverage_within_the_run(tmp_path):
     ``stored_snapshots`` and wrote nothing, so a later requested timestamp that
     the SAME archived snapshot already answers was bought all over again.
 
-    The fixture returns a CONSTANT envelope timestamp (21:57Z Friday), which the
-    12-hour lookback window means also covers the Friday-18:00-ET (22:00Z)
-    cadence request. Four cadence points, three purchases: the fourth is skipped
-    because the third call's envelope already answered it. Pre-fix that skip
-    could not happen for an empty board and all four were bought.
+    The fixture returns a CONSTANT envelope timestamp three minutes before the
+    Sunday game's Saturday 18:00 ET lock (21:57Z Saturday), which the lookback
+    window means also covers that lock request. Four requested instants (three
+    cadence samples and the lock), three purchases: the lock is skipped because
+    an earlier call's envelope already answered it. Pre-fix that skip could not
+    happen for an empty board and all four were bought.
 
     SCOPE, stated rather than implied: this record is IN-MEMORY, so it bounds
     re-spend within one invocation only. It is deliberately not durable -- a
@@ -580,23 +689,28 @@ def test_an_empty_envelope_still_records_coverage_within_the_run(tmp_path):
     client = _mock_client(mock_mode=False)
     requested: list[str] = []
 
+    lock_adjacent_ts = "2021-10-16T21:57:00Z"
+
     def fake_hist(date_iso, markets, regions="us", return_headers=False):
         requested.append(date_iso)
-        envelope = _fake_envelope()  # constant ENVELOPE_TS, no usable board
+        envelope = _fake_envelope(lock_adjacent_ts)  # constant, no usable board
         envelope["data"] = []
         return (envelope, _fake_headers()) if return_headers else envelope
 
     client.get_historical_nfl_odds = fake_hist
 
-    written = backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+    written = backfill_timeline(
+        [2021], client, weeks=[6], base_path=tmp_path, games=WEEK6_GAMES
+    )
 
     assert written == 0
     assert len(requested) == 3, (
-        f"expected the covered 4th cadence point to be skipped, bought "
+        f"expected the covered lock request to be skipped, bought "
         f"{len(requested)} -- coverage is still being recorded from the emitted "
         f"rows instead of the envelope timestamp (WR-04)"
     )
-    assert ENVELOPE_TS not in requested
+    assert WEEK6_LOCK_UTC.strftime("%Y-%m-%dT%H:%M:%SZ") not in requested
+    assert lock_adjacent_ts not in requested
 
 
 def test_an_empty_envelope_is_logged_at_warning(tmp_path):
@@ -610,7 +724,9 @@ def test_an_empty_envelope_is_logged_at_warning(tmp_path):
     client.get_historical_nfl_odds = fake_hist
 
     with patch("scripts.ingest_odds_timeline.logger") as mock_logger:
-        backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+        backfill_timeline(
+            [2021], client, weeks=[6], base_path=tmp_path, games=WEEK6_GAMES
+        )
 
     warnings_logged = str(mock_logger.warning.call_args_list)
     assert "NO usable rows" in warnings_logged
@@ -744,7 +860,9 @@ def test_orphaned_game_ids_are_reported_at_warning(tmp_path):
     client.get_historical_nfl_odds = fake_hist
 
     with patch("scripts.ingest_odds_timeline.logger") as mock_logger:
-        backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+        backfill_timeline(
+            [2021], client, weeks=[6], base_path=tmp_path, games=WEEK6_GAMES
+        )
 
     logged = str(mock_logger.warning.call_args_list)
     _GAMES_ID_CACHE.clear()
@@ -770,7 +888,9 @@ def test_no_orphan_warning_when_the_key_joins(tmp_path):
     client.get_historical_nfl_odds = fake_hist
 
     with patch("scripts.ingest_odds_timeline.logger") as mock_logger:
-        backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+        backfill_timeline(
+            [2021], client, weeks=[6], base_path=tmp_path, games=WEEK6_GAMES
+        )
 
     logged = str(mock_logger.warning.call_args_list)
     _GAMES_ID_CACHE.clear()
@@ -792,7 +912,21 @@ def test_a_missing_games_table_does_not_block_the_write(tmp_path):
 
     client.get_historical_nfl_odds = fake_hist
 
-    written = backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+    written = backfill_timeline(
+        [2021], client, weeks=[6], base_path=tmp_path, games=WEEK6_GAMES
+    )
     _GAMES_ID_CACHE.clear()
 
     assert written == 4
+
+
+def test_the_backfill_refuses_to_run_without_a_schedule(tmp_path):
+    """No schedule means no per-game lock, and a guessed one is the defect."""
+    client = _mock_client(mock_mode=False)
+    sentinel = MagicMock()
+    client.get_historical_nfl_odds = sentinel
+
+    with pytest.raises(DataIngestionError, match="schedule"):
+        backfill_timeline([2021], client, weeks=[6], base_path=tmp_path)
+
+    sentinel.assert_not_called()

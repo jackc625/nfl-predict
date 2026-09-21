@@ -29,6 +29,13 @@ EVERYTHING HERE IS SANDBOXED. The parquet manager is pointed at ``tmp_path``, th
 API client is a stand-in that returns a documented-shape payload, and both odds
 saves already pass ``save_to_db=False``. No network, no DuckDB, no production store.
 
+ONE CAPTURE NOW CARRIES SEVERAL ``snapshot_ts`` VALUES (Plan 33.2-02). Each row is
+stamped with its OWN game's day-before lock rather than one instant for the whole
+request, so a single pull holding a Thursday game and the Sunday slate writes two
+different ``snapshot_ts`` values. The old fixture's uniform value could not have shown
+whether the single-file branch holds for such a batch; this one includes a Thursday
+game on purpose and asserts that it does.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -58,7 +65,10 @@ BOOKS_PER_GAME = 8
 
 HISTORICAL_ROW_COUNT = 5
 
-SNAPSHOT_TIME = datetime(2026, 9, 18, 18, 0, tzinfo=ET)
+# The first game kicks off Thursday night (8:15 PM ET, 00:15 UTC Friday) and the rest on
+# Sunday afternoon, so the batch carries two different day-before locks.
+THURSDAY_KICKOFF = "2026-09-18T00:15:00Z"
+SUNDAY_KICKOFF = "2026-09-20T17:00:00Z"
 
 _TEAM_NAMES: tuple[str, ...] = (
     "Atlanta Falcons",
@@ -103,6 +113,30 @@ class _StandInOddsClient:
         return None
 
 
+def _kickoff_for(index: int) -> str:
+    return THURSDAY_KICKOFF if index == 0 else SUNDAY_KICKOFF
+
+
+def _schedule() -> pd.DataFrame:
+    """The silver ``games`` slice for the payload's thirteen games."""
+    namer = OddsDataIngester.__new__(OddsDataIngester)
+    rows = []
+    for index in range(GAMES_IN_PAYLOAD):
+        home = namer._normalize_team_name(_TEAM_NAMES[2 * index])
+        away = namer._normalize_team_name(_TEAM_NAMES[2 * index + 1])
+        rows.append(
+            {
+                "game_id": f"2026_W02_{away}@{home}",
+                "season": 2026,
+                "week": 2,
+                "home_team": home,
+                "away_team": away,
+                "kickoff_et": pd.Timestamp(_kickoff_for(index)),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _payload() -> list[dict]:
     """Thirteen games in the Odds API v4 response shape, eight books each."""
     games = []
@@ -128,7 +162,7 @@ def _payload() -> list[dict]:
         games.append(
             {
                 "id": f"event{index}",
-                "commence_time": "2026-09-20T17:00:00Z",
+                "commence_time": _kickoff_for(index),
                 "home_team": home,
                 "away_team": away,
                 "bookmakers": bookmakers,
@@ -179,7 +213,7 @@ def ingested(sandbox_lake: Path) -> pd.DataFrame:
     ingester = OddsDataIngester.__new__(OddsDataIngester)
     ingester.api_client = _StandInOddsClient(_payload())
     ingester.sportsbook_priority = []
-    return ingester.ingest_odds(season=2026, week=2, snapshot_time=SNAPSHOT_TIME)
+    return ingester.ingest_odds(season=2026, week=2, schedule=_schedule())
 
 
 class TestTheFixtureExercisesTheOldPartitionBranch:
@@ -190,6 +224,14 @@ class TestTheFixtureExercisesTheOldPartitionBranch:
             f"the ingest produced {len(ingested)} validated rows; the old write only "
             f"partitioned ABOVE {OLD_PARTITION_THRESHOLD_ROWS}, so this fixture would "
             "not exercise the branch it exists to guard"
+        )
+
+    def test_one_capture_carries_more_than_one_snapshot_ts(self, ingested):
+        """Non-vacuity for the per-game stamp: a uniform value would prove nothing."""
+        assert ingested["snapshot_ts"].nunique() == 2, (
+            "the batch does not carry two different per-game locks, so it cannot show "
+            "that the single-file write holds for a capture whose rows differ in "
+            "snapshot_ts"
         )
 
 
@@ -213,6 +255,16 @@ class TestAnOverThresholdPullLandsInTheSingleFile:
             f"{len(history)} of {HISTORICAL_ROW_COUNT} historical rows remain after the "
             "pull. The silver odds write is an APPEND merge; a fix that turned it into a "
             "replace would trade one lost week for every lost season."
+        )
+
+    def test_rows_with_different_snapshot_ts_share_the_single_file(
+        self, sandbox_lake, ingested
+    ):
+        stored = pd.read_parquet(sandbox_lake / "silver" / "odds_snapshot.parquet")
+        new_rows = stored[stored["game_id"].isin(set(ingested["game_id"]))]
+        assert new_rows["snapshot_ts"].nunique() == 2, (
+            "the two per-game locks of one capture did not both land in "
+            "silver/odds_snapshot.parquet"
         )
 
     def test_no_snapshot_ts_partition_directory_is_created(
