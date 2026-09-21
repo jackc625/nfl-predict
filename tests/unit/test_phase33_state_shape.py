@@ -29,10 +29,27 @@ ASCII only, no emoji (CLAUDE.md hard constraint).
 from __future__ import annotations
 
 import ast
+import builtins
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STATE_MODULE_PATH = REPO_ROOT / "tests" / "phase33_state.py"
+
+# The ONLY calls the manifest may make: pure builtins that cannot read or write anything, run
+# outside code, or leave a side effect. The set is DERIVED from what ``tests/phase33_state.py``
+# actually uses (measured 2026-09-21: ``tuple(...)`` and ``range(...)`` over literal ints, and
+# ``dict.fromkeys(...)`` over literal tuples and a generator of literal tuples) and is no broader.
+# It names callables, never line numbers or slot names: a new slot using one of these is
+# admitted, and a new slot calling anything else is refused, without this list being edited.
+#
+# Owner ruling 2026-09-21 (Plan 33.2-06, orchestrator-assigned): the eleven entries that use
+# these builtins stay exactly as appended -- the append-once protocol holds and no slot is
+# rewritten as a hardcoded list. This check was sharpened instead, to test the risk its docstring
+# names (I/O and import-time side effects) rather than flag every call expression.
+_PURE_BUILTIN_CALLABLES: frozenset[str] = frozenset({"range", "tuple"})
+_PURE_BUILTIN_METHODS: frozenset[tuple[str, str]] = frozenset({("dict", "fromkeys")})
 
 
 def _module_source() -> str:
@@ -116,24 +133,159 @@ def test_the_state_module_defines_no_functions_or_classes() -> None:
     )
 
 
+def _names_bound_in(tree: ast.AST) -> set[str]:
+    """Every name the module binds anywhere -- the names that could SHADOW a builtin.
+
+    Assignment and annotation targets, loop and comprehension targets, walrus targets, import
+    aliases, and function / class / argument names. A builtin is only trusted as the builtin
+    when the module never rebinds its name.
+    """
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound.update(
+                (alias.asname or alias.name).split(".")[0] for alias in node.names
+            )
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+    return bound
+
+
+def disallowed_calls(source: str) -> list[str]:
+    """Every call in *source* that is NOT a pure, unshadowed builtin on the allowlist.
+
+    A call is admitted ONLY when its callee is a bare ``Name`` in
+    :data:`_PURE_BUILTIN_CALLABLES`, or a ``Name.attr`` pair in :data:`_PURE_BUILTIN_METHODS`
+    whose base is the bare builtin name -- and, in both cases, the module never rebinds that
+    name. Everything else is refused: ``open`` / ``print`` / any non-builtin name, any module
+    attribute call (``os.getenv(...)``, ``pathlib.Path(...).read_text()``), an allowlisted name
+    reached as an attribute of something else (``x.range(...)``), and any call on a call's
+    result. Nested calls are each judged on their own, so an allowed call cannot launder a
+    forbidden one through its arguments.
+    """
+    tree = ast.parse(source)
+    shadowed = _names_bound_in(tree)
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            if func.id in _PURE_BUILTIN_CALLABLES and func.id not in shadowed:
+                continue
+            reason = (
+                f"`{func.id}` is shadowed in the module"
+                if func.id in _PURE_BUILTIN_CALLABLES
+                else f"`{func.id}(...)` is not an allowlisted pure builtin"
+            )
+        elif (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and (func.value.id, func.attr) in _PURE_BUILTIN_METHODS
+        ):
+            if func.value.id not in shadowed:
+                continue
+            reason = f"`{func.value.id}` is shadowed in the module"
+        else:
+            reason = f"`{ast.unparse(func)}(...)` is not an allowlisted pure builtin"
+        violations.append(f"line {node.lineno}: {reason}")
+    return violations
+
+
+def test_the_allowlist_names_only_real_builtins() -> None:
+    """The allowlist cannot name something that is not the interpreter's own builtin."""
+    for name in _PURE_BUILTIN_CALLABLES:
+        assert callable(getattr(builtins, name)), name
+    for owner, method in _PURE_BUILTIN_METHODS:
+        assert callable(getattr(getattr(builtins, owner), method)), (owner, method)
+
+
+def test_the_call_scan_reaches_the_calls_the_module_really_makes() -> None:
+    """Anti-vacuity: the manifest does make allowlisted calls, so the scan is exercised.
+
+    It also proves the allowlisted names are the builtins HERE: the manifest rebinds none of
+    them, so ``tuple`` / ``range`` / ``dict`` in it can only resolve to the interpreter's own.
+    """
+    tree = ast.parse(_module_source(), filename=str(STATE_MODULE_PATH))
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    assert calls, "the manifest makes no calls -- the allowlist would be untested"
+    trusted = _PURE_BUILTIN_CALLABLES | {owner for owner, _ in _PURE_BUILTIN_METHODS}
+    assert not _names_bound_in(tree) & trusted
+
+
 def test_the_state_module_has_no_module_level_calls() -> None:
-    """No I/O, per the manifest's own stated constraint.
+    """No I/O and no import-time side effect, per the manifest's own stated constraint.
 
     A module-level call -- a file read, a print, a function invocation used to compute a
     "constant" -- would give this module a side effect on import, breaking the promise
-    that any test at any tier can import it without cost.
+    that any test at any tier can import it without cost. The pure builtins in
+    :data:`_PURE_BUILTIN_CALLABLES` / :data:`_PURE_BUILTIN_METHODS` can do none of those
+    things and are admitted; every other call is refused (see :func:`disallowed_calls`).
     """
-    tree = ast.parse(_module_source(), filename=str(STATE_MODULE_PATH))
-    violations: list[str] = []
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            violations.append(f"line {node.lineno}: call expression found")
+    violations = disallowed_calls(_module_source())
 
     assert not violations, (
         "I/O-shaped call(s) found in tests/phase33_state.py:\n"
         + "\n".join(f"  - {line}" for line in violations)
     )
+
+
+# Each planted source is fed through the SAME scan the real manifest goes through.
+_PLANTED_VIOLATIONS: tuple[tuple[str, str, str], ...] = (
+    ("open", "X = open('data/silver/games.parquet').read()", "`open(...)`"),
+    ("print", "X = print('side effect')", "`print(...)`"),
+    ("module-attribute-getenv", "X = os.getenv('HOME')", "`os.getenv(...)`"),
+    ("path-read-text", "X = pathlib.Path('f').read_text()", "read_text"),
+    ("unknown-name", "X = compute_the_constant()", "`compute_the_constant(...)`"),
+    ("allowlisted-name-as-attribute", "X = x.range(3)", "`x.range(...)`"),
+    (
+        "allowlisted-method-off-a-module",
+        "X = helpers.dict.fromkeys((1,), 0)",
+        "`helpers.dict.fromkeys(...)`",
+    ),
+    ("shadowed-tuple", "tuple = list\nX = tuple((1, 2))", "`tuple` is shadowed"),
+    (
+        "shadowed-dict",
+        "dict = object\nX = dict.fromkeys((1,), 0)",
+        "`dict` is shadowed",
+    ),
+    (
+        "forbidden-call-inside-an-allowed-one",
+        "X = tuple(open(p) for p in ())",
+        "`open(...)`",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("planted", "expected_fragment"),
+    [(source, fragment) for _name, source, fragment in _PLANTED_VIOLATIONS],
+    ids=[name for name, _source, _fragment in _PLANTED_VIOLATIONS],
+)
+def test_a_planted_side_effecting_call_is_refused(
+    planted: str, expected_fragment: str
+) -> None:
+    """PLANTED VIOLATIONS: every shape the check exists to refuse is still refused."""
+    violations = disallowed_calls(planted)
+    assert violations, f"the scan admitted a planted violation: {planted!r}"
+    assert any(expected_fragment in line for line in violations), violations
+
+
+def test_the_allowlisted_shapes_the_manifest_uses_are_admitted() -> None:
+    """NO FALSE POSITIVE: the shapes the eleven appended entries use pass the scan."""
+    admitted = "\n".join(
+        [
+            "A = tuple((season, None) for season in range(2002, 2026))",
+            "B = dict.fromkeys(('home_elo', 'away_elo'), 'REASON')",
+            "C = dict.fromkeys(((season, None) for season in range(2018, 2026)), 'R')",
+            "D = (*((season, None) for season in range(2002, 2018)),)",
+        ]
+    )
+    assert disallowed_calls(admitted) == []
 
 
 def test_the_module_body_holds_only_assignments_a_docstring_and_the_future_import() -> (
