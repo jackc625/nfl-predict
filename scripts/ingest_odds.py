@@ -1,7 +1,31 @@
-"""Odds data ingestion from external APIs."""
+"""Odds data ingestion from external APIs.
+
+ONE REQUEST, FOUR DISTINCT INSTANTS (Plan 33.2-02, D33.2-01)
+-------------------------------------------------------------
+The live capture used to take ONE ``snapshot_time`` and use it for four incompatible
+jobs. They are kept apart now, and the plumbing names each one:
+
+* the KICKOFF-time SELECTION window (``commence_from`` / ``commence_to``) -- which games
+  to ask the API about. The Odds API filters ``commenceTimeFrom`` / ``commenceTimeTo`` on
+  KICKOFF, so this is a game-selection window and never a time fence. It is a request
+  parameter and is never stored;
+* the observed CAPTURE instant (``captured_at``) -- read once, when the response
+  returns, and stored as ``created_at``. It is never supplied by a caller;
+* each row's UPSTREAM bookmaker time (``last_update``) -- NULL when the bookmaker gives
+  none or an unparseable one, never our own instant;
+* each game's own LOCK (``snapshot_ts``) -- ``utils.game_lock.lock_frame`` over the
+  matched schedule rows, derived only after the payload game has been matched to its
+  silver ``games`` row. The schedule, not the payload, says when a game starts.
+
+All three stored values already have ``OddsSchema`` columns, so there is no schema
+change. The public input is the slate's ``schedule``: the lock map is keyed by game ids
+that only exist after the match, so no caller could supply it.
+"""
 
 import argparse
 import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,20 +38,102 @@ from tenacity import (
     wait_exponential,
 )
 
+import utils.game_lock as lock_rule
 from conf.settings import get_settings
 from data.schemas import OddsSchema
-from data.storage import get_db_connection, save_dataframe
+from data.storage import get_db_connection, load_dataframe, save_dataframe
 from utils import (
     DataIngestionError,
     ExternalAPIError,
     get_current_nfl_week,
     get_logger,
-    get_snapshot_time,
     log_data_operation,
 )
 from utils.game_id_utils import is_valid_game_id
 
 logger = get_logger(__name__)
+
+# The kickoff SELECTION window is the slate's own kickoff span widened by this much on
+# each side, so a game whose listed commence_time drifts from the schedule by a few hours
+# is still returned and then REPORTED, rather than silently missing from the response.
+COMMENCE_WINDOW_MARGIN = timedelta(hours=12)
+
+# A payload commence_time further than this from the matched schedule kickoff is
+# reported by game id as a possible schedule move (R8 / D33.2-04). The schedule kickoff
+# is used either way; resolving a move is not an ingest script's job.
+COMMENCE_TIME_TOLERANCE = timedelta(hours=1)
+
+# The silver ``games`` columns the per-game match and the lock need.
+SCHEDULE_COLUMNS: tuple[str, ...] = (
+    "game_id",
+    "season",
+    "week",
+    "home_team",
+    "away_team",
+    "kickoff_et",
+)
+
+
+def _observe_capture_instant() -> datetime:
+    """The instant a response is OBSERVED, read once per request.
+
+    A named seam so a test fixes the capture instant by patching the clock, never by
+    passing a value: an instant a caller or operator could assert would be a
+    manufactured timestamp (RESEARCH P1).
+    """
+    return datetime.now(UTC)
+
+
+def _parse_commence_time(value: Any) -> datetime | None:
+    """A payload ``commence_time`` as a UTC instant, or None when absent or unparseable."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def load_schedule_slice(season: int, week: int) -> pd.DataFrame:
+    """The silver ``games`` rows for one slate, READ ONLY, in the shape the ingest needs.
+
+    Raises:
+        DataIngestionError: when the slate has no scheduled game. A request with no
+            schedule has no per-game lock to stamp, and guessing one is the defect.
+    """
+    games = load_dataframe("games", layer="silver")
+    missing = [c for c in SCHEDULE_COLUMNS if c not in games.columns]
+    if missing:
+        msg = f"silver games is missing {missing}; the odds ingest cannot match games"
+        raise DataIngestionError(msg)
+    slate = games[(games["season"] == season) & (games["week"] == week)]
+    if slate.empty:
+        msg = (
+            f"no scheduled games for {season} week {week} in silver games; the odds "
+            "ingest refuses to run without a schedule to derive per-game locks from"
+        )
+        raise DataIngestionError(msg)
+    return slate[list(SCHEDULE_COLUMNS)].reset_index(drop=True)
+
+
+@dataclass(frozen=True)
+class LiveOddsMatchReport:
+    """What the last transform could not match, and where payload and schedule disagreed.
+
+    Attributes:
+        unmatched_games: Payload games with no schedule row, named by teams and listed
+            commence_time. Each was SKIPPED: it has no kickoff, so it has no lock.
+        kickoff_disagreements: Game ids whose payload commence_time differs from the
+            schedule kickoff by more than :data:`COMMENCE_TIME_TOLERANCE`. The schedule
+            kickoff was used for every one of them.
+    """
+
+    unmatched_games: tuple[str, ...] = ()
+    kickoff_disagreements: tuple[str, ...] = ()
+
 
 # Sentinel substituted for the live API key in any logged params dict so the
 # secret never reaches the DEBUG log (review 29-03 MED).
@@ -571,7 +677,12 @@ class OddsDataIngester:
     def _create_game_id_from_odds(
         self, game_data: dict[str, Any], season: int, week: int
     ) -> str:
-        """Create game ID from odds data."""
+        """Create a game ID from odds data and the MATCHED schedule row's season/week.
+
+        The season and week come from the game's own schedule row, never from the
+        request: the request window spans eight days and so two NFL weeks, and stamping
+        every payload game with the requesting week mis-keyed the second week's games.
+        """
         home_team = self._normalize_team_name(game_data["home_team"])
         away_team = self._normalize_team_name(game_data["away_team"])
 
@@ -685,27 +796,112 @@ class OddsDataIngester:
 
         return market_data
 
+    def _match_schedule_row(
+        self, game_data: dict[str, Any], schedule: pd.DataFrame
+    ) -> pd.Series | None:
+        """The payload game's silver ``games`` row, or None when it has none.
+
+        Matched by canonical home and away team. When a slate holds the same pairing
+        twice (a window spanning a rematch), the row whose kickoff is nearest the listed
+        commence_time wins; with no usable commence_time that case is unmatched rather
+        than guessed.
+        """
+        home = self._normalize_team_name(game_data["home_team"])
+        away = self._normalize_team_name(game_data["away_team"])
+        candidates = schedule[
+            (schedule["home_team"] == home) & (schedule["away_team"] == away)
+        ]
+        if len(candidates) == 1:
+            return candidates.iloc[0]
+        if candidates.empty:
+            return None
+        commence = _parse_commence_time(game_data.get("commence_time"))
+        if commence is None:
+            return None
+        gaps = (pd.to_datetime(candidates["kickoff_et"], utc=True) - commence).abs()
+        return candidates.loc[gaps.idxmin()]
+
     def _process_game_odds(
-        self, game_data: dict[str, Any], snapshot_time: datetime, season: int, week: int
+        self,
+        game_data: dict[str, Any],
+        *,
+        schedule: pd.DataFrame,
+        locks: Mapping[str, datetime],
+        captured_at: datetime,
     ) -> list[dict[str, Any]]:
-        """Process odds for a single game."""
-        game_id = self._create_game_id_from_odds(game_data, season, week)
+        """Process odds for a single game, stamping each row with that game's OWN lock.
+
+        Args:
+            game_data: One event from the Odds API response.
+            schedule: The slate's silver ``games`` rows.
+            locks: ``game_id -> lock`` from ``utils.game_lock.lock_frame(schedule)``.
+            captured_at: The instant the response was observed; becomes ``created_at``.
+
+        Returns:
+            One record per bookmaker, or ``[]`` when the game matches no schedule row --
+            a game with no kickoff has no lock, and guessing one is the failure this
+            interface exists to end.
+        """
+        matched = self._match_schedule_row(game_data, schedule)
+        if matched is None:
+            self._unmatched.append(
+                f"{game_data.get('away_team')} @ {game_data.get('home_team')} "
+                f"(commence_time {game_data.get('commence_time')})"
+            )
+            logger.warning(
+                "Odds payload game has no schedule row; skipped rather than stamped "
+                "with a guessed lock",
+                home_team=game_data.get("home_team"),
+                away_team=game_data.get("away_team"),
+                commence_time=game_data.get("commence_time"),
+            )
+            return []
+
+        game_id = self._create_game_id_from_odds(
+            game_data, int(matched["season"]), int(matched["week"])
+        )
+        if game_id != str(matched["game_id"]) or game_id not in locks:
+            # The id built from the matched row must BE that row's id, or the lock looked
+            # up below would belong to a different key than the row written.
+            self._unmatched.append(f"{game_id} (schedule id {matched['game_id']})")
+            logger.warning(
+                "Odds game id does not equal its matched schedule id; skipped",
+                game_id=game_id,
+                schedule_game_id=str(matched["game_id"]),
+            )
+            return []
+        lock = locks[game_id]
+
+        commence = _parse_commence_time(game_data.get("commence_time"))
+        scheduled = pd.Timestamp(matched["kickoff_et"]).to_pydatetime()
+        if commence is not None and abs(commence - scheduled) > COMMENCE_TIME_TOLERANCE:
+            self._kickoff_disagreements.append(game_id)
+            logger.warning(
+                "Payload commence_time disagrees with the schedule kickoff; possible "
+                "schedule move (R8). The SCHEDULE kickoff and its lock are used.",
+                game_id=game_id,
+                payload_commence_time=commence.isoformat(),
+                schedule_kickoff=scheduled.isoformat(),
+            )
 
         odds_records = []
 
         for bookmaker in game_data.get("bookmakers", []):
             sportsbook = bookmaker.get("key", "unknown")
-            last_update = bookmaker.get("last_update")
+            raw_update = bookmaker.get("last_update")
 
-            if last_update:
+            # An absent or unparseable bookmaker time is UNKNOWN and stays NULL. Filling
+            # it with our own capture instant (or the lock) would make a manufactured
+            # stamp read as the bookmaker's own (RESEARCH P1, T-33.2-02-12). Plan 33.2-27
+            # adds the market-level last_update as a real fallback.
+            last_update: datetime | None = None
+            if raw_update:
                 try:
-                    last_update = datetime.fromisoformat(
-                        last_update.replace("Z", "+00:00")
-                    )
-                except (ValueError, TypeError):
-                    last_update = snapshot_time
-            else:
-                last_update = snapshot_time
+                    parsed = datetime.fromisoformat(raw_update.replace("Z", "+00:00"))
+                except (ValueError, TypeError, AttributeError):
+                    parsed = None
+                if parsed is not None and parsed.tzinfo is not None:
+                    last_update = parsed
 
             # Extract all market types
             sides = {
@@ -719,9 +915,10 @@ class OddsDataIngester:
             # Combine all odds data
             odds_record = {
                 "game_id": game_id,
-                "snapshot_ts": snapshot_time,
+                "snapshot_ts": lock,
                 "sportsbook": sportsbook,
                 "last_update": last_update,
+                "created_at": captured_at,
                 "is_live": False,  # Assume pre-game for now
                 **h2h_odds,
                 **spread_odds,
@@ -735,24 +932,31 @@ class OddsDataIngester:
     def transform_odds_data(
         self,
         raw_odds: list[dict[str, Any]],
-        snapshot_time: datetime,
-        season: int,
-        week: int,
+        *,
+        schedule: pd.DataFrame,
+        locks: Mapping[str, datetime],
+        captured_at: datetime,
     ) -> pd.DataFrame:
-        """Transform raw odds data to schema format."""
+        """Transform raw odds data to schema format, one lock per matched game.
+
+        Records what could not be matched, and where payload and schedule disagreed, on
+        ``self.last_match_report`` (:class:`LiveOddsMatchReport`).
+        """
         logger.info(
             "Transforming odds data",
             input_games=len(raw_odds),
-            season=season,
-            week=week,
+            scheduled_games=len(schedule),
+            captured_at=captured_at.isoformat(),
         )
 
+        self._unmatched: list[str] = []
+        self._kickoff_disagreements: list[str] = []
         all_odds_records = []
 
         for game_data in raw_odds:
             try:
                 game_odds = self._process_game_odds(
-                    game_data, snapshot_time, season, week
+                    game_data, schedule=schedule, locks=locks, captured_at=captured_at
                 )
                 all_odds_records.extend(game_odds)
 
@@ -763,11 +967,17 @@ class OddsDataIngester:
                 continue
 
         odds_df = pd.DataFrame(all_odds_records)
+        self.last_match_report = LiveOddsMatchReport(
+            unmatched_games=tuple(self._unmatched),
+            kickoff_disagreements=tuple(self._kickoff_disagreements),
+        )
 
         logger.info(
             "Transformed odds data",
             input_games=len(raw_odds),
             output_records=len(odds_df),
+            unmatched_games=len(self._unmatched),
+            kickoff_disagreements=len(self._kickoff_disagreements),
         )
 
         return odds_df
@@ -816,17 +1026,25 @@ class OddsDataIngester:
         self,
         season: int | None = None,
         week: int | None = None,
-        snapshot_time: datetime | None = None,
+        *,
+        schedule: pd.DataFrame,
+        commence_from: datetime | None = None,
+        commence_to: datetime | None = None,
         markets: list[str] | None = None,
         bookmakers: list[str] | None = None,
     ) -> pd.DataFrame:
         """
-        Full odds data ingestion pipeline.
+        Full odds data ingestion pipeline, stamping every row with its own game's lock.
 
         Args:
-            season: Season to ingest (default: current)
-            week: Week to ingest (default: current)
-            snapshot_time: Time of odds snapshot (default: Friday 6PM ET)
+            season: Season the slate belongs to; names the bronze file (default: current).
+            week: Week the slate belongs to; names the bronze file (default: current).
+            schedule: The slate's silver ``games`` rows. THE one input both the
+                game-id match and each game's lock are derived from.
+            commence_from: Start of the KICKOFF-time selection window. Default: the
+                schedule's earliest kickoff minus :data:`COMMENCE_WINDOW_MARGIN`.
+            commence_to: End of the KICKOFF-time selection window. Default: the
+                schedule's latest kickoff plus :data:`COMMENCE_WINDOW_MARGIN`.
             markets: Markets to fetch
             bookmakers: Bookmakers to include
 
@@ -838,8 +1056,28 @@ class OddsDataIngester:
             season = season or current_season
             week = week or current_week
 
-        if snapshot_time is None:
-            snapshot_time = get_snapshot_time()
+        missing = [c for c in SCHEDULE_COLUMNS if c not in schedule.columns]
+        if missing or schedule.empty:
+            msg = (
+                f"ingest_odds needs a non-empty schedule carrying {list(SCHEDULE_COLUMNS)}"
+                f" (missing: {missing}, rows: {len(schedule)}); without it no game has a "
+                "lock to stamp"
+            )
+            raise DataIngestionError(msg)
+
+        # The per-game locks, from the ONE rule, over the schedule's own kickoffs.
+        locks: dict[str, datetime] = {
+            str(game_id): lock.to_pydatetime()
+            for game_id, lock in lock_rule.lock_frame(schedule).items()
+        }
+
+        # The KICKOFF-time selection window. commenceTimeFrom / commenceTimeTo filter on
+        # KICKOFF, so this chooses which games to ask about -- it is not a time fence.
+        kickoffs = pd.to_datetime(schedule["kickoff_et"], utc=True)
+        if commence_from is None:
+            commence_from = kickoffs.min().to_pydatetime() - COMMENCE_WINDOW_MARGIN
+        if commence_to is None:
+            commence_to = kickoffs.max().to_pydatetime() + COMMENCE_WINDOW_MARGIN
 
         if markets is None:
             markets = ["h2h", "spreads", "totals"]
@@ -848,7 +1086,9 @@ class OddsDataIngester:
             "Starting odds data ingestion",
             season=season,
             week=week,
-            snapshot_time=snapshot_time.isoformat(),
+            scheduled_games=len(schedule),
+            commence_from=commence_from.isoformat(),
+            commence_to=commence_to.isoformat(),
             markets=markets,
             bookmakers=bookmakers,
         )
@@ -858,23 +1098,25 @@ class OddsDataIngester:
             raw_odds = self.api_client.get_nfl_odds(
                 markets=markets,
                 bookmakers=bookmakers,
-                date_from=snapshot_time - timedelta(days=1),
-                date_to=snapshot_time + timedelta(days=7),
+                date_from=commence_from,
+                date_to=commence_to,
             )
+            # Read ONCE, when the response returns: the one capture instant every row
+            # of this response carries as created_at.
+            captured_at = _observe_capture_instant()
 
             # Transform to our schema
-            odds_df = self.transform_odds_data(raw_odds, snapshot_time, season, week)
+            odds_df = self.transform_odds_data(
+                raw_odds, schedule=schedule, locks=locks, captured_at=captured_at
+            )
 
             if odds_df.empty:
                 logger.warning("No odds data to process")
                 return odds_df
 
-            # Validate data
+            # Validate data. created_at arrives on every row as the observed capture
+            # instant; no second clock read happens at the write.
             validated_df = self.validate_odds_data(odds_df)
-
-            # Add metadata timestamp (timezone-aware UTC for schema consistency)
-
-            validated_df["created_at"] = datetime.now(UTC)
 
             # Save to bronze layer (raw)
             save_dataframe(
@@ -909,7 +1151,7 @@ class OddsDataIngester:
                 rows=len(validated_df),
                 season=season,
                 week=week,
-                snapshot_time=snapshot_time.isoformat(),
+                captured_at=captured_at.isoformat(),
             )
 
             logger.info(
@@ -941,12 +1183,9 @@ def main():
 
     parser = add_standard_ingestion_args(parser)
 
-    # Add odds-specific arguments
-    parser.add_argument(
-        "--snapshot-time",
-        type=str,
-        help="Snapshot time (ISO format, default: Friday 6PM ET)",
-    )
+    # Add odds-specific arguments. There is deliberately NO flag for the capture time: the
+    # capture instant is observed when the response returns, and a flag letting an
+    # operator assert it would manufacture a timestamp (RESEARCH P1, Plan 33.2-02).
     parser.add_argument(
         "--markets",
         nargs="+",
@@ -995,14 +1234,8 @@ def main():
         # Log what we're about to ingest
         logger.info(f"Starting odds data ingestion for season {season}, week {week}")
 
-        # Parse snapshot time
-        snapshot_time = None
-        if args.snapshot_time:
-            try:
-                snapshot_time = datetime.fromisoformat(args.snapshot_time)
-            except ValueError:
-                print(f"Invalid snapshot time format: {args.snapshot_time}")
-                sys.exit(1)
+        # The slate's schedule: the one input each game's id and lock come from.
+        schedule = load_schedule_slice(season, week)
 
         # Initialize ingester
         api_key = args.api_key if not args.mock else None
@@ -1015,7 +1248,7 @@ def main():
         odds_df = ingester.ingest_odds(
             season=season,
             week=week,
-            snapshot_time=snapshot_time,
+            schedule=schedule,
             markets=args.markets,
             bookmakers=args.bookmakers,
         )

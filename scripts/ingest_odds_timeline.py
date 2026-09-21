@@ -4,8 +4,9 @@ This is the shared ingest/capture entry point for the line-movement signal
 (SIG-04), with two modes:
 
 * ``--backfill <start> <end>`` -- the PAID historical path. For each season in
-  range and each weekly snapshot timestamp T (the D-12 intraweek cadence:
-  open ~Tue / Wed / Thu / Fri-18:00-ET freeze), it calls
+  range and each requested timestamp T -- the three week-level D-12 cadence
+  samples (open Tue / intraweek Wed / late Thu, noon ET) plus the DISTINCT
+  per-game lock instants of that week's games (Plan 33.2-02) -- it calls
   ``OddsAPIClient.get_historical_nfl_odds`` ONCE per timestamp (whole board),
   normalizes each raw API game envelope into a consensus-median row, and writes
   to the additive ``odds_timeline`` silver table via ``upsert_silver_composite``
@@ -22,9 +23,11 @@ CRITICAL invariants:
   T -- storing T loses provenance and distorts trajectory ordering / inter-
   snapshot spacing that the late/steam path features depend on (review 29-03
   HIGH).
-* The Friday-18:00 freeze fence is computed in ``ZoneInfo("America/New_York")``,
-  never UTC (a UTC-localized 18:00 is 4-5 hours early and silently drops
-  legitimate ET-evening snapshots -- the WR-02 lesson).
+* Collection CADENCE and ADMISSIBILITY are separate. The cadence is a sampling
+  decision and stays week-level; admissibility is per game, and each game's lock
+  comes from ``utils.game_lock`` (18:00 ET on the ET day before kickoff), an
+  ``America/New_York`` instant, never a UTC-localized 18:00 (the WR-02 lesson).
+  The single week-level Friday freeze this module used to request is retired.
 * The backfill path HARD-FAILS on mock mode -- only REAL archived odds enter
   ``odds_timeline`` (OUM-06 discipline).
 * This script writes ONLY ``odds_timeline`` + bronze; it never writes
@@ -53,6 +56,7 @@ from typing import Any
 
 import pandas as pd
 
+import utils.game_lock as lock_rule
 from conf.settings import get_settings
 from data.schemas import OddsTimelineSchema
 from data.storage import save_bronze_snapshot, upsert_silver_composite
@@ -61,7 +65,6 @@ from utils import (
     DataIngestionError,
     get_current_nfl_week,
     get_logger,
-    get_snapshot_time,
 )
 from utils.date_utils import ET, get_nfl_season_start
 from utils.game_id_utils import create_standard_game_id
@@ -98,15 +101,20 @@ _MAX_DERIVABLE_WEEK = 22
 # minutes (10-minute archive cadence), but older seasons may be coarser, so the
 # window is deliberately generous.
 #
-# 12 hours is safe against FALSE skips by construction: consecutive D-12 cadence
-# timestamps are at least 24h apart (Tue noon -> Wed noon -> Thu noon -> Fri
-# 18:00 ET), so a snapshot stored for one cadence point can never fall inside
-# the next cadence point's ``(T - 12h, T]`` window.
-_SNAPSHOT_MATCH_LOOKBACK = timedelta(hours=12)
+# The window must stay BELOW the closest spacing of any two requested instants, or a
+# snapshot stored for one would falsely count as covering the next. Cadence samples
+# are 24h apart, but the requested set now also holds per-game LOCK instants
+# (Plan 33.2-02), and the closest pairs are SIX hours apart: a Thursday game locks
+# Wednesday 18:00 ET, six hours after the Wednesday-noon sample, and a Friday game
+# locks Thursday 18:00 ET, six hours after the Thursday-noon sample. The former 12h
+# window would have skipped both of those lock requests as already stored. 3h is
+# half the closest spacing, and still 18x the observed ~10-minute archive drift.
+_SNAPSHOT_MATCH_LOOKBACK = timedelta(hours=3)
 
 # WR-03 spend ceiling. The skip guard bounds RE-spend; these bound spend itself.
 #
-# A full single-season pull is 18 weeks x 4 cadence points = 72 paid calls, so 400
+# A full single-season pull is 18 weeks x (3 cadence samples + about 3-4 distinct
+# locks) = roughly 110-130 paid calls, so 400
 # leaves room for a deliberate multi-season run while keeping a typo'd
 # `--backfill 2015 2024` (which would otherwise issue ~720 calls with nothing
 # between the loop and the account balance) bounded and re-runnable.
@@ -170,18 +178,20 @@ def _credits_remaining(headers: Any) -> int | None:
         return None
 
 
-def weekly_snapshot_timestamps(season: int, week: int) -> list[tuple[str, datetime]]:
-    """Return the four D-12 intraweek capture timestamps for a game week.
+def weekly_cadence_timestamps(season: int, week: int) -> list[tuple[str, datetime]]:
+    """Return the three week-level D-12 trajectory samples for a game week.
 
-    The cadence captures the FULL open->freeze path (D-08) -- the only way to
-    support the steam/path features -- as four fixed ET instants anchored to the
-    game week:
+    COLLECTION CADENCE IS A SAMPLING DECISION, NOT AN ADMISSIBILITY BOUNDARY. These
+    three fixed ET instants sample the open-to-lock path (D-08) for the steam/path
+    features and legitimately stay week-level:
 
     * ``open``      -- Tuesday 12:00 ET
     * ``intraweek`` -- Wednesday 12:00 ET
     * ``late``      -- Thursday 12:00 ET
-    * ``freeze``    -- Friday 18:00 ET (the freeze fence; resolved via
-      ``get_snapshot_time`` in ET, never UTC -- WR-02)
+
+    There is no fourth, week-level cutoff member. What is admissible for a game is
+    decided per game by its own lock -- see :func:`game_lock_instants`, which needs
+    the schedule this function deliberately does not take.
 
     Args:
         season: NFL season year.
@@ -196,11 +206,6 @@ def weekly_snapshot_timestamps(season: int, week: int) -> list[tuple[str, dateti
     week_tuesday = week_thursday - timedelta(days=2)
     week_wednesday = week_thursday - timedelta(days=1)
 
-    # Resolve the Friday-18:00-ET freeze for this game week in ET (WR-02):
-    # passing the week's Tuesday lands get_snapshot_time on the SAME week's
-    # Friday.
-    freeze_et = get_snapshot_time(week_tuesday, "Friday 18:00")
-
     def _et_noon(day: datetime) -> datetime:
         return datetime(day.year, day.month, day.day, 12, 0, tzinfo=ET)
 
@@ -208,9 +213,79 @@ def weekly_snapshot_timestamps(season: int, week: int) -> list[tuple[str, dateti
         ("open", _et_noon(week_tuesday)),
         ("intraweek", _et_noon(week_wednesday)),
         ("late", _et_noon(week_thursday)),
-        ("freeze", freeze_et),
     ]
     return [(label, dt.astimezone(UTC)) for label, dt in anchors]
+
+
+def game_lock_instants(games_df: pd.DataFrame) -> list[tuple[str, str, datetime]]:
+    """The DISTINCT per-game lock instants of *games_df*, through the one rule.
+
+    Every instant is ``utils.game_lock.lock_frame`` over the games' own kickoffs --
+    18:00 ET on the ET day before kickoff (D33.2-01). Games that share a lock collapse
+    into ONE entry before any caller spends a credit: every Sunday game of a week
+    locks at the same Saturday 18:00 ET, so a typical week has three or four distinct
+    locks (Wednesday for a Thursday game, Friday for a Saturday game, Saturday for
+    the Sunday slate, Sunday for Monday night), not one per game.
+
+    Args:
+        games_df: A schedule frame carrying ``game_id`` and a tz-aware
+            ``kickoff_et``.
+
+    Returns:
+        ``(label, game_ids, lock_utc)`` per distinct lock, sorted by instant, where
+        ``label`` is ``"lock"`` and ``game_ids`` names every game sharing that lock,
+        comma-joined and sorted.
+
+    Raises:
+        utils.game_lock.MissingKickoffError: naming every game with no kickoff -- no
+            lock is emitted for the rows that could be computed.
+    """
+    if games_df.empty:
+        return []
+    locks = lock_rule.lock_frame(games_df)
+    by_instant: dict[datetime, list[str]] = {}
+    for game_id, lock in locks.items():
+        instant = lock.to_pydatetime().astimezone(UTC)
+        by_instant.setdefault(instant, []).append(str(game_id))
+    return [
+        ("lock", ",".join(sorted(ids)), instant)
+        for instant, ids in sorted(by_instant.items())
+    ]
+
+
+def _week_request_instants(
+    games: pd.DataFrame, season: int, week: int
+) -> list[tuple[str, datetime]]:
+    """The union a backfill requests for one week: cadence samples, then locks."""
+    week_games = games[(games["season"] == season) & (games["week"] == week)]
+    cadence = weekly_cadence_timestamps(season, week)
+    locks = [(label, lock) for label, _ids, lock in game_lock_instants(week_games)]
+    return [*cadence, *locks]
+
+
+def _load_backfill_schedule(base_path: Path | None) -> pd.DataFrame:
+    """The silver ``games`` schedule the backfill derives its lock instants from.
+
+    Raises:
+        DataIngestionError: when it cannot be read. No schedule means no per-game lock,
+            and a backfill that guessed one would buy data against the wrong instant.
+    """
+    if base_path is None:
+        base_path = Path(get_settings().config.data.root_path)
+    games_path = base_path / "silver" / "games.parquet"
+    try:
+        return pd.read_parquet(
+            games_path,
+            columns=["game_id", "season", "week", "kickoff_et"],
+            engine="pyarrow",
+        )
+    except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
+        msg = (
+            f"cannot backfill odds_timeline without a schedule: {games_path} could not "
+            f"be read ({exc}). Each game's lock is derived from its kickoff, so a "
+            "missing schedule is refused rather than guessed around."
+        )
+        raise DataIngestionError(msg) from exc
 
 
 def _parse_envelope_timestamp(timestamp: str | None) -> datetime:
@@ -555,13 +630,15 @@ def backfill_timeline(
     base_path: Path | None = None,
     max_paid_calls: int = DEFAULT_MAX_PAID_CALLS,
     min_credits_remaining: int = DEFAULT_MIN_CREDITS_REMAINING,
+    games: pd.DataFrame | None = None,
 ) -> int:
     """Backfill the odds trajectory from the PAID historical endpoint.
 
-    For each season and each weekly snapshot timestamp T, calls
-    ``get_historical_nfl_odds`` ONCE (whole board), normalizes the envelope into
-    consensus rows stamped on the ENVELOPE timestamp, and writes them
-    idempotently into ``odds_timeline``.
+    For each season and week it requests the union of the three week-level cadence
+    samples and the week's DISTINCT per-game lock instants (Plan 33.2-02): for each
+    requested timestamp T it calls ``get_historical_nfl_odds`` ONCE (whole board),
+    normalizes the envelope into consensus rows stamped on the ENVELOPE timestamp,
+    and writes them idempotently into ``odds_timeline``.
 
     HARD-FAILS on mock mode -- only real archived odds enter ``odds_timeline``
     (OUM-06). The check runs BEFORE any call so no synthetic data is ever
@@ -594,16 +671,22 @@ def backfill_timeline(
         weeks: Optional explicit week list (default weeks 1..18).
         base_path: Optional data root (for tests); defaults to settings.
         max_paid_calls: Hard ceiling on PAID calls in one invocation. Sized above
-            a full single-season pull (18 weeks x 4 cadence points = 72) with room
-            for a multi-season run, and far below a runaway.
+            a full single-season pull (18 weeks x 3 cadence samples plus about
+            3-4 distinct locks, roughly 110-130 calls) with room for a multi-season
+            run, and far below a runaway.
         min_credits_remaining: Abort when the API reports fewer remaining credits
             than this. A floor, not a budget: it leaves headroom for the weekly
             forward-collect job rather than draining the account to zero.
+        games: The schedule the lock instants are derived from (``game_id``,
+            ``season``, ``week``, ``kickoff_et``). Read from silver ``games`` under
+            *base_path* when omitted.
 
     Returns:
         Total rows written across all snapshots.
 
     Raises:
+        DataIngestionError: If no schedule is supplied and none can be read. Raised
+            before any paid call.
         MockModeBackfillError: If ``client`` is in mock mode.
         SpendGuardError: If the credit floor or the call ceiling is hit. Raised
             AFTER the current snapshot's rows are written, so an abort never
@@ -619,6 +702,9 @@ def backfill_timeline(
     if markets is None:
         markets = DEFAULT_MARKETS
 
+    # The schedule the per-game lock instants come from, resolved BEFORE any paid call.
+    schedule = _load_backfill_schedule(base_path) if games is None else games
+
     # Spend-safety guard: one read of what is already on disk FOR THESE MARKETS,
     # kept current as the loop writes so a resumed backfill never re-buys stored
     # timestamps -- and never skips a timestamp that lacks a requested market.
@@ -632,7 +718,7 @@ def backfill_timeline(
             weeks if weeks is not None else range(1, _REGULAR_SEASON_WEEKS + 1)
         )
         for week in target_weeks:
-            for label, snapshot_t in weekly_snapshot_timestamps(season, week):
+            for label, snapshot_t in _week_request_instants(schedule, season, week):
                 t_iso = snapshot_t.strftime("%Y-%m-%dT%H:%M:%SZ")
 
                 if _snapshot_already_stored(snapshot_t, stored_snapshots):
@@ -823,8 +909,9 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_PAID_CALLS,
         help=f"Hard ceiling on PAID historical calls in one --backfill run "
-        f"(default: {DEFAULT_MAX_PAID_CALLS}). A full season is 72 calls "
-        f"(18 weeks x 4 cadence points). Hitting the ceiling aborts; re-run to "
+        f"(default: {DEFAULT_MAX_PAID_CALLS}). A full season is roughly 110-130 "
+        f"calls (18 weeks x 3 cadence samples + each week's distinct game locks). "
+        f"Hitting the ceiling aborts; re-run to "
         f"continue, since stored snapshots are skipped without a paid call",
     )
     parser.add_argument(

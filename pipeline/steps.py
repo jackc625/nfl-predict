@@ -597,11 +597,20 @@ def step_verify_data_artifacts() -> None:
 
 
 def step_ingest_odds() -> None:
-    """Capture odds snapshot from The Odds API."""
-    from scripts.ingest_odds import OddsDataIngester
+    """Capture odds snapshot from The Odds API, each row stamped with its game's own lock.
 
-    ingester = OddsDataIngester()
-    ingester.ingest_odds()
+    The step passes the slate's silver ``games`` slice as ``schedule`` -- the one input
+    the ingest derives both each game's id and each game's lock from (Plan 33.2-02). It
+    used to call ``ingest_odds()`` with no arguments and silently inherit a single
+    preceding-Friday instant for the whole request. It computes NO lock map itself: that
+    would be a second derivation of what ``utils.game_lock.lock_frame`` owns.
+    """
+    import scripts.ingest_odds as ingest_odds_module
+
+    season, week = _resolve_current_week()
+    schedule = ingest_odds_module.load_schedule_slice(season, week)
+    ingester = ingest_odds_module.OddsDataIngester()
+    ingester.ingest_odds(season=season, week=week, schedule=schedule)
 
 
 def step_build_market_anchors() -> None:
