@@ -124,6 +124,24 @@ class TestTheBoundsWereCommittedFirst:
     def test_the_readout_names_the_tolerance_commit(self) -> None:
         assert _tolerance_commit() in _readout()
 
+    def test_the_state_manifest_witnesses_the_same_two_commits(self) -> None:
+        """The appended slot names the commits git resolves, and the order holds."""
+        from tests import phase33_state
+
+        assert _tolerance_commit() == phase33_state.P332_11_MOS_TOLERANCE_COMMIT
+        assert _readout_add_commit() == phase33_state.P332_11_MOS_READOUT_COMMIT
+
+
+def test_the_witnessed_schema_width_is_the_live_one() -> None:
+    """The slot's WeatherSchema width is measured, not transcribed from a guess."""
+    from data.schemas import WeatherSchema
+    from tests import phase33_state
+
+    assert (
+        len(WeatherSchema.model_fields)
+        == phase33_state.P332_11_WEATHER_SCHEMA_FIELDS_AFTER_MOS
+    )
+
 
 # ---------------------------------------------------------------------------
 # Doc drift

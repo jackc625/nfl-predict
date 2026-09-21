@@ -15148,3 +15148,67 @@ P332_10_RUNG3B_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
     "gold/features_wp.parquet",
     "nfl_predictions.duckdb",
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-11 Task 3 -- THE ARCHIVED DAY-BEFORE FORECAST BULLETINS (MOS): pre-registration
+# witness, bronze backfill and decode comparison (D33.2-12 / D33.2-13, SPEC R6).
+#
+# APPENDED ONCE by Plan 33.2-11 on 2026-09-21, in ONE block. Nothing above this line was
+# edited. Plan 33.2-08's <owned_protocol_witness> W5 names the first constant.
+#
+# THE PRE-REGISTRATION. config/mos_tolerance.py (the six detection bounds, the QPF midpoint
+# anchoring and the transmission argument) was committed ALONE in the commit below, after the
+# owner's three rulings of 2026-09-21 and before any comparison number existed. The readout
+# commit below is a strict descendant of it; tests/unit/test_mos_tolerance_ancestry.py
+# recomputes both from git and asserts the ancestry, and asserts this slot names the same
+# tolerance commit git resolves.
+#
+# THE BACKFILL, MEASURED 2026-09-21 over data/bronze/mos/ (nothing outside it moved: the
+# digest bracket outputs/p332_mos_before.json -> after named only bronze/mos/ keys, and the
+# second run over complete bronze made zero requests and moved nothing, bracket
+# outputs/p332_mos_rerun_before.json). One request per (station, season, model segment):
+# 644 segments, 24 of them the extra 2003 AVN/GFS splits, 33 stations. 5,413 covered games
+# (US outdoor or retractable roof, venue at the lock), 5,412 resolved; the one unresolved game
+# rests on a run CONFIRMED ABSENT from the archive (the date-range endpoint omitted it and the
+# single-run endpoint answered "no results"), recorded in bronze, never filled from another
+# run. 56 games at non-US venues are uncoverable: no US forecast station exists for them.
+#
+# THE COMPARISON (MOS-DECODE-COMPARISON.md): VERDICT PASS on all six bounds, both over all
+# 4,793 compared games and excluding the 57 covered games of the 68-game 09:00 ET kickoff
+# subset. Only the RULING is witnessed here; the point estimates live in the readout and are
+# never pinned.
+#
+# THE SCHEMA WIDTH. WeatherSchema gained five fields in Plan 33.2-11 Task 2
+# (forecast_issue_time, mos_model, mos_station, mos_qpf_category, mos_precip_level): 25 -> 30,
+# MEASURED as len(data.schemas.WeatherSchema.model_fields). The stored silver table is still
+# WEATHER_COLUMNS_AFTER_COVERAGE wide; Plan 33.2-12's silver regeneration is the write that
+# widens it.
+# ---------------------------------------------------------------------------
+
+P332_11_MOS_TOLERANCE_COMMIT: str = "3e19d95d476d9e424df0c0460b84daec6cf2e3b7"
+
+P332_11_MOS_READOUT_COMMIT: str = "b1abb040a7fc064e5cf49a6a720c9946e1b7f8d7"
+
+P332_11_OWNER_RULINGS_DATE: str = "2026-09-21"
+
+P332_11_MOS_SEGMENTS_PLANNED: int = 644
+
+P332_11_MOS_SPLIT_SEASON_REQUESTS: int = 24
+
+P332_11_MOS_STATIONS: int = 33
+
+P332_11_MOS_COVERED_GAMES: int = 5413
+
+P332_11_MOS_RESOLVED_GAMES: int = 5412
+
+P332_11_MOS_UNCOVERABLE_GAMES: int = 56
+
+P332_11_MOS_UNRESOLVED_GAME_IDS: tuple[str, ...] = ("2019_W18_BUF@HOU",)
+
+P332_11_MOS_ABSENT_RUNS: tuple[str, ...] = ("KHOU GFS 2020-01-03T12:00:00.000",)
+
+P332_11_MOS_COMPARISON_VERDICT: str = "PASS"
+
+P332_11_WEATHER_SCHEMA_FIELDS_AFTER_MOS: int = 30
+
+P332_11_DIGEST_BRACKET_PATH_PREFIX: str = "bronze/mos/"
