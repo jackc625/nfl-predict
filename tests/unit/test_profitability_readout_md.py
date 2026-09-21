@@ -89,6 +89,7 @@ from backtest.ev_chain_constants import (
     READOUT_REQUIRED_FIELDS,
     VERDICT_TOKENS,
 )
+from tests.unit.test_old_rule_labels import ADDENDUM_SENTINEL, LABEL_PHRASE
 
 # Repo root resolved from this file: tests/unit/test_profitability_readout_md.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -101,6 +102,12 @@ TARGETS: tuple[str, ...] = ("wp", "ats", "ou")
 # supersede. Their content hashes are pinned here, resolved at test-authoring time (2026-09-06).
 # Asserting the hashes is what mechanically discharges the prohibition: a whitespace-only edit to
 # any of them fails this module.
+#
+# 2026-09-21 (Phase 33.2, R16 / owner ruling D33.2-07, recorded in 33.2-CONTEXT.md): each of these
+# documents gained ONE appended old-rule addendum opening with ``ADDENDUM_SENTINEL``. The pins were
+# deliberately NOT moved to the new file hashes, because that would stop protecting the originals.
+# They still hash the ORIGINAL content -- everything before the addendum -- so a whitespace-only
+# edit to the original text still fails here, and so does an addendum that lacks the label.
 PRIOR_READOUT_SHA256: dict[str, str] = {
     "ACTIVATION-READOUT.md": (
         "8d73a1715b454af1bb41d61ac69d74fc0482edfe7e1faee58280ab7e7ae5f7cd"
@@ -138,8 +145,11 @@ FIGURE_SOURCES: tuple[str, ...] = (
 # Structural literals that are NOT measurements and must not be classified as restated figures:
 # version strings (v3.0) and pre-registration section references (sections 3.2 and 3.3). Both are
 # narrow and both are listed here rather than silently special-cased inside the extractor.
+# Phase 33.2 adds two more of the same kind for the old-rule addendum (R16): decimal phase numbers
+# ("Phase 33.2") and decision ids ("D33.2-07"). Neither is a measurement.
 _STRUCTURAL_LITERAL_RE = re.compile(
     r"v\d+\.\d+|[Ss]ections?\s+\d+\.\d+(?:\s+(?:and|,)\s+\d+\.\d+)*"
+    r"|Phase\s+\d+\.\d+|D\d+\.\d+-\d+"
 )
 
 # A measured quantity in this document always carries a decimal point or an exponent. Bare integers
@@ -171,6 +181,23 @@ SHALLOW_SKIP_MESSAGE = (
 # ---------------------------------------------------------------------------
 # readers and helpers
 # ---------------------------------------------------------------------------
+
+
+def _content_before_the_old_rule_addendum(raw: bytes) -> bytes:
+    """Return a prior readout's ORIGINAL bytes, without the appended Phase-33.2 old-rule addendum.
+
+    The addendum is appended after one blank line and opens with ``ADDENDUM_SENTINEL``, so the
+    original is everything before the sentinel minus exactly that one line ending. A file without
+    the sentinel is returned unchanged.
+    """
+    sentinel = ADDENDUM_SENTINEL.encode("ascii")
+    if sentinel not in raw:
+        return raw
+    head = raw.split(sentinel, 1)[0]
+    for line_ending in (b"\r\n", b"\n"):
+        if head.endswith(line_ending):
+            return head[: -len(line_ending)]
+    return head
 
 
 def _read_readout() -> str:
@@ -544,13 +571,37 @@ class TestPriorReadoutsPreserved:
         )
 
     def test_all_five_prior_readouts_have_unchanged_content_hashes(self) -> None:
-        """A whitespace-only edit fails here, which is the point."""
+        """A whitespace-only edit to the original content fails here, which is the point.
+
+        The hash covers everything before the Phase-33.2 old-rule addendum (D33.2-07). The addendum
+        must appear at most once and must carry the label, so the sentinel cannot hide an edit.
+        """
         drifted: dict[str, str] = {}
+        sentinel = ADDENDUM_SENTINEL.encode("ascii")
         for name, expected in PRIOR_READOUT_SHA256.items():
             path = REPO_ROOT / name
             if not path.is_file():
                 continue
-            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            raw = path.read_bytes()
+            if raw.count(sentinel) > 1:
+                drifted[name] = "carries the old-rule addendum sentinel more than once"
+                continue
+            if sentinel in raw:
+                addendum = raw.split(sentinel, 1)[1].decode("utf-8").lower()
+                if LABEL_PHRASE not in addendum:
+                    drifted[name] = (
+                        "has an old-rule addendum with no old-rule label in it"
+                    )
+                    continue
+            # The pins were taken from working-tree bytes in mixed line-ending forms (four LF, one
+            # CRLF), and core.autocrlf rewrites the working tree freely, so the ORIGINAL content is
+            # compared in both spellings. A content edit changes both; a line-ending change neither.
+            original_lf = _content_before_the_old_rule_addendum(raw).replace(
+                b"\r\n", b"\n"
+            )
+            spellings = (original_lf, original_lf.replace(b"\n", b"\r\n"))
+            hashes = [hashlib.sha256(spelling).hexdigest() for spelling in spellings]
+            actual = expected if expected in hashes else hashes[0]
             if actual != expected:
                 drifted[name] = f"expected {expected}, found {actual}"
         assert not drifted, (

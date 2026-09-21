@@ -651,3 +651,25 @@ Keyed off each stage's success signal above:
 *Phase 23 -- Documentation, Runbook & State-of-System. DOC-01 operator runbook + DOC-02
 Architecture & Data-Flow section. Link-don't-duplicate; every command verification-basis-
 labeled. ASCII only (no emoji, per CLAUDE.md).*
+
+<!-- old-rule-addendum-2026-09-15 -->
+
+## Old-rule addendum (2026-09-15)
+
+This section was added on 2026-09-15. Nothing above it has been changed: every number, table and
+heading is exactly as it was first published.
+
+Phase 33.2 found that the model inputs behind the results in this document were defective, in five
+ways. Weather observed after each game stood in for the forecast that was actually available the day
+before kickoff. Closing betting lines, which are only known at kickoff, were fed into the models as
+inputs. Feature builders took their cutoff from one global clock instead of each game's own lock
+time. The opponent adjustment never actually ran. Early-season placeholder values read as exactly
+league average, with nothing to say they were placeholders.
+
+This document stays in the record, unedited, because deleting it would be worse: it would hide what
+was claimed and when. Read it as history, not as a measure of how well the system works.
+
+**Built under the old rule on inputs later found defective; not evidence.** Only the 2026 season,
+recorded live under the day-before 6 PM ET lock, counts (D33.2-07). See Phase 33.2.
+
+What this covers in this document: the model verdicts it summarises in its cross-references (the diagnosis ratings and the promotion and retention outcomes) are old-rule; the operating procedures themselves are not results and are not covered by this label.
