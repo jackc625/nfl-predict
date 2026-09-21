@@ -1255,3 +1255,61 @@ source_published_at = ""
 lock_utc = "2026-11-24T23:00:00Z"
 verdict = "post_lock"
 notes = "Scheduled, not moved: the night before Thanksgiving in the published 2026 schedule. No announcement source was sought (D33.2-21 bounds the citation hunt to moves); from_value equals to_value, so the post-lock default leaves the game's facts unchanged."
+
+# ---------------------------------------------------------------------------------------
+# THE PUBLISHED POST-LOCK LIST (Plan 33.2-10 Task 4, SPEC R8: "the post-lock list is
+# published"). Owner ruling 2026-09-21 ("Approve as written" = ratify-all): the table
+# above stands as committed in 64abce6.
+#
+# real_moves           games REBUILT with the facts as they stood before the move
+#                      (features/schedule_moves.py reverts every move after the game's last
+#                      pre_lock move). 2003_W08_MIA@LAC: the Cedar fire moved it from
+#                      Qualcomm Stadium (SDG00) to Sun Devil Stadium (PHO99); no dated report
+#                      exists before its lock, so gold uses SDG00 -- venue, roof, surface,
+#                      travel, time zone and weather location. Its weekday is unchanged.
+# scheduled_not_moved  games that carry the post_lock default but were NEVER moved: their
+#                      from_value equals their to_value, so nothing about them changes. They
+#                      are listed apart so no reader is told a Super Bowl was neutralised.
+#
+# The loader recomputes both lists from the rows and REFUSES this block if it disagrees,
+# so it cannot drift. Regenerate it from the rows; never edit it by hand.
+# ---------------------------------------------------------------------------------------
+[post_lock_summary]
+real_moves = [
+    "2003_W08_MIA@LAC",
+]
+scheduled_not_moved = [
+    "2002_W21_LV@TB",
+    "2003_W21_CAR@NE",
+    "2004_W21_NE@PHI",
+    "2005_W21_SEA@PIT",
+    "2006_W21_IND@CHI",
+    "2007_W21_NYG@NE",
+    "2008_W21_PIT@ARI",
+    "2009_W13_NYJ@BUF",
+    "2009_W21_NO@IND",
+    "2010_W09_CHI@BUF",
+    "2010_W21_PIT@GB",
+    "2011_W08_WAS@BUF",
+    "2011_W21_NYG@NE",
+    "2012_W01_DAL@NYG",
+    "2012_W15_SEA@BUF",
+    "2012_W21_BAL@SF",
+    "2013_W21_SEA@DEN",
+    "2014_W21_NE@SEA",
+    "2015_W21_CAR@DEN",
+    "2016_W21_NE@ATL",
+    "2017_W21_PHI@NE",
+    "2018_W21_NE@LA",
+    "2019_W21_SF@KC",
+    "2020_W21_KC@TB",
+    "2021_W22_LA@CIN",
+    "2022_W22_KC@PHI",
+    "2023_W22_SF@KC",
+    "2024_W17_BAL@HOU",
+    "2024_W17_KC@PIT",
+    "2024_W22_KC@PHI",
+    "2025_W22_SEA@NE",
+    "2026_W01_NE@SEA",
+    "2026_W12_GB@LA",
+]
