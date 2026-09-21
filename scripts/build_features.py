@@ -184,6 +184,54 @@ def drop_excluded_games(
     }
 
 
+def scope_games_through_season(
+    games_df: pd.DataFrame,
+    through_season: int | None,
+    *,
+    target_season: int | None = None,
+    target_week: int | None = None,
+) -> pd.DataFrame:
+    """*games_df* cut to seasons ``<= through_season`` -- the LADDER-RUNG full rebuild.
+
+    OWNER RULING 2026-09-21 (Plan 33.2-08 Task 4 checkpoint, Option A). Gold has covered
+    2002-2025 since before the 2026 capture reached silver. A plain ``--all-seasons``
+    rebuild now ALSO builds 2026, and every rung of the Phase-33.2 ``p332_`` ladder
+    (Plans 33.2-08 .. 33.2-19) must move gold for ONE declared cause (D33.2-20) -- a
+    season appearing mid-ladder would be a second cause. So each rung rebuilds with
+    ``--through-season 2025``, and 2026 enters gold exactly once, in Plan 33.2-20's
+    production history build.
+
+    It narrows ONLY the base ``games`` frame, which is what every builder, the lock
+    frame and the information-time gate are driven from. Nothing else changes: the
+    build is still a FULL rebuild written with ``replace_mode=True``, and no gate is
+    skipped or relaxed -- a 2002-2025 game that would refuse under ``--all-seasons``
+    refuses here too.
+
+    ``None`` (the default) is the unbounded full rebuild, returned as the SAME object.
+
+    Raises:
+        ValueError: when combined with a season or week scope (it is a bound on the
+            FULL rebuild, not a scoped build), or when the bound leaves no game.
+    """
+    if through_season is None:
+        return games_df
+    if target_season is not None or target_week is not None:
+        msg = (
+            "through_season bounds the FULL rebuild and cannot be combined with "
+            f"target_season={target_season!r} / target_week={target_week!r}: a scoped "
+            "build merges its slice, a full rebuild replaces the table."
+        )
+        raise ValueError(msg)
+    scoped = games_df[games_df["season"] <= through_season]
+    if len(scoped) == 0:
+        msg = (
+            f"through_season={through_season} leaves no game in silver games (seasons "
+            f"present: {sorted(games_df['season'].dropna().unique().tolist())})."
+        )
+        raise ValueError(msg)
+    return scoped
+
+
 # THE TWO WEATHER BUILDER IDENTITIES (Ruling K1, Plan 33.1-04).
 #
 # `features.weather` exposes two builders that do NOT emit the same weather
@@ -433,6 +481,8 @@ class FeatureMatrixBuilder:
         target_season: int | None = None,
         target_week: int | None = None,
         as_of_datetime: datetime | None = None,
+        *,
+        through_season: int | None = None,
     ) -> dict[str, pd.DataFrame]:
         """
         Load all feature sources from silver layer.
@@ -442,6 +492,8 @@ class FeatureMatrixBuilder:
             target_week: Specific week to load
             as_of_datetime: Time-fence cutoff for builders that need it
                 (QBTracker, OpponentAdjuster). Defaults to ``datetime.now(ET)``.
+            through_season: Last season a FULL rebuild carries (the ladder-rung
+                bound, see ``scope_games_through_season``). ``None`` = every season.
 
         Returns:
             Dictionary with all feature DataFrames
@@ -486,6 +538,12 @@ class FeatureMatrixBuilder:
                 games_df = games_df[games_df["season"] == target_season]
                 if target_week:
                     games_df = games_df[games_df["week"] == target_week]
+            games_df = scope_games_through_season(
+                games_df,
+                through_season,
+                target_season=target_season,
+                target_week=target_week,
+            )
             feature_sources["games"] = games_df
             logger.info("Loaded games data", records=len(games_df))
 
@@ -2049,6 +2107,7 @@ class FeatureMatrixBuilder:
         as_of_datetime: datetime | None = None,
         *,
         excluded_game_ids: frozenset[str] = frozenset(),
+        through_season: int | None = None,
     ) -> dict[str, pd.DataFrame]:
         """Generate complete feature matrices for all prediction targets.
 
@@ -2075,6 +2134,10 @@ class FeatureMatrixBuilder:
                 the information-time gate, so a re-run after a skip does not re-refuse a game
                 that is already recorded and excluded. Empty by default, and a HISTORY build
                 never passes it: history must stop on any violation, not skip.
+            through_season: Last season a FULL rebuild carries -- the ``p332_`` ladder
+                rungs pass 2025 (owner ruling 2026-09-21; ``scope_games_through_season``).
+                It narrows the base games frame BEFORE the lock frame, so every gate
+                below runs unchanged over the games that remain. ``None`` = every season.
 
         Returns:
             Dictionary with feature matrices for each target.
@@ -2098,7 +2161,10 @@ class FeatureMatrixBuilder:
         try:
             # Load all feature sources
             feature_sources = self.load_all_feature_sources(
-                target_season, target_week, as_of_datetime=as_of_datetime
+                target_season,
+                target_week,
+                as_of_datetime=as_of_datetime,
+                through_season=through_season,
             )
             feature_sources = drop_excluded_games(feature_sources, excluded_game_ids)
 
@@ -2540,8 +2606,8 @@ class FeatureMatrixBuilder:
             )  # Exclude metadata columns
 
 
-def main():
-    """Build unified feature matrices."""
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI parser (extracted so its argument wiring is unit-testable)."""
     parser = argparse.ArgumentParser(description="Build unified feature matrices")
     # --all-seasons is the EXPLICIT name for the full historical rebuild, which is
     # also what a bare invocation does. It exists so the destructive mode can be
@@ -2563,6 +2629,23 @@ def main():
         ),
     )
     parser.add_argument("--week", type=int, help="Target week (1-18)")
+    # --through-season is the LADDER-RUNG form of the full rebuild (owner ruling
+    # 2026-09-21, Plan 33.2-08). It is still a full rebuild -- same write path
+    # (replace_mode=True), same gates -- bounded to seasons <= YEAR. Every p332_
+    # rung (Plans 33.2-08 .. 33.2-19) passes 2025, so the unplayed 2026 season does
+    # not enter gold as a second cause mid-ladder; Plan 33.2-20 is the one build
+    # that adds 2026. It is never the default.
+    parser.add_argument(
+        "--through-season",
+        type=int,
+        metavar="YEAR",
+        help=(
+            "Full rebuild that stops at season YEAR: it REPLACES gold exactly like "
+            "--all-seasons, through the same gates. The Phase-33.2 gold ladder rungs "
+            "pass 2025 so 2026 cannot enter gold mid-ladder. Not combinable with "
+            "--season or --week. Default: no bound."
+        ),
+    )
     parser.add_argument(
         "--as-of",
         type=str,
@@ -2588,8 +2671,13 @@ def main():
         default=True,
         help="Validate feature matrices after building",
     )
+    return parser
 
-    args = parser.parse_args()
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse and cross-validate the CLI arguments (*argv* defaults to ``sys.argv``)."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     # --all-seasons names the FULL rebuild, so it cannot also carry a week scope.
     # argparse's mutually-exclusive group already rejects --all-seasons --season.
@@ -2598,6 +2686,21 @@ def main():
             "--all-seasons is the full historical rebuild and cannot be combined "
             "with --week. Use --season <YEAR> --week <N> for a scoped build."
         )
+    # --through-season bounds the FULL rebuild; --season / --week select the scoped,
+    # MERGING build, a different write mode, so the pair is refused, never guessed.
+    if args.through_season is not None and (
+        args.season is not None or args.week is not None
+    ):
+        parser.error(
+            "--through-season bounds the full rebuild and cannot be combined with "
+            "--season or --week (those select the SCOPED, merging build)."
+        )
+    return args
+
+
+def main(argv: list[str] | None = None):
+    """Build unified feature matrices."""
+    args = parse_args(argv)
 
     # Parse --as-of datetime if provided.
     #
@@ -2613,7 +2716,12 @@ def main():
         if as_of_dt.tzinfo is None:
             as_of_dt = as_of_dt.replace(tzinfo=ET)
 
-    logger.info("Building unified feature matrices", season=args.season, week=args.week)
+    logger.info(
+        "Building unified feature matrices",
+        season=args.season,
+        week=args.week,
+        through_season=args.through_season,
+    )
 
     try:
         # Initialize feature matrix builder
@@ -2624,6 +2732,7 @@ def main():
             target_season=args.season,
             target_week=args.week,
             as_of_datetime=as_of_dt,
+            through_season=args.through_season,
         )
 
         if not feature_matrices:
