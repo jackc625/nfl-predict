@@ -1609,6 +1609,30 @@ PHASE332_ODDS_MARKET_SOURCES: dict[str, tuple[str, ...]] = {
     "snapshot_ml_prob_home_fair": ("ml_home", "ml_away"),
 }
 
+# DISCLOSED AT RUN TIME, NOT DECLARED BEFORE IT (owner ruling 2026-09-21, the rung-1
+# attribution checkpoint). The first rung-1 comparison moved `target_ats` in exactly the
+# seasons `snapshot_spread` moved, and it was missing from the pre-declared column list
+# above. It is the arithmetic CHILD of that gold column -- `target_ats = point_differential
+# - snapshot_spread` (scripts.build_features.create_target_variables) -- so it is the SAME
+# cause, not a second one. The owner said yes to adding it, disclosed as found at run
+# time. It is kept in its own table, beside and never inside the pre-declared one, so the
+# record still shows what was declared before the rebuild and what was learned from it.
+# Keyed by child gold column, valued by the parent gold column it is computed from.
+PHASE332_ODDS_RUN_TIME_DISCLOSED_CHILDREN: dict[str, str] = {
+    "target_ats": "snapshot_spread",
+}
+
+PHASE332_ODDS_RUN_TIME_DISCLOSURE: str = (
+    "target_ats was NOT in the column list declared before the rebuild; it was found at "
+    "run time (2026-09-21) and added by owner ruling. It is final margin minus the gold "
+    "snapshot_spread column (target_ats = point_differential - snapshot_spread), so it "
+    "moves wherever that column moves -- including 2022 and 2025, which hold no corrected "
+    "game, because the gold snapshot_spread it subtracts is the NORMALIZED value and "
+    "normalization carries a corrected spread into later seasons. It is attributed only "
+    "where its parent snapshot_spread was itself attributed in the same matrix, and only "
+    "in seasons where snapshot_spread moved"
+)
+
 # The committed correction record the attribution reads its corrected games from --
 # ONE source for which values changed, never a second list here.
 PHASE332_ODDS_CORRECTION_RECORD: Path = Path("config/odds_corrections.toml")
@@ -1644,6 +1668,8 @@ PHASE332_ODDS_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
         "ratify-locked): delete the stray folders, recovering zero rows; null an "
         "unsettleable price with a recorded reason and keep the game"
     ),
+    # Everything above this key was declared before the rebuild ran and is unchanged.
+    "disclosed_at_run_time": PHASE332_ODDS_RUN_TIME_DISCLOSURE,
 }
 
 RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX] = {
@@ -1653,6 +1679,79 @@ RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX] = {
 PHASE332_RUNG_SIGNATURES: dict[int, dict[str, object]] = {
     PHASE332_ODDS_RUNG: PHASE332_ODDS_RUNG_EXPECTED_SIGNATURE
 }
+
+# ---------------------------------------------------------------------------
+# RETAKEN BASELINES (owner ruling 2026-09-21: "retake a stale baseline, never widen a
+# rung's cause"; binding on every p332_ rung).
+#
+# A rung is judged against gold rebuilt from the CURRENT inputs with ONLY that rung's
+# own cause undone. The first rung-0 document (`p332_rung0.json`) was a fingerprint of
+# gold as it stood on disk, last built 2026-09-14 -- and Plan 33.2-05 had re-sorted
+# `elo_game_snapshots` after that (commit bfe3b24, value-preserving). 2002 week-1 teams
+# all rate 1500 and `_add_rank_features` breaks exact ties by row order, so a rebuild
+# from today's inputs moves 2002 Elo rank/percentile (and 2003, through prior-season
+# normalization) whatever the rung does. That movement is the earlier plan's, not the
+# rung's.
+#
+# So a rung that retakes its baseline registers the retaken document here, built in a
+# SCRATCH data root (never production data/) from today's inputs minus its own cause.
+# The original rung document is KEPT, never overwritten: the difference between the two
+# is recorded as a MEASURED pre-rung carry-in, attributed to the plan that caused it.
+# A rung absent from this table is judged against its ladder predecessor as before.
+# ---------------------------------------------------------------------------
+
+PHASE332_RETAKEN_BASELINES: dict[int, str] = {
+    PHASE332_ODDS_RUNG: f"{PHASE332_RUNG_PREFIX}rung0_retaken.json",
+}
+
+PHASE332_RETAKEN_BASELINE_REASONS: dict[int, str] = {
+    PHASE332_ODDS_RUNG: (
+        "RETAKEN 2026-09-21 by owner ruling. Gold rebuilt with `scripts/build_features.py "
+        "--through-season 2025` (the rung's own build path and gates) in a SCRATCH data "
+        "root holding a copy of today's production inputs, with ONLY the 12 odds values "
+        "config/odds_corrections.toml marks corrected or nulled put back to their "
+        "recorded old_value -- i.e. today's inputs minus exactly rung 1's cause. The "
+        "original p332_rung0.json (gold on disk, last built 2026-09-14) is kept unchanged "
+        "and was stale against its inputs"
+    ),
+}
+
+# The measured cause of the difference between the original and the retaken rung-0
+# documents. It is a carry-in from BEFORE the ladder's first rung, not part of any rung.
+PHASE332_RUNG0_CARRY_IN_CAUSE: str = (
+    "PRE-LADDER CARRY-IN, MEASURED 2026-09-21: Plan 33.2-05's value-preserving re-sort of "
+    "silver elo_game_snapshots into (season, kickoff_et, game_id) order (commit bfe3b24), "
+    "made after gold was last built (2026-09-14). Ratings are unchanged game by game, but "
+    "every 2002 week-1 team is tied at 1500 and _add_rank_features breaks exact ties by "
+    "row order, so 2002 Elo rank/percentile values change and carry into 2003 through "
+    "season-to-season normalization. Recorded here, NOT inside rung 1"
+)
+
+
+def phase332_baseline_document_path(directory: Path | str, rung: int) -> Path:
+    """The document *rung* of the `p332_` ladder is judged AGAINST.
+
+    The retaken baseline when the rung registered one in ``PHASE332_RETAKEN_BASELINES``,
+    otherwise its ladder predecessor. A registered baseline that is absent is REFUSED
+    rather than silently replaced by the predecessor: falling back would judge the rung
+    against the stale document the retake exists to replace.
+
+    Raises:
+        MissingPredecessorFingerprintError: a registered retaken baseline is absent.
+    """
+    name = PHASE332_RETAKEN_BASELINES.get(rung)
+    if name is None:
+        return rung_document_path(directory, rung - 1, PHASE332_RUNG_PREFIX)
+    path = Path(directory) / name
+    if not path.exists():
+        msg = (
+            f"Refusing to attribute p332_ rung {rung}: its registered retaken baseline "
+            f"'{path}' does not exist. Build it in a scratch data root from today's "
+            "inputs minus only this rung's cause; do not fall back to the stale "
+            "predecessor document."
+        )
+        raise MissingPredecessorFingerprintError(msg)
+    return path
 
 
 def _phase332_table_entry(table: dict, rung: int, table_name: str):
@@ -3496,8 +3595,13 @@ def _attribute_p332_odds(detail: dict, diff: dict, verdict: dict, fail) -> bool:
         _canonical(column): season
         for column, season in phase332_odds_corrected_seasons().items()
     }
+    children = {
+        _canonical(child): _canonical(parent)
+        for child, parent in PHASE332_ODDS_RUN_TIME_DISCLOSED_CHILDREN.items()
+    }
 
-    for column in sorted(diff["changed"]):
+    # Parents first, so a disclosed child can be judged against its parent's verdict.
+    for column in sorted(set(diff["changed"]) - set(children)):
         seasons = sorted(diff["changed"][column])
         floor = earliest.get(column)
         if floor is not None and seasons and all(int(s) >= floor for s in seasons):
@@ -3520,6 +3624,32 @@ def _attribute_p332_odds(detail: dict, diff: dict, verdict: dict, fail) -> bool:
             f"{', '.join(seasons) or '(none attributed)'}, but {why}. The rung's ONE "
             "cause is the silver odds correction; do NOT widen it to fit this diff"
         )
+
+    # Run-time-disclosed children (PHASE332_ODDS_RUN_TIME_DISCLOSED_CHILDREN): attributed
+    # ONLY when the parent gold column was attributed in THIS matrix and every season the
+    # child moved in is a season the parent moved in. A child moving without its parent
+    # has no arithmetic path from the correction and is unattributed.
+    for column in sorted(set(diff["changed"]) & set(children)):
+        seasons = sorted(diff["changed"][column])
+        parent = children[column]
+        parent_seasons = set(diff["changed"].get(parent, []))
+        if (
+            parent in verdict["attributed"]
+            and seasons
+            and set(seasons) <= parent_seasons
+        ):
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["market"].append(column)
+            continue
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at p332_ rung 1 in season(s) "
+            f"{', '.join(seasons) or '(none attributed)'}, but it is disclosed only as "
+            f"the arithmetic child of '{parent}', which was not attributed here in "
+            "those seasons. The rung's ONE cause is the silver odds correction; do NOT "
+            "widen it to fit this diff"
+        )
+    verdict["attributed"].sort()
     return blocking
 
 
@@ -4032,11 +4162,21 @@ def write_phase332_rebuild_diff(
         Path(out_path), what="the rebuild diff", suggestion="config/"
     )
     require_rung_ladder(fingerprint_dir, PHASE332_ODDS_RUNG + 1, PHASE332_RUNG_PREFIX)
-    before = json.loads(
-        rung_document_path(fingerprint_dir, 0, PHASE332_RUNG_PREFIX).read_text(
-            encoding="utf-8"
-        )
-    )
+    original_rung0_path = rung_document_path(fingerprint_dir, 0, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, PHASE332_ODDS_RUNG)
+    original_rung0 = json.loads(original_rung0_path.read_text(encoding="utf-8"))
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    retaken = baseline_path != original_rung0_path
+    # The pre-ladder carry-in: original rung 0 -> the retaken baseline. Recorded, never
+    # attributed to rung 1 (PHASE332_RUNG0_CARRY_IN_CAUSE).
+    carry_in: dict[str, list[str]] = {}
+    if retaken:
+        carry_report = compare_fingerprints(original_rung0, before)
+        for matrix in GOLD_MATRICES:
+            for column, seasons in carry_report[matrix]["columns_changed"].items():
+                if not _is_build_clock(column):
+                    merged = set(carry_in.get(column, [])) | set(seasons)
+                    carry_in[column] = sorted(merged)
     after = json.loads(
         rung_document_path(
             fingerprint_dir, PHASE332_ODDS_RUNG, PHASE332_RUNG_PREFIX
@@ -4087,6 +4227,7 @@ def write_phase332_rebuild_diff(
     ]
     for key, value in sorted(_platform_record().items()):
         lines.append(f'{key} = "{_toml_escape(value)}"')
+    widths_original = [original_rung0[m]["width"] for m in GOLD_MATRICES]
     lines.extend(
         [
             "",
@@ -4094,16 +4235,48 @@ def write_phase332_rebuild_diff(
             "rung = 0",
             f'prefix = "{PHASE332_RUNG_PREFIX}"',
             "rebuilt = false",
-            'cause = "BASELINE, NOT A REBUILD. Gold as it stood after BOTH silver '
+            'cause = "BASELINE, NOT A REBUILD. Gold as it stood on disk after BOTH silver '
             "odds corrections (Tasks 2 and 3) landed and before the rung-1 rebuild "
-            'overwrote it."',
-            f"widths = {_toml_array(widths_before)}",
+            'overwrote it (last built 2026-09-14)."',
+            f'document = "{original_rung0_path.name}"',
+            f"widths = {_toml_array(widths_original)}",
+        ]
+    )
+    if retaken:
+        lines.extend(
+            [
+                "superseded_as_rung1_baseline = true",
+                "",
+                "[rung.0.retaken]",
+                f'document = "{baseline_path.name}"',
+                "rebuilt = true",
+                f'why = "{_toml_escape(PHASE332_RETAKEN_BASELINE_REASONS[PHASE332_ODDS_RUNG])}"',
+                f"widths = {_toml_array(widths_before)}",
+                "",
+                "[rung.0.carry_in]",
+                f'from_document = "{original_rung0_path.name}"',
+                f'to_document = "{baseline_path.name}"',
+                f'cause = "{_toml_escape(PHASE332_RUNG0_CARRY_IN_CAUSE)}"',
+                f"moved_columns = {_toml_array(sorted(carry_in))}",
+                "",
+                "[rung.0.carry_in.moved_seasons]",
+            ]
+        )
+        for column, seasons in sorted(carry_in.items()):
+            lines.append(f"{column} = {_toml_array(seasons)}")
+    lines.extend(
+        [
             "",
             f"[rung.{PHASE332_ODDS_RUNG}]",
             f"rung = {PHASE332_ODDS_RUNG}",
             f'prefix = "{PHASE332_RUNG_PREFIX}"',
             f"rebuilt = {'true' if ran else 'false'}",
+            f'baseline_document = "{baseline_path.name}"',
             f'cause = "{_toml_escape(PHASE332_ODDS_RUNG_CAUSE)}"',
+            f"declared_columns = {_toml_array(sorted(PHASE332_ODDS_MARKET_SOURCES))}",
+            "disclosed_at_run_time_columns = "
+            f"{_toml_array(sorted(PHASE332_ODDS_RUN_TIME_DISCLOSED_CHILDREN))}",
+            f'disclosed_at_run_time = "{_toml_escape(PHASE332_ODDS_RUN_TIME_DISCLOSURE)}"',
             f"widths_before = {_toml_array(widths_before)}",
             f"widths_after = {_toml_array(widths_after)}",
             f"moved_columns = {_toml_array(moved)}",

@@ -1,0 +1,73 @@
+# ===========================================================================
+# config/phase332_gold_rebuild_diff.toml -- the per-rung record of the
+# Phase-33.2 gold rebuild ladder (prefix p332_). Plan 33.2-08 opens it.
+#
+# GENERATOR OUTPUT. Produced by
+#   python -c "import scripts.fingerprint_gold as f; f.write_phase332_rebuild_diff('config/phase332_gold_rebuild_diff.toml')"
+# Do NOT hand-edit any value below: re-run the generator.
+#
+# NO EPSILON AND NO ROUNDING: EXACT bytes of the IEEE-754 encoding produced by
+# scripts.fingerprint_gold._column_bytes, as every prior ladder. ASCII only.
+# ===========================================================================
+
+generated_at = "2026-09-21T19:26:04.691204+00:00"
+rung_prefix = "p332_"
+float_tolerance = "none -- EXACT byte comparison"
+
+[platform]
+blas = "auto"
+machine = "AMD64"
+numpy = "1.26.4"
+os = "Windows 11"
+pandas = "2.3.3"
+python = "3.13.3"
+
+[rung.0]
+rung = 0
+prefix = "p332_"
+rebuilt = false
+cause = "BASELINE, NOT A REBUILD. Gold as it stood on disk after BOTH silver odds corrections (Tasks 2 and 3) landed and before the rung-1 rebuild overwrote it (last built 2026-09-14)."
+document = "p332_rung0.json"
+widths = ["195", "196", "195"]
+superseded_as_rung1_baseline = true
+
+[rung.0.retaken]
+document = "p332_rung0_retaken.json"
+rebuilt = true
+why = "RETAKEN 2026-09-21 by owner ruling. Gold rebuilt with `scripts/build_features.py --through-season 2025` (the rung's own build path and gates) in a SCRATCH data root holding a copy of today's production inputs, with ONLY the 12 odds values config/odds_corrections.toml marks corrected or nulled put back to their recorded old_value -- i.e. today's inputs minus exactly rung 1's cause. The original p332_rung0.json (gold on disk, last built 2026-09-14) is kept unchanged and was stale against its inputs"
+widths = ["195", "196", "195"]
+
+[rung.0.carry_in]
+from_document = "p332_rung0.json"
+to_document = "p332_rung0_retaken.json"
+cause = "PRE-LADDER CARRY-IN, MEASURED 2026-09-21: Plan 33.2-05's value-preserving re-sort of silver elo_game_snapshots into (season, kickoff_et, game_id) order (commit bfe3b24), made after gold was last built (2026-09-14). Ratings are unchanged game by game, but every 2002 week-1 team is tied at 1500 and _add_rank_features breaks exact ties by row order, so 2002 Elo rank/percentile values change and carry into 2003 through season-to-season normalization. Recorded here, NOT inside rung 1"
+moved_columns = ["away_elo_percentile", "away_elo_rank", "home_elo_percentile", "home_elo_rank"]
+
+[rung.0.carry_in.moved_seasons]
+away_elo_percentile = ["2002", "2003"]
+away_elo_rank = ["2002", "2003"]
+home_elo_percentile = ["2002", "2003"]
+home_elo_rank = ["2002", "2003"]
+
+[rung.1]
+rung = 1
+prefix = "p332_"
+rebuilt = true
+baseline_document = "p332_rung0_retaken.json"
+cause = "THE SILVER odds_snapshot CORRECTION of Plan 33.2-08 (SPEC R12, D33.2-08 item 4, D33.2-23), and NOTHING else: the 6 spread-sign conflicts its detector found (SIGN_CONFLICTS_FOUND= 6) settled against the owned odds_timeline first and ESPN's public odds archive second -- 7 values corrected with a citation (RESOLVED= 7), 5 set to unknown with a recorded reason (NULLED_WITH_REASON= 5), no row dropped; the disputed 28.5 total on 2023_W18_NYJ@NE confirmed against the archived DraftKings close; the 1970 created_at family (EPOCH_1970_FOUND= 1855, CREATED_AT_REPAIRED= 0, CREATED_AT_NULLED= 1855) set to NULL; and the stray partition folders removed (STRAY_DIRS_REMOVED= 8) after nothing legitimate and missing was found to recover (RECOVERED= 0). Only the market columns of the games whose spread or moneyline changed can move. No column is added, none removed, no row moves"
+declared_columns = ["snapshot_ml_prob_home_fair", "snapshot_spread", "snapshot_total"]
+disclosed_at_run_time_columns = ["target_ats"]
+disclosed_at_run_time = "target_ats was NOT in the column list declared before the rebuild; it was found at run time (2026-09-21) and added by owner ruling. It is final margin minus the gold snapshot_spread column (target_ats = point_differential - snapshot_spread), so it moves wherever that column moves -- including 2022 and 2025, which hold no corrected game, because the gold snapshot_spread it subtracts is the NORMALIZED value and normalization carries a corrected spread into later seasons. It is attributed only where its parent snapshot_spread was itself attributed in the same matrix, and only in seasons where snapshot_spread moved"
+widths_before = ["195", "196", "195"]
+widths_after = ["195", "196", "195"]
+moved_columns = ["snapshot_ml_prob_home_fair", "snapshot_spread", "target_ats"]
+build_clock_moves = ["feature_timestamp"]
+unattributed_columns = []
+attribution_ok = true
+attribution_blocking = false
+attributor = "_attribute_p332_odds"
+
+[rung.1.moved_seasons]
+snapshot_ml_prob_home_fair = ["2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+snapshot_spread = ["2021", "2022", "2024", "2025"]
+target_ats = ["2021", "2022", "2024", "2025"]
