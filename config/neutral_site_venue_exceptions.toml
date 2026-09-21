@@ -1,0 +1,32 @@
+# Neutral-site games that LEGITIMATELY sit at the designated home team's own stadium
+# (Plan 33.2-09 Task 2, T-33.2-09-08).
+#
+# tests/unit/test_neutral_site_stadium_sanity.py fails whenever a `neutral_site` game in
+# silver `games` carries the home team's usual stadium for that season -- the exact shape
+# of the defect that recorded all seven 2025 international games at US stadiums. That
+# rule is not always true: the feed designates a home team for every Super Bowl, and
+# Super Bowl LV was played in Tampa Bay's own stadium. This registry is where such a case
+# is recorded, with its reason and a source.
+#
+# THIS IS NOT AN ALLOW-LIST.
+#   * `reason_type` is drawn from a CLOSED vocabulary pinned in the test:
+#       super_bowl_home_designation -- a Super Bowl whose designated home team plays in
+#                                      its own stadium;
+#       verified_neutral_at_home    -- any other cited neutral-site game at the home
+#                                      team's own venue.
+#     There is deliberately no reason for a corrected international game: those are
+#     asserted POSITIVELY (each carries its recorded venue), never exempted.
+#   * Every entry carries a source.
+#   * An entry whose game is no longer a neutral-at-usual case fails as STALE.
+#
+# MEASURED 2026-09-21 on silver `games`, 99 neutral-site games: eight sat at the home
+# team's modal stadium -- the seven 2025 international games and the one below. After
+# the international correction, exactly this one remains.
+
+[[exception]]
+game_id = "2020_W21_KC@TB"
+stadium_id = "TAM00"
+reason_type = "super_bowl_home_designation"
+source_url = "https://www.nfl.com/news/buccaneers-become-first-team-that-will-host-super-bowl-at-home-stadium"
+source_date = "2021-01-25"
+notes = "Super Bowl LV, 2021-02-07, Raymond James Stadium (Tampa). The feed designates Tampa Bay the home team; the Buccaneers were the first team to play a Super Bowl in their own stadium."
