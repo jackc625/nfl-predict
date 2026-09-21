@@ -3883,6 +3883,258 @@ PHASE332_RUNG_SIGNATURES[PHASE332_VENUE_RUNG] = PHASE332_VENUE_RUNG_EXPECTED_SIG
 PHASE332_RUNG_ATTRIBUTORS[PHASE332_VENUE_RUNG] = _attribute_p332_venue
 
 
+# ---------------------------------------------------------------------------
+# p332_ RUNG 3 -- EMERGENCY SCHEDULE MOVES (Plan 33.2-10 Task 4, SPEC R8, D33.2-04, D33.2-21).
+#
+# Registered per Plan 33.2-08's <owned_protocol_rung_registration>: three names, one
+# incremental cause line, one entry in each dispatch table, and NO new `if prefix ==`
+# branch. The table entries are sharpest here: without them the generic path's rung 3
+# expects a `line_movement` column REMOVAL (Phase 30's rung 3), so a correct rebuild that
+# removes nothing would be reported against another phase's cause.
+#
+# DECLARED BEFORE THE REBUILD RAN. The explainable columns are DERIVED, not listed: each
+# kind of move that is reverted (a REAL move whose verdict is post_lock in
+# config/schedule_moves.toml) reaches a known family of contextual columns, and a venue
+# move reaches exactly the stadium-dependent set rung 2 already derives from source. Today
+# the table holds ONE real post-lock move, a venue move, so only that family can move.
+#
+# WEATHER IS NOT IN THE SET, AND THAT IS THE PREDICTION. Gold weather is read from silver
+# weather_features by game_id and this rung writes no silver row, so no weather column can
+# move here. The neutralised game's WEATHER LOCATION is served by the same accessor to the
+# weather writer (scripts.ingest_weather resolves a game's venue through facts_at_lock), and
+# rung 4 (Plan 33.2-12) regenerates silver weather through it -- the observation stored
+# today was taken at the post-move venue and is replaced there, not here.
+# ---------------------------------------------------------------------------
+
+PHASE332_SCHEDULE_MOVE_RUNG: int = 3
+
+PHASE332_SCHEDULE_MOVE_TABLE: Path = Path("config/schedule_moves.toml")
+
+PHASE332_SCHEDULE_MOVE_RUNG_CAUSE: str = (
+    "THE EMERGENCY SCHEDULE-MOVE NEUTRALISATION of Plan 33.2-10 (SPEC R8, D33.2-04, "
+    "D33.2-21), and NOTHING else: every game whose emergency move was announced after its "
+    "lock is rebuilt with the facts as they stood before the move, read through the one "
+    "accessor features.schedule_moves.facts_at_lock from the owner-ratified evidence table "
+    "config/schedule_moves.toml -- today exactly one game, 2003_W08_MIA@LAC, moved by the "
+    "Cedar fire from Qualcomm Stadium (SDG00) to Sun Devil Stadium (PHO99) with no dated "
+    "report before its lock, so its contextual features return to SDG00. Only the "
+    "schedule-fact columns of the reverted moves' kinds can move, only in seasons on or "
+    "after the earliest season holding such a move. No column is added, none removed, no "
+    "row moves"
+)
+
+# The contextual columns a reverted DATE reaches: the weekday family, the rest family of
+# the game's own two teams, and the time-zone travel columns (a date can cross a DST
+# change). Unused while the table holds no post-lock date move; stated so a later verdict
+# change is judged by a declared set rather than a guessed one.
+PHASE332_SCHEDULE_DATE_FAMILY: tuple[str, ...] = (
+    "thursday_game",
+    "monday_game",
+    "saturday_game",
+    "short_week",
+    "game_day_of_week",
+    "home_rest_days",
+    "away_rest_days",
+    "rest_advantage",
+    "both_short_rest",
+    "home_short_rest",
+    "away_short_rest",
+    "home_off_bye",
+    "away_off_bye",
+    "away_timezone_diff_hours",
+    "away_abs_timezone_diff_hours",
+    "away_travel_fatigue_score",
+    "away_cross_country_travel",
+    "away_eastward_travel",
+    "away_westward_travel",
+)
+
+# A reverted WEEK moves the date too, and the two week-position columns.
+PHASE332_SCHEDULE_WEEK_ONLY_COLUMNS: tuple[str, ...] = (
+    "season_progress",
+    "late_season",
+)
+
+
+def phase332_post_lock_real_moves(
+    table_path: Path | str = PHASE332_SCHEDULE_MOVE_TABLE,
+) -> dict[str, tuple[str, ...]]:
+    """``game_id -> the kinds of its REAL moves that are reverted`` at its lock.
+
+    Read through ``features.schedule_moves`` -- the same loader and the same selection
+    the builders use -- so the attribution and the build cannot disagree about which
+    games were neutralised.
+    """
+    from features.schedule_moves import load_schedule_moves
+
+    reverted: dict[str, tuple[str, ...]] = {}
+    for game_id, moves in load_schedule_moves(table_path).items():
+        last_pre_lock = max(
+            (m.move_index for m in moves if m.verdict == "pre_lock"), default=0
+        )
+        after = [m for m in moves if m.move_index > last_pre_lock]
+        if any(m.verdict == "post_lock" for m in after):
+            kinds = tuple(sorted({m.what_moved for m in after if m.is_real_move}))
+            if kinds:
+                reverted[game_id] = kinds
+    return reverted
+
+
+def phase332_schedule_fact_columns(
+    table_path: Path | str = PHASE332_SCHEDULE_MOVE_TABLE,
+) -> tuple[str, ...]:
+    """The gold columns rung 3 may move: the union of the reverted move kinds' families."""
+    kinds = {k for ks in phase332_post_lock_real_moves(table_path).values() for k in ks}
+    columns: set[str] = set()
+    if "venue" in kinds:
+        columns |= set(phase332_stadium_dependent_columns())
+    if kinds & {"date", "week"}:
+        columns |= set(PHASE332_SCHEDULE_DATE_FAMILY)
+    if "week" in kinds:
+        columns |= set(PHASE332_SCHEDULE_WEEK_ONLY_COLUMNS)
+    return tuple(sorted(columns))
+
+
+def phase332_schedule_move_earliest_season(
+    table_path: Path | str = PHASE332_SCHEDULE_MOVE_TABLE,
+) -> int | None:
+    """The earliest season holding a reverted move, or None when nothing is reverted."""
+    games = phase332_post_lock_real_moves(table_path)
+    return min((int(game_id[:4]) for game_id in games), default=None)
+
+
+PHASE332_SCHEDULE_MOVE_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_SCHEDULE_MOVE_RUNG,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_SCHEDULE_MOVE_RUNG_CAUSE,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to the SCHEDULE-FACT columns of the reverted moves' kinds -- derived by "
+        "phase332_schedule_fact_columns(): a venue move reaches the stadium-dependent set "
+        "(phase332_stadium_dependent_columns), a date move the weekday, own-team rest and "
+        "time-zone travel columns, a week move those plus season_progress and late_season. "
+        "Today only a venue move is reverted. Each column only in seasons ON OR AFTER the "
+        "earliest season holding a reverted move (2003): the build's imputation medians and "
+        "winsorization bounds are fitted on ALL strictly-prior seasons, so a changed value "
+        "can reach every later season and no earlier one"
+    ),
+    "rows_changed": (
+        "before normalization only the neutralised game can differ. After it: a rescaled "
+        "column can also move on other rows of the same season sorted at or after that "
+        "game (expanding within-season statistics), on the next season's early rows (the "
+        "prior-season bootstrap), and on any later season's rows through the strictly-prior "
+        "imputation and winsorization fits. A level-preserved indicator can move on the "
+        "neutralised game only. Measured row by row at run time against a copy of the "
+        "before-gold, never inferred from the per-season digests"
+    ),
+    "weather": (
+        "NOT expected to move: gold weather is read from silver weather_features by game_id "
+        "and this rung writes no silver row. The neutralised game's weather LOCATION is "
+        "served by facts_at_lock to scripts.ingest_weather's venue resolution; rung 4 "
+        "(Plan 33.2-12) regenerates silver weather through it"
+    ),
+    "declared_families": ("schedule_fact",),
+    "family_mechanisms": {
+        "schedule_fact": (
+            "source-derived: the contextual columns each reverted move kind reaches, read "
+            "against the owner-ratified config/schedule_moves.toml through "
+            "features.schedule_moves"
+        ),
+    },
+    "declared_before_the_rebuild": True,
+    "owner_ruling": (
+        "2026-09-21, 'Approve as written' (ratify-all): the evidence table stands as "
+        "committed in 64abce6 -- 52 before-lock moves keep their real facts and "
+        "2003_W08_MIA@LAC stays decided after the lock and is neutralised"
+    ),
+}
+
+RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX][PHASE332_SCHEDULE_MOVE_RUNG] = (
+    PHASE332_SCHEDULE_MOVE_RUNG_CAUSE
+)
+
+# THE BASELINE WAS CONFIRMED, NOT ASSUMED (owner ruling 2026-09-21, "retake a stale
+# baseline, never widen a rung's cause"). Rung 3 registers NO retaken baseline because the
+# check below found nothing to retake: it is judged against its ladder predecessor.
+PHASE332_SCHEDULE_MOVE_RUNG_BASELINE_CONFIRMATION_DOCUMENT: str = (
+    f"{PHASE332_RUNG_PREFIX}rung3_baseline_confirm.json"
+)
+
+PHASE332_SCHEDULE_MOVE_RUNG_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-21 before rung 3 ran. Gold was rebuilt with `scripts/build_features.py "
+    "--through-season 2025` in a SCRATCH data root (DATA_ROOT_PATH and DUCKDB_PATH pointed at "
+    "a copy of today's production data/) from today's inputs minus exactly rung 3's cause -- "
+    "the code at commit 64abce6, before features.schedule_moves was wired into the contextual "
+    "builder -- and its fingerprint equals p332_rung2.json on EVERY non-clock column of all "
+    "three matrices (only feature_timestamp, the build clock, differs). The production data/ "
+    "tree was digest-identical (463 files) before and after that build, and production gold "
+    "fingerprinted identical to p332_rung2.json. So nothing moved between rungs 2 and 3: no "
+    "carry-in, no retake"
+)
+
+
+def _attribute_p332_schedule_move(
+    detail: dict, diff: dict, verdict: dict, fail
+) -> bool:
+    """Rung 3 of the `p332_` ladder: the schedule-move neutralisation's OWN judge.
+
+    A changed column is attributed ONLY when it is in the derived schedule-fact set AND
+    every season it moved in is on or after the earliest season holding a reverted move.
+    Anything else is UNATTRIBUTED and fails; it is never absorbed and the cause is never
+    widened to fit it.
+
+    NOT the generic rung-3 path, deliberately: that is Phase 30's, which expects a
+    `line_movement` column removal this rung does not make.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    verdict["changed_by_family"] = {"schedule_fact": []}
+    blocking = _phase33_structure(
+        detail,
+        diff,
+        fail,
+        "p332_ rung 3 (the emergency schedule moves)",
+        "Rebuilding post-lock-moved games with their pre-move facts",
+    )
+    explainable = {_canonical(column) for column in phase332_schedule_fact_columns()}
+    floor = phase332_schedule_move_earliest_season()
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        in_range = (
+            floor is not None
+            and bool(seasons)
+            and all(int(s) >= floor for s in seasons)
+        )
+        if column in explainable and in_range:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["schedule_fact"].append(column)
+            continue
+        verdict["unattributed"].append(column)
+        why = (
+            f"it moved in season(s) before {floor}, the earliest season holding a "
+            "reverted move, which the strictly-prior fits cannot reach"
+            if column in explainable
+            else "it is not a schedule-fact column of any reverted move's kind"
+        )
+        fail(
+            f"column '{column}' moved at p332_ rung 3 in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The rung's ONE cause is the "
+            "schedule-move neutralisation; do NOT widen it to fit this diff"
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_RUNG_SIGNATURES[PHASE332_SCHEDULE_MOVE_RUNG] = (
+    PHASE332_SCHEDULE_MOVE_RUNG_EXPECTED_SIGNATURE
+)
+PHASE332_RUNG_ATTRIBUTORS[PHASE332_SCHEDULE_MOVE_RUNG] = _attribute_p332_schedule_move
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -4362,7 +4614,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0, 1 and 2).
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 3).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -4528,6 +4780,12 @@ def write_phase332_rebuild_diff(
     if venue_document.exists():
         lines.extend(_phase332_venue_rung_lines(fingerprint_dir))
 
+    schedule_document = rung_document_path(
+        fingerprint_dir, PHASE332_SCHEDULE_MOVE_RUNG, PHASE332_RUNG_PREFIX
+    )
+    if schedule_document.exists():
+        lines.extend(_phase332_schedule_move_rung_lines(fingerprint_dir))
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out_path
@@ -4590,6 +4848,71 @@ def _phase332_venue_rung_lines(fingerprint_dir: Path | str) -> list[str]:
         "declared_columns = "
         f"{_toml_array(sorted(phase332_stadium_dependent_columns()))}",
         f"declared_seasons = {_toml_array([str(PHASE332_VENUE_CORRECTED_SEASON)])}",
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        f'weather = "{_toml_escape(str(signature["weather"]))}"',
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_RUNG_ATTRIBUTORS[rung].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the rung is '
+            'recorded as declared-but-not-run rather than as a rung that ran"'
+        )
+    lines.extend(["", f"[rung.{rung}.moved_seasons]"])
+    for column, seasons in sorted(_phase332_moved_seasons(report).items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_schedule_move_rung_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` rung 3 (Plan 33.2-10), recomputed from the ladder.
+
+    Judged by the same `attribute_rung` call the CLI makes, against the rung's baseline
+    document (its ladder predecessor: PHASE332_SCHEDULE_MOVE_RUNG_BASELINE_CONFIRMATION
+    records why no retake was needed).
+    """
+    rung = PHASE332_SCHEDULE_MOVE_RUNG
+    require_rung_ladder(fingerprint_dir, rung + 1, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, rung)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, rung, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, rung, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    signature = PHASE332_SCHEDULE_MOVE_RUNG_EXPECTED_SIGNATURE
+    floor = phase332_schedule_move_earliest_season()
+    lines = [
+        "",
+        f"[rung.{rung}]",
+        f"rung = {rung}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_SCHEDULE_MOVE_RUNG_BASELINE_CONFIRMATION)}"',
+        "baseline_confirmation_document = "
+        f'"{PHASE332_SCHEDULE_MOVE_RUNG_BASELINE_CONFIRMATION_DOCUMENT}"',
+        f'cause = "{_toml_escape(PHASE332_SCHEDULE_MOVE_RUNG_CAUSE)}"',
+        f'move_table = "{PHASE332_SCHEDULE_MOVE_TABLE.as_posix()}"',
+        "post_lock_real_moves = "
+        f"{_toml_array(sorted(phase332_post_lock_real_moves()))}",
+        f"declared_columns = {_toml_array(list(phase332_schedule_fact_columns()))}",
+        f"declared_season_floor = {floor if floor is not None else 0}",
         f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
         f'weather = "{_toml_escape(str(signature["weather"]))}"',
         f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",

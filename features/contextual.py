@@ -27,6 +27,7 @@ import pandas as pd
 
 from conf.settings import get_settings
 from data.storage import load_dataframe
+from features.schedule_moves import FactsAtLock, facts_at_lock
 from ratings.elo import is_divisional_game
 from utils import DataIngestionError, get_logger
 from utils.date_utils import kickoff_wall_clock_et
@@ -506,8 +507,26 @@ class ContextualFeaturesCalculator:
         """Resolve a game's true venue under the D33.1-06 routing rule."""
         return resolve_venue_for_game(game, self.venues_data["venues"])
 
+    def facts_for_game(self, game: Any) -> FactsAtLock:
+        """The venue, kickoff and week this game's features may use (Plan 33.2-10).
+
+        Read through ``features.schedule_moves.facts_at_lock``, the ONE place the
+        last-admissible-move selection is made. A game moved by an emergency announced
+        after its lock gets the facts as they stood before the move; every other game
+        gets the facts silver records. The venue, roof, surface, travel, time zone,
+        weekday and season position below all derive from these facts, so they cannot
+        disagree with each other or with the weather writer about where and when a game
+        was scheduled at its lock.
+        """
+        return facts_at_lock(game.get("game_id"), game)
+
     def _resolve_venue_id_for_game(self, game: Any) -> str:
         """The venue_id the feature build should use for this game.
+
+        THE VENUE AT THE LOCK (Plan 33.2-10). The ``stadium_id`` is taken from
+        :meth:`facts_for_game`, so a post-lock emergency move resolves to the venue the
+        game was scheduled at before the move. For every other game it is the game's own
+        ``stadium_id``, exactly as below.
 
         EVERY SEASON AND EVERY GAME ROUTES BY ``stadium_id`` (D33.1-06). This
         method's previous docstring said that seasons before 2026 never enter the
@@ -525,7 +544,9 @@ class ContextualFeaturesCalculator:
             UnknownStadiumError: the game's ``stadium_id`` is not in
                 ``data/venues.json``, or the frame carries no ``stadium_id`` at all.
         """
-        return self.resolve_venue_for_game(game)["venue_id"]
+        facts = self.facts_for_game(game)
+        at_lock = {"game_id": game.get("game_id"), "stadium_id": facts.stadium_id}
+        return self.resolve_venue_for_game(at_lock)["venue_id"]
 
     def _get_venue_surface(self, venue_id: str) -> str | None:
         """Get the surface type for a venue by its ID.
@@ -1278,7 +1299,7 @@ class ContextualFeaturesCalculator:
                 # load_dataframe happened to resolve: it is correct on the
                 # ET-typed DuckDB table and WRONG for 718 of 6,499 rows on the
                 # UTC-typed parquet.
-                kickoff_dt = kickoff_wall_clock_et(game["kickoff_et"])
+                kickoff_dt = self.facts_for_game(game).kickoff_et
                 season = game["season"]
                 week = game["week"]
 
@@ -1603,9 +1624,17 @@ class ContextualFeaturesCalculator:
                 # load_dataframe happened to resolve: it is correct on the
                 # ET-typed DuckDB table and WRONG for 718 of 6,499 rows on the
                 # UTC-typed parquet.
-                kickoff_dt = kickoff_wall_clock_et(game["kickoff_et"])
+                #
+                # THE FACTS AT THE LOCK (Plan 33.2-10): the kickoff and the week come from
+                # facts_for_game, the same accessor the venue above resolved through, so a
+                # post-lock emergency move is built with the facts before the move. The
+                # accessor returns the ET wall clock exactly as kickoff_wall_clock_et does.
+                # `week` stays the silver value: it is a merge key, not a feature.
+                facts = self.facts_for_game(game)
+                kickoff_dt = facts.kickoff_et
                 season = game["season"]
                 week = game["week"]
+                week_at_lock = facts.week
 
                 game_features: dict[str, object] = {
                     "game_id": game_id,
@@ -1699,8 +1728,8 @@ class ContextualFeaturesCalculator:
                 game_features.update(game_spots)
 
                 # FEAT-17: Season-week position features
-                season_progress = float(week) / 18.0
-                late_season = 1.0 if week >= 14 else 0.0
+                season_progress = float(week_at_lock) / 18.0
+                late_season = 1.0 if week_at_lock >= 14 else 0.0
 
                 # FEAT-18: Surface type mismatch (away team perspective)
                 surface_mismatch = self._compute_surface_mismatch(away_team, venue_id)

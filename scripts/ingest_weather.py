@@ -41,6 +41,7 @@ from data.storage import load_dataframe, save_bronze_snapshot, upsert_silver
 # The exception class is imported directly: it is re-raised as a type, never called.
 from features import contextual as venue_routing
 from features.contextual import UnknownStadiumError
+from features.schedule_moves import facts_at_lock
 from utils import (
     DataIngestionError,
     get_current_nfl_week,
@@ -792,9 +793,18 @@ class WeatherDataIngester:
         so the contextual builder, the forecast path and the archive path cannot
         diverge about which stadium a game is at, mechanically rather than by
         coincidence.
+
+        THE WEATHER LOCATION IS THE VENUE AT THE LOCK (Plan 33.2-10). The
+        ``stadium_id`` comes from ``features.schedule_moves.facts_at_lock`` -- the same
+        accessor the contextual builder reads -- so a game moved by an emergency
+        announced after its lock takes its weather at the venue it was scheduled at
+        before the move. Every other game resolves by its own ``stadium_id``, exactly
+        as before.
         """
+        game_id = game.get("game_id")
+        stadium_id = facts_at_lock(game_id, game).weather_stadium_id
         return self._get_venue_record_by_stadium_id(
-            game.get("stadium_id"), venues_df, game_id=game.get("game_id")
+            stadium_id, venues_df, game_id=game_id
         )
 
     def _get_venue_coordinates(
