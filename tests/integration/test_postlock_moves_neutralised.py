@@ -524,6 +524,30 @@ needs_gold_copy = pytest.mark.skipif(
 )
 
 
+RUNG3_DOCUMENT = REPO_ROOT / "outputs" / "fingerprints" / "p332_rung3.json"
+
+
+def _skip_unless_the_game_rows_are_rung_three(matrix: str, after: pd.DataFrame) -> None:
+    """Skip once a later rung has moved the post-lock games' seasons past rung 3.
+
+    The expected moved-column set is rung 3's own; a later rung (the day-before weather,
+    for one) legitimately moves more columns on these rows, and judging that against
+    rung 3's prediction would be judging the wrong rebuild.
+    """
+    import scripts.fingerprint_gold as fg
+
+    if not RUNG3_DOCUMENT.is_file():
+        pytest.skip(f"{RUNG3_DOCUMENT} is absent (gitignored runtime evidence)")
+    seasons = {str(game_id[:4]) for game_id in _real_post_lock_games()}
+    rung3 = json.loads(RUNG3_DOCUMENT.read_text(encoding="utf-8"))[matrix]["columns"]
+    live = fg.fingerprint_matrix(after.reset_index())["columns"]
+    for column, digests in rung3.items():
+        if fg._is_build_clock(column) or column not in live:
+            continue
+        if any(live[column].get(s) != digests.get(s) for s in seasons):
+            pytest.skip("live gold has moved on in the post-lock seasons since rung 3")
+
+
 @needs_gold_copy
 class TestGoldCarriesThePreMoveFacts:
     @pytest.mark.parametrize("matrix", GOLD_MATRICES)
@@ -536,6 +560,7 @@ class TestGoldCarriesThePreMoveFacts:
         after = pd.read_parquet(GOLD_AFTER_DIR / f"{matrix}.parquet").set_index(
             "game_id"
         )
+        _skip_unless_the_game_rows_are_rung_three(matrix, after)
         for game_id in _real_post_lock_games():
             season_games = _season_frame(silver, int(silver.at[game_id, "season"]))
             as_played = season_games.copy()

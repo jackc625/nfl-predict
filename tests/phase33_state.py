@@ -15070,3 +15070,81 @@ P332_10_RUNG3_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
     "gold/features_wp.parquet",
     "nfl_predictions.duckdb",
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-10 (orchestrator-assigned extra step) -- p332_ STEP 3b: SURFACE CLASSIFICATION
+# (D33.2-20; the Plan 33.2-09 deferred item "surface_mismatch treats natural and hybrid
+# grass ... as synthetic").
+#
+# APPENDED ONCE by Plan 33.2-10 on 2026-09-21, in ONE block. Nothing above this line was
+# edited.
+#
+# THE FIX. features.contextual.SURFACE_CLASS_BY_SPELLING classifies all 12 distinct surface
+# spellings in data/venues.json; Grass, Hybrid Grass and Desso GrassMaster became grass, and
+# an unlisted spelling raises instead of defaulting to synthetic. RealGrass stays synthetic:
+# it is Texas Stadium's artificial turf, not a natural pitch.
+#
+# STEP 3b is an EXTRA STEP (string id, follows rung 3), so it cannot collide with rungs 4-9.
+# Declared in commit bfcf2bf BEFORE the rebuild ran; judged against p332_rung3.json, the
+# CONFIRMED baseline (data/ unchanged since rung 3's rebuild). MEASURED 2026-09-21:
+# attribution_ok true, zero unattributed, only surface_mismatch moved, in 2005-2025; the
+# digest bracket outputs/p332_rung3b_before.json -> after named exactly the four declared
+# paths.
+#
+# THE ROW RULE, measured row by row against a copy of the before-gold: 3,665 rows moved in
+# each matrix, all in surface_mismatch -- all 55 reclassified games through 2025, and 3,610
+# other rows of seasons 2005-2025 whose z-scored value the reclassified games' season
+# statistics (and the prior-season bootstrap) now reach. No other column moved.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_SURFACE_STEP_CAUSE (UTF-8), declared in commit
+# bfcf2bf before the rebuild ran.
+P332_10_RUNG3B_CAUSE_DIGEST: str = (
+    "7b6a972768af91a2f2dec2da6ce8c86568a9cccdbc86ef9438493bb7d41a11c3"
+)
+
+P332_10_RUNG3B_DECLARED_IN_COMMIT: str = "bfcf2bf7f8646c4807a9190ad3b2d0a0fa694043"
+
+P332_10_RUNG3B_STEP_ID: str = "3b"
+
+P332_10_RUNG3B_FOLLOWS_RUNG: int = 3
+
+P332_10_RUNG3B_BASELINE_DOCUMENT: str = "p332_rung3.json"
+
+P332_10_SURFACE_GRASS_SPELLINGS: tuple[str, ...] = (
+    "Bermuda Grass",
+    "Desso GrassMaster",
+    "Grass",
+    "Hybrid Grass",
+    "Kentucky Bluegrass",
+)
+
+P332_10_SURFACE_SYNTHETIC_SPELLINGS: tuple[str, ...] = (
+    "AstroPlay",
+    "AstroTurf",
+    "FieldTurf",
+    "Matrix Turf",
+    "NexTurf",
+    "RealGrass",
+    "Sport Turf",
+)
+
+# Silver games whose surface_mismatch the fix changes: all seasons, and through 2025.
+P332_10_RUNG3B_RECLASSIFIED_GAMES: int = 58
+
+P332_10_RUNG3B_RECLASSIFIED_GAMES_THROUGH_2025: int = 55
+
+P332_10_RUNG3B_MOVED_COLUMNS: tuple[str, ...] = ("surface_mismatch",)
+
+P332_10_RUNG3B_SEASON_FLOOR: int = 2005
+
+P332_10_RUNG3B_ROWS_MOVED_PER_MATRIX: int = 3665
+
+P332_10_RUNG3B_OTHER_ROWS_MOVED: int = 3610
+
+P332_10_RUNG3B_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "gold/features_wp.parquet",
+    "nfl_predictions.duckdb",
+)

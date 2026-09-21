@@ -10,7 +10,7 @@
 # scripts.fingerprint_gold._column_bytes, as every prior ladder. ASCII only.
 # ===========================================================================
 
-generated_at = "2026-09-21T21:41:56.960853+00:00"
+generated_at = "2026-09-21T22:04:25.136977+00:00"
 rung_prefix = "p332_"
 float_tolerance = "none -- EXACT byte comparison"
 
@@ -143,3 +143,28 @@ away_travel_fatigue_score = ["2003", "2004"]
 venue_capacity = ["2003", "2004"]
 venue_elevation_ft = ["2003", "2004"]
 venue_warm_climate = ["2003", "2004"]
+
+[rung."3b"]
+rung = "3b"
+prefix = "p332_"
+extra_step = true
+follows_rung = 3
+rebuilt = true
+baseline_document = "p332_rung3.json"
+baseline_confirmation = "CONFIRMED 2026-09-21 before step 3b ran. p332_rung3.json IS gold rebuilt from today's inputs minus exactly this step's cause: the rung-3 rebuild ran on the same inputs with the code at commit 0757605, which differs from this step's code only by the surface classification. Between that rebuild and this step the production data/ tree did not change (463 files, digest-identical to the state rung 3 left), and production gold fingerprinted identical to p332_rung3.json. No carry-in, no retake"
+cause = "THE SURFACE-CLASSIFICATION FIX of Plan 33.2-10 extra step 3b (orchestrator-assigned, deferred-items entry of Plan 33.2-09), and NOTHING else: features.contextual.SURFACE_CLASS_BY_SPELLING now classifies every distinct surface spelling in data/venues.json -- Grass, Hybrid Grass and Desso GrassMaster as grass (natural or hybrid), RealGrass and the other turf products as synthetic -- and an unlisted spelling raises instead of defaulting to synthetic, so surface_mismatch is recomputed at the international and hybrid-pitch venues the two-spelling rule misread. Only surface_mismatch can move, only in seasons on or after the earliest season holding a reclassified game. No column is added, none removed, no row moves"
+declared_columns = ["surface_mismatch"]
+declared_season_floor = 2005
+reclassified_games_through_2025 = ["2005_W04_SF@ARI", "2007_W08_NYG@MIA", "2008_W08_LAC@NO", "2009_W07_NE@TB", "2010_W08_DEN@SF", "2011_W07_CHI@TB", "2012_W08_NE@LA", "2013_W04_PIT@MIN", "2013_W08_SF@JAX", "2014_W04_MIA@LV", "2014_W08_DET@ATL", "2014_W10_DAL@JAX", "2015_W04_NYJ@MIA", "2015_W07_BUF@JAX", "2015_W08_DET@KC", "2016_W04_IND@JAX", "2016_W07_NYG@LA", "2016_W08_WAS@CIN", "2016_W11_HOU@LV", "2017_W03_BAL@JAX", "2017_W04_NO@MIA", "2017_W07_ARI@LA", "2017_W08_MIN@CLE", "2017_W11_NE@LV", "2018_W06_SEA@LV", "2018_W07_TEN@LAC", "2018_W08_PHI@JAX", "2019_W05_CHI@LV", "2019_W06_CAR@TB", "2019_W08_CIN@LA", "2019_W09_HOU@JAX", "2019_W11_KC@LAC", "2021_W05_NYJ@ATL", "2021_W06_MIA@JAX", "2022_W04_MIN@NO", "2022_W05_NYG@GB", "2022_W08_DEN@JAX", "2022_W10_SEA@TB", "2022_W11_SF@ARI", "2023_W04_ATL@JAX", "2023_W05_JAX@BUF", "2023_W06_BAL@TEN", "2023_W09_MIA@KC", "2023_W10_IND@NE", "2024_W01_GB@PHI", "2024_W05_NYJ@MIN", "2024_W06_JAX@CHI", "2024_W07_NE@JAX", "2024_W10_NYG@CAR", "2025_W01_KC@LAC", "2025_W04_MIN@PIT", "2025_W05_MIN@CLE", "2025_W06_DEN@NYJ", "2025_W07_LA@JAX", "2025_W10_ATL@IND"]
+rows_changed = "before normalization only the reclassified games can differ. surface_mismatch is a varying binary flag, so gold z-scores it: after normalization it can also move on other rows of a reclassified game's season sorted at or after that game, and on the next season's early rows. Measured row by row at run time against a copy of the before-gold"
+widths_before = ["195", "196", "195"]
+widths_after = ["195", "196", "195"]
+moved_columns = ["surface_mismatch"]
+build_clock_moves = ["feature_timestamp"]
+unattributed_columns = []
+attribution_ok = true
+attribution_blocking = false
+attributor = "_attribute_p332_surface"
+
+[rung."3b".moved_seasons]
+surface_mismatch = ["2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
