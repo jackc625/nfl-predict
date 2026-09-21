@@ -741,6 +741,15 @@ RUN_MODE_FORWARD = "forward"
 _REPLAY_CONTAMINATED_SEASONS: frozenset[int] = frozenset({2021, 2022, 2023, 2024})
 _REPLAY_CLEAN_HOLDOUT_SEASON = 2025
 
+# The seasons each backtest-replay evidence class is drawn from, read off the two constants above.
+# The /bets replay tracker sections carry no season column of their own, so the website's dated
+# old-rule label (R16 / D33.2-07) scopes each section through this map. A class missing from it is
+# an unknown span, which labels.
+REPLAY_VALIDATION_TYPE_SEASONS: dict[str, frozenset[int]] = {
+    VALIDATION_TYPE_CONTAMINATED: _REPLAY_CONTAMINATED_SEASONS,
+    VALIDATION_TYPE_CLEAN_HOLDOUT: frozenset({_REPLAY_CLEAN_HOLDOUT_SEASON}),
+}
+
 # The standalone CREATE, so materialize_bet_list can run against any connection (the web cache, or
 # an in-memory test DB) without first building the whole CACHE_SCHEMA. This is the SAME definition
 # embedded in CACHE_SCHEMA above (the LOCKED column order + NO PRIMARY KEY).
@@ -2251,6 +2260,81 @@ def _load_game_context(
     return row_count
 
 
+# ---------------------------------------------------------------------------
+# Season spans of the pre-rendered blocks (Phase 33.2, R16 / D33.2-07)
+# ---------------------------------------------------------------------------
+# A pre-rendered chart blob carries no season column, so the season span it was drawn from is
+# stamped into cache_meta at population time, beside the keys populate_cache already writes. The
+# website reads it back through DataService.cached_span_old_rule_scope to decide whether a block
+# shows pre-fix numbers and so carries the dated old-rule label. A missing key means the cache
+# predates the stamp and cannot say what its charts cover, and the reader LABELS in that case.
+
+# /backtest, /insights and the /performance all-history summary: every table their charts and
+# figures are drawn from.
+BACKTEST_SEASON_RANGE_KEY = "backtest_season_range"
+_BACKTEST_SEASONS_SQL = (
+    "SELECT MIN(season), MAX(season) FROM ("
+    "SELECT season FROM backtest_predictions "
+    "UNION ALL SELECT season FROM backtest_metrics WHERE season > 0 "
+    "UNION ALL SELECT season FROM betting_bets)"
+)
+
+# /betting: the per-bet simulation ledger its KPI strip, charts and ROI table are drawn from.
+BETTING_SEASON_RANGE_KEY = "betting_season_range"
+_BETTING_SEASONS_SQL = "SELECT MIN(season), MAX(season) FROM betting_bets"
+
+# /bets needs no stamp: its replay tracker sections are keyed by evidence class, and each class's
+# seasons are fixed by REPLAY_VALIDATION_TYPE_SEASONS.
+
+# The value stamped for a source with no rows: a known-empty span, so no label.
+NO_SEASONS = "none"
+
+
+def format_season_range(low: int | None, high: int | None) -> str:
+    """Render a season span as ``"MIN-MAX"``, or ``"none"`` for a source with no rows."""
+    if low is None or high is None:
+        return NO_SEASONS
+    return f"{int(low)}-{int(high)}"
+
+
+def parse_season_range(value: str | None) -> list[int] | None:
+    """Read a stamped span back: ``[MIN, MAX]``, ``[]`` for ``"none"``, None if unreadable.
+
+    None means UNKNOWN -- an absent key or a value this format does not describe -- and the label
+    partial labels an unknown span. Returning an empty list for garbage instead would turn a
+    malformed stamp into a silent "no pre-fix numbers here".
+    """
+    if value == NO_SEASONS:
+        return []
+    if not value or value.count("-") != 1:
+        return None
+    low, high = value.split("-")
+    if not (low.isdigit() and high.isdigit()):
+        return None
+    return [int(low), int(high)]
+
+
+def stamp_old_rule_season_ranges(
+    conn: duckdb.DuckDBPyConnection, now: datetime
+) -> dict[str, str]:
+    """Stamp the season span of each pre-rendered block family into ``cache_meta``.
+
+    Reads the populated tables only; computes nothing about any game. Returns the stamped values.
+    """
+    stamped: dict[str, str] = {}
+    for key, sql in (
+        (BACKTEST_SEASON_RANGE_KEY, _BACKTEST_SEASONS_SQL),
+        (BETTING_SEASON_RANGE_KEY, _BETTING_SEASONS_SQL),
+    ):
+        low, high = conn.execute(sql).fetchone() or (None, None)
+        stamped[key] = format_season_range(low, high)
+    conn.executemany(
+        "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
+        [(key, value, now) for key, value in stamped.items()],
+    )
+    return stamped
+
+
 def _prerender_charts(
     conn: duckdb.DuckDBPyConnection,
 ) -> int:
@@ -2519,11 +2603,14 @@ def populate_cache(
             "INSERT OR REPLACE INTO cache_meta VALUES (?, ?, ?)",
             meta_rows,
         )
+        # The season span behind each pre-rendered block family (R16 / D33.2-07).
+        old_rule_spans = stamp_old_rule_season_ranges(conn, now)
 
         logger.info(
             "Cache metadata set",
             prediction_count=pred_count,
             season_range=season_range,
+            **old_rule_spans,
         )
 
     finally:

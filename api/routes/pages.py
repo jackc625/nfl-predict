@@ -20,6 +20,12 @@ from typing import Any, NamedTuple
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from api.cache import (
+    BACKTEST_SEASON_RANGE_KEY,
+    BETTING_SEASON_RANGE_KEY,
+    PROVENANCE_BACKTEST_REPLAY,
+    REPLAY_VALIDATION_TYPE_SEASONS,
+)
 from api.charts import BETTING_CHART_IDS, INSIGHTS_CHART_IDS
 from api.dependencies import get_data_service, templates
 from api.season_metrics import _ats_outcome, _ou_outcome, _wp_outcome
@@ -167,6 +173,45 @@ def _normalize_betting_scope(scope: str) -> str:
     return scope if scope in _BETTING_SCOPES else _DEFAULT_BETTING_SCOPE
 
 
+# ---------------------------------------------------------------------------
+# Old-rule label scopes (Phase 33.2, R16 / D33.2-07)
+# ---------------------------------------------------------------------------
+# Every page context carries one scope per block that can show numbers, under a key ending in
+# ``old_rule_scope``. The shared ``components/_old_rule_label.html`` partial reads it and renders
+# the dated label when the block shows a 2021-2025 season. Each scope comes from the block's OWN
+# data -- its rows' seasons, or the span population stamped for a pre-rendered chart -- and never
+# from a request parameter such as the selected season, which on /performance does not even
+# describe the all-history block it would be gating.
+
+
+def _rows_seasons(rows: list[dict]) -> list[int]:
+    """The seasons a block's rows carry. An empty list means the block renders no numbers."""
+    return [row["season"] for row in rows if row.get("season") is not None]
+
+
+def _replay_tracker_seasons(blocks: list[dict]) -> list[int] | None:
+    """The seasons behind every backtest-replay tracker section that shows graded figures.
+
+    A replay section carries no season column, so its seasons come from its evidence class through
+    ``REPLAY_VALIDATION_TYPE_SEASONS``. A section with no graded bets renders an empty state and
+    contributes nothing. A class the map does not know makes the whole span UNKNOWN (None), which
+    labels.
+    """
+    seasons: list[int] = []
+    for block in blocks:
+        if block.get("provenance") != PROVENANCE_BACKTEST_REPLAY:
+            continue
+        if not block.get("bets_graded"):
+            continue
+        class_seasons = REPLAY_VALIDATION_TYPE_SEASONS.get(
+            block.get("validation_type", "")
+        )
+        if class_seasons is None:
+            return None
+        seasons.extend(class_seasons)
+    return seasons
+
+
 def _build_betting_context(
     service: DataService, scope: str, request: Request
 ) -> dict[str, Any]:
@@ -196,6 +241,9 @@ def _build_betting_context(
         "current_scope": scope,
         "current_path": "/betting",
         "cache_meta": service.get_cache_meta(),
+        # One block: every KPI, chart and ROI row is drawn from the betting simulation ledger.
+        # Built here so betting_page and betting_fragment receive it from one place.
+        "old_rule_scope": service.cached_span_old_rule_scope(BETTING_SEASON_RANGE_KEY),
     }
 
 
@@ -248,14 +296,19 @@ def _build_season_context(
         charts[f"season_weekly_{season}"] = service.get_chart_html(
             f"season_weekly_{season}"
         )
+    kpis = service.get_season_kpis(season) if season is not None else {}
+    # The template shows its empty state -- no numbers -- when a season has no KPI blob and no
+    # chart, so the scope is known-empty in exactly that case and the season otherwise.
+    shows_numbers = season is not None and (bool(kpis) or any(charts.values()))
     return {
         "request": request,
         "charts": charts,
-        "kpis": service.get_season_kpis(season) if season is not None else {},
+        "kpis": kpis,
         "available_seasons": service.get_prediction_seasons(),
         "current_season": season,
         "current_path": "/season",
         "cache_meta": service.get_cache_meta(),
+        "old_rule_scope": DataService.old_rule_scope([season] if shows_numbers else []),
     }
 
 
@@ -468,6 +521,8 @@ def _build_bets_context(
     # reads (D31-27/29). See _bets_blocked for why neither side may come from get_cache_meta or
     # from the bet rows.
     freshness = _bets_blocked(service, season, week)
+    bet_list_available = service.bet_list_table_exists()
+    tracker_blocks = service.get_bet_tracker_blocks()
 
     return {
         "request": request,
@@ -487,7 +542,7 @@ def _build_bets_context(
         # A cache that predates Phase 31 has no bet_list table. That is a DIFFERENT absence from a
         # week that admitted nothing, and the page says so rather than reporting a missing table
         # as a modelling result (plan 31-15, UI-SPEC E2 empty).
-        "bet_list_available": service.bet_list_table_exists(),
+        "bet_list_available": bet_list_available,
         "bet_list_populated_at": freshness.populated_at,
         # The stale-cache hard-block (D31-27), SCOPED. It withholds the current week's list, that
         # week's suppressed disclosure and the forward tracker block -- all three are computed
@@ -502,7 +557,16 @@ def _build_bets_context(
         # no rate, no return and no SQL aggregate (UIAP-01). The template partitions the rows into
         # its sections by matching the two stored labels; it never pools two classes into one
         # figure, because the pooled figure does not exist to render.
-        "tracker_blocks": service.get_bet_tracker_blocks(),
+        "tracker_blocks": tracker_blocks,
+        # Two blocks, two scopes. The selected week's list (a 2021-2025 week is a replay the old
+        # models reconstructed), and the backtest-replay tracker sections. The forward tracker
+        # section is 2026 by construction and carries no label.
+        "week_old_rule_scope": DataService.old_rule_scope(
+            [season] if season is not None and bet_list_available else []
+        ),
+        "replay_old_rule_scope": DataService.old_rule_scope(
+            _replay_tracker_seasons(tracker_blocks)
+        ),
     }
 
 
@@ -666,6 +730,8 @@ def this_week_page(
         "current_path": "/",
         "cache_meta": cache_meta,
         "week_summary": _compute_week_summary(games),
+        # One block: the week summary and the game grid, scoped to the games actually shown.
+        "old_rule_scope": DataService.old_rule_scope(_rows_seasons(games)),
     }
 
     block_name = "game_grid" if request.headers.get("HX-Request") else None
@@ -705,6 +771,15 @@ def performance_page(
         "summary": summary,
         "current_path": "/performance",
         "cache_meta": cache_meta,
+        # Two blocks, two scopes. The summary aggregates the WHOLE backtest corpus whatever season
+        # is selected (_compute_summary reads every metric), so its scope is that corpus's span and
+        # never the season query parameter. The table is scoped to the rows it shows.
+        "summary_old_rule_scope": service.cached_span_old_rule_scope(
+            BACKTEST_SEASON_RANGE_KEY
+        ),
+        "season_metrics_old_rule_scope": DataService.old_rule_scope(
+            _rows_seasons(season_metrics)
+        ),
     }
 
     # If HTMX request, return only the performance_content block
@@ -739,6 +814,8 @@ def backtest_page(
         "charts": charts,
         "current_path": "/backtest",
         "cache_meta": cache_meta,
+        # One block: the four charts, pre-rendered over the whole backtest corpus.
+        "old_rule_scope": service.cached_span_old_rule_scope(BACKTEST_SEASON_RANGE_KEY),
     }
     template_response = templates.TemplateResponse(
         request, "pages/backtest.html", context
@@ -782,6 +859,8 @@ def insights_page(
         "aggregate_table": aggregate_table,
         "current_path": "/insights",
         "cache_meta": cache_meta,
+        # One block: all three sections are drawn from the same backtest corpus.
+        "old_rule_scope": service.cached_span_old_rule_scope(BACKTEST_SEASON_RANGE_KEY),
     }
     template_response = templates.TemplateResponse(
         request, "pages/insights.html", context
@@ -936,6 +1015,8 @@ def game_detail_page(
         "game": game,
         "current_path": "",
         "cache_meta": cache_meta,
+        # One block: the game's prediction, result badge and CLV, scoped to its own season.
+        "old_rule_scope": DataService.old_rule_scope([game["season"]] if game else []),
     }
     template_response = templates.TemplateResponse(
         request, "pages/game_detail.html", context

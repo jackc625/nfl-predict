@@ -23,6 +23,9 @@
 {# Game grid -- HTMX swap target #}
 <div id="game-grid">
   {% block game_grid %}
+  {# Old-rule label for the selected week (R16 / D33.2-07). Inside game_grid so an HTMX swap
+     re-renders it for the newly selected season rather than leaving a stale one behind. #}
+  {% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
   {% include "components/_week_summary.html" %}
   {% if games %}
   <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">

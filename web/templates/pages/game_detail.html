@@ -16,6 +16,10 @@
   Back to predictions
 </a>
 
+{# Old-rule label for this game (R16 / D33.2-07): a 2021-2025 game's prediction, result badge
+   and CLV are all pre-fix. The route scopes it to the game's own season. #}
+{% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+
 {# Game header #}
 <div class="bg-white rounded-lg border border-gray-200 p-6 mb-6">
   <div class="flex items-center justify-between mb-2">

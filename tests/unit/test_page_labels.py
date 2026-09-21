@@ -28,13 +28,14 @@ ASCII only, no emoji (CLAUDE.md).
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from api.dependencies import templates
-from api.services import DataService
+from api.services import DataService, clear_cache
 from backtest.ev_chain_constants import READOUT_FORBIDDEN_WORDS
 from tests.unit.test_old_rule_labels import LABEL_PHRASE
 
@@ -87,6 +88,16 @@ if sorted(EXPECTED_PREFIX_BLOCKS) != _page_listing():
         "EXPECTED_PREFIX_BLOCKS must be keyed by exactly the files in web/templates/pages/: "
         f"declared {sorted(EXPECTED_PREFIX_BLOCKS)}, on disk {_page_listing()}"
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_data_service_cache() -> Iterator[None]:
+    """DataService memoises cache_meta at module level, so each test starts from a cold cache."""
+    clear_cache()
+    try:
+        yield
+    finally:
+        clear_cache()
 
 
 class _StubRequest:

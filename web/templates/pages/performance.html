@@ -6,6 +6,10 @@
   <p class="text-sm text-gray-500">Season-by-season model accuracy, CLV trends, and calibration analysis</p>
 </div>
 
+{# Old-rule label for the all-history summary (R16 / D33.2-07). Its scope is the whole backtest
+   corpus the summary aggregates, NOT the selected season. #}
+{% with scope=summary_old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+
 {# All-time summary row (Display role typography per UI-SPEC) #}
 <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
   <div class="bg-white rounded-lg border border-gray-200 p-4 text-center">
@@ -38,6 +42,8 @@
 {# Season-specific content (HTMX swap target) #}
 <div id="performance-content">
   {% block performance_content %}
+  {# Old-rule label for the season-scoped table, from the seasons the table shows. #}
+  {% with scope=season_metrics_old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
   {# Season metrics table -- pivoted by (season, target) #}
   {% if season_metrics %}
   <div class="bg-white rounded-lg border border-gray-200 overflow-hidden mb-6">

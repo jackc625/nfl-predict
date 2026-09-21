@@ -7,6 +7,9 @@
   <p class="text-sm text-gray-500">How the model behaves -- calibration, feature importance, and head-to-head comparison vs the betting market</p>
 </div>
 
+{# Old-rule label for all three sections below (R16 / D33.2-07); the partial decides. #}
+{% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+
 {# ----------------------------------------------------------------- #}
 {# Section 1: Calibration                                             #}
 {# ----------------------------------------------------------------- #}

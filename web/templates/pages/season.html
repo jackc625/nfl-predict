@@ -35,6 +35,10 @@
 {% set cumulative_id = "season_cumulative_" ~ current_season %}
 {% set weekly_id = "season_weekly_" ~ current_season %}
 
+{# Old-rule label for the selected season (R16 / D33.2-07). The route passes a known-empty
+   scope when the season has nothing to show, so the empty state below carries no label. #}
+{% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+
 {# Whole-season empty guard FIRST (D-02): a season with zero completed games has
    no KPI blob and no rendered charts, so render a single empty state instead of
    the KPI strip + charts. This is the offseason reality for a not-yet-played

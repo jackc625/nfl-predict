@@ -35,6 +35,7 @@ from __future__ import annotations
 import copy
 import json
 import threading
+from collections.abc import Iterable
 from typing import Any
 
 import duckdb
@@ -45,6 +46,7 @@ from api.cache import (
     BET_STATUS_LIVE,
     BET_TRACKER_BLOCK_COLUMNS,
     bet_list_populated_at_key,
+    parse_season_range,
 )
 from utils import get_logger
 
@@ -158,8 +160,63 @@ def _parse_json_or_default(value: Any, default: Any) -> Any:
 class DataService:
     """Read-only data service backed by an injected DuckDB connection."""
 
+    # D33.2-07: the newest season whose numbers were produced under the old rule, on inputs later
+    # found defective. 2026, recorded live under the day-before-kickoff lock, is the first season
+    # that counts as evidence.
+    LAST_OLD_RULE_SEASON = 2025
+
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self._conn = conn
+
+    # ------------------------------------------------------------------
+    # Old-rule label scope (Phase 33.2, R16 / D33.2-07)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def old_rule_scope(seasons: Iterable[int | None] | None = None) -> dict[str, Any]:
+        """Return a website block's season scope and whether it shows pre-fix numbers.
+
+        The shared ``components/_old_rule_label.html`` partial reads the returned dict and renders
+        the dated old-rule label when ``contains_old_rule_results`` is true.
+
+        Args:
+            seasons: The seasons the block's numbers come from. ``None`` means the span is
+                UNKNOWN; an empty iterable means the block renders no numbers at all. A None
+                season inside it is ignored.
+
+        Returns:
+            ``{"min_season", "max_season", "contains_old_rule_results"}``. An UNKNOWN span counts
+            as containing old-rule results, so a block nobody wired carries a visible label rather
+            than silently going without one. A known-empty span does not.
+        """
+        if seasons is None:
+            return {
+                "min_season": None,
+                "max_season": None,
+                "contains_old_rule_results": True,
+            }
+        known = sorted({int(season) for season in seasons if season is not None})
+        if not known:
+            return {
+                "min_season": None,
+                "max_season": None,
+                "contains_old_rule_results": False,
+            }
+        return {
+            "min_season": known[0],
+            "max_season": known[-1],
+            "contains_old_rule_results": known[0] <= DataService.LAST_OLD_RULE_SEASON,
+        }
+
+    def cached_span_old_rule_scope(self, meta_key: str) -> dict[str, Any]:
+        """Scope a PRE-RENDERED block from the season span population stamped under *meta_key*.
+
+        Chart blobs carry no season column, so ``api.cache.stamp_old_rule_season_ranges`` records
+        their span in ``cache_meta``. An absent or unreadable key is an unknown span, which labels.
+        """
+        return self.old_rule_scope(
+            parse_season_range(self.get_cache_meta().get(meta_key))
+        )
 
     # ------------------------------------------------------------------
     # Connection accessor (Codex MEDIUM #11)

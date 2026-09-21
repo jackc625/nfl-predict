@@ -6,6 +6,9 @@
   <p class="text-sm text-gray-500">Walk-forward backtest across 2021-2024 with CLV-headlined metrics and interactive charts</p>
 </div>
 
+{# Old-rule label for the whole chart grid (R16 / D33.2-07); the partial decides. #}
+{% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+
 {# Charts grid: 2x2 desktop, 1-col mobile #}
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
   {# Calibration chart #}

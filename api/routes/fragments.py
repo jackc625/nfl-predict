@@ -25,6 +25,7 @@ from api.routes.pages import (
     _normalize_betting_scope,
     _normalize_season,
     _pivot_season_metrics,
+    _rows_seasons,
 )
 from api.services import DataService
 
@@ -68,6 +69,8 @@ def games_fragment(
         "current_season": season_int,
         "current_sort": sort,
         "week_summary": _compute_week_summary(games),
+        # The same scope this_week_page builds for the game_grid block (R16 / D33.2-07).
+        "old_rule_scope": DataService.old_rule_scope(_rows_seasons(games)),
     }
     template_response = templates.TemplateResponse(
         request, "pages/this_week.html", context, block_name="game_grid"
@@ -95,6 +98,10 @@ def performance_fragment(
         "request": request,
         "season_metrics": season_metrics,
         "current_season": season_int,
+        # The same scope performance_page builds for the performance_content block (R16 / D33.2-07).
+        "season_metrics_old_rule_scope": DataService.old_rule_scope(
+            _rows_seasons(season_metrics)
+        ),
     }
     template_response = templates.TemplateResponse(
         request,

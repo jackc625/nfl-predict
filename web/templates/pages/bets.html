@@ -133,6 +133,10 @@
     </h2>
   </div>
 
+  {# Old-rule label for the selected week (R16 / D33.2-07): a 2021-2025 week is a replay
+     reconstructed by the old models. The route scopes it to the selected season. #}
+  {% with scope=week_old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+
   {# The four distinct non-happy renders (SPEC R5, UI-SPEC E2 empty / E7). Order matters:
      a missing TABLE is checked first because it is the only one of the four that names an action
      the reader can take, and reporting it as "no bets cleared the floor" would be a claim about
@@ -516,6 +520,10 @@
   {% endif %}
 </section>
 {%- endmacro %}
+
+{# Old-rule label for the backtest-replay sections below (R16 / D33.2-07). The route scopes it
+   to the replay rows' seasons, and to a known-empty scope when no replay class has graded bets. #}
+{% with scope=replay_old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
 
 {# The replay sections. One per replay class PRESENT in the ledger; when the ledger holds none, a
    single section still renders so the reader learns that nothing is graded rather than finding

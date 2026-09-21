@@ -18,6 +18,10 @@
   {% include "components/_betting_scope_toggle.html" %}
 </div>
 
+{# Old-rule label for every section below (R16 / D33.2-07). Inside betting_content so the
+   fragment swap re-renders it with the page. The partial decides. #}
+{% with scope=old_rule_scope %}{% include "components/_old_rule_label.html" %}{% endwith %}
+
 {# ----------------------------------------------------------------- #}
 {# Section 1: KPI scoreboard (D-06) -- 7 scope-aware cards            #}
 {# ----------------------------------------------------------------- #}
