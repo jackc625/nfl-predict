@@ -80,7 +80,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -263,9 +263,10 @@ class InjuryBuilder:
             if injuries is None or len(injuries) == 0:
                 self._injuries_by_week = {}
             else:
+                grouped = injuries.groupby(["season", "week"])
                 self._injuries_by_week = {
-                    (int(s), int(w)): rows
-                    for (s, w), rows in injuries.groupby(["season", "week"])
+                    (int(key[0]), int(key[1])): rows
+                    for key, rows in ((cast(tuple[int, int], k), r) for k, r in grouped)
                 }
         return self._injuries_by_week.get((int(season), int(week)), pd.DataFrame())
 
@@ -328,7 +329,7 @@ class InjuryBuilder:
         return InjurySelection(
             rows=latest,
             rule=SelectionRule(top["_selection_rule"]),
-            information_time=pd.Timestamp(top["_information_time"]),
+            information_time=cast(pd.Timestamp, pd.Timestamp(top["_information_time"])),
             undatable_teams=undatable_teams,
         )
 
@@ -340,12 +341,14 @@ class InjuryBuilder:
         ``date_modified`` is absent. A naive value in either column is refused.
         """
         if "date_modified" in rows.columns:
-            modified = to_aware_utc(rows["date_modified"], column="date_modified")
+            modified = to_aware_utc(
+                pd.Series(rows["date_modified"]), column="date_modified"
+            )
         else:
             modified = pd.Series(pd.NaT, index=rows.index, dtype="datetime64[ns, UTC]")
         if UPSTREAM_CAPTURE_COLUMN in rows.columns:
             captured = to_aware_utc(
-                rows[UPSTREAM_CAPTURE_COLUMN], column=UPSTREAM_CAPTURE_COLUMN
+                pd.Series(rows[UPSTREAM_CAPTURE_COLUMN]), column=UPSTREAM_CAPTURE_COLUMN
             )
         else:
             captured = pd.Series(pd.NaT, index=rows.index, dtype="datetime64[ns, UTC]")
@@ -538,7 +541,9 @@ class InjuryBuilder:
 
             qb1_id, qb2_id = self._resolve_qb_ids(season, week, team, lock)
             out_ids = set(
-                team_inj.loc[team_inj["report_status"].isin(OUT_STATUSES), "gsis_id"]
+                team_inj.loc[
+                    team_inj["report_status"].isin(sorted(OUT_STATUSES)), "gsis_id"
+                ]
             )
             qb_out = 1.0 if (qb1_id is not None and qb1_id in out_ids) else 0.0
             backup_delta = (
@@ -616,9 +621,8 @@ class InjuryBuilder:
             lock_frame = lock_rule.lock_frame(target_games)
 
         rows: list[dict] = []
-        for (season, week), week_games in target_games.groupby(
-            ["season", "week"], sort=True
-        ):
+        for key, week_games in target_games.groupby(["season", "week"], sort=True):
+            season, week = cast(tuple[int, int], key)
             team_shares = self._team_shares(int(season), int(week))
             for game in week_games.to_dict("records"):
                 lock = lock_frame[str(game["game_id"])]

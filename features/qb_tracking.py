@@ -30,7 +30,7 @@ Key constraints:
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -147,9 +147,9 @@ def to_aware_utc(values: pd.Series, *, column: str) -> pd.Series:
     return parsed.dt.tz_convert("UTC")
 
 
-def _one_aware_utc(value: Any, column: str) -> pd.Timestamp:
+def _one_aware_utc(value: Any, column: str) -> Any:
     if value is None or (not isinstance(value, str) and pd.isna(value)):
-        return pd.NaT  # type: ignore[return-value]
+        return pd.NaT
     instant = pd.Timestamp(value)
     if instant.tzinfo is None:
         _refuse_naive(column)
@@ -171,7 +171,7 @@ def lock_as_utc(lock: Any) -> pd.Timestamp:
     instant = pd.Timestamp(lock)
     if instant.tzinfo is None:
         _refuse_naive("lock")
-    return instant.tz_convert("UTC")
+    return cast(pd.Timestamp, instant.tz_convert("UTC"))
 
 
 class QBTracker:
@@ -609,7 +609,7 @@ class QBTracker:
                 return DepthChartQBs(None, None, None)
             latest = published.loc[admitted].max()
             snapshot = qbs.loc[admitted & (published == latest)]
-            published_at = pd.Timestamp(latest)
+            published_at = cast(pd.Timestamp, pd.Timestamp(latest))
         else:
             snapshot = qbs
             if "season" in snapshot.columns:
@@ -657,19 +657,23 @@ class QBTracker:
             raise UntimeablePlayByPlayError(msg)
 
         keys = ["season", "week", "home_team", "away_team"]
-        pbp_games = pbp[["game_id", *keys]].drop_duplicates("game_id").copy()
-        schedule = games_df[[*keys, "kickoff_et"]].copy()
+        pbp_games = pd.DataFrame(pbp[["game_id", *keys]]).drop_duplicates(
+            subset=["game_id"]
+        )
+        schedule = pd.DataFrame(games_df[[*keys, "kickoff_et"]])
         for frame in (pbp_games, schedule):
             for column in ("home_team", "away_team"):
-                frame[column] = frame[column].map(self._safe_normalize_team)
+                frame[column] = pd.Series(frame[column]).map(self._safe_normalize_team)
             for column in ("season", "week"):
-                frame[column] = pd.to_numeric(frame[column]).astype("int64")
+                frame[column] = pd.Series(
+                    pd.to_numeric(pd.Series(frame[column]))
+                ).astype("int64")
         schedule["end"] = (
-            to_aware_utc(schedule["kickoff_et"], column="kickoff_et")
+            to_aware_utc(pd.Series(schedule["kickoff_et"]), column="kickoff_et")
             + DECLARED_GAME_DURATION
         )
         matched = pbp_games.merge(
-            schedule.drop(columns="kickoff_et").drop_duplicates(keys),
+            schedule.drop(columns="kickoff_et").drop_duplicates(subset=keys),
             on=keys,
             how="inner",
         )
@@ -688,7 +692,7 @@ class QBTracker:
         """
         if pbp is None or len(pbp) == 0 or len(game_ends) == 0:
             return pbp.iloc[0:0] if pbp is not None else pd.DataFrame()
-        admitted_ids = game_ends.index[game_ends <= lock_as_utc(lock)]
+        admitted_ids = game_ends.index[game_ends <= lock_as_utc(lock)].tolist()
         return pbp.loc[pbp["game_id"].isin(admitted_ids)]
 
     # ------------------------------------------------------------------
@@ -748,9 +752,8 @@ class QBTracker:
         # refuses by name (a provenance row with no source row), so it cannot pass quietly.
         fan_out = target_season is None or target_week is None
         chunks: list[pd.DataFrame] = []
-        for (season, week), week_games in target_games.groupby(
-            ["season", "week"], sort=True
-        ):
+        for key, week_games in target_games.groupby(["season", "week"], sort=True):
+            season, week = cast(tuple[int, int], key)
             try:
                 chunks.append(
                     self._build_week(
@@ -852,9 +855,8 @@ class QBTracker:
         records: list[dict[str, Any]] = []
         if len(target_games) > 0:
             locks = lock_rule.lock_frame(target_games)
-            for (season, week), week_games in target_games.groupby(
-                ["season", "week"], sort=True
-            ):
+            for key, week_games in target_games.groupby(["season", "week"], sort=True):
+                season, week = cast(tuple[int, int], key)
                 context = self._week_context(games_df, int(season), int(week))
                 for game in week_games.to_dict("records"):
                     game_id = str(game["game_id"])
@@ -947,7 +949,11 @@ class QBTracker:
         if memo_key in context.inputs:
             return context.inputs[memo_key]
         admitted_ends = context.game_ends.loc[context.game_ends <= lock_utc]
-        latest_end = pd.Timestamp(admitted_ends.max()) if len(admitted_ends) else None
+        latest_end = (
+            cast(pd.Timestamp, pd.Timestamp(admitted_ends.max()))
+            if len(admitted_ends)
+            else None
+        )
         admitted_ids = frozenset(admitted_ends.index)
 
         # The rolling window reads only games in earlier weeks, so the rolling result
@@ -957,7 +963,7 @@ class QBTracker:
         rolling = context.rolling.get(window)
         if rolling is None:
             rolling = self.compute_rolling_qb_metrics(
-                context.pbp.loc[context.pbp["game_id"].isin(window)]
+                context.pbp.loc[context.pbp["game_id"].isin(sorted(window))]
                 if len(context.pbp) > 0
                 else context.pbp,
                 context.season,
@@ -1001,7 +1007,7 @@ class QBTracker:
         primary = context.primary.get(admitted_ids)
         if primary is None:
             primary = self.compute_per_game_qb_stats(
-                context.pbp.loc[context.pbp["game_id"].isin(admitted_ids)]
+                context.pbp.loc[context.pbp["game_id"].isin(sorted(admitted_ids))]
             )
             if len(primary) > 0:
                 primary = primary.assign(
@@ -1095,7 +1101,7 @@ class QBTracker:
                 # `resolve_depth_chart_qbs` can take the latest snapshot at or before a
                 # game's lock.
                 if "dt" in dc.columns:
-                    dc["dt"] = to_aware_utc(dc["dt"], column="dt")
+                    dc["dt"] = to_aware_utc(pd.Series(dc["dt"]), column="dt")
 
             self._depth_chart_cache[season] = dc
             return dc
