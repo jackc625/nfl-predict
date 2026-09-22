@@ -5406,6 +5406,241 @@ PHASE332_RUNG_SIGNATURES[PHASE332_CUTOFF_RUNG] = PHASE332_CUTOFF_RUNG_EXPECTED_S
 PHASE332_RUNG_ATTRIBUTORS[PHASE332_CUTOFF_RUNG] = _attribute_p332_cutoff
 
 
+# ---------------------------------------------------------------------------
+# p332_ RUNG 6 -- THE SNAP AND INJURY FEEDS WIRED AND POPULATED (Plan 33.2-15 Task 4, D33.2-16).
+# Registered per Plan 33.2-08's <owned_protocol_rung_registration>: three names, one
+# incremental cause-table append, one entry in EACH dispatch table, no new prefix branch.
+#
+# DECLARED BEFORE THE REBUILD, from the prospective-stamp ruling and not from "the feeds now
+# have data":
+#
+# * snaps -- the 20 snap columns MOVE, in 2025 only. Silver snap_counts stopped at 2024, so
+#   every 2025 game's window was the last eight 2024 games (team_form's dynamic window reaches
+#   the prior season when the current one has nothing): 2025 weeks 3 and 15 read the SAME
+#   values. Real 2025 snaps replace that. A snap count's information time is its game's END
+#   instant (Plan 33.2-14's rule), so every one is admissible at later games' locks. Week-1
+#   rows may not move (their window is still the 2024 tail). 2026 is NOT in gold under the
+#   owner's --through-season 2025 ruling, so 2025 is the only season that can move.
+# * injury, qb -- EMPTY. Every 2025 game was already basis="no_information" at rung 5 (upstream
+#   dropped date_modified), and the 2025 rows this rung's ingest wrote carry the release
+#   asset's 2026-09-07 stamp, AFTER every 2025 lock, so the builder admits none of them. The
+#   capture rule becomes load-bearing only where a capture precedes a lock -- the forward
+#   daily run -- and no such game is in a history rebuild. An injury movement would mean a
+#   post-lock stamp was ADMITTED: a named finding, never a diff to absorb. availability_coverage
+#   depends only on whether prior snap shares EXIST, which they did before (the 2024 tail) and
+#   do after.
+# * no pre-2025 row moves and no width changes: the generic per-season imputer is untouched
+#   (the pre-coverage case is Plan 33.2-17's cause at rung 8), the empty-source guard never
+#   fires on a full build (neither frame is empty), and every statistic that 2025 enters is
+#   strictly-prior or within-season.
+#
+# JUDGED AGAINST p332_rung5.json (no retake: see the confirmation).
+# ---------------------------------------------------------------------------
+
+PHASE332_FEED_RUNG: int = 6
+
+PHASE332_FEED_RUNG_CAUSE: str = (
+    "THE SNAP AND INJURY FEEDS WIRED, p332_ rung 6 of Plan 33.2-15 (D33.2-16), and NOTHING else: "
+    "both ingests run for 2025 and 2026, every row validated through a real silver schema "
+    "(SnapCountSchema / InjurySchema, via validate_bronze_to_silver) and stamped with its "
+    "release asset's publication time as capture provenance (upstream_captured_at), and the "
+    "median fill for a family whose source frame is EMPTY replaced by NaN. Only the 20 snap "
+    "columns can move, only in 2025 (real 2025 snaps replace the 2024 window every 2025 game "
+    "read); the injury and QB columns cannot, because a 2025 row captured in 2026 carries a "
+    "stamp after every 2025 lock and admits nothing. No column is added, none removed, no row "
+    "moves"
+)
+
+#: The seasons a moved column may move in. 2026 is listed because the ingest populated it, but
+#: gold stops at 2025 under the owner's --through-season ruling, so the PREDICTION is 2025 only.
+PHASE332_FEED_RUNG_ALLOWED_SEASONS: tuple[str, ...] = ("2025", "2026")
+PHASE332_FEED_RUNG_PREDICTED_SEASONS: tuple[str, ...] = ("2025",)
+
+
+def phase332_feed_snap_columns() -> tuple[str, ...]:
+    """The 20 snap columns, DERIVED from the snap builder's own ``no_information_signature``."""
+    from features.snaps import SnapCountBuilder
+
+    snaps = SnapCountBuilder.__new__(SnapCountBuilder)
+    return tuple(
+        sorted(_canonical(c) for c in SnapCountBuilder.no_information_signature(snaps))
+    )
+
+
+#: THE PREDICTION, PER BUILDER. Declared before the rebuild. ``snaps`` is derived at import
+#: from the builder's declaration; the empty subsets are recorded, not omitted, so a movement
+#: there arrives as a named finding.
+PHASE332_FEED_RUNG_PREDICTED_BY_BUILDER: dict[str, tuple[str, ...]] = {
+    "snaps": phase332_feed_snap_columns(),
+    "injury": (),
+    "qb": (),
+}
+
+
+def phase332_feed_builder_columns() -> dict[str, frozenset[str]]:
+    """The gold columns each feed builder can reach: snaps from its signature, injury / qb from
+    ``PHASE332_STEP4B_CARRY_IN_PREDICTED_COLUMNS`` (the declared injury and QB families)."""
+    return {
+        "snaps": frozenset(phase332_feed_snap_columns()),
+        "injury": frozenset(
+            _canonical(c) for c in PHASE332_STEP4B_CARRY_IN_PREDICTED_COLUMNS["injury"]
+        ),
+        "qb": frozenset(
+            _canonical(c) for c in PHASE332_STEP4B_CARRY_IN_PREDICTED_COLUMNS["qb"]
+        ),
+    }
+
+
+def phase332_feed_moved_by_builder(moved: Iterable[str]) -> dict[str, list[str]]:
+    """*moved* columns split by the feed builder that emits them; ``unmapped`` = none of them."""
+    families = phase332_feed_builder_columns()
+    split: dict[str, list[str]] = {builder: [] for builder in families}
+    split["unmapped"] = []
+    for column in sorted(_canonical(c) for c in moved):
+        owners = [b for b, columns in families.items() if column in columns]
+        split[owners[0] if owners else "unmapped"].append(column)
+    return split
+
+
+#: THE INJURY-FRESHNESS LIMITATION and the ESPN ruling, recorded together in the rung record
+#: (Plan 33.2-15's espn_ruling). The single source is data.upstream_asset_stamp.
+PHASE332_FEED_RUNG_ESPN_RULING: str = (
+    "The ESPN injuries endpoint is NOT adopted as a model input and NOT archived: it carries game "
+    "status and prose rather than the official practice-participation report the model is "
+    "trained on (train/serve mismatch), it is current-season only so 2009-2024 cannot be "
+    "rebuilt from it (a mid-history character change), and it is an undocumented endpoint with "
+    "no published contract. The daily nflverse file stands and the limitation is stated"
+)
+
+PHASE332_FEED_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_FEED_RUNG,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_FEED_RUNG_CAUSE,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to the snap builder's 20 columns, each only in 2025 (2026 is not in gold); "
+        "the injury and QB subsets are EMPTY -- an injury movement means a post-lock capture "
+        "stamp was admitted"
+    ),
+    "rows_changed": (
+        "2025 games whose snap window now reads real 2025 snaps instead of the last eight 2024 "
+        "games; week-1 rows may not move, since their window is still the 2024 tail"
+    ),
+    "predicted_by_builder": PHASE332_FEED_RUNG_PREDICTED_BY_BUILDER,
+    "predicted_seasons": PHASE332_FEED_RUNG_PREDICTED_SEASONS,
+    "allowed_seasons": PHASE332_FEED_RUNG_ALLOWED_SEASONS,
+    "declared_families": ("snaps",),
+    "family_mechanisms": {
+        "snaps": (
+            "features.snaps.SnapCountBuilder over silver snap_counts, now populated for "
+            "2025-2026 by scripts/ingest_snaps.py through SnapCountSchema"
+        ),
+    },
+    "prospective_stamp_ruling": (
+        "the release asset's updated_at is CAPTURE provenance for the file fetched now, a "
+        "row's information time only where it is at or before that row's game's lock; a "
+        "backfill of a completed season admits nothing on that basis"
+    ),
+    "disclosed": (
+        "the first 2025 injury upsert exposed a silver-writer defect (a stored "
+        "datetime64[us, UTC] column met fresh datetime64[ns, UTC] rows and was written as "
+        "TEXT); data.storage.upsert_silver now aligns the pair and refuses an object result, "
+        "and silver injuries.date_modified was repaired once from the stored strings, verified "
+        "row-for-row against the Phase-28 bronze capture (81,408 pre-2025 rows identical). "
+        "Values are unchanged, so no gold column can move from it"
+    ),
+    "injury_freshness_limitation": (
+        "A Wednesday 18:00 ET lock for a Thursday game sees the nflverse injury file as it "
+        "stood at roughly 08:38 ET that morning (measured 2026-09-15), so it misses that "
+        "Wednesday's practice report"
+    ),
+    "espn_ruling": PHASE332_FEED_RUNG_ESPN_RULING,
+    "declared_before_the_rebuild": True,
+}
+
+RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX][PHASE332_FEED_RUNG] = (
+    PHASE332_FEED_RUNG_CAUSE
+)
+
+# THE BASELINE WAS CONFIRMED, NOT ASSUMED (owner ruling 2026-09-21). No retake: p332_rung5.json is
+# production gold as rung 5 wrote it, production data/ was digest-identical to rung 5's
+# after-state when this rung began, and every code change since is rung 6's own cause.
+PHASE332_FEED_RUNG_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-22 before rung 6 wrote anything. p332_rung5.json IS gold rebuilt from "
+    "today's inputs minus exactly this rung's cause: rung 5's rebuild is the last production "
+    "gold write, production data/ was digest-identical to outputs/p332_rung5_after.json (1107 "
+    "files, verified immediately before outputs/p332_rung6_before.json was taken), and every "
+    "code change since b090892 is rung 6's own (the stamp module and schemas, the gated and "
+    "stamped ingests, the empty-source guard, the empty-snap-table fix, the silver-writer "
+    "alignment). No carry-in, no retake"
+)
+
+
+def _attribute_p332_feed(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Rung 6 of the `p332_` ladder: the snap and injury feeds' OWN judge.
+
+    STRUCTURE: nothing added, nothing removed, width and rows unchanged (a surprise BLOCKS).
+    VALUES: a snap column is attributed only when every season it moved in is in
+    ``PHASE332_FEED_RUNG_ALLOWED_SEASONS``. Anything else is UNATTRIBUTED and fails, naming its
+    builder: a pre-2025 snap movement means a second cause leaked into the rung, and ANY injury
+    or QB movement means a post-lock capture stamp was admitted. The cause is never widened.
+
+    NOT the generic rung-6 path, deliberately: a registered-but-undispatched p332_ rung would be
+    judged by Phase 30's rung-number-keyed path and still print a verdict.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    label = "p332_ rung 6 (the snap and injury feeds wired and populated)"
+    verdict["changed_by_family"] = {
+        builder: [] for builder in PHASE332_FEED_RUNG_PREDICTED_BY_BUILDER
+    }
+    blocking = _phase33_structure(
+        detail, diff, fail, label, "Wiring the snap and injury feeds"
+    )
+    snaps = set(PHASE332_FEED_RUNG_PREDICTED_BY_BUILDER["snaps"])
+    allowed = set(PHASE332_FEED_RUNG_ALLOWED_SEASONS)
+    owners = phase332_feed_builder_columns()
+
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        if column in snaps and seasons and set(seasons) <= allowed:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["snaps"].append(column)
+            continue
+        owner = next(
+            (b for b, columns in owners.items() if column in columns),
+            "none of the feed builders",
+        )
+        verdict["unattributed"].append(column)
+        if column in snaps:
+            why = (
+                "it moved in a season before 2025, which only a SECOND cause could reach "
+                "(the generic per-season imputer is Plan 33.2-17's)"
+            )
+        elif owner in ("injury", "qb"):
+            why = (
+                "the injury and QB subsets are EMPTY: a movement means a capture stamp "
+                "after its game's lock was ADMITTED"
+            )
+        else:
+            why = "it belongs to no builder this rung's cause reaches"
+        fail(
+            f"column '{column}' (builder: {owner}) moved at {label} in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The rung's ONE cause is the "
+            "feed wiring and its prediction was declared before the rebuild; do NOT widen it"
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_RUNG_SIGNATURES[PHASE332_FEED_RUNG] = PHASE332_FEED_RUNG_EXPECTED_SIGNATURE
+PHASE332_RUNG_ATTRIBUTORS[PHASE332_FEED_RUNG] = _attribute_p332_feed
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -5885,7 +6120,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 5, steps 3b, 3c, 4b).
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 6, steps 3b, 3c, 4b).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -6086,6 +6321,12 @@ def write_phase332_rebuild_diff(
     )
     if cutoff_document.exists():
         lines.extend(_phase332_cutoff_rung_lines(fingerprint_dir))
+
+    feed_document = rung_document_path(
+        fingerprint_dir, PHASE332_FEED_RUNG, PHASE332_RUNG_PREFIX
+    )
+    if feed_document.exists():
+        lines.extend(_phase332_feed_rung_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -6583,6 +6824,79 @@ def _phase332_cutoff_rung_lines(fingerprint_dir: Path | str) -> list[str]:
         lines.append(f'{child} = "{parent}"')
     lines.extend(["", f"[rung.{rung}.moved_seasons]"])
     for column, seasons in sorted(_phase332_moved_seasons(report).items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_feed_rung_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` rung 6 (Plan 33.2-15 Task 4), recomputed from the ladder.
+
+    Judged by the same ``attribute_rung`` call the CLI makes, against rung 5, the entry before
+    it. Records the prediction PER BUILDER beside the measured split, the predicted and moved
+    seasons, and -- together, as the plan requires -- the injury-freshness limitation and the
+    ESPN ruling.
+    """
+    rung = PHASE332_FEED_RUNG
+    require_rung_ladder(fingerprint_dir, rung, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, rung)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, rung, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, rung, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    signature = PHASE332_FEED_RUNG_EXPECTED_SIGNATURE
+    moved_seasons = _phase332_moved_seasons(report)
+    lines = [
+        "",
+        f"[rung.{rung}]",
+        f"rung = {rung}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_FEED_RUNG_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_FEED_RUNG_CAUSE)}"',
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        f'prospective_stamp_ruling = "{_toml_escape(str(signature["prospective_stamp_ruling"]))}"',
+        f'disclosed = "{_toml_escape(str(signature["disclosed"]))}"',
+        "injury_freshness_limitation = "
+        f'"{_toml_escape(str(signature["injury_freshness_limitation"]))}"',
+        f'espn_ruling = "{_toml_escape(PHASE332_FEED_RUNG_ESPN_RULING)}"',
+        f"predicted_seasons = {_toml_array(list(PHASE332_FEED_RUNG_PREDICTED_SEASONS))}",
+        f"allowed_seasons = {_toml_array(list(PHASE332_FEED_RUNG_ALLOWED_SEASONS))}",
+        "moved_season_union = "
+        f"{_toml_array(sorted({s for seasons in moved_seasons.values() for s in seasons}))}",
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_RUNG_ATTRIBUTORS[rung].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the rung is '
+            'recorded as declared-but-not-run rather than as a rung that ran"'
+        )
+    lines.extend(["", f"[rung.{rung}.predicted_by_builder]"])
+    for builder, columns in PHASE332_FEED_RUNG_PREDICTED_BY_BUILDER.items():
+        lines.append(f"{builder} = {_toml_array(list(columns))}")
+    lines.extend(["", f"[rung.{rung}.moved_by_builder]"])
+    for builder, columns in phase332_feed_moved_by_builder(moved).items():
+        lines.append(f"{builder} = {_toml_array(columns)}")
+    lines.extend(["", f"[rung.{rung}.moved_seasons]"])
+    for column, seasons in sorted(moved_seasons.items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
     return lines
 
