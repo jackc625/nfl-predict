@@ -115,7 +115,10 @@ class TestTheStepIsRegisteredAndDispatched:
         ):
             assert all(isinstance(key, int) for key in table)
             assert PHASE332_SURFACE_STEP not in table
-        assert max(fg.RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX]) == 3
+        # The numbered rungs stay a contiguous run of integers the tooling can range over
+        # (rung 4, Plan 33.2-12, was registered after this step without disturbing it).
+        numbered = sorted(fg.RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX])
+        assert numbered == list(range(1, numbered[-1] + 1))
 
     def test_the_step_is_judged_by_its_own_attributor(self, monkeypatch) -> None:
         calls: list[str] = []

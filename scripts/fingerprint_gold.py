@@ -4676,6 +4676,192 @@ PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_KICKOFF_HOUR_STEP] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# p332_ RUNG 4 -- THE DAY-BEFORE WEATHER FORECAST (Plan 33.2-12, SPEC R6, D33.2-02 / D33.2-12
+# / D33.2-13). Registered per Plan 33.2-08's <owned_protocol_rung_registration>: three names,
+# one incremental cause-table append, one entry in EACH dispatch table, no new prefix branch.
+#
+# DECLARED BEFORE THE REBUILD. The rung's one cause is the silver regeneration of Plan
+# 33.2-12 Task 1 plus the two forecast-less inputs leaving gold (Task 2). Every gold column
+# the weather builder emits can move, for every outdoor game, in every season 2002-2025 --
+# the widest rung of the ladder -- and exactly two columns leave all three matrices. The
+# explainable family is DERIVED from the builder's own declaration
+# (features.weather.WEATHER_FEATURE_COLUMNS_BY_BUILDER["full"]) plus the one gold column the
+# build copies from it (raw_weather_severity, scripts/build_features.py: the un-normalized
+# weather_severity_score kept for display), never typed from the diff.
+#
+# JUDGED AGAINST p332_rung3c.json, the entry before it (extra step 3c follows step 3b).
+# ---------------------------------------------------------------------------
+
+PHASE332_WEATHER_RUNG: int = 4
+
+#: The two weather inputs no forecast can supply, removed from gold through the registry
+#: group ``weather_unsupplied`` (backtest.signal_lift) by scripts.build_features.
+PHASE332_WEATHER_RUNG_REMOVED_COLUMNS: tuple[str, ...] = ("precip_mm", "raw_precip_mm")
+
+#: Gold columns the build DERIVES from a weather-builder column (not emitted by the builder).
+PHASE332_WEATHER_DERIVED_COPIES: tuple[str, ...] = ("raw_weather_severity",)
+
+#: The accepted live-versus-history provider mismatch (RESEARCH 6.6; config/mos_tolerance.py,
+#: owner heads-up of 2026-09-21): recorded with the rung, never hidden.
+PHASE332_WEATHER_RUNG_PROVIDER_MISMATCH: str = (
+    "ACCEPTED, MEASURED train/serve difference: history (2002-2025) is now the archived NWS "
+    "MOS bulletin while live 2026 games are served from Open-Meteo. Measured 2026-09-15 at one "
+    "common valid hour across 18 stadium stations: temperature agrees to +0.37 F (effectively "
+    "exact); wind carries a +1.56 mph systematic offset (bulletins higher, maximum gap 6.5 "
+    "mph). The gold wind_calm / wind_moderate boundary sits at 5.0 mph, so on a genuinely calm "
+    "day the offset can flip the band between training and serving, and wind_moderate is an "
+    "ATS-selected feature today. For Plan 33.2-23: the re-fit's candidate set may reasonably "
+    "prefer the continuous wind_mph / wind_impact_score over the hard-edged wind one-hots for "
+    "this reason"
+)
+
+PHASE332_WEATHER_RUNG_CAUSE: str = (
+    "THE DAY-BEFORE WEATHER FORECAST of Plan 33.2-12 (SPEC R6, D33.2-02), and NOTHING else: "
+    "silver weather and weather_features for 2002-2025 regenerated from the archived day-before "
+    "12 UTC NWS MOS bulletins (data/bronze/mos/), replacing the ERA5 reanalysis observations, "
+    "with precip_mm and raw_precip_mm removed from gold as forecast-less inputs. Only the "
+    "weather-builder columns and the one column the build copies from them "
+    "(raw_weather_severity) can move, in any season; exactly precip_mm and raw_precip_mm are "
+    "removed from all three matrices, no column is added and no row moves"
+)
+
+
+def phase332_weather_columns() -> frozenset[str]:
+    """The rung's explainable family: the full weather builder's columns plus their copies.
+
+    DERIVED from ``features.weather.WEATHER_FEATURE_COLUMNS_BY_BUILDER["full"]`` -- the ONE
+    declaration the builder asserts its own frame against -- plus
+    ``PHASE332_WEATHER_DERIVED_COPIES``. Canonical (lower-case) names.
+    """
+    from features.weather import WEATHER_FEATURE_COLUMNS_BY_BUILDER
+
+    return frozenset(
+        _canonical(column)
+        for column in (
+            *WEATHER_FEATURE_COLUMNS_BY_BUILDER["full"],
+            *PHASE332_WEATHER_DERIVED_COPIES,
+        )
+    )
+
+
+PHASE332_WEATHER_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_WEATHER_RUNG,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_WEATHER_RUNG_CAUSE,
+    "columns_added": "empty",
+    "columns_removed": PHASE332_WEATHER_RUNG_REMOVED_COLUMNS,
+    "rows": "unchanged",
+    "width": "each matrix exactly two columns narrower (precip_mm, raw_precip_mm)",
+    "columns_changed": (
+        "restricted to the weather family (phase332_weather_columns: the full weather "
+        "builder's declared columns and raw_weather_severity), in ANY season 2002-2025: every "
+        "outdoor game's weather is a new value, and every dome keeps its genuine indoor state"
+    ),
+    "rows_changed": (
+        "every outdoor game's weather-family values; after normalization the rescaled "
+        "weather columns also move on every other row of each season and, through the "
+        "strictly-prior fits, on later seasons. A discrete indicator that now takes both "
+        "values (extreme_weather, which was constant on the observations) becomes "
+        "level-preserved by the builder's own predicate. Measured row by row at run time "
+        "against a copy of the before-gold"
+    ),
+    "weather": "EXPECTED to move: this rung IS the weather",
+    "declared_families": ("weather",),
+    "family_mechanisms": {
+        "weather": (
+            "source-derived: features.weather.WEATHER_FEATURE_COLUMNS_BY_BUILDER['full'] plus "
+            "the build's raw_weather_severity copy"
+        ),
+    },
+    "provider_mismatch": PHASE332_WEATHER_RUNG_PROVIDER_MISMATCH,
+    "declared_before_the_rebuild": True,
+}
+
+RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX][PHASE332_WEATHER_RUNG] = (
+    PHASE332_WEATHER_RUNG_CAUSE
+)
+
+# THE BASELINE WAS CONFIRMED, NOT ASSUMED (owner ruling 2026-09-21). Rung 4 registers NO
+# retaken baseline: it is judged against step 3c, the entry before it.
+PHASE332_WEATHER_RUNG_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-21 before rung 4 rebuilt gold. p332_rung3c.json IS gold rebuilt from "
+    "today's inputs minus exactly this rung's cause: step 3c's rebuild ran on the same inputs "
+    "with the code at commit 0c67856 (before the weather fence, the regeneration and the "
+    "weather_unsupplied drop existed), and between that rebuild and this rung the production "
+    "data/ tree changed ONLY in this rung's own declared silver write (silver/weather.parquet, "
+    "silver/weather_features.parquet and their DuckDB copy -- digest bracket "
+    "outputs/p332_rung4_before.json). No carry-in, no retake"
+)
+
+
+def _attribute_p332_weather(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Rung 4 of the `p332_` ladder: the day-before weather forecast's OWN judge.
+
+    STRUCTURE: no column may be added; the removed set must be EXACTLY the two declared
+    forecast-less columns; the width must fall by exactly that many; rows must not move. Any
+    structural surprise BLOCKS. VALUES: a changed column is attributed only when it is in the
+    derived weather family. Anything else is UNATTRIBUTED and fails; the cause is never
+    widened to fit it.
+
+    NOT the generic rung-4 path, deliberately: that is Phase 30's N-01 re-sync, keyed by rung
+    NUMBER, and a registered-but-undispatched p332_ rung 4 would be judged by it.
+
+    Returns:
+        Whether this matrix BLOCKS the phase.
+    """
+    verdict["changed_by_family"] = {"weather": []}
+    label = "p332_ rung 4 (the day-before weather forecast)"
+    blocking = False
+    removed_expected = {_canonical(c) for c in PHASE332_WEATHER_RUNG_REMOVED_COLUMNS}
+    for column in diff["added"]:
+        blocking = True
+        fail(f"column '{column}' was ADDED at {label}, which adds none")
+    removed = {_canonical(c) for c in diff["removed"]}
+    if removed != removed_expected:
+        blocking = True
+        fail(
+            f"{label} removed {sorted(removed)}, not exactly the declared forecast-less "
+            f"columns {sorted(removed_expected)}"
+        )
+    if detail["width_after"] != detail["width_before"] - len(removed_expected):
+        blocking = True
+        fail(
+            f"width moved {detail['width_before']} -> {detail['width_after']} at {label}, "
+            f"which predicts exactly {len(removed_expected)} columns fewer"
+        )
+    if detail.get("rows_before") != detail.get("rows_after"):
+        blocking = True
+        fail(
+            f"rows moved {detail.get('rows_before')} -> {detail.get('rows_after')} at "
+            f"{label}; the rung re-derives the same games"
+        )
+    if not diff["changed"] and not removed:
+        fail(f"{label} moved no column at all; the weather must move")
+
+    explainable = phase332_weather_columns()
+    for column in sorted(diff["changed"]):
+        if column in explainable:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["weather"].append(column)
+            continue
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at {label} in season(s) "
+            f"{', '.join(sorted(diff['changed'][column])) or '(none)'}, but it is not a "
+            "weather-family column. The rung's ONE cause is the day-before forecast; do NOT "
+            "widen it to fit this diff"
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_RUNG_SIGNATURES[PHASE332_WEATHER_RUNG] = (
+    PHASE332_WEATHER_RUNG_EXPECTED_SIGNATURE
+)
+PHASE332_RUNG_ATTRIBUTORS[PHASE332_WEATHER_RUNG] = _attribute_p332_weather
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
