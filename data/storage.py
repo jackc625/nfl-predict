@@ -1357,6 +1357,74 @@ def _keep_duckdb_copy_in_step(
     )
 
 
+class SilverDatetimeDriftError(Exception):
+    """An upsert would have stored a datetime column as text.
+
+    Inherits ``Exception`` rather than ``ValueError`` so no optional-source catch tuple in this
+    repository can quietly swallow it: a silently stringified information time is exactly the
+    failure it exists to stop.
+    """
+
+
+def _align_aware_datetime_columns(
+    existing: pd.DataFrame, new_df: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Give each tz-aware datetime column the SAME dtype on both sides of an upsert.
+
+    THE DEFECT (found by Plan 33.2-15 on silver ``injuries``). A column read back from parquet
+    is ``datetime64[us, UTC]`` under a pytz zone; the same column built fresh is
+    ``datetime64[ns, UTC]`` under ``datetime.timezone.utc``. pandas cannot unify that pair and
+    ``pd.concat`` falls back to ``object`` -- which ``ParquetManager`` then writes as TEXT, so
+    every stored ``date_modified`` became a string. Only a pair whose dtypes DIFFER is touched,
+    and both sides go to ``datetime64[ns, UTC]``: the instants are unchanged (a conversion, never
+    a relabel), and a table whose columns already agree is written exactly as before.
+    """
+    existing = existing.copy()
+    new_df = new_df.copy()
+    for column in existing.columns.intersection(new_df.columns):
+        left, right = existing[column], new_df[column]
+        both_aware = isinstance(left.dtype, pd.DatetimeTZDtype) and isinstance(
+            right.dtype, pd.DatetimeTZDtype
+        )
+        if both_aware and left.dtype != right.dtype:
+            existing[column] = left.dt.tz_convert("UTC").astype("datetime64[ns, UTC]")
+            new_df[column] = right.dt.tz_convert("UTC").astype("datetime64[ns, UTC]")
+    return existing, new_df
+
+
+def _refuse_datetime_columns_turned_object(
+    table_name: str,
+    existing: pd.DataFrame,
+    new_df: pd.DataFrame,
+    combined: pd.DataFrame,
+) -> None:
+    """Raise when a column that is a datetime on either side came out of the concat as object.
+
+    The parquet normalizer stringifies an object column of timestamps, so an ``object`` result
+    here is a column about to be stored as text. Refused by name instead.
+
+    Raises:
+        SilverDatetimeDriftError: naming the table and the column(s).
+    """
+    drifted = sorted(
+        column
+        for column in combined.columns
+        if combined[column].dtype == object
+        and any(
+            column in side.columns
+            and pd.api.types.is_datetime64_any_dtype(side[column])
+            for side in (existing, new_df)
+        )
+    )
+    if drifted:
+        msg = (
+            f"upserting silver {table_name} would store datetime column(s) {drifted} as TEXT: "
+            "the stored and new dtypes could not be unified. Refusing rather than writing "
+            "strings where information times belong."
+        )
+        raise SilverDatetimeDriftError(msg)
+
+
 def upsert_silver(
     new_df: pd.DataFrame,
     table_name: str,
@@ -1404,7 +1472,16 @@ def upsert_silver(
         existing = pd.read_parquet(silver_path, engine="pyarrow")
         # Remove rows that match any key in new data (latest wins)
         existing = existing[~existing[key_column].isin(new_df[key_column])]
-        combined = pd.concat([existing, new_df], ignore_index=True)
+        if len(existing) == 0:
+            # Every stored row was replaced: the new frame IS the table. An empty frame still
+            # carries dtypes, and pandas would let them decide the combined column types.
+            combined = new_df
+        else:
+            existing, aligned_new = _align_aware_datetime_columns(existing, new_df)
+            combined = pd.concat([existing, aligned_new], ignore_index=True)
+            _refuse_datetime_columns_turned_object(
+                table_name, existing, aligned_new, combined
+            )
     else:
         combined = new_df
 
