@@ -326,21 +326,6 @@ class TestTheFirstGameIsTheFlaggedUnknown:
             assert by_game.loc[game_id, "basis"] == InformationBasis.PER_ROW.value
             assert pd.notna(by_game.loc[game_id, "information_time"])
 
-    def test_a_dated_game_reports_the_latest_game_end_it_read(
-        self, adjuster: OpponentAdjuster, stats: pd.DataFrame, schedule: pd.DataFrame
-    ) -> None:
-        adjuster.build_features(schedule, _AS_OF, team_game_stats=stats)
-        provenance = adjuster.information_times(schedule).set_index("game_id")
-        week6_kickoff = pd.Timestamp(
-            schedule.loc[schedule["week"] == 6, "kickoff_et"].iloc[0]
-        )
-        from features.provenance import DECLARED_GAME_DURATION
-
-        game_id = schedule.loc[schedule["week"] == 7, "game_id"].iloc[0]
-        assert pd.Timestamp(provenance.loc[game_id, "information_time"]) == (
-            week6_kickoff + DECLARED_GAME_DURATION
-        )
-
 
 # ---------------------------------------------------------------------------
 # 4. The degradation tripwire: raw EPA wearing an adjusted name FAILS

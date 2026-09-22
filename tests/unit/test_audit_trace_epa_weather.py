@@ -41,63 +41,64 @@ ARROWHEAD_LON = -94.4839
 # ===========================================================================
 
 
+_ROUND_ROBIN_START = datetime(2023, 9, 10, 17, 0, tzinfo=UTC)  # Sunday 13:00 ET
+
+
 def _round_robin_stats():
     """Synthetic 6-team round-robin with known per-team EPA (mirrors the
     test_opponent_adjustment analog) so the adjustment can be recomputed by
-    hand."""
+    hand.
+
+    Plan 33.2-16: real abbreviations, play-by-play game ids and a timed schedule -- the
+    adjuster resolves opponents through ``convert_legacy_game_id`` and admits every input at
+    the lock of the game it informs, so the old ``game_2023_W01_B@A`` ids are refused.
+    """
+    a, b, c, d, e, f = "KC", "BUF", "MIA", "NYJ", "NE", "DEN"
     matchups = [
-        [("A", "B"), ("C", "D"), ("E", "F")],
-        [("B", "C"), ("D", "E"), ("F", "A")],
-        [("A", "D"), ("B", "E"), ("C", "F")],
-        [("D", "F"), ("E", "A"), ("B", "C")],
-        [("A", "C"), ("B", "F"), ("D", "E")],
-        [("C", "E"), ("D", "A"), ("F", "B")],
+        [(a, b), (c, d), (e, f)],
+        [(b, c), (d, e), (f, a)],
+        [(a, d), (b, e), (c, f)],
+        [(d, f), (e, a), (b, c)],
+        [(a, c), (b, f), (d, e)],
+        [(c, e), (d, a), (f, b)],
+        [(a, f), (b, d), (c, e)],
     ]
-    team_off_epa = {"A": 0.10, "B": -0.05, "C": 0.05, "D": 0.03, "E": 0.08, "F": 0.00}
-    team_def_epa = {"A": -0.05, "B": 0.15, "C": 0.10, "D": 0.12, "E": -0.03, "F": 0.05}
+    team_off_epa = {a: 0.10, b: -0.05, c: 0.05, d: 0.03, e: 0.08, f: 0.00}
+    team_def_epa = {a: -0.05, b: 0.15, c: 0.10, d: 0.12, e: -0.03, f: 0.05}
 
     sched_rows, stats_rows = [], []
     season = 2023
     for week_idx, week in enumerate(matchups, start=1):
+        kickoff = pd.Timestamp(_ROUND_ROBIN_START) + pd.Timedelta(weeks=week_idx - 1)
         for home, away in week:
-            gid = f"game_{season}_W{week_idx:02d}_{away}@{home}"
             sched_rows.append(
                 {
-                    "game_id": gid,
+                    "game_id": f"{season}_W{week_idx:02d}_{away}@{home}",
                     "season": season,
                     "week": week_idx,
                     "home_team": home,
                     "away_team": away,
+                    "kickoff_et": kickoff,
                 }
             )
+            pbp_id = f"{season}_{week_idx:02d}_{away}_{home}"
             for team in (home, away):
-                opp = away if team == home else home
-                stats_rows.append(
-                    {
-                        "game_id": gid,
-                        "season": season,
-                        "week": week_idx,
-                        "team": team,
-                        "opponent": opp,
-                        "side": "offense",
-                        "epa_per_play": team_off_epa[team],
-                        "pass_epa_per_play": team_off_epa[team],
-                        "rush_epa_per_play": team_off_epa[team],
-                    }
-                )
-                stats_rows.append(
-                    {
-                        "game_id": gid,
-                        "season": season,
-                        "week": week_idx,
-                        "team": team,
-                        "opponent": opp,
-                        "side": "defense",
-                        "epa_per_play": team_def_epa[team],
-                        "pass_epa_per_play": team_def_epa[team],
-                        "rush_epa_per_play": team_def_epa[team],
-                    }
-                )
+                for side, epa in (
+                    ("offense", team_off_epa[team]),
+                    ("defense", team_def_epa[team]),
+                ):
+                    stats_rows.append(
+                        {
+                            "game_id": pbp_id,
+                            "season": season,
+                            "week": week_idx,
+                            "team": team,
+                            "side": side,
+                            "epa_per_play": epa,
+                            "pass_epa_per_play": epa,
+                            "rush_epa_per_play": epa,
+                        }
+                    )
     return pd.DataFrame(sched_rows), pd.DataFrame(stats_rows), team_off_epa
 
 
@@ -113,15 +114,16 @@ class TestArea2OpponentAdjEpa:
         is bounded by the spread of the synthetic def EPA values).
         """
         sched, stats, off_epa = _round_robin_stats()
-        adjuster = OpponentAdjuster(window=10, min_opponent_games=4)
+        adjuster = OpponentAdjuster(window=10, min_opponent_games=4, schedule_df=sched)
         result = adjuster.build_features(
             sched,
-            datetime(2023, 12, 31),
+            datetime(2023, 12, 31, tzinfo=UTC),
             target_season=2023,
             target_week=7,
             team_game_stats=stats,
         )
         off = result[result["side"] == "offense"]
+        assert len(off) == 6
         # League def EPA spread is ~[-0.05, 0.15] -> adjustment magnitude < 0.25
         for _, row in off.iterrows():
             raw = off_epa[row["team"]]
@@ -134,24 +136,28 @@ class TestArea2OpponentAdjEpa:
 
     def test_one_week_lag_no_adjustment_below_threshold(self):
         """1-week-lag correctness: with only 1 prior week, opponents have fewer
-        than min_opponent_games, so adjustment=0 and adjusted == raw."""
-        sched, stats, off_epa = _round_robin_stats()
-        adjuster = OpponentAdjuster(window=10, min_opponent_games=4)
+        than min_opponent_games, so nothing is adjusted.
+
+        Was: "adjusted == raw" -- raw EPA under an adjusted name, the fall-through Plan
+        33.2-16 removed. Now the row is the flagged unknown: NaN, coverage 0.0.
+        """
+        from features.opponent_adj import OPP_ADJ_COVERAGE_COLUMN
+
+        sched, stats, _ = _round_robin_stats()
+        adjuster = OpponentAdjuster(window=10, min_opponent_games=4, schedule_df=sched)
         result = adjuster.build_features(
             sched,
-            datetime(2023, 9, 15),  # after week 1 only
+            datetime(2023, 9, 15, tzinfo=UTC),  # the Protocol argument; not the fence
             target_season=2023,
             target_week=2,
             team_game_stats=stats,
         )
         off = result[result["side"] == "offense"]
-        for _, row in off.iterrows():
-            raw = off_epa[row["team"]]
-            adj = row["rolling_opp_adj_epa_per_play"]
-            assert abs(adj - raw) < 0.001, (
-                f"Team {row['team']}: below threshold, adjusted ({adj}) must "
-                f"equal raw ({raw}) -- confirms the 1-week lag + min-games guard"
-            )
+        assert len(off) == 6
+        assert off["rolling_opp_adj_epa_per_play"].isna().all(), (
+            "below threshold nothing is adjusted -- confirms the 1-week lag + min-games guard"
+        )
+        assert (off[OPP_ADJ_COVERAGE_COLUMN] == 0.0).all()
 
     def test_uniform_opponents_zero_adjustment(self):
         """When every opponent has identical def EPA (= league avg), the
@@ -161,15 +167,16 @@ class TestArea2OpponentAdjEpa:
         stats = stats.copy()
         stats.loc[stats["side"] == "defense", "epa_per_play"] = 0.05
         stats.loc[stats["side"] == "offense", "epa_per_play"] = 0.05
-        adjuster = OpponentAdjuster(window=10, min_opponent_games=4)
+        adjuster = OpponentAdjuster(window=10, min_opponent_games=4, schedule_df=sched)
         result = adjuster.build_features(
             sched,
-            datetime(2023, 12, 31),
+            datetime(2023, 12, 31, tzinfo=UTC),
             target_season=2023,
             target_week=7,
             team_game_stats=stats,
         )
         off = result[result["side"] == "offense"]
+        assert len(off) == 6
         for _, row in off.iterrows():
             assert abs(row["rolling_opp_adj_epa_per_play"] - 0.05) < 0.001
 

@@ -3,137 +3,133 @@
 Tests the OpponentAdjuster class which applies single-pass opponent strength
 adjustment to EPA metrics. Uses synthetic data with known EPA values to verify
 adjustment correctness, lagging, minimum games threshold, and bidirectionality.
+
+PLAN 33.2-16 moved this fixture onto REAL team abbreviations, play-by-play game ids and a
+timed schedule: opponents now resolve through ``utils.game_id_utils.convert_legacy_game_id``
+and every input is admitted at the lock of the game it informs, so a synthetic
+``game_2023_W01_B@A`` id with teams "A".."F" is (correctly) refused. Two tests used to assert
+the defect itself -- "below the threshold, adjusted EPA equals raw EPA" -- and now assert its
+replacement: NaN beside a false coverage flag. Each says so with a "Was:" line.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from features.opponent_adj import OpponentAdjuster
+from features.opponent_adj import OPP_ADJ_COVERAGE_COLUMN, OpponentAdjuster
+
+ET = ZoneInfo("America/New_York")
+_SEASON_START = datetime(2023, 9, 10, 13, 0, tzinfo=ET)  # a Sunday
+
+# The six synthetic teams, on real abbreviations (the canonical converter refuses others).
+A, B, C, D, E, F = "KC", "BUF", "MIA", "NYJ", "NE", "DEN"
 
 # ---------------------------------------------------------------------------
 # Fixtures: synthetic per-game team stats
 # ---------------------------------------------------------------------------
 
+#: (home, away) tuples per week -- every team plays every week.
+_MATCHUPS = [
+    [(A, B), (C, D), (E, F)],  # Week 1
+    [(B, C), (D, E), (F, A)],  # Week 2
+    [(A, D), (B, E), (C, F)],  # Week 3
+    [(D, F), (E, A), (B, C)],  # Week 4 (repeat OK for test)
+    [(A, C), (B, F), (D, E)],  # Week 5
+    [(C, E), (D, A), (F, B)],  # Week 6
+    [(A, F), (B, D), (C, E)],  # Week 7
+    [(E, B), (F, C), (D, A)],  # Week 8
+    [(A, E), (B, C), (D, F)],  # Week 9 (A vs strong def E)
+    [(F, A), (C, B), (E, D)],  # Week 10
+    [(A, B), (C, D), (E, F)],  # Week 11 (the target week for the full-history tests)
+]
 
-def _make_schedule() -> pd.DataFrame:
-    """Create a synthetic schedule for 6 teams over 10 weeks in one season.
 
-    Returns a DataFrame with columns: game_id, season, week, home_team,
-    away_team, and per-game EPA stats for both sides (offense/defense).
-
-    Schedule design:
-    - 6 teams: A, B, C, D, E, F
-    - 10 weeks with round-robin pairing
-    - Team A always faces weak defenses (high def EPA = bad defense)
-    - Team B always faces strong defenses (low def EPA = good defense)
-    - Other teams have average opponents
-    """
-    # Round-robin schedule for 6 teams over 10 weeks
-    # Each team plays once per week
-    matchups = [
-        # (home, away) tuples per week
-        [("A", "B"), ("C", "D"), ("E", "F")],  # Week 1
-        [("B", "C"), ("D", "E"), ("F", "A")],  # Week 2
-        [("A", "D"), ("B", "E"), ("C", "F")],  # Week 3
-        [("D", "F"), ("E", "A"), ("B", "C")],  # Week 4 (repeat OK for test)
-        [("A", "C"), ("B", "F"), ("D", "E")],  # Week 5
-        [("C", "E"), ("D", "A"), ("F", "B")],  # Week 6
-        [("A", "F"), ("B", "D"), ("C", "E")],  # Week 7
-        [("E", "B"), ("F", "C"), ("D", "A")],  # Week 8
-        [("A", "E"), ("B", "C"), ("D", "F")],  # Week 9 (A vs strong def E)
-        [("F", "A"), ("C", "B"), ("E", "D")],  # Week 10
-    ]
-
+def _schedule_from(matchups, season: int = 2023) -> pd.DataFrame:
+    """Silver ``games`` shape: canonical ids and tz-aware Sunday kickoffs."""
     rows = []
-    season = 2023
-
     for week_idx, week_matchups in enumerate(matchups, start=1):
+        kickoff = _SEASON_START + timedelta(weeks=week_idx - 1)
         for home, away in week_matchups:
-            game_id = f"game_{season}_W{week_idx:02d}_{away}@{home}"
             rows.append(
                 {
-                    "game_id": game_id,
+                    "game_id": f"{season}_W{week_idx:02d}_{away}@{home}",
                     "season": season,
                     "week": week_idx,
                     "home_team": home,
                     "away_team": away,
+                    "kickoff_et": pd.Timestamp(kickoff),
                 }
             )
-
     schedule_df = pd.DataFrame(rows)
+    schedule_df["kickoff_et"] = pd.to_datetime(schedule_df["kickoff_et"], utc=True)
     return schedule_df
+
+
+def _pbp_id(game: pd.Series) -> str:
+    """The play-by-play spelling of a scheduled game (``2023_01_BUF_KC``)."""
+    return (
+        f"{game['season']}_{game['week']:02d}_{game['away_team']}_{game['home_team']}"
+    )
+
+
+def _make_schedule() -> pd.DataFrame:
+    """A synthetic schedule for 6 teams over 11 weeks in one season.
+
+    Schedule design:
+    - 6 teams: A, B, C, D, E, F
+    - Team A always faces weak defenses (high def EPA = bad defense)
+    - Team B always faces strong defenses (low def EPA = good defense)
+    - Other teams have average opponents
+    """
+    return _schedule_from(_MATCHUPS)
+
+
+# Deterministic EPA per team (constant across games for simplicity)
+TEAM_OFF_EPA = {A: 0.10, B: -0.05, C: 0.05, D: 0.03, E: 0.08, F: 0.00}
+TEAM_OFF_PASS_EPA = {A: 0.12, B: -0.03, C: 0.06, D: 0.04, E: 0.10, F: 0.01}
+TEAM_OFF_RUSH_EPA = {A: 0.05, B: -0.08, C: 0.03, D: 0.01, E: 0.04, F: -0.02}
+TEAM_DEF_EPA = {A: -0.05, B: 0.15, C: 0.10, D: 0.12, E: -0.03, F: 0.05}
+TEAM_DEF_PASS_EPA = {A: -0.04, B: 0.18, C: 0.12, D: 0.14, E: -0.02, F: 0.06}
+TEAM_DEF_RUSH_EPA = {A: -0.06, B: 0.10, C: 0.07, D: 0.08, E: -0.04, F: 0.03}
 
 
 def _make_team_game_stats(schedule_df: pd.DataFrame) -> pd.DataFrame:
     """Build per-game stats from the schedule, with controlled EPA values.
 
-    Creates one offense row and one defense row per team per game.
-    EPA values are deterministic so we can compute expected adjustments.
+    Creates one offense row and one defense row per team per game, keyed by the
+    PLAY-BY-PLAY id as TeamFormCalculator emits it. No ``opponent`` column: the adjuster
+    resolves it through the canonical mapping.
     """
-    # Deterministic EPA per team (constant across games for simplicity)
-    team_off_epa = {
-        "A": 0.10, "B": -0.05, "C": 0.05, "D": 0.03, "E": 0.08, "F": 0.00,
-    }
-    team_off_pass_epa = {
-        "A": 0.12, "B": -0.03, "C": 0.06, "D": 0.04, "E": 0.10, "F": 0.01,
-    }
-    team_off_rush_epa = {
-        "A": 0.05, "B": -0.08, "C": 0.03, "D": 0.01, "E": 0.04, "F": -0.02,
-    }
-    team_def_epa = {
-        "A": -0.05, "B": 0.15, "C": 0.10, "D": 0.12, "E": -0.03, "F": 0.05,
-    }
-    team_def_pass_epa = {
-        "A": -0.04, "B": 0.18, "C": 0.12, "D": 0.14, "E": -0.02, "F": 0.06,
-    }
-    team_def_rush_epa = {
-        "A": -0.06, "B": 0.10, "C": 0.07, "D": 0.08, "E": -0.04, "F": 0.03,
-    }
-
     rows = []
     for _, game in schedule_df.iterrows():
-        game_id = game["game_id"]
-        season = game["season"]
-        week = game["week"]
-        home = game["home_team"]
-        away = game["away_team"]
-
-        for team in [home, away]:
-            opponent = away if team == home else home
-
-            # Offense row
+        for team in [game["home_team"], game["away_team"]]:
+            base = {
+                "game_id": _pbp_id(game),
+                "season": game["season"],
+                "week": game["week"],
+                "team": team,
+            }
             rows.append(
                 {
-                    "game_id": game_id,
-                    "season": season,
-                    "week": week,
-                    "team": team,
-                    "opponent": opponent,
+                    **base,
                     "side": "offense",
-                    "epa_per_play": team_off_epa[team],
-                    "pass_epa_per_play": team_off_pass_epa[team],
-                    "rush_epa_per_play": team_off_rush_epa[team],
+                    "epa_per_play": TEAM_OFF_EPA[team],
+                    "pass_epa_per_play": TEAM_OFF_PASS_EPA[team],
+                    "rush_epa_per_play": TEAM_OFF_RUSH_EPA[team],
                 }
             )
-
-            # Defense row
             rows.append(
                 {
-                    "game_id": game_id,
-                    "season": season,
-                    "week": week,
-                    "team": team,
-                    "opponent": opponent,
+                    **base,
                     "side": "defense",
-                    "epa_per_play": team_def_epa[team],
-                    "pass_epa_per_play": team_def_pass_epa[team],
-                    "rush_epa_per_play": team_def_rush_epa[team],
+                    "epa_per_play": TEAM_DEF_EPA[team],
+                    "pass_epa_per_play": TEAM_DEF_PASS_EPA[team],
+                    "rush_epa_per_play": TEAM_DEF_RUSH_EPA[team],
                 }
             )
-
     return pd.DataFrame(rows)
 
 
@@ -148,9 +144,11 @@ def team_game_stats(schedule_df: pd.DataFrame) -> pd.DataFrame:
 
 
 @pytest.fixture
-def adjuster() -> OpponentAdjuster:
-    return OpponentAdjuster(window=10, min_opponent_games=4)
+def adjuster(schedule_df: pd.DataFrame) -> OpponentAdjuster:
+    return OpponentAdjuster(window=10, min_opponent_games=4, schedule_df=schedule_df)
 
+
+_AS_OF = datetime(2023, 12, 31, tzinfo=ET)
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -175,23 +173,24 @@ class TestWeakScheduleAdjustment:
     """Team facing weak defenses should get downward-adjusted EPA."""
 
     def test_weak_opponents_lower_adjusted_epa(
-        self, adjuster: OpponentAdjuster, team_game_stats: pd.DataFrame,
+        self,
+        adjuster: OpponentAdjuster,
+        team_game_stats: pd.DataFrame,
         schedule_df: pd.DataFrame,
     ):
         """A team facing consistently weak defenses (high def EPA) should have
         adjusted EPA that is lower than raw EPA, because the adjustment
         penalizes for easy opponents."""
-        as_of = datetime(2023, 12, 31)  # After all 10 weeks
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=11,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=11,
             team_game_stats=team_game_stats,
         )
 
         # Team A's offense row
-        team_a_off = result[
-            (result["team"] == "A") & (result["side"] == "offense")
-        ]
+        team_a_off = result[(result["team"] == A) & (result["side"] == "offense")]
         assert len(team_a_off) == 1
 
         adj_epa = team_a_off["rolling_opp_adj_epa_per_play"].values[0]
@@ -205,16 +204,19 @@ class TestStrongScheduleAdjustment:
     """Team facing strong defenses should get upward-adjusted EPA."""
 
     def test_strong_opponents_higher_adjusted_epa(
-        self, adjuster: OpponentAdjuster, team_game_stats: pd.DataFrame,
+        self,
+        adjuster: OpponentAdjuster,
+        team_game_stats: pd.DataFrame,
         schedule_df: pd.DataFrame,
     ):
         """A team facing consistently strong defenses (low def EPA) should have
         adjusted EPA higher than raw EPA, because the adjustment rewards
         difficult opponents."""
-        as_of = datetime(2023, 12, 31)
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=11,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=11,
             team_game_stats=team_game_stats,
         )
 
@@ -226,13 +228,16 @@ class TestBidirectionalAdjustment:
     """Both offensive and defensive EPA should be adjusted."""
 
     def test_offensive_epa_adjusted_for_opponent_defense(
-        self, adjuster: OpponentAdjuster, team_game_stats: pd.DataFrame,
+        self,
+        adjuster: OpponentAdjuster,
+        team_game_stats: pd.DataFrame,
         schedule_df: pd.DataFrame,
     ):
-        as_of = datetime(2023, 12, 31)
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=11,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=11,
             team_game_stats=team_game_stats,
         )
 
@@ -244,13 +249,16 @@ class TestBidirectionalAdjustment:
         assert not off_rows["rolling_opp_adj_epa_per_play"].isna().all()
 
     def test_defensive_epa_adjusted_for_opponent_offense(
-        self, adjuster: OpponentAdjuster, team_game_stats: pd.DataFrame,
+        self,
+        adjuster: OpponentAdjuster,
+        team_game_stats: pd.DataFrame,
         schedule_df: pd.DataFrame,
     ):
-        as_of = datetime(2023, 12, 31)
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=11,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=11,
             team_game_stats=team_game_stats,
         )
 
@@ -263,107 +271,92 @@ class TestBidirectionalAdjustment:
 
 
 class TestLagging:
-    """Opponent metrics must be lagged by 1 week."""
+    """Opponent metrics must be lagged: only games that ENDED at the lock count."""
 
     def test_opponent_stats_lagged_by_one_week(
-        self, adjuster: OpponentAdjuster, team_game_stats: pd.DataFrame,
+        self,
+        adjuster: OpponentAdjuster,
+        team_game_stats: pd.DataFrame,
         schedule_df: pd.DataFrame,
     ):
-        """Opponent's stats for week N must use only data from weeks < N.
+        """Opponent's stats for week N must use only data from games before week N.
 
-        We verify this by checking that week 1 games cannot have any adjustment
-        (no prior opponent data exists), so adjusted EPA equals raw EPA.
+        Was: "adjusted EPA equals raw EPA" for the week-2 target -- the silent fall-through
+        Plan 33.2-16 removed. Now: the one prior game's opponents had played nothing, so no
+        game is adjusted and the row is the flagged unknown (NaN, coverage 0.0).
         """
-        as_of = datetime(2023, 9, 15)  # After week 1 only
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=2,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=2,
             team_game_stats=team_game_stats,
         )
 
-        # With only 1 prior game (week 1), opponents have < min_opponent_games (4)
-        # So no adjustment should be applied -- adjusted = raw
         off_rows = result[result["side"] == "offense"]
-        for _, row in off_rows.iterrows():
-            team = row["team"]
-            raw_epa = 0.10 if team == "A" else (
-                -0.05 if team == "B" else (
-                    0.05 if team == "C" else (
-                        0.03 if team == "D" else (
-                            0.08 if team == "E" else 0.00
-                        )
-                    )
-                )
-            )
-            adj_epa = row["rolling_opp_adj_epa_per_play"]
-            # With only 1 game of opponent data, should be below threshold
-            # Therefore adjusted EPA should approximately equal raw EPA
-            # (no adjustment applied)
-            assert abs(adj_epa - raw_epa) < 0.001, (
-                f"Team {team}: expected ~{raw_epa}, got {adj_epa} "
-                f"(no adjustment should be applied with < {adjuster.min_opponent_games} opponent games)"
-            )
+        assert len(off_rows) == 6
+        assert (off_rows["games_used"] == 1).all()
+        assert off_rows["rolling_opp_adj_epa_per_play"].isna().all()
+        assert (off_rows[OPP_ADJ_COVERAGE_COLUMN] == 0.0).all()
 
 
 class TestMinimumGamesThreshold:
-    """Below min_opponent_games, no adjustment is applied."""
+    """Below min_opponent_games, no adjustment is applied -- and none is pretended."""
 
-    def test_below_threshold_returns_raw_epa(
-        self, team_game_stats: pd.DataFrame, schedule_df: pd.DataFrame,
+    def test_below_threshold_is_the_flagged_unknown(
+        self,
+        team_game_stats: pd.DataFrame,
+        schedule_df: pd.DataFrame,
     ):
-        """With fewer than min_opponent_games of opponent data, adjustment = 0."""
-        adjuster = OpponentAdjuster(window=10, min_opponent_games=4)
+        """With fewer than min_opponent_games of opponent data, nothing is adjusted.
 
-        # After week 3, each opponent has at most 3 games of data
-        as_of = datetime(2023, 10, 1)
+        Was: "below threshold, adjusted EPA equals raw EPA" -- raw EPA under an adjusted name,
+        the defect Plan 33.2-16 removed. Now NaN beside a false coverage flag.
+        """
+        adjuster = OpponentAdjuster(
+            window=10, min_opponent_games=4, schedule_df=schedule_df
+        )
+
+        # Before week 4, each opponent had at most 2 games at each earlier game's lock
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=4,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=4,
             team_game_stats=team_game_stats,
         )
 
-        # Check that adjusted EPA approximately equals raw EPA for all teams
         off_rows = result[result["side"] == "offense"]
-        raw_epas = {
-            "A": 0.10, "B": -0.05, "C": 0.05, "D": 0.03, "E": 0.08, "F": 0.00,
-        }
-        for _, row in off_rows.iterrows():
-            team = row["team"]
-            adj_epa = row["rolling_opp_adj_epa_per_play"]
-            raw_epa = raw_epas[team]
-            assert abs(adj_epa - raw_epa) < 0.001, (
-                f"Team {team}: below threshold, adjusted ({adj_epa}) should equal raw ({raw_epa})"
-            )
+        assert len(off_rows) == 6
+        assert off_rows["rolling_opp_adj_epa_per_play"].isna().all()
+        assert (off_rows[OPP_ADJ_COVERAGE_COLUMN] == 0.0).all()
 
     def test_at_threshold_adjustment_applied(
-        self, team_game_stats: pd.DataFrame, schedule_df: pd.DataFrame,
+        self,
+        team_game_stats: pd.DataFrame,
+        schedule_df: pd.DataFrame,
     ):
         """With exactly min_opponent_games of opponent data, adjustment IS applied."""
-        adjuster = OpponentAdjuster(window=10, min_opponent_games=4)
+        adjuster = OpponentAdjuster(
+            window=10, min_opponent_games=4, schedule_df=schedule_df
+        )
 
-        # After week 5, each opponent has at least 4-5 games of data
-        as_of = datetime(2023, 10, 20)
+        # The week-5 games' opponents had played exactly 4 -- the inclusive boundary --
+        # and the week-6 target reads them.
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=6,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=6,
             team_game_stats=team_game_stats,
         )
 
-        # With 5 weeks of data, opponents should have >= 4 games
-        # so adjustment should be non-zero for teams with unequal schedules
         off_rows = result[result["side"] == "offense"]
-        adjustments_nonzero = False
-        raw_epas = {
-            "A": 0.10, "B": -0.05, "C": 0.05, "D": 0.03, "E": 0.08, "F": 0.00,
-        }
-        for _, row in off_rows.iterrows():
-            team = row["team"]
-            adj_epa = row["rolling_opp_adj_epa_per_play"]
-            raw_epa = raw_epas[team]
-            if abs(adj_epa - raw_epa) > 0.001:
-                adjustments_nonzero = True
-                break
-
+        assert (off_rows[OPP_ADJ_COVERAGE_COLUMN] == 1.0).all()
+        adjustments_nonzero = any(
+            abs(row["rolling_opp_adj_epa_per_play"] - TEAM_OFF_EPA[row["team"]]) > 0.001
+            for _, row in off_rows.iterrows()
+        )
         assert adjustments_nonzero, (
             "At threshold, at least some teams should have non-zero adjustment"
         )
@@ -373,15 +366,18 @@ class TestLeagueAverage:
     """League average is computed from all teams, not just the team's opponents."""
 
     def test_league_average_uses_all_teams(
-        self, adjuster: OpponentAdjuster, team_game_stats: pd.DataFrame,
+        self,
+        adjuster: OpponentAdjuster,
+        team_game_stats: pd.DataFrame,
         schedule_df: pd.DataFrame,
     ):
         """The league average defensive EPA should be the mean across ALL teams'
         lagged defensive EPA, not just the opponents of a specific team."""
-        as_of = datetime(2023, 12, 31)
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=11,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=11,
             team_game_stats=team_game_stats,
         )
 
@@ -400,57 +396,58 @@ class TestOutputColumns:
     """Output should have the correct column names."""
 
     def test_output_replaces_raw_epa_columns(
-        self, adjuster: OpponentAdjuster, team_game_stats: pd.DataFrame,
+        self,
+        adjuster: OpponentAdjuster,
+        team_game_stats: pd.DataFrame,
         schedule_df: pd.DataFrame,
     ):
         """Output rolling columns should use opp_adj_ prefix for EPA metrics."""
-        as_of = datetime(2023, 12, 31)
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=11,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=11,
             team_game_stats=team_game_stats,
         )
 
-        # Offensive side should have these columns
-        expected_off_cols = [
+        expected_cols = [
             "rolling_opp_adj_epa_per_play",
             "rolling_opp_adj_pass_epa",
             "rolling_opp_adj_rush_epa",
+            OPP_ADJ_COVERAGE_COLUMN,
         ]
-        for col in expected_off_cols:
+        for col in expected_cols:
             assert col in result.columns, f"Missing column: {col}"
 
-        # Defensive side should also have adjusted columns
-        expected_def_cols = [
-            "rolling_opp_adj_epa_per_play",
-            "rolling_opp_adj_pass_epa",
-            "rolling_opp_adj_rush_epa",
-        ]
         def_rows = result[result["side"] == "defense"]
-        for col in expected_def_cols:
+        for col in expected_cols:
             assert col in def_rows.columns, f"Missing defense column: {col}"
 
 
-class TestAsOfDatetimeRespected:
-    """as_of_datetime time-fence must be respected."""
+class TestTheLockIsTheFence:
+    """Every input is admitted at the lock of the game it informs (Plan 33.2-16)."""
 
     def test_no_future_data_used(
-        self, adjuster: OpponentAdjuster, team_game_stats: pd.DataFrame,
+        self,
+        adjuster: OpponentAdjuster,
+        team_game_stats: pd.DataFrame,
         schedule_df: pd.DataFrame,
     ):
-        """When as_of_datetime is set to mid-season, only games before that
-        date should be used for opponent rolling averages."""
-        # As of after week 5 -- should only use weeks 1-5
-        as_of = datetime(2023, 10, 20)
+        """A week-6 target reads exactly the five games that ended before its lock.
+
+        Was a check that ``as_of_datetime`` was respected; the fence is now each target
+        game's own lock, and ``as_of_datetime`` is not read at all.
+        """
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=6,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=6,
             team_game_stats=team_game_stats,
         )
 
-        # Result should exist and have data
         assert len(result) > 0
-        assert "rolling_opp_adj_epa_per_play" in result.columns
+        assert (result["games_used"] == 5).all()
 
 
 class TestIdenticalOpponents:
@@ -459,82 +456,49 @@ class TestIdenticalOpponents:
     def test_uniform_defense_no_adjustment(self):
         """If every team has the same defensive EPA, the adjustment is zero
         for all teams (league_avg - opponent_def = 0)."""
-        adjuster = OpponentAdjuster(window=10, min_opponent_games=4)
-
-        # Create uniform schedule -- all teams have identical EPA
         uniform_epa = 0.05
-
-        # Build schedule
+        u, v, w, x, y, z = "SF", "SEA", "LA", "ARI", "DAL", "PHI"
         matchups = [
-            [("X", "Y"), ("Z", "W"), ("V", "U")],
-            [("Y", "Z"), ("W", "V"), ("U", "X")],
-            [("X", "W"), ("Y", "V"), ("Z", "U")],
-            [("W", "U"), ("V", "X"), ("Y", "Z")],
-            [("X", "Z"), ("Y", "U"), ("W", "V")],
-            [("Z", "V"), ("W", "X"), ("U", "Y")],
+            [(x, y), (z, w), (v, u)],
+            [(y, z), (w, v), (u, x)],
+            [(x, w), (y, v), (z, u)],
+            [(w, u), (v, x), (y, z)],
+            [(x, z), (y, u), (w, v)],
+            [(z, v), (w, x), (u, y)],
+            [(x, y), (z, w), (v, u)],
         ]
-
-        sched_rows = []
+        schedule_df = _schedule_from(matchups)
         stats_rows = []
-        season = 2023
-
-        for week_idx, week_matchups in enumerate(matchups, start=1):
-            for home, away in week_matchups:
-                game_id = f"game_{season}_W{week_idx:02d}_{away}@{home}"
-                sched_rows.append(
-                    {
-                        "game_id": game_id,
-                        "season": season,
-                        "week": week_idx,
-                        "home_team": home,
-                        "away_team": away,
-                    }
-                )
-
-                for team in [home, away]:
-                    opponent = away if team == home else home
-                    # Offense row -- same for all teams
+        for _, game in schedule_df.iterrows():
+            for team in [game["home_team"], game["away_team"]]:
+                for side in ("offense", "defense"):
                     stats_rows.append(
                         {
-                            "game_id": game_id,
-                            "season": season,
-                            "week": week_idx,
+                            "game_id": _pbp_id(game),
+                            "season": game["season"],
+                            "week": game["week"],
                             "team": team,
-                            "opponent": opponent,
-                            "side": "offense",
+                            "side": side,
                             "epa_per_play": uniform_epa,
                             "pass_epa_per_play": uniform_epa,
                             "rush_epa_per_play": uniform_epa,
                         }
                     )
-                    # Defense row -- same for all teams
-                    stats_rows.append(
-                        {
-                            "game_id": game_id,
-                            "season": season,
-                            "week": week_idx,
-                            "team": team,
-                            "opponent": opponent,
-                            "side": "defense",
-                            "epa_per_play": uniform_epa,
-                            "pass_epa_per_play": uniform_epa,
-                            "rush_epa_per_play": uniform_epa,
-                        }
-                    )
-
-        schedule_df = pd.DataFrame(sched_rows)
-        stats_df = pd.DataFrame(stats_rows)
-
-        as_of = datetime(2023, 12, 31)
+        adjuster = OpponentAdjuster(
+            window=10, min_opponent_games=4, schedule_df=schedule_df
+        )
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=7,
-            team_game_stats=stats_df,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=7,
+            team_game_stats=pd.DataFrame(stats_rows),
         )
 
         # With uniform defensive EPA, the league average equals each opponent's
         # defensive EPA, so the adjustment is zero and adjusted EPA equals raw EPA
         off_rows = result[result["side"] == "offense"]
+        assert len(off_rows) == 6
         for _, row in off_rows.iterrows():
             adj_epa = row["rolling_opp_adj_epa_per_play"]
             assert abs(adj_epa - uniform_epa) < 0.001, (
@@ -547,13 +511,16 @@ class TestAllSixMetricsAdjusted:
     """All 6 EPA metrics (3 off + 3 def) should be adjusted."""
 
     def test_all_metrics_present(
-        self, adjuster: OpponentAdjuster, team_game_stats: pd.DataFrame,
+        self,
+        adjuster: OpponentAdjuster,
+        team_game_stats: pd.DataFrame,
         schedule_df: pd.DataFrame,
     ):
-        as_of = datetime(2023, 12, 31)
         result = adjuster.build_features(
-            schedule_df, as_of,
-            target_season=2023, target_week=11,
+            schedule_df,
+            _AS_OF,
+            target_season=2023,
+            target_week=11,
             team_game_stats=team_game_stats,
         )
 
