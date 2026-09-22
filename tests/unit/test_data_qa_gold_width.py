@@ -29,6 +29,18 @@ than the assertion simply being relaxed. ``PHASE_28_WIDTHS`` and
 ``PHASE_30_REMOVED_LINE_MOVEMENT_COLUMNS`` are left exactly as they are: both are
 historical records of what earlier phases did, and a historical record that gets
 edited every time the present changes is not a record.
+
+PHASE 33.2 (Plan 33.2-12, owner of the gold-width pin protocol) moves widths at four ladder
+rungs: rung 4 removes the two forecast-less weather columns, rungs 7 and 8 add coverage
+flags, rung 9 removes the market columns. Rather than re-pinning these tests at every rung,
+each width-moving rung appends ONE ``P332_*_GOLD_WIDTH_DELTA`` slot to the append-once
+manifest (``tests/phase33_state.py``) naming the columns it added and removed and the widths
+it MEASURED before and after, and re-pins ``GOLD_FEATURE_MATRICES`` to its measured widths.
+The resolvers below discover those slots by NAME -- the suffix is the discovery contract --
+so the residual assertions follow the manifest and a later rung edits no test. The chain
+test pins the arithmetic and the names; ``PHASE_28_WIDTHS``,
+``PHASE_30_REMOVED_LINE_MOVEMENT_COLUMNS``, ``PHASE_331_ADDED_WEATHER_COLUMNS`` and
+``test_the_phase33_ladder_moved_no_width`` stay byte-unchanged as the records they are.
 """
 
 from pathlib import Path
@@ -91,6 +103,66 @@ MARKET_SURVIVORS = (
     "total_movement",
     "spread_movement",
 )
+
+MATRIX_ORDER = ("features_wp", "features_ats", "features_ou")
+
+
+# ---------------------------------------------------------------------------
+# THE PHASE-33.2 WIDTH-DELTA RESOLVERS (Plan 33.2-12, <owned_protocol_gold_width_pin> P4).
+# ---------------------------------------------------------------------------
+
+
+def phase332_width_deltas() -> list[dict]:
+    """Every ``P332_*_GOLD_WIDTH_DELTA`` slot in the manifest, ordered by its ``rung``."""
+    slots = [
+        getattr(phase33_state, name)
+        for name in dir(phase33_state)
+        if name.startswith("P332_") and name.endswith("_GOLD_WIDTH_DELTA")
+    ]
+    return sorted(slots, key=lambda slot: slot["rung"])
+
+
+def current_ladder_widths() -> tuple[int, int, int]:
+    """The widths the ladder has reached: the last slot's ``widths_after``.
+
+    ``phase33_state.GOLD_WIDTHS_AFTER_ELO_REBUILD`` -- the Phase-33 ladder's close -- when no
+    Phase-33.2 rung has moved a width yet.
+    """
+    slots = phase332_width_deltas()
+    if not slots:
+        return tuple(phase33_state.GOLD_WIDTHS_AFTER_ELO_REBUILD)
+    return tuple(slots[-1]["widths_after"])
+
+
+def phase332_net_width_delta() -> int:
+    """The net column change of every Phase-33.2 rung (identical in all three matrices)."""
+    return sum(len(s["added"]) - len(s["removed"]) for s in phase332_width_deltas())
+
+
+def width_chain_violations(
+    slots: list[dict], baseline: tuple[int, int, int]
+) -> list[str]:
+    """Every arithmetic break in a chain of width-delta slots; empty when it holds.
+
+    The first slot's ``widths_before`` must equal *baseline*, each later slot's
+    ``widths_before`` its predecessor's ``widths_after``, and each slot's ``widths_after``
+    its ``widths_before`` plus ``len(added)`` minus ``len(removed)`` in every matrix.
+    """
+    violations: list[str] = []
+    expected_before = tuple(baseline)
+    for slot in slots:
+        before, after = tuple(slot["widths_before"]), tuple(slot["widths_after"])
+        if before != expected_before:
+            violations.append(
+                f"rung {slot['rung']}: widths_before {before} != {expected_before}"
+            )
+        delta = len(slot["added"]) - len(slot["removed"])
+        if after != tuple(width + delta for width in before):
+            violations.append(
+                f"rung {slot['rung']}: widths_after {after} != {before} + {delta}"
+            )
+        expected_before = after
+    return violations
 
 
 @pytest.mark.parametrize(
@@ -161,6 +233,13 @@ def test_phase_30_narrowing_is_exactly_the_line_movement_family(
     difference between "the width moved by one" and "the width moved by one, and
     the one is the column we meant": a build that added an unrelated column while
     omitting the flag satisfies the integer exactly as well as the right one does.
+
+    AND NOW THE PHASE-33.2 NET DELTA, MOVED WITH A REASON (Plan 33.2-12). The ladder's
+    width-moving rungs each record the NAMED columns they added and removed in a
+    ``P332_*_GOLD_WIDTH_DELTA`` manifest slot; rung 4 removed the two weather inputs no
+    forecast can supply (``precip_mm``, ``raw_precip_mm``), so the residual is the
+    Phase-33.1 flag plus the summed Phase-33.2 net delta. The names are asserted by
+    ``test_the_phase_332_width_deltas_chain_and_are_pinned_by_name``.
     """
     path = GOLD_DIR / f"{table_name}.parquet"
     if not path.exists():
@@ -175,15 +254,18 @@ def test_phase_30_narrowing_is_exactly_the_line_movement_family(
     )
 
     residual_delta = GOLD_FEATURE_MATRICES[table_name] - PHASE_28_WIDTHS[table_name]
-    expected_residual = len(PHASE_331_ADDED_WEATHER_COLUMNS)
+    expected_residual = (
+        len(PHASE_331_ADDED_WEATHER_COLUMNS) + phase332_net_width_delta()
+    )
     assert residual_delta == expected_residual, (
         f"{table_name}: the tripwire reads "
         f"{GOLD_FEATURE_MATRICES[table_name]}, which is {residual_delta} columns "
         f"from the Phase-28 width {PHASE_28_WIDTHS[table_name]}. Removing the "
         f"{len(PHASE_30_REMOVED_LINE_MOVEMENT_COLUMNS)}-column line-movement family "
         f"returns the matrix to exactly its Phase-28 width, and Phase 33.1 adds "
-        f"{expected_residual} on top of that: "
-        f"{list(PHASE_331_ADDED_WEATHER_COLUMNS)}. A residual other than "
+        f"{len(PHASE_331_ADDED_WEATHER_COLUMNS)} on top of that "
+        f"({list(PHASE_331_ADDED_WEATHER_COLUMNS)}) and the Phase-33.2 ladder a net "
+        f"{phase332_net_width_delta()}. A residual other than "
         f"{expected_residual} means something ELSE changed the gold width. "
         f"Identify it before updating the tripwire."
     )
@@ -205,6 +287,10 @@ def test_the_phase_331_widening_is_pinned_to_the_named_coverage_flag(
 
     Removing ``weather_coverage`` from a copy of a matrix makes THIS test fail by
     NAME, where the width tripwire alone would only have reported an integer.
+
+    The width half now adds the Phase-33.2 net delta (Plan 33.2-12): the flag is still
+    present and still counted, and the rungs after it are accounted for by the manifest's
+    named width-delta slots rather than by a relaxed integer.
     """
     path = GOLD_DIR / f"{table_name}.parquet"
     if not path.exists():
@@ -219,13 +305,17 @@ def test_the_phase_331_widening_is_pinned_to_the_named_coverage_flag(
         f"cannot say WHICH column arrived."
     )
 
-    assert GOLD_FEATURE_MATRICES[table_name] == PHASE_28_WIDTHS[table_name] + len(
-        PHASE_331_ADDED_WEATHER_COLUMNS
+    assert (
+        GOLD_FEATURE_MATRICES[table_name]
+        == PHASE_28_WIDTHS[table_name]
+        + len(PHASE_331_ADDED_WEATHER_COLUMNS)
+        + phase332_net_width_delta()
     ), (
         f"{table_name}: the tripwire reads {GOLD_FEATURE_MATRICES[table_name]}, "
         f"which is not the Phase-28 width {PHASE_28_WIDTHS[table_name]} plus the "
         f"{len(PHASE_331_ADDED_WEATHER_COLUMNS)} named Phase-33.1 column(s) "
-        f"{list(PHASE_331_ADDED_WEATHER_COLUMNS)}."
+        f"{list(PHASE_331_ADDED_WEATHER_COLUMNS)} plus the Phase-33.2 net "
+        f"{phase332_net_width_delta()}."
     )
 
 
@@ -291,18 +381,63 @@ def test_the_live_matrix_width_matches_the_ladder_record(table_name: str) -> Non
 
     Asserted against LIVE gold rather than against another constant, because two
     constants agreeing with each other says nothing about the artifact.
+
+    The recorded triple is ``current_ladder_widths()`` since Plan 33.2-12: the last
+    Phase-33.2 width-delta slot's measured ``widths_after``, or the Phase-33 ladder's close
+    while no Phase-33.2 rung has moved a width.
     """
     path = GOLD_DIR / f"{table_name}.parquet"
     if not path.exists():
         pytest.skip(f"{path} not built yet -- run scripts.build_features first")
 
-    order = ("features_wp", "features_ats", "features_ou")
-    recorded = dict(
-        zip(order, phase33_state.GOLD_WIDTHS_AFTER_ELO_REBUILD, strict=True)
-    )
+    recorded = dict(zip(MATRIX_ORDER, current_ladder_widths(), strict=True))
     actual = pd.read_parquet(path).shape[1]
     assert actual == recorded[table_name], (
         f"{table_name} is {actual} columns wide but the ladder records "
         f"{recorded[table_name]}. Either a rung moved a width nobody declared, "
         "or gold has been rebuilt since the ladder closed."
     )
+
+
+# ---------------------------------------------------------------------------
+# THE PHASE-33.2 WIDTH CHAIN (Plan 33.2-12, <owned_protocol_gold_width_pin> P4(b)).
+# ---------------------------------------------------------------------------
+
+
+def test_the_phase_332_width_deltas_chain_and_are_pinned_by_name() -> None:
+    """The manifest's width deltas chain, name their columns, and equal the live pin.
+
+    * The chain arithmetic holds from the Phase-33 ladder's close.
+    * Every ``added`` name is PRESENT and every ``removed`` name ABSENT in each live matrix.
+    * ``GOLD_FEATURE_MATRICES`` equals ``current_ladder_widths()``.
+
+    Controls: at least one slot is discovered once rung 4 has run (non-vacuity), and a
+    planted chain whose ``widths_after`` is off by one yields a violation.
+    """
+    slots = phase332_width_deltas()
+    assert slots, "non-vacuity: no P332_*_GOLD_WIDTH_DELTA slot was discovered"
+
+    baseline = tuple(phase33_state.GOLD_WIDTHS_AFTER_ELO_REBUILD)
+    assert width_chain_violations(slots, baseline) == []
+
+    for table_name in MATRIX_ORDER:
+        path = GOLD_DIR / f"{table_name}.parquet"
+        if not path.exists():
+            pytest.skip(f"{path} not built yet -- run scripts.build_features first")
+        columns = set(pd.read_parquet(path).columns)
+        for slot in slots:
+            assert set(slot["added"]) <= columns, (table_name, slot["rung"])
+            assert not set(slot["removed"]) & columns, (table_name, slot["rung"])
+
+    assert (
+        tuple(GOLD_FEATURE_MATRICES[name] for name in MATRIX_ORDER)
+        == current_ladder_widths()
+    )
+
+    planted = [
+        {
+            **slots[0],
+            "widths_after": tuple(w + 1 for w in slots[0]["widths_after"]),
+        }
+    ]
+    assert width_chain_violations(planted, baseline) != []

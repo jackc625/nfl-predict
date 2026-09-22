@@ -89,10 +89,19 @@ logger = get_logger(__name__)
 # rebuilt matrices, and the rung that moved them is attributed under its own
 # document prefix (``p331_``) with a compound cause declared in committed source
 # BEFORE the rebuild ran.
+# PHASE 33.2 RUNG 4 (Plan 33.2-12 Task 3, rebuilt 2026-09-21) moves each matrix by
+# exactly -2, from 195/196/195 to 193/194/193. The removed columns are ``precip_mm``
+# and ``raw_precip_mm``: history's weather is now the archived day-before NWS MOS
+# bulletin, which carries no millimetre amount, so both are forecast-less inputs and
+# leave gold through the ``weather_unsupplied`` registry group. The widths below were
+# PREDICTED in tests/integration/test_p332_rung4_attribution.py before the rebuild and
+# written here only after the rebuilt matrices MEASURED equal to that prediction; the
+# delta is pinned to those two NAMES by the ``P332_12_GOLD_WIDTH_DELTA`` manifest slot
+# (tests/phase33_state.py), which tests/unit/test_data_qa_gold_width.py discovers.
 GOLD_FEATURE_MATRICES = {
-    "features_wp": 195,
-    "features_ats": 196,
-    "features_ou": 195,
+    "features_wp": 193,
+    "features_ats": 194,
+    "features_ou": 193,
 }
 
 # Tables whose DuckDB and parquet copies must agree on row-set MEMBERSHIP (D30-18).

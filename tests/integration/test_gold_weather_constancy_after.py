@@ -52,6 +52,15 @@ FOUR CONTROLS
    asserted to be zero there -- a handful of games genuinely were 65F, and a
    test demanding zero would be asserting something untrue.
 
+THE THIRD HALF: p332_ RUNG 4 (Plan 33.2-12). Rung 4 replaced the ERA5 observations with the
+archived day-before forecasts, so the LIVE assertions below now read
+``tests.phase33_state.P332_12_GOLD_WEATHER_CONSTANCY_AFTER_RUNG4`` -- recorded beside the Phase
+33.1 pair, which is left byte-unchanged and still asserted as the record it is. Three facts
+changed and each is stated where it bites: the forecast probability now EXISTS (so nothing is
+constant any more), the coverage flag takes BOTH levels (the 56 games abroad have no
+forecast), and the bulletins report WHOLE DEGREES (so a surviving 65 F default is detected as a
+spike beside its neighbours rather than by a raw count).
+
 WHAT THIS MODULE DOES NOT CLAIM (SPEC R8). That any model is more accurate. No
 model was re-fit, no gate was run, and ``artifacts/latest.json`` is unchanged.
 This is a statement about what the columns CONTAIN.
@@ -84,6 +93,9 @@ POPULATIONS = {
 }
 
 BUILD_COMMAND = "uv run python scripts/build_features.py --all-seasons"
+
+#: The latest AFTER record: p332_ rung 4's, stated beside the Phase 33.1 pair.
+RUNG4_AFTER = state.P332_12_GOLD_WEATHER_CONSTANCY_AFTER_RUNG4
 
 
 def _gold(matrix: str) -> pd.DataFrame:
@@ -183,16 +195,22 @@ class TestTheOuSeventeenNoLongerSitAtOneValue:
     def test_the_only_one_still_constant_is_the_forecast_probability(self) -> None:
         """PLANTED-VIOLATION CONTROL: the residual is NAMED, not just counted.
 
-        ``raw_precip_prob`` is a FORECAST probability and ERA5 reanalysis never
-        reports one, so it is genuinely unanswerable. Any OTHER constant column
-        among the seventeen would be a flattening this phase did not intend,
-        and naming the expected residual is what makes the difference visible.
+        At Phase 33.1 the residual was ``raw_precip_prob`` alone: a FORECAST
+        probability, which ERA5 reanalysis never reports. Since p332_ rung 4 the
+        history IS a forecast, so the probability exists and the residual is EMPTY --
+        recorded as ``(0, 17)`` in the rung-4 slot. Any constant column among the
+        seventeen now would be a flattening nobody intended.
         """
         frame = _gold("features_ou")
         ou_weather = _ou_weather_features()
         window = frame[frame["season"].isin(POPULATIONS["wp_ou_train_2018_2019"])]
 
-        assert _constant_columns(window, ou_weather) == ["raw_precip_prob"]
+        constant = _constant_columns(window, ou_weather)
+        recorded = RUNG4_AFTER["ou_weather_features_constant"]["ou_train_2018_2019"]
+        assert (len(constant), len(ou_weather)) == recorded, (
+            f"the O/U seventeen: RECORDED at rung 4 {recorded}, MEASURED "
+            f"{(len(constant), len(ou_weather))}; constant now: {constant}"
+        )
 
 
 @pytest.mark.integration
@@ -204,21 +222,19 @@ class TestTheWholeWeatherFamilyVariesInEveryWindow:
     def test_only_the_four_named_columns_are_constant(
         self, matrix: str, population: str
     ) -> None:
-        """Four, and each of the four is constant for a reason on the record.
+        """Four at Phase 33.1, each for a reason on the record; none since rung 4.
 
         BEFORE: 45 of 46 constant, only ``venue_cold_climate`` varying.
-        AFTER:  4 of 47 constant, 43 varying.
+        AFTER (Phase 33.1, ERA5): 4 of 47 constant, 43 varying.
+        AFTER (p332_ rung 4, the day-before forecast): none constant. The expected
+        set is read from the rung-4 slot; the Phase 33.1 figures stay recorded.
         """
         frame = _gold(matrix)
         columns = _weather_columns()
         window = frame[frame["season"].isin(POPULATIONS[population])]
 
         constant = _constant_columns(window, columns)
-        expected = list(
-            state.GOLD_WEATHER_CONSTANCY_AFTER["populations"][population][
-                "constant_columns"
-            ]
-        )
+        expected = list(RUNG4_AFTER["populations"][population]["constant_columns"])
         before = state.GOLD_WEATHER_CONSTANCY_MEASUREMENT["populations"].get(population)
         before_text = (
             f"RECORDED BEFORE {before['constant']} of "
@@ -231,8 +247,8 @@ class TestTheWholeWeatherFamilyVariesInEveryWindow:
         assert constant == expected, (
             f"{matrix} / {population}: {before_text}; MEASURED AFTER "
             f"{len(constant)} of {len(columns)} constant. Expected exactly "
-            f"{expected} -- each named in "
-            "GOLD_WEATHER_CONSTANCY_AFTER['why_the_four_are_still_constant']. "
+            f"{expected}, the rung-4 record (Phase 33.1's four are named in "
+            "GOLD_WEATHER_CONSTANCY_AFTER['why_the_four_are_still_constant']). "
             f"Measured: {constant}"
         )
 
@@ -276,11 +292,12 @@ class TestNoWeatherColumnCarriesAnImputedStandIn:
         """
         frame = _gold(matrix)
         composites = state.WEATHER_NULL_STATE_MATRIX["column_groups"]["composite"]
-        indoor_mask = frame["raw_temp_f"].isna()
+        # Since rung 4 a NULL temperature is no longer only a dome: the 56 games abroad
+        # have no forecast either, and THEIR composites are rightly NULL. So the indoor
+        # population is read from the applicability flag itself.
+        indoor_mask = frame["weather_affects_game"] == 0.0
 
-        assert int(indoor_mask.sum()) == int(
-            state.WEATHER_NULL_STATE_MATRIX["indoor_games_gaining_nan"]
-        )
+        assert int(indoor_mask.sum()) == int(RUNG4_AFTER["dome_or_closed_roof_rows"])
         for column in composites:
             nan_among_indoor = int(frame.loc[indoor_mask, column].isna().sum())
             assert nan_among_indoor == 0, (
@@ -291,27 +308,36 @@ class TestNoWeatherColumnCarriesAnImputedStandIn:
     def test_the_old_default_is_reported_rather_than_asserted_to_be_absent(
         self,
     ) -> None:
-        """NO-FALSE-POSITIVE CONTROL. A few games genuinely were 65F.
+        """NO-FALSE-POSITIVE CONTROL. Plenty of games genuinely were 65F.
 
         Demanding zero rows at the old default would be asserting something
         untrue about the weather. The honest form is a bound with the before
         figure beside it.
+
+        SINCE RUNG 4 THE BOUND IS A SPIKE TEST. The bulletins forecast WHOLE
+        degrees, so 65 F is simply one of about 80 values an outdoor game takes and
+        a raw count at it is normal (128 on rung-4 gold). A surviving default shows
+        as a SPIKE: thousands of rows at 65 beside ordinary counts at 64 and 66. The
+        bound is therefore relative to the two neighbouring degrees, and the
+        distinct-value floor is a whole-degree one.
         """
         frame = _gold("features_ou")
-        at_default = int((frame["raw_temp_f"] == 65.0).sum())
-        distinct = int(frame["raw_temp_f"].nunique())
+        temps = frame["raw_temp_f"]
+        at_default = int((temps == 65.0).sum())
+        neighbours = max(int((temps == 64.0).sum()), int((temps == 66.0).sum()))
+        distinct = int(temps.nunique())
         before = state.GOLD_WEATHER_CONSTANCY_MEASUREMENT["raw_temp_f_imputed"]
 
-        assert at_default <= 50, (
+        assert at_default <= 2 * neighbours, (
             f"RECORDED BEFORE {before['rows_at_default']} of "
             f"{before['rows_total']} rows at the 65.0 default "
-            f"({before['share']:.4%}); MEASURED AFTER {at_default}. A handful is "
-            "expected -- some games genuinely were that temperature -- but "
-            "thousands means the default survived"
+            f"({before['share']:.4%}); MEASURED AFTER {at_default} at 65 F against "
+            f"{neighbours} at the busier neighbouring degree. A spike means the "
+            "default survived"
         )
-        assert distinct >= 500, (
-            f"raw_temp_f takes only {distinct} distinct values. A real "
-            "temperature series over 4,847 outdoor games takes hundreds"
+        assert distinct >= 60, (
+            f"raw_temp_f takes only {distinct} distinct values. Whole-degree "
+            "forecasts over 4,793 outdoor games still take dozens"
         )
 
 
@@ -341,12 +367,16 @@ class TestTheCoverageFlagSaysWhatItMeasures:
 
         assert column in frame.columns
         levels = sorted(set(frame[column].dropna().tolist()))
-        assert levels == [1.0], (
+        # SINCE RUNG 4 THE FLAG VARIES, and that is its point: the 56 games abroad have
+        # no forecast, so they read 0.0 -- the value that means NO FORECAST -- and every
+        # other row reads 1.0. Both levels are asserted with the absence count.
+        assert levels == list(RUNG4_AFTER["coverage_levels"]), (
             f"{matrix}.{column} reads {levels}. Every game in this corpus has a "
             "real observation, so the honest value is 1.0 on every row; 0.0 is "
             "what an ABSENT observation reads, and it is what this column "
             "carried on all 6,499 rows before the rung-3 rebuild"
         )
+        assert int((frame[column] == 0.0).sum()) == int(RUNG4_AFTER["absence_rows"])
 
 
 @pytest.mark.integration
@@ -403,7 +433,11 @@ class TestTheAfterSlotIsThePairAndNotAReplacement:
         )
 
         frame = _gold("features_ou")
-        assert int(frame["raw_humidity_pct"].isna().sum()) == 1652
+        # Live gold since rung 4: the 1,650 domes and closed roofs plus the 56 games
+        # abroad. The recorded 1,652 above is Phase 33.1's figure and stays as it is.
+        assert int(frame["raw_humidity_pct"].isna().sum()) == int(
+            RUNG4_AFTER["raw_humidity_pct_null_rows"]
+        )
 
     def test_the_after_slot_does_not_claim_an_accuracy_improvement(self) -> None:
         """SPEC R8. This phase corrects a record; it does not improve a model."""

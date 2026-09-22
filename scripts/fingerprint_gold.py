@@ -5341,7 +5341,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 3, steps 3b, 3c).
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 4, steps 3b, 3c).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -5524,6 +5524,12 @@ def write_phase332_rebuild_diff(
     )
     if kickoff_document.exists():
         lines.extend(_phase332_kickoff_hour_step_lines(fingerprint_dir))
+
+    weather_document = rung_document_path(
+        fingerprint_dir, PHASE332_WEATHER_RUNG, PHASE332_RUNG_PREFIX
+    )
+    if weather_document.exists():
+        lines.extend(_phase332_weather_rung_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -5803,6 +5809,62 @@ def _phase332_kickoff_hour_step_lines(fingerprint_dir: Path | str) -> list[str]:
             'recorded as declared-but-not-run rather than as a step that ran"'
         )
     lines.extend(["", f'[rung."{step}".moved_seasons]'])
+    for column, seasons in sorted(_phase332_moved_seasons(report).items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_weather_rung_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` rung 4 (Plan 33.2-12), recomputed.
+
+    Judged by the same `attribute_rung` call the CLI makes, against step 3c, the ladder entry
+    before it. Carries the accepted live-versus-history provider mismatch with the rung.
+    """
+    rung = PHASE332_WEATHER_RUNG
+    require_rung_ladder(fingerprint_dir, rung, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, rung)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, rung, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, rung, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    removed = sorted({c for m in GOLD_MATRICES for c in report[m]["columns_removed"]})
+    signature = PHASE332_WEATHER_RUNG_EXPECTED_SIGNATURE
+    lines = [
+        "",
+        f"[rung.{rung}]",
+        f"rung = {rung}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if verdict['non_clock_moves'] or removed else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_WEATHER_RUNG_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_WEATHER_RUNG_CAUSE)}"',
+        f"declared_removed_columns = {_toml_array(list(PHASE332_WEATHER_RUNG_REMOVED_COLUMNS))}",
+        f"declared_family = {_toml_array(sorted(phase332_weather_columns()))}",
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"removed_columns = {_toml_array(removed)}",
+        f"moved_columns = {_toml_array(verdict['non_clock_moves'])}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_RUNG_ATTRIBUTORS[rung].__name__}"',
+        f'provider_mismatch = "{_toml_escape(PHASE332_WEATHER_RUNG_PROVIDER_MISMATCH)}"',
+        "live_minus_history_wind_offset_mph = 1.56",
+        "wind_band_edge_mph = 5.0",
+    ]
+    lines.extend(["", f"[rung.{rung}.moved_seasons]"])
     for column, seasons in sorted(_phase332_moved_seasons(report).items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
     return lines

@@ -804,13 +804,24 @@ class TestTheIdentityMigrationMovesNoGoldColumn:
 
         The full decision, with both references and the rationale, is recorded in
         ``tests.phase33_state.GOLD_WIDTH_REFERENCE_RECONCILIATION_33_14``.
+
+        RE-POINTED AGAIN by Plan 33.2-12, in the same voice. The reference became
+        stale in its turn because p332_ rung 4 rebuilt gold with an ATTRIBUTED width
+        change: the two weather inputs no forecast can supply (``precip_mm``,
+        ``raw_precip_mm``) left all three matrices. The assertion now reads
+        ``current_ladder_widths()``, IMPORTED from the width module so there is one
+        resolver, not two: the last Phase-33.2 ``P332_*_GOLD_WIDTH_DELTA`` slot's
+        measured widths. ``GOLD_WIDTHS_AFTER_WEATHER_RUNG`` is left BYTE-UNCHANGED as
+        the record of what gold was between Phase 33.1 and that rung.
         """
+        from tests.unit.test_data_qa_gold_width import current_ladder_widths
+
         measured = _production_gold_widths()
-        recorded = tuple(phase33_state.GOLD_WIDTHS_AFTER_WEATHER_RUNG)
+        recorded = current_ladder_widths()
         superseded = tuple(phase33_state.GOLD_WIDTHS_BEFORE_ELO_REBUILD)
         assert measured == recorded, (
             f"production gold is {measured} wide but "
-            f"GOLD_WIDTHS_AFTER_WEATHER_RUNG records {recorded}. Either gold was "
+            f"the Phase-33.2 width ladder records {recorded}. Either gold was "
             "rebuilt with a schema change that nobody attributed, or this "
             "reference is stale in its turn. The superseded pre-33.1 reference "
             f"GOLD_WIDTHS_BEFORE_ELO_REBUILD reads {superseded} and is retained "

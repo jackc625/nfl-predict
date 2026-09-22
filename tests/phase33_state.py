@@ -15300,3 +15300,120 @@ P332_12_STEP3C_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
     "nfl_predictions.duckdb",
     "silver/games.parquet",
 )
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-12 Task 3 -- p332_ RUNG 4, THE DAY-BEFORE WEATHER FORECAST (SPEC R6, D33.2-02,
+# D33.2-12 / D33.2-13), and the first Phase-33.2 gold-width move
+# (<owned_protocol_gold_width_pin>, owned by this plan). APPENDED ONCE on 2026-09-21, in ONE
+# block. Nothing above this line was edited.
+#
+# THE CAUSE, declared in the commit below before the rebuild ran: silver weather and
+# weather_features for 2002-2025 regenerated from the archived day-before 12 UTC NWS MOS
+# bulletins (data/bronze/mos/, zero network calls), replacing the ERA5 reanalysis
+# observations, with precip_mm and raw_precip_mm removed from gold as forecast-less inputs.
+# The regeneration applies Phase 33.1's per-game roof rule at the venue in force at the lock:
+# 4,793 forecast rows, 1,650 indoor or closed-roof rows, 56 absences (every one a venue
+# outside the United States), 0 observation rows.
+#
+# MEASURED 2026-09-21: judged against p332_rung3c.json (confirmed: production gold
+# fingerprinted identical to it before the rebuild, 0 columns changed); attribution_ok true,
+# not blocking, zero unattributed. 45 weather-family columns moved and nothing else; exactly
+# precip_mm and raw_precip_mm left all three matrices; widths 195/196/195 -> 193/194/193,
+# equal to the prediction; rows unchanged (6,499). Every row of every matrix moved in some
+# weather column (the rescaled columns reach every row). The plan-level digest bracket
+# outputs/p332_rung4_before.json -> after named exactly the six declared paths. The
+# production gate checked the weather source against every game's lock (checked_sources
+# elo, weather).
+#
+# extreme_weather, a constant 0.0 on the ERA5 observations, now takes both values, so the
+# builder's own indicator predicate preserves its level: the Phase-33 level-preserved family
+# grows by that one named member.
+#
+# THE PROVIDER MISMATCH, accepted and recorded: temperature agrees with the live Open-Meteo
+# forecast to +0.37 F; wind reads +1.56 mph higher in the bulletins against the 5.0 mph
+# wind_calm / wind_moderate edge. Handed to Plan 33.2-23.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_WEATHER_RUNG_CAUSE (UTF-8), declared in commit
+# 684cdf4 before the rebuild ran.
+P332_12_RUNG4_CAUSE_DIGEST: str = (
+    "ebf61f37a2c79217a42ae333102d6c0c74895411498b5276201be17cb13e0a4b"
+)
+
+P332_12_RUNG4_DECLARED_IN_COMMIT: str = "684cdf4ccef7b7b948c188e776aae9e6951eae72"
+
+P332_12_RUNG4_BASELINE_DOCUMENT: str = "p332_rung3c.json"
+
+P332_12_SILVER_FORECAST_ROWS: int = 4793
+
+P332_12_SILVER_DOME_OR_CLOSED_ROOF_ROWS: int = 1650
+
+P332_12_SILVER_ABSENCE_ROWS: int = 56
+
+P332_12_SILVER_OBSERVATION_ROWS: int = 0
+
+P332_12_NETWORK_CALLS: int = 0
+
+P332_12_RUNG4_MOVED_COLUMN_COUNT: int = 45
+
+P332_12_RUNG4_ROWS_MOVED_PER_MATRIX: int = 6499
+
+P332_12_LEVEL_PRESERVED_COLUMNS_ADDED: tuple[str, ...] = ("extreme_weather",)
+
+P332_12_LIVE_MINUS_HISTORY_WIND_OFFSET_MPH: float = 1.56
+
+P332_12_RUNG4_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "gold/features_wp.parquet",
+    "nfl_predictions.duckdb",
+    "silver/weather.parquet",
+    "silver/weather_features.parquet",
+)
+
+P332_12_GOLD_WIDTH_DELTA: dict[str, object] = {
+    "rung": 4,
+    "plan": "33.2-12",
+    "added": (),
+    "removed": ("precip_mm", "raw_precip_mm"),
+    "widths_before": (195, 196, 195),
+    "widths_after": (193, 194, 193),
+    "measured_at": "2026-09-21",
+}
+
+# THE THIRD HALF OF R5'S RECORD, stated BESIDE the Phase 33.1 before/after pair and never
+# replacing it (GOLD_WEATHER_CONSTANCY_MEASUREMENT and GOLD_WEATHER_CONSTANCY_AFTER are
+# byte-unchanged). MEASURED 2026-09-21 on rung-4 gold: every weather column now varies in
+# every window (none constant -- the forecast probability exists now, and the coverage flag
+# and extreme_weather take both values); the deployed-era O/U seventeen are 0 of 17
+# constant; 1,650 dome or closed-roof rows and 56 absences, so 1,706 rows have no
+# temperature or humidity; the bulletins report WHOLE DEGREES, so raw_temp_f takes 83
+# distinct values and 65 F is not a spike beside its neighbours.
+P332_12_GOLD_WEATHER_CONSTANCY_AFTER_RUNG4: dict[str, object] = {
+    "supersedes": "GOLD_WEATHER_CONSTANCY_AFTER",
+    "supersedes_note": (
+        "stated beside the Phase 33.1 after slot, never 'replaces' it: that slot records the "
+        "ERA5 gold; this one the day-before-forecast gold of p332_ rung 4"
+    ),
+    "populations": {
+        "ats_train_2015_2019": {"constant_columns": ()},
+        "wp_ou_train_2018_2019": {"constant_columns": ()},
+        "gate_holdout_2021_2024": {"constant_columns": ()},
+        "all_2002_2025": {"constant_columns": ()},
+    },
+    "ou_weather_features_constant": {
+        "ou_train_2018_2019": (0, 17),
+        "gate_holdout_2021_2024": (0, 17),
+    },
+    "weather_columns_counted": 47,
+    "weather_columns_in_gold": 45,
+    "dome_or_closed_roof_rows": 1650,
+    "absence_rows": 56,
+    "raw_temp_f_null_rows": 1706,
+    "raw_humidity_pct_null_rows": 1706,
+    "coverage_levels": (0.0, 1.0),
+    "raw_temp_f_at_65": 128,
+    "raw_temp_f_at_64": 95,
+    "raw_temp_f_at_66": 105,
+    "raw_temp_f_distinct": 83,
+}

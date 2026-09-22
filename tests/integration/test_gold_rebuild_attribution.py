@@ -3398,17 +3398,30 @@ class TestThePhase33LadderIsAttributed:
         selects silently stops being normalized and reaches the re-fit as a raw
         level. So the resolved set must equal the declaration exactly -- an
         unexpected member and a missing member both fail.
+
+        THE DECLARATION GREW BY ONE NAMED MEMBER AT p332_ RUNG 4 (Plan 33.2-12). The
+        indicator arm reads silver ``weather_features``, which rung 4 regenerated from
+        the day-before forecasts: ``extreme_weather``, a constant 0.0 on the ERA5
+        observations, now takes both values, so the builder's own predicate preserves its
+        level. The Phase-33 record stays byte-unchanged (26 members) and the rung's
+        addition is its own manifest constant, so the equality is still exact in both
+        directions.
         """
-        from tests.phase33_state import GOLD_LEVEL_PRESERVED_COLUMNS_33_14
+        from tests.phase33_state import (
+            GOLD_LEVEL_PRESERVED_COLUMNS_33_14,
+            P332_12_LEVEL_PRESERVED_COLUMNS_ADDED,
+        )
 
         f = _p331_module()
         resolved = set(f.phase33_level_preserved_family())
-        pinned = set(GOLD_LEVEL_PRESERVED_COLUMNS_33_14)
+        pinned = set(GOLD_LEVEL_PRESERVED_COLUMNS_33_14) | set(
+            P332_12_LEVEL_PRESERVED_COLUMNS_ADDED
+        )
         assert resolved == pinned, (
             f"unexpected members {sorted(resolved - pinned)}; missing members "
             f"{sorted(pinned - resolved)}"
         )
-        assert len(pinned) == 26
+        assert len(GOLD_LEVEL_PRESERVED_COLUMNS_33_14) == 26
 
     def test_the_elo_family_covers_ranks_percentiles_and_momentum(self) -> None:
         """A family omitting them would UNDER-declare the blast radius.
