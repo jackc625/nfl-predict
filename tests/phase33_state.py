@@ -16969,3 +16969,222 @@ P332_19_STEP8C_NEUTRAL_ZERO_UNFLAGGED_COLUMNS: int = 98
 #: The game the deferred item named, still the example: its 2013 week-2 snap values are
 #: measured (flag 1.0) and read exactly 0.0.
 P332_19_STEP8C_NEUTRAL_ZERO_EXAMPLE_GAME: str = "2013_W02_NYJ@NE"
+
+# ---------------------------------------------------------------------------
+# PLAN 33.2-19 (orchestrator-assigned extra step 8d), MEASURED 2026-09-22.
+#
+# p332_ EXTRA STEP 8d -- AN UNSCORABLE CELL IS BLANK, NOT THE NEUTRAL ZERO (owner
+# ruling 2026-09-22, "LEAVE THE CELL BLANK"; the THIRD of Plan 33.2-19's four
+# orchestrator-assigned steps, after 8b and 8c and before 8e and rung 9).
+#
+# ONE CAUSE: features.normalization.expanding_normalize's terminal fill writes the
+# neutral 0.0 z-score only where the INPUT VALUE was absent. A position whose value
+# EXISTS and whose expanding mean or standard deviation could not be formed at all --
+# and whose prior-season bootstrap, which still runs first, supplies none either --
+# comes back BLANK, beside whatever coverage flag it already carries. The ruling covers
+# EVERY such cell, not only the ones whose family declares coverage. A cell whose
+# statistic WAS formed is untouched, including a degenerate window whose admitted
+# values are all identical and whose honest z-score is 0.0.
+#
+# Declared in 87fb610 BEFORE the production rebuild, against a full scratch build
+# whose every other cell reproduces production gold EXACTLY. Judged against
+# p332_rung8c.json with no retake (production data/ was digest-identical to
+# outputs/p332_step8c_after.json, 1,128 files) -- attribution_ok true, not blocking,
+# zero unattributed; exactly the 124 declared columns moved, each only in its declared
+# seasons and identically in all three matrices; none of the 69 columns declared
+# UNMOVED moved; every moved cell moved from exactly 0.0 to blank, so every declared
+# column's null count rose by exactly its declared cell count and no other null count
+# moved; widths 201/202/201 and rows 6,499 unchanged. Production equalled the preview
+# on every non-clock column. Digest bracket outputs/p332_step8d_before.json -> after:
+# the three gold matrices and the DuckDB file; mixed empty, nothing added or removed.
+#
+# CORRECTION TO THE STEP-8c ESTIMATE, recorded rather than quietly replaced. The
+# P332_19_STEP8C_NEUTRAL_ZERO_* names above estimated 307 cells (46 flag-true, 257
+# unflagged) from a read-only proxy -- the build's tail replayed twice with a per-row
+# offset. That proxy named EXACTLY the same column sets (124 / 26 / 98); its CELL
+# counts are larger because it also counted positions whose statistic WAS formed on a
+# degenerate window. Measured example: away_qb_out_flag carries 105 cells of exactly
+# 0.0 in 2017 alone, every one a real z-score of a value equal to its window mean, and
+# the step blanks none of them. The names below are the end-to-end measurement of what
+# the build that writes gold actually did.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_UNSCORABLE_BLANK_STEP_CAUSE (UTF-8),
+# declared in 87fb610.
+P332_19_STEP8D_CAUSE_DIGEST: str = (
+    "df59e19037e99d41e5dbdd4f2f396f5601f47968d592a2787ec3955877b7eeab"
+)
+
+P332_19_STEP8D_DECLARED_IN_COMMIT: str = "87fb610959e053db64cf8a2e9d753884c7b3ac9e"
+
+P332_19_STEP8D_BASELINE_DOCUMENT: str = "p332_rung8c.json"
+
+#: The 124 columns that moved: every column holding at least one cell that existed and
+#: could not be scored. Each moved in ALL THREE matrices, in the seasons
+#: PHASE332_UNSCORABLE_BLANK_STEP_SEASONS_BY_COLUMN declares for it.
+P332_19_STEP8D_MOVED_COLUMNS: tuple[str, ...] = (
+    "apparent_temp_f",
+    "away_abs_timezone_diff_hours",
+    "away_availability_fraction",
+    "away_backup_quality_delta",
+    "away_cross_country_travel",
+    "away_def_rolling_pass_success_rate",
+    "away_def_rolling_red_zone_td_rate",
+    "away_def_rolling_rush_success_rate",
+    "away_def_rolling_success_rate",
+    "away_def_rolling_third_down_conversion_rate",
+    "away_eastward_travel",
+    "away_elo",
+    "away_elo_percentile",
+    "away_elo_rank",
+    "away_elo_uncertainty",
+    "away_letdown_spot",
+    "away_look_ahead_spot",
+    "away_off_bye",
+    "away_off_rolling_avg_drive_start_yardline",
+    "away_off_rolling_neutral_pace",
+    "away_off_rolling_neutral_pass_rate",
+    "away_off_rolling_pass_success_rate",
+    "away_off_rolling_red_zone_td_rate",
+    "away_off_rolling_rush_success_rate",
+    "away_off_rolling_success_rate",
+    "away_off_rolling_third_down_conversion_rate",
+    "away_qb_adjustment",
+    "away_qb_out_flag",
+    "away_rest_days",
+    "away_rolling_snap_share_db",
+    "away_rolling_snap_share_dl",
+    "away_rolling_snap_share_lb",
+    "away_rolling_snap_share_ol",
+    "away_rolling_snap_share_qb",
+    "away_rolling_snap_share_rb",
+    "away_rolling_snap_share_te",
+    "away_rolling_snap_share_wr",
+    "away_short_rest",
+    "away_snap_concentration",
+    "away_snap_continuity",
+    "away_timezone_diff_hours",
+    "away_travel_distance_miles",
+    "away_travel_fatigue_score",
+    "away_westward_travel",
+    "ball_handling_difficulty",
+    "both_short_rest",
+    "cold_impact_score",
+    "defensive_advantage",
+    "elo_diff",
+    "elo_prob_away",
+    "elo_prob_home",
+    "game_day_of_week",
+    "heat_impact_score",
+    "hfa_used",
+    "home_availability_fraction",
+    "home_backup_quality_delta",
+    "home_def_rolling_pass_success_rate",
+    "home_def_rolling_red_zone_td_rate",
+    "home_def_rolling_rush_success_rate",
+    "home_def_rolling_success_rate",
+    "home_def_rolling_third_down_conversion_rate",
+    "home_elo",
+    "home_elo_percentile",
+    "home_elo_rank",
+    "home_elo_uncertainty",
+    "home_letdown_spot",
+    "home_look_ahead_spot",
+    "home_off_bye",
+    "home_off_rolling_avg_drive_start_yardline",
+    "home_off_rolling_neutral_pace",
+    "home_off_rolling_neutral_pass_rate",
+    "home_off_rolling_pass_success_rate",
+    "home_off_rolling_red_zone_td_rate",
+    "home_off_rolling_rush_success_rate",
+    "home_off_rolling_success_rate",
+    "home_off_rolling_third_down_conversion_rate",
+    "home_qb_adjustment",
+    "home_qb_out_flag",
+    "home_rest_days",
+    "home_rolling_snap_share_db",
+    "home_rolling_snap_share_dl",
+    "home_rolling_snap_share_lb",
+    "home_rolling_snap_share_ol",
+    "home_rolling_snap_share_qb",
+    "home_rolling_snap_share_rb",
+    "home_rolling_snap_share_te",
+    "home_rolling_snap_share_wr",
+    "home_short_rest",
+    "home_snap_concentration",
+    "home_snap_continuity",
+    "home_weather_advantage",
+    "is_away_game",
+    "is_divisional",
+    "is_home_game",
+    "kicking_difficulty",
+    "late_season",
+    "monday_game",
+    "passing_difficulty",
+    "passing_efficiency",
+    "precip_impact_score",
+    "precip_prob",
+    "rest_advantage",
+    "rushing_advantage",
+    "saturday_game",
+    "scoring_multiplier",
+    "scoring_reduction",
+    "season_progress",
+    "short_week",
+    "surface_mismatch",
+    "temp_f",
+    "thursday_game",
+    "turnover_multiplier",
+    "venue_capacity",
+    "venue_cold_climate",
+    "venue_elevation_ft",
+    "venue_high_altitude",
+    "venue_indoor",
+    "venue_large_stadium",
+    "venue_outdoor",
+    "venue_retractable",
+    "venue_warm_climate",
+    "weather_severity_score",
+    "wind_impact_score",
+    "wind_mph",
+)
+
+#: Cells blanked in EACH matrix. Every one was exactly 0.0 before and is blank after;
+#: no cell gained a value and no non-blank value moved anywhere.
+P332_19_STEP8D_CELLS_PER_MATRIX: int = 182
+
+#: ...of which the family's coverage flag reads TRUE, i.e. the value WAS measured and
+#: nothing could place it. 26 columns carry them.
+P332_19_STEP8D_FLAGGED_TRUE_CELLS: int = 28
+
+P332_19_STEP8D_FLAGGED_TRUE_COLUMNS: int = 26
+
+#: The flag-true cells by season (28 in all): the snap and availability family's first
+#: covered season, and the injury family's per-side first covered seasons.
+P332_19_STEP8D_FLAGGED_TRUE_BY_SEASON: dict[str, int] = {
+    "2009": 2,
+    "2010": 4,
+    "2013": 22,
+}
+
+#: The remaining 150 cells sit in 98 columns that carry no coverage flag at all, so
+#: nothing says whether the value was measured; 98 of them are in 2002, the ladder's
+#: first season.
+P332_19_STEP8D_UNFLAGGED_CELLS: int = 150
+
+P332_19_STEP8D_UNFLAGGED_COLUMNS: int = 98
+
+P332_19_STEP8D_WIDTHS: tuple[int, int, int] = (201, 202, 201)
+
+P332_19_STEP8D_ROWS: int = 6499
+
+#: Null counts DID move at this step, by exactly the cells blanked -- the one rung of
+#: the ladder where a null-count move is the step rather than a finding.
+P332_19_STEP8D_NULL_COUNTS_MOVED: int = 182
+
+P332_19_STEP8D_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "nfl_predictions.duckdb",
+)

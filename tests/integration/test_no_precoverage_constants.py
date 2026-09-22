@@ -42,6 +42,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import scripts.fingerprint_gold as fg
 from scripts import scan_precoverage_constants as scan
 
 GOLD = Path("data/gold")
@@ -202,6 +203,37 @@ def _snap_value_columns(frame: pd.DataFrame) -> list[str]:
     ]
 
 
+def _undeclared_blanks(
+    frame: pd.DataFrame, rows: pd.Series, columns: list[str]
+) -> list[tuple[str, int, str]]:
+    """Blank cells among *rows* that p332_ extra step 8d did NOT declare.
+
+    OWNER RULING 2026-09-22 ("LEAVE THE CELL BLANK"). A covered row's value is blank
+    when its NORMALIZATION STATISTIC could not be formed -- a family's first covered
+    season has no prior season to bootstrap from, and its earliest lock group can hold
+    fewer than ``min_periods`` admitted rows. That cell was measured and nothing could
+    place it; before step 8d it read the neutral 0.0, which claimed it was exactly
+    average.
+
+    The allowance is PINNED to the step's own declaration rather than waved: a blank
+    is accepted only in a season that column declared, and only up to the cell count
+    it declared. A blank anywhere else is still the defect these nodes exist to catch.
+    """
+    violations: list[tuple[str, int, str]] = []
+    for column in columns:
+        blank = rows & frame[column].isna()
+        if not blank.any():
+            continue
+        seasons = {str(int(s)) for s in frame.loc[blank, "season"]}
+        allowed_seasons = set(
+            fg.PHASE332_UNSCORABLE_BLANK_STEP_SEASONS_BY_COLUMN.get(column, ())
+        )
+        allowed_cells = fg.PHASE332_UNSCORABLE_BLANK_STEP_CELLS_BY_COLUMN.get(column, 0)
+        if not seasons <= allowed_seasons or int(blank.sum()) > allowed_cells:
+            violations.append((column, int(blank.sum()), ",".join(sorted(seasons))))
+    return violations
+
+
 @needs_gold
 def test_gold_snap_boundary_2012_2013() -> None:
     """Snaps: NaN with the flag false for 2002-2012; populated, flag true, from 2013.
@@ -219,6 +251,16 @@ def test_gold_snap_boundary_2012_2013() -> None:
     one week, and from 2014 on every flagged row carries every value. Was: ``first.loc[populated,
     side_values].notna().all().all()`` over every snap value, continuity included -- a premise
     step 7b's measured blanks contradict.
+
+    CORRECTED AGAIN BY p332_ EXTRA STEP 8d (owner ruling 2026-09-22), for one more
+    measured blank: 2013 is the snap family's FIRST covered season, so it has no prior
+    season to bootstrap the expanding normalization from, and the season's earliest lock
+    group holds fewer than ``min_periods`` admitted rows. Those cells were measured -- the
+    flag says so -- and nothing could score them, so they are blank instead of the neutral
+    0.0 that used to claim they were exactly average. The allowance is PINNED to step 8d's
+    own per-column seasons and cell counts (``_undeclared_blanks``), so a blank anywhere
+    else still fails. Was: every flag-true 2013 row asserted populated in every non-
+    continuity column.
     """
     for matrix in scan.GOLD_MATRICES:
         frame = _gold(matrix)
@@ -236,15 +278,22 @@ def test_gold_snap_boundary_2012_2013() -> None:
             first = frame[frame["season"] == 2013]
             populated = first[flag] == 1.0
             assert populated.any(), (matrix, flag)
-            assert first.loc[populated, others].notna().all().all()
+            assert _undeclared_blanks(first, populated, others) == [], (matrix, side)
             assert first.loc[~populated, side_values].isna().all().all()
-            undefined_weeks = set(
-                first.loc[populated & first[continuity].isna(), "week"].astype(int)
-            )
-            assert undefined_weeks <= {int(first.loc[populated, "week"].min())}, (
+            # Continuity is undefined in the team's FIRST flagged week (step 7b: its
+            # window holds a single snap game). Any OTHER undefined week must be one
+            # step 8d declared -- the 2013 lock group that could not be scored -- and
+            # is checked against that declaration rather than admitted by widening the
+            # week set. Was: ``undefined_weeks <= {first flagged week}``, which step
+            # 8d's declared 2013 blank in week 3 contradicts.
+            first_week = int(first.loc[populated, "week"].min())
+            undefined = populated & first[continuity].isna()
+            assert undefined.any(), (matrix, continuity)
+            beyond = undefined & (first["week"].astype(int) != first_week)
+            assert _undeclared_blanks(first, beyond, [continuity]) == [], (
                 matrix,
                 continuity,
-                sorted(undefined_weeks),
+                sorted(set(first.loc[beyond, "week"].astype(int))),
             )
             later = frame[frame["season"] > 2013]
             flagged_later = later[later[flag] == 1.0]
@@ -272,6 +321,14 @@ def test_gold_injury_boundary_2008_2009() -> None:
     is not asserted NaN. The node's name keeps its original spelling so its id is stable. Was:
     both sides ``covered.any()`` in 2009 and every uncovered 2009 row NaN -- premises the
     measured per-side boundary and the step-7b fill contradict.
+
+    CORRECTED AGAIN BY p332_ EXTRA STEP 8d (owner ruling 2026-09-22): in each side's FIRST
+    covered season there is no prior season to bootstrap the expanding normalization from,
+    so a handful of covered rows have no statistic to be scored against. Those values were
+    measured -- the flag says so -- and are now blank rather than the neutral 0.0 that used
+    to claim they were exactly average. The allowance is PINNED to step 8d's own per-column
+    seasons and cell counts (``_undeclared_blanks``), so a blank in any other season, or one
+    cell too many, still fails. Was: every covered row asserted populated.
     """
     for matrix in scan.GOLD_MATRICES:
         frame = _gold(matrix)
@@ -288,7 +345,7 @@ def test_gold_injury_boundary_2008_2009() -> None:
             ahead = frame[frame["season"] < first_covered]
             assert ahead[values].isna().all().all(), (matrix, side, first_covered)
             assert (ahead[flag] == 0.0).all(), (matrix, flag, first_covered)
-            assert frame.loc[covered, values].notna().all().all(), (matrix, side)
+            assert _undeclared_blanks(frame, covered, values) == [], (matrix, side)
 
 
 @needs_gold

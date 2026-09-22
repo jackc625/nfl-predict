@@ -13021,7 +13021,12 @@ def _phase332_unscorable_blank_step_lines(fingerprint_dir: Path | str) -> list[s
         "predicted_unmoved_columns = "
         f"{_toml_array(list(PHASE332_UNSCORABLE_BLANK_STEP_PREDICTED_UNMOVED))}",
         f"declared_cells = {PHASE332_UNSCORABLE_BLANK_STEP_CELLS}",
-        f"measured_cells = {_toml_array([measured_cells[m] for m in GOLD_MATRICES])}",
+        # Integers, not the quoted-string array the rest of this file uses: the cell
+        # counts are the prediction this step is judged on, and a reader comparing
+        # them with ``declared_cells`` should not have to unquote a digit first.
+        "measured_cells = ["
+        + ", ".join(str(measured_cells[m]) for m in GOLD_MATRICES)
+        + "]",
         f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
         f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
         f"moved_columns = {_toml_array(moved)}",
@@ -13040,7 +13045,7 @@ def _phase332_unscorable_blank_step_lines(fingerprint_dir: Path | str) -> list[s
     for column in PHASE332_UNSCORABLE_BLANK_STEP_COLUMNS:
         seasons = PHASE332_UNSCORABLE_BLANK_STEP_SEASONS_BY_COLUMN[column]
         lines.append(f"{column} = {_toml_array(list(seasons))}")
-    lines.extend(["", f'[rung."{step}".declared_cells]'])
+    lines.extend(["", f'[rung."{step}".declared_cells_by_column]'])
     for column in PHASE332_UNSCORABLE_BLANK_STEP_COLUMNS:
         lines.append(
             f"{column} = {PHASE332_UNSCORABLE_BLANK_STEP_CELLS_BY_COLUMN[column]}"
