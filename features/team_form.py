@@ -35,7 +35,7 @@ Key constraints:
 """
 
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, cast
 
@@ -143,52 +143,20 @@ def week_team_locks(
 
 
 # ---------------------------------------------------------------------------
-# THE PER-GAME SEASON POOL (Plan 33.1-07 Task 4, 2026-09-14).
+# THE PER-GAME SEASON POOL (Plan 33.1-07 Task 4; reworded by Plan 33.2-17 Task 1).
 #
-# WHAT WAS WRONG. `get_per_game_stats` resolved its full-build pool as
-# `list(range(2018, 2025))`. `range` stops BEFORE its second argument, so season
-# 2025 was never built -- and 2025 is the season feeding the live 2026
-# predictions. MEASURED in production gold, for each of the twelve
-# `{home,away}_{off,def}_rolling_opp_adj_*` columns: 285 distinct values across
-# the 285 rows of 2023, 285 across 2024, and TWO across the 285 rows of 2025.
-# Two distinct values is not a team-strength signal; it is the imputation that
-# runs when the real column is absent, wearing the column's name.
+# WHAT WAS WRONG ONCE. `get_per_game_stats` resolved its full-build pool as a hardcoded
+# `range(...)` whose exclusive upper bound silently stopped one season short, so the live
+# season's twelve opponent-adjusted columns carried two distinct values -- the imputation that
+# runs when the real column is absent, wearing the column's name. The UPPER bound is therefore
+# DERIVED from the seasons the data carries (see `per_game_seasons`), never typed.
 #
-# WHY A CONSTANT AND A DERIVATION RATHER THAN A NEW RANGE. Writing
-# `range(2018, 2026)` would rot on exactly the same schedule and in exactly the
-# same silent way: a wrong upper bound produces a full-looking column rather
-# than an error, which is why this one survived unnoticed. So the UPPER bound
-# now comes from the seasons the DATA carries -- the caller's own games frame
-# where it has one, the silver `games` table where it does not -- and only the
-# FLOOR is a literal.
-#
-# THE FLOOR IS INHERITED, NOT DERIVED, AND THAT IS DELIBERATE. The play-by-play
-# pin reaches back to 2001, so 2018 is NOT a coverage floor; it is a literal
-# whose origin this plan did not establish. Widening it would move roughly
-# ninety gold columns that are a flat imputed constant for 2002-2017 -- far
-# outside the change set the Phase-33.1 rung declares, and a different decision
-# from the one this plan was asked to make. It is named here so it is visible
-# and pinned by a test, and Plan 33.1-09 -- which consolidates every season
-# literal in the repository into `conf/season_partition.py` -- is where it
-# should be re-decided. This constant is deliberately shaped to be folded into
-# that module without changing any call site.
-#
-# ---------------------------------------------------------------------------
-# THE FOLD-IN (Plan 33.1-09 Task 2, 2026-09-14). The paragraph above asked for
-# exactly this, and here it is: the floor is no longer a literal in this module,
-# it is `conf.season_partition.SELECTION_WINDOW_FIRST_SEASON`. No call site
-# changed, as that paragraph predicted; the name and its type are unchanged.
-#
-# THE TWO FLOORS ARE THE SAME NUMBER FOR THE SAME MEASURED REASON, AND THE
-# RESIDUAL DIFFERENCE IS RECORDED RATHER THAN SMOOTHED OVER. The selection
-# window's 2018 IS a coverage floor: it is where elo_game_snapshots,
-# odds_snapshot and team_game_stats begin, which is why ninety gold columns are
-# a flat imputed constant before it. This per-game floor is NOT forced by its
-# own source -- the play-by-play pin reaches back to 2001 -- but widening it
-# would move that same ninety-column family, so it is held at the same boundary
-# deliberately rather than coincidentally. Consolidating them means a future
-# decision to widen the window moves BOTH, which is the point: two literals that
-# must agree and are free to drift is the defect this plan exists to remove.
+# THE FLOOR IS THE RULE MODULE'S, BY IDENTITY. It is whatever
+# `conf.season_partition.SELECTION_WINDOW_FIRST_SEASON` says, and the reason it sits where it
+# does -- and which coverage floors it once stood in for -- is recorded in that module's
+# `RULE_EVIDENCE`, not here. This binding exists so the two cannot drift: a decision to move
+# the selection window moves this pool with it, and nothing in this file restates a season or
+# a column count that could go stale when it does.
 # ---------------------------------------------------------------------------
 
 TEAM_FORM_PER_GAME_FIRST_SEASON: int = SELECTION_WINDOW_FIRST_SEASON
@@ -969,9 +937,9 @@ class TeamFormCalculator:
 
         The FLOOR is ``TEAM_FORM_PER_GAME_FIRST_SEASON`` and the CEILING is
         whatever the caller's data reaches. A season below the floor is
-        DROPPED rather than fetched, because widening the pool downward is a
-        separate decision with a ninety-column blast radius (see the constant's
-        comment).
+        DROPPED rather than fetched: widening the pool downward is the rule
+        module's decision, carried here by the identity binding (see the
+        constant's comment), never a per-call choice.
 
         THERE IS DELIBERATELY NO UPPER BOUND, and code review WR-07 asked for
         one, so the reasoning is recorded here rather than left implicit. A
@@ -1261,6 +1229,8 @@ class TeamFormCalculator:
         seasons: list[int],
         target_season: int | None = None,
         target_week: int | None = None,
+        *,
+        bootstrap_seasons: Sequence[int] = (),
     ) -> pd.DataFrame:
         """Build complete team form features for specified seasons.
 
@@ -1268,10 +1238,20 @@ class TeamFormCalculator:
             Use :meth:`build_features` instead, which enforces the
             ``as_of_datetime`` time-fence.
 
+        THE BOOTSTRAP SEASONS (Plan 33.2-17 Task 1). A season's week-1 window rolls over the
+        PRIOR season's games, so the first season of a corpus build needs the season before it
+        fetched too -- otherwise its week 1 has no row at all. *bootstrap_seasons* are fetched
+        and timed exactly like the targets, but no rolling row and no ``team_game_stats`` row
+        is computed or persisted for them. Every window is still admitted at its target game's
+        lock (:meth:`admitted_window`); fetching an extra season widens what is AVAILABLE,
+        never what a single game may see.
+
         Args:
             seasons: Seasons to process play-by-play data for
             target_season: Specific season to calculate features for
             target_week: Specific week to calculate features for
+            bootstrap_seasons: Seasons fetched only to supply earlier windows. The caller's
+                schedule must time them (a team-game that cannot be timed is never admitted).
 
         Returns:
             DataFrame with team form features
@@ -1297,8 +1277,10 @@ class TeamFormCalculator:
         incremental = target_season is not None and target_week is not None
 
         try:
-            # Fetch play-by-play data
-            pbp_df = self.fetch_pbp_data(seasons)
+            # Fetch play-by-play data: the targets plus any bootstrap season
+            pbp_df = self.fetch_pbp_data(
+                sorted({*map(int, bootstrap_seasons), *map(int, seasons)})
+            )
 
             # Calculate team-game statistics (persisted UNTIMED below; timed for the
             # lock-keyed windows, Plan 33.2-14)
@@ -1326,8 +1308,10 @@ class TeamFormCalculator:
             # within a fixed seasons argument; switching between full and
             # current builds no longer mutates the table's season span.
             if not incremental:
+                # The targets only: a bootstrap season is fetched to supply windows, never
+                # persisted as if it were part of the corpus.
                 save_dataframe(
-                    team_stats_df,
+                    team_stats_df[team_stats_df["season"].isin(seasons)],
                     "team_game_stats",
                     layer="silver",
                     replace_mode=True,

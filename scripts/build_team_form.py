@@ -5,10 +5,20 @@ This script processes NFL play-by-play data to calculate rolling team performanc
 including EPA/play, success rates, and situational statistics.
 
 Usage:
-    python scripts/build_team_form.py --season 2024           # Process single season
-    python scripts/build_team_form.py --seasons 2022 2023    # Process multiple seasons
-    python scripts/build_team_form.py --all-seasons          # Process all available
+    python scripts/build_team_form.py --season YEAR          # Process single season
+    python scripts/build_team_form.py --seasons YEAR YEAR    # Process multiple seasons
+    python scripts/build_team_form.py --all-seasons          # Every season of the corpus
     python scripts/build_team_form.py --current              # Process current season
+
+THE CORPUS STARTS AT ``conf.season_partition.CORPUS_FIRST_SEASON`` (Plan 33.2-17 Task 1,
+D33.2-08 item 2). ``--all-seasons`` used to default to a hardcoded later season, so gold's
+team-form columns before it were a flat 0.0 nobody measured. Every season a build targets is
+now computed from the pinned play-by-play, and the season BEFORE the first target is fetched as
+a BOOTSTRAP only -- its games give the first target season's week 1 a window, and nothing is
+persisted for it. The pin must carry that prior season (:func:`require_prior_season_pinned`
+refuses by name otherwise), and its games are timed through the same ingest path silver
+``games`` is built by (:func:`bootstrap_timing_games`), because silver ``games`` does not carry
+a season before the corpus and an untimed team-game is never admitted.
 """
 
 import argparse
@@ -21,14 +31,107 @@ import pandas as pd
 # Add project root to path
 sys.path.append(".")
 
-from conf.season_partition import LATEST_COMPLETED_SEASON
+from conf.season_partition import CORPUS_FIRST_SEASON, LATEST_COMPLETED_SEASON
 from conf.settings import get_settings
+from data import upstream_pin
+from data.quality_gates import validate_bronze_to_silver
+from data.schemas import GameSchema
 from data.storage import load_dataframe, save_dataframe
 from features.team_form import TeamFormCalculator
+from scripts.ingest_games import GameDataIngester
 from utils import get_current_nfl_week, get_logger, setup_logging
 from utils.date_utils import ET
 
 logger = get_logger(__name__)
+
+#: The schedule columns a team-game is timed from (``features.team_form.team_game_schedule``).
+TIMING_COLUMNS: tuple[str, ...] = (
+    "game_id",
+    "season",
+    "week",
+    "home_team",
+    "away_team",
+    "kickoff_et",
+)
+
+
+class PriorSeasonNotPinnedError(RuntimeError):
+    """The upstream pin does not carry the season before a build's first target season.
+
+    A ``RuntimeError`` so :func:`main`'s ``(ValueError, KeyError, TypeError, FileNotFoundError,
+    OSError)`` handler cannot turn it into a quiet exit: without the prior season the first
+    target season's week 1 has no window, and a NaN-seeded week 1 must never be written as if it
+    had been computed.
+    """
+
+
+class BootstrapTimingError(RuntimeError):
+    """A bootstrap-season game could not be timed through the ingest path."""
+
+
+def require_prior_season_pinned(first_season: int) -> int:
+    """THE NAMED CHECK: the pin carries play-by-play AND a schedule for ``first_season - 1``.
+
+    The whole case for computing team form from the corpus's first season rests on that season
+    having a prior season to roll over. Checked against the pin's manifest, before any fetch.
+
+    Returns:
+        The prior season.
+
+    Raises:
+        PriorSeasonNotPinnedError: naming the dataset and season the pin lacks.
+    """
+    prior = first_season - 1
+    manifest = upstream_pin.load_manifest()
+    for dataset in ("pbp", "schedules"):
+        if prior not in upstream_pin.pinned_seasons(dataset, manifest):
+            msg = (
+                f"the upstream pin carries no {dataset!r} for season {prior}, the season "
+                f"before the first target season {first_season}. Its week 1 would have no "
+                "prior-season window; refusing rather than writing a NaN-seeded week 1 as "
+                "if it had been computed. Capture it with "
+                f"{upstream_pin.PIN_CLI_TEXT}."
+            )
+            raise PriorSeasonNotPinnedError(msg)
+    return prior
+
+
+def bootstrap_timing_games(season: int) -> pd.DataFrame:
+    """Timing rows for a season silver ``games`` does not carry, from its PINNED schedule.
+
+    Built by the SAME path silver ``games`` is: ``GameDataIngester.transform_schedule_data``
+    (canonical team codes, the one kickoff-clock decision) and ``GameSchema`` (the feed's ET
+    wall clock made tz-aware). Nothing is written: these rows only time the bootstrap season's
+    team-games. ``transform_schedule_data`` SKIPS a row it cannot transform, so a count mismatch
+    is a refusal -- a silently dropped game would leave its window short with no error.
+
+    Raises:
+        BootstrapTimingError: a pinned game did not survive the ingest path.
+    """
+    schedule = upstream_pin.load_schedules([season])
+    transformed = GameDataIngester().transform_schedule_data(schedule)
+    if len(transformed) != len(schedule):
+        msg = (
+            f"season {season}: only {len(transformed)} of {len(schedule)} pinned schedule "
+            "rows survived the ingest transform, so the rest cannot be timed; refusing "
+            "rather than rolling week 1 over a partial season"
+        )
+        raise BootstrapTimingError(msg)
+    validated = validate_bronze_to_silver(transformed, GameSchema)
+    return validated[list(TIMING_COLUMNS)].reset_index(drop=True)
+
+
+def corpus_timing_schedule(bootstrap_seasons: list[int]) -> pd.DataFrame:
+    """Silver ``games`` plus the timing rows of every bootstrap season it does not carry."""
+    games = load_dataframe("games", layer="silver")
+    frames = [games[list(TIMING_COLUMNS)]]
+    carried = {int(s) for s in games["season"].dropna().unique()}
+    frames.extend(
+        bootstrap_timing_games(season)
+        for season in bootstrap_seasons
+        if season not in carried
+    )
+    return pd.concat(frames, ignore_index=True)
 
 
 class TeamFormBuilder:
@@ -43,6 +146,10 @@ class TeamFormBuilder:
         """
         Build team form features for specified seasons.
 
+        The season before the first target is a BOOTSTRAP (Plan 33.2-17 Task 1): the pin must
+        carry it, its games are timed, and its play-by-play fills the first target season's
+        week-1 window. No row is persisted for it.
+
         Args:
             seasons: List of seasons to process
 
@@ -51,9 +158,17 @@ class TeamFormBuilder:
         """
         logger.info("Building team form features for seasons", seasons=seasons)
 
+        prior = require_prior_season_pinned(min(seasons))
+        calculator = TeamFormCalculator(
+            max_prior_games=self.calculator.max_prior_games,
+            schedule_df=corpus_timing_schedule([prior]),
+        )
+
         try:
-            # Build features for all seasons
-            form_df = self.calculator.build_team_form_features(seasons)
+            # Build features for all seasons, the prior season fetched as the bootstrap
+            form_df = calculator.build_team_form_features(
+                seasons, bootstrap_seasons=[prior]
+            )
 
             # Validate results
             if len(form_df) > 0:
@@ -359,8 +474,8 @@ class TeamFormBuilder:
             return {"error": str(e)}
 
 
-def main():
-    """CLI entry point for team form builder."""
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI parser (extracted so its defaults are unit-testable)."""
     parser = argparse.ArgumentParser(description="Build NFL team form metrics")
     parser.add_argument("--season", type=int, help="Process single season")
     parser.add_argument(
@@ -381,8 +496,11 @@ def main():
     parser.add_argument(
         "--start-season",
         type=int,
-        default=2020,
-        help="Starting season for all-seasons build (default: 2020)",
+        default=CORPUS_FIRST_SEASON,
+        help=(
+            "Starting season for the all-seasons build (default: the corpus's first "
+            f"season, conf.season_partition.CORPUS_FIRST_SEASON = {CORPUS_FIRST_SEASON})"
+        ),
     )
     parser.add_argument(
         "--validate-only", action="store_true", help="Only validate existing features"
@@ -390,8 +508,12 @@ def main():
     parser.add_argument(
         "--analyze-team", type=str, help="Analyze trends for specific team"
     )
+    return parser
 
-    args = parser.parse_args()
+
+def main():
+    """CLI entry point for team form builder."""
+    args = build_parser().parse_args()
 
     try:
         # Setup logging
@@ -457,6 +579,8 @@ def main():
             print(f"Records: {len(form_df)}")
             print(f"Teams: {len(form_df['team'].unique())}")
             print(f"Seasons: {sorted(form_df['target_season'].unique())}")
+            # Machine-read by Plan 33.2-17 Task 1's verify.
+            print(f"FIRST_SEASON= {int(form_df['target_season'].min())}")
 
             # Show sample of recent features
             recent_features = form_df[
