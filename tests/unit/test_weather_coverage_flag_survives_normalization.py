@@ -68,13 +68,28 @@ import pandas as pd
 import pytest
 
 from features.normalization import expanding_normalize
+from features.point_in_time_fill import imputation_game_timing
 from features.weather import (
     WEATHER_COVERAGE_COLUMN,
     WEATHER_FEATURE_COLUMNS_BY_BUILDER,
     WEATHER_FLAG_COLUMNS,
 )
 from scripts.build_features import FeatureMatrixBuilder
+from tests.normalization_locks import row_order_locks
 from tests.phase33_state import GOLD_LEVEL_PRESERVED_COLUMNS_33_14
+
+
+def _normalize(frame, **kwargs):
+    """``expanding_normalize`` with the per-row lock p332_ extra step 8c made mandatory.
+
+    These tests are not about lock ORDERING -- ``tests/unit/test_normalization_lock_order.py``
+    is -- so they are given a lock that REPRODUCES the window they already assumed: one
+    distinct instant per row, in the order the function sorts the frame into. Every
+    assertion below is therefore unchanged by step 8c.
+    """
+    kwargs.setdefault("row_locks", row_order_locks(frame, kwargs.get("sort_cols")))
+    return expanding_normalize(frame, **kwargs)
+
 
 # A constant weather column that is NOT the coverage flag. Control 4 rides on
 # it: it travels the identical path and must still be z-scored flat, or the
@@ -96,6 +111,25 @@ def _weather_only_frame() -> pd.DataFrame:
     )
 
 
+def _games_frame() -> pd.DataFrame:
+    """The eight games these frames describe, one kickoff a week apart.
+
+    p332_ EXTRA STEP 8c: ``normalize_combined_features`` orders every expanding
+    statistic by each game's LOCK and refuses a frame it cannot time, so the fixture
+    now carries the ``game_id`` and ``kickoff_et`` the one lock rule reads. One game a
+    week, so the lock order IS the week order these assertions already assumed.
+    """
+    return pd.DataFrame(
+        {
+            "game_id": [f"{SEASON}_W0{week}_AAA@BBB" for week in WEEKS],
+            "kickoff_et": pd.to_datetime(
+                [f"{SEASON}-09-{week + 7:02d} 17:00:00+00:00" for week in WEEKS],
+                utc=True,
+            ),
+        }
+    )
+
+
 def _builder_with_merged_weather() -> FeatureMatrixBuilder:
     builder = FeatureMatrixBuilder()
     resolved = builder.record_missing_preserving_columns(_weather_only_frame())
@@ -104,6 +138,7 @@ def _builder_with_merged_weather() -> FeatureMatrixBuilder:
         "resolution to the compressed builder would make the rest of this "
         "module assert about the wrong set"
     )
+    builder.imputation_timing = imputation_game_timing(_games_frame())
     return builder
 
 
@@ -111,6 +146,7 @@ def _combined_frame(coverage: list[float]) -> pd.DataFrame:
     """One season, eight weeks, the flag under test and one control column."""
     return pd.DataFrame(
         {
+            "game_id": [f"{SEASON}_W0{week}_AAA@BBB" for week in WEEKS],
             "season": [SEASON] * len(WEEKS),
             "week": WEEKS,
             WEATHER_COVERAGE_COLUMN: coverage,
@@ -208,7 +244,7 @@ class TestTheNormalizerIsWhatDestroysTheFlag:
         the normalizer's treatment of columns outside the named exemption.
         """
         frame = _combined_frame([1.0] * 8)
-        result = expanding_normalize(frame.copy(), feature_cols=[CONTROL_COLUMN])
+        result = _normalize(frame.copy(), feature_cols=[CONTROL_COLUMN])
         assert set(result[CONTROL_COLUMN].tolist()) == {0.0}, (
             "the expanding std of a constant column is zero, so safe_std clips "
             "to 1e-8 and (v - v) / 1e-8 is 0.0. That is the whole mechanism"
@@ -224,9 +260,7 @@ class TestTheNormalizerIsWhatDestroysTheFlag:
         is byte-preserved and only the gold build's named opt-in changes.
         """
         frame = _combined_frame([1.0] * 8)
-        result = expanding_normalize(
-            frame.copy(), feature_cols=[WEATHER_COVERAGE_COLUMN]
-        )
+        result = _normalize(frame.copy(), feature_cols=[WEATHER_COVERAGE_COLUMN])
         assert set(result[WEATHER_COVERAGE_COLUMN].tolist()) == {0.0}
 
     def test_with_the_parameter_the_recorded_levels_are_returned_unchanged(
@@ -235,7 +269,7 @@ class TestTheNormalizerIsWhatDestroysTheFlag:
         """And a column outside the named set in the SAME call still z-scores."""
         coverage = [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0]
         frame = _combined_frame(coverage)
-        result = expanding_normalize(
+        result = _normalize(
             frame.copy(),
             feature_cols=[WEATHER_COVERAGE_COLUMN, CONTROL_COLUMN],
             preserve_level_cols=[WEATHER_COVERAGE_COLUMN],

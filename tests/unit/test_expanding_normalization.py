@@ -15,6 +15,20 @@ import pandas as pd
 import pytest
 
 from features.normalization import compute_prior_season_stats, expanding_normalize
+from tests.normalization_locks import row_order_locks
+
+
+def _normalize(frame, **kwargs):
+    """``expanding_normalize`` with the per-row lock p332_ extra step 8c made mandatory.
+
+    These tests are not about lock ORDERING -- ``tests/unit/test_normalization_lock_order.py``
+    is -- so they are given a lock that REPRODUCES the window they already assumed: one
+    distinct instant per row, in the order the function sorts the frame into. Every
+    assertion below is therefore unchanged by step 8c.
+    """
+    kwargs.setdefault("row_locks", row_order_locks(frame, kwargs.get("sort_cols")))
+    return expanding_normalize(frame, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -59,7 +73,7 @@ def test_expanding_uses_only_past_data(multi_season_df):
     """For Week 8, expanding normalization uses only data from Weeks 1-7."""
     feature_cols = ["feat_a", "feat_b"]
 
-    result = expanding_normalize(
+    result = _normalize(
         multi_season_df,
         feature_cols=feature_cols,
         group_col="season",
@@ -112,7 +126,7 @@ def test_week1_uses_prior_season_bootstrap(multi_season_df):
         for col in feature_cols
     }
 
-    result = expanding_normalize(
+    result = _normalize(
         multi_season_df,
         feature_cols=feature_cols,
         group_col="season",
@@ -140,7 +154,7 @@ def test_season_reset_no_cross_contamination(multi_season_df):
     feature_cols = ["feat_a"]
 
     # Run with min_periods=1 so we can compare within each season
-    result = expanding_normalize(
+    result = _normalize(
         multi_season_df,
         feature_cols=feature_cols,
         group_col="season",
@@ -185,7 +199,7 @@ def test_min_periods_uses_prior_stats_for_insufficient_data(multi_season_df):
         for col in feature_cols
     }
 
-    result = expanding_normalize(
+    result = _normalize(
         multi_season_df,
         feature_cols=feature_cols,
         group_col="season",
@@ -216,7 +230,7 @@ def test_output_shape_matches_input(multi_season_df):
     """Expanding normalize preserves DataFrame shape (no rows dropped)."""
     feature_cols = ["feat_a", "feat_b"]
 
-    result = expanding_normalize(
+    result = _normalize(
         multi_season_df,
         feature_cols=feature_cols,
         group_col="season",
@@ -241,7 +255,7 @@ def test_normalization_effectiveness(multi_season_df):
     """Normalized values for Week 8+ have mean closer to 0 than raw values."""
     feature_cols = ["feat_a", "feat_b"]
 
-    result = expanding_normalize(
+    result = _normalize(
         multi_season_df,
         feature_cols=feature_cols,
         group_col="season",
@@ -289,7 +303,7 @@ def test_added_excluded_column_does_not_change_other_zscores(multi_season_df):
     feature_cols = ["feat_a"]
 
     # Baseline: normalize feat_a alone.
-    baseline = expanding_normalize(
+    baseline = _normalize(
         multi_season_df,
         feature_cols=feature_cols,
         group_col="season",
@@ -301,7 +315,7 @@ def test_added_excluded_column_does_not_change_other_zscores(multi_season_df):
     # feature_cols (mirrors raw_weather_severity = copy of weather_severity_score).
     with_sibling = multi_season_df.copy()
     with_sibling["raw_feat_a"] = multi_season_df["feat_a"]
-    normalized = expanding_normalize(
+    normalized = _normalize(
         with_sibling,
         feature_cols=feature_cols,  # raw_feat_a deliberately excluded
         group_col="season",
@@ -354,7 +368,7 @@ def test_degenerate_prior_season_falls_back_to_zero_not_raw():
     prior = compute_prior_season_stats(df, ["elo"], 2017)
     assert "elo" not in prior, "degenerate constant prior should be omitted"
 
-    result = expanding_normalize(
+    result = _normalize(
         df,
         feature_cols=["elo"],
         group_col="season",

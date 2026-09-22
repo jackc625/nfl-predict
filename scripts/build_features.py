@@ -49,13 +49,18 @@ from features.contextual import (
 from features.elo_features import EloFeatureBuilder
 from features.injury import INJURY_FEATURE_COLUMNS, InjuryBuilder
 from features.market_anchors import MarketAnchorFeaturesCalculator
-from features.normalization import compute_prior_season_stats, expanding_normalize
+from features.normalization import (
+    LockOrderedStatisticUnavailableError,
+    compute_prior_season_stats,
+    expanding_normalize,
+)
 from features.opponent_adj import (
     OPP_ADJ_SOURCE_NAME,
     OpponentAdjuster,
     opponent_adjusted_gold_columns,
 )
 from features.point_in_time_fill import (
+    UNTIMED_LOCK_NS,
     admitted_mean,
     imputation_game_timing,
     row_timing,
@@ -2185,6 +2190,44 @@ class FeatureMatrixBuilder:
 
         return result
 
+    def _normalization_row_locks(self, frame: pd.DataFrame) -> pd.Series:
+        """Each row's LOCK, for the normalization window (p332_ extra step 8c).
+
+        The lock comes from the ONE rule (``utils.game_lock`` through
+        ``features.point_in_time_fill``, the same timing the imputer reads); this
+        method derives nothing. A row the timing does not cover carries the untimed
+        sentinel, and a game with no lock has no window -- so the whole frame is
+        refused BY NAME rather than normalized against week order, which is the leak
+        this step removed.
+
+        Args:
+            frame: The frame about to be normalized.
+
+        Returns:
+            A ``Series`` of UTC nanosecond locks, indexed like *frame*.
+
+        Raises:
+            LockOrderedStatisticUnavailableError: naming how many rows could not be
+                timed, and the first of them.
+        """
+        _ends, locks = row_timing(frame, self.imputation_timing)
+        untimed = locks == UNTIMED_LOCK_NS
+        if bool(untimed.any()):
+            ids = (
+                frame.loc[untimed, "game_id"].astype(str).tolist()
+                if "game_id" in frame.columns
+                else []
+            )
+            msg = (
+                f"{int(untimed.sum())} row(s) of the frame about to be normalized "
+                f"carry no lock (e.g. {ids[:5] or 'the frame has no game_id column'}), "
+                "so their expanding statistics cannot be ordered by lock instant. "
+                "Refusing rather than falling back to week order (p332_ extra step 8c, "
+                "D33.2-01)."
+            )
+            raise LockOrderedStatisticUnavailableError(msg)
+        return pd.Series(locks, index=frame.index, name="lock_ns")
+
     def normalize_combined_features(
         self,
         processed_features: pd.DataFrame,
@@ -2320,6 +2363,11 @@ class FeatureMatrixBuilder:
             columns=list(preserve_level_cols),
         )
 
+        # P332_ EXTRA STEP 8c: the lock every expanding statistic below is ordered by,
+        # resolved ONCE for the whole frame and then sliced per season, so the batch
+        # and single-season paths cannot disagree about a row's window.
+        row_locks = self._normalization_row_locks(processed_features)
+
         # Compute prior-season stats for bootstrap and normalize
         if target_season:
             # Single-season mode: compute prior stats once
@@ -2336,6 +2384,7 @@ class FeatureMatrixBuilder:
                     prior_season_stats=prior_stats,
                     preserve_missing_cols=preserve_missing,
                     preserve_level_cols=preserve_level_cols,
+                    row_locks=row_locks,
                 )
             )
 
@@ -2356,6 +2405,7 @@ class FeatureMatrixBuilder:
                 prior_season_stats=prior_stats,
                 preserve_missing_cols=preserve_missing,
                 preserve_level_cols=preserve_level_cols,
+                row_locks=row_locks.loc[season_df.index],
             )
             normalized_parts.append(norm_part)
         # P332_ EXTRA STEP 7b: a recorded blank stays blank (never the neutral 0.0).

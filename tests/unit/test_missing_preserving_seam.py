@@ -58,6 +58,20 @@ from features.normalization import expanding_normalize
 from features.point_in_time_fill import imputation_game_timing
 from features.weather import WEATHER_FEATURE_COLUMNS_BY_BUILDER
 from scripts.build_features import BUILDER_KEYS, FeatureMatrixBuilder
+from tests.normalization_locks import row_order_locks
+
+
+def _normalize(frame, **kwargs):
+    """``expanding_normalize`` with the per-row lock p332_ extra step 8c made mandatory.
+
+    These tests are not about lock ORDERING -- ``tests/unit/test_normalization_lock_order.py``
+    is -- so they are given a lock that REPRODUCES the window they already assumed: one
+    distinct instant per row, in the order the function sorts the frame into. Every
+    assertion below is therefore unchanged by step 8c.
+    """
+    kwargs.setdefault("row_locks", row_order_locks(frame, kwargs.get("sort_cols")))
+    return expanding_normalize(frame, **kwargs)
+
 
 WEATHER_COLUMN = "weather_severity_score"
 # Deliberately NOT prefixed home_/away_: that prefix routes a column to
@@ -88,7 +102,7 @@ class TestTheNormalizerExemptionIsOptInAndNarrow:
 
     def test_a_preserved_nan_survives_and_the_control_does_not(self):
         frame = _normalizable_frame()
-        result = expanding_normalize(
+        result = _normalize(
             frame.copy(),
             feature_cols=[WEATHER_COLUMN, CONTROL_COLUMN],
             preserve_missing_cols=[WEATHER_COLUMN],
@@ -102,20 +116,18 @@ class TestTheNormalizerExemptionIsOptInAndNarrow:
     def test_without_the_parameter_the_same_position_is_filled(self):
         """CONTROL 4: the new behaviour is OPT-IN, not a silent global change."""
         frame = _normalizable_frame()
-        result = expanding_normalize(
-            frame.copy(), feature_cols=[WEATHER_COLUMN, CONTROL_COLUMN]
-        )
+        result = _normalize(frame.copy(), feature_cols=[WEATHER_COLUMN, CONTROL_COLUMN])
         assert np.isfinite(result[WEATHER_COLUMN].iloc[3])
 
     def test_a_present_value_is_transformed_identically(self):
         """Preservation applies to ABSENCE, never to the transform."""
         frame = _normalizable_frame()
-        preserved = expanding_normalize(
+        preserved = _normalize(
             frame.copy(),
             feature_cols=[WEATHER_COLUMN],
             preserve_missing_cols=[WEATHER_COLUMN],
         )
-        plain = expanding_normalize(frame.copy(), feature_cols=[WEATHER_COLUMN])
+        plain = _normalize(frame.copy(), feature_cols=[WEATHER_COLUMN])
         for position in (0, 1, 2, 4, 5, 6, 7):
             assert (
                 abs(
