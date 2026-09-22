@@ -3,9 +3,10 @@
 ONE-WAY BY CONSTRUCTION, in the shape of ``backtest/ev_chain_constants.py`` and
 ``backtest/group_gate_constants.py``. This module IS the rule (SPEC R6, D33.1-03), not a
 description of one. Its LAST-MODIFYING COMMIT is the git-ancestry anchor:
-``tests/phase33_state.SEASON_PARTITION_RULE_COMMIT`` records it in a STRICTLY LATER commit,
-and ``tests/unit/test_preregistration_ancestry.py::TestThePhase331SeasonPartitionRule``
-recomputes and compares.
+``tests/phase33_state.P332_18_SEASON_PARTITION_RULE_COMMIT`` records it in a STRICTLY LATER
+commit, and ``tests/unit/test_preregistration_ancestry.py::TestThePhase331SeasonPartitionRule``
+recomputes and compares. (``SEASON_PARTITION_RULE_COMMIT`` is the witness of the rule as it
+stood before the second amendment below; it is kept unedited as that record.)
 
 Stated plainly because it is easy to forget several plans later: EDITING THIS FILE AFTER A
 WINDOW HAS BEEN SCORED DOES NOT FIX A BUG -- IT DESTROYS THE EVIDENCE. A value that is wrong
@@ -25,6 +26,35 @@ out of a gold frame carrying live 2026 rows, which was silently wrong. The rule'
 (``tests/phase33_state.SEASON_PARTITION_RULE_COMMIT`` and the file digest beside it) was
 re-measured from the new commit in a strictly later one, which is the procedure
 ``tests/unit/test_preregistration_ancestry.py`` names for a deliberate change.
+
+THE SECOND AMENDMENT: THE SELECTION WINDOW WIDENS FROM 2018 TO 2002 (D33.2-14)
+-----------------------------------------------------------------------------
+2026-09-22, Phase 33.2 Plan 33.2-18: ``SELECTION_WINDOW_FIRST_SEASON`` moved from 2018 to 2002
+and ``RULE_EVIDENCE`` was REWRITTEN, not appended to. Nothing else in the numeric surface moved:
+``CORPUS_FIRST_SEASON`` was already 2002 and ``LATEST_COMPLETED_SEASON`` stays 2025.
+
+WHY THE PRIOR EVIDENCE NO LONGER HOLDS. The 2018 boundary rested on three cited coverage floors
+-- Elo, odds and team stats -- and all three dissolved in Phase 33.2: the canonical Elo chain
+reaches 2002 after Phase 33's re-derivation; no betting line is a model input under D33.2-03;
+and team form and opponent-adjusted EPA are computed for every season from 2002 under
+D33.2-08 item 2. The "90 gold columns constant over 2002-2017" figure did not reproduce either.
+A window rule whose stated evidence has evaporated is a leftover, not a rule, and leaving the old
+citations beside the new value would have made this module say two things.
+
+NO WINDOW HAD BEEN SCORED IN THIS PHASE WHEN IT WAS MADE. No Phase 33.2 re-fit, tuning run or
+gate had run; the first fit on this partition is Plan 33.2-20's. Phase 33's own re-fit DID run
+on the 2018 window, and that is exactly why this is recorded as an amendment rather than made
+quietly: the artifacts it produced were fitted on inputs the owner has ruled corrupted and are
+not kept (standing ruling 2026-09-14), and the rule they were selected under is preserved, not
+erased -- ``tests/phase33_state.SEASON_PARTITION_RULE_COMMIT`` and its file digest are left
+unedited as the record of what was true before, and git holds that commit's bytes.
+
+``features.team_form.TEAM_FORM_PER_GAME_FIRST_SEASON`` is bound to the window by identity, so the
+opponent-adjusted per-game pool moves with it; that binding is asserted, not duplicated. This
+commit touches this file and nothing else, and the witness was re-measured from it in a STRICTLY
+LATER commit under NEW names (``P332_18_SEASON_PARTITION_RULE_COMMIT`` and
+``P332_18_SEASON_PARTITION_RULE_FILE_SHA256``), so two amendments can be witnessed without either
+editing the other's record.
 
 THE PROHIBITION IS SATISFIED VACUOUSLY, AND THE ANCESTRY CHECK EXISTS ANYWAY
 ----------------------------------------------------------------------------
@@ -63,54 +93,49 @@ Given the completed seasons:
   hp_val;
 * the FINAL FIT covers every completed season from ``CORPUS_FIRST_SEASON`` (D33.1-02).
 
-On the seasons 2002 through 2025 that yields selection 2018-2022, hp_val 2023, holdout
-2024-2025 and a final fit over 2002-2025. The three evaluated sets are pairwise disjoint, each
+On the seasons 2002 through 2025 that yields selection 2002-2022, hp_val 2023, holdout
+2024-2025 and a final fit over 2002-2025 (selection was 2018-2022 before the second amendment). The three evaluated sets are pairwise disjoint, each
 non-empty and strictly ordered, so ``models.temporal.TemporalSplitConfig.validate()`` accepts
 them -- and 2025 is present, which is the defect SPEC R6 exists to remove.
 
-THE EVIDENCE FOR THE SELECTION WINDOW'S 2018 BOUNDARY (Ruling Q)
-----------------------------------------------------------------
+THE EVIDENCE FOR THE SELECTION WINDOW'S BOUNDARY (Ruling Q, amended by D33.2-14)
+--------------------------------------------------------------------------------
 R6 requires the rule AND its evidence to be readable in committed source. This is where
-"readable" means read. The choice rests on a STATED PRIOR, not on a measured result: nothing
-was scored to pick it, and both of the alternatives below are defensible.
+"readable" means read. The machine-readable index is ``RULE_EVIDENCE`` below; this is its prose.
 
-**Why 534 rows is too small -- MEASURED, and already committed.**
+**Why 534 rows is too small -- MEASURED, and already committed. Still true.**
 ``GATED-REFIT-READOUT.md:401-427`` records that feature selection on the 534-row 2018-2019
 training window admits synthetic noise columns over real ones. The production selection path
 was run with N synthetic unit-variance Gaussian columns appended, drawn independently of the
 target. At N=50, SIX of ATS's 25 and NINE of O/U's 25 selected features were pure noise. The
-same readout names window widening as the explicitly untried lever: "Widening the window,
-changing K and changing the estimator were all explicitly out of scope."
+same readout names window widening as the explicitly untried lever.
 
-**Why 2002 is too generous -- MEASURED this phase.**
-NINETY gold columns are a flat imputed constant for every season from 2002 to 2017, because
-their silver sources begin late:
+**Why 2018 was chosen in Phase 33.1, and why that reason is gone.**
+As frozen on 2026-09-14, the boundary sat at 2018 because it was the coverage floor of three
+silver sources -- ``elo_game_snapshots`` and ``odds_snapshot`` starting in 2018,
+``team_game_stats`` in 2020 -- and "ninety gold columns" were said to be a flat imputed
+constant before it, so a
+2002-start window would have selected features on placeholders. Each floor DISSOLVED in Phase
+33.2: Elo reaches 2002 after Phase 33's re-derivation; no betting line is a model input under
+D33.2-03; team form and opponent-adjusted EPA are computed from 2002 under D33.2-08 item 2.
+The ninety-column figure did not reproduce; the measured before-rung-8 count is in
+``PRECOVERAGE-SCAN.md``. With the premise gone, the window starts where the corpus does,
+which is D33.1-03's literal default.
 
-* ``data/silver/elo_game_snapshots.parquet`` covers 2018-2025;
-* ``data/silver/odds_snapshot.parquet`` covers 2018-2025;
-* ``data/silver/team_game_stats.parquet`` covers 2020-2025.
-
-The set includes every Elo column, every rolling opponent-adjusted EPA / success-rate / CPOE /
-pace / red-zone / third-down column, all three market snapshot columns and the situational
-spots. Deployed exposure: SEVEN of WP's twenty selected features, SEVENTEEN of ATS's
-twenty-five and SEVENTEEN of O/U's twenty-five sit in that set, including O/U's single
-highest-importance feature. A 2002-start selection window trades a 534-row frame for a
-5,679-row frame in which 90 candidates are placeholders over 16 of 21 seasons -- and
-``informative_columns`` will NOT withhold them, because they DO vary across the 2018 boundary.
-
-**Why 2018 is the right boundary and not an arbitrary one.**
-It is the measured coverage floor of three silver sources. It is argued from DATA COVERAGE,
-never from a story about the game changing: there is no committed evidence for a regime break
-anywhere in this repository, so any boundary argued that way would be an unsourced prior.
-``p/n`` falls from 0.36 to 0.12, and 45 weather columns are entering the candidate pool for the
-first time this phase -- adding live candidates to a selector measured choosing noise at 0.36
-makes the small window worse, not merely unchanged.
+**Why 2002 is still argued from coverage, not from a story.**
+There is no committed evidence for a regime break anywhere in this repository, so no boundary
+is argued from a story about the game changing. Where a family's upstream data genuinely starts
+late (snap counts 2013, injury reports 2009 with gaps, completion probability 2006), the value
+before it is an honest unknown beside a coverage flag (Plans 33.2-16 and 33.2-17), never a
+placeholder that reads as "exactly average". That is what makes the early seasons usable for
+selection rather than misleading.
 
 **The cost, recorded rather than hidden.**
-The selection window (2018-2022) is NARROWER than the fit window (2002-2025). That mismatch
-already exists today and is not introduced here: the WP scaler is fitted on ``train_seasons``
-while the model is fitted on everything before the last holdout season. D33.1-02 widens the fit
-window, so the gap widens with it. It is named in the readout rather than presented as new.
+Sixteen additional seasons (2002-2017) enter the selection step, and the earliest of them carry
+fewer covered families; the flags make that absence visible to the model rather than silent.
+The selection window (2002-2022) now starts where the fit window (2002-2025) starts, but the WP
+scaler is still fitted on ``train_seasons`` while the model is fitted on everything before the
+last holdout season, so the two still end at different seasons.
 
 WHAT THIS RULE DELIBERATELY DOES NOT DECIDE
 -------------------------------------------
@@ -160,10 +185,11 @@ HOLDOUT_SEASON_COUNT: int = 2
 #: converter, i.e. one hard crash and two silently degenerate models.
 HP_VAL_SEASON_COUNT: int = 1
 
-#: The first season of the FEATURE-SELECTION window (Ruling Q). Measured: the coverage floor of
-#: the Elo, odds and team-stat silver sources. See the module docstring for the full argument
-#: and for the two alternatives that were weighed and not taken.
-SELECTION_WINDOW_FIRST_SEASON: int = 2018
+#: The first season of the FEATURE-SELECTION window (Ruling Q, amended by D33.2-14 on
+#: 2026-09-22 from 2018). The Elo, odds and team-stat coverage floors that held it at 2018 all
+#: dissolved in Phase 33.2, so it now starts at the corpus start. See the module docstring's
+#: second amendment and ``RULE_EVIDENCE``.
+SELECTION_WINDOW_FIRST_SEASON: int = 2002
 
 #: The first season of the CORPUS the shipped artifact is finally fitted on (D33.1-02). The
 #: pinned nflverse schedules reach back to 2002 with full coverage of the 6,499-game
@@ -207,28 +233,46 @@ RULE_EVIDENCE: tuple[str, ...] = (
     "GATED-REFIT-READOUT.md:401-427 -- MEASURED: feature selection on the 534-row "
     "2018-2019 window selected 6 of ATS's 25 and 9 of O/U's 25 features from pure "
     "synthetic noise columns at N=50. The same section names window widening as the "
-    "explicitly untried lever.",
-    "data/silver/elo_game_snapshots.parquet covers 2018-2025 only -- every Elo column is a "
-    "flat imputed constant before 2018.",
-    "data/silver/odds_snapshot.parquet covers 2018-2025 only -- all three market snapshot "
-    "columns are a flat imputed constant before 2018.",
-    "data/silver/team_game_stats.parquet covers 2020-2025 only -- every rolling "
-    "opponent-adjusted EPA / success-rate / CPOE / pace / red-zone / third-down column is a "
-    "flat imputed constant before 2018.",
-    "MEASURED this phase: 90 gold columns are constant over 2002-2017 and vary from 2018 "
-    "onward; 7 of WP's 20, 17 of ATS's 25 and 17 of O/U's 25 deployed features are in that "
-    "set, including O/U's highest-importance feature (snapshot_total).",
-    "THE CHOICE RESTS ON A STATED PRIOR, NOT ON A SCORE. Nothing was fitted, ranked or "
-    "compared to pick this window. Both alternatives -- D33.1-03's literal default of every "
-    "season before hp_val, and the 534-row status quo -- are defensible; only the 2002 start "
-    "rests on a premise the placeholder measurement contradicts.",
+    "explicitly untried lever. This is the measured reason a wider selection frame is "
+    "wanted, and it still holds.",
+    "THE ELO COVERAGE FLOOR IS DISSOLVED (D33.2-14). The 2018 boundary cited "
+    "data/silver/elo_game_snapshots.parquet as covering 2018-2025 only. After Phase 33's "
+    "re-derivation (Plan 33-13) the canonical Elo chain reaches 2002, so Elo no longer "
+    "constrains the selection window.",
+    "THE ODDS COVERAGE FLOOR IS DISSOLVED (D33.2-03, D33.2-14). The 2018 boundary cited "
+    "data/silver/odds_snapshot.parquet as covering 2018-2025 only. No betting line is a model "
+    "input for any target under D33.2-03, so the odds coverage floor no longer constrains "
+    "the selection window.",
+    "THE TEAM-STAT COVERAGE FLOOR IS DISSOLVED (D33.2-08 item 2, D33.2-14). The 2018 "
+    "boundary cited data/silver/team_game_stats.parquet as covering 2020-2025 only. Team "
+    "form and opponent-adjusted EPA are now computed for every season 2002-2025 from the "
+    "pinned play-by-play: the silver team-form corpus by Plan 33.2-17, and the "
+    "opponent-adjusted per-game pool through features.team_form."
+    "TEAM_FORM_PER_GAME_FIRST_SEASON, which is this module's window by identity. The "
+    "team-stat floor no longer constrains the selection window.",
+    "THE '90 gold columns constant over 2002-2017' FIGURE IS SUPERSEDED: it does not "
+    "reproduce. The 2026-09-15 census measured 59; Plan 33.2-17 measured 55 model inputs "
+    "constant over 2002-2017 on the gold that existed before the rung-8 rebuild "
+    "(PRECOVERAGE-SCAN.md, line CONSTANT_2002_2017_BEFORE_RUNG8). The current scan, "
+    "including the count after the rung-8 rebuild, is PRECOVERAGE-SCAN.md.",
+    "THE HONEST COST OF THE WIDENING, STATED RATHER THAN HIDDEN: sixteen additional seasons "
+    "(2002-2017) enter the selection step, and the earliest of them carry fewer covered "
+    "families -- snap counts begin 2013, injury reports 2009 with gaps, completion "
+    "probability 2006. The coverage flags added in Plans 33.2-16 and 33.2-17 are what make "
+    "that absence visible to the model rather than silent: before its coverage a value is "
+    "an honest unknown beside a flag, never a 0.0 that reads as exactly average.",
+    "THE CHOICE STILL RESTS ON A STATED RULE, NOT ON A SCORE. Nothing was fitted, ranked or "
+    "compared to pick 2002: it is D33.1-03's literal default (every completed season before "
+    "hp_val, from the corpus start), adopted because the premise that argued against it -- "
+    "placeholder values before 2018 -- no longer holds.",
     "There is NO committed evidence for a regime break (a rule change, a scoring-environment "
-    "shift) anywhere in this repository, so the 2018 boundary is argued from measured DATA "
-    "COVERAGE and never from a story about the game changing.",
-    "THE RECORDED COST: the selection window is narrower than the fit window. That mismatch "
-    "already exists between the WP scaler (fitted on train_seasons) and the model (fitted on "
-    "everything before the last holdout season); D33.1-02 widens the fit window, so the gap "
-    "widens with it.",
+    "shift) anywhere in this repository, so the boundary is argued from measured DATA "
+    "COVERAGE and never from a story about the game changing; with coverage reaching the "
+    "corpus start, the selection window starts where the corpus does.",
+    "THE RECORDED COST, REDUCED: the selection window (2002-2022) now starts where the fit "
+    "window (2002-2025) starts. The WP scaler is still fitted on train_seasons while the "
+    "model is fitted on everything before the last holdout season, so the two still end at "
+    "different seasons.",
 )
 
 
