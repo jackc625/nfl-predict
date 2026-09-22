@@ -17422,3 +17422,92 @@ P332_19_RUNG9_GOLD_WIDTH_DELTA: dict[str, object] = {
     "widths_after": (188, 188, 187),
     "measured_at": "2026-09-22, Plan 33.2-19 Task 3 (rung 9)",
 }
+
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-20 (orchestrator-assigned pre-build fix 1), 2026-09-22.
+#
+# THE THREE 2026 VENUE SURFACE CORRECTIONS.
+#
+# `data/venues.json` recorded Melbourne Cricket Ground (MEL00) and the Maracana
+# (RIO00) as `Matrix Turf` and the Stade de France (PAR00) as `Sport Turf`. All
+# three are natural or hybrid GRASS pitches, so `surface_mismatch` -- the feature
+# `features.contextual` computes from the surface class -- was wrong for their 2026
+# games. Each venue hosts exactly ONE 2026 game and no gold row through 2025 reads
+# any of the three records, so this correction moves nothing that already exists;
+# Plan 33.2-20's clean production history build is the FIRST build in which those
+# rows reach gold, which is why the correction lands before it and not after.
+#
+# THIS SUPERSEDES THREE CELLS OF `INTERNATIONAL_VENUE_FACTS`, which the owner
+# ratified on 2026-09-12 (Plan 33-06 Task 2). The ratified slot is NOT edited --
+# the APPEND PROTOCOL at the top of this module forbids that, and a ratified value
+# quietly rewritten in place would destroy the evidence that it ever said something
+# else. The correction is recorded HERE, beside the ratified table, naming the cell,
+# the old value, the new value and the source; `tests/unit/test_venues_json_
+# international.py` reads this record when it compares the file against the ratified
+# table, so both the ratification and its correction stay readable.
+#
+# The two spellings used are both already classified by
+# `features.contextual.SURFACE_CLASS_BY_SPELLING` (`Grass` and `Hybrid Grass` are
+# both `grass`), so no new spelling enters the vocabulary and nothing can raise
+# `UnknownSurfaceError` because of this edit.
+#
+# SOURCES ARE PER FIELD, per the Plan 33.2-09 standard. They were researched by the
+# orchestrator and handed to the executor verbatim; this executor has no web access
+# and did not fetch them itself, which is stated rather than implied.
+# ---------------------------------------------------------------------------
+
+#: ``stadium_id -> (field, was, now)`` for every ratified cell this plan corrects.
+P332_20_VENUE_SURFACE_CORRECTIONS: dict[str, tuple[str, str, str]] = {
+    "MEL00": ("surface", "Matrix Turf", "Grass"),
+    "RIO00": ("surface", "Matrix Turf", "Grass"),
+    "PAR00": ("surface", "Sport Turf", "Hybrid Grass"),
+}
+
+#: One cited source per corrected cell: ``(stadium_id, field, source)``.
+P332_20_VENUE_SURFACE_SOURCES: tuple[tuple[str, str, str], ...] = (
+    (
+        "MEL00",
+        "surface",
+        "en.wikipedia Melbourne_Cricket_Ground infobox: 'Surface: Grass'; Austadiums "
+        "'Inside the MCG's massive transformation for the NFL' "
+        "(austadiums.com/news/1829): approximately 8,000 square metres of TURF is "
+        "replaced after the game because of the paint depth -- a natural pitch that is "
+        "re-laid, not a synthetic carpet",
+    ),
+    (
+        "RIO00",
+        "surface",
+        "en.wikipedia Maracana_Stadium infobox: 'Surface: Grass'; AP via FOX Sports "
+        "2026-09-21, 'NFL field director says he's confident Rio stadium surface will "
+        "be in good shape for Ravens-Cowboys': the NATURAL GRASS pitch is strained by "
+        "two soccer matches a week and rain, and the NFL shipped a tarp to protect the "
+        "turf",
+    ),
+    (
+        "PAR00",
+        "surface",
+        "en.wikipedia Stade_de_France infobox: 'Surface: Hybrid Grass by SIS Pitches'; "
+        "SIS Pitches (the manufacturer), 'SIS Pitches celebrates record year 2024': the "
+        "Stade de France 'features a hybrid SIS Grass pitch' -- natural turf stitched "
+        "with synthetic fibre, which SURFACE_CLASS_BY_SPELLING already classes as grass "
+        "under the existing 'Hybrid Grass' spelling",
+    ),
+)
+
+#: Who researched the sources above, and when. Recorded because the executor that made
+#: the edit could not have fetched them: it has no network access.
+P332_20_VENUE_SURFACE_RESEARCHED_BY: str = (
+    "the Phase-33.2 orchestrator, 2026-09-22, handed to the Plan 33.2-20 executor "
+    "verbatim in its dispatch"
+)
+
+#: sha256 of the 60 records that predate Plan 33.2-09's two additions, canonicalised the
+#: same way ``test_venues_json_international._canonical_digest`` canonicalises them,
+#: taken 2026-09-22 AFTER the three surface corrections above.
+#: WAS ``d836816d0349ae6adc84efa2507e2eb2ce082356982863f54169cbf1878b3a76`` (2026-09-21,
+#: commit 65cf31c, before the corrections). The digest moved for exactly the three cells
+#: ``P332_20_VENUE_SURFACE_CORRECTIONS`` names and for nothing else.
+P332_20_VENUE_RECORDS_SHA256_AFTER_SURFACE_FIX: str = (
+    "8f7e79879e1a7573be0c2b821631eec967f08509d84a9defef9122a48c9531a3"
+)

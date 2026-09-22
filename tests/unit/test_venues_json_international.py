@@ -204,9 +204,30 @@ EXPECTED_NON_US_STADIUM_IDS: frozenset[str] = frozenset(
 # sha256 of the 60 PRE-EDIT records, canonicalised (sorted by stadium_id, keys sorted,
 # compact separators, ASCII), taken 2026-09-21 on commit 65cf31c before either record was
 # added. "No existing record changed" is checked against this digest.
+#
+# SUPERSEDED BY PLAN 33.2-20's THREE SURFACE CORRECTIONS, and kept here as the value it
+# WAS rather than deleted: the digest is the evidence that Plan 33.2-09 revised no
+# existing record, and that claim is still true of Plan 33.2-09. What changed the bytes
+# is a LATER, separately-recorded correction of three cells the owner had ratified
+# (MEL00, RIO00 and PAR00's surface, `phase33_state.P332_20_VENUE_SURFACE_CORRECTIONS`),
+# so the live assertion below compares against the post-correction digest and a second
+# assertion proves the delta is exactly those three records.
 PRE_EDIT_RECORDS_SHA256 = (
     "d836816d0349ae6adc84efa2507e2eb2ce082356982863f54169cbf1878b3a76"
 )
+
+# The live expectation: the 60 pre-2025-addition records as they stand AFTER Plan
+# 33.2-20's three surface corrections (measured 2026-09-22).
+CURRENT_PRE_EDIT_RECORDS_SHA256 = (
+    phase33_state.P332_20_VENUE_RECORDS_SHA256_AFTER_SURFACE_FIX
+)
+
+# ``stadium_id -> (field, was, now)``: the ratified cells Plan 33.2-20 corrected, read
+# from the ONE record in `tests.phase33_state` rather than restated here.
+SURFACE_CORRECTIONS: dict[str, tuple[str, str, str]] = (
+    phase33_state.P332_20_VENUE_SURFACE_CORRECTIONS
+)
+
 PRE_EDIT_RECORD_COUNT = 60
 
 # The field order INTERNATIONAL_VENUE_FACTS is stated in, named here so the unpacking
@@ -238,10 +259,27 @@ def _load_venue_records() -> list[dict[str, object]]:
 
 
 def _facts_by_stadium_id() -> dict[str, dict[str, object]]:
-    return {
+    """The ratified table, WITH the corrections a later plan recorded beside it.
+
+    ``INTERNATIONAL_VENUE_FACTS`` is an append-once slot and is never edited, so a cell
+    the owner ratified on 2026-09-12 that a later plan corrected is superseded HERE,
+    from the correction record, rather than rewritten at the source. Both readings stay
+    on the record: the ratified value, and what replaced it with its citation.
+    """
+    facts = {
         row[0]: dict(zip(FACT_FIELDS, row, strict=True))
         for row in phase33_state.INTERNATIONAL_VENUE_FACTS
     }
+    for stadium_id, (field, was, now) in SURFACE_CORRECTIONS.items():
+        ratified = facts[stadium_id]
+        assert ratified[field] == was, (
+            f"{stadium_id}.{field} reads {ratified[field]!r} in the ratified table, but "
+            f"the Plan 33.2-20 correction record says it was {was!r}. The correction "
+            "names a cell that no longer says what it corrected; re-measure rather than "
+            "adjusting either side."
+        )
+        ratified[field] = now
+    return facts
 
 
 def _records_by_stadium_id() -> dict[str, dict[str, object]]:
@@ -622,13 +660,74 @@ class TestTheTwo2025InternationalVenues:
     def test_the_file_holds_the_expected_number_of_records(self) -> None:
         assert len(_load_venue_records()) == EXPECTED_TOTAL_RECORDS == 62
 
-    def test_no_pre_existing_record_changed(self) -> None:
+    def test_no_pre_existing_record_changed_except_the_recorded_corrections(
+        self,
+    ) -> None:
+        """Was: ``test_no_pre_existing_record_changed``, against the PRE-EDIT digest.
+
+        Plan 33.2-09 still adds two records and revises none. What moved the digest is
+        Plan 33.2-20's three SURFACE corrections, each recorded with its source in
+        ``phase33_state.P332_20_VENUE_SURFACE_SOURCES``. The assertion is not relaxed:
+        it now pins the post-correction digest, and the companion test below proves the
+        delta is exactly those three cells and nothing else.
+        """
         pre_existing = _pre_existing_records()
         assert len(pre_existing) == PRE_EDIT_RECORD_COUNT
-        assert _canonical_digest(pre_existing) == PRE_EDIT_RECORDS_SHA256, (
-            "a record that existed before Plan 33.2-09 changed. The plan adds two "
-            "records and revises none (D33.2-04: static venue data is time-invariant)."
+        assert _canonical_digest(pre_existing) == CURRENT_PRE_EDIT_RECORDS_SHA256, (
+            "a record that existed before Plan 33.2-09 changed, beyond the three "
+            "surface cells Plan 33.2-20 corrected. Static venue data is time-invariant "
+            "(D33.2-04); a value that moves needs its own cited record."
         )
+
+    def test_the_digest_delta_is_exactly_the_three_corrected_cells(self) -> None:
+        """Non-vacuity: rewinding the corrections must reproduce the PRE-EDIT digest.
+
+        This is what makes the re-pin above a RECORD rather than a rubber stamp. If any
+        other byte of any pre-existing record had moved, undoing the three named cells
+        would not land back on the 2026-09-21 digest.
+        """
+        rewound = []
+        for record in _pre_existing_records():
+            code = str(record["stadium_id"])
+            if code in SURFACE_CORRECTIONS:
+                field, was, now = SURFACE_CORRECTIONS[code]
+                assert record[field] == now
+                record = {**record, field: was}
+            rewound.append(record)
+        assert _canonical_digest(rewound) == PRE_EDIT_RECORDS_SHA256, (
+            "undoing the three recorded surface corrections does NOT reproduce the "
+            "2026-09-21 digest, so something else in the 60 pre-existing records moved "
+            "as well. Find it and record it; do not re-pin."
+        )
+
+    def test_every_corrected_cell_carries_a_cited_source(self) -> None:
+        cited = {
+            (code, field)
+            for code, field, source in phase33_state.P332_20_VENUE_SURFACE_SOURCES
+            if source
+        }
+        expected = {
+            (code, field) for code, (field, _, _) in SURFACE_CORRECTIONS.items()
+        }
+        assert cited == expected, (
+            f"corrected cells without a cited source: {sorted(expected - cited)!r}; "
+            f"sources for cells that were not corrected: {sorted(cited - expected)!r}. "
+            "A venue value without a source is exactly the unsourced cell the Plan "
+            "33-06 checkpoint exists to prevent."
+        )
+        assert phase33_state.P332_20_VENUE_SURFACE_RESEARCHED_BY
+
+    def test_every_corrected_surface_is_a_classified_grass_spelling(self) -> None:
+        """The correction may not introduce a spelling the classifier cannot read."""
+        from features.contextual import SURFACE_CLASS_BY_SPELLING
+
+        for code, (field, _was, now) in SURFACE_CORRECTIONS.items():
+            assert field == "surface"
+            assert SURFACE_CLASS_BY_SPELLING.get(now) == "grass", (
+                f"{code}'s corrected surface {now!r} is not classified as grass by "
+                "features.contextual.SURFACE_CLASS_BY_SPELLING. An unlisted spelling "
+                "raises UnknownSurfaceError at build time."
+            )
 
     def test_the_added_ids_are_new_codes(self) -> None:
         pre_existing = {record["stadium_id"] for record in _pre_existing_records()}

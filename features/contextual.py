@@ -57,8 +57,17 @@ logger = get_logger(__name__)
 # defaulting. HYBRID GRASS IS GRASS: a Desso GrassMaster or other hybrid pitch is natural
 # grass reinforced with a small share of synthetic fibres, and it plays as grass.
 # "RealGrass" is NOT grass despite its name: it is an infilled artificial-turf product, and
-# Texas Stadium, its only record, never had a natural pitch. "Sport Turf" is classified by
-# what the spelling says (a synthetic surface), not by any guess about the venue.
+# Texas Stadium, its only record, never had a natural pitch.
+#
+# "Sport Turf" LEFT THIS MAP at Plan 33.2-20 and its absence is deliberate. It had exactly
+# one record -- the Stade de France (PAR00) -- and that record was WRONG: the Stade de
+# France plays on a hybrid SIS Grass pitch, and the record now says "Hybrid Grass"
+# (tests.phase33_state.P332_20_VENUE_SURFACE_SOURCES cites the manufacturer and the venue
+# infobox). With no record using the spelling, an entry for it would be a GUESS about a
+# venue nobody has recorded, which is the dead-entry failure
+# tests/unit/test_surface_classification.py forbids in both directions. The map mirrors the
+# file. A venue record spelled "Sport Turf" again therefore RAISES UnknownSurfaceError and
+# has to be classified deliberately -- which is the fail-closed behaviour, not a gap.
 # ---------------------------------------------------------------------------
 SURFACE_CLASS_BY_SPELLING: dict[str, str] = {
     "AstroPlay": "synthetic",
@@ -72,7 +81,6 @@ SURFACE_CLASS_BY_SPELLING: dict[str, str] = {
     "Matrix Turf": "synthetic",
     "NexTurf": "synthetic",
     "RealGrass": "synthetic",
-    "Sport Turf": "synthetic",
 }
 
 # The grass spellings, DERIVED from the one mapping above (kept under its historical name
