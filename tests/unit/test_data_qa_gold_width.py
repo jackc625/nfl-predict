@@ -112,14 +112,37 @@ MATRIX_ORDER = ("features_wp", "features_ats", "features_ou")
 # ---------------------------------------------------------------------------
 
 
+def ladder_order(rung: int | str) -> tuple[int, str]:
+    """Sort key for a `p332_` ladder id: a numbered rung, then the steps that follow it.
+
+    The ladder's EXTRA STEPS carry string ids (``3b``, ``7b``, ``8c``, ``8e``) and its
+    numbered rungs carry ints, so ``sorted(slots, key=lambda s: s["rung"])`` -- what this
+    resolver used before p332_ extra step 8e -- raises ``TypeError`` the moment an extra
+    step moves a width, as step 8e does (-8). Splitting the id into its leading integer
+    and its suffix orders 4, 7, 8, "8e", 9 exactly as the ladder runs them, which is the
+    order the chain arithmetic below depends on. A slot with an unparseable id is a
+    manifest error and raises rather than sorting somewhere arbitrary.
+    """
+    text = str(rung)
+    digits = ""
+    for character in text:
+        if not character.isdigit():
+            break
+        digits += character
+    if not digits:
+        msg = f"ladder id {rung!r} does not start with a rung number"
+        raise ValueError(msg)
+    return (int(digits), text[len(digits) :])
+
+
 def phase332_width_deltas() -> list[dict]:
-    """Every ``P332_*_GOLD_WIDTH_DELTA`` slot in the manifest, ordered by its ``rung``."""
+    """Every ``P332_*_GOLD_WIDTH_DELTA`` slot in the manifest, in ladder order."""
     slots = [
         getattr(phase33_state, name)
         for name in dir(phase33_state)
         if name.startswith("P332_") and name.endswith("_GOLD_WIDTH_DELTA")
     ]
-    return sorted(slots, key=lambda slot: slot["rung"])
+    return sorted(slots, key=lambda slot: ladder_order(slot["rung"]))
 
 
 def current_ladder_widths() -> tuple[int, int, int]:
@@ -441,3 +464,16 @@ def test_the_phase_332_width_deltas_chain_and_are_pinned_by_name() -> None:
         }
     ]
     assert width_chain_violations(planted, baseline) != []
+
+
+def test_the_ladder_order_puts_an_extra_step_after_the_rung_it_follows() -> None:
+    """``ladder_order`` is what lets an EXTRA STEP move a width (p332_ step 8e).
+
+    The ladder's extra steps carry string ids and its numbered rungs carry ints, so the
+    slot list cannot be ordered by the raw ``rung`` value at all once a string-id step
+    appends one. This pins the order the chain arithmetic depends on, and the refusal
+    for an id that names no rung.
+    """
+    assert sorted([9, "8e", 4, "8b", 8], key=ladder_order) == [4, 8, "8b", "8e", 9]
+    with pytest.raises(ValueError):
+        ladder_order("rung8")

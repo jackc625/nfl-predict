@@ -10,7 +10,7 @@
 # scripts.fingerprint_gold._column_bytes, as every prior ladder. ASCII only.
 # ===========================================================================
 
-generated_at = "2026-09-22T22:14:34.169172+00:00"
+generated_at = "2026-09-22T22:44:44.560316+00:00"
 rung_prefix = "p332_"
 float_tolerance = "none -- EXACT byte comparison"
 
@@ -1845,3 +1845,25 @@ venue_warm_climate = ["2002"]
 weather_severity_score = ["2002"]
 wind_impact_score = ["2002"]
 wind_mph = ["2002"]
+
+[rung."8e"]
+rung = "8e"
+follows_rung = 8
+prefix = "p332_"
+rebuilt = true
+baseline_document = "p332_rung8d.json"
+baseline_confirmation = "CONFIRMED 2026-09-22 before step 8e wrote anything: production data/ was digest-identical to outputs/p332_step8d_after.json, and the only code changed since step 8d's rebuild is this step's own. p332_rung8d.json IS gold rebuilt from today's inputs minus exactly this step's cause. No carry-in, no retake"
+cause = "THE NEVER-POPULATED DEFENSIVE COPIES LEAVE GOLD, p332_ extra step 8e (owner ruling 2026-09-22, 'REMOVE the eight columns from gold', run fourth in Plan 33.2-19's dispatch), and NOTHING else: the gold team-form layout stops copying the DEFENSIVE column of every metric features.team_form declares offence-only, so {home,away}_def_rolling_cpoe, _def_rolling_avg_drive_start_yardline, _def_rolling_neutral_pace and _def_rolling_neutral_pass_rate leave all three matrices. The calculator never populated them, so gold carried a flat 0.0 that read as 'exactly average' about a measurement nobody took. The skip reads the ONE registry the calculator's own defence-side skip reads, never a second list; the OFFENSIVE copies are untouched; no column is added, no surviving column's value or null count moves, and no row moves"
+rows_changed = "none -- no surviving value and no null count moves"
+prerebuild_measurement = "MEASURED 2026-09-22 before any production write, read-only on step 8d's gold: each of the eight columns holds ONE distinct value, 0.0, in all 6,499 rows of every season 2002-2025, in all three matrices -- they are the only columns test_gold_team_form_and_opp_adj_not_constant_within_season fails on, and 8 of the 15 columns constant over 2002-2017 after rung 8. No production reader names any of them (grep over the tree finds only ladder records and the re-fit's zero-variance pre-filter, which withholds a constant column from a fit anyway). This step's prediction is therefore DERIVED rather than previewed: a column nothing reads and nothing varies with cannot move another column's value when it is removed"
+declared_removed_columns = ["away_def_rolling_avg_drive_start_yardline", "away_def_rolling_cpoe", "away_def_rolling_neutral_pace", "away_def_rolling_neutral_pass_rate", "home_def_rolling_avg_drive_start_yardline", "home_def_rolling_cpoe", "home_def_rolling_neutral_pace", "home_def_rolling_neutral_pass_rate"]
+removed_columns = ["away_def_rolling_avg_drive_start_yardline", "away_def_rolling_cpoe", "away_def_rolling_neutral_pace", "away_def_rolling_neutral_pass_rate", "home_def_rolling_avg_drive_start_yardline", "home_def_rolling_cpoe", "home_def_rolling_neutral_pace", "home_def_rolling_neutral_pass_rate"]
+added_columns = []
+widths_before = ["201", "202", "201"]
+widths_after = ["193", "194", "193"]
+moved_columns = []
+build_clock_moves = ["feature_timestamp"]
+unattributed_columns = []
+attribution_ok = true
+attribution_blocking = false
+attributor = "_attribute_p332_offense_only"

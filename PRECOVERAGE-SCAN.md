@@ -274,3 +274,57 @@ them as a flat 0.0 that reads as "exactly average" in every season. They are not
 (no season ever covers them), so closing them is a separate cause and is routed as its own step
 (`deferred-items.md`, recorded by Plan 33.2-18); `test_gold_team_form_and_opp_adj_not_constant_within_season`
 fails on exactly these eight until then.
+
+
+## After step 8e
+
+Scanned 2026-09-22 against the gold p332_ extra steps 8d and 8e rebuilt (Plan 33.2-19,
+`p332_rung8e.json`). The section above is left exactly as it was: it is the record of rung 8,
+and a record edited whenever the present changes is not a record. This section states what the
+two steps moved and what the scan reports now.
+
+Machine-readable lines (read by `tests/integration/test_no_precoverage_constants.py`):
+
+CLASSIFIED_AFTER_STEP8E: 495
+UNFLAGGED_AFTER_STEP8E: 0
+UNROUTED_AFTER_STEP8E: 0
+CONSTANT_2002_2017_AFTER_STEP8E: 5
+
+### Counts by class
+
+| Matrix | `varies_from_corpus_start` | `flagged_precoverage` | `unflagged_precoverage` | `never_varies` |
+|---|---|---|---|---|
+| `features_wp` | 130 | 28 | 0 | 7 |
+| `features_ats` | 130 | 28 | 0 | 7 |
+| `features_ou` | 130 | 28 | 0 | 7 |
+
+The UNFLAGGED count is still zero in all three matrices: neither step re-opened a
+pre-coverage block, and the zero ruling rung 8 made is unchanged.
+
+### What moved since the rung-8 section
+
+- **CLASSIFIED falls 519 -> 495, which is -8 model inputs per matrix.** p332_ extra step 8e
+  removed the eight never-populated defensive copies of the four offence-only team-form
+  metrics (`{home,away}_def_rolling_cpoe`, `_def_rolling_avg_drive_start_yardline`,
+  `_def_rolling_neutral_pace`, `_def_rolling_neutral_pass_rate`). The rung-8 section listed
+  them as a DEFECT it did not own, routed to its own step; this is that step. Nothing else
+  left the classification.
+- **`never_varies` falls 15 -> 7 per matrix** for the same reason: the eight were 8 of those
+  15.
+- **`CONSTANT_2002_2017` falls 15 -> 5**, and the extra two are p332_ extra step 8d's, not
+  step 8e's. `is_home_game` and `is_away_game` are still constant in the ordinary sense, but
+  the census counts a column as constant only when it holds ONE value with NaN counted as a
+  value, and step 8d blanked 27 cells in each of them -- the season openers, whose lock group
+  holds fewer than `min_periods` rows and whose statistic therefore could not be formed. They
+  are still `never_varies`; they are no longer single-valued.
+- The five market columns are the remaining `CONSTANT_2002_2017`, and they are the constant
+  0.0 Plan 33.2-14 left until rung 9 removes them from every model input (Plan 33.2-19). They
+  are listed and not routed here, because they are not a pre-coverage block.
+
+### The defect the rung-8 section routed is closed
+
+`tests/integration/test_no_precoverage_constants.py::test_gold_team_form_and_opp_adj_not_constant_within_season`
+failed on exactly those eight columns against rung-8 gold and passes against step-8e gold.
+The four metrics are offence-only by design, so their defensive copies never held a measured
+value in any season; keeping them blank and computing real defence-allowed versions were both
+put to the owner and both rejected (2026-09-22). The OFFENSIVE copies are untouched.

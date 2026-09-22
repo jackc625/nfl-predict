@@ -1214,12 +1214,21 @@ class TeamFormCalculator:
         ``{home,away}_{off,def}_rolling_*`` columns ``scripts/build_features`` lays out
         from silver ``team_form_features``; a game with no rolling row for either team
         carries NULL in all of them.
+
+        THE DEFENSIVE COPIES OF THE OFFENCE-ONLY METRICS ARE NOT IN THAT FRAME since
+        p332_ extra step 8e, so they are not in this signature either. The declaration
+        has to describe the layout the build actually produces: the gate REFUSES a
+        signature naming a column the source frame does not carry, by name, because a
+        declaration it cannot check is worse than none -- which is exactly how the first
+        step-8e rebuild stopped, before writing anything.
         """
+        offense_only = set(OFFENSE_ONLY_ROLLING_COLUMNS)
         return {
             f"{prefix}_{side}_{column}": None
             for prefix in ("home", "away")
             for side in ("off", "def")
             for column in ROLLING_COLUMNS
+            if not (side == "def" and column in offense_only)
         }
 
     def _provenance_schedule(

@@ -66,8 +66,26 @@ def _gold(matrix: str) -> pd.DataFrame:
     return pd.read_parquet(GOLD / f"{matrix}.parquet")
 
 
+#: A scan section's heading. GENERALISED from the two literal headings this guard was
+#: written for (p332_ extra step 8e): the document now carries a third section, because
+#: the ladder kept moving gold after rung 8 and a record that is edited whenever the
+#: present changes is not a record. The guard's own design already said reading the
+#: LATEST section is what keeps ONE guard correct at every wave; this makes that true
+#: for any number of them.
+_SECTION_HEADING = re.compile(r"^## (?:Before|After) [^\n]+$", flags=re.MULTILINE)
+
+#: The machine-readable lines a section publishes. The SUFFIX names the section
+#: (``BEFORE_RUNG8``, ``AFTER_RUNG8``, ``AFTER_STEP8E``) and is read off the line rather
+#: than derived from the heading's spelling, so a section cannot half-rename itself.
+_MACHINE_LINE = re.compile(
+    r"^(?P<key>CLASSIFIED|UNFLAGGED|UNROUTED|CONSTANT_2002_2017)"
+    r"_(?P<suffix>[A-Z0-9_]+):\s*(?P<value>\d+)\s*$",
+    flags=re.MULTILINE,
+)
+
+
 def _latest_section() -> tuple[str, str]:
-    """(heading, body) of the LAST ``## Before/After rung 8`` HEADING in the document.
+    """(heading, body) of the LAST scan-section HEADING in the document.
 
     Matched as a heading at the start of a line, so prose that merely names a section cannot
     be mistaken for it.
@@ -76,22 +94,31 @@ def _latest_section() -> tuple[str, str]:
         f"{DOCUMENT} is missing: the before-state was never published"
     )
     text = DOCUMENT.read_text(encoding="utf-8")
-    headings = list(
-        re.finditer(
-            rf"^({re.escape(BEFORE_SECTION)}|{re.escape(AFTER_SECTION)})[ 	]*$",
-            text,
-            flags=re.MULTILINE,
-        )
-    )
-    assert headings, "the document carries no Before/After rung 8 section"
+    headings = list(_SECTION_HEADING.finditer(text))
+    assert headings, "the document carries no Before/After scan section"
     last = headings[-1]
-    return last.group(1), text[last.start() :]
+    return last.group(0).strip(), text[last.start() :]
 
 
 def _recorded(body: str, key: str) -> int:
-    match = re.search(rf"^{key}:\s*(\d+)\s*$", body, flags=re.MULTILINE)
-    assert match, f"the latest section records no machine-readable '{key}:' line"
-    return int(match.group(1))
+    """The value of *key*'s machine-readable line in *body*, whatever its section suffix.
+
+    Every machine line in a section must carry the SAME suffix: a section publishing two
+    suffixes is half-copied from an older one, and reading either would be reading a
+    number that describes different gold.
+    """
+    lines = list(_MACHINE_LINE.finditer(body))
+    assert lines, "the latest section records no machine-readable count lines"
+    suffixes = {match.group("suffix") for match in lines}
+    assert len(suffixes) == 1, (
+        f"the latest section mixes machine-line suffixes {sorted(suffixes)}; its counts "
+        "do not all describe the same gold"
+    )
+    for match in lines:
+        if match.group("key") == key:
+            return int(match.group("value"))
+    msg = f"the latest section records no machine-readable '{key}_*:' line"
+    raise AssertionError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -127,10 +154,9 @@ class TestTheScanSeesTheGold:
 @needs_gold
 class TestTheDocumentRecordsTheLiveRuling:
     def test_the_latest_sections_counts_equal_the_live_scan(self) -> None:
-        heading, body = _latest_section()
-        suffix = "BEFORE_RUNG8" if heading == BEFORE_SECTION else "AFTER_RUNG8"
-        assert _recorded(body, f"UNFLAGGED_{suffix}") == len(_live()["unflagged"])
-        assert _recorded(body, f"CLASSIFIED_{suffix}") == _live()["classified"]
+        _heading, body = _latest_section()
+        assert _recorded(body, "UNFLAGGED") == len(_live()["unflagged"])
+        assert _recorded(body, "CLASSIFIED") == _live()["classified"]
 
     def test_the_latest_section_lists_every_unflagged_column_with_its_route(
         self,

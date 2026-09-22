@@ -119,10 +119,23 @@ logger = get_logger(__name__)
 # tests/integration/test_p332_rung8_attribution.py before the rebuild and written here only
 # after the rebuilt matrices MEASURED equal to that prediction; the delta is pinned to those
 # four NAMES by the ``P332_18_RUNG8_GOLD_WIDTH_DELTA`` manifest slot.
+# PHASE 33.2 EXTRA STEP 8e (Plan 33.2-19, orchestrator-assigned; owner ruling 2026-09-22,
+# rebuilt 2026-09-22) moves each matrix by exactly -8, from 201/202/201 to 193/194/193. The
+# removed columns are the eight NEVER-POPULATED DEFENSIVE COPIES of the four offence-only
+# team-form metrics: ``{home,away}_def_rolling_cpoe``,
+# ``{home,away}_def_rolling_avg_drive_start_yardline``,
+# ``{home,away}_def_rolling_neutral_pace`` and
+# ``{home,away}_def_rolling_neutral_pass_rate``. ``features/team_form.py`` writes NaN for
+# them on a defence row by design, so they had never held a measured value in any season and
+# gold carried them as a flat 0.0 that a model reads as "exactly average". The widths below
+# were PREDICTED in tests/integration/test_p332_step8e_attribution.py before the rebuild and
+# written here only after the rebuilt matrices MEASURED equal to that prediction; the delta
+# is pinned to those eight NAMES by the ``P332_19_STEP8E_GOLD_WIDTH_DELTA`` manifest slot.
+# The OFFENSIVE copies are untouched: the metrics are offence-only, not absent.
 GOLD_FEATURE_MATRICES = {
-    "features_wp": 201,
-    "features_ats": 202,
-    "features_ou": 201,
+    "features_wp": 193,
+    "features_ats": 194,
+    "features_ou": 193,
 }
 
 # Tables whose DuckDB and parquet copies must agree on row-set MEMBERSHIP (D30-18).

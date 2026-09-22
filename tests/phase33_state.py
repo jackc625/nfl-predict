@@ -17188,3 +17188,95 @@ P332_19_STEP8D_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
     "gold/features_ou.parquet",
     "nfl_predictions.duckdb",
 )
+
+# ---------------------------------------------------------------------------
+# PLAN 33.2-19 (orchestrator-assigned extra step 8e), MEASURED 2026-09-22.
+#
+# p332_ EXTRA STEP 8e -- THE NEVER-POPULATED DEFENSIVE COPIES LEAVE GOLD (owner ruling
+# 2026-09-22, "REMOVE the eight columns from gold"; the FOURTH of Plan 33.2-19's four
+# orchestrator-assigned steps, after 8b, 8c and 8d and before rung 9). RENUMBERED from
+# 8d when the owner's blank-cell ruling took that slot ahead of it.
+#
+# ONE CAUSE: the gold team-form layout stops copying the DEFENSIVE column of every
+# metric features.team_form declares offence-only. The four metrics -- cpoe, average
+# drive start yardline, neutral pace and neutral pass rate -- exist for the offence
+# only, so their defensive copies had never held a measured value in any season and
+# gold carried them as a flat 0.0 that a model reads as "exactly average". The skip
+# reads the ONE registry the calculator's own defence-side skip reads
+# (features.team_form.OFFENSE_ONLY_ROLLING_COLUMNS), so the layout and the calculator
+# cannot drift apart; the OFFENSIVE copies are untouched.
+#
+# Declared in b0b1a43 BEFORE the production rebuild, with a DERIVED rather than
+# previewed prediction: a column nothing reads and nothing varies with cannot move
+# another column's value when it is removed. Judged against p332_rung8d.json with no
+# retake (production data/ was digest-identical to outputs/p332_step8d_after.json,
+# 1,128 files) -- attribution_ok true, not blocking, zero unattributed; exactly the
+# eight declared columns removed in all three matrices, nothing added, every width
+# down by exactly 8 and rows 6,499 unchanged, and NO surviving column moved at all.
+# Digest bracket outputs/p332_step8e_before.json -> after: the three gold matrices and
+# the DuckDB file; mixed empty, nothing added or removed.
+#
+# THE FIRST ATTEMPT WAS REFUSED BY NAME AND WROTE NOTHING, recorded because the refusal
+# is the gate working. TeamFormCalculator.no_information_signature still enumerated the
+# eight, and features.provenance refuses a signature naming a column the source frame
+# does not carry -- a declaration it cannot check. The signature now derives from the
+# same registry; data/ was digest-identical across the refused run.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_OFFENSE_ONLY_STEP_CAUSE (UTF-8),
+# declared in b0b1a43.
+P332_19_STEP8E_CAUSE_DIGEST: str = (
+    "0d2f5a694f49bae51b0cceb115d1d8d7c2dc1619c8c6b64f9cd3ceece763c772"
+)
+
+P332_19_STEP8E_DECLARED_IN_COMMIT: str = "b0b1a43ffcce5c813b7a3a643cf884359053439a"
+
+P332_19_STEP8E_BASELINE_DOCUMENT: str = "p332_rung8d.json"
+
+#: The eight columns removed. Equal to features.team_form.offense_only_gold_columns().
+P332_19_STEP8E_REMOVED_COLUMNS: tuple[str, ...] = (
+    "away_def_rolling_avg_drive_start_yardline",
+    "away_def_rolling_cpoe",
+    "away_def_rolling_neutral_pace",
+    "away_def_rolling_neutral_pass_rate",
+    "home_def_rolling_avg_drive_start_yardline",
+    "home_def_rolling_cpoe",
+    "home_def_rolling_neutral_pace",
+    "home_def_rolling_neutral_pass_rate",
+)
+
+#: NO surviving column moved: this step removes columns and changes nothing else.
+P332_19_STEP8E_MOVED_COLUMNS: tuple[str, ...] = ()
+
+P332_19_STEP8E_WIDTHS: tuple[int, int, int] = (193, 194, 193)
+
+P332_19_STEP8E_ROWS: int = 6499
+
+P332_19_STEP8E_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "nfl_predictions.duckdb",
+)
+
+#: The gold-width pin delta (Plan 33.2-12 <owned_protocol_gold_width_pin> P3). The
+#: ``rung`` key is this step's LADDER ID, the string "8e", so the chain resolver orders
+#: it after rung 8 and before rung 9 (tests/unit/test_data_qa_gold_width.ladder_order).
+P332_19_STEP8E_GOLD_WIDTH_DELTA: dict[str, object] = {
+    "rung": "8e",
+    "plan": "33.2-19",
+    "added": (),
+    "removed": (
+        "away_def_rolling_avg_drive_start_yardline",
+        "away_def_rolling_cpoe",
+        "away_def_rolling_neutral_pace",
+        "away_def_rolling_neutral_pass_rate",
+        "home_def_rolling_avg_drive_start_yardline",
+        "home_def_rolling_cpoe",
+        "home_def_rolling_neutral_pace",
+        "home_def_rolling_neutral_pass_rate",
+    ),
+    "widths_before": (201, 202, 201),
+    "widths_after": (193, 194, 193),
+    "measured_at": "2026-09-22, Plan 33.2-19 extra step 8e",
+}
