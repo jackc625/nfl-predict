@@ -16016,3 +16016,119 @@ P332_16_GOLD_WIDTH_DELTA: dict[str, object] = {
     "widths_after": (197, 198, 197),
     "measured_at": "2026-09-22",
 }
+
+# ---------------------------------------------------------------------------
+# Owner ruling 2026-09-22, run FIRST in Plan 33.2-17's dispatch -- p332_ EXTRA STEP 7b: WITHIN-
+# SEASON IMPUTATION MADE POINT-IN-TIME. APPENDED ONCE on 2026-09-22, in ONE block, by the step
+# that ran. Nothing above this line was edited.
+#
+# THE LEAK: scripts/build_features.FeatureMatrixBuilder._impute_team_features filled a NaN in any
+# home_* / away_* column with the team's mean over the WHOLE season (then the whole-season league
+# mean) -- a week-1 gap filled from weeks 2-18 is post-lock information under D33.2-01 -- and
+# _impute_game_level_features fell back to a median of the gap's own season.
+#
+# THE CAUSE, declared in commit ba47ad1 before any rebuild: a gap is filled only from games that
+# had ENDED by its own lock (the team's pre-lock mean, then the league's pre-lock mean that
+# season, then the strictly-prior-seasons median, never a self-fit); where nothing known at the
+# lock exists the cell stays blank through normalization. PREDICTED, measured read-only on the
+# exact frame the imputer receives: only the 50 imputed columns move, each from its first imputed
+# season through 2025 (team form 2020, snaps 2013, Elo momentum 2002); each gains exactly its
+# declared blank cells (832 in all); nothing added or removed.
+#
+# MEASURED 2026-09-22: a scratch preview (production data/ digest-identical across it, 1128
+# files) and then the production rebuild --through-season 2025, judged against p332_rung7.json
+# (baseline confirmed: data/ digest-identical to outputs/p332_rung7_after.json, no retake) --
+# attribution_ok true, not blocking, zero unattributed; exactly the 50 declared columns moved,
+# each within its declared seasons; every declared blank count exact in all three matrices;
+# widths 197/198/197 and rows 6,499 unchanged; production identical to the preview on every
+# non-clock column. Of 3,584 imputed cells, 1,611 changed value (832 of them now blank); through
+# the rescaling that follows, 114,495 gold cells per matrix moved, all inside the 50 columns.
+# Digest bracket outputs/p332_step7b_before.json -> after: the three gold matrices and the DuckDB
+# file; mixed empty, nothing removed.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_IMPUTATION_STEP_CAUSE (UTF-8), declared in ba47ad1.
+P332_17_STEP7B_CAUSE_DIGEST: str = (
+    "cc99d607da12f9348139ee330b3bc90be559d2c11c253f89f5c3ba79df005369"
+)
+
+P332_17_STEP7B_DECLARED_IN_COMMIT: str = "ba47ad153484d15d40b948520538701462739b1f"
+
+P332_17_STEP7B_BASELINE_DOCUMENT: str = "p332_rung7.json"
+
+P332_17_STEP7B_MOVED_COLUMNS: tuple[str, ...] = (
+    "away_def_rolling_pass_success_rate", "away_def_rolling_red_zone_td_rate",
+    "away_def_rolling_rush_success_rate", "away_def_rolling_success_rate",
+    "away_def_rolling_third_down_conversion_rate", "away_elo_momentum",
+    "away_off_rolling_avg_drive_start_yardline", "away_off_rolling_cpoe",
+    "away_off_rolling_neutral_pace", "away_off_rolling_neutral_pass_rate",
+    "away_off_rolling_pass_success_rate", "away_off_rolling_red_zone_td_rate",
+    "away_off_rolling_rush_success_rate", "away_off_rolling_success_rate",
+    "away_off_rolling_third_down_conversion_rate", "away_rolling_snap_share_db",
+    "away_rolling_snap_share_dl", "away_rolling_snap_share_lb", "away_rolling_snap_share_ol",
+    "away_rolling_snap_share_qb", "away_rolling_snap_share_rb", "away_rolling_snap_share_te",
+    "away_rolling_snap_share_wr", "away_snap_concentration", "away_snap_continuity",
+    "home_def_rolling_pass_success_rate", "home_def_rolling_red_zone_td_rate",
+    "home_def_rolling_rush_success_rate", "home_def_rolling_success_rate",
+    "home_def_rolling_third_down_conversion_rate", "home_elo_momentum",
+    "home_off_rolling_avg_drive_start_yardline", "home_off_rolling_cpoe",
+    "home_off_rolling_neutral_pace", "home_off_rolling_neutral_pass_rate",
+    "home_off_rolling_pass_success_rate", "home_off_rolling_red_zone_td_rate",
+    "home_off_rolling_rush_success_rate", "home_off_rolling_success_rate",
+    "home_off_rolling_third_down_conversion_rate", "home_rolling_snap_share_db",
+    "home_rolling_snap_share_dl", "home_rolling_snap_share_lb", "home_rolling_snap_share_ol",
+    "home_rolling_snap_share_qb", "home_rolling_snap_share_rb", "home_rolling_snap_share_te",
+    "home_rolling_snap_share_wr", "home_snap_concentration", "home_snap_continuity",
+)  # fmt: skip
+
+P332_17_STEP7B_FIRST_SEASON_2020_COLUMNS: tuple[str, ...] = (
+    "away_def_rolling_pass_success_rate", "away_def_rolling_red_zone_td_rate",
+    "away_def_rolling_rush_success_rate", "away_def_rolling_success_rate",
+    "away_def_rolling_third_down_conversion_rate", "away_off_rolling_avg_drive_start_yardline",
+    "away_off_rolling_cpoe", "away_off_rolling_neutral_pace",
+    "away_off_rolling_neutral_pass_rate", "away_off_rolling_pass_success_rate",
+    "away_off_rolling_red_zone_td_rate", "away_off_rolling_rush_success_rate",
+    "away_off_rolling_success_rate", "away_off_rolling_third_down_conversion_rate",
+    "home_def_rolling_pass_success_rate", "home_def_rolling_red_zone_td_rate",
+    "home_def_rolling_rush_success_rate", "home_def_rolling_success_rate",
+    "home_def_rolling_third_down_conversion_rate", "home_off_rolling_avg_drive_start_yardline",
+    "home_off_rolling_cpoe", "home_off_rolling_neutral_pace",
+    "home_off_rolling_neutral_pass_rate", "home_off_rolling_pass_success_rate",
+    "home_off_rolling_red_zone_td_rate", "home_off_rolling_rush_success_rate",
+    "home_off_rolling_success_rate", "home_off_rolling_third_down_conversion_rate",
+)  # fmt: skip
+
+P332_17_STEP7B_FIRST_SEASON_2013_COLUMNS: tuple[str, ...] = (
+    "away_rolling_snap_share_db", "away_rolling_snap_share_dl", "away_rolling_snap_share_lb",
+    "away_rolling_snap_share_ol", "away_rolling_snap_share_qb", "away_rolling_snap_share_rb",
+    "away_rolling_snap_share_te", "away_rolling_snap_share_wr", "away_snap_concentration",
+    "away_snap_continuity", "home_rolling_snap_share_db", "home_rolling_snap_share_dl",
+    "home_rolling_snap_share_lb", "home_rolling_snap_share_ol", "home_rolling_snap_share_qb",
+    "home_rolling_snap_share_rb", "home_rolling_snap_share_te", "home_rolling_snap_share_wr",
+    "home_snap_concentration", "home_snap_continuity",
+)  # fmt: skip
+
+P332_17_STEP7B_FIRST_SEASON_2002_COLUMNS: tuple[str, ...] = (
+    "away_elo_momentum", "home_elo_momentum",
+)  # fmt: skip
+
+P332_17_STEP7B_IMPUTED_CELLS: int = 3584
+
+P332_17_STEP7B_CHANGED_IMPUTED_CELLS: int = 1611
+
+P332_17_STEP7B_BLANK_CELLS: int = 832
+
+P332_17_STEP7B_BLANK_CELLS_BY_SEASON: dict[int, int] = {2002: 32, 2013: 352, 2020: 448}
+
+P332_17_STEP7B_GOLD_CELLS_MOVED_PER_MATRIX: int = 114495
+
+P332_17_STEP7B_WIDTHS: tuple[int, int, int] = (197, 198, 197)
+
+P332_17_STEP7B_ROWS: int = 6499
+
+P332_17_STEP7B_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "nfl_predictions.duckdb",
+)
