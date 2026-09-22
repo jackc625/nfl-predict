@@ -15805,3 +15805,96 @@ P332_15_RUNG6_BRONZE_PREFIXES: tuple[str, ...] = (
     "bronze/injuries_raw_bronze_",
 )
 P332_15_RUNG6_BRONZE_FILES_ADDED: dict[str, int] = {"snap_counts": 2, "injuries": 2}
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-15 -- p332_ EXTRA STEP 6b: POSTSEASON INJURY REPORTS INGESTED AND TIMED (the question
+# Plan 33.2-13 routed to this plan). APPENDED ONCE on 2026-09-22, in ONE block, after rung 6's.
+# Nothing above this line was edited.
+#
+# THE QUESTION AND ITS ANSWER: can the postseason injury reports be fetched from the free source,
+# honestly timed? YES. Measured read-only 2026-09-22: upstream (nflreadpy load_injuries)
+# publishes 3,544 postseason rows over 2009-2025; a per-row date_modified on every 2010-2024
+# row, none on 2009's, no column in 2025's; 2023 upstream carries the Wild Card round ONLY (its
+# DIV/CON/SB games stay the flagged unknown, never zero-filled). The ingest's own REG filter was
+# what dropped them.
+#
+# THE CAUSE, declared in commit 4592a1c before the backfill or any rebuild: the injury ingest
+# keeps every game type, and the postseason reports were added (--game-types WC DIV CON SB, so
+# no stored regular-season row was re-written), each admitted only when its own date_modified
+# is at or before its game's lock. PREDICTED: ten injury columns (availability_coverage cannot
+# move); the two coverage flags only in 2010-2024, the three value columns only in 2010-2025.
+#
+# MEASURED 2026-09-22: scratch preview (production data/ digest-identical across it, 1128 files)
+# and then the production rebuild --through-season 2025, judged against p332_rung6.json --
+# attribution_ok true, not blocking, zero unattributed; exactly the ten declared columns moved;
+# the coverage flags in 2010-2024 only; the value columns within 2013-2025 (availability_fraction
+# first moves in 2013 because its snap-share weights begin in 2013); production identical to the
+# preview on every non-clock column. 167 postseason games (every 2010-2024 postseason game
+# upstream covers) now carry lock-timed reports, from none; home_injury_coverage moved on exactly
+# those 167 rows. Digest bracket outputs/p332_step6b_before.json -> after: silver injuries, the
+# three gold matrices, the DuckDB file and 17 new bronze injury snapshots; mixed empty.
+#
+# THE BRACKET WAS RETAKEN ONCE, AND WHY: tests/integration/test_n01_resync_control.py (the
+# repository's one declared production writer, D33-24) rewrote nfl_predictions.duckdb's bytes --
+# content unchanged, games divergence 0 -- during a targeted gold-reader run after rung 6 closed;
+# the step-6b before-digest was retaken after it, before any step-6b write.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_POSTSEASON_INJURY_STEP_CAUSE, declared in 4592a1c.
+P332_15_STEP6B_CAUSE_DIGEST: str = (
+    "bbd48df18c108323490c55429dbdeaf08699f2685a28e59999bcc1b747779bc3"
+)
+
+P332_15_STEP6B_DECLARED_IN_COMMIT: str = "4592a1c51cbf0a3ddace91115d4c4dc4117c9aa7"
+
+P332_15_STEP6B_ID: str = "6b"
+
+P332_15_STEP6B_FOLLOWS_RUNG: int = 6
+
+P332_15_STEP6B_BASELINE_DOCUMENT: str = "p332_rung6.json"
+
+P332_15_STEP6B_MOVED_COLUMNS: tuple[str, ...] = (
+    "away_availability_fraction", "away_backup_quality_delta", "away_date_modified_coverage",
+    "away_injury_coverage", "away_qb_out_flag", "home_availability_fraction",
+    "home_backup_quality_delta", "home_date_modified_coverage", "home_injury_coverage",
+    "home_qb_out_flag",
+)  # fmt: skip
+
+P332_15_STEP6B_FIRST_AND_LAST_MOVED_SEASON: dict[str, tuple[str, str]] = {
+    "away_availability_fraction": ("2013", "2025"),
+    "away_backup_quality_delta": ("2014", "2025"),
+    "away_date_modified_coverage": ("2010", "2024"),
+    "away_injury_coverage": ("2010", "2024"),
+    "away_qb_out_flag": ("2014", "2023"),
+    "home_availability_fraction": ("2013", "2025"),
+    "home_backup_quality_delta": ("2015", "2025"),
+    "home_date_modified_coverage": ("2010", "2024"),
+    "home_injury_coverage": ("2010", "2024"),
+    "home_qb_out_flag": ("2015", "2023"),
+}
+
+P332_15_STEP6B_WIDTHS: tuple[int, int, int] = (193, 194, 193)
+
+P332_15_STEP6B_UPSTREAM_POSTSEASON_ROWS: int = 3544
+
+P332_15_STEP6B_POSTSEASON_ROWS_WITH_DATE_MODIFIED: int = 3034
+
+P332_15_STEP6B_POSTSEASON_GAMES_IN_SILVER: int = 191
+
+P332_15_STEP6B_POSTSEASON_GAMES_WITH_ADMITTED_REPORTS: int = 167
+
+P332_15_STEP6B_SILVER_INJURY_ROWS: dict[str, int] = {
+    "total": 91168,
+    "regular_season": 87624,
+    "postseason": 3544,
+}
+
+P332_15_STEP6B_BRONZE_FILES_ADDED: int = 17
+
+P332_15_STEP6B_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "silver/injuries.parquet",
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "nfl_predictions.duckdb",
+)

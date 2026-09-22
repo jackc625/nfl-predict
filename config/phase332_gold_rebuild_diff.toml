@@ -10,7 +10,7 @@
 # scripts.fingerprint_gold._column_bytes, as every prior ladder. ASCII only.
 # ===========================================================================
 
-generated_at = "2026-09-22T06:33:28.523061+00:00"
+generated_at = "2026-09-22T07:02:21.458021+00:00"
 rung_prefix = "p332_"
 float_tolerance = "none -- EXACT byte comparison"
 
@@ -472,3 +472,35 @@ home_rolling_snap_share_te = ["2025"]
 home_rolling_snap_share_wr = ["2025"]
 home_snap_concentration = ["2025"]
 home_snap_continuity = ["2025"]
+
+[rung."6b"]
+rung = "6b"
+follows_rung = 6
+prefix = "p332_"
+rebuilt = true
+baseline_document = "p332_rung6.json"
+baseline_confirmation = "CONFIRMED 2026-09-22: p332_rung6.json is production gold as rung 6 wrote it minutes earlier; the only changes since are this step's own (the injury ingest keeping postseason game types, and the postseason backfill into silver injuries). No carry-in, no retake"
+cause = "POSTSEASON INJURY REPORTS INGESTED AND TIMED, p332_ extra step 6b of Plan 33.2-15, and NOTHING else: scripts/ingest_injuries.py no longer drops non-REG game types, and the 2009-2025 postseason reports upstream publishes were added to silver injuries (the regular-season rows untouched), each admitted for its game only when its own date_modified is at or before that game's lock -- the rule a regular-season report already meets. Only ten injury columns can move (availability_coverage cannot): the two coverage flags on 2010-2024 postseason games alone, the three value columns there and, through within-season scaling and strictly-prior fits, on later rows through 2025. No column is added, none removed, no row moves"
+upstream_coverage = "3,544 postseason rows 2009-2025 (measured 2026-09-22); date_modified on every 2010-2024 row, none on 2009, no column in 2025; 2023 upstream holds the Wild Card round only"
+rows_changed = "before normalization only 2010-2024 postseason games whose teams gained an admitted report can differ; after it, the three z-scored value columns can also differ on later rows of the same season and on later seasons through the prior-season bootstrap and the strictly-prior winsorization bounds"
+declared_columns = ["away_availability_fraction", "away_backup_quality_delta", "away_date_modified_coverage", "away_injury_coverage", "away_qb_out_flag", "home_availability_fraction", "home_backup_quality_delta", "home_date_modified_coverage", "home_injury_coverage", "home_qb_out_flag"]
+widths_before = ["193", "194", "193"]
+widths_after = ["193", "194", "193"]
+moved_columns = ["away_availability_fraction", "away_backup_quality_delta", "away_date_modified_coverage", "away_injury_coverage", "away_qb_out_flag", "home_availability_fraction", "home_backup_quality_delta", "home_date_modified_coverage", "home_injury_coverage", "home_qb_out_flag"]
+build_clock_moves = ["feature_timestamp"]
+unattributed_columns = []
+attribution_ok = true
+attribution_blocking = false
+attributor = "_attribute_p332_postseason_injury"
+
+[rung."6b".moved_seasons]
+away_availability_fraction = ["2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+away_backup_quality_delta = ["2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+away_date_modified_coverage = ["2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024"]
+away_injury_coverage = ["2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024"]
+away_qb_out_flag = ["2014", "2015", "2016", "2017", "2018", "2019", "2022", "2023"]
+home_availability_fraction = ["2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_backup_quality_delta = ["2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_date_modified_coverage = ["2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024"]
+home_injury_coverage = ["2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024"]
+home_qb_out_flag = ["2015", "2016", "2017", "2022", "2023"]
