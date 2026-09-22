@@ -16662,3 +16662,310 @@ P332_19_STEP8B_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
     "gold/features_ou.parquet",
     "nfl_predictions.duckdb",
 )
+
+# ---------------------------------------------------------------------------
+# Owner ruling 2026-09-22, run SECOND in Plan 33.2-19's dispatch -- p332_ EXTRA STEP 8c:
+# NORMALIZATION STATISTICS ORDERED BY LOCK INSTANT. APPENDED ONCE on 2026-09-22, in ONE
+# block, by the step that ran. Nothing above this line was edited.
+#
+# THE LEAK: features/normalization.expanding_normalize sorted each season by (season, week)
+# -- an unstable sort with no tie-break inside a week -- and expanded over that order, so a
+# same-week game whose LOCK is later entered an earlier-locking game's statistic (a Monday
+# night game's day-before forecast, issued on the Sunday, reaching a Sunday game locked on
+# the Saturday), and two games played the same afternoon got different statistics depending
+# on the arbitrary order their rows arrived in.
+#
+# THE CAUSE, declared in commit 5a21f5e before any rebuild: a row's expanding mean and
+# standard deviation are computed over every row of its season whose lock is at or before
+# that row's lock (at-lock admissible, D33.2-01), so games sharing a lock share ONE
+# statistic. The lock is the one rule (utils.game_lock through features.point_in_time_fill);
+# a caller that cannot supply one is refused by name. The row set, the returned row order,
+# min_periods, the prior-season bootstrap, the neutral 0.0, preserve_missing_cols and
+# preserve_level_cols keep their meanings.
+#
+# MEASURED 2026-09-22: predicted on the tail replay step 8b used (control: the same replay
+# from a worktree at rung 8's commit 2d0eb97 reproduces production gold exactly). Then the
+# production rebuild --through-season 2025, judged against p332_rung8b.json (baseline
+# confirmed: data/ digest-identical to outputs/p332_step8b_after.json, 1128 files; no
+# retake) -- attribution_ok true, not blocking, zero unattributed; exactly the 138 declared
+# columns moved, each only in its declared seasons and identically in all three matrices;
+# none of the 55 columns declared UNMOVED moved; no null count moved; widths 201/202/201 and
+# rows 6,499 unchanged; production identical to the preview on every non-clock column.
+# Digest bracket outputs/p332_step8c_before.json -> after: the three gold matrices and the
+# DuckDB file; mixed empty, nothing added or removed.
+#
+# THE STOP CONDITION THE ORCHESTRATOR SET FOR THIS STEP, measured after it ran (see the
+# P332_19_STEP8C_NEUTRAL_ZERO_* names below): it is NOT zero, so the plan stops here for an
+# owner ruling rather than continuing to step 8d.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_LOCK_ORDER_STEP_CAUSE (UTF-8), declared in 5a21f5e.
+P332_19_STEP8C_CAUSE_DIGEST: str = (
+    "41df145bb3edc963a0a3a95ff28264a7544d39166a9723292d0e39dff7cc987e"
+)
+
+P332_19_STEP8C_DECLARED_IN_COMMIT: str = "5a21f5e8b86adebb66b3ee06a4975a66ca04b21d"
+
+P332_19_STEP8C_BASELINE_DOCUMENT: str = "p332_rung8b.json"
+
+# The 138 columns that moved: every column the normalizer z-scores. Each moved in ALL THREE
+# matrices, in the seasons PHASE332_LOCK_ORDER_STEP_SEASONS_BY_COLUMN declares for it.
+P332_19_STEP8C_MOVED_COLUMNS: tuple[str, ...] = (
+    "apparent_temp_f",
+    "away_abs_timezone_diff_hours",
+    "away_availability_fraction",
+    "away_backup_quality_delta",
+    "away_cross_country_travel",
+    "away_def_rolling_opp_adj_epa_per_play",
+    "away_def_rolling_opp_adj_pass_epa",
+    "away_def_rolling_opp_adj_rush_epa",
+    "away_def_rolling_pass_success_rate",
+    "away_def_rolling_red_zone_td_rate",
+    "away_def_rolling_rush_success_rate",
+    "away_def_rolling_success_rate",
+    "away_def_rolling_third_down_conversion_rate",
+    "away_eastward_travel",
+    "away_elo",
+    "away_elo_momentum",
+    "away_elo_percentile",
+    "away_elo_rank",
+    "away_elo_uncertainty",
+    "away_letdown_spot",
+    "away_look_ahead_spot",
+    "away_off_bye",
+    "away_off_rolling_avg_drive_start_yardline",
+    "away_off_rolling_cpoe",
+    "away_off_rolling_neutral_pace",
+    "away_off_rolling_neutral_pass_rate",
+    "away_off_rolling_opp_adj_epa_per_play",
+    "away_off_rolling_opp_adj_pass_epa",
+    "away_off_rolling_opp_adj_rush_epa",
+    "away_off_rolling_pass_success_rate",
+    "away_off_rolling_red_zone_td_rate",
+    "away_off_rolling_rush_success_rate",
+    "away_off_rolling_success_rate",
+    "away_off_rolling_third_down_conversion_rate",
+    "away_qb_adjustment",
+    "away_qb_out_flag",
+    "away_rest_days",
+    "away_rolling_snap_share_db",
+    "away_rolling_snap_share_dl",
+    "away_rolling_snap_share_lb",
+    "away_rolling_snap_share_ol",
+    "away_rolling_snap_share_qb",
+    "away_rolling_snap_share_rb",
+    "away_rolling_snap_share_te",
+    "away_rolling_snap_share_wr",
+    "away_short_rest",
+    "away_snap_concentration",
+    "away_snap_continuity",
+    "away_timezone_diff_hours",
+    "away_travel_distance_miles",
+    "away_travel_fatigue_score",
+    "away_westward_travel",
+    "ball_handling_difficulty",
+    "both_short_rest",
+    "cold_impact_score",
+    "defensive_advantage",
+    "elo_diff",
+    "elo_prob_away",
+    "elo_prob_home",
+    "game_day_of_week",
+    "heat_impact_score",
+    "hfa_used",
+    "home_availability_fraction",
+    "home_backup_quality_delta",
+    "home_def_rolling_opp_adj_epa_per_play",
+    "home_def_rolling_opp_adj_pass_epa",
+    "home_def_rolling_opp_adj_rush_epa",
+    "home_def_rolling_pass_success_rate",
+    "home_def_rolling_red_zone_td_rate",
+    "home_def_rolling_rush_success_rate",
+    "home_def_rolling_success_rate",
+    "home_def_rolling_third_down_conversion_rate",
+    "home_elo",
+    "home_elo_momentum",
+    "home_elo_percentile",
+    "home_elo_rank",
+    "home_elo_uncertainty",
+    "home_letdown_spot",
+    "home_look_ahead_spot",
+    "home_off_bye",
+    "home_off_rolling_avg_drive_start_yardline",
+    "home_off_rolling_cpoe",
+    "home_off_rolling_neutral_pace",
+    "home_off_rolling_neutral_pass_rate",
+    "home_off_rolling_opp_adj_epa_per_play",
+    "home_off_rolling_opp_adj_pass_epa",
+    "home_off_rolling_opp_adj_rush_epa",
+    "home_off_rolling_pass_success_rate",
+    "home_off_rolling_red_zone_td_rate",
+    "home_off_rolling_rush_success_rate",
+    "home_off_rolling_success_rate",
+    "home_off_rolling_third_down_conversion_rate",
+    "home_qb_adjustment",
+    "home_qb_out_flag",
+    "home_rest_days",
+    "home_rolling_snap_share_db",
+    "home_rolling_snap_share_dl",
+    "home_rolling_snap_share_lb",
+    "home_rolling_snap_share_ol",
+    "home_rolling_snap_share_qb",
+    "home_rolling_snap_share_rb",
+    "home_rolling_snap_share_te",
+    "home_rolling_snap_share_wr",
+    "home_short_rest",
+    "home_snap_concentration",
+    "home_snap_continuity",
+    "home_weather_advantage",
+    "is_divisional",
+    "kicking_difficulty",
+    "late_season",
+    "monday_game",
+    "passing_difficulty",
+    "passing_efficiency",
+    "precip_impact_score",
+    "precip_prob",
+    "rest_advantage",
+    "rushing_advantage",
+    "saturday_game",
+    "scoring_multiplier",
+    "scoring_reduction",
+    "season_progress",
+    "short_week",
+    "surface_mismatch",
+    "temp_f",
+    "thursday_game",
+    "turnover_multiplier",
+    "venue_capacity",
+    "venue_cold_climate",
+    "venue_elevation_ft",
+    "venue_high_altitude",
+    "venue_indoor",
+    "venue_large_stadium",
+    "venue_outdoor",
+    "venue_retractable",
+    "venue_warm_climate",
+    "weather_severity_score",
+    "wind_impact_score",
+    "wind_mph",
+)
+
+# The NEGATIVE half of the prediction, MEASURED unmoved: the level-preserved coverage flags
+# and weather indicators, the display-only raw_* passthroughs, the five market columns
+# constant since rung 5, and the eight never-populated defensive team-form copies.
+P332_19_STEP8C_UNMOVED_COLUMNS: tuple[str, ...] = (
+    "away_availability_coverage",
+    "away_date_modified_coverage",
+    "away_def_rolling_avg_drive_start_yardline",
+    "away_def_rolling_cpoe",
+    "away_def_rolling_neutral_pace",
+    "away_def_rolling_neutral_pass_rate",
+    "away_def_rolling_opp_adj_coverage",
+    "away_injury_coverage",
+    "away_off_rolling_cpoe_coverage",
+    "away_off_rolling_opp_adj_coverage",
+    "away_snap_coverage",
+    "extreme_weather",
+    "home_availability_coverage",
+    "home_date_modified_coverage",
+    "home_def_rolling_avg_drive_start_yardline",
+    "home_def_rolling_cpoe",
+    "home_def_rolling_neutral_pace",
+    "home_def_rolling_neutral_pass_rate",
+    "home_def_rolling_opp_adj_coverage",
+    "home_injury_coverage",
+    "home_off_rolling_cpoe_coverage",
+    "home_off_rolling_opp_adj_coverage",
+    "home_snap_coverage",
+    "is_away_game",
+    "is_dry",
+    "is_home_game",
+    "is_rain",
+    "is_snow",
+    "precip_heavy",
+    "precip_light",
+    "precip_moderate",
+    "precip_none",
+    "raw_humidity_pct",
+    "raw_precip_prob",
+    "raw_temp_f",
+    "raw_weather_severity",
+    "raw_wind_mph",
+    "snapshot_ml_prob_home_fair",
+    "snapshot_spread",
+    "snapshot_total",
+    "spread_movement",
+    "temp_cold",
+    "temp_cool",
+    "temp_hot",
+    "temp_mild",
+    "temp_very_cold",
+    "temp_warm",
+    "total_movement",
+    "weather_affects_game",
+    "weather_coverage",
+    "weather_game",
+    "wind_calm",
+    "wind_high",
+    "wind_moderate",
+    "wind_severe",
+)
+
+P332_19_STEP8C_WIDTHS: tuple[int, int, int] = (201, 202, 201)
+
+P332_19_STEP8C_ROWS: int = 6499
+
+P332_19_STEP8C_NULL_COUNTS_MOVED: int = 0
+
+P332_19_STEP8C_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "nfl_predictions.duckdb",
+)
+
+# ---------------------------------------------------------------------------
+# THE STOP-CONDITION MEASUREMENT, on step 8c's own gold.
+#
+# HOW IT IS SEPARATED FROM AN ORDINARY ZERO. expanding_normalize ends with fillna(0.0) for a
+# position whose statistic could not be formed (fewer than min_periods admitted rows AND no
+# prior-season bootstrap); such a cell reads exactly 0.0 WHATEVER its input value. A cell
+# whose statistic WAS formed reads 0.0 only when its value happens to equal the window mean,
+# and that coincidence moves when the values move. So the frame was normalized twice, the
+# second time with every normalized column shifted by a per-row distinct offset, and a cell
+# exactly 0.0 in BOTH runs had no statistic. Input NaNs are excluded: this counts values that
+# EXIST and are rendered as "exactly average".
+# ---------------------------------------------------------------------------
+
+#: Cells with a PRESENT value whose normalization statistic could not be formed, all columns.
+P332_19_STEP8C_NEUTRAL_ZERO_CELLS: int = 307
+
+#: ...of which the family's coverage flag reads TRUE, i.e. the value WAS measured. This is
+#: the count the orchestrator's stop condition is stated on. NOT zero.
+P332_19_STEP8C_NEUTRAL_ZERO_MEASURED_CELLS: int = 46
+
+P332_19_STEP8C_NEUTRAL_ZERO_MEASURED_COLUMNS: int = 26
+
+#: The measured cells by season (46 in all): the snap and availability family's first covered
+#: season, and the QB backup-quality pair's.
+P332_19_STEP8C_NEUTRAL_ZERO_MEASURED_BY_SEASON: dict[str, int] = {
+    "2009": 1,
+    "2010": 1,
+    "2013": 22,
+    "2017": 4,
+    "2021": 4,
+    "2022": 4,
+    "2023": 4,
+    "2024": 4,
+}
+
+#: The remaining 257 cells sit in 98 columns that carry no coverage flag at all, so nothing
+#: says whether the value was measured; 121 of them are in 2002, the ladder's first season.
+P332_19_STEP8C_NEUTRAL_ZERO_UNFLAGGED_CELLS: int = 257
+
+P332_19_STEP8C_NEUTRAL_ZERO_UNFLAGGED_COLUMNS: int = 98
+
+#: The game the deferred item named, still the example: its 2013 week-2 snap values are
+#: measured (flag 1.0) and read exactly 0.0.
+P332_19_STEP8C_NEUTRAL_ZERO_EXAMPLE_GAME: str = "2013_W02_NYJ@NE"
