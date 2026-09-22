@@ -793,6 +793,214 @@ class PredictionSchema(BaseModel):
         return self
 
 
+# ---------------------------------------------------------------------------
+# THE SNAP AND INJURY SILVER SCHEMAS (Plan 33.2-15 Task 1, D33.2-16, REPLAN adjudication #2).
+#
+# Until this plan neither silver table had a schema, and both ingesters wrote silver DIRECTLY
+# (save_bronze_snapshot then upsert_silver), so nothing validated a single row. These two classes
+# exist so that scripts/ingest_snaps.py and scripts/ingest_injuries.py can route every batch
+# through data.quality_gates.validate_bronze_to_silver -- a schema nothing validates against
+# protects nothing.
+#
+# EVERY KEPT COLUMN IS DECLARED, not only the new stamp, deliberately (RESEARCH P-6, the same
+# reason `weather_coverage` gives above): validate_bronze_to_silver rebuilds each row as
+# `schema_class(**row).model_dump()` and Pydantic v2 defaults to extra='ignore', so an
+# undeclared column vanishes between bronze and silver with no error at all. A schema declaring
+# only `upstream_captured_at` would silently delete the six raw snap values the snap builder
+# reads the first time the ingester is routed through the gate.
+#
+# `upstream_captured_at` IS CAPTURE PROVENANCE (data.upstream_asset_stamp): the nflverse release
+# asset's `updated_at` for the file the row was captured from. It is REQUIRED with NO default --
+# a row that does not say when its file was published is refused, never stored as null -- and a
+# naive value is refused, never relabelled (convert, never relabel: D33.2-01). It is a row's
+# information time only where it is at or before that row's game's lock (features.injury); a
+# snap row's information time is its game's END instant and the stamp is provenance only.
+#
+# The injury field name is the literal features.injury.UPSTREAM_CAPTURE_COLUMN declares. It is
+# NOT imported here -- a data module importing a feature module would invert the layering --
+# and tests/unit/test_injury_capture_time_basis.py asserts the two spellings are identical.
+# ---------------------------------------------------------------------------
+
+
+def _is_missing(value: object) -> bool:
+    """True for ``None`` and the pandas missing markers (NaN, NaT, pd.NA)."""
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _aware_utc(value: object, field: str) -> datetime:
+    """*value* as a tz-aware UTC ``datetime``; a naive value is REFUSED, never relabelled."""
+    parsed = pd.Timestamp(value)  # type: ignore[arg-type]
+    if parsed.tzinfo is None:
+        raise ValueError(
+            f"{field} {value!r} carries no time zone; it is refused, never relabelled as UTC"
+        )
+    return parsed.tz_convert("UTC").to_pydatetime()
+
+
+class SnapCountSchema(BaseModel):
+    """One player's snap counts in one game (silver ``snap_counts``, player grain).
+
+    The columns are exactly what ``scripts/ingest_snaps.py`` keeps -- ``SNAP_KEY_COLUMNS`` plus
+    ``RAW_SNAP_COLUMNS`` -- plus the capture stamp. ``game_id`` is nflverse's snap id
+    (``2026_01_ARI_LAC``), not the silver ``games`` id; the snap builder times each team-game
+    against the schedule by (season, week, team).
+    """
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    _NULLABLE_SNAP_FIELDS = (
+        "pfr_player_id",
+        "position",
+        "opponent",
+        "offense_snaps",
+        "offense_pct",
+        "defense_snaps",
+        "defense_pct",
+        "st_snaps",
+        "st_pct",
+    )
+
+    game_id: str = Field(..., description="nflverse snap game id (2026_01_ARI_LAC)")
+    pfr_player_id: str | None = Field(
+        None, description="Pro-Football-Reference player id"
+    )
+    player: str = Field(..., description="Player name")
+    position: str | None = Field(None, description="Raw nflverse position code")
+    team: str = Field(..., min_length=2, max_length=5, description="Canonical team")
+    opponent: str | None = Field(None, description="Canonical opponent")
+    season: int = Field(..., ge=2012, le=2030, description="NFL season")
+    week: int = Field(..., ge=1, le=22, description="Week (19-22 postseason)")
+
+    offense_snaps: float | None = Field(None, ge=0, description="Offensive snaps")
+    offense_pct: float | None = Field(
+        None, ge=0, le=1, description="Offensive snap share"
+    )
+    defense_snaps: float | None = Field(None, ge=0, description="Defensive snaps")
+    defense_pct: float | None = Field(
+        None, ge=0, le=1, description="Defensive snap share"
+    )
+    st_snaps: float | None = Field(None, ge=0, description="Special-teams snaps")
+    st_pct: float | None = Field(
+        None, ge=0, le=1, description="Special-teams snap share"
+    )
+
+    upstream_captured_at: datetime = Field(
+        ...,
+        description=(
+            "CAPTURE PROVENANCE: the nflverse snap_counts release asset's updated_at for the "
+            "file this row was captured from (tz-aware UTC; REQUIRED, naive refused). Not the "
+            "row's information time -- a snap count is known once its game ENDS"
+        ),
+    )
+
+    @field_validator(*_NULLABLE_SNAP_FIELDS, mode="before")
+    @classmethod
+    def missing_to_none(cls, v):
+        """Pandas NaN / NA -> None before type and range checks run."""
+        return None if _is_missing(v) else v
+
+    @field_validator("upstream_captured_at", mode="before")
+    @classmethod
+    def require_aware_capture_stamp(cls, v):
+        """The stamp is required and tz-aware; a missing or naive value is refused."""
+        if _is_missing(v):
+            raise ValueError(
+                "upstream_captured_at is required: every captured row is stamped"
+            )
+        return _aware_utc(v, "upstream_captured_at")
+
+
+class InjurySchema(BaseModel):
+    """One player's weekly-final injury report (silver ``injuries``).
+
+    The columns are exactly what ``scripts/ingest_injuries.py`` keeps -- ``INJURY_COLUMNS`` plus
+    the joined ``game_id`` -- plus the capture stamp. ``date_modified`` is NULLABLE: upstream
+    dropped it from the 2025+ schema (RESEARCH 5.1) and the ingest carries a null, so for those
+    seasons the capture stamp is the only time a row can carry.
+    """
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    _NULLABLE_INJURY_FIELDS = (
+        "gsis_id",
+        "position",
+        "full_name",
+        "game_type",
+        "report_status",
+        "report_primary_injury",
+        "report_secondary_injury",
+        "practice_status",
+        "practice_primary_injury",
+        "practice_secondary_injury",
+    )
+
+    gsis_id: str | None = Field(None, description="nflverse gsis player id")
+    team: str = Field(..., min_length=2, max_length=5, description="Canonical team")
+    position: str | None = Field(None, description="Raw position code")
+    full_name: str | None = Field(None, description="Player name")
+    season: int = Field(..., ge=2009, le=2030, description="NFL season")
+    week: int = Field(..., ge=1, le=22, description="Week (19-22 postseason)")
+    game_type: str | None = Field(None, description="REG, WC, DIV, CON or SB")
+    report_status: str | None = Field(None, description="Out / Doubtful / Questionable")
+    report_primary_injury: str | None = Field(None, description="Primary injury")
+    report_secondary_injury: str | None = Field(None, description="Secondary injury")
+    practice_status: str | None = Field(None, description="Practice participation")
+    practice_primary_injury: str | None = Field(
+        None, description="Practice primary injury"
+    )
+    practice_secondary_injury: str | None = Field(
+        None, description="Practice secondary injury"
+    )
+    date_modified: datetime | None = Field(
+        None,
+        description=(
+            "Upstream per-row modification time (2009-2024); NULL from 2025, where upstream "
+            "dropped the column. tz-aware UTC; a naive value is refused"
+        ),
+    )
+    game_id: str = Field(
+        ..., description="Silver games id, joined on (season, week, team)"
+    )
+
+    upstream_captured_at: datetime = Field(
+        ...,
+        description=(
+            "CAPTURE PROVENANCE: the nflverse injuries release asset's updated_at for the file "
+            "this row was captured from (tz-aware UTC; REQUIRED, naive refused). A row's "
+            "information time ONLY where it is at or before its game's lock"
+        ),
+    )
+
+    @field_validator(*_NULLABLE_INJURY_FIELDS, mode="before")
+    @classmethod
+    def missing_to_none(cls, v):
+        """Pandas NaN / NA -> None before type checks run."""
+        return None if _is_missing(v) else v
+
+    @field_validator("date_modified", mode="before")
+    @classmethod
+    def optional_aware_date_modified(cls, v):
+        """NaT / None -> None; a present value must be tz-aware."""
+        if _is_missing(v):
+            return None
+        return _aware_utc(v, "date_modified")
+
+    @field_validator("upstream_captured_at", mode="before")
+    @classmethod
+    def require_aware_capture_stamp(cls, v):
+        """The stamp is required and tz-aware; a missing or naive value is refused."""
+        if _is_missing(v):
+            raise ValueError(
+                "upstream_captured_at is required: every captured row is stamped"
+            )
+        return _aware_utc(v, "upstream_captured_at")
+
+
 # Utility functions for schema validation
 
 

@@ -28,9 +28,10 @@ import inspect
 import textwrap
 from datetime import UTC, datetime
 
-import data.upstream_asset_stamp as stamp_module
 import pytest
 import requests
+
+import data.upstream_asset_stamp as stamp_module
 from data.upstream_asset_stamp import (
     NFLVERSE_RELEASES_API,
     UpstreamStampUnavailable,
@@ -191,8 +192,10 @@ class TestTheTtlCache:
         session = _FakeSession(
             _FakeResponse(200, _release()), _FakeResponse(200, _release())
         )
-        asset_published_at(ASSET, session=session)
+        # The expiry is fixed when the entry is STORED, so a negative TTL makes the first
+        # read's entry already expired by the time the second call looks it up.
         monkeypatch.setattr(stamp_module, "STAMP_CACHE_TTL_SECONDS", -1.0)
+        asset_published_at(ASSET, session=session)
         asset_published_at(ASSET, session=session)
         assert len(session.urls) == 2
 
