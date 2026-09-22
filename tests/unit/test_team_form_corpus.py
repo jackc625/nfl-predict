@@ -260,3 +260,80 @@ class TestTheBootstrapSeasonIsTimedByTheIngestPath:
         assert len(games) > 250
         assert str(games["kickoff_et"].dt.tz) == ET
         assert set(games["season"]) == {CORPUS_FIRST_SEASON - 1}
+
+
+class TestTheProvenanceTimesTheBootstrapWindow:
+    """Plan 33.2-18 (found by rung 8's preview): the gold provenance times a window exactly as
+    the silver corpus build did.
+
+    The corpus build times the bootstrap season's team-games from its pinned schedule, so the
+    first target season's week 1 carries a rolling row drawn from the season before. The
+    information-time provenance used to time windows against silver ``games`` alone, which
+    does not carry that season -- so it declared those rows ``no_information`` beside real
+    values, and the gate (rightly) refused the build. It now reads the same corpus timing.
+    """
+
+    @staticmethod
+    def _calculator(monkeypatch, *, pinned: bool) -> tuple[TeamFormCalculator, list]:
+        calls: list[int] = []
+        form = pd.DataFrame(
+            {
+                "team": ["BUF", "MIA"],
+                "side": ["offense", "offense"],
+                "target_season": [2002, 2002],
+                "target_week": [1, 1],
+            }
+        )
+        calculator = TeamFormCalculator(
+            max_prior_games=4, schedule_df=_schedule(2002, range(1, 4))
+        )
+        calculator._form_df = form
+        monkeypatch.setattr(
+            team_form_module.upstream_pin,
+            "pinned_seasons",
+            lambda dataset, _m: [2001, 2002] if pinned else [2002],
+        )
+        monkeypatch.setattr(team_form_module.upstream_pin, "load_manifest", lambda: {})
+
+        def _bootstrap(season: int) -> pd.DataFrame:
+            calls.append(season)
+            return _schedule(season, range(15, 18))
+
+        monkeypatch.setattr(build_team_form, "bootstrap_timing_games", _bootstrap)
+        return calculator, calls
+
+    def test_week_one_of_the_first_season_is_timed_from_the_bootstrap(
+        self, monkeypatch
+    ) -> None:
+        calculator, calls = self._calculator(monkeypatch, pinned=True)
+        provenance = calculator.information_times(_schedule(2002, range(1, 2)))
+        row = provenance.iloc[0]
+        assert row["basis"] == "per_row"
+        # The latest admitted game is 2001 week 17: its kickoff plus the declared duration.
+        kickoff = pd.Timestamp("2001-09-08 13:00", tz=ET) + pd.Timedelta(days=7 * 16)
+        expected = kickoff.tz_convert("UTC") + team_form_module.DECLARED_GAME_DURATION
+        assert pd.Timestamp(row["information_time"]) == expected
+        assert calls == [2001]
+
+    def test_an_unpinned_bootstrap_leaves_the_row_untimed(self, monkeypatch) -> None:
+        """CONTROL: no second timing source is invented; the gate then refuses loudly."""
+        calculator, calls = self._calculator(monkeypatch, pinned=False)
+        provenance = calculator.information_times(_schedule(2002, range(1, 2)))
+        assert provenance.iloc[0]["basis"] == "no_information"
+        assert calls == []
+
+    def test_a_game_after_the_first_season_does_not_read_the_bootstrap(
+        self, monkeypatch
+    ) -> None:
+        """CONTROL: only the first target season's windows can reach the season before it."""
+        calculator, calls = self._calculator(monkeypatch, pinned=True)
+        calculator._form_df = pd.DataFrame(
+            {
+                "team": ["BUF", "MIA", "BUF"],
+                "side": ["offense", "offense", "offense"],
+                "target_season": [2002, 2002, 2003],
+                "target_week": [1, 1, 1],
+            }
+        )
+        calculator.information_times(_schedule(2003, range(1, 2)))
+        assert calls == []
