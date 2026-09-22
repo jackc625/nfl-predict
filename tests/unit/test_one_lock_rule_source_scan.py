@@ -127,10 +127,22 @@ def _drive_gameday_lock(_tmp: Path) -> None:
     gameday_lock(_SUNDAY_GAMEDAY)
 
 
-def _drive_is_admissible_at_lock(_tmp: Path) -> None:
-    from scripts.ingest_historical_odds import is_admissible_at_lock
+def _drive_gameday_lock_admissibility(_tmp: Path) -> None:
+    """Was: ``_drive_is_admissible_at_lock``, which drove a SECOND admissibility helper.
 
-    is_admissible_at_lock("2026-09-18T18:00:00-04:00", _SUNDAY_GAMEDAY)
+    ``scripts.ingest_historical_odds.is_admissible_at_lock`` was DELETED by Plan 33.2-20:
+    it never acquired a production caller (Plans 33.2-13 and 33.2-14 each recorded why they
+    reached ``utils.game_lock`` directly instead), and a second admissibility entry point in
+    ``scripts/`` is exactly the two-answers shape this module exists to forbid.
+
+    The reader this drives is unchanged in substance: ``gameday_lock`` hands an Eastern
+    gameday to the ONE rule, and the verdict is taken from ``utils.game_lock.is_admissible``
+    against the lock that rule returns.
+    """
+    from scripts.ingest_historical_odds import gameday_lock
+    from utils.game_lock import is_admissible
+
+    is_admissible("2026-09-18T18:00:00-04:00", gameday_lock(_SUNDAY_GAMEDAY))
 
 
 def _drive_historical_odds_stamp(_tmp: Path) -> None:
@@ -239,8 +251,8 @@ def _drive_provenance_lock_frame(_tmp: Path) -> None:
 READERS: tuple[tuple[str, Callable[[Path], None]], ...] = (
     ("scripts.ingest_historical_odds.gameday_lock", _drive_gameday_lock),
     (
-        "scripts.ingest_historical_odds.is_admissible_at_lock",
-        _drive_is_admissible_at_lock,
+        "scripts.ingest_historical_odds.gameday_lock -> utils.game_lock.is_admissible",
+        _drive_gameday_lock_admissibility,
     ),
     (
         "scripts.ingest_historical_odds.transform_nfl_odds_with_counts",

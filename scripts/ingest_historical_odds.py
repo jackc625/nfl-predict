@@ -40,9 +40,18 @@ The stored ``snapshot_ts`` column is a STRING today, holding one fixed calendar 
 and its single non-consensus row uses a different, space-separated UTC format. Any comparison
 against a lock instant must PARSE and must never string-compare, and it must be
 Eastern-anchored rather than UTC-anchored. :func:`normalize_snapshot_ts` is the ONE lenient parse
-path and :func:`require_aware_snapshot_ts` the strict one; :func:`is_admissible_at_lock` is the
-ONE comparison, and it delegates to ``utils.game_lock.is_admissible``. Plan 31-09's selector calls
-the same functions, so the value written and the value compared come from one rule.
+path and :func:`require_aware_snapshot_ts` the strict one; the ONE comparison is
+``utils.game_lock.is_admissible``, called directly, against a lock this module derives with
+:func:`gameday_lock`. Plan 31-09's selector calls the same functions, so the value written and
+the value compared come from one rule.
+
+THERE IS NO LOCAL ADMISSIBILITY WRAPPER, AND THAT IS THE POINT (Plan 33.2-20). This module used
+to export ``is_admissible_at_lock(snapshot_value, kickoff)``, which re-derived a lock from a
+kickoff on every call and then delegated. It NEVER acquired a production caller: Plan 33.2-13's
+injury and QB cutoffs and Plan 33.2-14's market fence each compare a vector of information times
+against a lock the caller already holds, so all three call ``utils.game_lock.is_admissible``
+directly, and each recorded that choice. A second admissibility entry point that nothing calls is
+a rival answer waiting to drift from the real one, so it was deleted rather than kept.
 
 WHAT THIS MODULE WILL NOT DO
 ----------------------------
@@ -395,52 +404,25 @@ def _naive_parse_or_none(value: Any) -> pd.Timestamp | None:
     return parsed if parsed.tzinfo is None else None
 
 
-def _lock_of(kickoff: Any) -> datetime:
-    """The lock of the game identified by *kickoff*: an aware kickoff, or an Eastern gameday.
-
-    An aware kickoff instant goes straight to ``utils.game_lock.game_lock``; a date-only Eastern
-    ``gameday`` goes through :func:`gameday_lock`, which hands the same rule that date. A NAIVE
-    instant with a time of day is refused by :func:`gameday_lock` rather than relabelled.
-    """
-    import utils.game_lock as lock_rule
-
-    if isinstance(kickoff, datetime) and kickoff.tzinfo is not None:
-        return lock_rule.game_lock(kickoff)
-    if isinstance(kickoff, str):
-        parsed = pd.Timestamp(kickoff)
-        if parsed.tzinfo is not None:
-            return lock_rule.game_lock(parsed)
-    return gameday_lock(kickoff)
-
-
-def is_admissible_at_lock(snapshot_value: Any, kickoff: Any) -> bool:
-    """True when *snapshot_value* was captured AT or BEFORE that game's own lock.
-
-    THE DIRECTION CHANGED ON PURPOSE (Plan 33.2-02, RESEARCH 2.4). The function this replaces
-    answered "is this quote stale?" -- ``snapshot_ts >= freeze``, at-freeze fresh and strictly
-    before it stale. This one answers "could we have known this?" -- ``information_time <=
-    lock``, the lock rule's own admissibility test. They are OPPOSITE inequalities over the
-    same instant, and picking one silently is the failure mode, so it is said here: a quote from
-    three days before the lock is now ADMISSIBLE (it is old information, not future
-    information), a quote exactly AT the lock is admissible, and a quote one second after it is
-    not. Choosing the FRESHEST admissible quote -- the latest at or before the lock -- is a
-    separate concern and belongs to the odds-selection change in Plan 33.2-13.
-
-    The comparison is ``utils.game_lock.is_admissible``, reached as a module attribute at call
-    time; both sides go through the strict parser, so a NAIVE snapshot raises rather than being
-    anchored in any zone.
-
-    Args:
-        snapshot_value: The stored or derived ``snapshot_ts``; it must carry a timezone.
-        kickoff: That game's aware kickoff instant, or its Eastern calendar ``gameday``.
-
-    Returns:
-        True when the quote was known at or before the game's lock.
-    """
-    import utils.game_lock as lock_rule
-
-    return lock_rule.is_admissible(snapshot_value, _lock_of(kickoff))
-
+# ``_lock_of`` AND ``is_admissible_at_lock`` STOOD HERE AND WERE DELETED (Plan 33.2-20).
+#
+# ``is_admissible_at_lock(snapshot_value, kickoff)`` answered "could we have known this?" --
+# ``information_time <= lock``, the direction Plan 33.2-02 corrected from the retired staleness
+# rule. That DIRECTION is not what was removed: it is the rule ``utils.game_lock.is_admissible``
+# states, and every caller now asks that function.
+#
+# What was removed is the SECOND ENTRY POINT. The helper re-derived a lock from a kickoff on
+# every call, and it never acquired a production caller. Plan 33.2-13 recorded why its injury
+# and QB cutoffs did not use it (they compare a VECTOR of information times against one game's
+# lock the caller already holds, and the helper lives in ``scripts/``, which ``features/`` would
+# have to import lazily); Plan 33.2-14 recorded the same for the market fence. A second
+# admissibility function that nothing calls cannot be kept honest by use, and the one-lock-rule
+# scan would go on counting it as a reader that proves nothing.
+#
+# The retired staleness intent it carried -- at-lock admissible, one second after inadmissible,
+# a quote three days early still admissible because it is OLD information, not FUTURE
+# information -- is asserted directly against ``utils.game_lock.is_admissible`` in
+# ``tests/integration/test_ingest_2025_odds.py`` and ``tests/unit/test_suppression_freshness.py``.
 
 # ---------------------------------------------------------------------------
 # Clause 5: canonical keys.

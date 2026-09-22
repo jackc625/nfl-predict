@@ -786,7 +786,11 @@ class TestPerGameLockIsLoadBearing:
         Both halves are asserted so the per-game rule is shown to be LOAD-BEARING: a single
         week-level instant would give these two games the same verdict.
         """
-        from scripts.ingest_historical_odds import is_admissible_at_lock
+        # Retargeted by Plan 33.2-20 at ``utils.game_lock.is_admissible``, THE one rule.
+        # Was: ``scripts.ingest_historical_odds.is_admissible_at_lock``, a second
+        # admissibility entry point that never gained a production caller and was deleted
+        # rather than kept as a rival answer.
+        from utils.game_lock import is_admissible
 
         saturday_quote = _lock_for(_LATER_SUNDAY_GAMEDAY) - timedelta(hours=1)
         assert saturday_quote > _lock_for(_THURSDAY_GAMEDAY)
@@ -797,8 +801,8 @@ class TestPerGameLockIsLoadBearing:
         )
         assert thursday_reasons == ["stale_line"]
         assert "stale_line" not in sunday_reasons
-        assert is_admissible_at_lock(saturday_quote, _THURSDAY_GAMEDAY) is False
-        assert is_admissible_at_lock(saturday_quote, _LATER_SUNDAY_GAMEDAY) is True
+        assert is_admissible(saturday_quote, _lock_for(_THURSDAY_GAMEDAY)) is False
+        assert is_admissible(saturday_quote, _lock_for(_LATER_SUNDAY_GAMEDAY)) is True
 
 
 class TestSnapshotValueShapes:

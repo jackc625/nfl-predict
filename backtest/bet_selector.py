@@ -245,8 +245,9 @@ def _freshness_context(
     locks on the Wednesday and that week's Sunday games on the Saturday.
 
     The lock is ``utils.game_lock.game_lock`` and the verdict is ``utils.game_lock.is_admissible``
-    -- the same comparison ``scripts.ingest_historical_odds.is_admissible_at_lock`` delegates to --
-    each called exactly ONCE here and never restated. Both are reached as module attributes at
+    -- the ONE comparison every admissibility reader in the tree now calls directly, since Plan
+    33.2-20 deleted the uncalled ``scripts.ingest_historical_odds.is_admissible_at_lock`` wrapper
+    that used to delegate to it -- each called exactly ONCE here and never restated. Both are reached as module attributes at
     call time, so the phase's identity scan sees them. It is an ADMISSIBILITY verdict, not a
     staleness one (Plan 33.2-02): a snapshot captured AT or BEFORE the lock is admissible, one
     captured after it is not. Both sides are parsed strictly -- the stored column holds

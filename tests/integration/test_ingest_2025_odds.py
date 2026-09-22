@@ -1083,10 +1083,10 @@ class TestThePerGameSnapshotInstant:
         """
         from scripts.ingest_historical_odds import (
             gameday_lock,
-            is_admissible_at_lock,
             transform_nfl_odds_with_counts,
         )
         from utils.game_id_utils import create_standard_game_id
+        from utils.game_lock import is_admissible
         from utils.team_data import normalize_team_abbreviation
 
         schedule = _load_live_schedule(2025)
@@ -1107,8 +1107,14 @@ class TestThePerGameSnapshotInstant:
         checked = 0
         for _, row in out.iterrows():
             gameday = gameday_by_game[row["game_id"]]
-            assert row["snapshot_ts"] == gameday_lock(gameday)
-            assert is_admissible_at_lock(row["snapshot_ts"], gameday)
+            # Retargeted by Plan 33.2-20 at ``utils.game_lock.is_admissible``, THE one
+            # rule. Was: ``is_admissible_at_lock(row["snapshot_ts"], gameday)``, a second
+            # admissibility entry point in ``scripts/`` that re-derived the lock from the
+            # gameday on every call and that no production code ever called. The
+            # comparison, and this assertion's intent, are unchanged.
+            lock = gameday_lock(gameday)
+            assert row["snapshot_ts"] == lock
+            assert is_admissible(row["snapshot_ts"], lock)
             checked += 1
 
         assert checked == len(out)
@@ -1169,18 +1175,20 @@ class TestTheSharedSnapshotNormalization:
         information -- admissible, not stale. The staleness intent dies with the rule
         (D33.2-01); choosing the freshest admissible quote is Plan 33.2-13's subject.
         """
-        from scripts.ingest_historical_odds import gameday_lock, is_admissible_at_lock
+        from scripts.ingest_historical_odds import gameday_lock
+        from utils.game_lock import is_admissible
 
         lock = gameday_lock("2024-09-08")
 
-        assert is_admissible_at_lock(lock, "2024-09-08") is True
-        assert is_admissible_at_lock(lock + timedelta(seconds=1), "2024-09-08") is False
-        assert is_admissible_at_lock(lock - timedelta(seconds=1), "2024-09-08") is True
-        assert is_admissible_at_lock(lock - timedelta(hours=72), "2024-09-08") is True
+        assert is_admissible(lock, lock) is True
+        assert is_admissible(lock + timedelta(seconds=1), lock) is False
+        assert is_admissible(lock - timedelta(seconds=1), lock) is True
+        assert is_admissible(lock - timedelta(hours=72), lock) is True
 
     def test_one_instant_in_three_encodings_gives_one_verdict(self) -> None:
         """A string comparison would call these three different; a parse calls them one."""
-        from scripts.ingest_historical_odds import gameday_lock, is_admissible_at_lock
+        from scripts.ingest_historical_odds import gameday_lock
+        from utils.game_lock import is_admissible
 
         lock = gameday_lock("2024-09-08").astimezone(UTC)
         string_encodings = [
@@ -1193,7 +1201,7 @@ class TestTheSharedSnapshotNormalization:
             *string_encodings,
         ]  # plus the datetime this ingest now writes
 
-        verdicts = {is_admissible_at_lock(value, "2024-09-08") for value in encodings}
+        verdicts = {is_admissible(value, lock) for value in encodings}
 
         assert verdicts == {True}
         assert len(set(string_encodings)) == len(string_encodings), (
@@ -1246,14 +1254,15 @@ class TestTheSharedSnapshotNormalization:
             "import json\n"
             "from datetime import datetime, timedelta\n"
             "from scripts.ingest_historical_odds import ("
-            "gameday_lock, is_admissible_at_lock, normalize_snapshot_ts)\n"
+            "gameday_lock, normalize_snapshot_ts)\n"
+            "from utils.game_lock import is_admissible\n"
             "lock = gameday_lock('2024-09-08')\n"
             "print(json.dumps({\n"
             "  'offset_hours': datetime.now().astimezone().utcoffset().total_seconds()/3600,\n"
             "  'lock': lock.isoformat(),\n"
-            "  'at_lock': is_admissible_at_lock(lock, '2024-09-08'),\n"
-            "  'one_second_after': is_admissible_at_lock("
-            "lock + timedelta(seconds=1), '2024-09-08'),\n"
+            "  'at_lock': is_admissible(lock, lock),\n"
+            "  'one_second_after': is_admissible("
+            "lock + timedelta(seconds=1), lock),\n"
             "  'legacy_string': normalize_snapshot_ts("
             f"{_LEGACY_PER_SEASON_STRING!r}).isoformat(),\n"
             "  'naive_string': normalize_snapshot_ts('2021-09-19 18:00:00').isoformat(),\n"
@@ -1280,16 +1289,16 @@ class TestTheSharedSnapshotNormalization:
 
         from scripts.ingest_historical_odds import (
             gameday_lock,
-            is_admissible_at_lock,
             normalize_snapshot_ts,
         )
+        from utils.game_lock import is_admissible
 
         lock = gameday_lock("2024-09-08")
         assert pd.Timestamp(remote["lock"]) == pd.Timestamp(lock)
-        assert remote["at_lock"] is is_admissible_at_lock(lock, "2024-09-08") is True
+        assert remote["at_lock"] is is_admissible(lock, lock) is True
         assert (
             remote["one_second_after"]
-            is is_admissible_at_lock(lock + timedelta(seconds=1), "2024-09-08")
+            is is_admissible(lock + timedelta(seconds=1), lock)
             is False
         )
         assert pd.Timestamp(remote["legacy_string"]) == pd.Timestamp(
