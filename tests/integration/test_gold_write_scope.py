@@ -457,6 +457,35 @@ def _sandbox_silver_weather(games: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _sandbox_silver_odds(games: pd.DataFrame) -> pd.DataFrame:
+    """One consensus odds row per game, CAPTURED the day before its lock.
+
+    Since Plan 33.2-14 the market builder is an information-time supplier: a line counts for
+    a game only with a recorded capture time (``created_at``) at or before its lock (owner
+    ruling 2026-09-22), and the supplier dates each game from the silver ``odds_snapshot``
+    rows it admitted. A sandbox that seeds the market FEATURES must also seed the silver
+    rows they came from, each captured 24 hours before the game's 18:00 ET lock.
+    """
+    import utils.game_lock as lock_rule
+
+    locks = lock_rule.lock_frame(games[["game_id", "kickoff_et"]])
+    captured = pd.to_datetime(
+        [locks[str(g)] - pd.Timedelta(days=1) for g in games["game_id"]], utc=True
+    )
+    return pd.DataFrame(
+        {
+            "game_id": games["game_id"].to_numpy(),
+            "sportsbook": "consensus",
+            "snapshot_ts": [str(locks[str(g)]) for g in games["game_id"]],
+            "created_at": captured,
+            "ml_home": -150.0,
+            "ml_away": 130.0,
+            "spread": -3.0,
+            "total": 44.0,
+        }
+    )
+
+
 def _sandbox_team_form(games: pd.DataFrame) -> pd.DataFrame:
     """The silver ``team_form_features`` shape: one row per (team, side, target week).
 
@@ -599,6 +628,11 @@ def _build_into_sandbox(
     )
     storage_mod._parquet_manager.save(
         _sandbox_silver_weather(seeded_games), "silver/weather.parquet"
+    )
+    # The market supplier dates each game from the silver odds rows captured at or before
+    # its lock (Plan 33.2-14, owner ruling 2026-09-22).
+    storage_mod._parquet_manager.save(
+        _sandbox_silver_odds(seeded_games), "silver/odds_snapshot.parquet"
     )
     # The team-form supplier reads the silver rolling table to know which teams carry a
     # row for each game (Plan 33.2-14).
