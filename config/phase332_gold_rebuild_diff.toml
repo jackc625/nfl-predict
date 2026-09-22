@@ -10,7 +10,7 @@
 # scripts.fingerprint_gold._column_bytes, as every prior ladder. ASCII only.
 # ===========================================================================
 
-generated_at = "2026-09-22T01:23:33.551637+00:00"
+generated_at = "2026-09-22T03:21:14.917424+00:00"
 rung_prefix = "p332_"
 float_tolerance = "none -- EXACT byte comparison"
 
@@ -268,3 +268,103 @@ wind_impact_score = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "20
 wind_moderate = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
 wind_mph = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
 wind_severe = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+
+[rung."4b"]
+rung = "4b"
+prefix = "p332_"
+extra_step = true
+follows_rung = 4
+rebuilt = true
+baseline_document = "p332_rung4_retaken.json"
+baseline_retaken_why = "RETAKEN 2026-09-21 by the standing ruling. Gold rebuilt with `scripts/build_features.py --through-season 2025` in a SCRATCH data root (DATA_ROOT_PATH and DUCKDB_PATH pointed at a copy of today's production data/, the code exported from commit fda8727 -- Plan 33.2-13's last commit, before step 4b existed), i.e. today's inputs minus exactly step 4b's cause. The production data/ tree was digest-identical (1107 files) before and after that build. p332_rung4.json is kept unchanged"
+cause = "A RETRACTABLE ROOF IS UNKNOWN AT THE LOCK, p332_ extra step 4b of Plan 33.2-14 (orchestrator-assigned; owner ruling 2026-09-21), and NOTHING else: the 2002-2025 silver weather regeneration (scripts.weather_from_mos) no longer reads any game's realized open/closed roof, so every game at a retractable-roof stadium carries the day-before forecast exactly as an outdoor game does -- 620 games rung 4 had turned into domes, 619 gaining their bulletin and 2019_W18_BUF@HOU (a confirmed archive gap) becoming an honest absence -- while fixed-roof domes stay domes and the venue's retractability stays model-visible through venue_retractable. Only the weather-builder columns and raw_weather_severity can move, in any season 2002-2025. No column is added, none removed, no row moves"
+declared_family = ["apparent_temp_f", "ball_handling_difficulty", "cold_impact_score", "defensive_advantage", "extreme_weather", "heat_impact_score", "home_weather_advantage", "is_dry", "is_rain", "is_snow", "kicking_difficulty", "passing_difficulty", "passing_efficiency", "precip_heavy", "precip_impact_score", "precip_light", "precip_mm", "precip_moderate", "precip_none", "precip_prob", "raw_humidity_pct", "raw_precip_mm", "raw_precip_prob", "raw_temp_f", "raw_weather_severity", "raw_wind_mph", "rushing_advantage", "scoring_multiplier", "scoring_reduction", "temp_cold", "temp_cool", "temp_f", "temp_hot", "temp_mild", "temp_very_cold", "temp_warm", "turnover_multiplier", "weather_affects_game", "weather_condition", "weather_coverage", "weather_game", "weather_severity_score", "wind_calm", "wind_high", "wind_impact_score", "wind_moderate", "wind_mph", "wind_severe"]
+redecided_games = 620
+archive_gap_game = "2019_W18_BUF@HOU"
+owner_ruling = "2026-09-21: the open/closed state of a retractable roof is NOT known at the lock (Treat as unknown at lock)"
+model_visible_roof_flag = "venue_retractable (features.contextual.encode_venue_features, the lock venue's FIXED roof type in data/venues.json); NOT expected to move"
+rows_changed = "before normalization only the 620 redecided games can differ. The rescaled weather columns are z-scored within each season from that season's earlier rows and fitted on prior seasons, so after normalization they also move on the rows of a redecided game's season sorted after it (the rescaled same-season neighbours) and on later seasons. Measured row by row at run time against a copy of the before-gold"
+widths_before = ["193", "194", "193"]
+widths_after = ["193", "194", "193"]
+moved_columns = ["apparent_temp_f", "ball_handling_difficulty", "cold_impact_score", "defensive_advantage", "extreme_weather", "heat_impact_score", "home_weather_advantage", "is_dry", "is_rain", "is_snow", "kicking_difficulty", "passing_difficulty", "passing_efficiency", "precip_heavy", "precip_impact_score", "precip_light", "precip_moderate", "precip_none", "precip_prob", "raw_humidity_pct", "raw_precip_prob", "raw_temp_f", "raw_weather_severity", "raw_wind_mph", "rushing_advantage", "scoring_multiplier", "scoring_reduction", "temp_cold", "temp_cool", "temp_f", "temp_hot", "temp_mild", "temp_very_cold", "temp_warm", "turnover_multiplier", "weather_affects_game", "weather_coverage", "weather_game", "weather_severity_score", "wind_calm", "wind_high", "wind_impact_score", "wind_moderate", "wind_mph", "wind_severe"]
+build_clock_moves = ["feature_timestamp"]
+unattributed_columns = []
+attribution_ok = true
+attribution_blocking = false
+attributor = "_attribute_p332_retractable_roof"
+
+[rung."4b".moved_seasons]
+apparent_temp_f = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+ball_handling_difficulty = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+cold_impact_score = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+defensive_advantage = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+extreme_weather = ["2015", "2019"]
+heat_impact_score = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_weather_advantage = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+is_dry = ["2002", "2003", "2004", "2006", "2007", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+is_rain = ["2002", "2003", "2004", "2006", "2007", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+is_snow = ["2014", "2016", "2019", "2023", "2024"]
+kicking_difficulty = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+passing_difficulty = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+passing_efficiency = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+precip_heavy = ["2002", "2003", "2006", "2009", "2011", "2012", "2013", "2014", "2015", "2016", "2018", "2019", "2020", "2021", "2023"]
+precip_impact_score = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+precip_light = ["2003", "2004", "2006", "2007", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2022", "2023", "2024", "2025"]
+precip_moderate = ["2007", "2012", "2013", "2014", "2016", "2018", "2019", "2020", "2021", "2022", "2023", "2024"]
+precip_none = ["2002", "2003", "2004", "2006", "2007", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+precip_prob = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+raw_humidity_pct = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+raw_precip_prob = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+raw_temp_f = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+raw_weather_severity = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+raw_wind_mph = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+rushing_advantage = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+scoring_multiplier = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+scoring_reduction = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+temp_cold = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+temp_cool = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+temp_f = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+temp_hot = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+temp_mild = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+temp_very_cold = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+temp_warm = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+turnover_multiplier = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+weather_affects_game = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+weather_coverage = ["2019"]
+weather_game = ["2006", "2009", "2013", "2014", "2015", "2018", "2019", "2020", "2021", "2023"]
+weather_severity_score = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+wind_calm = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+wind_high = ["2002", "2003", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+wind_impact_score = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+wind_moderate = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+wind_mph = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+wind_severe = ["2008", "2010", "2011", "2012", "2014", "2015", "2016", "2017", "2019", "2021", "2022", "2023", "2024", "2025"]
+
+[rung."4b".carry_in]
+from_document = "p332_rung4.json"
+to_document = "p332_rung4_retaken.json"
+cause = "PRE-STEP-4b CARRY-IN: Plan 33.2-13's injury and QB builders moved onto each game's own lock (commits dfe241e, 2c36173, 501e47c -- code only, no gold rebuild, made after rung 4 was built): injury reports admitted only when timed at or before the lock, 2025+ injury rows the honest unknown (upstream dropped date_modified), the latest admitted report per player, exact neutral availability for a team that admitted nothing; 2025 starting QBs from the depth chart published at or before the lock; play-by-play admitted per game when that game ended by the lock; the per-(season, week, lock) rolling cache. It is the injury and starting-QB / QB-play-by-play half of rung 5's declared builder-cutoff cause, measured before step 4b rather than folded into it"
+moved_columns = ["away_availability_fraction", "away_backup_quality_delta", "away_date_modified_coverage", "away_injury_coverage", "away_qb_adjustment", "away_qb_out_flag", "home_availability_fraction", "home_backup_quality_delta", "home_date_modified_coverage", "home_injury_coverage", "home_qb_adjustment", "home_qb_out_flag"]
+outside_prediction = []
+
+[rung."4b".carry_in.predicted_by_builder]
+injury = ["away_availability_coverage", "away_availability_fraction", "away_backup_quality_delta", "away_date_modified_coverage", "away_injury_coverage", "away_qb_out_flag", "home_availability_coverage", "home_availability_fraction", "home_backup_quality_delta", "home_date_modified_coverage", "home_injury_coverage", "home_qb_out_flag"]
+qb = ["away_qb_adjustment", "home_qb_adjustment"]
+
+[rung."4b".carry_in.moved_by_builder]
+injury = ["away_availability_fraction", "away_backup_quality_delta", "away_date_modified_coverage", "away_injury_coverage", "away_qb_out_flag", "home_availability_fraction", "home_backup_quality_delta", "home_date_modified_coverage", "home_injury_coverage", "home_qb_out_flag"]
+qb = ["away_qb_adjustment", "home_qb_adjustment"]
+
+[rung."4b".carry_in.moved_seasons]
+away_availability_fraction = ["2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+away_backup_quality_delta = ["2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+away_date_modified_coverage = ["2009", "2010", "2020", "2022", "2024"]
+away_injury_coverage = ["2009", "2010", "2020", "2022", "2024"]
+away_qb_adjustment = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+away_qb_out_flag = ["2009", "2010"]
+home_availability_fraction = ["2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_backup_quality_delta = ["2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_date_modified_coverage = ["2009", "2010", "2013", "2017", "2020", "2022", "2023"]
+home_injury_coverage = ["2009", "2010", "2013", "2017", "2020", "2022", "2023"]
+home_qb_adjustment = ["2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+home_qb_out_flag = ["2009", "2010"]

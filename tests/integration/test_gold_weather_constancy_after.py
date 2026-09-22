@@ -61,6 +61,15 @@ constant any more), the coverage flag takes BOTH levels (the 56 games abroad hav
 forecast), and the bulletins report WHOLE DEGREES (so a surviving 65 F default is detected as a
 spike beside its neighbours rather than by a raw count).
 
+THE FOURTH HALF: p332_ STEP 4b (Plan 33.2-14, owner ruling 2026-09-21). A retractable roof's
+open/closed state is not known at the lock, so the 620 games rung 4 had made domes now carry
+their forecast (2019_W18_BUF@HOU, a confirmed archive gap, is an absence). The LIVE assertions
+now read ``tests.phase33_state.P332_14_GOLD_WEATHER_CONSTANCY_AFTER_STEP4B``, recorded beside
+the rung-4 slot, which is left byte-unchanged. The indoor population is the FIXED-roof domes
+alone (1,030), so the temperature-null floor reads the step-4b dome count rather than Phase
+33.1's 1,652, which counted closed retractable roofs as indoor and stays recorded as that
+phase's figure.
+
 WHAT THIS MODULE DOES NOT CLAIM (SPEC R8). That any model is more accurate. No
 model was re-fit, no gate was run, and ``artifacts/latest.json`` is unchanged.
 This is a statement about what the columns CONTAIN.
@@ -94,8 +103,12 @@ POPULATIONS = {
 
 BUILD_COMMAND = "uv run python scripts/build_features.py --all-seasons"
 
-#: The latest AFTER record: p332_ rung 4's, stated beside the Phase 33.1 pair.
+#: The rung-4 AFTER record, stated beside the Phase 33.1 pair (kept as the record it is).
 RUNG4_AFTER = state.P332_12_GOLD_WEATHER_CONSTANCY_AFTER_RUNG4
+
+#: The LATEST AFTER record: p332_ step 4b's, stated beside the rung-4 slot. Live gold is
+#: asserted against this one.
+LATEST_AFTER = state.P332_14_GOLD_WEATHER_CONSTANCY_AFTER_STEP4B
 
 
 def _gold(matrix: str) -> pd.DataFrame:
@@ -206,7 +219,7 @@ class TestTheOuSeventeenNoLongerSitAtOneValue:
         window = frame[frame["season"].isin(POPULATIONS["wp_ou_train_2018_2019"])]
 
         constant = _constant_columns(window, ou_weather)
-        recorded = RUNG4_AFTER["ou_weather_features_constant"]["ou_train_2018_2019"]
+        recorded = LATEST_AFTER["ou_weather_features_constant"]["ou_train_2018_2019"]
         assert (len(constant), len(ou_weather)) == recorded, (
             f"the O/U seventeen: RECORDED at rung 4 {recorded}, MEASURED "
             f"{(len(constant), len(ou_weather))}; constant now: {constant}"
@@ -234,7 +247,7 @@ class TestTheWholeWeatherFamilyVariesInEveryWindow:
         window = frame[frame["season"].isin(POPULATIONS[population])]
 
         constant = _constant_columns(window, columns)
-        expected = list(RUNG4_AFTER["populations"][population]["constant_columns"])
+        expected = list(LATEST_AFTER["populations"][population]["constant_columns"])
         before = state.GOLD_WEATHER_CONSTANCY_MEASUREMENT["populations"].get(population)
         before_text = (
             f"RECORDED BEFORE {before['constant']} of "
@@ -268,7 +281,10 @@ class TestNoWeatherColumnCarriesAnImputedStandIn:
             *groups["temperature"],
             *groups["temperature_impact"],
         ]
-        indoor = int(state.WEATHER_NULL_STATE_MATRIX["indoor_games_gaining_nan"])
+        # The indoor population since step 4b is the fixed-roof domes alone. Phase 33.1's
+        # recorded 1,652 counted closed retractable roofs as indoor and stays as that record.
+        assert int(state.WEATHER_NULL_STATE_MATRIX["indoor_games_gaining_nan"]) == 1652
+        indoor = int(LATEST_AFTER["dome_rows"])
 
         assert len(temperature_derived) == 13
         for column in temperature_derived:
@@ -297,7 +313,7 @@ class TestNoWeatherColumnCarriesAnImputedStandIn:
         # population is read from the applicability flag itself.
         indoor_mask = frame["weather_affects_game"] == 0.0
 
-        assert int(indoor_mask.sum()) == int(RUNG4_AFTER["dome_or_closed_roof_rows"])
+        assert int(indoor_mask.sum()) == int(LATEST_AFTER["dome_rows"])
         for column in composites:
             nan_among_indoor = int(frame.loc[indoor_mask, column].isna().sum())
             assert nan_among_indoor == 0, (
@@ -337,7 +353,7 @@ class TestNoWeatherColumnCarriesAnImputedStandIn:
         )
         assert distinct >= 60, (
             f"raw_temp_f takes only {distinct} distinct values. Whole-degree "
-            "forecasts over 4,793 outdoor games still take dozens"
+            "forecasts over 5,412 weather-applies games still take dozens"
         )
 
 
@@ -370,13 +386,13 @@ class TestTheCoverageFlagSaysWhatItMeasures:
         # SINCE RUNG 4 THE FLAG VARIES, and that is its point: the 56 games abroad have
         # no forecast, so they read 0.0 -- the value that means NO FORECAST -- and every
         # other row reads 1.0. Both levels are asserted with the absence count.
-        assert levels == list(RUNG4_AFTER["coverage_levels"]), (
+        assert levels == list(LATEST_AFTER["coverage_levels"]), (
             f"{matrix}.{column} reads {levels}. Every game in this corpus has a "
             "real observation, so the honest value is 1.0 on every row; 0.0 is "
             "what an ABSENT observation reads, and it is what this column "
             "carried on all 6,499 rows before the rung-3 rebuild"
         )
-        assert int((frame[column] == 0.0).sum()) == int(RUNG4_AFTER["absence_rows"])
+        assert int((frame[column] == 0.0).sum()) == int(LATEST_AFTER["absence_rows"])
 
 
 @pytest.mark.integration
@@ -433,10 +449,10 @@ class TestTheAfterSlotIsThePairAndNotAReplacement:
         )
 
         frame = _gold("features_ou")
-        # Live gold since rung 4: the 1,650 domes and closed roofs plus the 56 games
-        # abroad. The recorded 1,652 above is Phase 33.1's figure and stays as it is.
+        # Live gold since step 4b: the 1,030 fixed-roof domes plus the 57 absences. The
+        # recorded 1,652 above is Phase 33.1's figure and stays as it is.
         assert int(frame["raw_humidity_pct"].isna().sum()) == int(
-            RUNG4_AFTER["raw_humidity_pct_null_rows"]
+            LATEST_AFTER["raw_humidity_pct_null_rows"]
         )
 
     def test_the_after_slot_does_not_claim_an_accuracy_improvement(self) -> None:

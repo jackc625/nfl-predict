@@ -5589,7 +5589,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 4, steps 3b, 3c).
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 4, steps 3b, 3c, 4b).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -5778,6 +5778,12 @@ def write_phase332_rebuild_diff(
     )
     if weather_document.exists():
         lines.extend(_phase332_weather_rung_lines(fingerprint_dir))
+
+    retractable_document = rung_document_path(
+        fingerprint_dir, PHASE332_RETRACTABLE_ROOF_STEP, PHASE332_RUNG_PREFIX
+    )
+    if retractable_document.exists():
+        lines.extend(_phase332_retractable_roof_step_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -6114,6 +6120,100 @@ def _phase332_weather_rung_lines(fingerprint_dir: Path | str) -> list[str]:
     ]
     lines.extend(["", f"[rung.{rung}.moved_seasons]"])
     for column, seasons in sorted(_phase332_moved_seasons(report).items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_retractable_roof_step_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` extra step 4b (Plan 33.2-14), recomputed.
+
+    Judged by the same ``attribute_rung`` call the CLI makes, against the RETAKEN baseline
+    (``PHASE332_RETAKEN_BASELINES``). The carry-in between p332_rung4.json and that baseline
+    -- Plan 33.2-13's measured effect -- is recorded in its own table, beside the step and
+    never inside it.
+    """
+    step = PHASE332_RETRACTABLE_ROOF_STEP
+    require_rung_ladder(fingerprint_dir, step, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, step)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, step, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, step, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    signature = PHASE332_RETRACTABLE_ROOF_STEP_EXPECTED_SIGNATURE
+    carry_in = phase332_step4b_carry_in(fingerprint_dir)
+    carry_seasons = cast("dict[str, list[str]]", carry_in["moved_seasons"])
+    carry_by_builder = cast("dict[str, list[str]]", carry_in["by_builder"])
+    carry_outside = cast("list[str]", carry_in["outside_prediction"])
+    lines = [
+        "",
+        f'[rung."{step}"]',
+        f'rung = "{step}"',
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        "extra_step = true",
+        f"follows_rung = {PHASE332_RETRACTABLE_ROOF_STEP_FOLLOWS}",
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_retaken_why = "
+        f'"{_toml_escape(PHASE332_RETAKEN_BASELINE_REASONS[step])}"',
+        f'cause = "{_toml_escape(PHASE332_RETRACTABLE_ROOF_STEP_CAUSE)}"',
+        f"declared_family = {_toml_array(sorted(phase332_weather_columns()))}",
+        f"redecided_games = {PHASE332_RETRACTABLE_ROOF_STEP_REDECIDED_GAMES}",
+        f'archive_gap_game = "{PHASE332_RETRACTABLE_ROOF_STEP_ARCHIVE_GAP}"',
+        'owner_ruling = "2026-09-21: the open/closed state of a retractable roof is NOT '
+        'known at the lock (Treat as unknown at lock)"',
+        f'model_visible_roof_flag = "{_toml_escape(str(signature["model_visible_roof_flag"]))}"',
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_EXTRA_STEP_ATTRIBUTORS[step].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the step is '
+            'recorded as declared-but-not-run rather than as a step that ran"'
+        )
+    lines.extend(["", f'[rung."{step}".moved_seasons]'])
+    for column, seasons in sorted(_phase332_moved_seasons(report).items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    lines.extend(
+        [
+            "",
+            f'[rung."{step}".carry_in]',
+            'from_document = "'
+            + rung_document_path(
+                fingerprint_dir, PHASE332_WEATHER_RUNG, PHASE332_RUNG_PREFIX
+            ).name
+            + '"',
+            f'to_document = "{baseline_path.name}"',
+            f'cause = "{_toml_escape(PHASE332_STEP4B_CARRY_IN_CAUSE)}"',
+            f"moved_columns = {_toml_array(sorted(carry_seasons))}",
+            f"outside_prediction = {_toml_array(carry_outside)}",
+            "",
+            f'[rung."{step}".carry_in.predicted_by_builder]',
+        ]
+    )
+    for builder, columns in sorted(PHASE332_STEP4B_CARRY_IN_PREDICTED_COLUMNS.items()):
+        lines.append(f"{builder} = {_toml_array(list(columns))}")
+    lines.extend(["", f'[rung."{step}".carry_in.moved_by_builder]'])
+    for builder, columns in sorted(carry_by_builder.items()):
+        lines.append(f"{builder} = {_toml_array(columns)}")
+    lines.extend(["", f'[rung."{step}".carry_in.moved_seasons]'])
+    for column, seasons in sorted(carry_seasons.items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
     return lines
 

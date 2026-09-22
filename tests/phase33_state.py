@@ -15417,3 +15417,180 @@ P332_12_GOLD_WEATHER_CONSTANCY_AFTER_RUNG4: dict[str, object] = {
     "raw_temp_f_at_66": 105,
     "raw_temp_f_distinct": 83,
 }
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-14, orchestrator-assigned -- p332_ EXTRA STEP 4b: A RETRACTABLE ROOF IS UNKNOWN AT
+# THE LOCK (owner ruling 2026-09-21, "Treat as unknown at lock"). APPENDED ONCE on 2026-09-21,
+# in ONE block. Nothing above this line was edited.
+#
+# THE CAUSE, declared in commit 5e190c9 before any production write: the 2002-2025 silver
+# weather regeneration no longer reads a game's realized open/closed roof, so every game at a
+# retractable-roof stadium takes the day-before forecast exactly as an outdoor game does.
+# Rung 4 had turned 620 closed-roof games into domes with no weather; 619 now carry their
+# bulletin and 2019_W18_BUF@HOU (the confirmed KHOU archive gap) is an honest absence. Fixed-
+# roof domes stay domes; the stadium's retractability stays model-visible as venue_retractable
+# (the fixed roof type, unchanged by this step).
+#
+# THE BASELINE WAS RETAKEN, NOT ASSUMED. Plan 33.2-13 changed the injury and QB builders (code
+# only) after rung 4 was built, so gold was rebuilt in a SCRATCH data root from today's inputs
+# with the code at fda8727 (before step 4b existed) -> p332_rung4_retaken.json; production
+# data/ was digest-identical (1107 files) before and after that build. Its difference from
+# p332_rung4.json is Plan 33.2-13's MEASURED effect (the CARRY_IN slots below): 12 columns,
+# all inside the prediction declared (5e190c9) before the scratch fingerprint was read -- 10
+# injury-family columns and both qb_adjustment columns; no column added or removed, rows
+# unchanged. home_availability_coverage and away_availability_coverage were predicted and did
+# not move.
+#
+# MEASURED 2026-09-21: step 4b judged against the retaken baseline -- attribution_ok true, not
+# blocking, zero unattributed; 45 weather-family columns moved and nothing else; exactly the
+# 620 redecided games changed weather_affects_game; 6,373 rows per matrix moved in some weather
+# column (the rescaled same-season neighbours); widths 193/194/193 unchanged; rows 6,499
+# unchanged. Silver: 620 weather rows moved, no 2026 row. The digest bracket
+# outputs/p332_step4b_before.json -> after named exactly the six declared paths.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_RETRACTABLE_ROOF_STEP_CAUSE (UTF-8), declared in
+# commit 5e190c9 before any production write.
+P332_14_STEP4B_CAUSE_DIGEST: str = (
+    "f2aaaac672687a4b1fa5a010926d03c4e814a102086946a87d112197b06fac2c"
+)
+
+P332_14_STEP4B_DECLARED_IN_COMMIT: str = "5e190c9a699462286ea01666e4be4f1e83bc1a72"
+
+P332_14_STEP4B_ID: str = "4b"
+
+P332_14_STEP4B_FOLLOWS_RUNG: int = 4
+
+P332_14_STEP4B_BASELINE_DOCUMENT: str = "p332_rung4_retaken.json"
+
+P332_14_STEP4B_BASELINE_CODE_COMMIT: str = "fda872747304364bdf30b183194a9561c4b26979"
+
+P332_14_STEP4B_REDECIDED_GAMES: int = 620
+
+P332_14_STEP4B_ARCHIVE_GAP_GAME: str = "2019_W18_BUF@HOU"
+
+P332_14_STEP4B_SILVER_FORECAST_ROWS: int = 5412
+
+P332_14_STEP4B_SILVER_DOME_ROWS: int = 1030
+
+P332_14_STEP4B_SILVER_ABSENCE_ROWS: int = 57
+
+P332_14_STEP4B_SILVER_ABSENCE_ABROAD: int = 56
+
+P332_14_STEP4B_SILVER_ABSENCE_US: int = 1
+
+P332_14_STEP4B_SILVER_OBSERVATION_ROWS: int = 0
+
+P332_14_STEP4B_NETWORK_CALLS: int = 0
+
+P332_14_STEP4B_SILVER_ROWS_MOVED: int = 620
+
+P332_14_STEP4B_MOVED_COLUMN_COUNT: int = 45
+
+P332_14_STEP4B_ROWS_MOVED_PER_MATRIX: int = 6373
+
+P332_14_STEP4B_WEATHER_AFFECTS_GAME_ROWS_MOVED: int = 620
+
+P332_14_STEP4B_WIDTHS: tuple[int, int, int] = (193, 194, 193)
+
+P332_14_STEP4B_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "gold/features_wp.parquet",
+    "nfl_predictions.duckdb",
+    "silver/weather.parquet",
+    "silver/weather_features.parquet",
+)
+
+P332_14_STEP4B_CARRY_IN_SCRATCH_PROD_DIGEST_FILES: int = 1107
+
+P332_14_STEP4B_CARRY_IN_OUTSIDE_PREDICTION: tuple[str, ...] = ()
+
+P332_14_STEP4B_CARRY_IN_BY_BUILDER: dict[str, tuple[str, ...]] = {
+    "injury": (
+        "away_availability_fraction",
+        "away_backup_quality_delta",
+        "away_date_modified_coverage",
+        "away_injury_coverage",
+        "away_qb_out_flag",
+        "home_availability_fraction",
+        "home_backup_quality_delta",
+        "home_date_modified_coverage",
+        "home_injury_coverage",
+        "home_qb_out_flag",
+    ),
+    "qb": ("away_qb_adjustment", "home_qb_adjustment"),
+}
+
+P332_14_STEP4B_CARRY_IN_MOVED_SEASONS: dict[str, tuple[str, ...]] = {
+    "away_availability_fraction": (
+        "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021",
+        "2022", "2023", "2024", "2025",
+    ),
+    "away_backup_quality_delta": (
+        "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017",
+        "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025",
+    ),
+    "away_date_modified_coverage": ("2009", "2010", "2020", "2022", "2024"),
+    "away_injury_coverage": ("2009", "2010", "2020", "2022", "2024"),
+    "away_qb_adjustment": (
+        "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010",
+        "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019",
+        "2020", "2021", "2022", "2023", "2024", "2025",
+    ),
+    "away_qb_out_flag": ("2009", "2010"),
+    "home_availability_fraction": (
+        "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021",
+        "2022", "2023", "2024", "2025",
+    ),
+    "home_backup_quality_delta": (
+        "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017",
+        "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025",
+    ),
+    "home_date_modified_coverage": ("2009", "2010", "2013", "2017", "2020", "2022", "2023"),
+    "home_injury_coverage": ("2009", "2010", "2013", "2017", "2020", "2022", "2023"),
+    "home_qb_adjustment": (
+        "2002", "2003", "2004", "2005", "2006", "2007", "2008", "2009", "2010",
+        "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019",
+        "2020", "2021", "2022", "2023", "2024", "2025",
+    ),
+    "home_qb_out_flag": ("2009", "2010"),
+}  # fmt: skip
+
+# THE FOURTH HALF OF R5'S WEATHER RECORD, stated BESIDE the rung-4 slot and never replacing it
+# (P332_12_GOLD_WEATHER_CONSTANCY_AFTER_RUNG4 is byte-unchanged). MEASURED 2026-09-21 on
+# step-4b gold: still no weather column constant in any window, and 0 of the O/U seventeen;
+# 1,030 fixed-roof dome rows and 57 absences (56 abroad, 2019_W18_BUF@HOU), so 1,087 rows have
+# no temperature or humidity; raw_temp_f takes 98 whole-degree values, 134 at 65 F beside 109
+# at 64 and 110 at 66 (no spike). Phase 33.1's WEATHER_NULL_STATE_MATRIX counted 1,652
+# indoor games because it read closed retractable roofs as indoor; that figure stays recorded
+# as the Phase 33.1 record.
+P332_14_GOLD_WEATHER_CONSTANCY_AFTER_STEP4B: dict[str, object] = {
+    "supersedes": "P332_12_GOLD_WEATHER_CONSTANCY_AFTER_RUNG4",
+    "supersedes_note": (
+        "stated beside the rung-4 slot, never 'replaces' it: that slot records the gold in "
+        "which 620 closed retractable roofs were domes; this one the gold of p332_ step 4b, "
+        "in which a retractable roof is unknown at the lock"
+    ),
+    "populations": {
+        "ats_train_2015_2019": {"constant_columns": ()},
+        "wp_ou_train_2018_2019": {"constant_columns": ()},
+        "gate_holdout_2021_2024": {"constant_columns": ()},
+        "all_2002_2025": {"constant_columns": ()},
+    },
+    "ou_weather_features_constant": {
+        "ou_train_2018_2019": (0, 17),
+        "gate_holdout_2021_2024": (0, 17),
+    },
+    "weather_columns_counted": 47,
+    "weather_columns_in_gold": 45,
+    "dome_rows": 1030,
+    "absence_rows": 57,
+    "raw_temp_f_null_rows": 1087,
+    "raw_humidity_pct_null_rows": 1087,
+    "coverage_levels": (0.0, 1.0),
+    "raw_temp_f_at_65": 134,
+    "raw_temp_f_at_64": 109,
+    "raw_temp_f_at_66": 110,
+    "raw_temp_f_distinct": 98,
+}
