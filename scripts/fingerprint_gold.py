@@ -6728,6 +6728,297 @@ PHASE332_RUNG_SIGNATURES[PHASE332_WINDOW_RUNG] = PHASE332_WINDOW_RUNG_EXPECTED_S
 PHASE332_RUNG_ATTRIBUTORS[PHASE332_WINDOW_RUNG] = _attribute_p332_window
 
 
+# ---------------------------------------------------------------------------
+# p332_ EXTRA STEP 8b -- WINSORIZATION STOPS FITTING ON THE SEASON IT CLIPS
+# (owner ruling 2026-09-22, "Skip trim, first season"; run FIRST in Plan 33.2-19's
+# dispatch, before steps 8c / 8d and rung 9). Registered per Plan 33.2-08's
+# <owned_protocol_rung_registration>, in the extra-step form steps 3b / 3c / 4b / 6b /
+# 7b use: a STRING id that cannot collide with rung 9, one cause, one entry in each
+# extra-step dispatch table, no new prefix branch.
+#
+# THE LEAK. scripts/build_features.py::handle_missing_data_and_outliers fitted each
+# season's q01/q99 winsorization bounds on the seasons STRICTLY BEFORE it (WR-06) --
+# except where no such slice existed, when ``_season_fit_source`` fell back to the
+# season's OWN rows under a ``self_fit`` flag. That bound saw the whole season, so a
+# week-1 value was clipped by a statistic that had read week 18. Two shapes reach it:
+# the EARLIEST season (2002), and a column's FIRST POPULATED season when its upstream
+# source starts later (cpoe 2006, backup-quality 2010, snaps and availability 2013).
+# D30-16 accepted it as a within-season residual before the day-before lock existed;
+# under D33.2-01 it is post-lock information. It was the last statistic in that method
+# still reading any.
+#
+# THE FIX (commit recorded in tests.phase33_state.P332_19_STEP8B_*): bounds come from
+# strictly-prior seasons only. A season with no usable strictly-prior fit is left
+# UNCLIPPED -- exactly the treatment a degenerate bound already got -- and recorded in
+# ``FeatureMatrixBuilder.unclipped_seasons``; clipping begins the FOLLOWING season, from
+# past seasons only. Unchanged: the pre-clip snapshot, the minimum-fit-points rule, the
+# degenerate-bound skip and the CR-02 discrete-indicator exemption.
+#
+# THE PREDICTION, measured before the production rebuild on a REPLAY of the build's
+# tail from the captured combined frame (the replay reproduces production gold exactly
+# on every non-clock column when run with rung 8's own code -- that control is what
+# makes the measurement a prediction rather than a guess):
+#
+# * VALUES -- exactly the 97 columns below move, each only in the seasons named
+#   beside it. The shape is one rule seen twice: a column's first fitted season S moves
+#   because it is no longer clipped, and S+1 moves because its own normalization
+#   bootstrap reads S's prior-season mean and standard deviation. The five display-only
+#   ``raw_*`` columns move in S ALONE, because they are excluded from
+#   ``expanding_normalize`` and so carry no bootstrap -- and because clipping to q01/q99
+#   does not move q01/q99, S+1's BOUND is unchanged in every column.
+# * STRUCTURE -- nothing added, nothing removed, widths 201/202/201 and rows 6,499
+#   unchanged. No null count moves: a clip never produced or removed a NaN.
+# * The three matrices must agree: each of the 97 columns moves in ALL THREE, in
+#   the same seasons.
+# ---------------------------------------------------------------------------
+
+PHASE332_WINSORIZATION_STEP: str = "8b"
+
+PHASE332_WINSORIZATION_STEP_FOLLOWS: int = PHASE332_WINDOW_RUNG
+
+PHASE332_WINSORIZATION_STEP_CAUSE: str = (
+    "WINSORIZATION MADE POINT-IN-TIME, p332_ extra step 8b (owner ruling 2026-09-22, "
+    "'Skip trim, first season', run first in Plan 33.2-19's dispatch), and NOTHING "
+    "else: a season's q01/q99 clip bounds are fitted ONLY on strictly-prior seasons, "
+    "and a season with no usable strictly-prior fit -- the earliest season, or a "
+    "column's first populated season -- is left UNCLIPPED rather than fitting a bound "
+    "on the very season it clips, so no week-1 value is trimmed by a statistic that "
+    "read week 18. Only a column that was clipped in such a season can move, in that "
+    "season and in the one after it (whose prior-season normalization bootstrap reads "
+    "it); the pre-clip snapshot, the minimum-fit-points rule, the degenerate-bound skip "
+    "and the CR-02 discrete-indicator exemption are unchanged; no column is added or "
+    "removed, no null count moves and no row moves"
+)
+
+#: Every column the step moves, mapped to the seasons it may move in. MEASURED before
+#: the production rebuild; the step's whole prediction, column by column.
+PHASE332_WINSORIZATION_STEP_SEASONS_BY_COLUMN: dict[str, tuple[str, ...]] = {
+    "apparent_temp_f": ("2002", "2003"),
+    "away_availability_fraction": ("2013", "2014"),
+    "away_def_rolling_opp_adj_epa_per_play": ("2002", "2003"),
+    "away_def_rolling_opp_adj_pass_epa": ("2002", "2003"),
+    "away_def_rolling_opp_adj_rush_epa": ("2002", "2003"),
+    "away_def_rolling_pass_success_rate": ("2002", "2003"),
+    "away_def_rolling_red_zone_td_rate": ("2002", "2003"),
+    "away_def_rolling_rush_success_rate": ("2002", "2003"),
+    "away_def_rolling_success_rate": ("2002", "2003"),
+    "away_def_rolling_third_down_conversion_rate": ("2002", "2003"),
+    "away_elo": ("2002", "2003"),
+    "away_elo_momentum": ("2002", "2003"),
+    "away_off_rolling_avg_drive_start_yardline": ("2002", "2003"),
+    "away_off_rolling_cpoe": ("2006", "2007"),
+    "away_off_rolling_neutral_pace": ("2002", "2003"),
+    "away_off_rolling_neutral_pass_rate": ("2002", "2003"),
+    "away_off_rolling_opp_adj_epa_per_play": ("2002", "2003"),
+    "away_off_rolling_opp_adj_pass_epa": ("2002", "2003"),
+    "away_off_rolling_opp_adj_rush_epa": ("2002", "2003"),
+    "away_off_rolling_pass_success_rate": ("2002", "2003"),
+    "away_off_rolling_red_zone_td_rate": ("2002", "2003"),
+    "away_off_rolling_rush_success_rate": ("2002", "2003"),
+    "away_off_rolling_success_rate": ("2002", "2003"),
+    "away_off_rolling_third_down_conversion_rate": ("2002", "2003"),
+    "away_qb_adjustment": ("2002", "2003"),
+    "away_rest_days": ("2002", "2003"),
+    "away_rolling_snap_share_db": ("2013", "2014"),
+    "away_rolling_snap_share_dl": ("2013", "2014"),
+    "away_rolling_snap_share_lb": ("2013", "2014"),
+    "away_rolling_snap_share_ol": ("2013", "2014"),
+    "away_rolling_snap_share_qb": ("2013", "2014"),
+    "away_rolling_snap_share_rb": ("2013", "2014"),
+    "away_rolling_snap_share_te": ("2013", "2014"),
+    "away_rolling_snap_share_wr": ("2013", "2014"),
+    "away_snap_concentration": ("2013", "2014"),
+    "away_snap_continuity": ("2013", "2014"),
+    "away_travel_distance_miles": ("2002", "2003"),
+    "away_travel_fatigue_score": ("2002", "2003"),
+    "ball_handling_difficulty": ("2002", "2003"),
+    "cold_impact_score": ("2002", "2003"),
+    "defensive_advantage": ("2002", "2003"),
+    "elo_diff": ("2002", "2003"),
+    "elo_prob_away": ("2002", "2003"),
+    "elo_prob_home": ("2002", "2003"),
+    "home_availability_fraction": ("2013", "2014"),
+    "home_backup_quality_delta": ("2010", "2011"),
+    "home_def_rolling_opp_adj_epa_per_play": ("2002", "2003"),
+    "home_def_rolling_opp_adj_pass_epa": ("2002", "2003"),
+    "home_def_rolling_opp_adj_rush_epa": ("2002", "2003"),
+    "home_def_rolling_pass_success_rate": ("2002", "2003"),
+    "home_def_rolling_red_zone_td_rate": ("2002", "2003"),
+    "home_def_rolling_rush_success_rate": ("2002", "2003"),
+    "home_def_rolling_success_rate": ("2002", "2003"),
+    "home_def_rolling_third_down_conversion_rate": ("2002", "2003"),
+    "home_elo": ("2002", "2003"),
+    "home_elo_momentum": ("2002", "2003"),
+    "home_off_rolling_avg_drive_start_yardline": ("2002", "2003"),
+    "home_off_rolling_cpoe": ("2006", "2007"),
+    "home_off_rolling_neutral_pace": ("2002", "2003"),
+    "home_off_rolling_neutral_pass_rate": ("2002", "2003"),
+    "home_off_rolling_opp_adj_epa_per_play": ("2002", "2003"),
+    "home_off_rolling_opp_adj_pass_epa": ("2002", "2003"),
+    "home_off_rolling_opp_adj_rush_epa": ("2002", "2003"),
+    "home_off_rolling_pass_success_rate": ("2002", "2003"),
+    "home_off_rolling_red_zone_td_rate": ("2002", "2003"),
+    "home_off_rolling_rush_success_rate": ("2002", "2003"),
+    "home_off_rolling_success_rate": ("2002", "2003"),
+    "home_off_rolling_third_down_conversion_rate": ("2002", "2003"),
+    "home_qb_adjustment": ("2002", "2003"),
+    "home_rest_days": ("2002", "2003"),
+    "home_rolling_snap_share_db": ("2013", "2014"),
+    "home_rolling_snap_share_dl": ("2013", "2014"),
+    "home_rolling_snap_share_lb": ("2013", "2014"),
+    "home_rolling_snap_share_ol": ("2013", "2014"),
+    "home_rolling_snap_share_qb": ("2013", "2014"),
+    "home_rolling_snap_share_rb": ("2013", "2014"),
+    "home_rolling_snap_share_te": ("2013", "2014"),
+    "home_rolling_snap_share_wr": ("2013", "2014"),
+    "home_snap_concentration": ("2013", "2014"),
+    "home_snap_continuity": ("2013", "2014"),
+    "home_weather_advantage": ("2002", "2003"),
+    "kicking_difficulty": ("2002", "2003"),
+    "passing_difficulty": ("2002", "2003"),
+    "passing_efficiency": ("2002", "2003"),
+    "precip_prob": ("2002", "2003"),
+    "raw_humidity_pct": ("2002",),
+    "raw_precip_prob": ("2002",),
+    "raw_temp_f": ("2002",),
+    "raw_weather_severity": ("2002",),
+    "raw_wind_mph": ("2002",),
+    "rest_advantage": ("2002", "2003"),
+    "rushing_advantage": ("2002", "2003"),
+    "season_progress": ("2002", "2003"),
+    "temp_f": ("2002", "2003"),
+    "turnover_multiplier": ("2002", "2003"),
+    "weather_severity_score": ("2002", "2003"),
+    "wind_mph": ("2002", "2003"),
+}
+
+#: The declared columns, sorted.
+PHASE332_WINSORIZATION_STEP_COLUMNS: tuple[str, ...] = tuple(
+    sorted(PHASE332_WINSORIZATION_STEP_SEASONS_BY_COLUMN)
+)
+
+#: The read-only pre-rebuild measurement the step's record carries beside its own.
+PHASE332_WINSORIZATION_STEP_PREREBUILD_MEASUREMENT: str = (
+    "MEASURED 2026-09-22 before any production write, on a REPLAY of the build's tail "
+    "(handle_missing_data_and_outliers -> expanding_normalize -> targets -> the "
+    "per-target split) from the combined frame captured once at the merge point, into a "
+    "scratch root; production data/ was digest-identical across it. CONTROL: the same "
+    "replay run from a worktree at rung 8's own commit 2d0eb97 reproduces production "
+    "gold EXACTLY -- zero non-clock columns changed, widths 201/202/201, rows 6,499 -- "
+    "so the diff below is the step's effect and not the harness's. With the fix: 97 "
+    "non-clock columns move, each in the seasons declared beside it and in all three "
+    "matrices identically; 0 added, 0 removed, widths and rows unchanged; the only "
+    "build-clock move is feature_timestamp"
+)
+
+PHASE332_WINSORIZATION_STEP_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_WINSORIZATION_STEP,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_WINSORIZATION_STEP_CAUSE,
+    "follows_rung": PHASE332_WINSORIZATION_STEP_FOLLOWS,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "exactly the 97 columns in PHASE332_WINSORIZATION_STEP_SEASONS_BY_COLUMN, "
+        "each only in the seasons declared beside it, in all three matrices; every "
+        "other column EMPTY"
+    ),
+    "rows_changed": (
+        "in a column's first fitted season the rows that were clipped return to their "
+        "unclipped values, and the same-season rescaling the normalization carries moves "
+        "their neighbours; in the season after it the prior-season normalization "
+        "bootstrap moves with them. No null count moves"
+    ),
+    "predicted_changed": PHASE332_WINSORIZATION_STEP_COLUMNS,
+    "declared_families": ("winsorization",),
+    "family_mechanisms": {
+        "winsorization": (
+            "scripts.build_features.FeatureMatrixBuilder._season_fit_source (the "
+            "strictly-prior slice, with no self-fit fallback) and the per-season clip "
+            "loop in handle_missing_data_and_outliers, whose skipped seasons are "
+            "recorded in FeatureMatrixBuilder.unclipped_seasons"
+        ),
+    },
+    "prerebuild_measurement": PHASE332_WINSORIZATION_STEP_PREREBUILD_MEASUREMENT,
+    "declared_before_the_rebuild": True,
+}
+
+EXTRA_STEPS_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_WINSORIZATION_STEP
+] = PHASE332_WINSORIZATION_STEP_FOLLOWS
+EXTRA_STEP_CAUSES_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_WINSORIZATION_STEP
+] = PHASE332_WINSORIZATION_STEP_CAUSE
+
+PHASE332_WINSORIZATION_STEP_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-22 before step 8b wrote anything: production data/ was "
+    "digest-identical to outputs/p332_rung8_after.json (0 added, 0 removed, 0 changed), "
+    "and no commit since rung 8's rebuild commit 2d0eb97 changes anything a build reads "
+    "except this step's own. p332_rung8.json IS gold rebuilt from today's inputs minus "
+    "exactly this step's cause. No carry-in, no retake"
+)
+
+
+def _attribute_p332_winsorization(
+    detail: dict, diff: dict, verdict: dict, fail
+) -> bool:
+    """Extra step 8b of the `p332_` ladder: the prior-seasons-only clip's OWN judge.
+
+    STRUCTURE unchanged (a surprise BLOCKS). VALUES: a changed column is attributed only
+    when it is one of the declared columns AND every season it moved in was declared for
+    that column. A declared column that did NOT move fails too -- the prediction is that
+    all of them move, in all three matrices, and a silent non-move would mean the clip
+    was never applied there in the first place. Anything else is UNATTRIBUTED and fails;
+    the cause is never widened to fit it.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    label = "p332_ extra step 8b (winsorization fitted on strictly-prior seasons only)"
+    declared = PHASE332_WINSORIZATION_STEP_SEASONS_BY_COLUMN
+    verdict["changed_by_family"] = {"winsorization": []}
+    blocking = _phase33_structure(
+        detail, diff, fail, label, "Refitting the winsorization bounds"
+    )
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        allowed = declared.get(column)
+        if allowed is not None and seasons and set(seasons) <= set(allowed):
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["winsorization"].append(column)
+            continue
+        why = (
+            "it is not one of the columns clipped in a season that had no strictly-prior "
+            "fit"
+            if allowed is None
+            else f"its declared seasons are {', '.join(allowed)}"
+        )
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at {label} in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The step's ONE cause is the "
+            "prior-seasons-only winsorization bound; do NOT widen it to fit this diff"
+        )
+    for column in PHASE332_WINSORIZATION_STEP_COLUMNS:
+        if column not in diff["changed"]:
+            fail(
+                f"column '{column}' did not move at {label}, but it was declared as "
+                f"moving in season(s) {', '.join(declared[column])} before the rebuild"
+            )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_EXTRA_STEP_SIGNATURES[PHASE332_WINSORIZATION_STEP] = (
+    PHASE332_WINSORIZATION_STEP_EXPECTED_SIGNATURE
+)
+PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_WINSORIZATION_STEP] = (
+    _attribute_p332_winsorization
+)
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -7438,6 +7729,12 @@ def write_phase332_rebuild_diff(
     )
     if window_document.exists():
         lines.extend(_phase332_window_rung_lines(fingerprint_dir))
+
+    winsorization_document = rung_document_path(
+        fingerprint_dir, PHASE332_WINSORIZATION_STEP, PHASE332_RUNG_PREFIX
+    )
+    if winsorization_document.exists():
+        lines.extend(_phase332_winsorization_step_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -8325,6 +8622,70 @@ def _phase332_window_rung_lines(fingerprint_dir: Path | str) -> list[str]:
         ]
     )
     for column, seasons in sorted(carry_seasons.items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_winsorization_step_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` extra step 8b, recomputed from the ladder.
+
+    Judged by the same ``attribute_rung`` call the ladder run makes, against rung 8.
+    Records the declared per-column seasons beside the measured ones, so a reader can
+    see the prediction and the measurement without re-deriving either.
+    """
+    step = PHASE332_WINSORIZATION_STEP
+    require_rung_ladder(fingerprint_dir, step, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, step)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, step, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, step, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    signature = PHASE332_WINSORIZATION_STEP_EXPECTED_SIGNATURE
+    lines = [
+        "",
+        f'[rung."{step}"]',
+        f'rung = "{step}"',
+        f"follows_rung = {PHASE332_WINSORIZATION_STEP_FOLLOWS}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_WINSORIZATION_STEP_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_WINSORIZATION_STEP_CAUSE)}"',
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        "prerebuild_measurement = "
+        f'"{_toml_escape(PHASE332_WINSORIZATION_STEP_PREREBUILD_MEASUREMENT)}"',
+        f"declared_columns = {_toml_array(list(PHASE332_WINSORIZATION_STEP_COLUMNS))}",
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_EXTRA_STEP_ATTRIBUTORS[step].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the step is '
+            'recorded as declared-but-not-run rather than as a step that ran"'
+        )
+    lines.extend(["", f'[rung."{step}".declared_seasons]'])
+    for column in PHASE332_WINSORIZATION_STEP_COLUMNS:
+        seasons = PHASE332_WINSORIZATION_STEP_SEASONS_BY_COLUMN[column]
+        lines.append(f"{column} = {_toml_array(list(seasons))}")
+    lines.extend(["", f'[rung."{step}".moved_seasons]'])
+    for column, seasons in sorted(_phase332_moved_seasons(report).items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
     return lines
 
