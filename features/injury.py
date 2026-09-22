@@ -1,66 +1,103 @@
-"""Injury Signal Feature Builder (SIG-01).
+"""Injury Signal Feature Builder (SIG-01), fenced at EACH GAME'S OWN LOCK (Plan 33.2-13).
 
-This module exposes the weekly-final injury silver table (produced by the Plan
-28-02 ingest) as three leakage-safe, pre-game team features, all fenced to the
-Friday 6 PM ET freeze:
+This module exposes the weekly-final injury silver table (produced by the Plan 28-02
+ingest) as three pre-game team features:
 
 - ``qb_out_flag`` -- 1.0 when the team's depth-chart QB1 is listed ``Out`` or
-  ``Doubtful`` in the Friday-fenced report, else 0.0 (D-07).
-- ``backup_quality_delta`` -- ``quality(QB1) - quality(QB2)`` on the REUSED
-  QBTracker quality scale (D-06/D-08); 0.0 when the starter is not out. A
-  no-history backup is valued at the EXPLICIT below-average
-  ``REPLACEMENT_LEVEL_QB_QUALITY`` constant, never a silent 0.0 mislabeled
-  "replacement-level" (review bonus, qb_tracking.py:385).
-- ``availability_fraction`` -- snap-weighted positional availability at the
-  (team, position) grain (D-09), weighting each key non-QB position group by the
+  ``Doubtful`` in the latest report admitted at the lock, else 0.0 (D-07).
+- ``backup_quality_delta`` -- ``quality(QB1) - quality(QB2)`` on the REUSED QBTracker
+  quality scale (D-06/D-08); 0.0 when the starter is not out. A no-history backup is valued
+  at the EXPLICIT below-average ``REPLACEMENT_LEVEL_QB_QUALITY`` constant, never a silent
+  0.0 mislabeled "replacement-level" (review bonus, qb_tracking.py:385).
+- ``availability_fraction`` -- snap-weighted positional availability at the (team,
+  position) grain (D-09), weighting each key non-QB position group by the
   SnapCountBuilder's per-position PRIOR snap share.
 
-The load-bearing temporal control is the per-row ``date_modified <=
-as_of_datetime`` fence (D-07): only injury reports KNOWN at/before the Friday
-freeze enter a feature, so the ~7.5% Saturday/Sunday game-day updates (the SC1
-leakage event) are excluded. The fence is tolerant of a dropped ``date_modified``
-column (2025+, Pitfall 4): it falls back to a week-based snapshot fence and sets
-a ``*_coverage`` flag instead of raising a ``KeyError``.
+THE FENCE IS THE PER-GAME LOCK (D33.2-01, SPEC R5)
+--------------------------------------------------
+A report is admitted for a game only when its information time is AT or BEFORE that
+game's lock -- 18:00 America/New_York on the ET calendar day before kickoff
+(``utils.game_lock``). The retired fence compared every row with ONE frame-wide
+``as_of_datetime``, which is ``datetime.now(ET)`` in production and therefore admitted
+everything that had already happened. ``as_of_datetime`` survives only because the
+``FeatureBuilder`` Protocol carries it; no selection reads it.
 
-Snaps -> injuries dependency (review #6): the per-position snap-share availability
-weights are obtained from a CONSTRUCTED ``SnapCountBuilder`` handed in at
-construction (``InjuryBuilder(snap_builder=...)``), NOT an implicit independent
-re-load of the snap silver. This LOCKS the snaps-before-injuries build order
-(Plan 28-06 must construct ``SnapCountBuilder()`` first, then
-``InjuryBuilder(snap_builder=self.snap_builder)``). The FeatureBuilder Protocol
-``build_features`` signature is unchanged -- the dependency is injected, not
-threaded through a new argument.
+A row's information time, and the SELECTION RULE that admitted it:
 
-The backup-quality delta REUSES QBTracker's ``compute_composite_quality`` /
-rolling-metric quality path (D-06); this builder authors NO new EPA/CPOE quality
-metric.
+* ``date_modified`` -- the per-row upstream modification time (2010-2024 in full, a
+  handful of 2009 rows). The honest per-row time wherever it exists.
+* ``capture_stamp`` -- the frame column named by :data:`UPSTREAM_CAPTURE_COLUMN`: the
+  upstream publication time of the file a row was captured from (D33.2-16). It admits a
+  row only when AT or BEFORE the game's lock, which is the forward daily-capture case.
+  A season fetched after its games carries a stamp after every lock and admits nothing.
+* otherwise the row is UNDATABLE and is NOT ADMITTED -- exactly as a post-lock row is not.
 
-Per D-10, the builder emits neutral defaults (no QB out = 0.0, availability =
-1.0) plus ``*_coverage`` flags marking gaps, so the paired-lift population stays
-intact rather than dropping rows.
+A game that admitted nothing is ``none_admitted``: its values are the documented neutral
+defaults with the ``*_coverage`` flags at 0.0, and its provenance is
+``basis="no_information"`` with a NULL time, which the information-time gate CHECKS against
+:meth:`InjuryBuilder.no_information_signature` rather than believes (RESEARCH P2).
+
+WHAT THIS REPLACED, AND WHY IT IS NOT A WEEK JOIN ANY MORE. Until Plan 33.2-13 a week whose
+rows carried no ``date_modified`` fell back to the week's report UNFENCED and returned a
+flag saying the date fence had not been applied -- a value that looked computed but was not
+fenced. That fallback is deleted. An undatable row is simply not admitted.
+
+THE 2025+ SCHEMA CARRIES NO PER-ROW TIME AT ALL. Measured 2026-09-15 (RESEARCH 5.1):
+``injuries_2025.parquet`` (6,068 rows) and ``injuries_2026.parquet`` have NO
+``date_modified`` column -- upstream dropped it. ``nflreadr``'s own documentation still says
+the injury source "died after the 2024 season", and that page is stale (the 2026 asset
+refreshed at 12:38 UTC on 2026-09-15), but the source visibly changed, which is what dropped
+the column. Upstream injury availability is therefore FRAGILE, and its absence is a flagged
+unknown, never a zero. The real cost, stated rather than worked around: for 2025 and 2026
+games already played, nobody captured the file before their locks, so the injury family
+reads as unknown-with-a-flag for them. Plan 33.2-14's rung 5 predicts that movement.
+
+THE CAPTURE BRANCH READS A FRAME COLUMN, NOT A MODULE. The stamp arrives as DATA on the
+injury frame, so this module imports nothing from the capture machinery Plan 33.2-15
+builds; Plan 33.2-15 declares the same column on the real ``InjurySchema`` and asserts the
+two names are identical (D30-02: one literal, one checked tie).
+
+Snaps -> injuries dependency (review #6): the per-position snap-share availability weights
+come from a CONSTRUCTED ``SnapCountBuilder`` handed in at construction
+(``InjuryBuilder(snap_builder=...)``), which LOCKS the snaps-before-injuries build order.
+
+The backup-quality delta REUSES QBTracker's quality path (D-06), fed only play-by-play from
+games whose result was known at the lock; QB1 / QB2 come from QBTracker's lock-aware
+depth-chart resolver, so a 2025+ chart published after the lock is not seen either.
 
 Key constraints:
 
-- No data leakage: the binding control is ``date_modified <= as_of_datetime``;
-  availability reads the ``report_status`` column (there is no game-day inactive
-  status field to lean on).
-- Team x position availability grain deliberately avoids the pfr_player_id (snaps)
-  vs gsis_id (injuries) cross-ID bridge that would silently zero-match (Pitfall 5).
+- Team x position availability grain deliberately avoids the pfr_player_id (snaps) vs
+  gsis_id (injuries) cross-ID bridge that would silently zero-match (Pitfall 5).
 - Canonical team abbreviations via ``normalize_team_abbreviation`` (reused through
-  QBTracker's ``_safe_normalize_team``); hard-fail-tolerant on unknowns.
+  QBTracker's ``_safe_normalize_team``).
 """
 
+from __future__ import annotations
+
 from collections import defaultdict
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
+from typing import Any
 
 import pandas as pd
 
+import utils.game_lock as lock_rule
 from data.storage import load_dataframe
-from features.qb_tracking import QBTracker
+from features.provenance import PROVENANCE_COLUMNS, InformationBasis
+from features.qb_tracking import QBTracker, lock_as_utc, to_aware_utc
 from features.snaps import KEY_POSITION_GROUPS, POSITION_GROUP_MAP, SnapCountBuilder
 from utils import get_logger
 
 logger = get_logger(__name__)
+
+#: THE INPUT CONTRACT for the capture-time selection rule: the column the injury ingest
+#: writes each captured row's upstream publication stamp into (tz-aware). Plan 33.2-15
+#: declares the same name on ``data.schemas.InjurySchema`` and a test there asserts the two
+#: are identical, so the builder and the ingest share one literal plus one checked tie.
+UPSTREAM_CAPTURE_COLUMN: str = "upstream_captured_at"
 
 # Report-status values that mark a player as NOT available pre-game. Read from
 # the `report_status` column (the silver vocabulary is {None, Questionable, Out,
@@ -102,20 +139,63 @@ _FEATURE_COLUMNS = [
     "date_modified_coverage",
 ]
 
+# The per-team values a team that admitted NO report carries: the documented neutral
+# defaults (D-10) with the injury coverage flags at 0.0. ``availability_coverage`` is NOT
+# here: it reports whether PRIOR SNAP SHARES exist, which is a snap fact, not an injury one.
+_UNKNOWN_TEAM_VALUES: dict[str, float] = {
+    "qb_out_flag": 0.0,
+    "backup_quality_delta": 0.0,
+    "availability_fraction": 1.0,
+    "injury_coverage": 0.0,
+    "date_modified_coverage": 0.0,
+}
+
+
+class SelectionRule(StrEnum):
+    """Which admission rule applied to a game's injury reports. Builder-internal.
+
+    NOT the provenance basis. ``features.provenance.InformationBasis`` has exactly two
+    members; :meth:`InjuryBuilder.information_times` maps ``date_modified`` and
+    ``capture_stamp`` onto ``per_row`` and ``none_admitted`` onto ``no_information``.
+    These names only let a test tell the two dated paths apart.
+    """
+
+    DATE_MODIFIED = "date_modified"
+    CAPTURE_STAMP = "capture_stamp"
+    NONE_ADMITTED = "none_admitted"
+
+
+@dataclass(frozen=True)
+class InjurySelection:
+    """The injury reports one game was allowed to see, and how they were admitted.
+
+    Attributes:
+        rows: The admitted reports, ONE per (team, player): the latest admitted at or
+            before the lock, not the latest overall.
+        rule: The selection rule of the report that sets :attr:`information_time`, or
+            ``NONE_ADMITTED`` when nothing was admitted.
+        information_time: The latest information time among the admitted reports (the
+            provenance time), or ``None`` when nothing was admitted.
+        undatable_teams: Teams with at least one report excluded because it carried no
+            information time at all -- their dated coverage is incomplete.
+    """
+
+    rows: pd.DataFrame
+    rule: SelectionRule
+    information_time: pd.Timestamp | None
+    undatable_teams: frozenset[str]
+
 
 class InjuryBuilder:
-    """Build leakage-safe pre-game injury features from the injury silver.
+    """Build pre-game injury features, each game fenced at its own lock.
 
-    Conforms to the FeatureBuilder Protocol (``build_features`` with the
-    ``as_of_datetime`` Friday-freeze fence + ``get_features_for_game``). Emits
-    per game the home/away-expanded ``qb_out_flag`` / ``backup_quality_delta`` /
-    ``availability_fraction`` columns plus ``*_coverage`` flags (D-10).
+    Conforms to the ``FeatureBuilder`` Protocol (``build_features`` +
+    ``get_features_for_game``) AND to ``features.protocol.InformationTimeProvider``
+    (``information_times`` + ``no_information_signature``), so the information-time gate
+    checks it on every build.
 
-    The snaps -> injuries dependency is LOCKED at construction (review #6): the
-    per-position prior snap shares (the D-09 availability weights) come from a
-    constructed :class:`SnapCountBuilder` passed via ``snap_builder=...``, never
-    an implicit re-load. The backup delta REUSES :class:`QBTracker`'s quality
-    path (D-06).
+    The snaps -> injuries dependency is LOCKED at construction (review #6). The backup delta
+    REUSES :class:`QBTracker`'s quality path (D-06).
     """
 
     def __init__(
@@ -136,7 +216,7 @@ class InjuryBuilder:
                 locking the snaps-before-injuries build order. Required.
             injuries_df: Optional player-level injury frame to use directly (the
                 test-injection seam). When ``None`` the builder loads
-                ``injuries`` from the silver layer.
+                ``injuries`` from the silver layer, once.
             depth_charts_df: Optional depth-chart frame for QB1/QB2 resolution
                 (test-injection seam). When ``None`` the builder loads depth
                 charts per season through the reused QBTracker loader.
@@ -160,11 +240,14 @@ class InjuryBuilder:
         self._qb_tracker = qb_tracker if qb_tracker is not None else QBTracker()
 
         self._games_cache: pd.DataFrame | None = None
-        # Cache rolling QB metrics per season so the quality path runs once.
-        self._rolling_cache: dict[int, pd.DataFrame] = {}
+        # The injury frame, loaded once and grouped by (season, week).
+        self._injuries_by_week: dict[tuple[int, int], pd.DataFrame] | None = None
+        # Rolling QB quality per (season, week, lock): the admitted play-by-play differs by
+        # lock, so a per-season cache would reuse one week's window for every week.
+        self._rolling_cache: dict[tuple[int, int, pd.Timestamp], pd.DataFrame] = {}
 
     # ------------------------------------------------------------------
-    # Silver loading + Friday fence
+    # Silver loading + the per-game lock fence
     # ------------------------------------------------------------------
 
     def _load_injuries(self) -> pd.DataFrame:
@@ -173,61 +256,110 @@ class InjuryBuilder:
             return self._injuries_df
         return load_dataframe("injuries", layer="silver")
 
-    def fenced_injuries(
-        self,
-        target_season: int,
-        target_week: int,
-        as_of_datetime: datetime,
-    ) -> tuple[pd.DataFrame, bool]:
-        """Return the week's injury rows known at/before the Friday freeze.
+    def _week_rows(self, season: int, week: int) -> pd.DataFrame:
+        """The injury rows filed for one (season, week), from a frame loaded once."""
+        if self._injuries_by_week is None:
+            injuries = self._load_injuries()
+            if injuries is None or len(injuries) == 0:
+                self._injuries_by_week = {}
+            else:
+                self._injuries_by_week = {
+                    (int(s), int(w)): rows
+                    for (s, w), rows in injuries.groupby(["season", "week"])
+                }
+        return self._injuries_by_week.get((int(season), int(week)), pd.DataFrame())
 
-        Filters to the target (season, week) weekly-final report, then applies
-        the load-bearing ``date_modified <= as_of_datetime`` fence (D-07) so the
-        Saturday/Sunday game-day updates are excluded. Tolerant of a missing /
-        all-null ``date_modified`` column (2025+, Pitfall 4): falls back to the
-        week-based snapshot report and reports ``date_modified_applied=False``.
+    def fenced_injuries(self, game: Mapping[str, Any], lock: Any) -> InjurySelection:
+        """The injury reports *game* may see: those known at or before ITS lock.
+
+        Replaces both the frame-wide ``date_modified <= as_of_datetime`` fence and the
+        week-keyed fallback that stood beside it. That fallback returned a week's rows
+        UNFENCED whenever ``date_modified`` was absent and reported the fact through a
+        ``date_modified_applied`` flag in a ``(rows, flag)`` tuple; it is gone, and so is
+        the tuple. Now each row's information time is its ``date_modified`` or, failing
+        that, the capture stamp in :data:`UPSTREAM_CAPTURE_COLUMN`; a row with neither is
+        UNDATABLE and is NOT ADMITTED, exactly like a row timed after the lock. Among the
+        admitted rows, each player's LATEST report wins.
 
         Args:
-            target_season: Season being predicted.
-            target_week: Week being predicted.
-            as_of_datetime: The Friday 6 PM ET freeze cutoff.
+            game: The target game (``season``, ``week``, ``home_team``, ``away_team``).
+            lock: The target game's lock (``utils.game_lock``), tz-aware.
 
         Returns:
-            ``(fenced_rows, date_modified_applied)`` -- the fenced injury rows
-            for the week and whether the per-row date fence was applied.
+            The admitted reports, the selection rule and the provenance time.
         """
-        inj = self._load_injuries()
-        if inj is None or len(inj) == 0:
-            return inj if inj is not None else pd.DataFrame(), False
-
-        week_rows = inj[
-            (inj["season"] == target_season) & (inj["week"] == target_week)
-        ].copy()
+        season, week = int(game["season"]), int(game["week"])
+        teams = {
+            self._qb_tracker._safe_normalize_team(game[column])
+            for column in ("home_team", "away_team")
+        }
+        week_rows = self._week_rows(season, week)
         if len(week_rows) == 0:
-            return week_rows, False
+            return InjurySelection(
+                week_rows, SelectionRule.NONE_ADMITTED, None, frozenset()
+            )
 
-        has_dm = (
-            "date_modified" in week_rows.columns
-            and week_rows["date_modified"].notna().any()
+        normalized = week_rows["team"].map(self._qb_tracker._safe_normalize_team)
+        rows = week_rows.loc[normalized.isin(sorted(teams))].copy()
+        rows["_team"] = normalized.loc[rows.index]
+        if len(rows) == 0:
+            return InjurySelection(rows, SelectionRule.NONE_ADMITTED, None, frozenset())
+
+        times, rules = self._row_information_times(rows)
+        undatable_teams = frozenset(rows.loc[times.isna(), "_team"])
+        lock_utc = lock_as_utc(lock)
+        # The at-lock-admissible comparison utils.game_lock.is_admissible states (<=),
+        # vectorised over this game's candidate rows against its one lock.
+        admitted_mask = times.notna() & (times <= lock_utc)
+        admitted = rows.loc[admitted_mask].copy()
+        if len(admitted) == 0:
+            return InjurySelection(
+                admitted, SelectionRule.NONE_ADMITTED, None, undatable_teams
+            )
+
+        admitted["_information_time"] = times.loc[admitted.index]
+        admitted["_selection_rule"] = rules.loc[admitted.index]
+        latest = (
+            admitted.sort_values("_information_time", kind="stable")
+            .groupby(["_team", "gsis_id"], dropna=False, sort=False)
+            .tail(1)
         )
-        if not has_dm:
-            # 2025+ drop / all-null: best available is the weekly-final report.
-            return week_rows, False
+        top = latest.sort_values("_information_time", kind="stable").iloc[-1]
+        return InjurySelection(
+            rows=latest,
+            rule=SelectionRule(top["_selection_rule"]),
+            information_time=pd.Timestamp(top["_information_time"]),
+            undatable_teams=undatable_teams,
+        )
 
-        dm = pd.to_datetime(week_rows["date_modified"], utc=True, errors="coerce")
-        cutoff = pd.Timestamp(as_of_datetime)
-        if cutoff.tz is None:
-            cutoff = cutoff.tz_localize("UTC")
+    @staticmethod
+    def _row_information_times(rows: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+        """Each row's information time and the selection rule that supplies it.
+
+        ``date_modified`` wins where present; the capture stamp covers a row only where
+        ``date_modified`` is absent. A naive value in either column is refused.
+        """
+        if "date_modified" in rows.columns:
+            modified = to_aware_utc(rows["date_modified"], column="date_modified")
         else:
-            cutoff = cutoff.tz_convert("UTC")
+            modified = pd.Series(pd.NaT, index=rows.index, dtype="datetime64[ns, UTC]")
+        if UPSTREAM_CAPTURE_COLUMN in rows.columns:
+            captured = to_aware_utc(
+                rows[UPSTREAM_CAPTURE_COLUMN], column=UPSTREAM_CAPTURE_COLUMN
+            )
+        else:
+            captured = pd.Series(pd.NaT, index=rows.index, dtype="datetime64[ns, UTC]")
 
-        # Rows with an unparseable date_modified cannot be proven pre-freeze and
-        # are excluded (conservative: never admit an un-fenceable row).
-        fenced = week_rows[dm <= cutoff]
-        return fenced, True
+        times = modified.where(modified.notna(), captured)
+        rules = pd.Series(None, index=rows.index, dtype="object")
+        rules.loc[modified.notna()] = SelectionRule.DATE_MODIFIED.value
+        rules.loc[modified.isna() & captured.notna()] = (
+            SelectionRule.CAPTURE_STAMP.value
+        )
+        return times, rules
 
     # ------------------------------------------------------------------
-    # QB1 / QB2 depth-chart resolution (reuses the QBTracker loaders)
+    # QB1 / QB2 depth-chart resolution (reuses QBTracker's lock-aware resolver)
     # ------------------------------------------------------------------
 
     def _load_depth_charts(self, season: int) -> pd.DataFrame:
@@ -237,55 +369,33 @@ class InjuryBuilder:
         return self._qb_tracker._load_depth_charts(season)
 
     def _resolve_qb_ids(
-        self, season: int, week: int, team: str
+        self, season: int, week: int, team: str, lock: Any
     ) -> tuple[str | None, str | None]:
-        """Resolve a team's QB1 and QB2 gsis_ids from depth charts (D-07).
-
-        Reuses QBTracker's depth-chart loader + team normalization. QB1 is
-        ``depth_team == "1"``, QB2 is ``depth_team == "2"`` for ``position ==
-        "QB"`` in the target (season, week).
-
-        Returns:
-            ``(qb1_gsis_id, qb2_gsis_id)`` -- either may be None when absent.
-        """
-        dc = self._load_depth_charts(season)
-        if dc is None or len(dc) == 0 or "club_code" not in dc.columns:
-            return None, None
-
-        qbs = dc[dc["position"] == "QB"].copy()
-        if "season" in qbs.columns:
-            qbs = qbs[qbs["season"] == season]
-        if "week" in qbs.columns:
-            qbs = qbs[qbs["week"] == week]
-        if len(qbs) == 0:
-            return None, None
-
-        qbs["_team"] = qbs["club_code"].apply(self._qb_tracker._safe_normalize_team)
-        qbs = qbs[qbs["_team"] == team]
-        if len(qbs) == 0:
-            return None, None
-
-        depth = qbs["depth_team"].astype(str)
-        qb1 = qbs[depth == "1"]
-        qb2 = qbs[depth == "2"]
-        qb1_id = str(qb1.iloc[0]["gsis_id"]) if len(qb1) > 0 else None
-        qb2_id = str(qb2.iloc[0]["gsis_id"]) if len(qb2) > 0 else None
-        return qb1_id, qb2_id
+        """A team's QB1 and QB2 gsis_ids as known at the game's lock (D-07)."""
+        resolved = self._qb_tracker.resolve_depth_chart_qbs(
+            self._load_depth_charts(season), season, week, team, lock
+        )
+        return resolved.qb1, resolved.qb2
 
     # ------------------------------------------------------------------
     # Backup-quality delta (REUSES the QBTracker quality scale, D-06)
     # ------------------------------------------------------------------
 
-    def _rolling_qb(self, season: int, week: int) -> pd.DataFrame:
-        """Compute (and cache) the reused QBTracker rolling quality for a season."""
-        if season in self._rolling_cache:
-            return self._rolling_cache[season]
-        if self._pbp_df is not None:
-            pbp = self._pbp_df
-        else:
-            pbp = self._qb_tracker._load_pbp_data(season)
-        rolling = self._qb_tracker.compute_rolling_qb_metrics(pbp, season, week)
-        self._rolling_cache[season] = rolling
+    def _rolling_qb(self, season: int, week: int, lock: Any) -> pd.DataFrame:
+        """The reused QBTracker rolling quality from PBP known at the lock (cached)."""
+        key = (int(season), int(week), lock_as_utc(lock))
+        if key in self._rolling_cache:
+            return self._rolling_cache[key]
+        pbp = (
+            self._pbp_df
+            if self._pbp_df is not None
+            else self._qb_tracker._load_pbp_data(season)
+        )
+        games = self._games_cache if self._games_cache is not None else pd.DataFrame()
+        ends = self._qb_tracker.pbp_game_end_times(pbp, games)
+        admitted = self._qb_tracker.admitted_pbp(pbp, ends, lock)
+        rolling = self._qb_tracker.compute_rolling_qb_metrics(admitted, season, week)
+        self._rolling_cache[key] = rolling
         return rolling
 
     def _quality_for(
@@ -303,6 +413,7 @@ class InjuryBuilder:
         self,
         season: int,
         week: int,
+        lock: Any,
         qb1_id: str | None,
         qb2_id: str | None,
     ) -> float:
@@ -313,7 +424,7 @@ class InjuryBuilder:
         league-average 0.0); the starter falls back to 0.0 (league average) when
         their rolling history is unavailable.
         """
-        rolling = self._rolling_qb(season, week)
+        rolling = self._rolling_qb(season, week, lock)
         starter_quality = self._quality_for(rolling, qb1_id, default=0.0)
         backup_quality = self._quality_for(
             rolling, qb2_id, default=REPLACEMENT_LEVEL_QB_QUALITY
@@ -371,81 +482,89 @@ class InjuryBuilder:
         return float(availability), True
 
     # ------------------------------------------------------------------
-    # Per-(season, week) feature assembly
+    # Per-game feature assembly
     # ------------------------------------------------------------------
 
-    def compute_injury_features(
-        self,
-        target_season: int,
-        target_week: int,
-        as_of_datetime: datetime,
-        teams: list[str],
-    ) -> dict[str, dict[str, float]]:
-        """Compute per-team injury features for one target (season, week).
-
-        Args:
-            target_season: Season being predicted.
-            target_week: Week being predicted.
-            as_of_datetime: The Friday 6 PM ET freeze cutoff.
-            teams: Canonical team abbreviations to build features for.
-
-        Returns:
-            ``{team: {feature: value}}`` with neutral defaults + coverage flags.
-        """
-        fenced, dm_applied = self.fenced_injuries(
-            target_season, target_week, as_of_datetime
-        )
-        week_has_data = 1.0 if len(fenced) > 0 else 0.0
-        dm_coverage = 1.0 if dm_applied else 0.0
-
-        # Per-position prior snap shares (the D-09 availability weights) come from
-        # the constructor-injected SnapCountBuilder, NOT an independent re-load.
-        prior = self.snap_builder.get_position_prior_shares(target_season, target_week)
+    def _team_shares(self, season: int, week: int) -> dict[str, dict[str, float]]:
+        """Per-team prior snap shares from the constructor-injected SnapCountBuilder."""
+        prior = self.snap_builder.get_position_prior_shares(season, week)
         team_shares: dict[str, dict[str, float]] = defaultdict(dict)
         if prior is not None and len(prior) > 0:
             for _, row in prior.iterrows():
                 team_shares[str(row["team"])][str(row["position_group"])] = float(
                     row["prior_snap_share"]
                 )
+        return team_shares
+
+    def compute_game_injury_features(
+        self,
+        game: Mapping[str, Any],
+        lock: Any,
+        team_shares: Mapping[str, Mapping[str, float]],
+    ) -> dict[str, dict[str, float]]:
+        """Per-team injury features for one game, from the reports known at its lock.
+
+        Args:
+            game: The target game (``season``, ``week``, ``home_team``, ``away_team``).
+            lock: The target game's lock, tz-aware.
+            team_shares: Per-team prior snap shares (the D-09 weights).
+
+        Returns:
+            ``{team: {feature: value}}`` for the game's two teams.
+        """
+        season, week = int(game["season"]), int(game["week"])
+        selection = self.fenced_injuries(game, lock)
 
         results: dict[str, dict[str, float]] = {}
-        for team in teams:
+        for column in ("home_team", "away_team"):
+            team = self._qb_tracker._safe_normalize_team(game[column])
             team_inj = (
-                fenced[
-                    fenced["team"].apply(self._qb_tracker._safe_normalize_team) == team
-                ]
-                if len(fenced) > 0
-                else fenced
+                selection.rows.loc[selection.rows["_team"] == team]
+                if len(selection.rows) > 0
+                else selection.rows
             )
+            shares = dict(team_shares.get(team, {}))
+            _, has_share = self._availability_fraction(shares, {})
 
-            qb1_id, qb2_id = self._resolve_qb_ids(target_season, target_week, team)
-            out_ids = (
-                set(team_inj[team_inj["report_status"].isin(OUT_STATUSES)]["gsis_id"])
-                if len(team_inj) > 0
-                else set()
+            if len(team_inj) == 0:
+                # Nothing admitted for this team: the documented unknown values, with
+                # the coverage flags saying so. availability_fraction is the exact
+                # neutral 1.0 rather than a float sum that could read 0.9999999.
+                results[team] = {
+                    **_UNKNOWN_TEAM_VALUES,
+                    "availability_coverage": 1.0 if has_share else 0.0,
+                }
+                continue
+
+            qb1_id, qb2_id = self._resolve_qb_ids(season, week, team, lock)
+            out_ids = set(
+                team_inj.loc[team_inj["report_status"].isin(OUT_STATUSES), "gsis_id"]
             )
             qb_out = 1.0 if (qb1_id is not None and qb1_id in out_ids) else 0.0
-
             backup_delta = (
-                self._backup_quality_delta(target_season, target_week, qb1_id, qb2_id)
+                self._backup_quality_delta(season, week, lock, qb1_id, qb2_id)
                 if qb_out == 1.0
                 else 0.0
             )
-
-            out_counts = (
-                self._out_counts_by_group(team_inj) if len(team_inj) > 0 else {}
+            availability, _ = self._availability_fraction(
+                shares, self._out_counts_by_group(team_inj)
             )
-            availability, has_share = self._availability_fraction(
-                team_shares.get(team, {}), out_counts
+            dated_by_row = bool(
+                (team_inj["_selection_rule"] == SelectionRule.DATE_MODIFIED.value).any()
             )
-
             results[team] = {
                 "qb_out_flag": qb_out,
                 "backup_quality_delta": float(backup_delta),
                 "availability_fraction": float(availability),
-                "injury_coverage": week_has_data,
+                "injury_coverage": 1.0,
                 "availability_coverage": 1.0 if has_share else 0.0,
-                "date_modified_coverage": dm_coverage,
+                # 1.0 only when this team's reports were dated per row by
+                # date_modified AND none of its rows was dropped as undatable.
+                "date_modified_coverage": (
+                    1.0
+                    if dated_by_row and team not in selection.undatable_teams
+                    else 0.0
+                ),
             }
         return results
 
@@ -460,30 +579,29 @@ class InjuryBuilder:
         *,
         target_season: int | None = None,
         target_week: int | None = None,
+        lock_frame: pd.Series | None = None,
     ) -> pd.DataFrame:
-        """Build home/away-expanded injury features for games.
-
-        Conforms to the FeatureBuilder Protocol. The binding time-fence is the
-        per-row ``date_modified <= as_of_datetime`` filter applied inside
-        :meth:`fenced_injuries` (D-07): only reports known at/before the Friday
-        freeze enter a feature.
+        """Build home/away-expanded injury features, each game fenced at its own lock.
 
         Args:
-            games_df: DataFrame of games to build features for.
-            as_of_datetime: The Friday 6 PM ET freeze cutoff.
+            games_df: DataFrame of games to build features for (``kickoff_et`` required:
+                a game with no kickoff has no lock and is refused by name).
+            as_of_datetime: Carried for the ``FeatureBuilder`` Protocol ONLY. It is NOT a
+                fence and no selection reads it; the fence is each game's lock.
             target_season: Season to calculate features for.
             target_week: Week to calculate features for.
+            lock_frame: The build's ``game_id`` -> lock frame, built ONCE by the caller
+                (``scripts/build_features.py``). When ``None`` it is built here, once,
+                from *games_df* through ``utils.game_lock.lock_frame``.
 
         Returns:
             One row per game with ``home_`` / ``away_`` injury feature columns.
         """
         logger.info(
             "Building injury features",
-            as_of_datetime=str(as_of_datetime),
             target_season=target_season,
             target_week=target_week,
         )
-
         self._games_cache = games_df
 
         empty_cols = (
@@ -491,101 +609,142 @@ class InjuryBuilder:
             + [f"home_{c}" for c in _FEATURE_COLUMNS]
             + [f"away_{c}" for c in _FEATURE_COLUMNS]
         )
-        if len(games_df) == 0:
-            return pd.DataFrame(columns=empty_cols)
-
-        # Fan out over every (season, week) when no single target is given.
-        if target_season is None or target_week is None:
-            all_results = []
-            season_weeks = (
-                games_df[["season", "week"]]
-                .drop_duplicates()
-                .sort_values(["season", "week"])
-            )
-            for _, sw in season_weeks.iterrows():
-                chunk = self.build_features(
-                    games_df,
-                    as_of_datetime,
-                    target_season=int(sw["season"]),
-                    target_week=int(sw["week"]),
-                )
-                if len(chunk) > 0:
-                    all_results.append(chunk)
-            if all_results:
-                return pd.concat(all_results, ignore_index=True)
-            return pd.DataFrame(columns=empty_cols)
-
-        target_games = games_df[
-            (games_df["season"] == target_season) & (games_df["week"] == target_week)
-        ]
+        target_games = self._target_games(games_df, target_season, target_week)
         if len(target_games) == 0:
             return pd.DataFrame(columns=empty_cols)
-
-        teams: list[str] = []
-        for _, game in target_games.iterrows():
-            for col in ("home_team", "away_team"):
-                team = self._qb_tracker._safe_normalize_team(game[col])
-                if team not in teams:
-                    teams.append(team)
-
-        team_features = self.compute_injury_features(
-            target_season, target_week, as_of_datetime, teams
-        )
+        if lock_frame is None:
+            lock_frame = lock_rule.lock_frame(target_games)
 
         rows: list[dict] = []
-        for _, game in target_games.iterrows():
-            record: dict = {"game_id": game["game_id"]}
-            for prefix, team_col in (("home", "home_team"), ("away", "away_team")):
-                team = self._qb_tracker._safe_normalize_team(game[team_col])
-                feats = team_features.get(team, self._neutral_features())
-                for col in _FEATURE_COLUMNS:
-                    record[f"{prefix}_{col}"] = float(feats[col])
-            rows.append(record)
+        for (season, week), week_games in target_games.groupby(
+            ["season", "week"], sort=True
+        ):
+            team_shares = self._team_shares(int(season), int(week))
+            for game in week_games.to_dict("records"):
+                lock = lock_frame[str(game["game_id"])]
+                team_features = self.compute_game_injury_features(
+                    game, lock, team_shares
+                )
+                record: dict = {"game_id": game["game_id"]}
+                for prefix, team_col in (("home", "home_team"), ("away", "away_team")):
+                    team = self._qb_tracker._safe_normalize_team(game[team_col])
+                    feats = team_features.get(team, self._neutral_features())
+                    for col in _FEATURE_COLUMNS:
+                        record[f"{prefix}_{col}"] = float(feats[col])
+                rows.append(record)
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows, columns=empty_cols)
 
     def get_features_for_game(
         self,
         game_id: str,
         as_of_datetime: datetime,
     ) -> dict[str, float]:
-        """Get home/away injury features for a single game.
+        """Home/away injury features for one game, fenced at its lock.
 
-        Conforms to the FeatureBuilder Protocol.
-
-        Args:
-            game_id: Unique game identifier.
-            as_of_datetime: The Friday 6 PM ET freeze cutoff.
-
-        Returns:
-            Dict of ``home_`` / ``away_`` injury feature values.
+        The game is resolved from the frame handed to the last ``build_features`` call,
+        because its lock needs the kickoff; a game that cannot be resolved has no lock and
+        is refused by name (``utils.game_lock.MissingKickoffError``) rather than built from
+        a manufactured cutoff. ``as_of_datetime`` is carried for the Protocol only.
         """
-        empty = {
-            f"{prefix}_{col}": float(self._neutral_features()[col])
-            for prefix in ("home", "away")
-            for col in _FEATURE_COLUMNS
-        }
-
-        season, week, home_team, away_team = self._resolve_game(game_id)
-        if season is None or week is None:
-            return empty
-
-        home = self._qb_tracker._safe_normalize_team(home_team)
-        away = self._qb_tracker._safe_normalize_team(away_team)
-        team_features = self.compute_injury_features(
-            season, week, as_of_datetime, [home, away]
+        game = self._resolve_game(game_id)
+        if game is None:
+            msg = (
+                f"game {game_id} is not in the games frame this builder was given, so it "
+                "has no kickoff and therefore no lock; refusing rather than guessing one"
+            )
+            raise lock_rule.MissingKickoffError(msg)
+        lock = lock_rule.game_lock(game.get("kickoff_et"), game_id=str(game_id))
+        team_features = self.compute_game_injury_features(
+            game, lock, self._team_shares(int(game["season"]), int(game["week"]))
         )
 
-        result = dict(empty)
-        for prefix, team in (("home", home), ("away", away)):
+        result: dict[str, float] = {}
+        for prefix, team_col in (("home", "home_team"), ("away", "away_team")):
+            team = self._qb_tracker._safe_normalize_team(game[team_col])
             feats = team_features.get(team, self._neutral_features())
             for col in _FEATURE_COLUMNS:
                 result[f"{prefix}_{col}"] = float(feats[col])
         return result
 
     # ------------------------------------------------------------------
+    # InformationTimeProvider (features.protocol, Plan 33.2-01's owned contract)
+    # ------------------------------------------------------------------
+
+    def no_information_signature(self) -> Mapping[str, float | None]:
+        """What a game that admitted NO report must carry, per source-frame column.
+
+        Both teams take the documented unknown values: no QB out, no backup delta, full
+        availability, and both injury coverage flags at 0.0. Non-empty by construction, so
+        the gate value-checks every ``no_information`` row instead of trusting it.
+        """
+        return {
+            f"{prefix}_{column}": value
+            for prefix in ("home", "away")
+            for column, value in _UNKNOWN_TEAM_VALUES.items()
+        }
+
+    def information_times(
+        self,
+        games_df: pd.DataFrame,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """One provenance row per game, from the SAME selection ``build_features`` runs.
+
+        * The game admitted reports (``date_modified`` or ``capture_stamp`` rule):
+          ``basis="per_row"`` with the MAXIMUM information time among the reports it
+          actually admitted -- the selector is the only thing that knows what it used.
+        * The game admitted nothing (``none_admitted``): ``basis="no_information"`` with a
+          NULL time, value-checked by the gate against :meth:`no_information_signature`.
+
+        There is never a ``per_row`` row with a null time, so the gate's undated refusal is
+        unreachable from this builder.
+
+        Returns:
+            A frame with exactly ``PROVENANCE_COLUMNS``.
+        """
+        target_games = self._target_games(games_df, target_season, target_week)
+        records: list[dict[str, Any]] = []
+        if len(target_games) > 0:
+            locks = lock_rule.lock_frame(target_games)
+            for game in target_games.to_dict("records"):
+                game_id = str(game["game_id"])
+                selection = self.fenced_injuries(game, locks[game_id])
+                dated = selection.rule is not SelectionRule.NONE_ADMITTED
+                records.append(
+                    {
+                        "game_id": game_id,
+                        "basis": (
+                            InformationBasis.PER_ROW.value
+                            if dated
+                            else InformationBasis.NO_INFORMATION.value
+                        ),
+                        "information_time": (
+                            selection.information_time if dated else None
+                        ),
+                    }
+                )
+        return pd.DataFrame(records, columns=list(PROVENANCE_COLUMNS))
+
+    # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _target_games(
+        games_df: pd.DataFrame, target_season: int | None, target_week: int | None
+    ) -> pd.DataFrame:
+        """The games a build covers: one (season, week) when both are given, else all."""
+        if len(games_df) == 0:
+            return games_df
+        if target_season is not None and target_week is not None:
+            return games_df.loc[
+                (games_df["season"] == target_season)
+                & (games_df["week"] == target_week)
+            ]
+        return games_df
 
     @staticmethod
     def _neutral_features() -> dict[str, float]:
@@ -599,29 +758,11 @@ class InjuryBuilder:
             "date_modified_coverage": 0.0,
         }
 
-    def _resolve_game(
-        self, game_id: str
-    ) -> tuple[int | None, int | None, str | None, str | None]:
-        """Resolve (season, week, home_team, away_team) for a game_id."""
-        if self._games_cache is not None:
-            match = self._games_cache[self._games_cache["game_id"] == game_id]
-            if len(match) > 0:
-                r = match.iloc[0]
-                return (
-                    int(r["season"]),
-                    int(r["week"]),
-                    str(r["home_team"]),
-                    str(r["away_team"]),
-                )
-
-        parts = str(game_id).split("_")
-        if len(parts) >= 4:
-            try:
-                season = int(parts[0])
-                week = int(parts[1])
-            except ValueError:
-                return None, None, None, None
-            away, home = parts[2], parts[3]
-            return season, week, home, away
-
-        return None, None, None, None
+    def _resolve_game(self, game_id: str) -> dict[str, Any] | None:
+        """The cached games-frame row for *game_id*, or ``None``."""
+        if self._games_cache is None or len(self._games_cache) == 0:
+            return None
+        match = self._games_cache.loc[self._games_cache["game_id"] == game_id]
+        if len(match) == 0:
+            return None
+        return match.iloc[0].to_dict()

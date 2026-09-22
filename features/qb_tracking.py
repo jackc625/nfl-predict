@@ -21,11 +21,14 @@ Key constraints:
 - Single composite metric per team per game (D-03)
 """
 
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from features.provenance import DECLARED_GAME_DURATION, InformationTimeViolation
 from utils import get_logger
 from utils.team_data import normalize_team_abbreviation
 
@@ -37,6 +40,97 @@ CPOE_WEIGHT = 0.3
 
 # Dynamic window parameters (matching TeamFormCalculator)
 MAX_PRIOR_GAMES = 8
+
+
+class DepthChartSchemaError(LookupError):
+    """A depth-chart frame carries neither a ``dt`` nor a ``week`` column.
+
+    Neither schema can be resolved, so no starter can be named. A ``LookupError``, which is
+    NOT a member of ``scripts.build_features._SOURCE_LOAD_ERRORS`` (``KeyError`` is a
+    subclass of ``LookupError``, not the other way round), so it reaches the caller instead
+    of becoming an empty QB frame -- the same shape as ``UnknownSurfaceError``.
+    """
+
+
+class UntimeablePlayByPlayError(LookupError):
+    """Play-by-play rows cannot be matched to a scheduled game, so their end is unknown.
+
+    A play with no end instant cannot be compared to a lock. Refused by name rather than
+    admitted, for the reason ``DepthChartSchemaError`` gives about its base class.
+    """
+
+
+@dataclass(frozen=True)
+class DepthChartQBs:
+    """A team's QB1 and QB2 as a depth chart published them, and WHEN it did.
+
+    ``published_at`` is the upstream ``dt`` of the snapshot used (2025+ schema) -- a real
+    publication time. It is ``None`` on the week-keyed 2002-2024 schema, whose charts carry
+    no publication time at all; that is stated, not manufactured.
+    """
+
+    qb1: str | None
+    qb2: str | None
+    published_at: pd.Timestamp | None
+
+
+def to_aware_utc(values: pd.Series, *, column: str) -> pd.Series:
+    """*values* as tz-aware UTC instants; a naive value is REFUSED, never relabelled.
+
+    ``pd.to_datetime(..., utc=True)`` would stamp a naive wall clock as UTC, which is the
+    convert-never-relabel defect D33.2-01 forbids. The refusal is an
+    ``InformationTimeViolation`` so the build's optional-source handler cannot swallow it.
+
+    Args:
+        values: A series of instants: tz-aware datetimes, ISO-8601 strings carrying an
+            offset, or nulls.
+        column: The column the values came from, named in a refusal.
+
+    Returns:
+        A ``datetime64[..., UTC]`` series on the same index (nulls stay NaT).
+    """
+    if len(values) == 0 or bool(values.isna().all()):
+        return pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns, UTC]")
+    if isinstance(values.dtype, pd.DatetimeTZDtype):
+        return values.dt.tz_convert("UTC")
+    if pd.api.types.is_datetime64_dtype(values):
+        _refuse_naive(column)
+    try:
+        parsed = pd.to_datetime(values, format="ISO8601")
+    except (ValueError, TypeError):
+        # Mixed offsets cannot be parsed as one vector without utc=True, which would
+        # relabel any naive member; parse element by element instead.
+        return values.map(lambda value: _one_aware_utc(value, column))
+    if not isinstance(parsed.dtype, pd.DatetimeTZDtype):
+        _refuse_naive(column)
+    return parsed.dt.tz_convert("UTC")
+
+
+def _one_aware_utc(value: Any, column: str) -> pd.Timestamp:
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return pd.NaT  # type: ignore[return-value]
+    instant = pd.Timestamp(value)
+    if instant.tzinfo is None:
+        _refuse_naive(column)
+    return instant.tz_convert("UTC")
+
+
+def _refuse_naive(column: str) -> None:
+    msg = (
+        f"the {column!r} column carries a naive (tz-unaware) instant. It cannot be "
+        "compared to a game's lock, and a naive value is refused rather than relabelled."
+    )
+    raise InformationTimeViolation(
+        msg, {"column": column, "violation_type": "naive_information_time"}
+    )
+
+
+def lock_as_utc(lock: Any) -> pd.Timestamp:
+    """A lock (from ``utils.game_lock``) as a UTC ``Timestamp``; a naive lock is refused."""
+    instant = pd.Timestamp(lock)
+    if instant.tzinfo is None:
+        _refuse_naive("lock")
+    return instant.tz_convert("UTC")
 
 
 class QBTracker:
@@ -398,6 +492,153 @@ class QBTracker:
 
         qb_quality = EPA_WEIGHT * norm_epa + CPOE_WEIGHT * norm_cpoe
         return float(qb_quality)
+
+    # ------------------------------------------------------------------
+    # Per-game lock helpers (Phase 33.2, Plan 33.2-13): shared with InjuryBuilder
+    # ------------------------------------------------------------------
+
+    def resolve_depth_chart_qbs(
+        self,
+        depth_charts: pd.DataFrame,
+        season: int,
+        week: int,
+        team: str,
+        lock: Any,
+    ) -> DepthChartQBs:
+        """A team's QB1 / QB2 as known at *lock*, branching on the depth-chart SCHEMA.
+
+        * A ``dt`` column (the 2025+ schema): nflverse stopped assigning weeks after 2024
+          and appends each update with an ISO-8601 publication time instead. The snapshot
+          used is the LATEST one whose ``dt`` is at or before the lock; a snapshot published
+          one second later is not seen. ``dt`` is a genuine upstream publication time, so
+          the identity carries a REAL information time -- better provenance than the
+          week-keyed path can offer.
+        * A ``week`` column (2002-2024): the chart filed for the target week, and never a
+          later week's. That chart has no publication time, so ``published_at`` is None.
+
+        The branch is on the column, never on a season literal. The 2025+ frames also carry
+        ``espn_id`` beside ``gsis_id`` -- the bridge for anything ESPN-sourced. It is
+        recorded here and deliberately unused (Plan 33.2-15 settles the ESPN question).
+
+        Args:
+            depth_charts: A depth-chart frame in the loader's normalised column names
+                (``club_code``, ``position``, ``depth_team``, ``gsis_id``).
+            season: The target game's season.
+            week: The target game's week.
+            team: Canonical team abbreviation.
+            lock: The target game's lock (``utils.game_lock``), tz-aware.
+
+        Returns:
+            The resolved QB1 / QB2 and the publication time of the snapshot used.
+
+        Raises:
+            DepthChartSchemaError: the frame carries neither ``dt`` nor ``week``.
+        """
+        if depth_charts is None or len(depth_charts) == 0:
+            return DepthChartQBs(None, None, None)
+        if "dt" not in depth_charts.columns and "week" not in depth_charts.columns:
+            msg = (
+                "a depth-chart frame carries neither 'dt' (2025+) nor 'week' (2002-2024), "
+                f"so no starter can be resolved; columns: {sorted(depth_charts.columns)}"
+            )
+            raise DepthChartSchemaError(msg)
+
+        qbs = depth_charts.loc[depth_charts["position"] == "QB"]
+        qbs = qbs.loc[qbs["club_code"].map(self._safe_normalize_team) == team]
+        if len(qbs) == 0:
+            return DepthChartQBs(None, None, None)
+
+        published_at: pd.Timestamp | None = None
+        if "dt" in qbs.columns:
+            published = to_aware_utc(qbs["dt"], column="dt")
+            # The at-lock-admissible comparison utils.game_lock.is_admissible states (<=),
+            # applied to a vector of publication times against this game's one lock.
+            admitted = published.notna() & (published <= lock_as_utc(lock))
+            if not bool(admitted.any()):
+                return DepthChartQBs(None, None, None)
+            latest = published.loc[admitted].max()
+            snapshot = qbs.loc[admitted & (published == latest)]
+            published_at = pd.Timestamp(latest)
+        else:
+            snapshot = qbs
+            if "season" in snapshot.columns:
+                snapshot = snapshot.loc[snapshot["season"] == season]
+            snapshot = snapshot.loc[snapshot["week"] == week]
+
+        depth = snapshot["depth_team"].astype(str)
+        qb1 = snapshot.loc[depth == "1"]
+        qb2 = snapshot.loc[depth == "2"]
+        return DepthChartQBs(
+            qb1=str(qb1.iloc[0]["gsis_id"]) if len(qb1) > 0 else None,
+            qb2=str(qb2.iloc[0]["gsis_id"]) if len(qb2) > 0 else None,
+            published_at=published_at,
+        )
+
+    def pbp_game_end_times(
+        self, pbp: pd.DataFrame, games_df: pd.DataFrame
+    ) -> pd.Series:
+        """When each play-by-play game's RESULT became known: kickoff plus the duration.
+
+        The duration is ``features.provenance.DECLARED_GAME_DURATION`` (4 h) -- the SAME
+        value ``audit.elo_replay.DEFAULT_GAME_DURATION_HOURS`` declares, reused rather than
+        re-declared, so the builder and the replay cannot disagree about when a game ended.
+
+        PBP ids (``2024_01_BUF_KC``) and silver ids (``2024_W01_BUF@KC``) never match, so a
+        PBP game is keyed to its scheduled game by (season, week, home team, away team).
+        A PBP game with no scheduled match in *games_df* has no known end and is left out
+        of the result -- it is therefore never admitted, which is the conservative answer.
+
+        Returns:
+            PBP ``game_id`` -> tz-aware UTC end instant.
+
+        Raises:
+            UntimeablePlayByPlayError: non-empty PBP without ``home_team`` / ``away_team``.
+        """
+        empty = pd.Series(dtype="datetime64[ns, UTC]", name="end")
+        if pbp is None or len(pbp) == 0 or len(games_df) == 0:
+            return empty
+        missing = [c for c in ("home_team", "away_team") if c not in pbp.columns]
+        if missing:
+            msg = (
+                f"play-by-play carries no {missing} column(s), so its games cannot be "
+                "matched to the schedule and have no end instant to compare to a lock"
+            )
+            raise UntimeablePlayByPlayError(msg)
+
+        keys = ["season", "week", "home_team", "away_team"]
+        pbp_games = pbp[["game_id", *keys]].drop_duplicates("game_id").copy()
+        schedule = games_df[[*keys, "kickoff_et"]].copy()
+        for frame in (pbp_games, schedule):
+            for column in ("home_team", "away_team"):
+                frame[column] = frame[column].map(self._safe_normalize_team)
+            for column in ("season", "week"):
+                frame[column] = pd.to_numeric(frame[column]).astype("int64")
+        schedule["end"] = (
+            to_aware_utc(schedule["kickoff_et"], column="kickoff_et")
+            + DECLARED_GAME_DURATION
+        )
+        matched = pbp_games.merge(
+            schedule.drop(columns="kickoff_et").drop_duplicates(keys),
+            on=keys,
+            how="inner",
+        )
+        return pd.Series(
+            matched["end"].to_numpy(), index=matched["game_id"].to_numpy(), name="end"
+        )
+
+    @staticmethod
+    def admitted_pbp(
+        pbp: pd.DataFrame, game_ends: pd.Series, lock: Any
+    ) -> pd.DataFrame:
+        """The plays from games whose result was known at or before *lock*.
+
+        Uses the at-lock-admissible comparison ``utils.game_lock.is_admissible`` states
+        (``end <= lock``), vectorised over the game ends.
+        """
+        if pbp is None or len(pbp) == 0 or len(game_ends) == 0:
+            return pbp.iloc[0:0] if pbp is not None else pd.DataFrame()
+        admitted_ids = game_ends.index[game_ends <= lock_as_utc(lock)]
+        return pbp.loc[pbp["game_id"].isin(admitted_ids)]
 
     # ------------------------------------------------------------------
     # FeatureBuilder Protocol methods
