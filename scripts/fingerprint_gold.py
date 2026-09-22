@@ -6311,6 +6311,412 @@ PHASE332_EXTRA_STEP_SIGNATURES[PHASE332_IMPUTATION_STEP] = (
 PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_IMPUTATION_STEP] = _attribute_p332_imputation
 
 
+# ---------------------------------------------------------------------------
+# p332_ RUNG 8 -- THE COVERAGE FLOORS ARE RETIRED (Plan 33.2-18 Task 3; D33.2-14, D33.2-08
+# item 2, SPEC R10). Registered per Plan 33.2-08's <owned_protocol_rung_registration>: three
+# names, one incremental cause-table append, one entry in EACH dispatch table, no new prefix
+# branch.
+#
+# ONE CAUSE, SEEN FROM SEVERAL SIDES. conf/season_partition.py's 2018 selection floor WAS a
+# coverage floor -- the season where Elo, odds and team stats began -- and the team-form,
+# opponent-adjusted, snap and injury families were floored with it. Retiring those floors is one
+# fact: the window moves to 2002 (commit 0ca6798), and every family 2018 floored is now either
+# computed back to 2002 or an honest unknown beside a flag. Moving the window, widening the
+# corpora and replacing the placeholders are faces of that one retirement, not a bundle. They
+# land in one rebuild because they are one fact, and they are attributed FACET BY FACET so a
+# surprise can still be bisected without a second rung:
+#
+# * FACET A -- team form. Plan 33.2-17 Task 1's silver corpus reaches 2002 (2002 week 1 rolling
+#   over the 2001 bootstrap season), so the 28 team-form value columns that were the neutral 0.0
+#   before 2020 carry computed values for 2002-2019. They may also move in 2020-2025: the
+#   prior-season normalization bootstrap, the strictly-prior winsorization bounds and step 7b's
+#   strictly-prior-seasons median all read the newly-covered earlier seasons. The source-limited
+#   metric rolling_cpoe (no completion probability in the pinned play-by-play before 2006) is NaN
+#   for 2002-2005 beside a new {side}_off_rolling_cpoe_coverage flag: TWO COLUMNS ADDED. The
+#   eight DEFENSIVE copies of the four offense-only metrics (cpoe, avg_drive_start_yardline,
+#   neutral_pace, neutral_pass_rate) are never populated and are PREDICTED NOT TO MOVE.
+# * FACET B -- opponent-adjusted. features/team_form.py binds TEAM_FORM_PER_GAME_FIRST_SEASON to
+#   SELECTION_WINDOW_FIRST_SEASON by identity and per_game_seasons drops every season below it,
+#   so the per-game pool now starts at 2002: the twelve *_rolling_opp_adj_* values and their four
+#   *_rolling_opp_adj_coverage flags gain 2002-2017 (NaN / 0.0 before), and may move in
+#   2018-2025 too (2018's early weeks now see 2017 history; the per-lock league average and the
+#   normalization read the earlier seasons). No column added or removed.
+# * FACET C -- snaps and injury. Plan 33.2-17 Task 2's builders reach gold: before a family's
+#   upstream coverage a value is NaN beside a false flag and the NaN survives normalization, where
+#   it was the neutral 0.0. Snaps 2002-2012 (the 20 snap columns); injury wherever no report was
+#   admitted -- 2002-2008, 2009's undatable rows, every 2025 game, 2023's late postseason --
+#   across its twelve columns (values and the injury / availability / date_modified flags;
+#   availability_fraction is NaN beside availability_coverage 0.0 for 2009-2012 and 2013 week 1).
+#   {side}_snap_coverage is emitted by the snap builder: TWO COLUMNS ADDED.
+#
+# STRUCTURE: exactly four columns added (two in A, two in C), none removed, every width +4
+# (197/198/197 -> 201/202/201), rows unchanged (6,499). Nothing outside the union of the three
+# facets may move; a column outside every facet HALTS the run -- the cause is never widened.
+#
+# THE EXPECTED CASE IS "RUNS", determined from the consumers before the rebuild
+# (features/team_form.py's identity binding -> per_game_seasons), never from the diff. An empty
+# diff is a FINDING, not a declared-but-not-run record.
+#
+# JUDGED AGAINST A RETAKEN BASELINE (PHASE332_RETAKEN_BASELINES[8]): see the carry-in below.
+# ---------------------------------------------------------------------------
+
+PHASE332_WINDOW_RUNG: int = 8
+
+PHASE332_WINDOW_RUNG_CAUSE: str = (
+    "THE COVERAGE FLOORS ARE RETIRED, p332_ rung 8 of Plan 33.2-18 (D33.2-14, D33.2-08 item 2, "
+    "SPEC R10) -- ONE cause seen from several sides, not a list of changes. The input-selection "
+    "window's 2018 WAS a coverage floor, and the families it floored are released from it "
+    "together: the window itself moves from 2018 to 2002 in conf/season_partition.py, and every "
+    "family 2018 floored is now computed or honestly unknown back to 2002 -- team form from the "
+    "pinned play-by-play (Plan 33.2-17's silver corpus), opponent-adjusted EPA through "
+    "TEAM_FORM_PER_GAME_FIRST_SEASON's identity binding to the window, and snaps, injury and "
+    "completion probability as NaN beside a coverage flag before their upstream coverage. These "
+    "are faces of the one retirement. Attributed facet by facet: (A) the 28 team-form values and "
+    "two added rolling_cpoe coverage flags, (B) the twelve opponent-adjusted values and their "
+    "four flags, (C) the snap and injury families and two added snap_coverage flags. Exactly "
+    "four columns are added, none removed, no row moves, and nothing outside the three facets "
+    "may move"
+)
+
+_PHASE332_ALL_SEASONS: tuple[str, ...] = tuple(str(s) for s in range(2002, 2026))
+
+
+def _phase332_seasons(first: int, last: int) -> tuple[str, ...]:
+    return tuple(str(s) for s in range(first, last + 1))
+
+
+#: THE PREDICTION, FACET BY FACET, declared before the rebuild. Each facet names the columns it
+#: may move (``changed``), the columns it adds (``added``), the seasons a move may fall in
+#: (``allowed_seasons``) and the seasons it MUST move in (``required_seasons`` -- the face of the
+#: retirement that facet exists to show).
+PHASE332_WINDOW_RUNG_FACETS: dict[str, dict[str, tuple[str, ...]]] = {
+    "A_team_form": {
+        "changed": (
+            "away_def_rolling_pass_success_rate", "away_def_rolling_red_zone_td_rate",
+            "away_def_rolling_rush_success_rate", "away_def_rolling_success_rate",
+            "away_def_rolling_third_down_conversion_rate",
+            "away_off_rolling_avg_drive_start_yardline", "away_off_rolling_cpoe",
+            "away_off_rolling_neutral_pace", "away_off_rolling_neutral_pass_rate",
+            "away_off_rolling_pass_success_rate", "away_off_rolling_red_zone_td_rate",
+            "away_off_rolling_rush_success_rate", "away_off_rolling_success_rate",
+            "away_off_rolling_third_down_conversion_rate",
+            "home_def_rolling_pass_success_rate", "home_def_rolling_red_zone_td_rate",
+            "home_def_rolling_rush_success_rate", "home_def_rolling_success_rate",
+            "home_def_rolling_third_down_conversion_rate",
+            "home_off_rolling_avg_drive_start_yardline", "home_off_rolling_cpoe",
+            "home_off_rolling_neutral_pace", "home_off_rolling_neutral_pass_rate",
+            "home_off_rolling_pass_success_rate", "home_off_rolling_red_zone_td_rate",
+            "home_off_rolling_rush_success_rate", "home_off_rolling_success_rate",
+            "home_off_rolling_third_down_conversion_rate",
+        ),
+        "added": ("away_off_rolling_cpoe_coverage", "home_off_rolling_cpoe_coverage"),
+        "allowed_seasons": _PHASE332_ALL_SEASONS,
+        "required_seasons": _phase332_seasons(2002, 2019),
+    },
+    "B_opponent_adjusted": {
+        "changed": (
+            "away_def_rolling_opp_adj_coverage", "away_def_rolling_opp_adj_epa_per_play",
+            "away_def_rolling_opp_adj_pass_epa", "away_def_rolling_opp_adj_rush_epa",
+            "away_off_rolling_opp_adj_coverage", "away_off_rolling_opp_adj_epa_per_play",
+            "away_off_rolling_opp_adj_pass_epa", "away_off_rolling_opp_adj_rush_epa",
+            "home_def_rolling_opp_adj_coverage", "home_def_rolling_opp_adj_epa_per_play",
+            "home_def_rolling_opp_adj_pass_epa", "home_def_rolling_opp_adj_rush_epa",
+            "home_off_rolling_opp_adj_coverage", "home_off_rolling_opp_adj_epa_per_play",
+            "home_off_rolling_opp_adj_pass_epa", "home_off_rolling_opp_adj_rush_epa",
+        ),
+        "added": (),
+        "allowed_seasons": _PHASE332_ALL_SEASONS,
+        "required_seasons": _phase332_seasons(2002, 2017),
+    },
+    "C_snaps_injury": {
+        "changed": (
+            "away_rolling_snap_share_db", "away_rolling_snap_share_dl",
+            "away_rolling_snap_share_lb", "away_rolling_snap_share_ol",
+            "away_rolling_snap_share_qb", "away_rolling_snap_share_rb",
+            "away_rolling_snap_share_te", "away_rolling_snap_share_wr",
+            "away_snap_concentration", "away_snap_continuity",
+            "home_rolling_snap_share_db", "home_rolling_snap_share_dl",
+            "home_rolling_snap_share_lb", "home_rolling_snap_share_ol",
+            "home_rolling_snap_share_qb", "home_rolling_snap_share_rb",
+            "home_rolling_snap_share_te", "home_rolling_snap_share_wr",
+            "home_snap_concentration", "home_snap_continuity",
+            "away_availability_coverage", "away_availability_fraction",
+            "away_backup_quality_delta", "away_date_modified_coverage",
+            "away_injury_coverage", "away_qb_out_flag",
+            "home_availability_coverage", "home_availability_fraction",
+            "home_backup_quality_delta", "home_date_modified_coverage",
+            "home_injury_coverage", "home_qb_out_flag",
+        ),
+        "added": ("away_snap_coverage", "home_snap_coverage"),
+        "allowed_seasons": _PHASE332_ALL_SEASONS,
+        "required_seasons": _phase332_seasons(2002, 2012),
+    },
+}  # fmt: skip
+
+#: The eight team-form columns that are PREDICTED NOT TO MOVE: the defensive copies of the four
+#: offense-only metrics, never populated by the builder in any season (a constant in gold before
+#: and after this rung). Listed so a movement there is a named finding, not a silent pass.
+PHASE332_WINDOW_RUNG_PREDICTED_UNMOVED: tuple[str, ...] = (
+    "away_def_rolling_avg_drive_start_yardline", "away_def_rolling_cpoe",
+    "away_def_rolling_neutral_pace", "away_def_rolling_neutral_pass_rate",
+    "home_def_rolling_avg_drive_start_yardline", "home_def_rolling_cpoe",
+    "home_def_rolling_neutral_pace", "home_def_rolling_neutral_pass_rate",
+)  # fmt: skip
+
+#: The union of the facets' moved columns and of their added columns, sorted.
+PHASE332_WINDOW_RUNG_PREDICTED_CHANGED: tuple[str, ...] = tuple(
+    sorted(
+        {c for facet in PHASE332_WINDOW_RUNG_FACETS.values() for c in facet["changed"]}
+    )
+)
+PHASE332_WINDOW_RUNG_PREDICTED_ADDED: tuple[str, ...] = tuple(
+    sorted(
+        {c for facet in PHASE332_WINDOW_RUNG_FACETS.values() for c in facet["added"]}
+    )
+)
+PHASE332_WINDOW_RUNG_WIDTH_DELTA: int = 4
+PHASE332_WINDOW_RUNG_WIDTHS_BEFORE: tuple[int, int, int] = (197, 198, 197)
+PHASE332_WINDOW_RUNG_WIDTHS_AFTER: tuple[int, int, int] = (201, 202, 201)
+
+#: THE DETERMINATION, made from the consumers before the rebuild (never from the diff).
+PHASE332_WINDOW_RUNG_EXPECTED_CASE: str = "runs"
+
+PHASE332_WINDOW_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_WINDOW_RUNG,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_WINDOW_RUNG_CAUSE,
+    "expected_case": PHASE332_WINDOW_RUNG_EXPECTED_CASE,
+    "columns_added": PHASE332_WINDOW_RUNG_PREDICTED_ADDED,
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "each matrix exactly four columns wider (two rolling_cpoe and two snap flags)",
+    "columns_changed": (
+        "restricted to the union of the three facets in PHASE332_WINDOW_RUNG_FACETS, each "
+        "column only in its facet's allowed seasons; every other column EMPTY, including the "
+        "eight never-populated defensive team-form copies"
+    ),
+    "rows_changed": (
+        "A: team form 2002-2019 from the neutral 0.0 to computed values (rolling_cpoe NaN for "
+        "2002-2005 beside its new flag), later seasons through normalization; B: opponent-"
+        "adjusted 2002-2017 from NaN / flag 0.0 to computed values, later seasons through the "
+        "per-lock league average and normalization; C: snaps 2002-2012 and every game that "
+        "admitted no injury report from the neutral 0.0 to NaN beside a false flag"
+    ),
+    "facets": PHASE332_WINDOW_RUNG_FACETS,
+    "predicted_unmoved": PHASE332_WINDOW_RUNG_PREDICTED_UNMOVED,
+    "declared_families": ("team_form", "opponent_adj", "snaps", "injury"),
+    "family_mechanisms": {
+        "window": (
+            "conf.season_partition.SELECTION_WINDOW_FIRST_SEASON 2018 -> 2002, bound by identity "
+            "to features.team_form.TEAM_FORM_PER_GAME_FIRST_SEASON -> "
+            "TeamFormCalculator.per_game_seasons"
+        ),
+        "team_form": "silver team_form_features 2002-2026 (Plan 33.2-17 Task 1)",
+        "honest_unknowns": (
+            "features.snaps / features.injury NaN before coverage beside their flags, "
+            "_flag_source_limited_team_form, COVERAGE_FLAGGED_FAMILIES + "
+            "_restore_imputation_blanks (Plan 33.2-17 Task 2)"
+        ),
+    },
+    "declared_before_the_rebuild": True,
+}
+
+RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX][PHASE332_WINDOW_RUNG] = (
+    PHASE332_WINDOW_RUNG_CAUSE
+)
+
+# ---------------------------------------------------------------------------
+# RUNG 8'S RETAKEN BASELINE AND THE SILVER CARRY-IN IT ISOLATES (owner ruling 2026-09-21,
+# "retake a stale baseline, never widen a rung's cause").
+#
+# Plan 33.2-17 Task 1 rebuilt silver team_form_features / team_game_stats for 2002-2026 (commit
+# 1609373), and its 2020-2025 rows differ from the table production gold was last built on for
+# reasons that are NOT this rung's: the old table predated the upstream play-by-play pin (921
+# team-game rows in 2020, 2024 and 2025 differ, e.g. play counts off by one) and Plan 33.2-14's
+# lock-keyed windows (428 stale bye-week rows the current code correctly omits). So rung 8 is
+# judged against gold rebuilt in a SCRATCH data root from today's inputs minus only its own
+# cause: silver team form rebuilt from the pin at the OLD floor (`python -m
+# scripts.build_team_form --all-seasons --start-season 2020`), the gold code of commit bdaef81
+# (the code p332_rung7b.json was built with, window 2018, before Plan 33.2-17's builder changes).
+# The difference between p332_rung7b.json and that baseline is recorded as the MEASURED silver
+# carry-in -- beside rung 8, never inside it.
+# ---------------------------------------------------------------------------
+
+PHASE332_WINDOW_RUNG_BASELINE_DOCUMENT: str = (
+    f"{PHASE332_RUNG_PREFIX}rung7b_retaken.json"
+)
+
+PHASE332_RETAKEN_BASELINES[PHASE332_WINDOW_RUNG] = (
+    PHASE332_WINDOW_RUNG_BASELINE_DOCUMENT
+)
+PHASE332_RETAKEN_BASELINE_REASONS[PHASE332_WINDOW_RUNG] = (
+    "RETAKEN 2026-09-22 by the standing ruling. Gold rebuilt with `scripts/build_features.py "
+    "--through-season 2025` in a SCRATCH data root (DATA_ROOT_PATH and DUCKDB_PATH pointed at a "
+    "copy of today's production data/) whose silver team_form_features / team_game_stats were "
+    "first rebuilt from the pin at the old floor (`scripts.build_team_form --all-seasons "
+    "--start-season 2020`, today's code), with the gold code of commit bdaef81 -- step 7b's "
+    "rebuild commit, window 2018, before Plan 33.2-17's builder changes -- i.e. today's inputs "
+    "minus exactly rung 8's cause. p332_rung7b.json is kept unchanged"
+)
+
+#: THE CARRY-IN'S CAUSE: Plan 33.2-17 Task 1's re-derivation of silver team form for the
+#: seasons the old floor already covered. Not rung 8's: it would have happened at the old floor.
+PHASE332_RUNG8_CARRY_IN_CAUSE: str = (
+    "PRE-RUNG-8 SILVER CARRY-IN: Plan 33.2-17 Task 1 (commit 1609373) re-derived silver "
+    "team_form_features / team_game_stats for 2020 onward from the upstream play-by-play pin "
+    "with today's code -- the old table predated the pin (921 team-game rows in 2020, 2024 and "
+    "2025 differ) and Plan 33.2-14's lock-keyed windows (428 stale bye-week rows omitted), and "
+    "the corpus builder bootstraps the season before its first target, so at the old 2020 floor "
+    "2020's early windows also roll over 2019. Measured between p332_rung7b.json and the retaken "
+    "baseline, recorded beside rung 8 and never inside it"
+)
+
+#: DECLARED BEFORE THE CARRY-IN WAS MEASURED: only the team-form value columns can carry it,
+#: and only in 2020-2025 (the seasons the old floor covered). Canonical names. A carry-in
+#: column or season outside this prediction halts the ladder for investigation.
+PHASE332_RUNG8_CARRY_IN_PREDICTED_COLUMNS: tuple[str, ...] = tuple(
+    sorted(PHASE332_WINDOW_RUNG_FACETS["A_team_form"]["changed"])
+)
+PHASE332_RUNG8_CARRY_IN_ALLOWED_SEASONS: tuple[str, ...] = _phase332_seasons(2020, 2025)
+
+
+def phase332_rung8_carry_in(
+    fingerprint_dir: Path | str = FINGERPRINT_DIR,
+) -> dict[str, object]:
+    """The measured pre-rung-8 silver carry-in: p332_rung7b.json against the retaken baseline.
+
+    Returns the non-clock columns that moved (unioned over the three matrices, with their
+    seasons), every moved column OUTSIDE the prediction, every moved season outside 2020-2025
+    (both must be empty) and the per-matrix structure (added / removed columns and rows).
+    """
+    directory = Path(fingerprint_dir)
+    original = json.loads(
+        rung_document_path(
+            directory, PHASE332_IMPUTATION_STEP, PHASE332_RUNG_PREFIX
+        ).read_text(encoding="utf-8")
+    )
+    retaken = json.loads(
+        (directory / PHASE332_WINDOW_RUNG_BASELINE_DOCUMENT).read_text(encoding="utf-8")
+    )
+    report = compare_fingerprints(original, retaken)
+    moved = _phase332_moved_seasons(report)
+    predicted = {_canonical(c) for c in PHASE332_RUNG8_CARRY_IN_PREDICTED_COLUMNS}
+    allowed = set(PHASE332_RUNG8_CARRY_IN_ALLOWED_SEASONS)
+    structure = {
+        matrix: {
+            "added": list(report[matrix]["columns_added"]),
+            "removed": list(report[matrix]["columns_removed"]),
+            "rows": [report[matrix]["rows_before"], report[matrix]["rows_after"]],
+        }
+        for matrix in GOLD_MATRICES
+    }
+    return {
+        "moved_seasons": moved,
+        "outside_prediction": sorted(c for c in moved if c not in predicted),
+        "outside_seasons": sorted(
+            {s for seasons in moved.values() for s in seasons} - allowed
+        ),
+        "structure": structure,
+    }
+
+
+def _attribute_p332_window(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Rung 8 of the `p332_` ladder: the coverage-floor retirement's OWN judge, facet by facet.
+
+    STRUCTURE: the added set must be EXACTLY the four declared flags (two in facet A, two in
+    facet C), nothing may be removed, the width must grow by exactly four and the rows must not
+    move -- any structural surprise BLOCKS. VALUES: a changed column is attributed to the facet
+    that declares it, and only when every season it moved in is in that facet's allowed seasons.
+    Each facet must ALSO move in its required seasons -- the face of the retirement it exists to
+    show -- so a facet that silently did nothing fails by name. Anything outside the three
+    facets is UNATTRIBUTED and fails; the cause is never widened to fit it.
+
+    NOT the generic rung-8 path, deliberately: a registered-but-undispatched p332_ rung would be
+    judged by Phase 30's rung-number-keyed path and still print a verdict.
+
+    Returns:
+        Whether this matrix BLOCKS the phase.
+    """
+    label = "p332_ rung 8 (the coverage floors are retired)"
+    verdict["changed_by_family"] = {name: [] for name in PHASE332_WINDOW_RUNG_FACETS}
+    blocking = False
+
+    added = {_canonical(c) for c in diff["added"]}
+    expected_added = {_canonical(c) for c in PHASE332_WINDOW_RUNG_PREDICTED_ADDED}
+    if added != expected_added:
+        blocking = True
+        fail(
+            f"{label} added {sorted(added)}, not exactly the four declared flags "
+            f"{sorted(expected_added)}"
+        )
+    for column in diff["removed"]:
+        blocking = True
+        fail(f"column '{column}' was REMOVED at {label}; this rung removes none")
+    if (
+        detail["width_after"]
+        != detail["width_before"] + PHASE332_WINDOW_RUNG_WIDTH_DELTA
+    ):
+        blocking = True
+        fail(
+            f"width moved {detail['width_before']} -> {detail['width_after']} at {label}, "
+            f"which predicts exactly {PHASE332_WINDOW_RUNG_WIDTH_DELTA} columns more"
+        )
+    if detail.get("rows_before") != detail.get("rows_after"):
+        blocking = True
+        fail(
+            f"rows moved {detail.get('rows_before')} -> {detail.get('rows_after')} at "
+            f"{label}; the rung re-derives the same games"
+        )
+    if not diff["changed"]:
+        fail(
+            f"{label} moved no value column at all. The expected case was determined from the "
+            "consumers before the rebuild as RUNS; an empty diff is a FINDING"
+        )
+
+    facet_of = {
+        _canonical(column): name
+        for name, facet in PHASE332_WINDOW_RUNG_FACETS.items()
+        for column in facet["changed"]
+    }
+    moved_by_facet: dict[str, set[str]] = {
+        name: set() for name in PHASE332_WINDOW_RUNG_FACETS
+    }
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        facet = facet_of.get(column)
+        if facet is not None:
+            allowed = set(PHASE332_WINDOW_RUNG_FACETS[facet]["allowed_seasons"])
+            if seasons and set(seasons) <= allowed:
+                verdict["attributed"].append(column)
+                verdict["changed_by_family"][facet].append(column)
+                moved_by_facet[facet].update(seasons)
+                continue
+            why = f"it moved outside facet {facet}'s allowed seasons"
+        else:
+            why = "it is in none of the three facets"
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at {label} in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The rung's ONE cause is the "
+            "coverage-floor retirement and its facet prediction was declared before the "
+            "rebuild; do NOT widen it"
+        )
+
+    for name, facet in PHASE332_WINDOW_RUNG_FACETS.items():
+        missing = sorted(set(facet["required_seasons"]) - moved_by_facet[name])
+        if missing:
+            fail(
+                f"facet {name} did not move in its required season(s) {', '.join(missing)} at "
+                f"{label}: that face of the retirement is not in the rebuilt gold"
+            )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_RUNG_SIGNATURES[PHASE332_WINDOW_RUNG] = PHASE332_WINDOW_RUNG_EXPECTED_SIGNATURE
+PHASE332_RUNG_ATTRIBUTORS[PHASE332_WINDOW_RUNG] = _attribute_p332_window
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -6790,7 +7196,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 7, steps 3b-7b).
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 8, steps 3b-7b).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -7015,6 +7421,12 @@ def write_phase332_rebuild_diff(
     )
     if imputation_document.exists():
         lines.extend(_phase332_imputation_step_lines(fingerprint_dir))
+
+    window_document = rung_document_path(
+        fingerprint_dir, PHASE332_WINDOW_RUNG, PHASE332_RUNG_PREFIX
+    )
+    if window_document.exists():
+        lines.extend(_phase332_window_rung_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -7787,6 +8199,121 @@ def _phase332_imputation_step_lines(fingerprint_dir: Path | str) -> list[str]:
         lines.append(f"{column} = {blanks}")
     lines.extend(["", f'[rung."{step}".moved_seasons]'])
     for column, seasons in sorted(_phase332_moved_seasons(report).items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_window_rung_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` rung 8 (Plan 33.2-18 Task 3), recomputed from the ladder.
+
+    Judged by the same ``attribute_rung`` call the ladder run makes, against the RETAKEN baseline
+    (``PHASE332_RETAKEN_BASELINES[8]``). Records the facet prediction beside the measured
+    per-facet moves, the widths, and the silver carry-in between p332_rung7b.json and the
+    retaken baseline in its own table -- beside the rung, never inside it.
+    """
+    rung = PHASE332_WINDOW_RUNG
+    require_rung_ladder(fingerprint_dir, rung, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, rung)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, rung, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, rung, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    added = sorted(
+        {c for matrix in GOLD_MATRICES for c in report[matrix]["columns_added"]}
+    )
+    signature = PHASE332_WINDOW_RUNG_EXPECTED_SIGNATURE
+    moved_seasons = _phase332_moved_seasons(report)
+    carry_in = phase332_rung8_carry_in(fingerprint_dir)
+    carry_seasons = cast("dict[str, list[str]]", carry_in["moved_seasons"])
+    carry_outside = cast("list[str]", carry_in["outside_prediction"])
+    carry_outside_seasons = cast("list[str]", carry_in["outside_seasons"])
+    season_union = sorted({s for seasons in moved_seasons.values() for s in seasons})
+    lines = [
+        "",
+        f"[rung.{rung}]",
+        f"rung = {rung}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'expected_case = "{PHASE332_WINDOW_RUNG_EXPECTED_CASE}"',
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_retaken_why = "
+        f'"{_toml_escape(PHASE332_RETAKEN_BASELINE_REASONS[rung])}"',
+        f'cause = "{_toml_escape(PHASE332_WINDOW_RUNG_CAUSE)}"',
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        "predicted_changed_columns = "
+        f"{_toml_array(list(PHASE332_WINDOW_RUNG_PREDICTED_CHANGED))}",
+        "predicted_added_columns = "
+        f"{_toml_array(list(PHASE332_WINDOW_RUNG_PREDICTED_ADDED))}",
+        "predicted_unmoved_columns = "
+        f"{_toml_array(list(PHASE332_WINDOW_RUNG_PREDICTED_UNMOVED))}",
+        f"moved_season_union = {_toml_array(season_union)}",
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"added_columns = {_toml_array(added)}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_RUNG_ATTRIBUTORS[rung].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, although the expected '
+            'case was RUNS -- a finding, not a declared-but-not-run rung"'
+        )
+    for name, facet in PHASE332_WINDOW_RUNG_FACETS.items():
+        declared = set(facet["changed"])
+        facet_moved = sorted(c for c in moved if c in declared)
+        facet_seasons = sorted(
+            {s for c in facet_moved for s in moved_seasons.get(c, [])}
+        )
+        lines.extend(
+            [
+                "",
+                f"[rung.{rung}.facets.{name}]",
+                f"declared_changed = {_toml_array(list(facet['changed']))}",
+                f"declared_added = {_toml_array(list(facet['added']))}",
+                f"required_seasons = {_toml_array(list(facet['required_seasons']))}",
+                f"moved_columns = {_toml_array(facet_moved)}",
+                f"moved_seasons = {_toml_array(facet_seasons)}",
+            ]
+        )
+    lines.extend(["", f"[rung.{rung}.moved_seasons]"])
+    for column, seasons in sorted(moved_seasons.items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    from_document = rung_document_path(
+        fingerprint_dir, PHASE332_IMPUTATION_STEP, PHASE332_RUNG_PREFIX
+    ).name
+    lines.extend(
+        [
+            "",
+            f"[rung.{rung}.carry_in]",
+            f'from_document = "{from_document}"',
+            f'to_document = "{baseline_path.name}"',
+            f'cause = "{_toml_escape(PHASE332_RUNG8_CARRY_IN_CAUSE)}"',
+            "predicted_columns = "
+            f"{_toml_array(list(PHASE332_RUNG8_CARRY_IN_PREDICTED_COLUMNS))}",
+            "allowed_seasons = "
+            f"{_toml_array(list(PHASE332_RUNG8_CARRY_IN_ALLOWED_SEASONS))}",
+            f"moved_columns = {_toml_array(sorted(carry_seasons))}",
+            f"outside_prediction = {_toml_array(carry_outside)}",
+            f"outside_seasons = {_toml_array(carry_outside_seasons)}",
+            "",
+            f"[rung.{rung}.carry_in.moved_seasons]",
+        ]
+    )
+    for column, seasons in sorted(carry_seasons.items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
     return lines
 
