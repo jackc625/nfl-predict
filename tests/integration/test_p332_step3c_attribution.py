@@ -322,11 +322,30 @@ class TestTheRowRule:
 
     @pytest.mark.parametrize("matrix", fg.GOLD_MATRICES)
     def test_every_game_whose_rest_count_moves_moved(self, matrix) -> None:
-        _, moved = self._moves(matrix)
+        """Every derived game moved in gold, bar the season-opening rows gold cannot scale.
+
+        The derivation scores the CONTEXTUAL rest count. Gold then z-scores the column
+        within each season, and a week-1 row has no earlier row of its season to be
+        scaled against, so it reads exactly 0.0 whatever its raw count. MEASURED
+        2026-09-21: 199 of the 201 derived games moved; the other two are 2003 week-1
+        games (a team whose previous game was a 2002 Monday-night game) reading 0.0 in
+        both rest columns before and after. The exception is that shape exactly, not a
+        list of games.
+        """
+        before, moved = self._moves(matrix)
         rest_rows = moved.get("home_rest_days", set()) | moved.get(
             "away_rest_days", set()
+        )
+        after = pd.read_parquet(GOLD_AFTER_DIR / f"{matrix}.parquet").set_index(
+            "game_id"
         )
         changed = {
             g for g, s in fg.phase332_kickoff_hour_rest_changes().items() if s <= 2025
         }
-        assert changed <= rest_rows
+        masked = sorted(changed - rest_rows)
+        for game_id in masked:
+            assert int(before.loc[game_id, "week"]) == 1, game_id
+            for column in ("home_rest_days", "away_rest_days"):
+                assert before.loc[game_id, column] == 0.0, (game_id, column)
+                assert after.loc[game_id, column] == 0.0, (game_id, column)
+        assert len(masked) < len(changed) / 10

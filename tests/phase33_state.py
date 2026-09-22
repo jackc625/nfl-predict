@@ -15212,3 +15212,91 @@ P332_11_MOS_COMPARISON_VERDICT: str = "PASS"
 P332_11_WEATHER_SCHEMA_FIELDS_AFTER_MOS: int = 30
 
 P332_11_DIGEST_BRACKET_PATH_PREFIX: str = "bronze/mos/"
+
+# ---------------------------------------------------------------------------
+# Plan 33.2-12 extra step 3c -- THE KICKOFF-HOUR CORRECTION (orchestrator-assigned; the
+# deferred-items entry "68 silver kickoffs in 2002-2005 are stored at 09:00 ET for Monday and
+# Thursday NIGHT games", found by Plan 33.2-10). APPENDED ONCE on 2026-09-21, in ONE block.
+# Nothing above this line was edited.
+#
+# THE DEFECT. The feed's gametime is "09:00" for all 68 of 2002-2005's Monday and Thursday
+# night games (NFL.com carries the same value): a 12-hour AM/PM error. The ET date was right,
+# so no lock moved; the clock was wrong, and it feeds the contextual rest-day count and the
+# day-before forecast hour rung 4 selects.
+#
+# THE FIX. config/kickoff_hour_corrections.toml records all 68, 09:00 -> 21:00 ET, each
+# cited to an Internet Archive capture of its Pro-Football-Reference box score (67) or of
+# its official NFL Gamebook (1, whose only PFR capture predates the Start Time field); 22
+# entries also carry the gamebook, and every archived pair agrees to the minute. The loader
+# refuses a cited start outside [21:00, 21:30) ET. scripts.ingest_games applies the record
+# at every ingest through resolve_kickoff_gametime (a third feed value raises
+# KickoffCorrectionDriftError), and scripts/repair_kickoff_hours.py applied it once to
+# silver games through the same function (68 corrected, a re-run corrects 0).
+#
+# STEP 3c is an EXTRA STEP (string id, follows rung 3 AFTER step 3b), declared in the
+# commit below before any production write; judged against p332_rung3b.json, CONFIRMED by a
+# scratch rebuild from today's inputs minus this cause. MEASURED 2026-09-21: attribution_ok
+# true, zero unattributed; five of the eight declared rest columns moved, in 2002-2006, and
+# rest_advantage also in 2012-2015 and 2017-2018 through the strictly-prior winsorization
+# fits. No weather, weekday or other column moved. The digest bracket
+# outputs/p332_rung3c_before.json -> after named exactly the five declared paths.
+#
+# THE ROW RULE, against a copy of the before-gold: 1,838 rows moved in each matrix. 199 of
+# the 201 games whose contextual rest count the correction moves are among them; the other
+# two are 2003 week-1 games that read 0.0 before and after (a season's first week has no
+# earlier row to be z-scored against). The remaining 1,637 rows are rescaled same-season
+# neighbours and the later seasons the strictly-prior fits reach.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_KICKOFF_HOUR_STEP_CAUSE (UTF-8), declared in
+# commit 0c67856 before any production write.
+P332_12_STEP3C_CAUSE_DIGEST: str = (
+    "c839ed5631f4dd9e575147f6fc125d65a5f26ee6258ff5587e796a32c2afa698"
+)
+
+P332_12_STEP3C_DECLARED_IN_COMMIT: str = "0c678567d02ef14c92910a211fd4bb96960eb970"
+
+P332_12_STEP3C_STEP_ID: str = "3c"
+
+P332_12_STEP3C_FOLLOWS_RUNG: int = 3
+
+P332_12_STEP3C_BASELINE_DOCUMENT: str = "p332_rung3b.json"
+
+P332_12_STEP3C_CORRECTED_KICKOFFS: int = 68
+
+P332_12_STEP3C_CORRECTED_KICKOFFS_BY_SEASON: tuple[tuple[int, int], ...] = (
+    (2002, 17),
+    (2003, 17),
+    (2004, 17),
+    (2005, 17),
+)
+
+P332_12_STEP3C_FEED_CLOCK_ET: str = "09:00"
+
+P332_12_STEP3C_CORRECTED_CLOCK_ET: str = "21:00"
+
+P332_12_STEP3C_ENTRIES_CITING_A_GAMEBOOK: int = 22
+
+P332_12_STEP3C_REST_COUNT_MOVED_GAMES: int = 201
+
+P332_12_STEP3C_MOVED_COLUMNS: tuple[str, ...] = (
+    "away_off_bye",
+    "away_rest_days",
+    "home_off_bye",
+    "home_rest_days",
+    "rest_advantage",
+)
+
+P332_12_STEP3C_SEASON_FLOOR: int = 2002
+
+P332_12_STEP3C_ROWS_MOVED_PER_MATRIX: int = 1838
+
+P332_12_STEP3C_REST_GAMES_MASKED_BY_WEEK_ONE_SCALING: int = 2
+
+P332_12_STEP3C_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "gold/features_wp.parquet",
+    "nfl_predictions.duckdb",
+    "silver/games.parquet",
+)

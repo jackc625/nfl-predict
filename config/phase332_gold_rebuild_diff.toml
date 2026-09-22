@@ -10,7 +10,7 @@
 # scripts.fingerprint_gold._column_bytes, as every prior ladder. ASCII only.
 # ===========================================================================
 
-generated_at = "2026-09-21T22:04:25.136977+00:00"
+generated_at = "2026-09-22T00:17:59.132967+00:00"
 rung_prefix = "p332_"
 float_tolerance = "none -- EXACT byte comparison"
 
@@ -168,3 +168,33 @@ attributor = "_attribute_p332_surface"
 
 [rung."3b".moved_seasons]
 surface_mismatch = ["2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+
+[rung."3c"]
+rung = "3c"
+prefix = "p332_"
+extra_step = true
+follows_rung = 3
+rebuilt = true
+baseline_document = "p332_rung3b.json"
+baseline_confirmation = "CONFIRMED 2026-09-21 before step 3c wrote anything. Gold was rebuilt with `scripts/build_features.py --through-season 2025` in a SCRATCH data root (DATA_ROOT_PATH and DUCKDB_PATH pointed at a copy of today's production data/, the code exported from commit 5d7eefd, before the kickoff correction existed) from today's inputs minus exactly this step's cause, and its fingerprint equals p332_rung3b.json on EVERY non-clock column of all three matrices (only feature_timestamp, the build clock, differs). Plan 33.2-11 changed data/ between step 3b and this step only under bronze/mos/, which no gold builder reads. The production data/ tree was digest-identical (1107 files) before and after that build. No carry-in, no retake"
+cause = "THE KICKOFF-HOUR CORRECTION of Plan 33.2-12 extra step 3c (orchestrator-assigned, deferred-items entry of Plan 33.2-10), and NOTHING else: silver games.kickoff_et of the 68 2002-2005 Monday and Thursday night games in config/kickoff_hour_corrections.toml moves from 09:00 to 21:00 ET on the same date (a 12-hour AM/PM error in the feed, each game cited to its archived box score or official gamebook), applied at every ingest by scripts.ingest_games.resolve_kickoff_gametime. No lock, weekday or weather value moves. Only the rest-day family can move -- home_rest_days, away_rest_days, rest_advantage, both_short_rest, home_short_rest, away_short_rest, home_off_bye, away_off_bye -- and only in seasons on or after the earliest season holding a game whose rest count changes. No column is added, none removed, no row moves"
+declared_columns = ["home_rest_days", "away_rest_days", "rest_advantage", "both_short_rest", "home_short_rest", "away_short_rest", "home_off_bye", "away_off_bye"]
+declared_season_floor = 2002
+correction_record = "config/kickoff_hour_corrections.toml"
+rest_count_moved_games_through_2025 = ["2002_W02_LV@PIT", "2002_W02_NE@NYJ", "2002_W02_PHI@WAS", "2002_W03_DAL@PHI", "2002_W03_LA@TB", "2002_W03_WAS@SF", "2002_W04_DAL@LA", "2002_W04_DEN@BAL", "2002_W04_TB@CIN", "2002_W05_BAL@CLE", "2002_W05_GB@CHI", "2002_W05_LAC@DEN", "2002_W06_GB@NE", "2002_W06_SF@SEA", "2002_W07_CHI@DET", "2002_W07_IND@PIT", "2002_W07_SEA@LA", "2002_W07_SF@NO", "2002_W08_NYG@PHI", "2002_W08_PIT@BAL", "2002_W09_JAX@NYG", "2002_W09_MIA@GB", "2002_W09_PHI@CHI", "2002_W10_DET@GB", "2002_W10_LV@DEN", "2002_W10_MIA@NYJ", "2002_W11_CHI@LA", "2002_W11_DEN@SEA", "2002_W11_NE@LV", "2002_W12_DET@CHI", "2002_W12_LA@WAS", "2002_W12_PHI@SF", "2002_W13_LA@PHI", "2002_W13_NYJ@LV", "2002_W13_SEA@SF", "2002_W14_CHI@MIA", "2002_W14_DEN@NYJ", "2002_W14_LV@LAC", "2002_W15_LV@MIA", "2002_W15_NE@TEN", "2002_W15_NYJ@CHI", "2002_W16_NYJ@NE", "2002_W16_PIT@TB", "2002_W16_TEN@JAX", "2002_W17_BAL@PIT", "2002_W17_SF@LA", "2002_W17_TB@CHI", "2002_W18_NYG@SF", "2003_W01_LA@NYG", "2003_W01_NYJ@WAS", "2003_W01_TB@PHI", "2003_W02_CAR@TB", "2003_W02_DAL@NYG", "2003_W02_MIA@NYJ", "2003_W02_NE@PHI", "2003_W02_WAS@ATL", "2003_W03_LV@DEN", "2003_W03_NYG@WAS", "2003_W04_DAL@NYJ", "2003_W04_DET@DEN", "2003_W04_GB@CHI", "2003_W04_LAC@LV", "2003_W05_IND@TB", "2003_W05_LV@CHI", "2003_W05_SEA@GB", "2003_W06_ATL@LA", "2003_W06_CAR@IND", "2003_W06_TB@WAS", "2003_W07_GB@LA", "2003_W07_KC@LV", "2003_W07_NO@ATL", "2003_W08_MIA@LAC", "2003_W09_IND@MIA", "2003_W09_LAC@CHI", "2003_W09_LV@DET", "2003_W09_NE@DEN", "2003_W10_PHI@GB", "2003_W11_DAL@NE", "2003_W11_GB@TB", "2003_W11_LAC@DEN", "2003_W11_NYG@PHI", "2003_W11_PIT@SF", "2003_W12_NYG@TB", "2003_W12_PIT@CLE", "2003_W12_SF@GB", "2003_W13_BUF@NYG", "2003_W13_TB@JAX", "2003_W13_TEN@NYJ", "2003_W14_IND@TEN", "2003_W14_LA@CLE", "2003_W14_NYJ@BUF", "2003_W15_CLE@DEN", "2003_W15_PHI@MIA", "2003_W15_SEA@LA", "2003_W16_GB@LV", "2003_W16_MIA@BUF", "2003_W16_SF@PHI", "2003_W17_DEN@GB", "2003_W17_LV@LAC", "2004_W01_GB@CAR", "2004_W01_IND@NE", "2004_W02_CAR@KC", "2004_W02_CHI@GB", "2004_W02_IND@TEN", "2004_W02_MIN@PHI", "2004_W02_NE@ARI", "2004_W03_CHI@MIN", "2004_W03_DAL@WAS", "2004_W03_PHI@DET", "2004_W04_KC@BAL", "2004_W04_WAS@CLE", "2004_W05_BAL@WAS", "2004_W05_NYG@DAL", "2004_W05_TEN@GB", "2004_W06_GB@DET", "2004_W06_HOU@TEN", "2004_W06_KC@JAX", "2004_W06_TB@LA", "2004_W07_CHI@TB", "2004_W07_DEN@CIN", "2004_W07_LA@MIA", "2004_W08_ATL@DEN", "2004_W08_CIN@TEN", "2004_W08_MIA@NYJ", "2004_W09_ARI@MIA", "2004_W09_MIN@IND", "2004_W09_NYJ@BUF", "2004_W10_HOU@IND", "2004_W10_MIN@GB", "2004_W10_PHI@DAL", "2004_W11_DAL@BAL", "2004_W11_NE@KC", "2004_W11_WAS@PHI", "2004_W12_BAL@NE", "2004_W12_LA@GB", "2004_W12_LAC@KC", "2004_W13_DAL@SEA", "2004_W13_GB@PHI", "2004_W13_SF@LA", "2004_W14_KC@TEN", "2004_W14_NO@DAL", "2004_W14_SEA@MIN", "2004_W15_DEN@KC", "2004_W15_NE@MIA", "2004_W15_TEN@LV", "2004_W16_CLE@MIA", "2004_W16_NE@NYJ", "2004_W16_PHI@LA", "2004_W17_CIN@PHI", "2004_W17_NYJ@LA", "2005_W01_LV@NE", "2005_W01_PHI@ATL", "2005_W02_ATL@SEA", "2005_W02_KC@LV", "2005_W02_NE@CAR", "2005_W02_SF@PHI", "2005_W02_WAS@DAL", "2005_W03_DAL@SF", "2005_W03_KC@DEN", "2005_W04_DEN@JAX", "2005_W04_GB@CAR", "2005_W04_PHI@KC", "2005_W04_SEA@WAS", "2005_W05_CAR@ARI", "2005_W05_NO@GB", "2005_W05_PIT@LAC", "2005_W06_JAX@PIT", "2005_W06_LA@IND", "2005_W06_LAC@LV", "2005_W07_IND@HOU", "2005_W07_NO@LA", "2005_W07_NYJ@ATL", "2005_W08_BAL@PIT", "2005_W09_ATL@MIA", "2005_W09_CIN@BAL", "2005_W09_IND@NE", "2005_W09_LAC@NYJ", "2005_W09_PIT@GB", "2005_W10_DAL@PHI", "2005_W10_HOU@IND", "2005_W10_NE@MIA", "2005_W11_DET@DAL", "2005_W11_MIN@GB", "2005_W11_PHI@NYG", "2005_W12_CLE@MIN", "2005_W12_GB@PHI", "2005_W12_PIT@IND", "2005_W13_CIN@PIT", "2005_W13_SEA@PHI", "2005_W13_TEN@IND", "2005_W14_NO@ATL", "2005_W14_NYG@PHI", "2005_W14_SF@SEA", "2005_W15_ATL@CHI", "2005_W15_CAR@NO", "2005_W15_GB@BAL", "2005_W16_CHI@GB", "2005_W16_MIN@BAL", "2005_W16_NE@NYJ", "2005_W17_BUF@NYJ", "2005_W17_MIA@NE"]
+rows_changed = "before normalization only the games phase332_kickoff_hour_rest_changes derives can differ. The rest columns are continuous or varying flags, so gold z-scores them within each season: after normalization they can also move on the other rows of an affected game's season sorted at or after that game (the rescaled same-season neighbours) and on the next season's early rows. Measured row by row at run time against a copy of the before-gold"
+widths_before = ["195", "196", "195"]
+widths_after = ["195", "196", "195"]
+moved_columns = ["away_off_bye", "away_rest_days", "home_off_bye", "home_rest_days", "rest_advantage"]
+build_clock_moves = ["feature_timestamp"]
+unattributed_columns = []
+attribution_ok = true
+attribution_blocking = false
+attributor = "_attribute_p332_kickoff_hour"
+
+[rung."3c".moved_seasons]
+away_off_bye = ["2002", "2003", "2004", "2005", "2006"]
+away_rest_days = ["2002", "2003", "2004", "2005", "2006"]
+home_off_bye = ["2003", "2004", "2005", "2006"]
+home_rest_days = ["2002", "2003", "2004", "2005", "2006"]
+rest_advantage = ["2002", "2003", "2004", "2005", "2006", "2012", "2013", "2014", "2015", "2017", "2018"]

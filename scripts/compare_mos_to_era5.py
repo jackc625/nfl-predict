@@ -25,6 +25,14 @@ consistent and they are compared. So they cannot hide a breach, every bound must
 all compared games and over all compared games excluding them
 (``VERDICT_REQUIRES_PASS_WITHOUT_KICKOFF_HOUR_SUBSET``); they are also reported alone.
 
+A ONE-SHOT MEASUREMENT. The committed readout was computed once (Plan 33.2-11) against the
+pre-correction kickoffs and the ERA5 rows still in silver. Plan 33.2-12 then corrected the 68
+kickoffs in silver (p332_ extra step 3c) and replaced silver weather with the decoded bulletins
+(rung 4), so a re-run no longer reproduces that pairing: the forecast hour would follow the
+corrected 21:00 ET kickoff while ERA5 stays at 09:00, and after rung 4 no ERA5 row is left in
+silver to compare with. The subset is identified by the committed correction record, not by
+its (now corrected) clock, so it keeps its identity either way.
+
 ASCII only, no emoji (CLAUDE.md hard constraint).
 """
 
@@ -48,8 +56,8 @@ from scripts.backfill_mos_forecasts import (
     load_bronze_run_records,
     load_corpus,
 )
+from scripts.ingest_games import load_kickoff_hour_corrections
 from scripts.mos_decode import build_weather_record, run_instant
-from utils.date_utils import kickoff_wall_clock_et
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOLERANCE_PATH = "config/mos_tolerance.py"
@@ -161,9 +169,12 @@ def judge(stats: Stats, resolved_share: float) -> dict[str, bool]:
 
 
 def is_kickoff_hour_subset(game: CoveredGame) -> bool:
-    """The 2002-2005 night games stored at a 09:00 ET kickoff (the AM/PM feed error)."""
-    et = kickoff_wall_clock_et(game.kickoff_utc)
-    return game.season <= 2005 and et.hour == 9 and et.minute == 0
+    """The 2002-2005 night games whose feed clock was the 09:00 ET AM/PM error.
+
+    Identified by ``config/kickoff_hour_corrections.toml`` (Plan 33.2-12 step 3c), not by
+    reading a 09:00 clock: silver now carries the corrected 21:00 ET for all of them.
+    """
+    return game.game_id in load_kickoff_hour_corrections()
 
 
 @dataclass
