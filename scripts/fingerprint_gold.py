@@ -5458,12 +5458,23 @@ PHASE332_FEED_RUNG_PREDICTED_SEASONS: tuple[str, ...] = ("2025",)
 
 
 def phase332_feed_snap_columns() -> tuple[str, ...]:
-    """The 20 snap columns, DERIVED from the snap builder's own ``no_information_signature``."""
-    from features.snaps import SnapCountBuilder
+    """The 20 snap columns, DERIVED from the snap builder's own ``no_information_signature``.
+
+    The VALUE columns only. Plan 33.2-17 Task 2 added the ``{side}_snap_coverage`` flag to
+    that signature (it first reaches gold at rung 8); rung 6 declared the 20 values before the
+    flag existed, so the flag is excluded here -- otherwise rung 6's committed prediction would
+    silently grow two columns every time its record is regenerated (found and restored by Plan
+    33.2-18).
+    """
+    from features.snaps import SNAP_COVERAGE_COLUMN, SnapCountBuilder
 
     snaps = SnapCountBuilder.__new__(SnapCountBuilder)
     return tuple(
-        sorted(_canonical(c) for c in SnapCountBuilder.no_information_signature(snaps))
+        sorted(
+            _canonical(c)
+            for c in SnapCountBuilder.no_information_signature(snaps)
+            if not c.endswith(f"_{SNAP_COVERAGE_COLUMN}")
+        )
     )
 
 
