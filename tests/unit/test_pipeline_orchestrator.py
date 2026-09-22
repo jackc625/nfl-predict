@@ -57,8 +57,8 @@ def make_mock_step(
 class TestStepRegistry:
     """Tests for build_step_registry."""
 
-    def test_build_step_registry_returns_22_steps(self):
-        """build_step_registry returns exactly 22 StepDefinition objects.
+    def test_build_step_registry_returns_24_steps(self):
+        """build_step_registry returns exactly 24 StepDefinition objects.
 
         18 through Plan 31-17; the nineteenth is the NON-CRITICAL ``populate_web_cache`` step
         Plan 31-18 registered last (SPEC R9, D31-29). Its position and non-criticality are pinned
@@ -70,22 +70,25 @@ class TestStepRegistry:
         two of them rather than one combined check inside ``verify_data_artifacts``: that
         gate runs BEFORE gold and predictions exist, so a currency check there would report
         an ordering fact as a stale artifact on every correct run.
+
+        The twenty-third and twenty-fourth are Plan 33.2-15's ``ingest_snaps`` and
+        ``ingest_injuries`` (D33.2-16): the two feeds that ran nowhere, now DATA steps.
         """
         registry = build_step_registry()
-        assert len(registry) == 22
+        assert len(registry) == 24
         assert all(isinstance(s, StepDefinition) for s in registry)
 
     def test_build_step_registry_phases_correct(self):
-        """First 9 steps are DATA, last 13 are PREDICTIONS."""
+        """First 11 steps are DATA, last 13 are PREDICTIONS (Plan 33.2-15 added two DATA steps)."""
         registry = build_step_registry()
         data_steps = [s for s in registry if s.phase == PipelinePhase.DATA]
         pred_steps = [s for s in registry if s.phase == PipelinePhase.PREDICTIONS]
-        assert len(data_steps) == 9
+        assert len(data_steps) == 11
         assert len(pred_steps) == 13
         # DATA steps come first
-        for i, step in enumerate(registry[:9]):
+        for i, step in enumerate(registry[:11]):
             assert step.phase == PipelinePhase.DATA, f"Step {i} should be DATA"
-        for i, step in enumerate(registry[9:], start=9):
+        for i, step in enumerate(registry[11:], start=11):
             assert step.phase == PipelinePhase.PREDICTIONS, (
                 f"Step {i} should be PREDICTIONS"
             )
@@ -98,6 +101,10 @@ class TestStepRegistry:
         the same transient-failure surface the other three carry. A retry is safe because the
         live manifest is APPEND-ONLY -- a second capture of the same week is a new sequence
         entry, never a rewrite of the first.
+
+        ``ingest_snaps`` and ``ingest_injuries`` (Plan 33.2-15) are the fifth and sixth: each
+        re-captures a season over the network, and a retry is safe because silver is
+        latest-wins by ``game_id`` and bronze refuses a same-second overwrite.
         """
         registry = build_step_registry()
         retryable_steps = [s for s in registry if s.retryable]
@@ -106,6 +113,8 @@ class TestStepRegistry:
             "capture_live_season",
             "ingest_games",
             "ingest_weather",
+            "ingest_snaps",
+            "ingest_injuries",
             "ingest_odds",
         }
 

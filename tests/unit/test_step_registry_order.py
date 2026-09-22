@@ -362,10 +362,17 @@ def test_the_non_critical_set_is_exactly_the_declared_four() -> None:
     rebuilt gold from a weather-features table that did not cover the week being predicted;
     ``tests/integration/test_weather_features_refusal_stops_pipeline.py`` pins that the
     refusal now stops the run before gold is built.
+
+    SIX AFTER PLAN 33.2-15. ``ingest_snaps`` and ``ingest_injuries`` JOINED the set by design:
+    each re-captures a season, and a failed capture leaves the previous, honestly stamped capture
+    in place -- a snap row is timed by its game's end and an injury row only by a stamp at or
+    before the lock -- so a failure degrades to older honest data and cannot leak.
     """
     non_critical = {step.name for step in build_step_registry() if not step.critical}
     assert non_critical == {
         "ingest_weather",
+        "ingest_snaps",
+        "ingest_injuries",
         "verify_output_files",
         "build_market_anchors",
         CACHE_STEP,

@@ -187,6 +187,14 @@ class SnapCountBuilder:
             Team-game aggregate DataFrame sorted chronologically, with a
             per-team ``snap_continuity`` column derived from consecutive games.
         """
+        # AN EMPTY SNAP TABLE IS "NO TEAM-GAMES", NOT A CRASH (Plan 33.2-15, D33.2-16). It used
+        # to raise KeyError('team') here, which the gold build's optional-source handler turned
+        # into a zero-row frame the information-time gate could not date. Now every target game
+        # reads NULL in every snap column and reports basis="no_information", which the gate
+        # value-checks against no_information_signature -- the honest unknown, checked.
+        if len(snaps_df) == 0:
+            return pd.DataFrame()
+
         df = snaps_df.copy()
 
         # Coerce raw snap counts to numeric; a player's participation is the sum

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import Any, Protocol
 
@@ -278,3 +279,45 @@ def asset_published_at(
     stamp = _parse_updated_at(asset_name, entry.get("updated_at"))
     _cache_store(asset_name, stamp)
     return stamp
+
+
+def fetch_with_stamp[Fetched](
+    asset_name: str,
+    fetch: Callable[[], Fetched],
+    *,
+    stamp_reader: Callable[..., datetime] | None = None,
+) -> tuple[Fetched, datetime]:
+    """Run *fetch* bracketed by two stamp reads, and return its result with THE stamp.
+
+    The stamp is read once before the download (the cache may answer) and once after it, fresh
+    from the API. If the two differ, upstream republished the asset while it was being fetched,
+    so which version the bytes are is unknowable from here -- and a stamp EARLIER than the
+    version actually fetched would let content published after a lock pass as captured before
+    it. That is refused by name rather than resolved by guessing; a retry succeeds.
+
+    When they agree, the returned stamp is the publication instant of exactly the file fetched.
+
+    Args:
+        asset_name: The release asset *fetch* downloads (``snap_counts_2026.parquet``).
+        fetch: The download (e.g. ``lambda: nflreadpy.load_snap_counts(2026)``).
+        stamp_reader: ``asset_published_at``'s shape (the test seam).
+
+    Returns:
+        ``(fetch(), stamp)``.
+
+    Raises:
+        UpstreamStampUnavailable: either read fails, or the asset changed mid-fetch.
+    """
+    read = stamp_reader if stamp_reader is not None else asset_published_at
+    before = read(asset_name)
+    fetched = fetch()
+    after = read(asset_name, fresh=True)
+    if before != after:
+        msg = (
+            f"{asset_name} was republished while it was being fetched (updated_at "
+            f"{before.isoformat()} before the download, {after.isoformat()} after it), so the "
+            "fetched bytes cannot be tied to one publication instant. Refusing rather than "
+            "guessing; re-run the capture."
+        )
+        raise UpstreamStampUnavailable(msg)
+    return fetched, after

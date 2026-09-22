@@ -11,32 +11,46 @@ storage primitives.
 
 load_injuries is weekly-final: exactly one row per (gsis_id, season, week).
 For 2009-2024 each row carries date_modified (a UTC timestamp = when the
-weekly-final row was last touched), which the Plan 28-05 InjuryBuilder uses
-to fence to the Friday 6 PM ET freeze. The 2025 schema DROPPED date_modified
-and ADDED season_type, so this script is schema-tolerant: it branches on
-`"date_modified" in df.columns` and, when absent, carries a null date_modified
-(the deploy-time builder then falls back to snapshot-time fencing -- Pitfall 4 /
-D-19). It never raises KeyError on the missing column.
+weekly-final row was last touched), which features.injury uses as the row's
+information time against each game's lock. The 2025 schema DROPPED
+date_modified (RESEARCH 5.1), so this script is schema-tolerant: when the
+column is absent it carries a null date_modified. It never raises KeyError on
+the missing column.
+
+WHAT PLAN 33.2-15 CHANGED (D33.2-16: the dead feed is fixed, not worked around)
+------------------------------------------------------------------------------
+* Silver ``injuries`` stopped at 2024 and this script ran nowhere. It is now a
+  daily pipeline step (``pipeline.steps.step_ingest_injuries``) and was run for
+  2025-2026.
+* Every batch reaches silver THROUGH the promotion gate:
+  ``validate_bronze_to_silver(df, InjurySchema)`` between the bronze snapshot and
+  the silver upsert. One bad row fails the whole batch.
+* Every captured row carries ``upstream_captured_at``, the nflverse release
+  asset's ``updated_at`` for the file it came from -- CAPTURE PROVENANCE, read on
+  both sides of the download (``data.upstream_asset_stamp.fetch_with_stamp``).
+* Bronze is written with ``exclusive=True`` (a same-second collision raises rather
+  than overwrites); silver stays latest-wins by ``game_id``.
 
 Injuries carry no game_id; it is derived by joining the season's silver games
 on (season, week, team) so upsert_silver(..., key_column="game_id") is
 idempotent at game grain.
 
 Coverage floor: 2009.
-
-Per D-19 this script is deploy-ready (supports both historical backfill and a
---current-week refresh) but is intentionally NOT registered in the Friday
-orchestrator / make snapshot -- that wiring is deferred to deploy time
-(Phase 30/31).
 """
 
 import argparse
 import sys
+from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
 
 import nflreadpy as nfl
 import pandas as pd
 
+from data.quality_gates import validate_bronze_to_silver
+from data.schemas import InjurySchema
 from data.storage import load_dataframe, save_bronze_snapshot, upsert_silver
+from data.upstream_asset_stamp import fetch_with_stamp, season_asset_name
 from utils import get_logger, log_data_operation
 from utils.ingestion_args import (
     add_standard_ingestion_args,
@@ -49,9 +63,17 @@ logger = get_logger(__name__)
 # Injury-report coverage floor (load_injuries docstring: since 2009).
 INJURY_COVERAGE_FLOOR = 2009
 
+#: The nflverse release (and nflreadpy dataset) injury reports are published under.
+INJURY_DATASET = "injuries"
+
+#: The capture-provenance column. The SAME literal ``features.injury.UPSTREAM_CAPTURE_COLUMN``
+#: declares (the builder reads it) and ``data.schemas.InjurySchema`` declares (the gate keeps
+#: it); tests/unit/test_injury_capture_time_basis.py asserts the spellings are one.
+CAPTURE_COLUMN = "upstream_captured_at"
+
 # Columns retained in the silver injuries table (alongside the derived game_id).
-# date_modified is kept when present (2009-2024) for the Plan 28-05 Friday fence;
-# it is absent in the 2025 schema and is carried as null then (schema tolerance).
+# date_modified is kept when present (2009-2024) as each row's per-row information
+# time; it is absent in the 2025 schema and is carried as null then (schema tolerance).
 INJURY_COLUMNS = [
     "gsis_id",
     "team",
@@ -70,14 +92,25 @@ INJURY_COLUMNS = [
 ]
 
 
-def _build_game_id_lookup(season: int) -> pd.DataFrame:
+def _load_season(season: int) -> pd.DataFrame:
+    """nflreadpy's injury reports for *season*, polars -> pandas at the boundary (Pitfall 1)."""
+    return nfl.load_injuries(season).to_pandas()
+
+
+def _build_game_id_lookup(
+    season: int, games: pd.DataFrame | None = None
+) -> pd.DataFrame:
     """Build a (season, week, team) -> game_id lookup from the silver games table.
 
     Teams in the silver games table are already canonical; each team plays at
-    most one regular-season game per week, so the lookup is unique per
-    (season, week, team).
+    most one game per week, so the lookup is unique per (season, week, team).
+
+    Args:
+        season: The season to look up.
+        games: The silver games frame (the test seam); loaded from silver when ``None``.
     """
-    games = load_dataframe("games", layer="silver")
+    if games is None:
+        games = load_dataframe("games", layer="silver")
     games = games[games["season"] == season]
 
     home = games[["season", "week", "home_team", "game_id"]].rename(
@@ -90,16 +123,35 @@ def _build_game_id_lookup(season: int) -> pd.DataFrame:
     return lookup.drop_duplicates(subset=["season", "week", "team"], keep="first")
 
 
-def ingest_injuries_season(season: int, weeks: list[int] | None = None) -> pd.DataFrame:
+def ingest_injuries_season(
+    season: int,
+    weeks: list[int] | None = None,
+    *,
+    loader: Callable[[int], pd.DataFrame] = _load_season,
+    stamp_reader: Callable[..., datetime] | None = None,
+    games: pd.DataFrame | None = None,
+    base_path: Path | None = None,
+) -> pd.DataFrame:
     """Ingest injury reports for one season into Bronze + Silver.
 
     Args:
         season: NFL season year (>= 2009).
         weeks: Optional list of weeks to restrict to. None ingests the whole
             (regular) season.
+        loader: Downloads one season (the test seam; defaults to nflreadpy).
+        stamp_reader: ``data.upstream_asset_stamp.asset_published_at``'s shape (the test
+            seam).
+        games: The silver games frame for the game_id join (the test seam).
+        base_path: Data root (the test seam; defaults to the configured root).
 
     Returns:
-        The game-grain injury DataFrame upserted to silver (may be empty).
+        The VALIDATED game-grain injury DataFrame upserted to silver (may be empty).
+
+    Raises:
+        data.upstream_asset_stamp.UpstreamStampUnavailable: the asset's publication time
+            could not be read, or the asset changed during the download. Nothing is written.
+        utils.exceptions.DataValidationError: any row failed ``InjurySchema``; nothing
+            reaches silver.
     """
     if season < INJURY_COVERAGE_FLOOR:
         logger.warning(
@@ -109,8 +161,10 @@ def ingest_injuries_season(season: int, weeks: list[int] | None = None) -> pd.Da
         )
         return pd.DataFrame()
 
-    # polars -> pandas at the loader boundary (Pitfall 1).
-    raw = nfl.load_injuries(season).to_pandas()
+    asset = season_asset_name(INJURY_DATASET, season)
+    raw, stamp = fetch_with_stamp(
+        asset, lambda: loader(season), stamp_reader=stamp_reader
+    )
 
     if raw.empty:
         logger.warning("No injury data returned", season=season)
@@ -126,13 +180,13 @@ def ingest_injuries_season(season: int, weeks: list[int] | None = None) -> pd.Da
         logger.warning("No REG injury rows after filtering", season=season, weeks=weeks)
         return pd.DataFrame()
 
-    # Schema tolerance (Pitfall 4): 2025 dropped date_modified. Carry it as a
-    # null column so the silver schema is stable and the builder can fall back
-    # to snapshot-time fencing. Never KeyError on the missing column.
+    # Schema tolerance (Pitfall 4): 2025 dropped date_modified. Carry it as a null column
+    # so the silver schema is stable. Never KeyError on the missing column, and never
+    # fabricate a value: a null here means "upstream published no per-row time".
     if "date_modified" not in df.columns:
         logger.warning(
-            "date_modified absent (2025+ schema); carrying as null for "
-            "snapshot-time fencing",
+            "date_modified absent (2025+ schema); carrying as null -- the capture stamp "
+            "is the only time these rows can carry",
             season=season,
         )
         df["date_modified"] = pd.NaT
@@ -144,7 +198,7 @@ def ingest_injuries_season(season: int, weeks: list[int] | None = None) -> pd.Da
     df = df[INJURY_COLUMNS].copy()
 
     # Derive game_id by joining the season's silver games on (season, week, team).
-    lookup = _build_game_id_lookup(season)
+    lookup = _build_game_id_lookup(season, games)
     df = df.merge(lookup, on=["season", "week", "team"], how="inner")
 
     if df.empty:
@@ -154,33 +208,60 @@ def ingest_injuries_season(season: int, weeks: list[int] | None = None) -> pd.Da
         )
         return pd.DataFrame()
 
-    # Bronze snapshot (append-only, timestamped). save_bronze_snapshot formats
-    # W{week:02d}, so a season-wide / multi-week run must pass the week=0
-    # sentinel exactly as ingest_weather.py:545-546 does (review #5).
+    # THE CAPTURE STAMP IS PROVENANCE, AND AN INFORMATION TIME ONLY BEFORE THE LOCK (Plan
+    # 33.2-15, reviews round f924749). It is a true fact about the file fetched NOW: upstream
+    # published it at this instant. It is NOT the time any row of a season-wide file first
+    # became known. features.injury admits a row on this stamp only where the stamp is AT OR
+    # BEFORE that row's game's lock -- the forward daily-capture case. Upstream dropped
+    # date_modified from 2025 and the branch above fills it with pd.NaT, so no per-row
+    # historical time is recoverable from anything this ingest can see; presenting a current
+    # stamp as historical would make every 2025 value post-lock. A backfill of a completed
+    # season therefore admits NOTHING on this basis, and its games stay the honest unknown.
+    df[CAPTURE_COLUMN] = stamp
+
+    # Bronze snapshot (append-only, timestamped) of the frame BEFORE validation. A
+    # season-wide / multi-week run passes the week=0 sentinel (review #5). exclusive=True:
+    # a same-second second capture raises FileExistsError rather than overwriting (WR-04).
     if weeks is not None and len(weeks) == 1:
         bronze_week = weeks[0]
     else:
         bronze_week = 0
-    save_bronze_snapshot(df, "injuries", season=season, week=bronze_week)
+    save_bronze_snapshot(
+        df,
+        "injuries",
+        season=season,
+        week=bronze_week,
+        base_path=base_path,
+        exclusive=True,
+    )
+
+    # THE PROMOTION GATE (Plan 33.2-15, adjudication #2). Every row is rebuilt through
+    # InjurySchema; one bad row fails the batch and nothing reaches silver. The two time
+    # columns come back as aware datetimes (or None) and are stored as UTC datetime64, never
+    # as the strings ParquetManager would write for an object column.
+    validated = validate_bronze_to_silver(df, InjurySchema)
+    for column in ("date_modified", CAPTURE_COLUMN):
+        validated[column] = pd.to_datetime(validated[column], utc=True)
 
     # Silver upsert: game-grain latest-wins -- idempotent under re-run (review #5).
-    upsert_silver(df, "injuries", key_column="game_id")
+    upsert_silver(validated, "injuries", key_column="game_id", base_path=base_path)
 
     log_data_operation(
         operation="ingest",
         table="injuries",
-        rows=len(df),
+        rows=len(validated),
         season=season,
     )
 
     logger.info(
         "Injury ingestion completed",
         season=season,
-        rows=len(df),
-        unique_games=df["game_id"].nunique(),
+        rows=len(validated),
+        unique_games=validated["game_id"].nunique(),
+        upstream_captured_at=stamp.isoformat(),
     )
 
-    return df
+    return validated
 
 
 def main() -> None:
@@ -201,6 +282,8 @@ def main() -> None:
     for season in seasons:
         df = ingest_injuries_season(season, weeks=weeks)
         total_rows += len(df)
+        stamp = df[CAPTURE_COLUMN].iloc[0].isoformat() if len(df) else None
+        print(f"SEASON= {season} ROWS_WRITTEN= {len(df)} STAMP= {stamp}")
 
     if total_rows == 0:
         print("No injury data ingested")

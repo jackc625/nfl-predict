@@ -59,8 +59,8 @@ that fires once a week.
 
 | Flag | Effect |
 |------|--------|
-| (none) | Full pipeline: all 22 steps (DATA + PREDICTIONS). |
-| `--data-only` | DATA phase only (the 9 DATA-phase steps). |
+| (none) | Full pipeline: all 24 steps (DATA + PREDICTIONS). |
+| `--data-only` | DATA phase only (the 11 DATA-phase steps). |
 | `--predictions-only` | PREDICTIONS phase only (the 13 PREDICTIONS-phase steps); logs a "ensure data artifacts are fresh" warning. |
 | `--dry-run` | List the steps that would execute (filtered by mode); execute nothing; exit 0. Works year-round: `--dry-run` bypasses the offseason no-op short-circuit so steps can be inspected out of season without `--force` (WR-04). |
 | `--force` | Bypass the pre-flight staleness/season checks AND the offseason no-op short-circuit; pre-flight health becomes advisory. |
@@ -87,7 +87,7 @@ flow:
   checks (database connectivity, model artifacts, disk space). Without `--force`,
   `unhealthy` aborts (failure alert + raise). With `--force`, `unhealthy` is advisory:
   it appends the warning `"Pre-flight health: unhealthy (forced)"` and continues.
-- **C. Step execution:** the 22-step registry (`pipeline/steps.py`), phase-filtered by
+- **C. Step execution:** the 24-step registry (`pipeline/steps.py`), phase-filtered by
   mode, run in order. The log is written atomically after each step (incremental
   snapshot). A **critical** step failure sets `status="failed"`, fires
   `alert_pipeline_failure` (CRITICAL) and raises immediately. A **non-critical** step
@@ -119,10 +119,10 @@ exits 0 as a no-op with **no CRITICAL alert**.
 
 ---
 
-## 3. The 22 orchestrator steps
+## 3. The 24 orchestrator steps
 
-The registry (`pipeline.steps.build_step_registry`) is exactly 22 `StepDefinition`
-entries: 9 in the DATA phase, 13 in the PREDICTIONS phase. Each step uses deferred
+The registry (`pipeline.steps.build_step_registry`) is exactly 24 `StepDefinition`
+entries: 11 in the DATA phase, 13 in the PREDICTIONS phase. Each step uses deferred
 imports (inside the function body) to avoid argparse collisions and module-level side
 effects. `critical=True` means a failure aborts the run; `retryable=True` means transient
 errors trigger retry.
@@ -132,32 +132,34 @@ errors trigger retry.
 | 1 | `capture_live_season` | DATA | yes | yes (3) | Capture what nflverse is serving RIGHT NOW into the append-only live zone, BEFORE anything consumes it. Calls `run_capture` directly with the run's resolved (season, week). |
 | 2 | `ingest_games` | DATA | yes | yes (3) | Ingest current-week games via nflreadpy. |
 | 3 | `ingest_weather` | DATA | no | yes (3) | Ingest weather forecasts via Open-Meteo (async). |
-| 4 | `data_qa` | DATA | yes | no | Run data-quality validation; fail if checks failed. |
-| 5 | `build_elo` | DATA | yes | no | Update Elo ratings for the current season. |
-| 6 | `build_team_form` | DATA | yes | no | Build team-form metrics for the current week. |
-| 7 | `build_contextual` | DATA | yes | no | Build contextual features (travel, rest, venue). |
-| 8 | `build_weather_features` | DATA | no | no | Build weather-based features for outdoor games. |
-| 9 | `verify_data_artifacts` | DATA | yes | no | Verify the DATA-boundary silver artifacts exist AND carry a row for the current (season, week). Gold is NOT checked here -- it is built in the PREDICTIONS phase, so a currency check here would report an ordering fact as a stale artifact. |
-| 10 | `ingest_odds` | PREDICTIONS | yes | yes (3) | Capture the odds snapshot from The Odds API. |
-| 11 | `build_market_anchors` | PREDICTIONS | yes | no | Build market-anchor features from the odds snapshot. |
-| 12 | `build_features` | PREDICTIONS | yes | no | Assemble the unified per-target gold feature matrices. |
-| 13 | `validate_features` | PREDICTIONS | yes | no | Validate features for data leakage / quality. |
-| 14 | `verify_gold_currency` | PREDICTIONS | yes | no | Verify the three gold matrices carry a row for the current (season, week). R9's "gold has no rows for this week" refusal, at the first point in the run where gold exists. |
-| 15 | `validate_models` | PREDICTIONS | yes | no | Validate WP/ATS/OU models are available + loadable (via `artifacts/latest.json`). |
-| 16 | `generate_predictions` | PREDICTIONS | yes | no | Generate current-week predictions (loads artifacts, applies market blend). |
-| 17 | `verify_prediction_currency` | PREDICTIONS | yes | no | Verify the prediction file's ROWS are the current week, not only its filename. Runs before anything consumes it. |
-| 18 | `generate_recommendations` | PREDICTIONS | yes | no | Select the week's +EV bet list through `BetSelector` and write the durable bet-list artifacts. |
-| 19 | `export_artifacts` | PREDICTIONS | yes | no | Export the predictions CSV to JSON. |
-| 20 | `validate_predictions` | PREDICTIONS | yes | no | Validate the prediction file (non-empty, required columns, `wp_prob` in [0,1]). |
-| 21 | `verify_output_files` | PREDICTIONS | no | no | Verify the expected output files exist (advisory; warns on missing). |
-| 22 | `populate_web_cache` | PREDICTIONS | no | no | Rebuild `data/web_cache.duckdb` so the served bet list is this run's. |
+| 4 | `ingest_snaps` | DATA | no | yes (3) | Capture the season's player snap counts (Plan 33.2-15, D33.2-16): every row passes `SnapCountSchema` through `validate_bronze_to_silver` and carries the release asset's `upstream_captured_at` (capture provenance; a snap count's information time is its game's end). |
+| 5 | `ingest_injuries` | DATA | no | yes (3) | Capture the season's injury reports (Plan 33.2-15, D33.2-16): schema-gated through `InjurySchema`; `upstream_captured_at` is a row's information time only where it is at or before that game's lock. The stamp lookup refuses on a rate limit rather than stamping the fetch instant. |
+| 6 | `data_qa` | DATA | yes | no | Run data-quality validation; fail if checks failed. |
+| 7 | `build_elo` | DATA | yes | no | Update Elo ratings for the current season. |
+| 8 | `build_team_form` | DATA | yes | no | Build team-form metrics for the current week. |
+| 9 | `build_contextual` | DATA | yes | no | Build contextual features (travel, rest, venue). |
+| 10 | `build_weather_features` | DATA | yes | no | Build weather-based features for outdoor games. |
+| 11 | `verify_data_artifacts` | DATA | yes | no | Verify the DATA-boundary silver artifacts exist AND carry a row for the current (season, week). Gold is NOT checked here -- it is built in the PREDICTIONS phase, so a currency check here would report an ordering fact as a stale artifact. |
+| 12 | `ingest_odds` | PREDICTIONS | yes | yes (3) | Capture the odds snapshot from The Odds API. |
+| 13 | `build_market_anchors` | PREDICTIONS | no | no | Build market-anchor features from the odds snapshot. |
+| 14 | `build_features` | PREDICTIONS | yes | no | Assemble the unified per-target gold feature matrices. |
+| 15 | `validate_features` | PREDICTIONS | yes | no | Validate features for data leakage / quality. |
+| 16 | `verify_gold_currency` | PREDICTIONS | yes | no | Verify the three gold matrices carry a row for the current (season, week). R9's "gold has no rows for this week" refusal, at the first point in the run where gold exists. |
+| 17 | `validate_models` | PREDICTIONS | yes | no | Validate WP/ATS/OU models are available + loadable (via `artifacts/latest.json`). |
+| 18 | `generate_predictions` | PREDICTIONS | yes | no | Generate current-week predictions (loads artifacts, applies market blend). |
+| 19 | `verify_prediction_currency` | PREDICTIONS | yes | no | Verify the prediction file's ROWS are the current week, not only its filename. Runs before anything consumes it. |
+| 20 | `generate_recommendations` | PREDICTIONS | yes | no | Select the week's +EV bet list through `BetSelector` and write the durable bet-list artifacts. |
+| 21 | `export_artifacts` | PREDICTIONS | yes | no | Export the predictions CSV to JSON. |
+| 22 | `validate_predictions` | PREDICTIONS | yes | no | Validate the prediction file (non-empty, required columns, `wp_prob` in [0,1]). |
+| 23 | `verify_output_files` | PREDICTIONS | no | no | Verify the expected output files exist (advisory; warns on missing). |
+| 24 | `populate_web_cache` | PREDICTIONS | no | no | Rebuild `data/web_cache.duckdb` so the served bet list is this run's. |
 
 > Note: retry is handled by `tenacity` (`Retrying` with `wait_exponential` backoff) and
 > fires ONLY on `TRANSIENT_EXCEPTIONS` (`ConnectionError`, `TimeoutError`, `OSError`,
 > and `httpx.HTTPStatusError` when httpx is available). Local / validation errors
-> (`ValueError`, `RuntimeError`, etc.) are NOT retried -- they fail fast. Only the four
+> (`ValueError`, `RuntimeError`, etc.) are NOT retried -- they fail fast. Only the six
 > network-touching steps (`capture_live_season`, `ingest_games`, `ingest_weather`,
-> `ingest_odds`) are retryable.
+> `ingest_snaps`, `ingest_injuries`, `ingest_odds`) are retryable.
 
 ---
 
@@ -192,7 +194,7 @@ freeze has passed is never rewritten by a later run.
 This boundary MOVED. Until plan 31-18 the orchestrator did not rebuild the web cache and this
 document said so; that statement is now false and has been replaced by this section.
 
-`populate_web_cache` is step **22**, the LAST entry in the registry. It rebuilds
+`populate_web_cache` is step **24**, the LAST entry in the registry. It rebuilds
 `data/web_cache.duckdb` from the model artifacts, the backtest outputs, the gold/silver layers
 and the two `outputs/bet_list/` artifacts, so the bet list the site serves after a Friday run is
 the one that run selected rather than whatever a previous manual `scripts/populate_cache.py`

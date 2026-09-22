@@ -28,6 +28,7 @@ Usage:
 import argparse
 import sys
 import warnings
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -45,7 +46,7 @@ from features.contextual import (
     UnknownSurfaceError,
 )
 from features.elo_features import EloFeatureBuilder
-from features.injury import InjuryBuilder
+from features.injury import INJURY_FEATURE_COLUMNS, InjuryBuilder
 from features.market_anchors import MarketAnchorFeaturesCalculator
 from features.normalization import compute_prior_season_stats, expanding_normalize
 from features.opponent_adj import OpponentAdjuster
@@ -303,6 +304,50 @@ BUILDER_KEYS: tuple[str, ...] = ("full", "compressed")
 # two levels here would re-break the exact column it was written to protect.
 LEVEL_PRESERVED_COLUMN_SUFFIX: str = "_coverage"
 
+# THE EMPTY-SOURCE-FAMILY GUARD (Plan 33.2-15, D33.2-16).
+#
+# WHAT IT ENDS. A family whose SOURCE FRAME carries nothing -- zero rows (the source failed to
+# load or build), or rows whose every value column is NULL (the builder read an empty silver
+# table) -- used to reach the generic imputer `_impute_team_features`, whose last resort is the
+# strictly-prior-seasons median, and the neutral 0.0 z-score after it. Measured on the snap
+# family: 2025 weeks 3 and 15 produced IDENTICAL snap values in columns the ATS and O/U models
+# actually consume, because no current snap data existed and something plausible was put in
+# its place. A historical median wearing a real column's name is a fabricated input. So an
+# empty family's value columns are NaN, are EXCLUDED from the generic imputer and are preserved
+# as NaN through normalization; the injury family's existing `*_coverage` flags read 0.0 (no
+# information). Absence then survives into the models the way it should: WP's fold-fitted
+# imputation pipeline (models/trainers/wp_trainer.py) median-imputes INSIDE the fold and appends
+# a `_was_missing` indicator per column; ATS/O-U XGBoost take NaN natively. Do NOT restore a
+# build-time fill "as a convenience".
+#
+# WHAT IT DELIBERATELY DOES NOT TOUCH, and who owns it. The generic per-column/per-season
+# imputation in `_impute_team_features` is UNCHANGED. It still fills a WITHIN-SEASON gap in a
+# family that has data, and it still fires in a season where a family has NO upstream data at
+# all (snaps before 2013, injury before 2009) while other seasons do. That per-season case is
+# Plan 33.2-17's, under the coverage-floor cause attributed at rung 8 -- folding it in here
+# would move pre-2025 rows under rung 6's cause. The guard is keyed on the SOURCE FRAME being
+# empty, never on a season literal, so on a full-history rebuild (neither frame empty) it moves
+# nothing; it is the LIVE-path property D33.2-16 requires.
+EMPTY_SOURCE_GUARDED_FAMILIES: tuple[str, ...] = ("snaps", "injury")
+
+
+def source_family_is_empty(frame: pd.DataFrame, value_columns: Sequence[str]) -> bool:
+    """True when a family's source frame carries no value at all.
+
+    Zero rows, or not one non-null value in any of the family's VALUE columns (its
+    ``*_coverage`` flags excluded). A frame whose builder emitted its documented unknown values
+    -- the injury builder's neutral defaults with the coverage flags at 0.0 -- is NOT empty: those
+    are values the information-time gate value-checks, not an absence.
+
+    Args:
+        frame: The family's ``feature_sources`` frame.
+        value_columns: The family's value (non-flag) columns.
+    """
+    if len(frame) == 0:
+        return True
+    present = [column for column in value_columns if column in frame.columns]
+    return not present or not bool(frame[present].notna().to_numpy().any())
+
 
 def drop_feature_group(df: pd.DataFrame, group: str) -> pd.DataFrame:
     """Return *df* without any column belonging to *group*.
@@ -468,6 +513,12 @@ class FeatureMatrixBuilder:
         # asserting about a set nothing consumed.
         self.missing_preserving_columns: dict[str, tuple[str, ...]] | None = None
         self.active_builder_key: str | None = None
+
+        # PLAN 33.2-15: the families whose SOURCE FRAME was empty in the last
+        # ``combine_features`` call, mapped to their VALUE columns. Their columns are NaN, the
+        # generic imputer skips them and normalization preserves the NaN (see
+        # EMPTY_SOURCE_GUARDED_FAMILIES). Reset on every ``combine_features`` call.
+        self.empty_source_families: dict[str, tuple[str, ...]] = {}
 
     # ------------------------------------------------------------------
     # Ruling K1: the per-builder missing-preserving seam
@@ -1038,6 +1089,13 @@ class FeatureMatrixBuilder:
             )
             feature_counts["injury"] = len(injury_cols)
 
+        # PLAN 33.2-15: a family whose source frame carries nothing reads as UNKNOWN (NaN, its
+        # coverage flags at 0.0), never as a historical median. Laid out here, after the two
+        # merges, so the matrix width does not depend on whether a source loaded.
+        combined_features = self._lay_out_empty_source_families(
+            combined_features, feature_sources
+        )
+
         # SEAM 2 of 2 for the Phase-29 line-movement family is DELIBERATELY ABSENT
         # here (SPEC R3, D29-07-01). This is where an explicit merge block used to
         # sit, and it is the seam that actually landed the columns in gold: a
@@ -1060,6 +1118,70 @@ class FeatureMatrixBuilder:
         )
 
         return combined_features
+
+    def _source_family_columns(
+        self, family: str
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """``(value_columns, coverage_flag_columns)`` a guarded family emits into gold.
+
+        DERIVED from each builder's own declaration, never typed again here: the snap
+        builder's ``no_information_signature`` (every snap column; the family has no coverage
+        flag until Plan 33.2-17 adds ``snap_coverage``) and ``features.injury.
+        INJURY_FEATURE_COLUMNS`` expanded home/away. A ``*_coverage`` column is a flag.
+        """
+        if family == "snaps":
+            columns = tuple(self.snap_builder.no_information_signature())
+        elif family == "injury":
+            columns = tuple(
+                f"{prefix}_{column}"
+                for prefix in ("home", "away")
+                for column in INJURY_FEATURE_COLUMNS
+            )
+        else:
+            msg = f"{family!r} is not an empty-source-guarded family"
+            raise KeyError(msg)
+        flags = tuple(c for c in columns if c.endswith(LEVEL_PRESERVED_COLUMN_SUFFIX))
+        values = tuple(c for c in columns if c not in flags)
+        return values, flags
+
+    def _lay_out_empty_source_families(
+        self,
+        combined_features: pd.DataFrame,
+        feature_sources: dict[str, pd.DataFrame],
+    ) -> pd.DataFrame:
+        """Give every guarded family whose SOURCE FRAME is empty its honest unknown.
+
+        Its value columns are NaN (added when the merge above never ran because the frame had
+        zero rows) and its ``*_coverage`` flags are 0.0, and the family is recorded in
+        ``self.empty_source_families`` so the generic imputer skips it and normalization keeps
+        the NaN. A family whose frame carries values is untouched. See
+        ``EMPTY_SOURCE_GUARDED_FAMILIES`` for why, and for what is deliberately left to Plan
+        33.2-17.
+        """
+        self.empty_source_families = {}
+        for family in EMPTY_SOURCE_GUARDED_FAMILIES:
+            frame = feature_sources.get(family, pd.DataFrame())
+            values, flags = self._source_family_columns(family)
+            if not source_family_is_empty(frame, values):
+                continue
+            self.empty_source_families[family] = values
+            for column in values:
+                combined_features[column] = np.nan
+            for column in flags:
+                combined_features[column] = 0.0
+            logger.warning(
+                "A feature family's source frame is EMPTY: its columns read as unknown "
+                "(NaN, coverage 0.0) and are excluded from imputation",
+                family=family,
+                source_rows=len(frame),
+                value_columns=len(values),
+            )
+        return combined_features
+
+    def _empty_source_value_columns(self) -> tuple[str, ...]:
+        """Every value column of every family recorded empty by the last combine, sorted."""
+        recorded = getattr(self, "empty_source_families", {}) or {}
+        return tuple(sorted({c for columns in recorded.values() for c in columns}))
 
     def _information_time_suppliers(self) -> dict[str, object]:
         """The builder behind each ``feature_sources`` registry key.
@@ -1373,6 +1495,9 @@ class FeatureMatrixBuilder:
         # merged weather frame with no usable entry refuses here rather than
         # after silently median-filling the first weather column it meets.
         preserved_weather_columns = set(self._preserved_weather_columns())
+        # PLAN 33.2-15: a family whose SOURCE FRAME was empty is excluded from imputation
+        # outright (EMPTY_SOURCE_GUARDED_FAMILIES). Its NaN is the answer.
+        empty_family_columns = set(self._empty_source_value_columns())
 
         for col in numeric_cols:
             original_missing = processed_df[col].isna().sum()
@@ -1391,7 +1516,9 @@ class FeatureMatrixBuilder:
             # by the CR-02 rule, which is why the coverage flag cannot be
             # clipped into a constant on a single-season build. Missing-handling
             # and outlier-handling have been independent since CR-02 and stay so.
-            preserve_this_column = col in preserved_weather_columns
+            preserve_this_column = (
+                col in preserved_weather_columns or col in empty_family_columns
+            )
             if preserve_this_column and original_missing > 0:
                 missing_stats[col] = original_missing
 
@@ -1706,6 +1833,14 @@ class FeatureMatrixBuilder:
             or BUILDER_KEYS[0]: self._preserved_weather_columns()
         }
         active_builder = self.active_builder_key or BUILDER_KEYS[0]
+        # PLAN 33.2-15: an empty family's NaN survives normalization too, instead of becoming
+        # the neutral 0.0 z-score. Appended AFTER the weather entry, and only when a family
+        # was recorded empty, so a build with no empty family passes exactly the weather set.
+        preserve_missing = tuple(preserve_by_builder[active_builder]) + tuple(
+            column
+            for column in self._empty_source_value_columns()
+            if column not in set(preserve_by_builder[active_builder])
+        )
 
         # THE COVERAGE FLAG IS NOT A MEASUREMENT, so it is not z-scored
         # (Plan 33.1-07 Task 4). DERIVED from the set the merged frame actually
@@ -1792,7 +1927,7 @@ class FeatureMatrixBuilder:
                 sort_cols=["season", "week"],
                 min_periods=4,
                 prior_season_stats=prior_stats,
-                preserve_missing_cols=preserve_by_builder[active_builder],
+                preserve_missing_cols=preserve_missing,
                 preserve_level_cols=preserve_level_cols,
             )
 
@@ -1811,7 +1946,7 @@ class FeatureMatrixBuilder:
                 sort_cols=["season", "week"],
                 min_periods=4,
                 prior_season_stats=prior_stats,
-                preserve_missing_cols=preserve_by_builder[active_builder],
+                preserve_missing_cols=preserve_missing,
                 preserve_level_cols=preserve_level_cols,
             )
             normalized_parts.append(norm_part)

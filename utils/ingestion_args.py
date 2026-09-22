@@ -5,6 +5,27 @@ import argparse
 from utils.date_utils import get_current_nfl_week
 
 
+def season_token(token: str) -> list[int]:
+    """One ``--seasons`` token: a single year (``2025``) or an inclusive range (``2025-2026``).
+
+    Returns a list either way, so ``parse_season_week_args`` flattens both shapes. A range
+    whose end precedes its start is refused rather than silently read as empty.
+    """
+    start_text, sep, end_text = token.partition("-")
+    try:
+        start = int(start_text)
+        end = int(end_text) if sep else start
+    except ValueError as error:
+        msg = (
+            f"{token!r} is not a season (2025) or an inclusive season range (2025-2026)"
+        )
+        raise argparse.ArgumentTypeError(msg) from error
+    if end < start:
+        msg = f"season range {token!r} ends before it starts"
+        raise argparse.ArgumentTypeError(msg)
+    return list(range(start, end + 1))
+
+
 def get_current_season_weeks() -> tuple[int, list[int]]:
     """
     Get weeks 1 through current week of current season.
@@ -35,7 +56,10 @@ def add_standard_ingestion_args(
         "--season", type=int, help="Single season to ingest (default: current)"
     )
     season_group.add_argument(
-        "--seasons", nargs="+", type=int, help="Multiple seasons to ingest"
+        "--seasons",
+        nargs="+",
+        type=season_token,
+        help="Multiple seasons to ingest: years and/or inclusive ranges (2013 2025-2026)",
     )
 
     # Week arguments
@@ -73,7 +97,13 @@ def parse_season_week_args(args) -> tuple[list[int], list[int] | None]:
     """
     # Determine seasons
     if args.seasons:
-        seasons = args.seasons
+        # Each token is a list (season_token) when parsed from the CLI; a caller building the
+        # Namespace by hand may still pass plain ints.
+        seasons = [
+            season
+            for token in args.seasons
+            for season in (token if isinstance(token, list) else [token])
+        ]
     elif args.season:
         seasons = [args.season]
     elif args.current:

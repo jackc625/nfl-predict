@@ -139,6 +139,11 @@ _FEATURE_COLUMNS = [
     "date_modified_coverage",
 ]
 
+#: The per-team columns this builder emits, public so the gold build can lay out an EMPTY
+#: injury source frame (Plan 33.2-15's empty-source-family guard in scripts/build_features.py)
+#: from the builder's own list rather than a second hand-kept one.
+INJURY_FEATURE_COLUMNS: tuple[str, ...] = tuple(_FEATURE_COLUMNS)
+
 # The per-team values a team that admitted NO report carries: the documented neutral
 # defaults (D-10) with the injury coverage flags at 0.0. ``availability_coverage`` is NOT
 # here: it reports whether PRIOR SNAP SHARES exist, which is a snap fact, not an injury one.

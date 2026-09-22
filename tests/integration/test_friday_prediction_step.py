@@ -301,16 +301,31 @@ def test_orchestrator_data_phase_reaches_verify_gate(tmp_path, monkeypatch):
         "pipeline.steps no longer defines step_capture_live_season; this no-op has gone "
         "stale and the real capture would run against the live zone"
     )
-    for name in (
+    # DERIVED FROM THE REGISTRY, not hand-kept (Plan 33.2-15). The list used to be typed out,
+    # so when ingest_snaps and ingest_injuries joined the DATA phase they would have run FOR
+    # REAL here -- two network fetches and two production silver writes as a side effect of a
+    # path-existence gate test. Every DATA-phase body except the gate is no-op'd by the name the
+    # registry itself carries; the eight the list used to name are asserted to be among them.
+    data_bodies = [
+        step.callable.__name__
+        for step in steps.build_step_registry()
+        if step.phase == steps.PipelinePhase.DATA
+        and step.name != "verify_data_artifacts"
+    ]
+    assert {
         "step_capture_live_season",
         "step_ingest_games",
         "step_ingest_weather",
+        "step_ingest_snaps",
+        "step_ingest_injuries",
         "step_data_qa",
         "step_build_elo",
         "step_build_team_form",
         "step_build_contextual",
         "step_build_weather_features",
-    ):
+    } <= set(data_bodies), data_bodies
+    for name in data_bodies:
+        assert hasattr(steps, name), name
         monkeypatch.setattr(steps, name, lambda: None)
 
     # Drive the REAL orchestrator loop through the DATA phase -- no build_step_registry

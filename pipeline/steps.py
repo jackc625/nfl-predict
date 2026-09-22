@@ -3,7 +3,7 @@
 Every step adapter uses deferred imports (inside the function body) to avoid
 argparse collisions and module-level side effects from scripts/.
 
-The step registry returns exactly 22 StepDefinition entries covering the full
+The step registry returns exactly 24 StepDefinition entries covering the full
 data-to-prediction pipeline, ending with the NON-CRITICAL web-cache population
 step Plan 31-18 added (SPEC R9, D31-29).
 """
@@ -526,6 +526,46 @@ def step_ingest_weather() -> None:
 
     ingester = WeatherDataIngester()
     ingester.ingest_weather()
+
+
+def step_ingest_snaps() -> None:
+    """Capture the RESOLVED season's player snap counts into bronze + silver (D33.2-16).
+
+    Until Plan 33.2-15 ``scripts/ingest_snaps.py`` ran nowhere and silver ``snap_counts``
+    stopped at 2024, so a live build had no current snap data. This step re-captures the whole
+    season every run: silver is latest-wins by ``game_id``, so unchanged upstream leaves it
+    byte-identical, and every row passes the promotion gate (``SnapCountSchema``) and carries
+    the release asset's ``upstream_captured_at``. Plan 33.2-27 owns the daily cadence; this
+    plan owns the wiring.
+
+    A snap count's information time is its game's END instant, so a stale capture (this step
+    failed today) still feeds only games that had ended by each lock -- which is why the step is
+    registered NON-critical: a failure degrades to yesterday's honest capture, it cannot leak.
+    """
+    from scripts.ingest_snaps import ingest_snaps_season
+
+    season, _week = _resolve_current_week()
+    ingest_snaps_season(season)
+
+
+def step_ingest_injuries() -> None:
+    """Capture the RESOLVED season's injury reports into bronze + silver (D33.2-16).
+
+    Until Plan 33.2-15 ``scripts/ingest_injuries.py`` ran nowhere and silver ``injuries``
+    stopped at 2024. Every captured row passes the promotion gate (``InjurySchema``) and carries
+    the release asset's ``upstream_captured_at``: CAPTURE provenance, admitted by the injury
+    builder as a row's information time ONLY where it is at or before that game's lock. That is
+    what makes this step load-bearing for the forward daily run -- a capture before a game's lock
+    is the only honest time a 2025+ injury row can carry (upstream dropped ``date_modified``).
+
+    NON-critical for the same reason as snaps: a failed capture leaves the previous capture in
+    place, whose stamp is still honest, and a game with no pre-lock capture reads as the flagged
+    unknown. The stamp lookup REFUSES on a rate limit rather than stamping the fetch instant.
+    """
+    from scripts.ingest_injuries import ingest_injuries_season
+
+    season, _week = _resolve_current_week()
+    ingest_injuries_season(season)
 
 
 def step_data_qa() -> None:
@@ -1123,13 +1163,13 @@ def step_populate_web_cache() -> None:
 
 
 def build_step_registry() -> list[StepDefinition]:
-    """Build the complete 22-step pipeline registry.
+    """Build the complete 24-step pipeline registry.
 
     Returns:
         Ordered list of StepDefinitions covering data and prediction phases.
     """
     return [
-        # DATA PHASE (9 steps)
+        # DATA PHASE (11 steps)
         #
         # FIRST, and the position is load-bearing (Plan 33-07, D32-04). The capture records
         # what nflverse served THIS RUN; anything that reads upstream before it has been
@@ -1168,6 +1208,27 @@ def build_step_registry() -> list[StepDefinition]:
             retryable=True,
             max_retries=3,
             description="Ingest weather forecasts",
+        ),
+        # PLAN 33.2-15 (D33.2-16): the two feeds that used to run nowhere. NON-critical and
+        # retryable: each re-captures the whole season over the network, and a failure leaves
+        # the previous (honestly stamped) capture in place rather than anything fabricated.
+        StepDefinition(
+            "ingest_snaps",
+            step_ingest_snaps,
+            PipelinePhase.DATA,
+            critical=False,
+            retryable=True,
+            max_retries=3,
+            description="Capture the season's snap counts (stamped, schema-gated)",
+        ),
+        StepDefinition(
+            "ingest_injuries",
+            step_ingest_injuries,
+            PipelinePhase.DATA,
+            critical=False,
+            retryable=True,
+            max_retries=3,
+            description="Capture the season's injury reports (stamped, schema-gated)",
         ),
         StepDefinition(
             "data_qa",
