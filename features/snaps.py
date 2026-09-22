@@ -108,6 +108,17 @@ POSITION_GROUP_MAP = {
 # team snap denominator but is not a key availability group (D-09).
 KEY_POSITION_GROUPS = ["db", "dl", "lb", "ol", "qb", "rb", "te", "wr"]
 
+# THE SNAP COVERAGE FLAG (Plan 33.2-17 Task 2, D33.2-08 item 2). 1.0 when a team's value was
+# computed from at least one admitted snap team-game, 0.0 when its window admitted none -- then
+# every snap value beside it is NaN, never 0.0. A 0.0 in a z-scored or centred feature reads as
+# "exactly average", a confident claim about a game nobody measured; that is the defect this
+# flag and the NaN replace, and before snaps' first covered season it spanned every snap column
+# of every model. The FIRST COVERED SEASON IS DERIVED FROM THE DATA, never a literal: a season
+# before any snap row exists has no admitted game in any window, so the boundary (2012 / 2013 on
+# today's feed) emerges from what upstream supplied (D30-02: one answer on disk). The name ends
+# in ``_coverage``, so the gold build keeps its level (never z-scored, never winsorized).
+SNAP_COVERAGE_COLUMN: str = "snap_coverage"
+
 
 class SnapCountBuilder:
     """Build backward-rolling team snap features from player-level snap silver.
@@ -198,7 +209,10 @@ class SnapCountBuilder:
         df = snaps_df.copy()
 
         # Coerce raw snap counts to numeric; a player's participation is the sum
-        # of offense + defense + special-teams snaps.
+        # of offense + defense + special-teams snaps. The 0.0 here is a PLAYER's missing count
+        # INSIDE a covered team-game (he took no snaps of that kind), not a stand-in for a game
+        # nobody measured: a season with no snap rows never reaches this line, and its games
+        # read NaN with ``snap_coverage`` 0.0 (see SNAP_COVERAGE_COLUMN).
         for col in RAW_SNAP_COUNT_COLUMNS:
             if col not in df.columns:
                 df[col] = 0.0
@@ -458,6 +472,8 @@ class SnapCountBuilder:
                 "target_season": target_season,
                 "target_week": target_week,
                 "snap_games_used": len(window),
+                # Measured from at least one admitted snap team-game.
+                SNAP_COVERAGE_COLUMN: 1.0,
             }
 
             # Concentration: weighted mean over the window.
@@ -527,12 +543,23 @@ class SnapCountBuilder:
     # ------------------------------------------------------------------
 
     def _feature_columns(self) -> list[str]:
-        """Per-team rolling feature column names (pre home/away expansion)."""
+        """Per-team rolling feature column names (pre home/away expansion).
+
+        ``snap_coverage`` IS IN THIS LIST ON PURPOSE: ``build_features`` emits only
+        ``home_{c}`` / ``away_{c}`` for the columns named here, so a flag left off it would be
+        computed and never reach gold.
+        """
         return [
             "snap_continuity",
             "snap_concentration",
             *[f"rolling_snap_share_{grp}" for grp in KEY_POSITION_GROUPS],
+            SNAP_COVERAGE_COLUMN,
         ]
+
+    @staticmethod
+    def _unmeasured_value(column: str) -> float:
+        """What a team whose window admitted no snap game carries: NaN, its flag 0.0."""
+        return 0.0 if column == SNAP_COVERAGE_COLUMN else float("nan")
 
     def build_features(
         self,
@@ -626,7 +653,9 @@ class SnapCountBuilder:
                 team = self._safe_normalize(game[team_col])
                 team_feats = team_lookup.get(team, {})
                 for col in feature_cols:
-                    record[f"{prefix}_{col}"] = float(team_feats.get(col, np.nan))
+                    record[f"{prefix}_{col}"] = float(
+                        team_feats.get(col, self._unmeasured_value(col))
+                    )
             rows.append(record)
 
         if not rows:
@@ -660,9 +689,9 @@ class SnapCountBuilder:
     # ------------------------------------------------------------------
 
     def no_information_signature(self) -> Mapping[str, float | None]:
-        """A game whose two teams admitted no snap team-game: every snap column NULL."""
+        """A game whose two teams admitted no snap team-game: every value NULL, both flags 0.0."""
         return {
-            f"{prefix}_{column}": None
+            f"{prefix}_{column}": (0.0 if column == SNAP_COVERAGE_COLUMN else None)
             for prefix in ("home", "away")
             for column in self._feature_columns()
         }
@@ -738,7 +767,7 @@ class SnapCountBuilder:
         """
         feature_cols = self._feature_columns()
         empty = {
-            f"{prefix}_{col}": float("nan")
+            f"{prefix}_{col}": self._unmeasured_value(col)
             for prefix in ("home", "away")
             for col in feature_cols
         }

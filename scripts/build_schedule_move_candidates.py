@@ -70,6 +70,7 @@ from typing import cast
 import pandas as pd
 
 import utils.game_lock as lock_rule
+from conf.season_partition import CORPUS_FIRST_SEASON
 from scripts.repair_international_venues import usual_home_stadium
 from utils.date_utils import kickoff_wall_clock_et
 
@@ -83,7 +84,9 @@ INTERNATIONAL_CORRECTIONS_PATH = (
 #: The first season the move proof covers (D33.2-04: "every emergency move since 2002").
 #: There is no last season: every season silver holds is enumerated, so a live-season
 #: move reaches the manifest the next time it is regenerated.
-FIRST_SEASON: int = 2002
+# The corpus floor is the rule module's (conf.season_partition.CORPUS_FIRST_SEASON), not a
+# second literal here (Plan 33.2-17, SPEC R10). Same value.
+FIRST_SEASON: int = CORPUS_FIRST_SEASON
 
 #: ``venues.json`` spells the United States one way; this set is the guard's convention.
 US_COUNTRY_VALUES: frozenset[str] = frozenset({"US", "USA", "UNITED STATES"})

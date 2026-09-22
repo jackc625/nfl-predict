@@ -75,6 +75,26 @@ ROLLING_COLUMNS: tuple[str, ...] = (
     "rolling_neutral_pace",
 )
 
+#: THE METRICS THE PINNED PLAY-BY-PLAY DOES NOT CARRY IN EVERY SEASON (Plan 33.2-17 Task 2).
+#: Measured 2026-09-22 on silver team form rebuilt from the pin back to 2002: ``rolling_cpoe``
+#: is NULL in every 2002-2005 row -- the play-by-play carries no completion probability before
+#: 2006 -- and every other rolling metric is populated from 2002. The gold build gives each
+#: offensive copy a ``*_coverage`` flag (1.0 where the value was computed) and keeps the
+#: unmeasured value NaN, never the neutral 0.0 a model would read as "exactly average". The
+#: metric is offense-only, so its defensive copy is never populated and is not flagged. Which
+#: seasons lack it is read from the data, never stated as a literal.
+SOURCE_LIMITED_ROLLING_COLUMNS: tuple[str, ...] = ("rolling_cpoe",)
+
+
+def source_limited_gold_columns() -> tuple[tuple[str, str], ...]:
+    """``(value column, coverage flag)`` in gold for each source-limited metric, per side."""
+    return tuple(
+        (f"{prefix}_off_{column}", f"{prefix}_off_{column}_coverage")
+        for prefix in ("home", "away")
+        for column in SOURCE_LIMITED_ROLLING_COLUMNS
+    )
+
+
 #: The team-schedule frame's columns (``team_game_schedule``).
 TEAM_SCHEDULE_COLUMNS: tuple[str, ...] = (
     "season",

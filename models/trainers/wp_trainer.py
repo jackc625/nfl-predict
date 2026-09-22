@@ -63,13 +63,25 @@ class _ImputeAndCarryRaw(BaseEstimator, TransformerMixin):
 
     ``statistics_`` is re-exposed so the per-fold temporal-safety assertion can
     read the fitted statistic off a fitted pipeline.
+
+    A COLUMN THAT IS ENTIRELY NaN IN THE FIT WINDOW IS KEPT (Plan 33.2-17 Task 2).
+    sklearn's ``SimpleImputer`` DROPS such a column by default, which would shift
+    every later column one place left -- the ``[imputed | raw]`` halves would then
+    have different widths, :class:`_FoldRawIntoMissingIndicator` would split them
+    in the wrong place, and a coverage flag would silently land at another
+    column's position. Since the seasons before a family's first covered season
+    are honest unknowns (NaN beside a false flag), a fold whose training window
+    ends before that season sees exactly such a column. ``keep_empty_features``
+    keeps it, filled with 0.0 inside the fold; its indicator column reads 1.0 on
+    every row, which is the true statement that nothing was measured.
+    ``tests/unit/test_imputation_preserves_flags.py`` pins this by position.
     """
 
     def __init__(self, strategy: str = "median") -> None:
         self.strategy = strategy
 
     def fit(self, X, y=None):
-        self.imputer_ = SimpleImputer(strategy=self.strategy)
+        self.imputer_ = SimpleImputer(strategy=self.strategy, keep_empty_features=True)
         self.imputer_.fit(np.asarray(X, dtype=float))
         self.n_features_in_ = np.asarray(X, dtype=float).shape[1]
         return self

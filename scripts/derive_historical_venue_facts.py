@@ -77,10 +77,6 @@ OPEN_METEO_ELEVATION_URL = "https://api.open-meteo.com/v1/elevation"
 REQUEST_TIMEOUT_SECONDS = 60
 USER_AGENT = "nfl-predict/33.1-01 historical venue derivation"
 
-# The seasons the pinned feed covers, and the span R1 is stated over.
-FIRST_SEASON = 2002
-LAST_SEASON = 2025
-
 # `venue_high_altitude` fires at elevation_ft >= 3000 (features/contextual.py:643). The
 # boundary is printed beside every derived elevation so the ratifier can see at a glance
 # that none of the 22 is near it (Ruling A).
@@ -98,7 +94,14 @@ LARGE_STADIUM_BOUNDARY = 75000
 # from there, so it cannot describe a rule the feature no longer applies. Printed beside
 # every surface cell so the ratifier can see which side each record lands on.
 sys.path.insert(0, str(REPO_ROOT))
+from conf.season_partition import CORPUS_FIRST_SEASON
 from features.contextual import GRASS_SURFACES as GRASS_SURFACE_TOKENS
+
+# The seasons the pinned feed covers, and the span R1 is stated over. The corpus floor is the
+# rule module's (conf.season_partition.CORPUS_FIRST_SEASON), not a second literal here
+# (Plan 33.2-17, SPEC R10). Same value.
+FIRST_SEASON = CORPUS_FIRST_SEASON
+LAST_SEASON = 2025
 
 METRES_PER_FOOT = 0.3048
 

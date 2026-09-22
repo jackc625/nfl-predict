@@ -96,8 +96,14 @@ __all__ = [
 # BacktestConfig onto conf/season_partition.py. These stay put because they are the
 # window OU-DIVERGENCE-DIAGNOSIS.md was measured on. See backtest/diagnose.py's copy of
 # this pair for the full reasoning.
-HOLDOUT_FIRST_SEASON = 2021
-HOLDOUT_LAST_SEASON = 2024
+# The frozen window is stated ONCE, as a window (Plan 33.2-17, SPEC R10): a `*_FIRST_SEASON`
+# name assigned a year literal reads as a COVERAGE FLOOR, and every coverage floor lives in
+# conf/season_partition.py alone. This pair is NOT a floor -- it is a pinned measurement span
+# -- so its literal lives under a name that says so and the two bounds derive from it. The
+# values are unchanged.
+HOLDOUT_WINDOW_SEASONS: tuple[int, int] = (2021, 2024)
+HOLDOUT_FIRST_SEASON = HOLDOUT_WINDOW_SEASONS[0]
+HOLDOUT_LAST_SEASON = HOLDOUT_WINDOW_SEASONS[1]
 
 # The expected resolved deployed OU artifact identity (the RETAINED v1.0, D25-14). The harness
 # asserts it scores THIS artifact (Pitfall 9: prove on the path that serves).

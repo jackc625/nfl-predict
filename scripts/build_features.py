@@ -71,7 +71,7 @@ from features.provenance import (
 )
 from features.qb_tracking import QBTracker
 from features.snaps import SnapCountBuilder
-from features.team_form import TeamFormCalculator
+from features.team_form import TeamFormCalculator, source_limited_gold_columns
 from features.validation import LeakageGate, LeakageViolation
 from features.weather import (
     WEATHER_COVERAGE_COLUMN,
@@ -340,15 +340,29 @@ LEVEL_PRESERVED_COLUMN_SUFFIX: str = "_coverage"
 # a `_was_missing` indicator per column; ATS/O-U XGBoost take NaN natively. Do NOT restore a
 # build-time fill "as a convenience".
 #
-# WHAT IT DELIBERATELY DOES NOT TOUCH, and who owns it. The generic per-column/per-season
-# imputation in `_impute_team_features` is UNCHANGED. It still fills a WITHIN-SEASON gap in a
-# family that has data, and it still fires in a season where a family has NO upstream data at
-# all (snaps before 2013, injury before 2009) while other seasons do. That per-season case is
-# Plan 33.2-17's, under the coverage-floor cause attributed at rung 8 -- folding it in here
-# would move pre-2025 rows under rung 6's cause. The guard is keyed on the SOURCE FRAME being
-# empty, never on a season literal, so on a full-history rebuild (neither frame empty) it moves
-# nothing; it is the LIVE-path property D33.2-16 requires.
+# WHAT IT DELIBERATELY DOES NOT TOUCH, and who owns it. The guard is keyed on the SOURCE FRAME
+# being empty, never on a season literal, so on a full-history rebuild (neither frame empty) it
+# moves nothing; it is the LIVE-path property D33.2-16 requires. Its PER-SEASON half -- a family
+# with no value for one whole season while other seasons have them (the seasons before snaps' or
+# injury's first covered season) -- is Plan 33.2-17's, below: THE WHOLE-FAMILY-SEASON GUARD.
 EMPTY_SOURCE_GUARDED_FAMILIES: tuple[str, ...] = ("snaps", "injury")
+
+# THE WHOLE-FAMILY-SEASON GUARD (Plan 33.2-17 Task 2, D33.2-08 item 2; the per-season half the
+# empty-source guard above deliberately left).
+#
+# A family that DECLARES A COVERAGE FLAG -- snaps (``snap_coverage``) and injury
+# (``injury_coverage`` / ``availability_coverage``); the opponent-adjusted family's values are
+# never imputed at all (FLAG_GUARDED_NAN_COLUMNS) -- and that has NO value in a column for a
+# whole season is BEFORE that family's coverage (or its feed was absent that season). Its values
+# stay NaN, its flags say so, and the NaN survives normalization: nothing -- not even the
+# strictly-prior-seasons median -- stands in for a season with no data. Keyed on the season
+# carrying no value in the column, NEVER on a season literal: the first covered season emerges
+# from what upstream supplied. A WITHIN-SEASON gap in such a family is still filled, by the
+# point-in-time rule of p332_ step 7b. On today's history the prior median already found nothing
+# for the pre-coverage seasons (no earlier season has data either); what this ends is a FUTURE
+# season with prior data and none of its own being filled with a borrowed median -- exactly how
+# 2025 weeks 3 and 15 once came out identical.
+COVERAGE_FLAGGED_FAMILIES: tuple[str, ...] = EMPTY_SOURCE_GUARDED_FAMILIES
 
 # THE FLAG-GUARDED NaN COLUMNS (Plan 33.2-16, SPEC R9 / R10).
 #
@@ -1016,6 +1030,7 @@ class FeatureMatrixBuilder:
             feature_counts["team_form"] = len(
                 [col for col in combined_features.columns if "form_" in col]
             )
+        combined_features = self._flag_source_limited_team_form(combined_features)
 
         # Elo features (game-level, already has home/away columns from EloFeatureBuilder)
         elo_df = feature_sources.get("elo", pd.DataFrame())
@@ -1179,9 +1194,9 @@ class FeatureMatrixBuilder:
         """``(value_columns, coverage_flag_columns)`` a guarded family emits into gold.
 
         DERIVED from each builder's own declaration, never typed again here: the snap
-        builder's ``no_information_signature`` (every snap column; the family has no coverage
-        flag until Plan 33.2-17 adds ``snap_coverage``) and ``features.injury.
-        INJURY_FEATURE_COLUMNS`` expanded home/away. A ``*_coverage`` column is a flag.
+        builder's ``no_information_signature`` (every snap column, ``snap_coverage`` among
+        them since Plan 33.2-17) and ``features.injury.INJURY_FEATURE_COLUMNS`` expanded
+        home/away. A ``*_coverage`` column is a flag.
         """
         if family == "snaps":
             columns = tuple(self.snap_builder.no_information_signature())
@@ -1231,6 +1246,42 @@ class FeatureMatrixBuilder:
                 value_columns=len(values),
             )
         return combined_features
+
+    @staticmethod
+    def _flag_source_limited_team_form(frame: pd.DataFrame) -> pd.DataFrame:
+        """Give each source-limited team-form metric its coverage flag (Plan 33.2-17 Task 2).
+
+        ``features.team_form.SOURCE_LIMITED_ROLLING_COLUMNS`` names the metrics the pinned
+        play-by-play does not carry in every season (``rolling_cpoe`` before 2006). The flag is
+        1.0 where the laid-out value exists and 0.0 where it does not -- including a game with
+        no team-form row at all -- and the whole-family-season guard keeps the unmeasured value
+        NaN through normalization. Added only when the value column is present.
+        """
+        for value, flag in source_limited_gold_columns():
+            if value in frame.columns:
+                frame[flag] = frame[value].notna().astype(float)
+        return frame
+
+    def _coverage_flagged_value_columns(self, frame: pd.DataFrame) -> frozenset[str]:
+        """The value columns of every flag-declaring family whose flags are in *frame*.
+
+        Plan 33.2-17's whole-family-season guard reads this: for these columns a season with
+        no value stays NaN instead of taking the strictly-prior-seasons median. Derived from
+        the builders' own column lists (``_source_family_columns``), never from a name pattern.
+        """
+        columns: set[str] = set()
+        for family in COVERAGE_FLAGGED_FAMILIES:
+            values, flags = self._source_family_columns(family)
+            if any(flag in frame.columns for flag in flags):
+                columns.update(c for c in values if c in frame.columns)
+        # The team-form metrics the pinned play-by-play lacks in some seasons, each with its
+        # own flag (``_flag_source_limited_team_form``).
+        columns.update(
+            value
+            for value, flag in source_limited_gold_columns()
+            if value in frame.columns and flag in frame.columns
+        )
+        return frozenset(columns)
 
     def _empty_source_value_columns(self) -> tuple[str, ...]:
         """Every value column of every family recorded empty by the last combine, sorted."""
@@ -1755,6 +1806,8 @@ class FeatureMatrixBuilder:
         # blank register reset -- it describes THIS call's frame only.
         self.imputation_left_blank = {}
         timed_rows = row_timing(processed_df, self.imputation_timing)
+        # PLAN 33.2-17: a flag-declaring family's whole season with no value stays NaN.
+        whole_season_guarded = self._coverage_flagged_value_columns(processed_df)
 
         # WR-06: the per-season passes, computed ONCE. ``season`` sits in the
         # target-column exclusion list above, which removes it from ``numeric_cols``
@@ -1814,7 +1867,10 @@ class FeatureMatrixBuilder:
                 # For team-based features, the team's mean over its games ended by the lock
                 if any(prefix in col for prefix in ["home_", "away_"]):
                     processed_df[col] = self._impute_team_features(
-                        processed_df, col, timed_rows
+                        processed_df,
+                        col,
+                        timed_rows,
+                        leave_empty_seasons=col in whole_season_guarded,
                     )
                 else:
                     # WR-06 surface 1: for game-level features this was
@@ -1825,7 +1881,12 @@ class FeatureMatrixBuilder:
                     processed_df[col] = self._impute_game_level_features(
                         processed_df, col, season_passes, earliest_season, timed_rows
                     )
-                self._record_imputation_blanks(processed_df, col, source_values)
+                self._record_imputation_blanks(
+                    processed_df,
+                    col,
+                    source_values,
+                    include_empty_seasons=col in whole_season_guarded,
+                )
 
                 missing_stats[col] = original_missing
 
@@ -2432,6 +2493,8 @@ class FeatureMatrixBuilder:
         df: pd.DataFrame,
         col: str,
         timed_rows: tuple[np.ndarray, np.ndarray] | None = None,
+        *,
+        leave_empty_seasons: bool = False,
     ) -> pd.Series:
         """Impute a missing team feature from what was known at the gap's own lock.
 
@@ -2461,6 +2524,10 @@ class FeatureMatrixBuilder:
             col: The column to fill.
             timed_rows: ``features.point_in_time_fill.row_timing`` for *df*; derived from
                 ``self.imputation_timing`` when omitted.
+            leave_empty_seasons: Plan 33.2-17's whole-family-season guard. When True, a season
+                in which *col* has no value at all is left NaN -- not even the
+                strictly-prior-seasons median fills it. Set for the value columns of a
+                family that declares a coverage flag.
         """
         season_passes = self._season_passes(df)
         earliest_season = season_passes[0][0] if season_passes else None
@@ -2494,6 +2561,10 @@ class FeatureMatrixBuilder:
             # A season with no value at all for this column is a coverage floor, not a
             # within-season gap: nothing inside it can be admitted.
             season_has_values = bool((in_season & ~missing).any())
+            if leave_empty_seasons and not season_has_values:
+                # Before a flag-declaring family's coverage: the honest unknown, never a
+                # borrowed median (Plan 33.2-17, COVERAGE_FLAGGED_FAMILIES).
+                continue
             # Computed LAZILY, and at most once per season.
             prior_median: float | None = None
             prior_median_computed = False
@@ -2542,17 +2613,29 @@ class FeatureMatrixBuilder:
         return float(prior.median())
 
     def _record_imputation_blanks(
-        self, df: pd.DataFrame, col: str, source_values: pd.Series
+        self,
+        df: pd.DataFrame,
+        col: str,
+        source_values: pd.Series,
+        *,
+        include_empty_seasons: bool = False,
     ) -> None:
-        """Record the cells of *col* the imputer had to leave blank (step 7b).
+        """Record the cells of *col* the imputer had to leave blank.
 
-        A cell is recorded when it is still NaN after imputation AND its season carries at
-        least one value for the column -- a within-season gap nothing known at its lock
-        could fill. A season with NO value is a coverage floor, a different cause (Plan
-        33.2-17 Task 2 / rung 8), and is not recorded here.
+        Step 7b: a cell is recorded when it is still NaN after imputation AND its season
+        carries at least one value for the column -- a within-season gap nothing known at its
+        lock could fill.
+
+        Plan 33.2-17 (*include_empty_seasons*): for a flag-declaring family a season with NO
+        value is recorded too -- the family's coverage floor, NaN beside a false flag, kept
+        blank through normalization. For every other family such a season is a coverage floor
+        this rule does not own, and is not recorded.
         """
         still_missing = self._column(df, col).isna() & source_values.isna()
         if not still_missing.any():
+            return
+        if include_empty_seasons:
+            self.imputation_left_blank[col] = df.index[still_missing.to_numpy()]
             return
         if "season" in df.columns:
             seasons_with_values = set(df.loc[source_values.notna(), "season"])

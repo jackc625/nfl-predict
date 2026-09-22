@@ -95,12 +95,19 @@ DOCUMENT_PATH = "COLD-START-PREREGISTRATION.md"
 # The population the thresholds are derived on: the D31-04 pinned 2021-2024 backtest
 # population, which is ALSO the population the label movement is measured against. That
 # circularity is stated rather than discovered -- see the emitted module.
-THRESHOLD_FIRST_SEASON = 2021
-THRESHOLD_LAST_SEASON = 2024
+# The frozen window is stated ONCE, as a window (Plan 33.2-17, SPEC R10): a `*_FIRST_SEASON`
+# name assigned a year literal reads as a COVERAGE FLOOR, and every coverage floor lives in
+# conf/season_partition.py alone. This pair is NOT a floor -- it is a pinned measurement span
+# -- so its literal lives under a name that says so and the two bounds derive from it. The
+# values are unchanged.
+THRESHOLD_WINDOW_SEASONS: tuple[int, int] = (2021, 2024)
+THRESHOLD_FIRST_SEASON = THRESHOLD_WINDOW_SEASONS[0]
+THRESHOLD_LAST_SEASON = THRESHOLD_WINDOW_SEASONS[1]
 
 # The pool the 2026 chain-fit bias is estimated from: strictly-prior completed seasons.
-BIAS_FIRST_SEASON = 2021
-BIAS_LAST_SEASON = 2025
+BIAS_WINDOW_SEASONS: tuple[int, int] = (2021, 2025)
+BIAS_FIRST_SEASON = BIAS_WINDOW_SEASONS[0]
+BIAS_LAST_SEASON = BIAS_WINDOW_SEASONS[1]
 BIAS_TARGET_SEASON = 2026
 
 # The quantile convention, NAMED rather than left to a library default that could change on an

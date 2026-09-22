@@ -67,6 +67,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from conf.season_partition import CORPUS_FIRST_SEASON as RULE_CORPUS_FIRST_SEASON
 from data.quality_gates import validate_bronze_to_silver
 from data.schemas import WeatherSchema
 from data.storage import save_bronze_snapshot, upsert_silver
@@ -142,7 +143,9 @@ BACKFILL_BRONZE_TABLE: str = "weather_backfill"
 #
 # Deriving the bound from the pin rather than from a wall clock also means the
 # range cannot drift out from under the coverage rule on 1 January.
-CORPUS_FIRST_SEASON: int = 2002
+# The corpus floor is the rule module's (conf.season_partition.CORPUS_FIRST_SEASON), not a
+# second literal here (Plan 33.2-17, SPEC R10). Same value.
+CORPUS_FIRST_SEASON: int = RULE_CORPUS_FIRST_SEASON
 CORPUS_LAST_SEASON: int = SEALED_THROUGH_SEASON
 
 # THE TEN PRE-EXISTING BRONZE WEATHER FILES, BY NAME (SPEC prohibition 6).

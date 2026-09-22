@@ -389,7 +389,9 @@ class TestUndatableRows:
         provenance = builder.information_times(games, target_season=2023, target_week=1)
 
         assert selection.rule is SelectionRule.NONE_ADMITTED
-        assert float(frame.iloc[0]["home_qb_out_flag"]) == 0.0
+        # Was: ``home_qb_out_flag == 0.0`` -- "no QB out", a stand-in read as exactly average.
+        # Plan 33.2-17 Task 2: nothing admitted is the honest unknown, NaN beside a false flag.
+        assert pd.isna(frame.iloc[0]["home_qb_out_flag"])
         assert float(frame.iloc[0]["home_injury_coverage"]) == 0.0
         assert float(frame.iloc[0]["home_date_modified_coverage"]) == 0.0
         assert provenance.iloc[0]["basis"] == InformationBasis.NO_INFORMATION.value
@@ -469,11 +471,16 @@ class TestThe2025ShapedFrame:
         assert provenance.iloc[0]["basis"] == InformationBasis.NO_INFORMATION.value
         assert pd.isna(provenance.iloc[0]["information_time"])
         assert float(frame.iloc[0]["home_injury_coverage"]) == 0.0
-        assert float(frame.iloc[0]["home_qb_out_flag"]) == 0.0, (
+        # Was: ``home_qb_out_flag == 0.0``. Plan 33.2-17 Task 2: the Out row was not known at
+        # the lock, so the value is the honest unknown (NaN), never 1.0 and never a stand-in.
+        assert pd.isna(frame.iloc[0]["home_qb_out_flag"]), (
             "the Out row was NOT known at the lock; no quiet week join may admit it"
         )
         for column, declared in builder.no_information_signature().items():
-            assert float(frame.iloc[0][column]) == declared
+            if declared is None:
+                assert pd.isna(frame.iloc[0][column]), column
+            else:
+                assert float(frame.iloc[0][column]) == declared, column
 
     def test_the_gate_accepts_the_2025_shaped_frame(self) -> None:
         """The case that proves rung 5's full-history rebuild can complete."""
@@ -505,7 +512,9 @@ class TestThe2025ShapedFrame:
 
         assert selection.rule is SelectionRule.NONE_ADMITTED
         assert provenance.iloc[0]["basis"] == InformationBasis.NO_INFORMATION.value
-        assert float(frame.iloc[0]["home_qb_out_flag"]) == 0.0
+        # Was: ``== 0.0``; nothing admitted is NaN beside a false flag (Plan 33.2-17 Task 2).
+        assert pd.isna(frame.iloc[0]["home_qb_out_flag"])
+        assert float(frame.iloc[0]["home_injury_coverage"]) == 0.0
 
     def test_the_capture_column_name_is_the_documented_input_contract(self) -> None:
         assert UPSTREAM_CAPTURE_COLUMN == "upstream_captured_at"

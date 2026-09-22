@@ -32,10 +32,19 @@ A row's information time, and the SELECTION RULE that admitted it:
   A season fetched after its games carries a stamp after every lock and admits nothing.
 * otherwise the row is UNDATABLE and is NOT ADMITTED -- exactly as a post-lock row is not.
 
-A game that admitted nothing is ``none_admitted``: its values are the documented neutral
-defaults with the ``*_coverage`` flags at 0.0, and its provenance is
+A game that admitted nothing is ``none_admitted``: its values are NaN -- the honest
+unknown -- with the ``*_coverage`` flags at 0.0, and its provenance is
 ``basis="no_information"`` with a NULL time, which the information-time gate CHECKS against
 :meth:`InjuryBuilder.no_information_signature` rather than believes (RESEARCH P2).
+
+WHY NaN AND NOT THE OLD NEUTRAL DEFAULTS (Plan 33.2-17 Task 2, D33.2-08 item 2). A team with no
+admitted report used to read "no QB out, no backup delta, full availability" -- 0.0 / 0.0 /
+1.0. A 0.0 in a z-scored or centred feature reads as "exactly average", a confident claim about
+a game nobody measured, and before the feed's first covered season it filled every one of these
+columns. The flags already said "unknown"; the values now agree with them. The first covered
+season is DERIVED from the data (no admitted report before the feed begins), never a literal.
+The same rule covers ``availability_fraction`` when no prior snap shares exist to weight it:
+NaN beside ``availability_coverage`` 0.0, never the neutral 1.0.
 
 WHAT THIS REPLACED, AND WHY IT IS NOT A WEEK JOIN ANY MORE. Until Plan 33.2-13 a week whose
 rows carried no ``date_modified`` fell back to the week's report UNFENCED and returned a
@@ -75,6 +84,7 @@ Key constraints:
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -144,16 +154,23 @@ _FEATURE_COLUMNS = [
 #: from the builder's own list rather than a second hand-kept one.
 INJURY_FEATURE_COLUMNS: tuple[str, ...] = tuple(_FEATURE_COLUMNS)
 
-# The per-team values a team that admitted NO report carries: the documented neutral
-# defaults (D-10) with the injury coverage flags at 0.0. ``availability_coverage`` is NOT
-# here: it reports whether PRIOR SNAP SHARES exist, which is a snap fact, not an injury one.
+# The per-team values a team that admitted NO report carries: the honest unknown -- NaN in
+# every value column -- with the injury coverage flags at 0.0 (Plan 33.2-17 Task 2; these were
+# the neutral defaults 0.0 / 0.0 / 1.0, read by a model as "exactly average").
+# ``availability_coverage`` is NOT here: it reports whether PRIOR SNAP SHARES exist, which is a
+# snap fact, not an injury one.
 _UNKNOWN_TEAM_VALUES: dict[str, float] = {
-    "qb_out_flag": 0.0,
-    "backup_quality_delta": 0.0,
-    "availability_fraction": 1.0,
+    "qb_out_flag": float("nan"),
+    "backup_quality_delta": float("nan"),
+    "availability_fraction": float("nan"),
     "injury_coverage": 0.0,
     "date_modified_coverage": 0.0,
 }
+
+#: The injury columns whose unknown is NaN (the value columns); the rest are flags.
+_UNKNOWN_IS_NULL: frozenset[str] = frozenset(
+    column for column, value in _UNKNOWN_TEAM_VALUES.items() if math.isnan(value)
+)
 
 
 class SelectionRule(StrEnum):
@@ -473,13 +490,14 @@ class InjuryBuilder:
 
         Returns:
             ``(availability_fraction, has_share_coverage)``. When no prior snap
-            shares exist the neutral 1.0 default is returned with coverage False.
+            shares exist the value is NaN -- nothing weights it, so it is unknown,
+            never the neutral 1.0 -- with coverage False.
         """
         weights = {grp: prior_shares.get(grp, 0.0) for grp in _NON_QB_KEY_GROUPS}
         total_w = sum(weights.values())
         if total_w <= 0:
-            # No prior snap-share weights -> neutral default, flagged as a gap.
-            return 1.0, False
+            # No prior snap-share weights: the honest unknown, flagged as a gap.
+            return float("nan"), False
 
         availability = 0.0
         for grp in _NON_QB_KEY_GROUPS:
@@ -535,9 +553,8 @@ class InjuryBuilder:
             _, has_share = self._availability_fraction(shares, {})
 
             if len(team_inj) == 0:
-                # Nothing admitted for this team: the documented unknown values, with
-                # the coverage flags saying so. availability_fraction is the exact
-                # neutral 1.0 rather than a float sum that could read 0.9999999.
+                # Nothing admitted for this team: the honest unknown (NaN values), with
+                # the coverage flags saying so.
                 results[team] = {
                     **_UNKNOWN_TEAM_VALUES,
                     "availability_coverage": 1.0 if has_share else 0.0,
@@ -683,12 +700,14 @@ class InjuryBuilder:
     def no_information_signature(self) -> Mapping[str, float | None]:
         """What a game that admitted NO report must carry, per source-frame column.
 
-        Both teams take the documented unknown values: no QB out, no backup delta, full
-        availability, and both injury coverage flags at 0.0. Non-empty by construction, so
-        the gate value-checks every ``no_information`` row instead of trusting it.
+        Both teams take the honest unknown: every value column NULL, and both injury coverage
+        flags at 0.0 (Plan 33.2-17 Task 2 -- the declared unknown moved with the value, so the
+        gate keeps checking the claim against what is actually emitted). Non-empty by
+        construction, so the gate value-checks every ``no_information`` row instead of
+        trusting it.
         """
         return {
-            f"{prefix}_{column}": value
+            f"{prefix}_{column}": (None if column in _UNKNOWN_IS_NULL else value)
             for prefix in ("home", "away")
             for column, value in _UNKNOWN_TEAM_VALUES.items()
         }
@@ -757,14 +776,14 @@ class InjuryBuilder:
 
     @staticmethod
     def _neutral_features() -> dict[str, float]:
-        """Neutral defaults (D-10): no QB out, full availability, no coverage."""
+        """A team the game frame names but no computation reached: the honest unknown.
+
+        Every value NaN, every coverage flag 0.0 (Plan 33.2-17 Task 2; this used to be the
+        neutral defaults 0.0 / 0.0 / 1.0).
+        """
         return {
-            "qb_out_flag": 0.0,
-            "backup_quality_delta": 0.0,
-            "availability_fraction": 1.0,
-            "injury_coverage": 0.0,
+            **_UNKNOWN_TEAM_VALUES,
             "availability_coverage": 0.0,
-            "date_modified_coverage": 0.0,
         }
 
     def _resolve_game(self, game_id: str) -> dict[str, Any] | None:

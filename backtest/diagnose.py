@@ -65,8 +65,14 @@ logger = get_logger(__name__)
 # changing them here would silently re-window a pre-registered result.
 #
 # Every gate and promotion caller passes gold_df explicitly and is unaffected by these.
-HOLDOUT_FIRST_SEASON = 2021
-HOLDOUT_LAST_SEASON = 2024
+# The frozen window is stated ONCE, as a window (Plan 33.2-17, SPEC R10): a `*_FIRST_SEASON`
+# name assigned a year literal reads as a COVERAGE FLOOR, and every coverage floor lives in
+# conf/season_partition.py alone. This pair is NOT a floor -- it is a pinned measurement span
+# -- so its literal lives under a name that says so and the two bounds derive from it. The
+# values are unchanged.
+HOLDOUT_WINDOW_SEASONS: tuple[int, int] = (2021, 2024)
+HOLDOUT_FIRST_SEASON = HOLDOUT_WINDOW_SEASONS[0]
+HOLDOUT_LAST_SEASON = HOLDOUT_WINDOW_SEASONS[1]
 
 # CLV significance: require a reasonable sample (mirrors clv_tracking.py:561).
 MIN_CLV_SAMPLE = 10

@@ -84,6 +84,7 @@ from tenacity import (
 )
 
 import utils.game_lock as lock_rule
+from conf.season_partition import CORPUS_FIRST_SEASON as RULE_CORPUS_FIRST_SEASON
 from config.mos_stations import (
     COVERED_ROOF_TYPES,
     UNCOVERABLE_NON_US_STADIUM_IDS,
@@ -159,7 +160,9 @@ if _COLLIDING_LEGACY_FILENAMES:  # pragma: no cover -- an import-time impossibil
     )
 
 #: The corpus: the SEALED upstream zone. The live season belongs to the live forecast path.
-CORPUS_FIRST_SEASON: int = 2002
+# The corpus floor is the rule module's (conf.season_partition.CORPUS_FIRST_SEASON), not a
+# second literal here (Plan 33.2-17, SPEC R10). Same value.
+CORPUS_FIRST_SEASON: int = RULE_CORPUS_FIRST_SEASON
 CORPUS_LAST_SEASON: int = SEALED_THROUGH_SEASON
 
 #: The columns this ingest adds to WeatherSchema (declared in the same task that emits them).
