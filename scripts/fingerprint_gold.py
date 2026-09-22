@@ -21,7 +21,7 @@ import argparse
 import hashlib
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -5110,6 +5110,302 @@ PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_RETRACTABLE_ROOF_STEP] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# p332_ RUNG 5 -- EVERY BUILDER SELECTION CUTOFF ON THE PER-GAME LOCK (Plan 33.2-14 Task 3,
+# SPEC R5, D33.2-01). Registered per Plan 33.2-08's <owned_protocol_rung_registration>: three
+# names, one incremental cause-table append, one entry in EACH dispatch table, no new prefix
+# branch.
+#
+# ONE CAUSE, EIGHT SELECTIONS. The rung is one rule change applied uniformly -- "a builder
+# admits a row only when it was known at or before the target game's own lock" -- to the
+# injury, starting-QB identity, QB play-by-play, letdown, rest-days, market-odds, snap-window
+# and team-form selections. The breadth is one rule, not a bundle (D33.2-20). The day-before
+# forecast fence is NOT in it: that selection is rung 4's cause and Plan 33.2-12's alone.
+#
+# DECLARED BEFORE THE REBUILD, PER BUILDER, from read-only measurement and not from the diff:
+#
+# * injury, qb -- EMPTY at this rung. Plan 33.2-13's builders moved these values, and their
+#   movement already landed in production gold at extra step 4b, recorded there as Plan
+#   33.2-13's MEASURED CARRY-IN (PHASE332_STEP4B_CARRY_IN_*). Rung 5 is judged against
+#   p332_rung4b.json, which already carries it.
+# * contextual (letdown, rest days), snaps -- EMPTY. Measured read-only 2026-09-21 over
+#   2002-2025 (the previous executor's probe of the pre- and post-change builders): outputs
+#   byte-identical. A team's previous game ends days before its next lock on every ordinary
+#   schedule; a row here would have to be a NAMED rescheduled game.
+# * team_form -- EMPTY, per D33.2-01's measurement: 0 games in 2002-2026 whose week-keyed
+#   prior-game inputs include a result that ended after their day-before lock. The window is
+#   per team and a team plays at most once a week. A team-form movement is a FINDING.
+# * market -- the five market columns and their two arithmetic children. By owner ruling
+#   2026-09-22 ("Only real capture times") a line counts only with a RECORDED capture time
+#   (created_at) at or before the lock; every stored 2018-2025 line fails (created_at NULL,
+#   or the 2026-09-05 backfill), so every 2018-2025 market value becomes the honest unknown.
+#   target_ats and target_ou are final margin / total minus the gold snapshot_spread /
+#   snapshot_total, so they move with them (not model inputs; disclosed here, before the
+#   rebuild). Seasons: 2018-2025 only -- silver odds_snapshot holds no row before 2018, so
+#   earlier games already carried no line.
+#
+# JUDGED AGAINST p332_rung4b.json, the entry before it (no retake: see the confirmation).
+# ---------------------------------------------------------------------------
+
+PHASE332_CUTOFF_RUNG: int = 5
+
+PHASE332_CUTOFF_RUNG_CAUSE: str = (
+    "EVERY BUILDER SELECTION CUTOFF MOVED FROM A FRAME-WIDE GLOBAL CLOCK TO THE TARGET GAME'S "
+    "OWN DAY-BEFORE LOCK, p332_ rung 5 of Plan 33.2-14 (SPEC R5, D33.2-01), and NOTHING else. "
+    "It is ONE rule change applied uniformly to eight selections, not eight unrelated "
+    "corrections: injury reports, starting-QB identity and QB play-by-play (Plan 33.2-13), "
+    "and the letdown flag, the rest-days window, the market-odds selection, the snap window "
+    "and the team-form rolling window (this plan). A prior game counts only once it ENDED "
+    "(kickoff plus the declared four hours) at or before the lock, a report or depth chart "
+    "only when timed at or before it, and a market line only with a RECORDED capture time "
+    "(created_at) at or before it (owner ruling 2026-09-22) -- so every stored 2018-2025 "
+    "line, whose only time is a manufactured snapshot_ts label, becomes the honest unknown. "
+    "The injury and QB half already landed in production gold at step 4b as Plan 33.2-13's "
+    "measured carry-in, and the contextual, snap and team-form windows agree with their "
+    "week-keyed predecessors on every ordinary schedule, so only the five market columns and "
+    "their two arithmetic children (target_ats, target_ou) can move, in seasons 2018-2025. No "
+    "column is added, none removed, no row moves"
+)
+
+#: The first season silver odds_snapshot holds any row (measured read-only 2026-09-22: 2,140
+#: rows over 2018-2025, one consensus line per game). A market value can move in this season
+#: and, through expanding normalization, in later ones -- never earlier.
+PHASE332_CUTOFF_RUNG_EARLIEST_MARKET_SEASON: int = 2018
+
+#: The five compressed market columns (features.market_anchors.MARKET_FEATURE_COLUMNS).
+PHASE332_CUTOFF_RUNG_MARKET_COLUMNS: tuple[str, ...] = (
+    "snapshot_spread",
+    "snapshot_total",
+    "snapshot_ml_prob_home_fair",
+    "spread_movement",
+    "total_movement",
+)
+
+#: The market columns' ARITHMETIC CHILDREN in gold (scripts.build_features.
+#: create_target_variables): child -> the gold market column it subtracts. Declared BEFORE the
+#: rebuild (compare rung 1, where target_ats had to be disclosed at run time). Not model
+#: inputs (models/temporal.py lists both as id columns).
+PHASE332_CUTOFF_RUNG_MARKET_CHILDREN: dict[str, str] = {
+    "target_ats": "snapshot_spread",
+    "target_ou": "snapshot_total",
+}
+
+#: THE PREDICTION, PER BUILDER (Plan 33.2-14 Task 3; Codex MEDIUM). Declared before the rebuild.
+#: A builder whose subset is EMPTY must move nothing; a moved column outside every subset halts
+#: the rung for investigation. Canonical names.
+PHASE332_CUTOFF_RUNG_PREDICTED_BY_BUILDER: dict[str, tuple[str, ...]] = {
+    "injury": (),
+    "qb": (),
+    "contextual": (),
+    "snaps": (),
+    "team_form": (),
+    "market": (
+        *PHASE332_CUTOFF_RUNG_MARKET_COLUMNS,
+        *PHASE332_CUTOFF_RUNG_MARKET_CHILDREN,
+    ),
+}
+
+
+def phase332_cutoff_builder_columns() -> dict[str, frozenset[str]]:
+    """The gold columns each builder whose cutoff this rung moves can reach, by builder.
+
+    DERIVED from each builder's own declarations, never typed from a diff: the injury and QB
+    columns from ``PHASE332_STEP4B_CARRY_IN_PREDICTED_COLUMNS``; the contextual selections'
+    columns (rest days and the letdown flag) from ``features.contextual.
+    NO_PRIOR_GAME_SIGNATURE``; the snap and team-form columns from their builders'
+    ``no_information_signature``; the market columns and their two children declared above.
+    Used to BISECT a moved column to the builder that produced it.
+    """
+    from features.contextual import NO_PRIOR_GAME_SIGNATURE
+    from features.snaps import SnapCountBuilder
+    from features.team_form import ROLLING_COLUMNS
+
+    snaps = SnapCountBuilder.__new__(SnapCountBuilder)
+    team_form = {
+        f"{prefix}_{side}_{column}"
+        for prefix in ("home", "away")
+        for side in ("off", "def")
+        for column in ROLLING_COLUMNS
+    }
+    families = {
+        **{
+            builder: set(columns)
+            for builder, columns in PHASE332_STEP4B_CARRY_IN_PREDICTED_COLUMNS.items()
+        },
+        "contextual": set(NO_PRIOR_GAME_SIGNATURE),
+        "snaps": set(SnapCountBuilder.no_information_signature(snaps)),
+        "team_form": team_form,
+        "market": {
+            *PHASE332_CUTOFF_RUNG_MARKET_COLUMNS,
+            *PHASE332_CUTOFF_RUNG_MARKET_CHILDREN,
+        },
+    }
+    return {
+        builder: frozenset(_canonical(c) for c in columns)
+        for builder, columns in families.items()
+    }
+
+
+def phase332_cutoff_moved_by_builder(moved: Iterable[str]) -> dict[str, list[str]]:
+    """*moved* columns split by the builder that emits them; ``unmapped`` = none of the six."""
+    families = phase332_cutoff_builder_columns()
+    split: dict[str, list[str]] = {builder: [] for builder in families}
+    split["unmapped"] = []
+    for column in sorted(_canonical(c) for c in moved):
+        owners = [b for b, columns in families.items() if column in columns]
+        split[owners[0] if owners else "unmapped"].append(column)
+    return split
+
+
+PHASE332_CUTOFF_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_CUTOFF_RUNG,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_CUTOFF_RUNG_CAUSE,
+    "columns_added": "empty",
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "unchanged",
+    "columns_changed": (
+        "restricted to the market builder's five columns and their two arithmetic children "
+        "(target_ats, target_ou), each only in seasons on or after 2018 (the first season any "
+        "stored line exists; expanding normalization reaches its own and later seasons, never "
+        "an earlier one); a child only where its parent moved in the same matrix and seasons. "
+        "The injury, QB, contextual, snap and team-form subsets are EMPTY"
+    ),
+    "rows_changed": (
+        "every 2018-2025 game's market values become the honest unknown (NULL in the builder's "
+        "frame), which the gold build's existing missing handling carries into the same "
+        "representation 2002-2017 games already hold (no line); spread_movement and "
+        "total_movement were already that representation for every game (one stored snapshot "
+        "per game gave a 0.0 movement), so they are expected not to move"
+    ),
+    "predicted_by_builder": PHASE332_CUTOFF_RUNG_PREDICTED_BY_BUILDER,
+    "weather": "NOT expected to move: the forecast fence is rung 4's cause",
+    "declared_families": ("market",),
+    "family_mechanisms": {
+        "market": (
+            "features.market_anchors.admissible_market_rows: created_at at or before the "
+            "game's lock (owner ruling 2026-09-22); gold children by create_target_variables"
+        ),
+    },
+    "owner_ruling": (
+        "2026-09-22, Plan 33.2-14 market-odds checkpoint, Option B 'Only real capture "
+        "times': a market line is admissible only with a genuinely recorded capture time at "
+        "or before the game's lock; the fabricated snapshot_ts stamps are never information "
+        "times; target_ats / target_ou move with the market columns"
+    ),
+    "declared_before_the_rebuild": True,
+}
+
+RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX][PHASE332_CUTOFF_RUNG] = (
+    PHASE332_CUTOFF_RUNG_CAUSE
+)
+
+# THE BASELINE WAS CONFIRMED, NOT ASSUMED (owner ruling 2026-09-21). Rung 5 registers NO retaken
+# baseline: p332_rung4b.json is production gold as step 4b wrote it, and nothing but rung 5's
+# own cause has changed since.
+PHASE332_CUTOFF_RUNG_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-22 before rung 5 rebuilt gold. p332_rung4b.json IS gold rebuilt from "
+    "today's inputs minus exactly this rung's cause: step 4b's rebuild (2026-09-21, code "
+    "5e190c9) is the last production gold write, the production data/ tree has been "
+    "digest-identical since (1107 files: outputs/p332_rung5_probe_before.json, taken after "
+    "that write, equals outputs/p332_rung5_scratch_prod_before.json), and every code change "
+    "since is rung 5's own cause (the contextual, snap, team-form and market selections and "
+    "their registration: fc1a5dd, dabcc83, 009126f). No carry-in, no retake"
+)
+
+
+def _attribute_p332_cutoff(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Rung 5 of the `p332_` ladder: the builder-cutoff move's OWN judge.
+
+    STRUCTURE: nothing added, nothing removed, width and rows unchanged (a surprise BLOCKS).
+    VALUES: a market column is attributed only when every season it moved in is on or after
+    ``PHASE332_CUTOFF_RUNG_EARLIEST_MARKET_SEASON``; a market CHILD only when its parent was
+    attributed in this matrix and the child's seasons are a subset of the parent's. Anything
+    else -- including any column of a builder whose predicted subset is EMPTY -- is
+    UNATTRIBUTED and fails, naming the builder it belongs to so the surprise is bisected
+    without a second rung. The cause is never widened to fit it.
+
+    NOT the generic rung-5 path, deliberately: that is Phase 30's, keyed by rung NUMBER, and a
+    registered-but-undispatched p332_ rung 5 would be judged by it and still print a verdict.
+
+    Returns:
+        Whether this matrix BLOCKS the phase (a structural surprise only).
+    """
+    label = "p332_ rung 5 (every builder selection cutoff on the per-game lock)"
+    verdict["changed_by_family"] = {
+        builder: [] for builder in PHASE332_CUTOFF_RUNG_PREDICTED_BY_BUILDER
+    }
+    blocking = _phase33_structure(
+        detail,
+        diff,
+        fail,
+        label,
+        "Moving every builder selection onto each game's own lock",
+    )
+    floor = PHASE332_CUTOFF_RUNG_EARLIEST_MARKET_SEASON
+    market = {_canonical(c) for c in PHASE332_CUTOFF_RUNG_MARKET_COLUMNS}
+    children = {
+        _canonical(child): _canonical(parent)
+        for child, parent in PHASE332_CUTOFF_RUNG_MARKET_CHILDREN.items()
+    }
+    owners = phase332_cutoff_builder_columns()
+
+    def _owner(column: str) -> str:
+        found = [b for b, columns in owners.items() if column in columns]
+        return found[0] if found else "none of the six builders whose cutoff moved"
+
+    def _refuse(column: str, seasons: list[str], why: str) -> None:
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' (builder: {_owner(column)}) moved at {label} in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The rung's ONE cause is the "
+            "builder-cutoff move and its prediction was declared per builder before the "
+            "rebuild; do NOT widen it to fit this diff"
+        )
+
+    for column in sorted(set(diff["changed"]) - set(children)):
+        seasons = sorted(diff["changed"][column])
+        if column in market and seasons and all(int(s) >= floor for s in seasons):
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["market"].append(column)
+            continue
+        if column in market:
+            _refuse(
+                column,
+                seasons,
+                f"it moved in a season before {floor}, the first season any stored line "
+                "exists, which expanding normalization cannot reach",
+            )
+        else:
+            _refuse(column, seasons, "its builder's predicted subset is EMPTY")
+
+    for column in sorted(set(diff["changed"]) & set(children)):
+        seasons = sorted(diff["changed"][column])
+        parent = children[column]
+        parent_seasons = set(diff["changed"].get(parent, []))
+        if (
+            parent in verdict["attributed"]
+            and seasons
+            and set(seasons) <= parent_seasons
+        ):
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["market"].append(column)
+            continue
+        _refuse(
+            column,
+            seasons,
+            f"it is declared only as the arithmetic child of '{parent}', which was not "
+            "attributed here in those seasons",
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_RUNG_SIGNATURES[PHASE332_CUTOFF_RUNG] = PHASE332_CUTOFF_RUNG_EXPECTED_SIGNATURE
+PHASE332_RUNG_ATTRIBUTORS[PHASE332_CUTOFF_RUNG] = _attribute_p332_cutoff
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -5589,7 +5885,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 4, steps 3b, 3c, 4b).
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 5, steps 3b, 3c, 4b).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -5784,6 +6080,12 @@ def write_phase332_rebuild_diff(
     )
     if retractable_document.exists():
         lines.extend(_phase332_retractable_roof_step_lines(fingerprint_dir))
+
+    cutoff_document = rung_document_path(
+        fingerprint_dir, PHASE332_CUTOFF_RUNG, PHASE332_RUNG_PREFIX
+    )
+    if cutoff_document.exists():
+        lines.extend(_phase332_cutoff_rung_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -6214,6 +6516,73 @@ def _phase332_retractable_roof_step_lines(fingerprint_dir: Path | str) -> list[s
         lines.append(f"{builder} = {_toml_array(columns)}")
     lines.extend(["", f'[rung."{step}".carry_in.moved_seasons]'])
     for column, seasons in sorted(carry_seasons.items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_cutoff_rung_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` rung 5 (Plan 33.2-14 Task 3), recomputed.
+
+    Judged by the same ``attribute_rung`` call the CLI makes, against step 4b, the entry
+    before it. Records the prediction PER BUILDER beside the measured split, so a surprise is
+    bisected to its builder from the committed record alone.
+    """
+    rung = PHASE332_CUTOFF_RUNG
+    require_rung_ladder(fingerprint_dir, rung, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, rung)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, rung, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, rung, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    signature = PHASE332_CUTOFF_RUNG_EXPECTED_SIGNATURE
+    lines = [
+        "",
+        f"[rung.{rung}]",
+        f"rung = {rung}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_CUTOFF_RUNG_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_CUTOFF_RUNG_CAUSE)}"',
+        f'owner_ruling = "{_toml_escape(str(signature["owner_ruling"]))}"',
+        f"earliest_market_season = {PHASE332_CUTOFF_RUNG_EARLIEST_MARKET_SEASON}",
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_RUNG_ATTRIBUTORS[rung].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the rung is '
+            'recorded as declared-but-not-run rather than as a rung that ran"'
+        )
+    lines.extend(["", f"[rung.{rung}.predicted_by_builder]"])
+    for builder, columns in PHASE332_CUTOFF_RUNG_PREDICTED_BY_BUILDER.items():
+        lines.append(f"{builder} = {_toml_array(list(columns))}")
+    lines.extend(["", f"[rung.{rung}.moved_by_builder]"])
+    for builder, columns in phase332_cutoff_moved_by_builder(moved).items():
+        lines.append(f"{builder} = {_toml_array(columns)}")
+    lines.extend(["", f"[rung.{rung}.market_children]"])
+    for child, parent in PHASE332_CUTOFF_RUNG_MARKET_CHILDREN.items():
+        lines.append(f'{child} = "{parent}"')
+    lines.extend(["", f"[rung.{rung}.moved_seasons]"])
+    for column, seasons in sorted(_phase332_moved_seasons(report).items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
     return lines
 
