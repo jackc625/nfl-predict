@@ -299,9 +299,14 @@ class TestEverySiteAgreesWithTheRule:
 
         Without this, every assertion above would still pass if the rule itself changed: they
         compare the sites to the rule, and the rule to itself.
+
+        Re-pointed by Plan 33.2-18 Task 2: the rule's second amendment (D33.2-14) moved the
+        selection window to 2002, so the outside reference is the record appended with that
+        amendment's witness. Was: ``phase33_state.SEASON_PARTITION_AFTER`` (selection
+        2018-2022), kept unedited as the record of the rule before the amendment.
         """
         partition = _partition()
-        after = phase33_state.SEASON_PARTITION_AFTER
+        after = phase33_state.P332_18_SEASON_PARTITION_RULE_PARTITION_AFTER
         assert tuple(partition.selection) == after["selection"]
         assert tuple(partition.hp_val) == after["hp_val"]
         assert tuple(partition.holdout) == after["holdout"]

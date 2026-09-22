@@ -723,7 +723,17 @@ SEASON_PARTITION_RULE_PATH = season_partition.PARTITION_RULE_PATH
 
 
 class TestThePhase331SeasonPartitionRule:
-    """SPEC R6: the rule was committed, alone, before anything consumed it."""
+    """SPEC R6: the rule was committed, alone, before anything consumed it.
+
+    RE-POINTED BY PLAN 33.2-18 TASK 2 (D33.2-14). The rule's second amendment moved the selection
+    window to 2002, so its witness was re-measured from that commit in a strictly later one and
+    recorded under NEW names, ``P332_18_SEASON_PARTITION_RULE_COMMIT`` and
+    ``P332_18_SEASON_PARTITION_RULE_FILE_SHA256`` (Plan 33.2-08 owned protocol W5). Every method
+    below reads those names and keeps its intent. ``SEASON_PARTITION_RULE_COMMIT`` and
+    ``SEASON_PARTITION_RULE_FILE_SHA256`` stay unedited as the record of the rule before the
+    amendment; ``test_the_checks_fail_against_the_superseded_pair`` proves they no longer satisfy
+    these checks, so the re-point was necessary and an unchanged constant could not pass.
+    """
 
     def test_the_witness_covers_exactly_the_file_the_rule_names(self) -> None:
         """The recorded hash keys EQUAL the single path the rule names for itself.
@@ -732,7 +742,7 @@ class TestThePhase331SeasonPartitionRule:
         without a hash appended here would be silently unwitnessed, and editable
         after the fact with nothing to catch it.
         """
-        assert set(phase33_state.SEASON_PARTITION_RULE_FILE_SHA256) == {
+        assert set(phase33_state.P332_18_SEASON_PARTITION_RULE_FILE_SHA256) == {
             SEASON_PARTITION_RULE_PATH
         }
 
@@ -747,7 +757,7 @@ class TestThePhase331SeasonPartitionRule:
 
     def test_it_still_hashes_to_its_recorded_digest(self) -> None:
         """The content lock: a ONE-BYTE edit to the rule fails here."""
-        expected = phase33_state.SEASON_PARTITION_RULE_FILE_SHA256[
+        expected = phase33_state.P332_18_SEASON_PARTITION_RULE_FILE_SHA256[
             SEASON_PARTITION_RULE_PATH
         ]
         assert _SHA256_RE.match(expected), expected
@@ -760,13 +770,14 @@ class TestThePhase331SeasonPartitionRule:
             "it destroys the evidence. If the rule was wrong, that is a FINDING "
             "about the rule, and the finding is what gets reported. A DELIBERATE "
             "change (bumping LATEST_COMPLETED_SEASON when a season ends, say) is "
-            "legitimate: re-measure BOTH constants in tests/phase33_state.py from "
-            "the new commit, in a strictly later commit, and record why."
+            "legitimate: APPEND a new pair of P332_* names to tests/phase33_state.py, "
+            "measured from the new commit in a strictly later commit, re-point this "
+            "class at them and record why (Plan 33.2-08 owned protocol W5)."
         )
 
     def test_it_does_not_contain_its_own_recorded_hash(self) -> None:
         """REVIEW-CIRCULAR, asserted rather than merely explained in the header."""
-        expected = phase33_state.SEASON_PARTITION_RULE_FILE_SHA256[
+        expected = phase33_state.P332_18_SEASON_PARTITION_RULE_FILE_SHA256[
             SEASON_PARTITION_RULE_PATH
         ]
         content = (REPO_ROOT / SEASON_PARTITION_RULE_PATH).read_text(encoding="utf-8")
@@ -784,10 +795,10 @@ class TestThePhase331SeasonPartitionRule:
             "log", "-1", "--format=%H", "--", SEASON_PARTITION_RULE_PATH
         ).stdout.strip()
         assert _SHA1_RE.match(resolved), resolved
-        assert resolved == phase33_state.SEASON_PARTITION_RULE_COMMIT, (
+        assert resolved == phase33_state.P332_18_SEASON_PARTITION_RULE_COMMIT, (
             "the resolved rule commit does NOT match the recorded anchor.\n"
             f"  resolved from git: {resolved}\n"
-            f"  recorded:          {phase33_state.SEASON_PARTITION_RULE_COMMIT}\n"
+            f"  recorded:          {phase33_state.P332_18_SEASON_PARTITION_RULE_COMMIT}\n"
             "Either the rule was re-committed and the witness was not re-measured, "
             "or the witness was edited."
         )
@@ -802,7 +813,7 @@ class TestThePhase331SeasonPartitionRule:
         if _git_history_is_unavailable():
             pytest.skip(SHALLOW_SKIP_MESSAGE)
 
-        commit = phase33_state.SEASON_PARTITION_RULE_COMMIT
+        commit = phase33_state.P332_18_SEASON_PARTITION_RULE_COMMIT
         listing = _git("show", "--name-only", "--format=", commit)
         assert listing.returncode == 0, listing.stderr
         touched = sorted(path for path in listing.stdout.split() if path)
@@ -817,7 +828,7 @@ class TestThePhase331SeasonPartitionRule:
         if _git_history_is_unavailable():
             pytest.skip(SHALLOW_SKIP_MESSAGE)
 
-        rule = phase33_state.SEASON_PARTITION_RULE_COMMIT
+        rule = phase33_state.P332_18_SEASON_PARTITION_RULE_COMMIT
         head = _git("rev-parse", "HEAD").stdout.strip()
 
         assert rule != head, (
@@ -837,7 +848,7 @@ class TestThePhase331SeasonPartitionRule:
             "log", "-1", "--format=%H", "--", "tests/phase33_state.py"
         ).stdout.strip()
         assert _SHA1_RE.match(witness_commit), witness_commit
-        rule = phase33_state.SEASON_PARTITION_RULE_COMMIT
+        rule = phase33_state.P332_18_SEASON_PARTITION_RULE_COMMIT
         assert witness_commit != rule, (
             "the witness and the rule are the SAME commit. A file cannot record "
             "the hash of a commit it is part of."
@@ -853,6 +864,40 @@ class TestThePhase331SeasonPartitionRule:
         """Ruling L again, so a later 'tidy' cannot fold this rule into Phase 31's."""
         assert SEASON_PARTITION_RULE_PATH not in PREREGISTRATION_PATHS
         assert len(PREREGISTRATION_PATHS) == 2
+
+    def test_the_checks_fail_against_the_superseded_pair(self) -> None:
+        """CONTROL: the pre-amendment witness no longer satisfies the ancestry checks.
+
+        The old pair is kept byte-unchanged as the record of what was true before the second
+        amendment. If it still resolved as the file's last-modifying commit, or still matched
+        the file's digest, the re-point would be cosmetic and the checks above could be passed
+        by a constant nobody re-measured.
+        """
+        if _git_history_is_unavailable():
+            pytest.skip(SHALLOW_SKIP_MESSAGE)
+
+        resolved = _git(
+            "log", "-1", "--format=%H", "--", SEASON_PARTITION_RULE_PATH
+        ).stdout.strip()
+        assert resolved != phase33_state.SEASON_PARTITION_RULE_COMMIT
+        assert resolved == phase33_state.P332_18_SEASON_PARTITION_RULE_COMMIT
+        assert phase33_state.SEASON_PARTITION_RULE_FILE_SHA256[
+            SEASON_PARTITION_RULE_PATH
+        ] != _normalized_sha256(SEASON_PARTITION_RULE_PATH)
+        assert (
+            phase33_state.P332_18_SEASON_PARTITION_RULE_COMMIT
+            != phase33_state.SEASON_PARTITION_RULE_COMMIT
+        )
+        ancestry = _git(
+            "merge-base",
+            "--is-ancestor",
+            phase33_state.SEASON_PARTITION_RULE_COMMIT,
+            phase33_state.P332_18_SEASON_PARTITION_RULE_COMMIT,
+        )
+        assert ancestry.returncode == 0, (
+            "the superseded rule commit is not an ancestor of the amendment it was "
+            "superseded by; the two witnesses would not describe one history"
+        )
 
     def test_the_rule_is_deterministic_and_scores_nothing(self) -> None:
         """Why the SPEC's third prohibition is satisfied VACUOUSLY, asserted.
