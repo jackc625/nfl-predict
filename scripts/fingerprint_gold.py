@@ -5816,6 +5816,212 @@ PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_POSTSEASON_INJURY_STEP] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# p332_ RUNG 7 -- THE OPPONENT ADJUSTMENT MADE TO RUN, HONESTLY (Plan 33.2-16, SPEC R9 / R2,
+# D33.2-08 item 1).
+#
+# THE DEFECT. features.opponent_adj looked each play-by-play game id (2023_01_ARI_WAS) up in
+# silver games (2023_W01_ARI@WAS); no id matched, every opponent was "", and the RAW value was
+# kept under the adjusted name -- 0 of 1,088 rows adjusted for 2023, so gold's twelve
+# *_rolling_opp_adj_* columns were plain EPA wearing an adjusted name. The league averages it
+# subtracted were means over the WHOLE loaded frame (games after the adjusted one included).
+#
+# THE ONE CAUSE: the adjustment resolved through the canonical converter so it actually runs,
+# every input admitted at the lock of the game it informs (per-lock league averages replacing
+# whole-frame means), and an explicit coverage flag -- with the value NaN, never imputed --
+# replacing the silent fall-through to raw EPA. The family is checked by the information-time
+# gate at its post-Stage-1 merge site.
+#
+# DECLARED BEFORE THE REBUILD:
+#
+# * VALUES -- the twelve *_rolling_opp_adj_* columns, and only them. 2018-2025 (the per-game
+#   play-by-play pool's seasons): every row is new -- genuinely adjusted EPA where the rule is
+#   met, NaN where it is not (2018's first weeks: no opponent had four games yet; 2018 week 1:
+#   no history at all). 2002-2017 (outside the pool): the value was already NaN before
+#   normalization and came out as the neutral 0.0 z-score; it is now PRESERVED as NaN beside a
+#   0.0 flag (build_features.FLAG_GUARDED_NAN_COLUMNS), so those rows move too, 0.0 -> NaN.
+#   Rescaled same-season movement cannot reach any OTHER column: imputation, winsorization and
+#   the expanding normalization are per column. So the value columns may move in any season
+#   2002-2025, and nothing outside them may move.
+# * ADDED -- exactly four columns in every matrix, home_off_ / home_def_ / away_off_ /
+#   away_def_rolling_opp_adj_coverage (features.opponent_adj.OPP_ADJ_COVERAGE_COLUMN, the
+#   name that survives both merge filters). Level-preserved (the _coverage suffix): never
+#   z-scored, never winsorized, 0.0 or 1.0 on every row.
+# * REMOVED -- nothing (the six raw EPA columns already left gold at the merge; they still do).
+# * WIDTHS -- each matrix +4: 193/194/193 -> 197/198/197. ROWS -- unchanged (6,499).
+#
+# JUDGED AGAINST p332_rung6b.json (no retake: see the confirmation).
+# ---------------------------------------------------------------------------
+
+PHASE332_OPPADJ_RUNG: int = 7
+
+PHASE332_OPPADJ_RUNG_CAUSE: str = (
+    "THE OPPONENT ADJUSTMENT MADE TO RUN, HONESTLY, p332_ rung 7 of Plan 33.2-16 (SPEC R9, "
+    "D33.2-08 item 1), and NOTHING else: opponents resolved through the canonical game id "
+    "mapping (utils.game_id_utils.convert_legacy_game_id, an unresolvable id refused by name) "
+    "so the adjustment actually runs, every input admitted at the lock of the game it informs "
+    "with per-lock league averages replacing whole-frame means, and an explicit per-side "
+    "coverage flag (rolling_opp_adj_coverage) with the value left NaN -- never imputed -- "
+    "replacing the silent fall-through to raw EPA. Only the twelve *_rolling_opp_adj_* "
+    "columns can move (any season 2002-2025: new values 2018-2025, the 0.0 stand-in becoming "
+    "NaN before the play-by-play pool), exactly the four *_rolling_opp_adj_coverage flags are "
+    "added to every matrix, none is removed, and no row moves"
+)
+
+#: THE PREDICTION, declared before the rebuild. Derived from the adjuster's own declaration.
+PHASE332_OPPADJ_RUNG_PREDICTED_CHANGED: tuple[str, ...] = tuple(
+    sorted(
+        f"{prefix}_{side}_{name}"
+        for prefix in ("home", "away")
+        for side in ("off", "def")
+        for name in (
+            "rolling_opp_adj_epa_per_play",
+            "rolling_opp_adj_pass_epa",
+            "rolling_opp_adj_rush_epa",
+        )
+    )
+)
+PHASE332_OPPADJ_RUNG_PREDICTED_ADDED: tuple[str, ...] = tuple(
+    sorted(
+        f"{prefix}_{side}_rolling_opp_adj_coverage"
+        for prefix in ("home", "away")
+        for side in ("off", "def")
+    )
+)
+PHASE332_OPPADJ_RUNG_ALLOWED_SEASONS: tuple[str, ...] = tuple(
+    str(season) for season in range(2002, 2026)
+)
+PHASE332_OPPADJ_RUNG_WIDTH_DELTA: int = 4
+
+#: The read-only pre-plan measurement the rung's record carries beside its own.
+PHASE332_OPPADJ_RUNG_PREPLAN_MEASUREMENT: str = (
+    "Read-only, before the fix: 0 of 1,088 rows adjusted for 2023; with ids matched, 832 of "
+    "1,088, mean absolute adjustment 0.058 EPA per play"
+)
+
+PHASE332_OPPADJ_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_OPPADJ_RUNG,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_OPPADJ_RUNG_CAUSE,
+    "columns_added": PHASE332_OPPADJ_RUNG_PREDICTED_ADDED,
+    "columns_removed": "empty",
+    "rows": "unchanged",
+    "width": "each matrix exactly four columns wider (the four coverage flags)",
+    "columns_changed": (
+        "restricted to the twelve *_rolling_opp_adj_* value columns, in any season "
+        "2002-2025; every other column EMPTY"
+    ),
+    "rows_changed": (
+        "2018-2025: every row's opponent-adjusted values (genuinely adjusted, or NaN beside a "
+        "0.0 flag where the minimum opponent history is not met); 2002-2017: the neutral 0.0 "
+        "z-score becomes the preserved NaN, the flag 0.0"
+    ),
+    "predicted_changed": PHASE332_OPPADJ_RUNG_PREDICTED_CHANGED,
+    "allowed_seasons": PHASE332_OPPADJ_RUNG_ALLOWED_SEASONS,
+    "declared_families": ("opponent_adj",),
+    "family_mechanisms": {
+        "opponent_adj": (
+            "features.opponent_adj.OpponentAdjuster over the per-game play-by-play pool "
+            "(2018-2025), merged after Stage 1 through FeatureMatrixBuilder."
+            "_merge_opponent_adjusted and checked there by the information-time gate"
+        ),
+    },
+    "preplan_measurement": PHASE332_OPPADJ_RUNG_PREPLAN_MEASUREMENT,
+    "declared_before_the_rebuild": True,
+}
+
+RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX][PHASE332_OPPADJ_RUNG] = (
+    PHASE332_OPPADJ_RUNG_CAUSE
+)
+
+# THE BASELINE WAS CONFIRMED, NOT ASSUMED (owner ruling 2026-09-21). No retake.
+PHASE332_OPPADJ_RUNG_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-22 before rung 7 wrote anything. p332_rung6b.json IS gold rebuilt from "
+    "today's inputs minus exactly this rung's cause: step 6b's rebuild is the last production "
+    "gold write, production data/ was digest-identical to outputs/p332_step6b_after.json "
+    "(verified before outputs/p332_rung7_before.json was taken), and every code change since "
+    "7748d57 is rung 7's own (the canonical opponent resolution, the lock-keyed adjustment "
+    "and per-lock league averages, the coverage flag, the NaN preservation and the merge-site "
+    "gate). No carry-in, no retake"
+)
+
+
+def _attribute_p332_oppadj(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Rung 7 of the `p332_` ladder: the opponent adjustment's OWN judge.
+
+    STRUCTURE: the added set must be EXACTLY the four declared coverage flags, nothing may be
+    removed, the width must grow by exactly four and the rows must not move -- any structural
+    surprise BLOCKS. VALUES: a changed column is attributed only when it is one of the twelve
+    declared value columns and every season it moved in is 2002-2025. Anything else is
+    UNATTRIBUTED and fails; the cause is never widened to fit it.
+
+    NOT the generic rung-7 path, deliberately: a registered-but-undispatched p332_ rung would be
+    judged by Phase 30's rung-number-keyed path and still print a verdict.
+
+    Returns:
+        Whether this matrix BLOCKS the phase.
+    """
+    label = "p332_ rung 7 (the opponent adjustment made to run, honestly)"
+    verdict["changed_by_family"] = {"opponent_adj": []}
+    blocking = False
+
+    added = {_canonical(c) for c in diff["added"]}
+    expected_added = {_canonical(c) for c in PHASE332_OPPADJ_RUNG_PREDICTED_ADDED}
+    if added != expected_added:
+        blocking = True
+        fail(
+            f"{label} added {sorted(added)}, not exactly the four declared coverage flags "
+            f"{sorted(expected_added)}"
+        )
+    for column in diff["removed"]:
+        blocking = True
+        fail(f"column '{column}' was REMOVED at {label}; this rung removes none")
+    if (
+        detail["width_after"]
+        != detail["width_before"] + PHASE332_OPPADJ_RUNG_WIDTH_DELTA
+    ):
+        blocking = True
+        fail(
+            f"width moved {detail['width_before']} -> {detail['width_after']} at {label}, "
+            f"which predicts exactly {PHASE332_OPPADJ_RUNG_WIDTH_DELTA} columns more"
+        )
+    if detail.get("rows_before") != detail.get("rows_after"):
+        blocking = True
+        fail(
+            f"rows moved {detail.get('rows_before')} -> {detail.get('rows_after')} at "
+            f"{label}; the rung re-derives the same games"
+        )
+    if not diff["changed"]:
+        fail(f"{label} moved no value column at all; the adjustment must move")
+
+    explainable = {_canonical(c) for c in PHASE332_OPPADJ_RUNG_PREDICTED_CHANGED}
+    allowed = set(PHASE332_OPPADJ_RUNG_ALLOWED_SEASONS)
+    for column in sorted(diff["changed"]):
+        seasons = sorted(diff["changed"][column])
+        if column in explainable and seasons and set(seasons) <= allowed:
+            verdict["attributed"].append(column)
+            verdict["changed_by_family"]["opponent_adj"].append(column)
+            continue
+        verdict["unattributed"].append(column)
+        why = (
+            "it moved outside 2002-2025"
+            if column in explainable
+            else "it is not one of the twelve opponent-adjusted value columns"
+        )
+        fail(
+            f"column '{column}' moved at {label} in season(s) "
+            f"{', '.join(seasons) or '(none)'}, but {why}. The rung's ONE cause is the "
+            "opponent adjustment and its prediction was declared before the rebuild; do NOT "
+            "widen it"
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_RUNG_SIGNATURES[PHASE332_OPPADJ_RUNG] = PHASE332_OPPADJ_RUNG_EXPECTED_SIGNATURE
+PHASE332_RUNG_ATTRIBUTORS[PHASE332_OPPADJ_RUNG] = _attribute_p332_oppadj
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -6295,7 +6501,7 @@ def write_phase33_rebuild_diff(out_path: Path | str) -> Path:
 def write_phase332_rebuild_diff(
     out_path: Path | str, fingerprint_dir: Path | str = FINGERPRINT_DIR
 ) -> Path:
-    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 6, steps 3b, 3c, 4b, 6b).
+    """Emit the COMMITTED per-rung record of the `p332_` ladder (rungs 0 .. 7, steps 3b, 3c, 4b, 6b).
 
     ``data/gold/`` and ``outputs/`` are both gitignored, so this file is the only
     place a fresh checkout can read what the ladder moved. Unlike
@@ -6508,6 +6714,12 @@ def write_phase332_rebuild_diff(
     )
     if postseason_document.exists():
         lines.extend(_phase332_postseason_injury_step_lines(fingerprint_dir))
+
+    oppadj_document = rung_document_path(
+        fingerprint_dir, PHASE332_OPPADJ_RUNG, PHASE332_RUNG_PREFIX
+    )
+    if oppadj_document.exists():
+        lines.extend(_phase332_oppadj_rung_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -7132,6 +7344,75 @@ def _phase332_postseason_injury_step_lines(fingerprint_dir: Path | str) -> list[
         )
     lines.extend(["", f'[rung."{step}".moved_seasons]'])
     for column, seasons in sorted(_phase332_moved_seasons(report).items()):
+        lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_oppadj_rung_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` rung 7 (Plan 33.2-16 Task 3), recomputed from the ladder.
+
+    Judged by the same ``attribute_rung`` call the ladder run makes, against step 6b, the entry
+    before it. Records the predicted value and added columns beside the measured ones, the
+    widths and the pre-plan measurement.
+    """
+    rung = PHASE332_OPPADJ_RUNG
+    require_rung_ladder(fingerprint_dir, rung, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, rung)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, rung, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, rung, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    added = sorted(
+        {c for matrix in GOLD_MATRICES for c in report[matrix]["columns_added"]}
+    )
+    signature = PHASE332_OPPADJ_RUNG_EXPECTED_SIGNATURE
+    moved_seasons = _phase332_moved_seasons(report)
+    lines = [
+        "",
+        f"[rung.{rung}]",
+        f"rung = {rung}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if moved else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_OPPADJ_RUNG_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_OPPADJ_RUNG_CAUSE)}"',
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        f'preplan_measurement = "{_toml_escape(PHASE332_OPPADJ_RUNG_PREPLAN_MEASUREMENT)}"',
+        "predicted_changed_columns = "
+        f"{_toml_array(list(PHASE332_OPPADJ_RUNG_PREDICTED_CHANGED))}",
+        "predicted_added_columns = "
+        f"{_toml_array(list(PHASE332_OPPADJ_RUNG_PREDICTED_ADDED))}",
+        f"allowed_seasons = {_toml_array(list(PHASE332_OPPADJ_RUNG_ALLOWED_SEASONS))}",
+        "moved_season_union = "
+        f"{_toml_array(sorted({s for seasons in moved_seasons.values() for s in seasons}))}",
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"added_columns = {_toml_array(added)}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_RUNG_ATTRIBUTORS[rung].__name__}"',
+    ]
+    if not moved:
+        lines.append(
+            'why_not_run = "the rebuild moved no non-clock column, so the rung is '
+            'recorded as declared-but-not-run rather than as a rung that ran"'
+        )
+    lines.extend(["", f"[rung.{rung}.moved_seasons]"])
+    for column, seasons in sorted(moved_seasons.items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
     return lines
 
