@@ -10,7 +10,7 @@
 # scripts.fingerprint_gold._column_bytes, as every prior ladder. ASCII only.
 # ===========================================================================
 
-generated_at = "2026-09-22T22:44:44.560316+00:00"
+generated_at = "2026-09-22T23:13:52.445600+00:00"
 rung_prefix = "p332_"
 float_tolerance = "none -- EXACT byte comparison"
 
@@ -1867,3 +1867,35 @@ unattributed_columns = []
 attribution_ok = true
 attribution_blocking = false
 attributor = "_attribute_p332_offense_only"
+
+[rung.9]
+rung = 9
+prefix = "p332_"
+rebuilt = true
+baseline_document = "p332_rung8e.json"
+baseline_confirmation = "CONFIRMED 2026-09-22 before rung 9 wrote anything: production data/ was digest-identical to outputs/p332_step8e_after.json, and the only code changed since step 8e's rebuild is this rung's own. p332_rung8e.json IS gold rebuilt from today's inputs minus exactly this rung's cause. No carry-in, no retake"
+cause = "NO BETTING LINE IS A MODEL INPUT FOR ANY TARGET, p332_ rung 9 (Plan 33.2-19, D33.2-03), and NOTHING else: the five market-line columns -- snapshot_spread, snapshot_total, snapshot_ml_prob_home_fair, spread_movement and total_movement -- are removed from all three gold matrices through the ONE registry group 'market' and the ONE drop mechanism every dropped group uses, replacing the hand-written list that stood in combine_features. The four line-derived TARGET columns go with their parents, as arithmetic children of exactly those columns and not as a second cause: target_ats and target_ou leave the ats and ou matrices, and their boolean children home_covered_spread and game_went_over leave the build (neither ever reached a matrix); the ats and ou matrices are selected on home_margin and total_points, their trainers' own targets, so no row moves. The market source stays REGISTERED so the information-time gate keeps checking the lock-fenced odds selection grading and CLV depend on; only its merge seam is gone. Nothing is added, no surviving column's value moves, and no row moves"
+rows_changed = "none -- no surviving value moves and no row moves"
+prerebuild_measurement = "MEASURED 2026-09-22 before any production write, read-only on step 8e's gold. The five market columns are a CONSTANT 0.0 on all 6,499 rows of every season since rung 5 (no stored 2002-2025 line carries a recorded capture time at or before its game's lock), and spread_movement / total_movement were identically 0.0 long before that -- so part of this rung's diff is the removal of columns that were already inert, and the removal's real effect is on the 2018-2025 fits that read a closing line. target_ats and target_ou were computed AFTER normalization, so they subtracted a Z-SCORED market value rather than a line in points; since rung 5 that value has been 0.0, so target_ats equalled point_differential and target_ou equalled total_points for every game. No trainer, backtest, API or web module reads any of the four (grep over the tree 2026-09-22); all four are id/excluded columns in models/temporal, and the ATS and O/U trainers read home_margin and total_points. The deployed models' measured cost, on record BEFORE the re-fit: WP loses 9.87% of its coefficient mass at rank 3 of 40; ATS loses 9.32% combined at ranks 3 and 4; O/U loses its RANK-1 input of 25, 10.68%"
+declared_market_columns = ["snapshot_ml_prob_home_fair", "snapshot_spread", "snapshot_total", "spread_movement", "total_movement"]
+declared_target_columns = ["target_ats", "target_ou"]
+removed_columns = ["snapshot_ml_prob_home_fair", "snapshot_spread", "snapshot_total", "spread_movement", "target_ats", "target_ou", "total_movement"]
+added_columns = []
+widths_before = ["193", "194", "193"]
+widths_after = ["188", "188", "187"]
+moved_columns = []
+build_clock_moves = ["feature_timestamp"]
+unattributed_columns = []
+attribution_ok = true
+attribution_blocking = false
+attributor = "_attribute_p332_market"
+
+[rung.9.declared_removed_by_matrix]
+features_wp = ["snapshot_ml_prob_home_fair", "snapshot_spread", "snapshot_total", "spread_movement", "total_movement"]
+features_ats = ["snapshot_ml_prob_home_fair", "snapshot_spread", "snapshot_total", "spread_movement", "total_movement", "target_ats"]
+features_ou = ["snapshot_ml_prob_home_fair", "snapshot_spread", "snapshot_total", "spread_movement", "total_movement", "target_ou"]
+
+[rung.9.removed_by_matrix]
+features_wp = ["snapshot_ml_prob_home_fair", "snapshot_spread", "snapshot_total", "spread_movement", "total_movement"]
+features_ats = ["snapshot_ml_prob_home_fair", "snapshot_spread", "snapshot_total", "spread_movement", "target_ats", "total_movement"]
+features_ou = ["snapshot_ml_prob_home_fair", "snapshot_spread", "snapshot_total", "spread_movement", "target_ou", "total_movement"]

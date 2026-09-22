@@ -132,10 +132,26 @@ logger = get_logger(__name__)
 # written here only after the rebuilt matrices MEASURED equal to that prediction; the delta
 # is pinned to those eight NAMES by the ``P332_19_STEP8E_GOLD_WIDTH_DELTA`` manifest slot.
 # The OFFENSIVE copies are untouched: the metrics are offence-only, not absent.
+# PHASE 33.2 RUNG 9 (Plan 33.2-19 Task 3, rebuilt 2026-09-22) is the LAST width-moving rung
+# of the ladder, so the widths below are the FINAL ones: 193/194/193 to 188/188/187. Every
+# matrix loses the five market-line columns ``snapshot_spread``, ``snapshot_total``,
+# ``snapshot_ml_prob_home_fair``, ``spread_movement`` and ``total_movement`` -- no betting
+# line is a model input for any target (D33.2-03), and the exclusion comes from the ONE
+# registry group ``market``. THE DELTA IS NOT UNIFORM, which is the one place this rung
+# departs from its plan's text: ``features_ats`` also loses ``target_ats`` and
+# ``features_ou`` also loses ``target_ou``, the line-derived target columns that were
+# arithmetic children of exactly the columns removed above (``home_covered_spread`` and
+# ``game_went_over`` were their boolean children and never reached a matrix). The ats and
+# ou matrices are now selected on ``home_margin`` and ``total_points``, their trainers' own
+# targets, so no row moved. The widths below were PREDICTED in
+# tests/integration/test_p332_rung9_attribution.py before the rebuild and written here only
+# after the rebuilt matrices MEASURED equal to that prediction; the delta is pinned to those
+# NAMES, per matrix, by the ``P332_19_RUNG9_GOLD_WIDTH_DELTA`` manifest slot. Plan 33.2-20
+# ASSERTS this pin against its clean build and re-pins nothing.
 GOLD_FEATURE_MATRICES = {
-    "features_wp": 193,
-    "features_ats": 194,
-    "features_ou": 193,
+    "features_wp": 188,
+    "features_ats": 188,
+    "features_ou": 187,
 }
 
 # Tables whose DuckDB and parquet copies must agree on row-set MEMBERSHIP (D30-18).

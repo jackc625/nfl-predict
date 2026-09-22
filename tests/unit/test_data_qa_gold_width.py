@@ -163,9 +163,33 @@ def current_ladder_widths() -> tuple[int, int, int]:
     return tuple(slots[-1]["widths_after"])
 
 
-def phase332_net_width_delta() -> int:
-    """The net column change of every Phase-33.2 rung (identical in all three matrices)."""
-    return sum(len(s["added"]) - len(s["removed"]) for s in phase332_width_deltas())
+def slot_names(slot: dict, key: str, matrix: str) -> tuple[str, ...]:
+    """The names *slot* declares under *key* for *matrix*.
+
+    A slot's ``added`` / ``removed`` is EITHER a flat tuple, which applies to every
+    matrix, OR a mapping keyed by matrix name. p332_ rung 9 needs the second form: every
+    matrix loses the five market columns, and ``features_ats`` / ``features_ou`` each also
+    lose one line-derived target column (``home_covered_spread`` and ``game_went_over``
+    never reached a matrix). Its delta is -5 / -6 / -6, so a single scalar per slot cannot
+    describe it -- and describing it with one anyway is how a width chain starts agreeing
+    with itself while disagreeing with gold.
+    """
+    declared = slot[key]
+    if isinstance(declared, dict):
+        return tuple(declared.get(matrix, ()))
+    return tuple(declared)
+
+
+def slot_delta(slot: dict, matrix: str) -> int:
+    """*slot*'s net column change for *matrix*."""
+    return len(slot_names(slot, "added", matrix)) - len(
+        slot_names(slot, "removed", matrix)
+    )
+
+
+def phase332_net_width_delta(matrix: str) -> int:
+    """The net column change of every Phase-33.2 rung, for one matrix."""
+    return sum(slot_delta(slot, matrix) for slot in phase332_width_deltas())
 
 
 def width_chain_violations(
@@ -175,7 +199,8 @@ def width_chain_violations(
 
     The first slot's ``widths_before`` must equal *baseline*, each later slot's
     ``widths_before`` its predecessor's ``widths_after``, and each slot's ``widths_after``
-    its ``widths_before`` plus ``len(added)`` minus ``len(removed)`` in every matrix.
+    its ``widths_before`` plus that MATRIX's own net delta -- which is not the same number
+    in all three once a rung removes a column from only some of them (rung 9).
     """
     violations: list[str] = []
     expected_before = tuple(baseline)
@@ -185,10 +210,13 @@ def width_chain_violations(
             violations.append(
                 f"rung {slot['rung']}: widths_before {before} != {expected_before}"
             )
-        delta = len(slot["added"]) - len(slot["removed"])
-        if after != tuple(width + delta for width in before):
+        deltas = tuple(slot_delta(slot, matrix) for matrix in MATRIX_ORDER)
+        expected_after = tuple(
+            width + delta for width, delta in zip(before, deltas, strict=True)
+        )
+        if after != expected_after:
             violations.append(
-                f"rung {slot['rung']}: widths_after {after} != {before} + {delta}"
+                f"rung {slot['rung']}: widths_after {after} != {before} + {deltas}"
             )
         expected_before = after
     return violations
@@ -283,8 +311,8 @@ def test_phase_30_narrowing_is_exactly_the_line_movement_family(
     )
 
     residual_delta = GOLD_FEATURE_MATRICES[table_name] - PHASE_28_WIDTHS[table_name]
-    expected_residual = (
-        len(PHASE_331_ADDED_WEATHER_COLUMNS) + phase332_net_width_delta()
+    expected_residual = len(PHASE_331_ADDED_WEATHER_COLUMNS) + phase332_net_width_delta(
+        table_name
     )
     assert residual_delta == expected_residual, (
         f"{table_name}: the tripwire reads "
@@ -294,7 +322,7 @@ def test_phase_30_narrowing_is_exactly_the_line_movement_family(
         f"returns the matrix to exactly its Phase-28 width, and Phase 33.1 adds "
         f"{len(PHASE_331_ADDED_WEATHER_COLUMNS)} on top of that "
         f"({list(PHASE_331_ADDED_WEATHER_COLUMNS)}) and the Phase-33.2 ladder a net "
-        f"{phase332_net_width_delta()}. A residual other than "
+        f"{phase332_net_width_delta(table_name)}. A residual other than "
         f"{expected_residual} means something ELSE changed the gold width. "
         f"Identify it before updating the tripwire."
     )
@@ -334,17 +362,14 @@ def test_the_phase_331_widening_is_pinned_to_the_named_coverage_flag(
         f"cannot say WHICH column arrived."
     )
 
-    assert (
-        GOLD_FEATURE_MATRICES[table_name]
-        == PHASE_28_WIDTHS[table_name]
-        + len(PHASE_331_ADDED_WEATHER_COLUMNS)
-        + phase332_net_width_delta()
-    ), (
+    assert GOLD_FEATURE_MATRICES[table_name] == PHASE_28_WIDTHS[table_name] + len(
+        PHASE_331_ADDED_WEATHER_COLUMNS
+    ) + phase332_net_width_delta(table_name), (
         f"{table_name}: the tripwire reads {GOLD_FEATURE_MATRICES[table_name]}, "
         f"which is not the Phase-28 width {PHASE_28_WIDTHS[table_name]} plus the "
         f"{len(PHASE_331_ADDED_WEATHER_COLUMNS)} named Phase-33.1 column(s) "
         f"{list(PHASE_331_ADDED_WEATHER_COLUMNS)} plus the Phase-33.2 net "
-        f"{phase332_net_width_delta()}."
+        f"{phase332_net_width_delta(table_name)}."
     )
 
 
@@ -472,8 +497,10 @@ def test_the_phase_332_width_deltas_chain_and_are_pinned_by_name() -> None:
             pytest.skip(f"{path} not built yet -- run scripts.build_features first")
         columns = set(pd.read_parquet(path).columns)
         for slot in slots:
-            assert set(slot["added"]) <= columns, (table_name, slot["rung"])
-            assert not set(slot["removed"]) & columns, (table_name, slot["rung"])
+            added = set(slot_names(slot, "added", table_name))
+            removed = set(slot_names(slot, "removed", table_name))
+            assert added <= columns, (table_name, slot["rung"])
+            assert not removed & columns, (table_name, slot["rung"])
 
     assert (
         tuple(GOLD_FEATURE_MATRICES[name] for name in MATRIX_ORDER)
@@ -487,6 +514,35 @@ def test_the_phase_332_width_deltas_chain_and_are_pinned_by_name() -> None:
         }
     ]
     assert width_chain_violations(planted, baseline) != []
+
+
+def test_a_per_matrix_removed_set_is_read_per_matrix() -> None:
+    """``slot_names`` reads BOTH slot forms, and the chain uses the matrix's own delta.
+
+    p332_ rung 9 removes five columns from every matrix and one more from two of them, so
+    a slot that declared one scalar delta could not describe it. The planted control is
+    the shape that used to pass silently: a uniform reading of a per-matrix slot.
+    """
+    uniform = {"rung": 1, "added": (), "removed": ("a", "b")}
+    per_matrix = {
+        "rung": 2,
+        "added": (),
+        "removed": {"features_wp": ("a",), "features_ats": ("a", "b")},
+    }
+    assert slot_names(uniform, "removed", "features_ou") == ("a", "b")
+    assert slot_delta(uniform, "features_ou") == -2
+    assert slot_names(per_matrix, "removed", "features_ou") == ()
+    assert slot_delta(per_matrix, "features_wp") == -1
+    assert slot_delta(per_matrix, "features_ats") == -2
+
+    chain = [
+        {**per_matrix, "widths_before": (10, 10, 10), "widths_after": (9, 8, 10)},
+    ]
+    assert width_chain_violations(chain, (10, 10, 10)) == []
+    planted = [
+        {**per_matrix, "widths_before": (10, 10, 10), "widths_after": (9, 9, 10)},
+    ]
+    assert width_chain_violations(planted, (10, 10, 10)) != []
 
 
 def test_the_ladder_order_puts_an_extra_step_after_the_rung_it_follows() -> None:

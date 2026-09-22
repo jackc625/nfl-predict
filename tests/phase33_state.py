@@ -17280,3 +17280,145 @@ P332_19_STEP8E_GOLD_WIDTH_DELTA: dict[str, object] = {
     "widths_after": (193, 194, 193),
     "measured_at": "2026-09-22, Plan 33.2-19 extra step 8e",
 }
+
+# ---------------------------------------------------------------------------
+# PLAN 33.2-19 Task 3 (p332_ RUNG 9), MEASURED 2026-09-22.
+#
+# p332_ RUNG 9 -- NO BETTING LINE IS A MODEL INPUT FOR ANY TARGET (D33.2-03). The LAST
+# rung of the ladder, and the LAST width-moving one, so the widths it records are the
+# FINAL ones Plans 33.2-20 and 33.2-23 are measured against.
+#
+# ONE CAUSE: the five market-line columns leave all three matrices through the ONE
+# registry group "market" and the ONE drop mechanism every dropped group uses, replacing
+# the hand-written list that stood in combine_features. The four line-derived TARGET
+# columns go with their parents as arithmetic children of exactly those columns --
+# target_ats and target_ou leave the ats and ou matrices, and their boolean children
+# home_covered_spread and game_went_over leave the build without ever having reached a
+# matrix. The ats and ou matrices are selected on home_margin and total_points, their
+# trainers' own targets, so no row moved.
+#
+# THE WIDTH DELTA IS NOT UNIFORM, which is the one place this rung departs from its
+# plan's text (-5 everywhere): -5 on features_wp and -6 on features_ats and features_ou.
+#
+# Declared in 75e39ea BEFORE the production rebuild. Judged against p332_rung8e.json
+# with no retake (production data/ was digest-identical to outputs/p332_step8e_after.json,
+# 1,128 files) -- attribution_ok true, not blocking, zero unattributed; each matrix removed
+# exactly what was declared for it, nothing was added, each width fell by exactly what that
+# matrix removed, rows 6,499 unchanged, and NO surviving column moved at all. The nine-rung
+# ladder plus its seven extra steps is complete and recoverable end to end
+# (require_rung_ladder + assert_ladder_is_recoverable over rung 9). Digest bracket
+# outputs/p332_rung9_before.json -> after: the three gold matrices and the DuckDB file;
+# mixed empty, nothing added or removed.
+#
+# THE MEASURED COST, on record BEFORE the re-fit measures it: WP loses a feature carrying
+# 9.87% of its coefficient mass at rank 3 of 40; ATS loses two carrying 9.32% combined at
+# ranks 3 and 4; O/U loses its RANK-1 input of 25, carrying 10.68%. The largest degradation
+# is expected on O/U. Part of this diff removes columns that were ALREADY INERT: every
+# market value has been a constant 0.0 since rung 5, and spread_movement / total_movement
+# were identically 0.0 on all 6,499 rows long before that.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_MARKET_RUNG_CAUSE (UTF-8), declared in 75e39ea.
+P332_19_RUNG9_CAUSE_DIGEST: str = (
+    "b8219c673f0558494e9d6debac6534551b54c61a86844d6c0ba51edc1de02b74"
+)
+
+P332_19_RUNG9_DECLARED_IN_COMMIT: str = "75e39ea570742368d6507f366caa4fdd618c2974"
+
+P332_19_RUNG9_BASELINE_DOCUMENT: str = "p332_rung8e.json"
+
+#: The five betting-line columns, removed from ALL THREE matrices.
+P332_19_RUNG9_MARKET_COLUMNS: tuple[str, ...] = (
+    "snapshot_ml_prob_home_fair",
+    "snapshot_spread",
+    "snapshot_total",
+    "spread_movement",
+    "total_movement",
+)
+
+#: What each matrix removed, MEASURED. Not uniform: the ats and ou matrices each lose one
+#: line-derived target column as well.
+P332_19_RUNG9_REMOVED_BY_MATRIX: dict[str, tuple[str, ...]] = {
+    "features_wp": (
+        "snapshot_ml_prob_home_fair",
+        "snapshot_spread",
+        "snapshot_total",
+        "spread_movement",
+        "total_movement",
+    ),
+    "features_ats": (
+        "snapshot_ml_prob_home_fair",
+        "snapshot_spread",
+        "snapshot_total",
+        "spread_movement",
+        "target_ats",
+        "total_movement",
+    ),
+    "features_ou": (
+        "snapshot_ml_prob_home_fair",
+        "snapshot_spread",
+        "snapshot_total",
+        "spread_movement",
+        "target_ou",
+        "total_movement",
+    ),
+}
+
+#: The two line-derived target columns that never reached a matrix and so moved no width.
+P332_19_RUNG9_TARGET_CHILDREN_NOT_IN_GOLD: tuple[str, ...] = (
+    "game_went_over",
+    "home_covered_spread",
+)
+
+#: NO surviving column moved: the rung removes columns and changes nothing else.
+P332_19_RUNG9_MOVED_COLUMNS: tuple[str, ...] = ()
+
+#: The FINAL gold widths. Plan 33.2-20's clean build and Plan 33.2-23's re-fit are
+#: measured against these, so they are recorded explicitly rather than re-derived.
+P332_19_RUNG9_WIDTHS: tuple[int, int, int] = (188, 188, 187)
+
+P332_19_RUNG9_ROWS: int = 6499
+
+P332_19_RUNG9_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "nfl_predictions.duckdb",
+)
+
+#: The FINAL gold-width pin delta (Plan 33.2-12 <owned_protocol_gold_width_pin> P3).
+#: ``removed`` is a PER-MATRIX mapping, the second form the chain resolver reads: this
+#: rung's delta is -5 / -6 / -6 and a single scalar could not describe it.
+P332_19_RUNG9_GOLD_WIDTH_DELTA: dict[str, object] = {
+    "rung": 9,
+    "plan": "33.2-19",
+    "added": (),
+    "removed": {
+        "features_wp": (
+            "snapshot_ml_prob_home_fair",
+            "snapshot_spread",
+            "snapshot_total",
+            "spread_movement",
+            "total_movement",
+        ),
+        "features_ats": (
+            "snapshot_ml_prob_home_fair",
+            "snapshot_spread",
+            "snapshot_total",
+            "spread_movement",
+            "target_ats",
+            "total_movement",
+        ),
+        "features_ou": (
+            "snapshot_ml_prob_home_fair",
+            "snapshot_spread",
+            "snapshot_total",
+            "spread_movement",
+            "target_ou",
+            "total_movement",
+        ),
+    },
+    "widths_before": (193, 194, 193),
+    "widths_after": (188, 188, 187),
+    "measured_at": "2026-09-22, Plan 33.2-19 Task 3 (rung 9)",
+}

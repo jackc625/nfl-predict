@@ -328,3 +328,53 @@ failed on exactly those eight columns against rung-8 gold and passes against ste
 The four metrics are offence-only by design, so their defensive copies never held a measured
 value in any season; keeping them blank and computing real defence-allowed versions were both
 put to the owner and both rejected (2026-09-22). The OFFENSIVE copies are untouched.
+
+
+## After rung 9
+
+Scanned 2026-09-22 against the gold p332_ rung 9 rebuilt (Plan 33.2-19 Task 3,
+`p332_rung9.json`) -- the LAST rung of the ladder. The two sections above are left exactly
+as they were; each is the record of the gold it was scanned against.
+
+Machine-readable lines (read by `tests/integration/test_no_precoverage_constants.py`):
+
+CLASSIFIED_AFTER_RUNG9: 480
+UNFLAGGED_AFTER_RUNG9: 0
+UNROUTED_AFTER_RUNG9: 0
+CONSTANT_2002_2017_AFTER_RUNG9: 0
+
+### Counts by class
+
+| Matrix | `varies_from_corpus_start` | `flagged_precoverage` | `unflagged_precoverage` | `never_varies` |
+|---|---|---|---|---|
+| `features_wp` | 130 | 28 | 0 | 2 |
+| `features_ats` | 130 | 28 | 0 | 2 |
+| `features_ou` | 130 | 28 | 0 | 2 |
+
+The UNFLAGGED count is still zero in all three matrices.
+
+### What moved since the step-8e section
+
+- **CLASSIFIED falls 495 -> 480, which is -5 model inputs per matrix.** Rung 9 removed the
+  five market-line columns -- `snapshot_spread`, `snapshot_total`,
+  `snapshot_ml_prob_home_fair`, `spread_movement`, `total_movement` -- from every matrix,
+  because no betting line is a model input for any target (D33.2-03). The rung also removed
+  `target_ats` from `features_ats` and `target_ou` from `features_ou`, but those are TARGET
+  columns rather than model inputs, so they never entered this count.
+- **`never_varies` falls 7 -> 2 per matrix**, and the five that left are exactly those
+  market columns. What remains is `is_home_game` and `is_away_game`, which are constant by
+  construction rather than by absence of a measurement.
+- **`CONSTANT_2002_2017` falls 5 -> 0.** The five market columns were the whole of that set
+  after step 8e, and the census is now EMPTY: no model input of any gold matrix holds one
+  value over 2002-2017. The routed item the two sections above both carried -- "the five
+  market columns are the constant 0.0 Plan 33.2-14 left until rung 9 removes them from every
+  model input" -- is closed here.
+
+### The census the RULE_EVIDENCE figure could not reproduce is now empty
+
+The Before-rung-8 section measured 55 model inputs constant over 2002-2017 and recorded that
+`conf/season_partition.py`'s `RULE_EVIDENCE` figure of 90 did not reproduce. After rung 8 it
+was 15, after step 8e 5, and after rung 9 it is 0. Each fall is attributed to the step that
+caused it: the coverage floors retiring (rung 8), the never-populated defensive copies
+leaving (step 8e), step 8d blanking the unscorable cells of `is_home_game` / `is_away_game`,
+and the betting line leaving (rung 9).
