@@ -1,7 +1,19 @@
-"""The dated 2026 gold-default switch: what it holds, and what it must not touch.
+"""The dated 2026 gold-default switch: the record of the hold, and of the hold ENDING.
 
-WHAT IS BEING PINNED
---------------------
+THE HOLD HAS ENDED (Plan 33-15 Task 4, owner ruling 2026-09-14)
+---------------------------------------------------------------
+The flip condition below was MET when Phase 33 Wave 15's re-fit trained the deployed
+artifacts on the corrected historical weather, and the owner removed the hold:
+``features.weather.WEATHER_GOLD_DEFAULT_SEASONS`` is EMPTY by ruling, and the module's own
+removal comment is the record of the hold ending. Plan 33.2-13 (orchestrator-assigned)
+rewrote the eight tests that still asserted the hold so they pin THAT record instead: the
+set is empty, the creating ruling and the removal are both still readable in committed
+source, and a 2026 build takes the ORDINARY path -- the real observation reaches gold,
+exactly as a 2025 build's does. Nothing here restores 2026 to the hold. The history below
+is kept because it is why the switch existed.
+
+WHAT WAS PINNED WHILE THE HOLD STOOD
+------------------------------------
 D33-25, as the owner RULED it on 2026-09-14 at Plan 33-09's Task-4 blocking
 checkpoint: the GOLD weather family is held at its declared default for the 2026
 season behind a named, DATED switch readable in committed source, so train and
@@ -55,6 +67,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import utils.game_lock as lock_rule
 from features import weather
 from features.weather import (
     WEATHER_FLAG_COLUMNS,
@@ -164,16 +177,43 @@ def switch_emptied(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(weather, "WEATHER_GOLD_DEFAULT_SEASONS", frozenset())
 
 
-class TestTheSwitchIsReadableInCommittedSource:
-    """A default nobody can read is the silent-imputation class, not the cure."""
+# The line in features/weather.py that separates the retained record of the ruling that
+# CREATED the hold from the record of the hold ENDING (Plan 33-15 Task 4).
+_REMOVAL_MARKER = "THE CONDITION WAS MET, AND THE HOLD IS REMOVED"
 
-    def test_the_switch_names_2026(self):
-        assert HELD_SEASON in weather.WEATHER_GOLD_DEFAULT_SEASONS
+
+def _creating_record() -> str:
+    """The committed source immediately BEFORE the removal record: the creating ruling."""
+    source = inspect.getsource(weather)
+    index = source.find(_REMOVAL_MARKER)
+    assert index > 0, "the removal record is gone from features/weather.py"
+    return source[max(0, index - 2600) : index]
+
+
+def _removal_record() -> str:
+    """The committed source from the removal marker to the (emptied) constant."""
+    source = inspect.getsource(weather)
+    start = source.find(_REMOVAL_MARKER)
+    end = source.find("WEATHER_GOLD_DEFAULT_SEASONS:", start)
+    assert 0 < start < end, "the removal record must precede the constant it empties"
+    return source[start:end]
+
+
+class TestTheSwitchRecordsTheHoldEnding:
+    """The switch stays readable in committed source -- now as a hold that ENDED."""
+
+    def test_the_held_season_set_is_empty(self):
+        """Was: the switch names 2026. The owner ended the hold; the set is EMPTY."""
         assert isinstance(weather.WEATHER_GOLD_DEFAULT_SEASONS, frozenset)
+        assert HELD_SEASON not in weather.WEATHER_GOLD_DEFAULT_SEASONS
+        assert frozenset() == weather.WEATHER_GOLD_DEFAULT_SEASONS
 
-    def test_no_season_other_than_2026_is_held(self):
-        """The hold is a BRIDGE, not a policy about weather in general."""
-        assert set(weather.WEATHER_GOLD_DEFAULT_SEASONS) == {HELD_SEASON}
+    def test_no_season_is_held_and_the_hold_was_not_re_dated(self):
+        """Was: no season other than 2026 is held. The bridge is removed, not moved:
+        the flip condition said "REMOVED, not re-dated", so no other season took 2026's
+        place."""
+        assert set(weather.WEATHER_GOLD_DEFAULT_SEASONS) == set()
+        assert "MET AND REMOVED" in weather.WEATHER_GOLD_DEFAULT_FLIP_CONDITION
 
     def test_the_flip_condition_names_phase_33_wave_15(self):
         flip = weather.WEATHER_GOLD_DEFAULT_FLIP_CONDITION
@@ -190,61 +230,65 @@ class TestTheSwitchIsReadableInCommittedSource:
         """
         assert "Phase 37" not in weather.WEATHER_GOLD_DEFAULT_FLIP_CONDITION
 
-    def test_the_switch_is_dated_sourced_and_attributed(self):
-        """The comment must carry the date, the measurement and the ruling.
+    def test_the_creating_ruling_and_the_removal_are_both_dated_and_attributed(self):
+        """Was: the comment carries the date, the measurement and the ruling.
 
-        This mirrors Plan 33-09 Task 5's own `<verify>` command, which reads the
-        1,200 characters of source immediately preceding the constant.
+        The creating ruling is RETAINED UNEDITED above the removal record (the module
+        says so), so it is read there -- the removal record now sits between it and the
+        constant, which is why the old fixed window before the constant stopped reaching
+        it. The removal record must itself be dated and name the owner's ruling.
         """
-        source = inspect.getsource(weather)
-        index = source.find("WEATHER_GOLD_DEFAULT_SEASONS")
-        assert index > 0
-        head = source[max(0, index - 1200) : index]
+        created = _creating_record()[-1200:]
+        assert re.search(r"20\d\d-\d\d-\d\d", created), "the ruling is undated"
+        assert "constan" in created.lower(), "the ruling cites no measurement"
+        assert "owner" in created.lower(), "the ruling names no authorising owner"
 
-        assert re.search(r"20\d\d-\d\d-\d\d", head), "the switch is undated"
-        assert "constan" in head.lower(), "the switch does not cite its measurement"
-        assert "owner" in head.lower(), "the switch names no authorising ruling"
+        removed = _removal_record()
+        assert "2026-09-14" in removed, "the removal is undated"
+        assert "Plan 33-15" in removed, "the removal names no plan"
+        assert "owner" in removed.lower(), "the removal names no authorising ruling"
 
-    def test_the_comment_cites_task_3s_re_derived_numbers_by_value(self):
-        """Cited BY VALUE, so the reason cannot drift from the record.
+    def test_the_retained_record_still_cites_task_3s_numbers_by_value(self):
+        """Was: the comment cites Task 3's re-derived numbers by value.
 
-        `tests/phase33_state.GOLD_WEATHER_CONSTANCY_MEASUREMENT` is the canonical
-        record; these are the two figures it carries.
+        Still cited BY VALUE in the retained creating record, so the reason the hold
+        existed cannot drift from `tests/phase33_state.GOLD_WEATHER_CONSTANCY_MEASUREMENT`.
         """
-        source = inspect.getsource(weather)
-        index = source.find("WEATHER_GOLD_DEFAULT_SEASONS")
-        head = source[max(0, index - 2600) : index]
-
-        assert "45 of 46" in head
-        assert "99.7846" in head or "6,485 of 6,499" in head
+        created = _creating_record()
+        assert "45 of 46" in created
+        assert "99.7846" in created or "6,485 of 6,499" in created
 
 
-class TestA2026BuildTakesTheHeldDefault:
-    """The held season ignores silver, whatever silver holds."""
+class TestA2026BuildTakesTheOrdinaryPath:
+    """With the hold ended, a 2026 build reads silver exactly as a 2025 build does."""
 
-    def test_every_weather_column_is_null_on_a_held_row(self):
+    def test_every_weather_column_carries_the_real_observation_on_a_2026_row(self):
+        """Was: every weather column is NULL on a held row. The hold is gone, so the
+        live 2026 observation reaches gold -- the models now promoted were trained on
+        weather that varies, which is the whole reason the owner ended it."""
         frame = _build_full(_games(HELD_SEASON, HELD_GAME_ID), _silver(HELD_GAME_ID))
         row = frame.iloc[0]
 
-        for column in HELD_NULL_COLUMNS:
-            assert _is_null(row[column]), (
-                f"{column} reads {row[column]!r} on a HELD 2026 row. The switch "
-                "holds the whole weather family out of gold; a number here means "
-                "a live 2026 observation reached a model that never saw weather "
-                "vary."
-            )
-
-    def test_a_held_row_still_says_weather_applies_and_was_not_observed(self):
-        frame = _build_full(_games(HELD_SEASON, HELD_GAME_ID), _silver(HELD_GAME_ID))
-        row = frame.iloc[0]
-
-        assert row["weather_affects_game"] == 1.0, (
-            "the game is outdoors and weather APPLIES; what is withheld is the "
-            "observation, not the applicability"
+        assert row["temp_f"] == 24.0
+        assert row["raw_temp_f"] == 24.0
+        assert row["wind_mph"] == 21.0
+        assert row["weather_severity_score"] > 0.0
+        nulls = [column for column in HELD_NULL_COLUMNS if _is_null(row[column])]
+        assert len(nulls) < len(HELD_NULL_COLUMNS), (
+            f"every weather column is NULL on a 2026 row ({nulls}): the retired hold "
+            "is still in force"
         )
-        assert row["weather_coverage"] == 0.0, (
-            "a held row must be distinguishable from an observed one IN THE DATA "
-            "-- that is the whole difference from the silent Elo imputation"
+
+    def test_a_2026_row_says_weather_applies_and_was_observed(self):
+        """Was: a held row says weather applies and was NOT observed. Applicability
+        is unchanged; the coverage flag now says the observation is there."""
+        frame = _build_full(_games(HELD_SEASON, HELD_GAME_ID), _silver(HELD_GAME_ID))
+        row = frame.iloc[0]
+
+        assert row["weather_affects_game"] == 1.0
+        assert row["weather_coverage"] == 1.0, (
+            "a 2026 row with a real observation must say so IN THE DATA; 0.0 here "
+            "would mean the retired hold is still withholding it"
         )
 
     def test_the_same_silver_frame_yields_real_values_when_the_switch_is_empty(
@@ -261,16 +305,17 @@ class TestA2026BuildTakesTheHeldDefault:
         assert row["weather_severity_score"] > 0.0
         assert row["weather_coverage"] == 1.0
 
-    def test_the_compressed_builder_holds_2026_too(self):
-        """Both builders feed gold, so a switch on one of them is a half switch."""
+    def test_the_compressed_builder_no_longer_holds_2026_either(self):
+        """Was: the compressed builder holds 2026 too. Both builders feed gold, so
+        the hold's ending must reach both, or it is half an ending."""
         frame = _build_compressed(
             _games(HELD_SEASON, HELD_GAME_ID), _silver(HELD_GAME_ID)
         )
         row = frame.iloc[0]
 
-        assert _is_null(row["weather_severity_score"])
-        assert _is_null(row["wind_mph"])
-        assert _is_null(row["is_precipitation"])
+        assert row["wind_mph"] == 21.0
+        assert row["is_precipitation"] == 1.0
+        assert row["weather_severity_score"] > 0.0
         assert row["is_outdoor"] == 1.0
 
     def test_the_compressed_builder_yields_real_values_when_the_switch_is_empty(
@@ -285,19 +330,24 @@ class TestA2026BuildTakesTheHeldDefault:
         assert row["is_precipitation"] == 1.0
         assert row["weather_severity_score"] > 0.0
 
-    def test_the_hold_applies_when_only_the_game_id_carries_the_season(self):
-        """`get_features_for_game` builds a frame with `season: 0`.
+    def test_the_single_game_path_is_not_held_either(self):
+        """Was: the hold applies when only the game_id carries the season.
 
-        The season would be unresolvable from the column alone there, and an
-        unresolvable season silently NOT held is the switch failing open on the
-        single-game serving path -- which is the path that serves a live 2026
-        prediction.
+        `get_features_for_game` builds a frame with `season: 0`, which is why the
+        season resolver falls back to the game_id. With no season held, resolving
+        2026 from the id no longer holds anything: the single-game path takes the
+        ordinary fenced path. That path needs the game's kickoff to find its lock
+        (Plan 33.2-12), so a frame without one is refused by name rather than built.
         """
-        games = pd.DataFrame([{"game_id": HELD_GAME_ID, "season": 0, "week": 0}])
+        games = _games(HELD_SEASON, HELD_GAME_ID).assign(season=0, week=0)
         row = _build_compressed(games, _silver(HELD_GAME_ID)).iloc[0]
 
-        assert _is_null(row["wind_mph"])
+        assert row["wind_mph"] == 21.0
         assert row["is_outdoor"] == 1.0
+
+        kickoff_less = pd.DataFrame([{"game_id": HELD_GAME_ID, "season": 0, "week": 0}])
+        with pytest.raises(lock_rule.MissingKickoffError):
+            _build_compressed(kickoff_less, _silver(HELD_GAME_ID))
 
 
 class TestANonHeldSeasonIsUnchanged:
