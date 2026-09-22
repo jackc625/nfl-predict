@@ -11414,6 +11414,250 @@ PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_OFFENSE_ONLY_STEP] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# p332_ RUNG 9 -- NO BETTING LINE IS A MODEL INPUT FOR ANY TARGET
+# (Plan 33.2-19, D33.2-03). The LAST rung of the ladder, judged against extra
+# step 8e. Registered per Plan 33.2-08's <owned_protocol_rung_registration>:
+# three module-level names, the incremental cause-table append, and BOTH
+# dispatch-table entries -- a registered-but-undispatched p332_ rung falls
+# through to Phase 30's rung-number-keyed path, and Phase 30 has no rung 9.
+#
+# THE DEFECT. All three deployed models select a line: WP ``snapshot_spread``;
+# ATS ``snapshot_spread`` plus ``snapshot_ml_prob_home_fair``; O/U
+# ``snapshot_total``, its rank-1 input of 25. For 2018-2025 those are CLOSING
+# lines, which did not exist at the lock. None of the three targets needs one --
+# WP predicts the winner, ATS the margin, O/U total points -- and the line is
+# used AFTERWARDS, to price and decide a bet.
+#
+# THE FIX. The five columns leave all three matrices through the ONE registry
+# (``backtest.signal_lift._GROUP_PREDICATE["market"]``) and the ONE drop
+# mechanism (``scripts.build_features._enforce_groups_dropped``). The hand-written
+# ``market_feature_cols`` list and the merge it drove are deleted; the
+# ``feature_sources["market"]`` REGISTRATION is retained, so the R2
+# information-time gate keeps checking the lock-fenced odds selection that
+# grading and CLV depend on.
+#
+# THE FOUR LINE-DERIVED TARGET COLUMNS GO WITH THEIR PARENTS, and that is this
+# rung's own cause rather than a second one: ``target_ats`` and ``target_ou`` are
+# arithmetic children of exactly the columns this rung removes, and
+# ``home_covered_spread`` / ``game_went_over`` are their boolean children.
+# Measured before removing them: all four are id/EXCLUDED columns in
+# ``models/temporal._DEFAULT_ID_COLS`` and no trainer, backtest, API or web module
+# reads any of them; the ATS trainer's target is ``home_margin`` and the O/U
+# trainer's is ``total_points``. Recomputing them from the RAW silver line in
+# points was the alternative the orchestrator allowed if a real consumer existed,
+# and it was rejected on measurement: only 2,140 of 6,499 games carry a stored
+# line, so the ATS matrix's row filter would have cut it to ~2,140 rows.
+# ``home_covered_spread`` and ``game_went_over`` never reached a gold matrix at
+# all, so only two of the four move a width.
+#
+# THE WIDTH DELTA IS THEREFORE NOT UNIFORM, which is the one place this rung
+# departs from the plan's own text (-5 everywhere). features_wp loses the five;
+# features_ats loses the five AND ``target_ats``; features_ou loses the five AND
+# ``target_ou``. 193/194/193 -> 188/188/187.
+#
+# THE PREDICTION, derivable before the rebuild and stated as such:
+#
+# * STRUCTURE -- every matrix removes the five market columns; the ats and ou
+#   matrices each remove exactly ONE line-derived target as well; nothing is
+#   added; each width falls by exactly the number of columns that matrix removed;
+#   rows stay 6,499 (the ats and ou row filters moved from the line-derived
+#   target to ``home_margin`` / ``total_points``, both non-null on every game
+#   that has scores, which is every game in gold).
+# * VALUES -- NO surviving column moves at all. diff["changed"] must be EMPTY.
+#   Every market value has been a constant 0.0 since rung 5 (no stored line
+#   carries a recorded capture time at or before its game's lock), and
+#   ``spread_movement`` / ``total_movement`` were identically 0.0 on all 6,499
+#   rows long before that -- so part of this diff is the removal of columns that
+#   were already inert. A moved value would mean a downstream step reads the
+#   market columns, which is a FINDING that halts the run.
+# ---------------------------------------------------------------------------
+
+PHASE332_MARKET_RUNG: int = 9
+
+#: The five betting-line columns, removed from ALL THREE matrices.
+PHASE332_MARKET_RUNG_MARKET_COLUMNS: tuple[str, ...] = (
+    "snapshot_ml_prob_home_fair",
+    "snapshot_spread",
+    "snapshot_total",
+    "spread_movement",
+    "total_movement",
+)
+
+#: The line-derived TARGET columns, one per matrix that carried one. They are
+#: arithmetic children of the columns above, not a second cause.
+PHASE332_MARKET_RUNG_TARGET_COLUMNS: tuple[str, ...] = ("target_ats", "target_ou")
+
+#: Which matrix loses which target column. ``features_wp`` carried neither.
+PHASE332_MARKET_RUNG_REMOVED_BY_MATRIX: dict[str, tuple[str, ...]] = {
+    "features_wp": PHASE332_MARKET_RUNG_MARKET_COLUMNS,
+    "features_ats": (*PHASE332_MARKET_RUNG_MARKET_COLUMNS, "target_ats"),
+    "features_ou": (*PHASE332_MARKET_RUNG_MARKET_COLUMNS, "target_ou"),
+}
+
+PHASE332_MARKET_RUNG_CAUSE: str = (
+    "NO BETTING LINE IS A MODEL INPUT FOR ANY TARGET, p332_ rung 9 (Plan 33.2-19, "
+    "D33.2-03), and NOTHING else: the five market-line columns -- snapshot_spread, "
+    "snapshot_total, snapshot_ml_prob_home_fair, spread_movement and total_movement -- "
+    "are removed from all three gold matrices through the ONE registry group 'market' and "
+    "the ONE drop mechanism every dropped group uses, replacing the hand-written list that "
+    "stood in combine_features. The four line-derived TARGET columns go with their "
+    "parents, as arithmetic children of exactly those columns and not as a second cause: "
+    "target_ats and target_ou leave the ats and ou matrices, and their boolean children "
+    "home_covered_spread and game_went_over leave the build (neither ever reached a "
+    "matrix); the ats and ou matrices are selected on home_margin and total_points, their "
+    "trainers' own targets, so no row moves. The market source stays REGISTERED so the "
+    "information-time gate keeps checking the lock-fenced odds selection grading and CLV "
+    "depend on; only its merge seam is gone. Nothing is added, no surviving column's value "
+    "moves, and no row moves"
+)
+
+#: The read-only pre-rebuild measurement the rung's record carries beside its own.
+PHASE332_MARKET_RUNG_PREREBUILD_MEASUREMENT: str = (
+    "MEASURED 2026-09-22 before any production write, read-only on step 8e's gold. The "
+    "five market columns are a CONSTANT 0.0 on all 6,499 rows of every season since rung "
+    "5 (no stored 2002-2025 line carries a recorded capture time at or before its game's "
+    "lock), and spread_movement / total_movement were identically 0.0 long before that -- "
+    "so part of this rung's diff is the removal of columns that were already inert, and "
+    "the removal's real effect is on the 2018-2025 fits that read a closing line. "
+    "target_ats and target_ou were computed AFTER normalization, so they subtracted a "
+    "Z-SCORED market value rather than a line in points; since rung 5 that value has been "
+    "0.0, so target_ats equalled point_differential and target_ou equalled total_points "
+    "for every game. No trainer, backtest, API or web module reads any of the four (grep "
+    "over the tree 2026-09-22); all four are id/excluded columns in models/temporal, and "
+    "the ATS and O/U trainers read home_margin and total_points. The deployed models' "
+    "measured cost, on record BEFORE the re-fit: WP loses 9.87% of its coefficient mass "
+    "at rank 3 of 40; ATS loses 9.32% combined at ranks 3 and 4; O/U loses its RANK-1 "
+    "input of 25, 10.68%"
+)
+
+PHASE332_MARKET_RUNG_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_MARKET_RUNG,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_MARKET_RUNG_CAUSE,
+    "columns_added": "empty",
+    "columns_removed": (
+        "the five columns in PHASE332_MARKET_RUNG_MARKET_COLUMNS from every matrix, "
+        "plus target_ats from features_ats and target_ou from features_ou "
+        "(PHASE332_MARKET_RUNG_REMOVED_BY_MATRIX)"
+    ),
+    "rows": "unchanged",
+    "width": "-5 on features_wp and -6 on features_ats and features_ou "
+    "(193/194/193 -> 188/188/187)",
+    "columns_changed": (
+        "EMPTY. No surviving column moves: the market values have been a constant 0.0 "
+        "since rung 5 and nothing downstream reads them"
+    ),
+    "rows_changed": "none -- no surviving value moves and no row moves",
+    "predicted_changed": (),
+    "predicted_removed": PHASE332_MARKET_RUNG_REMOVED_BY_MATRIX,
+    "declared_families": ("market",),
+    "family_mechanisms": {
+        "market": (
+            "backtest.signal_lift._GROUP_PREDICATE['market'] plus "
+            "scripts.build_features._enforce_groups_dropped, with the market merge "
+            "block in combine_features deleted and the feature_sources registration "
+            "retained"
+        ),
+    },
+    "prerebuild_measurement": PHASE332_MARKET_RUNG_PREREBUILD_MEASUREMENT,
+    "declared_before_the_rebuild": True,
+}
+
+RUNG_CAUSES_BY_PREFIX[PHASE332_RUNG_PREFIX][PHASE332_MARKET_RUNG] = (
+    PHASE332_MARKET_RUNG_CAUSE
+)
+
+PHASE332_MARKET_RUNG_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-22 before rung 9 wrote anything: production data/ was "
+    "digest-identical to outputs/p332_step8e_after.json, and the only code changed since "
+    "step 8e's rebuild is this rung's own. p332_rung8e.json IS gold rebuilt from today's "
+    "inputs minus exactly this rung's cause. No carry-in, no retake"
+)
+
+
+def _attribute_p332_market(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Rung 9 of the `p332_` ladder: the market removal's OWN judge.
+
+    STRUCTURE: nothing may be ADDED; the removed set must contain ALL five market
+    columns and NOTHING outside the five plus at most ONE line-derived target; the
+    width must fall by exactly the number removed; rows must not move. Any structural
+    surprise BLOCKS. VALUES: the changed set must be EMPTY -- the market values have
+    been a constant 0.0 since rung 5 and nothing downstream reads them, so a moved
+    value would mean a downstream step DOES, which is a finding.
+
+    THE PER-MATRIX REMOVED SET IS JUDGED WITHOUT THE MATRIX NAME, which this hook does
+    not receive: "all five, plus at most one of the two named targets" is exactly as
+    tight as naming them, because the two targets are distinct columns and a matrix can
+    only lose one of them. Which matrix lost which is pinned in
+    ``tests/integration/test_p332_rung9_attribution.py``, where the name is available.
+
+    Returns:
+        Whether this matrix BLOCKS the phase.
+    """
+    label = "p332_ rung 9 (no betting line is a model input for any target)"
+    verdict["changed_by_family"] = {"market": []}
+    blocking = False
+    market = {_canonical(c) for c in PHASE332_MARKET_RUNG_MARKET_COLUMNS}
+    targets = {_canonical(c) for c in PHASE332_MARKET_RUNG_TARGET_COLUMNS}
+    for column in diff["added"]:
+        blocking = True
+        fail(f"column '{column}' was ADDED at {label}, which adds none")
+    removed = {_canonical(c) for c in diff["removed"]}
+    if not market <= removed:
+        blocking = True
+        fail(
+            f"{label} did not remove the market columns {sorted(market - removed)}; every "
+            "matrix loses all five, or the three matrices disagree about the candidate "
+            "feature set"
+        )
+    extra = removed - market
+    if not extra <= targets:
+        blocking = True
+        fail(
+            f"{label} removed {sorted(extra - targets)}, which is neither a market column "
+            "nor one of the line-derived targets it takes with them. The rung's ONE cause "
+            "is the betting line; do NOT widen it to fit this diff"
+        )
+    elif len(extra) > 1:
+        blocking = True
+        fail(
+            f"{label} removed both line-derived targets {sorted(extra)} from ONE matrix. "
+            "A matrix carried at most one of them"
+        )
+    if detail["width_after"] != detail["width_before"] - len(removed):
+        blocking = True
+        fail(
+            f"width moved {detail['width_before']} -> {detail['width_after']} at {label}, "
+            f"which predicts exactly {len(removed)} columns fewer"
+        )
+    if detail.get("rows_before") != detail.get("rows_after"):
+        blocking = True
+        fail(
+            f"rows moved {detail.get('rows_before')} -> {detail.get('rows_after')} at "
+            f"{label}. The ats and ou row filters moved from the line-derived target to "
+            "home_margin / total_points, both non-null on every game in gold, so no row "
+            "may move"
+        )
+    if not removed:
+        fail(f"{label} removed no column at all; the betting line must leave")
+    for column in sorted(diff["changed"]):
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at {label} in season(s) "
+            f"{', '.join(sorted(diff['changed'][column])) or '(none)'}, but this rung "
+            "predicts NO surviving value moves. The market values have been a constant "
+            "0.0 since rung 5; a move here means a downstream step reads them, and that "
+            "is a finding rather than something to widen the cause for"
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_RUNG_SIGNATURES[PHASE332_MARKET_RUNG] = PHASE332_MARKET_RUNG_EXPECTED_SIGNATURE
+PHASE332_RUNG_ATTRIBUTORS[PHASE332_MARKET_RUNG] = _attribute_p332_market
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -12148,6 +12392,12 @@ def write_phase332_rebuild_diff(
     )
     if offense_only_document.exists():
         lines.extend(_phase332_offense_only_step_lines(fingerprint_dir))
+
+    market_document = rung_document_path(
+        fingerprint_dir, PHASE332_MARKET_RUNG, PHASE332_RUNG_PREFIX
+    )
+    if market_document.exists():
+        lines.extend(_phase332_market_rung_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -13321,6 +13571,83 @@ def _phase332_offense_only_step_lines(fingerprint_dir: Path | str) -> list[str]:
         lines.append(
             'why_not_run = "the rebuild removed no column, so the step is recorded as '
             'declared-but-not-run rather than as a step that ran"'
+        )
+    return lines
+
+
+def _phase332_market_rung_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` rung 9, recomputed from the ladder.
+
+    Judged by the same ``attribute_rung`` call the ladder run makes, against step 8e.
+    The removed set is recorded PER MATRIX, because this rung's is not uniform: the ats
+    and ou matrices each lose one line-derived target column alongside the five market
+    columns every matrix loses.
+    """
+    rung = PHASE332_MARKET_RUNG
+    require_rung_ladder(fingerprint_dir, rung, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, rung)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, rung, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, rung, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    removed = sorted(
+        {c for matrix in GOLD_MATRICES for c in report[matrix]["columns_removed"]}
+    )
+    added = sorted(
+        {c for matrix in GOLD_MATRICES for c in report[matrix]["columns_added"]}
+    )
+    signature = PHASE332_MARKET_RUNG_EXPECTED_SIGNATURE
+    lines = [
+        "",
+        f"[rung.{rung}]",
+        f"rung = {rung}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if removed else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_MARKET_RUNG_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_MARKET_RUNG_CAUSE)}"',
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        "prerebuild_measurement = "
+        f'"{_toml_escape(PHASE332_MARKET_RUNG_PREREBUILD_MEASUREMENT)}"',
+        "declared_market_columns = "
+        f"{_toml_array(list(PHASE332_MARKET_RUNG_MARKET_COLUMNS))}",
+        "declared_target_columns = "
+        f"{_toml_array(list(PHASE332_MARKET_RUNG_TARGET_COLUMNS))}",
+        f"removed_columns = {_toml_array(removed)}",
+        f"added_columns = {_toml_array(added)}",
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_RUNG_ATTRIBUTORS[rung].__name__}"',
+    ]
+    if not removed:
+        lines.append(
+            'why_not_run = "the rebuild removed no column, so the rung is recorded as '
+            'declared-but-not-run rather than as a rung that ran"'
+        )
+    lines.extend(["", f"[rung.{rung}.declared_removed_by_matrix]"])
+    for matrix in GOLD_MATRICES:
+        columns = PHASE332_MARKET_RUNG_REMOVED_BY_MATRIX[matrix]
+        lines.append(f"{matrix} = {_toml_array(list(columns))}")
+    lines.extend(["", f"[rung.{rung}.removed_by_matrix]"])
+    for matrix in GOLD_MATRICES:
+        lines.append(
+            f"{matrix} = {_toml_array(sorted(report[matrix]['columns_removed']))}"
         )
     return lines
 
