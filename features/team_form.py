@@ -75,6 +75,68 @@ ROLLING_COLUMNS: tuple[str, ...] = (
     "rolling_neutral_pace",
 )
 
+#: THE METRICS THAT EXIST FOR ONE SIDE OF THE BALL ONLY (p332_ extra step 8e, owner ruling
+#: 2026-09-22). ``calculate_rolling_averages`` writes NaN for these on the DEFENCE side and
+#: ``get_per_game_stats`` does the same one layer down ("Not applicable for defense"), so
+#: their defensive copies have never held a measured value in any season.
+#:
+#: ONE REGISTRY, read by both the calculator that skips them and the gold layout that no
+#: longer copies them (``scripts.build_features.FeatureMatrixBuilder._get_team_features``).
+#: A second hand-written list in the layout would drift: a fifth offence-only metric would
+#: keep reaching gold as a flat 0.0, and a metric that stopped being offence-only would
+#: stay out of it. Spelled as the METRIC names the calculator loops over; the rolling
+#: column each is written under comes from ``rolling_column_for_metric``.
+OFFENSE_ONLY_METRICS: frozenset[str] = frozenset(
+    {
+        "neutral_pass_rate",
+        "team_cpoe",
+        "avg_drive_start_yardline",
+        "neutral_pace",
+    }
+)
+
+#: The metrics whose rolling column is NOT simply ``rolling_<metric>``.
+_ROLLING_COLUMN_BY_METRIC: dict[str, str] = {
+    "team_cpoe": "rolling_cpoe",
+    "avg_drive_start_yardline": "rolling_avg_drive_start_yardline",
+    "neutral_pace": "rolling_neutral_pace",
+}
+
+
+def rolling_column_for_metric(metric: str) -> str:
+    """The ``rolling_*`` column *metric* is written under.
+
+    The three exceptions are DATA (``_ROLLING_COLUMN_BY_METRIC``) rather than an
+    if/elif chain inside the loop, so the gold layout can ask the same question the
+    calculator answers without re-spelling the mapping.
+    """
+    return _ROLLING_COLUMN_BY_METRIC.get(metric, f"rolling_{metric}")
+
+
+#: The rolling columns of the offence-only metrics, derived from the registry above.
+OFFENSE_ONLY_ROLLING_COLUMNS: tuple[str, ...] = tuple(
+    sorted(rolling_column_for_metric(metric) for metric in OFFENSE_ONLY_METRICS)
+)
+
+
+def offense_only_gold_columns() -> tuple[str, ...]:
+    """The gold columns p332_ extra step 8e removes: the DEFENSIVE copies, per side.
+
+    Eight names today. They were a flat 0.0 in all 6,499 rows of every season -- NaN
+    from a builder that never populates them, turned into the neutral z-score by
+    normalization -- so a model read "exactly average" about a measurement that was
+    never taken. The offensive copies are untouched: the metrics are offence-only, not
+    absent.
+    """
+    return tuple(
+        sorted(
+            f"{prefix}_def_{column}"
+            for prefix in ("home", "away")
+            for column in OFFENSE_ONLY_ROLLING_COLUMNS
+        )
+    )
+
+
 #: THE METRICS THE PINNED PLAY-BY-PLAY DOES NOT CARRY IN EVERY SEASON (Plan 33.2-17 Task 2).
 #: Measured 2026-09-22 on silver team form rebuilt from the pin back to 2002: ``rolling_cpoe``
 #: is NULL in every 2002-2005 row -- the play-by-play carries no completion probability before
@@ -751,14 +813,9 @@ class TeamFormCalculator:
 
             # Calculate weighted averages for key metrics
             # Original 9 metrics + 3 new PBP-derived metrics (FEAT-15, 20, 21)
-            # Offense-only metrics are set to NaN for the defense side
-            offense_only_metrics = {
-                "neutral_pass_rate",
-                "team_cpoe",
-                "avg_drive_start_yardline",
-                "neutral_pace",
-            }
-
+            # Offense-only metrics are set to NaN for the defense side. The set is the
+            # MODULE-LEVEL registry (p332_ extra step 8e) so the gold layout that no
+            # longer copies their defensive columns reads the same answer.
             # Build metrics list dynamically: original 9 + new 3
             all_metrics = [
                 "epa_per_play",
@@ -778,17 +835,10 @@ class TeamFormCalculator:
             avg_stats = {}
             for metric in all_metrics:
                 # Use custom rolling column names for new metrics
-                if metric == "team_cpoe":
-                    rolling_name = "rolling_cpoe"
-                elif metric == "avg_drive_start_yardline":
-                    rolling_name = "rolling_avg_drive_start_yardline"
-                elif metric == "neutral_pace":
-                    rolling_name = "rolling_neutral_pace"
-                else:
-                    rolling_name = f"rolling_{metric}"
+                rolling_name = rolling_column_for_metric(metric)
 
                 # Skip offense-only metrics for defense side
-                if metric in offense_only_metrics and side == "defense":
+                if metric in OFFENSE_ONLY_METRICS and side == "defense":
                     avg_stats[rolling_name] = np.nan
                 elif metric not in recent_games.columns:
                     # Graceful handling when column is missing (backward compat)

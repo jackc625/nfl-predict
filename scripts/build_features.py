@@ -76,7 +76,11 @@ from features.provenance import (
 )
 from features.qb_tracking import QBTracker
 from features.snaps import SnapCountBuilder
-from features.team_form import TeamFormCalculator, source_limited_gold_columns
+from features.team_form import (
+    OFFENSE_ONLY_ROLLING_COLUMNS,
+    TeamFormCalculator,
+    source_limited_gold_columns,
+)
 from features.validation import LeakageGate, LeakageViolation
 from features.weather import (
     WEATHER_COVERAGE_COLUMN,
@@ -1447,7 +1451,18 @@ class FeatureMatrixBuilder:
         ``{prefix}_off_{col}`` / ``{prefix}_def_{col}``. A static method so the
         opponent-adjusted layout (and its coupling test) runs this exact code without a
         builder instance.
+
+        THE DEFENCE SIDE SKIPS THE OFFENCE-ONLY METRICS (p332_ extra step 8e, owner ruling
+        2026-09-22). ``features.team_form.OFFENSE_ONLY_ROLLING_COLUMNS`` names the four the
+        calculator never populates for a defence row, so their defensive copies had never
+        held a measured value in ANY season; gold copied them anyway and normalization
+        turned the all-NaN block into a flat 0.0, which a model reads as "exactly average".
+        The skip reads that ONE registry rather than a second list here, so a fifth
+        offence-only metric leaves gold automatically and a metric that stops being
+        offence-only returns automatically. The OFFENSIVE copies are untouched: the metrics
+        are offence-only, not absent.
         """
+        offense_only = set(OFFENSE_ONLY_ROLLING_COLUMNS)
         team_features = []
 
         for _, game in games_df.iterrows():
@@ -1486,7 +1501,7 @@ class FeatureMatrixBuilder:
             if len(team_def) > 0:
                 def_row = team_def.iloc[0]
                 for col in def_row.index:
-                    if col.startswith("rolling_"):
+                    if col.startswith("rolling_") and col not in offense_only:
                         feature_name = f"{prefix}_def_{col}"
                         game_features[feature_name] = def_row[col]
 

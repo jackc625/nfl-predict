@@ -11217,6 +11217,203 @@ PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_UNSCORABLE_BLANK_STEP] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# p332_ EXTRA STEP 8e -- THE NEVER-POPULATED DEFENSIVE COPIES LEAVE GOLD
+# (owner ruling 2026-09-22, "REMOVE the eight columns from gold"; run FOURTH in
+# Plan 33.2-19's dispatch, after steps 8b, 8c and 8d and before rung 9).
+# RENUMBERED from 8d on 2026-09-22, when the owner's blank-cell ruling took that
+# slot ahead of it. Registered per Plan 33.2-08's
+# <owned_protocol_rung_registration> in the extra-step form: a STRING id that
+# cannot collide with rung 9, one cause, one entry in each extra-step dispatch
+# table, no new prefix branch. Its baseline is p332_rung8d.json.
+#
+# THE DEFECT. {home,away}_def_rolling_cpoe, _def_rolling_avg_drive_start_yardline,
+# _def_rolling_neutral_pace and _def_rolling_neutral_pass_rate are the DEFENSIVE
+# copies of four metrics that exist for the offence only. features/team_form.py
+# writes NaN for them on a defence row by design, so they have never held a
+# measured value in any season; gold copied them anyway and normalization turned
+# the all-NaN block into a flat 0.0 -- which a model reads as "exactly average"
+# about a measurement nobody ever took. Measured on rung 8's gold: they are the
+# only columns failing test_no_precoverage_constants.py::
+# test_gold_team_form_and_opp_adj_not_constant_within_season (576 matrix-season-
+# column triples) and 8 of the 15 CONSTANT_2002_2017_AFTER_RUNG8 columns.
+#
+# REJECTED by the owner, recorded so neither is mistaken for an oversight: keeping
+# them blank (eight columns that can never hold anything), and computing real
+# defence-allowed versions (a NEW signal, which belongs with new-signal work and
+# not inside this phase's correction ladder).
+#
+# THE FIX. scripts.build_features.FeatureMatrixBuilder._get_team_features skips the
+# defensive copy of every column in features.team_form.OFFENSE_ONLY_ROLLING_COLUMNS
+# -- the ONE registry the calculator's own defence-side skip now reads, so the
+# layout and the calculator cannot drift apart. The OFFENSIVE copies are untouched.
+#
+# THE PREDICTION, derivable before the rebuild and stated as such rather than
+# measured on a preview: the four metrics are offence-only in the SOURCE, so their
+# defensive copies carry no information for any other column to depend on.
+#
+# * STRUCTURE -- exactly the eight columns below are REMOVED, nothing is added,
+#   every width falls by exactly 8 (201/202/201 -> 193/194/193) and rows stay
+#   6,499.
+# * VALUES -- NO surviving column moves at all. diff["changed"] must be EMPTY.
+#   Removing a column cannot change another column's value: each is normalized,
+#   imputed and winsorized independently, and nothing reads these eight. A single
+#   moved value is a FINDING that halts the step.
+# * NULL COUNTS -- no surviving column's null count moves either.
+# ---------------------------------------------------------------------------
+
+PHASE332_OFFENSE_ONLY_STEP: str = "8e"
+
+PHASE332_OFFENSE_ONLY_STEP_FOLLOWS: int = PHASE332_WINDOW_RUNG
+
+PHASE332_OFFENSE_ONLY_STEP_CAUSE: str = (
+    "THE NEVER-POPULATED DEFENSIVE COPIES LEAVE GOLD, p332_ extra step 8e (owner ruling "
+    "2026-09-22, 'REMOVE the eight columns from gold', run fourth in Plan 33.2-19's "
+    "dispatch), and NOTHING else: the gold team-form layout stops copying the DEFENSIVE "
+    "column of every metric features.team_form declares offence-only, so "
+    "{home,away}_def_rolling_cpoe, _def_rolling_avg_drive_start_yardline, "
+    "_def_rolling_neutral_pace and _def_rolling_neutral_pass_rate leave all three "
+    "matrices. The calculator never populated them, so gold carried a flat 0.0 that read "
+    "as 'exactly average' about a measurement nobody took. The skip reads the ONE registry "
+    "the calculator's own defence-side skip reads, never a second list; the OFFENSIVE "
+    "copies are untouched; no column is added, no surviving column's value or null count "
+    "moves, and no row moves"
+)
+
+#: The eight columns removed, read from the registry rather than re-typed here.
+PHASE332_OFFENSE_ONLY_STEP_REMOVED_COLUMNS: tuple[str, ...] = (
+    "away_def_rolling_avg_drive_start_yardline",
+    "away_def_rolling_cpoe",
+    "away_def_rolling_neutral_pace",
+    "away_def_rolling_neutral_pass_rate",
+    "home_def_rolling_avg_drive_start_yardline",
+    "home_def_rolling_cpoe",
+    "home_def_rolling_neutral_pace",
+    "home_def_rolling_neutral_pass_rate",
+)
+
+#: The read-only pre-rebuild measurement the step's record carries beside its own.
+PHASE332_OFFENSE_ONLY_STEP_PREREBUILD_MEASUREMENT: str = (
+    "MEASURED 2026-09-22 before any production write, read-only on step 8d's gold: each "
+    "of the eight columns holds ONE distinct value, 0.0, in all 6,499 rows of every "
+    "season 2002-2025, in all three matrices -- they are the only columns "
+    "test_gold_team_form_and_opp_adj_not_constant_within_season fails on, and 8 of the 15 "
+    "columns constant over 2002-2017 after rung 8. No production reader names any of "
+    "them (grep over the tree finds only ladder records and the re-fit's zero-variance "
+    "pre-filter, which withholds a constant column from a fit anyway). This step's "
+    "prediction is therefore DERIVED rather than previewed: a column nothing reads and "
+    "nothing varies with cannot move another column's value when it is removed"
+)
+
+PHASE332_OFFENSE_ONLY_STEP_EXPECTED_SIGNATURE: dict[str, object] = {
+    "rung": PHASE332_OFFENSE_ONLY_STEP,
+    "prefix": PHASE332_RUNG_PREFIX,
+    "cause": PHASE332_OFFENSE_ONLY_STEP_CAUSE,
+    "follows_rung": PHASE332_OFFENSE_ONLY_STEP_FOLLOWS,
+    "columns_added": "empty",
+    "columns_removed": (
+        "exactly the eight columns in "
+        "PHASE332_OFFENSE_ONLY_STEP_REMOVED_COLUMNS, in all three matrices"
+    ),
+    "rows": "unchanged",
+    "width": "-8 in every matrix (201/202/201 -> 193/194/193)",
+    "columns_changed": (
+        "EMPTY. No surviving column moves: removing a column cannot change another "
+        "column's value, and nothing reads these eight"
+    ),
+    "rows_changed": "none -- no surviving value and no null count moves",
+    "predicted_changed": (),
+    "predicted_removed": PHASE332_OFFENSE_ONLY_STEP_REMOVED_COLUMNS,
+    "declared_families": ("team_form",),
+    "family_mechanisms": {
+        "team_form": (
+            "scripts.build_features.FeatureMatrixBuilder._get_team_features skips the "
+            "defensive copy of every column in "
+            "features.team_form.OFFENSE_ONLY_ROLLING_COLUMNS"
+        ),
+    },
+    "prerebuild_measurement": PHASE332_OFFENSE_ONLY_STEP_PREREBUILD_MEASUREMENT,
+    "declared_before_the_rebuild": True,
+}
+
+EXTRA_STEPS_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_OFFENSE_ONLY_STEP
+] = PHASE332_OFFENSE_ONLY_STEP_FOLLOWS
+EXTRA_STEP_CAUSES_BY_PREFIX.setdefault(PHASE332_RUNG_PREFIX, {})[
+    PHASE332_OFFENSE_ONLY_STEP
+] = PHASE332_OFFENSE_ONLY_STEP_CAUSE
+
+PHASE332_OFFENSE_ONLY_STEP_BASELINE_CONFIRMATION: str = (
+    "CONFIRMED 2026-09-22 before step 8e wrote anything: production data/ was "
+    "digest-identical to outputs/p332_step8d_after.json, and the only code changed since "
+    "step 8d's rebuild is this step's own. p332_rung8d.json IS gold rebuilt from today's "
+    "inputs minus exactly this step's cause. No carry-in, no retake"
+)
+
+
+def _attribute_p332_offense_only(detail: dict, diff: dict, verdict: dict, fail) -> bool:
+    """Extra step 8e of the `p332_` ladder: the column-removal step's OWN judge.
+
+    STRUCTURE: nothing may be ADDED; the removed set must be EXACTLY the eight declared
+    columns; the width must fall by exactly eight; rows must not move. Any structural
+    surprise BLOCKS. VALUES: the changed set must be EMPTY -- this step removes columns
+    and changes nothing else, so a single moved value is a FINDING and the cause is never
+    widened to cover it.
+
+    Returns:
+        Whether this matrix BLOCKS the phase.
+    """
+    label = "p332_ extra step 8e (the never-populated defensive copies leave gold)"
+    verdict["changed_by_family"] = {"team_form": []}
+    blocking = False
+    removed_expected = {
+        _canonical(c) for c in PHASE332_OFFENSE_ONLY_STEP_REMOVED_COLUMNS
+    }
+    for column in diff["added"]:
+        blocking = True
+        fail(f"column '{column}' was ADDED at {label}, which adds none")
+    removed = {_canonical(c) for c in diff["removed"]}
+    if removed != removed_expected:
+        blocking = True
+        fail(
+            f"{label} removed {sorted(removed)}, not exactly the declared "
+            f"never-populated defensive copies {sorted(removed_expected)}"
+        )
+    if detail["width_after"] != detail["width_before"] - len(removed_expected):
+        blocking = True
+        fail(
+            f"width moved {detail['width_before']} -> {detail['width_after']} at {label}, "
+            f"which predicts exactly {len(removed_expected)} columns fewer"
+        )
+    if detail.get("rows_before") != detail.get("rows_after"):
+        blocking = True
+        fail(
+            f"rows moved {detail.get('rows_before')} -> {detail.get('rows_after')} at "
+            f"{label}; the step re-derives the same games"
+        )
+    if not removed:
+        fail(f"{label} removed no column at all; the eight must leave")
+    for column in sorted(diff["changed"]):
+        verdict["unattributed"].append(column)
+        fail(
+            f"column '{column}' moved at {label} in season(s) "
+            f"{', '.join(sorted(diff['changed'][column])) or '(none)'}, but this step "
+            "predicts NO surviving value moves at all. Removing a column cannot change "
+            "another column's value; a move here means the rebuild did something this "
+            "step did not declare, and the cause is never widened to fit it"
+        )
+    verdict["attributed"].sort()
+    return blocking
+
+
+PHASE332_EXTRA_STEP_SIGNATURES[PHASE332_OFFENSE_ONLY_STEP] = (
+    PHASE332_OFFENSE_ONLY_STEP_EXPECTED_SIGNATURE
+)
+PHASE332_EXTRA_STEP_ATTRIBUTORS[PHASE332_OFFENSE_ONLY_STEP] = (
+    _attribute_p332_offense_only
+)
+
+
 def _attribute_rung2(diff: dict, verdict: dict, fail) -> None:
     """WR-06 may MOVE any imputed or clipped column; it may not FLATTEN one.
 
@@ -11945,6 +12142,12 @@ def write_phase332_rebuild_diff(
     )
     if unscorable_blank_document.exists():
         lines.extend(_phase332_unscorable_blank_step_lines(fingerprint_dir))
+
+    offense_only_document = rung_document_path(
+        fingerprint_dir, PHASE332_OFFENSE_ONLY_STEP, PHASE332_RUNG_PREFIX
+    )
+    if offense_only_document.exists():
+        lines.extend(_phase332_offense_only_step_lines(fingerprint_dir))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -13053,6 +13256,72 @@ def _phase332_unscorable_blank_step_lines(fingerprint_dir: Path | str) -> list[s
     lines.extend(["", f'[rung."{step}".moved_seasons]'])
     for column, seasons in sorted(_phase332_moved_seasons(report).items()):
         lines.append(f"{column} = {_toml_array(seasons)}")
+    return lines
+
+
+def _phase332_offense_only_step_lines(fingerprint_dir: Path | str) -> list[str]:
+    """The committed record of `p332_` extra step 8e, recomputed from the ladder.
+
+    Judged by the same ``attribute_rung`` call the ladder run makes, against step 8d.
+    This step's whole prediction is structural, so the record leads with the removed set
+    and the widths and records the MOVED set as the empty thing it must be.
+    """
+    step = PHASE332_OFFENSE_ONLY_STEP
+    require_rung_ladder(fingerprint_dir, step, PHASE332_RUNG_PREFIX)
+    baseline_path = phase332_baseline_document_path(fingerprint_dir, step)
+    before = json.loads(baseline_path.read_text(encoding="utf-8"))
+    after = json.loads(
+        rung_document_path(fingerprint_dir, step, PHASE332_RUNG_PREFIX).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = compare_fingerprints(before, after)
+    verdict = attribute_rung(
+        report, step, before=before, after=after, rung_prefix=PHASE332_RUNG_PREFIX
+    )
+    moved = verdict["non_clock_moves"]
+    unattributed = sorted(
+        {c for detail in verdict["matrices"].values() for c in detail["unattributed"]}
+    )
+    removed = sorted(
+        {c for matrix in GOLD_MATRICES for c in report[matrix]["columns_removed"]}
+    )
+    added = sorted(
+        {c for matrix in GOLD_MATRICES for c in report[matrix]["columns_added"]}
+    )
+    signature = PHASE332_OFFENSE_ONLY_STEP_EXPECTED_SIGNATURE
+    lines = [
+        "",
+        f'[rung."{step}"]',
+        f'rung = "{step}"',
+        f"follows_rung = {PHASE332_OFFENSE_ONLY_STEP_FOLLOWS}",
+        f'prefix = "{PHASE332_RUNG_PREFIX}"',
+        f"rebuilt = {'true' if removed else 'false'}",
+        f'baseline_document = "{baseline_path.name}"',
+        "baseline_confirmation = "
+        f'"{_toml_escape(PHASE332_OFFENSE_ONLY_STEP_BASELINE_CONFIRMATION)}"',
+        f'cause = "{_toml_escape(PHASE332_OFFENSE_ONLY_STEP_CAUSE)}"',
+        f'rows_changed = "{_toml_escape(str(signature["rows_changed"]))}"',
+        "prerebuild_measurement = "
+        f'"{_toml_escape(PHASE332_OFFENSE_ONLY_STEP_PREREBUILD_MEASUREMENT)}"',
+        "declared_removed_columns = "
+        f"{_toml_array(list(PHASE332_OFFENSE_ONLY_STEP_REMOVED_COLUMNS))}",
+        f"removed_columns = {_toml_array(removed)}",
+        f"added_columns = {_toml_array(added)}",
+        f"widths_before = {_toml_array([before[m]['width'] for m in GOLD_MATRICES])}",
+        f"widths_after = {_toml_array([after[m]['width'] for m in GOLD_MATRICES])}",
+        f"moved_columns = {_toml_array(moved)}",
+        f"build_clock_moves = {_toml_array(verdict['build_clock_moves'])}",
+        f"unattributed_columns = {_toml_array(unattributed)}",
+        f"attribution_ok = {'true' if verdict['ok'] else 'false'}",
+        f"attribution_blocking = {'true' if verdict['blocking'] else 'false'}",
+        f'attributor = "{PHASE332_EXTRA_STEP_ATTRIBUTORS[step].__name__}"',
+    ]
+    if not removed:
+        lines.append(
+            'why_not_run = "the rebuild removed no column, so the step is recorded as '
+            'declared-but-not-run rather than as a step that ran"'
+        )
     return lines
 
 
