@@ -120,7 +120,16 @@ REGISTRY_KEYS: tuple[str, ...] = (
 
 #: MEASURED on this slice (Plan 33.2-01 Task 3): which of the seven non-elo keys loaded
 #: zero rows, and which loaded rows but have no provenance supplier yet.
-EXPECTED_EMPTY_UNCHECKED: tuple[str, ...] = ("injury", "market", "snaps", "team_form")
+#: Plan 33.2-16 brought the opponent-adjusted family into the gate at its post-Stage-1 merge
+#: site. On this slice the per-game play-by-play pool is floored at 2018, so the family has
+#: no rows and is reported ``empty_unchecked`` BY NAME -- never silently skipped.
+EXPECTED_EMPTY_UNCHECKED: tuple[str, ...] = (
+    "injury",
+    "market",
+    "opponent_adj",
+    "snaps",
+    "team_form",
+)
 #: Plan 33.2-12 registered ``weather`` (it owns the weather fence and its provenance), so
 #: it moved from the unregistered set to ``checked_sources``. Plan 33.2-13 registered
 #: ``qb_tracking`` (and ``injury``, which loads zero rows on this slice and so stays
@@ -447,8 +456,11 @@ class TestTheNarrowCoverageReport:
         assert report.unregistered_sources == EXPECTED_UNREGISTERED
 
     def test_the_post_stage1_family_is_its_own_set(self, tracer: TracerRun) -> None:
+        """Was: ``post_stage1_sources == ("opponent_adj",)`` -- the family merged after Stage 1
+        and out of the gate's reach. Plan 33.2-16 checks it at its merge site, so the set is
+        empty and the family is reported in the ordinary sets (``empty_unchecked`` here)."""
         assert tracer.clean_coverage is not None
-        assert tracer.clean_coverage.post_stage1_sources == ("opponent_adj",)
+        assert tracer.clean_coverage.post_stage1_sources == ()
 
     def test_the_sets_partition_the_eight_non_games_keys(
         self, tracer: TracerRun
@@ -462,7 +474,9 @@ class TestTheNarrowCoverageReport:
         )
         flat = [key for group in sets for key in group]
         assert len(flat) == len(set(flat)), "a key was counted twice"
-        assert set(flat) == set(REGISTRY_KEYS) - {"games"}
+        # The eight non-games registry keys plus the opponent-adjusted family, which is not
+        # a registry key but is checked at its merge site since Plan 33.2-16.
+        assert set(flat) == (set(REGISTRY_KEYS) - {"games"}) | {"opponent_adj"}
 
 
 # ===========================================================================

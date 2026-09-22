@@ -12,10 +12,11 @@ builder registered here is driven through the same three assertions:
 3. when the planted row's information time is reported honestly, the information-time
    gate REFUSES the frame and names the game.
 
-ONE HARNESS, SEVEN BUILDERS. ``REVEAL_CASES`` was seeded by Plan 33.2-13 with ``injury`` and
+ONE HARNESS, EIGHT BUILDERS. ``REVEAL_CASES`` was seeded by Plan 33.2-13 with ``injury`` and
 ``qb``. Plan 33.2-14 adds ``contextual``, ``snaps``, ``team_form``, ``weather`` and
-``market_anchors`` to the same tuple and raises ``DECLARED_REVEAL_CASE_COUNT`` to 7; a builder
-silently leaving the list fails the declared-length control. The ``market_anchors`` plant is
+``market_anchors`` to the same tuple and raises ``DECLARED_REVEAL_CASE_COUNT`` to 7; Plan
+33.2-16 adds ``opponent_adj`` and raises it to 8. A builder silently leaving the list fails the
+declared-length control. The ``market_anchors`` plant is
 an odds row whose RECORDED CAPTURE TIME (``created_at``) sits at, or one second after, the
 lock (owner ruling 2026-09-22: the ``snapshot_ts`` label is never an information time). The ``weather`` case is a REGRESSION CHECK of Plan
 33.2-12's fence (rung 4 owns it), not a second owner of it. The contextual, snap and
@@ -649,8 +650,69 @@ def _market_scenario() -> RevealScenario:
 
 
 # ---------------------------------------------------------------------------
+# Case 8: opponent_adj -- the adjusted rolling window admits a team-game once it ENDED at the
+# lock (Plan 33.2-16). The family is merged AFTER Stage 1 and checked at that merge site.
+# ---------------------------------------------------------------------------
+
+
+def _opponent_stats_rows(game_id: str, week: int, epa: float) -> list[dict]:
+    """KC and BUF offense/defense rows for one game, in the play-by-play id form."""
+    return [
+        {
+            "game_id": game_id,
+            "season": 2023,
+            "week": week,
+            "team": team,
+            "side": side,
+            "epa_per_play": epa if team == "KC" else -epa,
+            "pass_epa_per_play": epa,
+            "rush_epa_per_play": epa,
+        }
+        for team in ("KC", "BUF")
+        for side in ("offense", "defense")
+    ]
+
+
+def _opponent_adj_scenario() -> RevealScenario:
+    def build(planted_at: pd.Timestamp | None):
+        from features.opponent_adj import OpponentAdjuster
+        from scripts.build_features import FeatureMatrixBuilder
+
+        stats = _opponent_stats_rows("2023_01_BUF_KC", 1, 0.10)
+        if planted_at is not None:
+            # The week-2 KC@BUF game: BUF carries one game of history at its lock, so with
+            # a one-game minimum it is ADJUSTED and moves KC's rolling value -- if read.
+            stats += _opponent_stats_rows("2023_02_KC_BUF", 2, 0.40)
+        adjuster = OpponentAdjuster(
+            window=10, min_opponent_games=1, schedule_df=_schedule(planted_at)
+        )
+        rolling = adjuster.build_features(
+            _W3_GAMES, _AS_OF, team_game_stats=pd.DataFrame(stats)
+        )
+        # The per-game frame gold reads, laid out by the REAL merge code.
+        frame = FeatureMatrixBuilder.opponent_adjusted_per_game(rolling, _W3_GAMES)
+        return (
+            frame,
+            adjuster.information_times(_W3_GAMES),
+            dict(adjuster.no_information_signature()),
+        )
+
+    return RevealScenario(
+        source_name="opponent_adj",
+        games=_W3_GAMES,
+        game_id=_W3_ID,
+        feature_columns=(
+            "home_off_rolling_opp_adj_epa_per_play",
+            "home_off_rolling_opp_adj_coverage",
+        ),
+        build=build,
+    )
+
+
+# ---------------------------------------------------------------------------
 # THE PARAMETER LIST. Plan 33.2-13 seeded it with injury and qb; Plan 33.2-14 appends
-# contextual, snaps, team_form, weather and market_anchors (the registry key is ``market``).
+# contextual, snaps, team_form, weather and market_anchors (the registry key is ``market``);
+# Plan 33.2-16 appends opponent_adj (the post-Stage-1 family, checked at its merge site).
 # ---------------------------------------------------------------------------
 
 REVEAL_CASES: tuple[RevealCase, ...] = (
@@ -661,8 +723,11 @@ REVEAL_CASES: tuple[RevealCase, ...] = (
     RevealCase("team_form", _team_form_scenario, "home_off_rolling_epa_per_play"),
     RevealCase("weather", _weather_scenario, "temp_f"),
     RevealCase("market_anchors", _market_scenario, "snapshot_spread"),
+    RevealCase(
+        "opponent_adj", _opponent_adj_scenario, "home_off_rolling_opp_adj_epa_per_play"
+    ),
 )
-DECLARED_REVEAL_CASE_COUNT = 7
+DECLARED_REVEAL_CASE_COUNT = 8
 
 
 class TestTheHarnessIsNotVacuous:
