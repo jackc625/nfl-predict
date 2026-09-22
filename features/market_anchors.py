@@ -14,16 +14,33 @@ Market anchors provide:
 - Public vs sharp betting patterns
 - Market inefficiency detection
 - Baseline probabilities for model comparison
+
+WHEN A LINE WAS KNOWN: ITS RECORDED CAPTURE TIME, NEVER ``snapshot_ts`` (owner ruling
+2026-09-22, Plan 33.2-14, "Only real capture times"). A market line is admissible for a game
+only when its row carries a GENUINELY RECORDED capture instant -- ``created_at``, which the
+live capture path stamps with the moment the response was observed (``scripts/ingest_odds.py``)
+-- at or before that game's lock (``utils.game_lock.is_admissible``: at-lock admissible, one
+second later not). ``snapshot_ts`` is a LABEL and is never read as an information time: every
+stored 2018-2024 row carries one manufactured constant per season (18:00 ET on September 19,
+after 210 week-1/2 games had been played), 2025 carries the retired preceding-Friday freeze,
+and the live path writes the game's own lock into it. Plan 33.2-08 nulled the 1970
+``created_at`` family and the 2025 rows' ``created_at`` is the 2026-09-05 backfill, so no stored
+2018-2025 line qualifies: those games are the honest unknown -- every market value NULL,
+``basis="no_information"`` checked against a signature of NULLs, never a 0.0 or 0.5 stand-in.
+Live 2026 lines captured before their lock are admitted normally.
 """
 
 import warnings
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, cast
 
 import pandas as pd
 
+import utils.game_lock as lock_rule
 from conf.settings import get_settings
 from data.storage import load_dataframe
+from features.provenance import PROVENANCE_COLUMNS, InformationBasis
 from utils import get_logger
 from utils.probability_utils import (
     devig_probabilities,
@@ -31,6 +48,79 @@ from utils.probability_utils import (
 )
 
 logger = get_logger(__name__)
+
+#: The odds column that records WHEN a line was seen: the observed capture instant the live
+#: capture path writes (``scripts/ingest_odds.py``). THE information time of a market line.
+MARKET_CAPTURE_TIME_COLUMN: str = "created_at"
+
+#: The compressed market columns the gold build merges (``scripts/build_features.py``).
+MARKET_FEATURE_COLUMNS: tuple[str, ...] = (
+    "snapshot_spread",
+    "snapshot_total",
+    "snapshot_ml_prob_home_fair",
+    "spread_movement",
+    "total_movement",
+)
+
+
+def admissible_market_rows(odds_df: pd.DataFrame, locks: pd.Series) -> pd.DataFrame:
+    """The odds rows known at or before THEIR OWN game's lock, by recorded capture time.
+
+    A row is admitted only when (1) its game has a lock in *locks* and (2) its
+    ``MARKET_CAPTURE_TIME_COLUMN`` value is present and ``utils.game_lock.is_admissible``
+    against that lock -- the ONE admissibility rule, reached as a module attribute at call
+    time. A NULL capture time is NOT admitted: an unknown time is never assumed early, and
+    ``snapshot_ts`` is never consulted in its place (see the module docstring).
+
+    Args:
+        odds_df: Stored odds rows (``game_id``, ``sportsbook``, ``created_at``, line columns).
+        locks: ``game_id`` -> tz-aware lock (``utils.game_lock.lock_frame``).
+
+    Returns:
+        The admitted rows, with ``information_time`` = the row's capture instant (tz-aware
+        UTC). Empty, with that column, when nothing is admitted.
+
+    Raises:
+        ValueError: a capture time that carries no timezone (the strict parser refuses a
+            naive instant rather than relabelling it).
+    """
+    if MARKET_CAPTURE_TIME_COLUMN not in odds_df.columns or len(odds_df) == 0:
+        empty = odds_df.iloc[0:0].copy()
+        empty["information_time"] = pd.Series(dtype="datetime64[ns, UTC]")
+        return empty
+
+    lock_by_game = {str(game_id): lock for game_id, lock in locks.items()}
+    admitted_positions: list[int] = []
+    for position, (game_id, captured) in enumerate(
+        zip(
+            odds_df["game_id"].astype(str),
+            odds_df[MARKET_CAPTURE_TIME_COLUMN],
+            strict=True,
+        )
+    ):
+        lock = lock_by_game.get(game_id)
+        if lock is None or pd.isna(captured):
+            continue
+        if lock_rule.is_admissible(captured, lock):
+            admitted_positions.append(position)
+
+    admitted = odds_df.iloc[admitted_positions].copy()
+    admitted["information_time"] = pd.to_datetime(
+        admitted[MARKET_CAPTURE_TIME_COLUMN], utc=True
+    )
+    return admitted
+
+
+def _as_float(value: object) -> float:
+    """*value* as a float, NULL (NaN) when it is missing."""
+    return float(cast("float", value)) if pd.notna(value) else float("nan")
+
+
+def _difference(latest: object, earliest: object) -> float:
+    """``latest - earliest`` when both are known, otherwise NULL (never a 0.0 stand-in)."""
+    if pd.notna(latest) and pd.notna(earliest):
+        return float(cast("float", latest)) - float(cast("float", earliest))
+    return float("nan")
 
 
 class MarketAnchorFeaturesCalculator:
@@ -167,7 +257,7 @@ class MarketAnchorFeaturesCalculator:
         self, odds_df: pd.DataFrame, games_df: pd.DataFrame
     ) -> pd.DataFrame:
         """
-        Select each game's latest odds at or before THAT game's own lock.
+        Select each game's latest odds known at or before THAT game's own lock.
 
         The lock is ``utils.game_lock.lock_frame`` over the games' own kickoffs:
         18:00 ET on the ET calendar day before kickoff, at-lock admissible
@@ -176,10 +266,14 @@ class MarketAnchorFeaturesCalculator:
         single game-week and wrong for any frame spanning two, because a Thursday
         game and the following Sunday's games do not lock at the same instant.
 
+        A row is known when it was CAPTURED (``created_at``), never when its
+        ``snapshot_ts`` label says (owner ruling 2026-09-22, Plan 33.2-14): the same
+        ``admissible_market_rows`` rule the gold builder uses, and the freshest
+        admissible capture per sportsbook wins.
+
         Odds rows for games absent from *games_df* are not selected: a game with no
         schedule row has no kickoff and therefore no lock, and this method builds
-        lines only for the games it was asked about. Finishing the per-game odds
-        selection (the freshest admissible quote) is Plan 33.2-13's subject.
+        lines only for the games it was asked about.
 
         Args:
             odds_df: DataFrame with odds data (``game_id``, ``sportsbook``,
@@ -230,8 +324,9 @@ class MarketAnchorFeaturesCalculator:
                 odds_df["game_id"].astype(str).map(cast("Any", locks))
             )
 
-            # At-lock is admissible (<=); one second later is not.
-            pre_cutoff_odds = odds_df[odds_df["snapshot_ts"] <= odds_df["cutoff_time"]]
+            # Admitted by RECORDED CAPTURE TIME at or before the game's own lock
+            # (at-lock admissible, one second later not); snapshot_ts is a label.
+            pre_cutoff_odds = admissible_market_rows(odds_df, locks)
 
             if len(pre_cutoff_odds) == 0:
                 logger.warning("No odds found before cutoff time")
@@ -243,8 +338,8 @@ class MarketAnchorFeaturesCalculator:
             for (game_id, sportsbook), group in pre_cutoff_odds.groupby(
                 ["game_id", "sportsbook"]
             ):
-                # Sort by snapshot time (latest first)
-                group_sorted = group.sort_values("snapshot_ts", ascending=False)
+                # The freshest admissible CAPTURE (latest first)
+                group_sorted = group.sort_values("information_time", ascending=False)
                 snapshot_line = group_sorted.iloc[0]
 
                 snapshot_lines.append(
@@ -653,7 +748,20 @@ class MarketAnchorFeaturesCalculator:
                 return self._create_empty_market_features(games_df)
 
             # Identify opening and snapshot lines
-            opening_lines_df = self.identify_opening_lines(odds_df)
+            # Only lines CAPTURED at or before their game's lock may open a market,
+            # by the same rule the snapshot selection and the gold builder use.
+            wanted = games_df[
+                games_df["game_id"]
+                .astype(str)
+                .isin(set(odds_df["game_id"].astype(str)))
+            ]
+            admitted_odds = admissible_market_rows(
+                odds_df,
+                lock_rule.lock_frame(
+                    cast("pd.DataFrame", wanted[["game_id", "kickoff_et"]])
+                ),
+            ).drop(columns=["information_time"])
+            opening_lines_df = self.identify_opening_lines(admitted_odds)
             snapshot_lines_df = self.select_snapshot_lines_at_lock(odds_df, games_df)
 
             # Create consensus lines
@@ -953,197 +1061,100 @@ class MarketAnchorFeaturesCalculator:
         *,
         target_season: int | None = None,
         target_week: int | None = None,
+        lock_frame: pd.Series | None = None,
     ) -> pd.DataFrame:
-        """Build compressed market anchor features (5 features) for games.
+        """Build compressed market anchor features (5 features), each game at its OWN lock.
 
-        Conforms to the FeatureBuilder Protocol. Uses only odds data
-        with ``snapshot_ts <= as_of_datetime``.
+        Conforms to the FeatureBuilder Protocol. A game's lines are the odds rows
+        CAPTURED at or before that game's lock (``admissible_market_rows``: the recorded
+        ``created_at`` against ``utils.game_lock``, at-lock admissible). ``snapshot_ts`` is a
+        label and is never read here (owner ruling 2026-09-22, Plan 33.2-14). A game with
+        no admitted line is the honest unknown: every market value NULL.
+
+        AFTER PLAN 33.2-19 THIS STOPS FEEDING A MODEL INPUT (D33.2-03: no betting line is a
+        model input) and becomes grading / CLV only. The fence still applies then: a
+        grading input built from post-lock information is still a defect.
 
         Output columns:
             game_id, snapshot_spread, snapshot_total,
             snapshot_ml_prob_home_fair, spread_movement, total_movement
 
         Args:
-            games_df: DataFrame of games to build features for.
-            as_of_datetime: Time-fence cutoff. Only odds data before this
-                timestamp may be used.
+            games_df: DataFrame of games to build features for (``game_id`` and a
+                tz-aware ``kickoff_et``).
+            as_of_datetime: Carried for the ``FeatureBuilder`` Protocol ONLY. It is NOT a
+                fence and no selection reads it.
             target_season: Optional season filter.
             target_week: Optional week filter.
+            lock_frame: The build's ``game_id`` -> lock frame, built ONCE by the caller.
+                When ``None`` it is built here from the target games.
 
         Returns:
             DataFrame with exactly 6 columns (game_id + 5 features).
+
+        Raises:
+            utils.game_lock.MissingKickoffError: a target game has no kickoff.
         """
+        del as_of_datetime  # the Protocol's argument; every game is fenced at its lock
         logger.info(
             "Building compressed market anchor features",
             games=len(games_df),
-            as_of=as_of_datetime.isoformat(),
             target_season=target_season,
             target_week=target_week,
         )
 
         try:
-            # Load odds data
-            odds_df = load_dataframe("odds_snapshot", layer="silver")
-            logger.info("Loaded odds data", odds_records=len(odds_df))
-
-            # Time-fence: only use odds before as_of_datetime.
-            #
-            # This parse used to be a bare ``pd.to_datetime(col, errors="coerce")``,
-            # and it SILENTLY DESTROYED a whole season. The stored ``snapshot_ts`` is a
-            # STRING column holding two known spellings -- the legacy per-season
-            # ``2018-09-19T18:00:00-04:00`` and the space-separated
-            # ``2025-08-29 22:00:00+00:00`` that a tz-aware write stringifies to.
-            # ``pd.to_datetime`` infers ONE format from the first element, so every row
-            # in the other spelling became NaT, NaT fails ``<= cutoff``, and those games
-            # fell through to ``_default_compressed_market_features`` with no log line.
-            # Measured on 2026-09-05: all 285 rows of the freshly ingested 2025 season
-            # were coerced to NaT and every 2025 market anchor in gold came out at the
-            # neutral default -- the ingest reached silver and never reached gold.
-            #
-            # ``scripts.ingest_historical_odds.normalize_snapshot_ts`` is the ONE parse
-            # path this project already declares for exactly this trap (its module
-            # docstring calls it "A TYPE TRAP TRAVELS WITH CLAUSE 3"). It is REUSED
-            # rather than re-implemented, because a second copy of a rule is free to
-            # drift away from the rule everything else applies. The import is deferred
-            # to keep a feature builder from importing a script at module load.
-            if "snapshot_ts" in odds_df.columns:
-                snapshot_col = self._parse_snapshot_column(
-                    cast("pd.Series", odds_df["snapshot_ts"])
-                )
-                cutoff = pd.Timestamp(as_of_datetime)
-                cutoff = (
-                    cutoff.tz_localize("UTC")
-                    if cutoff.tz is None
-                    else cutoff.tz_convert("UTC")
-                )
-                keep = snapshot_col <= cutoff
-                dropped = int((~keep).sum())
-                if dropped:
-                    logger.info(
-                        "Time-fenced odds rows out of the market-anchor population",
-                        dropped=dropped,
-                        kept=int(keep.sum()),
-                        cutoff=cutoff.isoformat(),
-                    )
-                odds_df = odds_df[keep]
-
-            # Filter to target if specified
             if target_season and target_week:
-                games_df = games_df[
-                    (games_df["season"] == target_season)
-                    & (games_df["week"] == target_week)
-                ].copy()
+                games_df = cast(
+                    "pd.DataFrame",
+                    games_df[
+                        (games_df["season"] == target_season)
+                        & (games_df["week"] == target_week)
+                    ],
+                ).copy()
 
-                game_ids = games_df["game_id"].tolist()
-                odds_df = odds_df[odds_df["game_id"].isin(game_ids)]
+            admitted = self._admitted_for(games_df, lock_frame)
 
             compressed_rows: list[dict[str, object]] = []
-            # Games that fell through to the neutral default, COUNTED. A market anchor
-            # at its default is indistinguishable from a real line that happens to be
-            # zero, so the only way a reader learns that a season got no odds at all is
-            # if the builder says so. It did not, and 285 games of the 2025 verdict
-            # season went to defaults in silence on 2026-09-05.
-            defaulted: list[str] = []
+            # Games with no line captured at or before their lock, COUNTED. The unknown is
+            # a NULL, which no reader can mistake for a real line -- but a reader should
+            # still learn how many games carried none.
+            unknown: list[str] = []
+            admitted_by_game = {
+                str(game_id): rows for game_id, rows in admitted.groupby("game_id")
+            }
 
-            for _, game in games_df.iterrows():
-                game_id = game["game_id"]
-                game_odds = odds_df[odds_df["game_id"] == game_id]
-
-                if len(game_odds) == 0:
-                    # No odds data -- use defaults
-                    defaulted.append(str(game_id))
+            for game_id in games_df["game_id"]:
+                game_odds = admitted_by_game.get(str(game_id))
+                if game_odds is None or len(game_odds) == 0:
+                    unknown.append(str(game_id))
                     compressed_rows.append(
                         self._default_compressed_market_features(game_id)
                     )
                     continue
+                compressed_rows.append(self._compress_game_lines(game_id, game_odds))
 
-                # Identify opening lines: earliest snapshot per sportsbook
-                # (at least 24 hours before potential kickoff)
-                opening_lines = (
-                    game_odds.sort_values("snapshot_ts")
-                    .groupby("sportsbook")
-                    .first()
-                    .reset_index()
-                )
+            features_df = pd.DataFrame(
+                compressed_rows, columns=["game_id", *MARKET_FEATURE_COLUMNS]
+            )
 
-                # Identify snapshot lines: latest snapshot per sportsbook
-                snapshot_lines = (
-                    game_odds.sort_values("snapshot_ts", ascending=False)
-                    .groupby("sportsbook")
-                    .first()
-                    .reset_index()
-                )
-
-                # Compute consensus snapshot values (median across books)
-                snap_spread = snapshot_lines["spread"].dropna().median()
-                snap_total = snapshot_lines["total"].dropna().median()
-
-                # Compute devigged home ML probability from snapshot
-                snap_ml_home_vals = snapshot_lines["ml_home"].dropna()
-                snap_ml_away_vals = snapshot_lines["ml_away"].dropna()
-
-                if len(snap_ml_home_vals) > 0 and len(snap_ml_away_vals) > 0:
-                    # Use median moneylines
-                    ml_home_med = int(snap_ml_home_vals.median())
-                    ml_away_med = int(snap_ml_away_vals.median())
-                    prob_home_raw = moneyline_to_probability(ml_home_med)
-                    prob_away_raw = moneyline_to_probability(ml_away_med)
-                    prob_home_fair, _ = devig_probabilities(
-                        prob_home_raw, prob_away_raw, method=self.devig_method
-                    )
-                else:
-                    prob_home_fair = 0.5
-
-                # Compute consensus opening values (median across books)
-                open_spread = opening_lines["spread"].dropna().median()
-                open_total = opening_lines["total"].dropna().median()
-
-                # Compute movement (signed difference)
-                if pd.notna(snap_spread) and pd.notna(open_spread):
-                    spread_mov = float(snap_spread - open_spread)
-                else:
-                    spread_mov = 0.0
-
-                if pd.notna(snap_total) and pd.notna(open_total):
-                    total_mov = float(snap_total - open_total)
-                else:
-                    total_mov = 0.0
-
-                compressed_rows.append(
-                    {
-                        "game_id": game_id,
-                        "snapshot_spread": (
-                            float(snap_spread)
-                            if pd.notna(snap_spread)
-                            else float("nan")
-                        ),
-                        "snapshot_total": (
-                            float(snap_total) if pd.notna(snap_total) else float("nan")
-                        ),
-                        "snapshot_ml_prob_home_fair": float(prob_home_fair),
-                        "spread_movement": spread_mov,
-                        "total_movement": total_mov,
-                    }
-                )
-
-            features_df = pd.DataFrame(compressed_rows)
-
-            if defaulted:
+            if unknown:
                 seasons = sorted(
-                    {str(gid).split("_")[0] for gid in defaulted if "_" in str(gid)}
+                    {str(gid).split("_")[0] for gid in unknown if "_" in str(gid)}
                 )
-                logger.warning(
-                    "Market anchors fell through to the NEUTRAL DEFAULT",
-                    games_defaulted=len(defaulted),
+                logger.info(
+                    "Market anchors are the honest unknown for games with no line "
+                    "captured at or before their lock",
+                    games_unknown=len(unknown),
                     games_total=len(features_df),
                     seasons_affected=seasons,
-                    first_examples=defaulted[:5],
+                    first_examples=unknown[:5],
                 )
 
             logger.info(
                 "Built compressed market anchor features",
                 features_count=len(features_df),
-                games_defaulted=len(defaulted),
+                games_unknown=len(unknown),
             )
 
             return features_df
@@ -1154,6 +1165,149 @@ class MarketAnchorFeaturesCalculator:
                 error=str(e),
             )
             raise
+
+    def _admitted_for(
+        self, games_df: pd.DataFrame, lock_frame: pd.Series | None
+    ) -> pd.DataFrame:
+        """The odds rows admitted for *games_df*, memoised for ``information_times``.
+
+        The provenance supplier re-reads THIS frame (what the features were computed from)
+        rather than re-deriving a selection, so it reports what was actually admitted.
+        """
+        if len(games_df) == 0:
+            self._admitted = pd.DataFrame(columns=["game_id", "information_time"])
+            self._admitted_game_ids: frozenset[str] = frozenset()
+            return self._admitted
+
+        odds_df = load_dataframe("odds_snapshot", layer="silver")
+        logger.info("Loaded odds data", odds_records=len(odds_df))
+        wanted = {str(g) for g in games_df["game_id"]}
+        odds_df = cast(
+            "pd.DataFrame",
+            odds_df[odds_df["game_id"].astype(str).isin(sorted(wanted))],
+        )
+        locks = (
+            lock_frame
+            if lock_frame is not None
+            else lock_rule.lock_frame(
+                cast("pd.DataFrame", games_df[["game_id", "kickoff_et"]])
+            )
+        )
+        self._admitted = admissible_market_rows(odds_df, locks)
+        self._admitted_game_ids = frozenset(wanted)
+        return self._admitted
+
+    def _compress_game_lines(
+        self, game_id: object, game_odds: pd.DataFrame
+    ) -> dict[str, object]:
+        """One game's five market values from its ADMITTED lines (consensus across books).
+
+        Opening line: the earliest admitted capture per sportsbook. Snapshot line: the
+        freshest admitted capture per sportsbook. A value the admitted lines cannot supply
+        is NULL -- never a 0.5 probability or a 0.0 movement stand-in.
+        """
+        opening_lines = (
+            game_odds.sort_values("information_time")
+            .groupby("sportsbook")
+            .first()
+            .reset_index()
+        )
+        snapshot_lines = (
+            game_odds.sort_values("information_time", ascending=False)
+            .groupby("sportsbook")
+            .first()
+            .reset_index()
+        )
+
+        snap_spread = snapshot_lines["spread"].dropna().median()
+        snap_total = snapshot_lines["total"].dropna().median()
+        open_spread = opening_lines["spread"].dropna().median()
+        open_total = opening_lines["total"].dropna().median()
+
+        prob_home_fair = float("nan")
+        snap_ml_home_vals = snapshot_lines["ml_home"].dropna()
+        snap_ml_away_vals = snapshot_lines["ml_away"].dropna()
+        if len(snap_ml_home_vals) > 0 and len(snap_ml_away_vals) > 0:
+            prob_home_raw = moneyline_to_probability(int(snap_ml_home_vals.median()))
+            prob_away_raw = moneyline_to_probability(int(snap_ml_away_vals.median()))
+            prob_home_fair, _ = devig_probabilities(
+                prob_home_raw, prob_away_raw, method=self.devig_method
+            )
+
+        return {
+            "game_id": game_id,
+            "snapshot_spread": _as_float(snap_spread),
+            "snapshot_total": _as_float(snap_total),
+            "snapshot_ml_prob_home_fair": float(prob_home_fair),
+            "spread_movement": _difference(snap_spread, open_spread),
+            "total_movement": _difference(snap_total, open_total),
+        }
+
+    # ------------------------------------------------------------------
+    # InformationTimeProvider (features.protocol, Plan 33.2-01's owned contract)
+    # ------------------------------------------------------------------
+
+    def no_information_signature(self) -> Mapping[str, float | None]:
+        """A game with no line captured at or before its lock: every market value NULL."""
+        return dict.fromkeys(MARKET_FEATURE_COLUMNS)
+
+    def information_times(
+        self,
+        games_df: pd.DataFrame,
+        *,
+        target_season: int | None = None,
+        target_week: int | None = None,
+    ) -> pd.DataFrame:
+        """One provenance row per game: the latest CAPTURE among the lines it admitted.
+
+        Read from the admitted frame :meth:`build_features` computed its values from (the
+        memo), re-derived through the same ``admissible_market_rows`` rule only when called
+        for games that build did not cover. The time is always a recorded ``created_at``,
+        never a ``snapshot_ts`` label. A game that admitted no line is
+        ``basis="no_information"`` with a NULL time, value-checked against
+        :meth:`no_information_signature`.
+
+        Returns:
+            A frame with exactly ``PROVENANCE_COLUMNS``.
+        """
+        target = games_df
+        if target_season and target_week:
+            target = cast(
+                "pd.DataFrame",
+                games_df[
+                    (games_df["season"] == target_season)
+                    & (games_df["week"] == target_week)
+                ],
+            )
+        wanted = {str(g) for g in target["game_id"]}
+        memo_ids: frozenset[str] = getattr(self, "_admitted_game_ids", frozenset())
+        admitted = (
+            self._admitted
+            if memo_ids and wanted <= memo_ids
+            else self._admitted_for(target, None)
+        )
+        latest: dict[str, pd.Timestamp] = {}
+        if len(admitted) > 0:
+            by_game = admitted.groupby(admitted["game_id"].astype(str))
+            latest = {
+                str(game_id): pd.Timestamp(cast("Any", when))
+                for game_id, when in by_game["information_time"].max().items()
+            }
+        records: list[dict[str, Any]] = []
+        for game_id in target["game_id"]:
+            when = latest.get(str(game_id))
+            records.append(
+                {
+                    "game_id": str(game_id),
+                    "basis": (
+                        InformationBasis.PER_ROW.value
+                        if when is not None
+                        else InformationBasis.NO_INFORMATION.value
+                    ),
+                    "information_time": when,
+                }
+            )
+        return pd.DataFrame(records, columns=list(PROVENANCE_COLUMNS))
 
     @staticmethod
     def _parse_snapshot_column(column: pd.Series) -> pd.Series:
@@ -1202,15 +1356,16 @@ class MarketAnchorFeaturesCalculator:
 
         return pd.to_datetime(pd.Series(parsed, index=column.index), utc=True)
 
-    def _default_compressed_market_features(self, game_id: str) -> dict[str, object]:
-        """Default compressed market features when no odds data available."""
+    def _default_compressed_market_features(self, game_id: object) -> dict[str, object]:
+        """A game with no line captured at or before its lock: the HONEST UNKNOWN.
+
+        Every value NULL, exactly ``no_information_signature``. This used to be a 0.5
+        probability and 0.0 movements, stand-ins a reader could not tell from a real
+        even-money line that never moved (owner ruling 2026-09-22).
+        """
         return {
             "game_id": game_id,
-            "snapshot_spread": float("nan"),
-            "snapshot_total": float("nan"),
-            "snapshot_ml_prob_home_fair": 0.5,
-            "spread_movement": 0.0,
-            "total_movement": 0.0,
+            **dict.fromkeys(MARKET_FEATURE_COLUMNS, float("nan")),
         }
 
     def get_features_for_game(
@@ -1224,13 +1379,21 @@ class MarketAnchorFeaturesCalculator:
 
         Args:
             game_id: Unique game identifier.
-            as_of_datetime: Time-fence cutoff.
+            as_of_datetime: Carried for the Protocol; not a fence (the game's lock is).
 
         Returns:
             Dictionary mapping feature names to values.
         """
         try:
-            games_df = pd.DataFrame([{"game_id": game_id, "season": 0, "week": 0}])
+            # The game's lock needs its kickoff, so the game is read from silver games; a
+            # kickoff-less stand-in row would have no lock and is refused by the rule.
+            games = load_dataframe("games", layer="silver")
+            games_df = cast(
+                "pd.DataFrame", games[games["game_id"].astype(str) == str(game_id)]
+            )
+            if len(games_df) == 0:
+                logger.warning("No schedule row for game", game_id=game_id)
+                return {}
             result = self.build_features(games_df, as_of_datetime)
 
             if len(result) == 0:

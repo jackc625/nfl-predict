@@ -9,6 +9,10 @@ Bug (pre-fix, Phase 20): the cutoff was localized to UTC, producing 18:00 UTC = 
 hours early), which silently dropped the legitimate 18:00 ET (= 22:00 UTC) snapshots --
 emptying the snapshot set on the orchestrator path.
 
+Plan 33.2-14 moved admission onto the RECORDED CAPTURE TIME (``created_at``) by owner ruling
+2026-09-22; each fixture row is captured at the instant it names, so the ET-not-UTC boundary
+below is unchanged and now applies to the capture.
+
 These tests construct snapshot timestamps that straddle a game's 6 PM ET lock in a way where
 ET-vs-UTC selection DIFFERS:
 
@@ -53,10 +57,17 @@ def _make_odds_row(
     home_ml: int = -150,
     away_ml: int = 130,
 ) -> dict:
-    """Build a minimal odds-snapshot row with the columns the lock selection needs."""
+    """Build a minimal odds-snapshot row with the columns the lock selection needs.
+
+    The row is CAPTURED at *snapshot_utc*: ``created_at`` carries that instant, and it is
+    what the lock selection reads (Plan 33.2-14, owner ruling 2026-09-22 -- a line counts
+    only with a recorded capture time; the ``snapshot_ts`` label is never an information
+    time). ``snapshot_ts`` carries the same instant so the returned label can be checked.
+    """
     return {
         "game_id": game_id,
         "sportsbook": sportsbook,
+        "created_at": pd.Timestamp(snapshot_utc),
         "snapshot_ts": snapshot_utc.isoformat(),
         "commence_time": (snapshot_utc + timedelta(days=2)).isoformat(),
         "home_spread": spread,

@@ -317,7 +317,24 @@ def _make_market_games_df():
 
 
 def _make_odds_df():
-    """Create synthetic odds data with opening and snapshot values."""
+    """Create synthetic odds data with opening and snapshot values.
+
+    Each row is CAPTURED at the ET instant its ``snapshot_ts`` names: ``created_at`` carries
+    that capture, and it is what the builder admits on (Plan 33.2-14, owner ruling
+    2026-09-22 -- a line counts only with a recorded capture time at or before its game's
+    lock, 18:00 ET Saturday Sep 7 for these Sunday games).
+    """
+    from zoneinfo import ZoneInfo
+
+    odds = _make_raw_odds_df()
+    odds["created_at"] = pd.to_datetime(odds["snapshot_ts"]).dt.tz_localize(
+        ZoneInfo("America/New_York")
+    )
+    return odds
+
+
+def _make_raw_odds_df():
+    """The synthetic odds rows, before their capture instants are stamped."""
     return pd.DataFrame(
         [
             # MKT_GAME_1 opening (Monday before)
@@ -448,22 +465,29 @@ class TestMarketCompression:
             f"Expected 'as_of_datetime' in build_features params, got {param_names}"
         )
 
-    def test_as_of_datetime_filters_odds(self):
-        """build_features only uses odds data with snapshot_ts <= as_of_datetime."""
+    def test_a_line_captured_after_the_lock_is_not_used(self):
+        """build_features only uses lines CAPTURED at or before each game's own lock.
+
+        Retargeted by Plan 33.2-14: the fence is the per-game lock applied to the recorded
+        capture time, not a frame-wide ``as_of_datetime``. MKT_GAME_2's later line is moved
+        to a capture after its Saturday 18:00 ET lock, so only its opening line is admitted:
+        snapshot = opening and the movement is 0.0.
+        """
         games_df = _make_market_games_df()
         odds_df = _make_odds_df()
-        # Use early cutoff -- only the opening lines should be available
-        early_cutoff = datetime(2024, 9, 3, 11, 0)
+        late = odds_df["game_id"].eq("MKT_GAME_2") & (odds_df["spread"] == -3.5)
+        odds_df.loc[late, "created_at"] = pd.Timestamp("2024-09-07 22:00:01", tz="UTC")
 
         with patch(
             "features.market_anchors.load_dataframe",
             return_value=odds_df,
         ):
-            result = self.calc.build_features(games_df, early_cutoff)
+            result = self.calc.build_features(
+                games_df, datetime(2030, 1, 1, tzinfo=UTC)
+            )
 
-        # MKT_GAME_2 has opening at Sep 3 10:00 (before cutoff), so snapshot = opening
-        # Therefore spread_movement should be 0.0 (no movement possible)
         game2 = result[result["game_id"] == "MKT_GAME_2"].iloc[0]
+        assert game2["snapshot_spread"] == pytest.approx(-3.0, abs=0.01)
         assert game2["spread_movement"] == pytest.approx(0.0, abs=0.01)
 
 

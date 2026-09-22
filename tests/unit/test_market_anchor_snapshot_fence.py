@@ -145,62 +145,89 @@ class TestTheFixedParseHandlesBothSpellings:
             )
 
 
-class TestBothSpellingsReachTheBuiltFeatures:
-    """End to end through ``build_features``: the regression, stated as behaviour."""
+def _captured_odds_frame() -> pd.DataFrame:
+    """The same two rows, each CAPTURED at the instant its label names (``created_at``)."""
+    frame = _odds_frame()
+    frame["created_at"] = [
+        pd.Timestamp(LEGACY_SPELLING).tz_convert("UTC"),
+        pd.Timestamp(TZ_AWARE_SPELLING).tz_convert("UTC"),
+    ]
+    return frame
+
+
+_BUILT_GAMES = pd.DataFrame(
+    [
+        {
+            "game_id": "2018_W03_LAC@LA",
+            "season": 2018,
+            "week": 3,
+            "kickoff_et": pd.Timestamp("2018-09-23 17:00:00", tz="UTC"),
+        },
+        {
+            "game_id": "2025_W01_DAL@PHI",
+            "season": 2025,
+            "week": 1,
+            "kickoff_et": pd.Timestamp("2025-09-05 00:20:00", tz="UTC"),
+        },
+    ]
+)
+
+
+class TestTheGoldBuilderReadsTheCaptureTimeNeverTheLabel:
+    """End to end through ``build_features`` (retargeted by Plan 33.2-14).
+
+    Owner ruling 2026-09-22: a line counts for a game only with a RECORDED capture time
+    (``created_at``) at or before its lock, and ``snapshot_ts`` is a label, never an
+    information time. So the spelling defect above can no longer reach gold -- the gold
+    builder does not parse the label at all -- and what stays pinned is its OUTCOME: a
+    stored line that WAS known before the lock reaches the feature, whichever spelling its
+    label uses, and one whose only time is the label does not.
+    """
 
     @staticmethod
-    def _build(monkeypatch: pytest.MonkeyPatch) -> pd.DataFrame:
+    def _build(monkeypatch: pytest.MonkeyPatch, odds: pd.DataFrame) -> pd.DataFrame:
         import features.market_anchors as module
 
-        monkeypatch.setattr(module, "load_dataframe", lambda *a, **k: _odds_frame())
-        games = pd.DataFrame(
-            [
-                {"game_id": "2018_W03_LAC@LA", "season": 2018, "week": 3},
-                {"game_id": "2025_W01_DAL@PHI", "season": 2025, "week": 1},
-            ]
-        )
-        return MarketAnchorFeaturesCalculator().build_features(
-            games, pd.Timestamp("2030-01-01", tz="UTC").to_pydatetime()
+        monkeypatch.setattr(module, "load_dataframe", lambda *a, **k: odds)
+        return (
+            MarketAnchorFeaturesCalculator()
+            .build_features(
+                _BUILT_GAMES, pd.Timestamp("2030-01-01", tz="UTC").to_pydatetime()
+            )
+            .set_index("game_id")
         )
 
-    def test_the_tz_aware_spelled_game_gets_a_real_spread_not_the_default(
+    def test_a_pre_lock_capture_reaches_the_feature_whatever_its_label_spelling(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        built = self._build(monkeypatch).set_index("game_id")
+        built = self._build(monkeypatch, _captured_odds_frame())
 
-        assert built.loc["2025_W01_DAL@PHI", "snapshot_spread"] == -7.5, (
-            "the game whose snapshot_ts uses the space-separated spelling still comes "
-            "back at the neutral default, which is the exact shape of the defect: the "
-            "odds are in the store and never reach the feature"
-        )
+        assert built.loc["2025_W01_DAL@PHI", "snapshot_spread"] == -7.5
         assert built.loc["2025_W01_DAL@PHI", "snapshot_total"] == 51.0
-
-    def test_the_legacy_spelled_game_is_unaffected(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The fix must not trade one spelling for the other."""
-        built = self._build(monkeypatch).set_index("game_id")
-
         assert built.loc["2018_W03_LAC@LA", "snapshot_spread"] == -3.0
         assert built.loc["2018_W03_LAC@LA", "snapshot_total"] == 46.5
 
-    def test_a_game_after_the_fence_still_gets_the_default(
+    def test_a_row_whose_only_time_is_its_label_is_the_honest_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stored 2018-2024 shape: a label, and created_at NULL."""
+        odds = _odds_frame()
+        odds["created_at"] = pd.NaT
+        built = self._build(monkeypatch, odds)
+
+        assert built["snapshot_spread"].isna().all()
+        assert built["snapshot_ml_prob_home_fair"].isna().all()
+
+    def test_a_capture_after_the_lock_is_the_honest_unknown(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Guard the guard: the fence must still FENCE, or these tests pass for free."""
-        import features.market_anchors as module
+        odds = _captured_odds_frame()
+        odds["created_at"] = pd.Timestamp("2026-09-05 04:59:49", tz="UTC")
+        built = self._build(monkeypatch, odds)
 
-        monkeypatch.setattr(module, "load_dataframe", lambda *a, **k: _odds_frame())
-        games = pd.DataFrame(
-            [{"game_id": "2025_W01_DAL@PHI", "season": 2025, "week": 1}]
-        )
-
-        built = MarketAnchorFeaturesCalculator().build_features(
-            games, pd.Timestamp("2020-01-01", tz="UTC").to_pydatetime()
-        )
-
-        assert pd.isna(built.iloc[0]["snapshot_spread"]), (
-            "an odds row dated AFTER the as-of cutoff still reached the feature, so the "
+        assert built["snapshot_spread"].isna().all(), (
+            "a line captured AFTER its game's lock still reached the feature, so the "
             "time fence is no longer fencing"
         )
 
@@ -266,11 +293,12 @@ class TestTheDeprecatedPathUsesTheSameOneParse:
 
         Stronger than the check it replaces, which asserted only the legacy-spelled game:
         under a per-game lock both rows are before their games' locks, so both must survive.
+        Admission reads each row's recorded capture (Plan 33.2-14), so the rows carry one.
         """
         self._patch(monkeypatch)
 
         snapshots = MarketAnchorFeaturesCalculator().select_snapshot_lines_at_lock(
-            _odds_frame(), self._GAMES
+            _captured_odds_frame(), self._GAMES
         )
 
         assert set(snapshots["game_id"]) == {"2018_W03_LAC@LA", "2025_W01_DAL@PHI"}

@@ -176,7 +176,8 @@ POST_STAGE1_SOURCES: tuple[str, ...] = ("opponent_adj",)
 #     elo         -- registered by Plan 33.2-01
 #     contextual  -- registered by Plan 33.2-14
 #     weather     -- registered by Plan 33.2-12 (rung 4 owns the weather fence AND its supplier)
-#     market      -- Plan 33.2-14, via features/market_anchors.py
+#     market      -- registered by Plan 33.2-14, via features/market_anchors.py (a line counts
+#                    only with a recorded capture time at or before the lock; owner 2026-09-22)
 #     qb_tracking -- registered by Plan 33.2-13
 #     snaps       -- registered by Plan 33.2-14
 #     injury      -- registered by Plan 33.2-13
@@ -596,8 +597,8 @@ class FeatureMatrixBuilder:
             target_week: Specific week to load
             as_of_datetime: The cutoff argument the FeatureBuilder Protocol still carries.
                 It is NOT a fence for QBTracker or InjuryBuilder (Plan 33.2-13), nor for
-                the contextual, snap and team-form builders (Plan 33.2-14): each selects at
-                every game's own lock. Builders not yet moved onto the lock
+                the contextual, snap, team-form and market-anchor builders (Plan
+                33.2-14): each selects at every game's own lock. Builders not yet moved onto the lock
                 (OpponentAdjuster, ...) still read it. Defaults to ``datetime.now(ET)``.
             through_season: Last season a FULL rebuild carries (the ladder-rung
                 bound, see ``scope_games_through_season``). ``None`` = every season.
@@ -767,13 +768,16 @@ class FeatureMatrixBuilder:
                 logger.warning("Failed to load weather features", error=str(e))
                 feature_sources["weather"] = pd.DataFrame()
 
-            # Market anchor features (computed on-the-fly via MarketAnchorFeaturesCalculator)
+            # Market anchor features (computed on-the-fly via MarketAnchorFeaturesCalculator).
+            # Each game's lines are those CAPTURED at or before its own lock (Plan 33.2-14,
+            # owner ruling 2026-09-22): the recorded created_at, never the snapshot_ts label.
             try:
                 market_df = self.market_calc.build_features(
                     games_df,
                     as_of_datetime,
                     target_season=target_season,
                     target_week=target_week,
+                    lock_frame=source_locks,
                 )
                 feature_sources["market"] = market_df
                 logger.info("Built market anchor features", records=len(market_df))
@@ -1092,10 +1096,12 @@ class FeatureMatrixBuilder:
           and ``no_information`` wherever nothing was admitted); ``contextual``,
           ``snaps`` and ``team_form`` (Plan 33.2-14 -- each admits a prior game only once
           it ENDED at or before the target game's lock, and reports the end of the latest
-          game it actually read).
-        * The full nine-key ledger, with ``market`` and the ``games`` disposition, sits
-          beside ``SUPPLIER_ATTRIBUTES``; Plan 33.2-16 brings the post-Stage-1
-          opponent-adjusted family into the loop.
+          game it actually read); ``market`` (Plan 33.2-14 -- a line counts only with a
+          recorded capture time, ``created_at``, at or before the lock, and reports the
+          latest such capture; the ``snapshot_ts`` label is never an information time).
+        * The full nine-key ledger, with the ``games`` disposition, sits beside
+          ``SUPPLIER_ATTRIBUTES``; Plan 33.2-16 brings the post-Stage-1 opponent-adjusted
+          family into the loop.
 
         No source is EXEMPTED, only not yet reached: the unchecked keys are NAMED in the
         CoverageReport, which is logged at every build, and Plan 33.2-20 arms the refusal
