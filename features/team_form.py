@@ -1172,6 +1172,46 @@ class TeamFormCalculator:
             for column in ROLLING_COLUMNS
         }
 
+    def _provenance_schedule(
+        self, form: pd.DataFrame, target: pd.DataFrame
+    ) -> pd.DataFrame:
+        """The timing the provenance reads: the corpus build's own, its bootstrap season included.
+
+        The silver corpus (``scripts.build_team_form``) times the season BEFORE its first target
+        season from that season's pinned schedule, so the first target season's week 1 carries a
+        rolling row drawn from it (Plan 33.2-17 Task 1). Silver ``games`` does not carry that
+        season, so a provenance timed against silver ``games`` alone would declare those rows
+        ``no_information`` beside real values -- which the information-time gate refuses. This
+        adds the bootstrap season's timing rows from the SAME function the corpus build used
+        (``bootstrap_timing_games``), and only when it can matter: a target game in the first
+        target season, a bootstrap season the schedule does not carry, and a pin that carries it.
+        An unpinned bootstrap season is left untimed -- no second timing source is invented --
+        so its rows stay ``no_information`` and the gate refuses loudly. Only the provenance
+        reads this; the per-game opponent-adjusted pool keeps its own timing.
+        """
+        schedule = self._team_schedule()
+        if len(form) == 0 or len(target) == 0:
+            return schedule
+        first_target = int(form["target_season"].min())
+        bootstrap = first_target - 1
+        target_seasons = {int(season) for season in target["season"].dropna()}
+        if first_target not in target_seasons:
+            return schedule
+        if bootstrap in {int(season) for season in schedule["season"].dropna()}:
+            return schedule
+        if bootstrap not in upstream_pin.pinned_seasons(
+            "schedules", upstream_pin.load_manifest()
+        ):
+            return schedule
+        # Lazy: scripts.build_team_form imports this module (the same precedent as
+        # features.elo_features reading scripts.build_elo).
+        from scripts.build_team_form import bootstrap_timing_games
+
+        return pd.concat(
+            [schedule, team_game_schedule(bootstrap_timing_games(bootstrap))],
+            ignore_index=True,
+        )
+
     def information_times(
         self,
         games_df: pd.DataFrame,
@@ -1212,7 +1252,7 @@ class TeamFormCalculator:
                 form["team"], form["target_season"], form["target_week"], strict=True
             )
         }
-        schedule = self._team_schedule()
+        schedule = self._provenance_schedule(form, target)
         by_team = {str(team): rows for team, rows in schedule.groupby("team")}
         locks = lock_rule.lock_frame(target)
         for game in target.to_dict("records"):
