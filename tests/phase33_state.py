@@ -16485,3 +16485,180 @@ P332_18_RUNG8_GOLD_WIDTH_DELTA: dict[str, object] = {
     "widths_after": (201, 202, 201),
     "measured_at": "2026-09-22",
 }
+
+# ---------------------------------------------------------------------------
+# Owner ruling 2026-09-22, run FIRST in Plan 33.2-19's dispatch -- p332_ EXTRA STEP 8b:
+# WINSORIZATION STOPS FITTING ON THE SEASON IT CLIPS. APPENDED ONCE on 2026-09-22, in ONE
+# block, by the step that ran. Nothing above this line was edited.
+#
+# THE LEAK: scripts/build_features.FeatureMatrixBuilder._season_fit_source fell back to a
+# season's OWN rows whenever no strictly-prior slice could be fitted -- the earliest season
+# (2002), and a column's first populated season when its upstream source starts later (cpoe
+# 2006, backup quality 2010, snaps and availability 2013). That bound saw the whole season, so
+# a week-1 value was clipped by a statistic that had read week 18: the residual D30-16 accepted
+# before the day-before lock existed, and the last statistic in that method still reading one.
+#
+# THE CAUSE, declared in commit eb9154f before any rebuild: bounds are fitted on strictly-prior
+# seasons only, and a season with no usable strictly-prior fit is left UNCLIPPED (the treatment
+# a degenerate bound already got), recorded in FeatureMatrixBuilder.unclipped_seasons. The
+# pre-clip snapshot, the minimum-fit-points rule, the degenerate-bound skip and the CR-02
+# discrete-indicator exemption are unchanged.
+#
+# MEASURED 2026-09-22: predicted on a REPLAY of the build's tail from the combined frame
+# captured once at the merge point, whose CONTROL -- the same replay from a worktree at rung 8's
+# own commit 2d0eb97 -- reproduces production gold EXACTLY (zero non-clock columns). Then the
+# production rebuild --through-season 2025, judged against p332_rung8.json (baseline confirmed:
+# data/ digest-identical to outputs/p332_rung8_after.json, 1128 files; no retake) --
+# attribution_ok true, not blocking, zero unattributed; exactly the 97 declared columns moved,
+# each only in its declared seasons and identically in all three matrices; no null count moved;
+# widths 201/202/201 and rows 6,499 unchanged; production identical to the preview on every
+# non-clock column. Digest bracket outputs/p332_step8b_before.json -> after: the three gold
+# matrices and the DuckDB file; mixed empty, nothing added or removed.
+# ---------------------------------------------------------------------------
+
+# sha256 of scripts.fingerprint_gold.PHASE332_WINSORIZATION_STEP_CAUSE (UTF-8), declared in eb9154f.
+P332_19_STEP8B_CAUSE_DIGEST: str = (
+    "ba2dc861abbcaf749c929e2df171044bbe1ad197de61203d8083e249adb6283b"
+)
+
+P332_19_STEP8B_DECLARED_IN_COMMIT: str = "eb9154f190e9d96b195909b9c5d3c64fcc8c1ac0"
+
+P332_19_STEP8B_BASELINE_DOCUMENT: str = "p332_rung8.json"
+
+# The 97 columns that moved, MEASURED. Each moved in ALL THREE matrices, in the seasons
+# scripts.fingerprint_gold.PHASE332_WINSORIZATION_STEP_SEASONS_BY_COLUMN declares for it.
+P332_19_STEP8B_MOVED_COLUMNS: tuple[str, ...] = (
+    "apparent_temp_f",
+    "away_availability_fraction",
+    "away_def_rolling_opp_adj_epa_per_play",
+    "away_def_rolling_opp_adj_pass_epa",
+    "away_def_rolling_opp_adj_rush_epa",
+    "away_def_rolling_pass_success_rate",
+    "away_def_rolling_red_zone_td_rate",
+    "away_def_rolling_rush_success_rate",
+    "away_def_rolling_success_rate",
+    "away_def_rolling_third_down_conversion_rate",
+    "away_elo",
+    "away_elo_momentum",
+    "away_off_rolling_avg_drive_start_yardline",
+    "away_off_rolling_cpoe",
+    "away_off_rolling_neutral_pace",
+    "away_off_rolling_neutral_pass_rate",
+    "away_off_rolling_opp_adj_epa_per_play",
+    "away_off_rolling_opp_adj_pass_epa",
+    "away_off_rolling_opp_adj_rush_epa",
+    "away_off_rolling_pass_success_rate",
+    "away_off_rolling_red_zone_td_rate",
+    "away_off_rolling_rush_success_rate",
+    "away_off_rolling_success_rate",
+    "away_off_rolling_third_down_conversion_rate",
+    "away_qb_adjustment",
+    "away_rest_days",
+    "away_rolling_snap_share_db",
+    "away_rolling_snap_share_dl",
+    "away_rolling_snap_share_lb",
+    "away_rolling_snap_share_ol",
+    "away_rolling_snap_share_qb",
+    "away_rolling_snap_share_rb",
+    "away_rolling_snap_share_te",
+    "away_rolling_snap_share_wr",
+    "away_snap_concentration",
+    "away_snap_continuity",
+    "away_travel_distance_miles",
+    "away_travel_fatigue_score",
+    "ball_handling_difficulty",
+    "cold_impact_score",
+    "defensive_advantage",
+    "elo_diff",
+    "elo_prob_away",
+    "elo_prob_home",
+    "home_availability_fraction",
+    "home_backup_quality_delta",
+    "home_def_rolling_opp_adj_epa_per_play",
+    "home_def_rolling_opp_adj_pass_epa",
+    "home_def_rolling_opp_adj_rush_epa",
+    "home_def_rolling_pass_success_rate",
+    "home_def_rolling_red_zone_td_rate",
+    "home_def_rolling_rush_success_rate",
+    "home_def_rolling_success_rate",
+    "home_def_rolling_third_down_conversion_rate",
+    "home_elo",
+    "home_elo_momentum",
+    "home_off_rolling_avg_drive_start_yardline",
+    "home_off_rolling_cpoe",
+    "home_off_rolling_neutral_pace",
+    "home_off_rolling_neutral_pass_rate",
+    "home_off_rolling_opp_adj_epa_per_play",
+    "home_off_rolling_opp_adj_pass_epa",
+    "home_off_rolling_opp_adj_rush_epa",
+    "home_off_rolling_pass_success_rate",
+    "home_off_rolling_red_zone_td_rate",
+    "home_off_rolling_rush_success_rate",
+    "home_off_rolling_success_rate",
+    "home_off_rolling_third_down_conversion_rate",
+    "home_qb_adjustment",
+    "home_rest_days",
+    "home_rolling_snap_share_db",
+    "home_rolling_snap_share_dl",
+    "home_rolling_snap_share_lb",
+    "home_rolling_snap_share_ol",
+    "home_rolling_snap_share_qb",
+    "home_rolling_snap_share_rb",
+    "home_rolling_snap_share_te",
+    "home_rolling_snap_share_wr",
+    "home_snap_concentration",
+    "home_snap_continuity",
+    "home_weather_advantage",
+    "kicking_difficulty",
+    "passing_difficulty",
+    "passing_efficiency",
+    "precip_prob",
+    "raw_humidity_pct",
+    "raw_precip_prob",
+    "raw_temp_f",
+    "raw_weather_severity",
+    "raw_wind_mph",
+    "rest_advantage",
+    "rushing_advantage",
+    "season_progress",
+    "temp_f",
+    "turnover_multiplier",
+    "weather_severity_score",
+    "wind_mph",
+)
+
+# The seasons any column moved in, unioned. A column's FIRST fitted season and the one after
+# it: 2002/2003 (67 columns), 2006/2007 (cpoe), 2010/2011 (home_backup_quality_delta),
+# 2013/2014 (22 snap and availability columns), and 2002 alone for the five display-only raw_*
+# passthroughs, which carry no prior-season normalization bootstrap.
+P332_19_STEP8B_SEASON_UNION: tuple[str, ...] = (
+    "2002",
+    "2003",
+    "2006",
+    "2007",
+    "2010",
+    "2011",
+    "2013",
+    "2014",
+)
+
+P332_19_STEP8B_DISPLAY_ONLY_COLUMNS: tuple[str, ...] = (
+    "raw_humidity_pct",
+    "raw_precip_prob",
+    "raw_temp_f",
+    "raw_weather_severity",
+    "raw_wind_mph",
+)
+
+P332_19_STEP8B_WIDTHS: tuple[int, int, int] = (201, 202, 201)
+
+P332_19_STEP8B_ROWS: int = 6499
+
+P332_19_STEP8B_NULL_COUNTS_MOVED: int = 0
+
+P332_19_STEP8B_DIGEST_BRACKET_PATHS: tuple[str, ...] = (
+    "gold/features_wp.parquet",
+    "gold/features_ats.parquet",
+    "gold/features_ou.parquet",
+    "nfl_predictions.duckdb",
+)
